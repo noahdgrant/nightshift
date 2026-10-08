@@ -1,4 +1,4 @@
-//! `sf ask --role <role>`: run the configured harness headless with the prompt on stdin.
+//! `ns ask --role <role>`: run the configured harness headless with the prompt on stdin.
 
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
@@ -14,7 +14,7 @@ use crate::which::which;
 fn not_configured(msg: String, path: &Path) -> anyhow::Error {
     SfError::new(EXIT_NOT_CONFIGURED, msg)
         .hint(format!(
-            "add a role or a default to {}, for example:\n\n{}\n\n  check with: sf doctor",
+            "add a role or a default to {}, for example:\n\n{}\n\n  check with: ns doctor",
             path.display(),
             config::EXAMPLE
         ))
@@ -41,7 +41,7 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
         if !dir.is_dir() {
             return Err(SfError::usage(
                 format!("--cwd {} is not a directory", dir.display()),
-                "sf ask --role build --write --cwd ../myrepo.worktrees/142-uart-timeout --prompt-file prompt.md",
+                "ns ask --role build --write --cwd ../myrepo.worktrees/142-uart-timeout --prompt-file prompt.md",
             )
             .into());
         }
@@ -49,7 +49,7 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
     if role.is_empty() {
         return Err(SfError::usage(
             "--role must not be empty",
-            "sf ask --role review.security --prompt-file prompt.md",
+            "ns ask --role review.security --prompt-file prompt.md",
         )
         .into());
     }
@@ -142,7 +142,7 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
                 resolved.harness, command[0]
             ),
         )
-        .hint("install it, or map the role to another harness; see installed harnesses with:\n  sf doctor")
+        .hint("install it, or map the role to another harness; see installed harnesses with:\n  ns doctor")
         .into());
     };
 
@@ -150,7 +150,7 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
     if prompt.iter().all(u8::is_ascii_whitespace) {
         return Err(SfError::usage(
             "the prompt is empty",
-            "sf ask --role review --prompt-file prompt.md",
+            "ns ask --role review --prompt-file prompt.md",
         )
         .into());
     }
@@ -185,7 +185,7 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
             command.join(" ")
         ))
         .hint(format!(
-            "preview the command with:\n  sf ask --role {role} --dry-run"
+            "preview the command with:\n  ns ask --role {role} --dry-run"
         ))
         .into());
     }
@@ -197,7 +197,7 @@ fn read_prompt(prompt_file: Option<&Path>) -> Result<Vec<u8>> {
         Some(p) => std::fs::read(p).map_err(|e| {
             SfError::usage(
                 format!("cannot read prompt file {}: {e}", p.display()),
-                "sf ask --role review --prompt-file prompt.md",
+                "ns ask --role review --prompt-file prompt.md",
             )
             .into()
         }),
@@ -206,7 +206,7 @@ fn read_prompt(prompt_file: Option<&Path>) -> Result<Vec<u8>> {
             if stdin.is_terminal() {
                 return Err(SfError::usage(
                     "no prompt: pipe it on stdin or pass --prompt-file",
-                    "sf ask --role review --prompt-file prompt.md\n  echo 'Review this diff' | sf ask --role review",
+                    "ns ask --role review --prompt-file prompt.md\n  echo 'Review this diff' | ns ask --role review",
                 )
                 .into());
             }

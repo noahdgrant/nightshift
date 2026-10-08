@@ -1,4 +1,4 @@
-//! `sf doctor`: config and harness availability report.
+//! `ns doctor`: config and harness availability report.
 
 use anyhow::Result;
 use serde_json::{json, Map, Value};
@@ -54,11 +54,11 @@ pub fn run() -> Result<()> {
         }
         if !cfg.roles.contains_key("default") {
             problems
-                .push("no [roles.default]; roles without a match exit 3 from sf ask".to_string());
+                .push("no [roles.default]; roles without a match exit 3 from ns ask".to_string());
         }
     } else if !exists {
         problems.push(format!(
-            "no config at {}; sf ask exits 3 until one exists (see sf ask --help)",
+            "no config at {}; ns ask exits 3 until one exists (see ns ask --help)",
             path.display()
         ));
     }

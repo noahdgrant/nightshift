@@ -1,4 +1,4 @@
-//! `sf`: the Software Factory CLI.
+//! `ns`: the Nightshift CLI.
 
 mod ask;
 mod config;
@@ -21,22 +21,22 @@ use error::SfError;
 
 const ROOT_HELP: &str = "\
 Examples:
-  sf worktree new 142-uart-timeout
-  sf worktree list
-  echo 'Review this diff' | sf ask --role review.security
-  sf lint skills
-  sf install --dry-run
-  sf doctor
+  ns worktree new 142-uart-timeout
+  ns worktree list
+  echo 'Review this diff' | ns ask --role review.security
+  ns lint skills
+  ns install --dry-run
+  ns doctor
 
 Exit codes: 0 ok, 1 failure, 2 usage error, 3 role not configured, 4 harness missing,
-5 no write command for `sf ask --write`.
-Run `sf <command> --help` for details on one command.";
+5 no write command for `ns ask --write`.
+Run `ns <command> --help` for details on one command.";
 
 #[derive(Parser)]
 #[command(
-    name = "sf",
+    name = "ns",
     version,
-    about = "Software Factory CLI: worktrees, headless harness calls, skill lint and install",
+    about = "Nightshift CLI: worktrees, headless harness calls, skill lint and install",
     after_help = ROOT_HELP,
     arg_required_else_help = true
 )]
@@ -47,9 +47,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create, list and remove per-unit worktrees (branch sf/<unit-id>)
+    /// Create, list and remove per-unit worktrees (branch ns/<unit-id>)
     #[command(
-        after_help = "Examples:\n  sf worktree new 142-uart-timeout\n  sf worktree list\n  sf worktree remove 142-uart-timeout --dry-run",
+        after_help = "Examples:\n  ns worktree new 142-uart-timeout\n  ns worktree list\n  ns worktree remove 142-uart-timeout --dry-run",
         arg_required_else_help = true
     )]
     Worktree {
@@ -77,12 +77,12 @@ enum Cmd {
         dry_run: bool,
     },
 
-    /// Validate sf-*/SKILL.md skills (frontmatter, names, upstream, relative links)
+    /// Validate ns-*/SKILL.md skills (frontmatter, names, upstream, relative links)
     #[command(after_help = "\
 Examples:
-  sf lint
-  sf lint path/to/skills
-  sf lint skills --human
+  ns lint
+  ns lint path/to/skills
+  ns lint skills --human
 
 Prints {\"ok\",\"skills\",\"errors\":[{\"skill\",\"file\",\"message\"}]}. Exits 1 if any error.")]
     Lint {
@@ -94,18 +94,18 @@ Prints {\"ok\",\"skills\",\"errors\":[{\"skill\",\"file\",\"message\"}]}. Exits 
         human: bool,
     },
 
-    /// Symlink skills/sf-* into harness skill directories
+    /// Symlink skills/ns-* into harness skill directories
     #[command(after_help = "\
 Examples:
-  sf install --dry-run
-  sf install --source ~/src/software-factory/skills
-  sf install --target ~/.agents/skills --target ~/.cursor/skills
+  ns install --dry-run
+  ns install --source ~/src/nightshift/skills
+  ns install --target ~/.agents/skills --target ~/.cursor/skills
 
 Default targets: ~/.agents/skills and ~/.claude/skills (created if missing).
-Stale sf-* symlinks are replaced. Real directories in the way are reported as
+Stale ns-* symlinks are replaced. Real directories in the way are reported as
 conflicts and left alone; the command then exits 1. Safe to re-run.")]
     Install {
-        /// Directory holding the sf-* skill directories (default: ./skills if present, else the checkout sf was built from)
+        /// Directory holding the ns-* skill directories (default: ./skills if present, else the checkout ns was built from)
         #[arg(long, value_name = "DIR")]
         source: Option<PathBuf>,
         /// Target skill directory; repeat for several (default: ~/.agents/skills, ~/.claude/skills)
@@ -119,19 +119,19 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
     /// Report config path and validity, configured roles, and harnesses on PATH
     #[command(after_help = "\
 Examples:
-  sf doctor
-  SF_CONFIG=./sf.toml sf doctor")]
+  ns doctor
+  NS_CONFIG=./ns.toml ns doctor")]
     Doctor,
 }
 
 const ASK_HELP: &str = "\
 Examples:
-  sf ask --role review.security --prompt-file prompt.md
-  git diff main | sf ask --role review.correctness
-  sf ask --role build --write --cwd ../myrepo.worktrees/142-uart-timeout --prompt-file brief.md
-  sf ask --role verify --dry-run
+  ns ask --role review.security --prompt-file prompt.md
+  git diff main | ns ask --role review.correctness
+  ns ask --role build --write --cwd ../myrepo.worktrees/142-uart-timeout --prompt-file brief.md
+  ns ask --role verify --dry-run
 
-Config: $SF_CONFIG, else $XDG_CONFIG_HOME/sf/config.toml, else ~/.config/sf/config.toml.
+Config: $NS_CONFIG, else $XDG_CONFIG_HOME/nightshift/config.toml, else ~/.config/nightshift/config.toml.
   [roles.default]
   harness = \"claude\"
   [roles.\"review.security\"]
@@ -146,14 +146,14 @@ Exit codes: 1 harness failed, 3 role not configured, 4 harness binary not on PAT
 
 #[derive(Subcommand)]
 enum WorktreeCmd {
-    /// Create (or reuse) the worktree for a unit and its .sf/<unit-id>/ artifact folder
+    /// Create (or reuse) the worktree for a unit and its .ns/<unit-id>/ artifact folder
     #[command(after_help = "\
 Examples:
-  sf worktree new 142-uart-timeout
-  sf worktree new uart-timeout --base develop
-  sf worktree new 142-uart-timeout --repo ~/src/firmware
+  ns worktree new 142-uart-timeout
+  ns worktree new uart-timeout --base develop
+  ns worktree new 142-uart-timeout --repo ~/src/firmware
 
-Creates <repo>/../<repo-name>.worktrees/<unit-id> on branch sf/<unit-id> and
+Creates <repo>/../<repo-name>.worktrees/<unit-id> on branch ns/<unit-id> and
 prints {\"unit\",\"path\",\"branch\",\"artifacts\"}. Re-running prints the same JSON.")]
     New {
         /// Unit id: [a-z0-9][a-z0-9-]*, e.g. 142-uart-timeout
@@ -165,11 +165,11 @@ prints {\"unit\",\"path\",\"branch\",\"artifacts\"}. Re-running prints the same 
         #[arg(long, value_name = "PATH")]
         repo: Option<PathBuf>,
     },
-    /// List sf worktrees as JSON, with the latest artifact status
+    /// List ns worktrees as JSON, with the latest artifact status
     #[command(after_help = "\
 Examples:
-  sf worktree list
-  sf worktree list --repo ~/src/firmware
+  ns worktree list
+  ns worktree list --repo ~/src/firmware
 
 Each entry: {\"unit\",\"path\",\"branch\",\"artifacts\",\"status\"}; status is null or
 {\"file\",\"phase\",\"status\",\"updated\"} from the newest artifact frontmatter.")]
@@ -178,12 +178,12 @@ Each entry: {\"unit\",\"path\",\"branch\",\"artifacts\",\"status\"}; status is n
         #[arg(long, value_name = "PATH")]
         repo: Option<PathBuf>,
     },
-    /// Remove a unit's worktree; the sf/<unit-id> branch is kept
+    /// Remove a unit's worktree; the ns/<unit-id> branch is kept
     #[command(after_help = "\
 Examples:
-  sf worktree remove 142-uart-timeout --dry-run
-  sf worktree remove 142-uart-timeout
-  sf worktree remove 142-uart-timeout --force
+  ns worktree remove 142-uart-timeout --dry-run
+  ns worktree remove 142-uart-timeout
+  ns worktree remove 142-uart-timeout --force
 
 Refuses a worktree with uncommitted changes unless --force. Removing a unit with
 no worktree is a no-op.")]
@@ -263,7 +263,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             println!("{}", serde_json::to_string_pretty(&report)?);
             if report.conflicts > 0 {
                 eprintln!(
-                    "error: {} conflict(s): real files or unrelated symlinks are in the way; move them, then re-run:\n  sf install --dry-run",
+                    "error: {} conflict(s): real files or unrelated symlinks are in the way; move them, then re-run:\n  ns install --dry-run",
                     report.conflicts
                 );
                 return Ok(ExitCode::from(1));
@@ -279,9 +279,9 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(code) => code,
         Err(e) => {
-            if let Some(sf) = e.downcast_ref::<SfError>() {
-                eprintln!("error: {}", sf.message);
-                if let Some(h) = &sf.hint {
+            if let Some(ns) = e.downcast_ref::<SfError>() {
+                eprintln!("error: {}", ns.message);
+                if let Some(h) = &ns.hint {
                     for line in h.lines() {
                         if line.is_empty() {
                             eprintln!();
@@ -290,7 +290,7 @@ fn main() -> ExitCode {
                         }
                     }
                 }
-                ExitCode::from(sf.code as u8)
+                ExitCode::from(ns.code as u8)
             } else {
                 eprintln!("error: {e:#}");
                 ExitCode::from(1)

@@ -1,4 +1,4 @@
-//! `sf lint [path]`: structural checks on `sf-*/SKILL.md` skills.
+//! `ns lint [path]`: structural checks on `ns-*/SKILL.md` skills.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -67,8 +67,8 @@ pub fn check_frontmatter(dir_name: &str, text: &str) -> Vec<String> {
                     "name {name:?} does not match directory {dir_name:?}"
                 ));
             }
-            if !name.starts_with("sf-") {
-                errs.push(format!("name {name:?} must start with \"sf-\""));
+            if !name.starts_with("ns-") {
+                errs.push(format!("name {name:?} must start with \"ns-\""));
             }
         }
         Some(_) => errs.push("name must be a string".into()),
@@ -170,7 +170,7 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
     if !root.is_dir() {
         return Err(SfError::usage(
             format!("skills directory {} does not exist", root.display()),
-            "sf lint skills\n  sf lint path/to/skills --human",
+            "ns lint skills\n  ns lint path/to/skills --human",
         )
         .into());
     }
@@ -181,7 +181,7 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
             p.is_dir()
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("sf-"))
+                    .is_some_and(|n| n.starts_with("ns-"))
         })
         .collect();
     dirs.sort();
@@ -234,11 +234,11 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
 mod tests {
     use super::*;
 
-    const GOOD: &str = "---\nname: sf-tdd\ndescription: Test first.\nmetadata:\n  upstream: mattpocock/skills@b0618bc436ad:skills/engineering/tdd\n---\nbody\n";
+    const GOOD: &str = "---\nname: ns-tdd\ndescription: Test first.\nmetadata:\n  upstream: mattpocock/skills@b0618bc436ad:skills/engineering/tdd\n---\nbody\n";
 
     #[test]
     fn good_frontmatter() {
-        assert!(check_frontmatter("sf-tdd", GOOD).is_empty());
+        assert!(check_frontmatter("ns-tdd", GOOD).is_empty());
     }
 
     #[test]
@@ -247,27 +247,27 @@ mod tests {
         assert_eq!(e.len(), 1, "{e:?}");
         let e = check_frontmatter("tdd", "---\nname: tdd\ndescription: x\n---\n");
         assert_eq!(e.len(), 1, "{e:?}");
-        assert!(e[0].contains("sf-"));
+        assert!(e[0].contains("ns-"));
     }
 
     #[test]
     fn description_rules() {
-        let e = check_frontmatter("sf-a", "---\nname: sf-a\ndescription: \"  \"\n---\n");
+        let e = check_frontmatter("ns-a", "---\nname: ns-a\ndescription: \"  \"\n---\n");
         assert_eq!(e, ["description is empty"]);
         let long = "x".repeat(1025);
         let e = check_frontmatter(
-            "sf-a",
-            &format!("---\nname: sf-a\ndescription: {long}\n---\n"),
+            "ns-a",
+            &format!("---\nname: ns-a\ndescription: {long}\n---\n"),
         );
         assert!(e[0].contains("1025"));
-        let e = check_frontmatter("sf-a", "---\nname: sf-a\n---\n");
+        let e = check_frontmatter("ns-a", "---\nname: ns-a\n---\n");
         assert_eq!(e, ["missing description"]);
     }
 
     #[test]
     fn bad_yaml_and_missing() {
-        assert!(check_frontmatter("sf-a", "---\nname: [unclosed\n---\n")[0].contains("YAML"));
-        assert!(check_frontmatter("sf-a", "# no fm\n")[0].contains("missing frontmatter"));
+        assert!(check_frontmatter("ns-a", "---\nname: [unclosed\n---\n")[0].contains("YAML"));
+        assert!(check_frontmatter("ns-a", "# no fm\n")[0].contains("missing frontmatter"));
     }
 
     #[test]
@@ -279,18 +279,18 @@ mod tests {
         assert!(!valid_upstream("cursor/plugins@ccb5507cec15"));
         assert!(!valid_upstream("plugins@ccb5507cec15:x"));
         assert!(!valid_upstream("cursor/plugins@ABCDEF0:x"));
-        let list = "---\nname: sf-a\ndescription: x\nmetadata:\n  upstream:\n    - a/b@1234567:p\n    - a/b@nothex:p\n---\n";
-        let e = check_frontmatter("sf-a", list);
+        let list = "---\nname: ns-a\ndescription: x\nmetadata:\n  upstream:\n    - a/b@1234567:p\n    - a/b@nothex:p\n---\n";
+        let e = check_frontmatter("ns-a", list);
         assert_eq!(e.len(), 1);
         assert!(e[0].contains("nothex"));
     }
 
     #[test]
     fn finds_relative_links_only() {
-        let text = "See [a](./a.md), [b](../sf-b/SKILL.md#top), [c](https://x.y/z), [d](#anchor), [e](./e.md \"t\").\n```\n[f](./ignored.md)\n```\n[g](refs/no-dot.md)\n";
+        let text = "See [a](./a.md), [b](../ns-b/SKILL.md#top), [c](https://x.y/z), [d](#anchor), [e](./e.md \"t\").\n```\n[f](./ignored.md)\n```\n[g](refs/no-dot.md)\n";
         assert_eq!(
             relative_links(text),
-            ["./a.md", "../sf-b/SKILL.md", "./e.md"]
+            ["./a.md", "../ns-b/SKILL.md", "./e.md"]
         );
     }
 }

@@ -1,4 +1,4 @@
-//! `sf worktree new|list|remove`.
+//! `ns worktree new|list|remove`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,7 +11,7 @@ use crate::error::SfError;
 use crate::frontmatter;
 use crate::git::{self, Repo, WorktreeEntry};
 
-pub const BRANCH_PREFIX: &str = "sf/";
+pub const BRANCH_PREFIX: &str = "ns/";
 
 /// A unit id is `[a-z0-9][a-z0-9-]*`.
 pub fn valid_unit_id(id: &str) -> bool {
@@ -56,7 +56,7 @@ fn find_unit<'a>(list: &'a [WorktreeEntry], unit: &str) -> Option<&'a WorktreeEn
         .find(|e| e.branch.as_deref() == Some(want.as_str()))
 }
 
-/// Append `.sf/` to the common `info/exclude` unless an equivalent line exists.
+/// Append `.ns/` to the common `info/exclude` unless an equivalent line exists.
 fn ensure_excluded(common_dir: &Path) -> Result<()> {
     let info = common_dir.join("info");
     fs::create_dir_all(&info).with_context(|| format!("cannot create {}", info.display()))?;
@@ -65,7 +65,7 @@ fn ensure_excluded(common_dir: &Path) -> Result<()> {
     let present = current
         .lines()
         .map(str::trim)
-        .any(|l| l == ".sf/" || l == ".sf" || l == "/.sf/" || l == "/.sf");
+        .any(|l| l == ".ns/" || l == ".ns" || l == "/.ns/" || l == "/.ns");
     if present {
         return Ok(());
     }
@@ -73,12 +73,12 @@ fn ensure_excluded(common_dir: &Path) -> Result<()> {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(".sf/\n");
+    text.push_str(".ns/\n");
     fs::write(&exclude, text).with_context(|| format!("cannot write {}", exclude.display()))
 }
 
 pub fn new(unit: &str, base: Option<&str>, repo: Option<&Path>) -> Result<()> {
-    let example = "sf worktree new 142-uart-timeout --base main";
+    let example = "ns worktree new 142-uart-timeout --base main";
     check_unit_id(unit, example)?;
     let repo = repo_from(repo)?;
     let branch = format!("{BRANCH_PREFIX}{unit}");
@@ -95,7 +95,7 @@ pub fn new(unit: &str, base: Option<&str>, repo: Option<&Path>) -> Result<()> {
                 path.display()
             ))
             .hint(
-                "move or delete that directory, then re-run:\n  sf worktree new ".to_string()
+                "move or delete that directory, then re-run:\n  ns worktree new ".to_string()
                     + unit,
             )
             .into());
@@ -129,7 +129,7 @@ pub fn new(unit: &str, base: Option<&str>, repo: Option<&Path>) -> Result<()> {
                     ) {
                         return Err(SfError::usage(
                             format!("base {b:?} does not name a commit in {}", repo.root.display()),
-                            format!("sf worktree new {unit} --base main\n  list branches: git branch -a"),
+                            format!("ns worktree new {unit} --base main\n  list branches: git branch -a"),
                         )
                         .into());
                     }
@@ -145,7 +145,7 @@ pub fn new(unit: &str, base: Option<&str>, repo: Option<&Path>) -> Result<()> {
         path
     };
 
-    let artifacts = path.join(".sf").join(unit);
+    let artifacts = path.join(".ns").join(unit);
     fs::create_dir_all(&artifacts)
         .with_context(|| format!("cannot create {}", artifacts.display()))?;
     ensure_excluded(&repo.common_dir)?;
@@ -243,7 +243,7 @@ pub fn list(repo: Option<&Path>) -> Result<()> {
         let Some(unit) = branch.strip_prefix(BRANCH_PREFIX) else {
             continue;
         };
-        let artifacts = e.path.join(".sf").join(unit);
+        let artifacts = e.path.join(".ns").join(unit);
         out.push(json!({
             "unit": unit,
             "path": e.path.to_string_lossy(),
@@ -257,7 +257,7 @@ pub fn list(repo: Option<&Path>) -> Result<()> {
 }
 
 pub fn remove(unit: &str, dry_run: bool, force: bool, repo: Option<&Path>) -> Result<()> {
-    check_unit_id(unit, "sf worktree remove 142-uart-timeout --dry-run")?;
+    check_unit_id(unit, "ns worktree remove 142-uart-timeout --dry-run")?;
     let repo = repo_from(repo)?;
     let list = git::worktrees(&repo.root)?;
     let branch = format!("{BRANCH_PREFIX}{unit}");
@@ -292,7 +292,7 @@ pub fn remove(unit: &str, dry_run: bool, force: bool, repo: Option<&Path>) -> Re
             dirty.len()
         ))
         .hint(format!(
-            "commit or stash the changes, or discard them with:\n  sf worktree remove {unit} --force"
+            "commit or stash the changes, or discard them with:\n  ns worktree remove {unit} --force"
         ))
         .into());
     }

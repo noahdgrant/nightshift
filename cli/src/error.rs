@@ -4,11 +4,11 @@ use std::fmt;
 
 /// Exit code for usage errors (bad arguments, invalid unit id).
 pub const EXIT_USAGE: i32 = 2;
-/// Exit code when `sf ask` finds no role or default in the config.
+/// Exit code when `ns ask` finds no role or default in the config.
 pub const EXIT_NOT_CONFIGURED: i32 = 3;
 /// Exit code when the harness binary is not on PATH.
 pub const EXIT_HARNESS_MISSING: i32 = 4;
-/// Exit code when `sf ask --write` targets a harness with no `command_write`.
+/// Exit code when `ns ask --write` targets a harness with no `command_write`.
 pub const EXIT_NO_WRITE_COMMAND: i32 = 5;
 
 #[derive(Debug, thiserror::Error)]

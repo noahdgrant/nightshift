@@ -7,9 +7,9 @@ use predicates::prelude::*;
 use serde_json::Value;
 use tempfile::TempDir;
 
-fn sf() -> Command {
-    let mut c = Command::cargo_bin("sf").unwrap();
-    c.env_remove("SF_CONFIG").env_remove("XDG_CONFIG_HOME");
+fn ns() -> Command {
+    let mut c = Command::cargo_bin("ns").unwrap();
+    c.env_remove("NS_CONFIG").env_remove("XDG_CONFIG_HOME");
     c
 }
 
@@ -51,7 +51,7 @@ fn json(out: &[u8]) -> Value {
 #[test]
 fn worktree_new_is_idempotent() {
     let (tmp, root) = repo();
-    let first = sf()
+    let first = ns()
         .current_dir(&root)
         .args(["worktree", "new", "142-uart-timeout"])
         .assert()
@@ -66,16 +66,16 @@ fn worktree_new_is_idempotent() {
         .unwrap()
         .join("myrepo.worktrees/142-uart-timeout");
     assert_eq!(v["unit"], "142-uart-timeout");
-    assert_eq!(v["branch"], "sf/142-uart-timeout");
+    assert_eq!(v["branch"], "ns/142-uart-timeout");
     assert_eq!(v["path"], expected.to_str().unwrap());
-    assert!(expected.join(".sf/142-uart-timeout").is_dir());
+    assert!(expected.join(".ns/142-uart-timeout").is_dir());
     assert_eq!(
         git(&expected, &["branch", "--show-current"]),
-        "sf/142-uart-timeout"
+        "ns/142-uart-timeout"
     );
 
     // Run again, this time from inside the new worktree: same JSON, one exclude line.
-    let second = sf()
+    let second = ns()
         .current_dir(&expected)
         .args(["worktree", "new", "142-uart-timeout"])
         .assert()
@@ -85,7 +85,7 @@ fn worktree_new_is_idempotent() {
         .clone();
     assert_eq!(first, second);
     let exclude = fs::read_to_string(root.join(".git/info/exclude")).unwrap();
-    assert_eq!(exclude.lines().filter(|l| *l == ".sf/").count(), 1);
+    assert_eq!(exclude.lines().filter(|l| *l == ".ns/").count(), 1);
     assert_eq!(git(&expected, &["status", "--porcelain"]), "");
 }
 
@@ -93,7 +93,7 @@ fn worktree_new_is_idempotent() {
 fn worktree_new_with_base_and_repo_flag() {
     let (_tmp, root) = repo();
     git(&root, &["branch", "develop"]);
-    let out = sf()
+    let out = ns()
         .args(["worktree", "new", "x1", "--base", "develop", "--repo"])
         .arg(&root)
         .assert()
@@ -101,29 +101,29 @@ fn worktree_new_with_base_and_repo_flag() {
         .get_output()
         .stdout
         .clone();
-    assert_eq!(json(&out)["branch"], "sf/x1");
+    assert_eq!(json(&out)["branch"], "ns/x1");
 
-    sf().current_dir(&root)
+    ns().current_dir(&root)
         .args(["worktree", "new", "x2", "--base", "nope"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("sf worktree new x2 --base main"));
+        .stderr(predicate::str::contains("ns worktree new x2 --base main"));
 }
 
 #[test]
 fn worktree_new_rejects_bad_unit_id() {
     let (_tmp, root) = repo();
-    sf().current_dir(&root)
+    ns().current_dir(&root)
         .args(["worktree", "new", "Bad_Id"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("sf worktree new 142-uart-timeout"));
+        .stderr(predicate::str::contains("ns worktree new 142-uart-timeout"));
 }
 
 #[test]
 fn worktree_list_and_remove() {
     let (_tmp, root) = repo();
-    let out = sf()
+    let out = ns()
         .current_dir(&root)
         .args(["worktree", "new", "7-thing"])
         .assert()
@@ -133,13 +133,13 @@ fn worktree_list_and_remove() {
         .clone();
     let wt = PathBuf::from(json(&out)["path"].as_str().unwrap());
     fs::write(
-        wt.join(".sf/7-thing/build.md"),
+        wt.join(".ns/7-thing/build.md"),
         "---\nunit: 7-thing\nphase: build\nstatus: pass\nupdated: 2026-10-08T21:14:00Z\n---\n",
     )
     .unwrap();
 
     let list = json(
-        &sf()
+        &ns()
             .current_dir(&root)
             .args(["worktree", "list"])
             .assert()
@@ -155,17 +155,17 @@ fn worktree_list_and_remove() {
 
     // Dirty: refused without --force.
     fs::write(wt.join("new.txt"), "x").unwrap();
-    sf().current_dir(&root)
+    ns().current_dir(&root)
         .args(["worktree", "remove", "7-thing"])
         .assert()
         .code(1)
         .stderr(predicate::str::contains(
-            "sf worktree remove 7-thing --force",
+            "ns worktree remove 7-thing --force",
         ));
 
     // Dry run leaves it in place.
     let dry = json(
-        &sf()
+        &ns()
             .current_dir(&root)
             .args(["worktree", "remove", "7-thing", "--dry-run", "--force"])
             .assert()
@@ -178,16 +178,16 @@ fn worktree_list_and_remove() {
 
     // Clean (artifacts are ignored): removes without --force, keeps the branch.
     fs::remove_file(wt.join("new.txt")).unwrap();
-    sf().current_dir(&root)
+    ns().current_dir(&root)
         .args(["worktree", "remove", "7-thing"])
         .assert()
         .success();
     assert!(!wt.exists());
-    assert!(git(&root, &["branch", "--list", "sf/7-thing"]).contains("sf/7-thing"));
+    assert!(git(&root, &["branch", "--list", "ns/7-thing"]).contains("ns/7-thing"));
 
     // Idempotent: second remove is a no-op.
     let again = json(
-        &sf()
+        &ns()
             .current_dir(&root)
             .args(["worktree", "remove", "7-thing"])
             .assert()
@@ -198,17 +198,17 @@ fn worktree_list_and_remove() {
     assert_eq!(again["action"], "none");
 
     // new again reuses the kept branch.
-    sf().current_dir(&root)
+    ns().current_dir(&root)
         .args(["worktree", "new", "7-thing"])
         .assert()
         .success();
-    assert!(wt.join(".sf/7-thing").is_dir());
+    assert!(wt.join(".ns/7-thing").is_dir());
 }
 
 #[test]
 fn worktree_outside_repo_fails_with_hint() {
     let tmp = tempfile::tempdir().unwrap();
-    sf().current_dir(tmp.path())
+    ns().current_dir(tmp.path())
         .args(["worktree", "list"])
         .assert()
         .code(2)
@@ -225,26 +225,26 @@ fn fixture_skills() -> TempDir {
     let s = tmp.path();
     write_skill(
         s,
-        "sf-good",
-        "---\nname: sf-good\ndescription: A good skill.\nmetadata:\n  upstream:\n    - mattpocock/skills@b0618bc436ad:skills/x\n    - cursor/plugins@ccb5507cec15:y\n---\nSee [ref](./references/r.md), [other](../sf-other/SKILL.md#x), [web](https://x.y).\n",
+        "ns-good",
+        "---\nname: ns-good\ndescription: A good skill.\nmetadata:\n  upstream:\n    - mattpocock/skills@b0618bc436ad:skills/x\n    - cursor/plugins@ccb5507cec15:y\n---\nSee [ref](./references/r.md), [other](../ns-other/SKILL.md#x), [web](https://x.y).\n",
     );
-    fs::create_dir_all(s.join("sf-good/references")).unwrap();
+    fs::create_dir_all(s.join("ns-good/references")).unwrap();
     fs::write(
-        s.join("sf-good/references/r.md"),
+        s.join("ns-good/references/r.md"),
         "back to [skill](../SKILL.md)\n",
     )
     .unwrap();
     write_skill(
         s,
-        "sf-other",
-        "---\nname: sf-other\ndescription: Other.\n---\n",
+        "ns-other",
+        "---\nname: ns-other\ndescription: Other.\n---\n",
     );
     write_skill(
         s,
-        "sf-bad",
+        "ns-bad",
         "---\nname: wrong\ndescription: \"\"\nmetadata:\n  upstream: mattpocock/skills@main:x\n---\n[gone](./missing.md)\n",
     );
-    write_skill(s, "sf-broken-yaml", "---\nname: [oops\n---\n");
+    write_skill(s, "ns-broken-yaml", "---\nname: [oops\n---\n");
     fs::create_dir_all(s.join("not-a-skill")).unwrap();
     tmp
 }
@@ -252,7 +252,7 @@ fn fixture_skills() -> TempDir {
 #[test]
 fn lint_reports_good_and_bad_skills() {
     let tmp = fixture_skills();
-    let out = sf()
+    let out = ns()
         .arg("lint")
         .arg(tmp.path())
         .assert()
@@ -272,12 +272,12 @@ fn lint_reports_good_and_bad_skills() {
             .collect::<Vec<_>>()
     };
     assert!(
-        for_skill("sf-good").is_empty(),
+        for_skill("ns-good").is_empty(),
         "{:?}",
-        for_skill("sf-good")
+        for_skill("ns-good")
     );
-    assert!(for_skill("sf-other").is_empty());
-    let bad = for_skill("sf-bad");
+    assert!(for_skill("ns-other").is_empty());
+    let bad = for_skill("ns-bad");
     assert!(
         bad.iter().any(|m| m.contains("does not match directory")),
         "{bad:?}"
@@ -295,9 +295,9 @@ fn lint_reports_good_and_bad_skills() {
         bad.iter().any(|m| m.contains("broken link: ./missing.md")),
         "{bad:?}"
     );
-    assert!(for_skill("sf-broken-yaml")[0].contains("YAML"));
+    assert!(for_skill("ns-broken-yaml")[0].contains("YAML"));
 
-    sf().arg("lint")
+    ns().arg("lint")
         .arg(tmp.path())
         .arg("--human")
         .assert()
@@ -310,11 +310,11 @@ fn lint_passes_clean_dir_and_rejects_missing_dir() {
     let tmp = tempfile::tempdir().unwrap();
     write_skill(
         tmp.path(),
-        "sf-a",
-        "---\nname: sf-a\ndescription: A.\n---\n",
+        "ns-a",
+        "---\nname: ns-a\ndescription: A.\n---\n",
     );
     let v = json(
-        &sf()
+        &ns()
             .arg("lint")
             .arg(tmp.path())
             .assert()
@@ -325,18 +325,18 @@ fn lint_passes_clean_dir_and_rejects_missing_dir() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["skills"], 1);
 
-    sf().arg("lint")
+    ns().arg("lint")
         .arg(tmp.path().join("nope"))
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("sf lint skills"));
+        .stderr(predicate::str::contains("ns lint skills"));
 }
 
 #[test]
 fn install_dry_run_touches_nothing() {
     let skills = fixture_skills();
     let home = tempfile::tempdir().unwrap();
-    let out = sf()
+    let out = ns()
         .env("HOME", home.path())
         .args(["install", "--dry-run", "--source"])
         .arg(skills.path())
@@ -367,11 +367,11 @@ fn install_links_relinks_and_reports_conflicts() {
     let target = tempfile::tempdir().unwrap();
     let t = target.path();
     // A stale link we own, and a real directory we must not clobber.
-    std::os::unix::fs::symlink("/old/checkout/sf-good", t.join("sf-good")).unwrap();
-    fs::create_dir(t.join("sf-other")).unwrap();
+    std::os::unix::fs::symlink("/old/checkout/ns-good", t.join("ns-good")).unwrap();
+    fs::create_dir(t.join("ns-other")).unwrap();
 
     let run = || {
-        sf().args(["install", "--source"])
+        ns().args(["install", "--source"])
             .arg(skills.path())
             .arg("--target")
             .arg(t)
@@ -387,16 +387,16 @@ fn install_links_relinks_and_reports_conflicts() {
             .unwrap()["action"]
             .clone()
     };
-    assert_eq!(action("sf-good"), "relink");
-    assert_eq!(action("sf-other"), "conflict");
-    assert_eq!(action("sf-bad"), "link");
+    assert_eq!(action("ns-good"), "relink");
+    assert_eq!(action("ns-other"), "conflict");
+    assert_eq!(action("ns-bad"), "link");
     assert_eq!(v["conflicts"], 1);
     assert_eq!(
-        fs::read_link(t.join("sf-good")).unwrap(),
-        skills.path().canonicalize().unwrap().join("sf-good")
+        fs::read_link(t.join("ns-good")).unwrap(),
+        skills.path().canonicalize().unwrap().join("ns-good")
     );
 
-    fs::remove_dir(t.join("sf-other")).unwrap();
+    fs::remove_dir(t.join("ns-other")).unwrap();
     let v = json(&run().success().get_output().stdout);
     let counts = |name: &str| {
         v["actions"]
@@ -421,7 +421,7 @@ command_write = ["sh", "-c", "pwd; cat"]
 [harness.fails]
 command = ["false"]
 [harness.ghost]
-command = ["sf-test-no-such-binary"]
+command = ["ns-test-no-such-binary"]
 
 [roles.default]
 harness = "codex"
@@ -443,8 +443,8 @@ fn ask_dry_run_resolves_role_chain() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = config(tmp.path());
     let v = json(
-        &sf()
-            .env("SF_CONFIG", &cfg)
+        &ns()
+            .env("NS_CONFIG", &cfg)
             .args(["ask", "--role", "review.security", "--dry-run"])
             .assert()
             .success()
@@ -455,8 +455,8 @@ fn ask_dry_run_resolves_role_chain() {
     assert_eq!(v["command"], serde_json::json!(["cat"]));
 
     let v = json(
-        &sf()
-            .env("SF_CONFIG", &cfg)
+        &ns()
+            .env("NS_CONFIG", &cfg)
             .args(["ask", "--role", "build", "--dry-run"])
             .assert()
             .success()
@@ -478,8 +478,8 @@ fn ask_write_mode_and_cwd() {
     fs::create_dir(&work).unwrap();
 
     let v = json(
-        &sf()
-            .env("SF_CONFIG", &cfg)
+        &ns()
+            .env("NS_CONFIG", &cfg)
             .args(["ask", "--role", "build", "--write", "--dry-run", "--cwd"])
             .arg(&work)
             .assert()
@@ -501,7 +501,7 @@ fn ask_write_mode_and_cwd() {
         ])
     );
 
-    sf().env("SF_CONFIG", &cfg)
+    ns().env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review", "--write", "--cwd"])
         .arg(&work)
         .write_stdin("p\n")
@@ -510,14 +510,14 @@ fn ask_write_mode_and_cwd() {
         .stdout(format!("{}\np\n", work.display()));
 
     // Harness with no command_write: exit 5 with a snippet.
-    sf().env("SF_CONFIG", &cfg)
+    ns().env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review.flaky", "--write"])
         .write_stdin("x")
         .assert()
         .code(5)
         .stderr(predicate::str::contains("command_write = ["));
 
-    sf().env("SF_CONFIG", &cfg)
+    ns().env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review", "--cwd"])
         .arg(tmp.path().join("nope"))
         .write_stdin("x")
@@ -528,9 +528,13 @@ fn ask_write_mode_and_cwd() {
 #[test]
 fn ask_xdg_config_home() {
     let tmp = tempfile::tempdir().unwrap();
-    fs::create_dir_all(tmp.path().join("sf")).unwrap();
-    fs::rename(config(tmp.path()), tmp.path().join("sf/config.toml")).unwrap();
-    sf().env("XDG_CONFIG_HOME", tmp.path())
+    fs::create_dir_all(tmp.path().join("nightshift")).unwrap();
+    fs::rename(
+        config(tmp.path()),
+        tmp.path().join("nightshift/config.toml"),
+    )
+    .unwrap();
+    ns().env("XDG_CONFIG_HOME", tmp.path())
         .args(["ask", "--role", "review", "--dry-run"])
         .assert()
         .success()
@@ -541,7 +545,7 @@ fn ask_xdg_config_home() {
 fn ask_runs_harness_and_maps_exit_codes() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = config(tmp.path());
-    sf().env("SF_CONFIG", &cfg)
+    ns().env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review"])
         .write_stdin("hello harness\n")
         .assert()
@@ -550,21 +554,21 @@ fn ask_runs_harness_and_maps_exit_codes() {
 
     let prompt = tmp.path().join("p.md");
     fs::write(&prompt, "from file\n").unwrap();
-    sf().env("SF_CONFIG", &cfg)
+    ns().env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review.spec", "--prompt-file"])
         .arg(&prompt)
         .assert()
         .success()
         .stdout("from file\n");
 
-    sf().env("SF_CONFIG", &cfg)
+    ns().env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review.flaky"])
         .write_stdin("x")
         .assert()
         .code(1)
         .stderr(predicate::str::contains("exited with 1"));
 
-    sf().env("SF_CONFIG", &cfg)
+    ns().env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "verify"])
         .write_stdin("x")
         .assert()
@@ -577,13 +581,13 @@ fn ask_unconfigured_exits_3_with_example() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = tmp.path().join("c.toml");
     fs::write(&cfg, "[roles.review]\nharness = \"claude\"\n").unwrap();
-    sf().env("SF_CONFIG", &cfg)
+    ns().env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "verify", "--dry-run"])
         .assert()
         .code(3)
         .stderr(predicate::str::contains("[roles.default]"));
 
-    sf().env("SF_CONFIG", tmp.path().join("missing.toml"))
+    ns().env("NS_CONFIG", tmp.path().join("missing.toml"))
         .args(["ask", "--role", "verify"])
         .write_stdin("x")
         .assert()
@@ -595,8 +599,8 @@ fn doctor_reports_config() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = config(tmp.path());
     let v = json(
-        &sf()
-            .env("SF_CONFIG", &cfg)
+        &ns()
+            .env("NS_CONFIG", &cfg)
             .arg("doctor")
             .assert()
             .success()
@@ -628,7 +632,7 @@ fn every_subcommand_help_has_examples() {
         vec!["install", "--help"],
         vec!["doctor", "--help"],
     ] {
-        sf().args(&args)
+        ns().args(&args)
             .assert()
             .success()
             .stdout(predicate::str::contains("Examples:"));

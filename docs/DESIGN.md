@@ -1,6 +1,6 @@
-# Software Factory: design draft
+# nightshift: design draft
 
-Status: draft v1, for discussion. Sources: mattpocock/skills, cursor/plugins/pstack, addyosmani/agent-skills.
+Status: draft v2, for discussion. Sources: mattpocock/skills, cursor/plugins/pstack, addyosmani/agent-skills.
 
 ## Decisions
 
@@ -13,13 +13,18 @@ Status: draft v1, for discussion. Sources: mattpocock/skills, cursor/plugins/pst
 | D5 | Model and provider choice belongs to the user. It lives in config, and skills name roles, not models. | |
 | D6 | The goal is fully autonomous overnight runs, as in poteto-mode. | Gates have a policy setting: `stop` or `auto`. |
 | D7 | One `triage` skill. It adopts Matt's state machine and Agent Brief and adds routing into the inner loop. | See "Triage". |
-| D8 | Repo `software-factory`. Skill names use the `sf-` prefix (`sf-define`, `sf-triage`, ...). | |
-| D9 | Upstream skills are copied and adapted, not used as submodules. Each copy records its source in `metadata.upstream`. | `sf-maintain` diffs against that. |
-| D10 | The `sf` CLI is written in Rust. | Ships as one binary with no runtime, so any harness can call it. Control-CLI templates for target projects stay in the project's own language (Python for the examples). |
+| D8 | The project is named **nightshift**. Skills use the `ns-` prefix, the CLI is `ns` (crate `nightshift`), user config lives at `~/.config/nightshift/`, unit branches are `ns/<unit-id>`, and runtime artifacts go in `.ns/<unit-id>/`. | Renamed from software-factory. Other projects named nightshift exist (e.g. marcus/nightshift); kept anyway. |
+| D9 | Upstream skills are copied and adapted, not used as submodules. Each copy records its source in `metadata.upstream`. | `ns-maintain` diffs against that. |
+| D10 | The `ns` CLI is written in Rust. | Ships as one binary with no runtime, so any harness can call it. Control-CLI templates for target projects stay in the project's own language (Python for the examples). |
 | D11 | Agent review runs locally, before push. After push, deterministic CI and any review bots run, and their comments are triaged skeptically. | See "Where review runs". |
-| D12 | pstack's principles ship as separate `sf-principle-*` skills. Phase skills point to them by relative path. | They are user-invoked, so the 24 descriptions add no context load. |
-| D13 | `sf-swarm` is the shared fan-out leaf. `sf-review` (split by axis) and `sf-verify` (split by feature) use it. | One source of truth for fan-out, aggregation and the PASS/ISSUES/BLOCKED report. |
-| D14 | pstack's `unslop` becomes `sf-writing-for-humans`, the define-phase leaf for prose people read. | |
+| D12 | pstack's principles ship as separate `ns-principle-*` skills. Phase skills point to them by relative path. | They are user-invoked, so the 24 descriptions add no context load. |
+| D13 | `ns-swarm` is the shared fan-out leaf. `ns-review` (split by axis) and `ns-verify` (split by feature) use it. | One source of truth for fan-out, aggregation and the PASS/ISSUES/BLOCKED report. |
+| D14 | pstack's `unslop` becomes `ns-writing-for-humans`, the define-phase leaf for prose people read. | |
+| D15 | Factory as code. A product's factory definition is a directory holding `nightshift.toml`, with `agents/`, `automations/`, `runners/`, `scorers/` and `skills/` beside it. A resource's name is its path. It lives at `.nightshift/` in a product repo, or at the root of its own repo when it spans several repos. Both are supported. | Modelled on Warp Factories' definition files, without promising schema compatibility. The ns-* skills are the library; a definition pins a version of it and adds the product's roles, triggers, runners and scorers. `.nightshift/` is committed; `.ns/` is runtime and excluded. |
+| D16 | The foreman is `ns run`, a deterministic state machine in the CLI, not an agent. It reads artifact frontmatter, starts the agent the definition assigns to the next phase, and enforces gates, retries, bench locks and the human-only actions in code. | Agents keep the judgement calls (triage, review). `ns-auto` becomes the in-session form of the same loop. |
+| D17 | Triggers run locally first (`ns watch`: polling the tracker plus cron). | Hardware benches sit next to local machines. A GitHub Actions export can come later. |
+| D18 | Skills are measured empirically. Each skill carries `evals/` with trigger cases (positive and negative) and behaviour cases (fixture repo, prompt, checks). `ns eval` runs each case several times with and without the skill, or old version against new, across configured harnesses, and reports pass rate, uplift, tokens and time. Online scorers grade real units with the same rubric format and feed `ns-improve`. | From Google's skill evaluation practice and Warp's scorers. Fixture repos: one Python, one firmware (host build or emulator). Deterministic graders over `.ns/` artifacts where possible, LLM judge with a rubric otherwise. A skill whose ablation shows no uplift is a retirement candidate. |
+| D19 | `ns-define` routes by size: a grilled Agent Brief for small work, a spec for a feature, and `ns-requirements` then `ns-design-doc` for a new product or subsystem. `ns-verify-docs` verifies doc units. Requirement IDs thread through design, tickets, tests and `evidence.md`. Approving requirements or a design is human-only. | Locations, review surface and templates come from the target repo (`docs/agents/docs.md`, overridable templates), so a team's house format stays in its own repos. |
 
 ## Terms
 
@@ -114,7 +119,7 @@ Changes from Matt's version:
 
 Steps that always wait for a human: force-push, deploy or OTA release, deleting data, messaging people outside the team.
 
-Not every harness can loop on its own. The factory therefore needs a small runner: the `sf` CLI (Rust), which calls the configured harness in headless mode (`claude -p`, `codex exec`, `cursor-agent -p`, ...) once per phase, passes artifacts between runs, and checks gates and the exit condition. This is the factory's own CLI. It is separate from the per-project control CLI.
+Not every harness can loop on its own. The factory therefore needs a small runner: the `ns` CLI (Rust), which calls the configured harness in headless mode (`claude -p`, `codex exec`, `cursor-agent -p`, ...) once per phase, passes artifacts between runs, and checks gates and the exit condition. This is the factory's own CLI. It is separate from the per-project control CLI.
 
 ## Where review runs
 
@@ -127,11 +132,11 @@ Our split:
 
 | Where | What | Why |
 |---|---|---|
-| Local, in the worktree, before push | `sf-review`: the five axes + comments + spec, multi-provider | Fast loop, the full context is there, no noise on the PR, works overnight with nobody watching |
+| Local, in the worktree, before push | `ns-review`: the five axes + comments + spec, multi-provider | Fast loop, the full context is there, no noise on the PR, works overnight with nobody watching |
 | CI, after push | Deterministic checks only: lint, types, tests, on-host firmware build, HIL if the bench is CI-attached | A check that has to run every time belongs in CI, not in a prompt (retro rule) |
-| PR, after push | Review bots (if any) and humans. `sf-ship` babysits and triages their comments | External reviewers catch what a local panel shares blind spots on |
+| PR, after push | Review bots (if any) and humans. `ns-ship` babysits and triages their comments | External reviewers catch what a local panel shares blind spots on |
 
-Later, a CI mode of `sf-review` could review PRs from outside contributors, which never had a local review. It runs the same skill headless.
+Later, a CI mode of `ns-review` could review PRs from outside contributors, which never had a local review. It runs the same skill headless.
 
 ## Review
 
@@ -175,9 +180,9 @@ Two mechanisms, both ending in a PR a human approves:
 ## Repo layout
 
 ```
-skills/       one flat dir per skill: sf-<name>/SKILL.md (+ references/, scripts/)
-              sf-principle-index.md lists the principles
-cli/          the `sf` CLI (Rust): overnight runner, worktrees, transcript readers, skill lint, upstream diff
+skills/       one flat dir per skill: ns-<name>/SKILL.md (+ references/, scripts/)
+              ns-principle-index.md lists the principles
+cli/          the `ns` CLI (Rust): overnight runner, worktrees, transcript readers, skill lint, upstream diff
 evals/
 docs/
 ```

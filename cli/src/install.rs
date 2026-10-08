@@ -1,4 +1,4 @@
-//! `sf install`: symlink `skills/sf-*` into harness skill directories.
+//! `ns install`: symlink `skills/ns-*` into harness skill directories.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,9 +15,9 @@ pub enum Action {
     Link,
     /// Already points at the source.
     Unchanged,
-    /// Replaced a stale sf-owned symlink.
+    /// Replaced a stale ns-owned symlink.
     Relink,
-    /// Removed a dangling sf-owned symlink to a skill that no longer exists in the source.
+    /// Removed a dangling ns-owned symlink to a skill that no longer exists in the source.
     Prune,
     /// Something else is in the way; left untouched.
     Conflict,
@@ -61,16 +61,16 @@ fn skill_dirs(source: &Path) -> Result<Vec<PathBuf>> {
 fn is_sf_name(p: &Path) -> bool {
     p.file_name()
         .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with("sf-"))
+        .is_some_and(|n| n.starts_with("ns-"))
 }
 
-/// A symlink is ours if it is named `sf-*` and points at a directory of the same name
+/// A symlink is ours if it is named `ns-*` and points at a directory of the same name
 /// (another checkout of the same skill) or at nothing at all.
 fn owned(link: &Path, dest: &Path) -> bool {
     is_sf_name(link) && (dest.file_name() == link.file_name() || !link.exists())
 }
 
-/// `./skills` when run from a checkout, else the checkout `sf` was built from.
+/// `./skills` when run from a checkout, else the checkout `ns` was built from.
 pub fn default_source() -> PathBuf {
     let local = PathBuf::from("skills");
     if local.is_dir() {
@@ -83,7 +83,7 @@ pub fn run(source: &Path, targets: &[PathBuf], dry_run: bool) -> Result<Report> 
     if !source.is_dir() {
         return Err(SfError::usage(
             format!("skills source {} does not exist", source.display()),
-            "sf install --source ~/src/software-factory/skills --dry-run",
+            "ns install --source ~/src/nightshift/skills --dry-run",
         )
         .into());
     }
@@ -93,8 +93,8 @@ pub fn run(source: &Path, targets: &[PathBuf], dry_run: bool) -> Result<Report> 
     let skills = skill_dirs(&source)?;
     if skills.is_empty() {
         return Err(SfError::usage(
-            format!("no sf-*/SKILL.md skills in {}", source.display()),
-            "sf install --source ~/src/software-factory/skills --dry-run",
+            format!("no ns-*/SKILL.md skills in {}", source.display()),
+            "ns install --source ~/src/nightshift/skills --dry-run",
         )
         .into());
     }

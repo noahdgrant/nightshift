@@ -1,6 +1,6 @@
 # What we take from each upstream
 
-Bold `sf-*` skills are in the first build round. The rest come later.
+Bold `ns-*` skills are in the first build round. The rest come later.
 
 ```mermaid
 flowchart LR
@@ -49,29 +49,29 @@ flowchart LR
     ao_eval[evals: structure, routing, behaviour]
   end
 
-  subgraph SF["software-factory"]
+  subgraph SF["nightshift"]
     direction TB
-    sf_setup["**sf-setup**"]
-    sf_wfa["**sf-writing-for-agents**"]
-    sf_grill["**sf-grilling**"]
-    sf_dom["**sf-domain-modeling**"]
-    sf_tri["**sf-triage**"]
-    sf_build["**sf-build**"]
-    sf_tdd["**sf-tdd**"]
-    sf_ver["**sf-verify**"]
-    sf_sv["**sf-setup-verify**"]
-    sf_rev["**sf-review**"]
-    sf_nc["**sf-no-comments**"]
-    sf_ship["**sf-ship**"]
-    sf_wfh["**sf-writing-for-humans**"]
-    sf_swarm["**sf-swarm**"]
-    sf_prin["**sf-principle-* x24**"]
-    sf_def[sf-define]
-    sf_plan[sf-plan]
-    sf_ts[sf-troubleshoot]
-    sf_auto[sf-auto]
-    sf_imp[sf-improve]
-    sf_mnt[sf-maintain + sf-maintain-verify]
+    sf_setup["**ns-setup**"]
+    sf_wfa["**ns-writing-for-agents**"]
+    sf_grill["**ns-grilling**"]
+    sf_dom["**ns-domain-modeling**"]
+    sf_tri["**ns-triage**"]
+    sf_build["**ns-build**"]
+    sf_tdd["**ns-tdd**"]
+    sf_ver["**ns-verify**"]
+    sf_sv["**ns-setup-verify**"]
+    sf_rev["**ns-review**"]
+    sf_nc["**ns-no-comments**"]
+    sf_ship["**ns-ship**"]
+    sf_wfh["**ns-writing-for-humans**"]
+    sf_swarm["**ns-swarm**"]
+    sf_prin["**ns-principle-* x24**"]
+    sf_def[ns-define]
+    sf_plan[ns-plan]
+    sf_ts[ns-troubleshoot]
+    sf_auto[ns-auto]
+    sf_imp[ns-improve]
+    sf_mnt[ns-maintain + ns-maintain-verify]
   end
 
   mp_wfa --> sf_wfa
@@ -114,34 +114,34 @@ flowchart LR
 
 ## By skill
 
-| sf skill | Phase | Taken from | What we change |
+| ns skill | Phase | Taken from | What we change |
 |---|---|---|---|
-| **sf-setup** | setup | Matt `setup-matt-pocock-skills` | Adds `stack.md` (build/test/lint commands, test seams: host, simulator, HIL) and `verify.md`. Drops pnpm/TS detection |
-| **sf-writing-for-agents** | meta | Matt `writing-for-agents` | Nearly verbatim |
-| **sf-grilling** | define (leaf) | Matt `grilling` + `grill-me` | Merged into one |
-| **sf-domain-modeling** | define (leaf) | Matt `domain-modeling` | `GLOSSARY.md` + ADRs, as upstream |
-| **sf-triage** | outer loop | Matt `triage`, `AGENT-BRIEF.md`, `OUT-OF-SCOPE.md` | New states `needs-define` and `needs-repro`, routing to the next phase, self-applies its decision under `gates: auto` |
-| **sf-build** | build | Matt `implement`; addy `incremental-implementation`, `source-driven-development` | Runs in a worktree, reads `brief.md`, writes `build.md` |
-| **sf-tdd** | build (leaf) | Matt `tdd` | pytest examples, firmware test seams (host vs on-target) |
-| **sf-verify** | verify | pstack `prove-it-works`, `benchmark-checklist` | Drives the project's verify skill and control CLI, writes `evidence.md` |
-| **sf-setup-verify** | setup | pstack `create-verification-skill`; Cursor `cli-for-agents`, `control-cli` | Generates the verify skill and a control CLI. Firmware drive recipes: flash, serial, reset, capture, HIL |
-| **sf-review** | review | addy five axes + personas, `doubt-driven-development`; Matt `code-review` spec axis; pstack `interrogate` | One reference file per reviewer, run in parallel through `sf ask`, with firmware variants for security and performance |
-| **sf-no-comments** | review (leaf) | pstack `no-comments` + `comment-sicko` | Python/C suppressions; register and errata notes count as the vendor exception |
-| **sf-ship** | ship | pstack `opening-a-pr`, `babysit`, `bugbot-triage`; Matt `pr`; addy `shipping-and-launch` | PR body, triage of review comments, GO/NO-GO with a rollback plan. Rollout thinking adapted for OTA/flash. Never merges without a human |
-| **sf-writing-for-humans** | define (leaf) | pstack `unslop`, `technical-writing` | Renamed. Python examples |
-| **sf-swarm** | shared leaf | pstack `swarm` | Harness-neutral fan-out: subagents, or `sf ask` per worker. Used by sf-review and sf-verify |
-| **sf-principle-\*** (24) | shared leaf | pstack `principle-*` | One skill each, user-invoked, referenced by path. Python/firmware examples |
-| sf-define | define | Matt `grill-with-docs`, `to-spec`; addy `interview-me`, `idea-refine`, `spec-driven-development` | Writes `brief.md` or `SPEC.md` |
-| sf-plan | plan | Matt `to-tickets`, `wayfinder`, `codebase-design` | |
-| sf-troubleshoot | outer loop | Matt `diagnosing-bugs` | Firmware feedback loops: serial, JTAG, HIL, logic analyzer |
-| sf-auto | all | pstack `poteto-mode`, overnight contract, selected principles | Chains the phases, gate policy, `sf run` runner |
-| sf-improve | meta | Matt `retro`; pstack `reflect`, `automate-me`, `correct`; Cursor `continual-learning`, `workflow-from-chats` | Per-session review plus weekly transcript mining, ending in a PR |
-| sf-maintain, sf-maintain-verify | meta | pstack `maintain-verification-skill`; addy evals | Upstream diffs, evals, verify-skill re-check |
+| **ns-setup** | setup | Matt `setup-matt-pocock-skills` | Adds `stack.md` (build/test/lint commands, test seams: host, simulator, HIL) and `verify.md`. Drops pnpm/TS detection |
+| **ns-writing-for-agents** | meta | Matt `writing-for-agents` | Nearly verbatim |
+| **ns-grilling** | define (leaf) | Matt `grilling` + `grill-me` | Merged into one |
+| **ns-domain-modeling** | define (leaf) | Matt `domain-modeling` | `GLOSSARY.md` + ADRs, as upstream |
+| **ns-triage** | outer loop | Matt `triage`, `AGENT-BRIEF.md`, `OUT-OF-SCOPE.md` | New states `needs-define` and `needs-repro`, routing to the next phase, self-applies its decision under `gates: auto` |
+| **ns-build** | build | Matt `implement`; addy `incremental-implementation`, `source-driven-development` | Runs in a worktree, reads `brief.md`, writes `build.md` |
+| **ns-tdd** | build (leaf) | Matt `tdd` | pytest examples, firmware test seams (host vs on-target) |
+| **ns-verify** | verify | pstack `prove-it-works`, `benchmark-checklist` | Drives the project's verify skill and control CLI, writes `evidence.md` |
+| **ns-setup-verify** | setup | pstack `create-verification-skill`; Cursor `cli-for-agents`, `control-cli` | Generates the verify skill and a control CLI. Firmware drive recipes: flash, serial, reset, capture, HIL |
+| **ns-review** | review | addy five axes + personas, `doubt-driven-development`; Matt `code-review` spec axis; pstack `interrogate` | One reference file per reviewer, run in parallel through `ns ask`, with firmware variants for security and performance |
+| **ns-no-comments** | review (leaf) | pstack `no-comments` + `comment-sicko` | Python/C suppressions; register and errata notes count as the vendor exception |
+| **ns-ship** | ship | pstack `opening-a-pr`, `babysit`, `bugbot-triage`; Matt `pr`; addy `shipping-and-launch` | PR body, triage of review comments, GO/NO-GO with a rollback plan. Rollout thinking adapted for OTA/flash. Never merges without a human |
+| **ns-writing-for-humans** | define (leaf) | pstack `unslop`, `technical-writing` | Renamed. Python examples |
+| **ns-swarm** | shared leaf | pstack `swarm` | Harness-neutral fan-out: subagents, or `ns ask` per worker. Used by ns-review and ns-verify |
+| **ns-principle-\*** (24) | shared leaf | pstack `principle-*` | One skill each, user-invoked, referenced by path. Python/firmware examples |
+| ns-define | define | Matt `grill-with-docs`, `to-spec`; addy `interview-me`, `idea-refine`, `spec-driven-development` | Writes `brief.md` or `SPEC.md` |
+| ns-plan | plan | Matt `to-tickets`, `wayfinder`, `codebase-design` | |
+| ns-troubleshoot | outer loop | Matt `diagnosing-bugs` | Firmware feedback loops: serial, JTAG, HIL, logic analyzer |
+| ns-auto | all | pstack `poteto-mode`, overnight contract, selected principles | Chains the phases, gate policy, `ns run` runner |
+| ns-improve | meta | Matt `retro`; pstack `reflect`, `automate-me`, `correct`; Cursor `continual-learning`, `workflow-from-chats` | Per-session review plus weekly transcript mining, ending in a PR |
+| ns-maintain, ns-maintain-verify | meta | pstack `maintain-verification-skill`; addy evals | Upstream diffs, evals, verify-skill re-check |
 
 ## Left out
 
 | Source | Skipped | Why |
 |---|---|---|
-| pstack | `setup-pstack` model slugs, Cursor automations, `typescript-best-practices`, visual-parity, iOS/Electron forensics, arena (for now) | Cursor-only or web/TS-only. Model choice moves to `sf` config |
+| pstack | `setup-pstack` model slugs, Cursor automations, `typescript-best-practices`, visual-parity, iOS/Electron forensics, arena (for now) | Cursor-only or web/TS-only. Model choice moves to `ns` config |
 | addy | browser-testing, frontend-ui, web-performance-auditor, Core Web Vitals perf, CI/CD (GitHub Actions specifics), observability (OTel) | Web/SaaS-specific |
-| Matt | `misc/` (shoehorn, Husky pre-commit, git-guardrails), `in-progress/`, `teach`, `ask-matt` (replaced by `sf-auto`) | TS-only or out of scope |
+| Matt | `misc/` (shoehorn, Husky pre-commit, git-guardrails), `in-progress/`, `teach`, `ask-matt` (replaced by `ns-auto`) | TS-only or out of scope |

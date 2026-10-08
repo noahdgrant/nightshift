@@ -1,12 +1,12 @@
 [package]
-name = "sf"
+name = "nightshift"
 version = "0.1.0"
 edition = "2021"
-description = "Software Factory CLI: worktrees, headless harness calls, skill lint and install"
+description = "Nightshift CLI: worktrees, headless harness calls, skill lint and install"
 license = "MIT"
 
 [[bin]]
-name = "sf"
+name = "ns"
 path = "src/main.rs"
 
 [dependencies]

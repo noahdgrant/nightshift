@@ -38,7 +38,7 @@ pub fn ok(cwd: &Path, args: &[&str]) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeEntry {
     pub path: PathBuf,
-    /// Full ref, e.g. `refs/heads/sf/142-uart-timeout`. `None` when detached.
+    /// Full ref, e.g. `refs/heads/ns/142-uart-timeout`. `None` when detached.
     pub branch: Option<String>,
     pub bare: bool,
 }
@@ -88,7 +88,7 @@ impl Repo {
         if !ok(start, &["rev-parse", "--git-dir"]) {
             return Err(SfError::usage(
                 format!("{} is not inside a git repository", start.display()),
-                "run from inside a repo, or pass --repo:\n  sf worktree new 142-uart-timeout --repo ~/src/myrepo",
+                "run from inside a repo, or pass --repo:\n  ns worktree new 142-uart-timeout --repo ~/src/myrepo",
             )
             .into());
         }
@@ -150,7 +150,7 @@ impl Repo {
         }
         Err(
             SfError::general("repository has no commits yet; make a first commit, or pass --base")
-                .hint("sf worktree new 142-uart-timeout --base main")
+                .hint("ns worktree new 142-uart-timeout --base main")
                 .into(),
         )
     }

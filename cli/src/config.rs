@@ -1,4 +1,4 @@
-//! `~/.config/sf/config.toml`: harness commands and role mapping.
+//! `~/.config/nightshift/config.toml`: harness commands and role mapping.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,7 +19,7 @@ pub struct Config {
 pub struct Harness {
     /// Read-only argv; `{model}` is replaced by the role's model.
     pub command: Vec<String>,
-    /// argv for `sf ask --write`: may edit files and run commands in the working directory.
+    /// argv for `ns ask --write`: may edit files and run commands in the working directory.
     #[serde(default)]
     pub command_write: Option<Vec<String>>,
 }
@@ -85,29 +85,29 @@ pub fn builtin_harness(name: &str) -> Option<Harness> {
     })
 }
 
-/// Config path: `$SF_CONFIG`, else `$XDG_CONFIG_HOME/sf/config.toml`, else `~/.config/sf/config.toml`.
+/// Config path: `$NS_CONFIG`, else `$XDG_CONFIG_HOME/nightshift/config.toml`, else `~/.config/nightshift/config.toml`.
 pub fn path() -> PathBuf {
     path_from(
-        std::env::var_os("SF_CONFIG"),
+        std::env::var_os("NS_CONFIG"),
         std::env::var_os("XDG_CONFIG_HOME"),
         std::env::var_os("HOME"),
     )
 }
 
 fn path_from(
-    sf: Option<std::ffi::OsString>,
+    ns: Option<std::ffi::OsString>,
     xdg: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> PathBuf {
-    if let Some(p) = sf.filter(|s| !s.is_empty()) {
+    if let Some(p) = ns.filter(|s| !s.is_empty()) {
         return PathBuf::from(p);
     }
     if let Some(x) = xdg.filter(|s| !s.is_empty()) {
-        return PathBuf::from(x).join("sf").join("config.toml");
+        return PathBuf::from(x).join("nightshift").join("config.toml");
     }
     PathBuf::from(home.unwrap_or_default())
         .join(".config")
-        .join("sf")
+        .join("nightshift")
         .join("config.toml")
 }
 
@@ -308,11 +308,11 @@ model = "big"
         );
         assert_eq!(
             path_from(None, s("/x"), s("/h")),
-            PathBuf::from("/x/sf/config.toml")
+            PathBuf::from("/x/nightshift/config.toml")
         );
         assert_eq!(
             path_from(None, None, s("/h")),
-            PathBuf::from("/h/.config/sf/config.toml")
+            PathBuf::from("/h/.config/nightshift/config.toml")
         );
     }
 }
