@@ -41,7 +41,7 @@ Fix the bug described in .ns/7-reserve-overflow/brief.md. gates: auto
 """
 
 [setup]
-commands = ["mkdir -p .ns/7-reserve-overflow", "cp ../brief.md .ns/7-reserve-overflow/"]
+commands = ["mkdir -p .ns/7-reserve-overflow", "cp ../brief.md .ns/7-reserve-overflow/"]   # `..` holds the case dir's other files during setup only
 
 [[check]]
 type = "command"
@@ -81,6 +81,7 @@ required = false                 # judges are advisory unless marked required
 Check rules:
 
 - `{unit}` is not substituted. Write paths out in full.
+- `diff_scope` compares the trial's final state with the post-setup commit, counting tracked changes and untracked files that aren't ignored (`git status --porcelain --untracked-files=all`). Paths in `.git/info/exclude` don't count.
 - `{changed_tests}` expands to the test files the trial added or changed relative to the base commit.
 - A trial **passes** when every required check passes. Checks are required by default, except `judge`.
 - `fails_on_base` copies the changed test files onto a clean checkout of the base commit, runs the command there, and passes when it exits non-zero. It proves the tests can go red on the bug.
@@ -101,13 +102,15 @@ ZEPHYR_BASE = "{capability.zephyr.base}"
 
 Capabilities come from the eval config (below). A case or fixture whose capability isn't configured is reported as `skipped`, never as failed.
 
+The fixture's `[env]` applies to everything in a trial: setup commands, the harness run, and every check. `{capability.<name>.<key>}` expands to that capability's value, with `~` expanded. A capability's `path_prepend` list is added to the front of `PATH` for the whole trial (e.g. a venv's `bin/` carrying a toolchain's Python requirements).
+
 ## Arms and isolation
 
 Each case runs in arms:
 
 - `with`: `skills` + `extra_skills` installed.
 - `without`: `extra_skills` only.
-- `--compare <ref>`: replaces `without` with the case's skills as they were at a git ref (`old` vs `new`).
+- `--compare <ref>`: replaces `without` with an `old` arm holding the case's skills as they were at a git ref.
 
 Each trial runs the harness with `HOME` pointed at a throwaway directory. The skills for that arm are copied into `$HOME/.claude/skills/` and `$HOME/.agents/skills/`, so nothing the user installed leaks in. The harness's credential files (from the eval config's `carry` list) are symlinked into the throwaway home. The directory is removed after the trial, transcripts excepted.
 
@@ -125,7 +128,7 @@ budget_usd = 5.0                # per invocation
 max_runs = 40
 transcripts = "~/.local/share/nightshift/evals"   # raw, never committed
 
-[eval.harness.claude]
+[eval.harnesses.claude]
 command = ["claude", "-p", "--model", "{model}", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"]
 carry = [".claude/.credentials.json", ".claude.json"]
 output = "claude-stream-json"
@@ -133,7 +136,10 @@ output = "claude-stream-json"
 [eval.capability.zephyr]
 base = "~/zephyrproject/zephyr"
 sdk = "~/zephyr-sdk-0.17.0"
+path_prepend = ["~/zephyrproject/.venv/bin"]   # python with Zephyr's requirements
 ```
+
+A capability is a table of arbitrary string keys plus the optional `path_prepend` list. It counts as configured when the table exists.
 
 Trials run in scratch directories with permissions bypassed, so the harness has no access beyond the scratch copy and the throwaway home. Never point a case at a real checkout.
 
@@ -145,9 +151,10 @@ ns eval [skill...] [--case <id>] [--arms with,without | --compare <ref>]
         [--triggers-only | --cases-only] [--dry-run] [--no-cache] [--out <file>]
 ```
 
+- `--harness`, `--model` and `--trigger-timeout` (default 180 s) override the config for one invocation. `--case` skips trigger evals.
 - `--dry-run` prints the plan (cases, arms, trials, cached baselines reused, estimated runs) and calls no model.
 - **Baseline cache.** A `without` result is keyed by (case content hash, fixture hash, harness, model, extra skills hash). A hit is reused across invocations. `--no-cache` forces a rerun.
-- **Adaptive trials.** Each arm starts at `trials`. If the arms disagree within a case (any trial differs), or the pass-rate gap is under 0.5, add one trial per arm up to `max_trials`.
+- **Adaptive trials.** Each arm starts at `trials`. While any arm has mixed results (some trials pass, some fail), add one trial per arm, up to `max_trials`. Arms that are unanimous stop early.
 - **Budget.** Stop starting new trials when cost reaches `budget_usd` or the run count reaches `max_runs`. Report everything not run as `skipped: budget`.
 - **Changed skills.** `--changed-since <ref>` selects skills with any file changed since `ref`.
 
