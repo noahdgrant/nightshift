@@ -1,0 +1,12 @@
+description = "The agent adds a test that passes on the base commit too (WEAK)"
+fixture = "tiny"
+timeout_minutes = 1
+prompt = "WEAK: fix src/calc.sh"
+
+[[check]]
+type = "command"
+run = "sh tests/run.sh"
+
+[[check]]
+type = "fails_on_base"
+run = "sh tests/run.sh {changed_tests}"

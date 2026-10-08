@@ -4,6 +4,7 @@ mod ask;
 mod config;
 mod doctor;
 mod error;
+mod eval;
 mod frontmatter;
 mod git;
 mod install;
@@ -27,6 +28,7 @@ Examples:
   ns lint skills
   ns install --dry-run
   ns doctor
+  ns eval ns-tdd --dry-run
 
 Exit codes: 0 ok, 1 failure, 2 usage error, 3 role not configured, 4 harness missing,
 5 no write command for `ns ask --write`.
@@ -47,9 +49,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create, list and remove per-unit worktrees (branch ns/<unit-id>)
+    /// Create, set up, list and remove per-unit worktrees (branch ns/<unit-id>)
     #[command(
-        after_help = "Examples:\n  ns worktree new 142-uart-timeout\n  ns worktree list\n  ns worktree remove 142-uart-timeout --dry-run",
+        after_help = "Examples:\n  ns worktree new 142-uart-timeout\n  ns worktree setup 142-uart-timeout\n  ns worktree list\n  ns worktree remove 142-uart-timeout --dry-run",
         arg_required_else_help = true
     )]
     Worktree {
@@ -116,6 +118,67 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         dry_run: bool,
     },
 
+    /// Measure skills: trigger evals and behaviour cases with and without the skill
+    #[command(after_help = EVAL_HELP)]
+    Eval {
+        /// Skills to evaluate, e.g. ns-tdd (or tdd). Default: every skill with an evals/ dir
+        skills: Vec<String>,
+        /// Only this case id; repeat for several
+        #[arg(long = "case", value_name = "ID")]
+        cases: Vec<String>,
+        /// Comma-separated arms: with, without (default: with,without)
+        #[arg(long, value_name = "LIST", conflicts_with = "compare")]
+        arms: Option<String>,
+        /// Compare the skills against themselves at a git ref (arms: with, old)
+        #[arg(long, value_name = "REF")]
+        compare: Option<String>,
+        /// Starting trials per arm (overrides [eval].trials)
+        #[arg(long, value_name = "N")]
+        trials: Option<u32>,
+        /// Only skills with a file changed since this ref (committed, staged, unstaged or untracked)
+        #[arg(long, value_name = "REF")]
+        changed_since: Option<String>,
+        /// Stop starting trials once the reported cost reaches this (overrides [eval].budget_usd)
+        #[arg(long, value_name = "USD")]
+        budget_usd: Option<f64>,
+        /// Stop after this many harness runs (overrides [eval].max_runs)
+        #[arg(long, value_name = "N")]
+        max_runs: Option<u32>,
+        /// Run only trigger evals
+        #[arg(long, conflicts_with = "cases_only")]
+        triggers_only: bool,
+        /// Run only behaviour cases
+        #[arg(long)]
+        cases_only: bool,
+        /// Print the plan as JSON; never calls a harness
+        #[arg(long)]
+        dry_run: bool,
+        /// Ignore cached `without` baselines and rerun them
+        #[arg(long)]
+        no_cache: bool,
+        /// Also write the result JSON to this file
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// Skills directory; fixtures are read from <its parent>/evals/fixtures
+        #[arg(long, value_name = "DIR", default_value = "skills")]
+        skills_dir: PathBuf,
+        /// Don't write skills/<skill>/evals/results/<date>-<sha>.json
+        #[arg(long)]
+        no_write_results: bool,
+        /// Also print a readable table to stderr
+        #[arg(long)]
+        human: bool,
+        /// Eval harness name (overrides [eval].harness)
+        #[arg(long)]
+        harness: Option<String>,
+        /// Model (overrides [eval].model)
+        #[arg(long)]
+        model: Option<String>,
+        /// Seconds before a trigger run is killed
+        #[arg(long, value_name = "SECS", default_value_t = eval::DEFAULT_TRIGGER_TIMEOUT_SECS)]
+        trigger_timeout: u64,
+    },
+
     /// Report config path and validity, configured roles, and harnesses on PATH
     #[command(after_help = "\
 Examples:
@@ -144,6 +207,23 @@ claude --permission-mode acceptEdits, codex --sandbox workspace-write).
 Exit codes: 1 harness failed, 3 role not configured, 4 harness binary not on PATH,
 5 --write given but the harness has no command_write.";
 
+const EVAL_HELP: &str = "\
+Examples:
+  ns eval --dry-run
+  ns eval ns-tdd --case py-capacity-off-by-one --trials 1 --human
+  ns eval ns-tdd --compare main --cases-only
+  ns eval --changed-since origin/main --budget-usd 2
+  ns eval ns-triage --triggers-only --no-write-results
+
+Spec: docs/EVALS.md. Config: [eval] in the ns config (see ns ask --help for the path).
+Each trial runs in a scratch dir under the system temp dir with HOME pointed at a
+throwaway directory holding only the arm's skills. Prints JSON on stdout and writes
+skills/<skill>/evals/results/<date>-<short-sha>.json. Raw transcripts and the
+baseline cache live under [eval].transcripts.
+
+Exit codes: 1 failure, 2 usage error, 3 eval harness not configured or bad config,
+4 harness binary not on PATH.";
+
 #[derive(Subcommand)]
 enum WorktreeCmd {
     /// Create (or reuse) the worktree for a unit and its .ns/<unit-id>/ artifact folder
@@ -154,13 +234,35 @@ Examples:
   ns worktree new 142-uart-timeout --repo ~/src/firmware
 
 Creates <repo>/../<repo-name>.worktrees/<unit-id> on branch ns/<unit-id> and
-prints {\"unit\",\"path\",\"branch\",\"artifacts\"}. Re-running prints the same JSON.")]
+prints {\"unit\",\"path\",\"branch\",\"artifacts\",\"setup\"}. Re-running prints the same JSON.
+
+A new worktree runs the [worktree] setup commands from <main-root>/.nightshift/nightshift.toml
+(env NS_UNIT, NS_WORKTREE, NS_MAIN_ROOT); \"setup\" lists {\"run\",\"exit\"} per command.
+A failing command exits 1 and leaves the worktree; retry with ns worktree setup <unit-id>.")]
     New {
         /// Unit id: [a-z0-9][a-z0-9-]*, e.g. 142-uart-timeout
         unit_id: String,
         /// Branch or commit to start from (default: the repo's default branch, else HEAD)
         #[arg(long)]
         base: Option<String>,
+        /// Any path inside the repo (default: current directory)
+        #[arg(long, value_name = "PATH")]
+        repo: Option<PathBuf>,
+        /// Skip the [worktree] setup commands from .nightshift/nightshift.toml
+        #[arg(long)]
+        no_setup: bool,
+    },
+    /// Re-run the [worktree] setup commands in a unit's existing worktree
+    #[command(after_help = "\
+Examples:
+  ns worktree setup 142-uart-timeout
+  ns worktree setup 142-uart-timeout --repo ~/src/firmware
+
+Reads [worktree] setup from <main-root>/.nightshift/nightshift.toml and runs each
+command with sh -c in the worktree, stopping at the first failure. Prints
+{\"unit\",\"path\",\"setup\":[{\"run\",\"exit\"}]}; exits 1 if a command fails.")]
+    Setup {
+        unit_id: String,
         /// Any path inside the repo (default: current directory)
         #[arg(long, value_name = "PATH")]
         repo: Option<PathBuf>,
@@ -208,7 +310,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 unit_id,
                 base,
                 repo,
-            } => worktree::new(&unit_id, base.as_deref(), repo.as_deref())?,
+                no_setup,
+            } => return worktree::new(&unit_id, base.as_deref(), repo.as_deref(), no_setup),
+            WorktreeCmd::Setup { unit_id, repo } => {
+                return worktree::setup(&unit_id, repo.as_deref())
+            }
             WorktreeCmd::List { repo } => worktree::list(repo.as_deref())?,
             WorktreeCmd::Remove {
                 unit_id,
@@ -268,6 +374,49 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 );
                 return Ok(ExitCode::from(1));
             }
+        }
+        Cmd::Eval {
+            skills,
+            cases,
+            arms,
+            compare,
+            trials,
+            changed_since,
+            budget_usd,
+            max_runs,
+            triggers_only,
+            cases_only,
+            dry_run,
+            no_cache,
+            out,
+            skills_dir,
+            no_write_results,
+            human,
+            harness,
+            model,
+            trigger_timeout,
+        } => {
+            return eval::run(eval::Args {
+                skills,
+                cases,
+                arms,
+                compare,
+                trials,
+                changed_since,
+                budget_usd,
+                max_runs,
+                triggers_only,
+                cases_only,
+                dry_run,
+                no_cache,
+                out,
+                skills_dir,
+                no_write_results,
+                human,
+                harness,
+                model,
+                trigger_timeout_secs: trigger_timeout,
+            })
         }
         Cmd::Doctor => doctor::run()?,
     }
