@@ -1,0 +1,96 @@
+description = "Seeded defect (a): Warehouse.reserve rejects a reservation for exactly the available quantity. Plain-words bug report, test-first fix."
+fixture = "py-inventory"
+# ns-tdd links to these two principles by relative path; ship them with it so the links resolve in the "with" arm.
+skills = ["ns-tdd", "ns-principle-test-behavior-not-implementation", "ns-principle-sequence-verifiable-units"]
+extra_skills = []
+requires = []
+timeout_minutes = 15
+prompt = """
+Bug from the warehouse floor: we had 5 M6 bolts in stock and tried to reserve all 5 for one order, and it was refused with "cannot reserve 5 of 'BOLT-M6': only 5 available". Reserving 4 works. Reserving 6 is refused, which is right.
+
+Fix it test-first. gates: auto. Nobody is around to answer questions, so take the seams from this report and carry on. Don't commit.
+"""
+
+[setup]
+# Keep any .ns/ phase artifacts out of git so diff_scope only sees source and test changes.
+commands = ["mkdir -p .git/info && echo '.ns/' >> .git/info/exclude"]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**"]
+
+[[check]]
+# A test added by the trial names the boundary: reserving exactly / all of the available stock.
+# regex checks take one fixed path and the agent picks the test file, so grep the lines the trial added
+# under tests/ (diff against the root commit, plus untracked files).
+type = "command"
+run = '''
+B=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+A=$( { git diff "$B" -U0 -- tests/ | grep '^+' ; git ls-files -o --exclude-standard tests/ | xargs -r cat ; } )
+printf '%s\n' "$A" | grep -Eiq 'def test_[a-z0-9_]*(exact|all_avail|all_of|all_the|entire|whole|full|capacity|boundary|equal|everything|remaining|last_unit)'
+'''
+expect_exit = 0
+
+[[check]]
+# Hidden acceptance test, written outside the repo so the agent never sees it.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_capacity_acceptance.py" <<'PYEOF'
+from datetime import datetime, timedelta
+
+import pytest
+
+from inventory import InsufficientStock, Warehouse
+
+T0 = datetime(2026, 4, 1, 10, 0)
+
+
+def make(qty):
+    w = Warehouse()
+    w.add_item("PIN-4", "4 mm dowel pin")
+    w.receive("PIN-4", qty)
+    return w
+
+
+def test_reserving_exactly_the_available_quantity_succeeds():
+    w = make(5)
+    r = w.reserve("PIN-4", 5, now=T0)
+    assert r.quantity == 5
+    assert w.available("PIN-4", T0) == 0
+
+
+def test_reserving_the_remainder_after_another_reservation_succeeds():
+    w = make(7)
+    w.reserve("PIN-4", 3, now=T0)
+    assert w.reserve("PIN-4", 4, now=T0).quantity == 4
+
+
+def test_reserving_one_more_than_available_is_still_rejected():
+    w = make(5)
+    with pytest.raises(InsufficientStock):
+        w.reserve("PIN-4", 6, now=T0)
+
+
+def test_nothing_left_after_a_full_reservation():
+    w = make(5)
+    w.reserve("PIN-4", 5, now=T0)
+    with pytest.raises(InsufficientStock):
+        w.reserve("PIN-4", 1, now=T0 + timedelta(minutes=1))
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_capacity_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Did the change fix the root cause (the comparison that decides whether enough stock is available) rather than special-casing the reported quantity, an item, or the error message? Does the new test reserve exactly the available quantity through the public Warehouse interface and assert a literal expected value?"
+required = false

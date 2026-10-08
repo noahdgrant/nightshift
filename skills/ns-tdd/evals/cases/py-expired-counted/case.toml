@@ -1,0 +1,119 @@
+description = "Seeded defect (b): Warehouse.stock_levels (and so `inventory status`) still counts expired reservations, while reserve()/available() ignore them. Plain-words bug report, test-first fix."
+fixture = "py-inventory"
+# ns-tdd links to these two principles by relative path; ship them with it so the links resolve in the "with" arm.
+skills = ["ns-tdd", "ns-principle-test-behavior-not-implementation", "ns-principle-sequence-verifiable-units"]
+extra_skills = []
+requires = []
+timeout_minutes = 15
+prompt = """
+Bug report: the stock report lies after reservations expire. We had 10 M6 bolts, reserved 4 with a 5 minute hold, and let the hold lapse. Twenty minutes later `inventory status` still shows 4 reserved and 6 available, but reserving 8 goes through fine, so the system clearly knows the hold is gone. The report should agree with what can actually be reserved.
+
+Fix it test-first. gates: auto. Nobody is around to answer questions, so take the seams from this report and carry on. Don't commit.
+"""
+
+[setup]
+# Keep any .ns/ phase artifacts out of git so diff_scope only sees source and test changes.
+commands = ["mkdir -p .git/info && echo '.ns/' >> .git/info/exclude"]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**"]
+
+[[check]]
+# A test added by the trial drives the report path (stock_levels or the CLI status command) with an expiry.
+# regex checks take one fixed path and the agent picks the test file, so grep the lines the trial added
+# under tests/ (diff against the root commit, plus untracked files).
+type = "command"
+run = '''
+B=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+A=$( { git diff "$B" -U0 -- tests/ | grep '^+' ; git ls-files -o --exclude-standard tests/ | xargs -r cat ; } )
+printf '%s\n' "$A" | grep -Eq 'stock_levels|status' && printf '%s\n' "$A" | grep -Eiq 'expir|ttl|timedelta'
+'''
+expect_exit = 0
+
+[[check]]
+# Hidden acceptance test, written outside the repo so the agent never sees it.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_expired_acceptance.py" <<'PYEOF'
+from datetime import datetime, timedelta
+
+from inventory import Warehouse
+from inventory.cli import main
+
+T0 = datetime(2026, 4, 1, 10, 0)
+
+
+def make():
+    w = Warehouse()
+    w.add_item("PIN-4", "4 mm dowel pin")
+    w.add_item("PIN-6", "6 mm dowel pin")
+    w.receive("PIN-4", 10)
+    w.receive("PIN-6", 10)
+    return w
+
+
+def level(w, sku, now):
+    return {lvl.sku: lvl for lvl in w.stock_levels(now)}[sku]
+
+
+def test_expired_reservation_is_not_counted_in_stock_levels():
+    w = make()
+    w.reserve("PIN-4", 4, now=T0, ttl=timedelta(minutes=5))
+    lvl = level(w, "PIN-4", T0 + timedelta(minutes=20))
+    assert (lvl.on_hand, lvl.reserved, lvl.available) == (10, 0, 10)
+
+
+def test_reservation_stops_counting_at_its_expiry_instant():
+    w = make()
+    w.reserve("PIN-4", 4, now=T0, ttl=timedelta(minutes=5))
+    assert level(w, "PIN-4", T0 + timedelta(minutes=4)).reserved == 4
+    assert level(w, "PIN-4", T0 + timedelta(minutes=5)).reserved == 0
+
+
+def test_only_expired_reservations_drop_out():
+    w = make()
+    w.reserve("PIN-4", 2, now=T0, ttl=timedelta(minutes=5))
+    w.reserve("PIN-4", 3, now=T0, ttl=timedelta(minutes=60))
+    w.reserve("PIN-6", 1, now=T0, ttl=timedelta(minutes=5))
+    now = T0 + timedelta(minutes=10)
+    assert level(w, "PIN-4", now).reserved == 3
+    assert level(w, "PIN-6", now).reserved == 0
+
+
+def test_stock_levels_agree_with_available():
+    w = make()
+    w.reserve("PIN-4", 4, now=T0, ttl=timedelta(minutes=5))
+    w.reserve("PIN-4", 1, now=T0, ttl=timedelta(minutes=60))
+    now = T0 + timedelta(minutes=30)
+    assert level(w, "PIN-4", now).available == w.available("PIN-4", now) == 9
+
+
+def test_cli_status_ignores_expired_reservations(tmp_path, capsys):
+    state = str(tmp_path / "inv.json")
+    base = ["--state", state, "--now"]
+    assert main([*base, "2026-04-01T10:00:00", "add-item", "PIN-4", "pin"]) == 0
+    assert main([*base, "2026-04-01T10:00:00", "receive", "PIN-4", "10"]) == 0
+    assert main([*base, "2026-04-01T10:00:00", "reserve", "PIN-4", "4", "--ttl", "5"]) == 0
+    capsys.readouterr()
+    assert main([*base, "2026-04-01T10:20:00", "status", "PIN-4"]) == 0
+    row = capsys.readouterr().out.splitlines()[1].split()
+    assert row == ["PIN-4", "10", "0", "10"]
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_expired_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Did the change fix the root cause by making the stock-level report use the same notion of an active (unexpired) reservation as reserve()/available(), rather than adding a second, separately maintained expiry filter or special-casing the CLI output? Does the new test let a reservation expire and assert literal expected figures through a public interface (Warehouse.stock_levels or the CLI)?"
+required = false

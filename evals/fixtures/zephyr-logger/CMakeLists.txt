@@ -1,0 +1,4 @@
+zephyr_include_directories(include)
+
+add_subdirectory_ifdef(CONFIG_ZL_RINGBUF_LOG lib/ringbuf_log)
+add_subdirectory_ifdef(CONFIG_ZL_SENSOR_READER drivers/sensor_reader)

@@ -1,0 +1,16 @@
+menu "zlogger"
+
+config ZL_RINGBUF_LOG
+	bool "Sample ring buffer"
+	help
+	  Fixed-capacity ring buffer of sensor samples with a configurable
+	  full-buffer policy (reject new or drop oldest).
+
+config ZL_SENSOR_READER
+	bool "Sensor reader"
+	select ZL_RINGBUF_LOG
+	help
+	  Reads samples through a small HAL and appends them to a
+	  sample ring buffer.
+
+endmenu

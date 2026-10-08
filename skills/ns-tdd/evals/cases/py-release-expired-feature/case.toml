@@ -1,0 +1,116 @@
+description = "Small feature, test-first: Warehouse.release_expired(now) drops expired reservations and returns them. Behaviour checked by a hidden acceptance test."
+fixture = "py-inventory"
+# ns-tdd links to these two principles by relative path; ship them with it so the links resolve in the "with" arm.
+skills = ["ns-tdd", "ns-principle-test-behavior-not-implementation", "ns-principle-sequence-verifiable-units"]
+extra_skills = []
+requires = []
+timeout_minutes = 20
+prompt = """
+Expired reservations pile up: they stay in Warehouse.reservations() and in the state file until someone cancels them by hand. Add a method to clean them up.
+
+`Warehouse.release_expired(now)`:
+- removes every reservation that is expired at `now` (a reservation whose expiry equals `now` counts as expired, same rule as everywhere else) and returns the removed reservations as a list, oldest first (creation order)
+- leaves unexpired reservations alone
+- does not change on-hand stock
+- returns an empty list when nothing has expired
+- after release, a released reservation is gone: cancel() or fulfil() on its id raises UnknownReservation
+
+No CLI changes. Build it test-first. gates: auto. Nobody is around to answer questions, so take the seams from this description and carry on. Don't commit.
+"""
+
+[setup]
+# Keep any .ns/ phase artifacts out of git so diff_scope only sees source and test changes.
+commands = ["mkdir -p .git/info && echo '.ns/' >> .git/info/exclude"]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**"]
+
+[[check]]
+type = "regex"
+path = "src/inventory/warehouse.py"
+pattern = 'def release_expired\('
+present = true
+
+[[check]]
+# Hidden acceptance test, written outside the repo so the agent never sees it.
+# Avoids exact-capacity reservations and stock_levels so seeded defects (a) and (b) can't fail it.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_release_expired_acceptance.py" <<'PYEOF'
+from datetime import datetime, timedelta
+
+import pytest
+
+from inventory import UnknownReservation, Warehouse
+
+T0 = datetime(2026, 5, 4, 8, 0)
+
+
+def make():
+    w = Warehouse()
+    w.add_item("GEAR-12", "12-tooth gear")
+    w.add_item("GEAR-20", "20-tooth gear")
+    w.receive("GEAR-12", 20)
+    w.receive("GEAR-20", 20)
+    return w
+
+
+def test_releases_only_expired_reservations_oldest_first():
+    w = make()
+    a = w.reserve("GEAR-12", 3, now=T0, ttl=timedelta(minutes=10))
+    b = w.reserve("GEAR-12", 2, now=T0, ttl=timedelta(minutes=60))
+    c = w.reserve("GEAR-20", 4, now=T0 + timedelta(minutes=1), ttl=timedelta(minutes=5))
+    released = w.release_expired(T0 + timedelta(minutes=20))
+    assert [r.id for r in released] == [a.id, c.id]
+    assert [r.id for r in w.reservations()] == [b.id]
+
+
+def test_reservation_expiring_exactly_now_is_released():
+    w = make()
+    a = w.reserve("GEAR-12", 3, now=T0, ttl=timedelta(minutes=10))
+    assert [r.id for r in w.release_expired(T0 + timedelta(minutes=10))] == [a.id]
+
+
+def test_nothing_expired_releases_nothing():
+    w = make()
+    a = w.reserve("GEAR-12", 3, now=T0, ttl=timedelta(minutes=10))
+    assert list(w.release_expired(T0 + timedelta(minutes=9))) == []
+    assert [r.id for r in w.reservations()] == [a.id]
+
+
+def test_release_does_not_change_on_hand():
+    w = make()
+    w.reserve("GEAR-12", 3, now=T0, ttl=timedelta(minutes=10))
+    w.release_expired(T0 + timedelta(minutes=30))
+    assert w.on_hand("GEAR-12") == 20
+
+
+def test_released_reservation_is_gone():
+    w = make()
+    a = w.reserve("GEAR-12", 3, now=T0, ttl=timedelta(minutes=10))
+    later = T0 + timedelta(minutes=30)
+    w.release_expired(later)
+    with pytest.raises(UnknownReservation):
+        w.cancel(a.id)
+    with pytest.raises(UnknownReservation):
+        w.fulfil(a.id, now=later)
+    assert list(w.release_expired(later)) == []
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_release_expired_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Was the feature built test-first in vertical slices (one behaviour, one test, one minimal implementation), with tests that call Warehouse.release_expired through the public interface and assert literal expected values (reservation ids, quantities) rather than recomputing them the way the code does? Was nothing beyond the request added (no CLI changes, no speculative options)?"
+required = false

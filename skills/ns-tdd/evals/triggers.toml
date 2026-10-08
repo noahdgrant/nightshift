@@ -1,0 +1,62 @@
+# Does the ns-tdd description fire on the right prompts? Run against evals/fixtures-style repos.
+# 8 positive, 7 negative.
+
+[[trigger]]
+prompt = "Reserving exactly the quantity that's in stock gets rejected. Fix it test-first."
+expect = true
+
+[[trigger]]
+prompt = "Let's do red-green-refactor on the reservation expiry logic."
+expect = true
+
+[[trigger]]
+prompt = "Add a release_expired(now) method to Warehouse. Write the failing test before the code."
+expect = true
+
+[[trigger]]
+prompt = "The status command still counts reservations that already expired. Can you fix that and add a test that would have caught it?"
+expect = true
+
+[[trigger]]
+prompt = "I want a --json flag on the status command. Build it TDD style, one test at a time."
+expect = true
+
+[[trigger]]
+prompt = "Write integration tests for the CLI that drive it through main() against a real state file."
+expect = true
+
+[[trigger]]
+prompt = "Fulfilling a reservation right at its expiry time succeeds when it should fail. Reproduce it in a test first, then fix it."
+expect = true
+
+[[trigger]]
+prompt = "Start with a failing test that pins down how cancel() should behave on an unknown id, then make it pass."
+expect = true
+
+[[trigger]]
+prompt = "Fix the typos in the README and make the install section clearer."
+expect = false
+
+[[trigger]]
+prompt = "Explain how Warehouse.reserve decides whether there's enough stock."
+expect = false
+
+[[trigger]]
+prompt = "Triage the new issues in .scratch/ and tell me which ones are ready for an agent."
+expect = false
+
+[[trigger]]
+prompt = "How do I squash my last three commits into one?"
+expect = false
+
+[[trigger]]
+prompt = "What's the difference between git rebase and git merge for this branch?"
+expect = false
+
+[[trigger]]
+prompt = "Add a glossary entry for 'backorder' to GLOSSARY.md."
+expect = false
+
+[[trigger]]
+prompt = "Summarise what changed in the last five commits."
+expect = false
