@@ -627,6 +627,8 @@ fn every_subcommand_help_has_examples() {
         vec!["worktree", "new", "--help"],
         vec!["worktree", "list", "--help"],
         vec!["worktree", "remove", "--help"],
+        vec!["worktree", "setup", "--help"],
+        vec!["eval", "--help"],
         vec!["ask", "--help"],
         vec!["lint", "--help"],
         vec!["install", "--help"],
@@ -637,4 +639,116 @@ fn every_subcommand_help_has_examples() {
             .success()
             .stdout(predicate::str::contains("Examples:"));
     }
+}
+
+fn factory_def(root: &Path, text: &str) {
+    fs::create_dir_all(root.join(".nightshift")).unwrap();
+    fs::write(root.join(".nightshift/nightshift.toml"), text).unwrap();
+}
+
+#[test]
+fn worktree_new_runs_setup_once() {
+    let (_tmp, root) = repo();
+    factory_def(
+        &root,
+        "[factory]\nname = \"future table, ignored\"\n\n[worktree]\nsetup = [\"echo \\\"$NS_UNIT|$NS_WORKTREE|$NS_MAIN_ROOT\\\" > setup.out\", \"echo noisy\"]\n",
+    );
+    let out = ns()
+        .current_dir(&root)
+        .args(["worktree", "new", "u1"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("noisy"))
+        .get_output()
+        .stdout
+        .clone();
+    let v = json(&out);
+    let path = PathBuf::from(v["path"].as_str().unwrap());
+    assert_eq!(v["setup"].as_array().unwrap().len(), 2);
+    assert_eq!(v["setup"][0]["exit"], 0);
+    assert_eq!(v["setup"][1]["run"], "echo noisy");
+    assert_eq!(
+        fs::read_to_string(path.join("setup.out")).unwrap().trim(),
+        format!("u1|{}|{}", path.display(), root.display())
+    );
+
+    // Idempotent repeat: no setup.
+    fs::remove_file(path.join("setup.out")).unwrap();
+    let v = json(
+        &ns()
+            .current_dir(&root)
+            .args(["worktree", "new", "u1"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["setup"], serde_json::json!([]));
+    assert!(!path.join("setup.out").exists());
+
+    // --no-setup on a fresh unit.
+    let v = json(
+        &ns()
+            .current_dir(&root)
+            .args(["worktree", "new", "u2", "--no-setup"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["setup"], serde_json::json!([]));
+    assert!(!PathBuf::from(v["path"].as_str().unwrap())
+        .join("setup.out")
+        .exists());
+}
+
+#[test]
+fn worktree_setup_failure_keeps_worktree_and_retries() {
+    let (_tmp, root) = repo();
+    factory_def(
+        &root,
+        "[worktree]\nsetup = [\"test -f ready\", \"touch done\"]\n",
+    );
+    let out = ns()
+        .current_dir(&root)
+        .args(["worktree", "new", "u3"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("ns worktree setup u3"))
+        .get_output()
+        .stdout
+        .clone();
+    let v = json(&out);
+    let path = PathBuf::from(v["path"].as_str().unwrap());
+    assert!(path.is_dir());
+    assert_eq!(v["setup"].as_array().unwrap().len(), 1);
+    assert_eq!(v["setup"][0]["exit"], 1);
+    assert!(!path.join("done").exists());
+
+    fs::write(path.join("ready"), "").unwrap();
+    let v = json(
+        &ns()
+            .current_dir(&root)
+            .args(["worktree", "setup", "u3"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["setup"][1]["exit"], 0);
+    assert!(path.join("done").exists());
+
+    ns().current_dir(&root)
+        .args(["worktree", "setup", "nope"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("ns worktree new nope"));
+
+    factory_def(&root, "[worktree]\nsetpu = []\n");
+    ns().current_dir(&root)
+        .args(["worktree", "new", "u4"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("cannot parse"));
+    assert!(!root.parent().unwrap().join("myrepo.worktrees/u4").exists());
 }

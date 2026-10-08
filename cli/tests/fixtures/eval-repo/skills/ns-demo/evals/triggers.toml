@@ -1,0 +1,15 @@
+[[trigger]]
+prompt = "Use the demo skill to fix the adder"
+expect = true
+
+[[trigger]]
+prompt = "Summarise the README"
+expect = false
+
+[[trigger]]
+prompt = "Write a demo poem"
+expect = false
+
+[[trigger]]
+prompt = "Fix the adder"
+expect = true

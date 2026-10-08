@@ -12,6 +12,120 @@ pub struct Config {
     pub harness: BTreeMap<String, Harness>,
     #[serde(default)]
     pub roles: BTreeMap<String, Role>,
+    #[serde(default)]
+    pub eval: EvalConfig,
+}
+
+/// `[eval]`: how `ns eval` runs trials. Every key has a default, so the section is optional.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct EvalConfig {
+    /// Name of the harness under `[eval.harnesses.<name>]` (or a built-in) to run trials with.
+    pub harness: String,
+    pub model: Option<String>,
+    /// Starting trials per arm.
+    pub trials: u32,
+    /// Adaptive ceiling per arm.
+    pub max_trials: u32,
+    /// Stop starting trials once the reported cost reaches this, per invocation.
+    pub budget_usd: f64,
+    pub max_runs: u32,
+    /// Raw transcripts and the baseline cache; never committed.
+    pub transcripts: String,
+    pub harnesses: BTreeMap<String, EvalHarness>,
+    /// `[eval.capability.<name>]`: configured when the table exists.
+    pub capability: BTreeMap<String, Capability>,
+}
+
+/// A capability: arbitrary string keys (`base`, `sdk`, ...) plus an optional `path_prepend`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct Capability {
+    /// Prepended to `PATH` for the whole trial; `~` is expanded.
+    #[serde(default)]
+    pub path_prepend: Vec<String>,
+    #[serde(flatten)]
+    pub keys: BTreeMap<String, String>,
+}
+
+impl Default for EvalConfig {
+    fn default() -> Self {
+        Self {
+            harness: "claude".into(),
+            model: None,
+            trials: 2,
+            max_trials: 5,
+            budget_usd: 5.0,
+            max_runs: 40,
+            transcripts: "~/.local/share/nightshift/evals".into(),
+            harnesses: BTreeMap::new(),
+            capability: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EvalHarness {
+    /// argv; `{model}` is replaced by `[eval].model`. The prompt goes to stdin.
+    pub command: Vec<String>,
+    /// Paths relative to `$HOME` symlinked into each trial's throwaway home (credentials).
+    #[serde(default)]
+    pub carry: Vec<String>,
+    /// Transcript format: `claude-stream-json`, or `none` (no metrics, triggers unsupported).
+    #[serde(default = "default_output")]
+    pub output: String,
+}
+
+fn default_output() -> String {
+    "none".into()
+}
+
+/// Output formats `ns eval` can parse, plus `none`.
+pub const EVAL_OUTPUTS: &[&str] = &["claude-stream-json", "none"];
+
+/// Built-in eval harnesses, used when `[eval.harnesses.<name>]` is not configured.
+pub fn builtin_eval_harness(name: &str) -> Option<EvalHarness> {
+    let owned = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    match name {
+        "claude" => Some(EvalHarness {
+            command: owned(&[
+                "claude",
+                "-p",
+                "--model",
+                "{model}",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--permission-mode",
+                "bypassPermissions",
+            ]),
+            carry: owned(&[".claude/.credentials.json", ".claude.json"]),
+            output: "claude-stream-json".into(),
+        }),
+        _ => None,
+    }
+}
+
+impl EvalConfig {
+    /// The harness named `name`: configured first, else built in.
+    pub fn harness_named(&self, name: &str) -> Option<EvalHarness> {
+        self.harnesses
+            .get(name)
+            .cloned()
+            .or_else(|| builtin_eval_harness(name))
+    }
+}
+
+/// Expand a leading `~/` (or a bare `~`) to `$HOME`.
+pub fn expand_tilde(p: &str) -> PathBuf {
+    let home = || PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    if p == "~" {
+        home()
+    } else if let Some(rest) = p.strip_prefix("~/") {
+        home().join(rest)
+    } else {
+        PathBuf::from(p)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -292,6 +406,55 @@ model = "big"
     fn unknown_harness_has_no_command() {
         let c = parse("[roles.default]\nharness = \"nope\"\n").unwrap();
         assert_eq!(c.resolve("x").unwrap().command, None);
+    }
+
+    #[test]
+    fn eval_defaults_and_overrides() {
+        let c = parse("").unwrap();
+        assert_eq!(c.eval, EvalConfig::default());
+        let h = c.eval.harness_named("claude").unwrap();
+        assert_eq!(h.output, "claude-stream-json");
+        assert!(h.command.contains(&"bypassPermissions".to_string()));
+        assert!(c.eval.harness_named("nope").is_none());
+
+        let c = parse(
+            r#"
+[eval]
+harness = "fake"
+model = "haiku"
+trials = 3
+budget_usd = 1.5
+[eval.harnesses.fake]
+command = ["fake", "{model}"]
+[eval.capability.zephyr]
+base = "~/zephyr"
+path_prepend = ["~/venv/bin"]
+[eval.capability.empty]
+"#,
+        )
+        .unwrap();
+        assert_eq!(c.eval.trials, 3);
+        assert_eq!(c.eval.max_trials, 5);
+        let h = c.eval.harness_named("fake").unwrap();
+        assert_eq!(h.output, "none");
+        assert!(h.carry.is_empty());
+        assert_eq!(c.eval.capability["zephyr"].keys["base"], "~/zephyr");
+        assert_eq!(c.eval.capability["zephyr"].path_prepend, ["~/venv/bin"]);
+        assert!(c.eval.capability.contains_key("empty"));
+        assert!(parse("[eval.capability.x]\nbase = 3\n").is_err());
+        assert!(parse(
+            "[eval]
+trails = 3
+"
+        )
+        .is_err());
+        assert!(parse(
+            "[eval.harnesses.x]
+command = []
+ouput = \"none\"
+"
+        )
+        .is_err());
     }
 
     #[test]

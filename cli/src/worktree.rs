@@ -2,9 +2,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::SfError;
@@ -40,6 +41,92 @@ struct NewOutput {
     path: String,
     branch: String,
     artifacts: String,
+    setup: Vec<SetupResult>,
+}
+
+/// `<main-root>/.nightshift/nightshift.toml`, the factory definition root (D15).
+/// Only `[worktree]` is read so far; other tables are ignored.
+#[derive(Debug, Default, Deserialize)]
+struct FactoryDef {
+    #[serde(default)]
+    worktree: WorktreeDef,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorktreeDef {
+    /// Shell commands run in a newly created worktree.
+    #[serde(default)]
+    setup: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetupResult {
+    run: String,
+    exit: Option<i32>,
+}
+
+pub const FACTORY_DEF: &str = ".nightshift/nightshift.toml";
+
+fn load_setup(root: &Path) -> Result<Vec<String>> {
+    let p = root.join(FACTORY_DEF);
+    let text = match fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(anyhow::anyhow!("cannot read {}: {e}", p.display())),
+    };
+    let def: FactoryDef = toml::from_str(&text).map_err(|e| {
+        SfError::general(format!("cannot parse {}: {e}", p.display()))
+            .hint("the worktree section looks like:\n\n[worktree]\nsetup = [\"git submodule update --init\"]")
+    })?;
+    Ok(def.worktree.setup)
+}
+
+/// Run each setup command with `sh -c` in the worktree; stop at the first failure.
+/// Command output goes to stderr so stdout stays JSON.
+fn run_setup(
+    commands: &[String],
+    unit: &str,
+    path: &Path,
+    root: &Path,
+) -> Result<Vec<SetupResult>> {
+    let mut results = Vec::new();
+    for c in commands {
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(c)
+            .current_dir(path)
+            .env("NS_UNIT", unit)
+            .env("NS_WORKTREE", path)
+            .env("NS_MAIN_ROOT", root)
+            .stdin(Stdio::null())
+            .stdout(std::io::stderr())
+            .stderr(std::io::stderr())
+            .status()
+            .with_context(|| format!("cannot run setup command {c:?}"))?;
+        let ok = status.success();
+        results.push(SetupResult {
+            run: c.clone(),
+            exit: status.code(),
+        });
+        if !ok {
+            break;
+        }
+    }
+    Ok(results)
+}
+
+fn setup_failed(results: &[SetupResult], unit: &str) -> Option<ExitCode> {
+    let failed = results.iter().find(|r| r.exit != Some(0))?;
+    let code = failed
+        .exit
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "a signal".into());
+    eprintln!(
+        "error: setup command {:?} exited with {code}; the worktree is left in place\n  fix the cause, then retry:\n  ns worktree setup {unit}",
+        failed.run
+    );
+    Some(ExitCode::from(1))
 }
 
 fn repo_from(repo: Option<&Path>) -> Result<Repo> {
@@ -77,16 +164,28 @@ fn ensure_excluded(common_dir: &Path) -> Result<()> {
     fs::write(&exclude, text).with_context(|| format!("cannot write {}", exclude.display()))
 }
 
-pub fn new(unit: &str, base: Option<&str>, repo: Option<&Path>) -> Result<()> {
+pub fn new(
+    unit: &str,
+    base: Option<&str>,
+    repo: Option<&Path>,
+    no_setup: bool,
+) -> Result<ExitCode> {
     let example = "ns worktree new 142-uart-timeout --base main";
     check_unit_id(unit, example)?;
     let repo = repo_from(repo)?;
+    let setup = if no_setup {
+        Vec::new()
+    } else {
+        load_setup(&repo.root)?
+    };
     let branch = format!("{BRANCH_PREFIX}{unit}");
     let list = git::worktrees(&repo.root)?;
 
+    let mut created = false;
     let path: PathBuf = if let Some(existing) = find_unit(&list, unit) {
         existing.path.clone()
     } else {
+        created = true;
         let parent = repo.root.parent().unwrap_or(&repo.root);
         let path = parent.join(format!("{}.worktrees", repo.name())).join(unit);
         if path.exists() {
@@ -150,14 +249,41 @@ pub fn new(unit: &str, base: Option<&str>, repo: Option<&Path>) -> Result<()> {
         .with_context(|| format!("cannot create {}", artifacts.display()))?;
     ensure_excluded(&repo.common_dir)?;
 
+    let results = if created {
+        run_setup(&setup, unit, &path, &repo.root)?
+    } else {
+        Vec::new()
+    };
     let out = NewOutput {
         unit: unit.to_string(),
         path: path.to_string_lossy().into_owned(),
         branch,
         artifacts: artifacts.to_string_lossy().into_owned(),
+        setup: results,
     };
     println!("{}", serde_json::to_string_pretty(&out)?);
-    Ok(())
+    Ok(setup_failed(&out.setup, unit).unwrap_or(ExitCode::SUCCESS))
+}
+
+/// `ns worktree setup <unit>`: re-run the `[worktree] setup` commands in an existing worktree.
+pub fn setup(unit: &str, repo: Option<&Path>) -> Result<ExitCode> {
+    check_unit_id(unit, "ns worktree setup 142-uart-timeout")?;
+    let repo = repo_from(repo)?;
+    let commands = load_setup(&repo.root)?;
+    let list = git::worktrees(&repo.root)?;
+    let Some(entry) = find_unit(&list, unit) else {
+        return Err(SfError::general(format!("no worktree for unit {unit}"))
+            .hint(format!("create it first:\n  ns worktree new {unit}"))
+            .into());
+    };
+    let results = run_setup(&commands, unit, &entry.path, &repo.root)?;
+    let out = json!({
+        "unit": unit,
+        "path": entry.path.to_string_lossy(),
+        "setup": results,
+    });
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(setup_failed(&results, unit).unwrap_or(ExitCode::SUCCESS))
 }
 
 const PHASE_ORDER: &[&str] = &[
@@ -220,7 +346,7 @@ pub fn latest_status(artifacts: &Path) -> Option<ArtifactStatus> {
     })
 }
 
-fn yaml_scalar(v: &serde_yaml::Value) -> Option<String> {
+pub fn yaml_scalar(v: &serde_yaml::Value) -> Option<String> {
     match v {
         serde_yaml::Value::String(s) => Some(s.clone()),
         serde_yaml::Value::Number(n) => Some(n.to_string()),

@@ -1,0 +1,46 @@
+description = "calc.sh subtracts instead of adding; fix it test-first"
+fixture = "tiny"
+extra_skills = ["ns-helper"]
+timeout_minutes = 1
+prompt = """
+Fix the bug described in .ns/demo/brief.md.
+"""
+
+[setup]
+commands = ["mkdir -p .ns/demo", "cp ../brief.md .ns/demo/"]
+
+[[check]]
+type = "command"
+run = "sh tests/run.sh"
+
+[[check]]
+type = "fails_on_base"
+run = "sh tests/run.sh {changed_tests}"
+
+[[check]]
+type = "file_exists"
+path = ".ns/demo/brief.md"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/demo/build.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**"]
+
+[[check]]
+type = "regex"
+path = "src/calc.sh"
+pattern = '\$1 \+ \$2'
+
+[[check]]
+type = "regex"
+path = "NOTES.md"
+pattern = "overlay"
+
+[[check]]
+type = "judge"
+rubric = "Did the change fix the root cause?"
