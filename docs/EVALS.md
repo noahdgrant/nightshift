@@ -131,7 +131,7 @@ carry = [".claude/.credentials.json", ".claude.json"]
 output = "claude-stream-json"
 
 [eval.capability.zephyr]
-base = "~/prevasum/embedded-workspace/zephyr"
+base = "~/zephyrproject/zephyr"
 sdk = "~/zephyr-sdk-0.17.0"
 ```
 
