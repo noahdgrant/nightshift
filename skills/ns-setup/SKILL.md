@@ -38,6 +38,13 @@ Read whatever exists. Assume nothing:
   - `.pre-commit-config.yaml`: the lint and format hooks
   - CI workflows (`.github/workflows/`, `.gitlab-ci.yml`): the commands CI runs. Treat these as the ground truth when they disagree with a Makefile or README. CI logs also give run durations.
 - **Test seams**: host unit tests, a simulator or emulator (QEMU, `native_sim`, Renode, a device simulator), and hardware-in-the-loop (a bench runner, a `hil` marker or env, a self-hosted CI runner with a board attached).
+- **Worktree traps**: does a fresh `git worktree` build its own sources? Common traps:
+  - submodules a new worktree lacks (`.gitmodules`)
+  - a shared workspace that resolves the module from the main checkout (west, a monorepo tool, an editable install pointing at the main checkout)
+  - generated files or caches outside the tree
+  - shared resources only one agent may use at a time (a workspace, a bench)
+
+  Read any worktree notes in `AGENTS.md`. Then prove it: create a scratch worktree, run the build, and check that its outputs name the worktree path (e.g. `compile_commands.json`, `build.ninja`). Remove the scratch worktree afterwards.
 - **Verify**: a `verify-<project>` skill in the repo and a control CLI it drives.
 - **Tracker**: `git remote -v`. GitHub or GitLab? A `.scratch/` directory means local markdown issues are already in use.
 - **Labels**: on GitHub, `gh label list`. On GitLab, `glab label list`.
@@ -81,6 +88,11 @@ Write `docs/agents/*.md` from the templates in [references/](references/):
 
 - [stack.md](references/stack.md), [verify.md](references/verify.md), [triage-labels.md](references/triage-labels.md), [domain.md](references/domain.md)
 - one of [issue-tracker-github.md](references/issue-tracker-github.md), [issue-tracker-gitlab.md](references/issue-tracker-gitlab.md), [issue-tracker-local.md](references/issue-tracker-local.md). For "other", write `docs/agents/issue-tracker.md` from the user's description, covering the same operations.
+
+If the worktree check found traps:
+- write the fix-up commands to `.nightshift/nightshift.toml` under `[worktree] setup = [...]`. `ns worktree new` runs them in each new worktree, with `NS_UNIT`, `NS_WORKTREE` and `NS_MAIN_ROOT` set.
+- write the worktree-correct build and test commands into `stack.md`.
+- name any shared resource in `stack.md` under "Gotchas", so phases take turns.
 
 On GitHub or GitLab, create each configured label the tracker lacks (`gh label create` / `glab label create`), with the meaning from the table as its description.
 
