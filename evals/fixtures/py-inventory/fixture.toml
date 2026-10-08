@@ -1,0 +1,2 @@
+description = "Pure-Python stock and reservation package (src layout, pytest, local .scratch/ tracker)"
+requires = []

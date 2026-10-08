@@ -1,0 +1,57 @@
+# Does the ns-triage description fire on the right prompts? 7 positive, 7 negative.
+
+[[trigger]]
+prompt = "Triage .scratch/reservations/issues/03-negative-stock.md"
+expect = true
+
+[[trigger]]
+prompt = "Show me anything on the tracker that needs my attention."
+expect = true
+
+[[trigger]]
+prompt = "What's ready for agents to pick up?"
+expect = true
+
+[[trigger]]
+prompt = "Look at the new bug report in .scratch about expired reservations and decide whether it's ready for an agent or needs more info from the reporter."
+expect = true
+
+[[trigger]]
+prompt = "Move issue 02 to ready-for-agent and write the Agent Brief."
+expect = true
+
+[[trigger]]
+prompt = "Someone filed a feature request for multi-warehouse support. Categorise it and route it to the right next step."
+expect = true
+
+[[trigger]]
+prompt = "Start a unit of work from .scratch/stock-reports/issues/01-status-wrong.md"
+expect = true
+
+[[trigger]]
+prompt = "Fix the off-by-one in Warehouse.reserve, test first."
+expect = false
+
+[[trigger]]
+prompt = "Write a unit test for storage.load with a corrupt file."
+expect = false
+
+[[trigger]]
+prompt = "Explain what the Reservation dataclass is for."
+expect = false
+
+[[trigger]]
+prompt = "Rename the --ttl flag to --hold-minutes across the CLI and docs."
+expect = false
+
+[[trigger]]
+prompt = "Why is git saying my branch has diverged from origin?"
+expect = false
+
+[[trigger]]
+prompt = "Tidy up the wording in the README's Development section."
+expect = false
+
+[[trigger]]
+prompt = "Review the diff on this branch for bugs before I open the PR."
+expect = false

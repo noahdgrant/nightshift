@@ -1,0 +1,157 @@
+description = "Seeded defect: zl_ringbuf_put under ZL_RB_DROP_OLDEST never advances the read index or caps the count when full, so count reports capacity+1 and the next get returns the newest sample instead of the oldest survivor. Plain-words bug report, test-first fix on native_sim."
+fixture = "zephyr-logger"
+# ns-tdd links to these principles (and firmware-seams.md) by relative path; ship them so the links resolve in the "with" arm.
+skills = ["ns-tdd", "ns-principle-test-behavior-not-implementation", "ns-principle-sequence-verifiable-units"]
+extra_skills = []
+requires = ["zephyr"]
+timeout_minutes = 30
+prompt = """
+Bug from the field logs: our sensor logger keeps a ring buffer of 16 samples set to drop the oldest sample when it's full. After the buffer fills up, the device reports 17 samples queued, which shouldn't be possible, and the first sample it hands back after the overflow is the one that just came in, not the oldest one still kept. Before the buffer is full everything comes out in order, and a buffer set to reject new samples behaves fine when full.
+
+Fix it test-first. gates: auto. Nobody is around to answer questions, so take the seams from this report and carry on. Don't commit.
+"""
+
+[setup]
+# Keep any .ns/ phase artifacts out of git so diff_scope only sees source and test changes.
+commands = ["mkdir -p .git/info && echo '.ns/' >> .git/info/exclude"]
+
+[[check]]
+# The whole suite passes. Twister output goes to a temp dir (the wrapper uses mktemp).
+type = "command"
+run = "scripts/twister.sh"
+expect_exit = 0
+
+[[check]]
+# scripts/twister.sh maps each changed test file to the suite (nearest testcase.yaml) that holds it,
+# so {changed_tests} can be plain file paths. With no suite selected it runs every suite, which
+# passes on base, so a trial that changed no tests fails this check.
+type = "fails_on_base"
+run = "scripts/twister.sh {changed_tests}"
+
+[[check]]
+type = "diff_scope"
+allow = ["lib/**", "tests/**"]
+
+[[check]]
+# Hidden acceptance suite, written outside the repo so the agent never sees it. It builds this
+# checkout's module via ZEPHYR_EXTRA_MODULES and runs on native_sim.
+type = "command"
+run = '''
+set -e
+T=$(mktemp -d)
+S="$T/accept"
+mkdir -p "$S/src"
+cat > "$S/CMakeLists.txt" <<'EOF'
+cmake_minimum_required(VERSION 3.20.0)
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+project(ringbuf_drop_oldest_accept)
+target_sources(app PRIVATE src/main.c)
+EOF
+printf 'CONFIG_ZTEST=y\nCONFIG_ZL_RINGBUF_LOG=y\n' > "$S/prj.conf"
+cat > "$S/testcase.yaml" <<'EOF'
+tests:
+  accept.ringbuf_drop_oldest:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+EOF
+cat > "$S/src/main.c" <<'EOF'
+#include <errno.h>
+#include <zephyr/ztest.h>
+#include <zl/ringbuf_log.h>
+
+#define CAP 3
+
+static struct zl_sample storage[CAP];
+static struct zl_ringbuf rb;
+
+static void put(int32_t v)
+{
+	struct zl_sample s = {.timestamp_ms = (uint32_t)v * 10U, .channel = 2U, .value = v};
+
+	zassert_ok(zl_ringbuf_put(&rb, &s));
+}
+
+static int32_t get(void)
+{
+	struct zl_sample s;
+
+	zassert_ok(zl_ringbuf_get(&rb, &s));
+	zassert_equal(s.timestamp_ms, (uint32_t)s.value * 10U);
+	return s.value;
+}
+
+static void before(void *f)
+{
+	ARG_UNUSED(f);
+	zassert_ok(zl_ringbuf_init(&rb, storage, CAP, ZL_RB_DROP_OLDEST));
+}
+
+ZTEST_SUITE(accept, NULL, NULL, before, NULL, NULL);
+
+ZTEST(accept, test_one_overflow_drops_exactly_the_oldest)
+{
+	struct zl_sample s;
+
+	put(1); put(2); put(3); put(4);
+	zassert_equal(zl_ringbuf_count(&rb), 3);
+	zassert_equal(zl_ringbuf_dropped(&rb), 1);
+	zassert_ok(zl_ringbuf_peek(&rb, &s));
+	zassert_equal(s.value, 2);
+	zassert_equal(get(), 2);
+	zassert_equal(get(), 3);
+	zassert_equal(get(), 4);
+	zassert_equal(zl_ringbuf_get(&rb, &s), -EAGAIN);
+}
+
+ZTEST(accept, test_many_overflows_keep_the_newest_capacity_samples)
+{
+	struct zl_sample s;
+
+	for (int32_t v = 1; v <= 10; v++) {
+		put(v);
+		zassert_true(zl_ringbuf_count(&rb) <= CAP);
+	}
+	zassert_equal(zl_ringbuf_count(&rb), 3);
+	zassert_equal(zl_ringbuf_dropped(&rb), 7);
+	zassert_ok(zl_ringbuf_peek_at(&rb, 2, &s));
+	zassert_equal(s.value, 10);
+	zassert_equal(zl_ringbuf_peek_at(&rb, 3, &s), -ERANGE);
+	zassert_equal(get(), 8);
+	zassert_equal(get(), 9);
+	zassert_equal(get(), 10);
+}
+
+ZTEST(accept, test_overflow_after_partial_drain_keeps_order)
+{
+	put(1); put(2); put(3);
+	zassert_equal(get(), 1);
+	put(4); put(5);
+	zassert_equal(zl_ringbuf_count(&rb), 3);
+	zassert_equal(zl_ringbuf_dropped(&rb), 1);
+	zassert_equal(get(), 3);
+	zassert_equal(get(), 4);
+	zassert_equal(get(), 5);
+}
+
+ZTEST(accept, test_reject_new_still_refuses_when_full)
+{
+	struct zl_sample s = {.value = 9};
+
+	zassert_ok(zl_ringbuf_init(&rb, storage, CAP, ZL_RB_REJECT_NEW));
+	put(1); put(2); put(3);
+	zassert_equal(zl_ringbuf_put(&rb, &s), -ENOSPC);
+	zassert_equal(zl_ringbuf_count(&rb), 3);
+	zassert_equal(zl_ringbuf_dropped(&rb), 0);
+	zassert_equal(get(), 1);
+}
+EOF
+"$ZEPHYR_BASE/scripts/twister" -T "$S" -p native_sim -x=ZEPHYR_EXTRA_MODULES="$PWD" -O "$T/out" --inline-logs
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Did the change fix the root cause in zl_ringbuf_put (when the buffer is full under ZL_RB_DROP_OLDEST, the oldest record must be discarded by advancing the read index, and the count must stay at capacity) rather than clamping count in zl_ringbuf_count, special-casing capacity 16, or changing get/peek to compensate? Does the new test overflow a drop-oldest buffer through the public zl_ringbuf_* interface and assert literal expected values (count equals capacity, the oldest survivor comes out first)?"
+required = false

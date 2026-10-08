@@ -1,0 +1,11 @@
+description = "Out-of-tree Zephyr module (sample ring buffer, HAL-backed sensor reader) with ztest suites on native_sim; drop-oldest overflow bug seeded"
+requires = ["zephyr"]
+
+[env]
+ZEPHYR_BASE = "{capability.zephyr.base}"
+ZEPHYR_SDK_INSTALL_DIR = "{capability.zephyr.sdk}"
+# native_sim builds with the host gcc whatever the variant; pinning it keeps
+# twister from probing for other toolchains.
+ZEPHYR_TOOLCHAIN_VARIANT = "zephyr"
+# Keep Python from writing __pycache__ into the shared Zephyr tree.
+PYTHONDONTWRITEBYTECODE = "1"
