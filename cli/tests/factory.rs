@@ -113,6 +113,10 @@ impl Env {
     }
 
     fn ready(&self, n: u64, title: &str, labels: &[&str], body: &str) {
+        self.ready_by(n, title, labels, body, Some("MEMBER"));
+    }
+
+    fn ready_by(&self, n: u64, title: &str, labels: &[&str], body: &str, assoc: Option<&str>) {
         self.issue(n, title, "OPEN");
         let mut all = vec!["status:ready-for-agent"];
         all.extend(labels);
@@ -121,6 +125,7 @@ impl Env {
             "title": title,
             "labels": all.iter().map(|l| serde_json::json!({"name": l})).collect::<Vec<_>>(),
             "body": body,
+            "authorAssociation": assoc,
         });
         let mut text = fs::read_to_string(self.ghd.join("issues.jsonl")).unwrap();
         text.push_str(&format!("{line}\n"));
@@ -614,6 +619,53 @@ fn watch_dry_run_orders_and_skips() {
     let skipped = v["skipped"].to_string();
     assert!(skipped.contains("blocked by open #9"), "{skipped}");
     assert!(skipped.contains("open PR #40 closes it"), "{skipped}");
+    assert!(e.calls().is_empty());
+    assert!(!e.gh_calls().contains("issue edit"));
+}
+
+#[test]
+fn watch_queues_only_team_authored_issues() {
+    let e = Env::new();
+    e.ready_by(1, "Owner", &[], "", Some("OWNER"));
+    e.ready_by(2, "Member", &[], "", Some("MEMBER"));
+    e.ready_by(3, "Collaborator", &[], "", Some("COLLABORATOR"));
+    e.ready_by(4, "Contributor", &[], "", Some("CONTRIBUTOR"));
+    e.ready_by(5, "Stranger", &[], "", Some("NONE"));
+    e.ready_by(6, "Unknown", &[], "", None);
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let order: Vec<u64> = v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(order, [1, 2, 3]);
+    let skipped: Vec<(u64, &str)> = v["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (i["number"].as_u64().unwrap(), i["reason"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        skipped,
+        [
+            (4, "author outside the team"),
+            (5, "author outside the team"),
+            (6, "author outside the team"),
+        ]
+    );
+    assert!(e.gh_calls().contains(
+        "api --paginate repos/{owner}/{repo}/issues?state=open&labels=status:ready-for-agent&per_page=100 --jq"
+    ));
+}
+
+#[test]
+fn watch_never_runs_a_non_team_issue() {
+    let e = Env::new();
+    e.ready_by(2, "Stranger", &["type:fix"], "", Some("NONE"));
+    let v = e.run(&["watch"], 0);
+    assert_eq!(v["stopped"], "queue empty");
+    assert!(v["units"].as_array().unwrap().is_empty());
     assert!(e.calls().is_empty());
     assert!(!e.gh_calls().contains("issue edit"));
 }

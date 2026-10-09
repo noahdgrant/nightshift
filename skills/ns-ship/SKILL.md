@@ -104,7 +104,7 @@ pr: <url, filled after step 6>
 
 ## 6. Push and open the PR
 
-Read `docs/agents/issue-tracker.md` for the forge CLI and how PRs link issues. Default to `gh`. If the file is missing, load `ns-setup`.
+Read `docs/agents/issue-tracker.md` for the forge CLI and how PRs link issues. Default to `gh`. If the file is missing, load `ns-setup`. Issue and PR comments follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content).
 
 ```bash
 git push -u origin ns/<unit-id>

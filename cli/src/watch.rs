@@ -33,29 +33,32 @@ pub struct Issue {
     pub title: String,
     pub labels: Vec<String>,
     pub body: String,
+    pub team: bool,
 }
 
-fn parse_issues(v: &Value) -> Vec<Issue> {
-    v.as_array()
-        .map(|a| {
-            a.iter()
-                .map(|i| Issue {
-                    number: i["number"].as_u64().unwrap_or(0),
-                    title: i["title"].as_str().unwrap_or("").to_string(),
-                    labels: i["labels"]
-                        .as_array()
-                        .map(|l| {
-                            l.iter()
-                                .filter_map(|x| x["name"].as_str().or(x.as_str()).map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    body: i["body"].as_str().unwrap_or("").to_string(),
+/// Author associations whose issues `ns watch` will run (docs/FACTORY.md, Trust).
+const TEAM: [&str; 3] = ["OWNER", "MEMBER", "COLLABORATOR"];
+
+/// One issue per line, as printed by the `--jq` filter in `queue()`.
+fn parse_issues(text: &str) -> Vec<Issue> {
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|i| Issue {
+            number: i["number"].as_u64().unwrap_or(0),
+            title: i["title"].as_str().unwrap_or("").to_string(),
+            labels: i["labels"]
+                .as_array()
+                .map(|l| {
+                    l.iter()
+                        .filter_map(|x| x["name"].as_str().or(x.as_str()).map(String::from))
+                        .collect()
                 })
-                .filter(|i| i.number > 0)
-                .collect()
+                .unwrap_or_default(),
+            body: i["body"].as_str().unwrap_or("").to_string(),
+            team: TEAM.contains(&i["authorAssociation"].as_str().unwrap_or("")),
         })
-        .unwrap_or_default()
+        .filter(|i| i.number > 0)
+        .collect()
 }
 
 /// Issue numbers named on a first line `Blocked by: #a, #b`.
@@ -98,19 +101,19 @@ struct Queue {
 
 fn queue(root: &Path, fac: &Factory) -> Result<Queue> {
     let q = &fac.queue;
-    let issues = parse_issues(&gh_json(
+    // `gh issue list --json` has no author association, so read the REST list.
+    let path = format!(
+        "repos/{{owner}}/{{repo}}/issues?state=open&labels={}&per_page=100",
+        q.ready_label
+    );
+    let issues = parse_issues(&gh(
         root,
         &[
-            "issue",
-            "list",
-            "--state",
-            "open",
-            "--label",
-            &q.ready_label,
-            "--limit",
-            "200",
-            "--json",
-            "number,title,labels,body",
+            "api",
+            "--paginate",
+            &path,
+            "--jq",
+            ".[] | select(.pull_request | not) | {number, title, labels, body, authorAssociation: .author_association}",
         ],
     )?);
     let prs = gh_json(
@@ -136,6 +139,12 @@ fn queue(root: &Path, fac: &Factory) -> Result<Queue> {
     let mut ready = Vec::new();
     let mut skipped = Vec::new();
     for i in issues {
+        if !i.team {
+            skipped.push(
+                json!({"number": i.number, "title": i.title, "reason": "author outside the team"}),
+            );
+            continue;
+        }
         if let Some(pr) = has_pr.get(&i.number) {
             skipped.push(json!({"number": i.number, "title": i.title, "reason": format!("open PR #{pr} closes it")}));
             continue;

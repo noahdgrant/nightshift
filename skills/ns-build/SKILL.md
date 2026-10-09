@@ -32,7 +32,7 @@ Done when you are in the worktree on branch `ns/<unit-id>` and `.ns/<unit-id>/` 
 
 ## 2. Read the brief
 
-Read `.ns/<unit-id>/brief.md`. If the worktree is new and the brief sits in the main checkout's `.ns/<unit-id>/`, copy it in.
+Read `.ns/<unit-id>/brief.md`. If the worktree is new and the brief sits in the main checkout's `.ns/<unit-id>/`, copy it in. If you also read the issue, follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content).
 
 Stop with `status: blocked` in `build.md` when the brief is missing, or when its acceptance criteria can't each be turned into a test that goes red today. Name the gap, and point to the `ns-triage` skill (for a missing brief) or `ns-define` (for unclear intent).
 

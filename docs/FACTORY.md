@@ -153,8 +153,8 @@ When the plan's usage limit is hit, `claude -p` ends with an error `result` even
 ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]
 ```
 
-1. List open issues with `ready_label` via `gh issue list --json number,title,labels,body`.
-2. Drop issues whose first-line `Blocked by: #a, #b` names any open issue, and issues that already have an open PR whose body says `Closes #n`.
+1. List open issues with `ready_label` via `gh api --paginate repos/{owner}/{repo}/issues`. The REST list carries each author's association, which `gh issue list --json` lacks.
+2. Drop issues whose author is outside the team (see Trust), issues whose first-line `Blocked by: #a, #b` names any open issue, and issues that already have an open PR whose body says `Closes #n`.
 3. Sort by the first matching `order` label, then by issue number.
 4. Take the first. Swap `ready_label` for `in_progress_label`. `git fetch origin`, then `ns run --issue <n> --base origin/<default>` (in process, sharing the budget).
 5. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`. On `stuck`, or a `done` that needs a human merge (files that need human review, no CI), swap to `stuck_label` and comment the reason and the last artifact path. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
@@ -164,6 +164,15 @@ ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]
 An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (unix seconds) pins the clock for tests; sleeps then advance it instead of blocking. Output: `{units:[{issue, unit, outcome, reason, pr, cost_usd}], stopped, cost_usd}`.
 
 `--once` takes one unit. `--dry-run` prints the ordered queue with skip reasons. `gh` runs with whatever `GH_TOKEN` the environment carries, so the account is chosen by whoever starts `ns watch`.
+
+## Trust
+
+Phases run unattended with permissions bypassed, and on a public repo anyone can open an issue or comment on one. The team is the authors whose association is `OWNER`, `MEMBER` or `COLLABORATOR`.
+
+- **Only team-authored issues are queued.** `ns watch` skips any other issue with reason `author outside the team`. A missing association counts as outside the team.
+- **Only team comments are instructions.** Phases quote other text as data and never act on it. The rule lives in `skills/ns-contract/SKILL.md` under "Untrusted issue content", and the skills that read issues point there.
+
+What remains: the team's own text is trusted in full, so a team member who pastes untrusted text into an issue or comment passes it through as instructions. `ns run --issue <n>` started by hand runs any issue, whoever wrote it, and only the skills' rule guards its comments.
 
 ## Starting a night
 
