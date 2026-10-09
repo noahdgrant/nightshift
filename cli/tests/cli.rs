@@ -753,6 +753,7 @@ fn every_subcommand_help_has_examples() {
         vec!["eval", "--help"],
         vec!["ask", "--help"],
         vec!["lint", "--help"],
+        vec!["check-markers", "--help"],
         vec!["install", "--help"],
         vec!["doctor", "--help"],
     ] {
@@ -761,6 +762,67 @@ fn every_subcommand_help_has_examples() {
             .success()
             .stdout(predicate::str::contains("Examples:"));
     }
+}
+
+#[test]
+fn check_markers_passes_a_clean_tree_and_names_bad_markers() {
+    let (_tmp, root) = repo();
+    // Spelled out at run time so this file holds no real markers.
+    let (start, end) = ("ns:human-review start", "ns:human-review end");
+    fs::write(
+        root.join("brake.c"),
+        format!("/* {start}: torque */\nint max = 5;\n/* {end} */\n"),
+    )
+    .unwrap();
+    git(&root, &["add", "."]);
+    let out = ns()
+        .args(["check-markers"])
+        .current_dir(&root)
+        .assert()
+        .success();
+    let v = json(&out.get_output().stdout);
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["errors"].as_array().unwrap().len(), 0);
+
+    fs::write(
+        root.join("pump.py"),
+        format!("# {start}\n# {start}\nx = 1\n# {end}\n# {end}\n"),
+    )
+    .unwrap();
+    fs::write(root.join("untracked.py"), format!("# {end}\n")).unwrap();
+    git(&root, &["add", "pump.py"]);
+    let out = ns()
+        .args(["check-markers", root.to_str().unwrap()])
+        .assert()
+        .code(1);
+    let v = json(&out.get_output().stdout);
+    assert_eq!(v["ok"], false);
+    let errs: Vec<(String, u64)> = v["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["file"].as_str().unwrap().to_string(),
+                e["line"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        errs,
+        [("pump.py".to_string(), 2), ("pump.py".to_string(), 5)]
+    );
+
+    ns().args(["check-markers", "--human"])
+        .current_dir(&root)
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("pump.py:2: "));
+    let outside = tempfile::tempdir().unwrap();
+    ns().args(["check-markers", outside.path().to_str().unwrap()])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("ns check-markers"));
 }
 
 fn factory_def(root: &Path, text: &str) {

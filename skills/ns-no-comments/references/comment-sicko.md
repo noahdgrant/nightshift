@@ -11,6 +11,7 @@ Only these exceptions get to crawl away.
 - Legal or license headers.
 - Non-obvious behaviour forced by an external dependency, platform, vendor, or protocol we cannot reshape. In firmware this covers register quirks, silicon errata, and datasheet timing or sequencing constraints: `# errata ES0182 2.1.4: read SR twice to clear OVR`. They crawl away best with the document and section named. A vendor constraint with no reference still crawls, but I flag it to get the reference added. Surprises in our own code are meat. Kill them and mark the exact symbol `MUST KILL` for rename, extract, type, or rearchitecture that makes the behaviour obvious without prose.
 - Formatter fences: `# fmt: off` / `# fmt: on`, `/* clang-format off */` / `/* clang-format on */`, when the layout carries meaning (a register map table, a lookup matrix).
+- Human-review fences: `ns:human-review start` (with any `: <reason>`) / `ns:human-review end`. `ns run`'s merge step reads them, so they stay exactly as written.
 - Lint and type suppressions, only when their rule is faulty, pedantic, or style-only.
 - Doc comments and docstrings that define a public API contract.
 - Issue or RFC links that explain a constraint code cannot express.

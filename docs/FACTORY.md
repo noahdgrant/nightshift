@@ -86,17 +86,17 @@ Steps:
 
 1. Create or reuse the worktree (`ns worktree new`, including setup).
 2. Read `.ns/<unit>/*.md` frontmatter and pick the next phase from the state table.
-3. Archive superseded artifacts. Before running phase P, move P's artifact, if present, to `.ns/<unit>/history/<artifact>-<n>.md`, with n one past the highest number already there for that artifact. Also archive every downstream artifact (order: brief, build, evidence, review, pr) unless it is `status: pass` with `sha` equal to HEAD. Whatever remains in `.ns/<unit>/` is current, so the state table needs no timestamps.
+3. Archive superseded artifacts. Before running phase P, move P's artifact, if present, to `.ns/<unit>/history/<artifact>-<n>.md`, with n one past the highest number already there for that artifact. Also archive every downstream artifact (order: brief, build, evidence, review, pr) unless it is `status: pass` and current, and every downstream artifact after one that was archived. Whatever remains in `.ns/<unit>/` is current, so the state table needs no timestamps.
 4. Run the phase's harness headless in write mode (`command_write`), with cwd set to the worktree and the rendered prompt on stdin. Enforce the timeout by killing the process group. The built-in `claude` write command for `ns run` is `claude -p --permission-mode bypassPermissions --model {model} --output-format stream-json --verbose`: the phases need Bash, which `acceptEdits` can't grant headless. A configured claude command gets `--output-format stream-json --verbose` added if it lacks them. Stdout goes to `<git-common-dir>/ns/transcripts/<unit>/<phase>-<attempt>.jsonl`, and cost and tokens are parsed from it.
 5. The attempt wrote its artifact if P's artifact exists after the run. If not, the attempt failed with "no artifact written" (or the timeout or exit code), and the files archived in step 3 move back, so the next decision sees the state as it was. A triage run that exits 0 without writing `brief.md` is the "triage decided a human or define is needed" row: stuck, no retry. A usage-limit stop also moves the files back (see "Billing").
 6. Repeat until the unit is done, merged, stuck, paused, or out of budget.
 
-"`sha` ≠ HEAD" compares the frontmatter `sha` with `git rev-parse --short HEAD` in the worktree by prefix, since the lengths may differ. Because of step 3, an artifact that exists is current. The table, as implemented, checked top to bottom:
+An artifact is current when its frontmatter `sha` matches `git rev-parse --short HEAD` in the worktree by prefix (the lengths may differ), or when the unit's diff at that sha has the same `git patch-id` as at HEAD. The unit's diff is `git diff $(git merge-base <base> <sha>) <sha>`, with `<base>` the one the worktree was cut from (`origin/<base>` instead when that is ahead of the local branch): `--base`, else `origin/HEAD`'s branch (the local branch when present), else the branch checked out in the main worktree (not the literal `HEAD`, a deliberate change from the issue's text), else the detached sha. `git patch-id` ignores whitespace, so a whitespace-only change after review counts as current. A rebase that leaves the change alone keeps every artifact current. A sha no longer in the repo is not current. "`sha` ≠ HEAD" below means not current. Because of step 3, an artifact that exists is current. The table, as implemented, checked top to bottom:
 
 | State | Next |
 |---|---|
 | any artifact `blocked` | stuck |
-| `pr` pass at HEAD | **done** (then the merge step under `merge.policy = auto`) |
+| `pr`, `evidence` and `review` pass at HEAD | **done** (then the merge step under `merge.policy = auto`) |
 | no `brief.md` | triage with an issue, else stuck "no brief" |
 | `brief` not pass | stuck (triage decided a human or define is needed) |
 | no `build`, or `build` fail | build (a fail's body is `{feedback}`) |
@@ -108,7 +108,7 @@ Steps:
 | `pr` fail | the phase its body names first (verify or review), with its body as `{feedback}`, else stuck |
 | a phase out of attempts | stuck |
 
-A review that commits leaves `evidence.md` stale, so verify runs again before ship; `review.md` carries the new sha and stays valid. A CI failure in the merge step runs build again; build's commit leaves evidence, review and pr stale, so verify, review and ship follow onto the same PR. The PR number comes from `pr.md`'s `pr:`, or from the newest archived `history/pr-<n>.md` that names one, so archiving never loses it.
+A review that commits leaves `evidence.md` stale, so verify runs again before ship; `review.md` carries the new sha and stays valid. A CI failure in the merge step runs build again; build's commit leaves evidence, review and pr stale, so verify, review and ship follow onto the same PR. A ship that changes the unit's diff after review leaves `pr.md` at HEAD but `review.md` stale, so verify, review and ship run again; the per-phase `max_attempts` bounds the loop. The PR number comes from `pr.md`'s `pr:`, or from the newest archived `history/pr-<n>.md` that names one, so archiving never loses it.
 
 Attempts are counted per invocation, so re-running `ns run` on a stuck unit gives each phase fresh attempts.
 
@@ -130,11 +130,29 @@ Output: final JSON `{unit, outcome: done|merged|stuck|budget|paused, phase, reas
 `merge.policy = "human"` (the default) ends a unit at `done` when `pr.md` passes. With `policy = "auto"`, `ns run` then runs its merge step. It is the only code in nightshift that merges, it only merges its own unit's PR, and only with squash:
 
 1. `gh pr view <pr> --json state,headRefOid,mergeStateStatus`. `MERGED` already means something other than this step merged it: stuck. Not `OPEN`: stuck.
-2. The PR head must equal the worktree HEAD, and `review.md` must be `pass` at that sha. Otherwise `done`, needing a human merge.
+2. The PR head and `review.md` must be current (see the state table), and `review.md` must be `pass`. Otherwise `done`, needing a human merge. The merge in step 7 matches the PR head, including the head from before a `BEHIND` update when `update-branch` reports none; this goes beyond the issue's literal text on purpose, so a rebase after review still merges the reviewed head.
 3. Branch protection requires PRs to be up to date with the base. `BEHIND`: `gh pr update-branch <pr>`. `DIRTY`, or a failed update: back to build with "rebase onto <default> and resolve conflicts" as `{feedback}`, which uses a build attempt.
 4. `gh pr checks <pr> --watch`, killed after `ci_timeout_minutes` (stuck). Then `gh pr checks <pr> --json name,state,bucket,link`. No checks at all: `done`, needing a human merge. Any check not `pass` or `skipping`: back to build with the failing check names and the tail of `gh run view <id> --log-failed` as `{feedback}`, then verify, review and ship onto the same PR.
 5. `gh pr diff <pr> --name-only`. Any path matching a `human_review` glob (`**` crosses directories): `done` with reason "changes files that need human review; needs a human merge". Files that need human review cover the factory's own guardrails: CI config, the definition, the guard and merge code.
-6. `gh pr merge <pr> --squash --delete-branch --match-head-commit <sha>`. If `gh pr view` then reports `MERGED`, the outcome is `merged`.
+6. Marked regions (below): HEAD is diffed against its merge base with `origin/<default>`. A changed line inside a region, in the base or the head version, or an added, removed or moved marker line: `done` with reason "changes code in a human-review region; needs a human merge (<file>:<start>-<end>: <reason>)". If the merge base can't be found, the reason says so and the unit still needs a human merge.
+7. `gh pr merge <pr> --squash --delete-branch --match-head-commit <sha>`. If `gh pr view` then reports `MERGED`, the outcome is `merged`.
+
+### Marked regions
+
+`human_review` guards whole files. To guard part of a file, fence it. A region runs from a line containing `ns:human-review start`, optionally followed by `: <reason>`, through the next line containing `ns:human-review end`, marker lines included. Detection is by substring, so any comment syntax works. `start` and `end` may be followed by anything except a letter, digit, `_`, `-`, a quote or a backtick (so `start*/` and `end-->` count, but `endpoint` and a marker quoted in backticks do not). A firmware project fencing its brake limits, with the keyword written as `[ns:human-review]` so this page holds no live marker; drop the brackets in real code:
+
+```c
+int brake_ramp(int now) { return now * 2; }
+
+/* [ns:human-review] start: brake torque limits, signed off by the safety lead */
+#define MAX_TORQUE_NM 420
+#define TORQUE_RAMP_MS 150
+/* [ns:human-review] end */
+```
+
+A PR that changes `brake_ramp` merges on its own. One that changes `MAX_TORQUE_NM`, or moves or deletes either marker, ends at `done` with "changes code in a human-review region; needs a human merge (src/brake.c:3-6: brake torque limits, signed off by the safety lead)".
+
+`ns check-markers [path]` checks every tracked file and exits 1 on a start with no end, an end with no start, or a start nested inside a region, naming file and line. Run it in CI next to the tests. `ns-no-comments` keeps marker lines. nightshift marks no regions in its own code; this example is the only one in the repo.
 
 ## Billing
 

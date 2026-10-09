@@ -13,7 +13,10 @@ mod frontmatter;
 mod git;
 mod install;
 mod lint;
+mod markers;
 mod run;
+#[cfg(test)]
+mod testutil;
 mod watch;
 mod which;
 mod worktree;
@@ -32,6 +35,7 @@ Examples:
   ns worktree list
   echo 'Review this diff' | ns ask --role review.security
   ns lint skills
+  ns check-markers
   ns install --dry-run
   ns doctor
   ns eval ns-tdd --dry-run
@@ -99,6 +103,25 @@ Prints {\"ok\",\"skills\",\"errors\":[{\"skill\",\"file\",\"message\"}]}. Exits 
     Lint {
         /// Skills directory
         #[arg(default_value = "skills")]
+        path: PathBuf,
+        /// Print one readable line per error instead of JSON
+        #[arg(long)]
+        human: bool,
+    },
+
+    /// Check human-review markers in tracked files: every start has an end, none nested
+    #[command(after_help = "\
+Examples:
+  ns check-markers
+  ns check-markers path/to/repo --human
+
+A region runs from a line containing `ns:human-review start` (optionally `: <reason>`)
+through a line containing `ns:human-review end`, in any comment syntax. Checks every file
+`git ls-files` lists under the path. Prints {\"ok\",\"files\",\"errors\":[{\"file\",\"line\",\"message\"}]}.
+Exit codes: 0 balanced, 1 an unbalanced or nested marker, 2 not a directory in a git repo.")]
+    CheckMarkers {
+        /// Directory inside a git repository
+        #[arg(default_value = ".")]
         path: PathBuf,
         /// Print one readable line per error instead of JSON
         #[arg(long)]
@@ -462,6 +485,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 return Ok(ExitCode::from(1));
             }
         }
+        Cmd::CheckMarkers { path, human } => return markers::cli(&path, human),
         Cmd::Install {
             source,
             target,
