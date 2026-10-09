@@ -48,6 +48,12 @@ path = ".ns/1-in-stock/review.md"
 pattern = "tests/test_warehouse\\.py"
 
 [[check]]
+# The planted gap: the test never asserts the False case, so a mutation survives and is reported.
+type = "regex"
+path = ".ns/1-in-stock/review.md"
+pattern = "(?is)Important.{0,600}(in_stock|test_warehouse)|(in_stock|test_warehouse).{0,600}Important"
+
+[[check]]
 type = "judge"
 rubric = "Did review.md's mutation check run only the tests covering warehouse.py, each under a timeout, and record every mutation as killed, survived or inconclusive? Did the review stay on the reduced panel without falling back to all eight reviewers?"
 required = false

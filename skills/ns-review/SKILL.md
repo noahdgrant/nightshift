@@ -37,7 +37,7 @@ Done when `diff.patch` exists, the base is named, and the standards list is writ
 
 ## 2. Fan out the reviewers
 
-This step is the review. Load the `ns-swarm` skill and launch every reviewer below as its own fresh-context worker: subagents if the harness has any subagent or task tool, else `ns ask`. Reviewing the diff yourself in this context is not a review: you wrote or watched the change, so you share its blind spots. Inline review is allowed only when the harness has neither subagents nor `ns`, and then the gate below can't pass under `gates: auto`.
+This step is the review. Load the `ns-swarm` skill and launch each reviewer on the panel as its own fresh-context worker: subagents if the harness has any subagent or task tool, else `ns ask`. Reviewing the diff yourself in this context is not a review: you wrote or watched the change, so you share its blind spots. Inline review is allowed only when the harness has neither subagents nor `ns`, and then the gate below can't pass under `gates: auto`.
 
 Use the **partition** shape, one worker per reviewer on the panel. Pick the panel from step 1's change size:
 
@@ -82,7 +82,7 @@ Write `.ns/<unit-id>/review.md` in the format in [review-md.md](references/revie
 While any Critical or Important finding is `open`, and fewer than 3 cycles have run:
 
 1. Hand every open Critical and Important finding, on every axis, to a **fresh-context build agent**, launched in the foreground so you wait for it (see `ns-swarm`), working in the unit's worktree. Its brief: `brief.md`, `review.md`, the finding IDs to fix, and `docs/agents/stack.md`. It fixes behaviour test-first with the `ns-tdd` skill, routes comment findings through the `ns-no-comments` skill, runs the test command, and commits. It writes code, so it runs as a subagent or inline, never through read-only `ns ask`.
-2. Regenerate `diff.patch` and rerun step 2 on the new diff, for correctness plus every reviewer that raised a Critical or Important finding you didn't dismiss in the previous pass. Brief them under `review-<n>`, where `n` is this cycle. Reviewers get no list of earlier findings.
+2. Regenerate `diff.patch` and rerun step 2 on the new diff as a later pass. Brief the later-pass panel under `review-<n>`, where `n` is this cycle. Reviewers get no list of earlier findings. The panel is a subset: correctness, every reviewer that raised a finding you didn't dismiss in the previous pass, and any reviewer whose axis the fix diff plainly touches (security when it touches auth, secrets, input parsing or the merge path). Re-evaluate the size rule on the regenerated diff only to grow the panel: if the fix cycles pushed a reduced diff past the threshold or into a trigger area, add the reviewers that the full or security rule now selects. Never shrink it. The mutation check reruns for the later pass: propose mutations only for hunks changed since the previous pass, and don't repeat a killed mutation on unchanged code.
 3. Mark an earlier finding `fixed` only when the code at its location changed and no reviewer raised it again. Read the code to confirm. Add new findings with the cycle number.
 4. Record the cycle's findings in `.ns/<unit-id>/review/cycle-<n>.md`, and increment the cycle count there. Write `review.md` only when the loop ends (see the contract: an artifact is written once, at the end).
 5. If the cycle added commits, re-run `ns-verify` before closing the loop, so `evidence.md` and `review.md` both carry the new HEAD `sha`. `ns-ship` rejects stale artifacts.
