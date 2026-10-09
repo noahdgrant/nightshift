@@ -196,6 +196,14 @@ impl Gate {
         }
     }
 
+    /// The feedback of a red verdict not yet followed by a green one.
+    pub fn red_feedback(&self) -> Option<&str> {
+        match &self.verdict {
+            Some(Verdict::Red { feedback, .. }) => Some(feedback),
+            _ => None,
+        }
+    }
+
     fn after_silent_build(&mut self, job: &Job<'_>, log: &dyn Fn(Value)) -> Result<Option<Red>> {
         match &self.verdict {
             Some(Verdict::Red { sha, feedback }) if same_sha(sha, &job.head) => Ok(Some(Red {
@@ -406,6 +414,22 @@ mod tests {
         assert!(r.green());
         assert!(!r.tail.is_empty());
         assert!(r.tail.chars().all(|c| c == 'x'));
+    }
+
+    #[test]
+    fn timed_out_after_uses_minutes_only_for_whole_minutes() {
+        assert_eq!(
+            timed_out_after(Duration::from_secs(60)),
+            "timed out after 1 min"
+        );
+        assert_eq!(
+            timed_out_after(Duration::from_secs(59)),
+            "timed out after 59.0 s"
+        );
+        assert_eq!(
+            timed_out_after(Duration::from_millis(60_500)),
+            "timed out after 60.5 s"
+        );
     }
 
     fn red(timed_out: bool, exit: Option<i32>) -> GateRun {

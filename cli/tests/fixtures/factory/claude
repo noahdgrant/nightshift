@@ -5,7 +5,7 @@
 #   extra:   commit | push | merge | script | any text (lands in the body, e.g. "review")
 #   commit and push append to work.txt, or run $FAKE_CTRL/edit instead when it exists
 #   script runs $FAKE_CTRL/<phase>.sh in the worktree
-#   sleep writes the artifact, then sleeps past any short timeout
+#   sleep writes the artifact last, then execs sleep so a short timeout kills it with no orphan
 set -e
 ctrl="$FAKE_CTRL"
 prompt=$(cat)
@@ -68,4 +68,4 @@ sha=$(git rev-parse --short HEAD)
   echo ---
   echo "$phase said $status $extra"
 } > "$dir/$art.md"
-if [ "$extra" = sleep ]; then sleep 30; fi
+if [ "$extra" = sleep ]; then exec sleep 30; fi
