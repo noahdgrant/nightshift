@@ -68,7 +68,7 @@ flowchart LR
     sf_prin["**ns-principle-* x24**"]
     sf_def[ns-define]
     sf_plan[ns-plan]
-    sf_ts[ns-troubleshoot]
+    sf_ts["**ns-troubleshoot**"]
     sf_auto["**ns-auto**"]
     sf_imp[ns-improve]
     sf_mnt[ns-maintain + ns-maintain-verify]
@@ -134,7 +134,7 @@ flowchart LR
 | **ns-auto** | all | pstack `poteto-mode` (`autonomous-run` playbook), overnight contract, selected principles | User-invoked. Chains the phases in one session, or defers to `ns run`. Never merges |
 | ns-define | define | Matt `grill-with-docs`, `to-spec`; addy `interview-me`, `idea-refine`, `spec-driven-development` | Writes `brief.md` or `SPEC.md` |
 | ns-plan | plan | Matt `to-tickets`, `wayfinder`, `codebase-design` | |
-| ns-troubleshoot | outer loop | Matt `diagnosing-bugs` | Firmware feedback loops: serial, JTAG, HIL, logic analyzer |
+| **ns-troubleshoot** | outer loop | Matt `diagnosing-bugs` | Runs in a worktree and writes no fix: ends with `brief.md` (repro and root cause) routed to `ns-build` or `ns-define`. Firmware loop recipes: native_sim, emulators, serial, HIL, logic analyzer, `git bisect run` on target |
 | ns-improve | meta | Matt `retro`; pstack `reflect`, `automate-me`, `correct`; Cursor `continual-learning`, `workflow-from-chats` | Per-session review plus weekly transcript mining, ending in a PR |
 | ns-maintain, ns-maintain-verify | meta | pstack `maintain-verification-skill`; addy evals | Upstream diffs, evals, verify-skill re-check |
 

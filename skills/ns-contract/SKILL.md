@@ -35,7 +35,7 @@ Each unit gets one worktree and one artifact folder, created by `ns worktree new
 
 ```
 <worktree>/.ns/<unit-id>/
-  brief.md       written by ns-triage or ns-define, read by ns-build
+  brief.md       written by ns-triage, ns-define or ns-troubleshoot, read by ns-build
   build.md       written by ns-build
   evidence.md    written by ns-verify
   review.md      written by ns-review
