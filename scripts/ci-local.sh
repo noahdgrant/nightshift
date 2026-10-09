@@ -75,6 +75,7 @@ if [ "$fast" -eq 0 ]; then
 fi
 step "build ns" cargo build --manifest-path cli/Cargo.toml
 step "ns lint" "$ns" lint skills --human
+step "ns check-markers" "$ns" check-markers --human
 if [ "$fast" -eq 0 ]; then
   step "ns eval --dry-run" eval_dry_run
   step "py-inventory fixture tests" fixture_tests
