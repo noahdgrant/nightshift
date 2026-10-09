@@ -23,7 +23,8 @@ case "$1 $2" in
   "pr view")
     st=$(cat "$d/pr-$3.state" 2>/dev/null || echo OPEN)
     ms=$(cat "$d/pr-$3.merge" 2>/dev/null || echo CLEAN)
-    printf '{"state":"%s","headRefOid":"%s","mergeStateStatus":"%s"}\n' "$st" "$(git rev-parse HEAD 2>/dev/null)" "$ms"
+    hd=$(cat "$d/pr-$3.head" 2>/dev/null || git rev-parse HEAD 2>/dev/null)
+    printf '{"state":"%s","headRefOid":"%s","mergeStateStatus":"%s"}\n' "$st" "$hd" "$ms"
     ;;
   "pr checks")
     [[ " $* " == *" --watch "* ]] && exit 0

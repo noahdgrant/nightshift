@@ -198,11 +198,11 @@ pub fn archive_for(dir: &Path, phase: &str, s: &State) -> Result<Vec<(PathBuf, P
         return Ok(moves);
     };
     archive_file(dir, artifact_of(phase), &mut moves)?;
-    let mut keep = true;
+    let mut cascading = true;
     for p in &PHASES[i + 1..] {
         let file = artifact_of(p);
-        keep = keep && read_art(&dir.join(file)).is_some_and(|a| s.passes(&a));
-        if !keep {
+        cascading = cascading && read_art(&dir.join(file)).is_some_and(|a| s.passes(&a));
+        if !cascading {
             archive_file(dir, file, &mut moves)?;
         }
     }
@@ -242,7 +242,13 @@ pub struct State {
     pub head: String,
     pub has_issue: bool,
     /// The worktree and the ref the unit's diff is taken against; `None` compares shas only.
-    pub diff_base: Option<(PathBuf, String)>,
+    pub diff_base: Option<DiffBase>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiffBase {
+    pub worktree: PathBuf,
+    pub base: String,
 }
 
 impl State {
@@ -252,7 +258,7 @@ impl State {
             || self
                 .diff_base
                 .as_ref()
-                .is_some_and(|(wt, base)| git::same_diff(wt, base, sha, &self.head))
+                .is_some_and(|d| git::same_diff(&d.worktree, &d.base, sha, &self.head))
     }
 
     fn passes(&self, a: &Art) -> bool {
@@ -260,12 +266,7 @@ impl State {
     }
 }
 
-fn read_state(
-    dir: &Path,
-    head: String,
-    has_issue: bool,
-    diff_base: Option<(PathBuf, String)>,
-) -> State {
+fn read_state(dir: &Path, head: String, has_issue: bool, diff_base: Option<DiffBase>) -> State {
     let mut arts = BTreeMap::new();
     for p in PHASES {
         if let Some(a) = read_art(&dir.join(artifact_of(p))) {
@@ -721,7 +722,7 @@ struct Finish {
 
 /// The ref a unit's diff is taken against: `--base`, else `origin/HEAD`'s branch, else the
 /// branch checked out in the main worktree.
-fn diff_base(repo: &Repo, base: Option<&str>) -> String {
+fn resolve_diff_base(repo: &Repo, base: Option<&str>) -> String {
     if let Some(b) = base {
         return b.to_string();
     }
@@ -856,7 +857,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
         issue: args.issue,
         issue_url,
         gates,
-        diff_base: diff_base(&repo, args.base.as_deref()),
+        diff_base: resolve_diff_base(&repo, args.base.as_deref()),
     };
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
@@ -929,12 +930,15 @@ fn dry_run(
         Some(p) => git::run(p, &["rev-parse", "--short", "HEAD"]).unwrap_or_default(),
         None => String::new(),
     };
-    let base = diff_base(repo, args.base.as_deref());
+    let base = resolve_diff_base(repo, args.base.as_deref());
     let state = read_state(
         &wt.join(".ns").join(unit),
         head,
         args.issue.is_some(),
-        existing.clone().map(|p| (p, base.clone())),
+        existing.clone().map(|p| DiffBase {
+            worktree: p,
+            base: base.clone(),
+        }),
     );
     let decision = match &args.from {
         Some(f) => run(
@@ -1033,7 +1037,10 @@ fn drive(
             &ctx.artifacts,
             ctx.head(),
             ctx.issue.is_some(),
-            Some((ctx.worktree.clone(), ctx.diff_base.clone())),
+            Some(DiffBase {
+                worktree: ctx.worktree.clone(),
+                base: ctx.diff_base.clone(),
+            }),
         );
         let decision = forced.take().unwrap_or_else(|| decide(&state));
         let (phase, feedback, why) = match decision {
@@ -1238,8 +1245,9 @@ fn human(reason: impl Into<String>) -> MergeStep {
     MergeStep::Finish(f)
 }
 
-/// `merge.policy = "auto"`: squash-merge this unit's PR when CI is green, review.md passed and
-/// is current at the PR head, and no file or marked region that needs human review changed. The only place ns merges anything.
+/// `merge.policy = "auto"`: squash-merge this unit's PR when CI is green, review.md passed and is
+/// current at the PR head, and no file or marked region that needs human review changed. The only
+/// place ns merges anything.
 fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep> {
     if !state.arts.contains_key("ship") {
         return Ok(human("no pr.md"));
@@ -1280,11 +1288,13 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
     let pr_head = view["headRefOid"].as_str().unwrap_or("");
     if !state.current(pr_head) {
         return Ok(human(format!(
-            "PR head {pr_head} is not the reviewed HEAD {head}; needs a human merge"
+            "PR head {pr_head} is not current with HEAD {head}; needs a human merge"
         )));
     }
     if !state.arts.get("review").is_some_and(|r| state.passes(r)) {
-        return Ok(human("review.md is not pass at HEAD; needs a human merge"));
+        return Ok(human(
+            "review.md is not pass and current; needs a human merge",
+        ));
     }
 
     // Strict required checks: a PR behind its base gets the base merged in, then fresh checks.
@@ -1312,7 +1322,7 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
                 return Ok(conflict());
             }
             ctx.log(json!({"event": "update_branch", "pr": n}));
-            merge_head = v["headRefOid"].as_str().unwrap_or(&head).to_string();
+            merge_head = v["headRefOid"].as_str().unwrap_or(pr_head).to_string();
         }
         _ => {}
     }
@@ -1559,7 +1569,6 @@ mod tests {
         assert_eq!(with(("ship", sf)), "review");
         assert_eq!(with(("ship", art("fail", "abc1234"))), "stuck");
         assert_eq!(with(("ship", art("pass", "abc1234"))), "done");
-        // A pr.md at HEAD over a review of another diff goes back through verify.
         let old = [
             brief.clone(),
             build.clone(),
@@ -1613,6 +1622,141 @@ mod tests {
         archive_for(d, "build", &state(&[])).unwrap();
         assert!(d.join("history/build-1.md").exists());
         assert!(d.join("history/build-2.md").exists());
+    }
+
+    fn g(dir: &Path, args: &[&str]) -> String {
+        let mut a = vec!["-c", "user.name=t", "-c", "user.email=t@t"];
+        a.extend_from_slice(args);
+        git::run(dir, &a).unwrap()
+    }
+
+    fn commit_file(dir: &Path, file: &str, text: &str) -> String {
+        fs::write(dir.join(file), text).unwrap();
+        g(dir, &["add", file]);
+        g(dir, &["commit", "-qm", file]);
+        g(dir, &["rev-parse", "HEAD"])
+    }
+
+    struct Rebased {
+        _tmp: tempfile::TempDir,
+        dir: PathBuf,
+        reviewed: String,
+        rebased: String,
+    }
+
+    fn rebased_unit() -> Rebased {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        g(&dir, &["init", "-q", "-b", "main"]);
+        commit_file(&dir, "README", "hi\n");
+        g(&dir, &["checkout", "-qb", "unit"]);
+        let reviewed = commit_file(&dir, "work.txt", "one\n");
+        g(&dir, &["checkout", "-q", "main"]);
+        commit_file(&dir, "UPSTREAM", "x\n");
+        g(&dir, &["checkout", "-q", "unit"]);
+        g(&dir, &["rebase", "-q", "main"]);
+        let rebased = g(&dir, &["rev-parse", "HEAD"]);
+        Rebased {
+            _tmp: tmp,
+            dir,
+            reviewed,
+            rebased,
+        }
+    }
+
+    fn real_state(r: &Rebased) -> State {
+        State {
+            arts: BTreeMap::new(),
+            head: r.rebased.clone(),
+            has_issue: true,
+            diff_base: Some(DiffBase {
+                worktree: r.dir.clone(),
+                base: "main".into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn current_matches_head_a_rebased_diff_and_nothing_else() {
+        let r = rebased_unit();
+        let s = real_state(&r);
+        assert!(s.current(&r.rebased));
+        assert!(s.current(&r.rebased[..7]));
+        assert!(s.current(&r.reviewed));
+        assert!(!s.current("0000000"));
+        assert!(!s.current(""));
+        let first = g(&r.dir, &["rev-parse", "main"]);
+        assert!(!s.current(&first));
+        let mut no_base = real_state(&r);
+        no_base.diff_base = None;
+        assert!(!no_base.current(&r.reviewed));
+    }
+
+    #[test]
+    fn a_rebase_archives_nothing_downstream() {
+        let r = rebased_unit();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        for f in ["evidence.md", "review.md", "pr.md"] {
+            fs::write(
+                d.join(f),
+                format!("---\nstatus: pass\nsha: {}\npr: 12\n---\n", r.reviewed),
+            )
+            .unwrap();
+        }
+        let moves = archive_for(d, "verify", &real_state(&r)).unwrap();
+        assert_eq!(moves.len(), 1);
+        assert!(!d.join("evidence.md").exists());
+        assert!(d.join("review.md").exists() && d.join("pr.md").exists());
+        let moves = archive_for(d, "review", &real_state(&r)).unwrap();
+        assert_eq!(moves.len(), 1);
+        assert!(d.join("pr.md").exists());
+        fs::write(
+            d.join("review.md"),
+            format!("---\nstatus: pass\nsha: {}\n---\n", r.reviewed),
+        )
+        .unwrap();
+        commit_file(&r.dir, "work.txt", "two\n");
+        let mut changed = real_state(&r);
+        changed.head = g(&r.dir, &["rev-parse", "HEAD"]);
+        archive_for(d, "verify", &changed).unwrap();
+        assert!(!d.join("review.md").exists() && !d.join("pr.md").exists());
+    }
+
+    fn repo_at(dir: &Path) -> Repo {
+        Repo::discover(dir).unwrap()
+    }
+
+    #[test]
+    fn the_diff_base_is_the_override_then_origin_head_then_the_checked_out_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        g(&dir, &["init", "-q", "-b", "dev"]);
+        commit_file(&dir, "README", "hi\n");
+        let repo = repo_at(&dir);
+        assert_eq!(resolve_diff_base(&repo, Some("release")), "release");
+        assert_eq!(resolve_diff_base(&repo, None), "dev");
+        g(&dir, &["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+        g(
+            &dir,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk",
+            ],
+        );
+        assert_eq!(resolve_diff_base(&repo, None), "origin/trunk");
+        assert_eq!(resolve_diff_base(&repo, Some("release")), "release");
+    }
+
+    #[test]
+    fn the_diff_base_falls_back_to_main_on_a_detached_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        g(&dir, &["init", "-q", "-b", "dev"]);
+        commit_file(&dir, "README", "hi\n");
+        g(&dir, &["checkout", "-q", "--detach"]);
+        assert_eq!(resolve_diff_base(&repo_at(&dir), None), "main");
     }
 
     #[test]

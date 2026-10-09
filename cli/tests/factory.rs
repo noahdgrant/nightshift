@@ -528,6 +528,11 @@ fn ci_failure_rebuilds_then_merges_on_the_same_pr() {
 /// main gains an unrelated commit after review. `pass:script` in ship rebases the unit onto
 /// it; `pass:commit` changes the unit's content instead.
 fn rebased_after_review(ship: &[&str]) -> (Env, Value, i32) {
+    rebased_with_pr_head(ship, "git rev-parse HEAD")
+}
+
+/// As `rebased_after_review`, with the PR head set to the sha `pr_head` prints before the rebase.
+fn rebased_with_pr_head(ship: &[&str], pr_head: &str) -> (Env, Value, i32) {
     let e = Env::new();
     e.factory(AUTO);
     e.ctl("pr", "12");
@@ -542,7 +547,8 @@ fn rebased_after_review(ship: &[&str]) -> (Env, Value, i32) {
     e.ctl(
         "ship.sh",
         &format!(
-            "git update-ref refs/heads/main {upstream}\n\
+            "({pr_head}) > \"$FAKE_GH_DIR/pr-12.head\"\n\
+             git update-ref refs/heads/main {upstream}\n\
              git -c user.name=f -c user.email=f@f rebase -q main\n"
         ),
     );
@@ -561,6 +567,32 @@ fn a_rebase_after_review_still_merges() {
     let review = fs::read_to_string(wt.join(format!(".ns/{UNIT}/review.md"))).unwrap();
     let head = git(&wt, &["rev-parse", "--short", "HEAD"]);
     assert!(!review.contains(&format!("sha: {head}")), "{review}");
+}
+
+#[test]
+fn a_pr_head_from_before_the_rebase_merges_at_that_head() {
+    let (e, v, code) = rebased_with_pr_head(&["pass:script"], "git rev-parse HEAD");
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    let old = fs::read_to_string(e.ghd.join("pr-12.head")).unwrap();
+    let wt = e.worktree(UNIT);
+    assert_ne!(old.trim(), git(&wt, &["rev-parse", "HEAD"]));
+    let want = format!("--match-head-commit {}", old.trim());
+    assert!(e.gh_calls().contains(&want), "{}", e.gh_calls());
+}
+
+#[test]
+fn a_pr_head_with_other_content_needs_a_human_merge() {
+    let other = "echo other > other.txt; git add other.txt; \
+                 git -c user.name=f -c user.email=f@f commit -qm other; \
+                 git rev-parse HEAD; git reset -q --hard HEAD~1";
+    let (e, v, code) = rebased_with_pr_head(&["pass:script"], other);
+    assert_eq!((code, &v["outcome"]), (0, &"done".into()), "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("is not current with HEAD") && reason.ends_with("needs a human merge"),
+        "{v}"
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
 }
 
 #[test]
