@@ -57,7 +57,7 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 - Raised by: correctness (provider-a), security (provider-b). Cross-provider.
 - Finding: <one or two lines>
 - Evidence: <trace, quote, or command + output>
-- Status: open | fixed (cycle 2, <commit>) | dismissed: <reason> | deferred: #<follow-up issue>
+- Status: open | fixed (cycle 2, <commit>) | dismissed: <reason> | deferred: #<follow-up issue> (an Important in pre-existing code only)
 
 ## Important
 ### I1. ...
@@ -77,10 +77,10 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 - <reviewer slice that produced no result, and why>
 ```
 
-Status follows the Gate in `SKILL.md`. For any `blocked` status, the first body line, before the title, is the one-sentence reason `ns watch` quotes. For open Criticals it names them:
+Status follows the Gate in `SKILL.md`. For any `blocked` status, the first body line, before the title, is the one-sentence reason `ns watch` quotes. After the cycle limit it names the open Criticals and the open Importants in changed code, Criticals first:
 
 ```markdown
-Open Critical after 3 fix cycles: C1, C3.
+Open after 3 fix cycles: C1, I2, I4.
 
 Options: fix by hand on the unit's branch then delete `.ns/<unit>/review.md` so `ns run` reviews again, split the issue, or route it to `ns-define`.
 

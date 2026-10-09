@@ -1,6 +1,6 @@
 ---
 name: ns-review
-description: REVIEW phase. Runs a local, multi-provider review of a unit's diff before push, writes review.md with Critical/Important/Suggestion findings, and loops fixes until no Critical stays open. Use after verify, before shipping, or when asked to review a branch or diff.
+description: REVIEW phase. Runs a local, multi-provider review of a unit's diff before push, writes review.md with Critical/Important/Suggestion findings, and loops fixes until no Critical, and no Important in changed code, stays open. Use after verify, before shipping, or when asked to review a branch or diff.
 metadata:
   upstream:
     - addyosmani/agent-skills@1401c8b8030e:skills/code-review-and-quality
@@ -91,12 +91,17 @@ Architecture, readability and comments findings are fixed like correctness ones:
 
 A cycle where reviewers raised substantive findings and you dismissed all of them is a warning sign: you are validating, not reviewing. Say so in `review.md`.
 
-After 3 cycles, stop the loop. An open Critical finding then needs a human decision, so another build attempt would only repeat the loop: `review.md` is `blocked`. The body's first line names the open Criticals (format in [review-md.md](references/review-md.md)). Below it, list the options:
+After 3 cycles, stop the loop. Sort each open finding by where it sits:
+
+- **Changed code**: the diff caused it. Its location is a line the diff adds, or the defect comes from a line the diff removes or a behaviour it changes (a dropped guard, a broken caller), or it is something the diff leaves out (a missing test, an unmet acceptance criterion).
+- **Pre-existing code**: the defect was there before the diff, unchanged by it. The unit didn't cause it, so it can't hold the unit back.
+
+An open Critical anywhere, or an open Important in changed code, means the unit is below the bar and three cycles couldn't lift it. Merging it would compound the debt, and another build attempt would only repeat the loop, so it needs a human decision: `review.md` is `blocked`. The body's first line names every such finding (format in [review-md.md](references/review-md.md)). Below it, list the options:
 - fix it by hand on the unit's branch, then delete `.ns/<unit>/review.md` so `ns run` reviews again (it stops on any `blocked` review.md until then)
 - split the issue into smaller units
 - route it to `ns-define` when the brief itself is wrong
 
-Open Important findings left after the third cycle become **follow-ups**, so they're tracked and don't stop the unit. File each one in the tracker per `docs/agents/issue-tracker.md`:
+Open Important findings in pre-existing code become **follow-ups**, so they're tracked and don't stop the unit. File each one in the tracker per `docs/agents/issue-tracker.md`:
 - the finding as an issue body, with the evidence
 - `type:` and `area:` labels
 - a link to the unit's issue
@@ -105,8 +110,8 @@ Then set the finding's status in `review.md` to `deferred: #<n>`. Suggestions st
 
 ## Gate
 
-- `pass`: no open Critical finding, every reviewer slice on the panel has a result, and every Important finding is `fixed`, `dismissed` with a reason, or `deferred` to a follow-up issue.
-- `fail`: the review ended on something a build attempt can fix, and no Critical is open after the third cycle. For example, the fix cycles' commits leave the test command or the `ns-verify` re-run failing. An open Critical after the third cycle is always `blocked`, even when another failure exists. The body's first line says what build must fix; `ns run` sends the body to build as feedback.
-- `blocked`: a human decision is needed: an open Critical finding remains after the third fix cycle (the "After 3 cycles" paragraph above), a reviewer slice could not run, the diff is empty, `brief.md` is missing, or (under `gates: auto`) the reviewers ran inline rather than in fresh contexts. The body's first line is the one-sentence reason `ns watch` quotes; [review-md.md](references/review-md.md) has the format. Record the launch mode in `review.md` (`launch: subagents | ns ask | inline`).
+- `pass`: no open Critical finding, every reviewer slice on the panel has a result, every Important finding in changed code is `fixed` or `dismissed` with a reason, and every Important finding in pre-existing code is one of those or `deferred` to a follow-up issue.
+- `fail`: the review ended on something a build attempt can fix, and nothing is left that makes it `blocked` after the third cycle. For example, the fix cycles' commits leave the test command or the `ns-verify` re-run failing. An open Critical, or an open Important in changed code, after the third cycle is always `blocked`, even when another failure exists. The body's first line says what build must fix; `ns run` sends the body to build as feedback.
+- `blocked`: a human decision is needed: an open Critical, or an open Important in changed code, remains after the third fix cycle (the "After 3 cycles" paragraph above), a reviewer slice could not run, the diff is empty, `brief.md` is missing, or (under `gates: auto`) the reviewers ran inline rather than in fresh contexts. The body's first line is the one-sentence reason `ns watch` quotes; [review-md.md](references/review-md.md) has the format. Record the launch mode in `review.md` (`launch: subagents | ns ask | inline`).
 
 Under `gates: stop`, report `review.md` and wait. Under `gates: auto`, continue on `pass`. Next phase: load the `ns-ship` skill.

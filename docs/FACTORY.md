@@ -131,7 +131,7 @@ An artifact is current when its frontmatter `sha` matches `git rev-parse --short
 | no `evidence`, or evidence `sha` ≠ HEAD | verify |
 | `evidence` fail | build, with its body as `{feedback}` |
 | no `review`, or review `sha` ≠ HEAD | review |
-| `review` fail (not an open Critical; that is `blocked`) | build, with its body as `{feedback}` |
+| `review` fail (not an open Critical or an open Important in changed code after the last fix cycle; that is `blocked`) | build, with its body as `{feedback}` |
 | no `pr`, or `pr` pass with `sha` ≠ HEAD | ship |
 | `pr` fail | the phase its body names first (verify or review), with its body as `{feedback}`, else stuck |
 | a phase out of attempts | stuck |
@@ -223,7 +223,7 @@ ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]
 2. Drop issues whose author is outside the team (see Trust), issues whose first-line `Blocked by: #a, #b` names any open issue, and issues that already have an open PR whose body says `Closes #n`.
 3. Sort by the first matching `priority` label, then the first matching `order` label, then issue number. An issue with no `priority` label sorts after the last one.
 4. Take the first. Swap `ready_label` for `in_progress_label`. `git fetch origin`, then `ns run --issue <n> --base origin/<default>` (in process, sharing the budget).
-5. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`. On `stuck`, or a `done` that needs a human merge (files that need human review, no CI), swap to `stuck_label` and comment the reason and the last artifact path. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
+5. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`. On `stuck`, or a `done` that needs a human merge (files that need human review, no CI), swap to `stuck_label` and comment the reason and the last artifact path. When the last artifact is a `review.md`, the comment also lists its open Critical and Important findings, each with its title and location. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
 6. On `paused`, keep `in_progress_label` and sleep until the reset time (30 minutes when unknown, then check again), then resume the same unit. If the reset is at or past `--until`, put `ready_label` back and stop cleanly.
 7. Repeat until the queue is empty, `--until` passes (no new unit starts after it), `max_units` is reached, or the budget is spent.
 

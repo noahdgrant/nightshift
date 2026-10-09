@@ -1242,7 +1242,20 @@ fn drive(
         );
         let decision = forced.take().unwrap_or_else(|| decide(&state));
         let (phase, feedback, why) = match decision {
-            Decision::Stuck(r) => return Ok(finish(Outcome::Stuck, r, None)),
+            Decision::Stuck(r) => {
+                if last_artifact.is_none() {
+                    *last_artifact = PHASES
+                        .iter()
+                        .find(|p| state.arts.get(**p).is_some_and(|a| a.status == "blocked"))
+                        .map(|p| {
+                            ctx.artifacts
+                                .join(artifact_of(p))
+                                .to_string_lossy()
+                                .into_owned()
+                        });
+                }
+                return Ok(finish(Outcome::Stuck, r, None));
+            }
             Decision::Done => {
                 if !fac.merge.auto() {
                     return Ok(finish(Outcome::Done, "pr.md passed", Some("ship")));

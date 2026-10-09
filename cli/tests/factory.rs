@@ -2156,6 +2156,51 @@ fn a_blocked_review_stops_at_once_and_the_comment_quotes_it() {
 }
 
 #[test]
+fn a_blocked_review_comment_lists_its_open_findings() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["blocked:Open after 3 fix cycles: C1, I2."]);
+    e.ctl(
+        "review.body",
+        "\n## Critical\n### C1. cancel_all drops every SKU\n- Location: `src/w.py:119`\n- Status: open\n\
+         \n## Important\n### I1. Fixed thing\n- Location: `src/w.py:3`\n- Status: fixed (cycle 1, abc)\n\
+         ### I2. No test for UnknownItem\n- Location: `src/w.py:118`\n- Status: open. The fix did not land.\n\
+         ### I3. Old code smell\n- Location: `src/old.py:9`\n- Status: deferred: #77\n\
+         \n## Suggestion\n### S1. Rename x\n- Location: `src/w.py:5`\n- Status: open\n",
+    );
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "stuck");
+    let calls = e.gh_calls();
+    let comment = calls.split("issue comment 2").nth(1).expect("comment");
+    assert!(
+        comment.contains(
+            "Open findings in `review.md`:\n```text\nC1. cancel_all drops every SKU (src/w.py:119)\nI2. No test for UnknownItem (src/w.py:118)\n```"
+        ),
+        "{comment}"
+    );
+    for gone in ["I1.", "I3.", "S1."] {
+        assert!(!comment.contains(gone), "{gone} in {comment}");
+    }
+}
+
+#[test]
+fn a_run_stopped_by_an_earlier_blocked_review_names_it() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["blocked:Open after 3 fix cycles: I2."]);
+    let first = e.run(&["run", "--issue", "7"], 1);
+    let again = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(e.calls(), ["triage", "build", "verify", "review"]);
+    assert_eq!(again["outcome"], "stuck");
+    assert_eq!(again["artifact"], first["artifact"]);
+    assert!(
+        again["artifact"].as_str().unwrap().ends_with("/review.md"),
+        "{again}"
+    );
+}
+
+#[test]
 fn a_failed_review_goes_back_to_build() {
     let e = Env::new();
     e.queue("build", &["pass:commit", "pass:commit"]);
