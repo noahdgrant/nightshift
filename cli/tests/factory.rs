@@ -1,8 +1,11 @@
 //! End-to-end tests for `ns run` and `ns watch` with a fake harness (`claude`) and a fake `gh`.
 
 use std::fs;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
+use std::process::{Child, Command as StdCommand, Stdio};
+use std::sync::mpsc;
+use std::thread;
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -488,13 +491,14 @@ fn runner_locks_are_held_for_the_phase_and_released_on_failure() {
 }
 
 #[test]
-fn a_runner_lock_left_by_a_dead_run_is_recovered() {
+fn leftover_content_in_a_free_runner_lock_is_overwritten() {
     let e = Env::new();
     let locks = e.base.join("locks");
     let lock = locks.join("bench-1.lock");
     e.bench(&locks);
     fs::create_dir_all(&locks).unwrap();
-    fs::write(&lock, "{\"pid\":2147483000,\"unit\":\"other\"}\n").unwrap();
+    let stale = serde_json::json!({"pid": 2147483000, "unit": "x".repeat(200)});
+    fs::write(&lock, format!("{stale}\n")).unwrap();
     e.queue("build", &["pass:commit"]);
     e.queue("verify", &["pass:script"]);
     e.ctl(
@@ -509,60 +513,162 @@ fn a_runner_lock_left_by_a_dead_run_is_recovered() {
     assert!(lock_is_free(&lock));
 }
 
+struct Killed(Child);
+
+impl Drop for Killed {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+enum Event {
+    Entered,
+    Exited(String),
+}
+
+/// A run whose verify phase holds its lock until `release` is called.
+struct Blocked {
+    run: Killed,
+    go: PathBuf,
+}
+
+impl Blocked {
+    /// Returns once the run's verify phase is inside the harness, or panics with its stderr if
+    /// the run ended first.
+    fn start(e: &Env, before: &str, after: &str) -> Blocked {
+        let entered = e.ctrl.join("entered");
+        let go = e.ctrl.join("go");
+        for f in [&entered, &go] {
+            assert!(StdCommand::new("mkfifo").arg(f).status().unwrap().success());
+        }
+        e.queue("verify", &["pass:script"]);
+        e.ctl(
+            "verify.sh",
+            &format!("{before}; echo in > {entered:?}; cat {go:?} > /dev/null; {after}"),
+        );
+        let mut child = e
+            .ns_std()
+            .args(["run", "--issue", "7"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stderr = child.stderr.take().unwrap();
+        let run = Killed(child);
+        let (tx, rx) = mpsc::channel();
+        let tx_err = tx.clone();
+        thread::spawn(move || {
+            let mut text = String::new();
+            let _ = stderr.read_to_string(&mut text);
+            let _ = tx_err.send(Event::Exited(text));
+        });
+        thread::spawn(move || {
+            let _ = fs::read_to_string(&entered);
+            let _ = tx.send(Event::Entered);
+        });
+        match rx.recv().unwrap() {
+            Event::Entered => Blocked { run, go },
+            Event::Exited(text) => panic!("the run ended before its verify phase began:\n{text}"),
+        }
+    }
+
+    fn release(&self) {
+        fs::write(&self.go, "go\n").unwrap();
+    }
+}
+
+#[test]
+fn a_runner_lock_held_by_a_killed_run_is_recovered() {
+    let a = Env::new();
+    let b = Env::new();
+    let locks = a.base.join("locks");
+    let lock = locks.join("bench-1.lock");
+    a.bench(&locks);
+    b.bench(&locks);
+    let mut held = Blocked::start(&a, "true", "true");
+    assert!(!lock_is_free(&lock));
+    held.run.0.kill().unwrap();
+    held.run.0.wait().unwrap();
+    held.release();
+    assert!(lock_is_free(&lock));
+
+    b.queue("build", &["pass:commit"]);
+    b.queue("verify", &["pass:script"]);
+    b.ctl(
+        "verify.sh",
+        &format!("cat {:?} > {:?}", lock, b.ctrl.join("seen")),
+    );
+    let v = b.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    let holder: Value =
+        serde_json::from_str(&fs::read_to_string(b.ctrl.join("seen")).unwrap()).unwrap();
+    assert_ne!(holder["pid"].as_u64().unwrap(), u64::from(held.run.0.id()));
+    assert!(lock_is_free(&lock));
+}
+
+#[test]
+fn a_runner_with_two_locks_holds_both_for_the_phase() {
+    let e = Env::new();
+    let locks = e.base.join("locks");
+    e.bench(&locks);
+    e.runner(
+        "bench",
+        "kind = \"bench\"\nlocks = [\"b-lock\", \"a-lock\"]\n",
+    );
+    e.queue("build", &["pass:commit"]);
+    e.queue("verify", &["pass:script"]);
+    let seen = e.ctrl.join("seen");
+    e.ctl(
+        "verify.sh",
+        &format!(
+            "for n in a-lock b-lock; do flock -n {l:?}/$n.lock true && echo free >> {s:?} || echo held >> {s:?}; done",
+            l = locks,
+            s = seen,
+        ),
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    assert_eq!(fs::read_to_string(&seen).unwrap(), "held\nheld\n");
+    assert!(lock_is_free(&locks.join("a-lock.lock")));
+    assert!(lock_is_free(&locks.join("b-lock.lock")));
+}
+
 #[test]
 fn two_runs_needing_one_lock_serialise() {
-    use std::io::{BufRead, BufReader};
-    use std::process::Stdio;
-
     let a = Env::new();
     let b = Env::new();
     let locks = a.base.join("locks");
     let order = a.base.join("order");
     a.bench(&locks);
     b.bench(&locks);
-    let entered = a.ctrl.join("entered");
-    let go = a.ctrl.join("go");
-    for f in [&entered, &go] {
-        assert!(StdCommand::new("mkfifo").arg(f).status().unwrap().success());
-    }
-    a.queue("verify", &["pass:script"]);
-    a.ctl(
-        "verify.sh",
-        &format!(
-            "echo A-in >> {o:?}; echo in > {entered:?}; cat {go:?} > /dev/null; echo A-out >> {o:?}",
-            o = order
-        ),
+    let held = Blocked::start(
+        &a,
+        &format!("echo A-in >> {order:?}"),
+        &format!("echo A-out >> {order:?}"),
     );
     b.queue("verify", &["pass:script"]);
     b.ctl("verify.sh", &format!("echo B >> {order:?}"));
 
-    let mut run_a = a
-        .ns_std()
-        .args(["run", "--issue", "7"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    // Returns once A's verify phase has opened the FIFO, so A holds bench-1 from here on.
-    fs::read_to_string(&entered).unwrap();
-    let mut run_b = b
-        .ns_std()
-        .args(["run", "--issue", "7"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut b_err = BufReader::new(run_b.stderr.take().unwrap()).lines();
+    let mut run_b = Killed(
+        b.ns_std()
+            .args(["run", "--issue", "7"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut b_err = BufReader::new(run_b.0.stderr.take().unwrap()).lines();
     let waited = b_err
         .by_ref()
         .map_while(Result::ok)
         .any(|l| l.contains("verify waits for lock bench-1"));
     let calls_while_waiting = b.calls();
-    fs::write(&go, "go\n").unwrap();
-    // Keep reading B's stderr, or its next eprintln! fails on a closed pipe.
+    held.release();
     b_err.for_each(drop);
-    assert!(run_a.wait().unwrap().success());
-    assert!(run_b.wait().unwrap().success());
+    assert!(run_b.0.wait().unwrap().success());
+    let mut a_run = held.run;
+    assert!(a_run.0.wait().unwrap().success());
 
     assert!(waited, "B never waited for bench-1");
     assert_eq!(calls_while_waiting, ["triage", "build"]);

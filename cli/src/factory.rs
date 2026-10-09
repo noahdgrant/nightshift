@@ -270,18 +270,13 @@ impl Factory {
         }
     }
 
-    /// The locks a phase's runner names, sorted and without duplicates, so every run takes
-    /// them in the same order.
+    /// The locks a phase's runner names.
     pub fn locks(&self, p: &PhaseSettings) -> Vec<String> {
-        let mut out: Vec<String> = p
-            .runner
+        p.runner
             .as_ref()
             .and_then(|r| self.runners.get(r))
             .map(|r| r.locks.clone())
-            .unwrap_or_default();
-        out.sort();
-        out.dedup();
-        out
+            .unwrap_or_default()
     }
 
     pub fn subscription(&self) -> bool {
@@ -349,11 +344,19 @@ impl Factory {
                 ));
             }
         }
+        let mut by_folded: BTreeMap<String, &str> = BTreeMap::new();
         for (name, r) in &self.runners {
             for l in &r.locks {
                 if !valid_lock_name(l) {
                     out.push(format!(
                         "runners/{name}.toml: lock {l:?} must be letters, digits, '.', '_' or '-', not starting with '.'"
+                    ));
+                    continue;
+                }
+                let first = by_folded.entry(l.to_lowercase()).or_insert(l);
+                if *first != l {
+                    out.push(format!(
+                        "runners/{name}.toml: lock {l:?} differs from {first:?} only by case, and one file serves both on a case-insensitive filesystem"
                     ));
                 }
             }
@@ -798,8 +801,25 @@ ci_timeout_minutes = 30
         let p = f.problems(None);
         assert_eq!(p.len(), 2, "{p:?}");
         assert!(p[0].contains("\"../x\""), "{p:?}");
-        assert_eq!(f.locks(&f.phase("verify")), ["../x", "a/b", "bench-1"]);
         assert!(f.locks(&f.phase("build")).is_empty());
+    }
+
+    #[test]
+    fn lock_names_that_differ_only_by_case_are_a_problem() {
+        let mut f = parse("").unwrap();
+        for (runner, lock) in [("a", "Bench"), ("b", "bench"), ("c", "Bench")] {
+            f.runners.insert(
+                runner.into(),
+                Runner {
+                    kind: RunnerKind::Local,
+                    locks: vec![lock.into()],
+                },
+            );
+        }
+        let p = f.problems(None);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("runners/b.toml"), "{p:?}");
+        assert!(p[0].contains("only by case"), "{p:?}");
     }
 
     #[test]

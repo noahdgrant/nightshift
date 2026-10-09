@@ -596,7 +596,7 @@ impl Drop for Lock {
 pub struct RunnerLocks(Vec<File>);
 
 impl RunnerLocks {
-    /// Take `names` in the order given (sorted by the caller, so two runs can't deadlock).
+    /// Take `names` sorted and without duplicates, so two runs can't deadlock.
     /// `waiting` hears each lock this run has to wait for, and who holds it.
     pub fn acquire(
         dir: &Path,
@@ -604,11 +604,14 @@ impl RunnerLocks {
         unit: &str,
         mut waiting: impl FnMut(&str, &Value),
     ) -> Result<RunnerLocks> {
+        let mut names = names.to_vec();
+        names.sort();
+        names.dedup();
         if !names.is_empty() {
             fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
         }
         let mut held = Vec::new();
-        for name in names {
+        for name in &names {
             let path = dir.join(format!("{name}.lock"));
             let mut f = OpenOptions::new()
                 .read(true)
@@ -1215,13 +1218,6 @@ fn drive(
                 ));
             }
         }
-        let held = RunnerLocks::acquire(&ctx.lock_dir, &fac.locks(&p), &ctx.unit, |lock, by| {
-            eprintln!(
-                "ns run: {} {phase} waits for lock {lock} (held by pid {}, unit {})",
-                ctx.unit, by["pid"], by["unit"]
-            );
-            ctx.log(json!({"event": "lock_wait", "phase": phase, "lock": lock, "held_by": by}));
-        })?;
         let art_path = ctx.artifacts.join(artifact_of(phase));
         let moves = archive_for(&ctx.artifacts, phase, &state)?;
         let prompt = ctx.prompt(&p, attempt, &feedback)?;
@@ -1238,16 +1234,27 @@ fn drive(
             ("NS_WORKTREE", ctx.worktree.to_string_lossy().into_owned()),
         ];
         eprintln!("ns run: {} {phase} attempt {attempt} ({why})", ctx.unit);
-        let r = run_harness(
-            &commands[phase],
-            &prompt,
-            &ctx.worktree,
-            &env,
-            Duration::from_secs(p.timeout_minutes * 60),
-            &transcript,
-            subscription,
-        );
-        drop(held);
+        let r = {
+            let _held =
+                RunnerLocks::acquire(&ctx.lock_dir, &fac.locks(&p), &ctx.unit, |lock, by| {
+                    eprintln!(
+                        "ns run: {} {phase} waits for lock {lock} (held by pid {}, unit {})",
+                        ctx.unit, by["pid"], by["unit"]
+                    );
+                    ctx.log(
+                        json!({"event": "lock_wait", "phase": phase, "lock": lock, "held_by": by}),
+                    );
+                })?;
+            run_harness(
+                &commands[phase],
+                &prompt,
+                &ctx.worktree,
+                &env,
+                Duration::from_secs(p.timeout_minutes * 60),
+                &transcript,
+                subscription,
+            )
+        };
         let r = r?;
         let t = ClaudeStreamJson.parse(&r.stdout);
         let cost = t.cost_usd.unwrap_or(0.0);
@@ -1666,6 +1673,17 @@ fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
 mod tests {
     use super::*;
     use crate::testutil::{commit_file, g, rebased_unit, Rebased};
+
+    #[test]
+    fn acquire_takes_a_repeated_name_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let names: Vec<String> = ["b", "a", "b"].map(String::from).into();
+        let held = RunnerLocks::acquire(dir.path(), &names, "u", |lock, _| {
+            panic!("waited on {lock}")
+        })
+        .unwrap();
+        assert_eq!(held.0.len(), 2);
+    }
 
     #[test]
     fn marked_regions_errors_when_the_merge_base_is_unknown() {

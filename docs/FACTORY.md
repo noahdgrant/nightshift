@@ -86,7 +86,7 @@ kind = "bench"                     # local (default) | bench
 locks = ["bench-1", "zephyr-workspace"]
 ```
 
-`kind` is a label for now: `bench` runs on this machine like `local`, and no runner is remote. A lock name is letters, digits, `.`, `_` and `-`, not starting with `.`. The runner's name is the file name, and a phase picks it with `runner = "<name>"`. `ns factory validate` reports a runner file that doesn't parse, an unknown key or `kind`, a bad lock name, and a phase `runner` with no file. `ns run` refuses all of them with exit 2.
+`kind` is a label for now: `bench` runs on this machine like `local`, and no runner is remote. A lock name is letters, digits, `.`, `_` and `-`, not starting with `.`, and no two lock names across runners may differ only by case, since a case-insensitive filesystem gives them one file. The runner's name is the file name, and a phase picks it with `runner = "<name>"`. `ns factory validate` reports a runner file that doesn't parse, an unknown key or `kind`, a bad lock name, two lock names that differ only by case, and a phase `runner` with no file. `ns run` refuses all of them with exit 2.
 
 Before a phase with a runner starts, `ns run` takes every lock it names, sorted by name so two runs can't deadlock, and holds them until the phase's harness exits, whatever the outcome. A phase with no runner takes no locks.
 
