@@ -73,13 +73,19 @@ pub struct Limit {
     pub reset_at: Option<i64>,
 }
 
-/// An error `result` event whose text mentions a usage limit, rate limit, or "limit reached".
+/// A usage-limit stop: an error `result` event that claude marks structurally
+/// (`api_error` names a limit, or `api_error_status` is 429), or whose text names one.
+/// The reset time comes from any event's `rate_limit_info.resetsAt`, else from the text.
 pub fn usage_limit(stdout: &str, now: i64) -> Option<Limit> {
     let mut found = None;
+    let mut resets_at: Option<i64> = None;
     for line in stdout.lines() {
         let Ok(ev) = serde_json::from_str::<Value>(line.trim()) else {
             continue;
         };
+        if let Some(t) = find_resets_at(&ev) {
+            resets_at = Some(t);
+        }
         if ev.get("type").and_then(Value::as_str) != Some("result") {
             continue;
         }
@@ -92,18 +98,43 @@ pub fn usage_limit(stdout: &str, now: i64) -> Option<Limit> {
             .or_else(|| ev.get("error").and_then(Value::as_str))
             .unwrap_or("")
             .to_string();
+        let api_error = ev.get("api_error").and_then(Value::as_str).unwrap_or("");
+        let structured = api_error.contains("limit")
+            || ev.get("api_error_status").and_then(Value::as_i64) == Some(429);
         let lower = text.to_lowercase();
-        if ["usage limit", "rate limit", "limit reached"]
-            .iter()
-            .any(|k| lower.contains(k))
-        {
+        let worded = [
+            "usage limit",
+            "rate limit",
+            "limit reached",
+            "session limit",
+            "hit your limit",
+            "5-hour limit",
+            "weekly limit",
+        ]
+        .iter()
+        .any(|k| lower.contains(k));
+        if structured || worded {
             found = Some(Limit {
-                reset_at: reset_time(&text, now),
+                reset_at: resets_at.or_else(|| reset_time(&text, now)),
                 message: text,
             });
         }
     }
     found
+}
+
+/// The first `resetsAt` (unix seconds) anywhere in an event.
+fn find_resets_at(v: &Value) -> Option<i64> {
+    match v {
+        Value::Object(m) => {
+            if let Some(t) = m.get("resetsAt").and_then(Value::as_i64) {
+                return Some(t);
+            }
+            m.values().find_map(find_resets_at)
+        }
+        Value::Array(a) => a.iter().find_map(find_resets_at),
+        _ => None,
+    }
 }
 
 /// `...|1760000000` (unix seconds), or `resets 3am` / `resets at 10:30pm` in local time.
@@ -128,6 +159,22 @@ fn reset_time(text: &str, now: i64) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_a_session_limit_from_structured_fields() {
+        let out = concat!(
+            "{\"type\":\"assistant\",\"error\":\"rate_limit\",\"api_error_params\":{\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":1791529200,\"rateLimitType\":\"five_hour\"}}}\n",
+            "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"api_error_status\":429,\"api_error\":\"usage_limit_reached\",\"result\":\"You've hit your session limit \\u00b7 resets 3am (America/Toronto)\"}\n",
+        );
+        let l = usage_limit(out, 1_791_500_000).unwrap();
+        assert_eq!(l.reset_at, Some(1_791_529_200));
+        assert!(l.message.contains("session limit"));
+        let bare =
+            "{\"type\":\"result\",\"is_error\":true,\"api_error_status\":429,\"result\":\"\"}";
+        assert!(usage_limit(bare, 0).is_some());
+        let other = "{\"type\":\"result\",\"is_error\":true,\"api_error_status\":500,\"result\":\"overloaded\"}";
+        assert!(usage_limit(other, 0).is_none());
+    }
 
     #[test]
     fn detects_limits_and_reset_times() {

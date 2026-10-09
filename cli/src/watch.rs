@@ -352,6 +352,8 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     }
 
     let mut units: Vec<Value> = Vec::new();
+    // Consecutive units whose every attempt failed instantly: the harness, not the work.
+    let mut harness_fails = 0u32;
     let mut started = 0u32;
     let mut finished: BTreeSet<u64> = BTreeSet::new();
     let stopped: String = 'outer: loop {
@@ -395,6 +397,9 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 "pr": r.json["pr"],
                 "cost_usd": r.cost_usd,
             });
+            if !(r.outcome == Outcome::Stuck && harness_failing(&r.json)) {
+                harness_fails = 0;
+            }
             match r.outcome {
                 Outcome::Merged => {
                     let status = set_status(&repo.root, &q, issue.number, None);
@@ -408,6 +413,15 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 }
                 Outcome::Done if !r.needs_human => {
                     set_status(&repo.root, &q, issue.number, Some(&q.done_label))?;
+                }
+                Outcome::Stuck if harness_failing(&r.json) => {
+                    set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
+                    harness_fails += 1;
+                    rec["outcome"] = json!("harness_failing");
+                    if harness_fails >= HARNESS_FAIL_LIMIT {
+                        units.push(rec);
+                        break 'outer "harness failing".into();
+                    }
                 }
                 Outcome::Done | Outcome::Stuck => {
                     let status = set_status(&repo.root, &q, issue.number, Some(&q.stuck_label));
@@ -475,6 +489,24 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         }))?
     );
     Ok(ExitCode::SUCCESS)
+}
+
+/// Two units in a row that fail like this stop the night instead of draining the queue.
+const HARNESS_FAIL_LIMIT: u32 = 2;
+
+/// Every attempt exited non-zero within seconds, having produced no output tokens:
+/// the harness itself is failing (an unrecognised usage limit, an auth or network
+/// error), not the work.
+fn harness_failing(run: &Value) -> bool {
+    let Some(phases) = run["phases"].as_array() else {
+        return false;
+    };
+    !phases.is_empty()
+        && phases.iter().all(|p| {
+            p["exit"].as_i64().is_some_and(|c| c != 0)
+                && p["output_tokens"].as_u64().unwrap_or(0) == 0
+                && p["wall_s"].as_f64().unwrap_or(f64::MAX) < 30.0
+        })
 }
 
 #[cfg(test)]

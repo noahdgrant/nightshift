@@ -1,7 +1,7 @@
 #!/bin/bash
 # Fake harness for ns run tests. Reads the phase from the prompt, pops the next action from
 # $FAKE_CTRL/<phase> (default: pass) and writes that phase's artifact.
-#   action = status[:extra]; status: pass | fail | blocked | none | limit
+#   action = status[:extra]; status: pass | fail | blocked | none | limit | session | crash
 #   extra:   commit | push | merge | script | any text (lands in the body, e.g. "review")
 #   commit and push append to work.txt, or run $FAKE_CTRL/edit instead when it exists
 #   script runs $FAKE_CTRL/<phase>.sh in the worktree
@@ -25,6 +25,15 @@ fi
 status=${action%%:*}
 extra=""
 [ "$status" != "$action" ] && extra=${action#*:}
+if [ "$status" = session ]; then
+  # The shape claude -p emits for a subscription session limit: structured fields, no "usage limit" text.
+  printf '{"type":"assistant","error":"rate_limit","api_error_params":{"rate_limit_info":{"status":"rejected","resetsAt":%s}}}\n' "$(cat "$ctrl/reset")"
+  printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"api_error":"usage_limit_reached","result":"You have hit your session limit - resets 3am"}\n'
+  exit 1
+fi
+if [ "$status" = crash ]; then
+  exit 1
+fi
 if [ "$status" = limit ]; then
   printf '{"type":"result","is_error":true,"result":"Claude AI usage limit reached|%s"}\n' "$(cat "$ctrl/reset")"
   exit 1

@@ -2333,3 +2333,45 @@ fn a_set_gitlab_host_wins_over_the_configured_one() {
         "{seen}"
     );
 }
+
+#[test]
+fn watch_pauses_on_a_session_limit_reported_only_in_structured_fields() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("reset", &(NOW + 3600).to_string());
+    e.queue("build", &["session", "pass:commit"]);
+    let v = e.run(&["watch", "--once", "--until", "06:30"], 0);
+    let units = v["units"].as_array().unwrap();
+    assert_eq!(units[0]["outcome"], "paused", "{v}");
+    assert_eq!(units[0]["reset_at"], "2026-10-09T01:00:00Z");
+    assert_eq!(units[1]["outcome"], "done");
+}
+
+#[test]
+fn watch_stops_the_night_when_the_harness_keeps_failing_instantly() {
+    let e = Env::new();
+    for n in [2, 3, 4] {
+        e.ready(n, &format!("Fix {n}"), &["type:fix"], "");
+    }
+    e.queue("triage", &["crash"; 6]);
+    let v = e.run(&["watch"], 0);
+    assert_eq!(v["stopped"], "harness failing", "{v}");
+    let units = v["units"].as_array().unwrap();
+    assert_eq!(units.len(), 2, "{v}");
+    assert!(units.iter().all(|u| u["outcome"] == "harness_failing"));
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains(
+            "issue edit 2 --remove-label status:in-progress --add-label status:ready-for-agent"
+        ),
+        "{calls}"
+    );
+    assert!(
+        calls.contains(
+            "issue edit 3 --remove-label status:in-progress --add-label status:ready-for-agent"
+        ),
+        "{calls}"
+    );
+    assert!(!calls.contains("issue edit 4"), "{calls}");
+    assert!(!calls.contains("got stuck"), "{calls}");
+}
