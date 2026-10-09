@@ -14,11 +14,16 @@ case "$1 $2" in
     done < "$d/issues.jsonl"
     ;;
   "api repos/"*/check-runs)
+    if [ -f "$d/check-runs.fail" ]; then cat "$d/check-runs.fail" >&2; exit 1; fi
     c=$(( $(cat "$d/register.count" 2>/dev/null || echo 0) + 1 ))
     echo $c > "$d/register.count"
     [ "$c" -gt "$(cat "$d/register.after" 2>/dev/null || echo 0)" ] && echo 1 || echo 0
     ;;
-  "api repos/"*/status) echo 0 ;;
+  "api repos/"*/status)
+    c=$(( $(cat "$d/status.count" 2>/dev/null || echo 0) + 1 ))
+    echo $c > "$d/status.count"
+    [ -f "$d/status.after" ] && [ "$c" -gt "$(cat "$d/status.after")" ] && echo 1 || echo 0
+    ;;
   "issue view") cat "$d/issue-$3.json" 2>/dev/null || { echo "no issue $3" >&2; exit 1; } ;;
   "issue edit")
     if [[ " $* " == *" --remove-label status:ready-for-agent "* ]]; then echo "$3" >> "$d/taken"; fi

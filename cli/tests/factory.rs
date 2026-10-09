@@ -571,9 +571,58 @@ fn no_checks_registered_within_the_timeout_needs_a_human_merge() {
     let calls = e.gh_calls();
     assert!(!calls.contains("--watch"), "{calls}");
     assert!(!calls.contains("pr merge"), "{calls}");
-    // Backoff 5, 10, 20, then 30 s, capped at the 180 s deadline: polls at 0, 5, 15, 35, 65, 95,
-    // 125, 155 and 180.
     assert_eq!(register_polls(&e).len(), 9, "{calls}");
+}
+
+#[test]
+fn a_shorter_register_timeout_polls_on_the_capped_schedule() {
+    let e = Env::new();
+    e.factory(&format!("{AUTO}ci_register_timeout = 1\n"));
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("register.after", "1000");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        v["reason"],
+        "no CI checks registered within 1 min on PR #12; needs a human merge"
+    );
+    assert_eq!(register_polls(&e).len(), 5, "{}", e.gh_calls());
+}
+
+#[test]
+fn status_only_ci_registers_and_is_watched() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("register.after", "1000");
+    e.gh_file("status.after", "1");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let calls = e.gh_calls();
+    assert!(calls.contains("pr checks 12 --watch"), "{calls}");
+    assert_eq!(register_polls(&e).len(), 2, "{calls}");
+}
+
+#[test]
+fn a_failing_check_query_is_reported_not_called_no_ci() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("check-runs.fail", "HTTP 403: rate limit exceeded");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("could not query CI checks on PR #12: "),
+        "{reason}"
+    );
+    assert!(reason.contains("rate limit exceeded"), "{reason}");
+    assert!(reason.ends_with("; needs a human merge"), "{reason}");
+    assert!(!e.gh_calls().contains("--watch"), "{}", e.gh_calls());
 }
 
 const PRINT_HEAD_SHA_CMD: &str = "git rev-parse HEAD";
@@ -649,6 +698,10 @@ fn a_behind_pr_merges_at_the_head_update_branch_returns() {
     assert!(calls.contains(&want), "{calls}");
     let polls = register_polls(&e);
     assert!(!polls.is_empty(), "{calls}");
+    let update = calls.find("pr update-branch 12").unwrap();
+    let first_poll = calls.find("/check-runs").unwrap();
+    let watch = calls.find("pr checks 12 --watch").unwrap();
+    assert!(update < first_poll && first_poll < watch, "{calls}");
     assert!(
         polls
             .iter()

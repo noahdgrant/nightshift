@@ -1244,30 +1244,47 @@ fn guards(
     Ok(None)
 }
 
+const REGISTER_BACKOFF_START: i64 = 5;
+const REGISTER_BACKOFF_MAX: i64 = 30;
+
+enum Registered {
+    Yes,
+    No,
+    QueryFailed(String),
+}
+
+fn check_count(wt: &Path, sha: &str, kind: &str) -> Result<u64> {
+    let out = gh(
+        wt,
+        &[
+            "api",
+            &format!("repos/{{owner}}/{{repo}}/commits/{sha}/{kind}"),
+            "--jq",
+            ".total_count",
+        ],
+    )?;
+    Ok(out.trim().parse().unwrap_or(0))
+}
+
 /// Poll until a check run or commit status exists for `sha`, backing off from 5 s to 30 s, for at
-/// most `mins` minutes. Right after a push or update-branch GitHub may not have registered any.
-fn checks_registered(wt: &Path, sha: &str, mins: u64, clock: &Clock) -> bool {
-    let deadline = clock.now() + (mins * 60) as i64;
-    let mut wait = 5;
+/// most `timeout_minutes`. Right after a push or update-branch GitHub may not have registered any.
+fn checks_registered(wt: &Path, sha: &str, timeout_minutes: u64, clock: &Clock) -> Registered {
+    let deadline = clock.now() + (timeout_minutes * 60) as i64;
+    let mut wait = REGISTER_BACKOFF_START;
     loop {
-        let any = ["check-runs", "status"].iter().any(|kind| {
-            gh(
-                wt,
-                &[
-                    "api",
-                    &format!("repos/{{owner}}/{{repo}}/commits/{sha}/{kind}"),
-                    "--jq",
-                    ".total_count",
-                ],
-            )
-            .is_ok_and(|c| c.trim().parse::<u64>().is_ok_and(|c| c > 0))
-        });
+        let counts = ["check-runs", "status"].map(|kind| check_count(wt, sha, kind));
+        if counts.iter().any(|c| matches!(c, Ok(n) if *n > 0)) {
+            return Registered::Yes;
+        }
         let now = clock.now();
-        if any || now >= deadline {
-            return any;
+        if now >= deadline {
+            return match counts.into_iter().find_map(|c| c.err()) {
+                Some(e) => Registered::QueryFailed(e.to_string()),
+                None => Registered::No,
+            };
         }
         clock.sleep_until((now + wait).min(deadline));
-        wait = (wait * 2).min(30);
+        wait = (wait * 2).min(REGISTER_BACKOFF_MAX);
     }
 }
 
@@ -1364,11 +1381,19 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
         _ => {}
     }
 
-    let reg = ctx.fac.merge.ci_register_timeout;
-    if !checks_registered(wt, &merge_head, reg, &shared.clock) {
-        return Ok(human(format!(
-            "no CI checks registered within {reg} min on PR #{n}; needs a human merge"
-        )));
+    let register_minutes = ctx.fac.merge.ci_register_timeout;
+    match checks_registered(wt, &merge_head, register_minutes, &shared.clock) {
+        Registered::Yes => {}
+        Registered::No => {
+            return Ok(human(format!(
+                "no CI checks registered within {register_minutes} min on PR #{n}; needs a human merge"
+            )));
+        }
+        Registered::QueryFailed(err) => {
+            return Ok(human(format!(
+                "could not query CI checks on PR #{n}: {err}; needs a human merge"
+            )));
+        }
     }
 
     // Wait for CI, bounded.
