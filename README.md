@@ -13,7 +13,7 @@ Status: early. The core path (triage → build → verify → review → ship) i
                      └─ needs-repro ──► ns-troubleshoot ──────┘
 ```
 
-Each unit of work gets its own git worktree. Phases hand off through files in `.ns/<unit>/` (`brief.md`, `build.md`, `evidence.md`, `review.md`, `pr.md`), so each phase can start in a fresh context. A phase's gate either stops for a human or, under `gates: auto`, moves on by itself. Merging, deploying and releasing always wait for a human.
+Each unit of work gets its own git worktree. Phases hand off through files in `.ns/<unit>/` (`brief.md`, `build.md`, `evidence.md`, `review.md`, `pr.md`), so each phase can start in a fresh context. A phase's gate either stops for a human or, under `gates: auto`, moves on by itself. Deploying and releasing always wait for a human. Merging waits for one under `merge.policy = "human"` (the default) or when the PR touches a protected path.
 
 ## Install
 
@@ -26,6 +26,17 @@ Then, in each project you want to run the factory on:
 
 1. `ns-setup`: writes `docs/agents/` (stack, tracker, labels, domain).
 2. `ns-setup-verify`: generates the project's verification skill and control CLI.
+
+## Run it overnight
+
+Start `ns watch` as the account that should open the PRs. `gh` uses whatever `GH_TOKEN` is set, so export it first:
+
+```bash
+export GH_TOKEN=$(gh auth token --user <account>)
+ns watch --until 06:30
+```
+
+It works through `status:ready-for-agent` issues until 06:30 and starts no new unit after that. [`docs/FACTORY.md`](docs/FACTORY.md) is the reference for the definition, `ns run` and `ns watch`.
 
 ## Skills
 
