@@ -1,10 +1,6 @@
-description = "Rough meeting notes for a low-stock alert feature. Under gates: auto, with no one to interview, the skill should write a versioned requirements doc plus changelog where docs/agents/docs.md says, with MoSCoW sections, <KEY>-<n> IDs, person-actor stories, undecided values left as [?] with Open questions rows, and Status short of Approved."
+description = "Rough meeting notes for a low-stock alert feature. Under gates: auto, with no one to interview, the skill should write a versioned requirements doc plus changelog where docs/agents/docs.md says, with MoSCoW sections, <KEY>-<n> IDs, person-actor stories, undecided values left as [?] with Open questions rows, and Status short of Approved. ns-grilling and ns-setup are not loaded: nobody can answer, and the overlay supplies docs/agents/docs.md."
 fixture = "py-inventory"
 skills = ["ns-requirements"]
-# ns-contract holds the human-only approval rule the skill links to.
-# ns-grilling is left out: under gates: auto nobody can answer, so the skill drafts from the notes
-# and turns each unsettled branch into [?] instead of interviewing. ns-setup is left out because the
-# overlay supplies docs/agents/docs.md.
 extra_skills = ["ns-contract"]
 requires = []
 timeout_minutes = 15
@@ -13,7 +9,6 @@ Turn the rough notes in notes/low-stock-alerts.md into a requirements doc. No on
 """
 
 [[check]]
-# Exactly one first version, in its own directory under the configured requirements directory.
 type = "command"
 run = '[ "$(ls docs/requirements/*/v1.md 2>/dev/null | wc -l)" -eq 1 ]'
 expect_exit = 0
@@ -24,7 +19,6 @@ run = 'f=$(ls docs/requirements/*/v1.md) && [ -f "$(dirname "$f")/changelog.md" 
 expect_exit = 0
 
 [[check]]
-# A heading for each MoSCoW category.
 type = "command"
 run = '''
 f=$(ls docs/requirements/*/v1.md) && for c in Must Should Could "Won.t"; do grep -Eq "^#+ *$c" "$f" || exit 1; done
@@ -32,36 +26,41 @@ f=$(ls docs/requirements/*/v1.md) && for c in Must Should Could "Won.t"; do grep
 expect_exit = 0
 
 [[check]]
-# Requirement rows carry <KEY>-<n> IDs.
 type = "command"
-run = '''f=$(ls docs/requirements/*/v1.md) && grep -Eq '^\| *[A-Z][A-Z0-9]*-[0-9]+ *\|' "$f"'''
-expect_exit = 0
-
-[[check]]
-# User stories whose actor is a person in a role from the notes.
-type = "command"
-run = '''f=$(ls docs/requirements/*/v1.md) && grep -Eiq 'As an? [^,]*(manager|purchas|buyer|clerk|picker)' "$f"'''
+run = '''f=$(ls docs/requirements/*/v1.md) && grep -Eq '^\| *[A-Z][A-Z0-9]*-[0-9]+ *\|' "$f" && ! grep -Eq 'PARK-[0-9]+' "$f"'''
 expect_exit = 0
 
 [[check]]
 type = "command"
-run = '''f=$(ls docs/requirements/*/v1.md) && ! grep -Eiq 'As (an?|the) (system|service|server|cli|api|script|job|cron)\b' "$f"'''
+run = '''f=$(ls docs/requirements/*/v1.md) && grep -Eiq 'As an? [^,]*(manager|purchas|buyer|clerk)' "$f"'''
 expect_exit = 0
 
 [[check]]
-# The undecided threshold and delivery channel stay unknown, with an Open questions section.
 type = "command"
-run = '''f=$(ls docs/requirements/*/v1.md) && grep -Fq '[?]' "$f" && grep -Eiq '^#+ *Open questions' "$f"'''
+run = '''f=$(ls docs/requirements/*/v1.md) && ! grep -Eiq 'As (an?|the) (system|service|server|cli|api|script|job|cron) *,' "$f" && ! grep -Eq 'S1\. As a driver' "$f"'''
 expect_exit = 0
 
 [[check]]
-# Approval is human-only.
 type = "command"
-run = '''f=$(ls docs/requirements/*/v1.md) && ! grep -Eiq '^\| *Status *\| *Approved' "$f" && grep -Eiq '^\| *Status *\| *(Draft|In review)' "$f"'''
+run = '''f=$(ls docs/requirements/*/v1.md) && [ "$(grep -Fo '[?]' "$f" | wc -l)" -ge 2 ] && awk '/^#+ *Open questions/{o=1;next} /^#+ /{o=0} o && /^\| *[^|-]/ && !/^\| *Question/' "$f" | grep -q .'''
 expect_exit = 0
 
 [[check]]
-# Template prompt lines are gone.
+type = "command"
+run = '''f=$(ls docs/requirements/*/v1.md) && awk '/^#+ *Won.t/{w=1;next} /^#+ /{w=0} w' "$f" | grep -Eiq 're-?order\w*' '''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/requirements/*/v1.md) && ! grep -v '\[?\]' "$f" | grep -Eiq '(below|under|less than|fewer than) +[0-9]+' '''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/requirements/*/v1.md) && s=$(grep -Ei '^\| *\**Status' "$f" | tr -d '*') && ! printf '%s' "$s" | grep -Eiq 'Approved' && printf '%s' "$s" | grep -Eiq '\| *(Draft|In review) *\|' '''
+expect_exit = 0
+
+[[check]]
 type = "command"
 run = '''f=$(ls docs/requirements/*/v1.md) && ! grep -Eq '^>' "$f"'''
 expect_exit = 0

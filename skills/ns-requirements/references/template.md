@@ -42,9 +42,9 @@ A system doc's requirement tables add an *Allocated to* column between "Why / so
 
 ## User stories
 
-> Numbered S1, S2, and so on. "As a <actor>, I want <capability>, so that <benefit>." The actor is a person in a role. Cover every actor who touches the thing, including installers and support.
+> Numbered S1, S2, and so on, without a list marker. The actor is a person in a role. Cover every actor who touches the thing, including installers and support. Example: "S1. As a driver, I want to know when my parking time is about to run out, so that I can top up before I get a ticket."
 
-1. S1. As a driver, I want to know when my parking time is about to run out, so that I can top up before I get a ticket.
+S1. As a <actor>, I want <capability>, so that <benefit>.
 
 Met as written in PARK, with no refinement here: <IDs>.
 
@@ -52,11 +52,11 @@ Met as written in PARK, with no refinement here: <IDs>.
 
 ## Must have
 
-> The scope is not done without these.
+> The scope is not done without these. Example row: "PARK-4 | The driver receives an expiry warning at least 10 min before their paid time runs out | S1. 10 min estimated, to confirm with the pilot city | End-to-end test, 20 sessions, every warning at or before 10 min".
 
 | ID | Requirement | Why / source | Verified by |
 |---|---|---|---|
-| PARK-4 | The driver receives an expiry warning at least 10 min before their paid time runs out | S1. 10 min estimated, to confirm with the pilot city | End-to-end test, 20 sessions, every warning at or before 10 min |
+| <KEY>-<n> | | | |
 
 ## Should have
 

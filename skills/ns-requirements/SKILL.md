@@ -23,9 +23,13 @@ Every doc has one **kind**, stated in its header.
 | System | A product built from several components with their own docs | User stories, and every promise made to a customer, the business, or a regulator, each with an *Allocated to* column naming the components that deliver it | A story or a stated need |
 | Component | One part of a system | What that component must do to meet its system's requirements, nothing the system doc already says | A system requirement ID, a system story it meets directly, or a sourced constraint |
 
-Most docs are standalone. Reach for system and component docs when several components each need their own requirements and must agree on shared promises. Each doc has one owner, so where ownership splits between teams, the docs split too.
+Most docs are standalone. Use system and component docs when several components each need their own requirements and must agree on shared promises.
 
-Each requirement lives in one doc only. A promise stays in the system doc even when one component delivers it alone; the component doc refines it ("sends a payment to the server within 5 s" under "the driver sees the paid-until time within 10 s") and cites its ID. A component row never repeats its parent, and never outranks it: a component Must that serves only a system Should means one of the two priorities is wrong. A system row allocated to a component that needs no refinement there is named on the component doc's "Met as written" line, by ID only, so a reader sees every promise the component carries without a copy that can drift.
+- Each requirement lives in one doc only.
+- A promise stays in the system doc even when one component delivers it alone.
+- The component doc refines a promise and cites its ID: "sends a payment to the server within 5 s" under "the driver sees the paid-until time within 10 s".
+- A component row never repeats its parent and never outranks it. A component Must that serves only a system Should means one of the two priorities is wrong.
+- A system row allocated to a component that needs no refinement goes on the component doc's "Met as written" line, by ID only, so no copy can drift.
 
 ## Scope and MoSCoW
 
@@ -57,7 +61,7 @@ Standalone and system docs start from user stories when a person is on the other
    - The repo file is the source of truth, changed through pull requests.
    - How it reaches reviewers, per the review surface in `docs/agents/docs.md`. Review comments come back as edits to the repo file.
    - Approval is theirs to give.
-   - When the next step is a design, the `ns-design-doc` skill picks up from here.
+   - When the next step is a design, the `ns-design-doc` skill picks up from here, once it exists.
 
 ## Approval
 
@@ -69,19 +73,19 @@ Approving requirements is human-only ([factory contract](../ns-contract/SKILL.md
 - Each ID is `<KEY>-<n>`, where the key names the thing (`METER-5`, `CLI-3`). Take the key from `docs/agents/docs.md` when the thing has one there; a new thing gets a new key, added to its table. IDs are never renumbered or reused, because design docs, tickets, and child docs cite them.
 - One requirement per row. An "and" joining two checks is two rows.
 - A requirement names the outcome, not the mechanism. "Show the driver the paid-until time within 10 s of payment" is a requirement; "push it over MQTT" is a design choice. Name a mechanism only when it is itself required, such as a city contract that mandates contactless card payment, and cite that source.
-- Give the source of every number: measured, estimated, datasheet, customer, or regulation. Outside facts go in the Sources section with a link to the primary source, and rows cite them by number. A number with no source gets treated as fact by the next reader.
+- Give the source of every number: measured, estimated, datasheet, customer, or regulation. Outside facts go in the Sources section with a link to the primary source, and rows cite them by number. A number from another of the project's docs, such as a design's measured budget, is cited by that doc's ID or section instead of repeated, so the row stays right when the source changes. A number with no source gets treated as fact by the next reader.
 - Cite other docs by name and version ("PARK v1"), never as "the old doc".
-- When a number comes from another of the project's docs that is its source, such as a design's measured budget or an interface's limit, the row's Why / source cites that doc's ID or section instead of repeating its figures, so the row stays right when the source changes.
-- A value nobody has decided yet is written `[?]` and gets a row in Open questions with an owner by name and a Needed by milestone, such as the beta or an issue. A milestone stays true when its date moves; use a calendar date only when no milestone fits. Never invent a number to fill the gap.
+- A value nobody has decided yet is written `[?]` and gets a row in Open questions. Never invent a number to fill the gap.
+- Each Open questions row names an owner and a Needed by milestone, such as the beta or an issue. A milestone stays true when its date moves; use a calendar date only when no milestone fits.
 
 ## Changing a requirement
 
 Every change is a check on everything built against the doc.
 
-1. If the current version is approved, start the next one (`v1.1.md` to `v1.2.md`) as a copy with Status `Draft`. The approved one becomes `Superseded by v<n>` when a person approves the new one. Then edit the draft's repo file, the source of truth, in a pull request. Add its line to the changelog, as "Versions and the changelog" says.
+1. If the current version is approved, start the next one as "Versions and the changelog" says, as a copy with Status `Draft`. Edit the draft's repo file, the source of truth, in a pull request, and add its changelog line.
 2. A dropped requirement moves to Won't with its ID and the reason. It keeps its ID so older citations still resolve.
 3. In a system doc, check each child doc's rows that cite the changed ID, and fix any priority or refinement the change broke.
-4. Update `Last updated` in the header. Search the design docs directory from `docs/agents/docs.md` for the changed IDs and for the doc's name. For each approved design doc that cites one, follow "When requirements change" in the `ns-design-doc` skill. In a draft design doc, fix any goal or decision the change broke, and point its Requirements row at the new version if the change started one.
+4. Update `Last updated` in the header. Search the design docs directory from `docs/agents/docs.md` for the changed IDs and for the doc's name. List each approved design doc that cites a changed ID and flag it for a human; the `ns-design-doc` skill will own the fuller procedure once it exists. In a draft design doc, fix any goal or decision the change broke, and point its Requirements row at the new version if the change started one.
 
 ## Reviewing an existing doc
 
