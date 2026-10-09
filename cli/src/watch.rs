@@ -174,7 +174,13 @@ fn queue(root: &Path, fac: &Factory) -> Result<Queue> {
         }
         ready.push(i);
     }
-    ready.sort_by_key(|i| (rank(&q.order, &i.labels), i.number));
+    ready.sort_by_key(|i| {
+        (
+            rank(&q.priority, &i.labels),
+            rank(&q.order, &i.labels),
+            i.number,
+        )
+    });
     Ok(Queue { ready, skipped })
 }
 
@@ -234,6 +240,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 json!({
                     "number": i.number,
                     "title": i.title,
+                    "priority_label": q.priority.get(rank(&q.priority, &i.labels)),
                     "order_label": q.order.get(rank(&q.order, &i.labels)),
                 })
             })
