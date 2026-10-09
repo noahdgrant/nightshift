@@ -130,6 +130,16 @@ impl Env {
         let mut text = fs::read_to_string(self.ghd.join("issues.jsonl")).unwrap();
         text.push_str(&format!("{line}\n"));
         fs::write(self.ghd.join("issues.jsonl"), text).unwrap();
+        fs::write(self.ghd.join(format!("labels-{n}")), all.join("\n") + "\n").unwrap();
+    }
+
+    /// The labels the fake gh holds for issue `n`.
+    fn labels(&self, n: u64) -> Vec<String> {
+        fs::read_to_string(self.ghd.join(format!("labels-{n}")))
+            .unwrap_or_default()
+            .lines()
+            .map(String::from)
+            .collect()
     }
 
     fn queue(&self, phase: &str, actions: &[&str]) {
@@ -1228,6 +1238,74 @@ fn watch_stuck_comment_quotes_the_blocker_and_a_relative_path() {
         "{comment}"
     );
     assert!(!comment.contains(e.base.to_str().unwrap()), "{comment}");
+}
+
+/// Run issue 2 through `ns watch --once` with a triage phase that re-adds the ready label, as
+/// `ns-triage` did on #59, and return the issue's labels afterwards.
+fn labels_after_triage_re_adds_ready(e: &Env, args: &[&str]) -> Vec<String> {
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl(
+        "triage.sh",
+        "gh issue edit 2 --add-label status:ready-for-agent\n",
+    );
+    e.queue("triage", &["pass:script"]);
+    e.run(args, 0);
+    let labels = e.labels(2);
+    assert!(labels.contains(&"type:fix".to_string()), "{labels:?}");
+    labels
+}
+
+#[test]
+fn watch_done_leaves_only_the_done_label() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit"]);
+    let labels = labels_after_triage_re_adds_ready(&e, &["watch", "--once"]);
+    assert_eq!(labels, ["type:fix", "status:in-review"]);
+}
+
+#[test]
+fn watch_stuck_leaves_only_the_stuck_label() {
+    let e = Env::new();
+    e.queue("verify", &["blocked:needs a board"]);
+    let labels = labels_after_triage_re_adds_ready(&e, &["watch", "--once"]);
+    assert_eq!(labels, ["type:fix", "status:ready-for-human"]);
+}
+
+#[test]
+fn watch_merged_leaves_no_status_label() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    let labels = labels_after_triage_re_adds_ready(&e, &["watch", "--once"]);
+    assert_eq!(labels, ["type:fix"]);
+}
+
+#[test]
+fn watch_given_back_leaves_only_the_ready_label() {
+    let e = Env::new();
+    e.ctl("reset", &(NOW + 8 * 3600).to_string());
+    e.queue("build", &["limit"]);
+    let labels = labels_after_triage_re_adds_ready(&e, &["watch", "--once", "--until", "06:30"]);
+    assert_eq!(labels, ["type:fix", "status:ready-for-agent"]);
+}
+
+#[test]
+fn watch_fails_loudly_when_a_label_edit_does_not_land() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file("edit.noop", "");
+    let out = e.ns().args(["watch", "--once"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("#2") && err.contains("status:ready-for-agent"),
+        "{err}"
+    );
+    let edits = e.gh_calls().matches("issue edit 2").count();
+    assert_eq!(edits, 2, "{}", e.gh_calls());
+    assert!(e.calls().is_empty());
 }
 
 #[test]

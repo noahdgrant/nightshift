@@ -200,13 +200,61 @@ fn queue(root: &Path, fac: &Factory, finished: &BTreeSet<u64>) -> Result<Queue> 
     Ok(Queue { ready, skipped })
 }
 
-fn swap(root: &Path, n: u64, remove: &str, add: Option<&str>) -> Result<()> {
+/// The issue's status labels other than `end`, and whether `end` is missing.
+fn stray_status(
+    root: &Path,
+    q: &factory::Queue,
+    n: &str,
+    end: Option<&str>,
+) -> Result<(Vec<String>, bool)> {
+    let v = gh_json(root, &["issue", "view", n, "--json", "labels"])?;
+    let labels: Vec<&str> = v["labels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|l| l["name"].as_str())
+        .collect();
+    let ours = [
+        &q.ready_label,
+        &q.in_progress_label,
+        &q.done_label,
+        &q.stuck_label,
+    ];
+    let stray = labels
+        .iter()
+        .filter(|l| Some(**l) != end && (l.starts_with("status:") || ours.iter().any(|o| o == *l)))
+        .map(|l| l.to_string())
+        .collect();
+    Ok((stray, end.is_some_and(|e| !labels.contains(&e))))
+}
+
+/// Make `end` the issue's only status label in one edit, then read the labels back. A phase
+/// can add a status label mid-run (ns-triage re-adding the ready label did), so every other
+/// status label goes, not only the one `ns watch` set. One retry, then an error.
+fn set_status(root: &Path, q: &factory::Queue, n: u64, end: Option<&str>) -> Result<()> {
     let ns = n.to_string();
-    let mut args = vec!["issue", "edit", ns.as_str(), "--remove-label", remove];
-    if let Some(a) = add {
-        args.extend(["--add-label", a]);
+    let mut edits = 0;
+    loop {
+        let (stray, missing) = stray_status(root, q, &ns, end)?;
+        if stray.is_empty() && !missing {
+            return Ok(());
+        }
+        if edits == 2 {
+            return Err(SfError::general(format!(
+                "#{n} still has status labels {stray:?} (want only {end:?}) after two label edits"
+            ))
+            .into());
+        }
+        let mut args = vec!["issue", "edit", ns.as_str()];
+        for l in &stray {
+            args.extend(["--remove-label", l.as_str()]);
+        }
+        if let Some(e) = end.filter(|_| missing) {
+            args.extend(["--add-label", e]);
+        }
+        gh(root, &args)?;
+        edits += 1;
     }
-    gh(root, &args).map(|_| ())
 }
 
 fn comment(root: &Path, n: u64, body: &str) -> Result<()> {
@@ -294,12 +342,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             break "queue empty".into();
         };
         started += 1;
-        swap(
-            &repo.root,
-            issue.number,
-            &q.ready_label,
-            Some(&q.in_progress_label),
-        )?;
+        set_status(&repo.root, &q, issue.number, Some(&q.in_progress_label))?;
         eprintln!("ns watch: #{} {}", issue.number, issue.title);
         loop {
             let base = fresh_base(&repo.root);
@@ -312,12 +355,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             let r = match run::execute(&rargs, &mut shared) {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = swap(
-                        &repo.root,
-                        issue.number,
-                        &q.in_progress_label,
-                        Some(&q.ready_label),
-                    );
+                    let _ = set_status(&repo.root, &q, issue.number, Some(&q.ready_label));
                     return Err(e);
                 }
             };
@@ -331,16 +369,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             });
             match r.outcome {
                 Outcome::Merged => {
-                    gh(
-                        &repo.root,
-                        &[
-                            "issue",
-                            "edit",
-                            &issue.number.to_string(),
-                            "--remove-label",
-                            &q.in_progress_label,
-                        ],
-                    )?;
+                    set_status(&repo.root, &q, issue.number, None)?;
                     // GitHub may not have closed it yet; an already-closed issue makes gh fail.
                     let n = issue.number.to_string();
                     if let Err(e) = gh(&repo.root, &["issue", "close", &n, "--reason", "completed"])
@@ -349,20 +378,10 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                     }
                 }
                 Outcome::Done if !r.needs_human => {
-                    swap(
-                        &repo.root,
-                        issue.number,
-                        &q.in_progress_label,
-                        Some(&q.done_label),
-                    )?;
+                    set_status(&repo.root, &q, issue.number, Some(&q.done_label))?;
                 }
                 Outcome::Done | Outcome::Stuck => {
-                    swap(
-                        &repo.root,
-                        issue.number,
-                        &q.in_progress_label,
-                        Some(&q.stuck_label),
-                    )?;
+                    set_status(&repo.root, &q, issue.number, Some(&q.stuck_label))?;
                     let what = if r.outcome == Outcome::Stuck {
                         "got stuck"
                     } else {
@@ -386,12 +405,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                     comment(&repo.root, issue.number, &body)?;
                 }
                 Outcome::Budget => {
-                    swap(
-                        &repo.root,
-                        issue.number,
-                        &q.in_progress_label,
-                        Some(&q.ready_label),
-                    )?;
+                    set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
                     units.push(rec);
                     break 'outer "budget".into();
                 }
@@ -404,12 +418,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                     rec["reset_at"] = json!(clock::iso(reset));
                     units.push(rec);
                     if deadline.is_some_and(|d| reset >= d) {
-                        swap(
-                            &repo.root,
-                            issue.number,
-                            &q.in_progress_label,
-                            Some(&q.ready_label),
-                        )?;
+                        set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
                         break 'outer "usage limit resets after --until".into();
                     }
                     eprintln!(
