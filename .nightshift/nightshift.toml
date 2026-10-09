@@ -38,7 +38,8 @@ ready_label = "status:ready-for-agent"
 in_progress_label = "status:in-progress"
 done_label = "status:in-review"
 stuck_label = "status:ready-for-human"
-order = ["priority:high", "type:fix", "type:feat", "type:refactor", "type:test", "type:ci", "type:docs", "type:chore"]
+priority = ["priority:critical", "priority:high", "priority:medium", "priority:low"]
+order = ["type:fix", "type:feat", "type:refactor", "type:test", "type:ci", "type:docs", "type:chore"]
 
 
 [merge]
