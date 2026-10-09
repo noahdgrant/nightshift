@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::clock;
 use crate::error::SfError;
-use crate::factory::Factory;
+use crate::factory::{Factory, Queue as QueueConfig};
 use crate::git::{self, Repo};
 use crate::run::{self, gh, gh_json, Outcome, RunArgs, Shared};
 use crate::worktree::BRANCH_PREFIX;
@@ -213,12 +213,7 @@ impl StatusDrift {
     }
 }
 
-fn status_drift(
-    root: &Path,
-    q: &factory::Queue,
-    n: &str,
-    end: Option<&str>,
-) -> Result<StatusDrift> {
+fn status_drift(root: &Path, q: &QueueConfig, n: &str, end: Option<&str>) -> Result<StatusDrift> {
     let v = gh_json(root, &["issue", "view", n, "--json", "labels"])?;
     let labels: Vec<&str> = v["labels"]
         .as_array()
@@ -243,7 +238,7 @@ fn status_drift(
     })
 }
 
-fn set_status(root: &Path, q: &factory::Queue, n: u64, end: Option<&str>) -> Result<()> {
+fn set_status(root: &Path, q: &QueueConfig, n: u64, end: Option<&str>) -> Result<()> {
     let ns = n.to_string();
     for _ in 0..LABEL_EDIT_ATTEMPTS {
         let drift = status_drift(root, q, &ns, end)?;
