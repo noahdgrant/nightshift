@@ -414,8 +414,11 @@ pub fn run_harness(
         .stdout(out)
         .stderr(err);
     sandbox_env(&mut cmd, scratch);
-    if subscription && crate::billing::is_claude(argv) {
-        crate::billing::scrub(&mut cmd);
+    if crate::billing::is_claude(argv) {
+        crate::billing::wait_for_bg_tasks(&mut cmd);
+        if subscription {
+            crate::billing::scrub(&mut cmd);
+        }
     }
     let (status, timed_out, wall_s) = match run_process(cmd, Some(prompt.as_bytes().to_vec()), timeout) {
         Ok(r) => r,
