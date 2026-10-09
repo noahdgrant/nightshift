@@ -15,6 +15,7 @@ mod git;
 mod install;
 mod lint;
 mod markers;
+mod review_md;
 mod run;
 mod skills_sync;
 #[cfg(test)]
