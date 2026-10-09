@@ -1,6 +1,6 @@
 # Triage Labels
 
-The `ns-*` skills speak in canonical triage roles. This file maps each role to the label string this repo's tracker uses. Every triaged issue carries exactly one category and one state.
+The `ns-*` skills speak in canonical triage roles. This file maps each role to the label string this repo's tracker uses. Every triaged issue carries exactly one category, one priority and one state.
 
 ## Categories
 
@@ -8,6 +8,14 @@ The `ns-*` skills speak in canonical triage roles. This file maps each role to t
 |---|---|---|
 | `bug` | `bug` | Something is broken |
 | `enhancement` | `enhancement` | New feature or improvement |
+
+## Priorities
+
+| Role | Label in our tracker | Meaning |
+|---|---|---|
+| `high` | `priority:high` | Blocks other open issues, breaks the factory or CI, or is a security issue |
+| `medium` | `priority:medium` | Normal work |
+| `low` | `priority:low` | Nice to have |
 
 ## States
 

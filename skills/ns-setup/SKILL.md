@@ -15,7 +15,7 @@ Scaffold the per-repo configuration the `ns-*` skills read:
 | `docs/agents/stack.md` | languages, build/test/lint/format commands, test seams with command and duration |
 | `docs/agents/verify.md` | pointer to the project's verify skill and control CLI |
 | `docs/agents/issue-tracker.md` | where issues live, the CLI that reaches them, how they are created and linked |
-| `docs/agents/triage-labels.md` | label strings for each triage category and state |
+| `docs/agents/triage-labels.md` | label strings for each triage category, priority and state |
 | `docs/agents/domain.md` | where `GLOSSARY.md` and ADRs live, and the rules for reading them |
 
 This is a prompt-driven skill, not a deterministic script. Explore, present what you found, confirm with the user, then write. The repo answers most questions. Ask only what it can't.
@@ -74,7 +74,7 @@ The GitHub and GitLab templates carry a "PRs as a request surface" flag, default
 
 > Do you want to keep the default triage labels? (recommended: **yes**)
 
-The defaults are the canonical roles with each label equal to its name (see [triage-labels.md](references/triage-labels.md)). On **no**, usually because the tracker already uses other names, collect the overrides so `ns-triage` applies existing labels instead of creating duplicates.
+The defaults are the canonical roles with each label equal to its name, and each priority as `priority:<role>`, the labels `ns watch` sorts on (see [triage-labels.md](references/triage-labels.md)). On **no**, usually because the tracker already uses other names, collect the overrides so `ns-triage` applies existing labels instead of creating duplicates. Custom priority labels also go, highest first, in `[queue] priority` of `.nightshift/nightshift.toml`.
 
 **Section E: Domain docs.** Default to **single-context** (one `GLOSSARY.md` + `docs/adr/` at the root) and write it without asking. Offer **multi-context** (a root `GLOSSARY-MAP.md` pointing to per-context `GLOSSARY.md` files) only when exploration found multi-context signals.
 
