@@ -1249,6 +1249,58 @@ fn watch_respects_max_units() {
 }
 
 #[test]
+fn watch_keeps_its_start_config_when_the_files_break_between_units() {
+    let e = Env::new();
+    e.config("[forge.github]\ntoken_env = \"MY_GH_TOKEN\"\n");
+    e.factory("[defaults]\nmax_attempts = 3\n");
+    let factory = e.root.join(".nightshift/nightshift.toml");
+    let config = e.base.join("no-config.toml");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ready(3, "Fix b", &["type:fix"], "");
+    e.ctl(
+        "triage.sh",
+        &format!(
+            "echo '[forge]\nbogus = 1' > {0}\necho 'not = [toml' > {1}\n",
+            config.display(),
+            factory.display()
+        ),
+    );
+    e.queue("triage", &["pass:script"]);
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    let out = e
+        .ns()
+        .env("MY_GH_TOKEN", FAKE_TOKEN)
+        .args(["watch", "--max-units", "2"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let outcomes: Vec<&str> = v["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["outcome"].as_str().unwrap())
+        .collect();
+    assert_eq!(outcomes, ["done", "done"], "{v}");
+    assert!(fs::read_to_string(&config).unwrap().contains("bogus"));
+    let started = &v["started_with"];
+    assert_eq!(started["config"]["path"], config.to_str().unwrap());
+    assert_eq!(started["factory"]["path"], factory.to_str().unwrap());
+    for f in ["config", "factory"] {
+        let h = started[f]["sha256"].as_str().unwrap();
+        assert_eq!(h.len(), 64, "{h}");
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains(config.to_str().unwrap()), "{err}");
+    assert!(
+        err.contains(started["config"]["sha256"].as_str().unwrap()),
+        "{err}"
+    );
+    assert!(!err.contains(FAKE_TOKEN), "{err}");
+}
+
+#[test]
 fn watch_stops_when_queue_empties() {
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");
