@@ -24,7 +24,7 @@ ns install                   # symlinks skills/ns-* into ~/.agents/skills and ~/
 
 Then, in each project you want to run the factory on:
 
-1. `ns-setup`: writes `docs/agents/` (stack, tracker, labels, domain).
+1. `ns-setup`: writes `docs/agents/` (stack, verify, tracker, labels, domain, docs).
 2. `ns-setup-verify`: generates the project's verification skill and control CLI.
 
 ## Run it overnight

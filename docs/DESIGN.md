@@ -168,6 +168,7 @@ Skills never name a language, test runner or hardware. Each target repo carries 
 - `stack.md`: language, build, test, lint commands. Test seams: host unit tests, simulator/QEMU, HIL.
 - `verify.md`: how to prove a change on the real surface (CLI, serial console, flashing a board, logic analyzer capture).
 - `issue-tracker.md`, `triage-labels.md`, `domain.md`: tracker, label names, and where the glossary and ADRs live.
+- `docs.md`: where requirements and design docs live, their review surface and ID keys.
 
 Skills say "run the test command from `docs/agents/stack.md`". Inline examples are Python.
 
