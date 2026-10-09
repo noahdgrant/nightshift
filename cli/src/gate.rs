@@ -1,6 +1,7 @@
 //! The deterministic CI gate `ns run` runs after build (docs/FACTORY.md, "Gate").
 
 use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -14,6 +15,8 @@ use crate::factory::Factory;
 const TAIL_LINES: usize = 40;
 /// Bytes of gate output kept for `{feedback}`, at most.
 const TAIL_BYTES: usize = 3000;
+/// Bytes read from the end of the log to build the tail.
+const WINDOW_BYTES: u64 = 16 * 1024;
 
 /// `[phases.build] gate`, else the `ci-local` row of `<repo>/docs/agents/stack.md`, else none.
 pub fn command(fac: &Factory, repo_root: &Path) -> Option<String> {
@@ -25,14 +28,19 @@ pub fn command(fac: &Factory, repo_root: &Path) -> Option<String> {
 }
 
 /// The command in a table row `| ci-local | `<command>` | ... |`: the first cell is `ci-local`
-/// (backticks optional), the command is the first backticked span of the second cell.
+/// (backticks optional), the command is the backticked span that opens the second cell (it may contain `|`).
 pub fn ci_local(stack_md: &str) -> Option<String> {
     stack_md.lines().find_map(|line| {
-        let mut cells = line.trim().strip_prefix('|')?.split('|').map(str::trim);
-        if cells.next()?.trim_matches('`') != "ci-local" {
+        let (first, rest) = line.trim().strip_prefix('|')?.split_once('|')?;
+        if first.trim().trim_matches('`') != "ci-local" {
             return None;
         }
-        let cmd = cells.next()?.split('`').nth(1)?.trim();
+        let cmd = rest
+            .trim_start()
+            .strip_prefix('`')?
+            .split('`')
+            .next()?
+            .trim();
         (!cmd.is_empty()).then(|| cmd.to_string())
     })
 }
@@ -70,8 +78,45 @@ pub fn run(cmd: &str, cwd: &Path, timeout: Duration, log: &Path) -> Result<GateR
         exit: status.and_then(|s| s.code()),
         timed_out,
         wall_s,
-        tail: tail(&fs::read(log).unwrap_or_default()),
+        tail: tail(&read_window(log)),
     })
+}
+
+/// The end of the file, from a line start unless the whole file fits.
+fn read_window(path: &Path) -> Vec<u8> {
+    let read = || -> std::io::Result<Vec<u8>> {
+        let mut f = File::open(path)?;
+        let len = f.metadata()?.len();
+        let start = len.saturating_sub(WINDOW_BYTES);
+        f.seek(SeekFrom::Start(start))?;
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf)?;
+        if start > 0 {
+            let cut = buf
+                .iter()
+                .position(|b| *b == b'\n')
+                .map_or(buf.len(), |i| i + 1);
+            buf.drain(..cut);
+        }
+        Ok(buf)
+    };
+    read().unwrap_or_default()
+}
+
+/// The `{feedback}` for a red gate.
+pub fn feedback(cmd: &str, r: &GateRun, timeout: Duration, head: &str) -> String {
+    let how = match (r.timed_out, r.exit) {
+        (true, _) if timeout.as_secs() >= 60 && timeout.as_secs() % 60 == 0 => {
+            format!("timed out after {} min", timeout.as_secs() / 60)
+        }
+        (true, _) => format!("timed out after {:.1} s", timeout.as_secs_f64()),
+        (false, Some(c)) => format!("exited {c}"),
+        (false, None) => "was killed by a signal".into(),
+    };
+    format!(
+        "The CI gate `{cmd}` {how} at {head}. Make it pass. The last lines of its output:\n\n{}\n",
+        r.tail
+    )
 }
 
 fn tail(bytes: &[u8]) -> String {
@@ -106,6 +151,19 @@ mod tests {
         assert_eq!(ci_local("ci-local: `make ci`"), None);
         assert_eq!(ci_local("| ci-local | none |"), None);
         assert_eq!(ci_local("| ci-local | `` |"), None);
+        assert_eq!(ci_local("| ci-local | n/a | see `docs` |"), None);
+    }
+
+    #[test]
+    fn ci_local_keeps_pipes_inside_the_command() {
+        assert_eq!(
+            ci_local("| ci-local | `make ci | tee x` | 1 s |").as_deref(),
+            Some("make ci | tee x")
+        );
+        assert_eq!(
+            ci_local("| ci-local | `a || b` |").as_deref(),
+            Some("a || b")
+        );
     }
 
     #[test]
@@ -165,5 +223,68 @@ mod tests {
         let t = tail(long.as_bytes());
         assert!(t.len() <= TAIL_BYTES);
         assert!(t.chars().all(|c| c == 'é'));
+    }
+
+    #[test]
+    fn a_signal_kill_is_red_with_no_exit_code() {
+        let (r, _tmp) = gate("kill -9 $$", Duration::from_secs(30));
+        assert_eq!(r.exit, None);
+        assert!(!r.timed_out);
+        assert!(!r.green());
+    }
+
+    #[test]
+    fn the_tail_reads_only_the_end_of_a_huge_log() {
+        let (r, _tmp) = gate("seq 1 100000", Duration::from_secs(30));
+        assert!(r.green());
+        assert_eq!(r.tail.lines().count(), TAIL_LINES);
+        assert!(r.tail.starts_with("99961"), "{}", r.tail);
+        assert!(r.tail.ends_with("100000"));
+    }
+
+    #[test]
+    fn the_window_drops_a_leading_partial_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("big.log");
+        let text: String = (0..5000).map(|i| format!("line {i:05}\n")).collect();
+        fs::write(&log, &text).unwrap();
+        let w = String::from_utf8(read_window(&log)).unwrap();
+        assert!((w.len() as u64) <= WINDOW_BYTES);
+        assert!(w.starts_with("line "), "{w:?}");
+        assert!(w.ends_with("line 04999\n"));
+        fs::write(&log, "small\n").unwrap();
+        assert_eq!(read_window(&log), b"small\n");
+        assert!(read_window(&tmp.path().join("missing")).is_empty());
+    }
+
+    fn red(timed_out: bool, exit: Option<i32>) -> GateRun {
+        GateRun {
+            exit,
+            timed_out,
+            wall_s: 0.0,
+            tail: "last line".into(),
+        }
+    }
+
+    #[test]
+    fn feedback_says_how_the_gate_failed() {
+        let t = Duration::from_secs(90 * 60);
+        let f = feedback("make ci", &red(true, None), t, "abc123");
+        assert!(
+            f.contains("`make ci` timed out after 90 min at abc123"),
+            "{f}"
+        );
+        assert!(f.ends_with("last line\n"));
+        let f = feedback(
+            "make ci",
+            &red(true, None),
+            Duration::from_millis(1500),
+            "a",
+        );
+        assert!(f.contains("timed out after 1.5 s"), "{f}");
+        let f = feedback("make ci", &red(false, Some(3)), t, "a");
+        assert!(f.contains("exited 3"), "{f}");
+        let f = feedback("make ci", &red(false, None), t, "a");
+        assert!(f.contains("was killed by a signal"), "{f}");
     }
 }

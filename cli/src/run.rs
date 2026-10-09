@@ -1170,7 +1170,7 @@ fn drive(
         )
     });
     let mut baseline = remote_default(&ctx.worktree);
-    let mut green_at: Option<String> = None;
+    let mut gate_state = GateState::default();
     ctx.log(json!({
         "event": "start",
         "default_branch": baseline.as_ref().map(|b| &b.0),
@@ -1340,15 +1340,27 @@ fn drive(
             _ => false,
         };
         if gated {
-            if let Some(fb) = gate_step(ctx, phase, attempt, &mut green_at)? {
+            if let Some(fb) = gate_step(ctx, phase, attempt, &mut gate_state)? {
                 forced = Some(run(
                     "build",
                     &fb,
                     format!("the CI gate failed after {phase}"),
                 ));
             }
+        } else if phase == "build" && !written {
+            if let Some((sha, fb)) = &gate_state.red {
+                if same_sha(sha, &ctx.head()) {
+                    forced = Some(run("build", fb, "the CI gate is still red"));
+                }
+            }
         }
     }
+}
+
+#[derive(Default)]
+struct GateState {
+    green_at: Option<String>,
+    red: Option<(String, String)>,
 }
 
 /// Run the CI gate at HEAD, unless it already went green there. `Some(feedback)` when red.
@@ -1356,16 +1368,16 @@ fn gate_step(
     ctx: &Ctx<'_>,
     phase: &str,
     attempt: u32,
-    green_at: &mut Option<String>,
+    state: &mut GateState,
 ) -> Result<Option<String>> {
     let Some(cmd) = &ctx.gate else {
         return Ok(None);
     };
     let head = ctx.head();
-    if green_at.as_deref() == Some(head.as_str()) {
+    if state.green_at.as_deref() == Some(head.as_str()) {
         return Ok(None);
     }
-    let minutes = ctx.fac.phase("build").timeout_minutes;
+    let timeout = gate_timeout(ctx.fac.phase("build").timeout_minutes);
     let log = ctx
         .common
         .join("ns")
@@ -1373,7 +1385,7 @@ fn gate_step(
         .join(&ctx.unit)
         .join(format!("gate-{phase}-{attempt}.log"));
     eprintln!("ns run: {} gate after {phase}: {cmd}", ctx.unit);
-    let r = gate::run(cmd, &ctx.worktree, Duration::from_secs(minutes * 60), &log)?;
+    let r = gate::run(cmd, &ctx.worktree, timeout, &log)?;
     ctx.log(json!({
         "event": "gate",
         "phase": phase,
@@ -1387,18 +1399,22 @@ fn gate_step(
         "log": log.to_string_lossy(),
     }));
     if r.green() {
-        *green_at = Some(head);
+        state.green_at = Some(head);
+        state.red = None;
         return Ok(None);
     }
-    let how = match (r.timed_out, r.exit) {
-        (true, _) => format!("timed out after {minutes} min"),
-        (false, Some(c)) => format!("exited {c}"),
-        (false, None) => "was killed by a signal".into(),
-    };
-    Ok(Some(format!(
-        "The CI gate `{cmd}` {how} at {head}. Make it pass. The last lines of its output:\n\n{}\n",
-        r.tail
-    )))
+    let fb = gate::feedback(cmd, &r, timeout, &head);
+    state.red = Some((head, fb.clone()));
+    Ok(Some(fb))
+}
+
+/// The build phase's timeout; `NS_GATE_TIMEOUT_MS` overrides it.
+fn gate_timeout(build_minutes: u64) -> Duration {
+    std::env::var("NS_GATE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_secs(build_minutes * 60))
 }
 
 fn merge_obj(mut a: Value, b: &Value) -> Value {

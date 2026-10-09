@@ -156,7 +156,7 @@ Output: final JSON `{unit, outcome: done|merged|stuck|budget|paused, phase, reas
 
 Build's artifact is the agent's own word that checks pass. The gate is a deterministic check `ns run` runs itself, so a build that fails CI goes back to build before verify, review and the PR.
 
-The command is `[phases.build] gate`. Unset, it is the `ci-local` row of the Commands table in `docs/agents/stack.md` in the main checkout: a table row whose first cell is `ci-local` (backticks optional), with the command as the first backticked span of the second cell:
+The command is `[phases.build] gate`. Unset, it is the `ci-local` row of the Commands table in `docs/agents/stack.md` in the main checkout: a table row whose first cell is `ci-local` (backticks optional), with the command as the backticked span that opens the second cell (it may contain `|`):
 
 ```markdown
 | ci-local | `scripts/ci-local.sh` | 2 min |
@@ -164,7 +164,7 @@ The command is `[phases.build] gate`. Unset, it is the `ci-local` row of the Com
 
 With neither, no gate runs. Both are read from the main checkout when `ns run` starts, so a phase can't change its own gate.
 
-`ns run` runs the command with `sh -c` in the worktree after a build that wrote `status: pass`, and again after a review that moved HEAD (a fix cycle that committed). It doesn't run again at a HEAD where it already went green in this invocation. It is killed at the build phase's `timeout_minutes`. Output goes to `<git-common-dir>/ns/transcripts/<unit>/gate-<phase>-<attempt>.log`.
+`ns run` runs the command with `sh -c` in the worktree after a build that wrote `status: pass`, and again after a review that moved HEAD (a fix cycle that committed). It doesn't run again at a HEAD where it already went green in this invocation. It is killed at the build phase's `timeout_minutes` (`NS_GATE_TIMEOUT_MS` overrides it, for tests). Only the last 16 KiB of its log are read for the tail. Output goes to `<git-common-dir>/ns/transcripts/<unit>/gate-<phase>-<attempt>.log`.
 
 Exit 0 is green and the run goes on as the state table says. A non-zero exit, a signal or the timeout is red: the next phase is build, with the command, how it failed and the last 40 lines of its output (at most 3000 bytes) as `{feedback}`. That build uses an attempt against `max_attempts`, so a gate that stays red ends with "build is out of attempts". Each run is a `gate` event in the run log with `phase` (what triggered it), `attempt`, `command`, `sha`, `exit`, `timed_out`, `wall_s`, `green` and `log`. `ns run --dry-run` shows the command as `gate`.
 

@@ -552,12 +552,21 @@ fn the_gate_falls_back_to_ci_local_in_stack_md() {
         "| Task | Command |\n|---|---|\n| ci-local | `echo from stack` | 1 s |\n",
     )
     .unwrap();
+    git(&e.root, &["add", "."]);
+    git(&e.root, &["commit", "-q", "-m", "stack"]);
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        "| Task | Command |\n|---|---|\n| ci-local | `echo from main` | 1 s |\n",
+    )
+    .unwrap();
     let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
-    assert_eq!(d["gate"], "echo from stack");
+    assert_eq!(d["gate"], "echo from main");
     e.run(&["run", "--issue", "7"], 0);
     let g = gate_events(&e);
     assert_eq!(g.len(), 1, "{g:?}");
-    assert_eq!(g[0]["command"], "echo from stack");
+    assert_eq!(g[0]["command"], "echo from main");
+    let in_worktree = fs::read_to_string(e.worktree(UNIT).join("docs/agents/stack.md")).unwrap();
+    assert!(in_worktree.contains("echo from stack"), "{in_worktree}");
 }
 
 #[test]
@@ -569,6 +578,68 @@ fn a_rebuild_that_leaves_head_alone_skips_a_green_gate() {
     e.run(&["run", "--issue", "7"], 0);
     assert_eq!(&e.calls()[..4], ["triage", "build", "verify", "build"]);
     assert_eq!(gate_events(&e).len(), 1);
+}
+
+#[test]
+fn a_gate_that_times_out_goes_back_to_build_and_uses_an_attempt() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"sleep 30\"\n");
+    let mut c = e.ns_std();
+    c.env("NS_GATE_TIMEOUT_MS", "300")
+        .args(["run", "--issue", "7"]);
+    let out = c.output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["reason"], "build is out of attempts (2)");
+    assert_eq!(e.calls(), ["triage", "build", "build"]);
+    assert!(e.prompt(3, "build").contains("timed out after 0.3 s"));
+    assert!(e.prompt(3, "build").contains("attempt 2"));
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[0]["timed_out"], true);
+    assert_eq!(g[0]["green"], false);
+}
+
+#[test]
+fn a_red_gate_is_not_skipped_when_the_rebuild_writes_no_artifact() {
+    let e = Env::new();
+    let flag = e.ctrl.join("gate-green");
+    e.factory(&format!(
+        "[phases.build]\nmax_attempts = 3\ngate = \"test -f {f} || {{ touch {f}; echo boom; exit 1; }}\"\n",
+        f = flag.display()
+    ));
+    e.queue("build", &["pass:commit", "none", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "build", "build", "verify", "review", "ship"]
+    );
+    assert!(e.prompt(4, "build").contains("boom"));
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[1]["green"], true);
+}
+
+#[test]
+fn a_red_gate_with_a_silent_rebuild_never_reaches_verify() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"exit 1\"\n");
+    e.queue("build", &["pass:commit", "none"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["reason"], "build is out of attempts (2)");
+    assert_eq!(e.calls(), ["triage", "build", "build"]);
+}
+
+#[test]
+fn a_build_that_did_not_pass_runs_no_gate() {
+    let e = Env::new();
+    e.factory("[phases.build]\nmax_attempts = 5\ngate = \"true\"\n");
+    e.queue("build", &["none", "fail", "blocked:no"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck");
+    assert_eq!(e.calls(), ["triage", "build", "build", "build"]);
+    assert!(gate_events(&e).is_empty());
 }
 
 #[test]
