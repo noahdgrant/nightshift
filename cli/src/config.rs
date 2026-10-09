@@ -14,6 +14,84 @@ pub struct Config {
     pub roles: BTreeMap<String, Role>,
     #[serde(default)]
     pub eval: EvalConfig,
+    #[serde(default)]
+    pub forge: Forges,
+}
+
+/// `[forge.github]` and `[forge.gitlab]`: where `ns run` and `ns watch` get forge tokens.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Forges {
+    pub github: Option<Forge>,
+    pub gitlab: Option<Forge>,
+}
+
+impl Forges {
+    /// `(name, token variable, host variable, config)` for every forge, configured or not.
+    pub fn each(&self) -> [(&'static str, &'static str, &'static str, Option<&Forge>); 2] {
+        [
+            ("github", "GH_TOKEN", "GH_HOST", self.github.as_ref()),
+            (
+                "gitlab",
+                "GITLAB_TOKEN",
+                "GITLAB_HOST",
+                self.gitlab.as_ref(),
+            ),
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(try_from = "RawForge", into = "RawForge")]
+pub struct Forge {
+    pub token: TokenSource,
+    pub host: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TokenSource {
+    /// A shell command whose trimmed stdout is the token.
+    Command(String),
+    /// The name of a variable holding the token.
+    Env(String),
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RawForge {
+    token_command: Option<String>,
+    token_env: Option<String>,
+    host: Option<String>,
+}
+
+impl TryFrom<RawForge> for Forge {
+    type Error = String;
+
+    fn try_from(r: RawForge) -> Result<Self, String> {
+        let token = match (r.token_command, r.token_env) {
+            (Some(c), None) => TokenSource::Command(c),
+            (None, Some(e)) => TokenSource::Env(e),
+            _ => return Err("set exactly one of token_command and token_env".into()),
+        };
+        Ok(Forge {
+            token,
+            host: r.host,
+        })
+    }
+}
+
+impl From<Forge> for RawForge {
+    fn from(f: Forge) -> Self {
+        let (token_command, token_env) = match f.token {
+            TokenSource::Command(c) => (Some(c), None),
+            TokenSource::Env(e) => (None, Some(e)),
+        };
+        RawForge {
+            token_command,
+            token_env,
+            host: f.host,
+        }
+    }
 }
 
 /// `[eval]`: how `ns eval` runs trials. Every key has a default, so the section is optional.
@@ -459,6 +537,28 @@ ouput = \"none\"
 "
         )
         .is_err());
+    }
+
+    #[test]
+    fn forge_takes_one_token_source() {
+        let c = parse(
+            "[forge.github]\ntoken_command = \"pass gh\"\n[forge.gitlab]\ntoken_env = \"MY_GL\"\nhost = \"gitlab.example.com\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            c.forge.github.unwrap().token,
+            TokenSource::Command("pass gh".into())
+        );
+        let gl = c.forge.gitlab.unwrap();
+        assert_eq!(gl.token, TokenSource::Env("MY_GL".into()));
+        assert_eq!(gl.host.as_deref(), Some("gitlab.example.com"));
+        assert_eq!(parse("").unwrap().forge, Forges::default());
+
+        let both = parse("[forge.github]\ntoken_command = \"x\"\ntoken_env = \"Y\"\n");
+        assert!(both.unwrap_err().to_string().contains("exactly one"));
+        assert!(parse("[forge.github]\n").is_err());
+        assert!(parse("[forge.github]\ntoken_cmd = \"x\"\n").is_err());
+        assert!(parse("[forge.bitbucket]\ntoken_env = \"X\"\n").is_err());
     }
 
     #[test]
