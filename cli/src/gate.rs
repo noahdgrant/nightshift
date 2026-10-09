@@ -103,13 +103,20 @@ fn read_window(path: &Path) -> Vec<u8> {
     read().unwrap_or_default()
 }
 
+/// "timed out after 90 min", or in seconds when `timeout` is not whole minutes.
+pub fn timed_out_after(timeout: Duration) -> String {
+    let secs = timeout.as_secs();
+    if secs >= 60 && secs.is_multiple_of(60) && timeout.subsec_nanos() == 0 {
+        format!("timed out after {} min", secs / 60)
+    } else {
+        format!("timed out after {:.1} s", timeout.as_secs_f64())
+    }
+}
+
 /// The `{feedback}` for a red gate.
 pub fn feedback(cmd: &str, r: &GateRun, timeout: Duration, head: &str) -> String {
     let how = match (r.timed_out, r.exit) {
-        (true, _) if timeout.as_secs() >= 60 && timeout.as_secs().is_multiple_of(60) => {
-            format!("timed out after {} min", timeout.as_secs() / 60)
-        }
-        (true, _) => format!("timed out after {:.1} s", timeout.as_secs_f64()),
+        (true, _) => timed_out_after(timeout),
         (false, Some(c)) => format!("exited {c}"),
         (false, None) => "was killed by a signal".into(),
     };

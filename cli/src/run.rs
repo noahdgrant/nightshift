@@ -157,13 +157,22 @@ fn read_art(path: &Path) -> Option<Art> {
 
 /// Move `file` into `<dir>/history/<stem>-<n>.md`, n one past the highest already there.
 fn archive_file(dir: &Path, file: &str, moves: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
+    archive_as(dir, file, file.trim_end_matches(".md"), moves)
+}
+
+/// Move `file` into `<dir>/history/<stem>-<n>.md`, n one past the highest `<stem>-<n>.md`.
+fn archive_as(
+    dir: &Path,
+    file: &str,
+    stem: &str,
+    moves: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<()> {
     let src = dir.join(file);
     if !src.exists() {
         return Ok(());
     }
     let hist = dir.join("history");
     fs::create_dir_all(&hist).with_context(|| format!("cannot create {}", hist.display()))?;
-    let stem = file.trim_end_matches(".md");
     let prefix = format!("{stem}-");
     let next = fs::read_dir(&hist)?
         .flatten()
@@ -460,6 +469,15 @@ pub fn phase_command(
         }
     }
     Ok(argv)
+}
+
+/// A phase's timeout; `NS_PHASE_TIMEOUT_MS` overrides it.
+fn phase_timeout(minutes: u64) -> Duration {
+    std::env::var("NS_PHASE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_secs(minutes * 60))
 }
 
 struct PhaseRun {
@@ -1154,6 +1172,7 @@ fn drive(
     let fac = ctx.fac;
     let subscription = fac.subscription();
     let mut attempts: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let mut timed_out: BTreeMap<&'static str, String> = BTreeMap::new();
     let mut forced: Option<Decision> = args.from.as_ref().map(|f| {
         run(
             PHASES
@@ -1207,11 +1226,13 @@ fn drive(
         let p = fac.phase(phase);
         let attempt = attempts.get(phase).copied().unwrap_or(0) + 1;
         if attempt > p.max_attempts {
-            return Ok(finish(
-                Outcome::Stuck,
-                format!("{phase} is out of attempts ({})", p.max_attempts),
-                Some(phase),
-            ));
+            let mut reason = format!("{phase} is out of attempts ({})", p.max_attempts);
+            if let Some(t) = timed_out.get(phase) {
+                reason.push_str(&format!(
+                    ": the last attempt {t}; raise its timeout_minutes or split the unit"
+                ));
+            }
+            return Ok(finish(Outcome::Stuck, reason, Some(phase)));
         }
         if let Some(b) = fac.budget_usd() {
             if shared.spent_usd >= b {
@@ -1237,6 +1258,7 @@ fn drive(
             ("NS_ATTEMPT", attempt.to_string()),
             ("NS_WORKTREE", ctx.worktree.to_string_lossy().into_owned()),
         ];
+        let timeout = phase_timeout(p.timeout_minutes);
         eprintln!("ns run: {} {phase} attempt {attempt} ({why})", ctx.unit);
         let r = {
             let _held =
@@ -1254,7 +1276,7 @@ fn drive(
                 &prompt,
                 &ctx.worktree,
                 &env,
-                Duration::from_secs(p.timeout_minutes * 60),
+                timeout,
                 &transcript,
                 subscription,
             )
@@ -1290,6 +1312,18 @@ fn drive(
             return Ok(f);
         }
         attempts.insert(phase, attempt);
+        if r.timed_out {
+            let file = artifact_of(phase);
+            let stem = format!("{}-timeout", file.trim_end_matches(".md"));
+            let mut late = Vec::new();
+            archive_as(&ctx.artifacts, file, &stem, &mut late)?;
+            if let Some((_, dst)) = late.first() {
+                rec["archived"] = json!(dst.to_string_lossy());
+            }
+            timed_out.insert(phase, gate::timed_out_after(timeout));
+        } else {
+            timed_out.remove(phase);
+        }
         let art = read_art(&art_path);
         let written = art.is_some();
         if !written {
@@ -1306,7 +1340,7 @@ fn drive(
             *last_artifact = Some(art_path.to_string_lossy().into_owned());
         } else {
             let why = if r.timed_out {
-                format!("timed out after {} min", p.timeout_minutes)
+                gate::timed_out_after(timeout)
             } else {
                 match r.exit {
                     Some(0) => "no artifact written".to_string(),
