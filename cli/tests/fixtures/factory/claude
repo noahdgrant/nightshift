@@ -11,6 +11,7 @@ echo "$phase" >> "$ctrl/calls"
 n=$(wc -l < "$ctrl/calls" | tr -d ' ')
 printf '%s' "$prompt" > "$ctrl/prompt-$n-$phase.txt"
 echo "$*" > "$ctrl/args"
+printf '%s\n' "${GH_TOKEN:-}" >> "$ctrl/tokens"
 [ -n "${ANTHROPIC_API_KEY:-}" ] && echo "ANTHROPIC_API_KEY" >> "$ctrl/leak"
 action=pass
 if [ -s "$ctrl/$phase" ]; then

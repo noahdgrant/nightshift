@@ -8,6 +8,7 @@ mod doctor;
 mod error;
 mod eval;
 mod factory;
+mod forge;
 mod frontmatter;
 mod git;
 mod install;

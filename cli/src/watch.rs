@@ -202,6 +202,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     let repo = Repo::discover(&start)?;
     let froot = factory::root(args.factory.as_deref(), &repo.root);
     let fac = factory::load(&froot)?;
+    run::load_config()?;
     let q = fac.queue.clone();
     let mut shared = Shared::new();
     let deadline = match &args.until {

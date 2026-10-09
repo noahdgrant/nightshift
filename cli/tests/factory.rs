@@ -203,6 +203,35 @@ impl Env {
         fs::read_to_string(self.ctrl.join(format!("prompt-{n}-{phase}.txt"))).unwrap()
     }
 
+    fn config(&self, text: &str) {
+        fs::write(self.base.join("no-config.toml"), text).unwrap();
+    }
+
+    /// An executable script in the temp dir, for `token_command`.
+    fn script(&self, name: &str, body: &str) -> PathBuf {
+        let p = self.base.join(name);
+        fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        StdCommand::new("chmod").arg("+x").arg(&p).status().unwrap();
+        p
+    }
+
+    /// The distinct `GH_TOKEN` values the fake gh and the fake harness saw.
+    fn tokens_seen(&self) -> Vec<String> {
+        let mut seen: Vec<String> = [self.ghd.join("tokens"), self.ctrl.join("tokens")]
+            .iter()
+            .flat_map(|p| {
+                fs::read_to_string(p)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        seen.sort();
+        seen.dedup();
+        seen
+    }
+
     fn worktree(&self, unit: &str) -> PathBuf {
         self.base.join("myrepo.worktrees").join(unit)
     }
@@ -816,4 +845,146 @@ fn watch_has_no_unit_cap_by_default() {
     let v = e.run(&["watch"], 0);
     assert_eq!(v["units"].as_array().unwrap().len(), 5, "{v}");
     assert_eq!(v["stopped"], "queue empty");
+}
+
+// ---------------------------------------------------------------- forge credentials
+
+const FAKE_TOKEN: &str = "fake-token-4f2a9c";
+
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(files_under(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
+}
+
+#[test]
+fn forge_token_reaches_every_child_and_never_the_logs() {
+    let e = Env::new();
+    let cmd = e.script("token.sh", &format!("echo '  {FAKE_TOKEN}  '"));
+    e.config(&format!(
+        "[forge.github]\ntoken_command = {:?}\n",
+        cmd.to_str().unwrap()
+    ));
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("build", &["pass:commit"]);
+    let out = e
+        .ns()
+        .args(["watch", "--once"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    assert_eq!(e.tokens_seen(), [FAKE_TOKEN]);
+    assert_eq!(e.calls(), ["triage", "build", "verify", "review", "ship"]);
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!printed.contains(FAKE_TOKEN), "{printed}");
+    let ns_dir = e.root.join(".git/ns");
+    let logged = files_under(&ns_dir);
+    assert!(logged.iter().any(|p| p.ends_with("runs.jsonl")));
+    assert!(logged
+        .iter()
+        .any(|p| p.to_string_lossy().contains("transcripts")));
+    for p in logged {
+        let text = fs::read_to_string(&p).unwrap_or_default();
+        assert!(!text.contains(FAKE_TOKEN), "token in {}", p.display());
+    }
+}
+
+#[test]
+fn forge_token_env_is_read_and_exported() {
+    let e = Env::new();
+    e.config("[forge.github]\ntoken_env = \"MY_GH_TOKEN\"\n");
+    let out = e
+        .ns()
+        .env("MY_GH_TOKEN", FAKE_TOKEN)
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    assert_eq!(e.tokens_seen(), [FAKE_TOKEN]);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(FAKE_TOKEN));
+}
+
+#[test]
+fn a_set_gh_token_wins_and_no_command_runs() {
+    let e = Env::new();
+    let marker = e.base.join("ran");
+    let cmd = e.script("token.sh", &format!("touch {}; exit 1", marker.display()));
+    e.config(&format!(
+        "[forge.github]\ntoken_command = {:?}\n",
+        cmd.to_str().unwrap()
+    ));
+    e.ns()
+        .env("GH_TOKEN", "from-env")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    assert!(
+        !marker.exists(),
+        "token_command ran though GH_TOKEN was set"
+    );
+    assert_eq!(e.tokens_seen(), ["from-env"]);
+}
+
+#[test]
+fn a_failing_token_command_stops_before_any_child_and_hides_its_output() {
+    let e = Env::new();
+    let cmd = e.script("token.sh", &format!("echo {FAKE_TOKEN}; exit 1"));
+    e.config(&format!(
+        "[forge.github]\ntoken_command = {:?}\n",
+        cmd.to_str().unwrap()
+    ));
+    for args in [&["run", "--issue", "7"][..], &["watch", "--once"][..]] {
+        let out = e.ns().args(args).assert().code(2).get_output().clone();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("github"), "{err}");
+        assert!(err.contains(cmd.to_str().unwrap()), "{err}");
+        assert!(!err.contains(FAKE_TOKEN), "{err}");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains(FAKE_TOKEN));
+    }
+    assert!(e.gh_calls().is_empty());
+    assert!(e.calls().is_empty());
+}
+
+#[test]
+fn an_empty_token_is_an_error() {
+    let e = Env::new();
+    let cmd = e.script("token.sh", "echo '   '");
+    e.config(&format!(
+        "[forge.github]\ntoken_command = {:?}\n",
+        cmd.to_str().unwrap()
+    ));
+    let out = e
+        .ns()
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("printed no token"), "{err}");
+    e.config("[forge.github]\ntoken_env = \"MY_GH_TOKEN\"\n");
+    let out = e
+        .ns()
+        .env("MY_GH_TOKEN", "")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("MY_GH_TOKEN"), "{err}");
+    assert!(e.calls().is_empty());
 }

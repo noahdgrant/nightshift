@@ -2,6 +2,7 @@
 # Fake gh for ns run / ns watch tests. Serves canned JSON from $FAKE_GH_DIR and records calls.
 d="$FAKE_GH_DIR"
 printf '%s\n' "$*" >> "$d/calls"
+printf '%s\n' "${GH_TOKEN:-}" >> "$d/tokens"
 case "$1 $2" in
   "api --paginate")
     while read -r line; do
