@@ -1,0 +1,76 @@
+description = "Rough meeting notes for a low-stock alert feature. Under gates: auto, with no one to interview, the skill should write a versioned requirements doc plus changelog where docs/agents/docs.md says, with MoSCoW sections, <KEY>-<n> IDs, person-actor stories, undecided values left as [?] with Open questions rows, and Status short of Approved."
+fixture = "py-inventory"
+skills = ["ns-requirements"]
+# ns-contract holds the human-only approval rule the skill links to.
+# ns-grilling is left out: under gates: auto nobody can answer, so the skill drafts from the notes
+# and turns each unsettled branch into [?] instead of interviewing. ns-setup is left out because the
+# overlay supplies docs/agents/docs.md.
+extra_skills = ["ns-contract"]
+requires = []
+timeout_minutes = 15
+prompt = """
+Turn the rough notes in notes/low-stock-alerts.md into a requirements doc. No one is around to answer questions. gates: auto
+"""
+
+[[check]]
+# Exactly one first version, in its own directory under the configured requirements directory.
+type = "command"
+run = '[ "$(ls docs/requirements/*/v1.md 2>/dev/null | wc -l)" -eq 1 ]'
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = 'f=$(ls docs/requirements/*/v1.md) && [ -f "$(dirname "$f")/changelog.md" ]'
+expect_exit = 0
+
+[[check]]
+# A heading for each MoSCoW category.
+type = "command"
+run = '''
+f=$(ls docs/requirements/*/v1.md) && for c in Must Should Could "Won.t"; do grep -Eq "^#+ *$c" "$f" || exit 1; done
+'''
+expect_exit = 0
+
+[[check]]
+# Requirement rows carry <KEY>-<n> IDs.
+type = "command"
+run = '''f=$(ls docs/requirements/*/v1.md) && grep -Eq '^\| *[A-Z][A-Z0-9]*-[0-9]+ *\|' "$f"'''
+expect_exit = 0
+
+[[check]]
+# User stories whose actor is a person in a role from the notes.
+type = "command"
+run = '''f=$(ls docs/requirements/*/v1.md) && grep -Eiq 'As an? [^,]*(manager|purchas|buyer|clerk|picker)' "$f"'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/requirements/*/v1.md) && ! grep -Eiq 'As (an?|the) (system|service|server|cli|api|script|job|cron)\b' "$f"'''
+expect_exit = 0
+
+[[check]]
+# The undecided threshold and delivery channel stay unknown, with an Open questions section.
+type = "command"
+run = '''f=$(ls docs/requirements/*/v1.md) && grep -Fq '[?]' "$f" && grep -Eiq '^#+ *Open questions' "$f"'''
+expect_exit = 0
+
+[[check]]
+# Approval is human-only.
+type = "command"
+run = '''f=$(ls docs/requirements/*/v1.md) && ! grep -Eiq '^\| *Status *\| *Approved' "$f" && grep -Eiq '^\| *Status *\| *(Draft|In review)' "$f"'''
+expect_exit = 0
+
+[[check]]
+# Template prompt lines are gone.
+type = "command"
+run = '''f=$(ls docs/requirements/*/v1.md) && ! grep -Eq '^>' "$f"'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = ["docs/requirements/**", "docs/agents/docs.md", ".ns/**"]
+
+[[check]]
+type = "judge"
+rubric = "Read the requirements doc under docs/requirements/. Pass only if: the threshold ('maybe 10?') and the alert delivery channel are left as [?] with Open questions rows naming an owner (Priya or Tom) rather than invented; available stock (net of reservations) is the measured quantity; auto-reordering is a Won't with a reason; days-of-stock is a Could; not slowing reserve/fulfil is a requirement with a [?] or sourced bar rather than an adjective; and no row names a mechanism (email, cron) as the requirement."
+required = false

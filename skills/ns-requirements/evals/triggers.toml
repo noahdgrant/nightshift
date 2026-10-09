@@ -1,0 +1,65 @@
+# Does the ns-requirements description fire on the right prompts? 8 positive, 8 negative.
+
+[[trigger]]
+prompt = "Write a requirements doc for the low-stock alerts feature from notes/low-stock-alerts.md."
+expect = true
+
+[[trigger]]
+prompt = "We're starting a new parking meter project. Help me flesh out the requirements before anyone designs anything."
+expect = true
+
+[[trigger]]
+prompt = "Sort these features into must-haves, should-haves and could-haves for the first release."
+expect = true
+
+[[trigger]]
+prompt = "Review docs/requirements/meter/v1.md and tell me whether it's ready to design against."
+expect = true
+
+[[trigger]]
+prompt = "Turn this list of customer asks into user stories and MoSCoW-prioritized requirements."
+expect = true
+
+[[trigger]]
+prompt = "The pilot customer now needs alerts within 30 seconds instead of 60. Update requirement PARK-4."
+expect = true
+
+[[trigger]]
+prompt = "What must be true for the reporting export to count as done? Capture it as requirements with IDs."
+expect = true
+
+[[trigger]]
+prompt = "Drop the offline mode requirement from the meter requirements, it's not happening this release."
+expect = true
+
+[[trigger]]
+prompt = "Fix the off-by-one in Inventory.reserve, test first."
+expect = false
+
+[[trigger]]
+prompt = "Install the Python requirements from requirements.txt into a venv."
+expect = false
+
+[[trigger]]
+prompt = "Write a design doc for how the meter talks to the payment server."
+expect = false
+
+[[trigger]]
+prompt = "Triage .scratch/reservations/issues/03-negative-stock.md"
+expect = false
+
+[[trigger]]
+prompt = "Summarise the README in three bullet points."
+expect = false
+
+[[trigger]]
+prompt = "Bump the pytest version pinned in pyproject.toml."
+expect = false
+
+[[trigger]]
+prompt = "Review the diff on this branch before I open the PR."
+expect = false
+
+[[trigger]]
+prompt = "Add a GLOSSARY.md entry for 'reservation'."
+expect = false
