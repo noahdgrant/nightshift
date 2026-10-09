@@ -485,7 +485,10 @@ mod tests {
         let (status, _, _) = run_process(cmd, None, Duration::from_secs(30)).unwrap();
         assert!(status.unwrap().success());
         let text = std::fs::read_to_string(&ids).unwrap();
-        let got: Vec<i32> = text.split_whitespace().map(|n| n.parse().unwrap()).collect();
+        let got: Vec<i32> = text
+            .split_whitespace()
+            .map(|n| n.parse().unwrap())
+            .collect();
         // SAFETY: getsid and getpgrp only read this process's ids.
         let (sid, pgid) = unsafe { (libc::getsid(0), libc::getpgrp()) };
         assert_eq!(got.len(), 2, "{text}");

@@ -305,6 +305,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     }
     let q = fac.queue.clone();
     let mut shared = Shared::new();
+    shared.watch_pid = Some(std::process::id());
     let deadline = match &args.until {
         Some(s) => {
             let Some((h, m)) = clock::parse_hm(s) else {
