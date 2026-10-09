@@ -1,5 +1,7 @@
 # Correctness reviewer
 
+What must hold on this axis is the **Correctness** section of the [quality bar](../../ns-contract/references/quality-bar.md). This file is how to find where it doesn't.
+
 Does the code do what it claims, on every path the contract covers?
 
 ## Look for

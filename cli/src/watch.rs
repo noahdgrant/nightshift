@@ -573,27 +573,43 @@ fn open_findings(review: &str) -> Vec<String> {
             .eq_ignore_ascii_case(name)
             .then(|| v.trim().replace('`', ""))
     };
+    struct Finding {
+        heading: String,
+        location: String,
+        open: bool,
+    }
+    let mut finding: Option<Finding> = None;
     let mut found = Vec::new();
-    let mut heading: Option<&str> = None;
-    let mut location = String::new();
+    let mut flush = |f: Option<Finding>| {
+        if let Some(f) = f.filter(|f| f.open) {
+            found.push(if f.location.is_empty() {
+                f.heading
+            } else {
+                format!("{} ({})", f.heading, f.location)
+            });
+        }
+    };
     for line in review.lines() {
-        if let Some(h) = line.strip_prefix("### ") {
-            heading = Some(h.trim()).filter(|h| id.is_match(h));
-            location.clear();
-        } else if let Some(l) = field(line, "location") {
-            location = l;
-        } else if let (Some(h), Some(st)) = (heading, field(line, "status")) {
-            if st.to_lowercase().starts_with("open") {
-                let h = h.replace('`', "");
-                found.push(if location.is_empty() {
-                    h
-                } else {
-                    format!("{h} ({location})")
+        if line.starts_with('#') {
+            flush(finding.take());
+            finding = line
+                .strip_prefix("### ")
+                .map(str::trim)
+                .filter(|h| id.is_match(h))
+                .map(|h| Finding {
+                    heading: h.replace('`', ""),
+                    location: String::new(),
+                    open: false,
                 });
+        } else if let Some(f) = finding.as_mut() {
+            if let Some(l) = field(line, "location") {
+                f.location = l;
+            } else if let Some(st) = field(line, "status") {
+                f.open = st.to_lowercase().starts_with("open");
             }
-            heading = None;
         }
     }
+    flush(finding);
     found
 }
 
@@ -644,6 +660,12 @@ Open after 3 fix cycles: C1, I2, I4.
 ### I4. Formatted loosely
 - **Location:** `a.py:4`
 - **Status:** Open
+### I5. Location after status
+- Status: open
+- Location: `a.py:5`
+### I6. Closed by a section
+## Suggestion
+- Status: open
 ### S1. A suggestion
 - Location: `a.py:3`
 - Status: open
@@ -655,7 +677,8 @@ Open after 3 fix cycles: C1, I2, I4.
             [
                 "C1. Drops every SKU (a.py:1)",
                 "I2. No location given",
-                "I4. Formatted loosely (a.py:4)"
+                "I4. Formatted loosely (a.py:4)",
+                "I5. Location after status (a.py:5)"
             ]
         );
         assert!(open_findings("no findings here").is_empty());

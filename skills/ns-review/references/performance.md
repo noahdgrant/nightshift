@@ -1,5 +1,7 @@
 # Performance reviewer
 
+What must hold on this axis is the **Performance** section of the [quality bar](../../ns-contract/references/quality-bar.md). This file is how to find where it doesn't.
+
 Find changes that make the system measurably slower, larger or hungrier. Quantify when you can: "adds one query per item, ~50 ms each at 100 items" beats "could be slow". Leave micro-optimisations alone unless the code is on a hot path.
 
 ## General

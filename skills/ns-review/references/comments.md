@@ -1,5 +1,7 @@
 # Comments reviewer
 
+What must hold on this axis is the **Comments** section of the [quality bar](../../ns-contract/references/quality-bar.md). This file is how to find where it doesn't.
+
 This axis delegates to the `ns-no-comments` skill. Its rules live in [comment-sicko.md](../../ns-no-comments/references/comment-sicko.md); the lead pastes that file into this brief below this one. Run that persona against the diff's comments and suppressions in **report mode**: list what it would delete and flag, and leave the files unchanged.
 
 ## Report

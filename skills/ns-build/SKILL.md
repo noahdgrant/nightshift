@@ -60,7 +60,17 @@ While building, apply these principles:
 
 Done when every acceptance criterion has a passing test and a commit, and the working tree is clean.
 
-## 4. Rebase, tidy, and run the full checks
+## 4. Self-check
+
+Review will check your diff against the [quality bar](../ns-contract/references/quality-bar.md). Meet it first. Diff against the base with `git diff "$(git merge-base <base> HEAD)"` and work through three checks. Fix what each one finds test-first, with the `ns-tdd` skill, and commit.
+
+1. **The bar.** Mark every item of the quality bar against your diff: met, fixed (with the commit), or not applicable with a one-line reason.
+2. **Every branch tested.** List each branch and error path the diff adds: each `if` arm, early return, raised or returned error, loop that can run zero times. Every one needs a test that takes it, whether or not an acceptance criterion names it.
+3. **Mutation self-check.** For each changed file with logic, pick up to five conditions or constants the diff adds or changes, and run each mutation as the Mutation check in [correctness.md](../ns-review/references/correctness.md) says: flip a comparison, drop a guard, invert a condition, run only the tests covering that file under a timeout, then restore the file and confirm `git status` is unchanged. A mutation that survives needs a new test. Add it, then rerun the mutation until it goes red.
+
+Done when every bar item is marked, every listed branch has a test, and every mutation is killed or recorded `inconclusive` with the reason.
+
+## 5. Rebase, tidy, and run the full checks
 
 `git fetch origin` and rebase onto the base branch (`origin/main` unless the brief names another). Tidy the history now: small commits that each build and pass, ordered to tell the story, with bodies written using `ns-writing-for-humans`. This is the history that verify, review and ship will see; nothing rewrites it later.
 
@@ -70,7 +80,7 @@ Firmware: the build check includes the size report. Record flash and RAM use aga
 
 A red check sends you back to step 3. Done when all three are green on a clean tree, or you have stopped with `fail` or `blocked`.
 
-## 5. Write the build artifact
+## 6. Write the build artifact
 
 Write `.ns/<unit-id>/build.md`:
 
@@ -92,6 +102,14 @@ updated: <UTC timestamp>
 ## Checks
 <command>: <pass|fail>, with the proving output lines
 
+## Self-check
+Bar: <n> met, <n> fixed, <n> not applicable. One line per fixed or not-applicable item: <axis>: <item>: <commit, or why it doesn't apply>
+Branches: <n> listed, all tested. One line per branch: <file:line> <branch>: <test id>
+
+| Mutation | Location | Command | Result |
+|---|---|---|---|
+| `>=` to `>` | `src/x.py:17` | `timeout 60 pytest -q tests/test_x.py` | killed |
+
 ## Deviations from the brief
 <what changed and why>, or "none"
 
@@ -101,9 +119,9 @@ updated: <UTC timestamp>
 
 If any step ran inline instead of through a fresh-context agent, say so here.
 
-## 6. Gate
+## 7. Gate
 
-The gate passes when tests, lint and build are all green on the final commit. Set `status: pass`. A check that stays red is `fail`, with what is missing. A check you can't run (no toolchain, no credentials) is `blocked`, never `pass`. A unit past the hard limit is `blocked` (step 3).
+The gate passes when the self-check is done (step 4) and tests, lint and build are all green on the final commit. Set `status: pass`. A check that stays red is `fail`, with what is missing. A check you can't run (no toolchain, no credentials) is `blocked`, never `pass`. A unit past the hard limit is `blocked` (step 3).
 
 Next phase: `ns-verify`. Under `gates: stop` (the default), stop and report the path to `build.md`. Under `gates: auto`, load the `ns-verify` skill if `status: pass`, and stop otherwise.
 
