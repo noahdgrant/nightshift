@@ -1,7 +1,8 @@
 //! Thin wrapper around the `git` binary.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 
@@ -33,6 +34,42 @@ pub fn ok(cwd: &Path, args: &[&str]) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// The `git patch-id` of `sha`'s changes since its merge base with `base`. `None` when either
+/// is not a commit here, or the diff is empty.
+pub fn diff_id(cwd: &Path, base: &str, sha: &str) -> Option<String> {
+    if sha.is_empty() {
+        return None;
+    }
+    let mb = run(cwd, &["merge-base", base, sha]).ok()?;
+    let diff = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["diff-tree", "-p", "--no-color", &mb, sha])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["patch-id", "--stable"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child.stdin.take()?.write_all(&diff.stdout).ok()?;
+    let out = child.wait_with_output().ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .map(String::from)
+}
+
+/// `a` and `b` carry the same change against `base`, as after a rebase.
+pub fn same_diff(cwd: &Path, base: &str, a: &str, b: &str) -> bool {
+    diff_id(cwd, base, a).is_some_and(|x| diff_id(cwd, base, b) == Some(x))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,5 +205,57 @@ mod tests {
         assert_eq!(e[0].branch.as_deref(), Some("refs/heads/main"));
         assert_eq!(e[1].branch, None);
         assert!(e[2].bare);
+    }
+
+    fn commit(dir: &Path, file: &str, text: &str) -> String {
+        std::fs::write(dir.join(file), text).unwrap();
+        run(dir, &["add", file]).unwrap();
+        run(
+            dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                file,
+            ],
+        )
+        .unwrap();
+        run(dir, &["rev-parse", "HEAD"]).unwrap()
+    }
+
+    #[test]
+    fn a_rebase_keeps_the_diff_id_and_a_content_change_does_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        run(d, &["init", "-q", "-b", "main"]).unwrap();
+        commit(d, "README", "hi\n");
+        run(d, &["checkout", "-qb", "unit"]).unwrap();
+        let reviewed = commit(d, "work.txt", "one\n");
+        run(d, &["checkout", "-q", "main"]).unwrap();
+        commit(d, "UPSTREAM", "x\n");
+        run(d, &["checkout", "-q", "unit"]).unwrap();
+        run(
+            d,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "rebase",
+                "-q",
+                "main",
+            ],
+        )
+        .unwrap();
+        let rebased = run(d, &["rev-parse", "HEAD"]).unwrap();
+        assert_ne!(reviewed, rebased);
+        assert!(same_diff(d, "main", &reviewed, &rebased));
+        let changed = commit(d, "work.txt", "two\n");
+        assert!(!same_diff(d, "main", &reviewed, &changed));
+        assert!(!same_diff(d, "main", "0000000", &rebased));
+        assert!(!same_diff(d, "main", "", &rebased));
     }
 }

@@ -525,6 +525,68 @@ fn ci_failure_rebuilds_then_merges_on_the_same_pr() {
     assert!(p.contains("assert 1 == 2"), "{p}");
 }
 
+/// main gains an unrelated commit after review. `pass:script` in ship rebases the unit onto
+/// it; `pass:commit` changes the unit's content instead.
+fn rebased_after_review(ship: &[&str]) -> (Env, Value, i32) {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.queue("ship", ship);
+    git(&e.root, &["checkout", "-qb", "upstream"]);
+    fs::write(e.root.join("UPSTREAM"), "x\n").unwrap();
+    git(&e.root, &["add", "UPSTREAM"]);
+    git(&e.root, &["commit", "-q", "-m", "upstream"]);
+    let upstream = git(&e.root, &["rev-parse", "HEAD"]);
+    git(&e.root, &["checkout", "-q", "main"]);
+    e.ctl(
+        "ship.sh",
+        &format!(
+            "git update-ref refs/heads/main {upstream}\n\
+             git -c user.name=f -c user.email=f@f rebase -q main\n"
+        ),
+    );
+    e.gh_file("checks-12.json", GREEN);
+    let out = e.ns().args(["run", "--issue", "7"]).output().unwrap();
+    let v = serde_json::from_slice(&out.stdout).unwrap();
+    (e, v, out.status.code().unwrap())
+}
+
+#[test]
+fn a_rebase_after_review_still_merges() {
+    let (e, v, code) = rebased_after_review(&["pass:script"]);
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    assert_eq!(e.calls(), ["triage", "build", "verify", "review", "ship"]);
+    let wt = e.worktree(UNIT);
+    let review = fs::read_to_string(wt.join(format!(".ns/{UNIT}/review.md"))).unwrap();
+    let head = git(&wt, &["rev-parse", "--short", "HEAD"]);
+    assert!(!review.contains(&format!("sha: {head}")), "{review}");
+}
+
+#[test]
+fn a_content_change_after_review_reverifies_reviews_and_ships() {
+    let (e, v, code) = rebased_after_review(&["pass:commit", "pass"]);
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "ship", "verify", "review", "ship"]
+    );
+    let hist = e.worktree(UNIT).join(format!(".ns/{UNIT}/history"));
+    assert!(hist.join("pr-1.md").is_file());
+}
+
+#[test]
+fn a_content_change_after_every_review_runs_out_of_attempts() {
+    let (e, v, code) = rebased_after_review(&["pass:commit", "pass:commit"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["reason"], "verify is out of attempts (2)", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "ship", "verify", "review", "ship"]
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
 #[test]
 fn human_review_files_need_a_human_merge() {
     let e = Env::new();
