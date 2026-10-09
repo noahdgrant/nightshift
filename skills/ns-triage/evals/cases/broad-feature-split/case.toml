@@ -61,20 +61,33 @@ for path in children:
     missing = [k for k, v in checks.items() if not v]
     if missing:
         sys.exit(f"{path}: missing {missing}")
-    m = re.search(r"(?mi)^\W*Blocked by:?\**:?\s*\D{0,3}(\d+)", text)
-    blockers[path] = int(m.group(1)) if m else None
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    body = lines[1:] if lines and lines[0].startswith("#") else lines
+    first = body[0] if body else ""
+    m = re.match(r"(?i)\W*Blocked by:?\**:?\s*(.*)", first)
+    blockers[path] = [int(n) for n in re.findall(r"#?(\d+)", m.group(1))] if m else []
+    if not m and re.search(r"(?mi)^\W*Blocked by", text):
+        sys.exit(f"{path}: Blocked by is not the first body line")
 numbers = {int(os.path.basename(p).split("-")[0]): p for p in children}
-roots = [p for p, n in blockers.items() if n is None]
+roots = [p for p, n in blockers.items() if not n]
 if len(roots) != 1:
     sys.exit(f"expected exactly one child without Blocked by, got {roots}")
 root = roots[0]
 first = open(root, encoding="utf-8").read().splitlines()[0]
 if not re.search(r"(?i)reorder[- _]?point", os.path.basename(root) + first):
     sys.exit(f"the unblocked child is not the reorder-point child: {root}")
-for path, n in blockers.items():
-    if n is not None and numbers.get(n) != root:
-        sys.exit(f"{path}: Blocked by #{n} does not resolve to the reorder-point child {root}")
-print(f"ok: {len(children)} children, all dependents blocked by {root}")
+def reaches_root(path, seen=()):
+    for n in blockers[path]:
+        dep = numbers.get(n)
+        if dep is None or dep in seen:
+            continue
+        if dep == root or reaches_root(dep, seen + (path,)):
+            return True
+    return False
+for path in blockers:
+    if path != root and not reaches_root(path):
+        sys.exit(f"{path}: blockers do not reach the reorder-point child {root}")
+print(f"ok: {len(children)} children, all dependents reach {root}")
 PYEOF
 '''
 expect_exit = 0
