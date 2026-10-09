@@ -1,4 +1,5 @@
-//! The factory definition: `nightshift.toml` and `agents/<role>/agent.md` (docs/FACTORY.md).
+//! The factory definition: `nightshift.toml`, `runners/<name>.toml` and `agents/<role>/agent.md`
+//! (docs/FACTORY.md).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -6,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config;
@@ -62,6 +63,35 @@ pub struct Factory {
     /// Absent table: `policy = "human"`.
     #[serde(default)]
     pub merge: Merge,
+    /// `runners/<name>.toml`, read by `load`, not part of `nightshift.toml`.
+    #[serde(skip)]
+    pub runners: BTreeMap<String, Runner>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunnerKind {
+    #[default]
+    Local,
+    /// A lock-bearing kind only; nothing runs remotely.
+    Bench,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Runner {
+    #[serde(default)]
+    pub kind: RunnerKind,
+    /// Names of exclusive locks `ns run` holds for the whole phase.
+    #[serde(default)]
+    pub locks: Vec<String>,
+}
+
+/// A lock name becomes a file name, so it may not hold a path separator or start with a dot.
+fn valid_lock_name(name: &str) -> bool {
+    regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+        .unwrap()
+        .is_match(name)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -161,6 +191,8 @@ pub struct Phase {
     pub model: Option<String>,
     pub timeout_minutes: Option<u64>,
     pub max_attempts: Option<u32>,
+    /// A `runners/<name>.toml`; unset runs with no locks.
+    pub runner: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -221,6 +253,7 @@ pub struct PhaseSettings {
     pub model: Option<String>,
     pub timeout_minutes: u64,
     pub max_attempts: u32,
+    pub runner: Option<String>,
 }
 
 impl Factory {
@@ -233,7 +266,17 @@ impl Factory {
             model: p.model.or_else(|| self.defaults.model.clone()),
             timeout_minutes: p.timeout_minutes.unwrap_or(self.defaults.timeout_minutes),
             max_attempts: p.max_attempts.unwrap_or(self.defaults.max_attempts),
+            runner: p.runner,
         }
+    }
+
+    /// The locks a phase's runner names.
+    pub fn locks(&self, p: &PhaseSettings) -> Vec<String> {
+        p.runner
+            .as_ref()
+            .and_then(|r| self.runners.get(r))
+            .map(|r| r.locks.clone())
+            .unwrap_or_default()
     }
 
     pub fn subscription(&self) -> bool {
@@ -285,6 +328,13 @@ impl Factory {
             if p.timeout_minutes == 0 {
                 out.push(format!("phase {name}: timeout_minutes must be at least 1"));
             }
+            if let Some(r) = &p.runner {
+                if !self.runners.contains_key(r) {
+                    out.push(format!(
+                        "phase {name}: runner {r:?} has no runners/{r}.toml"
+                    ));
+                }
+            }
             let known = cfg.is_some_and(|c| c.harness.contains_key(&p.harness))
                 || config::builtin_harness(&p.harness).is_some();
             if !known {
@@ -292,6 +342,23 @@ impl Factory {
                     "phase {name}: harness {:?} is neither in the user config nor built in (claude, codex)",
                     p.harness
                 ));
+            }
+        }
+        let mut by_folded: BTreeMap<String, &str> = BTreeMap::new();
+        for (name, r) in &self.runners {
+            for l in &r.locks {
+                if !valid_lock_name(l) {
+                    out.push(format!(
+                        "runners/{name}.toml: lock {l:?} must be letters, digits, '.', '_' or '-', not starting with '.'"
+                    ));
+                    continue;
+                }
+                let first = by_folded.entry(l.to_lowercase()).or_insert(l);
+                if *first != l {
+                    out.push(format!(
+                        "runners/{name}.toml: lock {l:?} differs from {first:?} only by case, and one file serves both on a case-insensitive filesystem"
+                    ));
+                }
             }
         }
         if !["auto", "human"].contains(&self.merge.policy.as_str()) {
@@ -326,21 +393,57 @@ pub fn parse(text: &str) -> Result<Factory, toml::de::Error> {
     toml::from_str(text)
 }
 
-/// Load `<root>/nightshift.toml`. A missing file gives the defaults.
+/// Load `<root>/nightshift.toml` and `<root>/runners/*.toml`. A missing file gives the defaults.
 pub fn load(root: &Path) -> Result<Factory> {
     let p = root.join(FILE);
-    let text = match fs::read_to_string(&p) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Factory::default()),
-        Err(e) => return Err(anyhow::anyhow!("cannot read {}: {e}", p.display())),
-    };
-    parse(&text).map_err(|e| {
+    let bad = |what: String| -> anyhow::Error {
         SfError::usage(
-            format!("cannot parse {}: {e}", p.display()),
+            what,
             "check it with:\n  ns factory validate\n\nthe schema is in docs/FACTORY.md",
         )
         .into()
-    })
+    };
+    let mut fac = match fs::read_to_string(&p) {
+        Ok(t) => parse(&t).map_err(|e| bad(format!("cannot parse {}: {e}", p.display())))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Factory::default(),
+        Err(e) => return Err(anyhow::anyhow!("cannot read {}: {e}", p.display())),
+    };
+    let (runners, problems) = load_runners(root);
+    if !problems.is_empty() {
+        return Err(bad(problems.join("; ")));
+    }
+    fac.runners = runners;
+    Ok(fac)
+}
+
+/// Every `runners/<name>.toml` under the root, and a problem for each file that doesn't parse.
+fn load_runners(root: &Path) -> (BTreeMap<String, Runner>, Vec<String>) {
+    let mut runners = BTreeMap::new();
+    let mut problems = Vec::new();
+    let Ok(entries) = fs::read_dir(root.join("runners")) else {
+        return (runners, problems);
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("toml") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| toml::from_str::<Runner>(&t).map_err(|e| e.message().to_string()))
+        {
+            Ok(r) => {
+                runners.insert(name, r);
+            }
+            Err(e) => problems.push(format!("runners/{name}.toml: {e}")),
+        }
+    }
+    problems.sort();
+    (runners, problems)
 }
 
 /// The prompt template for a role: `agents/<role>/agent.md` body, else `None` (built-in).
@@ -478,8 +581,11 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
             .map_err(|e| e.to_string())
             .and_then(|t| parse(&t).map_err(|e| e.to_string()))
         {
-            Ok(f) => {
+            Ok(mut f) => {
                 name = f.name.clone();
+                let (runners, bad) = load_runners(&root);
+                f.runners = runners;
+                problems.extend(bad);
                 problems.extend(f.problems(cfg.as_ref()));
                 problems.extend(agent_problems(&root));
                 for name in PHASES {
@@ -492,6 +598,8 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
                         "model": p.model,
                         "timeout_minutes": p.timeout_minutes,
                         "max_attempts": p.max_attempts,
+                        "runner": p.runner,
+                        "locks": f.locks(&p),
                         "prompt": if custom { "agent.md" } else { "built-in" },
                     }));
                 }
@@ -631,6 +739,89 @@ ci_timeout_minutes = 30
         assert!(p.contains("unknown phase"));
         assert!(p.contains("\"nope\""));
         assert!(p.contains("max_attempts"));
+    }
+
+    fn runners(files: &[(&str, &str)]) -> (BTreeMap<String, Runner>, Vec<String>) {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("runners")).unwrap();
+        for (name, text) in files {
+            fs::write(tmp.path().join("runners").join(name), text).unwrap();
+        }
+        load_runners(tmp.path())
+    }
+
+    #[test]
+    fn runner_files_load_with_local_as_the_default_kind() {
+        let (r, bad) = runners(&[
+            ("zephyr.toml", "locks = [\"zephyr-workspace\"]\n"),
+            (
+                "bench.toml",
+                "kind = \"bench\"\nlocks = [\"bench-1\", \"zephyr-workspace\"]\n",
+            ),
+            ("README.md", "not a runner"),
+        ]);
+        assert!(bad.is_empty(), "{bad:?}");
+        assert_eq!(r.len(), 2);
+        assert_eq!(r["zephyr"].kind, RunnerKind::Local);
+        assert_eq!(r["bench"].kind, RunnerKind::Bench);
+    }
+
+    #[test]
+    fn a_bad_runner_file_is_a_problem() {
+        let (r, bad) = runners(&[
+            ("remote.toml", "kind = \"remote\"\n"),
+            ("typo.toml", "lock = [\"a\"]\n"),
+            ("notalist.toml", "locks = \"a\"\n"),
+        ]);
+        assert!(r.is_empty());
+        assert_eq!(bad.len(), 3, "{bad:?}");
+        assert!(bad[1].starts_with("runners/remote.toml"), "{bad:?}");
+    }
+
+    #[test]
+    fn runner_references_and_lock_names_are_checked() {
+        let mut f = parse("[phases.verify]\nrunner = \"bench\"\n").unwrap();
+        let p = f.problems(None).join("\n");
+        assert!(
+            p.contains("phase verify: runner \"bench\" has no runners/bench.toml"),
+            "{p}"
+        );
+        f.runners.insert(
+            "bench".into(),
+            Runner {
+                kind: RunnerKind::Bench,
+                locks: vec![
+                    "../x".into(),
+                    "bench-1".into(),
+                    "bench-1".into(),
+                    "a/b".into(),
+                    ".hidden".into(),
+                    "..".into(),
+                ],
+            },
+        );
+        let p = f.problems(None);
+        assert_eq!(p.len(), 4, "{p:?}");
+        assert!(p[0].contains("\"../x\""), "{p:?}");
+        assert!(f.locks(&f.phase("build")).is_empty());
+    }
+
+    #[test]
+    fn lock_names_that_differ_only_by_case_are_a_problem() {
+        let mut f = parse("").unwrap();
+        for (runner, lock) in [("a", "Bench"), ("b", "bench"), ("c", "Bench")] {
+            f.runners.insert(
+                runner.into(),
+                Runner {
+                    kind: RunnerKind::Local,
+                    locks: vec![lock.into()],
+                },
+            );
+        }
+        let p = f.problems(None);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("runners/b.toml"), "{p:?}");
+        assert!(p[0].contains("only by case"), "{p:?}");
     }
 
     #[test]

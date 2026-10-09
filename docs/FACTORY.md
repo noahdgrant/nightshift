@@ -1,6 +1,6 @@
 # Factory definition and runner
 
-The minimum slice of D15 to D17 (`docs/DESIGN.md`) that runs nightshift unattended: a definition in `.nightshift/`, `ns run` to drive one unit through the phases, and `ns watch` to pull units from the tracker overnight. Automations, scorers and runner kinds come later (#5, #7).
+The minimum slice of D15 to D17 (`docs/DESIGN.md`) that runs nightshift unattended: a definition in `.nightshift/`, `ns run` to drive one unit through the phases, and `ns watch` to pull units from the tracker overnight. Automations and scorers come later (#7).
 
 ## Layout
 
@@ -8,6 +8,7 @@ The minimum slice of D15 to D17 (`docs/DESIGN.md`) that runs nightshift unattend
 .nightshift/
   nightshift.toml          the definition root
   agents/<role>/agent.md   one role per phase (optional: built-in default prompts exist)
+  runners/<name>.toml      exclusive locks a phase holds (optional; see "Runners")
 ```
 
 The root is the directory holding `nightshift.toml`: `.nightshift/` in a product repo, or the repo root of a factory repo. `ns` finds it from `--factory <dir>`, else `<main-worktree-root>/.nightshift/`.
@@ -35,6 +36,7 @@ skill = "ns-build"
 timeout_minutes = 90
 [phases.verify]
 skill = "ns-verify"
+runner = "bench"                   # a runners/<name>.toml. Unset: no locks
 [phases.review]
 skill = "ns-review"
 [phases.ship]
@@ -61,7 +63,7 @@ ci_timeout_minutes = 30
 ci_register_timeout = 3            # minutes to wait for the PR head's first check before "no CI"
 ```
 
-Every table and key is optional; the defaults are the values above, except `limits.max_units` (unset: no cap), `limits.budget_usd` and `merge` as noted. A phase table may override `harness`, `model`, `timeout_minutes` and `max_attempts`, and its `skill` defaults to `ns-<phase>`. Unknown keys and unknown phases are errors. `ns factory validate` checks the file and every `agents/<role>/agent.md` (role matches the directory, placeholders are known), and exits 1 on any problem.
+Every table and key is optional; the defaults are the values above, except `limits.max_units` (unset: no cap), `limits.budget_usd` and `merge` as noted. A phase table may override `harness`, `model`, `timeout_minutes` and `max_attempts`, may set `runner`, and its `skill` defaults to `ns-<phase>`. Unknown keys and unknown phases are errors. `ns factory validate` checks the file, every `runners/<name>.toml` and every `agents/<role>/agent.md` (role matches the directory, placeholders are known), and exits 1 on any problem.
 
 ## agents/<role>/agent.md
 
@@ -74,6 +76,28 @@ Work in {worktree}. gates: {gates}.
 ```
 
 Placeholders: `{skill}`, `{unit}`, `{issue}`, `{issue_url}`, `{worktree}`, `{gates}`, `{phase}`, `{attempt}`, `{feedback}` (the body of the artifact that sent work back, or the failing CI checks and log tail, empty on a first attempt). They are replaced in one pass, so placeholder-like text inside `{feedback}` stays literal. Without a file, `ns run` uses a built-in prompt of this shape, with a `Phase: <phase> (attempt <n>)` line and the feedback appended when there is any.
+
+## Runners
+
+A runner names the locks a phase must hold, so phases that share a Zephyr workspace or a hardware bench never overlap, across worktrees or across repos.
+
+```toml
+kind = "bench"                     # local (default) | bench
+locks = ["bench-1", "zephyr-workspace"]
+```
+
+`kind` is a label for now: `bench` runs on this machine like `local`, and no runner is remote. A lock name is letters, digits, `.`, `_` and `-`, not starting with `.`, and no two lock names across runners may differ only by case, since a case-insensitive filesystem gives them one file. The runner's name is the file name, and a phase picks it with `runner = "<name>"`. `ns factory validate` reports a runner file that doesn't parse, an unknown key or `kind`, a bad lock name, two lock names that differ only by case, and a phase `runner` with no file. `ns run` refuses all of them with exit 2.
+
+Before a phase with a runner starts, `ns run` takes every lock it names, sorted by name so two runs can't deadlock, and holds them until the phase's harness exits, whatever the outcome. A phase with no runner takes no locks.
+
+Each lock is the file `<lock_dir>/<name>.lock`. While a run holds it, the file records that run's pid and unit; otherwise it is empty. `lock_dir` defaults to `<git-common-dir>/ns/locks`, which only other runs in the same repo see, and `ns-run.lock` already keeps those to one at a time. To share a bench or workspace between repos, point every repo's runs at one directory in the user config (`cli/README.md`, `[runners]`):
+
+```toml
+[runners]
+lock_dir = "~/.local/state/nightshift/locks"
+```
+
+**A held lock makes the run wait**, not refuse. It prints `ns run: <unit> <phase> waits for lock <name> (held by pid <pid>, unit <unit>)` to stderr, logs a `lock_wait` event, and blocks until the holder lets go. The other run's phase timeout bounds the wait. Exit 5 still means only the per-repo run lock (below). The lock is an OS `flock` on the file, so the kernel drops a run's hold when its process dies, and a file naming a dead pid is taken over at once. If `ns` is hard-killed (SIGKILL or a crash), the lock frees at once while its harness child may still be running, since the child does not inherit the lock.
 
 ## ns run
 
@@ -88,7 +112,7 @@ Steps:
 1. Create or reuse the worktree (`ns worktree new`, including setup).
 2. Read `.ns/<unit>/*.md` frontmatter and pick the next phase from the state table.
 3. Archive superseded artifacts. Before running phase P, move P's artifact, if present, to `.ns/<unit>/history/<artifact>-<n>.md`, with n one past the highest number already there for that artifact. Also archive every downstream artifact (order: brief, build, evidence, review, pr) unless it is `status: pass` and current, and every downstream artifact after one that was archived. Whatever remains in `.ns/<unit>/` is current, so the state table needs no timestamps.
-4. Run the phase's harness headless in write mode (`command_write`), with cwd set to the worktree and the rendered prompt on stdin. Enforce the timeout by killing the process group. The built-in `claude` write command for `ns run` is `claude -p --permission-mode bypassPermissions --model {model} --output-format stream-json --verbose`: the phases need Bash, which `acceptEdits` can't grant headless. A configured claude command gets `--output-format stream-json --verbose` added if it lacks them. Stdout goes to `<git-common-dir>/ns/transcripts/<unit>/<phase>-<attempt>.jsonl`, and cost and tokens are parsed from it.
+4. Take the phase's runner locks (see "Runners"), waiting for any that another run holds. Run the phase's harness headless in write mode (`command_write`), with cwd set to the worktree and the rendered prompt on stdin. Enforce the timeout by killing the process group. The built-in `claude` write command for `ns run` is `claude -p --permission-mode bypassPermissions --model {model} --output-format stream-json --verbose`: the phases need Bash, which `acceptEdits` can't grant headless. A configured claude command gets `--output-format stream-json --verbose` added if it lacks them. Stdout goes to `<git-common-dir>/ns/transcripts/<unit>/<phase>-<attempt>.jsonl`, and cost and tokens are parsed from it.
 5. The attempt wrote its artifact if P's artifact exists after the run. If not, the attempt failed with "no artifact written" (or the timeout or exit code), and the files archived in step 3 move back, so the next decision sees the state as it was. A triage run that exits 0 without writing `brief.md` is the "triage decided a human or define is needed" row: stuck, no retry. A usage-limit stop also moves the files back (see "Billing").
 6. Repeat until the unit is done, merged, stuck, paused, or out of budget.
 
@@ -118,7 +142,7 @@ Hard rules, enforced in code whatever the prompts say:
 - Phases never merge, never approve, and never push to the default branch. Only `ns run`'s own merge step merges (see "Merge").
 - Before the first phase, `ns run` records `git ls-remote origin` for the default branch (skipped without an `origin` remote). After every phase it reads it again. If it moved to a commit reachable from the unit's HEAD, this run pushed to it: stuck with "default branch moved". A move to anything else is another actor (a human merge, another machine): it is logged as `default_moved_by_other_actor` and becomes the new baseline.
 - After every phase, if the unit has a known PR (`pr:` in `pr.md` or its newest archived copy, a number or a URL ending in one), `gh pr view <n> --json state`. `MERGED` means a phase merged it: stuck with "PR merged by run".
-- One unit at a time per repo. A lock file in the common git dir (`ns-run.lock`, holding pid and unit) refuses a second runner with exit 5. A lock whose pid is dead is removed.
+- One unit at a time per repo. A lock file in the common git dir (`ns-run.lock`, holding pid and unit) refuses a second runner with exit 5. A lock whose pid is dead is removed. Runner locks are separate and wait instead (see "Runners").
 
 Run log: append one JSON line per event to `.git/ns/runs.jsonl` in the common git dir: unit, phase, attempt, decision, artifact status, sha, cost, tokens, wall time, exit. Start, end, breaches, CI failures and merges are events too. `ns run --dry-run` prints the next decision, the rendered prompt and the command, and runs nothing: no worktree, no lock, no harness.
 

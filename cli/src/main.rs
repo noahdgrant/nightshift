@@ -310,7 +310,8 @@ are resolved once and exported as GH_TOKEN / GITLAB_TOKEN to every child; a set 
 
 Exit codes: 0 done or merged, 1 stuck, 2 usage or config error (incl. missing subscription
 login, harness not on PATH, forge token that does not resolve), 3 budget, 4 paused on a usage
-limit, 5 another ns run holds the lock.";
+limit, 5 another ns run holds the repo's run lock. A phase whose runner names a lock another
+run holds waits for it instead ([runners] lock_dir in the ns config shares locks across repos).";
 
 const WATCH_HELP: &str = "\
 Examples:
@@ -341,7 +342,7 @@ Exit codes: 1 failure, 2 usage error, 3 eval harness not configured or bad confi
 
 #[derive(Subcommand)]
 enum FactoryCmd {
-    /// Parse nightshift.toml (unknown keys are errors) and check agents/<role>/agent.md
+    /// Parse nightshift.toml and runners/*.toml (unknown keys are errors) and check agents/<role>/agent.md
     #[command(after_help = "\
 Examples:
   ns factory validate

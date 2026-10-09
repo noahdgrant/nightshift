@@ -230,6 +230,15 @@ host = "gitlab.example.com"                        # optional; exported as GITLA
 - A failing command, empty output or an unset `token_env` stops with exit 2. The error names the forge and the command, never the token or the command's output.
 - The token is never written to `runs.jsonl`, transcripts, errors or `ns doctor` output.
 
+### `[runners]`
+
+```toml
+[runners]
+lock_dir = "~/.local/state/nightshift/locks"   # unset: <git-common-dir>/ns/locks
+```
+
+Where `ns run` keeps the locks a factory's runners name. Point every repo that shares a bench or a workspace at the same directory, so their phases wait for each other. See `docs/FACTORY.md`, "Runners".
+
 Harness tables live at `[eval.harnesses.<name>]`, not `[eval.harness.<name>]` as `docs/EVALS.md` shows. TOML can't hold `eval.harness` as both the string `"claude"` and a table, so the spec's example doesn't parse.
 
 A capability holds arbitrary string keys plus an optional `path_prepend` list. Fixture `[env]` values expand `{capability.<name>.<key>}` and `~`. The `path_prepend` entries of every capability a case or its fixture requires go on the front of `PATH` for the whole trial.
