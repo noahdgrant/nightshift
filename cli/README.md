@@ -145,7 +145,7 @@ Lists open issues labelled `[queue] ready_label` with `gh`, drops issues whose f
 
 ### `ns doctor`
 
-Prints the config path, whether it exists and parses, and each configured role with its resolved harness, model, read-only and write commands, and whether the binary is on PATH. `distinct_harnesses` lists the providers in use, so a skill can tell whether two roles get a cross-provider check. `harnesses` reports which of `claude`, `codex`, `cursor-agent`, `gemini` and `opencode` are on PATH. `forge` reports, per forge, whether it is `configured` and whether a token resolved (`token_resolved`), and for GitHub the `account` that `gh api user` returns with that token. The token itself is never printed. `problems` lists anything that would make `ns ask` fail, and a forge token that doesn't resolve.
+Prints the config path, whether it exists and parses, and each configured role with its resolved harness, model, read-only and write commands, and whether the binary is on PATH. `distinct_harnesses` lists the providers in use, so a skill can tell whether two roles get a cross-provider check. `harnesses` reports which of `claude`, `codex`, `cursor-agent`, `gemini` and `opencode` are on PATH. `forge` reports, per forge, whether it is `configured` and whether a token resolved (`token_resolved`), and for GitHub the `account` that `gh api user` returns with that token. The token itself is never printed. `claude_phases` reports that `ns run` phases and `ns eval` trials run claude with auto-memory off (`auto_memory: false`) and the variable that does it (`env`). `problems` lists anything that would make `ns ask` fail, and a forge token that doesn't resolve.
 
 ## Config
 
