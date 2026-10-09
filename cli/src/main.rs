@@ -16,6 +16,7 @@ mod install;
 mod lint;
 mod markers;
 mod run;
+mod skills_sync;
 #[cfg(test)]
 mod testutil;
 mod watch;
