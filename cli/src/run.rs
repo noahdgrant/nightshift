@@ -157,13 +157,20 @@ fn read_art(path: &Path) -> Option<Art> {
 
 /// Move `file` into `<dir>/history/<stem>-<n>.md`, n one past the highest already there.
 fn archive_file(dir: &Path, file: &str, moves: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
+    if let Some(dst) = archive_as(dir, file, file.trim_end_matches(".md"))? {
+        moves.push((dir.join(file), dst));
+    }
+    Ok(())
+}
+
+/// Like `archive_file` with a custom `stem`; returns the destination, or None if `file` is absent.
+fn archive_as(dir: &Path, file: &str, stem: &str) -> Result<Option<PathBuf>> {
     let src = dir.join(file);
     if !src.exists() {
-        return Ok(());
+        return Ok(None);
     }
     let hist = dir.join("history");
     fs::create_dir_all(&hist).with_context(|| format!("cannot create {}", hist.display()))?;
-    let stem = file.trim_end_matches(".md");
     let prefix = format!("{stem}-");
     let next = fs::read_dir(&hist)?
         .flatten()
@@ -180,8 +187,7 @@ fn archive_file(dir: &Path, file: &str, moves: &mut Vec<(PathBuf, PathBuf)>) -> 
     let dst = hist.join(format!("{stem}-{next}.md"));
     fs::rename(&src, &dst)
         .with_context(|| format!("cannot move {} to {}", src.display(), dst.display()))?;
-    moves.push((src, dst));
-    Ok(())
+    Ok(Some(dst))
 }
 
 /// Undo `archive_for` after an attempt that wrote nothing, so the unit's state is as before.
@@ -213,7 +219,7 @@ pub fn archive_for(dir: &Path, phase: &str, s: &State) -> Result<Vec<(PathBuf, P
     Ok(moves)
 }
 
-/// The unit's PR number: from `pr.md`, else the newest archived `pr-<n>.md` that names one.
+/// The unit's PR number: from `pr.md`, else the newest archived `pr-<n>.md` or `pr-timeout-<n>.md` that names one.
 pub fn known_pr(dir: &Path) -> Option<u64> {
     if let Some(n) = read_art(&dir.join("pr.md"))
         .and_then(|a| a.pr)
@@ -226,11 +232,8 @@ pub fn known_pr(dir: &Path) -> Option<u64> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            let n = name
-                .strip_prefix("pr-")?
-                .strip_suffix(".md")?
-                .parse()
-                .ok()?;
+            let rest = name.strip_prefix("pr-")?.strip_suffix(".md")?;
+            let n = rest.strip_prefix("timeout-").unwrap_or(rest).parse().ok()?;
             Some((n, e.path()))
         })
         .collect();
@@ -460,6 +463,34 @@ pub fn phase_command(
         }
     }
     Ok(argv)
+}
+
+/// A phase's timeout. `NS_PHASE_TIMEOUT_MS` overrides it: `<ms>` for every phase, or
+/// comma-separated `<phase>=<ms>` for the named phases only.
+fn phase_timeout(phase: &str, minutes: u64) -> Duration {
+    let var = std::env::var("NS_PHASE_TIMEOUT_MS").ok();
+    timeout_override(var.as_deref(), phase).unwrap_or_else(|| Duration::from_secs(minutes * 60))
+}
+
+/// The override for `phase` in an `NS_PHASE_TIMEOUT_MS` value; a named entry beats a bare one.
+fn timeout_override(var: Option<&str>, phase: &str) -> Option<Duration> {
+    let mut bare = None;
+    for part in var?.split(',') {
+        match part.split_once('=') {
+            Some((p, ms)) if p.trim() == phase => {
+                if let Ok(ms) = ms.trim().parse::<u64>() {
+                    return Some(Duration::from_millis(ms));
+                }
+            }
+            Some(_) => {}
+            None => {
+                if bare.is_none() {
+                    bare = part.trim().parse::<u64>().ok();
+                }
+            }
+        }
+    }
+    bare.map(Duration::from_millis)
 }
 
 struct PhaseRun {
@@ -1154,6 +1185,7 @@ fn drive(
     let fac = ctx.fac;
     let subscription = fac.subscription();
     let mut attempts: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let mut timed_out: BTreeMap<&'static str, String> = BTreeMap::new();
     let mut forced: Option<Decision> = args.from.as_ref().map(|f| {
         run(
             PHASES
@@ -1207,11 +1239,13 @@ fn drive(
         let p = fac.phase(phase);
         let attempt = attempts.get(phase).copied().unwrap_or(0) + 1;
         if attempt > p.max_attempts {
-            return Ok(finish(
-                Outcome::Stuck,
-                format!("{phase} is out of attempts ({})", p.max_attempts),
-                Some(phase),
-            ));
+            let mut reason = format!("{phase} is out of attempts ({})", p.max_attempts);
+            if let Some(t) = timed_out.get(phase) {
+                reason.push_str(&format!(
+                    ": the last attempt {t}; raise its timeout_minutes or split the unit"
+                ));
+            }
+            return Ok(finish(Outcome::Stuck, reason, Some(phase)));
         }
         if let Some(b) = fac.budget_usd() {
             if shared.spent_usd >= b {
@@ -1237,6 +1271,7 @@ fn drive(
             ("NS_ATTEMPT", attempt.to_string()),
             ("NS_WORKTREE", ctx.worktree.to_string_lossy().into_owned()),
         ];
+        let timeout = phase_timeout(phase, p.timeout_minutes);
         eprintln!("ns run: {} {phase} attempt {attempt} ({why})", ctx.unit);
         let r = {
             let _held =
@@ -1254,7 +1289,7 @@ fn drive(
                 &prompt,
                 &ctx.worktree,
                 &env,
-                Duration::from_secs(p.timeout_minutes * 60),
+                timeout,
                 &transcript,
                 subscription,
             )
@@ -1275,6 +1310,13 @@ fn drive(
             "output_tokens": t.output_tokens,
             "transcript": transcript.to_string_lossy(),
         });
+        if r.timed_out {
+            let file = artifact_of(phase);
+            let stem = format!("{}-timeout", file.trim_end_matches(".md"));
+            if let Some(dst) = archive_as(&ctx.artifacts, file, &stem)? {
+                rec["archived"] = json!(dst.to_string_lossy());
+            }
+        }
         if let Some(limit) = billing::usage_limit(&r.stdout, shared.clock.now()) {
             rec["status"] = json!("paused");
             rec["reason"] = json!(limit.message);
@@ -1290,6 +1332,11 @@ fn drive(
             return Ok(f);
         }
         attempts.insert(phase, attempt);
+        if r.timed_out {
+            timed_out.insert(phase, gate::timed_out_after(timeout));
+        } else {
+            timed_out.remove(phase);
+        }
         let art = read_art(&art_path);
         let written = art.is_some();
         if !written {
@@ -1306,7 +1353,7 @@ fn drive(
             *last_artifact = Some(art_path.to_string_lossy().into_owned());
         } else {
             let why = if r.timed_out {
-                format!("timed out after {} min", p.timeout_minutes)
+                gate::timed_out_after(timeout)
             } else {
                 match r.exit {
                     Some(0) => "no artifact written".to_string(),
@@ -1330,10 +1377,19 @@ fn drive(
                 Some("triage"),
             ));
         }
-        if let (Some(cmd), Some(trigger)) = (
-            &ctx.gate,
-            gate_trigger(phase, art.as_ref(), !same_sha(&state.head, &ctx.head())),
-        ) {
+        let head_moved = !same_sha(&state.head, &ctx.head());
+        if r.timed_out && phase == "build" {
+            if let Some(fb) = gate_state.red_feedback() {
+                forced = Some(run("build", fb, "timed out with the CI gate still red"));
+            }
+            continue;
+        }
+        let trigger = if r.timed_out {
+            (phase == "review" && head_moved).then_some(gate::Trigger::ReviewMovedHead)
+        } else {
+            gate_trigger(phase, art.as_ref(), head_moved)
+        };
+        if let (Some(cmd), Some(trigger)) = (&ctx.gate, trigger) {
             let job = gate::Job {
                 cmd,
                 worktree: &ctx.worktree,
@@ -1895,6 +1951,53 @@ mod tests {
         archive_for(d, "build", &state(&[])).unwrap();
         assert!(d.join("history/build-1.md").exists());
         assert!(d.join("history/build-2.md").exists());
+    }
+
+    fn pr_art(dir: &Path, name: &str, pr: u64) {
+        fs::create_dir_all(dir.join("history")).unwrap();
+        fs::write(
+            dir.join(name),
+            format!(
+                "---\nunit: u\nphase: ship\nstatus: pass\nsha: abc1234\npr: https://github.com/o/r/pull/{pr}\nupdated: 2026-10-08T00:00:00Z\n---\nbody\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn known_pr_reads_timed_out_archives_newest_first() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        assert_eq!(known_pr(d), None);
+        pr_art(d, "history/pr-timeout-1.md", 21);
+        assert_eq!(known_pr(d), Some(21));
+        pr_art(d, "history/pr-2.md", 22);
+        assert_eq!(known_pr(d), Some(22));
+        pr_art(d, "history/pr-timeout-3.md", 23);
+        assert_eq!(known_pr(d), Some(23));
+        pr_art(d, "pr.md", 24);
+        assert_eq!(known_pr(d), Some(24));
+    }
+
+    #[test]
+    fn timeout_override_parses_bare_named_and_malformed_values() {
+        let ms = |v: Option<&str>, p: &str| timeout_override(v, p).map(|d| d.as_millis());
+        assert_eq!(ms(None, "build"), None);
+        assert_eq!(ms(Some(""), "build"), None);
+        assert_eq!(ms(Some("1500"), "build"), Some(1500));
+        assert_eq!(ms(Some("1500"), "review"), Some(1500));
+        assert_eq!(ms(Some("build=1500"), "build"), Some(1500));
+        assert_eq!(ms(Some("build=1500"), "review"), None);
+        assert_eq!(ms(Some("build=1,review=2"), "review"), Some(2));
+        assert_eq!(ms(Some(" build = 7 , review = 8 "), "review"), Some(8));
+        assert_eq!(ms(Some(" 9 "), "ship"), Some(9));
+        assert_eq!(ms(Some("abc"), "build"), None);
+        assert_eq!(ms(Some("build=abc"), "build"), None);
+        assert_eq!(ms(Some("build=,review=3"), "review"), Some(3));
+        assert_eq!(ms(Some("5,build=1"), "build"), Some(1));
+        assert_eq!(ms(Some("build=1,5"), "build"), Some(1));
+        assert_eq!(ms(Some("build=1,5"), "review"), Some(5));
+        assert_eq!(ms(Some("build=abc,5"), "build"), Some(5));
     }
 
     fn real_state(r: &Rebased) -> State {

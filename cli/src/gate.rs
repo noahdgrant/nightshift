@@ -103,13 +103,20 @@ fn read_window(path: &Path) -> Vec<u8> {
     read().unwrap_or_default()
 }
 
+/// "timed out after 90 min", or in seconds when `timeout` is not whole minutes.
+pub fn timed_out_after(timeout: Duration) -> String {
+    let secs = timeout.as_secs();
+    if secs >= 60 && secs.is_multiple_of(60) && timeout.subsec_nanos() == 0 {
+        format!("timed out after {} min", secs / 60)
+    } else {
+        format!("timed out after {:.1} s", timeout.as_secs_f64())
+    }
+}
+
 /// The `{feedback}` for a red gate.
 pub fn feedback(cmd: &str, r: &GateRun, timeout: Duration, head: &str) -> String {
     let how = match (r.timed_out, r.exit) {
-        (true, _) if timeout.as_secs() >= 60 && timeout.as_secs().is_multiple_of(60) => {
-            format!("timed out after {} min", timeout.as_secs() / 60)
-        }
-        (true, _) => format!("timed out after {:.1} s", timeout.as_secs_f64()),
+        (true, _) => timed_out_after(timeout),
         (false, Some(c)) => format!("exited {c}"),
         (false, None) => "was killed by a signal".into(),
     };
@@ -186,6 +193,14 @@ impl Gate {
         match trigger {
             Trigger::BuildPassed | Trigger::ReviewMovedHead => self.run_at_head(job, log),
             Trigger::BuildWroteNothing => self.after_silent_build(job, log),
+        }
+    }
+
+    /// The feedback of a red verdict not yet followed by a green one.
+    pub fn red_feedback(&self) -> Option<&str> {
+        match &self.verdict {
+            Some(Verdict::Red { feedback, .. }) => Some(feedback),
+            _ => None,
         }
     }
 
@@ -399,6 +414,22 @@ mod tests {
         assert!(r.green());
         assert!(!r.tail.is_empty());
         assert!(r.tail.chars().all(|c| c == 'x'));
+    }
+
+    #[test]
+    fn timed_out_after_uses_minutes_only_for_whole_minutes() {
+        assert_eq!(
+            timed_out_after(Duration::from_secs(60)),
+            "timed out after 1 min"
+        );
+        assert_eq!(
+            timed_out_after(Duration::from_secs(59)),
+            "timed out after 59.0 s"
+        );
+        assert_eq!(
+            timed_out_after(Duration::from_millis(60_500)),
+            "timed out after 60.5 s"
+        );
     }
 
     fn red(timed_out: bool, exit: Option<i32>) -> GateRun {

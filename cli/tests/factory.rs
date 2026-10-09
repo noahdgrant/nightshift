@@ -619,6 +619,172 @@ fn a_gate_that_times_out_goes_back_to_build_and_uses_an_attempt() {
     assert_eq!(g[0]["green"], false);
 }
 
+fn phase_events(e: &Env) -> Vec<Value> {
+    fs::read_to_string(e.root.join(".git/ns/runs.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["event"] == "phase")
+        .collect()
+}
+
+fn run_with_phase_timeout(e: &Env, code: i32) -> Value {
+    run_with_timeouts(e, "build=1500", code)
+}
+
+fn run_with_timeouts(e: &Env, timeouts: &str, code: i32) -> Value {
+    let out = e
+        .ns()
+        .env("NS_PHASE_TIMEOUT_MS", timeouts)
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(code)
+        .get_output()
+        .clone();
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+fn build_event(e: &Env, attempt: u64) -> Value {
+    phase_events(e)
+        .into_iter()
+        .find(|p| p["phase"] == "build" && p["attempt"] == attempt)
+        .unwrap()
+}
+
+#[test]
+fn a_timed_out_phase_ignores_its_artifact_and_retries() {
+    let e = Env::new();
+    e.queue("build", &["blocked:sleep", "pass:commit"]);
+    let v = run_with_phase_timeout(&e, 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "build", "verify", "review", "ship"]
+    );
+    let dir = e.worktree(UNIT).join(".ns").join(UNIT);
+    let archived = dir.join("history/build-timeout-1.md");
+    assert!(fs::read_to_string(&archived)
+        .unwrap()
+        .contains("status: blocked"));
+    assert!(fs::read_to_string(dir.join("build.md"))
+        .unwrap()
+        .contains("status: pass"));
+    let p = build_event(&e, 1);
+    assert_eq!(p["timed_out"], true);
+    assert_eq!(p["written"], false);
+    assert_eq!(p["reason"], "timed out after 1.5 s");
+    assert_eq!(p["archived"], archived.to_str().unwrap());
+    assert!(e.prompt(3, "build").contains("attempt 2"));
+}
+
+#[test]
+fn a_phase_that_times_out_on_every_attempt_is_stuck_on_the_timeout() {
+    let e = Env::new();
+    e.factory("[phases.build]\nmax_attempts = 1\n");
+    e.queue("build", &["blocked:sleep"]);
+    let v = run_with_phase_timeout(&e, 1);
+    assert_eq!(v["outcome"], "stuck");
+    let reason = v["reason"].as_str().unwrap();
+    assert_eq!(
+        reason,
+        "build is out of attempts (1): the last attempt timed out after 1.5 s; raise its timeout_minutes or split the unit"
+    );
+    assert_eq!(e.calls(), ["triage", "build"]);
+    let dir = e.worktree(UNIT).join(".ns").join(UNIT);
+    assert!(!dir.join("build.md").exists());
+    assert!(dir.join("history/build-timeout-1.md").exists());
+}
+
+#[test]
+fn a_timeout_then_a_plain_failure_is_not_stuck_on_a_timeout() {
+    let e = Env::new();
+    e.queue("build", &["blocked:sleep", "none"]);
+    let v = run_with_phase_timeout(&e, 1);
+    assert_eq!(v["outcome"], "stuck");
+    assert_eq!(v["reason"], "build is out of attempts (2)");
+    assert_eq!(build_event(&e, 2)["reason"], "no artifact written");
+}
+
+#[test]
+fn repeated_timeouts_archive_each_artifact_separately() {
+    let e = Env::new();
+    e.queue("build", &["blocked:sleep", "fail:sleep"]);
+    let v = run_with_phase_timeout(&e, 1);
+    assert_eq!(v["outcome"], "stuck");
+    let hist = e.worktree(UNIT).join(".ns").join(UNIT).join("history");
+    assert!(fs::read_to_string(hist.join("build-timeout-1.md"))
+        .unwrap()
+        .contains("status: blocked"));
+    assert!(fs::read_to_string(hist.join("build-timeout-2.md"))
+        .unwrap()
+        .contains("status: fail"));
+}
+
+#[test]
+fn a_timed_out_review_that_moved_head_still_runs_the_gate() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"true\"\n");
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["blocked:commit+sleep", "pass"]);
+    let v = run_with_timeouts(&e, "review=1500", 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[1]["phase"], "review");
+    assert_eq!(g[1]["attempt"], 1);
+}
+
+#[test]
+fn a_timed_out_ship_keeps_its_pr_number_for_the_merged_guard() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.queue("ship", &["pass:merge+sleep"]);
+    let v = run_with_timeouts(&e, "ship=1500", 1);
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("PR merged by run"),
+        "{v}"
+    );
+    let dir = e.worktree(UNIT).join(".ns").join(UNIT);
+    assert!(!dir.join("pr.md").exists());
+    assert!(dir.join("history/pr-timeout-1.md").exists());
+}
+
+#[test]
+fn a_timed_out_build_does_not_run_the_gate() {
+    let e = Env::new();
+    let runs = e.ctrl.join("gate-runs");
+    let flag = e.ctrl.join("gate-green");
+    e.factory(&format!(
+        "[phases.build]\nmax_attempts = 3\ngate = \"echo ran >> {r}; test -f {f} || {{ touch {f}; exit 1; }}\"\n",
+        r = runs.display(),
+        f = flag.display()
+    ));
+    e.queue("build", &["pass:commit", "blocked:sleep", "pass:commit"]);
+    let v = run_with_phase_timeout(&e, 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "build", "build", "verify", "review", "ship"]
+    );
+    assert_eq!(fs::read_to_string(&runs).unwrap().lines().count(), 2);
+    let attempts: Vec<_> = gate_events(&e)
+        .iter()
+        .map(|g| g["attempt"].clone())
+        .collect();
+    assert_eq!(attempts, [1, 3]);
+    assert_eq!(build_event(&e, 2)["reason"], "timed out after 1.5 s");
+    assert_eq!(
+        build_event(&e, 3)["decision"],
+        "timed out with the CI gate still red"
+    );
+    assert!(e.prompt(4, "build").contains("attempt 3"));
+}
+
 #[test]
 fn a_red_gate_is_not_skipped_when_the_rebuild_writes_no_artifact() {
     let e = Env::new();
