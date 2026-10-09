@@ -46,7 +46,7 @@ A system doc's requirement tables add an *Allocated to* column between "Why / so
 
 S1. As a <actor>, I want <capability>, so that <benefit>.
 
-Met as written in PARK, with no refinement here: <IDs>.
+Met as written in <SYSTEM KEY>, with no refinement here: <IDs>.
 
 > Component docs only: every system row allocated to this component that no row below cites. IDs only, never the text.
 

@@ -80,7 +80,7 @@ The defaults are the canonical roles with each label equal to its name, and each
 
 **Section E: Domain docs.** Default to **single-context** (one `GLOSSARY.md` + `docs/adr/` at the root) and write it without asking. Offer **multi-context** (a root `GLOSSARY-MAP.md` pointing to per-context `GLOSSARY.md` files) only when exploration found multi-context signals.
 
-**Section F: Docs.** Propose the directories exploration found, else the defaults in [docs.md](references/docs.md), with a pull request on this repo as the review surface. Ask only when existing docs live somewhere else or reviewers work in another tool. List any ID keys already in use.
+**Section F: Docs.** Propose the directories exploration found (the layout under them is fixed by `ns-requirements`), else the defaults in [docs.md](references/docs.md), with a pull request on this repo as the review surface. Ask only when existing docs live somewhere else or reviewers work in another tool. List any ID keys already in use.
 
 ### 3. Confirm
 

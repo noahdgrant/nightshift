@@ -4,7 +4,7 @@ Where this repo keeps requirements and design docs, and how they are reviewed. `
 
 ## Requirements
 
-- **Directory**: `[docs/requirements/]`. One directory per thing, named for it in lowercase (`<directory>/<name>/`), holding one file per version (`v1.md`, `v1.1.md`) and one `changelog.md`.
+- **Directory**: `[docs/requirements/]`. Only the path is configurable: `ns-requirements` fixes the layout under it (one directory per thing, `v<n>.md` per version, one `changelog.md`).
 - **Template**: `docs/agents/templates/requirements.md` when it exists, else the skill's own. Put the team's house format there to override it.
 
 ## Design docs

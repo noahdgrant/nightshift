@@ -21,7 +21,7 @@ expect_exit = 0
 [[check]]
 type = "command"
 run = '''
-f=$(ls docs/requirements/*/v1.md) && for c in Must Should Could "Won.t"; do grep -Eq "^#+ *$c" "$f" || exit 1; done
+f=$(ls docs/requirements/*/v1.md) && for c in Must Should Could "Won.{1,3}t"; do grep -Eq "^#+ *$c" "$f" || exit 1; done
 '''
 expect_exit = 0
 
@@ -32,7 +32,7 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = '''f=$(ls docs/requirements/*/v1.md) && grep -Eiq 'As an? [^,]*(manager|purchas|buyer|clerk)' "$f"'''
+run = '''f=$(ls docs/requirements/*/v1.md) && grep -Eiq 'As an? [^,]*(manager)' "$f" && grep -Eiq 'As an? [^,]*(purchas|buyer)' "$f"'''
 expect_exit = 0
 
 [[check]]
@@ -42,17 +42,17 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = '''f=$(ls docs/requirements/*/v1.md) && [ "$(grep -Fo '[?]' "$f" | wc -l)" -ge 2 ] && awk '/^#+ *Open questions/{o=1;next} /^#+ /{o=0} o && /^\| *[^|-]/ && !/^\| *Question/' "$f" | grep -q .'''
+run = '''f=$(ls docs/requirements/*/v1.md) && [ "$(grep -Fo '[?]' "$f" | wc -l)" -ge 2 ] && awk '/^#+ *Open questions/{o=1;next} /^#+ /{o=0} o && /^\| *[^| -][^|]*\| *[^| -]/ && !/^\| *Question/' "$f" | grep -q .'''
 expect_exit = 0
 
 [[check]]
 type = "command"
-run = '''f=$(ls docs/requirements/*/v1.md) && awk '/^#+ *Won.t/{w=1;next} /^#+ /{w=0} w' "$f" | grep -Eiq 're-?order\w*' '''
+run = '''f=$(ls docs/requirements/*/v1.md) && awk '/^#+ *Won.{1,3}t/{w=1;next} /^#+ /{w=0} w' "$f" | grep -Eiq 're-?order\w*' '''
 expect_exit = 0
 
 [[check]]
 type = "command"
-run = '''f=$(ls docs/requirements/*/v1.md) && ! grep -v '\[?\]' "$f" | grep -Eiq '(below|under|less than|fewer than) +[0-9]+' '''
+run = '''f=$(ls docs/requirements/*/v1.md) && ! awk '/^#+ *(Sources|Won.{1,3}t)/{x=1;next} /^#+ /{x=0} !x' "$f" | grep -v '\[?\]' | grep -Eq '(^|[^0-9A-Za-z.-])10([^0-9A-Za-z-]|$)' '''
 expect_exit = 0
 
 [[check]]
