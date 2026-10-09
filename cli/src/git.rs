@@ -42,7 +42,7 @@ pub fn diff_id(cwd: &Path, base: &str, sha: &str) -> Option<String> {
     if sha.is_empty() || sha.starts_with('-') || base.starts_with('-') {
         return None;
     }
-    let mb = run(cwd, &["merge-base", base, sha]).ok()?;
+    let mb = run(cwd, &["merge-base", &freshest(cwd, base), sha]).ok()?;
     let diff = Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -59,7 +59,9 @@ pub fn diff_id(cwd: &Path, base: &str, sha: &str) -> Option<String> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    child.stdin.take()?.write_all(&diff.stdout).ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&diff.stdout);
+    }
     let out = child.wait_with_output().ok()?;
     String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
@@ -67,9 +69,18 @@ pub fn diff_id(cwd: &Path, base: &str, sha: &str) -> Option<String> {
         .map(String::from)
 }
 
-/// `a` and `b` carry the same change against `base`, as after a rebase.
-pub fn same_diff(cwd: &Path, base: &str, a: &str, b: &str) -> bool {
-    diff_id(cwd, base, a).is_some_and(|x| diff_id(cwd, base, b) == Some(x))
+/// `origin/<base>` when it is strictly ahead of the local `base`, else `base`. A unit rebased
+/// onto a fetched `origin/<base>` shares no newer merge base with a stale local branch.
+fn freshest<'a>(cwd: &Path, base: &'a str) -> std::borrow::Cow<'a, str> {
+    let remote = format!("refs/remotes/origin/{base}");
+    let ahead = ok(cwd, &["rev-parse", "--verify", "--quiet", &remote])
+        && ok(cwd, &["merge-base", "--is-ancestor", base, &remote])
+        && !ok(cwd, &["merge-base", "--is-ancestor", &remote, base]);
+    if ahead {
+        remote.into()
+    } else {
+        base.into()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,6 +212,10 @@ mod tests {
     use super::*;
     use crate::testutil::{commit_file, g, rebased_unit, write_commit};
 
+    fn same_diff(cwd: &Path, base: &str, a: &str, b: &str) -> bool {
+        diff_id(cwd, base, a).is_some_and(|x| diff_id(cwd, base, b) == Some(x))
+    }
+
     #[test]
     fn parses_porcelain() {
         let text = "worktree /r\nHEAD abc\nbranch refs/heads/main\n\nworktree /w/x\nHEAD def\ndetached\n\nworktree /b\nbare\n";
@@ -222,6 +237,31 @@ mod tests {
         assert!(!same_diff(d, "main", &r.reviewed, &changed));
         assert!(!same_diff(d, "main", "0000000", &r.rebased));
         assert!(!same_diff(d, "main", "", &r.rebased));
+    }
+
+    #[test]
+    fn a_whitespace_only_change_is_the_same_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = &tmp.path().canonicalize().unwrap();
+        g(d, &["init", "-q", "-b", "main"]);
+        commit_file(d, "README", "hi\n");
+        g(d, &["checkout", "-qb", "unit"]);
+        let reviewed = commit_file(d, "work.txt", "a b\n");
+        let spaced = commit_file(d, "work.txt", "a   b\n");
+        assert!(same_diff(d, "main", &reviewed, &spaced));
+    }
+
+    #[test]
+    fn a_stale_local_base_still_sees_a_unit_rebased_onto_the_remote_branch() {
+        let r = rebased_unit();
+        let d = &r.dir;
+        let ahead = g(d, &["rev-parse", "main"]);
+        g(d, &["update-ref", "refs/remotes/origin/main", &ahead]);
+        g(d, &["update-ref", "refs/heads/main", &format!("{ahead}~1")]);
+        assert_eq!(freshest(d, "main"), "refs/remotes/origin/main");
+        assert!(same_diff(d, "main", &r.reviewed, &r.rebased));
+        let changed = commit_file(d, "work.txt", "two\n");
+        assert!(!same_diff(d, "main", &r.reviewed, &changed));
     }
 
     #[test]

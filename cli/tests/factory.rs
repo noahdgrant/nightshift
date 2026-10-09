@@ -525,14 +525,14 @@ fn ci_failure_rebuilds_then_merges_on_the_same_pr() {
     assert!(p.contains("assert 1 == 2"), "{p}");
 }
 
-const PR_HEAD_AT_SHIP: &str = "git rev-parse HEAD";
+const PRINT_HEAD_SHA_CMD: &str = "git rev-parse HEAD";
 
 /// main gains an unrelated commit after review. `pass:script` in ship rebases the unit onto
-/// it; `pass:commit` changes the unit's content instead. The PR head is the sha `pr_head`
+/// it; `pass:commit` changes the unit's content instead. The PR head is the sha `print_pr_head_sha`
 /// prints before the rebase; `setup` runs before the unit does.
 fn rebased_after_review(
     ship: &[&str],
-    pr_head: &str,
+    print_pr_head_sha: &str,
     setup: impl FnOnce(&Env),
 ) -> (Env, Value, i32) {
     let e = Env::new();
@@ -549,7 +549,7 @@ fn rebased_after_review(
     e.ctl(
         "ship.sh",
         &format!(
-            "({pr_head}) > \"$FAKE_GH_DIR/pr-12.head\"\n\
+            "({print_pr_head_sha}) | tee \"$FAKE_GH_DIR/pr-12.head\" > \"$FAKE_GH_DIR/pr-12.shipped\"\n\
              git update-ref refs/heads/main {upstream}\n\
              git -c user.name=f -c user.email=f@f rebase -q main\n"
         ),
@@ -563,7 +563,7 @@ fn rebased_after_review(
 
 #[test]
 fn a_rebase_after_review_still_merges() {
-    let (e, v, code) = rebased_after_review(&["pass:script"], PR_HEAD_AT_SHIP, |_| {});
+    let (e, v, code) = rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |_| {});
     assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
     assert_eq!(e.calls(), ["triage", "build", "verify", "review", "ship"]);
     let wt = e.worktree(UNIT);
@@ -574,7 +574,7 @@ fn a_rebase_after_review_still_merges() {
 
 #[test]
 fn a_pr_head_from_before_the_rebase_merges_at_that_head() {
-    let (e, v, code) = rebased_after_review(&["pass:script"], PR_HEAD_AT_SHIP, |_| {});
+    let (e, v, code) = rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |_| {});
     assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
     let old = fs::read_to_string(e.ghd.join("pr-12.head")).unwrap();
     let wt = e.worktree(UNIT);
@@ -587,7 +587,7 @@ const UPDATED_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 
 #[test]
 fn a_behind_pr_merges_at_the_head_update_branch_returns() {
-    let (e, v, code) = rebased_after_review(&["pass:script"], PR_HEAD_AT_SHIP, |e| {
+    let (e, v, code) = rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |e| {
         e.gh_file("pr-12.merge", "BEHIND");
         e.gh_file("updated-12.head", UPDATED_HEAD);
     });
@@ -600,7 +600,7 @@ fn a_behind_pr_merges_at_the_head_update_branch_returns() {
 
 #[test]
 fn a_behind_pr_without_an_updated_head_merges_at_the_pre_update_head() {
-    let (e, v, code) = rebased_after_review(&["pass:script"], PR_HEAD_AT_SHIP, |e| {
+    let (e, v, code) = rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |e| {
         e.gh_file("pr-12.merge", "BEHIND");
         e.gh_file("updated-12.head", "none");
     });
@@ -610,13 +610,15 @@ fn a_behind_pr_without_an_updated_head_merges_at_the_pre_update_head() {
     let calls = e.gh_calls();
     let merge = calls.lines().find(|l| l.starts_with("pr merge")).unwrap();
     let head = merge.rsplit(' ').next().unwrap();
-    assert_eq!(head.len(), 40, "{merge}");
+    let shipped = fs::read_to_string(e.ghd.join("pr-12.shipped")).unwrap();
+    assert_eq!(head, shipped.trim(), "{merge}");
+    assert_ne!(head, git(&e.worktree(UNIT), &["rev-parse", "HEAD"]));
     assert_ne!(head, UPDATED_HEAD);
 }
 
 #[test]
 fn a_dry_run_on_a_rebased_unit_sees_its_reviewed_artifacts_as_current() {
-    let (e, v, code) = rebased_after_review(&["pass:script"], PR_HEAD_AT_SHIP, |_| {});
+    let (e, v, code) = rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |_| {});
     assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
     let v = e.run(&["run", "--issue", "7", "--dry-run"], 0);
     assert_eq!(v["decision"]["action"], "done", "{v}");
@@ -639,7 +641,7 @@ fn a_pr_head_with_other_content_needs_a_human_merge() {
 
 #[test]
 fn a_content_change_after_review_reverifies_reviews_and_ships() {
-    let (e, v, code) = rebased_after_review(&["pass:commit", "pass"], PR_HEAD_AT_SHIP, |_| {});
+    let (e, v, code) = rebased_after_review(&["pass:commit", "pass"], PRINT_HEAD_SHA_CMD, |_| {});
     assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
     assert_eq!(
         e.calls(),
@@ -652,7 +654,7 @@ fn a_content_change_after_review_reverifies_reviews_and_ships() {
 #[test]
 fn a_content_change_after_every_review_runs_out_of_attempts() {
     let (e, v, code) =
-        rebased_after_review(&["pass:commit", "pass:commit"], PR_HEAD_AT_SHIP, |_| {});
+        rebased_after_review(&["pass:commit", "pass:commit"], PRINT_HEAD_SHA_CMD, |_| {});
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["reason"], "verify is out of attempts (2)", "{v}");
     assert_eq!(

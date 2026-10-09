@@ -241,24 +241,36 @@ pub struct State {
     pub arts: BTreeMap<&'static str, Art>,
     pub head: String,
     pub has_issue: bool,
-    /// The worktree and the ref the unit's diff is taken against; `None` compares shas only.
-    pub diff_base: Option<DiffBase>,
+    /// The unit's diff at HEAD; `None` compares shas only.
+    pub unit_diff: Option<UnitDiff>,
 }
 
 #[derive(Debug, Clone)]
-pub struct DiffBase {
-    pub worktree: PathBuf,
-    pub base: String,
+pub struct UnitDiff {
+    worktree: PathBuf,
+    base: String,
+    head_id: Option<String>,
+}
+
+impl UnitDiff {
+    pub fn new(worktree: PathBuf, base: String, head: &str) -> Self {
+        let head_id = git::diff_id(&worktree, &base, head);
+        Self {
+            worktree,
+            base,
+            head_id,
+        }
+    }
+
+    fn matches(&self, sha: &str) -> bool {
+        self.head_id.is_some() && git::diff_id(&self.worktree, &self.base, sha) == self.head_id
+    }
 }
 
 impl State {
     /// `sha` is HEAD, or carries the same diff against the base as HEAD (a rebase).
     pub fn current(&self, sha: &str) -> bool {
-        same_sha(sha, &self.head)
-            || self
-                .diff_base
-                .as_ref()
-                .is_some_and(|d| git::same_diff(&d.worktree, &d.base, sha, &self.head))
+        same_sha(sha, &self.head) || self.unit_diff.as_ref().is_some_and(|d| d.matches(sha))
     }
 
     fn passes(&self, a: &Art) -> bool {
@@ -266,7 +278,7 @@ impl State {
     }
 }
 
-fn read_state(dir: &Path, head: String, has_issue: bool, diff_base: Option<DiffBase>) -> State {
+fn read_state(dir: &Path, head: String, has_issue: bool, unit_diff: Option<UnitDiff>) -> State {
     let mut arts = BTreeMap::new();
     for p in PHASES {
         if let Some(a) = read_art(&dir.join(artifact_of(p))) {
@@ -277,7 +289,7 @@ fn read_state(dir: &Path, head: String, has_issue: bool, diff_base: Option<DiffB
         arts,
         head,
         has_issue,
-        diff_base,
+        unit_diff,
     }
 }
 
@@ -657,6 +669,13 @@ pub fn slug(title: &str) -> String {
 
 // ---------------------------------------------------------------- the run
 
+fn resolve_base(repo: &Repo, args: &RunArgs) -> Result<String> {
+    match &args.base {
+        Some(b) => Ok(b.clone()),
+        None => repo.default_base(),
+    }
+}
+
 struct Ctx<'a> {
     unit: String,
     worktree: PathBuf,
@@ -667,7 +686,7 @@ struct Ctx<'a> {
     issue: Option<u64>,
     issue_url: String,
     gates: String,
-    diff_base: String,
+    base: String,
 }
 
 impl Ctx<'_> {
@@ -834,10 +853,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
     }
 
     let _lock = Lock::acquire(&repo.common_dir, &unit)?;
-    let base = match &args.base {
-        Some(b) => b.clone(),
-        None => repo.default_base()?,
-    };
+    let base = resolve_base(&repo, args)?;
     let wt = worktree::ensure(&repo, &unit, Some(&base), &fac.worktree.setup)?;
     let ctx = Ctx {
         unit: unit.clone(),
@@ -849,7 +865,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
         issue: args.issue,
         issue_url,
         gates,
-        diff_base: base,
+        base,
     };
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
@@ -922,18 +938,16 @@ fn dry_run(
         Some(p) => git::run(p, &["rev-parse", "--short", "HEAD"]).unwrap_or_default(),
         None => String::new(),
     };
-    let base = match &args.base {
-        Some(b) => b.clone(),
-        None => repo.default_base()?,
-    };
+    let base = resolve_base(repo, args).ok();
+    let unit_diff = existing
+        .clone()
+        .zip(base.clone())
+        .map(|(p, b)| UnitDiff::new(p, b, &head));
     let state = read_state(
         &wt.join(".ns").join(unit),
         head,
         args.issue.is_some(),
-        existing.clone().map(|p| DiffBase {
-            worktree: p,
-            base: base.clone(),
-        }),
+        unit_diff,
     );
     let decision = match &args.from {
         Some(f) => run(
@@ -957,7 +971,7 @@ fn dry_run(
         issue: args.issue,
         issue_url: issue_url.to_string(),
         gates: gates.to_string(),
-        diff_base: base,
+        base: base.unwrap_or_default(),
     };
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
@@ -1032,10 +1046,11 @@ fn drive(
             &ctx.artifacts,
             ctx.head(),
             ctx.issue.is_some(),
-            Some(DiffBase {
-                worktree: ctx.worktree.clone(),
-                base: ctx.diff_base.clone(),
-            }),
+            Some(UnitDiff::new(
+                ctx.worktree.clone(),
+                ctx.base.clone(),
+                &ctx.head(),
+            )),
         );
         let decision = forced.take().unwrap_or_else(|| decide(&state));
         let (phase, feedback, why) = match decision {
@@ -1481,7 +1496,7 @@ mod tests {
             arts: arts.iter().cloned().collect(),
             head: "abc1234".into(),
             has_issue: true,
-            diff_base: None,
+            unit_diff: None,
         }
     }
 
@@ -1625,10 +1640,7 @@ mod tests {
             arts: BTreeMap::new(),
             head: r.rebased.clone(),
             has_issue: true,
-            diff_base: Some(DiffBase {
-                worktree: r.dir.clone(),
-                base: "main".into(),
-            }),
+            unit_diff: Some(UnitDiff::new(r.dir.clone(), "main".into(), &r.rebased)),
         }
     }
 
@@ -1644,7 +1656,7 @@ mod tests {
         let first = g(&r.dir, &["rev-parse", "main"]);
         assert!(!s.current(&first));
         let mut no_base = real_state(&r);
-        no_base.diff_base = None;
+        no_base.unit_diff = None;
         assert!(!no_base.current(&r.reviewed));
     }
 
@@ -1656,7 +1668,7 @@ mod tests {
             s.arts.insert(p, art("pass", &r.reviewed));
         }
         assert_eq!(decide(&s), Decision::Done);
-        s.diff_base = None;
+        s.unit_diff = None;
         assert_ne!(decide(&s), Decision::Done);
     }
 
@@ -1685,8 +1697,10 @@ mod tests {
         )
         .unwrap();
         commit_file(&r.dir, "work.txt", "two\n");
+        let head = g(&r.dir, &["rev-parse", "HEAD"]);
         let mut changed = real_state(&r);
-        changed.head = g(&r.dir, &["rev-parse", "HEAD"]);
+        changed.unit_diff = Some(UnitDiff::new(r.dir.clone(), "main".into(), &head));
+        changed.head = head;
         archive_for(d, "verify", &changed).unwrap();
         assert!(!d.join("review.md").exists() && !d.join("pr.md").exists());
     }
