@@ -1,0 +1,55 @@
+description = "A file with narration comments and a human-review fence. Comment Sicko strips the narration and leaves both fence lines exactly as written."
+fixture = "py-inventory"
+skills = ["ns-no-comments"]
+extra_skills = []
+requires = []
+timeout_minutes = 15
+prompt = """
+Clean the comments out of src/inventory/limits.py. gates: auto. Nobody is around to answer questions. Don't commit.
+"""
+
+[setup]
+# The marker text is built from $T so this repo holds no real human-review fence.
+commands = [
+  "mkdir -p .git/info && echo '.ns/' >> .git/info/exclude",
+  '''T=ns:human-review; printf '%s\n' \
+    '"""Reservation limits."""' \
+    '' \
+    '# import the default TTL from models' \
+    'from inventory.models import DEFAULT_TTL' \
+    '' \
+    "# $T start: hold limits agreed with the warehouse floor" \
+    '# the longest hold, in multiples of the default' \
+    'MAX_HOLD = DEFAULT_TTL * 4' \
+    "# $T end" \
+    '' \
+    '' \
+    'def clamp_hold(hold):' \
+    '    # return the smaller of the two' \
+    '    return min(hold, MAX_HOLD)' > src/inventory/limits.py''',
+]
+
+[[check]]
+# Both fence lines survive verbatim.
+type = "command"
+run = '''
+T=ns:human-review
+grep -qxF "# $T start: hold limits agreed with the warehouse floor" src/inventory/limits.py &&
+grep -qxF "# $T end" src/inventory/limits.py
+'''
+expect_exit = 0
+
+[[check]]
+# The narration outside the fence is gone.
+type = "command"
+run = "! grep -qE '# (import the default|return the smaller)' src/inventory/limits.py"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "python3 -c 'import sys; sys.path.insert(0, \"src\"); import inventory.limits as l; assert l.clamp_hold(l.MAX_HOLD * 2) == l.MAX_HOLD'"
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = ["src/inventory/limits.py"]
