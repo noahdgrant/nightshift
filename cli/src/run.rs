@@ -20,6 +20,7 @@ use crate::factory::{self, artifact_of, Factory, PhaseSettings, PHASES};
 use crate::forge;
 use crate::frontmatter;
 use crate::git::{self, Repo};
+use crate::markers;
 use crate::worktree;
 
 pub const EXIT_STUCK: u8 = 1;
@@ -1189,7 +1190,7 @@ fn human(reason: impl Into<String>) -> MergeStep {
 }
 
 /// `merge.policy = "auto"`: squash-merge this unit's PR when CI is green, review.md passed at
-/// HEAD, and no file that needs human review changed. The only place ns merges anything.
+/// HEAD, and no file or marked region that needs human review changed. The only place ns merges anything.
 fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep> {
     if !state.arts.contains_key("ship") {
         return Ok(human("no pr.md"));
@@ -1344,6 +1345,21 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
             hits.join(", ")
         )));
     }
+    match marked_regions(wt, &default) {
+        Ok(regions) if regions.is_empty() => {}
+        Ok(regions) => {
+            ctx.log(json!({"event": "human_review", "pr": n, "regions": regions}));
+            return Ok(human(format!(
+                "changes code in a human-review region; needs a human merge ({})",
+                regions.join(", ")
+            )));
+        }
+        Err(e) => {
+            return Ok(human(format!(
+                "cannot check human-review regions: {e:#}; needs a human merge"
+            )))
+        }
+    }
     let merged = gh(
         wt,
         &[
@@ -1377,9 +1393,25 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
     )))
 }
 
+/// Human-review regions that HEAD's changes since its merge base with `default` touch.
+fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
+    let _ = git::run(wt, &["fetch", "-q", "origin", default]);
+    let base = git::run(wt, &["merge-base", "HEAD", &format!("origin/{default}")])
+        .or_else(|_| git::run(wt, &["merge-base", "HEAD", default]))?;
+    markers::touched_between(wt, &base, "HEAD")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marked_regions_errors_when_the_merge_base_is_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(marked_regions(dir.path(), "main").is_err());
+        git::run(dir.path(), &["init", "-q"]).unwrap();
+        assert!(marked_regions(dir.path(), "main").is_err());
+    }
 
     fn art(status: &str, sha: &str) -> Art {
         Art {

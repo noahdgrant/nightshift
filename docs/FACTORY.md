@@ -134,7 +134,25 @@ Output: final JSON `{unit, outcome: done|merged|stuck|budget|paused, phase, reas
 3. Branch protection requires PRs to be up to date with the base. `BEHIND`: `gh pr update-branch <pr>`. `DIRTY`, or a failed update: back to build with "rebase onto <default> and resolve conflicts" as `{feedback}`, which uses a build attempt.
 4. `gh pr checks <pr> --watch`, killed after `ci_timeout_minutes` (stuck). Then `gh pr checks <pr> --json name,state,bucket,link`. No checks at all: `done`, needing a human merge. Any check not `pass` or `skipping`: back to build with the failing check names and the tail of `gh run view <id> --log-failed` as `{feedback}`, then verify, review and ship onto the same PR.
 5. `gh pr diff <pr> --name-only`. Any path matching a `human_review` glob (`**` crosses directories): `done` with reason "changes files that need human review; needs a human merge". Files that need human review cover the factory's own guardrails: CI config, the definition, the guard and merge code.
-6. `gh pr merge <pr> --squash --delete-branch --match-head-commit <sha>`. If `gh pr view` then reports `MERGED`, the outcome is `merged`.
+6. Marked regions (below): HEAD is diffed against its merge base with `origin/<default>`. A changed line inside a region, in the base or the head version, or an added, removed or moved marker line: `done` with reason "changes code in a human-review region; needs a human merge (<file>:<start>-<end>: <reason>)". If the merge base can't be found, the reason says so and the unit still needs a human merge.
+7. `gh pr merge <pr> --squash --delete-branch --match-head-commit <sha>`. If `gh pr view` then reports `MERGED`, the outcome is `merged`.
+
+### Marked regions
+
+`human_review` guards whole files. To guard part of a file, fence it. A region runs from a line containing `ns:human-review start`, optionally followed by `: <reason>`, through the next line containing `ns:human-review end`, marker lines included. Detection is by substring, so any comment syntax works. `start` and `end` may be followed by anything except a letter, digit, `_`, `-`, a quote or a backtick (so `start*/` and `end-->` count, but `endpoint` and a marker quoted in backticks do not). A firmware project fencing its brake limits, with the keyword written as `[ns:human-review]` so this page holds no live marker; drop the brackets in real code:
+
+```c
+int brake_ramp(int now) { return now * 2; }
+
+/* [ns:human-review] start: brake torque limits, signed off by the safety lead */
+#define MAX_TORQUE_NM 420
+#define TORQUE_RAMP_MS 150
+/* [ns:human-review] end */
+```
+
+A PR that changes `brake_ramp` merges on its own. One that changes `MAX_TORQUE_NM`, or moves or deletes either marker, ends at `done` with "changes code in a human-review region; needs a human merge (src/brake.c:3-6: brake torque limits, signed off by the safety lead)".
+
+`ns check-markers [path]` checks every tracked file and exits 1 on a start with no end, an end with no start, or a start nested inside a region, naming file and line. Run it in CI next to the tests. `ns-no-comments` keeps marker lines. nightshift marks no regions in its own code; this example is the only one in the repo.
 
 ## Billing
 

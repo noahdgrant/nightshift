@@ -3,6 +3,7 @@
 # $FAKE_CTRL/<phase> (default: pass) and writes that phase's artifact.
 #   action = status[:extra]; status: pass | fail | blocked | none | limit
 #   extra:   commit | push | merge | any text (lands in the body, e.g. "review")
+#   commit and push append to work.txt, or run $FAKE_CTRL/edit instead when it exists
 set -e
 ctrl="$FAKE_CTRL"
 prompt=$(cat)
@@ -33,7 +34,7 @@ dir=".ns/$NS_UNIT"
 mkdir -p "$dir"
 case "$extra" in
   commit|push)
-    echo "$phase $n" >> work.txt
+    if [ -f "$ctrl/edit" ]; then sh "$ctrl/edit"; else echo "$phase $n" >> work.txt; fi
     git add work.txt
     git -c user.name=f -c user.email=f@f commit -qm "$phase $n"
     ;;
