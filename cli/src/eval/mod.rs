@@ -439,7 +439,7 @@ fn hash_dir(h: &mut Sha256, dir: &Path) -> Result<()> {
     walk(h, dir, dir)
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
