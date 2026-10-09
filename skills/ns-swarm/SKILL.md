@@ -67,7 +67,7 @@ Pick the first launch mode the harness supports, and record which one ran:
    wait
    ```
    In `<worker>.exit`, 3 means the role is not configured, 4 means its harness is missing. 5 means the harness has no write mode configured. Retry that worker under the caller's fallback role if it named one, otherwise run it inline.
-3. **Inline.** No subagents and no `ns`: run each brief yourself, one at a time, clearing your working notes between briefs. Write "ran inline, sequentially, not in fresh contexts" at the top of the report.
+3. **Inline.** Only when the harness has no subagent or task tool **and** `ns` isn't installed. Choosing inline while either is available is a failure, not a fallback. Run each brief yourself, one at a time, clearing your working notes between briefs. Write "ran inline, sequentially, not in fresh contexts" at the top of the report.
 
 If a worker drops out, carry on with the rest and record the dropout.
 

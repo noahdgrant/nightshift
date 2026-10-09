@@ -37,7 +37,9 @@ Done when `diff.patch` exists, the base is named, and the standards list is writ
 
 ## 2. Fan out the reviewers
 
-Load the `ns-swarm` skill. Use the **partition** shape, one worker per reviewer:
+This step is the review. Load the `ns-swarm` skill and launch every reviewer below as its own fresh-context worker: subagents if the harness has any subagent or task tool, else `ns ask`. Reviewing the diff yourself in this context is not a review: you wrote or watched the change, so you share its blind spots. Inline review is allowed only when the harness has neither subagents nor `ns`, and then the gate below can't pass under `gates: auto`.
+
+Use the **partition** shape, one worker per reviewer:
 
 | Reviewer | Reference | `ns ask` role |
 |---|---|---|
@@ -97,6 +99,6 @@ Then set the finding's status in `review.md` to `deferred: #<n>`. Suggestions st
 
 - `pass`: no open Critical finding, every reviewer slice has a result, and every Important finding is `fixed`, `dismissed` with a reason, or `deferred` to a follow-up issue.
 - `fail`: an open Critical finding remains after the fix loop. The body names each one.
-- `blocked`: a reviewer slice could not run, the diff is empty, or `brief.md` is missing.
+- `blocked`: a reviewer slice could not run, the diff is empty, `brief.md` is missing, or (under `gates: auto`) the reviewers ran inline rather than in fresh contexts. Record the launch mode in `review.md` (`launch: subagents | ns ask | inline`).
 
 Under `gates: stop`, report `review.md` and wait. Under `gates: auto`, continue on `pass`. Next phase: load the `ns-ship` skill.
