@@ -290,6 +290,14 @@ mod tests {
         assert_eq!(command(&set, tmp.path()).as_deref(), Some("make ci"));
     }
 
+    #[test]
+    fn this_repos_gate_is_ci_local_sh() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let cmd = command(&parse("").unwrap(), repo).unwrap();
+        assert_eq!(cmd, "scripts/ci-local.sh");
+        assert!(repo.join(&cmd).is_file());
+    }
+
     fn gate(cmd: &str, timeout: Duration) -> (GateRun, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let r = run(cmd, tmp.path(), timeout, &tmp.path().join("logs/gate.log")).unwrap();
