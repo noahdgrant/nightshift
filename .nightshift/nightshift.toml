@@ -1,0 +1,42 @@
+# nightshift's own factory definition. Spec: docs/FACTORY.md.
+name = "nightshift"
+gates = "auto"
+
+[defaults]
+billing = "subscription"        # Max plan login only; API keys are stripped from child processes
+harness = "claude"
+model = "opus"
+timeout_minutes = 45
+max_attempts = 2
+
+[phases.triage]
+skill = "ns-triage"
+model = "sonnet"
+timeout_minutes = 20
+
+[phases.build]
+skill = "ns-build"
+timeout_minutes = 90
+
+[phases.verify]
+skill = "ns-verify"
+model = "sonnet"
+
+[phases.review]
+skill = "ns-review"
+
+[phases.ship]
+skill = "ns-ship"
+model = "sonnet"
+timeout_minutes = 30
+
+[queue]
+source = "github"
+ready_label = "status:ready-for-agent"
+in_progress_label = "status:in-progress"
+done_label = "status:in-review"
+stuck_label = "status:ready-for-human"
+order = ["type:fix", "type:feat", "type:refactor", "type:test", "type:ci", "type:docs", "type:chore"]
+
+[limits]
+max_units = 4
