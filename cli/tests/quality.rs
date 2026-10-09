@@ -61,6 +61,7 @@ fn write(path: PathBuf, text: &str) {
 struct Fixture {
     _tmp: TempDir,
     root: PathBuf,
+    base: String,
 }
 
 /// A unit worktree `<root>.worktrees/<unit>` on branch `ns/<unit>`, with one commit.
@@ -87,7 +88,7 @@ fn review(fm: &str, body: &str) -> String {
 }
 
 /// Unit `a`: the agreed field format, stopped at the cycle limit with one open Important and a
-/// pre-existing finding. Unit `b`: an older format with an archived first attempt and a
+/// pre-existing finding on a line the unit moved down by adding one above it. Unit `b`: an older format with an archived first attempt and a
 /// first-pass cycle file. Unit `c`: no frontmatter. The main checkout's own `.ns/` is ignored.
 fn fixture() -> Fixture {
     let tmp = tempfile::tempdir().unwrap();
@@ -98,11 +99,13 @@ fn fixture() -> Fixture {
     let base = commit(&root, "lib.txt", "one\ntwo\n", "feat: add two (#41)");
 
     let (a, _) = unit_worktree(&root, "1-alpha");
+    let a_head = commit(&a, "lib.txt", "zero\none\ntwo\n", "unit adds a line");
     write(
         a.join(".ns/1-alpha/review.md"),
         &review(
             &format!(
-                "status: blocked\nupdated: 2026-10-09T02:30:00Z\nbase: main@{}\ncycles: 3\n",
+                "status: blocked\nsha: {}\nupdated: 2026-10-09T02:30:00Z\nbase: main@{}\ncycles: 3\n",
+                &a_head[..7],
                 &base[..7]
             ),
             "Open after 3 fix cycles: I2.
@@ -120,7 +123,7 @@ Change size: 150 insertions, 50 deletions in 3 files.
 
 ## Important
 ### I1. Old helper swallows errors
-- Location: `lib.txt:2`
+- Location: `lib.txt:3`
 - Axis: correctness, security
 - Scope: pre-existing
 - Cycle: 0
@@ -195,12 +198,18 @@ Change size: 150 insertions, 50 deletions in 3 files.
             json!({"event":"merged","pr":77,"unit":"2-beta","ts":"2026-10-11T04:00:00Z"}),
             json!({"event":"phase","phase":"review","cost_usd":0.5,"unit":"8-gone","ts":"2026-10-11T02:00:00Z"}),
             json!({"event":"start","unit":"7-unreviewed","ts":"2026-10-11T02:00:00Z"}),
+            // 08:00 on the 9th at UTC-4: on the --since day itself.
+            json!({"event":"phase","phase":"review","cost_usd":0.25,"unit":"8-gone","ts":"2026-10-09T12:00:00Z"}),
         ]
         .iter()
         .map(|v| format!("{v}\n"))
         .collect::<String>(),
     );
-    Fixture { _tmp: tmp, root }
+    Fixture {
+        _tmp: tmp,
+        root,
+        base,
+    }
 }
 
 fn quality(f: &Fixture, args: &[&str]) -> Value {
@@ -277,6 +286,11 @@ fn reports_every_metric_from_fixture_artifacts() {
         (e["unit"].as_str(), e["id"].as_str()),
         (Some("1-alpha"), Some("I1"))
     );
+    assert_eq!(
+        e["introduced_by"],
+        json!({"commit": f.base, "summary": "feat: add two (#41)", "pr": 41})
+    );
+    assert_eq!(e["blame_error"], Value::Null);
 
     let units: Vec<_> = v["per_unit"]
         .as_array()
@@ -292,8 +306,24 @@ fn reports_every_metric_from_fixture_artifacts() {
     assert_eq!(b["first_pass_blocking"], 1);
     assert_eq!(b["reached_clean"], "clean");
     assert_eq!(b["cycles_to_clean"], 0);
-    assert_eq!(v["per_unit"][0]["reached_clean"], "not_clean");
+    let a = &v["per_unit"][0];
+    assert_eq!(a["reached_clean"], "not_clean");
+    assert_eq!(a["cycles_to_clean"], Value::Null);
+    assert_eq!(
+        (&a["critical"], &a["important"], &a["suggestion"]),
+        (&json!(1), &json!(2), &json!(1))
+    );
+    assert_eq!((&a["leftovers"], &a["escapes"]), (&json!(1), &json!(1)));
+    assert_eq!(a["first_pass"], "dirty");
+    assert_eq!(a["first_pass_blocking"], 1);
+    assert_eq!(
+        b["run"],
+        json!({"review_runs": 1, "review_cost_usd": 1.5, "outcome": null, "pr": 77})
+    );
+    assert_eq!(v["per_unit"][0]["run"]["outcome"], "stuck");
 
+    assert_eq!(v["run_log"]["review_runs"], 4);
+    assert_eq!(v["run_log"]["units_without_artifacts"], json!(["8-gone"]));
     let unparsed: Vec<_> = v["gaps"]["unparsed"]
         .as_array()
         .unwrap()
@@ -334,11 +364,34 @@ fn days_are_local_and_since_filters_by_them() {
     assert_eq!(v["since"], "2026-10-09");
     assert_eq!(v["units"], 1);
     assert_eq!(v["per_unit"][0]["unit"], "2-beta");
+    assert_eq!(v["run_log"]["review_runs"], 3);
+
+    let v = quality(&f, &["--since", "2026-10-08"]);
+    assert_eq!(v["units"], 2);
 
     let v = quality(&f, &["--since", "2026-10-11"]);
     assert_eq!(v["units"], 0);
     assert_eq!(v["first_pass"]["yield"], Value::Null);
     assert_eq!(v["trend"], json!([]));
+}
+
+#[test]
+fn a_blame_that_cannot_run_is_reported_not_fatal() {
+    let f = fixture();
+    let p = f
+        .root
+        .with_file_name("myrepo.worktrees/1-alpha/.ns/1-alpha/review.md");
+    let text = fs::read_to_string(&p)
+        .unwrap()
+        .replace("lib.txt:3", "gone.txt:3");
+    fs::write(&p, text).unwrap();
+    let v = quality(&f, &[]);
+    let e = &v["escape_findings"][0];
+    assert_eq!(e["introduced_by"], Value::Null);
+    assert!(
+        e["blame_error"].as_str().unwrap().contains("git blame"),
+        "{e}"
+    );
 }
 
 #[test]
@@ -350,6 +403,7 @@ fn a_repo_with_no_units_reports_zeroes() {
     assert!(out.status.success());
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["units"], 0);
+    assert_eq!(v["run_log"]["present"], false);
     assert_eq!(v["cycles_to_clean"]["median"], Value::Null);
 }
 

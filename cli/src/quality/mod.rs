@@ -2,8 +2,11 @@
 //! worktree and the run log (docs/FACTORY.md, Quality).
 
 mod artifacts;
+mod blame;
 mod metrics;
+mod runlog;
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -16,6 +19,7 @@ use crate::git::Repo;
 use crate::review_md::{Finding, Scope, Severity, Status};
 use artifacts::Unparsed;
 use metrics::Unit;
+use runlog::RunLog;
 
 fn since_date(s: &str) -> Result<String> {
     let ok = s.len() == 10 && clock::parse_iso(s).is_some();
@@ -56,6 +60,7 @@ fn gaps(units: &[&Unit], unparsed: Vec<Unparsed>) -> Value {
         "findings_without_status": count(&|f| f.status == Status::Unknown),
         "headings_with_status_not_read_as_findings": units.iter().map(|u| u.last().stray_statuses).sum::<usize>(),
         "units_first_pass_unknown": units_where(&|u| metrics::first_pass(u.first()).verdict == metrics::Verdict::Unknown),
+        "units_without_first_pass_count": units_where(&|u| metrics::first_pass(u.first()).blocking.is_none()),
         "units_without_change_size": units_where(&|u| u.first().changed_lines.is_none()),
         "units_without_updated": units_where(&|u| u.day.is_none()),
         "unparsed": unparsed,
@@ -89,17 +94,36 @@ fn per_unit(u: &Unit) -> Value {
         "suggestion": sev(Severity::Suggestion),
         "leftovers": metrics::leftovers(last).len(),
         "escapes": metrics::escapes(last).len(),
+        "run": u.run,
     })
 }
 
-fn report(units: &[&Unit], since: Option<&str>, root: &Path, unparsed: Vec<Unparsed>) -> Value {
+fn report(
+    units: &[&Unit],
+    since: Option<&str>,
+    root: &Path,
+    log: RunLog,
+    unparsed: Vec<Unparsed>,
+) -> Value {
     let leftovers: Vec<Value> = units
         .iter()
         .flat_map(|u| metrics::leftovers(u.last()).into_iter().map(|f| item(u, f)))
         .collect();
     let escapes: Vec<Value> = units
         .iter()
-        .flat_map(|u| metrics::escapes(u.last()).into_iter().map(|f| item(u, f)))
+        .flat_map(|u| {
+            metrics::escapes(u.last()).into_iter().map(|f| {
+                let b = blame::blame(
+                    Path::new(&u.worktree),
+                    u.last().blame_at.as_deref(),
+                    f.location.as_deref(),
+                );
+                let mut v = item(u, f);
+                v["introduced_by"] = b.as_ref().map_or(Value::Null, |b| json!(b));
+                v["blame_error"] = b.err().map_or(Value::Null, Value::String);
+                v
+            })
+        })
         .collect();
     let trend: Vec<Value> = metrics::trend(units)
         .into_iter()
@@ -117,6 +141,7 @@ fn report(units: &[&Unit], since: Option<&str>, root: &Path, unparsed: Vec<Unpar
     out["leftover_findings"] = json!(leftovers);
     out["escape_findings"] = json!(escapes);
     out["trend"] = json!(trend);
+    out["run_log"] = json!(log);
     out["gaps"] = gaps(units, unparsed);
     out["per_unit"] = json!(units.iter().map(|u| per_unit(u)).collect::<Vec<_>>());
     out
@@ -126,7 +151,20 @@ pub fn cli(since: Option<String>) -> Result<ExitCode> {
     let since = since.as_deref().map(since_date).transpose()?;
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
     let mut unparsed = Vec::new();
-    let units = artifacts::discover(&repo, &mut unparsed)?;
+    let mut units = artifacts::discover(&repo, &mut unparsed)?;
+    let (mut log, mut runs) = runlog::read(
+        &repo.common_dir.join("ns").join("runs.jsonl"),
+        since.as_deref(),
+    );
+    let known: BTreeSet<&str> = units.iter().map(|u| u.id.as_str()).collect();
+    log.units_without_artifacts = runs
+        .iter()
+        .filter(|(id, s)| s.review_runs > 0 && !known.contains(id.as_str()))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for u in &mut units {
+        u.run = runs.remove(&u.id).unwrap_or_default();
+    }
     let kept: Vec<&Unit> = units
         .iter()
         .filter(|u| {
@@ -135,7 +173,7 @@ pub fn cli(since: Option<String>) -> Result<ExitCode> {
                 .is_none_or(|s| u.day.as_deref().is_some_and(|d| d >= s))
         })
         .collect();
-    let r = report(&kept, since.as_deref(), &repo.root, unparsed);
+    let r = report(&kept, since.as_deref(), &repo.root, log, unparsed);
     println!("{}", serde_json::to_string_pretty(&r)?);
     Ok(ExitCode::SUCCESS)
 }
@@ -144,7 +182,7 @@ pub fn cli(since: Option<String>) -> Result<ExitCode> {
 mod tests {
     use super::*;
     use crate::review_md;
-    use metrics::Attempt;
+    use metrics::{Attempt, RunStats};
 
     #[test]
     fn since_must_be_a_calendar_date() {
@@ -169,6 +207,7 @@ mod tests {
             worktree: "/w".into(),
             attempts: vec![a],
             day: None,
+            run: RunStats::default(),
         };
         let g = gaps(&[&u], Vec::new());
         assert_eq!(g["findings_without_axis"], 1);
@@ -179,6 +218,7 @@ mod tests {
         assert_eq!(g["findings_without_status"], 2);
         assert_eq!(g["headings_with_status_not_read_as_findings"], 2);
         assert_eq!(g["units_first_pass_unknown"], 1);
+        assert_eq!(g["units_without_first_pass_count"], 1);
         assert_eq!(g["units_without_change_size"], 1);
         assert_eq!(g["units_without_updated"], 1);
     }

@@ -18,6 +18,9 @@ pub struct Attempt {
     pub status: Option<String>,
     pub updated: Option<i64>,
     pub cycles: Option<u32>,
+    /// The commit escapes are blamed at: the reviewed `sha:`, else `head:`, else the sha in
+    /// `base: <branch>@<sha>`. A location's line number matches the reviewed code.
+    pub blame_at: Option<String>,
     pub changed_lines: Option<u64>,
     pub changed_lines_source: Option<&'static str>,
     pub findings: Vec<Finding>,
@@ -25,6 +28,14 @@ pub struct Attempt {
     pub stray_statuses: usize,
     /// The Critical and Important findings the first pass's `cycle-0.md` or `cycle-1.md` lists.
     pub first_pass_file: Vec<CycleEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RunStats {
+    pub review_runs: u32,
+    pub review_cost_usd: f64,
+    pub outcome: Option<String>,
+    pub pr: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +46,7 @@ pub struct Unit {
     pub attempts: Vec<Attempt>,
     /// Local date of the newest attempt's `updated:`.
     pub day: Option<String>,
+    pub run: RunStats,
 }
 
 impl Unit {
@@ -78,6 +90,13 @@ pub struct FirstPass {
 pub fn first_pass(a: &Attempt) -> FirstPass {
     let blocking: Vec<&Finding> = a.findings.iter().filter(|f| f.against_unit()).collect();
     let unknown = blocking.iter().any(|f| in_first_pass(a, f).is_none());
+    if a.findings.is_empty() && a.status.as_deref() != Some("pass") {
+        return FirstPass {
+            verdict: Verdict::Unknown,
+            blocking: None,
+            by_axis: BTreeMap::new(),
+        };
+    }
     if unknown && !a.first_pass_file.is_empty() {
         return from_cycle_file(&a.first_pass_file);
     }
@@ -165,7 +184,7 @@ pub fn cycles_to_clean(a: &Attempt) -> Cycles {
     let fixed = a
         .findings
         .iter()
-        .any(|f| f.blocking() && f.status == Status::Fixed);
+        .any(|f| f.against_unit() && f.status == Status::Fixed);
     match a.cycles {
         Some(c) if c == 0 || fixed => Cycles::Clean(c),
         _ => Cycles::Unknown,
@@ -374,6 +393,7 @@ mod tests {
             worktree: format!("/w/{id}"),
             attempts,
             day: day.map(String::from),
+            run: RunStats::default(),
         }
     }
 
@@ -429,6 +449,9 @@ mod tests {
         assert_eq!((fp.verdict, fp.blocking), (Verdict::Clean, Some(0)));
         let none = attempt(None, "pass", "");
         assert_eq!(first_pass(&none).verdict, Verdict::Clean);
+        let ended_early = attempt(Some(0), "blocked", "");
+        let fp = first_pass(&ended_early);
+        assert_eq!((fp.verdict, fp.blocking), (Verdict::Unknown, None));
     }
 
     #[test]
@@ -492,6 +515,14 @@ mod tests {
                 "### I1. a\n- Scope: pre-existing\n- Status: open\n"
             )),
             Cycles::Clean(0)
+        );
+        assert_eq!(
+            cycles_to_clean(&attempt(
+                Some(1),
+                "pass",
+                "### I1. a\n- Scope: pre-existing\n- Status: fixed\n"
+            )),
+            Cycles::Unknown
         );
         assert_eq!(Cycles::Clean(1).label(), "clean");
         assert_eq!(Cycles::NotClean.label(), "not_clean");

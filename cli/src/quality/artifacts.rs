@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::Serialize;
 
-use super::metrics::{Attempt, Unit};
+use super::metrics::{Attempt, RunStats, Unit};
 use crate::clock;
 use crate::frontmatter;
 use crate::git::{self, Repo};
@@ -100,6 +100,10 @@ fn read_attempt(
     let field = |k: &str| frontmatter::raw_field(yaml, k);
     let base = field("base").and_then(|b| sha(b.rsplit('@').next().unwrap_or(&b)));
     let head = field("head").and_then(|h| sha(&h));
+    let blame_at = field("sha")
+        .and_then(|s| sha(&s))
+        .or_else(|| head.clone())
+        .or_else(|| base.clone());
     let (changed_lines, changed_lines_source) = match review_md::change_size(body) {
         Some(n) => (Some(n), Some("summary")),
         None => match base
@@ -116,6 +120,7 @@ fn read_attempt(
         status: field("status"),
         updated: field("updated").and_then(|u| clock::parse_iso(&u)),
         cycles: field("cycles").and_then(|c| c.parse().ok()),
+        blame_at,
         changed_lines,
         changed_lines_source,
         findings: review_md::parse(body),
@@ -209,6 +214,7 @@ pub fn discover(repo: &Repo, gaps: &mut Vec<Unparsed>) -> Result<Vec<Unit>> {
                     worktree: wt.display().to_string(),
                     attempts,
                     day,
+                    run: RunStats::default(),
                 },
             );
         }
@@ -244,6 +250,7 @@ mod tests {
         assert!(first_pass_file(None).is_empty());
         assert!(first_pass_file(Some(d)).is_empty());
         fs::write(d.join("cycle-3.md"), "## I1. late\n").unwrap();
+        fs::write(d.join("cycle-2.md"), "## I6. second fix cycle\n").unwrap();
         fs::write(d.join("cycle-x.md"), "## I8. junk\n").unwrap();
         assert!(first_pass_file(Some(d)).is_empty());
         fs::write(d.join("cycle-1.md"), "## I2. a\n- I3 perf: b\n").unwrap();
@@ -252,7 +259,7 @@ mod tests {
         assert_eq!(ids(&first_pass_file(Some(d))), ["I4"]);
         assert_eq!(
             cycle_files(d).iter().map(|(n, _)| *n).collect::<Vec<_>>(),
-            [0, 1, 3]
+            [0, 1, 2, 3]
         );
     }
 
@@ -369,6 +376,7 @@ mod tests {
         assert_eq!(a.path, "review.md");
         assert_eq!(a.status.as_deref(), Some("blocked"));
         assert_eq!(a.updated, Some(1_791_504_000));
+        assert_eq!(a.blame_at.as_deref(), Some("0e05787"));
         assert_eq!(a.cycles, Some(3));
         assert_eq!(
             (a.changed_lines, a.changed_lines_source),
@@ -377,7 +385,24 @@ mod tests {
         assert_eq!((a.findings.len(), a.stray_statuses), (1, 1));
         fs::write(&p, "---\nbase: main@HEAD\nhead: abcdef0\n---\n").unwrap();
         let a = read_attempt(tmp.path(), &p, None, &mut gaps).unwrap();
-        assert_eq!((a.changed_lines, a.changed_lines_source), (None, None));
+        assert_eq!(
+            (
+                a.blame_at.as_deref(),
+                a.changed_lines,
+                a.changed_lines_source
+            ),
+            (Some("abcdef0"), None, None)
+        );
+        fs::write(
+            &p,
+            "---\nsha: 1234567\nbase: main@0e05787\nhead: abcdef0\n---\n",
+        )
+        .unwrap();
+        let a = read_attempt(tmp.path(), &p, None, &mut gaps).unwrap();
+        assert_eq!(a.blame_at.as_deref(), Some("1234567"));
+        fs::write(&p, "---\nsha: HEAD\nbase: main@HEAD\n---\n").unwrap();
+        let a = read_attempt(tmp.path(), &p, None, &mut gaps).unwrap();
+        assert_eq!(a.blame_at, None);
         assert_eq!((a.status, a.updated, a.cycles), (None, None, None));
         assert!(read_attempt(tmp.path(), &tmp.path().join("gone.md"), None, &mut gaps).is_none());
         assert!(gaps[0].reason.starts_with("unreadable: "), "{gaps:?}");

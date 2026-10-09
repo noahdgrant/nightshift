@@ -12,7 +12,7 @@ use crate::error::SfError;
 use crate::factory::{Factory, Queue as QueueConfig};
 use crate::git::{self, Repo};
 use crate::install;
-use crate::review_md::{self, Severity, Status};
+use crate::review_md::{self, Status};
 use crate::run::{self, gh, gh_json, Outcome, RunArgs, RunResult, Shared};
 use crate::skills_sync::{self, Sync};
 use crate::worktree::BRANCH_PREFIX;
@@ -662,12 +662,13 @@ impl Night {
     }
 }
 
-/// The Critical and Important findings `review.md` leaves open, one `<id>. <title> (<location>)`
-/// line each, so the stuck comment tells a human what is left to finish.
+/// The Critical and Important findings in changed code `review.md` leaves open, one
+/// `<id>. <title> (<location>)` line each, so the stuck comment tells a human what is left to
+/// finish. A pre-existing finding is an escape filed elsewhere (D29), not the unit's to finish.
 fn open_findings(review: &str) -> Vec<String> {
     review_md::parse(review)
         .into_iter()
-        .filter(|f| f.severity != Severity::Suggestion && f.status == Status::Open)
+        .filter(|f| f.against_unit() && f.status == Status::Open)
         .map(|f| match f.location {
             Some(l) => format!("{}. {} ({l})", f.id, f.title),
             None => format!("{}. {}", f.id, f.title),
@@ -758,6 +759,9 @@ Open after 3 fix cycles: C1, I2, I4.
 ## Critical
 - C1. One-line finding (security). Open.
 - C2. One-line finding, fixed in cycle 2 (correctness). Fixed.
+### C3. An escape
+- Scope: pre-existing
+- Status: open
 ```
 ### I9. In a code fence
 - Status: open
