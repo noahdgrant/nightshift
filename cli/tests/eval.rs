@@ -16,7 +16,7 @@ const FAKE_HARNESS: &str = r#"#!/bin/sh
 prompt=$(cat)
 cred=no
 [ -L "$HOME/.fake-cred" ] && cred=yes
-echo "call model=$1 pwd=$PWD home=$HOME mode=$CALC_MODE cred=$cred bg=${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >> "$FAKE_LOG"
+echo "call model=$1 pwd=$PWD home=$HOME mode=$CALC_MODE cred=$cred mem=${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset} bg=${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >> "$FAKE_LOG"
 echo '{"type":"system","subtype":"init"}'
 if [ -d "$HOME/.claude/skills/ns-demo" ] && [ -d "$HOME/.agents/skills/ns-demo" ]; then
   case "$prompt" in
@@ -156,6 +156,7 @@ impl Env {
         let mut c = Command::cargo_bin("ns").unwrap();
         c.env_remove("XDG_CONFIG_HOME")
             .env_remove("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS")
+            .env_remove("CLAUDE_CODE_DISABLE_AUTO_MEMORY")
             .env("NS_CONFIG", &self.cfg)
             .env("FAKE_LOG", &self.log)
             .env("HOME", &self.home)
@@ -248,6 +249,10 @@ fn full_trial_with_and_without_then_cache_hit() {
             l.contains("bg=unset"),
             "only claude gets a bg wait ceiling: {l}"
         );
+        assert!(
+            l.contains("mem=unset"),
+            "only claude gets auto-memory off: {l}"
+        );
         assert!(!l.contains(&format!("home={} ", e.home.display())), "{l}");
         let pwd = l.split("pwd=").nth(1).unwrap().split(' ').next().unwrap();
         assert!(Path::new(pwd).starts_with(&tmp), "{l}");
@@ -328,6 +333,27 @@ fn claude_trials_wait_for_background_tasks() {
     let calls = e.calls();
     assert_eq!(calls.len(), 1);
     assert!(calls[0].ends_with(" bg=0"), "{}", calls[0]);
+}
+
+#[test]
+fn claude_trials_run_with_auto_memory_off_whatever_the_operator_set() {
+    let e = setup_claude();
+    e.ns()
+        .env("CLAUDE_CODE_OAUTH_TOKEN", "t")
+        .env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0")
+        .args([
+            "ns-demo",
+            "--case",
+            "fix-add",
+            "--arms",
+            "with",
+            "--no-write-results",
+        ])
+        .assert()
+        .success();
+    let calls = e.calls();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].contains(" mem=1 "), "{}", calls[0]);
 }
 
 #[test]

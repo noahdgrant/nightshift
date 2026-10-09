@@ -526,6 +526,7 @@ fn run_harness(
     }
     if billing::is_claude(argv) {
         billing::wait_for_bg_tasks(&mut cmd);
+        billing::disable_auto_memory(&mut cmd);
         if subscription {
             billing::scrub(&mut cmd);
         }

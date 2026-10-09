@@ -34,6 +34,15 @@ pub fn wait_for_bg_tasks(cmd: &mut Command) {
     }
 }
 
+/// Turns off Claude Code auto-memory, so a phase or trial can't write into the operator's
+/// `~/.claude/projects/` memory: https://code.claude.com/docs/en/memory
+pub const AUTO_MEMORY_ENV: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
+
+/// Always turn auto-memory off, overriding whatever the operator's environment says.
+pub fn disable_auto_memory(cmd: &mut Command) {
+    cmd.env(AUTO_MEMORY_ENV, "1");
+}
+
 /// Drop `--bare`, which forces API-key auth.
 pub fn strip_bare(argv: Vec<String>) -> Vec<String> {
     argv.into_iter().filter(|a| a != "--bare").collect()

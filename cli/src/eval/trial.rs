@@ -418,6 +418,7 @@ pub fn run_harness(
     sandbox_env(&mut cmd, scratch);
     if crate::billing::is_claude(argv) {
         crate::billing::wait_for_bg_tasks(&mut cmd);
+        crate::billing::disable_auto_memory(&mut cmd);
         if subscription {
             crate::billing::scrub(&mut cmd);
         }
