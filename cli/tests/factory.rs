@@ -525,6 +525,57 @@ fn ci_failure_rebuilds_then_merges_on_the_same_pr() {
     assert!(p.contains("assert 1 == 2"), "{p}");
 }
 
+fn register_polls(e: &Env) -> Vec<String> {
+    e.gh_calls()
+        .lines()
+        .filter(|l| l.ends_with("/check-runs --jq .total_count"))
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn checks_that_register_late_are_watched_then_merged() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("register.after", "2");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let calls = e.gh_calls();
+    let third = calls
+        .match_indices("/check-runs")
+        .nth(2)
+        .expect("3 polls")
+        .0;
+    let watch = calls.find("pr checks 12 --watch").unwrap();
+    assert!(third < watch, "{calls}");
+    assert_eq!(register_polls(&e).len(), 3, "{calls}");
+}
+
+#[test]
+fn no_checks_registered_within_the_timeout_needs_a_human_merge() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("register.after", "1000");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        v["reason"],
+        "no CI checks registered within 3 min on PR #12; needs a human merge"
+    );
+    let calls = e.gh_calls();
+    assert!(!calls.contains("--watch"), "{calls}");
+    assert!(!calls.contains("pr merge"), "{calls}");
+    // Backoff 5, 10, 20, then 30 s, capped at the 180 s deadline: polls at 0, 5, 15, 35, 65, 95,
+    // 125, 155 and 180.
+    assert_eq!(register_polls(&e).len(), 9, "{calls}");
+}
+
 const PRINT_HEAD_SHA_CMD: &str = "git rev-parse HEAD";
 
 /// main gains an unrelated commit after review. `pass:script` in ship rebases the unit onto
@@ -596,6 +647,14 @@ fn a_behind_pr_merges_at_the_head_update_branch_returns() {
     assert!(calls.contains("pr update-branch 12"), "{calls}");
     let want = format!("--match-head-commit {UPDATED_HEAD}");
     assert!(calls.contains(&want), "{calls}");
+    let polls = register_polls(&e);
+    assert!(!polls.is_empty(), "{calls}");
+    assert!(
+        polls
+            .iter()
+            .all(|p| p.contains(&format!("/commits/{UPDATED_HEAD}/"))),
+        "{calls}"
+    );
 }
 
 #[test]

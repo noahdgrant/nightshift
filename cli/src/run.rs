@@ -1244,6 +1244,33 @@ fn guards(
     Ok(None)
 }
 
+/// Poll until a check run or commit status exists for `sha`, backing off from 5 s to 30 s, for at
+/// most `mins` minutes. Right after a push or update-branch GitHub may not have registered any.
+fn checks_registered(wt: &Path, sha: &str, mins: u64, clock: &Clock) -> bool {
+    let deadline = clock.now() + (mins * 60) as i64;
+    let mut wait = 5;
+    loop {
+        let any = ["check-runs", "status"].iter().any(|kind| {
+            gh(
+                wt,
+                &[
+                    "api",
+                    &format!("repos/{{owner}}/{{repo}}/commits/{sha}/{kind}"),
+                    "--jq",
+                    ".total_count",
+                ],
+            )
+            .is_ok_and(|c| c.trim().parse::<u64>().is_ok_and(|c| c > 0))
+        });
+        let now = clock.now();
+        if any || now >= deadline {
+            return any;
+        }
+        clock.sleep_until((now + wait).min(deadline));
+        wait = (wait * 2).min(30);
+    }
+}
+
 enum MergeStep {
     Finish(Finish),
     Rebuild(String),
@@ -1335,6 +1362,13 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
             merge_head = v["headRefOid"].as_str().unwrap_or(pr_head).to_string();
         }
         _ => {}
+    }
+
+    let reg = ctx.fac.merge.ci_register_timeout;
+    if !checks_registered(wt, &merge_head, reg, &shared.clock) {
+        return Ok(human(format!(
+            "no CI checks registered within {reg} min on PR #{n}; needs a human merge"
+        )));
     }
 
     // Wait for CI, bounded.
