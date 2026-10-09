@@ -200,13 +200,25 @@ fn queue(root: &Path, fac: &Factory, finished: &BTreeSet<u64>) -> Result<Queue> 
     Ok(Queue { ready, skipped })
 }
 
-/// The issue's status labels other than `end`, and whether `end` is missing.
-fn stray_status(
+const LABEL_EDIT_ATTEMPTS: u32 = 2;
+
+struct StatusDrift {
+    stray: Vec<String>,
+    missing: bool,
+}
+
+impl StatusDrift {
+    fn is_clean(&self) -> bool {
+        self.stray.is_empty() && !self.missing
+    }
+}
+
+fn status_drift(
     root: &Path,
     q: &factory::Queue,
     n: &str,
     end: Option<&str>,
-) -> Result<(Vec<String>, bool)> {
+) -> Result<StatusDrift> {
     let v = gh_json(root, &["issue", "view", n, "--json", "labels"])?;
     let labels: Vec<&str> = v["labels"]
         .as_array()
@@ -225,36 +237,48 @@ fn stray_status(
         .filter(|l| Some(**l) != end && (l.starts_with("status:") || ours.iter().any(|o| o == *l)))
         .map(|l| l.to_string())
         .collect();
-    Ok((stray, end.is_some_and(|e| !labels.contains(&e))))
+    Ok(StatusDrift {
+        stray,
+        missing: end.is_some_and(|e| !labels.contains(&e)),
+    })
 }
 
-/// Make `end` the issue's only status label in one edit, then read the labels back. A phase
-/// can add a status label mid-run (ns-triage re-adding the ready label did), so every other
-/// status label goes, not only the one `ns watch` set. One retry, then an error.
 fn set_status(root: &Path, q: &factory::Queue, n: u64, end: Option<&str>) -> Result<()> {
     let ns = n.to_string();
-    let mut edits = 0;
-    loop {
-        let (stray, missing) = stray_status(root, q, &ns, end)?;
-        if stray.is_empty() && !missing {
+    for _ in 0..LABEL_EDIT_ATTEMPTS {
+        let drift = status_drift(root, q, &ns, end)?;
+        if drift.is_clean() {
             return Ok(());
         }
-        if edits == 2 {
-            return Err(SfError::general(format!(
-                "#{n} still has status labels {stray:?} (want only {end:?}) after two label edits"
-            ))
-            .into());
-        }
         let mut args = vec!["issue", "edit", ns.as_str()];
-        for l in &stray {
+        for l in &drift.stray {
             args.extend(["--remove-label", l.as_str()]);
         }
-        if let Some(e) = end.filter(|_| missing) {
+        if let Some(e) = end.filter(|_| drift.missing) {
             args.extend(["--add-label", e]);
         }
         gh(root, &args)?;
-        edits += 1;
     }
+    let drift = status_drift(root, q, &ns, end)?;
+    if drift.is_clean() {
+        return Ok(());
+    }
+    let mut problems = Vec::new();
+    if !drift.stray.is_empty() {
+        problems.push(format!(
+            "has stray status labels {}",
+            drift.stray.join(", ")
+        ));
+    }
+    if let Some(e) = end.filter(|_| drift.missing) {
+        problems.push(format!("is missing {e}"));
+    }
+    Err(SfError::general(format!(
+        "#{n} {} after {LABEL_EDIT_ATTEMPTS} label edits (want {})",
+        problems.join(" and "),
+        end.unwrap_or("no status label")
+    ))
+    .into())
 }
 
 fn comment(root: &Path, n: u64, body: &str) -> Result<()> {
@@ -369,19 +393,20 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             });
             match r.outcome {
                 Outcome::Merged => {
-                    set_status(&repo.root, &q, issue.number, None)?;
+                    let status = set_status(&repo.root, &q, issue.number, None);
                     // GitHub may not have closed it yet; an already-closed issue makes gh fail.
                     let n = issue.number.to_string();
                     if let Err(e) = gh(&repo.root, &["issue", "close", &n, "--reason", "completed"])
                     {
                         eprintln!("ns watch: #{n} not closed: {e}");
                     }
+                    status?;
                 }
                 Outcome::Done if !r.needs_human => {
                     set_status(&repo.root, &q, issue.number, Some(&q.done_label))?;
                 }
                 Outcome::Done | Outcome::Stuck => {
-                    set_status(&repo.root, &q, issue.number, Some(&q.stuck_label))?;
+                    let status = set_status(&repo.root, &q, issue.number, Some(&q.stuck_label));
                     let what = if r.outcome == Outcome::Stuck {
                         "got stuck"
                     } else {
@@ -402,7 +427,9 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                         "nightshift {what} on unit `{}`: {}\n\nLast artifact: {artifact}\n\n{DISCLAIMER}",
                         r.unit, r.reason
                     );
-                    comment(&repo.root, issue.number, &body)?;
+                    let posted = comment(&repo.root, issue.number, &body);
+                    status?;
+                    posted?;
                 }
                 Outcome::Budget => {
                     set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;

@@ -133,7 +133,6 @@ impl Env {
         fs::write(self.ghd.join(format!("labels-{n}")), all.join("\n") + "\n").unwrap();
     }
 
-    /// The labels the fake gh holds for issue `n`.
     fn labels(&self, n: u64) -> Vec<String> {
         fs::read_to_string(self.ghd.join(format!("labels-{n}")))
             .unwrap_or_default()
@@ -1240,19 +1239,21 @@ fn watch_stuck_comment_quotes_the_blocker_and_a_relative_path() {
     assert!(!comment.contains(e.base.to_str().unwrap()), "{comment}");
 }
 
-/// Run issue 2 through `ns watch --once` with a triage phase that re-adds the ready label, as
-/// `ns-triage` did on #59, and return the issue's labels afterwards.
-fn labels_after_triage_re_adds_ready(e: &Env, args: &[&str]) -> Vec<String> {
+fn labels_after_triage_adds(e: &Env, stray: &str, args: &[&str]) -> Vec<String> {
     e.ready(2, "Fix a", &["type:fix"], "");
     e.ctl(
         "triage.sh",
-        "gh issue edit 2 --add-label status:ready-for-agent\n",
+        &format!("gh issue edit 2 --add-label {stray}\n"),
     );
     e.queue("triage", &["pass:script"]);
     e.run(args, 0);
     let labels = e.labels(2);
     assert!(labels.contains(&"type:fix".to_string()), "{labels:?}");
     labels
+}
+
+fn labels_after_triage_re_adds_ready(e: &Env, args: &[&str]) -> Vec<String> {
+    labels_after_triage_adds(e, "status:ready-for-agent", args)
 }
 
 #[test]
@@ -1292,6 +1293,45 @@ fn watch_given_back_leaves_only_the_ready_label() {
 }
 
 #[test]
+fn watch_done_removes_an_unconfigured_status_label() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit"]);
+    let labels = labels_after_triage_adds(&e, "status:needs-info", &["watch", "--once"]);
+    assert_eq!(labels, ["type:fix", "status:in-review"]);
+}
+
+#[test]
+fn watch_stuck_removes_an_unconfigured_status_label() {
+    let e = Env::new();
+    e.queue("verify", &["blocked:needs a board"]);
+    let labels = labels_after_triage_adds(&e, "status:needs-info", &["watch", "--once"]);
+    assert_eq!(labels, ["type:fix", "status:ready-for-human"]);
+}
+
+#[test]
+fn watch_merged_removes_an_unconfigured_status_label() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    let labels = labels_after_triage_adds(&e, "status:needs-info", &["watch", "--once"]);
+    assert_eq!(labels, ["type:fix"]);
+}
+
+#[test]
+fn watch_retries_a_label_edit_that_did_not_land() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file("edit.drop-once", "");
+    e.queue("build", &["pass:commit"]);
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(2), ["type:fix", "status:in-review"]);
+    let edits = e.gh_calls().matches("issue edit 2").count();
+    assert_eq!(edits, 3, "{}", e.gh_calls());
+}
+
+#[test]
 fn watch_fails_loudly_when_a_label_edit_does_not_land() {
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");
@@ -1306,6 +1346,48 @@ fn watch_fails_loudly_when_a_label_edit_does_not_land() {
     let edits = e.gh_calls().matches("issue edit 2").count();
     assert_eq!(edits, 2, "{}", e.gh_calls());
     assert!(e.calls().is_empty());
+}
+
+#[test]
+fn watch_fails_loudly_when_the_end_label_edit_does_not_land() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("triage.sh", "touch \"$FAKE_GH_DIR/edit.noop\"\n");
+    e.queue("triage", &["pass:script"]);
+    e.queue("build", &["pass:commit"]);
+    let out = e.ns().args(["watch", "--once"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("#2") && err.contains("missing status:in-review"),
+        "{err}"
+    );
+    assert!(!err.contains("Some(") && !err.contains("None"), "{err}");
+}
+
+#[test]
+fn watch_posts_the_stuck_comment_even_when_the_label_edit_fails() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("triage.sh", "touch \"$FAKE_GH_DIR/edit.noop\"\n");
+    e.queue("triage", &["pass:script"]);
+    e.queue("verify", &["blocked:needs a board"]);
+    e.ns().args(["watch", "--once"]).assert().code(1);
+    assert!(e.gh_calls().contains("issue comment 2"), "{}", e.gh_calls());
+}
+
+#[test]
+fn watch_closes_the_merged_issue_even_when_the_label_edit_fails() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.ctl("triage.sh", "touch \"$FAKE_GH_DIR/edit.noop\"\n");
+    e.queue("triage", &["pass:script"]);
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.ns().args(["watch", "--once"]).assert().code(1);
+    assert!(e.gh_calls().contains("issue close 2"), "{}", e.gh_calls());
 }
 
 #[test]

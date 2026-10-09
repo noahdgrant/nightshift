@@ -1,15 +1,6 @@
 description = "The bug from bug-ready-for-agent, but `ns watch` already moved the issue to the run state in-progress before triage ran under `ns run`. Triage should keep Status: in-progress, set the category, append the Agent Brief and write brief.md, as #59 needed."
 fixture = "py-inventory"
 skills = ["ns-triage"]
-# The other exclusions match bug-ready-for-agent.
-# ns-contract defines units, worktrees, .ns artifacts, frontmatter and gates that triage writes against.
-# ns-setup is left out: the fixture already has every docs/agents/ file, so triage has no reason to load it.
-# ns-grilling and ns-domain-modeling are left out on purpose. Triage loads them only in step 4 (grill),
-# and every case here runs under `gates: auto`, where the skill says grilling needs a human and the
-# issue routes to needs-define or needs-info instead. Installing them would only add noise (ns-grilling
-# is model-invocable) without exercising anything these cases check.
-# ns-build / ns-define / ns-troubleshoot are not installed either, so the auto hand-off reports the
-# routing and stops, and the trial ends at triage.
 extra_skills = ["ns-contract"]
 requires = []
 timeout_minutes = 15
@@ -19,14 +10,12 @@ Phase: triage (attempt 1). End by writing the phase's artifact under .ns/01-full
 """
 
 [[check]]
-# ns run owns the state: it stays in-progress.
 type = "regex"
 path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
 pattern = '(?m)^\**Status:?\**:?\s*`?in-progress`?\s*$'
 present = true
 
 [[check]]
-# Exactly one state: triage added no second one.
 type = "regex"
 path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
 pattern = '(?m)^\**Status:?\**:?.*(ready-for-agent|needs-triage|ready-for-human)'
@@ -45,9 +34,6 @@ pattern = '(?m)^#+\s*Agent Brief'
 present = true
 
 [[check]]
-# The unit was started: brief.md exists with status: pass and a base, in the worktree `ns worktree new`
-# (or the git-worktree fallback) made at ../<repo>.worktrees/<unit>, or, tolerated, in the main checkout's .ns/.
-# The unit id should be 01-full-quantity-reservation-rejected; any 01-* slug is accepted.
 type = "command"
 run = '''
 python3 - <<'PYEOF'

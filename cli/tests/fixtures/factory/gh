@@ -37,10 +37,11 @@ case "$1 $2" in
     cat "$d/issue-$3.json" 2>/dev/null || { echo "no issue $3" >&2; exit 1; }
     ;;
   "issue edit")
-    # labels-N holds the issue's labels; edit.noop makes every edit silently not land.
     f="$d/labels-$3"; touch "$f"; a=("$@")
+    drop=; [ -f "$d/edit.noop" ] && drop=1
+    [ -f "$d/edit.drop-once" ] && { rm "$d/edit.drop-once"; drop=1; }
     for ((i = 3; i < ${#a[@]}; i++)); do
-      [ -f "$d/edit.noop" ] && break
+      [ -n "$drop" ] && break
       l=${a[$((i + 1))]}
       case "${a[$i]}" in
         --remove-label) grep -vxF -- "$l" "$f" > "$f.tmp" || true; mv "$f.tmp" "$f" ;;
