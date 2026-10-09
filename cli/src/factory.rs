@@ -70,7 +70,7 @@ pub struct Merge {
     /// `human` (default) or `auto`.
     pub policy: String,
     /// Globs (`**` crosses directories); a PR touching one needs a human merge.
-    pub protected: Vec<String>,
+    pub human_merge: Vec<String>,
     pub ci_timeout_minutes: u64,
 }
 
@@ -78,7 +78,7 @@ impl Default for Merge {
     fn default() -> Self {
         Self {
             policy: "human".into(),
-            protected: Vec::new(),
+            human_merge: Vec::new(),
             ci_timeout_minutes: 30,
         }
     }
@@ -89,15 +89,15 @@ impl Merge {
         self.policy == "auto"
     }
 
-    /// Changed paths matching a protected glob.
-    pub fn protected_hits(&self, files: &[String]) -> Vec<String> {
+    /// Changed paths matching a human_merge glob.
+    pub fn human_merge_hits(&self, files: &[String]) -> Vec<String> {
         let opts = glob::MatchOptions {
             case_sensitive: true,
             require_literal_separator: true,
             require_literal_leading_dot: false,
         };
         let pats: Vec<glob::Pattern> = self
-            .protected
+            .human_merge
             .iter()
             .filter_map(|p| glob::Pattern::new(p).ok())
             .collect();
@@ -194,21 +194,13 @@ impl Default for Queue {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Limits {
-    pub max_units: u32,
+    /// Unset: no cap; `--until`, the queue and usage limits end the night.
+    pub max_units: Option<u32>,
     /// Unset: no cap under `billing = "subscription"`, 25.0 under `api`.
     pub budget_usd: Option<f64>,
-}
-
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            max_units: 4,
-            budget_usd: None,
-        }
-    }
 }
 
 /// One phase with its defaults applied.
@@ -299,9 +291,9 @@ impl Factory {
                 self.merge.policy
             ));
         }
-        for p in &self.merge.protected {
+        for p in &self.merge.human_merge {
             if glob::Pattern::new(p).is_err() {
-                out.push(format!("merge.protected: {p:?} is not a valid glob"));
+                out.push(format!("merge.human_merge: {p:?} is not a valid glob"));
             }
         }
         if let Some(b) = self.limits.budget_usd {
@@ -554,7 +546,7 @@ max_units = 4
 budget_usd = 25.0
 [merge]
 policy = "auto"
-protected = [".github/**", ".nightshift/**", "cli/src/run.rs"]
+human_merge = [".github/**", ".nightshift/**", "cli/src/run.rs"]
 ci_timeout_minutes = 30
 "#;
 
@@ -570,7 +562,7 @@ ci_timeout_minutes = 30
         assert_eq!(f.budget_usd(), Some(25.0));
         assert!(f.subscription());
         assert!(f.merge.auto());
-        let hits = f.merge.protected_hits(&[
+        let hits = f.merge.human_merge_hits(&[
             ".github/workflows/ci.yml".into(),
             "cli/src/run.rs".into(),
             "cli/src/main.rs".into(),

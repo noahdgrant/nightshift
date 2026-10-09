@@ -228,7 +228,7 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         /// Start no new unit after this local time (HH:MM)
         #[arg(long, value_name = "HH:MM")]
         until: Option<String>,
-        /// Units per invocation (default: [limits] max_units)
+        /// Units per invocation (default: [limits] max_units, else no cap)
         #[arg(long, value_name = "N")]
         max_units: Option<u32>,
         /// Print the ordered queue with skip reasons; change nothing

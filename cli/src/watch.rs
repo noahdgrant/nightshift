@@ -209,9 +209,9 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         None => None,
     };
     let max_units = if args.once {
-        1
+        Some(1)
     } else {
-        args.max_units.unwrap_or(fac.limits.max_units)
+        args.max_units.or(fac.limits.max_units)
     };
 
     if args.dry_run {
@@ -243,7 +243,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     let mut units: Vec<Value> = Vec::new();
     let mut started = 0u32;
     let stopped: String = 'outer: loop {
-        if started >= max_units {
+        if max_units.is_some_and(|m| started >= m) {
             break "max_units".into();
         }
         if deadline.is_some_and(|d| shared.clock.now() >= d) {

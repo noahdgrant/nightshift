@@ -39,12 +39,10 @@ done_label = "status:in-review"
 stuck_label = "status:ready-for-human"
 order = ["type:fix", "type:feat", "type:refactor", "type:test", "type:ci", "type:docs", "type:chore"]
 
-[limits]
-max_units = 8                   # usage limits pause the run; they never fail it
 
 [merge]
-policy = "auto"                 # ns run merges its own PRs when review passes, CI is green, and nothing protected changed
-protected = [
+policy = "auto"                 # ns run merges its own PRs when review passes, CI is green, and no human-merge file changed
+human_merge = [
   ".github/**",                 # CI and the PR title check
   "scripts/check-private.sh",   # private-reference guard
   ".nightshift/**",             # this definition, including this list
