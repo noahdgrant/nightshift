@@ -186,6 +186,7 @@ impl Env {
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
             .env_remove("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS")
+            .env_remove("CLAUDE_CODE_DISABLE_AUTO_MEMORY")
             .env_remove("GH_TOKEN");
         c
     }
@@ -300,6 +301,8 @@ fn a_non_claude_harness_gets_no_bg_wait_ceiling() {
     e.run(&["run", "--issue", "7"], 0);
     let seen = fs::read_to_string(e.ctrl.join("bgwait")).unwrap();
     assert_eq!(seen.lines().collect::<Vec<_>>(), ["unset"; 5], "{seen}");
+    let seen = fs::read_to_string(e.ctrl.join("automem")).unwrap();
+    assert_eq!(seen.lines().collect::<Vec<_>>(), ["unset"; 5], "{seen}");
 }
 
 #[test]
@@ -321,6 +324,18 @@ fn a_bg_wait_ceiling_the_user_set_wins() {
         .code(0);
     let seen = fs::read_to_string(e.ctrl.join("bgwait")).unwrap();
     assert!(seen.lines().all(|l| l == "900000"), "{seen}");
+}
+
+#[test]
+fn claude_phases_run_with_auto_memory_off_whatever_the_operator_set() {
+    let e = Env::new();
+    e.ns()
+        .env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    let seen = fs::read_to_string(e.ctrl.join("automem")).unwrap();
+    assert_eq!(seen.lines().collect::<Vec<_>>(), ["1"; 5], "{seen}");
 }
 
 #[test]
