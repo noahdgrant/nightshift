@@ -24,6 +24,7 @@ model = "sonnet"
 
 [phases.review]
 skill = "ns-review"
+model = "sonnet"                # Opus cost ~90% of the first unit; revisit once evals compare models
 
 [phases.ship]
 skill = "ns-ship"
@@ -39,7 +40,7 @@ stuck_label = "status:ready-for-human"
 order = ["type:fix", "type:feat", "type:refactor", "type:test", "type:ci", "type:docs", "type:chore"]
 
 [limits]
-max_units = 4
+max_units = 8                   # usage limits pause the run; they never fail it
 
 [merge]
 policy = "auto"                 # ns run merges its own PRs when review passes, CI is green, and nothing protected changed
