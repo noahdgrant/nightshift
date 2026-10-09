@@ -5,7 +5,7 @@ extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments"]
 requires = ["python"]
 timeout_minutes = 30
 prompt = """
-Review unit 1-in-stock, on branch ns/1-in-stock in this repo. The brief is .ns/1-in-stock/brief.md. gates: auto. Nobody is around to answer questions. Stop once review.md is written: don't run verify, don't push, don't ship.
+Review unit 1-in-stock, on branch ns/1-in-stock in this repo. The brief is .ns/1-in-stock/brief.md. gates: auto. Nobody is around to answer questions. Stop once review.md is written: skip verify for this run, don't push, don't ship.
 """
 
 [setup]
@@ -48,10 +48,16 @@ path = ".ns/1-in-stock/review.md"
 pattern = "tests/test_warehouse\\.py"
 
 [[check]]
-# The planted gap: the test never asserts the False case, so a mutation survives and is reported.
+# The planted gap: the test never asserts the False case. A finding, a surviving mutation row or an Important heading must name it.
 type = "regex"
 path = ".ns/1-in-stock/review.md"
-pattern = "(?is)Important.{0,600}(in_stock|test_warehouse)|(in_stock|test_warehouse).{0,600}Important"
+pattern = "(?im)^(#+ .*Important.*(in_stock|> 0).*|.*(in_stock|> 0).*survived.*|.*survived.*(in_stock|> 0).*)$"
+
+[[check]]
+# The Mutation check table carries a timeout in a command and a recorded result.
+type = "regex"
+path = ".ns/1-in-stock/review.md"
+pattern = "(?im)^\\|.*timeout \\d+.*\\|\\s*(killed|survived|inconclusive)\\s*\\|?\\s*$"
 
 [[check]]
 type = "judge"
