@@ -24,6 +24,7 @@ model = "sonnet"
 
 [phases.review]
 skill = "ns-review"
+timeout_minutes = 90             # eight reviewers plus up to 3 fix cycles; 45 cut off unit #58
 model = "sonnet"                # Opus cost ~90% of the first unit; revisit once evals compare models
 
 [phases.ship]
