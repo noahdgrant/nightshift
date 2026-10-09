@@ -1405,6 +1405,14 @@ fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn marked_regions_errors_when_the_merge_base_is_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(marked_regions(dir.path(), "main").is_err());
+        git::run(dir.path(), &["init", "-q"]).unwrap();
+        assert!(marked_regions(dir.path(), "main").is_err());
+    }
+
     fn art(status: &str, sha: &str) -> Art {
         Art {
             status: status.into(),

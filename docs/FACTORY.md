@@ -139,15 +139,15 @@ Output: final JSON `{unit, outcome: done|merged|stuck|budget|paused, phase, reas
 
 ### Marked regions
 
-`human_review` guards whole files. To guard part of a file, fence it. A region runs from a line containing `ns:human-review start`, optionally followed by `: <reason>`, through the next line containing `ns:human-review end`, marker lines included. Detection is by substring, so any comment syntax works. The keyword must be followed by whitespace, `:` or the end of the line, so prose quoting a marker in backticks is not one. A firmware project fencing its brake limits:
+`human_review` guards whole files. To guard part of a file, fence it. A region runs from a line containing `ns:human-review start`, optionally followed by `: <reason>`, through the next line containing `ns:human-review end`, marker lines included. Detection is by substring, so any comment syntax works. `start` and `end` may be followed by anything except a letter, digit, `_`, `-`, a quote or a backtick (so `start*/` and `end-->` count, but `endpoint` and a marker quoted in backticks do not). A firmware project fencing its brake limits, with the keyword written as `[ns:human-review]` so this page holds no live marker; drop the brackets in real code:
 
 ```c
 int brake_ramp(int now) { return now * 2; }
 
-/* ns:human-review start: brake torque limits, signed off by the safety lead */
+/* [ns:human-review] start: brake torque limits, signed off by the safety lead */
 #define MAX_TORQUE_NM 420
 #define TORQUE_RAMP_MS 150
-/* ns:human-review end */
+/* [ns:human-review] end */
 ```
 
 A PR that changes `brake_ramp` merges on its own. One that changes `MAX_TORQUE_NM`, or moves or deletes either marker, ends at `done` with "changes code in a human-review region; needs a human merge (src/brake.c:3-6: brake torque limits, signed off by the safety lead)".

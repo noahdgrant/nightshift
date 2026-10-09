@@ -20,8 +20,18 @@ enum Marker {
     End,
 }
 
-/// The marker on a line. The keyword must be followed by the end of the line, whitespace or `:`,
-/// so prose that quotes a marker in backticks is not one.
+/// Whether what follows `start` or `end` ends the word: the end of the line, or any character
+/// except a letter, digit, `_`, `-`, a quote or a backtick. `-->` closes an HTML comment, so it is
+/// allowed. Quoted prose and longer words (`endpoint`) are not markers.
+fn follows_keyword(after: &str) -> bool {
+    match after.chars().next() {
+        None => true,
+        Some('-') => after.starts_with("-->"),
+        Some(c) => !(c.is_alphanumeric() || matches!(c, '_' | '`' | '\'' | '"')),
+    }
+}
+
+/// The marker on a line, found by substring so any comment syntax works.
 fn marker(line: &str) -> Option<Marker> {
     let mut rest = line;
     while let Some(i) = rest.find(TAG) {
@@ -31,7 +41,7 @@ fn marker(line: &str) -> Option<Marker> {
             let Some(after) = word.strip_prefix(kw) else {
                 continue;
             };
-            if !(after.is_empty() || after.starts_with([' ', '\t', ':', '\r'])) {
+            if !follows_keyword(after) {
                 continue;
             }
             if !start {
@@ -201,35 +211,93 @@ pub fn describe(path: &str, r: &Region) -> String {
     }
 }
 
-/// Regions touched between two commits of the repo at `dir`, one `describe` line each.
-pub fn touched_between(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> {
-    let names = git::run(
+/// One changed file between two commits.
+enum Change {
+    Added,
+    Deleted,
+    Modified,
+}
+
+fn changes(dir: &Path, base: &str, head: &str) -> Result<Vec<(String, Change)>> {
+    let out = git::run(
         dir,
-        &["diff", "--no-renames", "--name-only", "-z", base, head],
+        &[
+            "--literal-pathspecs",
+            "diff",
+            "--no-renames",
+            "--name-status",
+            "-z",
+            base,
+            head,
+        ],
     )?;
+    let mut parts = out.split('\0').filter(|p| !p.is_empty());
+    let mut list = Vec::new();
+    while let Some(status) = parts.next() {
+        let path = parts
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("unexpected git diff --name-status output"))?;
+        let change = match status.chars().next() {
+            Some('A') => Change::Added,
+            Some('D') => Change::Deleted,
+            _ => Change::Modified,
+        };
+        list.push((path.to_string(), change));
+    }
+    Ok(list)
+}
+
+/// Regions touched between two commits of the repo at `dir`, one `describe` line each. A git
+/// failure is an error, never "nothing touched". A changed file with markers whose diff shows no
+/// hunks (binary, `-diff`, mode change) counts as wholly touched.
+pub fn touched_between(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
-    for path in names.split('\0').filter(|p| !p.is_empty()) {
-        let show =
-            |rev: &str| git::run(dir, &["show", &format!("{rev}:{path}")]).unwrap_or_default();
-        let (old, new) = (show(base), show(head));
+    for (path, change) in changes(dir, base, head)? {
+        let show = |rev: &str| {
+            git::run(
+                dir,
+                &["--literal-pathspecs", "show", &format!("{rev}:{path}")],
+            )
+        };
+        let old = match change {
+            Change::Added => String::new(),
+            _ => show(base)?,
+        };
+        let new = match change {
+            Change::Deleted => String::new(),
+            _ => show(head)?,
+        };
         if !has_markers(&old) && !has_markers(&new) {
             continue;
         }
         let diff = git::run(
             dir,
             &[
+                "--literal-pathspecs",
                 "diff",
                 "--no-renames",
                 "--no-ext-diff",
+                "--text",
                 "-U0",
                 base,
                 head,
                 "--",
-                path,
+                &path,
             ],
         )?;
-        if let Some(r) = touched(&old, &new, &hunks(&diff)) {
-            out.push(describe(path, &r));
+        let hunks = hunks(&diff);
+        let region = if hunks.is_empty() {
+            let end = old.lines().count().max(new.lines().count()).max(1);
+            Some(Region {
+                start: 1,
+                end,
+                reason: None,
+            })
+        } else {
+            touched(&old, &new, &hunks)
+        };
+        if let Some(r) = region {
+            out.push(describe(&path, &r));
         }
     }
     Ok(out)
@@ -498,5 +566,177 @@ fn b() {}
             describe("src/brake.rs", &r),
             "src/brake.rs:2-4: brake torque limits"
         );
+    }
+
+    #[test]
+    fn closers_glued_to_the_keyword_are_markers() {
+        assert_eq!(marker(&m("/* @start*/")), Some(Marker::Start(None)));
+        assert_eq!(marker(&m("<!-- @end-->")), Some(Marker::End));
+        assert_eq!(
+            marker(&m("<!-- @start: why-->")),
+            Some(Marker::Start(Some("why".into())))
+        );
+        assert_eq!(marker(&m("keep \"@start\" lines")), None);
+        assert_eq!(marker(&m("// @start-ish")), None);
+        assert_eq!(marker(&m("// @end_of")), None);
+    }
+
+    #[test]
+    fn multi_hunk_diff_around_an_untouched_region_is_not_touched() {
+        let base = m("a\nb\n// @start\nx\n// @end\nc\nd\n");
+        let hunks = [
+            Hunk {
+                old_start: 2,
+                old_len: 1,
+                new_start: 2,
+                new_len: 1,
+            },
+            Hunk {
+                old_start: 6,
+                old_len: 1,
+                new_start: 6,
+                new_len: 2,
+            },
+        ];
+        assert_eq!(touched(&base, &base, &hunks), None);
+        let inside = [
+            hunks[0],
+            Hunk {
+                old_start: 4,
+                old_len: 1,
+                new_start: 4,
+                new_len: 1,
+            },
+        ];
+        assert_eq!(touched(&base, &base, &inside), Some(region(3, 5, None)));
+    }
+
+    #[test]
+    fn tracked_docs_hold_no_live_markers() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let files = git::run(&root, &["ls-files", "-z", "docs"]).unwrap();
+        for f in files.split('\0').filter(|f| f.ends_with(".md")) {
+            let text = std::fs::read_to_string(root.join(f)).unwrap();
+            assert_eq!(regions(&text), [], "{f}");
+        }
+    }
+
+    mod repo {
+        use super::*;
+        use std::fs;
+
+        fn git_in(dir: &Path, args: &[&str]) {
+            git::run(dir, args).unwrap();
+        }
+
+        fn init() -> tempfile::TempDir {
+            let t = tempfile::tempdir().unwrap();
+            for args in [
+                &["init", "-q"][..],
+                &["config", "user.email", "t@example.com"],
+                &["config", "user.name", "t"],
+                &["config", "commit.gpgsign", "false"],
+            ] {
+                git_in(t.path(), args);
+            }
+            t
+        }
+
+        fn commit(dir: &Path, msg: &str) -> String {
+            git_in(dir, &["add", "-A"]);
+            git_in(dir, &["commit", "-q", "-m", msg]);
+            git::run(dir, &["rev-parse", "HEAD"]).unwrap()
+        }
+
+        fn write(dir: &Path, name: &str, text: &str) {
+            fs::write(dir.join(name), m(text)).unwrap();
+        }
+
+        const FILE: &str = "a\n// @start: limits\nx = 1\n// @end\nb\n";
+
+        #[test]
+        fn binary_marked_files_cannot_hide_an_edit() {
+            let t = init();
+            write(t.path(), ".gitattributes", "*.c -diff\n");
+            write(t.path(), "f.c", FILE);
+            let base = commit(t.path(), "base");
+            write(t.path(), "f.c", &FILE.replace("x = 1", "x = 2"));
+            let head = commit(t.path(), "head");
+            let got = touched_between(t.path(), &base, &head).unwrap();
+            assert_eq!(got.len(), 1, "{got:?}");
+            assert!(got[0].starts_with("f.c:"), "{got:?}");
+        }
+
+        #[test]
+        fn nul_bytes_cannot_hide_an_edit() {
+            let t = init();
+            write(t.path(), "g.c", &format!("\0{FILE}"));
+            let base = commit(t.path(), "base");
+            write(
+                t.path(),
+                "g.c",
+                &format!("\0{}", FILE.replace("x = 1", "x = 2")),
+            );
+            let head = commit(t.path(), "head");
+            assert_eq!(touched_between(t.path(), &base, &head).unwrap().len(), 1);
+        }
+
+        #[test]
+        fn glob_characters_in_a_filename_are_literal() {
+            let t = init();
+            write(t.path(), "a[1]*.c", FILE);
+            let base = commit(t.path(), "base");
+            write(t.path(), "a[1]*.c", &FILE.replace("x = 1", "x = 2"));
+            let head = commit(t.path(), "head");
+            let got = touched_between(t.path(), &base, &head).unwrap();
+            assert_eq!(got, ["a[1]*.c:2-4: limits"]);
+        }
+
+        #[test]
+        fn added_and_deleted_files_with_markers_are_touched() {
+            let t = init();
+            write(t.path(), "keep.txt", "k\n");
+            write(t.path(), "gone.c", FILE);
+            let base = commit(t.path(), "base");
+            fs::remove_file(t.path().join("gone.c")).unwrap();
+            write(t.path(), "new.c", FILE);
+            let head = commit(t.path(), "head");
+            let mut got = touched_between(t.path(), &base, &head).unwrap();
+            got.sort();
+            assert_eq!(got, ["gone.c:2-4: limits", "new.c:2-4: limits"]);
+        }
+
+        #[test]
+        fn edits_outside_a_region_pass_and_git_errors_propagate() {
+            let t = init();
+            write(t.path(), "f.c", FILE);
+            let base = commit(t.path(), "base");
+            write(
+                t.path(),
+                "f.c",
+                &FILE.replace("a\n", "a2\n").replace("b\n", "b2\n"),
+            );
+            let head = commit(t.path(), "head");
+            assert!(touched_between(t.path(), &base, &head).unwrap().is_empty());
+            assert!(touched_between(t.path(), &base, "no-such-rev").is_err());
+            assert!(touched_between(&t.path().join("missing"), &base, &head).is_err());
+        }
+
+        #[test]
+        fn an_unreadable_side_is_an_error_not_an_absent_file() {
+            let t = init();
+            write(t.path(), "f.c", FILE);
+            let base = commit(t.path(), "base");
+            write(t.path(), "f.c", &FILE.replace("x = 1", "x = 2"));
+            commit(t.path(), "head");
+            let blob = git::run(t.path(), &["rev-parse", "HEAD:f.c"]).unwrap();
+            let loose = t
+                .path()
+                .join(".git/objects")
+                .join(&blob[..2])
+                .join(&blob[2..]);
+            fs::remove_file(loose).unwrap();
+            assert!(touched_between(t.path(), &base, "HEAD").is_err());
+        }
     }
 }
