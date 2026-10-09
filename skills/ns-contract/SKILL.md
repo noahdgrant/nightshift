@@ -60,9 +60,9 @@ updated: 2026-10-08T21:14:00Z
 `ns-ship` requires `evidence.md` and `review.md` to have `sha` equal to HEAD. Review fixes that add commits therefore re-run `ns-verify` before the unit can ship.
 
 - `pass`: the gate condition holds, so the next phase can start.
-- `fail`: the gate condition doesn't hold. The body says what is missing. A phase that can fix it itself retries first. Otherwise the phase that owns the fix picks it up, usually the previous one.
+- `fail`: the gate condition doesn't hold. The body's first line says what is missing, in one sentence; `ns watch` quotes it. A phase that can fix it itself retries first. Otherwise the phase that owns the fix picks it up, usually the previous one.
 - An `inconclusive` check with no failures gives `blocked` when a missing resource caused it, and `fail` otherwise.
-- `blocked`: progress needs something an agent can't get (hardware, credentials, a human decision). The body names the blocker.
+- `blocked`: progress needs something an agent can't get (hardware, credentials, a human decision). The body's first line names the blocker, in one sentence. An open non-Critical review finding is never a blocker: it becomes a follow-up issue (see `ns-review`).
 
 A phase reads only its input artifact and the repo. It never relies on chat history, so every phase can start in a fresh context.
 

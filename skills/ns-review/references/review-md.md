@@ -42,7 +42,7 @@ launch: subagents | ns ask | inline (sequential)
 # Review: <unit-id>
 
 ## Summary
-Open: <n> Critical, <n> Important, <n> Suggestion. Fixed: <n>. Dismissed: <n>.
+Open: <n> Critical, <n> Important, <n> Suggestion. Fixed: <n>. Dismissed: <n>. Deferred: <n>.
 Change size: <lines changed> lines in <n> files.
 
 ## Reviewers
@@ -55,7 +55,7 @@ Change size: <lines changed> lines in <n> files.
 - Raised by: correctness (provider-a), security (provider-b). Cross-provider.
 - Finding: <one or two lines>
 - Evidence: <trace, quote, or command + output>
-- Status: open | fixed (cycle 2, <commit>) | dismissed: <reason>
+- Status: open | fixed (cycle 2, <commit>) | dismissed: <reason> | deferred: #<follow-up issue>
 
 ## Important
 ### I1. ...
