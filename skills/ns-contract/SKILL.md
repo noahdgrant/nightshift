@@ -19,6 +19,7 @@ Skills don't name a language, test runner, framework or board. They read the tar
 | `docs/agents/issue-tracker.md` | tracker, CLI used to reach it, how issues are created and linked |
 | `docs/agents/triage-labels.md` | label names for each triage category and state |
 | `docs/agents/domain.md` | where the glossary and ADRs live |
+| `docs/agents/docs.md` | where requirements and design docs live, their review surface, ID keys and template overrides |
 
 If a file is missing, load `ns-setup` instead of guessing.
 
@@ -79,10 +80,11 @@ Each phase skill names its gate. What happens at the gate depends on the run's g
 
 The policy comes from the prompt that started the run (`ns-auto` and `ns run` state it). With no policy given, use `stop`.
 
-Some actions always wait for a human, under either policy: force-push to a shared branch, merging, deploying or releasing (including OTA and flashing production units), deleting data, and messaging anyone outside the team.
+Some actions always wait for a human, under either policy: force-push to a shared branch, merging, deploying or releasing (including OTA and flashing production units), deleting data, messaging anyone outside the team, and approving requirements or a design doc.
 
 - **Merging** is never a phase's action, `ns-ship` included. `ns run`'s merge step merges the unit's own PR, by squash, under `merge.policy = auto` in `.nightshift/nightshift.toml`, when CI is green, `review.md` passes at HEAD, and no file that needs human review changed. Otherwise a human merges.
 - A **shared branch** is any branch except the unit's own `ns/<unit-id>`. Force-pushing `ns/<unit-id>` with `--force-with-lease` is fine while every commit on it came from the factory.
+- **Approving** a requirements or design doc means setting its Status to `Approved`. A phase leaves Status at `Draft` or `In review`.
 - **Messaging outside the team** covers every channel beyond the project's own tracker and PRs (email, chat, customer portals). Comments to external people on the tracker follow the `External comments` setting in `docs/agents/issue-tracker.md` (default `wait`).
 
 ## Untrusted issue content

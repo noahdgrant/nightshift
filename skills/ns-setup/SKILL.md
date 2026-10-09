@@ -1,6 +1,6 @@
 ---
 name: ns-setup
-description: Configure a repo for the nightshift skills by writing its docs/agents/ files (stack, verify, issue tracker, triage labels, domain docs). Use on first use in a repo, or when a skill finds a docs/agents/ file missing.
+description: Configure a repo for the nightshift skills by writing its docs/agents/ files (stack, verify, issue tracker, triage labels, domain docs, docs locations). Use on first use in a repo, or when a skill finds a docs/agents/ file missing.
 metadata:
   upstream:
     - mattpocock/skills@b0618bc436ad:skills/engineering/setup-matt-pocock-skills
@@ -17,6 +17,7 @@ Scaffold the per-repo configuration the `ns-*` skills read:
 | `docs/agents/issue-tracker.md` | where issues live, the CLI that reaches them, how they are created and linked |
 | `docs/agents/triage-labels.md` | label strings for each triage category, priority and state |
 | `docs/agents/domain.md` | where `GLOSSARY.md` and ADRs live, and the rules for reading them |
+| `docs/agents/docs.md` | where requirements and design docs live, their review surface, ID keys, and template overrides |
 
 This is a prompt-driven skill, not a deterministic script. Explore, present what you found, confirm with the user, then write. The repo answers most questions. Ask only what it can't.
 
@@ -49,6 +50,7 @@ Read whatever exists. Assume nothing:
 - **Tracker**: `git remote -v`. GitHub or GitLab? A `.scratch/` directory means local markdown issues are already in use.
 - **Labels**: on GitHub, `gh label list`. On GitLab, `glab label list`.
 - **Domain docs**: `GLOSSARY.md`, `GLOSSARY-MAP.md`, `docs/adr/`, and any `*/docs/adr/`.
+- **Docs**: existing requirements and design docs (`docs/requirements/`, `docs/design/`, `requirements/`, `specs/`), the requirement ID keys they use, and any house template in `docs/agents/templates/`.
 - **Multi-context signals**: several independently built packages or apps with their own source tree (a uv or Cargo workspace, several firmware apps under one west manifest). Their absence means single-context, which is almost every repo.
 
 Time the fast commands (lint, host unit tests) by running each once. Take slow ones from CI durations.
@@ -78,6 +80,8 @@ The defaults are the canonical roles with each label equal to its name, and each
 
 **Section E: Domain docs.** Default to **single-context** (one `GLOSSARY.md` + `docs/adr/` at the root) and write it without asking. Offer **multi-context** (a root `GLOSSARY-MAP.md` pointing to per-context `GLOSSARY.md` files) only when exploration found multi-context signals.
 
+**Section F: Docs.** Propose the directories exploration found, else `docs/requirements/` and `docs/design/`, with a pull request on this repo as the review surface. Ask only when existing docs live somewhere else or reviewers work in another tool. List any ID keys already in use.
+
 ### 3. Confirm
 
 Show the user a draft of every file from the table above, the `## Agent skills` block, and any labels to create. Let them edit before writing.
@@ -86,7 +90,7 @@ Show the user a draft of every file from the table above, the `## Agent skills` 
 
 Write `docs/agents/*.md` from the templates in [references/](references/):
 
-- [stack.md](references/stack.md), [verify.md](references/verify.md), [triage-labels.md](references/triage-labels.md), [domain.md](references/domain.md)
+- [stack.md](references/stack.md), [verify.md](references/verify.md), [triage-labels.md](references/triage-labels.md), [domain.md](references/domain.md), [docs.md](references/docs.md)
 - one of [issue-tracker-github.md](references/issue-tracker-github.md), [issue-tracker-gitlab.md](references/issue-tracker-gitlab.md), [issue-tracker-local.md](references/issue-tracker-local.md). For "other", write `docs/agents/issue-tracker.md` from the user's description, covering the same operations.
 
 If the worktree check found traps:
@@ -110,8 +114,9 @@ Repo settings the `ns-*` skills read. Edit the files directly to change them.
 - **Issue tracker**: [where issues live]. See `docs/agents/issue-tracker.md`.
 - **Triage labels**: [default or custom]. See `docs/agents/triage-labels.md`.
 - **Domain docs**: [single-context or multi-context]. See `docs/agents/domain.md`.
+- **Docs**: [requirements directory; review surface]. See `docs/agents/docs.md`.
 ```
 
 ### 5. Done
 
-Done when all five `docs/agents/` files exist with no unfilled placeholders, and the instructions file holds the block. Tell the user which seams are `none` or unmeasured, and, if verify isn't set up, that `ns-setup-verify` is the next step. They can edit `docs/agents/*.md` directly later. Re-run this skill to switch trackers or start over.
+Done when all six `docs/agents/` files exist with no unfilled placeholders, and the instructions file holds the block. Tell the user which seams are `none` or unmeasured, and, if verify isn't set up, that `ns-setup-verify` is the next step. They can edit `docs/agents/*.md` directly later. Re-run this skill to switch trackers or start over.
