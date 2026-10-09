@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
 use crate::billing;
@@ -1244,6 +1244,51 @@ fn guards(
     Ok(None)
 }
 
+const REGISTER_BACKOFF_START: i64 = 5;
+const REGISTER_BACKOFF_MAX: i64 = 30;
+
+enum Registered {
+    Yes,
+    No,
+    QueryFailed(String),
+}
+
+fn check_count(wt: &Path, sha: &str, kind: &str) -> Result<u64> {
+    let out = gh(
+        wt,
+        &[
+            "api",
+            &format!("repos/{{owner}}/{{repo}}/commits/{sha}/{kind}"),
+            "--jq",
+            ".total_count",
+        ],
+    )?;
+    let out = out.trim();
+    out.parse()
+        .map_err(|_| anyhow!("unexpected output from the {kind} query: {out:?}"))
+}
+
+/// GitHub may not have registered any check run or status right after a push or update-branch.
+fn checks_registered(wt: &Path, sha: &str, timeout_minutes: u64, clock: &Clock) -> Registered {
+    let deadline = clock.now() + (timeout_minutes * 60) as i64;
+    let mut wait = REGISTER_BACKOFF_START;
+    loop {
+        let counts = ["check-runs", "status"].map(|kind| check_count(wt, sha, kind));
+        if counts.iter().any(|c| matches!(c, Ok(n) if *n > 0)) {
+            return Registered::Yes;
+        }
+        let now = clock.now();
+        if now >= deadline {
+            return match counts.into_iter().find_map(|c| c.err()) {
+                Some(e) => Registered::QueryFailed(e.to_string()),
+                None => Registered::No,
+            };
+        }
+        clock.sleep_until((now + wait).min(deadline));
+        wait = (wait * 2).min(REGISTER_BACKOFF_MAX);
+    }
+}
+
 enum MergeStep {
     Finish(Finish),
     Rebuild(String),
@@ -1335,6 +1380,21 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
             merge_head = v["headRefOid"].as_str().unwrap_or(pr_head).to_string();
         }
         _ => {}
+    }
+
+    let register_minutes = ctx.fac.merge.ci_register_timeout;
+    match checks_registered(wt, &merge_head, register_minutes, &shared.clock) {
+        Registered::Yes => {}
+        Registered::No => {
+            return Ok(human(format!(
+                "no CI checks registered within {register_minutes} min on PR #{n}; needs a human merge"
+            )));
+        }
+        Registered::QueryFailed(err) => {
+            return Ok(human(format!(
+                "could not query CI checks on PR #{n}: {err}; needs a human merge"
+            )));
+        }
     }
 
     // Wait for CI, bounded.

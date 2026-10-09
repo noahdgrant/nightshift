@@ -72,6 +72,8 @@ pub struct Merge {
     /// Globs (`**` crosses directories); a PR touching one needs a human merge.
     pub human_review: Vec<String>,
     pub ci_timeout_minutes: u64,
+    /// Minutes to wait for the first check to register on the PR head before concluding no CI.
+    pub ci_register_timeout: u64,
 }
 
 impl Default for Merge {
@@ -80,6 +82,7 @@ impl Default for Merge {
             policy: "human".into(),
             human_review: Vec::new(),
             ci_timeout_minutes: 30,
+            ci_register_timeout: 3,
         }
     }
 }
@@ -601,6 +604,9 @@ ci_timeout_minutes = 30
         assert_eq!(f.phase("verify").skill, "ns-verify");
         assert_eq!(f.phase("verify").max_attempts, 2);
         assert_eq!(f.budget_usd(), None);
+        assert_eq!(f.merge.ci_register_timeout, 3);
+        let f = parse("[merge]\nci_register_timeout = 7\n").unwrap();
+        assert_eq!(f.merge.ci_register_timeout, 7);
         let f = parse("[defaults]\nbilling = \"api\"\n").unwrap();
         assert_eq!(f.budget_usd(), Some(25.0));
     }

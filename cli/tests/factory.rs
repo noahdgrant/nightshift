@@ -525,6 +525,161 @@ fn ci_failure_rebuilds_then_merges_on_the_same_pr() {
     assert!(p.contains("assert 1 == 2"), "{p}");
 }
 
+fn register_polls(e: &Env) -> Vec<String> {
+    e.gh_calls()
+        .lines()
+        .filter(|l| l.ends_with("/check-runs --jq .total_count"))
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn checks_that_register_late_are_watched_then_merged() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("register.after", "2");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let calls = e.gh_calls();
+    let third = calls
+        .match_indices("/check-runs")
+        .nth(2)
+        .expect("3 polls")
+        .0;
+    let watch = calls.find("pr checks 12 --watch").unwrap();
+    assert!(third < watch, "{calls}");
+    assert_eq!(register_polls(&e).len(), 3, "{calls}");
+}
+
+#[test]
+fn no_checks_registered_within_the_timeout_needs_a_human_merge() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("register.after", "1000");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        v["reason"],
+        "no CI checks registered within 3 min on PR #12; needs a human merge"
+    );
+    let calls = e.gh_calls();
+    assert!(!calls.contains("--watch"), "{calls}");
+    assert!(!calls.contains("pr merge"), "{calls}");
+    assert_eq!(register_polls(&e).len(), 9, "{calls}");
+}
+
+#[test]
+fn a_shorter_register_timeout_polls_on_the_capped_schedule() {
+    let e = Env::new();
+    e.factory(&format!("{AUTO}ci_register_timeout = 1\n"));
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("register.after", "1000");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        v["reason"],
+        "no CI checks registered within 1 min on PR #12; needs a human merge"
+    );
+    assert_eq!(register_polls(&e).len(), 5, "{}", e.gh_calls());
+}
+
+#[test]
+fn status_only_ci_registers_and_is_watched() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("register.after", "1000");
+    e.gh_file("status.after", "1");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let calls = e.gh_calls();
+    assert!(calls.contains("pr checks 12 --watch"), "{calls}");
+    assert_eq!(register_polls(&e).len(), 2, "{calls}");
+}
+
+#[test]
+fn a_failing_check_query_is_reported_not_called_no_ci() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("check-runs.fail", "HTTP 403: rate limit exceeded");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("could not query CI checks on PR #12: "),
+        "{reason}"
+    );
+    assert!(reason.contains("rate limit exceeded"), "{reason}");
+    assert!(reason.ends_with("; needs a human merge"), "{reason}");
+    assert!(!e.gh_calls().contains("--watch"), "{}", e.gh_calls());
+}
+
+#[test]
+fn malformed_check_query_output_is_reported_not_called_no_ci() {
+    for output in ["", "null", "<html>Bad Gateway</html>"] {
+        let e = Env::new();
+        e.factory(AUTO);
+        e.ctl("pr", "12");
+        e.queue("build", &["pass:commit"]);
+        e.gh_file("check-runs.output", output);
+        let v = e.run(&["run", "--issue", "7"], 0);
+        assert_eq!(v["outcome"], "done", "{v}");
+        let reason = v["reason"].as_str().unwrap();
+        assert!(
+            reason.starts_with("could not query CI checks on PR #12: "),
+            "{output:?}: {reason}"
+        );
+        assert!(reason.ends_with("; needs a human merge"), "{reason}");
+        assert!(!e.gh_calls().contains("--watch"), "{}", e.gh_calls());
+    }
+}
+
+#[test]
+fn zero_check_runs_and_a_failing_status_query_is_reported_not_called_no_ci() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("register.after", "1000");
+    e.gh_file("status.fail", "HTTP 500: server error");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("could not query CI checks on PR #12: "),
+        "{reason}"
+    );
+    assert!(reason.contains("server error"), "{reason}");
+    assert!(!e.gh_calls().contains("--watch"), "{}", e.gh_calls());
+}
+
+#[test]
+fn a_status_with_checks_proceeds_though_the_check_runs_query_fails() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("check-runs.fail", "HTTP 403: rate limit exceeded");
+    e.gh_file("status.after", "0");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let calls = e.gh_calls();
+    assert!(calls.contains("pr checks 12 --watch"), "{calls}");
+    assert!(calls.contains("pr merge 12"), "{calls}");
+}
+
 const PRINT_HEAD_SHA_CMD: &str = "git rev-parse HEAD";
 
 /// main gains an unrelated commit after review. `pass:script` in ship rebases the unit onto
@@ -596,6 +751,18 @@ fn a_behind_pr_merges_at_the_head_update_branch_returns() {
     assert!(calls.contains("pr update-branch 12"), "{calls}");
     let want = format!("--match-head-commit {UPDATED_HEAD}");
     assert!(calls.contains(&want), "{calls}");
+    let polls = register_polls(&e);
+    assert!(!polls.is_empty(), "{calls}");
+    let update = calls.find("pr update-branch 12").unwrap();
+    let first_poll = calls.find("/check-runs").unwrap();
+    let watch = calls.find("pr checks 12 --watch").unwrap();
+    assert!(update < first_poll && first_poll < watch, "{calls}");
+    assert!(
+        polls
+            .iter()
+            .all(|p| p.contains(&format!("/commits/{UPDATED_HEAD}/"))),
+        "{calls}"
+    );
 }
 
 #[test]
