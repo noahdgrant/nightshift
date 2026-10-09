@@ -39,7 +39,7 @@ GO needs every line below to hold on the current `HEAD`. Record each one. The Ve
 - You can write a rollback plan. A change you can't undo needs a stated way forward instead (for example, a fix-forward migration).
 - If the change ships to devices or production (OTA, flashing, a deploy, a data migration), read [references/rollout.md](references/rollout.md) and fill its plan. Firmware always takes this branch.
 
-NO-GO writes `pr.md` with `status: fail` (the fix is agent work) or `status: blocked` (it needs a human, hardware, or credentials), and names the failing line.
+NO-GO writes `pr.md` with `status: fail` (the fix is agent work) or `status: blocked` (it needs hardware, credentials, or a decision no agent can make), and names the failing line first in the body. A finding `review.md` deferred to a follow-up issue never makes NO-GO: list it under Follow-ups and carry on.
 
 ## 3. Rebase into small ordered commits
 
@@ -74,6 +74,9 @@ a pseudocode sketch, call tree, file tree, or `diff` sketch. Pick one, two at mo
 ## Verification
 - **Before:** <failing test or output>  **After:** <passing test or output>
 - <one to three bullets, each a real command and its result, taken from evidence.md. Link the full evidence.>
+
+## Follow-ups
+<one line per finding deferred in review.md: the issue link and a few words. Drop the section when there are none.>
 
 ## Rollback
 <how to undo it: revert the PR, plus anything a revert does not undo

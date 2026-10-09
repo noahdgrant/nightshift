@@ -86,9 +86,16 @@ A cycle where reviewers raised substantive findings and you dismissed all of the
 
 After 3 cycles, stop the loop. Open Critical findings then mean the artifact is not ready: it needs a human, a split, or a return to `ns-plan`.
 
+Open Important findings left after the loop become **follow-ups**, so they're tracked and don't stop the unit. File each one in the tracker per `docs/agents/issue-tracker.md`:
+- the finding as an issue body, with the evidence
+- `type:` and `area:` labels
+- a link to the unit's issue
+
+Then set the finding's status in `review.md` to `deferred: #<n>`. Suggestions stay in `review.md` only.
+
 ## Gate
 
-- `pass`: no open Critical finding, and every reviewer slice has a result.
+- `pass`: no open Critical finding, every reviewer slice has a result, and every Important finding is `fixed`, `dismissed` with a reason, or `deferred` to a follow-up issue.
 - `fail`: an open Critical finding remains after the fix loop. The body names each one.
 - `blocked`: a reviewer slice could not run, the diff is empty, or `brief.md` is missing.
 
