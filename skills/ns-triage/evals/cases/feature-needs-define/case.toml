@@ -1,4 +1,4 @@
-description = "Large, fuzzy feature request (multiple warehouses with transfers). Under gates: auto, triage should set enhancement + needs-define with Triage Notes listing open questions, and not start a unit."
+description = "Large, fuzzy feature request (multiple warehouses with transfers). Under gates: auto, triage should set enhancement + needs-define, keep the issue's existing priority:low, and write Triage Notes listing open questions, and not start a unit."
 fixture = "py-inventory"
 skills = ["ns-triage"]
 # ns-contract defines units, worktrees, .ns artifacts, frontmatter and gates that triage writes against.
@@ -33,6 +33,19 @@ type = "regex"
 path = ".scratch/multi-warehouse/issues/01-support-multiple-warehouses.md"
 pattern = '(?m)^\**Category:?\**:?\s*`?enhancement`?\s*$'
 present = true
+
+[[check]]
+# The reporter's existing priority is kept, and stays the only one.
+type = "regex"
+path = ".scratch/multi-warehouse/issues/01-support-multiple-warehouses.md"
+pattern = '(?m)^\**Priority:?\**:?\s*`?priority:low`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/multi-warehouse/issues/01-support-multiple-warehouses.md"
+pattern = '(?m)^\**Priority:?.*priority:(high|medium)'
+present = false
 
 [[check]]
 type = "regex"

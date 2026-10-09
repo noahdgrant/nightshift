@@ -28,6 +28,14 @@ Every comment or issue posted to the issue tracker during triage **must** start 
 
 Two **category** roles: `bug` (something is broken) and `enhancement` (new feature or improvement).
 
+Three **priority** roles, which decide what `ns watch` works first:
+
+| Priority | Meaning |
+|---|---|
+| `high` | blocks other open issues, breaks the factory or CI, or is a security issue |
+| `medium` | normal work |
+| `low` | nice to have |
+
 Seven **state** roles, each routing to a next phase:
 
 | State | Meaning | Next |
@@ -42,7 +50,7 @@ Seven **state** roles, each routing to a next phase:
 
 For a PR, the states read against the attached code: `ready-for-agent` means a brief is attached and an agent should take the next step on the diff; `ready-for-human` means it's ready for a human to merge.
 
-Every triaged issue carries exactly one category and one state. If state labels conflict, flag it and ask the maintainer before doing anything else.
+Every triaged issue carries exactly one category, one priority and one state. If state labels conflict, flag it and ask the maintainer before doing anything else.
 
 State transitions: an unlabeled issue normally goes to `needs-triage` first, and from there to any other state. `needs-info` returns to `needs-triage` once the reporter replies. The maintainer can override at any time. Flag transitions that look unusual and ask before proceeding.
 
@@ -81,13 +89,13 @@ Show counts and a one-line summary per item. Let the maintainer pick.
    - **Redundancy**: search the codebase for an existing implementation of the requested behavior. If found, it's an already-implemented `wontfix` (step 5).
    - **Prior rejection**: read `.out-of-scope/*.md` and surface any that resembles this request.
 
-2. **Recommend.** State your category and state recommendation with reasoning, the next phase it routes to, and a brief codebase summary relevant to the request. Under `stop`, wait for direction. Under `auto`, carry on.
+2. **Recommend.** State your category, priority and state recommendation with reasoning, the next phase it routes to, and a brief codebase summary relevant to the request. Under `stop`, wait for direction. Under `auto`, carry on.
 
 3. **Verify the claim.** Before any grilling, check that the claim holds up. For a bug, reproduce it from the reporter's steps using the commands in `docs/agents/stack.md`. For a PR, check out the diff and run the relevant tests. Report the result: confirmed (with code path), failed, or insufficient detail. A bug you can't reproduce routes to `needs-repro` when the report is plausible and detailed, or `needs-info` when it lacks the detail to try. A confirmed verification makes a much stronger brief.
 
 4. **Grill (if needed).** If a few rounds of questions would settle the request, load the `ns-grilling` and `ns-domain-modeling` skills and grill it into shape, sharpening domain terms and updating `GLOSSARY.md`/ADRs inline as decisions land. If it needs a spec or a redesign, route it to `needs-define` instead.
 
-5. **Apply the outcome.** Set the labels, then:
+5. **Apply the outcome.** Set the category, priority and state labels. An issue that already carries a priority keeps it unless the maintainer says otherwise. Then:
    - `ready-for-agent`: post an Agent Brief comment ([agent-brief.md](references/agent-brief.md)), then start the unit (below).
    - `ready-for-human`: same structure as an Agent Brief, plus why it can't be delegated (judgement calls, hardware or external access, design decisions, manual testing).
    - `needs-repro`: post Triage Notes with the reporter's steps, what you tried, and what happened. Next: `ns-troubleshoot`.

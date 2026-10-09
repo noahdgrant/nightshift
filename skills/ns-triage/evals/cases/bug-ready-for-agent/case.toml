@@ -1,4 +1,4 @@
-description = "Clear, reproducible bug report for seeded defect (a) in the local .scratch/ tracker. Under gates: auto, triage should reproduce it, mark it bug + ready-for-agent, append an Agent Brief, and start the unit (worktree + .ns/<unit>/brief.md)."
+description = "Clear, reproducible bug report for seeded defect (a) in the local .scratch/ tracker. Under gates: auto, triage should reproduce it, mark it bug + one priority + ready-for-agent, append an Agent Brief, and start the unit (worktree + .ns/<unit>/brief.md)."
 fixture = "py-inventory"
 skills = ["ns-triage"]
 # ns-contract defines units, worktrees, .ns artifacts, frontmatter and gates that triage writes against.
@@ -34,6 +34,19 @@ type = "regex"
 path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
 pattern = '(?m)^\**Category:?\**:?\s*`?bug`?\s*$'
 present = true
+
+[[check]]
+# Exactly one priority label, from the tracker's priority table.
+type = "regex"
+path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
+pattern = '(?m)^\**Priority:?\**:?\s*`?priority:(high|medium|low)`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
+pattern = '(?m)^\**Priority:?\**:?.*priority:\w+.*priority:'
+present = false
 
 [[check]]
 type = "regex"
