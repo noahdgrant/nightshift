@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use anyhow::Result;
 use serde_json::{json, Map, Value};
 
-use crate::config;
+use crate::config::{self, Forge, ForgeKind};
 use crate::forge;
 use crate::which::which;
 
@@ -69,24 +69,7 @@ pub fn run() -> Result<()> {
     let forges = cfg.as_ref().map(|c| c.forge.clone()).unwrap_or_default();
     let mut forge = Map::new();
     for (kind, f) in forges.each() {
-        let creds = match f.map(|f| forge::resolve(kind, f)).transpose() {
-            Ok(c) => c.unwrap_or_default(),
-            Err(e) => {
-                problems.push(e.message);
-                let mut entry = json!({ "configured": true, "token_resolved": false });
-                if kind.name == "github" {
-                    entry["account"] = Value::Null;
-                }
-                forge.insert(kind.name.to_string(), entry);
-                continue;
-            }
-        };
-        let resolved = creds.token.is_some() || forge::is_set(kind.token_var);
-        let mut entry = json!({ "configured": f.is_some(), "token_resolved": resolved });
-        if kind.name == "github" {
-            entry["account"] = json!(resolved.then(|| github_account(&creds)).flatten());
-        }
-        forge.insert(kind.name.to_string(), entry);
+        forge.insert(kind.name.to_string(), forge_entry(kind, f, &mut problems));
     }
 
     let out = json!({
@@ -110,13 +93,37 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn github_account(creds: &forge::Credentials) -> Option<String> {
-    let mut cmd = Command::new("gh");
-    if let Some(t) = &creds.token {
-        cmd.env("GH_TOKEN", t);
+fn forge_entry(kind: ForgeKind, f: Option<&Forge>, problems: &mut Vec<String>) -> Value {
+    let creds = match f.map(|f| forge::resolve(kind, f)).transpose() {
+        Ok(c) => c,
+        Err(e) => {
+            problems.push(e.message);
+            None
+        }
+    };
+    let token_resolved = match f {
+        Some(_) => creds.is_some(),
+        None => forge::is_set(kind.token_var),
+    };
+    let mut entry = json!({ "configured": f.is_some(), "token_resolved": token_resolved });
+    if kind.is_github() {
+        let account = token_resolved
+            .then(|| github_account(creds.as_ref()))
+            .flatten();
+        entry["account"] = json!(account);
     }
-    if let Some(h) = &creds.host {
-        cmd.env("GH_HOST", h);
+    entry
+}
+
+fn github_account(creds: Option<&forge::Credentials>) -> Option<String> {
+    let mut cmd = Command::new("gh");
+    if let Some(forge::Credentials { token, host }) = creds {
+        if let forge::Token::Fetched(t) = token {
+            cmd.env("GH_TOKEN", t);
+        }
+        if let Some(h) = host {
+            cmd.env("GH_HOST", h);
+        }
     }
     let out = cmd
         .args(["api", "user", "--jq", ".login"])

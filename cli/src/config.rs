@@ -45,6 +45,12 @@ const GITLAB: ForgeKind = ForgeKind {
     host_var: "GITLAB_HOST",
 };
 
+impl ForgeKind {
+    pub fn is_github(&self) -> bool {
+        self.name == GITHUB.name
+    }
+}
+
 impl Forges {
     pub fn each(&self) -> [(ForgeKind, Option<&Forge>); 2] {
         [

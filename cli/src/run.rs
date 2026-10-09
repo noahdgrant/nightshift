@@ -703,7 +703,7 @@ fn finish(outcome: Outcome, reason: impl Into<String>, phase: Option<&str>) -> F
 }
 
 /// Load the user config and export its forge tokens, so every child process inherits them.
-pub fn load_config() -> Result<Option<Config>> {
+pub fn load_config_and_export_forge() -> Result<Option<Config>> {
     let cfg = config::load(&config::path())
         .map_err(|e| SfError::usage(format!("{e:#}"), "check it with:\n  ns doctor"))?;
     if let Some(c) = &cfg {
@@ -717,7 +717,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
     let repo = Repo::discover(&start)?;
     let root = factory::root(args.factory.as_deref(), &repo.root);
     let fac = factory::load(&root)?;
-    let cfg = load_config()?;
+    let cfg = load_config_and_export_forge()?;
     let problems = fac.problems(cfg.as_ref());
     if !problems.is_empty() {
         return Err(SfError::usage(

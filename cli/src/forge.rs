@@ -10,18 +10,24 @@ pub fn is_set(var: &str) -> bool {
     std::env::var(var).is_ok_and(|v| !v.is_empty())
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
+pub enum Token {
+    AlreadySet,
+    Fetched(String),
+}
+
+#[derive(Debug)]
 pub struct Credentials {
-    pub token: Option<String>,
+    pub token: Token,
     pub host: Option<String>,
 }
 
 pub fn resolve(kind: ForgeKind, forge: &Forge) -> Result<Credentials, SfError> {
     let host = forge.host.clone().filter(|_| !is_set(kind.host_var));
     let token = if is_set(kind.token_var) {
-        None
+        Token::AlreadySet
     } else {
-        Some(fetch(kind.name, &forge.token)?)
+        Token::Fetched(fetch(kind.name, &forge.token)?)
     };
     Ok(Credentials { token, host })
 }
@@ -33,7 +39,7 @@ pub fn export(forges: &Forges) -> Result<(), SfError> {
             if let Some(h) = creds.host {
                 std::env::set_var(kind.host_var, h);
             }
-            if let Some(t) = creds.token {
+            if let Token::Fetched(t) = creds.token {
                 std::env::set_var(kind.token_var, t);
             }
         }
