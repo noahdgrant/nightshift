@@ -10,6 +10,7 @@ mod eval;
 mod factory;
 mod forge;
 mod frontmatter;
+mod gate;
 mod git;
 mod install;
 mod lint;

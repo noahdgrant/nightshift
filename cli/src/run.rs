@@ -20,6 +20,7 @@ use crate::eval::trial::run_process;
 use crate::factory::{self, artifact_of, Factory, PhaseSettings, PHASES};
 use crate::forge;
 use crate::frontmatter;
+use crate::gate;
 use crate::git::{self, Repo};
 use crate::markers;
 use crate::worktree;
@@ -776,6 +777,8 @@ struct Ctx<'a> {
     gates: String,
     base: String,
     lock_dir: PathBuf,
+    /// The CI gate command; `None` runs no gate.
+    gate: Option<String>,
 }
 
 impl Ctx<'_> {
@@ -993,6 +996,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         gates,
         base,
         lock_dir: lock_dir(cfg.as_ref(), &repo.common_dir),
+        gate: gate::command(fac, &repo.root),
     };
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
@@ -1100,6 +1104,7 @@ fn dry_run(
         gates: gates.to_string(),
         base: base.unwrap_or_default(),
         lock_dir: PathBuf::new(),
+        gate: gate::command(fac, &repo.root),
     };
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
@@ -1125,6 +1130,7 @@ fn dry_run(
         "decision": decision_json,
         "prompt": prompt,
         "command": command,
+        "gate": ctx.gate,
         "budget_usd": fac.budget_usd(),
         "billing": fac.defaults.billing,
         "merge_policy": fac.merge.policy,
@@ -1164,6 +1170,7 @@ fn drive(
         )
     });
     let mut baseline = remote_default(&ctx.worktree);
+    let mut green_at: Option<String> = None;
     ctx.log(json!({
         "event": "start",
         "default_branch": baseline.as_ref().map(|b| &b.0),
@@ -1327,7 +1334,71 @@ fn drive(
                 Some("triage"),
             ));
         }
+        let gated = match phase {
+            "build" => art.is_some_and(|a| a.status == "pass"),
+            "review" => !same_sha(&state.head, &ctx.head()),
+            _ => false,
+        };
+        if gated {
+            if let Some(fb) = gate_step(ctx, phase, attempt, &mut green_at)? {
+                forced = Some(run(
+                    "build",
+                    &fb,
+                    format!("the CI gate failed after {phase}"),
+                ));
+            }
+        }
     }
+}
+
+/// Run the CI gate at HEAD, unless it already went green there. `Some(feedback)` when red.
+fn gate_step(
+    ctx: &Ctx<'_>,
+    phase: &str,
+    attempt: u32,
+    green_at: &mut Option<String>,
+) -> Result<Option<String>> {
+    let Some(cmd) = &ctx.gate else {
+        return Ok(None);
+    };
+    let head = ctx.head();
+    if green_at.as_deref() == Some(head.as_str()) {
+        return Ok(None);
+    }
+    let minutes = ctx.fac.phase("build").timeout_minutes;
+    let log = ctx
+        .common
+        .join("ns")
+        .join("transcripts")
+        .join(&ctx.unit)
+        .join(format!("gate-{phase}-{attempt}.log"));
+    eprintln!("ns run: {} gate after {phase}: {cmd}", ctx.unit);
+    let r = gate::run(cmd, &ctx.worktree, Duration::from_secs(minutes * 60), &log)?;
+    ctx.log(json!({
+        "event": "gate",
+        "phase": phase,
+        "attempt": attempt,
+        "command": cmd,
+        "sha": head,
+        "exit": r.exit,
+        "timed_out": r.timed_out,
+        "wall_s": (r.wall_s * 10.0).round() / 10.0,
+        "green": r.green(),
+        "log": log.to_string_lossy(),
+    }));
+    if r.green() {
+        *green_at = Some(head);
+        return Ok(None);
+    }
+    let how = match (r.timed_out, r.exit) {
+        (true, _) => format!("timed out after {minutes} min"),
+        (false, Some(c)) => format!("exited {c}"),
+        (false, None) => "was killed by a signal".into(),
+    };
+    Ok(Some(format!(
+        "The CI gate `{cmd}` {how} at {head}. Make it pass. The last lines of its output:\n\n{}\n",
+        r.tail
+    )))
 }
 
 fn merge_obj(mut a: Value, b: &Value) -> Value {
