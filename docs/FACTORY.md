@@ -34,6 +34,7 @@ skill = "ns-triage"
 [phases.build]
 skill = "ns-build"
 timeout_minutes = 90
+gate = "scripts/ci-local.sh"       # build only. Unset: the ci-local row of docs/agents/stack.md. See "Gate"
 [phases.verify]
 skill = "ns-verify"
 runner = "bench"                   # a runners/<name>.toml. Unset: no locks
@@ -63,7 +64,7 @@ ci_timeout_minutes = 30
 ci_register_timeout = 3            # minutes to wait for the PR head's first check before "no CI"
 ```
 
-Every table and key is optional; the defaults are the values above, except `limits.max_units` (unset: no cap), `limits.budget_usd` and `merge` as noted. A phase table may override `harness`, `model`, `timeout_minutes` and `max_attempts`, may set `runner`, and its `skill` defaults to `ns-<phase>`. Unknown keys and unknown phases are errors. `ns factory validate` checks the file, every `runners/<name>.toml` and every `agents/<role>/agent.md` (role matches the directory, placeholders are known), and exits 1 on any problem.
+Every table and key is optional; the defaults are the values above, except `limits.max_units` (unset: no cap), `limits.budget_usd` and `merge` as noted. A phase table may override `harness`, `model`, `timeout_minutes` and `max_attempts`, may set `runner`, and its `skill` defaults to `ns-<phase>`. Only `[phases.build]` may set `gate`, and not to an empty string. Unknown keys and unknown phases are errors. `ns factory validate` checks the file, every `runners/<name>.toml` and every `agents/<role>/agent.md` (role matches the directory, placeholders are known), and exits 1 on any problem.
 
 ## agents/<role>/agent.md
 
@@ -114,7 +115,8 @@ Steps:
 3. Archive superseded artifacts. Before running phase P, move P's artifact, if present, to `.ns/<unit>/history/<artifact>-<n>.md`, with n one past the highest number already there for that artifact. Also archive every downstream artifact (order: brief, build, evidence, review, pr) unless it is `status: pass` and current, and every downstream artifact after one that was archived. Whatever remains in `.ns/<unit>/` is current, so the state table needs no timestamps.
 4. Take the phase's runner locks (see "Runners"), waiting for any that another run holds. Run the phase's harness headless in write mode (`command_write`), with cwd set to the worktree and the rendered prompt on stdin. Enforce the timeout by killing the process group. The built-in `claude` write command for `ns run` is `claude -p --permission-mode bypassPermissions --model {model} --output-format stream-json --verbose`: the phases need Bash, which `acceptEdits` can't grant headless. A configured claude command gets `--output-format stream-json --verbose` added if it lacks them. Stdout goes to `<git-common-dir>/ns/transcripts/<unit>/<phase>-<attempt>.jsonl`, and cost and tokens are parsed from it.
 5. The attempt wrote its artifact if P's artifact exists after the run. If not, the attempt failed with "no artifact written" (or the timeout or exit code), and the files archived in step 3 move back, so the next decision sees the state as it was. A triage run that exits 0 without writing `brief.md` is the "triage decided a human or define is needed" row: stuck, no retry. A usage-limit stop also moves the files back (see "Billing").
-6. Repeat until the unit is done, merged, stuck, paused, or out of budget.
+6. Run the CI gate after a build that wrote `status: pass`, and after a review that moved HEAD (see "Gate"). A red gate sends the unit back to build.
+7. Repeat until the unit is done, merged, stuck, paused, or out of budget.
 
 An artifact is current when its frontmatter `sha` matches `git rev-parse --short HEAD` in the worktree by prefix (the lengths may differ), or when the unit's diff at that sha has the same `git patch-id` as at HEAD. The unit's diff is `git diff $(git merge-base <base> <sha>) <sha>`, with `<base>` the one the worktree was cut from (`origin/<base>` instead when that is ahead of the local branch): `--base`, else `origin/HEAD`'s branch (the local branch when present), else the branch checked out in the main worktree (not the literal `HEAD`, a deliberate change from the issue's text), else the detached sha. `git patch-id` ignores whitespace, so a whitespace-only change after review counts as current. A rebase that leaves the change alone keeps every artifact current. A sha no longer in the repo is not current. "`sha` ≠ HEAD" below means not current. Because of step 3, an artifact that exists is current. The table, as implemented, checked top to bottom:
 
@@ -144,11 +146,27 @@ Hard rules, enforced in code whatever the prompts say:
 - After every phase, if the unit has a known PR (`pr:` in `pr.md` or its newest archived copy, a number or a URL ending in one), `gh pr view <n> --json state`. `MERGED` means a phase merged it: stuck with "PR merged by run".
 - One unit at a time per repo. A lock file in the common git dir (`ns-run.lock`, holding pid and unit) refuses a second runner with exit 5. A lock whose pid is dead is removed. Runner locks are separate and wait instead (see "Runners").
 
-Run log: append one JSON line per event to `.git/ns/runs.jsonl` in the common git dir: unit, phase, attempt, decision, artifact status, sha, cost, tokens, wall time, exit. Start, end, breaches, CI failures and merges are events too. `ns run --dry-run` prints the next decision, the rendered prompt and the command, and runs nothing: no worktree, no lock, no harness.
+Run log: append one JSON line per event to `.git/ns/runs.jsonl` in the common git dir: unit, phase, attempt, decision, artifact status, sha, cost, tokens, wall time, exit. Start, end, breaches, CI failures, gate runs and merges are events too. `ns run --dry-run` prints the next decision, the rendered prompt and the command, and runs nothing: no worktree, no lock, no harness.
 
 Budget: before each phase, if the cost reported so far (across the units of one `ns watch`) has reached `limits.budget_usd`, the run ends with `budget`. On a subscription the reported cost is an estimate, so the cap is notional and unset by default; `--until`, an optional `max_units`, and usage-limit pauses bound a night instead.
 
 Output: final JSON `{unit, outcome: done|merged|stuck|budget|paused, phase, reason, pr, cost_usd, reset_at, artifact, phases:[...]}`. Exit 0 for done or merged, 1 for stuck, 2 for a usage or config error (bad definition, missing subscription login, harness not on PATH), 3 for budget, 4 for paused, 5 when another runner holds the lock.
+
+### Gate
+
+Build's artifact is the agent's own word that checks pass. The gate is a deterministic check `ns run` runs itself, so a build that fails CI goes back to build before verify, review and the PR.
+
+The command is `[phases.build] gate`. Unset, it is the `ci-local` row of the Commands table in `docs/agents/stack.md` in the main checkout: a table row whose first cell is `ci-local` (backticks optional), with the command as the first backticked span of the second cell:
+
+```markdown
+| ci-local | `scripts/ci-local.sh` | 2 min |
+```
+
+With neither, no gate runs. Both are read from the main checkout when `ns run` starts, so a phase can't change its own gate.
+
+`ns run` runs the command with `sh -c` in the worktree after a build that wrote `status: pass`, and again after a review that moved HEAD (a fix cycle that committed). It doesn't run again at a HEAD where it already went green in this invocation. It is killed at the build phase's `timeout_minutes`. Output goes to `<git-common-dir>/ns/transcripts/<unit>/gate-<phase>-<attempt>.log`.
+
+Exit 0 is green and the run goes on as the state table says. A non-zero exit, a signal or the timeout is red: the next phase is build, with the command, how it failed and the last 40 lines of its output (at most 3000 bytes) as `{feedback}`. That build uses an attempt against `max_attempts`, so a gate that stays red ends with "build is out of attempts". Each run is a `gate` event in the run log with `phase` (what triggered it), `attempt`, `command`, `sha`, `exit`, `timed_out`, `wall_s`, `green` and `log`. `ns run --dry-run` shows the command as `gate`.
 
 ## Merge
 
