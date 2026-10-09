@@ -82,7 +82,7 @@ Status follows the Gate in `SKILL.md`. For any `blocked` status, the first body 
 ```markdown
 Open Critical after 3 fix cycles: C1, C3.
 
-Options: fix by hand on the unit's branch, split the issue, or route it to `ns-define`.
+Options: fix by hand on the unit's branch then delete `.ns/<unit>/review.md` so `ns run` reviews again, split the issue, or route it to `ns-define`.
 
 # Review: <unit-id>
 ```

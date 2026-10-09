@@ -39,7 +39,17 @@ expect_exit = 0
 [[check]]
 type = "regex"
 path = ".ns/2-cancel-all/review.md"
-pattern = "(?is)by hand.*split.*ns-define|ns-define.*split.*by hand|split.*by hand.*ns-define"
+pattern = "(?i)by hand"
+
+[[check]]
+type = "regex"
+path = ".ns/2-cancel-all/review.md"
+pattern = "(?i)split"
+
+[[check]]
+type = "regex"
+path = ".ns/2-cancel-all/review.md"
+pattern = "(?i)ns-define"
 
 [[check]]
 type = "diff_scope"
