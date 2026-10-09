@@ -55,7 +55,7 @@ budget_usd = 25.0                  # soft cap, summed from harness cost reports.
 
 [merge]                            # absent table: policy = "human"
 policy = "auto"                    # auto | human. See "Merge"
-human_review = [".github/**", "scripts/check-private.sh", ".nightshift/**", "cli/src/run.rs"]
+human_review = [".github/**", "scripts/check-private.sh", ".nightshift/**"]
 ci_timeout_minutes = 30
 ```
 

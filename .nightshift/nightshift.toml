@@ -46,8 +46,5 @@ human_review = [
   ".github/**",                 # CI and the PR title check
   "scripts/check-private.sh",   # private-reference guard
   ".nightshift/**",             # this definition, including this list
-  "cli/src/run.rs",             # the state machine and merge step
-  "cli/src/billing.rs",         # subscription-only guard
-  "cli/src/factory.rs",         # parsing of this file
 ]
 ci_timeout_minutes = 30
