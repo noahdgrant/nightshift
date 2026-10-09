@@ -623,6 +623,10 @@ fn doctor_reports_config() {
         assert!(v["harnesses"][h]["on_path"].is_boolean());
     }
     assert_eq!(v["claude_phases"]["auto_memory"], false);
+    assert_eq!(
+        v["claude_phases"]["env"],
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"
+    );
 }
 
 fn executable(path: &Path, body: &str) {
