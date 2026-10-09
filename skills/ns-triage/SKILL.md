@@ -99,10 +99,10 @@ Show counts and a one-line summary per item. Let the maintainer pick.
 
 6. **Apply the outcome.** Set the category, priority and state labels. An issue that already carries a priority keeps it unless the maintainer says otherwise.
 
-   While the issue is `status:in-progress`, `ns run` is working it: triage adds and removes no status label, writes `brief.md` and posts the brief comment. A split there writes `brief.md` with `status: blocked` and the children's links instead.
+   While the issue is `status:in-progress`, `ns run` is working it: triage adds and removes no status label, writes `brief.md` and posts the brief comment. A split there files the children, posts the Triage Notes listing them, and writes `brief.md` with `status: blocked` and the children's links. The parent's labels stay for `ns run`.
 
    - `ready-for-agent`: post an Agent Brief comment ([agent-brief.md](references/agent-brief.md)), then start the unit (below).
-   - **Split**: file one child issue per shippable behaviour, each with its own Agent Brief and testable criteria, and `Blocked by: #N` where one needs another first. Children take the parent's category and priority, and the `needs-triage` state (`ready-for-agent` under `gates: auto`). Close nothing. Move the parent to `needs-define` with Triage Notes listing the children. Start no unit here: each child becomes its own unit when it is picked up.
+   - **Split**: file one child issue per shippable behaviour, each with its own Agent Brief and testable criteria, and `Blocked by: #N` where one needs another first. Children take the parent's category and priority, and the `needs-triage` state (`ready-for-agent` under `gates: auto`). Close nothing. Move the parent to `needs-define` with Triage Notes listing the children (unless `status:in-progress`, above). Start no unit here: each child becomes its own unit when it is picked up.
    - `ready-for-human`: same structure as an Agent Brief, plus why it can't be delegated (judgement calls, hardware or external access, design decisions, manual testing).
    - `needs-repro`: post Triage Notes with the reporter's steps, what you tried, and what happened. Next: `ns-troubleshoot`.
    - `needs-define`: post Triage Notes with what's settled and the open questions. Next: `ns-define`.

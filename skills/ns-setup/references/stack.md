@@ -36,7 +36,7 @@ Fastest first. A seam the project doesn't have is `none`.
 
 unit size: soft 400, hard 800
 
-Changed lines per unit. `ns-triage` splits work estimated past the soft limit; `ns-build` stops past the hard limit.
+See `ns-contract` (unit size).
 
 ## Gotchas
 

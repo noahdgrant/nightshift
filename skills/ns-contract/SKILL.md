@@ -22,7 +22,7 @@ Skills don't name a language, test runner, framework or board. They read the tar
 
 If a file is missing, load `ns-setup` instead of guessing.
 
-**Unit size.** `stack.md` sets two limits on a unit's changed lines with a line `unit size: soft 400, hard 800`. With no such line, use 400 and 800. Changed lines are the insertions plus deletions that `git diff --shortstat <base>` reports. `ns-triage` splits work estimated past the soft limit. `ns-build` stops when the diff passes the hard limit.
+**Unit size.** `stack.md` sets two limits on a unit's changed lines with a line `unit size: soft 400, hard 800`. With no such line, use 400 and 800. Changed lines are the insertions plus deletions that `git diff --shortstat <base>...HEAD -- . ':!.ns'` reports. `ns-triage` splits work estimated past the soft limit; its estimate is advisory. `ns-build` stops when the diff passes the hard limit.
 
 Code examples are Python. Where firmware changes the advice (registers, ISRs, flash/RAM budgets, on-target tests), add a short firmware note. Don't add a second full example in C.
 

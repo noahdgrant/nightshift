@@ -39,7 +39,7 @@ State what is out of scope. This keeps the agent from gold-plating or making ass
 
 ### Sized to one unit
 
-Record the size estimate: files and modules touched, new tests, rough changed lines. `ns-build` stops at the hard limit in `docs/agents/stack.md`, so work past the soft limit, or with more than one independently shippable behaviour, is split into child issues before it gets a brief.
+Record the size estimate in the brief; the limits and the split are in [triage](../SKILL.md) step 5.
 
 ## Template
 
