@@ -55,6 +55,11 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
 }
 
 /// Run git and report only whether it succeeded.
+/// Short shas may differ in length: compare by prefix.
+pub fn same_sha(a: &str, b: &str) -> bool {
+    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+}
+
 pub fn ok(cwd: &Path, args: &[&str]) -> bool {
     command()
         .arg("-C")
@@ -238,6 +243,14 @@ impl Repo {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn same_sha_compares_by_prefix_and_rejects_empty() {
+        assert!(super::same_sha("abc1234", "abc1234def"));
+        assert!(!super::same_sha("", "abc"));
+        assert!(!super::same_sha("abc", ""));
+        assert!(!super::same_sha("abc1", "abd1"));
+    }
+
     use super::*;
     use crate::testutil::{commit_file, g, rebased_unit, write_commit};
 

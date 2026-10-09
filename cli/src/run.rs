@@ -21,6 +21,7 @@ use crate::factory::{self, artifact_of, Factory, PhaseSettings, PHASES};
 use crate::forge;
 use crate::frontmatter;
 use crate::gate;
+use crate::git::same_sha;
 use crate::git::{self, Repo};
 use crate::markers;
 use crate::worktree;
@@ -313,11 +314,6 @@ fn run(phase: &'static str, feedback: &str, why: impl Into<String>) -> Decision 
         feedback: feedback.to_string(),
         why: why.into(),
     }
-}
-
-/// Short shas may differ in length: compare by prefix.
-pub fn same_sha(a: &str, b: &str) -> bool {
-    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
 }
 
 /// The body's first non-empty line, the contract's one-sentence reason. A heading marker is
@@ -1334,7 +1330,10 @@ fn drive(
                 Some("triage"),
             ));
         }
-        if let Some(cmd) = &ctx.gate {
+        if let (Some(cmd), Some(trigger)) = (
+            &ctx.gate,
+            gate_trigger(phase, art.as_ref(), !same_sha(&state.head, &ctx.head())),
+        ) {
             let job = gate::Job {
                 cmd,
                 worktree: &ctx.worktree,
@@ -1342,28 +1341,22 @@ fn drive(
                 unit: &ctx.unit,
                 timeout: gate::timeout(ctx.fac.phase("build").timeout_minutes),
                 head: ctx.head(),
-            };
-            let after = gate::After {
                 phase,
                 attempt,
-                build_passed: art.is_some_and(|a| a.status == "pass"),
-                head_moved: !same_sha(&state.head, &job.head),
-                written,
             };
-            match gate_state.after(&job, &after, &|ev| ctx.log(ev))? {
-                Some(gate::Red::Failed(fb)) => {
-                    forced = Some(run(
-                        "build",
-                        &fb,
-                        format!("the CI gate failed after {phase}"),
-                    ));
-                }
-                Some(gate::Red::Still(fb)) => {
-                    forced = Some(run("build", &fb, "the CI gate is still red"));
-                }
-                None => {}
+            if let Some(red) = gate_state.after(trigger, &job, &|ev| ctx.log(ev))? {
+                forced = Some(run("build", &red.feedback, red.reason));
             }
         }
+    }
+}
+
+fn gate_trigger(phase: &str, art: Option<&Art>, head_moved: bool) -> Option<gate::Trigger> {
+    match (phase, art) {
+        ("build", Some(a)) if a.status == "pass" => Some(gate::Trigger::BuildPassed),
+        ("build", None) => Some(gate::Trigger::BuildWroteNothing),
+        ("review", _) if head_moved => Some(gate::Trigger::ReviewMovedHead),
+        _ => None,
     }
 }
 
@@ -2014,9 +2007,6 @@ mod tests {
 
     #[test]
     fn helpers() {
-        assert!(same_sha("abc1234", "abc1234def"));
-        assert!(!same_sha("", "abc"));
-        assert!(!same_sha("abc1", "abd1"));
         assert_eq!(pr_number("https://github.com/o/r/pull/12"), Some(12));
         assert_eq!(pr_number("#7"), Some(7));
         assert_eq!(pr_number("<url>"), None);

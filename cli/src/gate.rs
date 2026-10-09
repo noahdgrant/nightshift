@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 
 use crate::eval::trial::run_process;
 use crate::factory::Factory;
+use crate::git::same_sha;
 
 /// Lines of gate output kept for `{feedback}`.
 const TAIL_LINES: usize = 40;
@@ -156,69 +157,62 @@ pub struct Job<'a> {
     pub unit: &'a str,
     pub timeout: Duration,
     pub head: String,
-}
-
-pub struct After<'a> {
     pub phase: &'a str,
     pub attempt: u32,
-    pub build_passed: bool,
-    pub head_moved: bool,
-    pub written: bool,
 }
 
-/// Feedback to send back to build.
-pub enum Red {
-    /// The gate ran and failed.
-    Failed(String),
-    /// A silent rebuild left a red HEAD as it was.
-    Still(String),
+/// Why the gate may need to run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trigger {
+    BuildPassed,
+    ReviewMovedHead,
+    BuildWroteNothing,
+}
+
+/// Feedback to send back to build, and why.
+pub struct Red {
+    pub feedback: String,
+    pub reason: String,
 }
 
 impl Gate {
-    /// Run the gate when `a.phase` finished in a way that needs it, unless it already went green at HEAD.
+    /// Run the gate when `trigger` calls for it, unless it already went green at HEAD.
     pub fn after(
         &mut self,
+        trigger: Trigger,
         job: &Job<'_>,
-        a: &After<'_>,
         log: &dyn Fn(Value),
     ) -> Result<Option<Red>> {
-        let triggered = match a.phase {
-            "build" => a.build_passed,
-            "review" => a.head_moved,
-            _ => false,
-        };
-        if triggered {
-            return self.run_at_head(job, a, log);
+        match trigger {
+            Trigger::BuildPassed | Trigger::ReviewMovedHead => self.run_at_head(job, log),
+            Trigger::BuildWroteNothing => self.after_silent_build(job, log),
         }
-        if a.phase == "build" && !a.written {
-            if let Some(Verdict::Red { sha, feedback }) = &self.verdict {
-                if crate::run::same_sha(sha, &job.head) {
-                    return Ok(Some(Red::Still(feedback.clone())));
-                }
-                return self.run_at_head(job, a, log);
-            }
-        }
-        Ok(None)
     }
 
-    fn run_at_head(
-        &mut self,
-        job: &Job<'_>,
-        a: &After<'_>,
-        log: &dyn Fn(Value),
-    ) -> Result<Option<Red>> {
-        if matches!(&self.verdict, Some(Verdict::Green { sha }) if *sha == job.head) {
+    fn after_silent_build(&mut self, job: &Job<'_>, log: &dyn Fn(Value)) -> Result<Option<Red>> {
+        match &self.verdict {
+            Some(Verdict::Red { sha, feedback }) if same_sha(sha, &job.head) => Ok(Some(Red {
+                feedback: feedback.clone(),
+                reason: "the CI gate is still red".into(),
+            })),
+            Some(Verdict::Red { .. }) => self.run_at_head(job, log),
+            _ => Ok(None),
+        }
+    }
+
+    fn run_at_head(&mut self, job: &Job<'_>, log: &dyn Fn(Value)) -> Result<Option<Red>> {
+        if matches!(&self.verdict, Some(Verdict::Green { sha }) if same_sha(sha, &job.head)) {
             return Ok(None);
         }
         let log_path = job
             .log_dir
-            .join(format!("gate-{}-{}.log", a.phase, a.attempt));
-        eprintln!("ns run: {} gate after {}: {}", job.unit, a.phase, job.cmd);
+            .join(format!("gate-{}-{}.log", job.phase, job.attempt));
+        eprintln!("ns run: {} gate after {}: {}", job.unit, job.phase, job.cmd);
         let r = run(job.cmd, job.worktree, job.timeout, &log_path)?;
         log(json!({
             "event": "gate",
-            "phase": a.phase,
-            "attempt": a.attempt,
+            "phase": job.phase,
+            "attempt": job.attempt,
             "command": job.cmd,
             "sha": job.head,
             "exit": r.exit,
@@ -238,7 +232,10 @@ impl Gate {
             sha: job.head.clone(),
             feedback: feedback.clone(),
         });
-        Ok(Some(Red::Failed(feedback)))
+        Ok(Some(Red {
+            feedback,
+            reason: format!("the CI gate failed after {}", job.phase),
+        }))
     }
 }
 
@@ -331,10 +328,11 @@ mod tests {
         assert_eq!(t.lines().count(), TAIL_LINES);
         assert!(t.ends_with("line 100"));
         assert!(t.starts_with("line 61"));
-        let long = "é".repeat(4000);
+        let long = format!("x{}", "é".repeat(4000));
         let t = tail(long.as_bytes());
         assert!(t.len() <= TAIL_BYTES);
         assert!(t.chars().all(|c| c == 'é'));
+        assert!(t.len() > TAIL_BYTES - 2);
     }
 
     #[test]

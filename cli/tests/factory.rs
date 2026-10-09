@@ -489,6 +489,25 @@ fn a_gate_red_until_attempts_run_out_is_stuck() {
 }
 
 #[test]
+fn a_committing_silent_rebuild_reruns_the_gate_and_can_go_green() {
+    let e = Env::new();
+    let flag = e.ctrl.join("gate-green");
+    e.factory(&format!(
+        "[phases.build]\nmax_attempts = 3\ngate = \"test -f {f} || {{ touch {f}; echo boom; exit 1; }}\"\n",
+        f = flag.display()
+    ));
+    e.queue("build", &["pass:commit", "none:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert!(e.calls().contains(&"verify".to_string()), "{:?}", e.calls());
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[0]["green"], false);
+    assert_eq!(g[1]["green"], true);
+    assert_ne!(g[0]["sha"], g[1]["sha"]);
+}
+
+#[test]
 fn a_review_that_commits_runs_the_gate_again() {
     let e = Env::new();
     let log = e.ctrl.join("gates");
