@@ -63,6 +63,11 @@ fixture_tests() {
   echo "SKIPPED: py-inventory fixture tests (no python with pytest; pip install pytest to run them)" >&2
 }
 
+brief_checker_tests() {
+  command -v python3 >/dev/null || { echo "ci-local: python3 is required for the brief checker tests" >&2; return 1; }
+  (cd skills/ns-troubleshoot/evals/cases/py-hold-expires-early && python3 -m unittest -q test_check_brief)
+}
+
 step "cargo fmt --check" cargo fmt --manifest-path cli/Cargo.toml --check
 step "cargo clippy" cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings
 if [ "$fast" -eq 0 ]; then
@@ -73,6 +78,7 @@ step "ns lint" "$ns" lint skills --human
 if [ "$fast" -eq 0 ]; then
   step "ns eval --dry-run" eval_dry_run
   step "py-inventory fixture tests" fixture_tests
+  step "ns-troubleshoot brief checker tests" brief_checker_tests
 fi
 step "private guard" scripts/check-private.sh
 
