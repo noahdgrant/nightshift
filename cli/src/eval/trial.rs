@@ -297,7 +297,8 @@ fn tail_of(path: &Path, max: usize) -> String {
     String::from_utf8_lossy(&buf[start..]).trim().to_string()
 }
 
-/// Run `cmd` in its own process group, feeding `stdin`, killing the group at the timeout.
+/// Run `cmd` in its own session and process group, feeding `stdin`, killing the group at the
+/// timeout. A `kill 0` or group kill inside the process stays out of the caller's group.
 pub fn run_process(
     mut cmd: Command,
     stdin: Option<Vec<u8>>,
@@ -306,7 +307,16 @@ pub fn run_process(
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
+        // SAFETY: setsid(2) is async-signal-safe; the child is not yet a group leader, so it
+        // gets a new session and a process group whose id is its pid.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
     cmd.stdin(if stdin.is_some() {
         Stdio::piped()
@@ -461,6 +471,29 @@ mod tests {
         assert!(wall < 5.0);
         std::thread::sleep(Duration::from_millis(1300));
         assert!(!marker.exists(), "background child survived the kill");
+    }
+
+    #[test]
+    fn the_process_runs_in_its_own_session_and_group() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ids = tmp.path().join("ids");
+        let mut cmd = Command::new("sh");
+        crate::git::scrub(&mut cmd);
+        cmd.arg("-c")
+            .arg("ps -o sid=,pgid= -p $$")
+            .stdout(File::create(&ids).unwrap());
+        let (status, _, _) = run_process(cmd, None, Duration::from_secs(30)).unwrap();
+        assert!(status.unwrap().success());
+        let text = std::fs::read_to_string(&ids).unwrap();
+        let got: Vec<i32> = text
+            .split_whitespace()
+            .map(|n| n.parse().unwrap())
+            .collect();
+        // SAFETY: getsid and getpgrp only read this process's ids.
+        let (sid, pgid) = unsafe { (libc::getsid(0), libc::getpgrp()) };
+        assert_eq!(got.len(), 2, "{text}");
+        assert_ne!(got[0], sid, "shares the caller's session");
+        assert_ne!(got[1], pgid, "shares the caller's process group");
     }
 
     #[test]

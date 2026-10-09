@@ -413,6 +413,91 @@ fn no_artifact_is_a_failed_attempt() {
     assert_eq!(&e.calls()[..3], ["triage", "build", "build"]);
 }
 
+/// The build phase records its `NS_RUN_PID`, `NS_WATCH_PID` and the sid and pgid of itself and of `ns`.
+fn record_phase_ids(e: &Env) {
+    e.ctl(
+        "build.sh",
+        r#"{
+  echo "${NS_RUN_PID-unset} ${NS_WATCH_PID-unset}"
+  ps -o sid=,pgid= -p $$
+  ps -o sid=,pgid= -p "$NS_RUN_PID"
+} > "$FAKE_CTRL/ids""#,
+    );
+    e.queue("build", &["pass:script"]);
+}
+
+fn phase_ids(e: &Env) -> Vec<String> {
+    fs::read_to_string(e.ctrl.join("ids"))
+        .unwrap()
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect()
+}
+
+fn wait_ok(child: Child) {
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_phase_runs_in_its_own_session_and_knows_the_run_pid() {
+    let e = Env::new();
+    record_phase_ids(&e);
+    let child = e
+        .ns_std()
+        .env("NS_WATCH_PID", "999999")
+        .args(["run", "--issue", "7"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    wait_ok(child);
+    let ids = phase_ids(&e);
+    assert_eq!(
+        ids[0],
+        pid.to_string(),
+        "an inherited NS_WATCH_PID leaked: {ids:?}"
+    );
+    let phase: Vec<&str> = ids[1].split(' ').collect();
+    let ns: Vec<&str> = ids[2].split(' ').collect();
+    assert_ne!(phase[0], ns[0], "phase shares ns's session: {ids:?}");
+    assert_ne!(phase[1], ns[1], "phase shares ns's process group: {ids:?}");
+}
+
+#[test]
+fn a_phase_under_watch_knows_the_watch_pid() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    record_phase_ids(&e);
+    let child = e
+        .ns_std()
+        .args(["watch", "--once"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    wait_ok(child);
+    assert_eq!(phase_ids(&e)[0], format!("{pid} {pid}"));
+}
+
+#[test]
+fn a_phase_that_kills_its_own_group_is_a_failed_attempt_not_a_dead_watch() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("build.sh", "kill 0");
+    e.queue("build", &["pass:script", "pass:commit"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "done", "{v}");
+    assert_eq!(&e.calls()[..3], ["triage", "build", "build"]);
+    assert_eq!(build_event(&e, 1)["written"], false);
+}
+
 #[test]
 fn triage_without_brief_is_stuck() {
     let e = Env::new();

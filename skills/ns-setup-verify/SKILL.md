@@ -58,7 +58,7 @@ Write `<dir>/verify-<project>/SKILL.md`. Frontmatter carries `name: verify-<proj
   - Verify side effects (files written, rows stored, pins toggled, messages sent) alongside what is printed.
   - Mock only where a production boundary already isolates the external system.
   - A dry-run or test mode may still touch the network or hardware. Verify what it skips by observing, not by trusting its name.
-- **Cleanup**: `control-<project> cleanup`. Kill what you started, never by process name. Cleanup removes instances and scratch state and leaves the evidence in the named location. Firmware: leave the board in a known state (reset, or reflash the baseline) and release the probe and serial port.
+- **Cleanup**: `control-<project> cleanup`. Kill what you started, per [killing processes](../ns-contract/SKILL.md#killing-processes). Cleanup removes instances and scratch state and leaves the evidence in the named location. Firmware: leave the board in a known state (reset, or reflash the baseline) and release the probe and serial port.
 - **Helpers**: every script the skill ships is executable and its invocation is shown in the skill body.
 
 ## 5. Seed the feature map

@@ -102,6 +102,8 @@ pub struct RunResult {
 pub struct Shared {
     pub spent_usd: f64,
     pub clock: Clock,
+    /// The `ns watch` process running this unit, or `None` for a standalone `ns run`.
+    pub watch_pid: Option<u32>,
 }
 
 impl Shared {
@@ -109,6 +111,7 @@ impl Shared {
         Self {
             spent_usd: 0.0,
             clock: Clock::from_env(),
+            watch_pid: None,
         }
     }
 }
@@ -1271,6 +1274,11 @@ fn drive(
             ("NS_PHASE", phase.to_string()),
             ("NS_ATTEMPT", attempt.to_string()),
             ("NS_WORKTREE", ctx.worktree.to_string_lossy().into_owned()),
+            ("NS_RUN_PID", std::process::id().to_string()),
+            (
+                "NS_WATCH_PID",
+                shared.watch_pid.map(|p| p.to_string()).unwrap_or_default(),
+            ),
         ];
         let timeout = phase_timeout(phase, p.timeout_minutes);
         eprintln!("ns run: {} {phase} attempt {attempt} ({why})", ctx.unit);
