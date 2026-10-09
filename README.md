@@ -13,7 +13,7 @@ Status: early. The core path (triage → build → verify → review → ship) i
                      └─ needs-repro ──► ns-troubleshoot ──────┘
 ```
 
-Each unit of work gets its own git worktree. Phases hand off through files in `.ns/<unit>/` (`brief.md`, `build.md`, `evidence.md`, `review.md`, `pr.md`), so each phase can start in a fresh context. A phase's gate either stops for a human or, under `gates: auto`, moves on by itself. Deploying and releasing always wait for a human. Merging waits for one under `merge.policy = "human"` (the default) or when the PR touches a protected path.
+Each unit of work gets its own git worktree. Phases hand off through files in `.ns/<unit>/` (`brief.md`, `build.md`, `evidence.md`, `review.md`, `pr.md`), so each phase can start in a fresh context. A phase's gate either stops for a human or, under `gates: auto`, moves on by itself. Deploying and releasing always wait for a human. Merging waits for one under `merge.policy = "human"` (the default) or when the PR touches a protected path, and [`docs/FACTORY.md`](docs/FACTORY.md#merge) lists the other cases.
 
 ## Install
 
@@ -29,14 +29,17 @@ Then, in each project you want to run the factory on:
 
 ## Run it overnight
 
-Start `ns watch` as the account that should open the PRs. `gh` uses whatever `GH_TOKEN` is set, so export it first:
+Log in to claude with your subscription account, then start `ns watch` as the account that should open the PRs. `gh` uses whatever `GH_TOKEN` is set, so export it first:
 
 ```bash
+claude /login
 export GH_TOKEN=$(gh auth token --user <account>)
 ns watch --until 06:30
 ```
 
-It works through `status:ready-for-agent` issues until 06:30 and starts no new unit after that. Log in to claude with the subscription account first (`claude /login`). The phases run with permissions bypassed inside worktrees and use the exported `GH_TOKEN`, so run it on a machine and as an account where that's acceptable.
+It works through `status:ready-for-agent` issues until 06:30 or until it has run 4 units (the default `limits.max_units`), whichever comes first.
+
+The worktree is not a sandbox. Each phase runs claude with permissions bypassed, so it can use the exported `GH_TOKEN` and read or change anything your user can. Run it on a dedicated machine or VM, with a bot account or a fine-grained token limited to the repo, and mark only issues you trust as ready.
 
 [`docs/FACTORY.md`](docs/FACTORY.md) is the reference for the factory definition (`.nightshift/nightshift.toml`), `ns run` and `ns watch`.
 
