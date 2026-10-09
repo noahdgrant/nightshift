@@ -1,11 +1,6 @@
 description = "Clear bug report for seeded defect (a) in the local .scratch/ tracker, with a full overnight contract and gates: auto. With no ns factory definition and no git remote, ns-auto runs triage, build, verify, review and ship itself, and the unit's artifacts end at pr.md with status blocked (nowhere to push) or pass."
 fixture = "py-inventory"
 skills = ["ns-auto"]
-# The phase skills and everything they load or link are installed in both arms. The "without" arm can
-# still run each phase, but nothing chains them, so it measures what ns-auto adds: the foreman loop.
-# The fixture has no .nightshift/ and the trial no origin, so ns-auto takes the in-session branch, and
-# ns-ship cannot push. ns-domain-modeling and ns-grilling are left out: under gates: auto triage routes
-# anything needing a grill to a human, and this bug needs none.
 extra_skills = [
   "ns-contract",
   "ns-triage",
@@ -46,13 +41,7 @@ Overnight contract. Nobody will answer questions tonight.
 - Escape hatch: stop at the first blocked or stuck phase, or after 50 minutes, and report here.
 """
 
-[setup]
-# Keep phase artifacts out of git so diff_scope only sees source and test changes.
-commands = ["mkdir -p .git/info && echo '.ns/' >> .git/info/exclude"]
-
 [[check]]
-# The unit's artifacts chain to pr.md: build, evidence and review pass, and pr.md is blocked (no remote) or pass.
-# They live in the unit's worktree, or, tolerated, in the main checkout's .ns/.
 type = "command"
 run = '''
 python3 - <<'PYEOF'
@@ -64,9 +53,11 @@ roots.update(glob.glob(os.path.join("..", os.path.basename(os.getcwd()) + ".work
 units = sorted({os.path.realpath(p) for r in roots for p in glob.glob(os.path.join(r, ".ns", "01-*"))})
 if not units:
     sys.exit("no .ns/01-*/ in the main checkout or any worktree")
-want = {"build": {"pass"}, "evidence": {"pass"}, "review": {"pass"}, "pr": {"blocked", "pass"}}
+want = {"brief": {"pass"}, "build": {"pass"}, "evidence": {"pass"}, "review": {"pass"}, "pr": {"blocked", "pass"}}
 for unit in units:
-    got = {}
+    wt = os.path.dirname(os.path.dirname(unit))
+    head = subprocess.run(["git", "-C", wt, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    got, shas = {}, {}
     for name in want:
         try:
             text = open(os.path.join(unit, name + ".md"), encoding="utf-8").read()
@@ -76,19 +67,21 @@ for unit in units:
         m = re.match(r"---\n(.*?)\n---\n", text, re.S)
         fm = dict(re.findall(r"(?m)^(\w+):[ \t]*['\"]?(.*?)['\"]?[ \t]*(?:#.*)?$", m.group(1))) if m else {}
         got[name] = fm.get("status")
-    ok = all(got[n] in s for n, s in want.items())
-    print(f"{unit}: {got} ok={ok}")
+        shas[name] = fm.get("sha", "")
+    current = bool(head) and all(shas.get(n) and (head.startswith(shas[n]) or shas[n].startswith(head)) for n in ("evidence", "review"))
+    ok = all(got[n] in s for n, s in want.items()) and current
+    print(f"{unit}: {got} head={head} shas={shas} ok={ok}")
     if ok:
         sys.exit(0)
-sys.exit("no unit whose artifacts chain to pr.md with build, evidence and review pass and pr blocked or pass")
+sys.exit("no unit whose artifacts chain to pr.md, with brief, build, evidence and review pass, pr blocked or pass, and evidence and review current at the worktree HEAD")
 PYEOF
 '''
 expect_exit = 0
 
 [[check]]
-# Never merges: every branch except the unit's own still holds only the fixture and setup commits.
 type = "command"
 run = '''
+[ -z "$(git remote)" ] || { echo "trial has a remote: $(git remote)"; exit 1; }
 for b in $(git for-each-ref --format='%(refname:short)' refs/heads/ | grep -v '^ns/'); do
   [ "$(git log --format=%s "$b" | tr '\n' ' ')" = "setup fixture " ] || { echo "$b moved: $(git log --oneline -3 "$b")"; exit 1; }
 done
@@ -96,19 +89,28 @@ done
 expect_exit = 0
 
 [[check]]
-# The fix is on the unit's branch: the fixture's tests pass there.
 type = "command"
 run = '''
 wt=$(git worktree list --porcelain | awk '/^worktree /{p=$2} /^branch refs\/heads\/ns\/01-/{print p}' | head -1)
 [ -n "$wt" ] || { echo "no worktree on an ns/01-* branch"; exit 1; }
-cd "$wt" && python3 -m pytest -q
+cd "$wt" || exit 1
+t=$(mktemp -d)
+inv() { PYTHONPATH=src python3 -m inventory --state "$t/$1.json" --now 2026-03-02T09:00:00 "${@:2}"; }
+for n in a b; do inv $n add-item BOLT-M6 bolt >/dev/null && inv $n receive BOLT-M6 5 >/dev/null || exit 1; done
+inv a reserve BOLT-M6 5 || { echo "reserving 5 of 5 still fails"; exit 1; }
+inv b reserve BOLT-M6 6 && { echo "reserving 6 of 5 succeeded"; exit 1; }
+python3 -m pytest -q
 '''
 expect_exit = 0
 
 [[check]]
-# The main checkout is untouched apart from the tracker; the code changes live in the worktree.
 type = "diff_scope"
 allow = [".scratch/**", ".ns/**"]
+
+[[check]]
+type = "command"
+run = "ls .ns/01-*/auto/log.md ../*.worktrees/01-*/.ns/01-*/auto/log.md 2>/dev/null | head -1 | grep -q ."
+expect_exit = 0
 
 [[check]]
 type = "judge"

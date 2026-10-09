@@ -131,7 +131,7 @@ flowchart LR
 | **ns-writing-for-humans** | define (leaf) | pstack `unslop`, `technical-writing` | Renamed. Python examples |
 | **ns-swarm** | shared leaf | pstack `swarm` | Harness-neutral fan-out: subagents, or `ns ask` per worker. Used by ns-review and ns-verify |
 | **ns-principle-\*** (24) | shared leaf | pstack `principle-*` | One skill each, user-invoked, referenced by path. Python/firmware examples |
-| **ns-auto** | all | pstack `poteto-mode` (`autonomous-run` playbook), overnight contract, selected principles | User-invoked. Chains the phases in one session under a stated gate policy, or defers to `ns run` when a factory definition exists. Never merges |
+| **ns-auto** | all | pstack `poteto-mode` (`autonomous-run` playbook), overnight contract, selected principles | User-invoked. Chains the phases in one session, or defers to `ns run`. Never merges |
 | ns-define | define | Matt `grill-with-docs`, `to-spec`; addy `interview-me`, `idea-refine`, `spec-driven-development` | Writes `brief.md` or `SPEC.md` |
 | ns-plan | plan | Matt `to-tickets`, `wayfinder`, `codebase-design` | |
 | ns-troubleshoot | outer loop | Matt `diagnosing-bugs` | Firmware feedback loops: serial, JTAG, HIL, logic analyzer |

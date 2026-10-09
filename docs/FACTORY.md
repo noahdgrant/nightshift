@@ -136,6 +136,8 @@ An artifact is current when its frontmatter `sha` matches `git rev-parse --short
 | `pr` fail | the phase its body names first (verify or review), with its body as `{feedback}`, else stuck |
 | a phase out of attempts | stuck |
 
+`skills/ns-auto` mirrors this table, the archiving in step 3 and the currency rule for in-session runs; change them together.
+
 A review that commits leaves `evidence.md` stale, so verify runs again before ship; `review.md` carries the new sha and stays valid. A CI failure in the merge step runs build again; build's commit leaves evidence, review and pr stale, so verify, review and ship follow onto the same PR. A ship that changes the unit's diff after review leaves `pr.md` at HEAD but `review.md` stale, so verify, review and ship run again; the per-phase `max_attempts` bounds the loop. The PR number comes from `pr.md`'s `pr:`, or from the newest archived `history/pr-<n>.md` that names one, so archiving never loses it.
 
 Attempts are counted per invocation, so re-running `ns run` on a stuck unit gives each phase fresh attempts.
