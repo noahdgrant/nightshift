@@ -766,6 +766,7 @@ fn every_subcommand_help_has_examples() {
         vec!["check-markers", "--help"],
         vec!["install", "--help"],
         vec!["doctor", "--help"],
+        vec!["quality", "--help"],
     ] {
         ns().args(&args)
             .assert()

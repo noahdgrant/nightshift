@@ -9,6 +9,17 @@ use std::sync::OnceLock;
 use regex::{Captures, Regex};
 use serde::Serialize;
 
+pub const AXES: [&str; 8] = [
+    "correctness",
+    "readability",
+    "architecture",
+    "security",
+    "performance",
+    "tests",
+    "spec",
+    "comments",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -72,6 +83,19 @@ pub struct Finding {
     pub status: Status,
     /// The fix cycle named in `fixed (cycle <n>, ...)`.
     pub fixed_cycle: Option<u32>,
+}
+
+impl Finding {
+    /// Critical or Important, and not dismissed.
+    pub fn blocking(&self) -> bool {
+        self.severity != Severity::Suggestion && self.status != Status::Dismissed
+    }
+
+    /// Blocking and not `pre-existing`: what holds the unit back. A pre-existing finding is an
+    /// escape and never blocks (docs/DESIGN.md D29).
+    pub fn against_unit(&self) -> bool {
+        self.blocking() && self.scope != Scope::PreExisting
+    }
 }
 
 fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
@@ -330,6 +354,87 @@ pub fn parse(text: &str) -> Vec<Finding> {
     found
 }
 
+/// One Critical or Important finding a free-form `cycle-<n>.md` lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CycleEntry {
+    pub id: String,
+    /// Axes named before the line's first `:` (`- I1 perf: ...`, `I2 Important (spec): ...`).
+    pub axes: Vec<String>,
+}
+
+/// The Critical and Important ids named at the start of a line in a `cycle-<n>.md`
+/// (`## I1. ...`, `- I1 perf: ...`, `I1 Important (...)`), first mention of each.
+pub fn cycle_entries(text: &str) -> Vec<CycleEntry> {
+    static R: OnceLock<Regex> = OnceLock::new();
+    let r = re(&R, r"^\s*(?:#{1,6}\s*|[-*]\s+)?\**([CI]\d+)\b");
+    let mut entries: Vec<CycleEntry> = Vec::new();
+    for line in text.lines() {
+        let Some(c) = r.captures(line) else {
+            continue;
+        };
+        if entries.iter().all(|e| e.id != c[1]) {
+            let head = line.split(':').next().unwrap_or(line);
+            entries.push(CycleEntry {
+                id: c[1].to_string(),
+                axes: axes_in(head),
+            });
+        }
+    }
+    entries
+}
+
+/// Headings that are not findings yet carry a `Status:` field, such as `### C3-1. ...` or
+/// `### D1. ...`: findings in a shape the parser can't number.
+pub fn stray_statuses(text: &str) -> usize {
+    let mut count = 0;
+    let mut stray = false;
+    let mut fence = false;
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            fence = !fence;
+        } else if fence {
+        } else if line.starts_with('#') {
+            stray = line.starts_with("##") && !heading_id().is_match(line);
+        } else if stray && field(line).is_some_and(|(k, _)| k == "status") {
+            count += 1;
+            stray = false;
+        }
+    }
+    count
+}
+
+/// Changed lines from the Summary's `Change size:` line: `<n> insertions, <m> deletions`
+/// sums both; otherwise the first `<n> lines`. Commas in numbers are allowed.
+pub fn change_size(text: &str) -> Option<u64> {
+    static R: OnceLock<Regex> = OnceLock::new();
+    let line = text
+        .lines()
+        .find(|l| l.to_lowercase().replace('*', "").contains("change size"))?;
+    let r = re(
+        &R,
+        r"(?i)(\d[\d,]*)\s+(insertions?|deletions?|(?:changed\s+|diff\s+)?lines)\b",
+    );
+    let mut ins = None;
+    let mut del = None;
+    let mut lines = None;
+    for c in r.captures_iter(line) {
+        let n: u64 = c[1].replace(',', "").parse().ok()?;
+        let kind = c[2].to_lowercase();
+        if kind.starts_with("insertion") {
+            ins.get_or_insert(n);
+        } else if kind.starts_with("deletion") {
+            del.get_or_insert(n);
+        } else {
+            lines.get_or_insert(n);
+        }
+    }
+    match (ins, del) {
+        (None, None) => lines,
+        (i, d) => Some(i.unwrap_or(0) + d.unwrap_or(0)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,6 +473,7 @@ mod tests {
                 fixed_cycle: Some(3),
             }
         );
+        assert!(f.blocking());
     }
 
     #[test]
@@ -444,6 +550,9 @@ mod tests {
         assert_eq!(st("dismissed: noted: premature"), Status::Dismissed);
         assert_eq!(st("deferred: #99"), Status::Deferred);
         assert_eq!(st("accepted"), Status::Unknown);
+        assert!(!one("### I1. t\n- Status: dismissed: wrong\n").blocking());
+        assert!(!one("### S1. t\n- Status: open\n").blocking());
+        assert!(one("### I1. t\n- Status: deferred: #9\n").blocking());
     }
 
     #[test]
@@ -559,5 +668,51 @@ mod tests {
     fn the_id_prefix_sets_severity_whatever_the_section() {
         let f = one("## Suggestion\n### C2. misfiled\n");
         assert_eq!(f.severity, Severity::Critical);
+    }
+
+    #[test]
+    fn cycle_entries_read_free_form_cycle_files() {
+        let text = "# Cycle 1\n\n## I1. a (spec + architecture)\nI2 Important (spec): b, not tests\n- I3 perf: c\n- **C1** d\n  - I4 nested\n- S1 not counted\nI1 again (tests)\nIn I5 prose\n";
+        let e = cycle_entries(text);
+        let ids: Vec<_> = e.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["I1", "I2", "I3", "C1", "I4"]);
+        assert_eq!(e[0].axes, ["spec", "architecture"]);
+        assert_eq!(e[1].axes, ["spec"]);
+        assert_eq!(e[2].axes, ["performance"]);
+        assert!(e[3].axes.is_empty());
+        assert!(cycle_entries("nothing").is_empty());
+    }
+
+    #[test]
+    fn stray_statuses_counts_headings_the_parser_skipped() {
+        let text = "## Important\n### I1. real\n- Status: open\n### C3-1. cycle note\n- Status: open\n### D1. dismissed\n- **Status:** dismissed\n- Status: again\n### Notes\n- no status\n# Top\n- Status: open\n```\n### X1\n- Status: open\n```\n";
+        assert_eq!(stray_statuses(text), 2);
+    }
+
+    #[test]
+    fn change_size_variants() {
+        let cs = |l: &str| change_size(&format!("## Summary\n{l}\n"));
+        assert_eq!(
+            cs("Change size: 816 insertions, 11 deletions in 7 files"),
+            Some(827)
+        );
+        assert_eq!(
+            cs("Change size at cycle 0: 576 insertions, 19 deletions in 13 files"),
+            Some(595)
+        );
+        assert_eq!(cs("Change size: 250 insertions in 3 files"), Some(250));
+        assert_eq!(cs("Change size: 3 deletions in 1 file"), Some(3));
+        assert_eq!(cs("Change size: about 1,100 lines in 15 files at cycle 1 (about 1,300 with the fixes)"), Some(1100));
+        assert_eq!(
+            cs("Change size: ~275 diff lines in 6 files (122 added, 27 removed)"),
+            Some(275)
+        );
+        assert_eq!(cs("**Change size:** 170 changed lines"), Some(170));
+        assert_eq!(cs("Change size: unknown"), None);
+        assert_eq!(
+            cs("Change size: 10 insertions, 2 deletions (30 insertions, 5 deletions at HEAD)"),
+            Some(12)
+        );
+        assert_eq!(change_size("Open: 1 Important.\n12 lines"), None);
     }
 }
