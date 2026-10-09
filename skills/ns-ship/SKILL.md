@@ -34,7 +34,7 @@ GO needs every line below to hold on the current `HEAD`. Record each one. The Ve
 
 - The test, lint, and build commands from `docs/agents/stack.md` pass.
 - `evidence.md` covers every acceptance criterion in `brief.md`. An `inconclusive` item is not covered.
-- `review.md` has no open Critical finding.
+- `review.md` has no open Critical finding, and no open Important finding in changed code.
 - The diff holds no secrets, credentials, or debug-only switches left on.
 - You can write a rollback plan. A change you can't undo needs a stated way forward instead (for example, a fix-forward migration).
 - If the change ships to devices or production (OTA, flashing, a deploy, a data migration), read [references/rollout.md](references/rollout.md) and fill its plan. Firmware always takes this branch.

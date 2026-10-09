@@ -37,4 +37,5 @@ Ask: "What's the public interface, and which seams should we test?" Give each pr
 
 - **Red before green.** Write the failing test first and watch it fail for the reason you expect. Then write only enough code to pass it. Don't anticipate future tests or add speculative features.
 - **One slice at a time.** One seam, one test, one minimal implementation per cycle.
+- **Every branch tested.** Each branch and error path you add gets a test that takes it, not only the paths the acceptance criteria name. This is the Tests section of the [quality bar](../ns-contract/references/quality-bar.md), the list review checks against.
 - **Refactoring is not part of the loop.** It belongs to the review stage (see the `ns-review` skill), not the red → green implementation cycle.

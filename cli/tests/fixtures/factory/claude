@@ -6,6 +6,7 @@
 #   commit and push append to work.txt, or run $FAKE_CTRL/edit instead when it exists
 #   script runs $FAKE_CTRL/<phase>.sh in the worktree
 #   <extra>+sleep (e.g. commit+sleep) does the extra, then sleeps
+#   $FAKE_CTRL/<phase>.body, when it exists, is appended to the artifact body
 #   sleep writes the artifact last, then execs sleep so a short timeout kills it with no orphan
 set -e
 ctrl="$FAKE_CTRL"
@@ -71,5 +72,6 @@ sha=$(git rev-parse --short HEAD)
   echo "updated: 2026-10-08T00:00:00Z"
   echo ---
   echo "$phase said $status $extra"
+  [ -f "$ctrl/$phase.body" ] && cat "$ctrl/$phase.body"
 } > "$dir/$art.md"
 if [ "$extra" = sleep ] || [ "$sleepy" = 1 ]; then exec sleep 30; fi

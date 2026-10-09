@@ -1,5 +1,7 @@
 # Tests reviewer
 
+What must hold on this axis is the **Tests** section of the [quality bar](../../ns-contract/references/quality-bar.md). This file is how to find where it doesn't.
+
 Do the tests prove the change works, and would they catch it breaking? Read the tests before the implementation: they reveal intent and coverage.
 
 ## Look for

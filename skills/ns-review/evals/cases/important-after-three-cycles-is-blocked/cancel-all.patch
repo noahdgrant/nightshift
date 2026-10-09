@@ -1,0 +1,37 @@
+diff --git a/src/inventory/warehouse.py b/src/inventory/warehouse.py
+index da52c45..920bff3 100644
+--- a/src/inventory/warehouse.py
++++ b/src/inventory/warehouse.py
+@@ -113,6 +113,14 @@ class Warehouse:
+         del self._reservations[reservation_id]
+         return reservation
+ 
++    def cancel_all(self, sku: str) -> int:
++        """Drop every reservation of `sku`, returning how many were dropped."""
++        self.item(sku)
++        doomed = [rid for rid, r in self._reservations.items() if r.sku == sku]
++        for rid in doomed:
++            del self._reservations[rid]
++        return len(doomed)
++
+     def fulfil(self, reservation_id: str, now: datetime) -> Reservation:
+         """Ship a reservation: remove its quantity from stock on hand."""
+         reservation = self.reservation(reservation_id)
+diff --git a/tests/test_warehouse.py b/tests/test_warehouse.py
+index 2bb5643..be307b3 100644
+--- a/tests/test_warehouse.py
++++ b/tests/test_warehouse.py
+@@ -103,3 +103,13 @@ def test_stock_levels_report_every_item(warehouse):
+     assert (levels["BOLT-M6"].on_hand, levels["BOLT-M6"].reserved) == (10, 3)
+     assert levels["BOLT-M6"].available == 7
+     assert levels["NUT-M6"].available == 0
++
++
++def test_cancel_all_drops_only_that_sku(warehouse):
++    warehouse.reserve("BOLT-M6", 2, now=T0)
++    warehouse.reserve("BOLT-M6", 3, now=T0)
++    warehouse.receive("NUT-M6", 5)
++    kept = warehouse.reserve("NUT-M6", 1, now=T0)
++    assert warehouse.cancel_all("BOLT-M6") == 2
++    assert warehouse.reservations("BOLT-M6") == []
++    assert warehouse.reservations("NUT-M6") == [kept]

@@ -499,8 +499,21 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                                 f.to_string_lossy()
                             )
                         });
+                    let findings = r
+                        .artifact
+                        .as_deref()
+                        .filter(|a| Path::new(a).file_name().is_some_and(|f| f == "review.md"))
+                        .and_then(|a| std::fs::read_to_string(a).ok())
+                        .map(|text| open_findings(&text))
+                        .filter(|f| !f.is_empty())
+                        .map_or(String::new(), |f| {
+                            format!(
+                                "\n\nOpen findings in `review.md`:\n```text\n{}\n```",
+                                f.join("\n")
+                            )
+                        });
                     let body = format!(
-                        "nightshift {what} on unit `{}`: {}\n\nLast artifact: {artifact}\n\n{DISCLAIMER}",
+                        "nightshift {what} on unit `{}`: {}{findings}\n\nLast artifact: {artifact}\n\n{DISCLAIMER}",
                         r.unit, r.reason
                     );
                     let posted = comment(&repo.root, issue.number, &body);
@@ -549,6 +562,57 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// The Critical and Important findings `review.md` leaves open, one `<id>. <title> (<location>)`
+/// line each, so the stuck comment tells a human what is left to finish.
+fn open_findings(review: &str) -> Vec<String> {
+    let id = regex::Regex::new(r"^[CI]\d+\.\s").unwrap();
+    let field = |line: &str, name: &str| {
+        let l = line.trim_start().strip_prefix('-')?.replace('*', "");
+        let (k, v) = l.split_once(':')?;
+        k.trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| v.trim().replace('`', ""))
+    };
+    struct Finding {
+        heading: String,
+        location: String,
+        open: bool,
+    }
+    let mut finding: Option<Finding> = None;
+    let mut found = Vec::new();
+    let mut flush = |f: Option<Finding>| {
+        if let Some(f) = f.filter(|f| f.open) {
+            found.push(if f.location.is_empty() {
+                f.heading
+            } else {
+                format!("{} ({})", f.heading, f.location)
+            });
+        }
+    };
+    for line in review.lines() {
+        if line.starts_with('#') {
+            flush(finding.take());
+            finding = line
+                .strip_prefix("### ")
+                .map(str::trim)
+                .filter(|h| id.is_match(h))
+                .map(|h| Finding {
+                    heading: h.replace('`', ""),
+                    location: String::new(),
+                    open: false,
+                });
+        } else if let Some(f) = finding.as_mut() {
+            if let Some(l) = field(line, "location") {
+                f.location = l;
+            } else if let Some(st) = field(line, "status") {
+                f.open = st.to_lowercase().starts_with("open");
+            }
+        }
+    }
+    flush(finding);
+    found
+}
+
 /// Two units in a row that fail like this stop the night instead of draining the queue.
 const HARNESS_FAIL_LIMIT: u32 = 2;
 
@@ -578,6 +642,46 @@ mod tests {
         assert!(blockers("text\nBlocked by: #3").is_empty());
         assert_eq!(closed_by("Closes #5. Also fixes #6"), [5, 6]);
         assert!(closed_by("see #5").is_empty());
+    }
+
+    #[test]
+    fn open_findings_keeps_open_criticals_and_importants() {
+        let review = "\
+Open after 3 fix cycles: C1, I2, I4.
+
+### C1. Drops every `SKU`
+- Location: `a.py:1`
+- Status: open
+### I1. Done already
+- Location: `a.py:2`
+- Status: dismissed: noted: open question for later
+### I2. No location given
+- Status: open. The fix did not land.
+### I4. Formatted loosely
+- **Location:** `a.py:4`
+- **Status:** Open
+### I5. Location after status
+- Status: open
+- Location: `a.py:5`
+### I6. Closed by a section
+## Suggestion
+- Status: open
+### S1. A suggestion
+- Location: `a.py:3`
+- Status: open
+### Cycle 3 notes
+- Status: open
+";
+        assert_eq!(
+            open_findings(review),
+            [
+                "C1. Drops every SKU (a.py:1)",
+                "I2. No location given",
+                "I4. Formatted loosely (a.py:4)",
+                "I5. Location after status (a.py:5)"
+            ]
+        );
+        assert!(open_findings("no findings here").is_empty());
     }
 
     #[test]

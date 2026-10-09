@@ -1,0 +1,121 @@
+description = "Build a small feature whose brief has a strict time boundary and an unnamed zero-reservation path. Before writing build.md, ns-build must self-check: the quality bar, a test for every branch it adds (including nothing to cancel), and a targeted mutation pass recorded in build.md."
+fixture = "py-inventory"
+skills = ["ns-build"]
+extra_skills = [
+  "ns-contract",
+  "ns-tdd",
+  "ns-review",
+  "ns-principle-test-behavior-not-implementation",
+  "ns-principle-sequence-verifiable-units",
+  "ns-principle-subtract-before-you-add",
+  "ns-principle-laziness-protocol",
+  "ns-principle-fix-root-causes",
+  "ns-principle-attack-the-premise",
+  "ns-principle-minimize-reader-load",
+]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Build unit 3-cancel-older. You are already in its worktree, on branch ns/3-cancel-older, and the brief is .ns/3-cancel-older/brief.md. The repo has no remote, so skip the fetch and rebase. gates: auto. Nobody is around to answer questions. Stop after writing build.md: don't verify, review or ship.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/3-cancel-older",
+  "mkdir -p .git/info && echo '.ns/' >> .git/info/exclude",
+  "mkdir -p .ns/3-cancel-older && cp ../brief.md .ns/3-cancel-older/",
+]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/3-cancel-older/build.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+type = "regex"
+path = ".ns/3-cancel-older/build.md"
+pattern = "(?m)^## Self-check"
+
+[[check]]
+# The self-check ran mutations and recorded at least one as killed.
+type = "regex"
+path = ".ns/3-cancel-older/build.md"
+pattern = "(?mi)^\\|.*\\|\\s*killed\\s*\\|\\s*$"
+
+[[check]]
+# Every branch tested: a test covers the path with nothing to cancel, which no acceptance criterion names.
+type = "command"
+run = '''
+B=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+A=$( { git diff "$B" -U0 -- tests/ | grep '^+' ; git ls-files -o --exclude-standard tests/ | xargs -r cat ; } )
+printf '%s\n' "$A" | grep -Eiq 'def test_[a-z0-9_]*(nothing|none|zero|empty|no_reserv|no_older|without)'
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**", ".ns/**"]
+
+[[check]]
+# Hidden acceptance test, written outside the repo so the agent never sees it.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_cancel_older_acceptance.py" <<'PYEOF'
+from datetime import datetime, timedelta
+
+import pytest
+
+from inventory import UnknownItem, Warehouse
+
+T0 = datetime(2026, 4, 1, 10, 0)
+
+
+def make():
+    w = Warehouse()
+    w.add_item("PIN-4", "4 mm dowel pin")
+    w.add_item("PIN-5", "5 mm dowel pin")
+    w.receive("PIN-4", 50)
+    w.receive("PIN-5", 50)
+    return w
+
+
+def test_drops_only_older_reservations_of_the_sku():
+    w = make()
+    w.reserve("PIN-4", 1, now=T0)
+    w.reserve("PIN-4", 2, now=T0 + timedelta(minutes=1))
+    kept = w.reserve("PIN-4", 3, now=T0 + timedelta(minutes=5))
+    other = w.reserve("PIN-5", 4, now=T0)
+    assert w.cancel_older("PIN-4", T0 + timedelta(minutes=5)) == 2
+    assert w.reservations("PIN-4") == [kept]
+    assert w.reservations("PIN-5") == [other]
+
+
+def test_nothing_older_returns_zero():
+    w = make()
+    w.reserve("PIN-4", 1, now=T0)
+    assert w.cancel_older("PIN-4", T0) == 0
+    assert w.cancel_older("PIN-5", T0 + timedelta(days=1)) == 0
+
+
+def test_unknown_sku_raises():
+    with pytest.raises(UnknownItem):
+        make().cancel_older("NOPE", T0)
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_cancel_older_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Does build.md's Self-check section mark the quality bar items, list the branches the diff added with the test covering each, and record a mutation table whose rows name real conditions in the new code (such as the strict before comparison) with the targeted command and a result? Was a test added for any mutation that first survived?"
+required = false
