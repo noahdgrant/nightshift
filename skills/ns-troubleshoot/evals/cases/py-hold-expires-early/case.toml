@@ -1,0 +1,82 @@
+description = "Seeded intermittent bug: Reservation.to_dict writes expires_at truncated to the minute, so a hold reloaded from the state file expires up to 59 s early. The reporter sees it 'one time in three' because it depends on the wall-clock seconds at reserve time; triage pinned whole-minute timestamps and couldn't reproduce it. Troubleshoot must build a red loop (a --now with seconds, or a save/load round trip), find the truncation, and write brief.md routing to ns-build, without fixing it."
+fixture = "py-inventory"
+# ns-troubleshoot links to ns-triage's agent-brief.md by relative path; ship it so the link resolves in the "with" arm.
+skills = ["ns-troubleshoot", "ns-triage"]
+# ns-contract defines units, worktrees, .ns artifacts and gates. ns-build is left out, so the auto hand-off
+# reports the routing and stops, and the trial ends at troubleshoot.
+extra_skills = ["ns-contract"]
+requires = []
+timeout_minutes = 20
+prompt = """
+Troubleshoot .scratch/reservations/issues/02-holds-expire-early.md. gates: auto
+"""
+
+# The seeded defect lives in files/src/inventory/models.py: `expires_at.isoformat(timespec="minutes")`.
+# Every check below reads files only: no wall clock, no sleeps, nothing shared between trials.
+
+[[check]]
+# brief.md exists for unit 02-*, in the worktree `ns worktree new` (or the git-worktree fallback) made at
+# ../<repo>.worktrees/<unit>, or, tolerated, in the main checkout's .ns/. It is a troubleshoot artifact with
+# status: pass, a base, an Agent Brief with acceptance criteria, a repro and a root cause, and routes to ns-build.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, os, re, subprocess, sys
+roots = {os.getcwd()}
+out = subprocess.run(["git", "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+roots.update(l.split(" ", 1)[1] for l in out.splitlines() if l.startswith("worktree "))
+roots.update(glob.glob(os.path.join("..", os.path.basename(os.getcwd()) + ".worktrees", "02-*")))
+briefs = sorted({os.path.realpath(p) for r in roots for p in glob.glob(os.path.join(r, ".ns", "02-*", "brief.md"))})
+if not briefs:
+    sys.exit("no .ns/02-*/brief.md in the main checkout or any worktree")
+for path in briefs:
+    text = open(path, encoding="utf-8").read()
+    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    if not m:
+        print(f"{path}: no frontmatter"); continue
+    fm = {k: v.strip("'\"") for k, v in re.findall(r"(?m)^(\w+):[ \t]*(.*?)[ \t]*(?:#.*)?$", m.group(1))}
+    checks = {
+        "phase": fm.get("phase") == "troubleshoot",
+        "status": fm.get("status") == "pass",
+        "base": fm.get("base", "") != "",
+        "agent brief": "Agent Brief" in text and "- [ ]" in text,
+        "repro section": re.search(r"(?im)^#+\s*repro", text) is not None,
+        "root cause section": re.search(r"(?im)^#+\s*root cause", text) is not None,
+        "root cause names expires_at": "expires_at" in text,
+        "root cause names truncation": re.search(r"(?i)truncat|timespec|seconds|whole minute|rounds? (down|to)", text) is not None,
+        "routes to ns-build": "ns-build" in text,
+    }
+    print(path, {k: v for k, v in checks.items() if not v} or "ok")
+    if all(checks.values()):
+        sys.exit(0)
+sys.exit("no brief.md passes every check")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# Troubleshoot writes no fix: the seeded defect is still there in the main checkout.
+type = "regex"
+path = "src/inventory/models.py"
+pattern = 'expires_at\.isoformat\(timespec="minutes"\)'
+present = true
+
+[[check]]
+# ...and in every worktree the trial created.
+type = "command"
+run = '''
+for wt in $(git worktree list --porcelain | sed -n 's/^worktree //p'); do
+  grep -q 'expires_at.isoformat(timespec="minutes")' "$wt/src/inventory/models.py" || { echo "fixed in $wt"; exit 1; }
+done
+'''
+expect_exit = 0
+
+[[check]]
+# Only the tracker and artifacts change in the main checkout. Throwaway harnesses are cleaned up.
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**"]
+
+[[check]]
+type = "judge"
+rubric = "Read the trial's transcript and the brief.md it wrote under .ns/02-*/. Pass only if: (1) before forming hypotheses about the cause, the agent built and ran a loop that went red on the reported symptom (a fulfil refused before the printed expiry), with a pinned clock rather than the wall clock or sleeps; (2) it recorded several ranked, falsifiable hypotheses and the probe that confirmed the survivor; (3) the root cause is the minute-truncated expires_at written by the state file (Reservation.to_dict), not the TTL arithmetic or the CLI; (4) it changed no source and routed to ns-build with a repro that ns-build can turn into a failing test."
+required = false

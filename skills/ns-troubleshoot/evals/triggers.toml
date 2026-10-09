@@ -1,0 +1,62 @@
+# Does the ns-troubleshoot description fire on the right prompts? Run against evals/fixtures-style repos.
+# 8 positive, 7 negative.
+
+[[trigger]]
+prompt = "Troubleshoot .scratch/reservations/issues/02-holds-expire-early.md. gates: auto"
+expect = true
+
+[[trigger]]
+prompt = "Issue 05 is in needs-repro. Find a way to reproduce it and work out the root cause."
+expect = true
+
+[[trigger]]
+prompt = "Sometimes fulfil says a reservation expired when it shouldn't have. Nobody can make it happen on demand. Can you diagnose it?"
+expect = true
+
+[[trigger]]
+prompt = "The status command got really slow on big state files since last week. Debug this."
+expect = true
+
+[[trigger]]
+prompt = "test_cli.py fails maybe one run in twenty on CI and passes locally. Figure out why."
+expect = true
+
+[[trigger]]
+prompt = "Our board resets about once a day with a hard fault. Work out what's causing it before anyone writes a fix."
+expect = true
+
+[[trigger]]
+prompt = "Something between v1.2 and v1.3 broke reservation expiry. Find the commit and the cause."
+expect = true
+
+[[trigger]]
+prompt = "Cancel sometimes returns the wrong quantity to stock. I don't know why. Dig into it."
+expect = true
+
+[[trigger]]
+prompt = "Reserving exactly the quantity that's in stock gets rejected. The brief is written; fix it test-first."
+expect = false
+
+[[trigger]]
+prompt = "Add a --json flag to the status command."
+expect = false
+
+[[trigger]]
+prompt = "Triage the new issues in .scratch/ and tell me which ones are ready for an agent."
+expect = false
+
+[[trigger]]
+prompt = "Review the diff on this branch before I push it."
+expect = false
+
+[[trigger]]
+prompt = "Explain how Warehouse.reserve decides whether there's enough stock."
+expect = false
+
+[[trigger]]
+prompt = "Write the PR description for this branch."
+expect = false
+
+[[trigger]]
+prompt = "Add a glossary entry for 'backorder' to GLOSSARY.md."
+expect = false
