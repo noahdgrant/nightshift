@@ -9,18 +9,16 @@ Troubleshoot .scratch/reservations/issues/02-holds-expire-early.md. gates: auto
 """
 
 [setup]
-commands = ["cp ../check_brief.py .git/check_brief.py"]
+commands = [
+  "cp ../check_brief.py .git/check_brief.py",
+  "sed -i 's/\"expires_at\": self.expires_at.isoformat(),/\"expires_at\": self.expires_at.isoformat(timespec=\"minutes\"),/' src/inventory/models.py",
+  "grep -q 'isoformat(timespec=\"minutes\")' src/inventory/models.py",
+]
 
 [[check]]
 type = "command"
 run = "python3 -I .git/check_brief.py"
 expect_exit = 0
-
-[[check]]
-type = "regex"
-path = "src/inventory/models.py"
-pattern = 'expires_at\.isoformat\(timespec="minutes"\)'
-present = true
 
 [[check]]
 type = "command"

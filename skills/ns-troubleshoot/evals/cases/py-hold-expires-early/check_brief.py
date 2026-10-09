@@ -6,15 +6,17 @@ import sys
 
 
 def section(text, name):
-    body, inside, in_fence = [], False, False
+    body, inside, in_fence, depth = [], False, False, 0
     for line in text.splitlines():
         if line.lstrip().startswith("```"):
             in_fence = not in_fence
-        elif not in_fence and re.match(r"#+[ \t]", line):
-            if inside:
+        elif not in_fence and (heading := re.match(r"(#+)[ \t]+(.*)", line)):
+            level = len(heading.group(1))
+            if inside and level <= depth:
                 break
-            inside = re.match(r"#+[ \t]*" + name, line, re.I) is not None
-            continue
+            if not inside and re.match(name, heading.group(2), re.I):
+                inside, depth = True, level
+                continue
         if inside:
             body.append(line)
     return "\n".join(body).strip()
@@ -29,7 +31,8 @@ def failures(text):
     repro = section(text, "repro")
     cause = section(text, "root cause")
     pinned_seconds = re.search(r"--now[ =]\S*T\d\d:\d\d:(?!00)\d\d", repro) is not None
-    round_trip = re.search(r"(?i)round.?trip|reload|save.*load|to_dict|from_dict", repro) is not None
+    commands = [l for l in repro.splitlines() if re.match(r"\s*(\$ )?python3?\b", l)]
+    round_trip = any(re.search(r"to_dict|from_dict|\.load\(|\.save\(", l) for l in commands)
     checks = {
         "phase": fm.get("phase") == "troubleshoot",
         "status": fm.get("status") == "pass",

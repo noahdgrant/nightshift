@@ -45,24 +45,38 @@ Use when the bug shows on real hardware and the device logs to a UART or RTT. Th
 Save this as `serial_check.py`. It exits 1 when the symptom appears (red), 2 when the board never printed its boot banner (the loop is broken, not green), and 0 when the banner appeared and the symptom did not.
 
 ```python
-import re, sys, time, serial  # pyserial
+import re
+import sys
+import time
+
+import serial  # pyserial
 
 PORT, BAUD, TIMEOUT, POLL = "/dev/ttyACM0", 115200, 10.0, 0.1
 BANNER, PATTERN = rb"Booting Zephyr", rb"rx overrun"
 
-with serial.Serial(PORT, BAUD, timeout=POLL) as s, open(sys.argv[1], "wb") as log:
-    s.reset_input_buffer()
-    # reset the board here (probe-rs reset, or a reset GPIO) so every run starts from boot
-    buf = b""
-    deadline = time.monotonic() + TIMEOUT
-    while time.monotonic() < deadline:
-        chunk = s.read(s.in_waiting or 1)
-        log.write(chunk)
-        buf += chunk
-        if re.search(PATTERN, buf):
-            sys.exit(1)  # red: the reported symptom appeared
-sys.exit(0 if re.search(BANNER, buf) else 2)
+
+def run(log_path):
+    with serial.Serial(PORT, BAUD, timeout=POLL) as s, open(log_path, "wb") as log:
+        s.reset_input_buffer()
+        buf = b""
+        deadline = time.monotonic() + TIMEOUT
+        while time.monotonic() < deadline:
+            chunk = s.read(s.in_waiting or 1)
+            log.write(chunk)
+            buf += chunk
+            if re.search(PATTERN, buf):
+                return 1
+    return 0 if re.search(BANNER, buf) else 2
+
+
+try:
+    sys.exit(run(sys.argv[1]))
+except Exception as e:
+    print(f"serial_check: {e!r}", file=sys.stderr)
+    sys.exit(2)
 ```
+
+Reset the board inside `run`, after `reset_input_buffer()` (probe-rs reset, or a reset GPIO), so every run starts from boot. An exception such as a missing port exits 2: the loop is broken, not red.
 
 Red: exit 1 and the symptom line in the saved log. Assert on the reporter's exact line, never on "no output".
 
@@ -107,18 +121,16 @@ Tighten: trigger on the event that precedes the bug (here SDA falling, the I2C s
 
 ## git bisect run on target
 
-Use when the bug appeared between two known commits and one of the loops above can tell good from bad. Wrap that loop in a script that builds, flashes, runs, and exits with git bisect's codes.
+Use when the bug appeared between two known commits and one of the loops above can tell good from bad. Wrap that loop in a script that builds, flashes, runs, and exits with git bisect's codes: 0 good, 1 bad, 125 skip (the commit can't be judged: a build break, a flash failure, a board that never booted, a checker that crashed).
 
 ```bash
 #!/usr/bin/env bash
-# bisect-check.sh: exit 0 good, 1 bad, 125 skip (can't build this commit).
-# serial_check.py is your checker from the serial-capture recipe.
+# bisect-check.sh: serial_check.py is your checker from the serial-capture recipe.
 west build -b <board> app -d "$OUT/build" --pristine >/dev/null 2>&1 || exit 125
 west flash -d "$OUT/build" >/dev/null 2>&1 || exit 125
 rc=0
 python3 "$OUT/serial_check.py" "$OUT/serial-$(git rev-parse --short HEAD).log" || rc=$?
-[ "$rc" -eq 2 ] && exit 125   # never booted: skip, don't blame the commit
-exit "$rc"
+case "$rc" in 0 | 1) exit "$rc" ;; *) exit 125 ;; esac
 ```
 
 ```bash
@@ -129,4 +141,4 @@ git bisect log > "$OUT/bisect.log"; git bisect reset
 
 Red: `git bisect run` names the first bad commit. That commit is evidence for a hypothesis, not the root cause: read what it changed, then form hypotheses in Phase 3.
 
-Tighten: exit 125 for every reason other than the bug (a build break, a flash failure, a board that never booted), so bisect skips instead of blaming the wrong commit. For a flaky bug, run the check several times per commit and call it bad on any failure. Keep the script outside the tree (under `.ns/<unit-id>/troubleshoot/`) so checkouts during the bisect don't remove it. Bisect submodules or the west manifest together with the app when the bug might be in a module.
+Tighten: exit 125 for every reason other than the bug (a build break, a flash failure, a board that never booted), so bisect skips instead of blaming the wrong commit. For a flaky bug, run the check several times per commit and call it bad on any failure. Keep the script in an untracked, git-ignored path (`.ns/<unit-id>/troubleshoot/`) so checkouts during the bisect don't remove it. Bisect submodules or the west manifest together with the app when the bug might be in a module.

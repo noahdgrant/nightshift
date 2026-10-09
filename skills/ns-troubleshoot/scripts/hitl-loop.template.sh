@@ -19,15 +19,11 @@ capture() {
   printf -v "$var" '%s' "$answer"
 }
 
-# --- edit below ---------------------------------------------------------
-
 step "Open <URL> and sign in."
 
 capture ERRORED "<Action>. Did it fail? (y/n)"
 
 capture ERROR_MSG "Paste the error message (or 'none'):"
-
-# --- edit above ---------------------------------------------------------
 
 printf '\n--- Captured ---\n'
 printf 'ERRORED=%s\n' "$ERRORED"

@@ -19,14 +19,14 @@ Issue: https://github.com/example/repo/issues/2
 
 ## Repro
 ```bash
-# reserve with seconds on the clock, then fulfil inside the hold
-python3 -m inventory --state inv.json --now 2026-03-02T09:00:00 reserve BOLT-M6 4 --ttl 5
-python3 -m inventory --state inv.json --now 2026-03-02T09:04:00 fulfil R0001
+export PYTHONPATH=src
+python3 -m inventory --state inv.json --now 2026-03-02T09:00:30 add-item BOLT-M6 Bolt
+python3 -m inventory --state inv.json --now 2026-03-02T09:00:30 receive BOLT-M6 10
+python3 -m inventory --state inv.json --now 2026-03-02T09:00:30 reserve BOLT-M6 4 --ttl 5
+python3 -m inventory --state inv.json --now 2026-03-02T09:05:10 fulfil R0001
 # ok
 ```
-
-# Seam
-Warehouse.save then load.
+The seam is `Warehouse.save` then `load`.
 
 ## Root cause
 `Reservation.to_dict` in `models.py` writes `expires_at` cut to the minute, so a reload loses up to 59 s.
