@@ -6,6 +6,7 @@ use std::process::Command as StdCommand;
 
 use assert_cmd::Command;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 const NOW: i64 = 1_791_504_000; // 2026-10-09T00:00:00Z
@@ -1255,6 +1256,14 @@ fn watch_keeps_its_start_config_when_the_files_break_between_units() {
     e.factory("[defaults]\nmax_attempts = 3\n");
     let factory = e.root.join(".nightshift/nightshift.toml");
     let config = e.base.join("no-config.toml");
+    let sha = |p: &Path| {
+        Sha256::digest(fs::read(p).unwrap())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let config_sha = sha(&config);
+    let factory_sha = sha(&factory);
     e.ready(2, "Fix a", &["type:fix"], "");
     e.ready(3, "Fix b", &["type:fix"], "");
     e.ctl(
@@ -1287,16 +1296,16 @@ fn watch_keeps_its_start_config_when_the_files_break_between_units() {
     let started = &v["started_with"];
     assert_eq!(started["config"]["path"], config.to_str().unwrap());
     assert_eq!(started["factory"]["path"], factory.to_str().unwrap());
-    for f in ["config", "factory"] {
-        let h = started[f]["sha256"].as_str().unwrap();
-        assert_eq!(h.len(), 64, "{h}");
-    }
+    assert_eq!(started["config"]["sha256"], config_sha.as_str());
+    assert_eq!(started["factory"]["sha256"], factory_sha.as_str());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains(config.to_str().unwrap()), "{err}");
     assert!(
         err.contains(started["config"]["sha256"].as_str().unwrap()),
         "{err}"
     );
+    assert!(err.contains(factory.to_str().unwrap()), "{err}");
+    assert!(err.contains(&factory_sha), "{err}");
     assert!(!err.contains(FAKE_TOKEN), "{err}");
 }
 
