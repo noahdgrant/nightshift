@@ -1,2 +1,2 @@
 description = "Pure-Python stock and reservation package (src layout, pytest, local .scratch/ tracker)"
-requires = []
+requires = ["python"]   # a Python 3.11+ with pytest; see [eval.capability.python] in docs/EVALS.md

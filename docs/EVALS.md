@@ -84,7 +84,7 @@ Check rules:
 - `diff_scope` compares the trial's final state with the post-setup commit, counting tracked changes and untracked files that aren't ignored (`git status --porcelain --untracked-files=all`). Paths in `.git/info/exclude` don't count.
 - `{changed_tests}` expands to the test files the trial added or changed relative to the base commit.
 - A trial **passes** when every required check passes. Checks are required by default, except `judge`.
-- `fails_on_base` copies the changed test files onto a clean checkout of the base commit, runs the command there, and passes when it exits non-zero. It proves the tests can go red on the bug.
+- `fails_on_base` first runs the command on the trial's final state, which must exit 0. It then copies the changed test files onto a clean checkout of the base commit, runs the command there, and passes when it exits non-zero. The first run rules out a "red" that only means the test runner couldn't start.
 - A judge returns `pass` or `fail` on its first line, followed by its reasoning.
 
 ## Fixtures
@@ -137,6 +137,9 @@ output = "claude-stream-json"
 base = "~/zephyrproject/zephyr"
 sdk = "~/zephyr-sdk-0.17.0"
 path_prepend = ["~/zephyrproject/.venv/bin"]   # python with Zephyr's requirements
+
+[eval.capability.python]
+path_prepend = ["~/.local/share/nightshift/venvs/python/bin"]   # python3 with pytest, for py-* fixtures
 ```
 
 A capability is a table of arbitrary string keys plus the optional `path_prepend` list. It counts as configured when the table exists.
