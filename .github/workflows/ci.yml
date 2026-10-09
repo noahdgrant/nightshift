@@ -79,6 +79,9 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install pytest
       - run: python -m pytest -q
+      - name: ns-troubleshoot brief checker tests
+        working-directory: skills/ns-troubleshoot/evals/cases/py-hold-expires-early
+        run: python -m unittest -q test_check_brief
 
   private-refs:
     name: Private-reference guard
