@@ -225,7 +225,9 @@ ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]
 6. On `paused`, keep `in_progress_label` and sleep until the reset time (30 minutes when unknown, then check again), then resume the same unit. If the reset is at or past `--until`, put `ready_label` back and stop cleanly.
 7. Repeat until the queue is empty, `--until` passes (no new unit starts after it), `max_units` is reached, or the budget is spent.
 
-An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (unix seconds) pins the clock for tests; sleeps then advance it instead of blocking. Output: `{units:[{issue, unit, outcome, reason, pr, cost_usd}], stopped, cost_usd, started_with}`.
+`--until HH:MM` is local time, from `TZ` or the system zone, so `06:30` means 06:30 where `ns watch` runs, across DST changes. Every time `ns watch` prints for a person (`until`, `reset_at`, the "sleeping until" line) is local, in RFC 3339 form with its offset: `2026-10-09T06:30:00-04:00`. The `ts` of each event in `runs.jsonl` stays UTC (`...Z`).
+
+An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (unix seconds) pins the clock for tests; sleeps then advance it instead of blocking. Output: `{units:[{issue, unit, outcome, reason, pr, cost_usd, reset_at}], stopped, until, cost_usd, started_with}`; `reset_at` only on a paused unit, `until` null without `--until`.
 
 `ns watch` reads the user config and the factory definition once, at start, and every unit uses that copy. Editing or breaking either file mid-night changes nothing until the next `ns watch`. It logs each file's path and sha256 to stderr, and `started_with` carries the same `{config, factory}` pair of `{path, sha256}` (`sha256` is null for a missing file).
 
