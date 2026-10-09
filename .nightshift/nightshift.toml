@@ -40,3 +40,15 @@ order = ["type:fix", "type:feat", "type:refactor", "type:test", "type:ci", "type
 
 [limits]
 max_units = 4
+
+[merge]
+policy = "auto"                 # ns run merges its own PRs when review passes, CI is green, and nothing protected changed
+protected = [
+  ".github/**",                 # CI and the PR title check
+  "scripts/check-private.sh",   # private-reference guard
+  ".nightshift/**",             # this definition, including this list
+  "cli/src/run.rs",             # the state machine and merge step
+  "cli/src/billing.rs",         # subscription-only guard
+  "cli/src/factory.rs",         # parsing of this file
+]
+ci_timeout_minutes = 30
