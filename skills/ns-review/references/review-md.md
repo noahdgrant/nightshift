@@ -35,7 +35,8 @@ sha: <git rev-parse --short HEAD>
 updated: <ISO-8601 UTC>
 base: <base branch>@<sha>
 head: <sha>
-cycles: <n>
+cycles: <n>         # fix cycles run, 0 to 3
+panel: full | reduced
 launch: subagents | ns ask | inline (sequential)
 ---
 
@@ -44,10 +45,11 @@ launch: subagents | ns ask | inline (sequential)
 ## Summary
 Open: <n> Critical, <n> Important, <n> Suggestion. Fixed: <n>. Dismissed: <n>. Deferred: <n>.
 Change size: <lines changed> lines in <n> files.
+Panel: <full | reduced>, because <the size rule that chose it; for reduced, whether security was added and why>.
 
 ## Reviewers
-| Reviewer | Role | Provider | Verdict | Findings |
-|---|---|---|---|---|
+| Reviewer | Role | Provider | Cycles run | Verdict | Findings |
+|---|---|---|---|---|---|
 
 ## Critical
 ### C1. <title>
@@ -66,7 +68,7 @@ Change size: <lines changed> lines in <n> files.
 ## Mutation check
 | Mutation | Location | Command | Result |
 |---|---|---|---|
-| `>=` to `>` | `src/x.py:17` | `pytest -q tests/test_x.py` | red (killed) |
+| `>=` to `>` | `src/x.py:17` | `timeout 60 pytest -q tests/test_x.py` | killed |
 
 ## Contract gaps
 - <what brief.md left unclear>
@@ -74,5 +76,7 @@ Change size: <lines changed> lines in <n> files.
 ## Gaps
 - <reviewer slice that produced no result, and why>
 ```
+
+`Cycles run` is the review passes the reviewer ran in, for example `0, 1`.
 
 Number findings once and keep the numbers stable across cycles, so the build agent and the human can refer to `I3`.
