@@ -97,7 +97,7 @@ Show counts and a one-line summary per item. Let the maintainer pick.
 
 5. **Apply the outcome.** Set the category, priority and state labels. An issue that already carries a priority keeps it unless the maintainer says otherwise.
 
-   An issue in the run state `in-progress` belongs to the `ns run` working it. Triage adds and removes no status or state label on it, whatever the outcome. It sets category and priority only, writes `brief.md` and posts the brief comment, and nothing else. A `ready-for-human`, `needs-repro`, `needs-define`, `needs-info`, `wontfix` or `needs-triage` outcome is written into the comment and `brief.md` (`status: blocked` when the work can't go on) for `ns run` to act on. It closes nothing and the list below applies to issues that are not `in-progress`.
+   While the issue is `status:in-progress`, `ns run` is working it: triage adds and removes no status label, writes `brief.md` and posts the brief comment.
 
    - `ready-for-agent`: post an Agent Brief comment ([agent-brief.md](references/agent-brief.md)), then start the unit (below).
    - `ready-for-human`: same structure as an Agent Brief, plus why it can't be delegated (judgement calls, hardware or external access, design decisions, manual testing).
@@ -134,7 +134,7 @@ Issue: <issue URL>
 ...
 ```
 
-The unit is started when the issue carries `ready-for-agent` (or keeps `in-progress`), the brief comment is posted, and `brief.md` exists in the worktree with `status: pass`.
+The unit is started when the issue carries `ready-for-agent`, the brief comment is posted, and `brief.md` exists in the worktree with `status: pass`.
 
 ## Quick state override
 
