@@ -629,9 +629,13 @@ fn phase_events(e: &Env) -> Vec<Value> {
 }
 
 fn run_with_phase_timeout(e: &Env, code: i32) -> Value {
+    run_with_timeouts(e, "build=1500", code)
+}
+
+fn run_with_timeouts(e: &Env, timeouts: &str, code: i32) -> Value {
     let out = e
         .ns()
-        .env("NS_PHASE_TIMEOUT_MS", "build=1500")
+        .env("NS_PHASE_TIMEOUT_MS", timeouts)
         .args(["run", "--issue", "7"])
         .assert()
         .code(code)
@@ -714,6 +718,40 @@ fn repeated_timeouts_archive_each_artifact_separately() {
     assert!(fs::read_to_string(hist.join("build-timeout-2.md"))
         .unwrap()
         .contains("status: fail"));
+}
+
+#[test]
+fn a_timed_out_review_that_moved_head_still_runs_the_gate() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"true\"\n");
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["blocked:commit+sleep", "pass"]);
+    let v = run_with_timeouts(&e, "review=1500", 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[1]["phase"], "review");
+    assert_eq!(g[1]["attempt"], 1);
+}
+
+#[test]
+fn a_timed_out_ship_keeps_its_pr_number_for_the_merged_guard() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.queue("ship", &["pass:merge+sleep"]);
+    let v = run_with_timeouts(&e, "ship=1500", 1);
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("PR merged by run"),
+        "{v}"
+    );
+    let dir = e.worktree(UNIT).join(".ns").join(UNIT);
+    assert!(!dir.join("pr.md").exists());
+    assert!(dir.join("history/pr-timeout-1.md").exists());
 }
 
 #[test]
