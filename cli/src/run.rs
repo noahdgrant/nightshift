@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::billing;
 use crate::clock::{self, Clock};
@@ -113,7 +114,8 @@ impl Shared {
 pub fn cli(args: RunArgs) -> Result<ExitCode> {
     let mut shared = Shared::new();
     let dry = args.dry_run;
-    let r = execute(&args, &mut shared)?;
+    let loaded = Loaded::read(args.factory.as_deref())?;
+    let r = execute(&args, &mut shared, &loaded)?;
     println!("{}", serde_json::to_string_pretty(&r.json)?);
     Ok(if dry {
         ExitCode::SUCCESS
@@ -752,22 +754,53 @@ fn finish(outcome: Outcome, reason: impl Into<String>, phase: Option<&str>) -> F
     }
 }
 
-/// Load the user config and export its forge tokens, so every child process inherits them.
-pub fn load_config_and_export_forge() -> Result<Option<Config>> {
-    let cfg = config::load(&config::path())
-        .map_err(|e| SfError::usage(format!("{e:#}"), "check it with:\n  ns doctor"))?;
-    if let Some(c) = &cfg {
-        forge::export(&c.forge)?;
-    }
-    Ok(cfg)
+/// The factory definition and user config, read once at the start of `ns run` or `ns watch`.
+pub struct Loaded {
+    pub root: PathBuf,
+    pub fac: Factory,
+    pub cfg: Option<Config>,
+    /// The path and sha256 of each file read, so a morning reader can tell what ran.
+    pub files: Value,
 }
 
-pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
+impl Loaded {
+    /// Read both files and export the config's forge tokens, so every child process inherits them.
+    pub fn read(factory: Option<&Path>) -> Result<Loaded> {
+        let start = std::env::current_dir().context("cannot read current directory")?;
+        let repo = Repo::discover(&start)?;
+        let root = factory::root(factory, &repo.root);
+        let fac = factory::load(&root)?;
+        let cfg_path = config::path();
+        let cfg = config::load(&cfg_path)
+            .map_err(|e| SfError::usage(format!("{e:#}"), "check it with:\n  ns doctor"))?;
+        if let Some(c) = &cfg {
+            forge::export(&c.forge)?;
+        }
+        let files = json!({
+            "config": file_hash(&cfg_path),
+            "factory": file_hash(&root.join(factory::FILE)),
+        });
+        Ok(Loaded {
+            root,
+            fac,
+            cfg,
+            files,
+        })
+    }
+}
+
+/// `{"path", "sha256"}`, with a null hash when the file does not exist.
+fn file_hash(p: &Path) -> Value {
+    let sha = fs::read(p)
+        .ok()
+        .map(|b| crate::eval::hex(&Sha256::digest(b)));
+    json!({"path": p, "sha256": sha})
+}
+
+pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<RunResult> {
     let start = std::env::current_dir().context("cannot read current directory")?;
     let repo = Repo::discover(&start)?;
-    let root = factory::root(args.factory.as_deref(), &repo.root);
-    let fac = factory::load(&root)?;
-    let cfg = load_config_and_export_forge()?;
+    let Loaded { root, fac, cfg, .. } = loaded;
     let problems = fac.problems(cfg.as_ref());
     if !problems.is_empty() {
         return Err(SfError::usage(
@@ -850,9 +883,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
     worktree::check_unit_id(&unit, "ns run 142-uart-timeout --issue 142")?;
 
     if args.dry_run {
-        return dry_run(
-            &repo, &fac, &root, &unit, args, &issue_url, &gates, &commands,
-        );
+        return dry_run(&repo, fac, root, &unit, args, &issue_url, &gates, &commands);
     }
 
     let _lock = Lock::acquire(&repo.common_dir, &unit)?;
@@ -863,8 +894,8 @@ pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
         worktree: PathBuf::from(&wt.path),
         artifacts: PathBuf::from(&wt.artifacts),
         common: repo.common_dir.clone(),
-        fac: &fac,
-        root,
+        fac,
+        root: root.clone(),
         issue: args.issue,
         issue_url,
         gates,

@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::clock;
 use crate::error::SfError;
-use crate::factory::{self, Factory};
+use crate::factory::Factory;
 use crate::git::{self, Repo};
 use crate::run::{self, gh, gh_json, Outcome, RunArgs, Shared};
 use crate::worktree::BRANCH_PREFIX;
@@ -295,9 +295,19 @@ fn fresh_base(root: &Path) -> Option<String> {
 pub fn run(args: WatchArgs) -> Result<ExitCode> {
     let start = std::env::current_dir().context("cannot read current directory")?;
     let repo = Repo::discover(&start)?;
-    let froot = factory::root(args.factory.as_deref(), &repo.root);
-    let fac = factory::load(&froot)?;
-    run::load_config_and_export_forge()?;
+    // Read once: a file broken between units must not end the night.
+    let loaded = run::Loaded::read(args.factory.as_deref())?;
+    let fac = &loaded.fac;
+    for (what, f) in [
+        ("config", &loaded.files["config"]),
+        ("factory", &loaded.files["factory"]),
+    ] {
+        eprintln!(
+            "ns watch: {what} {} sha256 {}",
+            f["path"].as_str().unwrap_or(""),
+            f["sha256"].as_str().unwrap_or("none (file missing)")
+        );
+    }
     let q = fac.queue.clone();
     let mut shared = Shared::new();
     let deadline = match &args.until {
@@ -320,7 +330,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     };
 
     if args.dry_run {
-        let qu = queue(&repo.root, &fac, &BTreeSet::new())?;
+        let qu = queue(&repo.root, fac, &BTreeSet::new())?;
         let ready: Vec<Value> = qu
             .ready
             .iter()
@@ -361,7 +371,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 break "budget".into();
             }
         }
-        let qu = queue(&repo.root, &fac, &finished)?;
+        let qu = queue(&repo.root, fac, &finished)?;
         let Some(issue) = qu.ready.first().cloned() else {
             break "queue empty".into();
         };
@@ -372,11 +382,10 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             let base = fresh_base(&repo.root);
             let rargs = RunArgs {
                 issue: Some(issue.number),
-                factory: args.factory.clone(),
                 base,
                 ..RunArgs::default()
             };
-            let r = match run::execute(&rargs, &mut shared) {
+            let r = match run::execute(&rargs, &mut shared, &loaded) {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = set_status(&repo.root, &q, issue.number, Some(&q.ready_label));
@@ -467,6 +476,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             "units": units,
             "stopped": stopped,
             "cost_usd": shared.spent_usd,
+            "started_with": loaded.files,
         }))?
     );
     Ok(ExitCode::SUCCESS)

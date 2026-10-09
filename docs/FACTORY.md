@@ -181,7 +181,9 @@ ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]
 6. On `paused`, keep `in_progress_label` and sleep until the reset time (30 minutes when unknown, then check again), then resume the same unit. If the reset is at or past `--until`, put `ready_label` back and stop cleanly.
 7. Repeat until the queue is empty, `--until` passes (no new unit starts after it), `max_units` is reached, or the budget is spent.
 
-An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (unix seconds) pins the clock for tests; sleeps then advance it instead of blocking. Output: `{units:[{issue, unit, outcome, reason, pr, cost_usd}], stopped, cost_usd}`.
+An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (unix seconds) pins the clock for tests; sleeps then advance it instead of blocking. Output: `{units:[{issue, unit, outcome, reason, pr, cost_usd}], stopped, cost_usd, started_with}`.
+
+`ns watch` reads the user config and the factory definition once, at start, and every unit uses that copy. Editing or breaking either file mid-night changes nothing until the next `ns watch`. It logs each file's path and sha256 to stderr, and `started_with` carries the same `{config, factory}` pair of `{path, sha256}` (`sha256` is null for a missing file).
 
 `--once` takes one unit. `--dry-run` prints the ordered queue, with each issue's `priority_label` and `order_label`, and the skip reasons. `gh` and the phases get `GH_TOKEN` from `[forge.github]` in the user config (`cli/README.md`, `[forge]`). A `GH_TOKEN` already set in the environment wins, so whoever starts `ns watch` can still pick the account.
 
