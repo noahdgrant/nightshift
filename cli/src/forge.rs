@@ -24,6 +24,15 @@ pub struct Credentials {
 
 pub fn resolve(kind: ForgeKind, forge: &Forge) -> Result<Credentials, SfError> {
     let host = forge.host.clone().filter(|_| !is_set(kind.host_var));
+    if host
+        .as_deref()
+        .is_some_and(|h| h.is_empty() || h.contains(['\0', '=']))
+    {
+        return Err(SfError::usage(
+            format!("forge {}: host is empty or has a NUL or `=`", kind.name),
+            HINT,
+        ));
+    }
     let token = if is_set(kind.token_var) {
         Token::AlreadySet
     } else {
