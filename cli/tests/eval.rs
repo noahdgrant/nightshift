@@ -347,6 +347,58 @@ fn a_bg_wait_ceiling_the_user_set_wins_in_trials() {
 }
 
 #[test]
+fn claude_trials_wait_for_background_tasks_under_api_billing() {
+    let e = setup_claude();
+    let cfg = fs::read_to_string(&e.cfg).unwrap();
+    fs::write(
+        &e.cfg,
+        cfg.replacen("trials = 1", "billing = \"api\"\ntrials = 1", 1),
+    )
+    .unwrap();
+    e.ns()
+        .args([
+            "ns-demo",
+            "--case",
+            "fix-add",
+            "--arms",
+            "with",
+            "--no-write-results",
+        ])
+        .assert()
+        .success();
+    let calls = e.calls();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].ends_with(" bg=0"), "{}", calls[0]);
+}
+
+#[test]
+fn a_bg_wait_ceiling_in_the_fixture_env_is_kept() {
+    let e = setup_claude();
+    let fixture = e.repo.join("evals/fixtures/tiny/fixture.toml");
+    let text = fs::read_to_string(&fixture).unwrap();
+    fs::write(
+        &fixture,
+        format!("{text}CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS = \"777\"\n"),
+    )
+    .unwrap();
+    e.ns()
+        .env("CLAUDE_CODE_OAUTH_TOKEN", "t")
+        .args([
+            "ns-demo",
+            "--case",
+            "fix-add",
+            "--arms",
+            "with",
+            "--no-write-results",
+        ])
+        .assert()
+        .success();
+    let calls = e.calls();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].ends_with(" bg=777"), "{}", calls[0]);
+}
+
+#[test]
 fn fails_on_base_rejects_a_test_that_passes_on_the_bug() {
     let e = setup();
     let out = e.tmp.path().join("out.json");

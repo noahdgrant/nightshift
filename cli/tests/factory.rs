@@ -249,6 +249,30 @@ fn claude_phases_wait_for_background_tasks() {
 }
 
 #[test]
+fn a_non_claude_harness_gets_no_bg_wait_ceiling() {
+    let e = Env::new();
+    let agent = e.bin.join("agent");
+    fs::copy(e.bin.join("claude"), &agent).unwrap();
+    e.config(&format!(
+        "[harness.other]\ncommand = [{a:?}]\ncommand_write = [{a:?}]\n",
+        a = agent.to_str().unwrap()
+    ));
+    e.factory("[defaults]\nharness = \"other\"\n");
+    e.run(&["run", "--issue", "7"], 0);
+    let seen = fs::read_to_string(e.ctrl.join("bgwait")).unwrap();
+    assert_eq!(seen.lines().collect::<Vec<_>>(), ["unset"; 5], "{seen}");
+}
+
+#[test]
+fn claude_phases_wait_for_background_tasks_under_api_billing() {
+    let e = Env::new();
+    e.factory("[defaults]\nbilling = \"api\"\n");
+    e.run(&["run", "--issue", "7"], 0);
+    let seen = fs::read_to_string(e.ctrl.join("bgwait")).unwrap();
+    assert_eq!(seen.lines().collect::<Vec<_>>(), ["0"; 5], "{seen}");
+}
+
+#[test]
 fn a_bg_wait_ceiling_the_user_set_wins() {
     let e = Env::new();
     e.ns()
