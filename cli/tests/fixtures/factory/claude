@@ -1,0 +1,54 @@
+#!/bin/bash
+# Fake harness for ns run tests. Reads the phase from the prompt, pops the next action from
+# $FAKE_CTRL/<phase> (default: pass) and writes that phase's artifact.
+#   action = status[:extra]; status: pass | fail | blocked | none | limit
+#   extra:   commit | push | merge | any text (lands in the body, e.g. "review")
+set -e
+ctrl="$FAKE_CTRL"
+prompt=$(cat)
+phase=$(printf '%s\n' "$prompt" | sed -n 's/^Phase: \([a-z]*\).*/\1/p' | head -1)
+echo "$phase" >> "$ctrl/calls"
+n=$(wc -l < "$ctrl/calls" | tr -d ' ')
+printf '%s' "$prompt" > "$ctrl/prompt-$n-$phase.txt"
+echo "$*" > "$ctrl/args"
+[ -n "${ANTHROPIC_API_KEY:-}" ] && echo "ANTHROPIC_API_KEY" >> "$ctrl/leak"
+action=pass
+if [ -s "$ctrl/$phase" ]; then
+  action=$(head -1 "$ctrl/$phase")
+  sed -i 1d "$ctrl/$phase"
+fi
+status=${action%%:*}
+extra=""
+[ "$status" != "$action" ] && extra=${action#*:}
+if [ "$status" = limit ]; then
+  printf '{"type":"result","is_error":true,"result":"Claude AI usage limit reached|%s"}\n' "$(cat "$ctrl/reset")"
+  exit 1
+fi
+case $phase in
+  triage) art=brief ;; build) art=build ;; verify) art=evidence ;; review) art=review ;; ship) art=pr ;;
+esac
+dir=".ns/$NS_UNIT"
+mkdir -p "$dir"
+case "$extra" in
+  commit|push)
+    echo "$phase $n" >> work.txt
+    git add work.txt
+    git -c user.name=f -c user.email=f@f commit -qm "$phase $n"
+    ;;
+esac
+[ "$extra" = push ] && git push -q origin HEAD:main
+[ "$extra" = merge ] && echo MERGED > "$FAKE_GH_DIR/pr-$(cat "$ctrl/pr").state"
+echo '{"type":"result","is_error":false,"result":"ok","total_cost_usd":0.5,"usage":{"input_tokens":10,"output_tokens":5}}'
+[ "$status" = none ] && exit 0
+sha=$(git rev-parse --short HEAD)
+{
+  echo ---
+  echo "unit: $NS_UNIT"
+  echo "phase: $phase"
+  echo "status: $status"
+  echo "sha: $sha"
+  if [ "$art" = pr ] && [ -s "$ctrl/pr" ]; then echo "pr: https://github.com/o/r/pull/$(cat "$ctrl/pr")"; fi
+  echo "updated: 2026-10-08T00:00:00Z"
+  echo ---
+  echo "$phase said $status $extra"
+} > "$dir/$art.md"

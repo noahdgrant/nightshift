@@ -42,7 +42,7 @@ pub const PLACEHOLDERS: &[&str] = &[
     "feedback",
 ];
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Factory {
     #[serde(default)]
@@ -106,6 +106,12 @@ impl Merge {
             .filter(|f| pats.iter().any(|p| p.matches_with(f, opts)))
             .cloned()
             .collect()
+    }
+}
+
+impl Default for Factory {
+    fn default() -> Self {
+        parse("").expect("the empty definition parses")
     }
 }
 

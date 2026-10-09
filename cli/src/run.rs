@@ -1131,7 +1131,16 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
     };
     let ns = n.to_string();
     let wt = &ctx.worktree;
-    let view = gh_json(wt, &["pr", "view", &ns, "--json", "state,headRefOid"])?;
+    let view = gh_json(
+        wt,
+        &[
+            "pr",
+            "view",
+            &ns,
+            "--json",
+            "state,headRefOid,mergeStateStatus",
+        ],
+    )?;
     match view["state"].as_str() {
         Some("OPEN") => {}
         Some("MERGED") => {
@@ -1159,6 +1168,36 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
     match state.arts.get("review") {
         Some(r) if r.status == "pass" && same_sha(r.sha.as_deref().unwrap_or(""), &head) => {}
         _ => return Ok(human("review.md is not pass at HEAD; needs a human merge")),
+    }
+
+    // Strict required checks: a PR behind its base gets the base merged in, then fresh checks.
+    let default = remote_default(wt)
+        .map(|d| d.0)
+        .unwrap_or_else(|| "main".into());
+    let conflict = || {
+        ctx.log(json!({"event": "conflict", "pr": n}));
+        MergeStep::Rebuild(format!(
+            "PR #{n} conflicts with {default}: rebase onto {default} and resolve conflicts, then force-push with --force-with-lease"
+        ))
+    };
+    let mut merge_head = head.clone();
+    match view["mergeStateStatus"].as_str() {
+        Some("DIRTY") => return Ok(conflict()),
+        Some("BEHIND") => {
+            if gh(wt, &["pr", "update-branch", &ns]).is_err() {
+                return Ok(conflict());
+            }
+            let v = gh_json(
+                wt,
+                &["pr", "view", &ns, "--json", "headRefOid,mergeStateStatus"],
+            )?;
+            if v["mergeStateStatus"].as_str() == Some("DIRTY") {
+                return Ok(conflict());
+            }
+            ctx.log(json!({"event": "update_branch", "pr": n}));
+            merge_head = v["headRefOid"].as_str().unwrap_or(&head).to_string();
+        }
+        _ => {}
     }
 
     // Wait for CI, bounded.
@@ -1246,7 +1285,7 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
             "--squash",
             "--delete-branch",
             "--match-head-commit",
-            &head,
+            &merge_head,
         ],
     );
     let state_now = gh_json(wt, &["pr", "view", &ns, "--json", "state"])
@@ -1308,7 +1347,10 @@ mod tests {
         assert_eq!(phase_of(&decide(&s)), "stuck");
         let brief = ("triage", art("pass", "", 1));
         let build = ("build", art("pass", "abc1234", 2));
-        assert_eq!(phase_of(&decide(&state(&[brief.clone()]))), "build");
+        assert_eq!(
+            phase_of(&decide(&state(std::slice::from_ref(&brief)))),
+            "build"
+        );
         assert_eq!(
             phase_of(&decide(&state(&[brief.clone(), build.clone()]))),
             "verify"
