@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
 use crate::billing;
@@ -1263,11 +1263,12 @@ fn check_count(wt: &Path, sha: &str, kind: &str) -> Result<u64> {
             ".total_count",
         ],
     )?;
-    Ok(out.trim().parse().unwrap_or(0))
+    let out = out.trim();
+    out.parse()
+        .map_err(|_| anyhow!("unexpected output from the {kind} query: {out:?}"))
 }
 
-/// Poll until a check run or commit status exists for `sha`, backing off from 5 s to 30 s, for at
-/// most `timeout_minutes`. Right after a push or update-branch GitHub may not have registered any.
+/// GitHub may not have registered any check run or status right after a push or update-branch.
 fn checks_registered(wt: &Path, sha: &str, timeout_minutes: u64, clock: &Clock) -> Registered {
     let deadline = clock.now() + (timeout_minutes * 60) as i64;
     let mut wait = REGISTER_BACKOFF_START;

@@ -625,6 +625,61 @@ fn a_failing_check_query_is_reported_not_called_no_ci() {
     assert!(!e.gh_calls().contains("--watch"), "{}", e.gh_calls());
 }
 
+#[test]
+fn malformed_check_query_output_is_reported_not_called_no_ci() {
+    for output in ["", "null", "<html>Bad Gateway</html>"] {
+        let e = Env::new();
+        e.factory(AUTO);
+        e.ctl("pr", "12");
+        e.queue("build", &["pass:commit"]);
+        e.gh_file("check-runs.output", output);
+        let v = e.run(&["run", "--issue", "7"], 0);
+        assert_eq!(v["outcome"], "done", "{v}");
+        let reason = v["reason"].as_str().unwrap();
+        assert!(
+            reason.starts_with("could not query CI checks on PR #12: "),
+            "{output:?}: {reason}"
+        );
+        assert!(reason.ends_with("; needs a human merge"), "{reason}");
+        assert!(!e.gh_calls().contains("--watch"), "{}", e.gh_calls());
+    }
+}
+
+#[test]
+fn zero_check_runs_and_a_failing_status_query_is_reported_not_called_no_ci() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("register.after", "1000");
+    e.gh_file("status.fail", "HTTP 500: server error");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("could not query CI checks on PR #12: "),
+        "{reason}"
+    );
+    assert!(reason.contains("server error"), "{reason}");
+    assert!(!e.gh_calls().contains("--watch"), "{}", e.gh_calls());
+}
+
+#[test]
+fn a_status_with_checks_proceeds_though_the_check_runs_query_fails() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("check-runs.fail", "HTTP 403: rate limit exceeded");
+    e.gh_file("status.after", "0");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let calls = e.gh_calls();
+    assert!(calls.contains("pr checks 12 --watch"), "{calls}");
+    assert!(calls.contains("pr merge 12"), "{calls}");
+}
+
 const PRINT_HEAD_SHA_CMD: &str = "git rev-parse HEAD";
 
 /// main gains an unrelated commit after review. `pass:script` in ship rebases the unit onto
