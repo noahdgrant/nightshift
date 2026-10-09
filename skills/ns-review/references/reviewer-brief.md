@@ -34,6 +34,8 @@ Check the diff against every item below. Each one not met is a finding, at the s
 
 ## Severity
 
+The bar says how its items map to severity. Use these definitions for anything else.
+
 - `Critical`: broken behaviour, data loss, an exploitable vulnerability, or a contract requirement that is missing. Blocks the change.
 - `Important`: must be fixed before merge: a missing test, a wrong abstraction, weak error handling, a structural regression.
 - `Suggestion`: worth considering, not required. Style, naming, optional simplifications.

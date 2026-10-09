@@ -1,7 +1,7 @@
 description = "Seeded defect: zl_ringbuf_put under ZL_RB_DROP_OLDEST never advances the read index or caps the count when full, so count reports capacity+1 and the next get returns the newest sample instead of the oldest survivor. Plain-words bug report, test-first fix on native_sim."
 fixture = "zephyr-logger"
-# ns-tdd links to these principles (and firmware-seams.md) by relative path; ship them so the links resolve in the "with" arm.
-skills = ["ns-tdd", "ns-principle-test-behavior-not-implementation", "ns-principle-sequence-verifiable-units"]
+# ns-tdd links to these skills by relative path (ns-contract for the quality bar, and the principles it and the bar name); ship them so the links resolve in the "with" arm.
+skills = ["ns-tdd", "ns-principle-test-behavior-not-implementation", "ns-principle-sequence-verifiable-units", "ns-principle-fix-root-causes", "ns-contract"]
 extra_skills = []
 requires = ["zephyr"]
 timeout_minutes = 30
