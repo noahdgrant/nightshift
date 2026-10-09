@@ -162,7 +162,7 @@ The command is `[phases.build] gate`. Unset, it is the `ci-local` row of the Com
 | ci-local | `scripts/ci-local.sh` | 2 min |
 ```
 
-With neither, no gate runs. Both are read from the main checkout when `ns run` starts, so a phase can't change its own gate.
+With neither, no gate runs. Both are read from the main checkout when `ns run` starts, so a phase can't change the command. The script it runs lives in the worktree, though, so the gate is not tamper-proof.
 
 `ns run` runs the command with `sh -c` in the worktree after a build that wrote `status: pass`, and again after a review that moved HEAD (a fix cycle that committed). It doesn't run again at a HEAD where it already went green in this invocation. It is killed at the build phase's `timeout_minutes` (`NS_GATE_TIMEOUT_MS` overrides it, for tests). Only the last 16 KiB of its log are read for the tail. Output goes to `<git-common-dir>/ns/transcripts/<unit>/gate-<phase>-<attempt>.log`.
 

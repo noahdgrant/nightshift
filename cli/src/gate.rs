@@ -2,11 +2,12 @@
 
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use serde_json::{json, Value};
 
 use crate::eval::trial::run_process;
 use crate::factory::Factory;
@@ -92,11 +93,9 @@ fn read_window(path: &Path) -> Vec<u8> {
         let mut buf = Vec::new();
         f.read_to_end(&mut buf)?;
         if start > 0 {
-            let cut = buf
-                .iter()
-                .position(|b| *b == b'\n')
-                .map_or(buf.len(), |i| i + 1);
-            buf.drain(..cut);
+            if let Some(i) = buf.iter().position(|b| *b == b'\n') {
+                buf.drain(..=i);
+            }
         }
         Ok(buf)
     };
@@ -128,6 +127,119 @@ fn tail(bytes: &[u8]) -> String {
         .find(|i| kept.is_char_boundary(*i))
         .unwrap_or(0);
     kept[start..].to_string()
+}
+
+/// The build phase's timeout; `NS_GATE_TIMEOUT_MS` overrides it.
+pub fn timeout(build_minutes: u64) -> Duration {
+    std::env::var("NS_GATE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_secs(build_minutes * 60))
+}
+
+enum Verdict {
+    Green { sha: String },
+    Red { sha: String, feedback: String },
+}
+
+/// What the gate last said about this unit's HEAD.
+#[derive(Default)]
+pub struct Gate {
+    verdict: Option<Verdict>,
+}
+
+pub struct Job<'a> {
+    pub cmd: &'a str,
+    pub worktree: &'a Path,
+    pub log_dir: PathBuf,
+    pub unit: &'a str,
+    pub timeout: Duration,
+    pub head: String,
+}
+
+pub struct After<'a> {
+    pub phase: &'a str,
+    pub attempt: u32,
+    pub build_passed: bool,
+    pub head_moved: bool,
+    pub written: bool,
+}
+
+/// Feedback to send back to build.
+pub enum Red {
+    /// The gate ran and failed.
+    Failed(String),
+    /// A silent rebuild left a red HEAD as it was.
+    Still(String),
+}
+
+impl Gate {
+    /// Run the gate when `a.phase` finished in a way that needs it, unless it already went green at HEAD.
+    pub fn after(
+        &mut self,
+        job: &Job<'_>,
+        a: &After<'_>,
+        log: &dyn Fn(Value),
+    ) -> Result<Option<Red>> {
+        let triggered = match a.phase {
+            "build" => a.build_passed,
+            "review" => a.head_moved,
+            _ => false,
+        };
+        if triggered {
+            return self.run_at_head(job, a, log);
+        }
+        if a.phase == "build" && !a.written {
+            if let Some(Verdict::Red { sha, feedback }) = &self.verdict {
+                if crate::run::same_sha(sha, &job.head) {
+                    return Ok(Some(Red::Still(feedback.clone())));
+                }
+                return self.run_at_head(job, a, log);
+            }
+        }
+        Ok(None)
+    }
+
+    fn run_at_head(
+        &mut self,
+        job: &Job<'_>,
+        a: &After<'_>,
+        log: &dyn Fn(Value),
+    ) -> Result<Option<Red>> {
+        if matches!(&self.verdict, Some(Verdict::Green { sha }) if *sha == job.head) {
+            return Ok(None);
+        }
+        let log_path = job
+            .log_dir
+            .join(format!("gate-{}-{}.log", a.phase, a.attempt));
+        eprintln!("ns run: {} gate after {}: {}", job.unit, a.phase, job.cmd);
+        let r = run(job.cmd, job.worktree, job.timeout, &log_path)?;
+        log(json!({
+            "event": "gate",
+            "phase": a.phase,
+            "attempt": a.attempt,
+            "command": job.cmd,
+            "sha": job.head,
+            "exit": r.exit,
+            "timed_out": r.timed_out,
+            "wall_s": (r.wall_s * 10.0).round() / 10.0,
+            "green": r.green(),
+            "log": log_path.to_string_lossy(),
+        }));
+        if r.green() {
+            self.verdict = Some(Verdict::Green {
+                sha: job.head.clone(),
+            });
+            return Ok(None);
+        }
+        let feedback = feedback(job.cmd, &r, job.timeout, &job.head);
+        self.verdict = Some(Verdict::Red {
+            sha: job.head.clone(),
+            feedback: feedback.clone(),
+        });
+        Ok(Some(Red::Failed(feedback)))
+    }
 }
 
 #[cfg(test)]
@@ -255,6 +367,17 @@ mod tests {
         fs::write(&log, "small\n").unwrap();
         assert_eq!(read_window(&log), b"small\n");
         assert!(read_window(&tmp.path().join("missing")).is_empty());
+    }
+
+    #[test]
+    fn a_long_final_line_without_a_newline_still_leaves_a_tail() {
+        let (r, _tmp) = gate(
+            "head -c 20000 /dev/zero | tr '\\0' x",
+            Duration::from_secs(30),
+        );
+        assert!(r.green());
+        assert!(!r.tail.is_empty());
+        assert!(r.tail.chars().all(|c| c == 'x'));
     }
 
     fn red(timed_out: bool, exit: Option<i32>) -> GateRun {
