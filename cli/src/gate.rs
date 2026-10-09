@@ -290,6 +290,29 @@ mod tests {
         assert_eq!(command(&set, tmp.path()).as_deref(), Some("make ci"));
     }
 
+    #[test]
+    fn this_repos_gate_is_ci_local_sh() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let cmd = command(&parse("").unwrap(), repo).unwrap();
+        assert_eq!(cmd, "scripts/ci-local.sh");
+        assert!(repo.join(&cmd).is_file());
+    }
+
+    #[test]
+    fn the_script_and_hook_are_executable_and_the_hook_runs_fast() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        for f in ["scripts/ci-local.sh", ".githooks/pre-commit"] {
+            let mode = std::fs::metadata(repo.join(f))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert!(mode & 0o111 != 0, "{f} is not executable");
+        }
+        let hook = std::fs::read_to_string(repo.join(".githooks/pre-commit")).unwrap();
+        assert!(hook.contains("scripts/ci-local.sh --fast"));
+    }
+
     fn gate(cmd: &str, timeout: Duration) -> (GateRun, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let r = run(cmd, tmp.path(), timeout, &tmp.path().join("logs/gate.log")).unwrap();
