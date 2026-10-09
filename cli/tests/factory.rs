@@ -1281,6 +1281,69 @@ fn watch_merged_removes_in_progress_and_bases_on_origin() {
 }
 
 #[test]
+fn watch_closes_a_merged_issue_and_never_restarts_it() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file("ready-sticks", "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    // A cap above one, so a restart fails the test instead of looping.
+    let v = e.run(&["watch", "--max-units", "3"], 0);
+    assert_eq!(v["units"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["units"][0]["outcome"], "merged", "{v}");
+    assert_eq!(v["stopped"], "queue empty");
+    let calls = e.gh_calls();
+    assert_eq!(calls.matches("api --paginate").count(), 2, "{calls}");
+    assert!(
+        calls.contains("issue close 2 --reason completed"),
+        "{calls}"
+    );
+}
+
+#[test]
+fn watch_keeps_going_when_the_merged_issue_is_already_closed() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file("close.fail", "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "merged", "{v}");
+    assert!(e.gh_calls().contains("issue close 2"));
+}
+
+#[test]
+fn watch_never_restarts_an_issue_it_finished() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file("ready-sticks", "");
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    // A cap above one, so a restart fails the test instead of looping.
+    let v = e.run(&["watch", "--max-units", "3"], 0);
+    assert_eq!(v["units"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["units"][0]["outcome"], "done");
+    assert_eq!(v["stopped"], "queue empty");
+    assert!(!e.gh_calls().contains("issue close"));
+}
+
+#[test]
+fn watch_skips_an_issue_a_merged_pr_closes() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ready(3, "Fix b", &["type:fix"], "");
+    e.gh_file("prs-merged.json", r#"[{"number":41,"body":"Fixes #3"}]"#);
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let order: Vec<u64> = queue_order(&v).iter().map(|q| q.0).collect();
+    assert_eq!(order, [2]);
+    assert_eq!(v["skipped"][0]["number"], 3);
+    assert_eq!(v["skipped"][0]["reason"], "merged PR #41 closes it");
+}
+
+#[test]
 fn watch_has_no_unit_cap_by_default() {
     let e = Env::new();
     for n in [2, 3, 4, 5, 6] {

@@ -1,6 +1,6 @@
 //! `ns watch`: pull ready issues from GitHub and run them one at a time (docs/FACTORY.md).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -100,7 +100,33 @@ struct Queue {
     skipped: Vec<Value>,
 }
 
-fn queue(root: &Path, fac: &Factory) -> Result<Queue> {
+/// Issue number -> the PR whose body closes it, from `gh pr list --state <state>`.
+fn closing_prs(root: &Path, state: &str) -> Result<BTreeMap<u64, u64>> {
+    let prs = gh_json(
+        root,
+        &[
+            "pr",
+            "list",
+            "--state",
+            state,
+            "--limit",
+            "200",
+            "--json",
+            "number,body",
+        ],
+    )?;
+    let mut by_issue = BTreeMap::new();
+    for p in prs.as_array().cloned().unwrap_or_default() {
+        for n in closed_by(p["body"].as_str().unwrap_or("")) {
+            by_issue.insert(n, p["number"].as_u64().unwrap_or(0));
+        }
+    }
+    Ok(by_issue)
+}
+
+/// Ready issues, minus those in `finished`: GitHub can list an issue as open
+/// for a few seconds after its closing PR merges.
+fn queue(root: &Path, fac: &Factory, finished: &BTreeSet<u64>) -> Result<Queue> {
     let q = &fac.queue;
     // `gh issue list --json` has no author association, so read the REST list.
     let path = format!(
@@ -117,29 +143,15 @@ fn queue(root: &Path, fac: &Factory) -> Result<Queue> {
             ".[] | select(.pull_request | not) | {number, title, labels, body, authorAssociation: .author_association}",
         ],
     )?);
-    let prs = gh_json(
-        root,
-        &[
-            "pr",
-            "list",
-            "--state",
-            "open",
-            "--limit",
-            "200",
-            "--json",
-            "number,body",
-        ],
-    )?;
-    let mut has_pr: BTreeMap<u64, u64> = BTreeMap::new();
-    for p in prs.as_array().cloned().unwrap_or_default() {
-        for n in closed_by(p["body"].as_str().unwrap_or("")) {
-            has_pr.insert(n, p["number"].as_u64().unwrap_or(0));
-        }
-    }
+    let has_pr = closing_prs(root, "open")?;
+    let merged_pr = closing_prs(root, "merged")?;
     let mut open_cache: BTreeMap<u64, bool> = BTreeMap::new();
     let mut ready = Vec::new();
     let mut skipped = Vec::new();
     for i in issues {
+        if finished.contains(&i.number) {
+            continue;
+        }
         if !i.team {
             skipped.push(
                 json!({"number": i.number, "title": i.title, "reason": "author outside the team"}),
@@ -148,6 +160,10 @@ fn queue(root: &Path, fac: &Factory) -> Result<Queue> {
         }
         if let Some(pr) = has_pr.get(&i.number) {
             skipped.push(json!({"number": i.number, "title": i.title, "reason": format!("open PR #{pr} closes it")}));
+            continue;
+        }
+        if let Some(pr) = merged_pr.get(&i.number) {
+            skipped.push(json!({"number": i.number, "title": i.title, "reason": format!("merged PR #{pr} closes it")}));
             continue;
         }
         let mut open_blockers = Vec::new();
@@ -232,7 +248,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     };
 
     if args.dry_run {
-        let qu = queue(&repo.root, &fac)?;
+        let qu = queue(&repo.root, &fac, &BTreeSet::new())?;
         let ready: Vec<Value> = qu
             .ready
             .iter()
@@ -260,6 +276,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
 
     let mut units: Vec<Value> = Vec::new();
     let mut started = 0u32;
+    let mut finished: BTreeSet<u64> = BTreeSet::new();
     let stopped: String = 'outer: loop {
         if max_units.is_some_and(|m| started >= m) {
             break "max_units".into();
@@ -272,7 +289,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 break "budget".into();
             }
         }
-        let qu = queue(&repo.root, &fac)?;
+        let qu = queue(&repo.root, &fac, &finished)?;
         let Some(issue) = qu.ready.first().cloned() else {
             break "queue empty".into();
         };
@@ -324,6 +341,12 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                             &q.in_progress_label,
                         ],
                     )?;
+                    // GitHub may not have closed it yet; an already-closed issue makes gh fail.
+                    let n = issue.number.to_string();
+                    if let Err(e) = gh(&repo.root, &["issue", "close", &n, "--reason", "completed"])
+                    {
+                        eprintln!("ns watch: #{n} not closed: {e}");
+                    }
                 }
                 Outcome::Done if !r.needs_human => {
                     swap(
@@ -400,6 +423,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             units.push(rec);
             break;
         }
+        finished.insert(issue.number);
     };
     println!(
         "{}",
