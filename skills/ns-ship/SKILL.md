@@ -125,4 +125,4 @@ The loop ends at merge-ready (`status: pass`) or at a blocker only a human can c
 
 Report the PR URL, the gate status, what you fixed and what you dismissed (with reasons), and anything waiting on a human, such as a required approval.
 
-Under either gate policy, ship ends here, and it never merges, even when asked to. `ns run` merges under `merge.policy = auto` once CI is green, `review.md` passes at HEAD and no human-merge file changed; otherwise a human merges. Deploying and releasing (including OTA and flashing production units) wait for a human. After the merge, remove the worktree with `ns worktree remove <unit-id>` (or `git worktree remove`).
+Under either gate policy, ship ends here, and it never merges, even when asked to. `ns run` merges under `merge.policy = auto` once CI is green, `review.md` passes at HEAD and no file that needs human review changed; otherwise a human merges. Deploying and releasing (including OTA and flashing production units) wait for a human. After the merge, remove the worktree with `ns worktree remove <unit-id>` (or `git worktree remove`).

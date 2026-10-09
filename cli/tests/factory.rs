@@ -409,12 +409,12 @@ fn budget_stops_new_phases() {
 }
 
 const AUTO: &str = "[merge]\npolicy = \"auto\"
-human_merge = [\".github/**\", \".nightshift/**\"]\nci_timeout_minutes = 1\n";
+human_review = [\".github/**\", \".nightshift/**\"]\nci_timeout_minutes = 1\n";
 const GREEN: &str = r#"[{"name":"ci","state":"SUCCESS","bucket":"pass","link":"https://github.com/o/r/actions/runs/1/job/2"}]"#;
 const RED: &str = r#"[{"name":"ci","state":"FAILURE","bucket":"fail","link":"https://github.com/o/r/actions/runs/99/job/2"}]"#;
 
 #[test]
-fn auto_merge_squashes_when_green_and_no_human_merge_files() {
+fn auto_merge_squashes_when_green_and_no_human_review_files() {
     let e = Env::new();
     e.factory(AUTO);
     e.ctl("pr", "12");
@@ -492,7 +492,7 @@ fn ci_failure_rebuilds_then_merges_on_the_same_pr() {
 }
 
 #[test]
-fn human_merge_files_need_a_human_merge() {
+fn human_review_files_need_a_human_merge() {
     let e = Env::new();
     e.factory(AUTO);
     e.ctl("pr", "12");
@@ -504,7 +504,7 @@ fn human_merge_files_need_a_human_merge() {
     assert!(v["reason"]
         .as_str()
         .unwrap()
-        .starts_with("changes human-merge files; needs a human merge"));
+        .starts_with("changes files that need human review; needs a human merge"));
     assert!(!e.gh_calls().contains("pr merge"));
 }
 

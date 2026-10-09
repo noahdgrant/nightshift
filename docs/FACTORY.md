@@ -55,7 +55,7 @@ budget_usd = 25.0                  # soft cap, summed from harness cost reports.
 
 [merge]                            # absent table: policy = "human"
 policy = "auto"                    # auto | human. See "Merge"
-human_merge = [".github/**", "scripts/check-private.sh", ".nightshift/**", "cli/src/run.rs"]
+human_review = [".github/**", "scripts/check-private.sh", ".nightshift/**", "cli/src/run.rs"]
 ci_timeout_minutes = 30
 ```
 
@@ -132,7 +132,7 @@ Output: final JSON `{unit, outcome: done|merged|stuck|budget|paused, phase, reas
 2. The PR head must equal the worktree HEAD, and `review.md` must be `pass` at that sha. Otherwise `done`, needing a human merge.
 3. Branch protection requires PRs to be up to date with the base. `BEHIND`: `gh pr update-branch <pr>`. `DIRTY`, or a failed update: back to build with "rebase onto <default> and resolve conflicts" as `{feedback}`, which uses a build attempt.
 4. `gh pr checks <pr> --watch`, killed after `ci_timeout_minutes` (stuck). Then `gh pr checks <pr> --json name,state,bucket,link`. No checks at all: `done`, needing a human merge. Any check not `pass` or `skipping`: back to build with the failing check names and the tail of `gh run view <id> --log-failed` as `{feedback}`, then verify, review and ship onto the same PR.
-5. `gh pr diff <pr> --name-only`. Any path matching a `human_merge` glob (`**` crosses directories): `done` with reason "changes human-merge files; needs a human merge". Human-merge files cover the factory's own guardrails: CI config, the definition, the guard and merge code.
+5. `gh pr diff <pr> --name-only`. Any path matching a `human_review` glob (`**` crosses directories): `done` with reason "changes files that need human review; needs a human merge". Files that need human review cover the factory's own guardrails: CI config, the definition, the guard and merge code.
 6. `gh pr merge <pr> --squash --delete-branch --match-head-commit <sha>`. If `gh pr view` then reports `MERGED`, the outcome is `merged`.
 
 ## Billing
@@ -157,7 +157,7 @@ ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]
 2. Drop issues whose first-line `Blocked by: #a, #b` names any open issue, and issues that already have an open PR whose body says `Closes #n`.
 3. Sort by the first matching `order` label, then by issue number.
 4. Take the first. Swap `ready_label` for `in_progress_label`. `git fetch origin`, then `ns run --issue <n> --base origin/<default>` (in process, sharing the budget).
-5. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`. On `stuck`, or a `done` that needs a human merge (human-merge files, no CI), swap to `stuck_label` and comment the reason and the last artifact path. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
+5. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`. On `stuck`, or a `done` that needs a human merge (files that need human review, no CI), swap to `stuck_label` and comment the reason and the last artifact path. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
 6. On `paused`, keep `in_progress_label` and sleep until the reset time (30 minutes when unknown, then check again), then resume the same unit. If the reset is at or past `--until`, put `ready_label` back and stop cleanly.
 7. Repeat until the queue is empty, `--until` passes (no new unit starts after it), `max_units` is reached, or the budget is spent.
 
