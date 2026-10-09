@@ -7,6 +7,7 @@ Agent skills that take an issue to a merged PR (`skills/ns-*`), plus the `ns` CL
 - **Adapted skills**: `metadata.upstream` names the source. Upstream copies are in `NOTICE.md`'s projects. Keep a skill's structure close to its upstream where it still fits, so `ns-maintain` diffs stay readable.
 - **CLI**: `cd cli && cargo test`. Every command follows `skills/ns-setup-verify/references/cli-for-agents.md`.
 - **Evals**: `docs/EVALS.md`. A skill change comes with eval cases or a reason it has none.
+- **CI**: `.github/workflows/ci.yml` runs cargo fmt/clippy/test, `ns lint`, `ns eval --dry-run`, the py-inventory fixture tests, and `scripts/check-private.sh`. The guard's denylist lives in the repo variable `PRIVATE_DENYLIST`; run it locally with `PRIVATE_DENYLIST=a,b scripts/check-private.sh`.
 - **Committed files**: generic names and example paths only (`~/zephyrproject/zephyr`), never a private company name or a real home directory path.
 
 ## Issues, PRs and labels
