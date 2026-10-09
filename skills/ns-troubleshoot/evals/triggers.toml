@@ -1,6 +1,3 @@
-# Does the ns-troubleshoot description fire on the right prompts? Run against evals/fixtures-style repos.
-# 8 positive, 7 negative.
-
 [[trigger]]
 prompt = "Troubleshoot .scratch/reservations/issues/02-holds-expire-early.md. gates: auto"
 expect = true

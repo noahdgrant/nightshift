@@ -28,10 +28,10 @@ Use when the bug needs the target's instruction set, memory map or a peripheral 
 Loop: boot the image in QEMU or Renode, feed it the stimulus, and assert on the console.
 
 ```bash
-west build -b qemu_cortex_m3 app -d "$OUT/build"
-timeout 30 west build -d "$OUT/build" -t run 2>&1 | tee "$OUT/console.log" \
-  | grep -q -E 'FATAL|Fault|ASSERTION FAIL' && exit 1   # red: the fault line appeared
-exit 0
+west build -b qemu_cortex_m3 app -d "$OUT/build" || exit 2   # a failed build is a broken loop (2), never red (1) or green (0)
+timeout 30 west build -d "$OUT/build" -t run > "$OUT/console.log" 2>&1 || true   # timeout ends a QEMU that never exits
+grep -q 'Booting Zephyr' "$OUT/console.log" || exit 2   # no boot marker: also a broken loop
+! grep -q -E 'FATAL|Fault|ASSERTION FAIL' "$OUT/console.log"   # red, exit 1: the fault line appeared
 ```
 
 Renode scripts the same loop with a robot test (`renode-test tests/rx_overflow.robot`), drives UART, GPIO and sensor models, and exits non-zero on a failed `Wait For Line On Uart`. It can also run a board model for the exact target, which QEMU often can't.
@@ -42,22 +42,26 @@ Tighten: replace the grep on the console stream with the emulator's own expect s
 
 Use when the bug shows on real hardware and the device logs to a UART or RTT. The loop resets the board, captures the log, and asserts on the symptom line.
 
+Save this as `serial_check.py`. It exits 1 when the symptom appears (red), 2 when the board never printed its boot banner (the loop is broken, not green), and 0 when the banner appeared and the symptom did not.
+
 ```python
-import re, sys, serial  # pyserial
+import re, sys, time, serial  # pyserial
 
-PORT, BAUD, PATTERN, TIMEOUT = "/dev/ttyACM0", 115200, rb"rx overrun", 10.0
+PORT, BAUD, TIMEOUT, POLL = "/dev/ttyACM0", 115200, 10.0, 0.1
+BANNER, PATTERN = rb"Booting Zephyr", rb"rx overrun"
 
-with serial.Serial(PORT, BAUD, timeout=0.1) as s, open(sys.argv[1], "wb") as log:
+with serial.Serial(PORT, BAUD, timeout=POLL) as s, open(sys.argv[1], "wb") as log:
     s.reset_input_buffer()
     # reset the board here (probe-rs reset, or a reset GPIO) so every run starts from boot
     buf = b""
-    for _ in range(int(TIMEOUT / 0.1)):
+    deadline = time.monotonic() + TIMEOUT
+    while time.monotonic() < deadline:
         chunk = s.read(s.in_waiting or 1)
         log.write(chunk)
         buf += chunk
         if re.search(PATTERN, buf):
             sys.exit(1)  # red: the reported symptom appeared
-sys.exit(0)
+sys.exit(0 if re.search(BANNER, buf) else 2)
 ```
 
 Red: exit 1 and the symptom line in the saved log. Assert on the reporter's exact line, never on "no output".
@@ -91,15 +95,15 @@ Use when the symptom is on the wire: a glitch, a wrong bit order, a timing viola
 
 ```bash
 sigrok-cli -d fx2lafw --config samplerate=24m --time 200ms -C D0,D1 \
-  --triggers D0=f -o "$OUT/cap.sr"
+  --triggers D1=f -o "$OUT/cap.sr"
 sigrok-cli -i "$OUT/cap.sr" -P i2c:scl=D0:sda=D1 -A i2c=address-write:data-write \
   > "$OUT/decoded.txt"
-python3 check_i2c.py "$OUT/decoded.txt"   # exits 1 when the decoded frames show the bug
+python3 check_i2c.py "$OUT/decoded.txt"   # your checker: exits 1 when the decoded frames show the bug
 ```
 
 Red: the checker exits 1 and names the frame that is wrong (a NACK at address 0x48, a 3 µs SCL high time against a 4 µs minimum).
 
-Tighten: trigger on the event that precedes the bug, so every capture holds it. Assert on decoded frames or measured timings, never on eyeballing a waveform. Save the `.sr` file: a captured trace replays through the decoder with no bench, which turns this into a host loop (Phase 1, "Replay a captured trace").
+Tighten: trigger on the event that precedes the bug (here SDA falling, the I2C start condition), so every capture holds it. Assert on decoded frames or measured timings, never on eyeballing a waveform. Save the `.sr` file: a captured trace replays through the decoder with no bench, which turns this into a host loop (Phase 1, "Replay a captured trace").
 
 ## git bisect run on target
 
@@ -107,10 +111,14 @@ Use when the bug appeared between two known commits and one of the loops above c
 
 ```bash
 #!/usr/bin/env bash
-# bisect-check.sh: exit 0 good, 1 bad, 125 skip (can't build this commit)
+# bisect-check.sh: exit 0 good, 1 bad, 125 skip (can't build this commit).
+# serial_check.py is your checker from the serial-capture recipe.
 west build -b <board> app -d "$OUT/build" --pristine >/dev/null 2>&1 || exit 125
 west flash -d "$OUT/build" >/dev/null 2>&1 || exit 125
-python3 serial_check.py "$OUT/serial-$(git rev-parse --short HEAD).log"
+rc=0
+python3 "$OUT/serial_check.py" "$OUT/serial-$(git rev-parse --short HEAD).log" || rc=$?
+[ "$rc" -eq 2 ] && exit 125   # never booted: skip, don't blame the commit
+exit "$rc"
 ```
 
 ```bash
@@ -121,4 +129,4 @@ git bisect log > "$OUT/bisect.log"; git bisect reset
 
 Red: `git bisect run` names the first bad commit. That commit is evidence for a hypothesis, not the root cause: read what it changed, then form hypotheses in Phase 3.
 
-Tighten: exit 125 for every reason other than the bug (a build break, a flash failure), so bisect skips instead of blaming the wrong commit. For a flaky bug, run the check several times per commit and call it bad on any failure. Keep the script outside the tree (under `.ns/<unit-id>/troubleshoot/`) so checkouts during the bisect don't remove it. Bisect submodules or the west manifest together with the app when the bug might be in a module.
+Tighten: exit 125 for every reason other than the bug (a build break, a flash failure, a board that never booted), so bisect skips instead of blaming the wrong commit. For a flaky bug, run the check several times per commit and call it bad on any failure. Keep the script outside the tree (under `.ns/<unit-id>/troubleshoot/`) so checkouts during the bisect don't remove it. Bisect submodules or the west manifest together with the app when the bug might be in a module.

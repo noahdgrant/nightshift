@@ -8,7 +8,7 @@ Reported by: Sam (packing station)
 
 ## Description
 
-Now and then a hold runs out early. We reserve with a 5 minute hold, pick the order, and fulfil it about four and a half minutes later. Most days that works. Maybe one time in three, `fulfil` says the reservation has expired, even though the `reserve` output said it was good for five minutes. Running the same steps again usually works, so we can't make it happen on demand.
+Now and then a hold runs out early. We reserve with a 5 minute hold, pick the order, and fulfil it about four and a half minutes later. Most days that works. About half the time, `fulfil` says the reservation has expired, even though the `reserve` output said it was good for five minutes. Running the same steps again usually works, so we can't make it happen on demand.
 
 ## What we run
 

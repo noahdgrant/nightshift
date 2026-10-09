@@ -1,4 +1,4 @@
-description = "Seeded intermittent bug: Reservation.to_dict writes expires_at truncated to the minute, so a hold reloaded from the state file expires up to 59 s early. The reporter sees it 'one time in three' because it depends on the wall-clock seconds at reserve time; triage pinned whole-minute timestamps and couldn't reproduce it. Troubleshoot must build a red loop (a --now with seconds, or a save/load round trip), find the truncation, and write brief.md routing to ns-build, without fixing it."
+description = "Seeded intermittent bug: Reservation.to_dict writes expires_at truncated to the minute, so a hold reloaded from the state file expires up to 59 s early. The reporter sees it 'about half the time' because it depends on the wall-clock seconds at reserve time; triage pinned whole-minute timestamps and couldn't reproduce it. Troubleshoot must build a red loop (a --now with seconds, or a save/load round trip), find the truncation, and write brief.md routing to ns-build, without fixing it."
 fixture = "py-inventory"
 skills = ["ns-troubleshoot", "ns-triage"]
 extra_skills = ["ns-contract"]
@@ -8,49 +8,12 @@ prompt = """
 Troubleshoot .scratch/reservations/issues/02-holds-expire-early.md. gates: auto
 """
 
+[setup]
+commands = ["cp ../check_brief.py .git/check_brief.py"]
+
 [[check]]
 type = "command"
-run = '''
-python3 - <<'PYEOF'
-import glob, os, re, subprocess, sys
-roots = {os.getcwd()}
-out = subprocess.run(["git", "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
-roots.update(l.split(" ", 1)[1] for l in out.splitlines() if l.startswith("worktree "))
-roots.update(glob.glob(os.path.join("..", os.path.basename(os.getcwd()) + ".worktrees", "02-*")))
-briefs = sorted({os.path.realpath(p) for r in roots for p in glob.glob(os.path.join(r, ".ns", "02-*", "brief.md"))})
-if not briefs:
-    sys.exit("no .ns/02-*/brief.md in the main checkout or any worktree")
-
-def section(text, name):
-    m = re.search(r"(?ims)^#+[ \t]*" + name + r"[^\n]*\n(.*?)(?=^#+[ \t]|\Z)", text)
-    return m.group(1).strip() if m else ""
-
-for path in briefs:
-    text = open(path, encoding="utf-8").read()
-    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
-    if not m:
-        print(f"{path}: no frontmatter"); continue
-    fm = {k: v.strip("'\"") for k, v in re.findall(r"(?m)^(\w+):[ \t]*(.*?)[ \t]*(?:#.*)?$", m.group(1))}
-    route = re.search(r"(?im)^\**Route:\**[ \t]*(ns-[a-z-]+)", text)
-    repro = section(text, "repro")
-    cause = section(text, "root cause")
-    checks = {
-        "phase": fm.get("phase") == "troubleshoot",
-        "status": fm.get("status") == "pass",
-        "base": fm.get("base", "") != "",
-        "agent brief": "Agent Brief" in text and "- [ ]" in text,
-        "repro body": repro != "",
-        "root cause body": cause != "",
-        "root cause names expires_at": "expires_at" in cause,
-        "root cause names truncation": re.search(r"(?i)truncat|timespec|whole minute|rounds? (down|to)", cause) is not None,
-        "routes to ns-build": route is not None and route.group(1) == "ns-build",
-    }
-    print(path, {k: v for k, v in checks.items() if not v} or "ok")
-    if all(checks.values()):
-        sys.exit(0)
-sys.exit("no brief.md passes every check")
-PYEOF
-'''
+run = "python3 -I .git/check_brief.py"
 expect_exit = 0
 
 [[check]]

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# HITL loop: a human performs the steps, you read what they capture.
 # Usage: bash hitl-loop.template.sh
 # step "<instruction>"      shows the instruction, waits for Enter
 # capture VAR "<question>"  reads the answer into VAR
@@ -20,9 +21,9 @@ capture() {
 
 # --- edit below ---------------------------------------------------------
 
-step "Open the app at http://localhost:3000 and sign in."
+step "Open <URL> and sign in."
 
-capture ERRORED "Click the 'Export' button. Did it throw an error? (y/n)"
+capture ERRORED "<Action>. Did it fail? (y/n)"
 
 capture ERROR_MSG "Paste the error message (or 'none'):"
 
