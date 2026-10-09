@@ -97,7 +97,7 @@ Each lock is the file `<lock_dir>/<name>.lock`. While a run holds it, the file r
 lock_dir = "~/.local/state/nightshift/locks"
 ```
 
-**A held lock makes the run wait**, not refuse. It prints `ns run: <unit> <phase> waits for lock <name> (held by pid <pid>, unit <unit>)` to stderr, logs a `lock_wait` event, and blocks until the holder lets go. The other run's phase timeout bounds the wait. Exit 5 still means only the per-repo run lock (below). The lock is an OS `flock` on the file, so the kernel drops a run's hold when its process dies, and a file naming a dead pid is taken over at once.
+**A held lock makes the run wait**, not refuse. It prints `ns run: <unit> <phase> waits for lock <name> (held by pid <pid>, unit <unit>)` to stderr, logs a `lock_wait` event, and blocks until the holder lets go. The other run's phase timeout bounds the wait. Exit 5 still means only the per-repo run lock (below). The lock is an OS `flock` on the file, so the kernel drops a run's hold when its process dies, and a file naming a dead pid is taken over at once. If `ns` is hard-killed (SIGKILL or a crash), the lock frees at once while its harness child may still be running, since the child does not inherit the lock.
 
 ## ns run
 

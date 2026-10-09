@@ -795,11 +795,13 @@ ci_timeout_minutes = 30
                     "bench-1".into(),
                     "bench-1".into(),
                     "a/b".into(),
+                    ".hidden".into(),
+                    "..".into(),
                 ],
             },
         );
         let p = f.problems(None);
-        assert_eq!(p.len(), 2, "{p:?}");
+        assert_eq!(p.len(), 4, "{p:?}");
         assert!(p[0].contains("\"../x\""), "{p:?}");
         assert!(f.locks(&f.phase("build")).is_empty());
     }

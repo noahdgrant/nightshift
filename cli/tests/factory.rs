@@ -491,6 +491,27 @@ fn runner_locks_are_held_for_the_phase_and_released_on_failure() {
 }
 
 #[test]
+fn the_default_lock_dir_is_under_the_git_common_dir() {
+    let e = Env::new();
+    e.factory("[phases.verify]\nrunner = \"bench\"\n");
+    e.runner("bench", "kind = \"bench\"\nlocks = [\"bench-1\"]\n");
+    let lock = e.root.join(".git/ns/locks/bench-1.lock");
+    e.queue("build", &["pass:commit"]);
+    e.queue("verify", &["pass:script"]);
+    e.ctl(
+        "verify.sh",
+        &format!("cat {:?} > {:?}", lock, e.ctrl.join("seen")),
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    let holder: Value =
+        serde_json::from_str(&fs::read_to_string(e.ctrl.join("seen")).unwrap()).unwrap();
+    assert_eq!(holder["unit"], UNIT);
+    assert!(lock.exists());
+    assert!(lock_is_free(&lock));
+}
+
+#[test]
 fn leftover_content_in_a_free_runner_lock_is_overwritten() {
     let e = Env::new();
     let locks = e.base.join("locks");

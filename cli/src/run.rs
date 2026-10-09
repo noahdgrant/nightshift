@@ -1675,6 +1675,25 @@ mod tests {
     use crate::testutil::{commit_file, g, rebased_unit, Rebased};
 
     #[test]
+    fn lock_dir_defaults_under_the_common_dir_and_expands_a_tilde() {
+        let common = Path::new("/repo/.git");
+        assert_eq!(lock_dir(None, common), common.join("ns").join("locks"));
+        let mut cfg = Config::default();
+        assert_eq!(
+            lock_dir(Some(&cfg), common),
+            common.join("ns").join("locks")
+        );
+        cfg.runners.lock_dir = Some("~/shared/locks".into());
+        assert_eq!(
+            lock_dir(Some(&cfg), common),
+            config::expand_tilde("~/shared/locks")
+        );
+        assert!(!lock_dir(Some(&cfg), common).starts_with(common));
+        cfg.runners.lock_dir = Some("/abs/locks".into());
+        assert_eq!(lock_dir(Some(&cfg), common), Path::new("/abs/locks"));
+    }
+
+    #[test]
     fn acquire_takes_a_repeated_name_once() {
         let dir = tempfile::tempdir().unwrap();
         let names: Vec<String> = ["b", "a", "b"].map(String::from).into();
