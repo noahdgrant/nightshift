@@ -54,6 +54,8 @@ While building, apply these principles:
 
 **Scope.** Touch only what the brief requires. Something worth fixing outside it goes in `build.md` under open risks, not in the diff. A change the brief asked for that you made differently goes under deviations, with the reason.
 
+**Size.** After each commit, check the unit's changed lines against the hard limit in `docs/agents/stack.md` ([unit size](../ns-contract/SKILL.md#target-repo-configuration)). Past it with acceptance criteria still unmet, stop: write `build.md` with `status: blocked` and "unit too large, split it" as the first line of the body, and list the criteria met and the ones left so triage can split the rest.
+
 **Commit each green slice** with a Conventional Commit, `type(scope): subject` (`feat(uart): time out reads after 50 ms`). One logical change per commit, each one building and passing on its own. Run single test files during the loop and the typecheck when the stack has one.
 
 Done when every acceptance criterion has a passing test and a commit, and the working tree is clean.
@@ -101,7 +103,7 @@ If any step ran inline instead of through a fresh-context agent, say so here.
 
 ## 6. Gate
 
-The gate passes when tests, lint and build are all green on the final commit. Set `status: pass`. A check that stays red is `fail`, with what is missing. A check you can't run (no toolchain, no credentials) is `blocked`, never `pass`.
+The gate passes when tests, lint and build are all green on the final commit. Set `status: pass`. A check that stays red is `fail`, with what is missing. A check you can't run (no toolchain, no credentials) is `blocked`, never `pass`. A unit past the hard limit is `blocked` (step 3).
 
 Next phase: `ns-verify`. Under `gates: stop` (the default), stop and report the path to `build.md`. Under `gates: auto`, load the `ns-verify` skill if `status: pass`, and stop otherwise.
 

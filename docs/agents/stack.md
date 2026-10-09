@@ -37,6 +37,12 @@ Run from the repo root. Use the binary built from this worktree (`cli/target/deb
 | simulator/emulator | none | | |
 | hardware-in-the-loop | none | | |
 
+## Unit size
+
+unit size: soft 400, hard 800
+
+See `ns-contract` (unit size).
+
 ## Gotchas
 
 - Never run a real `ns eval` (without `--dry-run`) or `ns run` / `ns watch` inside a phase. They start model runs that consume the plan's usage. Eval runs are scheduled separately.
