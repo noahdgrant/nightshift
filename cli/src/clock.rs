@@ -79,13 +79,39 @@ pub fn next_local(now: i64, hh: u32, mm: u32) -> i64 {
 
 #[cfg(not(unix))]
 pub fn next_local(now: i64, hh: u32, mm: u32) -> i64 {
-    let day = now - now.rem_euclid(86_400);
-    let t = day + i64::from(hh) * 3600 + i64::from(mm) * 60;
-    if t <= now {
-        t + 86_400
-    } else {
-        t
-    }
+    use chrono::{Local, TimeZone};
+    let today = Local
+        .timestamp_opt(now, 0)
+        .single()
+        .expect("unix seconds in range")
+        .date_naive();
+    today
+        .iter_days()
+        .take(3)
+        .filter_map(|d| {
+            Local
+                .from_local_datetime(&d.and_hms_opt(hh, mm, 0)?)
+                .earliest()
+        })
+        .map(|t| t.timestamp())
+        .find(|t| *t > now)
+        .expect("HH:MM occurs within two days")
+}
+
+#[cfg(unix)]
+fn utc_offset(t: i64) -> i64 {
+    let mut tm = local_tm(t);
+    // SAFETY: timegm reads the struct we own, as UTC.
+    unsafe { libc::timegm(&mut tm) as i64 - t }
+}
+
+#[cfg(not(unix))]
+fn utc_offset(t: i64) -> i64 {
+    use chrono::{Local, Offset, TimeZone};
+    Local
+        .timestamp_opt(t, 0)
+        .single()
+        .map_or(0, |d| i64::from(d.offset().fix().local_minus_utc()))
 }
 
 /// Parse `HH:MM`.
@@ -97,6 +123,19 @@ pub fn parse_hm(s: &str) -> Option<(u32, u32)> {
 
 /// `YYYY-MM-DDTHH:MM:SSZ`.
 pub fn iso(t: i64) -> String {
+    civil(t) + "Z"
+}
+
+/// `YYYY-MM-DDTHH:MM:SS±HH:MM` in the local zone, for times a person reads.
+pub fn local_iso(t: i64) -> String {
+    let off = utc_offset(t);
+    let sign = if off < 0 { '-' } else { '+' };
+    let a = off.abs();
+    format!("{}{sign}{:02}:{:02}", civil(t + off), a / 3600, a / 60 % 60)
+}
+
+/// `YYYY-MM-DDTHH:MM:SS` of `t` read as UTC.
+fn civil(t: i64) -> String {
     let days = t.div_euclid(86_400);
     let s = t.rem_euclid(86_400);
     let z = days + 719_468;
@@ -109,7 +148,7 @@ pub fn iso(t: i64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
     format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}",
         s / 3600,
         s / 60 % 60,
         s % 60

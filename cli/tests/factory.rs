@@ -1948,6 +1948,70 @@ fn custom_agent_prompt_is_rendered() {
 
 // ---------------------------------------------------------------- ns watch
 
+/// `ns watch` stdout and stderr with `TZ` and `NS_NOW` overridden.
+fn watch_in(e: &Env, tz: &str, now: i64, args: &[&str]) -> (Value, String) {
+    let out = e
+        .ns()
+        .env("TZ", tz)
+        .env("NS_NOW", now.to_string())
+        .arg("watch")
+        .args(args)
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    (
+        serde_json::from_slice(&out.stdout).unwrap(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn watch_until_is_local_time_with_its_offset() {
+    let e = Env::new();
+    // 2026-10-08T20:00 EDT.
+    let (v, _) = watch_in(
+        &e,
+        "America/Toronto",
+        NOW,
+        &["--dry-run", "--until", "06:30"],
+    );
+    assert_eq!(v["until"], "2026-10-09T06:30:00-04:00");
+    // 2026-01-14T19:00 EST.
+    let (v, _) = watch_in(
+        &e,
+        "America/Toronto",
+        1_768_435_200,
+        &["--dry-run", "--until", "06:30"],
+    );
+    assert_eq!(v["until"], "2026-01-15T06:30:00-05:00");
+    let (v, _) = watch_in(&e, "UTC", NOW, &["--dry-run", "--until", "06:30"]);
+    assert_eq!(v["until"], "2026-10-09T06:30:00+00:00");
+}
+
+#[test]
+fn watch_reports_until_and_the_usage_reset_in_local_time() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("reset", &(NOW + 3600).to_string());
+    e.queue("build", &["limit", "pass:commit"]);
+    let (v, err) = watch_in(&e, "America/Toronto", NOW, &["--once", "--until", "06:30"]);
+    assert_eq!(v["until"], "2026-10-09T06:30:00-04:00", "{v}");
+    assert_eq!(
+        v["units"][0]["reset_at"], "2026-10-08T21:00:00-04:00",
+        "{v}"
+    );
+    assert!(
+        err.contains("sleeping until 2026-10-08T21:00:00-04:00"),
+        "{err}"
+    );
+    let log = fs::read_to_string(e.root.join(".git/ns/runs.jsonl")).unwrap();
+    for line in log.lines() {
+        let ts = serde_json::from_str::<Value>(line).unwrap()["ts"].clone();
+        assert!(ts.as_str().unwrap().ends_with('Z'), "{line}");
+    }
+}
+
 #[test]
 fn watch_dry_run_orders_and_skips() {
     let e = Env::new();
@@ -2466,7 +2530,7 @@ fn watch_sleeps_through_a_usage_limit_before_until() {
     let units = v["units"].as_array().unwrap();
     assert_eq!(units.len(), 2, "{v}");
     assert_eq!(units[0]["outcome"], "paused");
-    assert_eq!(units[0]["reset_at"], "2026-10-09T01:00:00Z");
+    assert_eq!(units[0]["reset_at"], "2026-10-09T01:00:00+00:00");
     assert_eq!(units[1]["outcome"], "done");
     assert!(!e.gh_calls().contains("--add-label status:ready-for-agent"));
 }
@@ -2942,7 +3006,7 @@ fn watch_pauses_on_a_session_limit_reported_only_in_structured_fields() {
     let v = e.run(&["watch", "--once", "--until", "06:30"], 0);
     let units = v["units"].as_array().unwrap();
     assert_eq!(units[0]["outcome"], "paused", "{v}");
-    assert_eq!(units[0]["reset_at"], "2026-10-09T01:00:00Z");
+    assert_eq!(units[0]["reset_at"], "2026-10-09T01:00:00+00:00");
     assert_eq!(units[1]["outcome"], "done");
 }
 

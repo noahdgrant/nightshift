@@ -346,7 +346,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 "queue": ready,
                 "skipped": qu.skipped,
                 "max_units": max_units,
-                "until": deadline.map(clock::iso),
+                "until": deadline.map(clock::local_iso),
             }))?
         );
         return Ok(ExitCode::SUCCESS);
@@ -461,7 +461,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                         .reset_at
                         .filter(|t| *t > now)
                         .unwrap_or(now + PAUSE_RETRY_S);
-                    rec["reset_at"] = json!(clock::iso(reset));
+                    rec["reset_at"] = json!(clock::local_iso(reset));
                     units.push(rec);
                     if deadline.is_some_and(|d| reset >= d) {
                         set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
@@ -469,7 +469,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                     }
                     eprintln!(
                         "ns watch: usage limit, sleeping until {}",
-                        clock::iso(reset)
+                        clock::local_iso(reset)
                     );
                     shared.clock.sleep_until(reset);
                     continue;
@@ -485,6 +485,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         serde_json::to_string_pretty(&json!({
             "units": units,
             "stopped": stopped,
+            "until": deadline.map(clock::local_iso),
             "cost_usd": shared.spent_usd,
             "started_with": loaded.files,
         }))?
