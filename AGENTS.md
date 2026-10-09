@@ -22,3 +22,15 @@ Issues live on GitHub at `noahdgrant/nightshift`, managed with `gh`.
   - `breaking change` when the title has `!`
 - **Blockers**: put `Blocked by: #N` on the first line of the issue body.
 - **Merging**: squash-merge. The PR title becomes the commit on `main`, so it must be a Conventional Commit.
+
+## Agent skills
+
+This repo runs nightshift on itself.
+
+- **Stack**: `docs/agents/stack.md`
+- **Verify**: `docs/agents/verify.md`
+- **Issue tracker**: GitHub Issues on `noahdgrant/nightshift`. See `docs/agents/issue-tracker.md`.
+- **Triage labels**: `type:*` categories and `status:*` states. See `docs/agents/triage-labels.md`.
+- **Domain docs**: `docs/agents/domain.md`
+- **Factory definition**: `.nightshift/nightshift.toml`. `ns watch` works `status:ready-for-agent` issues overnight.
+
