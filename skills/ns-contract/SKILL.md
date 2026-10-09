@@ -14,13 +14,15 @@ Skills don't name a language, test runner, framework or board. They read the tar
 
 | File | Holds |
 |---|---|
-| `docs/agents/stack.md` | language, build, test, lint and format commands. Test seams: host unit, simulator/emulator, hardware-in-the-loop |
+| `docs/agents/stack.md` | language, build, test, lint and format commands. Test seams: host unit, simulator/emulator, hardware-in-the-loop. Unit size limits in changed lines |
 | `docs/agents/verify.md` | pointer to the project's verification skill and control CLI |
 | `docs/agents/issue-tracker.md` | tracker, CLI used to reach it, how issues are created and linked |
 | `docs/agents/triage-labels.md` | label names for each triage category and state |
 | `docs/agents/domain.md` | where the glossary and ADRs live |
 
 If a file is missing, load `ns-setup` instead of guessing.
+
+**Unit size.** `stack.md` sets two limits on a unit's changed lines with a line `unit size: soft 400, hard 800`. With no such line, use 400 and 800. Changed lines are the insertions plus deletions that `git diff --shortstat <base>` reports. `ns-triage` splits work estimated past the soft limit. `ns-build` stops when the diff passes the hard limit.
 
 Code examples are Python. Where firmware changes the advice (registers, ISRs, flash/RAM budgets, on-target tests), add a short firmware note. Don't add a second full example in C.
 

@@ -32,6 +32,12 @@ Fastest first. A seam the project doesn't have is `none`.
 | simulator/emulator | [e.g. `west twister -p native_sim -T tests`, or `none`] | [e.g. 3 min] | [e.g. Zephyr SDK] |
 | hardware-in-the-loop | [e.g. `uv run pytest -m hil --port /dev/ttyACM0`, or `none`] | [e.g. 8 min] | [e.g. nRF52840 DK on USB, J-Link] |
 
+## Unit size
+
+unit size: soft 400, hard 800
+
+Changed lines per unit. `ns-triage` splits work estimated past the soft limit; `ns-build` stops past the hard limit.
+
 ## Gotchas
 
 [Anything the config files don't say: a test that needs a running service, a board that must be power-cycled after flashing, a flaky seam. Delete this section if there is nothing.]
