@@ -106,7 +106,7 @@ fn read_window(path: &Path) -> Vec<u8> {
 /// The `{feedback}` for a red gate.
 pub fn feedback(cmd: &str, r: &GateRun, timeout: Duration, head: &str) -> String {
     let how = match (r.timed_out, r.exit) {
-        (true, _) if timeout.as_secs() >= 60 && timeout.as_secs() % 60 == 0 => {
+        (true, _) if timeout.as_secs() >= 60 && timeout.as_secs().is_multiple_of(60) => {
             format!("timed out after {} min", timeout.as_secs() / 60)
         }
         (true, _) => format!("timed out after {:.1} s", timeout.as_secs_f64()),
