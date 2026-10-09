@@ -58,9 +58,11 @@ While building, apply these principles:
 
 Done when every acceptance criterion has a passing test and a commit, and the working tree is clean.
 
-## 4. Run the full checks
+## 4. Rebase, tidy, and run the full checks
 
-Run the full test, lint and build commands from `docs/agents/stack.md`, once, on the final commit. Capture each command and the lines of output that prove its result.
+`git fetch origin` and rebase onto the base branch (`origin/main` unless the brief names another). Tidy the history now: small commits that each build and pass, ordered to tell the story, with bodies written using `ns-writing-for-humans`. This is the history that verify, review and ship will see; nothing rewrites it later.
+
+Then run the full test, lint and build commands from `docs/agents/stack.md`, once, on the final commit. Capture each command and the lines of output that prove its result.
 
 Firmware: the build check includes the size report. Record flash and RAM use against the budget in `stack.md`. On-target and HIL runs belong to `ns-verify`, not here.
 

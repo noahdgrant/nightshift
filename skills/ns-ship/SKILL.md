@@ -41,13 +41,11 @@ GO needs every line below to hold on the current `HEAD`. Record each one. The Ve
 
 NO-GO writes `pr.md` with `status: fail` (the fix is agent work) or `status: blocked` (it needs hardware, credentials, or a decision no agent can make), and names the failing line first in the body. A finding `review.md` deferred to a follow-up issue never makes NO-GO: list it under Follow-ups and carry on.
 
-## 3. Rebase into small ordered commits
+## 3. Ship the reviewed commits as they are
 
-1. `git fetch origin`, then rebase onto the base branch (`origin/main` unless the brief names another).
-2. Shape the history into small commits that each build and pass tests, ordered to tell the story. Use the repo's commit convention. If it has none, use Conventional Commits, `type(scope): subject`. Write each commit body with `ns-writing-for-humans`.
-3. Re-run the test command from `docs/agents/stack.md` after the rebase. A red run sends the unit back to `ns-build`.
+Leave the history alone. Don't rebase, squash, reorder or amend: `review.md` and `evidence.md` vouch for these exact commits, and any rewrite makes them stale, so the unit can't merge. `ns-build` already shaped the history and rebased onto the base before review.
 
-This is the last history rewrite. The branch is still yours alone, so rewriting is safe. After the PR opens, fixes land as new commits.
+If the base moved since review, leave that too. `ns run`'s merge step updates the branch after checking the review, and babysit merges the base for conflicts.
 
 ## 4. Write the PR body
 
