@@ -2,8 +2,9 @@
 # Fake harness for ns run tests. Reads the phase from the prompt, pops the next action from
 # $FAKE_CTRL/<phase> (default: pass) and writes that phase's artifact.
 #   action = status[:extra]; status: pass | fail | blocked | none | limit
-#   extra:   commit | push | merge | any text (lands in the body, e.g. "review")
+#   extra:   commit | push | merge | script | any text (lands in the body, e.g. "review")
 #   commit and push append to work.txt, or run $FAKE_CTRL/edit instead when it exists
+#   script runs $FAKE_CTRL/<phase>.sh in the worktree
 set -e
 ctrl="$FAKE_CTRL"
 prompt=$(cat)
@@ -39,6 +40,7 @@ case "$extra" in
     git -c user.name=f -c user.email=f@f commit -qm "$phase $n"
     ;;
 esac
+[ "$extra" = script ] && sh "$ctrl/$phase.sh"
 [ "$extra" = push ] && git push -q origin HEAD:main
 [ "$extra" = merge ] && echo MERGED > "$FAKE_GH_DIR/pr-$(cat "$ctrl/pr").state"
 echo '{"type":"result","is_error":false,"result":"ok","total_cost_usd":0.5,"usage":{"input_tokens":10,"output_tokens":5}}'

@@ -190,18 +190,19 @@ fn restore(moves: &[(PathBuf, PathBuf)]) {
 }
 
 /// Before running `phase`: archive its artifact, and every downstream artifact that is not
-/// `pass` at HEAD. Whatever exists afterwards is current, so presence alone drives `decide`.
-pub fn archive_for(dir: &Path, phase: &str, head: &str) -> Result<Vec<(PathBuf, PathBuf)>> {
+/// `pass` and current, or follows one that was archived. Whatever exists afterwards is current,
+/// so presence alone drives `decide`.
+pub fn archive_for(dir: &Path, phase: &str, s: &State) -> Result<Vec<(PathBuf, PathBuf)>> {
     let mut moves = Vec::new();
     let Some(i) = PHASES.iter().position(|p| *p == phase) else {
         return Ok(moves);
     };
     archive_file(dir, artifact_of(phase), &mut moves)?;
+    let mut cascading = true;
     for p in &PHASES[i + 1..] {
         let file = artifact_of(p);
-        let keep = read_art(&dir.join(file))
-            .is_some_and(|a| a.status == "pass" && same_sha(a.sha.as_deref().unwrap_or(""), head));
-        if !keep {
+        cascading = cascading && read_art(&dir.join(file)).is_some_and(|a| s.passes(&a));
+        if !cascading {
             archive_file(dir, file, &mut moves)?;
         }
     }
@@ -240,9 +241,44 @@ pub struct State {
     pub arts: BTreeMap<&'static str, Art>,
     pub head: String,
     pub has_issue: bool,
+    /// The unit's diff at HEAD; `None` compares shas only.
+    pub unit_diff: Option<UnitDiff>,
 }
 
-fn read_state(dir: &Path, head: String, has_issue: bool) -> State {
+#[derive(Debug, Clone)]
+pub struct UnitDiff {
+    worktree: PathBuf,
+    base: String,
+    head_id: Option<String>,
+}
+
+impl UnitDiff {
+    pub fn new(worktree: PathBuf, base: String, head: &str) -> Self {
+        let head_id = git::diff_id(&worktree, &base, head);
+        Self {
+            worktree,
+            base,
+            head_id,
+        }
+    }
+
+    fn matches(&self, sha: &str) -> bool {
+        self.head_id.is_some() && git::diff_id(&self.worktree, &self.base, sha) == self.head_id
+    }
+}
+
+impl State {
+    /// `sha` is HEAD, or carries the same diff against the base as HEAD (a rebase).
+    pub fn current(&self, sha: &str) -> bool {
+        same_sha(sha, &self.head) || self.unit_diff.as_ref().is_some_and(|d| d.matches(sha))
+    }
+
+    fn passes(&self, a: &Art) -> bool {
+        a.status == "pass" && self.current(a.sha.as_deref().unwrap_or(""))
+    }
+}
+
+fn read_state(dir: &Path, head: String, has_issue: bool, unit_diff: Option<UnitDiff>) -> State {
     let mut arts = BTreeMap::new();
     for p in PHASES {
         if let Some(a) = read_art(&dir.join(artifact_of(p))) {
@@ -253,6 +289,7 @@ fn read_state(dir: &Path, head: String, has_issue: bool) -> State {
         arts,
         head,
         has_issue,
+        unit_diff,
     }
 }
 
@@ -318,11 +355,10 @@ pub fn decide(s: &State) -> Decision {
             }
         }
     }
-    let stale = |a: &Art| !same_sha(a.sha.as_deref().unwrap_or(""), &s.head);
-    if let Some(pr) = s.arts.get("ship") {
-        if pr.status == "pass" && !stale(pr) {
-            return Decision::Done;
-        }
+    let stale = |a: &Art| !s.current(a.sha.as_deref().unwrap_or(""));
+    let passes = |p: &str| s.arts.get(p).is_some_and(|a| s.passes(a));
+    if passes("ship") && passes("verify") && passes("review") {
+        return Decision::Done;
     }
     let Some(brief) = s.arts.get("triage") else {
         return if s.has_issue {
@@ -347,7 +383,7 @@ pub fn decide(s: &State) -> Decision {
     }
     let stale_why = |file: &str, a: &Art| {
         format!(
-            "{file} sha {} is not HEAD {}",
+            "{file} sha {} is not current at HEAD {}",
             a.sha.as_deref().unwrap_or("(none)"),
             s.head
         )
@@ -633,6 +669,13 @@ pub fn slug(title: &str) -> String {
 
 // ---------------------------------------------------------------- the run
 
+fn resolve_base(repo: &Repo, args: &RunArgs) -> Result<String> {
+    match &args.base {
+        Some(b) => Ok(b.clone()),
+        None => repo.default_base(),
+    }
+}
+
 struct Ctx<'a> {
     unit: String,
     worktree: PathBuf,
@@ -643,6 +686,7 @@ struct Ctx<'a> {
     issue: Option<u64>,
     issue_url: String,
     gates: String,
+    base: String,
 }
 
 impl Ctx<'_> {
@@ -809,7 +853,8 @@ pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
     }
 
     let _lock = Lock::acquire(&repo.common_dir, &unit)?;
-    let wt = worktree::ensure(&repo, &unit, args.base.as_deref(), &fac.worktree.setup)?;
+    let base = resolve_base(&repo, args)?;
+    let wt = worktree::ensure(&repo, &unit, Some(&base), &fac.worktree.setup)?;
     let ctx = Ctx {
         unit: unit.clone(),
         worktree: PathBuf::from(&wt.path),
@@ -820,6 +865,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
         issue: args.issue,
         issue_url,
         gates,
+        base,
     };
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
@@ -892,7 +938,17 @@ fn dry_run(
         Some(p) => git::run(p, &["rev-parse", "--short", "HEAD"]).unwrap_or_default(),
         None => String::new(),
     };
-    let state = read_state(&wt.join(".ns").join(unit), head, args.issue.is_some());
+    let base = resolve_base(repo, args).ok();
+    let unit_diff = existing
+        .clone()
+        .zip(base.clone())
+        .map(|(p, b)| UnitDiff::new(p, b, &head));
+    let state = read_state(
+        &wt.join(".ns").join(unit),
+        head,
+        args.issue.is_some(),
+        unit_diff,
+    );
     let decision = match &args.from {
         Some(f) => run(
             PHASES
@@ -915,6 +971,7 @@ fn dry_run(
         issue: args.issue,
         issue_url: issue_url.to_string(),
         gates: gates.to_string(),
+        base: base.unwrap_or_default(),
     };
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
@@ -985,7 +1042,16 @@ fn drive(
         "default_sha": baseline.as_ref().map(|b| &b.1),
     }));
     loop {
-        let state = read_state(&ctx.artifacts, ctx.head(), ctx.issue.is_some());
+        let state = read_state(
+            &ctx.artifacts,
+            ctx.head(),
+            ctx.issue.is_some(),
+            Some(UnitDiff::new(
+                ctx.worktree.clone(),
+                ctx.base.clone(),
+                &ctx.head(),
+            )),
+        );
         let decision = forced.take().unwrap_or_else(|| decide(&state));
         let (phase, feedback, why) = match decision {
             Decision::Stuck(r) => return Ok(finish(Outcome::Stuck, r, None)),
@@ -1026,7 +1092,7 @@ fn drive(
             }
         }
         let art_path = ctx.artifacts.join(artifact_of(phase));
-        let moves = archive_for(&ctx.artifacts, phase, &ctx.head())?;
+        let moves = archive_for(&ctx.artifacts, phase, &state)?;
         let prompt = ctx.prompt(&p, attempt, &feedback)?;
         let transcript = ctx
             .common
@@ -1189,8 +1255,9 @@ fn human(reason: impl Into<String>) -> MergeStep {
     MergeStep::Finish(f)
 }
 
-/// `merge.policy = "auto"`: squash-merge this unit's PR when CI is green, review.md passed at
-/// HEAD, and no file or marked region that needs human review changed. The only place ns merges anything.
+/// `merge.policy = "auto"`: squash-merge this unit's PR when CI is green, review.md passed and is
+/// current at the PR head, and no file or marked region that needs human review changed. The only
+/// place ns merges anything.
 fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep> {
     if !state.arts.contains_key("ship") {
         return Ok(human("no pr.md"));
@@ -1229,14 +1296,15 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
     }
     let head = git::run(wt, &["rev-parse", "HEAD"]).unwrap_or_default();
     let pr_head = view["headRefOid"].as_str().unwrap_or("");
-    if !same_sha(pr_head, &head) {
+    if !state.current(pr_head) {
         return Ok(human(format!(
-            "PR head {pr_head} is not the reviewed HEAD {head}; needs a human merge"
+            "PR head {pr_head} is not current with HEAD {head}; needs a human merge"
         )));
     }
-    match state.arts.get("review") {
-        Some(r) if r.status == "pass" && same_sha(r.sha.as_deref().unwrap_or(""), &head) => {}
-        _ => return Ok(human("review.md is not pass at HEAD; needs a human merge")),
+    if !state.arts.get("review").is_some_and(|r| state.passes(r)) {
+        return Ok(human(
+            "review.md is not pass and current; needs a human merge",
+        ));
     }
 
     // Strict required checks: a PR behind its base gets the base merged in, then fresh checks.
@@ -1249,7 +1317,7 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
             "PR #{n} conflicts with {default}: rebase onto {default} and resolve conflicts, then force-push with --force-with-lease"
         ))
     };
-    let mut merge_head = head.clone();
+    let mut merge_head = pr_head.to_string();
     match view["mergeStateStatus"].as_str() {
         Some("DIRTY") => return Ok(conflict()),
         Some("BEHIND") => {
@@ -1264,7 +1332,7 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
                 return Ok(conflict());
             }
             ctx.log(json!({"event": "update_branch", "pr": n}));
-            merge_head = v["headRefOid"].as_str().unwrap_or(&head).to_string();
+            merge_head = v["headRefOid"].as_str().unwrap_or(pr_head).to_string();
         }
         _ => {}
     }
@@ -1404,6 +1472,7 @@ fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::{commit_file, g, rebased_unit, Rebased};
 
     #[test]
     fn marked_regions_errors_when_the_merge_base_is_unknown() {
@@ -1427,6 +1496,7 @@ mod tests {
             arts: arts.iter().cloned().collect(),
             head: "abc1234".into(),
             has_issue: true,
+            unit_diff: None,
         }
     }
 
@@ -1510,6 +1580,14 @@ mod tests {
         assert_eq!(with(("ship", sf)), "review");
         assert_eq!(with(("ship", art("fail", "abc1234"))), "stuck");
         assert_eq!(with(("ship", art("pass", "abc1234"))), "done");
+        let old = [
+            brief.clone(),
+            build.clone(),
+            ("verify", art("pass", "0000000")),
+            ("review", art("pass", "0000000")),
+            ("ship", art("pass", "abc1234")),
+        ];
+        assert_eq!(next(&old), "verify");
         // A pass at an older sha ships again once verify and review hold at HEAD.
         assert_eq!(with(("ship", art("pass", "0000000"))), "ship");
         assert_eq!(
@@ -1539,7 +1617,7 @@ mod tests {
         w("evidence.md", "pass", "abc1234");
         w("review.md", "fail", "abc1234");
         w("pr.md", "pass", "0000000");
-        let moves = archive_for(d, "build", "abc1234").unwrap();
+        let moves = archive_for(d, "build", &state(&[])).unwrap();
         assert!(!d.join("build.md").exists());
         assert!(d.join("evidence.md").exists());
         assert!(!d.join("review.md").exists());
@@ -1550,11 +1628,97 @@ mod tests {
         restore(&moves);
         assert!(d.join("build.md").exists() && d.join("pr.md").exists());
         // A restored slot is free again; a second archive takes the next number.
-        archive_for(d, "build", "abc1234").unwrap();
+        archive_for(d, "build", &state(&[])).unwrap();
         w("build.md", "pass", "abc1234");
-        archive_for(d, "build", "abc1234").unwrap();
+        archive_for(d, "build", &state(&[])).unwrap();
         assert!(d.join("history/build-1.md").exists());
         assert!(d.join("history/build-2.md").exists());
+    }
+
+    fn real_state(r: &Rebased) -> State {
+        State {
+            arts: BTreeMap::new(),
+            head: r.rebased.clone(),
+            has_issue: true,
+            unit_diff: Some(UnitDiff::new(r.dir.clone(), "main".into(), &r.rebased)),
+        }
+    }
+
+    #[test]
+    fn current_matches_head_a_rebased_diff_and_nothing_else() {
+        let r = rebased_unit();
+        let s = real_state(&r);
+        assert!(s.current(&r.rebased));
+        assert!(s.current(&r.rebased[..7]));
+        assert!(s.current(&r.reviewed));
+        assert!(!s.current("0000000"));
+        assert!(!s.current(""));
+        let first = g(&r.dir, &["rev-parse", "main"]);
+        assert!(!s.current(&first));
+        let mut no_base = real_state(&r);
+        no_base.unit_diff = None;
+        assert!(!no_base.current(&r.reviewed));
+    }
+
+    #[test]
+    fn decide_is_done_for_artifacts_at_the_pre_rebase_sha() {
+        let r = rebased_unit();
+        let mut s = real_state(&r);
+        for p in ["triage", "build", "verify", "review", "ship"] {
+            s.arts.insert(p, art("pass", &r.reviewed));
+        }
+        assert_eq!(decide(&s), Decision::Done);
+        s.unit_diff = None;
+        assert_ne!(decide(&s), Decision::Done);
+    }
+
+    #[test]
+    fn a_rebase_archives_nothing_downstream() {
+        let r = rebased_unit();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        for f in ["evidence.md", "review.md", "pr.md"] {
+            fs::write(
+                d.join(f),
+                format!("---\nstatus: pass\nsha: {}\npr: 12\n---\n", r.reviewed),
+            )
+            .unwrap();
+        }
+        let moves = archive_for(d, "verify", &real_state(&r)).unwrap();
+        assert_eq!(moves.len(), 1);
+        assert!(!d.join("evidence.md").exists());
+        assert!(d.join("review.md").exists() && d.join("pr.md").exists());
+        let moves = archive_for(d, "review", &real_state(&r)).unwrap();
+        assert_eq!(moves.len(), 1);
+        assert!(d.join("pr.md").exists());
+        fs::write(
+            d.join("review.md"),
+            format!("---\nstatus: pass\nsha: {}\n---\n", r.reviewed),
+        )
+        .unwrap();
+        commit_file(&r.dir, "work.txt", "two\n");
+        let head = g(&r.dir, &["rev-parse", "HEAD"]);
+        let mut changed = real_state(&r);
+        changed.unit_diff = Some(UnitDiff::new(r.dir.clone(), "main".into(), &head));
+        changed.head = head;
+        archive_for(d, "verify", &changed).unwrap();
+        assert!(!d.join("review.md").exists() && !d.join("pr.md").exists());
+    }
+
+    #[test]
+    fn archiving_drops_a_current_pr_behind_a_stale_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        for (f, sha) in [
+            ("evidence.md", "0000000"),
+            ("review.md", "0000000"),
+            ("pr.md", "abc1234"),
+        ] {
+            fs::write(d.join(f), format!("---\nstatus: pass\nsha: {sha}\n---\n")).unwrap();
+        }
+        archive_for(d, "verify", &state(&[])).unwrap();
+        assert!(d.join("history/review-1.md").exists());
+        assert!(d.join("history/pr-1.md").exists());
     }
 
     #[test]

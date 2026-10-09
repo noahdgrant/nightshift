@@ -15,6 +15,8 @@ mod install;
 mod lint;
 mod markers;
 mod run;
+#[cfg(test)]
+mod testutil;
 mod watch;
 mod which;
 mod worktree;
