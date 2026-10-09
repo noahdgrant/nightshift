@@ -1,7 +1,7 @@
 description = "The fix loop has run its 3 cycles and C1 (cancel_all drops every SKU's reservations) is still open. review.md must be blocked by the cycle-limit rule (cycles 3, first body line `Open after 3 fix cycles`), its first body line must name C1, and the body must offer fixing by hand, splitting the issue, or ns-define."
 fixture = "py-inventory"
 skills = ["ns-review"]
-extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments"]
+extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
 requires = ["python"]
 timeout_minutes = 30
 prompt = """
