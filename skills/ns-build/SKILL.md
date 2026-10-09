@@ -62,11 +62,11 @@ Done when every acceptance criterion has a passing test and a commit, and the wo
 
 ## 4. Self-check
 
-Review will check your diff against the [quality bar](../ns-contract/references/quality-bar.md). Meet it first. Diff against the base with `git diff "$(git merge-base <base> HEAD)"` and work through three checks. Fix what each one finds test-first, with the `ns-tdd` skill, and commit.
+Review will check your diff against the [quality bar](../ns-contract/references/quality-bar.md). Meet it first. The base is the branch `brief.md` records as `base:`, else `origin/main`. Diff against it with `git diff "$(git merge-base <base> HEAD)"` and work through three checks. Fix what each one finds test-first, with the `ns-tdd` skill, and commit.
 
 1. **The bar.** Mark every item of the quality bar against your diff: met, fixed (with the commit), or not applicable with a one-line reason.
 2. **Every branch tested.** List each branch and error path the diff adds: each `if` arm, early return, raised or returned error, loop that can run zero times. Every one needs a test that takes it, whether or not an acceptance criterion names it.
-3. **Mutation self-check.** For each changed file with logic, pick up to five conditions or constants the diff adds or changes, and run each mutation as the Mutation check in [correctness.md](../ns-review/references/correctness.md) says: flip a comparison, drop a guard, invert a condition, run only the tests covering that file under a timeout, then restore the file and confirm `git status` is unchanged. A mutation that survives needs a new test. Add it, then rerun the mutation until it goes red.
+3. **Mutation self-check.** Mutate every condition and constant the diff adds or changes, one at a time; a reviewer's limit of five is for spot checks, and you own the whole diff. Run each mutation as the Mutation check in [correctness.md](../ns-review/references/correctness.md) says: flip a comparison, drop a guard, invert a condition, run only the tests covering that file under a timeout, then restore the file and confirm `git status` is unchanged. A mutation that survives needs a new test. Add it, then rerun the mutation until it goes red.
 
 Done when every bar item is marked, every listed branch has a test, and every mutation is killed or recorded `inconclusive` with the reason.
 
@@ -78,7 +78,7 @@ Then run the full test, lint and build commands from `docs/agents/stack.md`, onc
 
 Firmware: the build check includes the size report. Record flash and RAM use against the budget in `stack.md`. On-target and HIL runs belong to `ns-verify`, not here.
 
-A red check sends you back to step 3. Done when all three are green on a clean tree, or you have stopped with `fail` or `blocked`.
+A red check, or a rebase conflict you resolved, sends you back to step 3, then through step 4 again for the lines that changed. Done when all three are green on a clean tree, or you have stopped with `fail` or `blocked`.
 
 ## 6. Write the build artifact
 

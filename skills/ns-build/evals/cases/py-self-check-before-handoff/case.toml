@@ -47,18 +47,58 @@ path = ".ns/3-cancel-older/build.md"
 pattern = "(?m)^## Self-check"
 
 [[check]]
-# The self-check ran mutations and recorded at least one as killed.
+# The self-check ran a mutation on the new code and recorded it killed (the template row names src/x.py).
 type = "regex"
 path = ".ns/3-cancel-older/build.md"
-pattern = "(?mi)^\\|.*\\|\\s*killed\\s*\\|\\s*$"
+pattern = "(?mi)^\\|.*src/inventory/warehouse\\.py.*\\|[^|]*\\bkilled\\b[^|]*\\|\\s*$"
 
 [[check]]
-# Every branch tested: a test covers the path with nothing to cancel, which no acceptance criterion names.
+# Every branch tested: the trial's own tests catch a cancel_older that fails only when nothing is
+# older, a path no acceptance criterion names.
 type = "command"
 run = '''
-B=$(git rev-list --max-parents=0 HEAD | tail -n 1)
-A=$( { git diff "$B" -U0 -- tests/ | grep '^+' ; git ls-files -o --exclude-standard tests/ | xargs -r cat ; } )
-printf '%s\n' "$A" | grep -Eiq 'def test_[a-z0-9_]*(nothing|none|zero|empty|no_reserv|no_older|without)'
+T=$(mktemp -d) && cat > "$T/zero_mutant.py" <<'PYEOF'
+from inventory import Warehouse
+
+real = Warehouse.cancel_older
+
+
+def broken(self, sku, before):
+    n = real(self, sku, before)
+    if n == 0:
+        raise LookupError("nothing to cancel")
+    return n
+
+
+Warehouse.cancel_older = broken
+PYEOF
+out=$(PYTHONPATH="$T:$PWD/src" python3 -m pytest -q -p no:cacheprovider -p zero_mutant tests/ 2>&1); s=$?; rm -rf "$T"
+# Killed means tests ran and failed: exit 1 with a "N failed" summary, not a plugin or import error.
+last=$(printf '%s\n' "$out" | tail -n 1); printf '%s' "$last" | grep -Eq '[0-9]+ failed' && ! printf '%s' "$last" | grep -q 'error' && [ "$s" -eq 1 ]
+'''
+expect_exit = 0
+
+[[check]]
+# Mutation self-check: the trial's own tests catch `<` turned into `<=` at the before boundary.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/boundary_mutant.py" <<'PYEOF'
+from datetime import timedelta
+
+from inventory import Warehouse
+
+real = Warehouse.cancel_older
+
+
+def broken(self, sku, before):
+    return real(self, sku, before + timedelta(microseconds=1))
+
+
+Warehouse.cancel_older = broken
+PYEOF
+out=$(PYTHONPATH="$T:$PWD/src" python3 -m pytest -q -p no:cacheprovider -p boundary_mutant tests/ 2>&1); s=$?; rm -rf "$T"
+# Killed means tests ran and failed: exit 1 with a "N failed" summary, not a plugin or import error.
+last=$(printf '%s\n' "$out" | tail -n 1); printf '%s' "$last" | grep -Eq '[0-9]+ failed' && ! printf '%s' "$last" | grep -q 'error' && [ "$s" -eq 1 ]
 '''
 expect_exit = 0
 

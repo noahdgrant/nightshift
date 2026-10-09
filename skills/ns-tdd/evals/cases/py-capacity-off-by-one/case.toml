@@ -1,7 +1,7 @@
 description = "Seeded defect (a): Warehouse.reserve rejects a reservation for exactly the available quantity. Plain-words bug report, test-first fix."
 fixture = "py-inventory"
-# ns-tdd links to these two principles by relative path; ship them with it so the links resolve in the "with" arm.
-skills = ["ns-tdd", "ns-principle-test-behavior-not-implementation", "ns-principle-sequence-verifiable-units"]
+# ns-tdd links to these skills by relative path (ns-contract for the quality bar, and the principles it and the bar name); ship them with it so the links resolve in the "with" arm.
+skills = ["ns-tdd", "ns-principle-test-behavior-not-implementation", "ns-principle-sequence-verifiable-units", "ns-principle-fix-root-causes", "ns-contract"]
 extra_skills = []
 requires = []
 timeout_minutes = 15
