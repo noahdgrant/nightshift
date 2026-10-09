@@ -11,7 +11,9 @@ use crate::clock;
 use crate::error::SfError;
 use crate::factory::{Factory, Queue as QueueConfig};
 use crate::git::{self, Repo};
+use crate::install;
 use crate::run::{self, gh, gh_json, Outcome, RunArgs, Shared};
+use crate::skills_sync::{self, Sync};
 use crate::worktree::BRANCH_PREFIX;
 
 pub struct WatchArgs {
@@ -287,6 +289,57 @@ fn fresh_base(root: &Path) -> Option<String> {
     Some(format!("origin/{branch}"))
 }
 
+/// Fast-forward the main checkout when installed skills resolve into it, so the unit runs
+/// the skills merged so far tonight. A checkout that can't move is reported, not changed;
+/// `warned` holds the last warning so a checkout that stays stuck warns once.
+fn sync_skills(repo: &Repo, base: &str, issue: u64, warned: &mut Option<String>) {
+    let targets = install::default_targets();
+    let installed = skills_sync::installed_into(&targets, &repo.root);
+    let short =
+        |sha: &str| git::run(&repo.root, &["rev-parse", "--short", sha]).unwrap_or_default();
+    let mut ev = json!({"issue": issue, "checkout": repo.root, "skills": installed.names});
+    match skills_sync::sync(&repo.root, base, &installed) {
+        Sync::NotInstalled | Sync::Current => return,
+        Sync::Updated { from, to } => {
+            eprintln!(
+                "ns watch: skills checkout {} fast-forwarded {} -> {}",
+                repo.root.display(),
+                short(&from),
+                short(&to)
+            );
+            ev["event"] = json!("skills_synced");
+            ev["from"] = json!(from);
+            ev["to"] = json!(to);
+            match skills_sync::relink(&installed, &targets) {
+                Ok(changed) => {
+                    for c in &changed {
+                        eprintln!("ns watch: skills {c}");
+                    }
+                    ev["relinked"] = json!(changed);
+                }
+                Err(e) => {
+                    eprintln!("ns watch: warning: could not relink skills: {e:#}");
+                    ev["relink_error"] = json!(format!("{e:#}"));
+                }
+            }
+            *warned = None;
+        }
+        Sync::Stale { reason } => {
+            if warned.as_deref() == Some(reason.as_str()) {
+                return;
+            }
+            eprintln!(
+                "ns watch: warning: installed skills may be stale ({}): {reason}",
+                installed.names.join(", ")
+            );
+            ev["event"] = json!("skills_stale");
+            ev["reason"] = json!(reason);
+            *warned = Some(reason);
+        }
+    }
+    run::log_event(&repo.common_dir, ev);
+}
+
 pub fn run(args: WatchArgs) -> Result<ExitCode> {
     let start = std::env::current_dir().context("cannot read current directory")?;
     let repo = Repo::discover(&start)?;
@@ -357,6 +410,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     let mut harness_fails = 0u32;
     let mut started = 0u32;
     let mut finished: BTreeSet<u64> = BTreeSet::new();
+    let mut skills_warned: Option<String> = None;
     let stopped: String = 'outer: loop {
         if max_units.is_some_and(|m| started >= m) {
             break "max_units".into();
@@ -378,6 +432,9 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         eprintln!("ns watch: #{} {}", issue.number, issue.title);
         loop {
             let base = fresh_base(&repo.root);
+            if let Some(b) = &base {
+                sync_skills(&repo, b, issue.number, &mut skills_warned);
+            }
             let rargs = RunArgs {
                 issue: Some(issue.number),
                 base,
