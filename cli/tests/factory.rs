@@ -741,6 +741,28 @@ fn watch_stuck_swaps_label_and_comments() {
 }
 
 #[test]
+fn watch_stuck_comment_quotes_the_blocker_and_a_relative_path() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("build", &["pass:commit"]);
+    e.queue("verify", &["blocked:needs a board"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "stuck");
+    let unit = v["units"][0]["unit"].as_str().unwrap();
+    let calls = e.gh_calls();
+    let comment = calls.split("issue comment 2").nth(1).expect("comment");
+    assert!(
+        comment.contains("evidence.md is blocked: verify said blocked needs a board"),
+        "{comment}"
+    );
+    assert!(
+        comment.contains(&format!("`.ns/{unit}/evidence.md` on branch `ns/{unit}`")),
+        "{comment}"
+    );
+    assert!(!comment.contains(e.base.to_str().unwrap()), "{comment}");
+}
+
+#[test]
 fn watch_respects_max_units() {
     let e = Env::new();
     for n in [2, 3, 4] {
