@@ -68,18 +68,25 @@ pub fn run() -> Result<()> {
 
     let forges = cfg.as_ref().map(|c| c.forge.clone()).unwrap_or_default();
     let mut forge = Map::new();
-    for (name, var, host_var, f) in forges.each() {
-        if let Some(f) = f {
-            if let Err(e) = forge::export_one(name, var, host_var, f) {
+    for (kind, f) in forges.each() {
+        let creds = match f.map(|f| forge::resolve(kind, f)).transpose() {
+            Ok(c) => c.unwrap_or_default(),
+            Err(e) => {
                 problems.push(e.message);
+                let mut entry = json!({ "configured": true, "token_resolved": false });
+                if kind.name == "github" {
+                    entry["account"] = Value::Null;
+                }
+                forge.insert(kind.name.to_string(), entry);
+                continue;
             }
-        }
-        let resolved = std::env::var(var).is_ok_and(|v| !v.is_empty());
+        };
+        let resolved = creds.token.is_some() || forge::is_set(kind.token_var);
         let mut entry = json!({ "configured": f.is_some(), "token_resolved": resolved });
-        if name == "github" {
-            entry["account"] = json!(resolved.then(github_account).flatten());
+        if kind.name == "github" {
+            entry["account"] = json!(resolved.then(|| github_account(&creds)).flatten());
         }
-        forge.insert(name.to_string(), entry);
+        forge.insert(kind.name.to_string(), entry);
     }
 
     let out = json!({
@@ -103,9 +110,15 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// The login `gh` authenticates as with the exported `GH_TOKEN`.
-fn github_account() -> Option<String> {
-    let out = Command::new("gh")
+fn github_account(creds: &forge::Credentials) -> Option<String> {
+    let mut cmd = Command::new("gh");
+    if let Some(t) = &creds.token {
+        cmd.env("GH_TOKEN", t);
+    }
+    if let Some(h) = &creds.host {
+        cmd.env("GH_HOST", h);
+    }
+    let out = cmd
         .args(["api", "user", "--jq", ".login"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())

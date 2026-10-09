@@ -3,29 +3,40 @@
 
 use std::process::{Command, Stdio};
 
-use crate::config::{Forge, Forges, TokenSource};
+use crate::config::{Forge, ForgeKind, Forges, TokenSource};
 use crate::error::SfError;
 
-fn is_set(var: &str) -> bool {
+pub fn is_set(var: &str) -> bool {
     std::env::var(var).is_ok_and(|v| !v.is_empty())
 }
 
-/// Export every configured forge's token and host. A variable that is already set wins.
-pub fn export(forges: &Forges) -> Result<(), SfError> {
-    for (name, var, host_var, forge) in forges.each() {
-        if let Some(f) = forge {
-            export_one(name, var, host_var, f)?;
-        }
-    }
-    Ok(())
+#[derive(Debug, Default)]
+pub struct Credentials {
+    pub token: Option<String>,
+    pub host: Option<String>,
 }
 
-pub fn export_one(name: &str, var: &str, host_var: &str, forge: &Forge) -> Result<(), SfError> {
-    if let Some(h) = forge.host.as_ref().filter(|_| !is_set(host_var)) {
-        std::env::set_var(host_var, h);
-    }
-    if !is_set(var) {
-        std::env::set_var(var, fetch(name, &forge.token)?);
+pub fn resolve(kind: ForgeKind, forge: &Forge) -> Result<Credentials, SfError> {
+    let host = forge.host.clone().filter(|_| !is_set(kind.host_var));
+    let token = if is_set(kind.token_var) {
+        None
+    } else {
+        Some(fetch(kind.name, &forge.token)?)
+    };
+    Ok(Credentials { token, host })
+}
+
+pub fn export(forges: &Forges) -> Result<(), SfError> {
+    for (kind, forge) in forges.each() {
+        if let Some(f) = forge {
+            let creds = resolve(kind, f)?;
+            if let Some(h) = creds.host {
+                std::env::set_var(kind.host_var, h);
+            }
+            if let Some(t) = creds.token {
+                std::env::set_var(kind.token_var, t);
+            }
+        }
     }
     Ok(())
 }

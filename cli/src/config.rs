@@ -26,17 +26,30 @@ pub struct Forges {
     pub gitlab: Option<Forge>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ForgeKind {
+    pub name: &'static str,
+    pub token_var: &'static str,
+    pub host_var: &'static str,
+}
+
+const GITHUB: ForgeKind = ForgeKind {
+    name: "github",
+    token_var: "GH_TOKEN",
+    host_var: "GH_HOST",
+};
+
+const GITLAB: ForgeKind = ForgeKind {
+    name: "gitlab",
+    token_var: "GITLAB_TOKEN",
+    host_var: "GITLAB_HOST",
+};
+
 impl Forges {
-    /// `(name, token variable, host variable, config)` for every forge, configured or not.
-    pub fn each(&self) -> [(&'static str, &'static str, &'static str, Option<&Forge>); 2] {
+    pub fn each(&self) -> [(ForgeKind, Option<&Forge>); 2] {
         [
-            ("github", "GH_TOKEN", "GH_HOST", self.github.as_ref()),
-            (
-                "gitlab",
-                "GITLAB_TOKEN",
-                "GITLAB_HOST",
-                self.gitlab.as_ref(),
-            ),
+            (GITHUB, self.github.as_ref()),
+            (GITLAB, self.gitlab.as_ref()),
         ]
     }
 }
