@@ -739,6 +739,35 @@ fn b() {}
         }
 
         #[test]
+        fn a_mode_only_change_touches_the_whole_file() {
+            let t = init();
+            write(t.path(), "f.c", FILE);
+            let base = commit(t.path(), "base");
+            git_in(t.path(), &["update-index", "--chmod=+x", "f.c"]);
+            git_in(t.path(), &["commit", "-q", "-m", "mode"]);
+            let head = git::run(t.path(), &["rev-parse", "HEAD"]).unwrap();
+            let got = touched_between(t.path(), &base, &head).unwrap();
+            let whole = Region {
+                start: 1,
+                end: FILE.lines().count(),
+                reason: None,
+            };
+            assert_eq!(got, [describe("f.c", &whole)]);
+        }
+
+        #[test]
+        fn deleting_only_the_end_marker_is_touched() {
+            let t = init();
+            write(t.path(), "f.c", FILE);
+            let base = commit(t.path(), "base");
+            write(t.path(), "f.c", &FILE.replace("// @end\n", ""));
+            let head = commit(t.path(), "head");
+            let got = touched_between(t.path(), &base, &head).unwrap();
+            assert_eq!(got.len(), 1, "{got:?}");
+            assert!(got[0].starts_with("f.c:"), "{got:?}");
+        }
+
+        #[test]
         fn an_unreadable_side_is_an_error_not_an_absent_file() {
             let t = init();
             write(t.path(), "f.c", FILE);
