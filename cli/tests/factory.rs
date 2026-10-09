@@ -1576,6 +1576,38 @@ fn watch_stuck_comment_quotes_the_blocker_and_a_relative_path() {
     assert!(!comment.contains(e.base.to_str().unwrap()), "{comment}");
 }
 
+#[test]
+fn a_blocked_review_stops_at_once_and_the_comment_quotes_it() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["blocked:C1 open after 3 cycles"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "stuck");
+    assert_eq!(e.calls(), ["triage", "build", "verify", "review"]);
+    let calls = e.gh_calls();
+    let comment = calls.split("issue comment 2").nth(1).expect("comment");
+    assert!(
+        comment.contains("review.md is blocked: review said blocked C1 open after 3 cycles"),
+        "{comment}"
+    );
+}
+
+#[test]
+fn a_failed_review_goes_back_to_build() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    e.queue("review", &["fail", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "build", "verify", "review", "ship"]
+    );
+    let p = e.prompt(5, "build");
+    assert!(p.contains("review said fail"), "{p}");
+}
+
 const READY: &str = "status:ready-for-agent";
 
 fn labels_after_triage_adds(e: &Env, stray: &str, args: &[&str]) -> Vec<String> {

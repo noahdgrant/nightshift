@@ -77,6 +77,16 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 - <reviewer slice that produced no result, and why>
 ```
 
+Status follows the Gate in `SKILL.md`. For any `blocked` status, the first body line, before the title, is the one-sentence reason `ns watch` quotes. For open Criticals it names them:
+
+```markdown
+Open Critical after 3 fix cycles: C1, C3.
+
+Options: fix by hand on the unit's branch then delete `.ns/<unit>/review.md` so `ns run` reviews again, split the issue, or route it to `ns-define`.
+
+# Review: <unit-id>
+```
+
 `Cycles run` is the review passes the reviewer ran in, for example `0, 1`.
 
 Number findings once and keep the numbers stable across cycles, so the build agent and the human can refer to `I3`.
