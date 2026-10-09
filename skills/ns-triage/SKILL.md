@@ -95,7 +95,10 @@ Show counts and a one-line summary per item. Let the maintainer pick.
 
 4. **Grill (if needed).** If a few rounds of questions would settle the request, load the `ns-grilling` and `ns-domain-modeling` skills and grill it into shape, sharpening domain terms and updating `GLOSSARY.md`/ADRs inline as decisions land. If it needs a spec or a redesign, route it to `needs-define` instead.
 
-5. **Apply the outcome.** Set the category, priority and state labels. An issue that already carries a priority keeps it unless the maintainer says otherwise. Then:
+5. **Apply the outcome.** Set the category, priority and state labels. An issue that already carries a priority keeps it unless the maintainer says otherwise.
+
+   While the issue is `status:in-progress`, `ns run` is working it: triage adds and removes no status label, writes `brief.md` and posts the brief comment.
+
    - `ready-for-agent`: post an Agent Brief comment ([agent-brief.md](references/agent-brief.md)), then start the unit (below).
    - `ready-for-human`: same structure as an Agent Brief, plus why it can't be delegated (judgement calls, hardware or external access, design decisions, manual testing).
    - `needs-repro`: post Triage Notes with the reporter's steps, what you tried, and what happened. Next: `ns-troubleshoot`.

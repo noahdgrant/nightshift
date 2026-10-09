@@ -26,8 +26,28 @@ case "$1 $2" in
     echo $c > "$d/status.count"
     [ -f "$d/status.after" ] && [ "$c" -gt "$(cat "$d/status.after")" ] && echo 1 || echo 0
     ;;
-  "issue view") cat "$d/issue-$3.json" 2>/dev/null || { echo "no issue $3" >&2; exit 1; } ;;
+  "issue view")
+    if [[ " $* " == *" --json labels "* ]]; then
+      touch "$d/labels-$3"
+      sep=""; printf '{"labels":['
+      while read -r l; do printf '%s{"name":"%s"}' "$sep" "$l"; sep=,; done < "$d/labels-$3"
+      printf ']}\n'
+      exit 0
+    fi
+    cat "$d/issue-$3.json" 2>/dev/null || { echo "no issue $3" >&2; exit 1; }
+    ;;
   "issue edit")
+    f="$d/labels-$3"; touch "$f"; a=("$@")
+    drop=; [ -f "$d/edit.noop" ] && drop=1
+    [ -f "$d/edit.drop-once" ] && { rm "$d/edit.drop-once"; drop=1; }
+    for ((i = 3; i < ${#a[@]}; i++)); do
+      [ -n "$drop" ] && break
+      l=${a[$((i + 1))]}
+      case "${a[$i]}" in
+        --remove-label) grep -vxF -- "$l" "$f" > "$f.tmp" || true; mv "$f.tmp" "$f" ;;
+        --add-label) grep -qxF -- "$l" "$f" || echo "$l" >> "$f" ;;
+      esac
+    done
     # ready-sticks: GitHub still lists the issue as ready, as it does until the closing PR lands.
     if [[ " $* " == *" --remove-label status:ready-for-agent "* ]] && [ ! -f "$d/ready-sticks" ]; then echo "$3" >> "$d/taken"; fi
     if [[ " $* " == *" --add-label status:ready-for-agent "* ]]; then sed -i "/^$3\$/d" "$d/taken"; fi

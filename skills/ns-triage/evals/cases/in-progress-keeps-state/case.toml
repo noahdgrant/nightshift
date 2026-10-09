@@ -1,0 +1,65 @@
+description = "The bug from bug-ready-for-agent, but `ns watch` already moved the issue to the run state in-progress before triage ran under `ns run`. Triage should keep Status: in-progress, set the category, append the Agent Brief and write brief.md, as #59 needed."
+fixture = "py-inventory"
+skills = ["ns-triage"]
+extra_skills = ["ns-contract"]
+requires = []
+timeout_minutes = 15
+prompt = """
+Load the `ns-triage` skill and run it for unit `01-full-quantity-reservation-rejected` (issue .scratch/reservations/issues/01-full-quantity-reservation-rejected.md). gates: auto.
+Phase: triage (attempt 1). End by writing the phase's artifact under .ns/01-full-quantity-reservation-rejected/ with its frontmatter status.
+"""
+
+[[check]]
+type = "regex"
+path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?in-progress`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
+pattern = '(?m)^\**Status:?\**:?.*(ready-for-agent|needs-triage|ready-for-human)'
+present = false
+
+[[check]]
+type = "regex"
+path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
+pattern = '(?m)^\**Category:?\**:?\s*`?bug`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
+pattern = '(?m)^#+\s*Agent Brief'
+present = true
+
+[[check]]
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, os, re, subprocess, sys
+roots = {os.getcwd()}
+out = subprocess.run(["git", "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+roots.update(l.split(" ", 1)[1] for l in out.splitlines() if l.startswith("worktree "))
+roots.update(glob.glob(os.path.join("..", os.path.basename(os.getcwd()) + ".worktrees", "01-*")))
+briefs = sorted({os.path.realpath(p) for r in roots for p in glob.glob(os.path.join(r, ".ns", "01-*", "brief.md"))})
+if not briefs:
+    sys.exit("no .ns/01-*/brief.md in the main checkout or any worktree")
+for path in briefs:
+    text = open(path, encoding="utf-8").read()
+    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    if not m:
+        print(f"{path}: no frontmatter"); continue
+    fm = {k: v.strip("'\"") for k, v in re.findall(r"(?m)^(\w+):[ \t]*(.*?)[ \t]*(?:#.*)?$", m.group(1))}
+    ok = fm.get("status") == "pass" and fm.get("base", "") != "" and "Agent Brief" in text and "- [ ]" in text
+    print(f"{path}: status={fm.get('status')!r} base={fm.get('base')!r} ok={ok}")
+    if ok:
+        sys.exit(0)
+sys.exit("no brief.md with status: pass, a base, and an Agent Brief with acceptance criteria")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]

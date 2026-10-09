@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::clock;
 use crate::error::SfError;
-use crate::factory::Factory;
+use crate::factory::{Factory, Queue as QueueConfig};
 use crate::git::{self, Repo};
 use crate::run::{self, gh, gh_json, Outcome, RunArgs, Shared};
 use crate::worktree::BRANCH_PREFIX;
@@ -200,13 +200,80 @@ fn queue(root: &Path, fac: &Factory, finished: &BTreeSet<u64>) -> Result<Queue> 
     Ok(Queue { ready, skipped })
 }
 
-fn swap(root: &Path, n: u64, remove: &str, add: Option<&str>) -> Result<()> {
-    let ns = n.to_string();
-    let mut args = vec!["issue", "edit", ns.as_str(), "--remove-label", remove];
-    if let Some(a) = add {
-        args.extend(["--add-label", a]);
+const LABEL_EDIT_ATTEMPTS: u32 = 2;
+
+struct StatusDrift {
+    stray: Vec<String>,
+    missing: bool,
+}
+
+impl StatusDrift {
+    fn is_clean(&self) -> bool {
+        self.stray.is_empty() && !self.missing
     }
-    gh(root, &args).map(|_| ())
+}
+
+fn status_drift(root: &Path, q: &QueueConfig, n: &str, end: Option<&str>) -> Result<StatusDrift> {
+    let v = gh_json(root, &["issue", "view", n, "--json", "labels"])?;
+    let labels: Vec<&str> = v["labels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|l| l["name"].as_str())
+        .collect();
+    let ours = [
+        &q.ready_label,
+        &q.in_progress_label,
+        &q.done_label,
+        &q.stuck_label,
+    ];
+    let stray = labels
+        .iter()
+        .filter(|l| Some(**l) != end && (l.starts_with("status:") || ours.iter().any(|o| o == *l)))
+        .map(|l| l.to_string())
+        .collect();
+    Ok(StatusDrift {
+        stray,
+        missing: end.is_some_and(|e| !labels.contains(&e)),
+    })
+}
+
+fn set_status(root: &Path, q: &QueueConfig, n: u64, end: Option<&str>) -> Result<()> {
+    let ns = n.to_string();
+    for _ in 0..LABEL_EDIT_ATTEMPTS {
+        let drift = status_drift(root, q, &ns, end)?;
+        if drift.is_clean() {
+            return Ok(());
+        }
+        let mut args = vec!["issue", "edit", ns.as_str()];
+        for l in &drift.stray {
+            args.extend(["--remove-label", l.as_str()]);
+        }
+        if let Some(e) = end.filter(|_| drift.missing) {
+            args.extend(["--add-label", e]);
+        }
+        gh(root, &args)?;
+    }
+    let drift = status_drift(root, q, &ns, end)?;
+    if drift.is_clean() {
+        return Ok(());
+    }
+    let mut problems = Vec::new();
+    if !drift.stray.is_empty() {
+        problems.push(format!(
+            "has stray status labels {}",
+            drift.stray.join(", ")
+        ));
+    }
+    if let Some(e) = end.filter(|_| drift.missing) {
+        problems.push(format!("is missing {e}"));
+    }
+    Err(SfError::general(format!(
+        "#{n} {} after {LABEL_EDIT_ATTEMPTS} label edits (want {})",
+        problems.join(" and "),
+        end.unwrap_or("no status label")
+    ))
+    .into())
 }
 
 fn comment(root: &Path, n: u64, body: &str) -> Result<()> {
@@ -304,12 +371,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             break "queue empty".into();
         };
         started += 1;
-        swap(
-            &repo.root,
-            issue.number,
-            &q.ready_label,
-            Some(&q.in_progress_label),
-        )?;
+        set_status(&repo.root, &q, issue.number, Some(&q.in_progress_label))?;
         eprintln!("ns watch: #{} {}", issue.number, issue.title);
         loop {
             let base = fresh_base(&repo.root);
@@ -321,12 +383,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             let r = match run::execute(&rargs, &mut shared, &loaded) {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = swap(
-                        &repo.root,
-                        issue.number,
-                        &q.in_progress_label,
-                        Some(&q.ready_label),
-                    );
+                    let _ = set_status(&repo.root, &q, issue.number, Some(&q.ready_label));
                     return Err(e);
                 }
             };
@@ -340,38 +397,20 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             });
             match r.outcome {
                 Outcome::Merged => {
-                    gh(
-                        &repo.root,
-                        &[
-                            "issue",
-                            "edit",
-                            &issue.number.to_string(),
-                            "--remove-label",
-                            &q.in_progress_label,
-                        ],
-                    )?;
+                    let status = set_status(&repo.root, &q, issue.number, None);
                     // GitHub may not have closed it yet; an already-closed issue makes gh fail.
                     let n = issue.number.to_string();
                     if let Err(e) = gh(&repo.root, &["issue", "close", &n, "--reason", "completed"])
                     {
                         eprintln!("ns watch: #{n} not closed: {e}");
                     }
+                    status?;
                 }
                 Outcome::Done if !r.needs_human => {
-                    swap(
-                        &repo.root,
-                        issue.number,
-                        &q.in_progress_label,
-                        Some(&q.done_label),
-                    )?;
+                    set_status(&repo.root, &q, issue.number, Some(&q.done_label))?;
                 }
                 Outcome::Done | Outcome::Stuck => {
-                    swap(
-                        &repo.root,
-                        issue.number,
-                        &q.in_progress_label,
-                        Some(&q.stuck_label),
-                    )?;
+                    let status = set_status(&repo.root, &q, issue.number, Some(&q.stuck_label));
                     let what = if r.outcome == Outcome::Stuck {
                         "got stuck"
                     } else {
@@ -392,15 +431,12 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                         "nightshift {what} on unit `{}`: {}\n\nLast artifact: {artifact}\n\n{DISCLAIMER}",
                         r.unit, r.reason
                     );
-                    comment(&repo.root, issue.number, &body)?;
+                    let posted = comment(&repo.root, issue.number, &body);
+                    status?;
+                    posted?;
                 }
                 Outcome::Budget => {
-                    swap(
-                        &repo.root,
-                        issue.number,
-                        &q.in_progress_label,
-                        Some(&q.ready_label),
-                    )?;
+                    set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
                     units.push(rec);
                     break 'outer "budget".into();
                 }
@@ -413,12 +449,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                     rec["reset_at"] = json!(clock::iso(reset));
                     units.push(rec);
                     if deadline.is_some_and(|d| reset >= d) {
-                        swap(
-                            &repo.root,
-                            issue.number,
-                            &q.in_progress_label,
-                            Some(&q.ready_label),
-                        )?;
+                        set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
                         break 'outer "usage limit resets after --until".into();
                     }
                     eprintln!(
