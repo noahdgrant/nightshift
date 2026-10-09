@@ -652,6 +652,59 @@ fn watch_dry_run_orders_and_skips() {
     assert!(!e.gh_calls().contains("issue edit"));
 }
 
+fn queue_order(v: &serde_json::Value) -> Vec<(u64, String, String)> {
+    v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["number"].as_u64().unwrap(),
+                i["priority_label"].as_str().unwrap_or("").to_string(),
+                i["order_label"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn watch_sorts_by_priority_before_type() {
+    let e = Env::new();
+    e.ready(1, "Low fix", &["type:fix", "priority:low"], "");
+    e.ready(2, "High docs", &["type:docs", "priority:high"], "");
+    e.ready(3, "Unprioritised fix", &["type:fix"], "");
+    e.ready(4, "Medium feat", &["type:feat", "priority:medium"], "");
+    e.ready(5, "Medium fix", &["priority:medium", "type:fix"], "");
+    e.ready(6, "High fix", &["type:fix", "priority:high"], "");
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let s = |x: &str| x.to_string();
+    assert_eq!(
+        queue_order(&v),
+        [
+            (6, s("priority:high"), s("type:fix")),
+            (2, s("priority:high"), s("type:docs")),
+            (5, s("priority:medium"), s("type:fix")),
+            (4, s("priority:medium"), s("type:feat")),
+            (1, s("priority:low"), s("type:fix")),
+            (3, s(""), s("type:fix")),
+        ]
+    );
+    assert!(v["queue"][5]["priority_label"].is_null());
+}
+
+#[test]
+fn watch_uses_a_custom_priority_list() {
+    let e = Env::new();
+    e.factory("[queue]\npriority = [\"p0\", \"p1\"]\n");
+    e.ready(1, "p1 fix", &["type:fix", "p1"], "");
+    e.ready(2, "p0 docs", &["type:docs", "p0"], "");
+    e.ready(3, "default label", &["type:fix", "priority:high"], "");
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let order: Vec<u64> = queue_order(&v).iter().map(|q| q.0).collect();
+    assert_eq!(order, [2, 1, 3]);
+    assert_eq!(v["queue"][0]["priority_label"], "p0");
+}
+
 #[test]
 fn watch_queues_only_team_authored_issues() {
     let e = Env::new();

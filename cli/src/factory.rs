@@ -168,6 +168,8 @@ pub struct Queue {
     pub in_progress_label: String,
     pub done_label: String,
     pub stuck_label: String,
+    /// Sorted on before `order`; an issue with no match goes after the last.
+    pub priority: Vec<String>,
     pub order: Vec<String>,
 }
 
@@ -179,6 +181,10 @@ impl Default for Queue {
             in_progress_label: "status:in-progress".into(),
             done_label: "status:in-review".into(),
             stuck_label: "status:ready-for-human".into(),
+            priority: ["priority:high", "priority:medium", "priority:low"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             order: [
                 "type:fix",
                 "type:feat",
@@ -597,6 +603,18 @@ ci_timeout_minutes = 30
         assert_eq!(f.budget_usd(), None);
         let f = parse("[defaults]\nbilling = \"api\"\n").unwrap();
         assert_eq!(f.budget_usd(), Some(25.0));
+    }
+
+    #[test]
+    fn queue_priority_defaults_and_overrides() {
+        let f = parse("").unwrap();
+        assert_eq!(
+            f.queue.priority,
+            ["priority:high", "priority:medium", "priority:low"]
+        );
+        let f = parse("[queue]\npriority = [\"p0\", \"p1\"]\n").unwrap();
+        assert_eq!(f.queue.priority, ["p0", "p1"]);
+        assert_eq!(f.queue.order[0], "type:fix");
     }
 
     #[test]
