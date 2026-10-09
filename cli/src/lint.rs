@@ -12,7 +12,6 @@ use crate::frontmatter;
 
 pub const MAX_DESCRIPTION: usize = 1024;
 
-/// Skills that drive other phases and must run only when a human invokes them.
 const USER_INVOKED_ONLY: &[&str] = &["ns-auto"];
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -281,6 +280,15 @@ mod tests {
         assert!(e[0].contains("disable-model-invocation"));
         let with = "---\nname: ns-auto\ndescription: x\ndisable-model-invocation: true\n---\n";
         assert!(check_frontmatter("ns-auto", with).is_empty());
+        for bad in ["false", "\"true\""] {
+            let src = format!(
+                "---\nname: ns-auto\ndescription: x\ndisable-model-invocation: {bad}\n---\n"
+            );
+            assert!(
+                !check_frontmatter("ns-auto", &src).is_empty(),
+                "{bad} must error"
+            );
+        }
         assert!(check_frontmatter("ns-a", "---\nname: ns-a\ndescription: x\n---\n").is_empty());
     }
 

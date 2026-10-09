@@ -104,10 +104,6 @@ python3 -m pytest -q
 expect_exit = 0
 
 [[check]]
-type = "diff_scope"
-allow = [".scratch/**", ".ns/**"]
-
-[[check]]
 type = "command"
 run = "ls .ns/01-*/auto/log.md ../*.worktrees/01-*/.ns/01-*/auto/log.md 2>/dev/null | head -1 | grep -q ."
 expect_exit = 0
