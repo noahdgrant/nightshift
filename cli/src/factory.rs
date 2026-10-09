@@ -193,6 +193,8 @@ pub struct Phase {
     pub max_attempts: Option<u32>,
     /// A `runners/<name>.toml`; unset runs with no locks.
     pub runner: Option<String>,
+    /// Build only: a shell command `ns run` runs in the worktree after build passes.
+    pub gate: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -254,6 +256,7 @@ pub struct PhaseSettings {
     pub timeout_minutes: u64,
     pub max_attempts: u32,
     pub runner: Option<String>,
+    pub gate: Option<String>,
 }
 
 impl Factory {
@@ -267,6 +270,7 @@ impl Factory {
             timeout_minutes: p.timeout_minutes.unwrap_or(self.defaults.timeout_minutes),
             max_attempts: p.max_attempts.unwrap_or(self.defaults.max_attempts),
             runner: p.runner,
+            gate: p.gate,
         }
     }
 
@@ -327,6 +331,19 @@ impl Factory {
             }
             if p.timeout_minutes == 0 {
                 out.push(format!("phase {name}: timeout_minutes must be at least 1"));
+            }
+            match &p.gate {
+                Some(_) if *name != "build" => {
+                    out.push(format!(
+                        "phase {name}: gate is only run after build; move it to [phases.build]"
+                    ));
+                }
+                Some(g) if g.trim().is_empty() => {
+                    out.push(format!(
+                        "phase {name}: gate is empty; remove it or name a command"
+                    ));
+                }
+                _ => {}
             }
             if let Some(r) = &p.runner {
                 if !self.runners.contains_key(r) {
@@ -599,6 +616,7 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
                         "timeout_minutes": p.timeout_minutes,
                         "max_attempts": p.max_attempts,
                         "runner": p.runner,
+                        "gate": p.gate,
                         "locks": f.locks(&p),
                         "prompt": if custom { "agent.md" } else { "built-in" },
                     }));
@@ -717,6 +735,27 @@ ci_timeout_minutes = 30
         assert_eq!(f.merge.ci_register_timeout, 7);
         let f = parse("[defaults]\nbilling = \"api\"\n").unwrap();
         assert_eq!(f.budget_usd(), Some(25.0));
+    }
+
+    #[test]
+    fn a_build_gate_parses_and_is_unset_by_default() {
+        assert_eq!(parse("").unwrap().phase("build").gate, None);
+        let f = parse("[phases.build]\ngate = \"scripts/ci-local.sh\"\n").unwrap();
+        assert_eq!(
+            f.phase("build").gate.as_deref(),
+            Some("scripts/ci-local.sh")
+        );
+        assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+    }
+
+    #[test]
+    fn a_gate_off_build_or_empty_is_a_problem() {
+        let f = parse("[phases.verify]\ngate = \"make ci\"\n").unwrap();
+        let p = f.problems(None).join("\n");
+        assert!(p.contains("phase verify: gate"), "{p}");
+        let f = parse("[phases.build]\ngate = \" \"\n").unwrap();
+        let p = f.problems(None).join("\n");
+        assert!(p.contains("phase build: gate"), "{p}");
     }
 
     #[test]

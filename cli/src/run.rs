@@ -20,6 +20,8 @@ use crate::eval::trial::run_process;
 use crate::factory::{self, artifact_of, Factory, PhaseSettings, PHASES};
 use crate::forge;
 use crate::frontmatter;
+use crate::gate;
+use crate::git::same_sha;
 use crate::git::{self, Repo};
 use crate::markers;
 use crate::worktree;
@@ -312,11 +314,6 @@ fn run(phase: &'static str, feedback: &str, why: impl Into<String>) -> Decision 
         feedback: feedback.to_string(),
         why: why.into(),
     }
-}
-
-/// Short shas may differ in length: compare by prefix.
-pub fn same_sha(a: &str, b: &str) -> bool {
-    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
 }
 
 /// The body's first non-empty line, the contract's one-sentence reason. A heading marker is
@@ -776,6 +773,8 @@ struct Ctx<'a> {
     gates: String,
     base: String,
     lock_dir: PathBuf,
+    /// The CI gate command; `None` runs no gate.
+    gate: Option<String>,
 }
 
 impl Ctx<'_> {
@@ -993,6 +992,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         gates,
         base,
         lock_dir: lock_dir(cfg.as_ref(), &repo.common_dir),
+        gate: gate::command(fac, &repo.root),
     };
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
@@ -1100,6 +1100,7 @@ fn dry_run(
         gates: gates.to_string(),
         base: base.unwrap_or_default(),
         lock_dir: PathBuf::new(),
+        gate: gate::command(fac, &repo.root),
     };
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
@@ -1125,6 +1126,7 @@ fn dry_run(
         "decision": decision_json,
         "prompt": prompt,
         "command": command,
+        "gate": ctx.gate,
         "budget_usd": fac.budget_usd(),
         "billing": fac.defaults.billing,
         "merge_policy": fac.merge.policy,
@@ -1164,6 +1166,7 @@ fn drive(
         )
     });
     let mut baseline = remote_default(&ctx.worktree);
+    let mut gate_state = gate::Gate::default();
     ctx.log(json!({
         "event": "start",
         "default_branch": baseline.as_ref().map(|b| &b.0),
@@ -1327,6 +1330,33 @@ fn drive(
                 Some("triage"),
             ));
         }
+        if let (Some(cmd), Some(trigger)) = (
+            &ctx.gate,
+            gate_trigger(phase, art.as_ref(), !same_sha(&state.head, &ctx.head())),
+        ) {
+            let job = gate::Job {
+                cmd,
+                worktree: &ctx.worktree,
+                log_dir: ctx.common.join("ns").join("transcripts").join(&ctx.unit),
+                unit: &ctx.unit,
+                timeout: gate::timeout(ctx.fac.phase("build").timeout_minutes),
+                head: ctx.head(),
+                phase,
+                attempt,
+            };
+            if let Some(red) = gate_state.after(trigger, &job, &|ev| ctx.log(ev))? {
+                forced = Some(run("build", &red.feedback, red.reason));
+            }
+        }
+    }
+}
+
+fn gate_trigger(phase: &str, art: Option<&Art>, head_moved: bool) -> Option<gate::Trigger> {
+    match (phase, art) {
+        ("build", Some(a)) if a.status == "pass" => Some(gate::Trigger::BuildPassed),
+        ("build", None) => Some(gate::Trigger::BuildWroteNothing),
+        ("review", _) if head_moved => Some(gate::Trigger::ReviewMovedHead),
+        _ => None,
     }
 }
 
@@ -1977,9 +2007,6 @@ mod tests {
 
     #[test]
     fn helpers() {
-        assert!(same_sha("abc1234", "abc1234def"));
-        assert!(!same_sha("", "abc"));
-        assert!(!same_sha("abc1", "abd1"));
         assert_eq!(pr_number("https://github.com/o/r/pull/12"), Some(12));
         assert_eq!(pr_number("#7"), Some(7));
         assert_eq!(pr_number("<url>"), None);
