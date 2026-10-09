@@ -85,7 +85,7 @@ pub struct RunResult {
     pub unit: String,
     pub outcome: Outcome,
     pub reason: String,
-    /// A `done` that still needs a human (human-merge files, no CI, ...).
+    /// A `done` that still needs a human (files that need human review, no CI, ...).
     pub needs_human: bool,
     pub reset_at: Option<i64>,
     pub artifact: Option<String>,
@@ -1182,7 +1182,7 @@ fn human(reason: impl Into<String>) -> MergeStep {
 }
 
 /// `merge.policy = "auto"`: squash-merge this unit's PR when CI is green, review.md passed at
-/// HEAD, and no human-merge file changed. The only place ns merges anything.
+/// HEAD, and no file that needs human review changed. The only place ns merges anything.
 fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep> {
     if !state.arts.contains_key("ship") {
         return Ok(human("no pr.md"));
@@ -1329,11 +1329,11 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .collect();
-    let hits = ctx.fac.merge.human_merge_hits(&files);
+    let hits = ctx.fac.merge.human_review_hits(&files);
     if !hits.is_empty() {
-        ctx.log(json!({"event": "human_merge", "pr": n, "paths": hits}));
+        ctx.log(json!({"event": "human_review", "pr": n, "paths": hits}));
         return Ok(human(format!(
-            "changes human-merge files; needs a human merge ({})",
+            "changes files that need human review; needs a human merge ({})",
             hits.join(", ")
         )));
     }

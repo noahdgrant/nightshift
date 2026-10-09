@@ -13,7 +13,7 @@ Status: early. The core path (triage → build → verify → review → ship) i
                      └─ needs-repro ──► ns-troubleshoot ──────┘
 ```
 
-Each unit of work gets its own git worktree. Phases hand off through files in `.ns/<unit>/` (`brief.md`, `build.md`, `evidence.md`, `review.md`, `pr.md`), so each phase can start in a fresh context. A phase's gate either stops for a human or, under `gates: auto`, moves on by itself. Deploying and releasing always wait for a human. Merging waits for one under `merge.policy = "human"` (the default) or when the PR touches a human-merge file, and [`docs/FACTORY.md`](docs/FACTORY.md#merge) lists the other cases.
+Each unit of work gets its own git worktree. Phases hand off through files in `.ns/<unit>/` (`brief.md`, `build.md`, `evidence.md`, `review.md`, `pr.md`), so each phase can start in a fresh context. A phase's gate either stops for a human or, under `gates: auto`, moves on by itself. Deploying and releasing always wait for a human. Merging waits for one under `merge.policy = "human"` (the default) or when the PR touches a file that needs human review, and [`docs/FACTORY.md`](docs/FACTORY.md#merge) lists the other cases.
 
 ## Install
 

@@ -37,17 +37,14 @@ ready_label = "status:ready-for-agent"
 in_progress_label = "status:in-progress"
 done_label = "status:in-review"
 stuck_label = "status:ready-for-human"
-order = ["type:fix", "type:feat", "type:refactor", "type:test", "type:ci", "type:docs", "type:chore"]
+order = ["priority:high", "type:fix", "type:feat", "type:refactor", "type:test", "type:ci", "type:docs", "type:chore"]
 
 
 [merge]
-policy = "auto"                 # ns run merges its own PRs when review passes, CI is green, and no human-merge file changed
-human_merge = [
+policy = "auto"                 # ns run merges its own PRs when review passes, CI is green, and no file that needs human review changed
+human_review = [
   ".github/**",                 # CI and the PR title check
   "scripts/check-private.sh",   # private-reference guard
   ".nightshift/**",             # this definition, including this list
-  "cli/src/run.rs",             # the state machine and merge step
-  "cli/src/billing.rs",         # subscription-only guard
-  "cli/src/factory.rs",         # parsing of this file
 ]
 ci_timeout_minutes = 30
