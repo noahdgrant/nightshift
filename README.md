@@ -36,7 +36,9 @@ export GH_TOKEN=$(gh auth token --user <account>)
 ns watch --until 06:30
 ```
 
-It works through `status:ready-for-agent` issues until 06:30 and starts no new unit after that. [`docs/FACTORY.md`](docs/FACTORY.md) is the reference for the definition, `ns run` and `ns watch`.
+It works through `status:ready-for-agent` issues until 06:30 and starts no new unit after that. Log in to claude with the subscription account first (`claude /login`). The phases run with permissions bypassed inside worktrees and use the exported `GH_TOKEN`, so run it on a machine and as an account where that's acceptable.
+
+[`docs/FACTORY.md`](docs/FACTORY.md) is the reference for the factory definition (`.nightshift/nightshift.toml`), `ns run` and `ns watch`.
 
 ## Skills
 
