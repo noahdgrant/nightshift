@@ -365,9 +365,9 @@ fn dry_run_plans_without_calling_the_harness() {
         .as_str()
         .unwrap()
         .contains("user-invoked"));
-    // 4 triggers + 2 cases x 2 arms x 1 trial.
-    assert_eq!(v["estimated_runs"]["min"], 8);
-    assert_eq!(v["estimated_runs"]["max"], 12);
+    // 4 triggers + 3 cases x 2 arms x 1 trial (up to 2 trials each).
+    assert_eq!(v["estimated_runs"]["min"], 10);
+    assert_eq!(v["estimated_runs"]["max"], 16);
     assert!(!e.tmp.path().join("transcripts").exists());
 
     // With the capability configured, the case is planned.
@@ -503,4 +503,17 @@ fn compare_installs_the_skill_at_a_ref() {
     assert_eq!(c["arms"]["old"]["pass_rate"], 1.0);
     assert_eq!(v["skills"][0]["metrics"]["uplift"], 0.0);
     assert_eq!(v["skills"][0]["metrics"]["baseline"], "old");
+}
+
+#[test]
+fn fails_on_base_rejects_a_runner_that_cannot_start() {
+    let e = setup();
+    let v = e.eval(&["ns-demo", "--case", "runner-missing", "--arms", "with"]);
+    let t = &case(&v, "runner-missing")["arms"]["with"]["trial_results"][0];
+    let fob = check(t, "fails_on_base");
+    assert_eq!(fob["passed"], false, "{fob}");
+    assert!(fob["detail"]
+        .as_str()
+        .unwrap()
+        .contains("must pass on the trial's final state"));
 }

@@ -1,0 +1,8 @@
+description = "The test runner can't start, so a non-zero exit on the base proves nothing"
+fixture = "tiny"
+timeout_minutes = 1
+prompt = "fix src/calc.sh"
+
+[[check]]
+type = "fails_on_base"
+run = "no-such-test-runner {changed_tests}"

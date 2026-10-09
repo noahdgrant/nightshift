@@ -247,6 +247,19 @@ fn fails_on_base(
     if changes.tests.is_empty() {
         return Ok((false, "the trial added or changed no test files".into()));
     }
+    // The same command must pass on the trial's final state first. Otherwise a
+    // non-zero exit on the base proves nothing: the runner may not even start.
+    let cmd = expand(run, changes);
+    let head = trial::run_sh(&cmd, s, &s.repo, CHECK_TIMEOUT, log)?;
+    if head.timed_out || head.exit != Some(0) {
+        return Ok((
+            false,
+            format!(
+                "`{cmd}` must pass on the trial's final state before its failure on the base counts, but it {}",
+                head.describe()
+            ),
+        ));
+    }
     let start = s.start.as_deref().context("trial has no start commit")?;
     let base = s.root().join(format!("base-{i}"));
     let base_str = base.to_string_lossy().into_owned();
@@ -261,7 +274,6 @@ fn fails_on_base(
         }
         fs::copy(s.repo.join(t), &to)?;
     }
-    let cmd = expand(run, changes);
     let r = trial::run_sh(&cmd, s, &base, CHECK_TIMEOUT, log)?;
     let _ = trial::git(&s.repo, &["worktree", "remove", "--force", &base_str]);
     let ok = !r.timed_out && r.exit.is_some_and(|c| c != 0);
