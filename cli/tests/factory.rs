@@ -988,3 +988,35 @@ fn an_empty_token_is_an_error() {
     assert!(err.contains("MY_GH_TOKEN"), "{err}");
     assert!(e.calls().is_empty());
 }
+
+#[test]
+fn forge_host_is_exported_unless_already_set() {
+    let e = Env::new();
+    e.config("[forge.github]\ntoken_env = \"MY_GH_TOKEN\"\nhost = \"ghe.example.com\"\n");
+    let hosts = || fs::read_to_string(e.ghd.join("hosts")).unwrap_or_default();
+    e.ns()
+        .env("MY_GH_TOKEN", FAKE_TOKEN)
+        .env_remove("GH_HOST")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    assert!(!hosts().is_empty());
+    assert!(
+        hosts().lines().all(|h| h == "ghe.example.com"),
+        "{}",
+        hosts()
+    );
+    fs::remove_file(e.ghd.join("hosts")).unwrap();
+    e.ns()
+        .env("MY_GH_TOKEN", FAKE_TOKEN)
+        .env("GH_HOST", "mine.example.com")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    assert!(!hosts().is_empty());
+    assert!(
+        hosts().lines().all(|h| h == "mine.example.com"),
+        "{}",
+        hosts()
+    );
+}
