@@ -8,9 +8,38 @@ use anyhow::{Context, Result};
 
 use crate::error::SfError;
 
+/// Variables through which a parent git process (a hook, `git rebase --exec`, `git bisect run`)
+/// points child git commands at its own repository. `GIT_DIR` overrides even `git -C <dir>`, so
+/// an inherited one makes a command meant for a scratch repo act on the real one.
+pub const LOCATION_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+];
+
+/// Remove inherited git location variables, so the command acts only on the repo it names.
+pub fn scrub(cmd: &mut Command) -> &mut Command {
+    for v in LOCATION_VARS {
+        cmd.env_remove(v);
+    }
+    cmd
+}
+
+/// A `git` command with inherited location variables removed.
+pub fn command() -> Command {
+    let mut c = Command::new("git");
+    scrub(&mut c);
+    c
+}
+
 /// Run git in `cwd` and return trimmed stdout. Fails with git's stderr on non-zero exit.
 pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
+    let out = command()
         .arg("-C")
         .arg(cwd)
         .args(args)
@@ -27,7 +56,7 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
 
 /// Run git and report only whether it succeeded.
 pub fn ok(cwd: &Path, args: &[&str]) -> bool {
-    Command::new("git")
+    command()
         .arg("-C")
         .arg(cwd)
         .args(args)
@@ -43,14 +72,14 @@ pub fn diff_id(cwd: &Path, base: &str, sha: &str) -> Option<String> {
         return None;
     }
     let mb = run(cwd, &["merge-base", &freshest(cwd, base), sha]).ok()?;
-    let diff = Command::new("git")
+    let diff = command()
         .arg("-C")
         .arg(cwd)
         .args(["diff-tree", "-p", "--binary", "--no-color", &mb, sha])
         .output()
         .ok()
         .filter(|o| o.status.success())?;
-    let mut child = Command::new("git")
+    let mut child = command()
         .arg("-C")
         .arg(cwd)
         .args(["patch-id", "--stable"])

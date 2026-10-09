@@ -16,6 +16,11 @@ const NOW: i64 = 1_791_504_000; // 2026-10-09T00:00:00Z
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = StdCommand::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_OBJECT_DIRECTORY")
         .arg("-C")
         .arg(dir)
         .args(args)

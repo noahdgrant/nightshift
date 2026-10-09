@@ -66,7 +66,7 @@ fn run_setup(
 ) -> Result<Vec<SetupResult>> {
     let mut results = Vec::new();
     for c in commands {
-        let status = Command::new("sh")
+        let status = crate::git::scrub(&mut Command::new("sh"))
             .arg("-c")
             .arg(c)
             .current_dir(path)

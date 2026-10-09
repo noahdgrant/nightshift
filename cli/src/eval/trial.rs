@@ -138,7 +138,7 @@ fn make_home(home: &Path, skills: &[PathBuf], carry: &[String]) -> Result<()> {
 
 /// A `git` command for scratch repos: fixed identity, no user or system config.
 pub fn git_cmd(dir: &Path) -> Command {
-    let mut c = Command::new("git");
+    let mut c = crate::git::command();
     c.arg("-C")
         .arg(dir)
         .args(["-c", "core.quotepath=off", "-c", "commit.gpgsign=false"])
@@ -375,6 +375,7 @@ pub fn run_sh(
 ) -> Result<ProcResult> {
     let out = File::create(log).with_context(|| format!("cannot create {}", log.display()))?;
     let mut cmd = Command::new("sh");
+    crate::git::scrub(&mut cmd);
     cmd.arg("-c")
         .arg(script)
         .current_dir(cwd)
@@ -409,6 +410,7 @@ pub fn run_harness(
     let err = File::create(stderr_path)
         .with_context(|| format!("cannot create {}", stderr_path.display()))?;
     let mut cmd = Command::new(bin);
+    crate::git::scrub(&mut cmd);
     cmd.args(args)
         .current_dir(&scratch.repo)
         .stdout(out)
@@ -449,6 +451,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let marker = tmp.path().join("survivor");
         let mut cmd = Command::new("sh");
+        crate::git::scrub(&mut cmd);
         cmd.arg("-c")
             .arg(format!("(sleep 1; touch {}) & sleep 30", marker.display()));
         let (status, timed_out, wall) = run_process(cmd, None, Duration::from_millis(200)).unwrap();

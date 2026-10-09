@@ -331,7 +331,7 @@ fn extract_at_ref(skills_dir: &Path, git_ref: &str) -> Result<(tempfile::TempDir
         .to_string_lossy()
         .into_owned();
     let tmp = tempfile::Builder::new().prefix("ns-eval-ref-").tempdir()?;
-    let status = Command::new("sh")
+    let status = crate::git::scrub(&mut Command::new("sh"))
         .arg("-c")
         .arg("git -C \"$1\" archive --format=tar \"$2\" -- \"$3\" | tar -x -C \"$4\"")
         .arg("sh")
