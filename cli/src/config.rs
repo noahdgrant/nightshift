@@ -16,6 +16,16 @@ pub struct Config {
     pub eval: EvalConfig,
     #[serde(default)]
     pub forge: Forges,
+    #[serde(default)]
+    pub runners: RunnersConfig,
+}
+
+/// `[runners]`: where `ns run` keeps runner locks.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RunnersConfig {
+    /// A directory shared between repos; `~` is expanded. Unset: `<git-common-dir>/ns/locks`.
+    pub lock_dir: Option<String>,
 }
 
 /// `[forge.github]` and `[forge.gitlab]`: where `ns run` and `ns watch` get forge tokens.

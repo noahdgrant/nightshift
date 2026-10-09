@@ -590,6 +590,85 @@ impl Drop for Lock {
     }
 }
 
+/// The locks a phase's runner names, held from before the phase starts until it ends. Each is
+/// an OS lock (`flock`) on `<dir>/<name>.lock`, so the kernel drops a dead run's hold and its
+/// file is taken over. A lock held by a live run makes this one wait.
+pub struct RunnerLocks(Vec<File>);
+
+impl RunnerLocks {
+    /// Take `names` in the order given (sorted by the caller, so two runs can't deadlock).
+    /// `waiting` hears each lock this run has to wait for, and who holds it.
+    pub fn acquire(
+        dir: &Path,
+        names: &[String],
+        unit: &str,
+        mut waiting: impl FnMut(&str, &Value),
+    ) -> Result<RunnerLocks> {
+        if !names.is_empty() {
+            fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+        }
+        let mut held = Vec::new();
+        for name in names {
+            let path = dir.join(format!("{name}.lock"));
+            let mut f = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .with_context(|| format!("cannot open {}", path.display()))?;
+            if !flock(&f, false).with_context(|| format!("cannot lock {}", path.display()))? {
+                let text = fs::read_to_string(&path).unwrap_or_default();
+                waiting(
+                    name,
+                    &serde_json::from_str(text.trim()).unwrap_or(Value::Null),
+                );
+                flock(&f, true).with_context(|| format!("cannot lock {}", path.display()))?;
+            }
+            f.set_len(0)?;
+            writeln!(f, "{}", json!({"pid": std::process::id(), "unit": unit}))?;
+            held.push(f);
+        }
+        Ok(RunnerLocks(held))
+    }
+}
+
+impl Drop for RunnerLocks {
+    fn drop(&mut self) {
+        for f in &self.0 {
+            let _ = f.set_len(0);
+        }
+    }
+}
+
+/// Take an exclusive `flock` on `f`. Without `block`, `Ok(false)` means another holds it.
+#[cfg(unix)]
+fn flock(f: &File, block: bool) -> std::io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    let op = if block {
+        libc::LOCK_EX
+    } else {
+        libc::LOCK_EX | libc::LOCK_NB
+    };
+    loop {
+        // SAFETY: the fd is open for as long as `f` lives.
+        if unsafe { libc::flock(f.as_raw_fd(), op) } == 0 {
+            return Ok(true);
+        }
+        let e = std::io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::EWOULDBLOCK) if !block => return Ok(false),
+            _ => return Err(e),
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn flock(_: &File, _: bool) -> std::io::Result<bool> {
+    Ok(true)
+}
+
 // ---------------------------------------------------------------- gh and git helpers
 
 pub fn gh(cwd: &Path, args: &[&str]) -> Result<String> {
@@ -692,6 +771,7 @@ struct Ctx<'a> {
     issue_url: String,
     gates: String,
     base: String,
+    lock_dir: PathBuf,
 }
 
 impl Ctx<'_> {
@@ -786,6 +866,14 @@ impl Loaded {
             cfg,
             files,
         })
+    }
+}
+
+/// `[runners] lock_dir` from the user config, else `<git-common-dir>/ns/locks`.
+fn lock_dir(cfg: Option<&Config>, common: &Path) -> PathBuf {
+    match cfg.and_then(|c| c.runners.lock_dir.as_deref()) {
+        Some(d) => config::expand_tilde(d),
+        None => common.join("ns").join("locks"),
     }
 }
 
@@ -900,6 +988,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         issue_url,
         gates,
         base,
+        lock_dir: lock_dir(cfg.as_ref(), &repo.common_dir),
     };
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
@@ -1006,6 +1095,7 @@ fn dry_run(
         issue_url: issue_url.to_string(),
         gates: gates.to_string(),
         base: base.unwrap_or_default(),
+        lock_dir: PathBuf::new(),
     };
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
@@ -1125,6 +1215,13 @@ fn drive(
                 ));
             }
         }
+        let held = RunnerLocks::acquire(&ctx.lock_dir, &fac.locks(&p), &ctx.unit, |lock, by| {
+            eprintln!(
+                "ns run: {} {phase} waits for lock {lock} (held by pid {}, unit {})",
+                ctx.unit, by["pid"], by["unit"]
+            );
+            ctx.log(json!({"event": "lock_wait", "phase": phase, "lock": lock, "held_by": by}));
+        })?;
         let art_path = ctx.artifacts.join(artifact_of(phase));
         let moves = archive_for(&ctx.artifacts, phase, &state)?;
         let prompt = ctx.prompt(&p, attempt, &feedback)?;
@@ -1149,7 +1246,9 @@ fn drive(
             Duration::from_secs(p.timeout_minutes * 60),
             &transcript,
             subscription,
-        )?;
+        );
+        drop(held);
+        let r = r?;
         let t = ClaudeStreamJson.parse(&r.stdout);
         let cost = t.cost_usd.unwrap_or(0.0);
         shared.spent_usd += cost;

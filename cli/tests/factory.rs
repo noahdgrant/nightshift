@@ -154,8 +154,9 @@ impl Env {
         fs::write(self.ghd.join(name), text).unwrap();
     }
 
-    fn ns(&self) -> Command {
-        let mut c = Command::cargo_bin("ns").unwrap();
+    /// `ns` with the fakes on PATH, as a std command so a test can spawn it.
+    fn ns_std(&self) -> StdCommand {
+        let mut c = StdCommand::new(assert_cmd::cargo::cargo_bin("ns"));
         let path = format!(
             "{}:{}",
             self.bin.display(),
@@ -179,6 +180,10 @@ impl Env {
             .env_remove("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS")
             .env_remove("GH_TOKEN");
         c
+    }
+
+    fn ns(&self) -> Command {
+        Command::from_std(self.ns_std())
     }
 
     fn run(&self, args: &[&str], code: i32) -> Value {
@@ -241,6 +246,22 @@ impl Env {
         seen.sort();
         seen.dedup();
         seen
+    }
+
+    /// verify runs on runner `bench`, which names lock `bench-1`, kept under `locks`.
+    fn bench(&self, locks: &Path) {
+        self.factory("[phases.verify]\nrunner = \"bench\"\n");
+        self.runner("bench", "kind = \"bench\"\nlocks = [\"bench-1\"]\n");
+        self.config(&format!(
+            "[runners]\nlock_dir = {:?}\n",
+            locks.to_str().unwrap()
+        ));
+    }
+
+    fn runner(&self, name: &str, text: &str) {
+        let dir = self.root.join(".nightshift/runners");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{name}.toml")), text).unwrap();
     }
 
     fn worktree(&self, unit: &str) -> PathBuf {
@@ -424,6 +445,189 @@ fn lock_refuses_a_second_runner_and_clears_a_stale_one() {
     e.queue("build", &["pass:commit"]);
     e.run(&["run", "--issue", "7"], 0);
     assert!(!lock.exists());
+}
+
+/// Whether another process could take `lock` right now, asked through flock(1).
+fn lock_is_free(lock: &Path) -> bool {
+    StdCommand::new("flock")
+        .args(["-n", lock.to_str().unwrap(), "true"])
+        .status()
+        .unwrap()
+        .success()
+}
+
+#[test]
+fn runner_locks_are_held_for_the_phase_and_released_on_failure() {
+    let e = Env::new();
+    let locks = e.base.join("locks");
+    let lock = locks.join("bench-1.lock");
+    e.bench(&locks);
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    e.queue("verify", &["fail:script", "fail:script"]);
+    e.ctl(
+        "verify.sh",
+        &format!(
+            "flock -n {l:?} true && echo free >> {s:?} || echo held >> {s:?}; cat {l:?} >> {s:?}",
+            l = lock,
+            s = e.ctrl.join("seen"),
+        ),
+    );
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck");
+    let seen = fs::read_to_string(e.ctrl.join("seen")).unwrap();
+    let lines: Vec<&str> = seen.lines().collect();
+    assert_eq!(lines.len(), 4, "{seen}");
+    for pair in lines.chunks(2) {
+        assert_eq!(pair[0], "held", "{seen}");
+        let holder: Value = serde_json::from_str(pair[1]).unwrap();
+        assert_eq!(holder["unit"], UNIT);
+        assert!(holder["pid"].as_u64().is_some(), "{seen}");
+    }
+    assert!(lock_is_free(&lock));
+    assert_eq!(fs::read_to_string(&lock).unwrap(), "");
+}
+
+#[test]
+fn a_runner_lock_left_by_a_dead_run_is_recovered() {
+    let e = Env::new();
+    let locks = e.base.join("locks");
+    let lock = locks.join("bench-1.lock");
+    e.bench(&locks);
+    fs::create_dir_all(&locks).unwrap();
+    fs::write(&lock, "{\"pid\":2147483000,\"unit\":\"other\"}\n").unwrap();
+    e.queue("build", &["pass:commit"]);
+    e.queue("verify", &["pass:script"]);
+    e.ctl(
+        "verify.sh",
+        &format!("cat {:?} > {:?}", lock, e.ctrl.join("seen")),
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    let holder: Value =
+        serde_json::from_str(&fs::read_to_string(e.ctrl.join("seen")).unwrap()).unwrap();
+    assert_eq!(holder["unit"], UNIT);
+    assert!(lock_is_free(&lock));
+}
+
+#[test]
+fn two_runs_needing_one_lock_serialise() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let a = Env::new();
+    let b = Env::new();
+    let locks = a.base.join("locks");
+    let order = a.base.join("order");
+    a.bench(&locks);
+    b.bench(&locks);
+    let entered = a.ctrl.join("entered");
+    let go = a.ctrl.join("go");
+    for f in [&entered, &go] {
+        assert!(StdCommand::new("mkfifo").arg(f).status().unwrap().success());
+    }
+    a.queue("verify", &["pass:script"]);
+    a.ctl(
+        "verify.sh",
+        &format!(
+            "echo A-in >> {o:?}; echo in > {entered:?}; cat {go:?} > /dev/null; echo A-out >> {o:?}",
+            o = order
+        ),
+    );
+    b.queue("verify", &["pass:script"]);
+    b.ctl("verify.sh", &format!("echo B >> {order:?}"));
+
+    let mut run_a = a
+        .ns_std()
+        .args(["run", "--issue", "7"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Returns once A's verify phase has opened the FIFO, so A holds bench-1 from here on.
+    fs::read_to_string(&entered).unwrap();
+    let mut run_b = b
+        .ns_std()
+        .args(["run", "--issue", "7"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut b_err = BufReader::new(run_b.stderr.take().unwrap()).lines();
+    let waited = b_err
+        .by_ref()
+        .map_while(Result::ok)
+        .any(|l| l.contains("verify waits for lock bench-1"));
+    let calls_while_waiting = b.calls();
+    fs::write(&go, "go\n").unwrap();
+    // Keep reading B's stderr, or its next eprintln! fails on a closed pipe.
+    b_err.for_each(drop);
+    assert!(run_a.wait().unwrap().success());
+    assert!(run_b.wait().unwrap().success());
+
+    assert!(waited, "B never waited for bench-1");
+    assert_eq!(calls_while_waiting, ["triage", "build"]);
+    assert_eq!(
+        fs::read_to_string(&order)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["A-in", "A-out", "B"]
+    );
+    let log = fs::read_to_string(b.root.join(".git/ns/runs.jsonl")).unwrap();
+    assert!(log.contains("\"event\":\"lock_wait\""), "{log}");
+}
+
+#[test]
+fn runner_problems_fail_validate_and_run() {
+    let e = Env::new();
+    e.factory("[phases.verify]\nrunner = \"bench\"\n");
+    let validate = |e: &Env| -> String {
+        let out = e
+            .ns()
+            .args(["factory", "validate"])
+            .assert()
+            .code(1)
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap()
+    };
+    let out = validate(&e);
+    assert!(
+        out.contains("runner \\\"bench\\\" has no runners/bench.toml"),
+        "{out}"
+    );
+    e.ns()
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("runners/bench.toml"));
+
+    e.runner("bench", "kind = \"remote\"\n");
+    let out = validate(&e);
+    assert!(
+        out.contains("runners/bench.toml: unknown variant `remote`"),
+        "{out}"
+    );
+    e.ns()
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("unknown variant `remote`"));
+    assert!(e.calls().is_empty());
+
+    e.runner("bench", "locks = [\"bench-1\"]\n");
+    let out = e
+        .ns()
+        .args(["factory", "validate"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["phases"][2]["runner"], "bench");
+    assert_eq!(v["phases"][2]["locks"][0], "bench-1");
 }
 
 #[test]
