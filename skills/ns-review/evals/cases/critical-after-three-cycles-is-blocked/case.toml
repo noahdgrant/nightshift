@@ -1,0 +1,46 @@
+description = "The fix loop has run its 3 cycles and C1 (cancel_all drops every SKU's reservations) is still open. review.md must be blocked, its first body line must name C1, and the body must offer fixing by hand, splitting the issue, or ns-define."
+fixture = "py-inventory"
+skills = ["ns-review"]
+extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments"]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Review unit 2-cancel-all, on branch ns/2-cancel-all in this repo. The brief is .ns/2-cancel-all/brief.md. The fix loop has already run all 3 cycles; their records are .ns/2-cancel-all/review/cycle-1.md to cycle-3.md. Run no more fix cycles and change no code: rerun the review panel on the current diff, then write review.md. gates: auto. Nobody is around to answer questions. Skip verify, don't push, don't ship.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/2-cancel-all",
+  "mkdir -p .ns/2-cancel-all/review && cp ../brief.md .ns/2-cancel-all/",
+  "for n in 1 2 3; do cp ../cycle-$n.md .ns/2-cancel-all/review/; done",
+  "git apply ../cancel-all.patch",
+  "git add src tests && git commit -q -m 'feat(warehouse): add cancel_all'",
+]
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/review.md"
+key = "status"
+equals = "blocked"
+
+[[check]]
+# The first non-empty line after the frontmatter is what ns watch quotes; it names the open Critical.
+type = "command"
+run = '''
+awk 'f==2 && NF {print; exit} /^---$/ {f++}' .ns/2-cancel-all/review.md | grep -E 'C1'
+'''
+expect_exit = 0
+
+[[check]]
+type = "regex"
+path = ".ns/2-cancel-all/review.md"
+pattern = "(?is)by hand.*split.*ns-define|ns-define.*split.*by hand|split.*by hand.*ns-define"
+
+[[check]]
+type = "diff_scope"
+allow = [".ns/**"]
+
+[[check]]
+type = "judge"
+rubric = "Did the review end blocked because C1 stayed open after the third fix cycle, rather than fail, and does its opening line say which Critical is open? Did it list fixing by hand, splitting the issue and routing to ns-define as the options?"
+required = false
