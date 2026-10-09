@@ -171,8 +171,8 @@ fn run_one(c: &Check, i: usize, changes: &Changes, ctx: &Ctx<'_>) -> Result<(boo
         } => match read_in_repo(&s.repo, path) {
             None => (false, format!("{path} is missing")),
             Some(text) => match crate::frontmatter::parse(&text) {
-                Ok(Some(fm)) => {
-                    let got = fm.get(key.as_str()).and_then(crate::worktree::yaml_scalar);
+                Ok(Some(_)) => {
+                    let got = crate::frontmatter::field(&text, key);
                     let ok = got.as_deref() == Some(equals.as_str());
                     (ok, format!("{path}: {key} = {got:?}, want {equals:?}"))
                 }

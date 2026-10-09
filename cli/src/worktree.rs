@@ -309,10 +309,10 @@ pub fn latest_status(artifacts: &Path) -> Option<ArtifactStatus> {
         let Ok(text) = fs::read_to_string(&p) else {
             continue;
         };
-        let Ok(Some(fm)) = frontmatter::parse(&text) else {
+        let Ok(Some(_)) = frontmatter::parse(&text) else {
             continue;
         };
-        let get = |k: &str| fm.get(k).and_then(yaml_scalar);
+        let get = |k: &str| frontmatter::field(&text, k);
         let status = get("status");
         let phase = get("phase");
         if status.is_none() && phase.is_none() {
@@ -334,15 +334,6 @@ pub fn latest_status(artifacts: &Path) -> Option<ArtifactStatus> {
             })
             .then_with(|| a.file.cmp(&b.file))
     })
-}
-
-pub fn yaml_scalar(v: &serde_yaml::Value) -> Option<String> {
-    match v {
-        serde_yaml::Value::String(s) => Some(s.clone()),
-        serde_yaml::Value::Number(n) => Some(n.to_string()),
-        serde_yaml::Value::Bool(b) => Some(b.to_string()),
-        _ => None,
-    }
 }
 
 pub fn list(repo: Option<&Path>) -> Result<()> {

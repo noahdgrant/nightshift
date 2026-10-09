@@ -133,12 +133,10 @@ pub struct Art {
 fn read_art(path: &Path) -> Option<Art> {
     let text = fs::read_to_string(path).ok()?;
     let (status, sha, pr, body) = match (frontmatter::parse(&text), frontmatter::split(&text)) {
-        (Ok(Some(fm)), Some((yaml, body))) => (
-            fm.get("status")
-                .and_then(worktree::yaml_scalar)
-                .unwrap_or_default(),
-            raw_field(yaml, "sha"),
-            raw_field(yaml, "pr"),
+        (Ok(Some(_)), Some((yaml, body))) => (
+            frontmatter::raw_field(yaml, "status").unwrap_or_default(),
+            frontmatter::raw_field(yaml, "sha"),
+            frontmatter::raw_field(yaml, "pr"),
             body.to_string(),
         ),
         _ => (String::new(), None, None, text.clone()),
@@ -149,19 +147,6 @@ fn read_art(path: &Path) -> Option<Art> {
         pr,
         body,
     })
-}
-
-/// A top-level frontmatter value as written. YAML would read an unquoted sha such as
-/// `0e05787` or `1234567` as a number and lose it, so `sha` and `pr` are taken verbatim.
-fn raw_field(yaml: &str, key: &str) -> Option<String> {
-    let prefix = format!("{key}:");
-    let line = yaml.lines().find(|l| l.starts_with(&prefix))?;
-    let mut v = line[prefix.len()..].trim();
-    if let Some(i) = v.find(" #") {
-        v = v[..i].trim_end();
-    }
-    let v = v.trim_matches(|c| c == '"' || c == '\'');
-    (!v.is_empty()).then(|| v.to_string())
 }
 
 /// Move `file` into `<dir>/history/<stem>-<n>.md`, n one past the highest already there.
