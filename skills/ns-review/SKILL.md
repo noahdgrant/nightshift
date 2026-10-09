@@ -91,7 +91,7 @@ Architecture, readability and comments findings are fixed like correctness ones:
 
 A cycle where reviewers raised substantive findings and you dismissed all of them is a warning sign: you are validating, not reviewing. Say so in `review.md`.
 
-After 3 cycles, stop the loop. An open Critical finding then needs a human decision, so another build attempt would only repeat the loop: `review.md` is `blocked`. The body's first line names the open Criticals, as in `Open Critical after 3 fix cycles: C1, C3.` `ns watch` quotes that line in its stuck comment. Below it, list the options:
+After 3 cycles, stop the loop. An open Critical finding then needs a human decision, so another build attempt would only repeat the loop: `review.md` is `blocked`. The body's first line names the open Criticals (format in [review-md.md](references/review-md.md)). Below it, list the options:
 - fix it by hand on the unit's branch
 - split the issue into smaller units
 - route it to `ns-define` when the brief itself is wrong
@@ -106,7 +106,7 @@ Then set the finding's status in `review.md` to `deferred: #<n>`. Suggestions st
 ## Gate
 
 - `pass`: no open Critical finding, every reviewer slice on the panel has a result, and every Important finding is `fixed`, `dismissed` with a reason, or `deferred` to a follow-up issue.
-- `fail`: the review ended on something a build attempt can fix, and no Critical is open after the third cycle. For example, a cycle's commits fail the test command or the re-run of `ns-verify`. The body's first line says what build must fix; `ns run` sends the body to build as feedback.
-- `blocked`: an open Critical finding remains after the third fix cycle (see step 5), a reviewer slice could not run, the diff is empty, `brief.md` is missing, or (under `gates: auto`) the reviewers ran inline rather than in fresh contexts. Record the launch mode in `review.md` (`launch: subagents | ns ask | inline`).
+- `fail`: no Critical is open after the loop, but the fix cycles' commits leave the test command or the `ns-verify` re-run (fix loop step 5) failing, or a reviewer reports a failure a build attempt can fix. An open Critical after the third cycle is always `blocked`, even when another failure exists. The body's first line says what build must fix; `ns run` sends the body to build as feedback.
+- `blocked`: an open Critical finding remains after the third fix cycle (the "After 3 cycles" paragraph above), a reviewer slice could not run, the diff is empty, `brief.md` is missing, or (under `gates: auto`) the reviewers ran inline rather than in fresh contexts. The body's first line is the one-sentence reason `ns watch` quotes; [review-md.md](references/review-md.md) has the format. Record the launch mode in `review.md` (`launch: subagents | ns ask | inline`).
 
 Under `gates: stop`, report `review.md` and wait. Under `gates: auto`, continue on `pass`. Next phase: load the `ns-ship` skill.

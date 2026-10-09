@@ -77,7 +77,7 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 - <reviewer slice that produced no result, and why>
 ```
 
-Status follows the Gate in `SKILL.md`. A `blocked` review for open Criticals opens the body with one line naming them, before the title:
+Status follows the Gate in `SKILL.md`. For any `blocked` status, the first body line, before the title, is the one-sentence reason `ns watch` quotes. For open Criticals it names them:
 
 ```markdown
 Open Critical after 3 fix cycles: C1, C3.

@@ -1,4 +1,4 @@
-description = "The fix loop has run its 3 cycles and C1 (cancel_all drops every SKU's reservations) is still open. review.md must be blocked, its first body line must name C1, and the body must offer fixing by hand, splitting the issue, or ns-define."
+description = "The fix loop has run its 3 cycles and C1 (cancel_all drops every SKU's reservations) is still open. review.md must be blocked by the cycle-limit rule (cycles 3, first body line `Open Critical after 3 fix cycles`), its first body line must name C1, and the body must offer fixing by hand, splitting the issue, or ns-define."
 fixture = "py-inventory"
 skills = ["ns-review"]
 extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments"]
@@ -24,10 +24,15 @@ key = "status"
 equals = "blocked"
 
 [[check]]
-# The first non-empty line after the frontmatter is what ns watch quotes; it names the open Critical.
+type = "frontmatter"
+path = ".ns/2-cancel-all/review.md"
+key = "cycles"
+equals = "3"
+
+[[check]]
 type = "command"
 run = '''
-awk 'f==2 && NF {print; exit} /^---$/ {f++}' .ns/2-cancel-all/review.md | grep -E 'C1'
+awk 'f==2 && NF {print; exit} /^---$/ {f++}' .ns/2-cancel-all/review.md | grep -E '^Open Critical after 3 fix cycles.*C1'
 '''
 expect_exit = 0
 
