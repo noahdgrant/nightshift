@@ -68,7 +68,7 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 ## Mutation check
 | Mutation | Location | Command | Result |
 |---|---|---|---|
-| `>=` to `>` | `src/x.py:17` | `timeout 30 pytest -q tests/test_x.py` | killed |
+| `>=` to `>` | `src/x.py:17` | `timeout 60 pytest -q tests/test_x.py` | killed |
 
 ## Contract gaps
 - <what brief.md left unclear>
@@ -76,5 +76,7 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 ## Gaps
 - <reviewer slice that produced no result, and why>
 ```
+
+`Cycles run` is the review passes the reviewer ran in, for example `0, 1`.
 
 Number findings once and keep the numbers stable across cycles, so the build agent and the human can refer to `I3`.

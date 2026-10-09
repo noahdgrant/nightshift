@@ -1,6 +1,6 @@
 # Reviewer brief template
 
-The lead fills this in once per reviewer and writes it to `.ns/<unit-id>/swarm/review-<cycle>/<reviewer>.brief.md`. Paste the reviewer reference file in full. Give paths for the diff and contract so the worker reads them from disk.
+The lead fills this in once per reviewer and writes it to `.ns/<unit-id>/swarm/review-<pass>/<reviewer>.brief.md`. Paste the reviewer reference file in full. Give paths for the diff and contract so the worker reads them from disk.
 
 ---
 

@@ -29,7 +29,7 @@ Input: `.ns/<unit-id>/brief.md` and the branch. Output: `.ns/<unit-id>/review.md
    ```
    An empty diff means there is nothing to review: stop with `status: blocked`.
 4. Collect the **standards**: the target repo's `CODING_STANDARDS.md` and `CONTRIBUTING.md` if present, plus any other file that documents how code is written there. Read `docs/agents/stack.md` for the test command. If it is missing, load the `ns-setup` skill.
-5. **Change sizing.** Count changed lines. Around 100 is good, 300 is fine for one logical change, around 1000 is too large: record an Important finding asking for a split (stack, by file group, horizontal or vertical slices). Also flag a refactor mixed with new behaviour, and any file the diff pushes past roughly 1000 total lines.
+5. **Change sizing.** Count changed lines: added plus deleted lines in `diff.patch`. Step 2 uses the same count to pick the panel. Around 100 is good, 300 is fine for one logical change, around 1000 is too large: record an Important finding asking for a split (stack, by file group, horizontal or vertical slices). Also flag a refactor mixed with new behaviour, and any file the diff pushes past roughly 1000 total lines.
 
 Leave `build.md`, `evidence.md` and the chat history out of every reviewer's input. They carry the author's conclusions, and a reviewer handed conclusions returns agreement.
 
@@ -57,7 +57,7 @@ Use the **partition** shape, one worker per reviewer on the panel. Pick the pane
 
 Roles let the user put different providers on different axes in `~/.config/nightshift/config.toml`. Run `ns doctor` once and note which provider serves each role, for the agreement ranking in step 3. Use `review` as the fallback role when an axis role is unconfigured.
 
-This first pass is cycle 0, so its briefs go under `review-0`. Build each worker's brief from [reviewer-brief.md](references/reviewer-brief.md): its one reference file, the paths to `diff.patch` and `brief.md`, and the standards list. Every reviewer stays inside its own axis.
+Review passes are numbered from 0: pass 0 is the first review and pass n follows fix cycle n. Briefs go under `review-<pass>`, so this first pass uses `review-0`. `cycles:` in `review.md` is the number of fix cycles run. Build each worker's brief from [reviewer-brief.md](references/reviewer-brief.md): its one reference file, the paths to `diff.patch` and `brief.md`, and the standards list. Every reviewer stays inside its own axis.
 
 **Mutation check.** `ns ask` workers are read-only, so the correctness reviewer proposes mutations and you run them, up to five, exactly as the Mutation check in [correctness.md](references/correctness.md) says: only the tests covering the mutated file, each under a timeout. Record each command and result as evidence.
 

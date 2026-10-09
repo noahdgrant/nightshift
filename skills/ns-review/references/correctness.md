@@ -36,7 +36,7 @@ Record each result as one of:
 # diff adds:  if retries >= MAX_RETRIES: raise TimeoutError
 # mutation:   if retries >  MAX_RETRIES: raise TimeoutError
 # expected red: tests/test_uart.py::test_gives_up_after_max_retries
-# targeted:     timeout 30 pytest -q tests/test_uart.py
+# targeted:     timeout 60 pytest -q tests/test_uart.py
 ```
 
 Firmware: run mutations against the host-side unit tests or the simulator, never by flashing a board. If a branch is only reachable on target, the mutation is `inconclusive`.

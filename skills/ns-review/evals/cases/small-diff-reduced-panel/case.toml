@@ -48,10 +48,10 @@ path = ".ns/1-in-stock/review.md"
 pattern = "tests/test_warehouse\\.py"
 
 [[check]]
-# The planted gap: the test never asserts the False case. A finding, a surviving mutation row or an Important heading must name it.
+# The planted gap: the test never asserts the False case. Pass when a finding heading names it, or a Mutation check row for it survived.
 type = "regex"
 path = ".ns/1-in-stock/review.md"
-pattern = "(?im)^(#+ .*Important.*(in_stock|> 0).*|.*(in_stock|> 0).*survived.*|.*survived.*(in_stock|> 0).*)$"
+pattern = '(?im)(^###\s+[CIS]\d+\..*(in_stock|False|not in stock|out of stock))|(^\|.*(> 0|in_stock).*\|\s*survived\s*\|?\s*$)'
 
 [[check]]
 # The Mutation check table carries a timeout in a command and a recorded result.
