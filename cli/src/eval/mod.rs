@@ -1,9 +1,9 @@
 //! `ns eval`: measure whether skills help. The spec is docs/EVALS.md.
 
 mod checks;
-mod parser;
+pub(crate) mod parser;
 mod spec;
-mod trial;
+pub(crate) mod trial;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

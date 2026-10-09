@@ -1,14 +1,19 @@
 //! `ns`: the Nightshift CLI.
 
 mod ask;
+mod billing;
+mod clock;
 mod config;
 mod doctor;
 mod error;
 mod eval;
+mod factory;
 mod frontmatter;
 mod git;
 mod install;
 mod lint;
+mod run;
+mod watch;
 mod which;
 mod worktree;
 
@@ -29,6 +34,9 @@ Examples:
   ns install --dry-run
   ns doctor
   ns eval ns-tdd --dry-run
+  ns factory validate
+  ns run --issue 142 --dry-run
+  ns watch --until 06:30
 
 Exit codes: 0 ok, 1 failure, 2 usage error, 3 role not configured, 4 harness missing,
 5 no write command for `ns ask --write`.
@@ -179,6 +187,58 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         trigger_timeout: u64,
     },
 
+    /// Check the factory definition (.nightshift/nightshift.toml and agents/<role>/agent.md)
+    #[command(arg_required_else_help = true)]
+    Factory {
+        #[command(subcommand)]
+        command: FactoryCmd,
+    },
+
+    /// Drive one unit through triage, build, verify, review and ship, unattended
+    #[command(after_help = RUN_HELP)]
+    Run {
+        /// Unit id, e.g. 142-uart-timeout (default with --issue: <n>-<slug of the title>)
+        unit_id: Option<String>,
+        /// The unit's GitHub issue number
+        #[arg(long, value_name = "N")]
+        issue: Option<u64>,
+        /// Start with this phase instead of the state table's pick
+        #[arg(long, value_name = "PHASE")]
+        from: Option<String>,
+        /// Gate policy passed to every phase prompt: stop or auto (default: nightshift.toml gates)
+        #[arg(long, value_name = "POLICY")]
+        gates: Option<String>,
+        /// Base for a new worktree (default: the repo's default branch)
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
+        /// Print the next decision and the rendered prompt; run nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Directory holding nightshift.toml (default: <main-worktree>/.nightshift)
+        #[arg(long, value_name = "DIR")]
+        factory: Option<PathBuf>,
+    },
+
+    /// Pull ready issues from GitHub and run them one at a time
+    #[command(after_help = WATCH_HELP)]
+    Watch {
+        /// Take one unit, then stop
+        #[arg(long)]
+        once: bool,
+        /// Start no new unit after this local time (HH:MM)
+        #[arg(long, value_name = "HH:MM")]
+        until: Option<String>,
+        /// Units per invocation (default: [limits] max_units)
+        #[arg(long, value_name = "N")]
+        max_units: Option<u32>,
+        /// Print the ordered queue with skip reasons; change nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Directory holding nightshift.toml (default: <main-worktree>/.nightshift)
+        #[arg(long, value_name = "DIR")]
+        factory: Option<PathBuf>,
+    },
+
     /// Report config path and validity, configured roles, and harnesses on PATH
     #[command(after_help = "\
 Examples:
@@ -207,6 +267,28 @@ claude --permission-mode acceptEdits, codex --sandbox workspace-write).
 Exit codes: 1 harness failed, 3 role not configured, 4 harness binary not on PATH,
 5 --write given but the harness has no command_write.";
 
+const RUN_HELP: &str = "\
+Examples:
+  ns run --issue 142
+  ns run 142-uart-timeout --dry-run
+  ns run 142-uart-timeout --from verify
+
+Spec: docs/FACTORY.md. Prints {unit,outcome,phase,reason,pr,cost_usd,phases}. Events go to
+<git-common-dir>/ns/runs.jsonl, harness transcripts to <git-common-dir>/ns/transcripts/.
+
+Exit codes: 0 done or merged, 1 stuck, 2 usage or config error (incl. missing subscription
+login, harness not on PATH), 3 budget, 4 paused on a usage limit, 5 another ns run holds the lock.";
+
+const WATCH_HELP: &str = "\
+Examples:
+  ns watch --dry-run
+  ns watch --once
+  ns watch --until 06:30 --max-units 3
+
+Lists open issues labelled [queue] ready_label with gh, drops blocked ones and ones with an
+open PR that closes them, sorts by [queue] order, and runs each with ns run --issue.
+Prints {units,stopped,cost_usd}. Exit codes as ns run's errors: 2 usage, 5 lock held.";
+
 const EVAL_HELP: &str = "\
 Examples:
   ns eval --dry-run
@@ -223,6 +305,22 @@ baseline cache live under [eval].transcripts.
 
 Exit codes: 1 failure, 2 usage error, 3 eval harness not configured or bad config,
 4 harness binary not on PATH.";
+
+#[derive(Subcommand)]
+enum FactoryCmd {
+    /// Parse nightshift.toml (unknown keys are errors) and check agents/<role>/agent.md
+    #[command(after_help = "\
+Examples:
+  ns factory validate
+  ns factory validate --factory path/to/factory
+
+Prints {\"ok\",\"path\",\"phases\",\"errors\"}. Exits 1 if any error.")]
+    Validate {
+        /// Directory holding nightshift.toml (default: <main-worktree>/.nightshift)
+        #[arg(long, value_name = "DIR")]
+        factory: Option<PathBuf>,
+    },
+}
 
 #[derive(Subcommand)]
 enum WorktreeCmd {
@@ -416,6 +514,43 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 harness,
                 model,
                 trigger_timeout_secs: trigger_timeout,
+            })
+        }
+        Cmd::Factory { command } => match command {
+            FactoryCmd::Validate { factory } => return factory::validate(factory.as_deref()),
+        },
+        Cmd::Run {
+            unit_id,
+            issue,
+            from,
+            gates,
+            base,
+            dry_run,
+            factory,
+        } => {
+            return run::cli(run::RunArgs {
+                unit: unit_id,
+                issue,
+                from,
+                gates,
+                dry_run,
+                factory,
+                base,
+            })
+        }
+        Cmd::Watch {
+            once,
+            until,
+            max_units,
+            dry_run,
+            factory,
+        } => {
+            return watch::run(watch::WatchArgs {
+                once,
+                until,
+                max_units,
+                dry_run,
+                factory,
             })
         }
         Cmd::Doctor => doctor::run()?,

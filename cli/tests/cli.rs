@@ -651,7 +651,7 @@ fn worktree_new_runs_setup_once() {
     let (_tmp, root) = repo();
     factory_def(
         &root,
-        "[factory]\nname = \"future table, ignored\"\n\n[worktree]\nsetup = [\"echo \\\"$NS_UNIT|$NS_WORKTREE|$NS_MAIN_ROOT\\\" > setup.out\", \"echo noisy\"]\n",
+        "name = \"demo\"\n\n[worktree]\nsetup = [\"echo \\\"$NS_UNIT|$NS_WORKTREE|$NS_MAIN_ROOT\\\" > setup.out\", \"echo noisy\"]\n",
     );
     let out = ns()
         .current_dir(&root)
@@ -748,7 +748,7 @@ fn worktree_setup_failure_keeps_worktree_and_retries() {
     ns().current_dir(&root)
         .args(["worktree", "new", "u4"])
         .assert()
-        .code(1)
+        .code(2)
         .stderr(predicate::str::contains("cannot parse"));
     assert!(!root.parent().unwrap().join("myrepo.worktrees/u4").exists());
 }
