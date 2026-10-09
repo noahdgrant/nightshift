@@ -15,6 +15,7 @@ jobs:
   rust:
     name: Rust (fmt, clippy, test)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: cli
@@ -33,6 +34,7 @@ jobs:
   skills-and-evals:
     name: Skills lint and eval dry-run
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -69,6 +71,7 @@ jobs:
   fixtures:
     name: Fixture tests (py-inventory)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: evals/fixtures/py-inventory
@@ -86,6 +89,7 @@ jobs:
   private-refs:
     name: Private-reference guard
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Check tracked files

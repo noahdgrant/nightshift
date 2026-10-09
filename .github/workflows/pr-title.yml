@@ -18,6 +18,7 @@ jobs:
   conventional-title:
     name: Conventional Commit title
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: ytanikin/pr-conventional-commits@1.4.0
         with:
