@@ -131,7 +131,7 @@ An artifact is current when its frontmatter `sha` matches `git rev-parse --short
 | no `evidence`, or evidence `sha` ≠ HEAD | verify |
 | `evidence` fail | build, with its body as `{feedback}` |
 | no `review`, or review `sha` ≠ HEAD | review |
-| `review` fail (not an open Critical or an open Important in changed code after the last fix cycle; that is `blocked`) | build, with its body as `{feedback}` |
+| `review` fail (not an open Critical or Important in changed code after the last fix cycle; that is `blocked`) | build, with its body as `{feedback}` |
 | no `pr`, or `pr` pass with `sha` ≠ HEAD | ship |
 | `pr` fail | the phase its body names first (verify or review), with its body as `{feedback}`, else stuck |
 | a phase out of attempts | stuck |

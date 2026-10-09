@@ -17,9 +17,22 @@ Categories are the Conventional Commit type labels.
 
 | Role | Label in our tracker | Meaning |
 |---|---|---|
-| `high` | `priority:high` | Blocks other open issues, breaks the factory or CI, or is a security issue |
+| `critical` | `priority:critical` | Fix next: a Critical or security finding, including one that escaped an earlier review |
+| `high` | `priority:high` | Blocks other open issues, or breaks the factory or CI |
 | `medium` | `priority:medium` | Normal work |
 | `low` | `priority:low` | Nice to have |
+
+## Areas
+
+Every issue also carries at least one area label.
+
+| Label | Covers |
+|---|---|
+| `area:cli` | the `ns` CLI in `cli/` |
+| `area:skills` | the skills under `skills/` |
+| `area:evals` | eval cases, fixtures and `ns eval` |
+| `area:factory` | the overnight factory: `ns watch`, `ns run`, `.nightshift/` |
+| `area:repo` | repo-wide docs and config |
 
 ## States
 

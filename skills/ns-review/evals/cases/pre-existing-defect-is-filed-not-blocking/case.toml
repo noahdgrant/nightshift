@@ -1,0 +1,81 @@
+description = "A clean diff that caps reserve's ttl sits beside seeded defect (a), the pre-existing `quantity >= available` off-by-one in Warehouse.reserve. review.md must pass, record that finding with Scope: pre-existing and status deferred to a new issue in the local .scratch/ tracker (needs-triage, bug, priority:high, says it escaped an earlier review), and leave the defect unfixed: an escape never blocks the unit and never goes to the fix loop."
+fixture = "py-inventory"
+skills = ["ns-review"]
+extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Review unit 01-cap-reservation-ttl, on branch ns/01-cap-reservation-ttl in this repo. The brief is .ns/01-cap-reservation-ttl/brief.md, and its issue is .scratch/reservations/issues/01-cap-reservation-ttl.md in the repo's local tracker. gates: auto. Nobody is around to answer questions. Stop once review.md is written: skip verify for this run, don't push, don't ship.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/01-cap-reservation-ttl",
+  "mkdir -p .ns/01-cap-reservation-ttl && cp ../brief.md .ns/01-cap-reservation-ttl/",
+  "git apply ../max-ttl.patch",
+  "git add src tests && git commit -q -m 'feat(warehouse): cap reservation ttl at one day'",
+]
+
+[[check]]
+type = "frontmatter"
+path = ".ns/01-cap-reservation-ttl/review.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+# A finding on the reserve boundary is scoped pre-existing and deferred to an issue.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, sys
+text = open(".ns/01-cap-reservation-ttl/review.md", encoding="utf-8").read()
+blocks = re.split(r"(?m)^(?=### [CIS]\d+\.)", text)[1:]
+for b in blocks:
+    field = lambda k: (re.search(r"(?mi)^-\s*\**" + k + r":\**\s*(.*)$", b) or [None, ""])[1]
+    if ("warehouse.py" in field("Location")
+            and re.search(r"(?i)>=|exact|off.by.one|boundary|all (of )?the available", b)
+            and re.match(r"(?i)`?pre-existing", field("Scope"))
+            and re.match(r"(?i)deferred:", field("Status"))):
+        print("found:", b.splitlines()[0])
+        sys.exit(0)
+sys.exit("no finding on the reserve boundary with Scope: pre-existing and Status: deferred")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# The escape is a new needs-triage bug at high priority that names the unit and says it escaped an earlier review.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, re, sys
+for p in glob.glob(".scratch/**/*.md", recursive=True):
+    if p.endswith("01-cap-reservation-ttl.md"):
+        continue
+    t = open(p, encoding="utf-8").read()
+    if not re.search(r"(?i)escaped an earlier review", t):
+        continue
+    checks = {
+        "status": re.search(r"(?mi)^\**Status:\**\s*`?needs-triage", t),
+        "category": re.search(r"(?mi)^\**Category:\**\s*`?bug", t),
+        "priority": re.search(r"(?mi)^\**Priority:\**\s*`?(priority:)?high\b", t),
+        "unit": "01-cap-reservation-ttl" in t,
+    }
+    print(p, {k: bool(v) for k, v in checks.items()})
+    if all(checks.values()):
+        sys.exit(0)
+sys.exit("no new .scratch issue that escaped an earlier review with needs-triage, bug, priority:high and a link to the unit")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# The escape went to the tracker, not the fix loop: the pre-existing defect is still there.
+type = "regex"
+path = "src/inventory/warehouse.py"
+pattern = "if quantity >= available:"
+
+[[check]]
+type = "judge"
+rubric = "Did the review find the pre-existing off-by-one in Warehouse.reserve (`quantity >= available`), judge it as code the unit didn't change, file it as a new issue instead of blocking or fixing it, and still pass the unit?"
+required = false

@@ -1,4 +1,4 @@
-description = "The fix loop has run its 3 cycles and I1 (no test that cancel_all raises UnknownItem) is still open, on a line the unit added. review.md must be blocked by the cycle-limit rule (cycles 3, first body line `Open after 3 fix cycles` naming I1), not pass with I1 deferred to a follow-up issue."
+description = "The fix loop has run its 3 cycles and I1 (no test that cancel_all raises UnknownItem) is still open, on a line the unit added. review.md must be blocked by the cycle-limit rule (cycles 3, first body line `Open after 3 fix cycles` naming I1), not pass with I1 filed as an escape issue."
 fixture = "py-inventory"
 skills = ["ns-review"]
 extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
@@ -43,9 +43,9 @@ pattern = "(?i)by hand"
 
 [[check]]
 type = "diff_scope"
-allow = [".ns/**"]
+allow = [".ns/**", ".scratch/**"]
 
 [[check]]
 type = "judge"
-rubric = "Did the review end blocked because I1, an Important finding on a line the unit added, stayed open after the third fix cycle, rather than passing with I1 deferred to a follow-up issue? Does its opening line name I1?"
+rubric = "Did the review end blocked because I1, an Important finding on a line the unit added, stayed open after the third fix cycle, rather than passing with I1 filed as an escape issue? Does its opening line name I1?"
 required = false

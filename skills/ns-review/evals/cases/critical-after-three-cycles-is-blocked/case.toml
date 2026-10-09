@@ -53,7 +53,7 @@ pattern = "(?i)ns-define"
 
 [[check]]
 type = "diff_scope"
-allow = [".ns/**"]
+allow = [".ns/**", ".scratch/**"]
 
 [[check]]
 type = "judge"
