@@ -240,11 +240,14 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         factory: Option<PathBuf>,
     },
 
-    /// Report config path and validity, configured roles, and harnesses on PATH
+    /// Report config path and validity, configured roles, harnesses on PATH, and forge accounts
     #[command(after_help = "\
 Examples:
   ns doctor
-  NS_CONFIG=./ns.toml ns doctor")]
+  NS_CONFIG=./ns.toml ns doctor
+
+forge.<name>: configured, token_resolved, and for github the account gh api user returns.
+The token itself is never printed.")]
     Doctor,
 }
 
@@ -277,8 +280,14 @@ Examples:
 Spec: docs/FACTORY.md. Prints {unit,outcome,phase,reason,pr,cost_usd,phases}. Events go to
 <git-common-dir>/ns/runs.jsonl, harness transcripts to <git-common-dir>/ns/transcripts/.
 
+Forge tokens: [forge.github] / [forge.gitlab] in the ns config (see ns ask --help for the path)
+are resolved once and exported as GH_TOKEN / GITLAB_TOKEN to every child; a set variable wins.
+  [forge.github]
+  token_command = \"gh auth token --user <account>\"   # or: token_env = \"MY_GH_TOKEN\"
+
 Exit codes: 0 done or merged, 1 stuck, 2 usage or config error (incl. missing subscription
-login, harness not on PATH), 3 budget, 4 paused on a usage limit, 5 another ns run holds the lock.";
+login, harness not on PATH, forge token that does not resolve), 3 budget, 4 paused on a usage
+limit, 5 another ns run holds the lock.";
 
 const WATCH_HELP: &str = "\
 Examples:
@@ -287,7 +296,7 @@ Examples:
   ns watch --until 06:30 --max-units 3
 
 Lists open issues labelled [queue] ready_label with gh, drops blocked ones and ones with an
-open PR that closes them, sorts by [queue] order, and runs each with ns run --issue.
+open PR that closes them, sorts by [queue] order, and runs each with ns run --issue. Forge tokens as in ns run --help.
 Prints {units,stopped,cost_usd}. Exit codes as ns run's errors: 2 usage, 5 lock held.";
 
 const EVAL_HELP: &str = "\

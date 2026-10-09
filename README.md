@@ -29,17 +29,24 @@ Then, in each project you want to run the factory on:
 
 ## Run it overnight
 
-Log in to claude with your Claude subscription, then start `ns watch` as the GitHub account that should open the PRs. `gh` uses whatever `GH_TOKEN` is set, so export it first:
+Log in to claude with your Claude subscription, and name the GitHub account that should open the PRs in `~/.config/nightshift/config.toml`:
+
+```toml
+[forge.github]
+token_command = "gh auth token --user <account>"
+```
+
+`ns watch` runs the command once and exports the token as `GH_TOKEN` to `gh` and every phase. A `GH_TOKEN` already set wins. `ns doctor` shows which account resolved.
 
 ```bash
 claude /login
-export GH_TOKEN=$(gh auth token --user <account>)
+ns doctor
 ns watch --until 06:30
 ```
 
 It takes `status:ready-for-agent` issues one at a time and starts no new unit after 06:30. A unit already running finishes. [`docs/FACTORY.md`](docs/FACTORY.md#ns-watch) lists the other stop conditions, such as `limits.max_units`.
 
-The worktree is not a sandbox. Each phase runs claude with permissions bypassed, so it can use the exported `GH_TOKEN` and read or change anything your user can. Run it on a dedicated machine or VM, with a bot account or a fine-grained token limited to the repo as the only GitHub login on that machine, and mark only issues you trust as ready.
+The worktree is not a sandbox. Each phase runs claude with permissions bypassed, so it can use the `GH_TOKEN` it inherits and read or change anything your user can. Run it on a dedicated machine or VM, with a bot account or a fine-grained token limited to the repo as the only GitHub login on that machine, and mark only issues you trust as ready.
 
 [`docs/FACTORY.md`](docs/FACTORY.md) is the reference for the factory definition (`.nightshift/nightshift.toml`), `ns run` and `ns watch`.
 

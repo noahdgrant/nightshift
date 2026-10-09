@@ -163,7 +163,7 @@ ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]
 
 An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (unix seconds) pins the clock for tests; sleeps then advance it instead of blocking. Output: `{units:[{issue, unit, outcome, reason, pr, cost_usd}], stopped, cost_usd}`.
 
-`--once` takes one unit. `--dry-run` prints the ordered queue with skip reasons. `gh` runs with whatever `GH_TOKEN` the environment carries, so the account is chosen by whoever starts `ns watch`.
+`--once` takes one unit. `--dry-run` prints the ordered queue with skip reasons. `gh` and the phases get `GH_TOKEN` from `[forge.github]` in the user config (`cli/README.md`, `[forge]`). A `GH_TOKEN` already set in the environment wins, so whoever starts `ns watch` can still pick the account.
 
 ## Trust
 
@@ -177,8 +177,14 @@ What remains: the team's own text is trusted in full, so a team member who paste
 ## Starting a night
 
 ```bash
-export GH_TOKEN=$(gh auth token --user <account>)   # the account PRs should come from
 ns watch --until 06:30 >> ~/.local/share/nightshift/watch.log 2>&1
+```
+
+Put the account PRs should come from in the user config first, and check it with `ns doctor`:
+
+```toml
+[forge.github]
+token_command = "gh auth token --user <account>"
 ```
 
 Log in to claude with the subscription account first (`claude /login`). The phases run with permissions bypassed inside worktrees. Run on a machine where that's acceptable.
