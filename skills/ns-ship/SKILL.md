@@ -13,7 +13,7 @@ metadata:
 
 # Ship
 
-You own the unit from reviewed branch to merge-ready PR. You stop at merge-ready. Merging belongs to the human.
+You own the unit from reviewed branch to merge-ready PR. You stop at merge-ready and never merge. A human merges, or `ns run`'s merge step does under `merge.policy = auto` in `.nightshift/nightshift.toml`.
 
 **Input**: `.ns/<unit-id>/review.md` and `.ns/<unit-id>/evidence.md` in the unit's worktree.
 **Output**: `.ns/<unit-id>/pr.md`, the PR body as sent, plus the open PR.
@@ -122,4 +122,4 @@ The loop ends at merge-ready (`status: pass`) or at a blocker only a human can c
 
 Report the PR URL, the gate status, what you fixed and what you dismissed (with reasons), and anything waiting on a human, such as a required approval.
 
-Under either gate policy, ship ends here. Merging, deploying, and releasing (including OTA and flashing production units) wait for a human. Merge only when the human explicitly asks. Before you merge on request, confirm the PR head is still the head that went green, then use the repo's merge method. After the merge, remove the worktree with `ns worktree remove <unit-id>` (or `git worktree remove`).
+Under either gate policy, ship ends here, and it never merges, even when asked to. `ns run` merges under `merge.policy = auto` once CI is green, `review.md` passes at HEAD and no protected path changed; otherwise a human merges. Deploying and releasing (including OTA and flashing production units) wait for a human. After the merge, remove the worktree with `ns worktree remove <unit-id>` (or `git worktree remove`).

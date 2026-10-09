@@ -1,6 +1,6 @@
 # ns
 
-The Nightshift CLI. It creates one worktree per unit of work, runs a configured harness headless for a role, lints skills, installs them into harness skill directories, and measures them with evals.
+The Nightshift CLI. It creates one worktree per unit of work, runs a configured harness headless for a role, drives units through the phases unattended (`ns run`, `ns watch`), lints skills, installs them into harness skill directories, and measures them with evals.
 
 ## Install
 
@@ -24,6 +24,8 @@ cargo install --path cli
 | 4 | `ns ask`, `ns eval`: harness binary not on PATH |
 | 5 | `ns ask --write`: the harness has no `command_write` |
 
+`ns run` has its own codes: 0 done or merged, 1 stuck, 2 usage or config error, 3 budget, 4 paused on a usage limit, 5 another `ns run` holds the lock.
+
 ## Commands
 
 ### `ns worktree new <unit-id> [--base <branch>] [--repo <path>] [--no-setup]`
@@ -41,7 +43,7 @@ setup = ["git submodule update --init"]
 
 Each command runs with `sh -c` in the new worktree, with `NS_UNIT`, `NS_WORKTREE` and `NS_MAIN_ROOT` set. Their output goes to stderr. `setup` in the JSON lists `{"run","exit"}` per command that ran. The first failing command stops the rest and makes `new` exit 1. The worktree stays in place, and `ns worktree setup <unit-id>` retries. An idempotent repeat of `new` runs nothing and prints `"setup": []`, and so does `--no-setup`.
 
-`.nightshift/` is the factory definition root (D15 in `docs/DESIGN.md`). Only the `[worktree]` table is read so far. Other tables are ignored, so a definition written for later versions still works. Unknown keys inside `[worktree]` are rejected.
+`.nightshift/` is the factory definition root (D15 in `docs/DESIGN.md`). The whole file is parsed against the schema in [docs/FACTORY.md](../docs/FACTORY.md), and unknown tables or keys are rejected (exit 2).
 
 ### `ns worktree setup <unit-id> [--repo <path>]`
 
@@ -122,6 +124,25 @@ Run control:
 
 Results: for every skill where something ran, `skills/<skill>/evals/results/<YYYY-MM-DD>-<short-sha>.json` holds the config, the commit and whether the skill dir was dirty, per-case and per-arm metrics (pass rate, median input and output tokens, cost, wall time and turns, outcomes), and skill metrics: `uplift` (mean per-case pass-rate gap against `without`, or `old`), `efficiency` (median tokens and wall time, `with` against the baseline) and trigger precision and recall. No transcripts. `--no-write-results` skips it. Transcripts go to `<transcripts>/runs/<run-id>/<skill>/<case>/<arm>-<n>.jsonl`, next to the harness's stderr.
 
+### `ns factory validate [--factory <dir>]`
+
+Parses `<dir>/nightshift.toml` (default `<main-worktree>/.nightshift/`) and checks gates, billing, merge policy and globs, phase names, harness names (user config or built in) and each `agents/<role>/agent.md` (frontmatter `role` matches the directory, placeholders are known). Prints `{"ok","path","name","phases","errors"}` with every phase's resolved skill, harness, model, timeout, attempts and prompt source. Exits 1 on any error.
+
+### `ns run [<unit-id>] [--issue <n>] [--from <phase>] [--gates stop|auto] [--base <ref>] [--dry-run] [--factory <dir>]`
+
+Implements `ns run` in [docs/FACTORY.md](../docs/FACTORY.md): creates or reuses the unit's worktree, reads `.ns/<unit>/*.md`, picks the next phase from the state table, runs the phase's harness headless in the worktree with the rendered prompt on stdin, and repeats until the unit is done, merged, stuck, paused or out of budget. With only `--issue`, the unit id is `<n>-<slug of the issue title>` (read with `gh issue view`).
+
+- **Harness.** Each phase uses the `command_write` of its harness: `[harness.<name>]` from the user config, else the built-in. The built-in claude command for `ns run` is `claude -p --permission-mode bypassPermissions --model {model} --output-format stream-json --verbose`. Headless `acceptEdits` can't run shell commands, and the phases need Bash. Permissions are bypassed, so the agent can run any command as your user; cwd is always the unit's worktree, but nothing else confines it. Run it on a machine where that is acceptable. A configured claude command gets `--output-format stream-json --verbose` added if it lacks them.
+- **Files.** Transcripts: `<git-common-dir>/ns/transcripts/<unit>/<phase>-<attempt>.jsonl` (plus `.stderr`). Run log: `<git-common-dir>/ns/runs.jsonl`. Lock: `<git-common-dir>/ns-run.lock`.
+- **Guards.** After every phase: the default branch on `origin` must not have moved to a commit of this unit, and a PR named in `pr.md` must not be merged. Either stops the run as stuck.
+- **Merge.** With `[merge] policy = "auto"`, a passing `pr.md` leads to the merge step: update a branch that is behind, wait for CI (bounded by `ci_timeout_minutes`), send CI failures and conflicts back to build, leave PRs touching `protected` globs to a human, else `gh pr merge --squash`. Outcome `merged`.
+- **Billing.** `[defaults] billing = "subscription"` (the default) removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY` from claude's environment, drops `--bare`, and refuses to start (exit 2) without `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. A usage-limit error from claude ends the run as `paused` (exit 4) without using an attempt. `budget_usd` is a soft cap on the reported cost, unset by default on a subscription.
+- `--dry-run` prints the next decision, the rendered prompt and the command. It creates no worktree, takes no lock, and calls no harness.
+
+### `ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]`
+
+Lists open issues labelled `[queue] ready_label` with `gh`, drops issues whose first line is `Blocked by: #a, #b` with any blocker open, and issues an open PR closes, then sorts by the first matching `[queue] order` label and the issue number. For each unit it swaps the ready label for the in-progress label, fetches `origin`, and runs `ns run --issue <n> --base origin/<default>` in process. Afterwards: `merged` removes the in-progress label, `done` sets `done_label`, `stuck` (or a `done` that needs a human merge) sets `stuck_label` and comments the reason with an AI disclaimer, `budget` returns the issue to the ready label and stops, and `paused` sleeps until the usage limit resets and resumes the same unit, or returns the issue and stops if the reset is past `--until`. `--dry-run` prints the ordered queue and the skip reasons. `gh` uses whatever `GH_TOKEN` is set. `NS_NOW` (unix seconds) pins the clock for tests.
+
 ### `ns doctor`
 
 Prints the config path, whether it exists and parses, and each configured role with its resolved harness, model, read-only and write commands, and whether the binary is on PATH. `distinct_harnesses` lists the providers in use, so a skill can tell whether two roles get a cross-provider check. `harnesses` reports which of `claude`, `codex`, `cursor-agent`, `gemini` and `opencode` are on PATH. `problems` lists anything that would make `ns ask` fail.
@@ -176,6 +197,7 @@ max_trials = 5                # adaptive ceiling
 budget_usd = 5.0              # per invocation
 max_runs = 40
 transcripts = "~/.local/share/nightshift/evals"
+billing = "subscription"      # or "api"; subscription strips API-key variables and --bare from claude
 
 # Built in; define it to override.
 [eval.harnesses.claude]

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::error::SfError;
@@ -36,50 +36,24 @@ pub fn check_unit_id(id: &str, example: &str) -> Result<()> {
 }
 
 #[derive(Serialize)]
-struct NewOutput {
-    unit: String,
-    path: String,
-    branch: String,
-    artifacts: String,
-    setup: Vec<SetupResult>,
-}
-
-/// `<main-root>/.nightshift/nightshift.toml`, the factory definition root (D15).
-/// Only `[worktree]` is read so far; other tables are ignored.
-#[derive(Debug, Default, Deserialize)]
-struct FactoryDef {
-    #[serde(default)]
-    worktree: WorktreeDef,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WorktreeDef {
-    /// Shell commands run in a newly created worktree.
-    #[serde(default)]
-    setup: Vec<String>,
+pub struct NewOutput {
+    pub unit: String,
+    pub path: String,
+    pub branch: String,
+    pub artifacts: String,
+    pub setup: Vec<SetupResult>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SetupResult {
-    run: String,
-    exit: Option<i32>,
+    pub run: String,
+    pub exit: Option<i32>,
 }
 
-pub const FACTORY_DEF: &str = ".nightshift/nightshift.toml";
-
 fn load_setup(root: &Path) -> Result<Vec<String>> {
-    let p = root.join(FACTORY_DEF);
-    let text = match fs::read_to_string(&p) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(anyhow::anyhow!("cannot read {}: {e}", p.display())),
-    };
-    let def: FactoryDef = toml::from_str(&text).map_err(|e| {
-        SfError::general(format!("cannot parse {}: {e}", p.display()))
-            .hint("the worktree section looks like:\n\n[worktree]\nsetup = [\"git submodule update --init\"]")
-    })?;
-    Ok(def.worktree.setup)
+    Ok(crate::factory::load(&root.join(".nightshift"))?
+        .worktree
+        .setup)
 }
 
 /// Run each setup command with `sh -c` in the worktree; stop at the first failure.
@@ -178,6 +152,25 @@ pub fn new(
     } else {
         load_setup(&repo.root)?
     };
+    let out = ensure(&repo, unit, base, &setup)?;
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(setup_failed(&out.setup, unit).unwrap_or(ExitCode::SUCCESS))
+}
+
+/// Where `ensure` puts a unit's worktree when it creates one.
+pub fn planned_path(repo: &Repo, unit: &str) -> PathBuf {
+    let parent = repo.root.parent().unwrap_or(&repo.root);
+    parent.join(format!("{}.worktrees", repo.name())).join(unit)
+}
+
+/// The existing worktree for `unit`, if any.
+pub fn existing(repo: &Repo, unit: &str) -> Result<Option<PathBuf>> {
+    let list = git::worktrees(&repo.root)?;
+    Ok(find_unit(&list, unit).map(|e| e.path.clone()))
+}
+
+/// Create or reuse the unit's worktree; run `setup` only when it is newly created.
+pub fn ensure(repo: &Repo, unit: &str, base: Option<&str>, setup: &[String]) -> Result<NewOutput> {
     let branch = format!("{BRANCH_PREFIX}{unit}");
     let list = git::worktrees(&repo.root)?;
 
@@ -186,8 +179,7 @@ pub fn new(
         existing.path.clone()
     } else {
         created = true;
-        let parent = repo.root.parent().unwrap_or(&repo.root);
-        let path = parent.join(format!("{}.worktrees", repo.name())).join(unit);
+        let path = planned_path(repo, unit);
         if path.exists() {
             return Err(SfError::general(format!(
                 "{} exists but is not the worktree for branch {branch}",
@@ -250,19 +242,17 @@ pub fn new(
     ensure_excluded(&repo.common_dir)?;
 
     let results = if created {
-        run_setup(&setup, unit, &path, &repo.root)?
+        run_setup(setup, unit, &path, &repo.root)?
     } else {
         Vec::new()
     };
-    let out = NewOutput {
+    Ok(NewOutput {
         unit: unit.to_string(),
         path: path.to_string_lossy().into_owned(),
         branch,
         artifacts: artifacts.to_string_lossy().into_owned(),
         setup: results,
-    };
-    println!("{}", serde_json::to_string_pretty(&out)?);
-    Ok(setup_failed(&out.setup, unit).unwrap_or(ExitCode::SUCCESS))
+    })
 }
 
 /// `ns worktree setup <unit>`: re-run the `[worktree] setup` commands in an existing worktree.
@@ -319,10 +309,10 @@ pub fn latest_status(artifacts: &Path) -> Option<ArtifactStatus> {
         let Ok(text) = fs::read_to_string(&p) else {
             continue;
         };
-        let Ok(Some(fm)) = frontmatter::parse(&text) else {
+        let Ok(Some(_)) = frontmatter::parse(&text) else {
             continue;
         };
-        let get = |k: &str| fm.get(k).and_then(yaml_scalar);
+        let get = |k: &str| frontmatter::field(&text, k);
         let status = get("status");
         let phase = get("phase");
         if status.is_none() && phase.is_none() {
@@ -344,15 +334,6 @@ pub fn latest_status(artifacts: &Path) -> Option<ArtifactStatus> {
             })
             .then_with(|| a.file.cmp(&b.file))
     })
-}
-
-pub fn yaml_scalar(v: &serde_yaml::Value) -> Option<String> {
-    match v {
-        serde_yaml::Value::String(s) => Some(s.clone()),
-        serde_yaml::Value::Number(n) => Some(n.to_string()),
-        serde_yaml::Value::Bool(b) => Some(b.to_string()),
-        _ => None,
-    }
 }
 
 pub fn list(repo: Option<&Path>) -> Result<()> {

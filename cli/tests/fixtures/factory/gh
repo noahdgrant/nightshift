@@ -1,0 +1,45 @@
+#!/bin/bash
+# Fake gh for ns run / ns watch tests. Serves canned JSON from $FAKE_GH_DIR and records calls.
+d="$FAKE_GH_DIR"
+printf '%s\n' "$*" >> "$d/calls"
+case "$1 $2" in
+  "issue list")
+    echo "["
+    first=1
+    while read -r line; do
+      [ -z "$line" ] && continue
+      n=$(printf '%s' "$line" | sed -n 's/.*"number": *\([0-9]*\).*/\1/p')
+      grep -qx "$n" "$d/taken" 2>/dev/null && continue
+      [ $first = 1 ] || echo ","
+      first=0
+      printf '%s\n' "$line"
+    done < "$d/issues.jsonl"
+    echo "]"
+    ;;
+  "issue view") cat "$d/issue-$3.json" 2>/dev/null || { echo "no issue $3" >&2; exit 1; } ;;
+  "issue edit")
+    if [[ " $* " == *" --remove-label status:ready-for-agent "* ]]; then echo "$3" >> "$d/taken"; fi
+    if [[ " $* " == *" --add-label status:ready-for-agent "* ]]; then sed -i "/^$3\$/d" "$d/taken"; fi
+    ;;
+  "issue comment") ;;
+  "pr list") cat "$d/prs.json" 2>/dev/null || echo "[]" ;;
+  "pr view")
+    st=$(cat "$d/pr-$3.state" 2>/dev/null || echo OPEN)
+    ms=$(cat "$d/pr-$3.merge" 2>/dev/null || echo CLEAN)
+    printf '{"state":"%s","headRefOid":"%s","mergeStateStatus":"%s"}\n' "$st" "$(git rev-parse HEAD 2>/dev/null)" "$ms"
+    ;;
+  "pr checks")
+    [[ " $* " == *" --watch "* ]] && exit 0
+    c=$(( $(cat "$d/checks-$3.count" 2>/dev/null || echo 0) + 1 ))
+    echo $c > "$d/checks-$3.count"
+    cat "$d/checks-$3-$c.json" 2>/dev/null || cat "$d/checks-$3.json" 2>/dev/null || echo "[]"
+    ;;
+  "pr diff") cat "$d/diff-$3.txt" 2>/dev/null || true ;;
+  "pr update-branch")
+    [ -f "$d/update-$3.fail" ] && { echo "conflict" >&2; exit 1; }
+    echo CLEAN > "$d/pr-$3.merge"
+    ;;
+  "pr merge") echo MERGED > "$d/pr-$3.state" ;;
+  "run view") echo "FAILED tests/test_x.py::test_y - assert 1 == 2" ;;
+  *) echo "fake gh: unsupported: $*" >&2; exit 1 ;;
+esac

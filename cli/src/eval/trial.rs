@@ -398,6 +398,7 @@ pub fn run_harness(
     timeout: Duration,
     stdout_path: &Path,
     stderr_path: &Path,
+    subscription: bool,
 ) -> Result<ProcResult> {
     ensure_scratch(&scratch.repo)?;
     let (bin, args) = argv
@@ -413,6 +414,9 @@ pub fn run_harness(
         .stdout(out)
         .stderr(err);
     sandbox_env(&mut cmd, scratch);
+    if subscription && crate::billing::is_claude(argv) {
+        crate::billing::scrub(&mut cmd);
+    }
     let (status, timed_out, wall_s) = match run_process(cmd, Some(prompt.as_bytes().to_vec()), timeout) {
         Ok(r) => r,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

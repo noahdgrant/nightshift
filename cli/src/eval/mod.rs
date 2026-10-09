@@ -1,9 +1,9 @@
 //! `ns eval`: measure whether skills help. The spec is docs/EVALS.md.
 
 mod checks;
-mod parser;
+pub(crate) mod parser;
 mod spec;
-mod trial;
+pub(crate) mod trial;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -216,7 +216,23 @@ fn resolve(args: &Args) -> Result<Env> {
         ))
         .into());
     }
-    let argv = config::expand(&harness.command, cfg.model.as_deref());
+    let mut argv = config::expand(&harness.command, cfg.model.as_deref());
+    if !["subscription", "api"].contains(&cfg.billing.as_str()) {
+        return Err(SfError::new(
+            EXIT_NOT_CONFIGURED,
+            format!(
+                "[eval] billing = {:?}: use \"subscription\" or \"api\"",
+                cfg.billing
+            ),
+        )
+        .into());
+    }
+    if cfg.billing == "subscription" && crate::billing::is_claude(&argv) {
+        argv = crate::billing::strip_bare(argv);
+        if !args.dry_run {
+            crate::billing::check_login()?;
+        }
+    }
     if argv.is_empty() {
         return Err(SfError::new(
             EXIT_NOT_CONFIGURED,
@@ -894,6 +910,7 @@ fn execute(args: &Args, env: &Env, plans: Vec<SkillPlan>) -> Result<ExitCode> {
                         Duration::from_secs(args.trigger_timeout_secs),
                         &out,
                         &dir.join(format!("{i}.stderr")),
+                        env.cfg.billing == "subscription",
                     )?;
                     let parsed = env
                         .parser
@@ -1125,6 +1142,7 @@ fn run_trial(
         Duration::from_secs(cp.case.timeout_secs()),
         &stdout_path,
         &dir.join(format!("{}-{n}.stderr", arm.label())),
+        env.cfg.billing == "subscription",
     )?;
     let parsed = env
         .parser
@@ -1419,13 +1437,8 @@ fn dirty(root: &Path, dir: &Path) -> bool {
 }
 
 mod time {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     fn now() -> (i64, u32, u32, u64) {
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let secs = crate::clock::Clock::from_env().now().max(0) as u64;
         let days = (secs / 86_400) as i64;
         let (y, m, d) = civil(days);
         (y, m, d, secs % 86_400)

@@ -35,6 +35,9 @@ pub struct EvalConfig {
     pub harnesses: BTreeMap<String, EvalHarness>,
     /// `[eval.capability.<name>]`: configured when the table exists.
     pub capability: BTreeMap<String, Capability>,
+    /// `subscription` (default): claude runs never see API-key variables or `--bare`, and a
+    /// missing subscription login stops the run. `api` turns the guard off.
+    pub billing: String,
 }
 
 /// A capability: arbitrary string keys (`base`, `sdk`, ...) plus an optional `path_prepend`.
@@ -59,6 +62,7 @@ impl Default for EvalConfig {
             transcripts: "~/.local/share/nightshift/evals".into(),
             harnesses: BTreeMap::new(),
             capability: BTreeMap::new(),
+            billing: "subscription".into(),
         }
     }
 }
