@@ -56,7 +56,7 @@ METHOD: <how it was checked>
 
 Pick the first launch mode the harness supports, and record which one ran:
 
-1. **Subagents.** Spawn all N in one message, in the background. Pass each its brief file.
+1. **Subagents.** Spawn all N in one message, in the foreground, so your turn waits for every result. Pass each its brief file. Never end your turn while workers are running: a headless run (`ns run`, `claude -p`) kills background work after the turn ends. Launch in the background only in an interactive session that is notified when work finishes.
 2. **`ns ask`.** Run one headless process per worker, all at once. Read-only workers use the default mode. Workers that edit files or run commands (verify, build) add `--write --cwd <their worktree>`:
    ```bash
    # workers.tsv: one "<worker> <role>" pair per line
