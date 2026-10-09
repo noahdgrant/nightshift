@@ -43,6 +43,8 @@ jobs:
         run: cargo build --manifest-path cli/Cargo.toml
       - name: Lint skills
         run: cli/target/debug/ns lint skills --human
+      - name: Check human-review markers
+        run: cli/target/debug/ns check-markers --human
       - name: Eval dry-run (validates every case and fixture, calls no model)
         run: |
           cfg="$RUNNER_TEMP/ns-config.toml"
