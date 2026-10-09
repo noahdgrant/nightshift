@@ -1,9 +1,12 @@
-//! `ns doctor`: config and harness availability report.
+//! `ns doctor`: config, harness availability and forge credential report.
+
+use std::process::{Command, Stdio};
 
 use anyhow::Result;
 use serde_json::{json, Map, Value};
 
 use crate::config;
+use crate::forge;
 use crate::which::which;
 
 pub const KNOWN_HARNESSES: &[&str] = &["claude", "codex", "cursor-agent", "gemini", "opencode"];
@@ -63,6 +66,22 @@ pub fn run() -> Result<()> {
         ));
     }
 
+    let forges = cfg.as_ref().map(|c| c.forge.clone()).unwrap_or_default();
+    let mut forge = Map::new();
+    for (name, var, host_var, f) in forges.each() {
+        if let Some(f) = f {
+            if let Err(e) = forge::export_one(name, var, host_var, f) {
+                problems.push(e.message);
+            }
+        }
+        let resolved = std::env::var(var).is_ok_and(|v| !v.is_empty());
+        let mut entry = json!({ "configured": f.is_some(), "token_resolved": resolved });
+        if name == "github" {
+            entry["account"] = json!(resolved.then(github_account).flatten());
+        }
+        forge.insert(name.to_string(), entry);
+    }
+
     let out = json!({
         "ok": parses && problems.is_empty(),
         "config": {
@@ -77,8 +96,21 @@ pub fn run() -> Result<()> {
             .map(|c| c.roles.values().map(|r| r.harness.clone()).collect::<std::collections::BTreeSet<_>>())
             .unwrap_or_default(),
         "harnesses": Value::Object(harnesses),
+        "forge": Value::Object(forge),
         "problems": problems,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
+}
+
+/// The login `gh` authenticates as with the exported `GH_TOKEN`.
+fn github_account() -> Option<String> {
+    let out = Command::new("gh")
+        .args(["api", "user", "--jq", ".login"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let login = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !login.is_empty()).then_some(login)
 }
