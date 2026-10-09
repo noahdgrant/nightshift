@@ -39,14 +39,14 @@ pub fn ok(cwd: &Path, args: &[&str]) -> bool {
 /// The `git patch-id` of `sha`'s changes since its merge base with `base`. `None` when either
 /// is not a commit here, or the diff is empty.
 pub fn diff_id(cwd: &Path, base: &str, sha: &str) -> Option<String> {
-    if sha.is_empty() {
+    if sha.is_empty() || sha.starts_with('-') || base.starts_with('-') {
         return None;
     }
     let mb = run(cwd, &["merge-base", base, sha]).ok()?;
     let diff = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["diff-tree", "-p", "--no-color", &mb, sha])
+        .args(["diff-tree", "-p", "--binary", "--no-color", &mb, sha])
         .output()
         .ok()
         .filter(|o| o.status.success())?;
@@ -156,7 +156,8 @@ impl Repo {
             .unwrap_or_else(|| "repo".to_string())
     }
 
-    /// The repo's default branch: origin/HEAD (local branch if present), else current HEAD.
+    /// The repo's default branch: origin/HEAD (local branch if present), else the checked-out
+    /// branch, else the detached HEAD's sha. Never the literal `HEAD`, which moves with the worktree.
     pub fn default_base(&self) -> Result<String> {
         if let Ok(r) = run(
             &self.root,
@@ -182,8 +183,10 @@ impl Repo {
             }
             return Ok(r);
         }
-        if ok(&self.root, &["rev-parse", "--verify", "--quiet", "HEAD"]) {
-            return Ok("HEAD".to_string());
+        if let Ok(sha) = run(&self.root, &["rev-parse", "--verify", "--quiet", "HEAD"]) {
+            return Ok(
+                run(&self.root, &["symbolic-ref", "--quiet", "--short", "HEAD"]).unwrap_or(sha),
+            );
         }
         Err(
             SfError::general("repository has no commits yet; make a first commit, or pass --base")
@@ -196,6 +199,7 @@ impl Repo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::{commit_file, g, rebased_unit, write_commit};
 
     #[test]
     fn parses_porcelain() {
@@ -207,55 +211,79 @@ mod tests {
         assert!(e[2].bare);
     }
 
-    fn commit(dir: &Path, file: &str, text: &str) -> String {
-        std::fs::write(dir.join(file), text).unwrap();
-        run(dir, &["add", file]).unwrap();
-        run(
-            dir,
-            &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "commit",
-                "-qm",
-                file,
-            ],
-        )
-        .unwrap();
-        run(dir, &["rev-parse", "HEAD"]).unwrap()
+    #[test]
+    fn a_rebase_keeps_the_diff_id_and_a_content_change_does_not() {
+        let r = rebased_unit();
+        let d = &r.dir;
+        assert_ne!(r.reviewed, r.rebased);
+        assert!(same_diff(d, "main", &r.reviewed, &r.rebased));
+        assert!(!same_diff(d, "main", &r.reviewed, "0000000"));
+        let changed = commit_file(d, "work.txt", "two\n");
+        assert!(!same_diff(d, "main", &r.reviewed, &changed));
+        assert!(!same_diff(d, "main", "0000000", &r.rebased));
+        assert!(!same_diff(d, "main", "", &r.rebased));
     }
 
     #[test]
-    fn a_rebase_keeps_the_diff_id_and_a_content_change_does_not() {
+    fn an_empty_diff_is_never_the_same_diff() {
+        let r = rebased_unit();
+        assert!(!same_diff(&r.dir, "main", "main", "main"));
+        assert!(same_diff(&r.dir, "main", &r.rebased, &r.rebased));
+    }
+
+    #[test]
+    fn option_looking_shas_and_bases_have_no_diff_id() {
+        let r = rebased_unit();
+        assert_eq!(diff_id(&r.dir, "main", "--help"), None);
+        assert_eq!(diff_id(&r.dir, "--all", &r.rebased), None);
+        assert_eq!(diff_id(&r.dir, "main", "-p"), None);
+    }
+
+    #[test]
+    fn a_binary_change_after_review_is_not_the_same_diff_but_a_rebase_is() {
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path();
-        run(d, &["init", "-q", "-b", "main"]).unwrap();
-        commit(d, "README", "hi\n");
-        run(d, &["checkout", "-qb", "unit"]).unwrap();
-        let reviewed = commit(d, "work.txt", "one\n");
-        run(d, &["checkout", "-q", "main"]).unwrap();
-        commit(d, "UPSTREAM", "x\n");
-        run(d, &["checkout", "-q", "unit"]).unwrap();
-        run(
-            d,
-            &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "rebase",
-                "-q",
-                "main",
-            ],
-        )
-        .unwrap();
-        let rebased = run(d, &["rev-parse", "HEAD"]).unwrap();
-        assert_ne!(reviewed, rebased);
+        g(d, &["init", "-q", "-b", "main"]);
+        commit_file(d, "README", "hi\n");
+        g(d, &["checkout", "-qb", "unit"]);
+        write_commit(d, "blob.bin", &[0, 1, 2, 0, 3]);
+        let reviewed = g(d, &["rev-parse", "HEAD"]);
+        write_commit(d, "blob.bin", &[0, 9, 9, 0, 9]);
+        let changed = g(d, &["rev-parse", "HEAD"]);
+        g(d, &["reset", "-q", "--hard", &reviewed]);
+        g(d, &["checkout", "-q", "main"]);
+        commit_file(d, "UPSTREAM", "x\n");
+        g(d, &["checkout", "-q", "unit"]);
+        g(d, &["rebase", "-q", "main"]);
+        let rebased = g(d, &["rev-parse", "HEAD"]);
         assert!(same_diff(d, "main", &reviewed, &rebased));
-        let changed = commit(d, "work.txt", "two\n");
-        assert!(!same_diff(d, "main", &reviewed, &changed));
-        assert!(!same_diff(d, "main", "0000000", &rebased));
-        assert!(!same_diff(d, "main", "", &rebased));
+        assert!(!same_diff(d, "main", &changed, &reviewed));
+    }
+
+    #[test]
+    fn the_default_base_is_never_the_literal_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        g(&dir, &["init", "-q", "-b", "dev"]);
+        assert!(Repo::discover(&dir).unwrap().default_base().is_err());
+        let sha = commit_file(&dir, "README", "hi\n");
+        let repo = Repo::discover(&dir).unwrap();
+        assert_eq!(repo.default_base().unwrap(), "dev");
+        g(&dir, &["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+        g(
+            &dir,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk",
+            ],
+        );
+        assert_eq!(repo.default_base().unwrap(), "origin/trunk");
+        g(
+            &dir,
+            &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+        );
+        g(&dir, &["checkout", "-q", "--detach"]);
+        assert_eq!(repo.default_base().unwrap(), sha);
     }
 }

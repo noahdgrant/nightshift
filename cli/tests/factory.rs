@@ -525,14 +525,16 @@ fn ci_failure_rebuilds_then_merges_on_the_same_pr() {
     assert!(p.contains("assert 1 == 2"), "{p}");
 }
 
-/// main gains an unrelated commit after review. `pass:script` in ship rebases the unit onto
-/// it; `pass:commit` changes the unit's content instead.
-fn rebased_after_review(ship: &[&str]) -> (Env, Value, i32) {
-    rebased_with_pr_head(ship, "git rev-parse HEAD")
-}
+const PR_HEAD_AT_SHIP: &str = "git rev-parse HEAD";
 
-/// As `rebased_after_review`, with the PR head set to the sha `pr_head` prints before the rebase.
-fn rebased_with_pr_head(ship: &[&str], pr_head: &str) -> (Env, Value, i32) {
+/// main gains an unrelated commit after review. `pass:script` in ship rebases the unit onto
+/// it; `pass:commit` changes the unit's content instead. The PR head is the sha `pr_head`
+/// prints before the rebase; `setup` runs before the unit does.
+fn rebased_after_review(
+    ship: &[&str],
+    pr_head: &str,
+    setup: impl FnOnce(&Env),
+) -> (Env, Value, i32) {
     let e = Env::new();
     e.factory(AUTO);
     e.ctl("pr", "12");
@@ -553,6 +555,7 @@ fn rebased_with_pr_head(ship: &[&str], pr_head: &str) -> (Env, Value, i32) {
         ),
     );
     e.gh_file("checks-12.json", GREEN);
+    setup(&e);
     let out = e.ns().args(["run", "--issue", "7"]).output().unwrap();
     let v = serde_json::from_slice(&out.stdout).unwrap();
     (e, v, out.status.code().unwrap())
@@ -560,7 +563,7 @@ fn rebased_with_pr_head(ship: &[&str], pr_head: &str) -> (Env, Value, i32) {
 
 #[test]
 fn a_rebase_after_review_still_merges() {
-    let (e, v, code) = rebased_after_review(&["pass:script"]);
+    let (e, v, code) = rebased_after_review(&["pass:script"], PR_HEAD_AT_SHIP, |_| {});
     assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
     assert_eq!(e.calls(), ["triage", "build", "verify", "review", "ship"]);
     let wt = e.worktree(UNIT);
@@ -571,7 +574,7 @@ fn a_rebase_after_review_still_merges() {
 
 #[test]
 fn a_pr_head_from_before_the_rebase_merges_at_that_head() {
-    let (e, v, code) = rebased_with_pr_head(&["pass:script"], "git rev-parse HEAD");
+    let (e, v, code) = rebased_after_review(&["pass:script"], PR_HEAD_AT_SHIP, |_| {});
     assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
     let old = fs::read_to_string(e.ghd.join("pr-12.head")).unwrap();
     let wt = e.worktree(UNIT);
@@ -580,12 +583,51 @@ fn a_pr_head_from_before_the_rebase_merges_at_that_head() {
     assert!(e.gh_calls().contains(&want), "{}", e.gh_calls());
 }
 
+const UPDATED_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+#[test]
+fn a_behind_pr_merges_at_the_head_update_branch_returns() {
+    let (e, v, code) = rebased_after_review(&["pass:script"], PR_HEAD_AT_SHIP, |e| {
+        e.gh_file("pr-12.merge", "BEHIND");
+        e.gh_file("updated-12.head", UPDATED_HEAD);
+    });
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    let calls = e.gh_calls();
+    assert!(calls.contains("pr update-branch 12"), "{calls}");
+    let want = format!("--match-head-commit {UPDATED_HEAD}");
+    assert!(calls.contains(&want), "{calls}");
+}
+
+#[test]
+fn a_behind_pr_without_an_updated_head_merges_at_the_pre_update_head() {
+    let (e, v, code) = rebased_after_review(&["pass:script"], PR_HEAD_AT_SHIP, |e| {
+        e.gh_file("pr-12.merge", "BEHIND");
+        e.gh_file("updated-12.head", "none");
+    });
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    let old = fs::read_to_string(e.ghd.join("pr-12.head")).unwrap();
+    assert_eq!(old.trim(), "none");
+    let calls = e.gh_calls();
+    let merge = calls.lines().find(|l| l.starts_with("pr merge")).unwrap();
+    let head = merge.rsplit(' ').next().unwrap();
+    assert_eq!(head.len(), 40, "{merge}");
+    assert_ne!(head, UPDATED_HEAD);
+}
+
+#[test]
+fn a_dry_run_on_a_rebased_unit_sees_its_reviewed_artifacts_as_current() {
+    let (e, v, code) = rebased_after_review(&["pass:script"], PR_HEAD_AT_SHIP, |_| {});
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    let v = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+    assert_eq!(v["decision"]["action"], "done", "{v}");
+}
+
 #[test]
 fn a_pr_head_with_other_content_needs_a_human_merge() {
     let other = "echo other > other.txt; git add other.txt; \
                  git -c user.name=f -c user.email=f@f commit -qm other; \
                  git rev-parse HEAD; git reset -q --hard HEAD~1";
-    let (e, v, code) = rebased_with_pr_head(&["pass:script"], other);
+    let (e, v, code) = rebased_after_review(&["pass:script"], other, |_| {});
     assert_eq!((code, &v["outcome"]), (0, &"done".into()), "{v}");
     let reason = v["reason"].as_str().unwrap();
     assert!(
@@ -597,7 +639,7 @@ fn a_pr_head_with_other_content_needs_a_human_merge() {
 
 #[test]
 fn a_content_change_after_review_reverifies_reviews_and_ships() {
-    let (e, v, code) = rebased_after_review(&["pass:commit", "pass"]);
+    let (e, v, code) = rebased_after_review(&["pass:commit", "pass"], PR_HEAD_AT_SHIP, |_| {});
     assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
     assert_eq!(
         e.calls(),
@@ -609,7 +651,8 @@ fn a_content_change_after_review_reverifies_reviews_and_ships() {
 
 #[test]
 fn a_content_change_after_every_review_runs_out_of_attempts() {
-    let (e, v, code) = rebased_after_review(&["pass:commit", "pass:commit"]);
+    let (e, v, code) =
+        rebased_after_review(&["pass:commit", "pass:commit"], PR_HEAD_AT_SHIP, |_| {});
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["reason"], "verify is out of attempts (2)", "{v}");
     assert_eq!(

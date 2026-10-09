@@ -720,18 +720,6 @@ struct Finish {
     reset_at: Option<i64>,
 }
 
-/// The ref a unit's diff is taken against: `--base`, else `origin/HEAD`'s branch, else the
-/// branch checked out in the main worktree.
-fn resolve_diff_base(repo: &Repo, base: Option<&str>) -> String {
-    if let Some(b) = base {
-        return b.to_string();
-    }
-    let symref = |r: &str| git::run(&repo.root, &["symbolic-ref", "--quiet", "--short", r]);
-    symref("refs/remotes/origin/HEAD")
-        .or_else(|_| symref("HEAD"))
-        .unwrap_or_else(|_| "main".into())
-}
-
 fn finish(outcome: Outcome, reason: impl Into<String>, phase: Option<&str>) -> Finish {
     Finish {
         outcome,
@@ -846,7 +834,11 @@ pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
     }
 
     let _lock = Lock::acquire(&repo.common_dir, &unit)?;
-    let wt = worktree::ensure(&repo, &unit, args.base.as_deref(), &fac.worktree.setup)?;
+    let base = match &args.base {
+        Some(b) => b.clone(),
+        None => repo.default_base()?,
+    };
+    let wt = worktree::ensure(&repo, &unit, Some(&base), &fac.worktree.setup)?;
     let ctx = Ctx {
         unit: unit.clone(),
         worktree: PathBuf::from(&wt.path),
@@ -857,7 +849,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
         issue: args.issue,
         issue_url,
         gates,
-        diff_base: resolve_diff_base(&repo, args.base.as_deref()),
+        diff_base: base,
     };
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
@@ -930,7 +922,10 @@ fn dry_run(
         Some(p) => git::run(p, &["rev-parse", "--short", "HEAD"]).unwrap_or_default(),
         None => String::new(),
     };
-    let base = resolve_diff_base(repo, args.base.as_deref());
+    let base = match &args.base {
+        Some(b) => b.clone(),
+        None => repo.default_base()?,
+    };
     let state = read_state(
         &wt.join(".ns").join(unit),
         head,
@@ -1462,6 +1457,7 @@ fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::{commit_file, g, rebased_unit, Rebased};
 
     #[test]
     fn marked_regions_errors_when_the_merge_base_is_unknown() {
@@ -1624,46 +1620,6 @@ mod tests {
         assert!(d.join("history/build-2.md").exists());
     }
 
-    fn g(dir: &Path, args: &[&str]) -> String {
-        let mut a = vec!["-c", "user.name=t", "-c", "user.email=t@t"];
-        a.extend_from_slice(args);
-        git::run(dir, &a).unwrap()
-    }
-
-    fn commit_file(dir: &Path, file: &str, text: &str) -> String {
-        fs::write(dir.join(file), text).unwrap();
-        g(dir, &["add", file]);
-        g(dir, &["commit", "-qm", file]);
-        g(dir, &["rev-parse", "HEAD"])
-    }
-
-    struct Rebased {
-        _tmp: tempfile::TempDir,
-        dir: PathBuf,
-        reviewed: String,
-        rebased: String,
-    }
-
-    fn rebased_unit() -> Rebased {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().canonicalize().unwrap();
-        g(&dir, &["init", "-q", "-b", "main"]);
-        commit_file(&dir, "README", "hi\n");
-        g(&dir, &["checkout", "-qb", "unit"]);
-        let reviewed = commit_file(&dir, "work.txt", "one\n");
-        g(&dir, &["checkout", "-q", "main"]);
-        commit_file(&dir, "UPSTREAM", "x\n");
-        g(&dir, &["checkout", "-q", "unit"]);
-        g(&dir, &["rebase", "-q", "main"]);
-        let rebased = g(&dir, &["rev-parse", "HEAD"]);
-        Rebased {
-            _tmp: tmp,
-            dir,
-            reviewed,
-            rebased,
-        }
-    }
-
     fn real_state(r: &Rebased) -> State {
         State {
             arts: BTreeMap::new(),
@@ -1690,6 +1646,18 @@ mod tests {
         let mut no_base = real_state(&r);
         no_base.diff_base = None;
         assert!(!no_base.current(&r.reviewed));
+    }
+
+    #[test]
+    fn decide_is_done_for_artifacts_at_the_pre_rebase_sha() {
+        let r = rebased_unit();
+        let mut s = real_state(&r);
+        for p in ["triage", "build", "verify", "review", "ship"] {
+            s.arts.insert(p, art("pass", &r.reviewed));
+        }
+        assert_eq!(decide(&s), Decision::Done);
+        s.diff_base = None;
+        assert_ne!(decide(&s), Decision::Done);
     }
 
     #[test]
@@ -1721,42 +1689,6 @@ mod tests {
         changed.head = g(&r.dir, &["rev-parse", "HEAD"]);
         archive_for(d, "verify", &changed).unwrap();
         assert!(!d.join("review.md").exists() && !d.join("pr.md").exists());
-    }
-
-    fn repo_at(dir: &Path) -> Repo {
-        Repo::discover(dir).unwrap()
-    }
-
-    #[test]
-    fn the_diff_base_is_the_override_then_origin_head_then_the_checked_out_branch() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().canonicalize().unwrap();
-        g(&dir, &["init", "-q", "-b", "dev"]);
-        commit_file(&dir, "README", "hi\n");
-        let repo = repo_at(&dir);
-        assert_eq!(resolve_diff_base(&repo, Some("release")), "release");
-        assert_eq!(resolve_diff_base(&repo, None), "dev");
-        g(&dir, &["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
-        g(
-            &dir,
-            &[
-                "symbolic-ref",
-                "refs/remotes/origin/HEAD",
-                "refs/remotes/origin/trunk",
-            ],
-        );
-        assert_eq!(resolve_diff_base(&repo, None), "origin/trunk");
-        assert_eq!(resolve_diff_base(&repo, Some("release")), "release");
-    }
-
-    #[test]
-    fn the_diff_base_falls_back_to_main_on_a_detached_head() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().canonicalize().unwrap();
-        g(&dir, &["init", "-q", "-b", "dev"]);
-        commit_file(&dir, "README", "hi\n");
-        g(&dir, &["checkout", "-q", "--detach"]);
-        assert_eq!(resolve_diff_base(&repo_at(&dir), None), "main");
     }
 
     #[test]
