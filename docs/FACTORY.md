@@ -49,17 +49,17 @@ stuck_label = "status:ready-for-human"
 order = ["type:fix", "type:feat", "type:refactor", "type:test", "type:docs", "type:chore"]
 
 [limits]
-max_units = 4                      # per `ns watch` invocation
+max_units = 8                      # optional cap per `ns watch` invocation; unset means no cap
 budget_usd = 25.0                  # soft cap, summed from harness cost reports. Unset: no cap
                                    # under billing = "subscription", 25.0 under "api"
 
 [merge]                            # absent table: policy = "human"
 policy = "auto"                    # auto | human. See "Merge"
-protected = [".github/**", "scripts/check-private.sh", ".nightshift/**", "cli/src/run.rs"]
+human_merge = [".github/**", "scripts/check-private.sh", ".nightshift/**", "cli/src/run.rs"]
 ci_timeout_minutes = 30
 ```
 
-Every table and key is optional; the defaults are the values above, except `limits.budget_usd` and `merge` as noted. A phase table may override `harness`, `model`, `timeout_minutes` and `max_attempts`, and its `skill` defaults to `ns-<phase>`. Unknown keys and unknown phases are errors. `ns factory validate` checks the file and every `agents/<role>/agent.md` (role matches the directory, placeholders are known), and exits 1 on any problem.
+Every table and key is optional; the defaults are the values above, except `limits.max_units` (unset: no cap), `limits.budget_usd` and `merge` as noted. A phase table may override `harness`, `model`, `timeout_minutes` and `max_attempts`, and its `skill` defaults to `ns-<phase>`. Unknown keys and unknown phases are errors. `ns factory validate` checks the file and every `agents/<role>/agent.md` (role matches the directory, placeholders are known), and exits 1 on any problem.
 
 ## agents/<role>/agent.md
 
@@ -120,7 +120,7 @@ Hard rules, enforced in code whatever the prompts say:
 
 Run log: append one JSON line per event to `.git/ns/runs.jsonl` in the common git dir: unit, phase, attempt, decision, artifact status, sha, cost, tokens, wall time, exit. Start, end, breaches, CI failures and merges are events too. `ns run --dry-run` prints the next decision, the rendered prompt and the command, and runs nothing: no worktree, no lock, no harness.
 
-Budget: before each phase, if the cost reported so far (across the units of one `ns watch`) has reached `limits.budget_usd`, the run ends with `budget`. On a subscription the reported cost is an estimate, so the cap is notional and unset by default; `max_units` and `--until` bound a night instead.
+Budget: before each phase, if the cost reported so far (across the units of one `ns watch`) has reached `limits.budget_usd`, the run ends with `budget`. On a subscription the reported cost is an estimate, so the cap is notional and unset by default; `--until`, an optional `max_units`, and usage-limit pauses bound a night instead.
 
 Output: final JSON `{unit, outcome: done|merged|stuck|budget|paused, phase, reason, pr, cost_usd, reset_at, artifact, phases:[...]}`. Exit 0 for done or merged, 1 for stuck, 2 for a usage or config error (bad definition, missing subscription login, harness not on PATH), 3 for budget, 4 for paused, 5 when another runner holds the lock.
 
@@ -132,7 +132,7 @@ Output: final JSON `{unit, outcome: done|merged|stuck|budget|paused, phase, reas
 2. The PR head must equal the worktree HEAD, and `review.md` must be `pass` at that sha. Otherwise `done`, needing a human merge.
 3. Branch protection requires PRs to be up to date with the base. `BEHIND`: `gh pr update-branch <pr>`. `DIRTY`, or a failed update: back to build with "rebase onto <default> and resolve conflicts" as `{feedback}`, which uses a build attempt.
 4. `gh pr checks <pr> --watch`, killed after `ci_timeout_minutes` (stuck). Then `gh pr checks <pr> --json name,state,bucket,link`. No checks at all: `done`, needing a human merge. Any check not `pass` or `skipping`: back to build with the failing check names and the tail of `gh run view <id> --log-failed` as `{feedback}`, then verify, review and ship onto the same PR.
-5. `gh pr diff <pr> --name-only`. Any path matching a `protected` glob (`**` crosses directories): `done` with reason "touches protected paths; needs a human merge". Protected paths cover the factory's own guardrails: CI config, the definition, the guard and merge code.
+5. `gh pr diff <pr> --name-only`. Any path matching a `human_merge` glob (`**` crosses directories): `done` with reason "changes human-merge files; needs a human merge". Human-merge files cover the factory's own guardrails: CI config, the definition, the guard and merge code.
 6. `gh pr merge <pr> --squash --delete-branch --match-head-commit <sha>`. If `gh pr view` then reports `MERGED`, the outcome is `merged`.
 
 ## Billing
@@ -157,7 +157,7 @@ ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]
 2. Drop issues whose first-line `Blocked by: #a, #b` names any open issue, and issues that already have an open PR whose body says `Closes #n`.
 3. Sort by the first matching `order` label, then by issue number.
 4. Take the first. Swap `ready_label` for `in_progress_label`. `git fetch origin`, then `ns run --issue <n> --base origin/<default>` (in process, sharing the budget).
-5. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`. On `stuck`, or a `done` that needs a human merge (protected paths, no CI), swap to `stuck_label` and comment the reason and the last artifact path. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
+5. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`. On `stuck`, or a `done` that needs a human merge (human-merge files, no CI), swap to `stuck_label` and comment the reason and the last artifact path. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
 6. On `paused`, keep `in_progress_label` and sleep until the reset time (30 minutes when unknown, then check again), then resume the same unit. If the reset is at or past `--until`, put `ready_label` back and stop cleanly.
 7. Repeat until the queue is empty, `--until` passes (no new unit starts after it), `max_units` is reached, or the budget is spent.
 

@@ -408,12 +408,13 @@ fn budget_stops_new_phases() {
     assert_eq!(e.calls(), ["triage", "build"]);
 }
 
-const AUTO: &str = "[merge]\npolicy = \"auto\"\nprotected = [\".github/**\", \".nightshift/**\"]\nci_timeout_minutes = 1\n";
+const AUTO: &str = "[merge]\npolicy = \"auto\"
+human_merge = [\".github/**\", \".nightshift/**\"]\nci_timeout_minutes = 1\n";
 const GREEN: &str = r#"[{"name":"ci","state":"SUCCESS","bucket":"pass","link":"https://github.com/o/r/actions/runs/1/job/2"}]"#;
 const RED: &str = r#"[{"name":"ci","state":"FAILURE","bucket":"fail","link":"https://github.com/o/r/actions/runs/99/job/2"}]"#;
 
 #[test]
-fn auto_merge_squashes_when_green_and_unprotected() {
+fn auto_merge_squashes_when_green_and_no_human_merge_files() {
     let e = Env::new();
     e.factory(AUTO);
     e.ctl("pr", "12");
@@ -491,7 +492,7 @@ fn ci_failure_rebuilds_then_merges_on_the_same_pr() {
 }
 
 #[test]
-fn protected_paths_need_a_human_merge() {
+fn human_merge_files_need_a_human_merge() {
     let e = Env::new();
     e.factory(AUTO);
     e.ctl("pr", "12");
@@ -503,7 +504,7 @@ fn protected_paths_need_a_human_merge() {
     assert!(v["reason"]
         .as_str()
         .unwrap()
-        .starts_with("touches protected paths; needs a human merge"));
+        .starts_with("changes human-merge files; needs a human merge"));
     assert!(!e.gh_calls().contains("pr merge"));
 }
 
@@ -751,4 +752,16 @@ fn watch_merged_removes_in_progress_and_bases_on_origin() {
     );
     let wt = e.worktree("2-fix-a");
     assert!(git(&wt, &["merge-base", "--is-ancestor", &upstream, "HEAD"]).is_empty());
+}
+
+#[test]
+fn watch_has_no_unit_cap_by_default() {
+    let e = Env::new();
+    for n in [2, 3, 4, 5, 6] {
+        e.ready(n, &format!("Fix {n}"), &["type:fix"], "");
+    }
+    e.queue("build", &["pass:commit"; 5]);
+    let v = e.run(&["watch"], 0);
+    assert_eq!(v["units"].as_array().unwrap().len(), 5, "{v}");
+    assert_eq!(v["stopped"], "queue empty");
 }
