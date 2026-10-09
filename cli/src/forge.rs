@@ -39,7 +39,7 @@ fn fetch(name: &str, source: &TokenSource) -> Result<String, SfError> {
             let out = Command::new("sh")
                 .args(["-c", c])
                 .stdin(Stdio::null())
-                .stderr(Stdio::inherit())
+                .stderr(Stdio::null())
                 .output()
                 .map_err(|e| {
                     SfError::usage(
@@ -73,6 +73,12 @@ fn fetch(name: &str, source: &TokenSource) -> Result<String, SfError> {
                 )
             })?,
     };
+    if token.contains('\0') {
+        return Err(SfError::usage(
+            format!("forge {name}: the token contains a NUL byte"),
+            HINT,
+        ));
+    }
     Ok(token)
 }
 
