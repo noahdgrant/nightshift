@@ -1,0 +1,50 @@
+diff --git a/src/inventory/models.py b/src/inventory/models.py
+--- a/src/inventory/models.py
++++ b/src/inventory/models.py
+@@ -6,6 +6,7 @@
+ from datetime import datetime, timedelta
+ 
+ DEFAULT_TTL = timedelta(minutes=30)
++MAX_TTL = timedelta(days=1)
+ 
+ 
+ @dataclass(frozen=True)
+diff --git a/src/inventory/warehouse.py b/src/inventory/warehouse.py
+--- a/src/inventory/warehouse.py
++++ b/src/inventory/warehouse.py
+@@ -11,7 +11,7 @@
+     UnknownItem,
+     UnknownReservation,
+ )
+-from inventory.models import DEFAULT_TTL, Item, Reservation, StockLevel
++from inventory.models import DEFAULT_TTL, MAX_TTL, Item, Reservation, StockLevel
+ 
+ 
+ class Warehouse:
+@@ -94,6 +94,8 @@
+             raise ValueError("quantity must be positive")
+         if ttl <= timedelta(0):
+             raise ValueError("ttl must be positive")
++        if ttl > MAX_TTL:
++            raise ValueError(f"ttl must be at most {MAX_TTL}")
+         available = self.available(sku, now)
+         if quantity >= available:
+             raise InsufficientStock(sku, quantity, available)
+diff --git a/tests/test_warehouse.py b/tests/test_warehouse.py
+--- a/tests/test_warehouse.py
++++ b/tests/test_warehouse.py
+@@ -103,3 +103,14 @@
+     assert (levels["BOLT-M6"].on_hand, levels["BOLT-M6"].reserved) == (10, 3)
+     assert levels["BOLT-M6"].available == 7
+     assert levels["NUT-M6"].available == 0
++
++
++def test_reserve_rejects_ttl_over_one_day(warehouse):
++    with pytest.raises(ValueError):
++        warehouse.reserve("BOLT-M6", 1, now=T0, ttl=timedelta(days=1, seconds=1))
++    assert warehouse.reservations("BOLT-M6") == []
++
++
++def test_reserve_accepts_ttl_of_exactly_one_day(warehouse):
++    r = warehouse.reserve("BOLT-M6", 1, now=T0, ttl=timedelta(days=1))
++    assert r.expires_at == T0 + timedelta(days=1)

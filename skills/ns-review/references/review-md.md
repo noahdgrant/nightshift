@@ -9,9 +9,9 @@ Classify each merged finding. The first matching row wins.
 | Bucket | When | Status |
 |---|---|---|
 | Contract gap | The reviewer flagged it because `brief.md` was unclear or incomplete | `dismissed: contract gap: <what brief.md should say>`. List it under Contract gaps |
-| Act on | A real defect in correctness, security or maintainability given the contract. It would block a real PR | `open` |
+| Act on | A real defect in correctness, security or maintainability given the contract. In changed code it would block a real PR; in pre-existing code it is an escape | `open`, or `deferred: #<n>` once an escape is filed |
 | Consider | Real, but you are unsure the fix is worth its cost now | `open`, severity Suggestion, with the trade-off stated |
-| Noted | Valid but not actionable here (premature, low impact, outside the diff) | `dismissed: noted: <why>` |
+| Noted | Valid but not actionable (premature, too low impact to track) | `dismissed: noted: <why>` |
 | Dismissed | Wrong, a hypothetical the call path rules out, a preference, or missing context the repo supplies | `dismissed: <why>` |
 
 Scrutinise a dismissal of a security or correctness finding twice. If Act on holds more than about five items, check whether you are filtering hard enough. The Dismissed list stays in the file: it lets the human override you.
@@ -43,7 +43,7 @@ launch: subagents | ns ask | inline (sequential)
 # Review: <unit-id>
 
 ## Summary
-Open: <n> Critical, <n> Important, <n> Suggestion. Fixed: <n>. Dismissed: <n>. Deferred: <n>.
+Open: <n> Critical, <n> Important, <n> Suggestion. Fixed: <n>. Dismissed: <n>. Escapes filed: <n>.
 Change size: <lines changed> lines in <n> files.
 Panel: <full | reduced>, because <the size rule that chose it; for reduced, whether security was added and why>.
 
@@ -54,10 +54,13 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 ## Critical
 ### C1. <title>
 - Location: `path/to/file.py:42`
+- Axis: correctness, security
+- Scope: changed | pre-existing
+- Cycle: 0
 - Raised by: correctness (provider-a), security (provider-b). Cross-provider.
 - Finding: <one or two lines>
 - Evidence: <trace, quote, or command + output>
-- Status: open | fixed (cycle 2, <commit>) | dismissed: <reason> | deferred: #<follow-up issue> (an Important in pre-existing code only)
+- Status: open | fixed (cycle 2, <commit>) | dismissed: <reason> | deferred: #<issue>
 
 ## Important
 ### I1. ...
@@ -75,9 +78,10 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 
 ## Gaps
 - <reviewer slice that produced no result, and why>
+- <escape the tracker couldn't take: its ID and why. It doesn't block.>
 ```
 
-Status follows the Gate in `SKILL.md`. For any `blocked` status, the first body line, before the title, is the one-sentence reason `ns watch` quotes. After the cycle limit it names the open Criticals and the open Importants in changed code, Criticals first:
+Status follows the Gate in `SKILL.md`. For any `blocked` status, the first body line, before the title, is the one-sentence reason `ns watch` quotes. After the cycle limit it names the open Criticals and Importants in changed code, Criticals first:
 
 ```markdown
 Open after 3 fix cycles: C1, I2, I4.
@@ -86,6 +90,13 @@ Options: fix by hand on the unit's branch then delete `.ns/<unit>/review.md` so 
 
 # Review: <unit-id>
 ```
+
+Every finding, in `review.md` and in `review/cycle-<n>.md`, carries the fields in the template above, in that order; `ns watch` and `ns quality` parse them. Their values:
+
+- `Axis`: the axes of the reviewers that raised it, from `correctness`, `readability`, `architecture`, `security`, `performance`, `tests`, `spec`, `comments`. Comma-separated when several raised it. A change-size finding from step 1 takes `architecture`.
+- `Scope`: `changed` or `pre-existing`, as step 3 of `SKILL.md` defines them.
+- `Cycle`: the review pass that first raised it, `0` for the first review.
+- `Status`: `deferred: #<n>` only for an escape filed as issue `#<n>`.
 
 `Cycles run` is the review passes the reviewer ran in, for example `0, 1`.
 

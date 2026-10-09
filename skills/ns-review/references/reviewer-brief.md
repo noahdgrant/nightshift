@@ -31,12 +31,13 @@ Check the diff against every item below. Each one not met is a finding, at the s
 - It shows why: a traced call path, a quoted line of the contract, a command and its output. "This could be None" needs the caller that passes None.
 - It separates "this is broken" from "I would have written it differently". Drop the second kind unless it names a concrete cost.
 - It proposes the fix when you have one: a named restructuring, a test case, a guard at the boundary.
+- A defect in surrounding code the diff didn't change is still a finding. Report it, and say it is pre-existing.
 
 ## Severity
 
 The bar says how its items map to severity. Use these definitions for anything else.
 
-- `Critical`: broken behaviour, data loss, an exploitable vulnerability, or a contract requirement that is missing. Blocks the change.
+- `Critical`: broken behaviour, data loss, an exploitable vulnerability, or a contract requirement that is missing. Blocks the change when the diff caused it.
 - `Important`: must be fixed before merge: a missing test, a wrong abstraction, weak error handling, a structural regression.
 - `Suggestion`: worth considering, not required. Style, naming, optional simplifications.
 

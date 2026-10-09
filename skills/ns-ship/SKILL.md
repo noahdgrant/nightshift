@@ -34,12 +34,12 @@ GO needs every line below to hold on the current `HEAD`. Record each one. The Ve
 
 - The test, lint, and build commands from `docs/agents/stack.md` pass.
 - `evidence.md` covers every acceptance criterion in `brief.md`. An `inconclusive` item is not covered.
-- `review.md` has no open Critical finding, and no open Important finding in changed code.
+- `review.md` has no open Critical or Important finding in changed code.
 - The diff holds no secrets, credentials, or debug-only switches left on.
 - You can write a rollback plan. A change you can't undo needs a stated way forward instead (for example, a fix-forward migration).
 - If the change ships to devices or production (OTA, flashing, a deploy, a data migration), read [references/rollout.md](references/rollout.md) and fill its plan. Firmware always takes this branch.
 
-NO-GO writes `pr.md` with `status: fail` (the fix is agent work) or `status: blocked` (it needs hardware, credentials, or a decision no agent can make), and names the failing line first in the body. A finding `review.md` deferred to a follow-up issue never makes NO-GO: list it under Follow-ups and carry on.
+NO-GO writes `pr.md` with `status: fail` (the fix is agent work) or `status: blocked` (it needs hardware, credentials, or a decision no agent can make), and names the failing line first in the body. A finding in pre-existing code never makes NO-GO, whatever its severity: `review.md` files it as an escape issue (`deferred: #<n>`). List it under Follow-ups and carry on.
 
 ## 3. Ship the reviewed commits as they are
 
@@ -74,7 +74,7 @@ a pseudocode sketch, call tree, file tree, or `diff` sketch. Pick one, two at mo
 - <one to three bullets, each a real command and its result, taken from evidence.md. Link the full evidence.>
 
 ## Follow-ups
-<one line per finding deferred in review.md: the issue link and a few words. Drop the section when there are none.>
+<one line per finding review.md marks `deferred: #<n>`: the issue link and a few words. Drop the section when there are none.>
 
 ## Rollback
 <how to undo it: revert the PR, plus anything a revert does not undo

@@ -28,10 +28,11 @@ Every comment or issue posted to the issue tracker during triage **must** start 
 
 Two **category** roles: `bug` (something is broken) and `enhancement` (new feature or improvement).
 
-Three **priority** roles, which decide what `ns watch` works first:
+**Priority** roles, which decide what `ns watch` works first:
 
 | Priority | Meaning |
 |---|---|
+| `critical` | optional: a Critical or security finding, fix next. A repo whose `triage-labels.md` has no `critical` row uses `high` |
 | `high` | blocks other open issues, breaks the factory or CI, or is a security issue |
 | `medium` | normal work |
 | `low` | nice to have |
