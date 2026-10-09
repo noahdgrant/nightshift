@@ -75,6 +75,7 @@ The policy comes from the prompt that started the run (`ns-auto` and `ns run` st
 
 Some actions always wait for a human, under either policy: force-push to a shared branch, merging, deploying or releasing (including OTA and flashing production units), deleting data, and messaging anyone outside the team.
 
+- **Merging** is never a phase's action, `ns-ship` included. `ns run`'s merge step merges the unit's own PR, by squash, under `merge.policy = auto` in `.nightshift/nightshift.toml`, when CI is green, `review.md` passes at HEAD, and no protected path changed. Otherwise a human merges.
 - A **shared branch** is any branch except the unit's own `ns/<unit-id>`. Force-pushing `ns/<unit-id>` with `--force-with-lease` is fine while every commit on it came from the factory.
 - **Messaging outside the team** covers every channel beyond the project's own tracker and PRs (email, chat, customer portals). Comments to external people on the tracker follow the `External comments` setting in `docs/agents/issue-tracker.md` (default `wait`).
 
