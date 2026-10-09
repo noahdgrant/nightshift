@@ -1,0 +1,116 @@
+description = "Clear bug report for seeded defect (a) in the local .scratch/ tracker, with a full overnight contract and gates: auto. With no ns factory definition and no git remote, ns-auto runs triage, build, verify, review and ship itself, and the unit's artifacts end at pr.md with status blocked (nowhere to push) or pass."
+fixture = "py-inventory"
+skills = ["ns-auto"]
+# The phase skills and everything they load or link are installed in both arms. The "without" arm can
+# still run each phase, but nothing chains them, so it measures what ns-auto adds: the foreman loop.
+# The fixture has no .nightshift/ and the trial no origin, so ns-auto takes the in-session branch, and
+# ns-ship cannot push. ns-domain-modeling and ns-grilling are left out: under gates: auto triage routes
+# anything needing a grill to a human, and this bug needs none.
+extra_skills = [
+  "ns-contract",
+  "ns-triage",
+  "ns-build",
+  "ns-tdd",
+  "ns-verify",
+  "ns-review",
+  "ns-ship",
+  "ns-swarm",
+  "ns-no-comments",
+  "ns-setup",
+  "ns-setup-verify",
+  "ns-writing-for-humans",
+  "ns-principles",
+  "ns-principle-attack-the-premise",
+  "ns-principle-encode-lessons-in-structure",
+  "ns-principle-explain-the-number",
+  "ns-principle-fix-root-causes",
+  "ns-principle-laziness-protocol",
+  "ns-principle-minimize-reader-load",
+  "ns-principle-never-block-on-the-human",
+  "ns-principle-prove-it-works",
+  "ns-principle-redesign-from-first-principles",
+  "ns-principle-sequence-verifiable-units",
+  "ns-principle-subtract-before-you-add",
+  "ns-principle-test-behavior-not-implementation",
+]
+requires = ["python"]
+timeout_minutes = 60
+prompt = """
+/ns-auto
+
+Overnight contract. Nobody will answer questions tonight.
+- Goal: fix the bug in .scratch/reservations/issues/01-full-quantity-reservation-rejected.md.
+- Done: evidence.md, review.md and pr.md pass at HEAD.
+- Unit and worktree: unit 01-full-quantity-reservation-rejected, in the worktree ns worktree new makes (or ../<repo>.worktrees/<unit> by hand), base main.
+- Allowed actions: gates: auto. You may commit on the unit's branch, push it and open a PR.
+- Escape hatch: stop at the first blocked or stuck phase, or after 50 minutes, and report here.
+"""
+
+[setup]
+# Keep phase artifacts out of git so diff_scope only sees source and test changes.
+commands = ["mkdir -p .git/info && echo '.ns/' >> .git/info/exclude"]
+
+[[check]]
+# The unit's artifacts chain to pr.md: build, evidence and review pass, and pr.md is blocked (no remote) or pass.
+# They live in the unit's worktree, or, tolerated, in the main checkout's .ns/.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, os, re, subprocess, sys
+roots = {os.getcwd()}
+out = subprocess.run(["git", "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+roots.update(l.split(" ", 1)[1] for l in out.splitlines() if l.startswith("worktree "))
+roots.update(glob.glob(os.path.join("..", os.path.basename(os.getcwd()) + ".worktrees", "01-*")))
+units = sorted({os.path.realpath(p) for r in roots for p in glob.glob(os.path.join(r, ".ns", "01-*"))})
+if not units:
+    sys.exit("no .ns/01-*/ in the main checkout or any worktree")
+want = {"build": {"pass"}, "evidence": {"pass"}, "review": {"pass"}, "pr": {"blocked", "pass"}}
+for unit in units:
+    got = {}
+    for name in want:
+        try:
+            text = open(os.path.join(unit, name + ".md"), encoding="utf-8").read()
+        except OSError:
+            got[name] = None
+            continue
+        m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+        fm = dict(re.findall(r"(?m)^(\w+):[ \t]*['\"]?(.*?)['\"]?[ \t]*(?:#.*)?$", m.group(1))) if m else {}
+        got[name] = fm.get("status")
+    ok = all(got[n] in s for n, s in want.items())
+    print(f"{unit}: {got} ok={ok}")
+    if ok:
+        sys.exit(0)
+sys.exit("no unit whose artifacts chain to pr.md with build, evidence and review pass and pr blocked or pass")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# Never merges: every branch except the unit's own still holds only the fixture and setup commits.
+type = "command"
+run = '''
+for b in $(git for-each-ref --format='%(refname:short)' refs/heads/ | grep -v '^ns/'); do
+  [ "$(git log --format=%s "$b" | tr '\n' ' ')" = "setup fixture " ] || { echo "$b moved: $(git log --oneline -3 "$b")"; exit 1; }
+done
+'''
+expect_exit = 0
+
+[[check]]
+# The fix is on the unit's branch: the fixture's tests pass there.
+type = "command"
+run = '''
+wt=$(git worktree list --porcelain | awk '/^worktree /{p=$2} /^branch refs\/heads\/ns\/01-/{print p}' | head -1)
+[ -n "$wt" ] || { echo "no worktree on an ns/01-* branch"; exit 1; }
+cd "$wt" && python3 -m pytest -q
+'''
+expect_exit = 0
+
+[[check]]
+# The main checkout is untouched apart from the tracker; the code changes live in the worktree.
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**"]
+
+[[check]]
+type = "judge"
+rubric = "Read the agent's transcript and the unit's .ns/ artifacts, including the run log .ns/<unit>/auto/log.md if present. Pass only if the agent stated the gate policy (gates: auto) before running a phase, ran triage, build, verify, review and ship in that order without skipping one, decided each next phase from the previous artifact's frontmatter status, never merged or tried to merge, and ended with a report that names the done condition, whether it holds, and the artifact that stopped the run (pr.md, blocked because there is no remote)."
+required = false
