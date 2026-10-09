@@ -17,6 +17,7 @@ use crate::error::SfError;
 use crate::eval::parser::{ClaudeStreamJson, OutputParser};
 use crate::eval::trial::run_process;
 use crate::factory::{self, artifact_of, Factory, PhaseSettings, PHASES};
+use crate::forge;
 use crate::frontmatter;
 use crate::git::{self, Repo};
 use crate::worktree;
@@ -703,18 +704,22 @@ fn finish(outcome: Outcome, reason: impl Into<String>, phase: Option<&str>) -> F
     }
 }
 
+/// Load the user config and export its forge tokens, so every child process inherits them.
+pub fn load_config_and_export_forge() -> Result<Option<Config>> {
+    let cfg = config::load(&config::path())
+        .map_err(|e| SfError::usage(format!("{e:#}"), "check it with:\n  ns doctor"))?;
+    if let Some(c) = &cfg {
+        forge::export(&c.forge)?;
+    }
+    Ok(cfg)
+}
+
 pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
     let start = std::env::current_dir().context("cannot read current directory")?;
     let repo = Repo::discover(&start)?;
     let root = factory::root(args.factory.as_deref(), &repo.root);
     let fac = factory::load(&root)?;
-    let cfg_path = config::path();
-    let cfg = config::load(&cfg_path).map_err(|e| {
-        anyhow::Error::from(SfError::usage(
-            format!("{e:#}"),
-            "check it with:\n  ns doctor",
-        ))
-    })?;
+    let cfg = load_config_and_export_forge()?;
     let problems = fac.problems(cfg.as_ref());
     if !problems.is_empty() {
         return Err(SfError::usage(

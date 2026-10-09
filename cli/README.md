@@ -141,11 +141,11 @@ Implements `ns run` in [docs/FACTORY.md](../docs/FACTORY.md): creates or reuses 
 
 ### `ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]`
 
-Lists open issues labelled `[queue] ready_label` with `gh`, drops issues whose first line is `Blocked by: #a, #b` with any blocker open, and issues an open PR closes, then sorts by the first matching `[queue] order` label and the issue number. For each unit it swaps the ready label for the in-progress label, fetches `origin`, and runs `ns run --issue <n> --base origin/<default>` in process. Afterwards: `merged` removes the in-progress label, `done` sets `done_label`, `stuck` (or a `done` that needs a human merge) sets `stuck_label` and comments the reason with an AI disclaimer, `budget` returns the issue to the ready label and stops, and `paused` sleeps until the usage limit resets and resumes the same unit, or returns the issue and stops if the reset is past `--until`. `--dry-run` prints the ordered queue and the skip reasons. `gh` uses whatever `GH_TOKEN` is set. `NS_NOW` (unix seconds) pins the clock for tests.
+Lists open issues labelled `[queue] ready_label` with `gh`, drops issues whose first line is `Blocked by: #a, #b` with any blocker open, and issues an open PR closes, then sorts by the first matching `[queue] order` label and the issue number. For each unit it swaps the ready label for the in-progress label, fetches `origin`, and runs `ns run --issue <n> --base origin/<default>` in process. Afterwards: `merged` removes the in-progress label, `done` sets `done_label`, `stuck` (or a `done` that needs a human merge) sets `stuck_label` and comments the reason with an AI disclaimer, `budget` returns the issue to the ready label and stops, and `paused` sleeps until the usage limit resets and resumes the same unit, or returns the issue and stops if the reset is past `--until`. `--dry-run` prints the ordered queue and the skip reasons. `gh` and every phase get `GH_TOKEN` from `[forge.github]` in the config, or from the environment when it is already set (see [`[forge]`](#forge)). `NS_NOW` (unix seconds) pins the clock for tests.
 
 ### `ns doctor`
 
-Prints the config path, whether it exists and parses, and each configured role with its resolved harness, model, read-only and write commands, and whether the binary is on PATH. `distinct_harnesses` lists the providers in use, so a skill can tell whether two roles get a cross-provider check. `harnesses` reports which of `claude`, `codex`, `cursor-agent`, `gemini` and `opencode` are on PATH. `problems` lists anything that would make `ns ask` fail.
+Prints the config path, whether it exists and parses, and each configured role with its resolved harness, model, read-only and write commands, and whether the binary is on PATH. `distinct_harnesses` lists the providers in use, so a skill can tell whether two roles get a cross-provider check. `harnesses` reports which of `claude`, `codex`, `cursor-agent`, `gemini` and `opencode` are on PATH. `forge` reports, per forge, whether it is `configured` and whether a token resolved (`token_resolved`), and for GitHub the `account` that `gh api user` returns with that token. The token itself is never printed. `problems` lists anything that would make `ns ask` fail, and a forge token that doesn't resolve.
 
 ## Config
 
@@ -210,6 +210,25 @@ base = "~/zephyrproject/zephyr"
 sdk = "~/zephyr-sdk-0.17.0"
 path_prepend = ["~/zephyrproject/.venv/bin"]
 ```
+
+### `[forge]`
+
+Where `ns run` and `ns watch` get forge tokens, so a night doesn't need a manual `export GH_TOKEN=...`:
+
+```toml
+[forge.github]
+token_command = "gh auth token --user <account>"   # a shell command; its trimmed stdout is the token
+
+[forge.gitlab]
+token_env = "MY_GITLAB_TOKEN"                      # or: read this variable
+host = "gitlab.example.com"                        # optional; exported as GITLAB_HOST (GH_HOST for github)
+```
+
+- Set exactly one of `token_command` and `token_env` per forge.
+- At start, `ns run` and `ns watch` resolve each token once and export it as `GH_TOKEN` or `GITLAB_TOKEN`. Every child (`gh`, `git`, each phase's harness) inherits it.
+- A variable that is already set and non-empty wins, and no command runs. `host` likewise doesn't override a set `GH_HOST` or `GITLAB_HOST`.
+- A failing command, empty output or an unset `token_env` stops with exit 2. The error names the forge and the command, never the token or the command's output.
+- The token is never written to `runs.jsonl`, transcripts, errors or `ns doctor` output.
 
 Harness tables live at `[eval.harnesses.<name>]`, not `[eval.harness.<name>]` as `docs/EVALS.md` shows. TOML can't hold `eval.harness` as both the string `"claude"` and a table, so the spec's example doesn't parse.
 
