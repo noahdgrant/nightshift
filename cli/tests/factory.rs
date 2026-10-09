@@ -186,6 +186,7 @@ impl Env {
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
             .env_remove("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS")
+            .env_remove("CLAUDE_CODE_DISABLE_AUTO_MEMORY")
             .env_remove("GH_TOKEN");
         c
     }
@@ -300,6 +301,8 @@ fn a_non_claude_harness_gets_no_bg_wait_ceiling() {
     e.run(&["run", "--issue", "7"], 0);
     let seen = fs::read_to_string(e.ctrl.join("bgwait")).unwrap();
     assert_eq!(seen.lines().collect::<Vec<_>>(), ["unset"; 5], "{seen}");
+    let seen = fs::read_to_string(e.ctrl.join("automem")).unwrap();
+    assert_eq!(seen.lines().collect::<Vec<_>>(), ["unset"; 5], "{seen}");
 }
 
 #[test]
@@ -321,6 +324,18 @@ fn a_bg_wait_ceiling_the_user_set_wins() {
         .code(0);
     let seen = fs::read_to_string(e.ctrl.join("bgwait")).unwrap();
     assert!(seen.lines().all(|l| l == "900000"), "{seen}");
+}
+
+#[test]
+fn claude_phases_run_with_auto_memory_off_whatever_the_operator_set() {
+    let e = Env::new();
+    e.ns()
+        .env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    let seen = fs::read_to_string(e.ctrl.join("automem")).unwrap();
+    assert_eq!(seen.lines().collect::<Vec<_>>(), ["1"; 5], "{seen}");
 }
 
 #[test]
@@ -398,6 +413,91 @@ fn no_artifact_is_a_failed_attempt() {
     assert_eq!(&e.calls()[..3], ["triage", "build", "build"]);
 }
 
+/// The build phase records its `NS_RUN_PID`, `NS_WATCH_PID` and the sid and pgid of itself and of `ns`.
+fn record_phase_ids(e: &Env) {
+    e.ctl(
+        "build.sh",
+        r#"{
+  echo "${NS_RUN_PID-unset} ${NS_WATCH_PID-unset}"
+  ps -o sid=,pgid= -p $$
+  ps -o sid=,pgid= -p "$NS_RUN_PID"
+} > "$FAKE_CTRL/ids""#,
+    );
+    e.queue("build", &["pass:script"]);
+}
+
+fn phase_ids(e: &Env) -> Vec<String> {
+    fs::read_to_string(e.ctrl.join("ids"))
+        .unwrap()
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect()
+}
+
+fn wait_ok(child: Child) {
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_phase_runs_in_its_own_session_and_knows_the_run_pid() {
+    let e = Env::new();
+    record_phase_ids(&e);
+    let child = e
+        .ns_std()
+        .env("NS_WATCH_PID", "999999")
+        .args(["run", "--issue", "7"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    wait_ok(child);
+    let ids = phase_ids(&e);
+    assert_eq!(
+        ids[0],
+        pid.to_string(),
+        "an inherited NS_WATCH_PID leaked: {ids:?}"
+    );
+    let phase: Vec<&str> = ids[1].split(' ').collect();
+    let ns: Vec<&str> = ids[2].split(' ').collect();
+    assert_ne!(phase[0], ns[0], "phase shares ns's session: {ids:?}");
+    assert_ne!(phase[1], ns[1], "phase shares ns's process group: {ids:?}");
+}
+
+#[test]
+fn a_phase_under_watch_knows_the_watch_pid() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    record_phase_ids(&e);
+    let child = e
+        .ns_std()
+        .args(["watch", "--once"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    wait_ok(child);
+    assert_eq!(phase_ids(&e)[0], format!("{pid} {pid}"));
+}
+
+#[test]
+fn a_phase_that_kills_its_own_group_is_a_failed_attempt_not_a_dead_watch() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("build.sh", "kill 0");
+    e.queue("build", &["pass:script", "pass:commit"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "done", "{v}");
+    assert_eq!(&e.calls()[..3], ["triage", "build", "build"]);
+    assert_eq!(build_event(&e, 1)["written"], false);
+}
+
 #[test]
 fn triage_without_brief_is_stuck() {
     let e = Env::new();
@@ -418,6 +518,468 @@ fn review_commit_makes_evidence_stale_and_reverifies() {
         e.calls(),
         ["triage", "build", "verify", "review", "verify", "ship"]
     );
+}
+
+/// The `gate` events in the run log.
+fn gate_events(e: &Env) -> Vec<Value> {
+    fs::read_to_string(e.root.join(".git/ns/runs.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["event"] == "gate")
+        .collect()
+}
+
+#[test]
+fn a_green_gate_continues_to_verify_and_is_logged() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"touch gate-ran && echo gate ok\"\n");
+    e.queue("build", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    assert_eq!(e.calls(), ["triage", "build", "verify", "review", "ship"]);
+    assert!(e.worktree(UNIT).join("gate-ran").exists());
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 1, "{g:?}");
+    assert_eq!(g[0]["command"], "touch gate-ran && echo gate ok");
+    assert_eq!(g[0]["exit"], 0);
+    assert_eq!(g[0]["green"], true);
+    assert_eq!(g[0]["phase"], "build");
+    assert!(g[0]["wall_s"].is_number(), "{g:?}");
+    assert_eq!(
+        g[0]["sha"].as_str(),
+        Some(git(&e.worktree(UNIT), &["rev-parse", "--short", "HEAD"]).as_str())
+    );
+}
+
+#[test]
+fn a_red_gate_goes_back_to_build_with_its_output_tail() {
+    let e = Env::new();
+    let flag = e.ctrl.join("gate-green");
+    e.factory(&format!(
+        "[phases.build]\ngate = \"test -f {f} || {{ touch {f}; echo boom from the gate; exit 1; }}\"\n",
+        f = flag.display()
+    ));
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "build", "verify", "review", "ship"]
+    );
+    let p = e.prompt(3, "build");
+    assert!(p.contains("attempt 2"), "{p}");
+    assert!(p.contains("boom from the gate"), "{p}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[0]["exit"], 1);
+    assert_eq!(g[0]["green"], false);
+    assert_eq!(g[1]["green"], true);
+}
+
+#[test]
+fn a_gate_red_until_attempts_run_out_is_stuck() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"exit 1\"\n");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck");
+    assert_eq!(v["reason"], "build is out of attempts (2)");
+    assert_eq!(e.calls(), ["triage", "build", "build"]);
+    assert_eq!(gate_events(&e).len(), 2);
+}
+
+#[test]
+fn a_committing_silent_rebuild_reruns_the_gate_and_can_go_green() {
+    let e = Env::new();
+    let flag = e.ctrl.join("gate-green");
+    e.factory(&format!(
+        "[phases.build]\nmax_attempts = 3\ngate = \"test -f {f} || {{ touch {f}; echo boom; exit 1; }}\"\n",
+        f = flag.display()
+    ));
+    e.queue("build", &["pass:commit", "none:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert!(e.calls().contains(&"verify".to_string()), "{:?}", e.calls());
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[0]["green"], false);
+    assert_eq!(g[1]["green"], true);
+    assert_ne!(g[0]["sha"], g[1]["sha"]);
+}
+
+#[test]
+fn a_review_that_commits_runs_the_gate_again() {
+    let e = Env::new();
+    let log = e.ctrl.join("gates");
+    e.factory(&format!(
+        "[phases.build]\ngate = \"echo ran >> {}\"\n",
+        log.display()
+    ));
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "verify", "ship"]
+    );
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[1]["phase"], "review");
+    assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 2);
+}
+
+#[test]
+fn a_red_gate_after_a_review_commit_goes_back_to_build() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"test ! -f broken\"\n");
+    let commit = "git -c user.name=f -c user.email=f@f commit -qm";
+    e.ctl(
+        "review.sh",
+        &format!("touch broken && git add broken && {commit} break"),
+    );
+    e.ctl("build.sh", &format!("git rm -q broken && {commit} fix"));
+    e.queue("build", &["pass:commit", "pass:script"]);
+    e.queue("review", &["pass:script", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "build", "verify", "review", "ship"]
+    );
+    assert!(e.prompt(5, "build").contains("test ! -f broken"));
+    let g: Vec<_> = gate_events(&e)
+        .iter()
+        .map(|g| (g["phase"].clone(), g["green"].clone()))
+        .collect();
+    assert_eq!(
+        g,
+        [
+            ("build".into(), true.into()),
+            ("review".into(), false.into()),
+            ("build".into(), true.into())
+        ]
+    );
+}
+
+#[test]
+fn the_gate_falls_back_to_ci_local_in_stack_md() {
+    let e = Env::new();
+    fs::create_dir_all(e.root.join("docs/agents")).unwrap();
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        "| Task | Command |\n|---|---|\n| ci-local | `echo from stack` | 1 s |\n",
+    )
+    .unwrap();
+    git(&e.root, &["add", "."]);
+    git(&e.root, &["commit", "-q", "-m", "stack"]);
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        "| Task | Command |\n|---|---|\n| ci-local | `echo from main` | 1 s |\n",
+    )
+    .unwrap();
+    let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+    assert_eq!(d["gate"], "echo from main");
+    e.run(&["run", "--issue", "7"], 0);
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 1, "{g:?}");
+    assert_eq!(g[0]["command"], "echo from main");
+    let in_worktree = fs::read_to_string(e.worktree(UNIT).join("docs/agents/stack.md")).unwrap();
+    assert!(in_worktree.contains("echo from stack"), "{in_worktree}");
+}
+
+#[test]
+fn a_rebuild_that_leaves_head_alone_skips_a_green_gate() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"true\"\n");
+    e.queue("build", &["pass:commit", "pass"]);
+    e.queue("verify", &["fail", "pass"]);
+    e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(&e.calls()[..4], ["triage", "build", "verify", "build"]);
+    assert_eq!(gate_events(&e).len(), 1);
+}
+
+#[test]
+fn a_gate_that_times_out_goes_back_to_build_and_uses_an_attempt() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"sleep 30\"\n");
+    let mut c = e.ns_std();
+    c.env("NS_GATE_TIMEOUT_MS", "300")
+        .args(["run", "--issue", "7"]);
+    let out = c.output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["reason"], "build is out of attempts (2)");
+    assert_eq!(e.calls(), ["triage", "build", "build"]);
+    assert!(e.prompt(3, "build").contains("timed out after 0.3 s"));
+    assert!(e.prompt(3, "build").contains("attempt 2"));
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[0]["timed_out"], true);
+    assert_eq!(g[0]["green"], false);
+}
+
+fn phase_events(e: &Env) -> Vec<Value> {
+    fs::read_to_string(e.root.join(".git/ns/runs.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["event"] == "phase")
+        .collect()
+}
+
+fn run_with_phase_timeout(e: &Env, code: i32) -> Value {
+    run_with_timeouts(e, "build=1500", code)
+}
+
+fn run_with_timeouts(e: &Env, timeouts: &str, code: i32) -> Value {
+    let out = e
+        .ns()
+        .env("NS_PHASE_TIMEOUT_MS", timeouts)
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(code)
+        .get_output()
+        .clone();
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+fn build_event(e: &Env, attempt: u64) -> Value {
+    phase_events(e)
+        .into_iter()
+        .find(|p| p["phase"] == "build" && p["attempt"] == attempt)
+        .unwrap()
+}
+
+#[test]
+fn a_timed_out_phase_ignores_its_artifact_and_retries() {
+    let e = Env::new();
+    e.queue("build", &["blocked:sleep", "pass:commit"]);
+    let v = run_with_phase_timeout(&e, 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "build", "verify", "review", "ship"]
+    );
+    let dir = e.worktree(UNIT).join(".ns").join(UNIT);
+    let archived = dir.join("history/build-timeout-1.md");
+    assert!(fs::read_to_string(&archived)
+        .unwrap()
+        .contains("status: blocked"));
+    assert!(fs::read_to_string(dir.join("build.md"))
+        .unwrap()
+        .contains("status: pass"));
+    let p = build_event(&e, 1);
+    assert_eq!(p["timed_out"], true);
+    assert_eq!(p["written"], false);
+    assert_eq!(p["reason"], "timed out after 1.5 s");
+    assert_eq!(p["archived"], archived.to_str().unwrap());
+    assert!(e.prompt(3, "build").contains("attempt 2"));
+}
+
+#[test]
+fn a_phase_that_times_out_on_every_attempt_is_stuck_on_the_timeout() {
+    let e = Env::new();
+    e.factory("[phases.build]\nmax_attempts = 1\n");
+    e.queue("build", &["blocked:sleep"]);
+    let v = run_with_phase_timeout(&e, 1);
+    assert_eq!(v["outcome"], "stuck");
+    let reason = v["reason"].as_str().unwrap();
+    assert_eq!(
+        reason,
+        "build is out of attempts (1): the last attempt timed out after 1.5 s; raise its timeout_minutes or split the unit"
+    );
+    assert_eq!(e.calls(), ["triage", "build"]);
+    let dir = e.worktree(UNIT).join(".ns").join(UNIT);
+    assert!(!dir.join("build.md").exists());
+    assert!(dir.join("history/build-timeout-1.md").exists());
+}
+
+#[test]
+fn a_timeout_then_a_plain_failure_is_not_stuck_on_a_timeout() {
+    let e = Env::new();
+    e.queue("build", &["blocked:sleep", "none"]);
+    let v = run_with_phase_timeout(&e, 1);
+    assert_eq!(v["outcome"], "stuck");
+    assert_eq!(v["reason"], "build is out of attempts (2)");
+    assert_eq!(build_event(&e, 2)["reason"], "no artifact written");
+}
+
+#[test]
+fn repeated_timeouts_archive_each_artifact_separately() {
+    let e = Env::new();
+    e.queue("build", &["blocked:sleep", "fail:sleep"]);
+    let v = run_with_phase_timeout(&e, 1);
+    assert_eq!(v["outcome"], "stuck");
+    let hist = e.worktree(UNIT).join(".ns").join(UNIT).join("history");
+    assert!(fs::read_to_string(hist.join("build-timeout-1.md"))
+        .unwrap()
+        .contains("status: blocked"));
+    assert!(fs::read_to_string(hist.join("build-timeout-2.md"))
+        .unwrap()
+        .contains("status: fail"));
+}
+
+#[test]
+fn a_timed_out_review_that_moved_head_still_runs_the_gate() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"true\"\n");
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["blocked:commit+sleep", "pass"]);
+    let v = run_with_timeouts(&e, "review=1500", 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[1]["phase"], "review");
+    assert_eq!(g[1]["attempt"], 1);
+}
+
+#[test]
+fn a_timed_out_ship_keeps_its_pr_number_for_the_merged_guard() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.queue("ship", &["pass:merge+sleep"]);
+    let v = run_with_timeouts(&e, "ship=1500", 1);
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("PR merged by run"),
+        "{v}"
+    );
+    let dir = e.worktree(UNIT).join(".ns").join(UNIT);
+    assert!(!dir.join("pr.md").exists());
+    assert!(dir.join("history/pr-timeout-1.md").exists());
+}
+
+#[test]
+fn a_timed_out_build_does_not_run_the_gate() {
+    let e = Env::new();
+    let runs = e.ctrl.join("gate-runs");
+    let flag = e.ctrl.join("gate-green");
+    e.factory(&format!(
+        "[phases.build]\nmax_attempts = 3\ngate = \"echo ran >> {r}; test -f {f} || {{ touch {f}; exit 1; }}\"\n",
+        r = runs.display(),
+        f = flag.display()
+    ));
+    e.queue("build", &["pass:commit", "blocked:sleep", "pass:commit"]);
+    let v = run_with_phase_timeout(&e, 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "build", "build", "verify", "review", "ship"]
+    );
+    assert_eq!(fs::read_to_string(&runs).unwrap().lines().count(), 2);
+    let attempts: Vec<_> = gate_events(&e)
+        .iter()
+        .map(|g| g["attempt"].clone())
+        .collect();
+    assert_eq!(attempts, [1, 3]);
+    assert_eq!(build_event(&e, 2)["reason"], "timed out after 1.5 s");
+    assert_eq!(
+        build_event(&e, 3)["decision"],
+        "timed out with the CI gate still red"
+    );
+    assert!(e.prompt(4, "build").contains("attempt 3"));
+}
+
+#[test]
+fn a_red_gate_is_not_skipped_when_the_rebuild_writes_no_artifact() {
+    let e = Env::new();
+    let flag = e.ctrl.join("gate-green");
+    e.factory(&format!(
+        "[phases.build]\nmax_attempts = 3\ngate = \"test -f {f} || {{ touch {f}; echo boom; exit 1; }}\"\n",
+        f = flag.display()
+    ));
+    e.queue("build", &["pass:commit", "none", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "build", "build", "verify", "review", "ship"]
+    );
+    assert!(e.prompt(4, "build").contains("boom"));
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[1]["green"], true);
+}
+
+#[test]
+fn a_red_gate_with_a_silent_rebuild_never_reaches_verify() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"exit 1\"\n");
+    e.queue("build", &["pass:commit", "none"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["reason"], "build is out of attempts (2)");
+    assert_eq!(e.calls(), ["triage", "build", "build"]);
+}
+
+#[test]
+fn a_rebuild_that_passes_at_the_same_head_reruns_a_red_gate() {
+    let e = Env::new();
+    let flag = e.ctrl.join("gate-green");
+    e.factory(&format!(
+        "[phases.build]\ngate = \"test -f {f} || {{ touch {f}; echo boom; exit 1; }}\"\n",
+        f = flag.display()
+    ));
+    e.queue("build", &["pass:commit", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "build", "verify", "review", "ship"]
+    );
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[0]["green"], false);
+    assert_eq!(g[1]["green"], true);
+    assert_eq!(g[0]["sha"], g[1]["sha"]);
+}
+
+#[test]
+fn a_red_gate_with_a_committing_rebuild_that_writes_no_artifact_never_reaches_verify() {
+    let e = Env::new();
+    e.factory("[phases.build]\nmax_attempts = 3\ngate = \"exit 1\"\n");
+    e.queue("build", &["pass:commit", "none:commit", "none:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck");
+    assert!(
+        !e.calls().contains(&"verify".to_string()),
+        "{:?}",
+        e.calls()
+    );
+}
+
+#[test]
+fn a_review_that_fails_after_moving_head_still_runs_the_gate() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"true\"\n");
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["fail:commit"]);
+    e.run(&["run", "--issue", "7"], 0);
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[1]["phase"], "review");
+}
+
+#[test]
+fn a_build_that_did_not_pass_runs_no_gate() {
+    let e = Env::new();
+    e.factory("[phases.build]\nmax_attempts = 5\ngate = \"true\"\n");
+    e.queue("build", &["none", "fail", "blocked:no"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck");
+    assert_eq!(e.calls(), ["triage", "build", "build", "build"]);
+    assert!(gate_events(&e).is_empty());
+}
+
+#[test]
+fn without_a_gate_none_runs() {
+    let e = Env::new();
+    e.run(&["run", "--issue", "7"], 0);
+    assert!(gate_events(&e).is_empty());
 }
 
 #[test]
@@ -1574,6 +2136,38 @@ fn watch_stuck_comment_quotes_the_blocker_and_a_relative_path() {
         "{comment}"
     );
     assert!(!comment.contains(e.base.to_str().unwrap()), "{comment}");
+}
+
+#[test]
+fn a_blocked_review_stops_at_once_and_the_comment_quotes_it() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["blocked:C1 open after 3 cycles"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "stuck");
+    assert_eq!(e.calls(), ["triage", "build", "verify", "review"]);
+    let calls = e.gh_calls();
+    let comment = calls.split("issue comment 2").nth(1).expect("comment");
+    assert!(
+        comment.contains("review.md is blocked: review said blocked C1 open after 3 cycles"),
+        "{comment}"
+    );
+}
+
+#[test]
+fn a_failed_review_goes_back_to_build() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    e.queue("review", &["fail", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "build", "verify", "review", "ship"]
+    );
+    let p = e.prompt(5, "build");
+    assert!(p.contains("review said fail"), "{p}");
 }
 
 const READY: &str = "status:ready-for-agent";

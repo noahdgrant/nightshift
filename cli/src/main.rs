@@ -10,11 +10,13 @@ mod eval;
 mod factory;
 mod forge;
 mod frontmatter;
+mod gate;
 mod git;
 mod install;
 mod lint;
 mod markers;
 mod run;
+mod skills_sync;
 #[cfg(test)]
 mod testutil;
 mod watch;

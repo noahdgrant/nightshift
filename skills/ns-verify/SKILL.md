@@ -63,7 +63,7 @@ Verdicts:
 - **FAIL**: a different end state was observed.
 - **INCONCLUSIVE**: the check couldn't run, ran on the wrong surface, or the evidence doesn't show the end state. Before settling here, try to make it checkable: extend the control CLI or feature map, or synthesize the trigger.
 
-Run the verify skill's Cleanup when done, then confirm the artifacts still exist.
+Run the verify skill's Cleanup when done, then confirm the artifacts still exist. Anything you started outside it, stop per [killing processes](../ns-contract/SKILL.md#killing-processes).
 
 Done when every criterion has a verdict, and every PASS and FAIL has a command, an excerpt and an artifact path.
 

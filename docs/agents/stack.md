@@ -26,6 +26,7 @@ Run from the repo root. Use the binary built from this worktree (`cli/target/deb
 | skill lint | `cli/target/debug/ns lint skills --human` | 1 s |
 | eval cases valid | `cli/target/debug/ns eval --dry-run` | 1 s |
 | private refs | `scripts/check-private.sh` | 1 s |
+| ci-local | `scripts/ci-local.sh` (all of CI; `--fast` for fmt, clippy, ns lint and the private guard) | 1 min |
 
 ## Test seams
 
@@ -35,6 +36,12 @@ Run from the repo root. Use the binary built from this worktree (`cli/target/deb
 | CLI end to end | the integration tests in `cli/tests/` (fake harness, fake `gh`, temp git repos) | included above | nothing |
 | simulator/emulator | none | | |
 | hardware-in-the-loop | none | | |
+
+## Unit size
+
+unit size: soft 400, hard 800
+
+See `ns-contract` (unit size).
 
 ## Gotchas
 

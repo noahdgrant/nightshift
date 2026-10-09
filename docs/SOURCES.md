@@ -68,8 +68,8 @@ flowchart LR
     sf_prin["**ns-principle-* x24**"]
     sf_def[ns-define]
     sf_plan[ns-plan]
-    sf_ts[ns-troubleshoot]
-    sf_auto[ns-auto]
+    sf_ts["**ns-troubleshoot**"]
+    sf_auto["**ns-auto**"]
     sf_imp[ns-improve]
     sf_mnt[ns-maintain + ns-maintain-verify]
   end
@@ -131,10 +131,10 @@ flowchart LR
 | **ns-writing-for-humans** | define (leaf) | pstack `unslop`, `technical-writing` | Renamed. Python examples |
 | **ns-swarm** | shared leaf | pstack `swarm` | Harness-neutral fan-out: subagents, or `ns ask` per worker. Used by ns-review and ns-verify |
 | **ns-principle-\*** (24) | shared leaf | pstack `principle-*` | One skill each, user-invoked, referenced by path. Python/firmware examples |
+| **ns-auto** | all | pstack `poteto-mode` (`autonomous-run` playbook), overnight contract, selected principles | User-invoked. Chains the phases in one session, or defers to `ns run`. Never merges |
 | ns-define | define | Matt `grill-with-docs`, `to-spec`; addy `interview-me`, `idea-refine`, `spec-driven-development` | Writes `brief.md` or `SPEC.md` |
 | ns-plan | plan | Matt `to-tickets`, `wayfinder`, `codebase-design` | |
-| ns-troubleshoot | outer loop | Matt `diagnosing-bugs` | Firmware feedback loops: serial, JTAG, HIL, logic analyzer |
-| ns-auto | all | pstack `poteto-mode`, overnight contract, selected principles | Chains the phases, gate policy, `ns run` runner |
+| **ns-troubleshoot** | outer loop | Matt `diagnosing-bugs` | Runs in a worktree and writes no fix: ends with `brief.md` (repro and root cause) routed to `ns-build` or `ns-define`. Firmware loop recipes: native_sim, emulators, serial, HIL, logic analyzer, `git bisect run` on target |
 | ns-improve | meta | Matt `retro`; pstack `reflect`, `automate-me`, `correct`; Cursor `continual-learning`, `workflow-from-chats` | Per-session review plus weekly transcript mining, ending in a PR |
 | ns-maintain, ns-maintain-verify | meta | pstack `maintain-verification-skill`; addy evals | Upstream diffs, evals, verify-skill re-check |
 

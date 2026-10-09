@@ -34,6 +34,7 @@ skill = "ns-triage"
 [phases.build]
 skill = "ns-build"
 timeout_minutes = 90
+gate = "scripts/ci-local.sh"       # build only. Unset: the ci-local row of docs/agents/stack.md. See "Gate"
 [phases.verify]
 skill = "ns-verify"
 runner = "bench"                   # a runners/<name>.toml. Unset: no locks
@@ -63,7 +64,7 @@ ci_timeout_minutes = 30
 ci_register_timeout = 3            # minutes to wait for the PR head's first check before "no CI"
 ```
 
-Every table and key is optional; the defaults are the values above, except `limits.max_units` (unset: no cap), `limits.budget_usd` and `merge` as noted. A phase table may override `harness`, `model`, `timeout_minutes` and `max_attempts`, may set `runner`, and its `skill` defaults to `ns-<phase>`. Unknown keys and unknown phases are errors. `ns factory validate` checks the file, every `runners/<name>.toml` and every `agents/<role>/agent.md` (role matches the directory, placeholders are known), and exits 1 on any problem.
+Every table and key is optional; the defaults are the values above, except `limits.max_units` (unset: no cap), `limits.budget_usd` and `merge` as noted. A phase table may override `harness`, `model`, `timeout_minutes` and `max_attempts`, may set `runner`, and its `skill` defaults to `ns-<phase>`. Only `[phases.build]` may set `gate`, and not to an empty string. Unknown keys and unknown phases are errors. `ns factory validate` checks the file, every `runners/<name>.toml` and every `agents/<role>/agent.md` (role matches the directory, placeholders are known), and exits 1 on any problem.
 
 ## agents/<role>/agent.md
 
@@ -112,9 +113,11 @@ Steps:
 1. Create or reuse the worktree (`ns worktree new`, including setup).
 2. Read `.ns/<unit>/*.md` frontmatter and pick the next phase from the state table.
 3. Archive superseded artifacts. Before running phase P, move P's artifact, if present, to `.ns/<unit>/history/<artifact>-<n>.md`, with n one past the highest number already there for that artifact. Also archive every downstream artifact (order: brief, build, evidence, review, pr) unless it is `status: pass` and current, and every downstream artifact after one that was archived. Whatever remains in `.ns/<unit>/` is current, so the state table needs no timestamps.
-4. Take the phase's runner locks (see "Runners"), waiting for any that another run holds. Run the phase's harness headless in write mode (`command_write`), with cwd set to the worktree and the rendered prompt on stdin. Enforce the timeout by killing the process group. The built-in `claude` write command for `ns run` is `claude -p --permission-mode bypassPermissions --model {model} --output-format stream-json --verbose`: the phases need Bash, which `acceptEdits` can't grant headless. A configured claude command gets `--output-format stream-json --verbose` added if it lacks them. Stdout goes to `<git-common-dir>/ns/transcripts/<unit>/<phase>-<attempt>.jsonl`, and cost and tokens are parsed from it.
+4. Take the phase's runner locks (see "Runners"), waiting for any that another run holds. Run the phase's harness headless in write mode (`command_write`), with cwd set to the worktree and the rendered prompt on stdin. The phase starts in its own session and process group, so a `kill 0` inside it can't reach `ns`. Its environment carries `NS_UNIT`, `NS_PHASE`, `NS_ATTEMPT`, `NS_WORKTREE`, `NS_RUN_PID` (the `ns` process running the unit) and `NS_WATCH_PID` (the `ns watch` process, empty under a standalone `ns run`; under watch it equals `NS_RUN_PID`). Enforce the timeout by killing the process group. The built-in `claude` write command for `ns run` is `claude -p --permission-mode bypassPermissions --model {model} --output-format stream-json --verbose`: the phases need Bash, which `acceptEdits` can't grant headless. A configured claude command gets `--output-format stream-json --verbose` added if it lacks them. Stdout goes to `<git-common-dir>/ns/transcripts/<unit>/<phase>-<attempt>.jsonl`, and cost and tokens are parsed from it.
 5. The attempt wrote its artifact if P's artifact exists after the run. If not, the attempt failed with "no artifact written" (or the timeout or exit code), and the files archived in step 3 move back, so the next decision sees the state as it was. A triage run that exits 0 without writing `brief.md` is the "triage decided a human or define is needed" row: stuck, no retry. A usage-limit stop also moves the files back (see "Billing").
-6. Repeat until the unit is done, merged, stuck, paused, or out of budget.
+   A phase killed at its timeout wrote nothing, whatever it left behind: its artifact moves to `.ns/<unit>/history/<artifact>-timeout-<n>.md` (n one past the highest timeout archive for that artifact), the attempt fails with "timed out after <n> min", and the run log's `phase` event names the archive as `archived`. When the phase then runs out of attempts, the stuck reason says the last attempt timed out and suggests raising its `timeout_minutes` or splitting the unit. `NS_PHASE_TIMEOUT_MS` overrides phase timeouts, for tests: `<ms>` for every phase, or `<phase>=<ms>[,<phase>=<ms>]` for the named ones.
+6. Run the CI gate after a build that wrote `status: pass`, and after a review that moved HEAD (see "Gate"). A red gate sends the unit back to build.
+7. Repeat until the unit is done, merged, stuck, paused, or out of budget.
 
 An artifact is current when its frontmatter `sha` matches `git rev-parse --short HEAD` in the worktree by prefix (the lengths may differ), or when the unit's diff at that sha has the same `git patch-id` as at HEAD. The unit's diff is `git diff $(git merge-base <base> <sha>) <sha>`, with `<base>` the one the worktree was cut from (`origin/<base>` instead when that is ahead of the local branch): `--base`, else `origin/HEAD`'s branch (the local branch when present), else the branch checked out in the main worktree (not the literal `HEAD`, a deliberate change from the issue's text), else the detached sha. `git patch-id` ignores whitespace, so a whitespace-only change after review counts as current. A rebase that leaves the change alone keeps every artifact current. A sha no longer in the repo is not current. "`sha` ≠ HEAD" below means not current. Because of step 3, an artifact that exists is current. The table, as implemented, checked top to bottom:
 
@@ -128,10 +131,12 @@ An artifact is current when its frontmatter `sha` matches `git rev-parse --short
 | no `evidence`, or evidence `sha` ≠ HEAD | verify |
 | `evidence` fail | build, with its body as `{feedback}` |
 | no `review`, or review `sha` ≠ HEAD | review |
-| `review` fail | build, with its body as `{feedback}` |
+| `review` fail (not an open Critical; that is `blocked`) | build, with its body as `{feedback}` |
 | no `pr`, or `pr` pass with `sha` ≠ HEAD | ship |
 | `pr` fail | the phase its body names first (verify or review), with its body as `{feedback}`, else stuck |
 | a phase out of attempts | stuck |
+
+`skills/ns-auto` mirrors this table, the archiving and the currency rule for in-session runs; change them together. The skill is authoritative for in-session runs. Intended differences: its done condition comes from the contract, and a stuck unit gets no timeout archive.
 
 A review that commits leaves `evidence.md` stale, so verify runs again before ship; `review.md` carries the new sha and stays valid. A CI failure in the merge step runs build again; build's commit leaves evidence, review and pr stale, so verify, review and ship follow onto the same PR. A ship that changes the unit's diff after review leaves `pr.md` at HEAD but `review.md` stale, so verify, review and ship run again; the per-phase `max_attempts` bounds the loop. The PR number comes from `pr.md`'s `pr:`, or from the newest archived `history/pr-<n>.md` that names one, so archiving never loses it.
 
@@ -142,13 +147,30 @@ Hard rules, enforced in code whatever the prompts say:
 - Phases never merge, never approve, and never push to the default branch. Only `ns run`'s own merge step merges (see "Merge").
 - Before the first phase, `ns run` records `git ls-remote origin` for the default branch (skipped without an `origin` remote). After every phase it reads it again. If it moved to a commit reachable from the unit's HEAD, this run pushed to it: stuck with "default branch moved". A move to anything else is another actor (a human merge, another machine): it is logged as `default_moved_by_other_actor` and becomes the new baseline.
 - After every phase, if the unit has a known PR (`pr:` in `pr.md` or its newest archived copy, a number or a URL ending in one), `gh pr view <n> --json state`. `MERGED` means a phase merged it: stuck with "PR merged by run".
+- Phases don't write the operator's personal memory. Every claude phase and `ns eval` trial runs with `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, set over whatever the operator's environment says, so nothing lands in `~/.claude/projects/`. Other harnesses don't get the variable. A lesson worth keeping goes through `ns-improve` into a skill, where review sees it. `ns doctor` reports this as `claude_phases.auto_memory: false`.
 - One unit at a time per repo. A lock file in the common git dir (`ns-run.lock`, holding pid and unit) refuses a second runner with exit 5. A lock whose pid is dead is removed. Runner locks are separate and wait instead (see "Runners").
 
-Run log: append one JSON line per event to `.git/ns/runs.jsonl` in the common git dir: unit, phase, attempt, decision, artifact status, sha, cost, tokens, wall time, exit. Start, end, breaches, CI failures and merges are events too. `ns run --dry-run` prints the next decision, the rendered prompt and the command, and runs nothing: no worktree, no lock, no harness.
+Run log: append one JSON line per event to `.git/ns/runs.jsonl` in the common git dir: unit, phase, attempt, decision, artifact status, sha, cost, tokens, wall time, exit. Start, end, breaches, CI failures, gate runs and merges are events too. `ns run --dry-run` prints the next decision, the rendered prompt and the command, and runs nothing: no worktree, no lock, no harness.
 
 Budget: before each phase, if the cost reported so far (across the units of one `ns watch`) has reached `limits.budget_usd`, the run ends with `budget`. On a subscription the reported cost is an estimate, so the cap is notional and unset by default; `--until`, an optional `max_units`, and usage-limit pauses bound a night instead.
 
 Output: final JSON `{unit, outcome: done|merged|stuck|budget|paused, phase, reason, pr, cost_usd, reset_at, artifact, phases:[...]}`. Exit 0 for done or merged, 1 for stuck, 2 for a usage or config error (bad definition, missing subscription login, harness not on PATH), 3 for budget, 4 for paused, 5 when another runner holds the lock.
+
+### Gate
+
+Build's artifact is the agent's own word that checks pass. The gate is a deterministic check `ns run` runs itself, so a build that fails CI goes back to build before verify, review and the PR.
+
+The command is `[phases.build] gate`. Unset, it is the `ci-local` row of the Commands table in `docs/agents/stack.md` in the main checkout: a table row whose first cell is `ci-local` (backticks optional), with the command as the backticked span that opens the second cell (it may contain `|`):
+
+```markdown
+| ci-local | `scripts/ci-local.sh` | 2 min |
+```
+
+With neither, no gate runs. Both are read from the main checkout when `ns run` starts, so a phase can't change the command. The script it runs lives in the worktree, though, so the gate is not tamper-proof.
+
+`ns run` runs the command with `sh -c` in the worktree after a build that wrote `status: pass`, and again after a review that moved HEAD (a fix cycle that committed). It doesn't run again at a HEAD where it already went green in this invocation. It is killed at the build phase's `timeout_minutes` (`NS_GATE_TIMEOUT_MS` overrides it, for tests). Only the last 16 KiB of its log are read for the tail. Output goes to `<git-common-dir>/ns/transcripts/<unit>/gate-<phase>-<attempt>.log`.
+
+Exit 0 is green and the run goes on as the state table says. A non-zero exit, a signal or the timeout is red: the next phase is build, with the command, how it failed and the last 40 lines of its output (at most 3000 bytes) as `{feedback}`. That build uses an attempt against `max_attempts`, so a gate that stays red ends with "build is out of attempts". Each run is a `gate` event in the run log with `phase` (what triggered it), `attempt`, `command`, `sha`, `exit`, `timed_out`, `wall_s`, `green` and `log`. `ns run --dry-run` shows the command as `gate`.
 
 ## Merge
 
@@ -205,9 +227,11 @@ ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]
 6. On `paused`, keep `in_progress_label` and sleep until the reset time (30 minutes when unknown, then check again), then resume the same unit. If the reset is at or past `--until`, put `ready_label` back and stop cleanly.
 7. Repeat until the queue is empty, `--until` passes (no new unit starts after it), `max_units` is reached, or the budget is spent.
 
+Before each unit, after the fetch, `ns watch` keeps installed skills current. A unit's worktree already has the skills checked into the repo at `origin/<default>`, but a skill installed as a symlink into the main checkout (`~/.agents/skills/*`, `~/.claude/skills/*`) would otherwise run whatever the checkout held when the night began. So when any installed symlink resolves to a skill dir (one with a `SKILL.md`) in the main checkout, and that checkout is on the default branch with no changes to tracked files, `ns watch` fast-forwards it to `origin/<default>` with the checkout's git hooks off. It then reruns `ns install` for each dir of `ns-*` skills it found, so a skill added tonight is linked and a removed one is pruned. It logs all this to stderr and as a `skills_synced` event (`from`, `to`, `skills`, `relinked`) in the run log. On another branch, a detached HEAD, local changes or diverged history, it changes nothing: it prints a warning naming the reason and the skills, logs a `skills_stale` event, and runs the unit anyway. The same reason warns once, not before every unit. It never resets, stashes or switches branches. Skills installed from anywhere else, such as a consumer's nightshift checkout, are never touched.
+
 An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (unix seconds) pins the clock for tests; sleeps then advance it instead of blocking. Output: `{units:[{issue, unit, outcome, reason, pr, cost_usd}], stopped, cost_usd, started_with}`.
 
-`ns watch` reads the user config and the factory definition once, at start, and every unit uses that copy. Editing or breaking either file mid-night changes nothing until the next `ns watch`. It logs each file's path and sha256 to stderr, and `started_with` carries the same `{config, factory}` pair of `{path, sha256}` (`sha256` is null for a missing file).
+`ns watch` reads the user config and the factory definition once, at start, and every unit uses that copy. Editing or breaking either file mid-night changes nothing until the next `ns watch`. The build gate command is read at start too, so a `docs/agents/stack.md` that a fast-forward of the main checkout brings in (above) takes effect at the next `ns watch`. It logs each file's path and sha256 to stderr, and `started_with` carries the same `{config, factory}` pair of `{path, sha256}` (`sha256` is null for a missing file).
 
 `--once` takes one unit. `--dry-run` prints the ordered queue, with each issue's `priority_label` and `order_label`, and the skip reasons. `gh` and the phases get `GH_TOKEN` from `[forge.github]` in the user config (`cli/README.md`, `[forge]`). A `GH_TOKEN` already set in the environment wins, so whoever starts `ns watch` can still pick the account.
 

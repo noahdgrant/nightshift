@@ -86,6 +86,10 @@ pub fn run() -> Result<()> {
             .map(|c| c.roles.values().map(|r| r.harness.clone()).collect::<std::collections::BTreeSet<_>>())
             .unwrap_or_default(),
         "harnesses": Value::Object(harnesses),
+        "claude_phases": {
+            "auto_memory": false,
+            "env": format!("{}=1", crate::billing::AUTO_MEMORY_ENV),
+        },
         "forge": Value::Object(forge),
         "problems": problems,
     });

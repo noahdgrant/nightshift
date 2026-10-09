@@ -1,0 +1,141 @@
+description = "Clear bug report for seeded defect (a) in the local .scratch/ tracker, with a full overnight contract and gates: auto. With no ns factory definition and no git remote, ns-auto runs triage, build, verify, review and ship itself, and the unit's artifacts end at pr.md with status blocked (nowhere to push) or pass."
+fixture = "py-inventory"
+skills = ["ns-auto"]
+extra_skills = [
+  "ns-contract",
+  "ns-triage",
+  "ns-build",
+  "ns-tdd",
+  "ns-verify",
+  "ns-review",
+  "ns-ship",
+  "ns-swarm",
+  "ns-no-comments",
+  "ns-setup",
+  "ns-setup-verify",
+  "ns-writing-for-humans",
+  "ns-principles",
+  "ns-principle-attack-the-premise",
+  "ns-principle-encode-lessons-in-structure",
+  "ns-principle-explain-the-number",
+  "ns-principle-fix-root-causes",
+  "ns-principle-laziness-protocol",
+  "ns-principle-minimize-reader-load",
+  "ns-principle-never-block-on-the-human",
+  "ns-principle-prove-it-works",
+  "ns-principle-redesign-from-first-principles",
+  "ns-principle-sequence-verifiable-units",
+  "ns-principle-subtract-before-you-add",
+  "ns-principle-test-behavior-not-implementation",
+]
+requires = ["python"]
+timeout_minutes = 60
+prompt = """
+/ns-auto
+
+Overnight contract. Nobody will answer questions tonight.
+- Goal: fix the bug in .scratch/reservations/issues/01-full-quantity-reservation-rejected.md.
+- Done: evidence.md, review.md and pr.md pass at HEAD.
+- Unit and worktree: unit 01-full-quantity-reservation-rejected, in the worktree ns worktree new makes (or ../<repo>.worktrees/<unit> by hand), base main.
+- Allowed actions: gates: auto. You may commit on the unit's branch, push it and open a PR.
+- Escape hatch: stop at the first blocked or stuck phase, or after 50 minutes, and report here.
+"""
+
+[[check]]
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, os, re, subprocess, sys
+roots = {os.getcwd()}
+out = subprocess.run(["git", "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+roots.update(l.split(" ", 1)[1] for l in out.splitlines() if l.startswith("worktree "))
+roots.update(glob.glob(os.path.join("..", os.path.basename(os.getcwd()) + ".worktrees", "01-*")))
+units = sorted({os.path.realpath(p) for r in roots for p in glob.glob(os.path.join(r, ".ns", "01-*"))})
+if not units:
+    sys.exit("no .ns/01-*/ in the main checkout or any worktree")
+want = {"brief": {"pass"}, "build": {"pass"}, "evidence": {"pass"}, "review": {"pass"}, "pr": {"blocked", "pass"}}
+for unit in units:
+    wt = os.path.dirname(os.path.dirname(unit))
+    head = subprocess.run(["git", "-C", wt, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    got, shas = {}, {}
+    for name in want:
+        try:
+            text = open(os.path.join(unit, name + ".md"), encoding="utf-8").read()
+        except OSError:
+            got[name] = None
+            continue
+        m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+        fm = dict(re.findall(r"(?m)^(\w+):[ \t]*['\"]?(.*?)['\"]?[ \t]*(?:#.*)?$", m.group(1))) if m else {}
+        got[name] = fm.get("status")
+        shas[name] = fm.get("sha", "")
+    need = ("evidence", "review") + (("pr",) if got["pr"] == "pass" else ())
+    current = bool(head) and all(shas.get(n) and (head.startswith(shas[n]) or shas[n].startswith(head)) for n in need)
+    ok = all(got[n] in s for n, s in want.items()) and current
+    print(f"{unit}: {got} head={head} shas={shas} ok={ok}")
+    if ok:
+        sys.exit(0)
+sys.exit("no unit whose artifacts chain to pr.md, with brief, build, evidence and review pass, pr blocked or pass, and evidence and review current at the worktree HEAD")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''
+[ -z "$(git remote)" ] || { echo "trial has a remote: $(git remote)"; exit 1; }
+for b in $(git for-each-ref --format='%(refname:short)' refs/heads/ | grep -v '^ns/'); do
+  [ "$(git log --format=%s "$b" | tr '\n' ' ')" = "setup fixture " ] || { echo "$b moved: $(git log --oneline -3 "$b")"; exit 1; }
+done
+'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''
+wt=$(git worktree list --porcelain | awk '/^worktree /{p=$2} /^branch refs\/heads\/ns\/01-/{print p}' | head -1)
+[ -n "$wt" ] || { echo "no worktree on an ns/01-* branch"; exit 1; }
+cd "$wt" || exit 1
+t=$(mktemp -d)
+inv() { PYTHONPATH=src python3 -m inventory --state "$t/$1.json" --now 2026-03-02T09:00:00 "${@:2}"; }
+for n in a b; do inv $n add-item BOLT-M6 bolt >/dev/null && inv $n receive BOLT-M6 5 >/dev/null || exit 1; done
+inv a reserve BOLT-M6 5 || { echo "reserving 5 of 5 still fails"; exit 1; }
+inv b reserve BOLT-M6 6 && { echo "reserving 6 of 5 succeeded"; exit 1; }
+python3 -m pytest -q
+'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "ls .ns/01-*/auto/log.md ../*.worktrees/01-*/.ns/01-*/auto/log.md 2>/dev/null | head -1 | grep -q ."
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, re, sys
+logs = glob.glob(".ns/01-*/auto/log.md") + glob.glob("../*.worktrees/01-*/.ns/01-*/auto/log.md")
+if not logs:
+    sys.exit("no run log")
+order = ["triage", "build", "verify", "review", "ship"]
+for path in logs:
+    text = open(path, encoding="utf-8").read()
+    if "## run" not in text:
+        continue
+    after = text[text.index("## run"):]
+    pos = 0
+    for line in after.splitlines():
+        if pos < len(order) and re.match(r"\W*" + order[pos] + r"\b", line):
+            pos += 1
+    if pos == len(order):
+        sys.exit(0)
+    print(f"{path}: reached {order[:pos]}")
+sys.exit("no run log with a ## run marker then triage, build, verify, review, ship in order")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Read the agent's transcript and the unit's .ns/ artifacts, including the run log .ns/<unit>/auto/log.md if present. Pass only if the agent stated the gate policy (gates: auto) before running a phase, ran triage, build, verify, review and ship in that order without skipping one, decided each next phase from the previous artifact's frontmatter status, never merged or tried to merge, and ended with a report that names the done condition, whether it holds, and the artifact that stopped the run (pr.md, blocked because there is no remote)."
+required = false

@@ -1,6 +1,6 @@
 ---
 name: ns-contract
-description: The nightshift contract that every ns phase skill follows. It covers the docs/agents files, units, worktrees, the .ns artifacts and their frontmatter, gates and gate policy, untrusted issue content, and evidence. Read it when a phase skill points here.
+description: The nightshift contract that every ns phase skill follows. It covers the docs/agents files, units, worktrees, the .ns artifacts and their frontmatter, gates and gate policy, untrusted issue content, killing processes, and evidence. Read it when a phase skill points here.
 disable-model-invocation: true
 ---
 
@@ -14,13 +14,16 @@ Skills don't name a language, test runner, framework or board. They read the tar
 
 | File | Holds |
 |---|---|
-| `docs/agents/stack.md` | language, build, test, lint and format commands. Test seams: host unit, simulator/emulator, hardware-in-the-loop |
+| `docs/agents/stack.md` | language, build, test, lint and format commands. Test seams: host unit, simulator/emulator, hardware-in-the-loop. Unit size limits in changed lines |
 | `docs/agents/verify.md` | pointer to the project's verification skill and control CLI |
 | `docs/agents/issue-tracker.md` | tracker, CLI used to reach it, how issues are created and linked |
 | `docs/agents/triage-labels.md` | label names for each triage category and state |
 | `docs/agents/domain.md` | where the glossary and ADRs live |
+| `docs/agents/docs.md` | where requirements and design docs live, their review surface, ID keys and template overrides |
 
 If a file is missing, load `ns-setup` instead of guessing.
+
+**Unit size.** `stack.md` sets two limits on a unit's changed lines with a line `unit size: soft 400, hard 800`. With no such line, use 400 and 800. Changed lines are the insertions plus deletions that `git diff --shortstat <base>...HEAD -- . ':!.ns'` reports. `ns-triage` splits work estimated past the soft limit; its estimate is advisory. `ns-build` stops when the diff passes the hard limit.
 
 Code examples are Python. Where firmware changes the advice (registers, ISRs, flash/RAM budgets, on-target tests), add a short firmware note. Don't add a second full example in C.
 
@@ -32,7 +35,7 @@ Each unit gets one worktree and one artifact folder, created by `ns worktree new
 
 ```
 <worktree>/.ns/<unit-id>/
-  brief.md       written by ns-triage or ns-define, read by ns-build
+  brief.md       written by ns-triage, ns-define or ns-troubleshoot, read by ns-build
   build.md       written by ns-build
   evidence.md    written by ns-verify
   review.md      written by ns-review
@@ -77,10 +80,11 @@ Each phase skill names its gate. What happens at the gate depends on the run's g
 
 The policy comes from the prompt that started the run (`ns-auto` and `ns run` state it). With no policy given, use `stop`.
 
-Some actions always wait for a human, under either policy: force-push to a shared branch, merging, deploying or releasing (including OTA and flashing production units), deleting data, and messaging anyone outside the team.
+Some actions always wait for a human, under either policy: force-push to a shared branch, merging, deploying or releasing (including OTA and flashing production units), deleting data, messaging anyone outside the team, and approving requirements or a design doc.
 
 - **Merging** is never a phase's action, `ns-ship` included. `ns run`'s merge step merges the unit's own PR, by squash, under `merge.policy = auto` in `.nightshift/nightshift.toml`, when CI is green, `review.md` passes at HEAD, and no file that needs human review changed. Otherwise a human merges.
 - A **shared branch** is any branch except the unit's own `ns/<unit-id>`. Force-pushing `ns/<unit-id>` with `--force-with-lease` is fine while every commit on it came from the factory.
+- **Approving** a requirements or design doc means recording an approval: for a doc with a Status field, setting it to `Approved`. A phase leaves Status at `Draft` or `In review`.
 - **Messaging outside the team** covers every channel beyond the project's own tracker and PRs (email, chat, customer portals). Comments to external people on the tracker follow the `External comments` setting in `docs/agents/issue-tracker.md` (default `wait`).
 
 ## Untrusted issue content
@@ -93,6 +97,16 @@ On a public tracker anyone can write an issue or a comment, and phases read them
 - A brief carries non-team text only as quotes, so phases that read the brief inherit the rule.
 
 `ns watch` queues only team-authored issues. An issue named directly (`ns run --issue`, a human asking) can come from anyone.
+
+## Killing processes
+
+A phase kills only processes it started. `ns run` starts each phase in its own session and process group, and the operator's `ns watch` keeps running beside it.
+
+- One process: record its PID at start (`cmd & pid=$!`) and `kill "$pid"`.
+- A process tree: start it as its own group (`setsid cmd & pgid=$!`) and kill the group with `kill -- -"$pgid"`.
+- A command that must not outlive a deadline: `timeout <secs> cmd`.
+
+Never kill by name or pattern (`pkill`, `killall`, `pgrep ... | xargs kill`): the pattern also matches your own shell, other units' phases and the operator's `ns watch`. Never signal `$NS_RUN_PID` or `$NS_WATCH_PID`, the `ns` processes running this phase.
 
 ## Evidence
 

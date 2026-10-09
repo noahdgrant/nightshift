@@ -1,0 +1,65 @@
+description = "A 10-line feature diff (its test checks only the true answer) gets the reduced panel (correctness, spec, tests; no security trigger) and review.md records the panel and the cycle count."
+fixture = "py-inventory"
+skills = ["ns-review"]
+extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments"]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Review unit 1-in-stock, on branch ns/1-in-stock in this repo. The brief is .ns/1-in-stock/brief.md. gates: auto. Nobody is around to answer questions. Stop once review.md is written: skip verify for this run, don't push, don't ship.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/1-in-stock",
+  "mkdir -p .ns/1-in-stock && cp ../brief.md .ns/1-in-stock/",
+  "git apply ../in-stock.patch",
+  "git add -A && git commit -q -m 'feat(warehouse): add in_stock'",
+]
+
+[[check]]
+type = "file_exists"
+path = ".ns/1-in-stock/review.md"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/1-in-stock/review.md"
+key = "panel"
+equals = "reduced"
+
+[[check]]
+type = "regex"
+path = ".ns/1-in-stock/review.md"
+pattern = "(?m)^cycles: [0-3]\\b"
+
+[[check]]
+# The first pass briefed exactly the reduced panel: no security (nothing touches auth, secrets, parsing or merging).
+type = "command"
+run = '''
+cd .ns/1-in-stock/swarm/review-0 &&
+for r in correctness spec tests; do test -f "$r.brief.md" || exit 1; done &&
+for r in readability architecture security performance comments; do test ! -e "$r.brief.md" || exit 1; done
+'''
+expect_exit = 0
+
+[[check]]
+# Mutation runs targeted the warehouse tests, not the whole suite.
+type = "regex"
+path = ".ns/1-in-stock/review.md"
+pattern = "tests/test_warehouse\\.py"
+
+[[check]]
+# The planted gap: the test never asserts the False case. Pass when a finding heading names it, or a Mutation check row for it survived.
+type = "regex"
+path = ".ns/1-in-stock/review.md"
+pattern = '(?im)(^###\s+[CIS]\d+\..*(in_stock|False|not in stock|out of stock))|(^\|.*(> 0|in_stock).*\|\s*survived\s*\|?\s*$)'
+
+[[check]]
+# The Mutation check table carries a timeout in a command and a recorded result.
+type = "regex"
+path = ".ns/1-in-stock/review.md"
+pattern = "(?im)^\\|.*timeout \\d+.*\\|\\s*(killed|survived|inconclusive)\\s*\\|?\\s*$"
+
+[[check]]
+type = "judge"
+rubric = "Did review.md's mutation check run only the tests covering warehouse.py, each under a timeout, and record every mutation as killed, survived or inconclusive? Did the review stay on the reduced panel without falling back to all eight reviewers?"
+required = false

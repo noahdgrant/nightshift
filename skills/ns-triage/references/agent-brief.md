@@ -37,6 +37,10 @@ The agent needs to know when it's done. Every Agent Brief has concrete, testable
 
 State what is out of scope. This keeps the agent from gold-plating or making assumptions about adjacent features.
 
+### Sized to one unit
+
+Record the size estimate in the brief; the limits and the split are in [triage](../SKILL.md) step 5.
+
 ## Template
 
 ```markdown
@@ -57,6 +61,8 @@ Be specific about edge cases and error conditions.
 - `ClassName`: what needs to change and why
 - `function_name()` return type: what it currently returns vs what it should return
 - Config shape: any new configuration options needed
+
+**Size:** files and modules touched, new tests, rough changed lines
 
 **Acceptance criteria:**
 - [ ] Specific, testable criterion 1
@@ -92,6 +98,8 @@ and append "..." to indicate truncation.
   needed, but the logic that populates it needs to respect word boundaries
 - `parse_frontmatter(text: str) -> SkillMetadata`, or whatever function reads
   SKILL.md frontmatter and extracts the description
+
+**Size:** one module (frontmatter parsing), four pytest cases, about 40 lines
 
 **Acceptance criteria:**
 - [ ] Descriptions under 1024 chars are unchanged
@@ -133,6 +141,8 @@ checked for matches.
 - The triage workflow should read all `.out-of-scope/*.md` files early
   and match incoming issues against them by concept similarity
 
+**Size:** the triage workflow and a new `.out-of-scope/` format, no code tests, about 120 lines
+
 **Acceptance criteria:**
 - [ ] Closing a feature as wontfix creates/updates a file in `.out-of-scope/`
 - [ ] The file includes the decision, reasoning, and link to the closed issue
@@ -172,6 +182,8 @@ is untouched when the flag is absent.
 - The command's error path should emit `{"error": "<message>"}` under `--json`
   instead of the plain-text error
 - Reuse the `to_json()` serializer the PR already added; keep it the only one
+
+**Size:** the command's error path, two pytest cases, about 50 lines on top of the PR
 
 **Acceptance criteria:**
 - [ ] `triage list --json` emits valid JSON for both success and error cases

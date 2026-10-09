@@ -20,6 +20,8 @@ use crate::eval::trial::run_process;
 use crate::factory::{self, artifact_of, Factory, PhaseSettings, PHASES};
 use crate::forge;
 use crate::frontmatter;
+use crate::gate;
+use crate::git::same_sha;
 use crate::git::{self, Repo};
 use crate::markers;
 use crate::worktree;
@@ -100,6 +102,8 @@ pub struct RunResult {
 pub struct Shared {
     pub spent_usd: f64,
     pub clock: Clock,
+    /// The `ns watch` process running this unit, or `None` for a standalone `ns run`.
+    pub watch_pid: Option<u32>,
 }
 
 impl Shared {
@@ -107,6 +111,7 @@ impl Shared {
         Self {
             spent_usd: 0.0,
             clock: Clock::from_env(),
+            watch_pid: None,
         }
     }
 }
@@ -155,13 +160,20 @@ fn read_art(path: &Path) -> Option<Art> {
 
 /// Move `file` into `<dir>/history/<stem>-<n>.md`, n one past the highest already there.
 fn archive_file(dir: &Path, file: &str, moves: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
+    if let Some(dst) = archive_as(dir, file, file.trim_end_matches(".md"))? {
+        moves.push((dir.join(file), dst));
+    }
+    Ok(())
+}
+
+/// Like `archive_file` with a custom `stem`; returns the destination, or None if `file` is absent.
+fn archive_as(dir: &Path, file: &str, stem: &str) -> Result<Option<PathBuf>> {
     let src = dir.join(file);
     if !src.exists() {
-        return Ok(());
+        return Ok(None);
     }
     let hist = dir.join("history");
     fs::create_dir_all(&hist).with_context(|| format!("cannot create {}", hist.display()))?;
-    let stem = file.trim_end_matches(".md");
     let prefix = format!("{stem}-");
     let next = fs::read_dir(&hist)?
         .flatten()
@@ -178,8 +190,7 @@ fn archive_file(dir: &Path, file: &str, moves: &mut Vec<(PathBuf, PathBuf)>) -> 
     let dst = hist.join(format!("{stem}-{next}.md"));
     fs::rename(&src, &dst)
         .with_context(|| format!("cannot move {} to {}", src.display(), dst.display()))?;
-    moves.push((src, dst));
-    Ok(())
+    Ok(Some(dst))
 }
 
 /// Undo `archive_for` after an attempt that wrote nothing, so the unit's state is as before.
@@ -211,7 +222,7 @@ pub fn archive_for(dir: &Path, phase: &str, s: &State) -> Result<Vec<(PathBuf, P
     Ok(moves)
 }
 
-/// The unit's PR number: from `pr.md`, else the newest archived `pr-<n>.md` that names one.
+/// The unit's PR number: from `pr.md`, else the newest archived `pr-<n>.md` or `pr-timeout-<n>.md` that names one.
 pub fn known_pr(dir: &Path) -> Option<u64> {
     if let Some(n) = read_art(&dir.join("pr.md"))
         .and_then(|a| a.pr)
@@ -224,11 +235,8 @@ pub fn known_pr(dir: &Path) -> Option<u64> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            let n = name
-                .strip_prefix("pr-")?
-                .strip_suffix(".md")?
-                .parse()
-                .ok()?;
+            let rest = name.strip_prefix("pr-")?.strip_suffix(".md")?;
+            let n = rest.strip_prefix("timeout-").unwrap_or(rest).parse().ok()?;
             Some((n, e.path()))
         })
         .collect();
@@ -312,11 +320,6 @@ fn run(phase: &'static str, feedback: &str, why: impl Into<String>) -> Decision 
         feedback: feedback.to_string(),
         why: why.into(),
     }
-}
-
-/// Short shas may differ in length: compare by prefix.
-pub fn same_sha(a: &str, b: &str) -> bool {
-    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
 }
 
 /// The body's first non-empty line, the contract's one-sentence reason. A heading marker is
@@ -465,6 +468,34 @@ pub fn phase_command(
     Ok(argv)
 }
 
+/// A phase's timeout. `NS_PHASE_TIMEOUT_MS` overrides it: `<ms>` for every phase, or
+/// comma-separated `<phase>=<ms>` for the named phases only.
+fn phase_timeout(phase: &str, minutes: u64) -> Duration {
+    let var = std::env::var("NS_PHASE_TIMEOUT_MS").ok();
+    timeout_override(var.as_deref(), phase).unwrap_or_else(|| Duration::from_secs(minutes * 60))
+}
+
+/// The override for `phase` in an `NS_PHASE_TIMEOUT_MS` value; a named entry beats a bare one.
+fn timeout_override(var: Option<&str>, phase: &str) -> Option<Duration> {
+    let mut bare = None;
+    for part in var?.split(',') {
+        match part.split_once('=') {
+            Some((p, ms)) if p.trim() == phase => {
+                if let Ok(ms) = ms.trim().parse::<u64>() {
+                    return Some(Duration::from_millis(ms));
+                }
+            }
+            Some(_) => {}
+            None => {
+                if bare.is_none() {
+                    bare = part.trim().parse::<u64>().ok();
+                }
+            }
+        }
+    }
+    bare.map(Duration::from_millis)
+}
+
 struct PhaseRun {
     exit: Option<i32>,
     timed_out: bool,
@@ -498,6 +529,7 @@ fn run_harness(
     }
     if billing::is_claude(argv) {
         billing::wait_for_bg_tasks(&mut cmd);
+        billing::disable_auto_memory(&mut cmd);
         if subscription {
             billing::scrub(&mut cmd);
         }
@@ -699,6 +731,23 @@ pub fn gh_json(cwd: &Path, args: &[&str]) -> Result<Value> {
         .with_context(|| format!("gh {} gave bad JSON", args.join(" ")))
 }
 
+/// Append one event to `<common>/ns/runs.jsonl`, stamped with `ts` and `pid`.
+pub fn log_event(common: &Path, mut ev: Value) {
+    if let Some(o) = ev.as_object_mut() {
+        o.insert("ts".into(), json!(clock::iso(Clock::from_env().now())));
+        o.insert("pid".into(), json!(std::process::id()));
+    }
+    let dir = common.join("ns");
+    let _ = fs::create_dir_all(&dir);
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("runs.jsonl"))
+    {
+        let _ = writeln!(f, "{ev}");
+    }
+}
+
 /// `origin`'s default branch and its sha, or `None` without an origin remote.
 pub fn remote_default(dir: &Path) -> Option<(String, String)> {
     git::run(dir, &["remote", "get-url", "origin"]).ok()?;
@@ -776,6 +825,8 @@ struct Ctx<'a> {
     gates: String,
     base: String,
     lock_dir: PathBuf,
+    /// The CI gate command; `None` runs no gate.
+    gate: Option<String>,
 }
 
 impl Ctx<'_> {
@@ -800,19 +851,9 @@ impl Ctx<'_> {
 
     fn log(&self, mut ev: Value) {
         if let Some(o) = ev.as_object_mut() {
-            o.insert("ts".into(), json!(clock::iso(Clock::from_env().now())));
             o.insert("unit".into(), json!(self.unit));
-            o.insert("pid".into(), json!(std::process::id()));
         }
-        let dir = self.common.join("ns");
-        let _ = fs::create_dir_all(&dir);
-        if let Ok(mut f) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("runs.jsonl"))
-        {
-            let _ = writeln!(f, "{ev}");
-        }
+        log_event(&self.common, ev);
     }
 
     fn head(&self) -> String {
@@ -843,6 +884,9 @@ pub struct Loaded {
     pub root: PathBuf,
     pub fac: Factory,
     pub cfg: Option<Config>,
+    /// The build gate command, read at start like the files: `ns watch` moves the main checkout
+    /// between units, and its `docs/agents/stack.md` must not change the night's gate.
+    pub gate: Option<String>,
     /// The path and sha256 of each file read, so a morning reader can tell what ran.
     pub files: Value,
 }
@@ -864,10 +908,12 @@ impl Loaded {
             "config": file_hash(&cfg_path),
             "factory": file_hash(&root.join(factory::FILE)),
         });
+        let gate = gate::command(&fac, &repo.root);
         Ok(Loaded {
             root,
             fac,
             cfg,
+            gate,
             files,
         })
     }
@@ -892,7 +938,13 @@ fn file_hash(p: &Path) -> Value {
 pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<RunResult> {
     let start = std::env::current_dir().context("cannot read current directory")?;
     let repo = Repo::discover(&start)?;
-    let Loaded { root, fac, cfg, .. } = loaded;
+    let Loaded {
+        root,
+        fac,
+        cfg,
+        gate,
+        ..
+    } = loaded;
     let problems = fac.problems(cfg.as_ref());
     if !problems.is_empty() {
         return Err(SfError::usage(
@@ -975,7 +1027,9 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
     worktree::check_unit_id(&unit, "ns run 142-uart-timeout --issue 142")?;
 
     if args.dry_run {
-        return dry_run(&repo, fac, root, &unit, args, &issue_url, &gates, &commands);
+        return dry_run(
+            &repo, fac, root, gate, &unit, args, &issue_url, &gates, &commands,
+        );
     }
 
     let _lock = Lock::acquire(&repo.common_dir, &unit)?;
@@ -993,6 +1047,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         gates,
         base,
         lock_dir: lock_dir(cfg.as_ref(), &repo.common_dir),
+        gate: gate.clone(),
     };
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
@@ -1051,6 +1106,7 @@ fn dry_run(
     repo: &Repo,
     fac: &Factory,
     root: &Path,
+    gate: &Option<String>,
     unit: &str,
     args: &RunArgs,
     issue_url: &str,
@@ -1100,6 +1156,7 @@ fn dry_run(
         gates: gates.to_string(),
         base: base.unwrap_or_default(),
         lock_dir: PathBuf::new(),
+        gate: gate.clone(),
     };
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
@@ -1125,6 +1182,7 @@ fn dry_run(
         "decision": decision_json,
         "prompt": prompt,
         "command": command,
+        "gate": ctx.gate,
         "budget_usd": fac.budget_usd(),
         "billing": fac.defaults.billing,
         "merge_policy": fac.merge.policy,
@@ -1152,6 +1210,7 @@ fn drive(
     let fac = ctx.fac;
     let subscription = fac.subscription();
     let mut attempts: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let mut timed_out: BTreeMap<&'static str, String> = BTreeMap::new();
     let mut forced: Option<Decision> = args.from.as_ref().map(|f| {
         run(
             PHASES
@@ -1164,6 +1223,7 @@ fn drive(
         )
     });
     let mut baseline = remote_default(&ctx.worktree);
+    let mut gate_state = gate::Gate::default();
     ctx.log(json!({
         "event": "start",
         "default_branch": baseline.as_ref().map(|b| &b.0),
@@ -1204,11 +1264,13 @@ fn drive(
         let p = fac.phase(phase);
         let attempt = attempts.get(phase).copied().unwrap_or(0) + 1;
         if attempt > p.max_attempts {
-            return Ok(finish(
-                Outcome::Stuck,
-                format!("{phase} is out of attempts ({})", p.max_attempts),
-                Some(phase),
-            ));
+            let mut reason = format!("{phase} is out of attempts ({})", p.max_attempts);
+            if let Some(t) = timed_out.get(phase) {
+                reason.push_str(&format!(
+                    ": the last attempt {t}; raise its timeout_minutes or split the unit"
+                ));
+            }
+            return Ok(finish(Outcome::Stuck, reason, Some(phase)));
         }
         if let Some(b) = fac.budget_usd() {
             if shared.spent_usd >= b {
@@ -1233,7 +1295,13 @@ fn drive(
             ("NS_PHASE", phase.to_string()),
             ("NS_ATTEMPT", attempt.to_string()),
             ("NS_WORKTREE", ctx.worktree.to_string_lossy().into_owned()),
+            ("NS_RUN_PID", std::process::id().to_string()),
+            (
+                "NS_WATCH_PID",
+                shared.watch_pid.map(|p| p.to_string()).unwrap_or_default(),
+            ),
         ];
+        let timeout = phase_timeout(phase, p.timeout_minutes);
         eprintln!("ns run: {} {phase} attempt {attempt} ({why})", ctx.unit);
         let r = {
             let _held =
@@ -1251,7 +1319,7 @@ fn drive(
                 &prompt,
                 &ctx.worktree,
                 &env,
-                Duration::from_secs(p.timeout_minutes * 60),
+                timeout,
                 &transcript,
                 subscription,
             )
@@ -1272,6 +1340,13 @@ fn drive(
             "output_tokens": t.output_tokens,
             "transcript": transcript.to_string_lossy(),
         });
+        if r.timed_out {
+            let file = artifact_of(phase);
+            let stem = format!("{}-timeout", file.trim_end_matches(".md"));
+            if let Some(dst) = archive_as(&ctx.artifacts, file, &stem)? {
+                rec["archived"] = json!(dst.to_string_lossy());
+            }
+        }
         if let Some(limit) = billing::usage_limit(&r.stdout, shared.clock.now()) {
             rec["status"] = json!("paused");
             rec["reason"] = json!(limit.message);
@@ -1287,6 +1362,11 @@ fn drive(
             return Ok(f);
         }
         attempts.insert(phase, attempt);
+        if r.timed_out {
+            timed_out.insert(phase, gate::timed_out_after(timeout));
+        } else {
+            timed_out.remove(phase);
+        }
         let art = read_art(&art_path);
         let written = art.is_some();
         if !written {
@@ -1303,7 +1383,7 @@ fn drive(
             *last_artifact = Some(art_path.to_string_lossy().into_owned());
         } else {
             let why = if r.timed_out {
-                format!("timed out after {} min", p.timeout_minutes)
+                gate::timed_out_after(timeout)
             } else {
                 match r.exit {
                     Some(0) => "no artifact written".to_string(),
@@ -1327,6 +1407,42 @@ fn drive(
                 Some("triage"),
             ));
         }
+        let head_moved = !same_sha(&state.head, &ctx.head());
+        if r.timed_out && phase == "build" {
+            if let Some(fb) = gate_state.red_feedback() {
+                forced = Some(run("build", fb, "timed out with the CI gate still red"));
+            }
+            continue;
+        }
+        let trigger = if r.timed_out {
+            (phase == "review" && head_moved).then_some(gate::Trigger::ReviewMovedHead)
+        } else {
+            gate_trigger(phase, art.as_ref(), head_moved)
+        };
+        if let (Some(cmd), Some(trigger)) = (&ctx.gate, trigger) {
+            let job = gate::Job {
+                cmd,
+                worktree: &ctx.worktree,
+                log_dir: ctx.common.join("ns").join("transcripts").join(&ctx.unit),
+                unit: &ctx.unit,
+                timeout: gate::timeout(ctx.fac.phase("build").timeout_minutes),
+                head: ctx.head(),
+                phase,
+                attempt,
+            };
+            if let Some(red) = gate_state.after(trigger, &job, &|ev| ctx.log(ev))? {
+                forced = Some(run("build", &red.feedback, red.reason));
+            }
+        }
+    }
+}
+
+fn gate_trigger(phase: &str, art: Option<&Art>, head_moved: bool) -> Option<gate::Trigger> {
+    match (phase, art) {
+        ("build", Some(a)) if a.status == "pass" => Some(gate::Trigger::BuildPassed),
+        ("build", None) => Some(gate::Trigger::BuildWroteNothing),
+        ("review", _) if head_moved => Some(gate::Trigger::ReviewMovedHead),
+        _ => None,
     }
 }
 
@@ -1867,6 +1983,53 @@ mod tests {
         assert!(d.join("history/build-2.md").exists());
     }
 
+    fn pr_art(dir: &Path, name: &str, pr: u64) {
+        fs::create_dir_all(dir.join("history")).unwrap();
+        fs::write(
+            dir.join(name),
+            format!(
+                "---\nunit: u\nphase: ship\nstatus: pass\nsha: abc1234\npr: https://github.com/o/r/pull/{pr}\nupdated: 2026-10-08T00:00:00Z\n---\nbody\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn known_pr_reads_timed_out_archives_newest_first() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        assert_eq!(known_pr(d), None);
+        pr_art(d, "history/pr-timeout-1.md", 21);
+        assert_eq!(known_pr(d), Some(21));
+        pr_art(d, "history/pr-2.md", 22);
+        assert_eq!(known_pr(d), Some(22));
+        pr_art(d, "history/pr-timeout-3.md", 23);
+        assert_eq!(known_pr(d), Some(23));
+        pr_art(d, "pr.md", 24);
+        assert_eq!(known_pr(d), Some(24));
+    }
+
+    #[test]
+    fn timeout_override_parses_bare_named_and_malformed_values() {
+        let ms = |v: Option<&str>, p: &str| timeout_override(v, p).map(|d| d.as_millis());
+        assert_eq!(ms(None, "build"), None);
+        assert_eq!(ms(Some(""), "build"), None);
+        assert_eq!(ms(Some("1500"), "build"), Some(1500));
+        assert_eq!(ms(Some("1500"), "review"), Some(1500));
+        assert_eq!(ms(Some("build=1500"), "build"), Some(1500));
+        assert_eq!(ms(Some("build=1500"), "review"), None);
+        assert_eq!(ms(Some("build=1,review=2"), "review"), Some(2));
+        assert_eq!(ms(Some(" build = 7 , review = 8 "), "review"), Some(8));
+        assert_eq!(ms(Some(" 9 "), "ship"), Some(9));
+        assert_eq!(ms(Some("abc"), "build"), None);
+        assert_eq!(ms(Some("build=abc"), "build"), None);
+        assert_eq!(ms(Some("build=,review=3"), "review"), Some(3));
+        assert_eq!(ms(Some("5,build=1"), "build"), Some(1));
+        assert_eq!(ms(Some("build=1,5"), "build"), Some(1));
+        assert_eq!(ms(Some("build=1,5"), "review"), Some(5));
+        assert_eq!(ms(Some("build=abc,5"), "build"), Some(5));
+    }
+
     fn real_state(r: &Rebased) -> State {
         State {
             arts: BTreeMap::new(),
@@ -1977,9 +2140,6 @@ mod tests {
 
     #[test]
     fn helpers() {
-        assert!(same_sha("abc1234", "abc1234def"));
-        assert!(!same_sha("", "abc"));
-        assert!(!same_sha("abc1", "abd1"));
         assert_eq!(pr_number("https://github.com/o/r/pull/12"), Some(12));
         assert_eq!(pr_number("#7"), Some(7));
         assert_eq!(pr_number("<url>"), None);

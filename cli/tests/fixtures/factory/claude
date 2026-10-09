@@ -5,6 +5,8 @@
 #   extra:   commit | push | merge | script | any text (lands in the body, e.g. "review")
 #   commit and push append to work.txt, or run $FAKE_CTRL/edit instead when it exists
 #   script runs $FAKE_CTRL/<phase>.sh in the worktree
+#   <extra>+sleep (e.g. commit+sleep) does the extra, then sleeps
+#   sleep writes the artifact last, then execs sleep so a short timeout kills it with no orphan
 set -e
 ctrl="$FAKE_CTRL"
 prompt=$(cat)
@@ -16,6 +18,7 @@ echo "$*" > "$ctrl/args"
 printf '%s\n' "${GH_TOKEN:-}" >> "$ctrl/tokens"
 printf '%s %s\n' "${GITLAB_TOKEN:-}" "${GITLAB_HOST:-}" >> "$ctrl/gitlab"
 printf '%s\n' "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >> "$ctrl/bgwait"
+printf '%s\n' "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset}" >> "$ctrl/automem"
 [ -n "${ANTHROPIC_API_KEY:-}" ] && echo "ANTHROPIC_API_KEY" >> "$ctrl/leak"
 action=pass
 if [ -s "$ctrl/$phase" ]; then
@@ -41,6 +44,8 @@ fi
 case $phase in
   triage) art=brief ;; build) art=build ;; verify) art=evidence ;; review) art=review ;; ship) art=pr ;;
 esac
+sleepy=0
+case "$extra" in *+sleep) sleepy=1; extra=${extra%+sleep} ;; esac
 dir=".ns/$NS_UNIT"
 mkdir -p "$dir"
 case "$extra" in
@@ -67,3 +72,4 @@ sha=$(git rev-parse --short HEAD)
   echo ---
   echo "$phase said $status $extra"
 } > "$dir/$art.md"
+if [ "$extra" = sleep ] || [ "$sleepy" = 1 ]; then exec sleep 30; fi

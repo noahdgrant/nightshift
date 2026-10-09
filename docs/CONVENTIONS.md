@@ -17,7 +17,7 @@ metadata:
 
 - `metadata.upstream` is `<owner>/<repo>@<sha>:<path>`. Set it on every adapted skill, and list several on separate lines (as a YAML list) when a skill merges sources. Omit it on originals. `ns-maintain` diffs upstream from that sha.
 - **Principles** (`ns-principle-*`) set `disable-model-invocation: true`. Other skills point to them by relative path, e.g. `[prove it works](../ns-principle-prove-it-works/SKILL.md)`, naming when the principle applies.
-- Model-invoked by default: phase skills call leaf skills, and `ns-auto` calls phase skills, so both need a description the agent can match. Set `disable-model-invocation: true` only on skills a human should be the only one to start.
+- Phase skills are model-invoked: `ns-auto` and the phase skills call them, so they need a description the agent can match. `ns-auto` and the principle skills are user-invoked (`disable-model-invocation: true`): `ns-auto` starts a long autonomous run and commits to a gate policy, so only a human starts it, and `ns lint` enforces the flag. Set the flag only on skills a human should be the only one to start.
 
 ## Harness neutrality
 
