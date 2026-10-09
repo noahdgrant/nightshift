@@ -156,6 +156,7 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
     }
 
     let mut cmd = Command::new(&bin);
+    crate::git::scrub(&mut cmd);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }

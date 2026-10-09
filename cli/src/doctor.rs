@@ -117,6 +117,7 @@ fn forge_entry(kind: ForgeKind, f: Option<&Forge>, problems: &mut Vec<String>) -
 
 fn github_account(creds: Option<&forge::Credentials>) -> Option<String> {
     let mut cmd = Command::new("gh");
+    crate::git::scrub(&mut cmd);
     if let Some(forge::Credentials { token, host }) = creds {
         if let forge::Token::Fetched(t) = token {
             cmd.env("GH_TOKEN", t);

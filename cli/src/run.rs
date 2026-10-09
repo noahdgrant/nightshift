@@ -488,6 +488,7 @@ fn run_harness(
         .with_context(|| format!("cannot create {}", transcript.display()))?;
     let err = File::create(transcript.with_extension("stderr"))?;
     let mut cmd = Command::new(&argv[0]);
+    crate::git::scrub(&mut cmd);
     cmd.args(&argv[1..])
         .current_dir(cwd)
         .stdout(out)
@@ -675,7 +676,7 @@ fn flock(_: &File, _: bool) -> std::io::Result<bool> {
 // ---------------------------------------------------------------- gh and git helpers
 
 pub fn gh(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("gh")
+    let out = crate::git::scrub(&mut Command::new("gh"))
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -1539,6 +1540,7 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
 
     // Wait for CI, bounded.
     let mut cmd = Command::new("gh");
+    crate::git::scrub(&mut cmd);
     cmd.args(["pr", "checks", &ns, "--watch"])
         .current_dir(wt)
         .stdout(Stdio::null())

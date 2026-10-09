@@ -15,6 +15,11 @@ fn ns() -> Command {
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = StdCommand::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_OBJECT_DIRECTORY")
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -935,4 +940,30 @@ fn worktree_setup_failure_keeps_worktree_and_retries() {
         .code(2)
         .stderr(predicate::str::contains("cannot parse"));
     assert!(!root.parent().unwrap().join("myrepo.worktrees/u4").exists());
+}
+
+#[test]
+fn an_inherited_git_dir_never_reaches_another_repo() {
+    // A parent git (a hook, `git rebase --exec`) exports GIT_DIR. Every git that ns spawns
+    // must act on the repo it names, never on the one GIT_DIR points at.
+    let (_t, root) = repo();
+    let (_d, decoy) = repo();
+    let decoy_git = decoy.join(".git");
+    let config_before = fs::read_to_string(decoy_git.join("config")).unwrap();
+    let branches_before = git(&decoy, &["branch", "--list"]);
+
+    ns().current_dir(&root)
+        .env("GIT_DIR", &decoy_git)
+        .env("GIT_WORK_TREE", &decoy)
+        .args(["worktree", "new", "7-thing"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_to_string(decoy_git.join("config")).unwrap(),
+        config_before
+    );
+    assert_eq!(git(&decoy, &["branch", "--list"]), branches_before);
+    assert!(git(&root, &["branch", "--list", "ns/7-thing"]).contains("ns/7-thing"));
+    assert_eq!(git(&decoy, &["rev-parse", "--is-bare-repository"]), "false");
 }

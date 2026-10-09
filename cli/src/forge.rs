@@ -62,7 +62,7 @@ const HINT: &str =
 fn fetch(name: &str, source: &TokenSource) -> Result<String, SfError> {
     let token = match source {
         TokenSource::Command(c) => {
-            let out = Command::new("sh")
+            let out = crate::git::scrub(&mut Command::new("sh"))
                 .args(["-c", c])
                 .stdin(Stdio::null())
                 .stderr(Stdio::null())
