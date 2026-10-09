@@ -43,6 +43,8 @@ Each unit gets one worktree and one artifact folder, created by `ns worktree new
 
 `ns run` archives superseded artifacts into `.ns/<unit-id>/history/<artifact>-<n>.md` before it runs a phase, so an artifact in `.ns/<unit-id>/` is always the current one. Don't read `history/` as current state.
 
+A phase writes its artifact **once, at the end**, when it knows the gate result. Progress notes, interim findings and scratch files go in `.ns/<unit-id>/<phase>/` (e.g. `.ns/<unit>/review/notes.md`), never in the artifact. A phase can be killed at any moment (timeout, usage limit), and whatever artifact exists is read as its verdict.
+
 Every artifact opens with frontmatter recording the gate result:
 
 ```yaml

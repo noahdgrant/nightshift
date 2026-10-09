@@ -81,7 +81,7 @@ While any Critical or Important finding is `open`, and fewer than 3 cycles have 
 1. Hand the open Critical and Important findings to a **fresh-context build agent**, launched in the foreground so you wait for it (see `ns-swarm`), working in the unit's worktree. Its brief: `brief.md`, `review.md`, the finding IDs to fix, and `docs/agents/stack.md`. It fixes behaviour test-first with the `ns-tdd` skill, routes comment findings through the `ns-no-comments` skill, runs the test command, and commits. It writes code, so it runs as a subagent or inline, never through read-only `ns ask`.
 2. Regenerate `diff.patch` and rerun step 2 for every reviewer on the new diff. Reviewers get no list of earlier findings.
 3. Mark an earlier finding `fixed` only when the code at its location changed and no reviewer raised it again. Read the code to confirm. Add new findings with the cycle number.
-4. Rewrite `review.md` and increment `cycles`.
+4. Record the cycle's findings in `.ns/<unit-id>/review/cycle-<n>.md`, and increment the cycle count there. Write `review.md` only when the loop ends (see the contract: an artifact is written once, at the end).
 5. If the cycle added commits, re-run `ns-verify` before closing the loop, so `evidence.md` and `review.md` both carry the new HEAD `sha`. `ns-ship` rejects stale artifacts.
 
 A cycle where reviewers raised substantive findings and you dismissed all of them is a warning sign: you are validating, not reviewing. Say so in `review.md`.
