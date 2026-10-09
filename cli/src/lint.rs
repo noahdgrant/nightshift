@@ -12,6 +12,8 @@ use crate::frontmatter;
 
 pub const MAX_DESCRIPTION: usize = 1024;
 
+const USER_INVOKED_ONLY: &[&str] = &["ns-auto"];
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct LintError {
     pub skill: String,
@@ -87,6 +89,12 @@ pub fn check_frontmatter(dir_name: &str, text: &str) -> Vec<String> {
         }
         Some(_) => errs.push("description must be a string".into()),
         None => errs.push("missing description".into()),
+    }
+
+    if USER_INVOKED_ONLY.contains(&dir_name)
+        && fm.get("disable-model-invocation") != Some(&Value::Bool(true))
+    {
+        errs.push("disable-model-invocation: true is required".into());
     }
 
     if let Some(up) = fm.get("metadata").and_then(|m| m.get("upstream")) {
@@ -262,6 +270,26 @@ mod tests {
         assert!(e[0].contains("1025"));
         let e = check_frontmatter("ns-a", "---\nname: ns-a\n---\n");
         assert_eq!(e, ["missing description"]);
+    }
+
+    #[test]
+    fn user_invoked_skills_disable_model_invocation() {
+        let without = "---\nname: ns-auto\ndescription: x\n---\n";
+        let e = check_frontmatter("ns-auto", without);
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(e[0].contains("disable-model-invocation"));
+        let with = "---\nname: ns-auto\ndescription: x\ndisable-model-invocation: true\n---\n";
+        assert!(check_frontmatter("ns-auto", with).is_empty());
+        for bad in ["false", "\"true\""] {
+            let src = format!(
+                "---\nname: ns-auto\ndescription: x\ndisable-model-invocation: {bad}\n---\n"
+            );
+            assert!(
+                !check_frontmatter("ns-auto", &src).is_empty(),
+                "{bad} must error"
+            );
+        }
+        assert!(check_frontmatter("ns-a", "---\nname: ns-a\ndescription: x\n---\n").is_empty());
     }
 
     #[test]
