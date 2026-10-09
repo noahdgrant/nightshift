@@ -1437,13 +1437,8 @@ fn dirty(root: &Path, dir: &Path) -> bool {
 }
 
 mod time {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     fn now() -> (i64, u32, u32, u64) {
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let secs = crate::clock::Clock::from_env().now().max(0) as u64;
         let days = (secs / 86_400) as i64;
         let (y, m, d) = civil(days);
         (y, m, d, secs % 86_400)

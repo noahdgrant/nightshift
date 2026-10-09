@@ -5,11 +5,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 use crate::billing;
 use crate::clock::{self, Clock};
@@ -129,22 +128,19 @@ pub struct Art {
     pub sha: Option<String>,
     pub pr: Option<String>,
     pub body: String,
-    pub mtime: SystemTime,
 }
 
 fn read_art(path: &Path) -> Option<Art> {
     let text = fs::read_to_string(path).ok()?;
-    let mtime = fs::metadata(path).and_then(|m| m.modified()).ok()?;
     let (status, sha, pr, body) = match (frontmatter::parse(&text), frontmatter::split(&text)) {
-        (Ok(Some(fm)), Some((_, body))) => {
-            let get = |k: &str| fm.get(k).and_then(worktree::yaml_scalar);
-            (
-                get("status").unwrap_or_default(),
-                get("sha"),
-                get("pr"),
-                body.to_string(),
-            )
-        }
+        (Ok(Some(fm)), Some((yaml, body))) => (
+            fm.get("status")
+                .and_then(worktree::yaml_scalar)
+                .unwrap_or_default(),
+            raw_field(yaml, "sha"),
+            raw_field(yaml, "pr"),
+            body.to_string(),
+        ),
         _ => (String::new(), None, None, text.clone()),
     };
     Some(Art {
@@ -152,16 +148,105 @@ fn read_art(path: &Path) -> Option<Art> {
         sha,
         pr,
         body,
-        mtime,
     })
 }
 
-type Snapshot = Option<(SystemTime, Vec<u8>)>;
+/// A top-level frontmatter value as written. YAML would read an unquoted sha such as
+/// `0e05787` or `1234567` as a number and lose it, so `sha` and `pr` are taken verbatim.
+fn raw_field(yaml: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    let line = yaml.lines().find(|l| l.starts_with(&prefix))?;
+    let mut v = line[prefix.len()..].trim();
+    if let Some(i) = v.find(" #") {
+        v = v[..i].trim_end();
+    }
+    let v = v.trim_matches(|c| c == '"' || c == '\'');
+    (!v.is_empty()).then(|| v.to_string())
+}
 
-fn snapshot(path: &Path) -> Snapshot {
-    let bytes = fs::read(path).ok()?;
-    let mtime = fs::metadata(path).and_then(|m| m.modified()).ok()?;
-    Some((mtime, Sha256::digest(&bytes).to_vec()))
+/// Move `file` into `<dir>/history/<stem>-<n>.md`, n one past the highest already there.
+fn archive_file(dir: &Path, file: &str, moves: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
+    let src = dir.join(file);
+    if !src.exists() {
+        return Ok(());
+    }
+    let hist = dir.join("history");
+    fs::create_dir_all(&hist).with_context(|| format!("cannot create {}", hist.display()))?;
+    let stem = file.trim_end_matches(".md");
+    let prefix = format!("{stem}-");
+    let next = fs::read_dir(&hist)?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.strip_prefix(&prefix)?
+                .strip_suffix(".md")?
+                .parse::<u32>()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let dst = hist.join(format!("{stem}-{next}.md"));
+    fs::rename(&src, &dst)
+        .with_context(|| format!("cannot move {} to {}", src.display(), dst.display()))?;
+    moves.push((src, dst));
+    Ok(())
+}
+
+/// Undo `archive_for` after an attempt that wrote nothing, so the unit's state is as before.
+fn restore(moves: &[(PathBuf, PathBuf)]) {
+    for (src, dst) in moves.iter().rev() {
+        if !src.exists() {
+            let _ = fs::rename(dst, src);
+        }
+    }
+}
+
+/// Before running `phase`: archive its artifact, and every downstream artifact that is not
+/// `pass` at HEAD. Whatever exists afterwards is current, so presence alone drives `decide`.
+pub fn archive_for(dir: &Path, phase: &str, head: &str) -> Result<Vec<(PathBuf, PathBuf)>> {
+    let mut moves = Vec::new();
+    let Some(i) = PHASES.iter().position(|p| *p == phase) else {
+        return Ok(moves);
+    };
+    archive_file(dir, artifact_of(phase), &mut moves)?;
+    for p in &PHASES[i + 1..] {
+        let file = artifact_of(p);
+        let keep = read_art(&dir.join(file))
+            .is_some_and(|a| a.status == "pass" && same_sha(a.sha.as_deref().unwrap_or(""), head));
+        if !keep {
+            archive_file(dir, file, &mut moves)?;
+        }
+    }
+    Ok(moves)
+}
+
+/// The unit's PR number: from `pr.md`, else the newest archived `pr-<n>.md` that names one.
+pub fn known_pr(dir: &Path) -> Option<u64> {
+    if let Some(n) = read_art(&dir.join("pr.md"))
+        .and_then(|a| a.pr)
+        .and_then(|v| pr_number(&v))
+    {
+        return Some(n);
+    }
+    let mut archived: Vec<(u32, PathBuf)> = fs::read_dir(dir.join("history"))
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let n = name
+                .strip_prefix("pr-")?
+                .strip_suffix(".md")?
+                .parse()
+                .ok()?;
+            Some((n, e.path()))
+        })
+        .collect();
+    archived.sort();
+    archived
+        .iter()
+        .rev()
+        .find_map(|(_, p)| read_art(p).and_then(|a| a.pr).and_then(|v| pr_number(&v)))
 }
 
 pub struct State {
@@ -244,12 +329,9 @@ pub fn decide(s: &State) -> Decision {
             }
         }
     }
-    let build = s.arts.get("build");
-    let older_than_build = |a: &Art| build.is_some_and(|b| a.mtime < b.mtime);
     let stale = |a: &Art| !same_sha(a.sha.as_deref().unwrap_or(""), &s.head);
-
     if let Some(pr) = s.arts.get("ship") {
-        if pr.status == "pass" && !older_than_build(pr) {
+        if pr.status == "pass" && !stale(pr) {
             return Decision::Done;
         }
     }
@@ -266,7 +348,7 @@ pub fn decide(s: &State) -> Decision {
             brief.status
         ));
     }
-    let Some(b) = build else {
+    let Some(b) = s.arts.get("build") else {
         return run("build", "", "no build.md");
     };
     match b.status.as_str() {
@@ -274,26 +356,22 @@ pub fn decide(s: &State) -> Decision {
         "fail" => return run("build", &b.body, "build.md failed; build retries"),
         other => return Decision::Stuck(format!("build.md has status {other:?}")),
     }
+    let stale_why = |file: &str, a: &Art| {
+        format!(
+            "{file} sha {} is not HEAD {}",
+            a.sha.as_deref().unwrap_or("(none)"),
+            s.head
+        )
+    };
     for (phase, file) in [("verify", "evidence.md"), ("review", "review.md")] {
         let Some(a) = s.arts.get(phase) else {
             return run(phase, "", format!("no {file}"));
         };
         if stale(a) {
-            return run(
-                phase,
-                "",
-                format!(
-                    "{file} sha {} is not HEAD {}",
-                    a.sha.as_deref().unwrap_or("(none)"),
-                    s.head
-                ),
-            );
+            return run(phase, "", stale_why(file, a));
         }
         match a.status.as_str() {
             "pass" => {}
-            "fail" if older_than_build(a) => {
-                return run(phase, "", format!("build ran after {file} failed"))
-            }
             "fail" => return run("build", &a.body, format!("{file} failed")),
             other => return Decision::Stuck(format!("{file} has status {other:?}")),
         }
@@ -302,11 +380,8 @@ pub fn decide(s: &State) -> Decision {
         return run("ship", "", "no pr.md");
     };
     match pr.status.as_str() {
-        "pass" => run("ship", "", "build ran after the PR was shipped"),
+        "pass" => run("ship", "", stale_why("pr.md", pr)),
         "fail" => match named_phase(&pr.body) {
-            Some(p) if s.arts.get(p).is_some_and(|a| a.mtime > pr.mtime) => {
-                run("ship", "", format!("{p} ran after pr.md failed"))
-            }
             Some(p) => run(
                 if p == "verify" { "verify" } else { "review" },
                 &pr.body,
@@ -771,7 +846,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared) -> Result<RunResult> {
             &mut last_artifact,
         )?
     };
-    let pr = read_art(&ctx.artifacts.join("pr.md")).and_then(|a| a.pr);
+    let pr = known_pr(&ctx.artifacts);
     ctx.log(json!({
         "event": "end",
         "outcome": result.outcome.label(),
@@ -958,7 +1033,7 @@ fn drive(
             }
         }
         let art_path = ctx.artifacts.join(artifact_of(phase));
-        let before = snapshot(&art_path);
+        let moves = archive_for(&ctx.artifacts, phase, &ctx.head())?;
         let prompt = ctx.prompt(&p, attempt, &feedback)?;
         let transcript = ctx
             .common
@@ -1000,6 +1075,7 @@ fn drive(
         if let Some(limit) = billing::usage_limit(&r.stdout, shared.clock.now()) {
             rec["status"] = json!("paused");
             rec["reason"] = json!(limit.message);
+            restore(&moves);
             ctx.log(merge_obj(json!({"event": "phase"}), &rec));
             phases.push(rec);
             let mut f = finish(
@@ -1011,9 +1087,11 @@ fn drive(
             return Ok(f);
         }
         attempts.insert(phase, attempt);
-        let after = snapshot(&art_path);
-        let written = after.is_some() && after != before;
         let art = read_art(&art_path);
+        let written = art.is_some();
+        if !written {
+            restore(&moves);
+        }
         rec["written"] = json!(written);
         rec["status"] = json!(if written {
             art.as_ref().map(|a| a.status.clone())
@@ -1041,7 +1119,8 @@ fn drive(
         if let Some(f) = guards(ctx, &mut baseline, phase)? {
             return Ok(f);
         }
-        if phase == "triage" && !written && r.exit == Some(0) && !r.timed_out && art.is_none() {
+        if phase == "triage" && !written && r.exit == Some(0) && !r.timed_out && !art_path.exists()
+        {
             return Ok(finish(
                 Outcome::Stuck,
                 "triage wrote no brief: the issue needs a human or ns-define",
@@ -1087,10 +1166,7 @@ fn guards(
             }
         }
     }
-    if let Some(n) = read_art(&ctx.artifacts.join("pr.md"))
-        .and_then(|a| a.pr)
-        .and_then(|v| pr_number(&v))
-    {
+    if let Some(n) = known_pr(&ctx.artifacts) {
         let v = gh_json(
             &ctx.worktree,
             &["pr", "view", &n.to_string(), "--json", "state"],
@@ -1123,10 +1199,10 @@ fn human(reason: impl Into<String>) -> MergeStep {
 /// `merge.policy = "auto"`: squash-merge this unit's PR when CI is green, review.md passed at
 /// HEAD, and no protected path changed. The only place ns merges anything.
 fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep> {
-    let Some(pr) = state.arts.get("ship") else {
+    if !state.arts.contains_key("ship") {
         return Ok(human("no pr.md"));
-    };
-    let Some(n) = pr.pr.as_deref().and_then(pr_number) else {
+    }
+    let Some(n) = known_pr(&ctx.artifacts) else {
         return Ok(human("pr.md has no pr: number; needs a human merge"));
     };
     let ns = n.to_string();
@@ -1313,13 +1389,12 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
 mod tests {
     use super::*;
 
-    fn art(status: &str, sha: &str, age: u64) -> Art {
+    fn art(status: &str, sha: &str) -> Art {
         Art {
             status: status.into(),
             sha: Some(sha.into()),
             pr: None,
             body: format!("{status} body"),
-            mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(age),
         }
     }
 
@@ -1339,100 +1414,121 @@ mod tests {
         }
     }
 
+    fn next(arts: &[(&'static str, Art)]) -> String {
+        phase_of(&decide(&state(arts))).to_string()
+    }
+
     #[test]
     fn state_table() {
-        assert_eq!(phase_of(&decide(&state(&[]))), "triage");
+        assert_eq!(next(&[]), "triage");
         let mut s = state(&[]);
         s.has_issue = false;
         assert_eq!(phase_of(&decide(&s)), "stuck");
-        let brief = ("triage", art("pass", "", 1));
-        let build = ("build", art("pass", "abc1234", 2));
-        assert_eq!(
-            phase_of(&decide(&state(std::slice::from_ref(&brief)))),
-            "build"
-        );
-        assert_eq!(
-            phase_of(&decide(&state(&[brief.clone(), build.clone()]))),
-            "verify"
-        );
-        // Stale evidence (shorter sha prefix still matches).
-        let ev = ("verify", art("pass", "abc12", 3));
-        assert_eq!(
-            phase_of(&decide(&state(&[brief.clone(), build.clone(), ev.clone()]))),
-            "review"
-        );
-        let stale = ("verify", art("pass", "fff0000", 3));
-        assert_eq!(
-            phase_of(&decide(&state(&[brief.clone(), build.clone(), stale]))),
-            "verify"
-        );
-        let evfail = ("verify", art("fail", "abc1234", 3));
-        let d = decide(&state(&[brief.clone(), build.clone(), evfail.clone()]));
+        let brief = ("triage", art("pass", ""));
+        let build = ("build", art("pass", "abc1234"));
+        let ev = ("verify", art("pass", "abc12"));
+        let rv = ("review", art("pass", "abc1234"));
+        assert_eq!(next(std::slice::from_ref(&brief)), "build");
+        assert_eq!(next(&[brief.clone(), ("build", art("fail", ""))]), "build");
+        assert_eq!(next(&[brief.clone(), build.clone()]), "verify");
+        // A shorter sha prefix still matches HEAD.
+        assert_eq!(next(&[brief.clone(), build.clone(), ev.clone()]), "review");
+        let stale = ("verify", art("pass", "fff0000"));
+        assert_eq!(next(&[brief.clone(), build.clone(), stale]), "verify");
+        let d = decide(&state(&[
+            brief.clone(),
+            build.clone(),
+            ("verify", art("fail", "abc1234")),
+        ]));
         assert!(
             matches!(&d, Decision::Run { phase: "build", feedback, .. } if feedback == "fail body")
         );
-        // Build reran after the failure: verify again.
-        let build2 = ("build", art("pass", "abc1234", 4));
+        let d = decide(&state(&[
+            brief.clone(),
+            build.clone(),
+            ev.clone(),
+            ("review", art("fail", "abc1234")),
+        ]));
+        assert!(matches!(&d, Decision::Run { phase: "build", .. }));
+        let base = [brief.clone(), build.clone(), ev.clone(), rv.clone()];
+        assert_eq!(next(&base), "ship");
+        let with = |extra: (&'static str, Art)| {
+            let mut v = base.to_vec();
+            v.push(extra);
+            next(&v)
+        };
+        let mut sf = art("fail", "abc1234");
+        sf.body = "evidence is stale; ns-review must rerun".into();
+        assert_eq!(with(("ship", sf)), "review");
+        assert_eq!(with(("ship", art("fail", "abc1234"))), "stuck");
+        assert_eq!(with(("ship", art("pass", "abc1234"))), "done");
+        // A pass at an older sha ships again once verify and review hold at HEAD.
+        assert_eq!(with(("ship", art("pass", "0000000"))), "ship");
         assert_eq!(
-            phase_of(&decide(&state(&[brief.clone(), build2, evfail]))),
-            "verify"
-        );
-        let rv = ("review", art("pass", "abc1234", 4));
-        assert_eq!(
-            phase_of(&decide(&state(&[
+            next(&[
                 brief.clone(),
                 build.clone(),
                 ev.clone(),
-                rv.clone()
-            ]))),
-            "ship"
-        );
-        let shipfail = ("ship", art("fail", "abc1234", 5));
-        let mut sf = shipfail.clone();
-        sf.1.body = "evidence is stale; ns-review must rerun".into();
-        assert_eq!(
-            phase_of(&decide(&state(&[
-                brief.clone(),
-                build.clone(),
-                ev.clone(),
-                rv.clone(),
-                sf
-            ]))),
-            "review"
-        );
-        assert_eq!(
-            phase_of(&decide(&state(&[
-                brief.clone(),
-                build.clone(),
-                ev.clone(),
-                rv.clone(),
-                shipfail
-            ]))),
+                ("review", art("blocked", "abc1234"))
+            ]),
             "stuck"
         );
-        let pr = ("ship", art("pass", "abc1234", 5));
-        assert_eq!(
-            phase_of(&decide(&state(&[
-                brief.clone(),
-                build.clone(),
-                ev.clone(),
-                rv.clone(),
-                pr
-            ]))),
-            "done"
-        );
-        let blocked = ("review", art("blocked", "abc1234", 4));
-        assert_eq!(
-            phase_of(&decide(&state(&[
-                brief.clone(),
-                build.clone(),
-                ev.clone(),
-                blocked
-            ]))),
-            "stuck"
-        );
-        let triage_fail = ("triage", art("fail", "", 1));
-        assert_eq!(phase_of(&decide(&state(&[triage_fail]))), "stuck");
+        assert_eq!(next(&[("triage", art("fail", ""))]), "stuck");
+    }
+
+    #[test]
+    fn archiving_keeps_only_current_downstream_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let w = |f: &str, status: &str, sha: &str| {
+            fs::write(
+                d.join(f),
+                format!("---\nstatus: {status}\nsha: {sha}\npr: 12\n---\nbody\n"),
+            )
+            .unwrap()
+        };
+        w("build.md", "pass", "abc1234");
+        w("evidence.md", "pass", "abc1234");
+        w("review.md", "fail", "abc1234");
+        w("pr.md", "pass", "0000000");
+        let moves = archive_for(d, "build", "abc1234").unwrap();
+        assert!(!d.join("build.md").exists());
+        assert!(d.join("evidence.md").exists());
+        assert!(!d.join("review.md").exists());
+        assert!(d.join("history/build-1.md").exists());
+        assert!(d.join("history/review-1.md").exists());
+        assert!(d.join("history/pr-1.md").exists());
+        assert_eq!(known_pr(d), Some(12));
+        restore(&moves);
+        assert!(d.join("build.md").exists() && d.join("pr.md").exists());
+        // A restored slot is free again; a second archive takes the next number.
+        archive_for(d, "build", "abc1234").unwrap();
+        w("build.md", "pass", "abc1234");
+        archive_for(d, "build", "abc1234").unwrap();
+        assert!(d.join("history/build-1.md").exists());
+        assert!(d.join("history/build-2.md").exists());
+    }
+
+    #[test]
+    fn sha_and_pr_are_read_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("evidence.md");
+        for (sha, want) in [
+            ("0e05787", "0e05787"),
+            ("1234567", "1234567"),
+            ("\"00ab12c\"", "00ab12c"),
+            ("3f9c2e1   # HEAD", "3f9c2e1"),
+        ] {
+            fs::write(
+                &p,
+                format!("---\nstatus: pass\nsha: {sha}\npr: 0012\n---\nbody\n"),
+            )
+            .unwrap();
+            let a = read_art(&p).unwrap();
+            assert_eq!(a.sha.as_deref(), Some(want));
+            assert_eq!(a.pr.as_deref(), Some("0012"));
+            assert_eq!(a.status, "pass");
+        }
     }
 
     #[test]

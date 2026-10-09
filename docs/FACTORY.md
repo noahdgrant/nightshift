@@ -85,40 +85,37 @@ Steps:
 
 1. Create or reuse the worktree (`ns worktree new`, including setup).
 2. Read `.ns/<unit>/*.md` frontmatter and pick the next phase from the state table.
-3. Run the phase's harness headless in write mode (`command_write`), with cwd set to the worktree and the rendered prompt on stdin. Enforce the timeout by killing the process group. The built-in `claude` write command for `ns run` is `claude -p --permission-mode bypassPermissions --model {model} --output-format stream-json --verbose`: the phases need Bash, which `acceptEdits` can't grant headless. A configured claude command gets `--output-format stream-json --verbose` added if it lacks them. Stdout goes to `<git-common-dir>/ns/transcripts/<unit>/<phase>-<attempt>.jsonl`, and cost and tokens are parsed from it.
-4. Re-read the phase's artifact. If it's missing or unchanged since before the run (same mtime and content hash), the attempt failed with "no artifact written". A triage run that exits 0 without writing `brief.md` is the "triage decided a human or define is needed" row: stuck, no retry.
-5. Repeat until the unit is done, merged, stuck, paused, or out of budget.
+3. Archive superseded artifacts. Before running phase P, move P's artifact, if present, to `.ns/<unit>/history/<artifact>-<n>.md`, with n one past the highest number already there for that artifact. Also archive every downstream artifact (order: brief, build, evidence, review, pr) unless it is `status: pass` with `sha` equal to HEAD. Whatever remains in `.ns/<unit>/` is current, so the state table needs no timestamps.
+4. Run the phase's harness headless in write mode (`command_write`), with cwd set to the worktree and the rendered prompt on stdin. Enforce the timeout by killing the process group. The built-in `claude` write command for `ns run` is `claude -p --permission-mode bypassPermissions --model {model} --output-format stream-json --verbose`: the phases need Bash, which `acceptEdits` can't grant headless. A configured claude command gets `--output-format stream-json --verbose` added if it lacks them. Stdout goes to `<git-common-dir>/ns/transcripts/<unit>/<phase>-<attempt>.jsonl`, and cost and tokens are parsed from it.
+5. The attempt wrote its artifact if P's artifact exists after the run. If not, the attempt failed with "no artifact written" (or the timeout or exit code), and the files archived in step 3 move back, so the next decision sees the state as it was. A triage run that exits 0 without writing `brief.md` is the "triage decided a human or define is needed" row: stuck, no retry. A usage-limit stop also moves the files back (see "Billing").
+6. Repeat until the unit is done, merged, stuck, paused, or out of budget.
 
-"`sha` ≠ HEAD" compares the frontmatter `sha` with `git rev-parse --short HEAD` in the worktree by prefix, since the lengths may differ. Rows are checked top to bottom, with these refinements, all by artifact mtime:
+"`sha` ≠ HEAD" compares the frontmatter `sha` with `git rev-parse --short HEAD` in the worktree by prefix, since the lengths may differ. Because of step 3, an artifact that exists is current. The table, as implemented, checked top to bottom:
 
-- `pr` pass is **done** only if `pr.md` is newer than `build.md`. Otherwise build ran again after the PR was shipped (a CI fix), and once verify and review hold at HEAD, ship runs again onto the same PR.
-- A `verify` or `review` fail older than `build.md` means build already answered it: that phase runs again instead of build.
-- A `ship` fail sends work to the phase its body names first; once that phase's artifact is newer than `pr.md`, ship runs again.
-- A `build` fail retries build, with its own body as `{feedback}`.
-- A review that commits leaves `evidence.md` stale, so verify runs again before ship. `review.md` itself carries the new sha and stays valid.
+| State | Next |
+|---|---|
+| any artifact `blocked` | stuck |
+| `pr` pass at HEAD | **done** (then the merge step under `merge.policy = auto`) |
+| no `brief.md` | triage with an issue, else stuck "no brief" |
+| `brief` not pass | stuck (triage decided a human or define is needed) |
+| no `build`, or `build` fail | build (a fail's body is `{feedback}`) |
+| no `evidence`, or evidence `sha` ≠ HEAD | verify |
+| `evidence` fail | build, with its body as `{feedback}` |
+| no `review`, or review `sha` ≠ HEAD | review |
+| `review` fail | build, with its body as `{feedback}` |
+| no `pr`, or `pr` pass with `sha` ≠ HEAD | ship |
+| `pr` fail | the phase its body names first (verify or review), with its body as `{feedback}`, else stuck |
+| a phase out of attempts | stuck |
+
+A review that commits leaves `evidence.md` stale, so verify runs again before ship; `review.md` carries the new sha and stays valid. A CI failure in the merge step runs build again; build's commit leaves evidence, review and pr stale, so verify, review and ship follow onto the same PR. The PR number comes from `pr.md`'s `pr:`, or from the newest archived `history/pr-<n>.md` that names one, so archiving never loses it.
 
 Attempts are counted per invocation, so re-running `ns run` on a stuck unit gives each phase fresh attempts.
-
-| Last state | Next |
-|---|---|
-| no `brief.md`, issue given | triage |
-| no `brief.md`, no issue | stuck: "no brief" |
-| `brief` pass, no `build` | build |
-| `build` pass, no `evidence` or evidence `sha` ≠ HEAD | verify |
-| `evidence` pass, no `review` or review `sha` ≠ HEAD | review |
-| `review` pass, no `pr` | ship |
-| `pr` pass | **done** |
-| triage ended `blocked`, or its issue state isn't ready-for-agent | stuck (triage decided a human or define is needed) |
-| `verify` fail, `review` fail | build again, with that artifact's body as `{feedback}` |
-| `ship` fail | the phase its body names (verify or review), else stuck |
-| any `blocked` | stuck |
-| a phase out of attempts | stuck |
 
 Hard rules, enforced in code whatever the prompts say:
 
 - Phases never merge, never approve, and never push to the default branch. Only `ns run`'s own merge step merges (see "Merge").
 - Before the first phase, `ns run` records `git ls-remote origin` for the default branch (skipped without an `origin` remote). After every phase it reads it again. If it moved to a commit reachable from the unit's HEAD, this run pushed to it: stuck with "default branch moved". A move to anything else is another actor (a human merge, another machine): it is logged as `default_moved_by_other_actor` and becomes the new baseline.
-- After every phase, if `pr.md` has `pr:` (a number or a URL ending in one), `gh pr view <n> --json state`. `MERGED` means a phase merged it: stuck with "PR merged by run".
+- After every phase, if the unit has a known PR (`pr:` in `pr.md` or its newest archived copy, a number or a URL ending in one), `gh pr view <n> --json state`. `MERGED` means a phase merged it: stuck with "PR merged by run".
 - One unit at a time per repo. A lock file in the common git dir (`ns-run.lock`, holding pid and unit) refuses a second runner with exit 5. A lock whose pid is dead is removed.
 
 Run log: append one JSON line per event to `.git/ns/runs.jsonl` in the common git dir: unit, phase, attempt, decision, artifact status, sha, cost, tokens, wall time, exit. Start, end, breaches, CI failures and merges are events too. `ns run --dry-run` prints the next decision, the rendered prompt and the command, and runs nothing: no worktree, no lock, no harness.
