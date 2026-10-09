@@ -1,9 +1,9 @@
 name: CI
 
+# PRs only. Branch protection requires PR branches to be up to date with main,
+# so every merge is exactly what CI tested and main needs no second run.
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
