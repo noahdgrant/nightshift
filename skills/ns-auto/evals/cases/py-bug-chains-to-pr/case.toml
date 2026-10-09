@@ -68,7 +68,8 @@ for unit in units:
         fm = dict(re.findall(r"(?m)^(\w+):[ \t]*['\"]?(.*?)['\"]?[ \t]*(?:#.*)?$", m.group(1))) if m else {}
         got[name] = fm.get("status")
         shas[name] = fm.get("sha", "")
-    current = bool(head) and all(shas.get(n) and (head.startswith(shas[n]) or shas[n].startswith(head)) for n in ("evidence", "review"))
+    need = ("evidence", "review") + (("pr",) if got["pr"] == "pass" else ())
+    current = bool(head) and all(shas.get(n) and (head.startswith(shas[n]) or shas[n].startswith(head)) for n in need)
     ok = all(got[n] in s for n, s in want.items()) and current
     print(f"{unit}: {got} head={head} shas={shas} ok={ok}")
     if ok:
@@ -106,6 +107,32 @@ expect_exit = 0
 [[check]]
 type = "command"
 run = "ls .ns/01-*/auto/log.md ../*.worktrees/01-*/.ns/01-*/auto/log.md 2>/dev/null | head -1 | grep -q ."
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, re, sys
+logs = glob.glob(".ns/01-*/auto/log.md") + glob.glob("../*.worktrees/01-*/.ns/01-*/auto/log.md")
+if not logs:
+    sys.exit("no run log")
+order = ["triage", "build", "verify", "review", "ship"]
+for path in logs:
+    text = open(path, encoding="utf-8").read()
+    if "## run" not in text:
+        continue
+    after = text[text.index("## run"):]
+    pos = 0
+    for line in after.splitlines():
+        if pos < len(order) and re.match(r"\W*" + order[pos] + r"\b", line):
+            pos += 1
+    if pos == len(order):
+        sys.exit(0)
+    print(f"{path}: reached {order[:pos]}")
+sys.exit("no run log with a ## run marker then triage, build, verify, review, ship in order")
+PYEOF
+'''
 expect_exit = 0
 
 [[check]]
