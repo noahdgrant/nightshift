@@ -166,6 +166,7 @@ impl Env {
             .env("GIT_COMMITTER_EMAIL", "t@t")
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
+            .env_remove("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS")
             .env_remove("GH_TOKEN");
         c
     }
@@ -238,6 +239,26 @@ impl Env {
 }
 
 const UNIT: &str = "7-fix-the-thing";
+
+#[test]
+fn claude_phases_wait_for_background_tasks() {
+    let e = Env::new();
+    e.run(&["run", "--issue", "7"], 0);
+    let seen = fs::read_to_string(e.ctrl.join("bgwait")).unwrap();
+    assert_eq!(seen.lines().collect::<Vec<_>>(), ["0"; 5], "{seen}");
+}
+
+#[test]
+fn a_bg_wait_ceiling_the_user_set_wins() {
+    let e = Env::new();
+    e.ns()
+        .env("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "900000")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    let seen = fs::read_to_string(e.ctrl.join("bgwait")).unwrap();
+    assert!(seen.lines().all(|l| l == "900000"), "{seen}");
+}
 
 #[test]
 fn happy_path_triage_to_done() {

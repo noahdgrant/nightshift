@@ -15,6 +15,7 @@ printf '%s' "$prompt" > "$ctrl/prompt-$n-$phase.txt"
 echo "$*" > "$ctrl/args"
 printf '%s\n' "${GH_TOKEN:-}" >> "$ctrl/tokens"
 printf '%s %s\n' "${GITLAB_TOKEN:-}" "${GITLAB_HOST:-}" >> "$ctrl/gitlab"
+printf '%s\n' "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >> "$ctrl/bgwait"
 [ -n "${ANTHROPIC_API_KEY:-}" ] && echo "ANTHROPIC_API_KEY" >> "$ctrl/leak"
 action=pass
 if [ -s "$ctrl/$phase" ]; then
