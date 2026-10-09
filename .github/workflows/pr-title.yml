@@ -1,0 +1,25 @@
+name: PR title
+
+# PRs squash-merge, so the title becomes the commit on main. It must be a
+# Conventional Commit (AGENTS.md).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  pull-requests: read
+
+jobs:
+  conventional-title:
+    name: Conventional Commit title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ytanikin/pr-conventional-commits@1.4.0
+        with:
+          task_types: '["build","chore","ci","docs","feat","fix","perf","refactor","style","test","revert"]'
+          add_label: 'false'
