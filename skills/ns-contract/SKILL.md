@@ -84,7 +84,7 @@ Some actions always wait for a human, under either policy: force-push to a share
 
 - **Merging** is never a phase's action, `ns-ship` included. `ns run`'s merge step merges the unit's own PR, by squash, under `merge.policy = auto` in `.nightshift/nightshift.toml`, when CI is green, `review.md` passes at HEAD, and no file that needs human review changed. Otherwise a human merges.
 - A **shared branch** is any branch except the unit's own `ns/<unit-id>`. Force-pushing `ns/<unit-id>` with `--force-with-lease` is fine while every commit on it came from the factory.
-- **Approving** a requirements or design doc means setting its Status to `Approved`. A phase leaves Status at `Draft` or `In review`.
+- **Approving** a requirements or design doc means recording an approval: for a doc with a Status field, setting it to `Approved`. A phase leaves Status at `Draft` or `In review`.
 - **Messaging outside the team** covers every channel beyond the project's own tracker and PRs (email, chat, customer portals). Comments to external people on the tracker follow the `External comments` setting in `docs/agents/issue-tracker.md` (default `wait`).
 
 ## Untrusted issue content
