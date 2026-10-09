@@ -691,6 +691,57 @@ fn doctor_reports_forge_account_but_never_the_token() {
 }
 
 #[test]
+fn doctor_with_a_set_gh_token_runs_no_token_command() {
+    const TOKEN: &str = "fake-token-5be2c9";
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    executable(
+        &bin.join("gh"),
+        &format!(
+            r#"[ "$*" = "api user --jq .login" ] && [ "$GH_TOKEN" = "{TOKEN}" ] && echo octocat"#
+        ),
+    );
+    let marker = tmp.path().join("ran");
+    let cmd = tmp.path().join("token.sh");
+    executable(&cmd, &format!("touch {}; exit 1", marker.display()));
+    let cfg = tmp.path().join("config.toml");
+    fs::write(
+        &cfg,
+        format!(
+            "[forge.github]\ntoken_command = {:?}\n",
+            cmd.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let out = ns()
+        .env("NS_CONFIG", &cfg)
+        .env("PATH", &path)
+        .env("GH_TOKEN", TOKEN)
+        .env_remove("GITLAB_TOKEN")
+        .arg("doctor")
+        .assert()
+        .get_output()
+        .clone();
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!all.contains(TOKEN), "{all}");
+    assert!(
+        !marker.exists(),
+        "token_command ran though GH_TOKEN was set"
+    );
+    let v = json(&out.stdout);
+    assert_eq!(
+        v["forge"]["github"],
+        serde_json::json!({"configured": true, "token_resolved": true, "account": "octocat"})
+    );
+}
+
+#[test]
 fn every_subcommand_help_has_examples() {
     for args in [
         vec!["--help"],

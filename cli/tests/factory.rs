@@ -1135,3 +1135,48 @@ fn token_command_stderr_is_discarded() {
     assert!(!String::from_utf8_lossy(&out.stderr).contains(FAKE_TOKEN));
     assert!(!String::from_utf8_lossy(&out.stdout).contains(FAKE_TOKEN));
 }
+
+#[test]
+fn an_unsettable_host_is_an_error_that_hides_the_token() {
+    let e = Env::new();
+    for host in ["a\\u0000b", ""] {
+        e.config(&format!(
+            "[forge.github]\ntoken_env = \"MY_GH_TOKEN\"\nhost = \"{host}\"\n"
+        ));
+        let out = e
+            .ns()
+            .env("MY_GH_TOKEN", FAKE_TOKEN)
+            .env_remove("GH_HOST")
+            .args(["run", "--issue", "7"])
+            .assert()
+            .code(2)
+            .get_output()
+            .clone();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("forge github"), "{err}");
+        assert!(err.contains("host"), "{err}");
+        assert!(!err.contains(FAKE_TOKEN), "{err}");
+        assert!(!err.contains("panicked"), "{err}");
+        assert!(e.calls().is_empty());
+    }
+}
+
+#[test]
+fn a_set_gitlab_host_wins_over_the_configured_one() {
+    let e = Env::new();
+    e.config("[forge.gitlab]\ntoken_env = \"MY_GL_TOKEN\"\nhost = \"gitlab.example.com\"\n");
+    e.ns()
+        .env("MY_GL_TOKEN", FAKE_TOKEN)
+        .env_remove("GITLAB_TOKEN")
+        .env("GITLAB_HOST", "mine.example.com")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    let seen = fs::read_to_string(e.ctrl.join("gitlab")).unwrap();
+    assert!(!seen.is_empty());
+    assert!(
+        seen.lines()
+            .all(|l| l == format!("{FAKE_TOKEN} mine.example.com")),
+        "{seen}"
+    );
+}
