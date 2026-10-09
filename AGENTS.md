@@ -20,4 +20,4 @@ Issues live on GitHub at `noahdgrant/nightshift`, managed with `gh`.
   - at least one `area:*` (`area:cli`, `area:skills`, `area:evals`, `area:factory`, `area:repo` for repo-wide docs and config)
   - `breaking change` when the title has `!`
 - **Blockers**: put `Blocked by: #N` on the first line of the issue body.
-- **Merging**: rebase-merge, so each commit lands on `main`. Keep commits small and each one a Conventional Commit.
+- **Merging**: squash-merge. The PR title becomes the commit on `main`, so it must be a Conventional Commit.
