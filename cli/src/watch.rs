@@ -12,6 +12,7 @@ use crate::error::SfError;
 use crate::factory::{self, Factory};
 use crate::git::{self, Repo};
 use crate::run::{self, gh, gh_json, Outcome, RunArgs, Shared};
+use crate::worktree::BRANCH_PREFIX;
 
 pub struct WatchArgs {
     pub once: bool,
@@ -336,11 +337,20 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                     } else {
                         "needs a human"
                     };
+                    let artifact = r
+                        .artifact
+                        .as_deref()
+                        .and_then(|a| Path::new(a).file_name())
+                        .map_or("none".to_string(), |f| {
+                            format!(
+                                "`.ns/{0}/{1}` on branch `{BRANCH_PREFIX}{0}`",
+                                r.unit,
+                                f.to_string_lossy()
+                            )
+                        });
                     let body = format!(
-                        "nightshift {what} on unit `{}`: {}\n\nLast artifact: `{}`\n\n{DISCLAIMER}",
-                        r.unit,
-                        r.reason,
-                        r.artifact.as_deref().unwrap_or("none")
+                        "nightshift {what} on unit `{}`: {}\n\nLast artifact: {artifact}\n\n{DISCLAIMER}",
+                        r.unit, r.reason
                     );
                     comment(&repo.root, issue.number, &body)?;
                 }

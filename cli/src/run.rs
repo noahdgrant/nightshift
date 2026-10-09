@@ -278,10 +278,12 @@ pub fn same_sha(a: &str, b: &str) -> bool {
     !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
 }
 
+/// The body's first non-empty line, the contract's one-sentence reason. A heading marker is
+/// dropped and its text kept.
 fn first_line(body: &str) -> String {
     body.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.trim().trim_start_matches('#').trim_start())
+        .find(|l| !l.is_empty())
         .unwrap_or("")
         .chars()
         .take(200)
@@ -1401,6 +1403,30 @@ mod tests {
 
     fn next(arts: &[(&'static str, Art)]) -> String {
         phase_of(&decide(&state(arts))).to_string()
+    }
+
+    #[test]
+    fn stuck_reason_is_the_first_body_line() {
+        let blocked = |body: &str| {
+            let mut a = art("blocked", "abc1234");
+            a.body = body.into();
+            match decide(&state(&[("verify", a)])) {
+                Decision::Stuck(r) => r,
+                _ => panic!("not stuck"),
+            }
+        };
+        assert_eq!(
+            blocked("\n  Needs a board on the bench.  \nlater text\n"),
+            "evidence.md is blocked: Needs a board on the bench."
+        );
+        // A heading marker is dropped and its text kept: the first line is the blocker even
+        // when it is written as a heading, and later body text is never used.
+        assert_eq!(
+            blocked("## Needs hardware\n\nlater text\n"),
+            "evidence.md is blocked: Needs hardware"
+        );
+        let long = blocked(&"x".repeat(300));
+        assert_eq!(long, format!("evidence.md is blocked: {}", "x".repeat(200)));
     }
 
     #[test]
