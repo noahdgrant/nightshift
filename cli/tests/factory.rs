@@ -586,6 +586,27 @@ fn an_edit_outside_a_human_review_region_merges() {
 }
 
 #[test]
+fn an_unreadable_merge_base_needs_a_human_merge() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.ctl("edit", "git update-ref -d refs/heads/main");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file("diff-12.txt", "work.txt\n");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("cannot check human-review regions:"),
+        "{v}"
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
+#[test]
 fn a_pr_merged_by_a_phase_is_stuck() {
     let e = Env::new();
     e.factory(AUTO);

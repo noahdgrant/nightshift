@@ -73,29 +73,37 @@ pub struct Region {
 }
 
 /// Regions in a text, read leniently so a bad file still guards its code: a nested start
-/// extends the open region, a stray end is ignored, and an unclosed start runs to the last line.
+/// deepens the open region, which closes when its own end is reached, a stray end is ignored,
+/// and an unclosed start runs to the last line.
 pub fn regions(text: &str) -> Vec<Region> {
     let mut out = Vec::new();
-    let mut open: Option<Region> = None;
+    let mut open: Option<(Region, usize)> = None;
     let mut last = 0;
     for (i, line) in text.lines().enumerate() {
         last = i + 1;
         match (marker(line), open.as_mut()) {
             (Some(Marker::Start(reason)), None) => {
-                open = Some(Region {
-                    start: last,
-                    end: last,
-                    reason,
-                })
+                open = Some((
+                    Region {
+                        start: last,
+                        end: last,
+                        reason,
+                    },
+                    1,
+                ))
             }
-            (Some(Marker::End), Some(r)) => {
-                r.end = last;
-                out.extend(open.take());
+            (Some(Marker::Start(_)), Some((_, depth))) => *depth += 1,
+            (Some(Marker::End), Some((r, depth))) => {
+                *depth -= 1;
+                if *depth == 0 {
+                    r.end = last;
+                    out.extend(open.take().map(|(r, _)| r));
+                }
             }
             _ => {}
         }
     }
-    if let Some(mut r) = open {
+    if let Some((mut r, _)) = open {
         r.end = last;
         out.push(r);
     }
@@ -539,6 +547,14 @@ fn b() {}
         assert_eq!(lines("# @start\n# @start\n# @end\n"), [2]);
         let e = &check(&m("# @start\n# @start\n# @end\n"))[0];
         assert!(e.message.contains("nested"), "{e:?}");
+    }
+
+    #[test]
+    fn a_nested_start_does_not_close_the_outer_region_early() {
+        let text = m("@start\n@start\na\n@end\nSAFETY=5\n@end\nz\n");
+        assert_eq!(regions(&text), [region(1, 6, None)]);
+        let stray = m("@end\n@start\na\n@end\n@end\n");
+        assert_eq!(regions(&stray), [region(2, 4, None)]);
     }
 
     #[test]
