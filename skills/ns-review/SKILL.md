@@ -39,7 +39,10 @@ Done when `diff.patch` exists, the base is named, and the standards list is writ
 
 This step is the review. Load the `ns-swarm` skill and launch every reviewer below as its own fresh-context worker: subagents if the harness has any subagent or task tool, else `ns ask`. Reviewing the diff yourself in this context is not a review: you wrote or watched the change, so you share its blind spots. Inline review is allowed only when the harness has neither subagents nor `ns`, and then the gate below can't pass under `gates: auto`.
 
-Use the **partition** shape, one worker per reviewer:
+Use the **partition** shape, one worker per reviewer on the panel. Pick the panel from step 1's change size:
+
+- **Reduced panel** when the diff is small: under about 50 changed lines, or docs-only, or test-only. It runs correctness, spec and tests. Add security when the diff touches auth, secrets, input parsing or the merge path.
+- **Full panel** otherwise: all eight reviewers below.
 
 | Reviewer | Reference | `ns ask` role |
 |---|---|---|
@@ -54,11 +57,11 @@ Use the **partition** shape, one worker per reviewer:
 
 Roles let the user put different providers on different axes in `~/.config/nightshift/config.toml`. Run `ns doctor` once and note which provider serves each role, for the agreement ranking in step 3. Use `review` as the fallback role when an axis role is unconfigured.
 
-Build each worker's brief from [reviewer-brief.md](references/reviewer-brief.md): its one reference file, the paths to `diff.patch` and `brief.md`, and the standards list. Every reviewer stays inside its own axis.
+This first pass is cycle 0, so its briefs go under `review-0`. Build each worker's brief from [reviewer-brief.md](references/reviewer-brief.md): its one reference file, the paths to `diff.patch` and `brief.md`, and the standards list. Every reviewer stays inside its own axis.
 
-**Mutation check.** `ns ask` workers are read-only, so the correctness reviewer proposes mutations and you run them. For each one (up to five), in the worktree: copy the file, apply the mutation, run the test command, restore the file from the copy, and confirm `git status` matches what it was before. A mutation the suite survives is an Important finding naming the missing test case. Record the command and result as evidence.
+**Mutation check.** `ns ask` workers are read-only, so the correctness reviewer proposes mutations and you run them, up to five, exactly as the Mutation check in [correctness.md](references/correctness.md) says: only the tests covering the mutated file, each under a timeout. Record each command and result as evidence.
 
-Done when every reviewer has a result or a gap entry. A gap is rerun once inline. A slice still missing after that makes the review `blocked`, never `pass`.
+Done when every reviewer on the panel has a result or a gap entry. A gap is rerun once inline. A slice still missing after that makes the review `blocked`, never `pass`.
 
 ## 3. Synthesize
 
@@ -78,17 +81,19 @@ Write `.ns/<unit-id>/review.md` in the format in [review-md.md](references/revie
 
 While any Critical or Important finding is `open`, and fewer than 3 cycles have run:
 
-1. Hand the open Critical and Important findings to a **fresh-context build agent**, launched in the foreground so you wait for it (see `ns-swarm`), working in the unit's worktree. Its brief: `brief.md`, `review.md`, the finding IDs to fix, and `docs/agents/stack.md`. It fixes behaviour test-first with the `ns-tdd` skill, routes comment findings through the `ns-no-comments` skill, runs the test command, and commits. It writes code, so it runs as a subagent or inline, never through read-only `ns ask`.
-2. Regenerate `diff.patch` and rerun step 2 for every reviewer on the new diff. Reviewers get no list of earlier findings.
+1. Hand every open Critical and Important finding, on every axis, to a **fresh-context build agent**, launched in the foreground so you wait for it (see `ns-swarm`), working in the unit's worktree. Its brief: `brief.md`, `review.md`, the finding IDs to fix, and `docs/agents/stack.md`. It fixes behaviour test-first with the `ns-tdd` skill, routes comment findings through the `ns-no-comments` skill, runs the test command, and commits. It writes code, so it runs as a subagent or inline, never through read-only `ns ask`.
+2. Regenerate `diff.patch` and rerun step 2 on the new diff, for correctness plus every reviewer that raised a Critical or Important finding you didn't dismiss in the previous pass. Brief them under `review-<n>`, where `n` is this cycle. Reviewers get no list of earlier findings.
 3. Mark an earlier finding `fixed` only when the code at its location changed and no reviewer raised it again. Read the code to confirm. Add new findings with the cycle number.
 4. Record the cycle's findings in `.ns/<unit-id>/review/cycle-<n>.md`, and increment the cycle count there. Write `review.md` only when the loop ends (see the contract: an artifact is written once, at the end).
 5. If the cycle added commits, re-run `ns-verify` before closing the loop, so `evidence.md` and `review.md` both carry the new HEAD `sha`. `ns-ship` rejects stale artifacts.
+
+Architecture, readability and comments findings are fixed like correctness ones: no axis is deferred because of its kind. Suggestions never start a cycle and never go to the build agent.
 
 A cycle where reviewers raised substantive findings and you dismissed all of them is a warning sign: you are validating, not reviewing. Say so in `review.md`.
 
 After 3 cycles, stop the loop. Open Critical findings then mean the artifact is not ready: it needs a human, a split, or a return to `ns-plan`.
 
-Open Important findings left after the loop become **follow-ups**, so they're tracked and don't stop the unit. File each one in the tracker per `docs/agents/issue-tracker.md`:
+Open Important findings left after the third cycle become **follow-ups**, so they're tracked and don't stop the unit. File each one in the tracker per `docs/agents/issue-tracker.md`:
 - the finding as an issue body, with the evidence
 - `type:` and `area:` labels
 - a link to the unit's issue
@@ -97,7 +102,7 @@ Then set the finding's status in `review.md` to `deferred: #<n>`. Suggestions st
 
 ## Gate
 
-- `pass`: no open Critical finding, every reviewer slice has a result, and every Important finding is `fixed`, `dismissed` with a reason, or `deferred` to a follow-up issue.
+- `pass`: no open Critical finding, every reviewer slice on the panel has a result, and every Important finding is `fixed`, `dismissed` with a reason, or `deferred` to a follow-up issue.
 - `fail`: an open Critical finding remains after the fix loop. The body names each one.
 - `blocked`: a reviewer slice could not run, the diff is empty, `brief.md` is missing, or (under `gates: auto`) the reviewers ran inline rather than in fresh contexts. Record the launch mode in `review.md` (`launch: subagents | ns ask | inline`).
 

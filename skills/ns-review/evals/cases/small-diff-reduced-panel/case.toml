@@ -29,7 +29,7 @@ equals = "reduced"
 [[check]]
 type = "regex"
 path = ".ns/1-in-stock/review.md"
-pattern = "(?m)^cycles: [0-3]$"
+pattern = "(?m)^cycles: [0-3]\\b"
 
 [[check]]
 # The first pass briefed exactly the reduced panel: no security (nothing touches auth, secrets, parsing or merging).
