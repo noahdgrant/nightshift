@@ -288,54 +288,63 @@ fn changes(dir: &Path, base: &str, head: &str) -> Result<Vec<(String, Change)>> 
 pub fn touched_between(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for (path, change) in changes(dir, base, head)? {
-        let show = |rev: &str| {
-            git::run(
-                dir,
-                &["--literal-pathspecs", "show", &format!("{rev}:{path}")],
-            )
-        };
-        let old = match change {
-            Change::Added => String::new(),
-            _ => show(base)?,
-        };
-        let new = match change {
-            Change::Deleted => String::new(),
-            _ => show(head)?,
-        };
-        if !has_markers(&old) && !has_markers(&new) {
-            continue;
-        }
-        let diff = git::run(
-            dir,
-            &[
-                "--literal-pathspecs",
-                "diff",
-                "--no-renames",
-                "--no-ext-diff",
-                "--text",
-                "-U0",
-                base,
-                head,
-                "--",
-                &path,
-            ],
-        )?;
-        let hunks = hunks(&diff);
-        let region = if hunks.is_empty() {
-            let end = old.lines().count().max(new.lines().count()).max(1);
-            Some(Region {
-                start: 1,
-                end,
-                reason: None,
-            })
-        } else {
-            touched(&old, &new, &hunks)
-        };
-        if let Some(r) = region {
+        if let Some(r) = touched_file(dir, base, head, &path, change)? {
             out.push(describe(&path, &r));
         }
     }
     Ok(out)
+}
+
+/// The region one changed file touches between two commits, if any.
+fn touched_file(
+    dir: &Path,
+    base: &str,
+    head: &str,
+    path: &str,
+    change: Change,
+) -> Result<Option<Region>> {
+    let show = |rev: &str| {
+        git::run(
+            dir,
+            &["--literal-pathspecs", "show", &format!("{rev}:{path}")],
+        )
+    };
+    let old = match change {
+        Change::Added => String::new(),
+        _ => show(base)?,
+    };
+    let new = match change {
+        Change::Deleted => String::new(),
+        _ => show(head)?,
+    };
+    if !has_markers(&old) && !has_markers(&new) {
+        return Ok(None);
+    }
+    let diff = git::run(
+        dir,
+        &[
+            "--literal-pathspecs",
+            "diff",
+            "--no-renames",
+            "--no-ext-diff",
+            "--text",
+            "-U0",
+            base,
+            head,
+            "--",
+            path,
+        ],
+    )?;
+    let hunks = hunks(&diff);
+    if hunks.is_empty() {
+        let end = old.lines().count().max(new.lines().count()).max(1);
+        return Ok(Some(Region {
+            start: 1,
+            end,
+            reason: None,
+        }));
+    }
+    Ok(touched(&old, &new, &hunks))
 }
 
 #[derive(Debug, Serialize)]
