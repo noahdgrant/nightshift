@@ -46,7 +46,7 @@ Every issue also carries at least one area label.
 | `ready-for-human` | `status:ready-for-human` | Needs a human (a judgement call, credentials, a stuck run) | a person |
 | `wontfix` | `status:wontfix` | Will not be actioned; close as not planned | none |
 
-`ns watch` also uses two run states. Skills never set these:
+`ns watch` also uses two run states, which skills never set, and moves a parent that triage split during a run to `status:needs-define` (`[queue] split_label`):
 
 | Label | Meaning |
 |---|---|

@@ -325,9 +325,10 @@ are resolved once and exported as GH_TOKEN / GITLAB_TOKEN to every child; a set 
   [forge.github]
   token_command = \"gh auth token --user <account>\"   # or: token_env = \"MY_GH_TOKEN\"
 
-Exit codes: 0 done or merged, 1 stuck, 2 usage or config error (incl. missing subscription
-login, harness not on PATH, forge token that does not resolve), 3 budget, 4 paused on a usage
-limit, 5 another ns run holds the repo's run lock. A phase whose runner names a lock another
+Exit codes: 0 done, merged or split (triage split the issue into child issues), 1 stuck,
+2 usage or config error (incl. missing subscription login, harness not on PATH, forge token
+that does not resolve), 3 budget, 4 paused on a usage limit, 5 another ns run holds the repo's
+run lock. A phase whose runner names a lock another
 run holds waits for it instead ([runners] lock_dir in the ns config shares locks across repos).";
 
 const WATCH_HELP: &str = "\

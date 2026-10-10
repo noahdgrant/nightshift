@@ -254,6 +254,7 @@ fn is_status(q: &QueueConfig, label: &str) -> bool {
             &q.in_progress_label,
             &q.done_label,
             &q.stuck_label,
+            &q.split_label,
             &q.triage_label,
         ]
         .iter()
@@ -507,6 +508,9 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                         eprintln!("ns watch: #{n} not closed: {e}");
                     }
                     status?;
+                }
+                Outcome::Split => {
+                    set_status(&repo.root, &q, issue.number, Some(&q.split_label))?;
                 }
                 Outcome::Done if !r.needs_human => {
                     set_status(&repo.root, &q, issue.number, Some(&q.done_label))?;

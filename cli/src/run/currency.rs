@@ -202,6 +202,8 @@ pub enum Decision {
     },
     Done,
     Stuck(String),
+    /// Triage split the issue into child issues, which replace the unit.
+    Split(String),
 }
 
 pub(super) fn run(phase: &'static str, feedback: &str, why: impl Into<String>) -> Decision {
@@ -239,6 +241,9 @@ fn named_phase(body: &str) -> Option<&'static str> {
 
 /// The state table in docs/FACTORY.md.
 pub fn decide(s: &State) -> Decision {
+    if let Some(brief) = s.arts.get("triage").filter(|a| a.status == "split") {
+        return Decision::Split(format!("brief.md is split: {}", first_line(&brief.body)));
+    }
     for p in PHASES {
         if let Some(a) = s.arts.get(p) {
             if a.status == "blocked" {
@@ -341,6 +346,7 @@ mod tests {
             Decision::Run { phase, .. } => phase,
             Decision::Done => "done",
             Decision::Stuck(_) => "stuck",
+            Decision::Split(_) => "split",
         }
     }
 
@@ -370,6 +376,34 @@ mod tests {
         );
         let long = blocked(&"x".repeat(300));
         assert_eq!(long, format!("evidence.md is blocked: {}", "x".repeat(200)));
+    }
+
+    #[test]
+    fn a_split_brief_ends_the_unit_with_its_first_line() {
+        let mut brief = art("split", "");
+        brief.body = "\nSplit into #8 and #9.\nIssue: https://github.com/o/r/issues/7\n".into();
+        assert_eq!(
+            decide(&state(&[("triage", brief.clone())])),
+            Decision::Split("brief.md is split: Split into #8 and #9.".into())
+        );
+        // The children replaced the unit, so an artifact a later phase left behind changes
+        // nothing.
+        let later = ("build", art("blocked", "abc1234"));
+        assert_eq!(next(&[("triage", brief), later]), "split");
+    }
+
+    #[test]
+    fn a_split_at_the_cap_is_blocked_and_stuck_on_its_reason() {
+        let mut brief = art("blocked", "");
+        brief.body =
+            "Six behaviours, over the split cap of 5: a human must split it.\nIssue: u\n".into();
+        assert_eq!(
+            decide(&state(&[("triage", brief)])),
+            Decision::Stuck(
+                "brief.md is blocked: Six behaviours, over the split cap of 5: a human must split it."
+                    .into()
+            )
+        );
     }
 
     #[test]

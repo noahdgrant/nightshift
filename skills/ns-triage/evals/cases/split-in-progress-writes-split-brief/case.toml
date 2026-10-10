@@ -1,4 +1,4 @@
-description = "The broad request from broad-feature-split, but `ns watch` already moved the issue to the run state in-progress before triage ran under `ns run`. Triage should still split it: file two or more child issues and list them in the parent's Triage Notes, keep the parent's Status: in-progress and its priority, write brief.md with status: blocked and the children's links, and start no new unit."
+description = "The broad request from broad-feature-split, but `ns watch` already moved the issue to the run state in-progress before triage ran under `ns run`. Triage should still split it: file two or more child issues and list them in the parent's Triage Notes, keep the parent's Status: in-progress and its priority, write brief.md with status: split, a first body line that names the split (not the issue URL), and the children's links, and start no new unit."
 fixture = "py-inventory"
 skills = ["ns-triage"]
 extra_skills = ["ns-contract"]
@@ -34,7 +34,7 @@ pattern = '(?m)^#+\s*Triage Notes'
 present = true
 
 [[check]]
-# Split: two or more child issues, each listed in the parent's Triage Notes and linked from a brief.md at status: blocked.
+# Split: two or more child issues, each listed in the parent's Triage Notes and linked from a brief.md at status: split whose first body line names the split.
 type = "command"
 run = '''
 python3 - <<'PYEOF'
@@ -71,10 +71,12 @@ for path in briefs:
     fm = {k: v.strip("'\"") for k, v in re.findall(r"(?m)^(\w+):[ \t]*(.*?)[ \t]*(?:#.*)?$", m.group(1))} if m else {}
     body = text[m.end():] if m else text
     missing = [p for p in children if not mentions(body, p, strict=True)]
-    print(f"{path}: status={fm.get('status')!r} children not linked={missing}")
-    if fm.get("status") == "blocked" and not missing:
+    first = next((l.strip() for l in body.splitlines() if l.strip()), "")
+    names_split = not re.match(r"(?i)\W*issue:", first) and sum(bool(mentions(first, p)) for p in children) >= 2
+    print(f"{path}: status={fm.get('status')!r} children not linked={missing} first line={first!r}")
+    if fm.get("status") == "split" and not missing and names_split:
         sys.exit(0)
-sys.exit("no brief.md with status: blocked that links every child")
+sys.exit("no brief.md with status: split that links every child and opens with the split")
 PYEOF
 '''
 expect_exit = 0
