@@ -39,7 +39,7 @@ check_example() {
       printf 'FAIL %s: %s gave no %s finding:\n%s\n' "$rule" "$example" "$rule" "$out" >&2
       ;;
     pass*)
-      out=$(grep -E '^[^ :]+:[0-9]+:' <<<"$out") || return 0
+      out=$(grep -E -e '^[^ :]+:[0-9]+:' -e '^Error' -e 'error:' <<<"$out") || return 0
       printf 'FAIL %s: %s gave findings:\n%s\n' "$rule" "$example" "$out" >&2
       ;;
   esac
@@ -104,20 +104,52 @@ fi
 # file-size.sh on a directory, inside a git repo and outside one, reports a long file and
 # skips a long file under a dot directory (outside git, by name; in git, by .gitignore).
 long=$(python3 -c "print('\n'.join(f'x{i} = {i}' for i in range(1001)))")
+git_as() { git -c user.name=t -c user.email=t@example.com "$@"; }
 for mode in plain git; do
   dir="$tmp/size-$mode"
   mkdir -p "$dir/.hidden"
-  printf '%s\n' "$long" | tee "$dir/long.py" >"$dir/.hidden/long.py"
+  printf '%s\n' "$long" | tee "$dir/long.py" "$dir/é.py" >"$dir/.hidden/long.py"
   if [ "$mode" = git ]; then
     git -C "$dir" init -q
     echo '.hidden/' >"$dir/.gitignore"
+    printf '%s\n' "$long" >"$dir/tracked.py"
+    git_as -C "$dir" add tracked.py
+    git_as -C "$dir" commit -q -m tracked
+    printf '%s\n' "$long" >"$dir/deleted.py"
+    git_as -C "$dir" add deleted.py
+    git_as -C "$dir" commit -q -m deleted
+    rm "$dir/deleted.py"
   fi
-  out=$("$pack/file-size.sh" "$dir")
-  grep -qF "long.py:1001:1: error[file-size]" <<<"$out" && ! grep -qF ".hidden" <<<"$out" || {
+  out=$("$pack/file-size.sh" "$dir" 2>&1)
+  for want in long.py é.py; do
+    grep -qF "$dir/$want:1001:1: error[file-size]" <<<"$out" || {
+      printf 'FAIL file-size: %s directory gave no %s finding:\n%s\n' "$mode" "$want" "$out" >&2
+      failed=1
+    }
+  done
+  if grep -qF -e ".hidden" -e "deleted.py" -e "rror:" <<<"$out"; then
     printf 'FAIL file-size: %s directory gave:\n%s\n' "$mode" "$out" >&2
     failed=1
-  }
+  fi
+  if [ "$mode" = git ]; then
+    grep -qF "$dir/tracked.py:1001:1: error[file-size]" <<<"$out" || {
+      printf 'FAIL file-size: tracked file not reported:\n%s\n' "$out" >&2
+      failed=1
+    }
+  fi
 done
+
+dir="$tmp/size-git"
+out=$("$pack/file-size.sh" "$dir/" 2>&1)
+grep -qF "$dir/long.py:1001:1: error[file-size]" <<<"$out" && ! grep -qF "//" <<<"$out" || {
+  printf 'FAIL file-size: a trailing slash gave:\n%s\n' "$out" >&2
+  failed=1
+}
+out=$(cd "$dir" && "$pack/file-size.sh" 2>&1)
+grep -qF "./long.py:1001:1: error[file-size]" <<<"$out" && ! grep -qF "//" <<<"$out" || {
+  printf 'FAIL file-size: no argument gave:\n%s\n' "$out" >&2
+  failed=1
+}
 
 [ "$failed" -eq 0 ] || exit 1
 echo "rules/python: $checked rules and the allowlist, all examples pass"
