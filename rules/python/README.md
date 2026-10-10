@@ -1,12 +1,17 @@
 # Python rule pack
 
-The rules `ns rules check` runs on a Python repo. They compose `ast-grep` and a small script, and each one enforces a principle or quality-bar item. Rules no tool can express stay in review.
+The rules `ns rules check` runs on a Python repo. They compose `ruff`, `ast-grep` and a small script, and each one enforces a principle or quality-bar item. Rules no tool can express stay in review.
 
 | Rule | Tool | Fails on | Enforces |
 |---|---|---|---|
 | `suppression-reason` | ast-grep | a suppression (`noqa`, `type: ignore`, `pyright: ignore`, `pylint: disable`, `ruff: noqa`) with no reason after it on the same line | [quality bar](https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md): no suppression hides a real bug |
 | `dependency-allowlist` | ast-grep | an import from outside the standard library and the allowlist | [pave the road](https://github.com/noahdgrant/nightshift/blob/main/skills/ns-principle-pave-the-road/SKILL.md): one road per job |
 | `duplicate-helper` | ast-grep | a function or class named like a helper that already exists | the same |
+| `F401` | ruff | an import nothing uses | [quality bar](https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md): nothing is dead: no unused code, parameters or imports |
+| `F821` | ruff | a name that is never defined | [quality bar](https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md): the diff's code runs, which a misspelt name breaks |
+| `F841` | ruff | a local variable assigned and never used | the same as `F401` |
+| `B006` | ruff | a mutable default argument (`def f(x=[])`) | [quality bar](https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md): shared state is guarded by structure, and a mutable default is shared by every call |
+| `RUF100` | ruff | a `noqa` that suppresses nothing | [quality bar](https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md): no suppression hides a real bug |
 | `file-size` | `file-size.sh` | a file whose last non-blank line is past line 1000, blank lines at the top included | [quality bar](https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md): no file grows past roughly 1000 lines |
 
 A suppression's reason is a second comment after it:
@@ -25,7 +30,7 @@ The `ns-setup` skill installs the pack, and [its steps](../../skills/ns-setup/re
 
 ## The allowlist
 
-The dependency allowlist is the regex in `utils/allowed-package.yml`, the one file of the pack that holds a repo's own data. List the import names of the repo's own top-level packages and of every dependency it allows, the runtime and the dev ones, separated by `|`:
+The dependency allowlist is the regex in `utils/allowed-package.yml`, one of the three places the pack holds a repo's own data, with `utils/helper-name.yml` and the `ignores` line of `rules/duplicate-helper.yml`; a rerun of the install keeps all three. List the import names of the repo's own top-level packages and of every dependency it allows, the runtime and the dev ones, separated by `|`:
 
 ```yaml
 rule:

@@ -33,10 +33,12 @@ findings() {
 }
 
 # Check one example against pack $1 for rule $2: a fail*.py must give a finding for
-# the rule, a pass*.py none at all. Sets failed=1 on a miss.
+# the rule, a pass*.py none at all. A ruff rule (a code like F401) sees ruff's findings;
+# the other rules ignore them, since their examples are not written to be ruff-clean. Sets failed=1 on a miss.
 check_example() {
   local p=$1 rule=$2 example=$3 out
   out=$(findings "$p" "$example")
+  [[ $rule =~ ^[A-Z]+[0-9]+$ ]] || out=$(grep -vE ': [A-Z]+[0-9]+ ' <<<"$out" || true)
   case $(basename "$example") in
     fail*)
       grep -qF -e ": $rule " -e "[$rule]" <<<"$out" && return
@@ -189,6 +191,34 @@ grep -qxF " sp ace.py:1001:1: error[file-size]: file is past 1000 lines; split i
   printf 'FAIL file-size: a file name with a leading space gave:\n%s\n' "$out" >&2
   failed=1
 }
+
+# The per-repo data is the allowlist regex, the helper-name regex and the `ignores` line of
+# duplicate-helper. The README names where each lives, and the install step keeps each on a rerun.
+readme="$pack/README.md"
+install="$pack/../../skills/ns-setup/references/rules-python.md"
+step3=$(grep '^3\. ' "$install")
+for want in "utils/allowed-package.yml|^  regex:" "utils/helper-name.yml|^  regex:" "rules/duplicate-helper.yml|^ignores:"; do
+  file=${want%%|*}
+  grep -qE "${want#*|}" "$pack/$file" && grep -qF "\`$file\`" "$readme" && grep -qF "\`$file\`" <<<"$step3" || {
+    printf 'FAIL per-repo data: %s is not in the pack, the README and install step 3 together\n' "$file" >&2
+    failed=1
+  }
+done
+grep -qF '`ignores`' <<<"$step3" || {
+  printf 'FAIL per-repo data: install step 3 does not keep the ignores list\n' >&2
+  failed=1
+}
+
+# file-size.sh with no argument and with `.`, from a plain directory, finds the long file and
+# does not walk into a dot directory.
+dir="$tmp/size-plain"
+for args in "" "."; do
+  out=$(cd "$dir" && "$pack/file-size.sh" $args 2>&1)
+  grep -qF "./long.py:1001:1: error[file-size]" <<<"$out" && ! grep -qF ".hidden" <<<"$out" || {
+    printf 'FAIL file-size: plain directory with argument "%s" gave:\n%s\n' "$args" "$out" >&2
+    failed=1
+  }
+done
 
 ns="$pack/../../cli/target/debug/ns"
 if [ -x "$ns" ]; then

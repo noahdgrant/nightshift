@@ -1,2 +1,2 @@
 [lint]
-select = []
+select = ["F401", "F821", "F841", "B006", "RUF100"]
