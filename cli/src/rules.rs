@@ -260,7 +260,7 @@ fn load_baseline(path: &Path) -> Result<Option<Vec<Finding>>> {
     };
     let b: Baseline = serde_json::from_str(&text).map_err(|e| {
         SfError::general(format!("{} is not a rules baseline: {e}", path.display()))
-            .hint("rewrite it from the current findings (a human step):\n  ns rules baseline --allow-growth")
+            .hint("restore it from git:\n  git checkout -- .nightshift/rules-baseline.json\nor delete it and have a human rerun:\n  ns rules baseline --allow-growth")
     })?;
     Ok(Some(b.violations))
 }
@@ -557,7 +557,7 @@ mod tests {
         fs::write(&p, "{}").unwrap();
         let e = load_baseline(&p).unwrap_err();
         let e = e.downcast_ref::<SfError>().unwrap();
-        assert!(e.hint.as_deref().unwrap().contains("--allow-growth"));
+        assert!(e.hint.as_deref().unwrap().contains("git checkout --"));
     }
 
     #[test]

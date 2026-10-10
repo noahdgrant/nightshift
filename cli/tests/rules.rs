@@ -430,9 +430,16 @@ fn a_malformed_baseline_is_an_error_that_names_the_fix() {
         let (code, _, err) = r.ns(args);
         assert_eq!(code, Some(1), "{args:?} {err}");
         assert!(err.contains("is not a rules baseline"), "{err}");
-        assert!(err.contains("ns rules baseline --allow-growth"), "{err}");
+        assert!(
+            err.contains("git checkout -- .nightshift/rules-baseline.json"),
+            "{err}"
+        );
+        assert!(err.contains("delete it"), "{err}");
     }
     assert_eq!(fs::read_to_string(r.path(BASELINE)).unwrap(), "{not json");
+    fs::remove_file(r.path(BASELINE)).unwrap();
+    let (code, _, err) = r.ns(&["baseline", "--allow-growth"]);
+    assert_eq!(code, Some(0), "{err}");
 }
 
 fn ns_with_env(r: &Repo, args: &[&str], env: (&str, &str)) -> (Option<i32>, String) {
