@@ -184,13 +184,13 @@ pub fn run(source: &Path, targets: &[PathBuf], dry_run: bool) -> Result<Report> 
 }
 
 #[cfg(unix)]
-fn symlink(src: &Path, link: &Path) -> Result<()> {
+pub fn symlink(src: &Path, link: &Path) -> Result<()> {
     std::os::unix::fs::symlink(src, link)
         .with_context(|| format!("cannot link {} -> {}", link.display(), src.display()))
 }
 
 #[cfg(windows)]
-fn symlink(src: &Path, link: &Path) -> Result<()> {
+pub fn symlink(src: &Path, link: &Path) -> Result<()> {
     std::os::windows::fs::symlink_dir(src, link)
         .with_context(|| format!("cannot link {} -> {}", link.display(), src.display()))
 }

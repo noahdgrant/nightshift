@@ -18,6 +18,7 @@ use serde_json::json;
 
 use super::{triage, Tonight};
 use crate::eval::trial::run_process;
+use crate::gate::stderr_tail;
 use crate::git::{self, Repo};
 use crate::run;
 use crate::stop;
@@ -47,9 +48,10 @@ fn run_bounded(mut cmd: Command, ceiling: Duration, log: &Path) -> Result<(ExitS
     match run_process(cmd, None, ceiling) {
         Err(e) if e.kind() == ErrorKind::Interrupted => bail!("stopped"),
         Err(e) => Err(e.into()),
-        Ok((Some(status), _, _)) => {
-            Ok((status, fs::read(log).map(|b| tail(&b)).unwrap_or_default()))
-        }
+        Ok((Some(status), _, _)) => Ok((
+            status,
+            fs::read(log).map(|b| warning_tail(&b)).unwrap_or_default(),
+        )),
         Ok((None, _, _)) => bail!("timed out after {}s", ceiling.as_secs_f32().round()),
     }
 }
@@ -272,19 +274,19 @@ fn extract(root: &Path, to: &str, into: &Path) -> Result<()> {
         .context("cannot run tar")?;
     let git = archive.wait_with_output().context("git archive")?;
     if !git.status.success() {
-        bail!("git archive {to}: {}", tail(&git.stderr));
+        bail!("git archive {to}: {}", warning_tail(&git.stderr));
     }
     if !tar.status.success() {
-        bail!("tar: {}", tail(&tar.stderr));
+        bail!("tar: {}", warning_tail(&tar.stderr));
     }
     Ok(())
 }
 
-/// The last lines of a command's stderr, for a warning.
-fn tail(stderr: &[u8]) -> String {
-    let text = String::from_utf8_lossy(stderr);
-    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-    lines[lines.len().saturating_sub(5)..].join("\n")
+const WARNING_LINES: usize = 5;
+
+/// The last `WARNING_LINES` non-blank lines of a command's stderr, for a warning.
+fn warning_tail(stderr: &[u8]) -> String {
+    stderr_tail(stderr, WARNING_LINES)
 }
 
 /// The night so far, which the new binary carries on from.
@@ -434,6 +436,16 @@ mod tests {
             }
             _ => {}
         }
+    }
+
+    #[test]
+    fn a_warning_keeps_the_last_five_non_blank_lines_of_stderr() {
+        let stderr = "one\n\ntwo\nthree\n  \nfour\nfive\n\nsix\n\n";
+        assert_eq!(
+            warning_tail(stderr.as_bytes()),
+            "two\nthree\nfour\nfive\nsix"
+        );
+        assert_eq!(warning_tail(b"\n \n"), "");
     }
 
     #[test]

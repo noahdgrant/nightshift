@@ -91,14 +91,14 @@ pub fn run(
         .stderr(out);
     let (status, timed_out, wall_s) =
         run_process(c, None, timeout).with_context(|| format!("cannot run gate {cmd:?}"))?;
-    let tail = tail(&read_window(log));
-    let cut = watch.cut_short(status, timed_out, || tail.clone());
+    let output = output_tail(&read_window(log));
+    let cut = watch.cut_short(status, timed_out, || output.clone());
     Ok(GateRun {
         exit: status.and_then(|s| s.code()),
         timed_out,
         cut,
         wall_s,
-        tail,
+        tail: output,
     })
 }
 
@@ -145,15 +145,32 @@ pub fn feedback(cmd: &str, r: &GateRun, timeout: Duration, head: &str) -> String
     )
 }
 
-fn tail(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let lines: Vec<&str> = text.trim_end().lines().collect();
-    let kept = lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n");
+/// The last `count` of `lines`, joined.
+fn last_lines<'a>(lines: impl Iterator<Item = &'a str>, count: usize) -> String {
+    let all: Vec<&str> = lines.collect();
+    all[all.len().saturating_sub(count)..].join("\n")
+}
+
+/// `bytes` as text without trailing whitespace.
+fn trimmed_lines(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).trim_end().to_string()
+}
+
+/// The last `TAIL_LINES` lines of a gate's output, cut to `TAIL_BYTES` on a char boundary.
+pub fn output_tail(bytes: &[u8]) -> String {
+    let text = trimmed_lines(bytes);
+    let kept = last_lines(text.lines(), TAIL_LINES);
     let start = kept.len().saturating_sub(TAIL_BYTES);
     let start = (start..kept.len())
         .find(|i| kept.is_char_boundary(*i))
         .unwrap_or(0);
     kept[start..].to_string()
+}
+
+/// The last `count` non-blank lines of a command's stderr.
+pub fn stderr_tail(bytes: &[u8], count: usize) -> String {
+    let text = trimmed_lines(bytes);
+    last_lines(text.lines().filter(|l| !l.trim().is_empty()), count)
 }
 
 /// The build phase's timeout; `NS_GATE_TIMEOUT_MS` overrides it.
@@ -487,6 +504,12 @@ mod tests {
     }
 
     #[test]
+    fn the_tail_keeps_blank_lines_between_output_but_not_after_it() {
+        let (r, _tmp) = gate("printf 'a\\n\\nb\\n\\n\\n'", Duration::from_secs(30));
+        assert_eq!(r.tail, "a\n\nb");
+    }
+
+    #[test]
     fn a_non_zero_exit_is_red_with_stdout_and_stderr_in_the_tail() {
         let (r, _tmp) = gate("echo out; echo err >&2; exit 3", Duration::from_secs(30));
         assert!(!r.green());
@@ -505,12 +528,12 @@ mod tests {
     #[test]
     fn the_tail_keeps_the_last_lines_within_the_byte_cap() {
         let many: String = (1..=100).map(|i| format!("line {i}\n")).collect();
-        let t = tail(many.as_bytes());
+        let t = output_tail(many.as_bytes());
         assert_eq!(t.lines().count(), TAIL_LINES);
         assert!(t.ends_with("line 100"));
         assert!(t.starts_with("line 61"));
         let long = format!("x{}", "é".repeat(4000));
-        let t = tail(long.as_bytes());
+        let t = output_tail(long.as_bytes());
         assert!(t.len() <= TAIL_BYTES);
         assert!(t.chars().all(|c| c == 'é'));
         assert!(t.len() > TAIL_BYTES - 2);
