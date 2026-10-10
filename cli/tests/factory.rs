@@ -7387,10 +7387,39 @@ fn a_failed_check_keeps_the_old_binary_and_is_not_retried() {
     assert_kept_the_old_binary(&e, &to, &v, &err, "--version said \"ns 0.1.0 (0000000)\"");
 }
 
+fn counting_git(e: &Env) {
+    let real = String::from_utf8(
+        StdCommand::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let p = e.bin.join("git");
+    fs::write(
+        &p,
+        format!(
+            "#!/bin/sh\ncase \" $* \" in *\" fetch \"*) echo >> \"$FAKE_CTRL/git-fetches\" ;; esac\nexec {} \"$@\"\n",
+            real.trim()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+fn fetches(e: &Env) -> usize {
+    fs::read_to_string(e.ctrl.join("git-fetches"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
 /// A night with a `cli/` change on origin the build commit lacks, which never updates; its
 /// stderr.
 fn assert_never_updates(e: &Env, ns: &mut Ns) -> String {
     two_ready(e);
+    counting_git(e);
     let out = ns.assert().code(0).get_output().clone();
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
@@ -7412,7 +7441,8 @@ fn watch_on_another_repo_never_drains_or_rebuilds() {
     )
     .unwrap();
     land(&e, "cli/x", "new\n");
-    assert_never_updates(&e, watch_from(&e, &from).args(["watch"]));
+    let err = assert_never_updates(&e, watch_from(&e, &from).args(["watch"]));
+    assert_eq!(fetches(&e), 2, "only each unit's own fetch: {err}");
 }
 
 #[test]
@@ -7420,10 +7450,11 @@ fn no_self_update_turns_it_off() {
     let e = Env::new();
     let from = nightshift_repo(&e);
     land(&e, "cli/x", "new\n");
-    assert_never_updates(
+    let err = assert_never_updates(
         &e,
         watch_from(&e, &from).args(["watch", "--no-self-update"]),
     );
+    assert_eq!(fetches(&e), 2, "only each unit's own fetch: {err}");
 }
 
 #[test]

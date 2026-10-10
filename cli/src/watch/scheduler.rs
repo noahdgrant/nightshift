@@ -280,11 +280,9 @@ impl<'a> Scheduler<'a> {
 
     /// The commit to update to, when origin's default branch has `cli/` changes this `ns` lacks.
     fn pending_update(&self) -> Option<String> {
+        let update = self.plan.update.as_ref()?;
         let base = fresh_base(&self.plan.repo.root)?;
-        self.plan
-            .update
-            .as_ref()?
-            .pending(&self.plan.repo.root, &base)
+        update.pending(&self.plan.repo.root, &base)
     }
 
     /// Draining, with nothing left running or paused, and no stop: time to update.
