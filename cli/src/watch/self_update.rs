@@ -18,7 +18,7 @@ use serde_json::json;
 
 use super::{triage, Tonight};
 use crate::eval::trial::run_process;
-use crate::gate::tail;
+use crate::gate::stderr_tail;
 use crate::git::{self, Repo};
 use crate::run;
 use crate::stop;
@@ -282,9 +282,11 @@ fn extract(root: &Path, to: &str, into: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The last non-blank lines of a command's output, for a warning.
-fn warning_tail(output: &[u8]) -> String {
-    tail(output, 5, usize::MAX, true)
+const WARNING_LINES: usize = 5;
+
+/// The last `WARNING_LINES` non-blank lines of a command's stderr, for a warning.
+fn warning_tail(stderr: &[u8]) -> String {
+    stderr_tail(stderr, WARNING_LINES)
 }
 
 /// The night so far, which the new binary carries on from.
