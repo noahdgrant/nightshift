@@ -1,3 +1,5 @@
+//! The subprocess guard: every `ns` a test starts is bounded, and its process tree is killed.
+
 mod common;
 
 use std::fs;

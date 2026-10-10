@@ -12,6 +12,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::billing;
+#[cfg(test)]
+use crate::clock::MAX_PINNED_POLLS;
 use crate::clock::{self, Clock};
 use crate::config::{self, Config};
 use crate::error::SfError;
@@ -469,7 +471,10 @@ impl RunnerLocks {
 /// on `clock`. `Ok(false)` once the clock reaches `at` without a success.
 fn poll_until(clock: &Clock, at: i64, mut try_once: impl FnMut() -> Result<bool>) -> Result<bool> {
     let mut step = 1;
+    let mut polls = 0;
     while !try_once()? {
+        clock.check_polls(polls)?;
+        polls += 1;
         let now = clock.now();
         if now >= at {
             return Ok(false);
@@ -1444,7 +1449,10 @@ fn checks_registered(
 ) -> Result<Registered> {
     let deadline = clock.now() + (timeout_minutes * 60) as i64;
     let mut wait = REGISTER_BACKOFF_START;
+    let mut polls = 0;
     loop {
+        clock.check_polls(polls)?;
+        polls += 1;
         let counts = ["check-runs", "status"].map(|kind| check_count(wt, sha, kind));
         if counts.iter().any(|c| matches!(c, Ok(n) if *n > 0)) {
             return Ok(Registered::Yes);
@@ -1478,7 +1486,10 @@ fn head_after_update(
 ) -> Result<UpdatedHead> {
     let deadline = clock.now() + (timeout_minutes * 60) as i64;
     let mut wait = REGISTER_BACKOFF_START;
+    let mut polls = 0;
     loop {
+        clock.check_polls(polls)?;
+        polls += 1;
         let v = gh_json(
             wt,
             &["pr", "view", pr, "--json", "headRefOid,mergeStateStatus"],
@@ -1951,6 +1962,19 @@ mod tests {
         .unwrap();
         assert!(got);
         assert_eq!(seen, [1000, 1001, 1003, 1007, 1012, 1017]);
+    }
+
+    #[test]
+    fn a_polling_loop_that_never_succeeds_fails_on_a_pinned_clock() {
+        let clock = Clock::pinned(1000);
+        let mut tries = 0;
+        let err = poll_until(&clock, 1 << 40, || {
+            tries += 1;
+            Ok(false)
+        })
+        .unwrap_err();
+        assert_eq!(tries, MAX_PINNED_POLLS + 1);
+        assert!(err.to_string().contains("pinned clock (NS_NOW)"), "{err}");
     }
 
     #[test]

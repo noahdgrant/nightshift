@@ -11,6 +11,10 @@ use anyhow::{bail, Result};
 /// clock has no cap.
 pub const MAX_STALLED_SLEEPS: u32 = 1000;
 
+/// A polling loop on a pinned clock gets this many tries before `check_polls` fails it, however
+/// the clock moves. A real clock has no cap.
+pub const MAX_PINNED_POLLS: u32 = 1000;
+
 pub struct Clock {
     pinned: Cell<Option<i64>>,
     stalls: Cell<u32>,
@@ -38,6 +42,13 @@ impl Clock {
 
     pub fn now(&self) -> i64 {
         self.pinned.get().unwrap_or_else(real_now)
+    }
+
+    pub fn check_polls(&self, polls: u32) -> Result<()> {
+        if self.pinned.get().is_some() && polls >= MAX_PINNED_POLLS {
+            bail!("a polling loop tried {MAX_PINNED_POLLS} times on the pinned clock (NS_NOW) without finishing");
+        }
+        Ok(())
     }
 
     pub fn sleep_until(&self, t: i64) -> Result<()> {
@@ -329,6 +340,18 @@ mod tests {
             c.sleep_until(0).unwrap();
         }
         assert!(c.sleep_until(0).is_err());
+    }
+
+    #[test]
+    fn only_a_pinned_clock_caps_polls() {
+        let pinned = Clock::pinned(100);
+        assert!(pinned.check_polls(MAX_PINNED_POLLS - 1).is_ok());
+        assert!(pinned.check_polls(MAX_PINNED_POLLS).is_err());
+        let real = Clock {
+            pinned: Cell::new(None),
+            stalls: Cell::new(0),
+        };
+        assert!(real.check_polls(u32::MAX).is_ok());
     }
 
     #[test]
