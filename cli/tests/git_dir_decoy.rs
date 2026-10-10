@@ -7,11 +7,15 @@ use std::fs;
 use std::path::Path;
 use std::process::Output;
 
-const LOCATION_VARS: [&str; 4] = [
+const LOCATION_VARS: [&str; 8] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
     "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
 ];
 
 fn script() -> std::path::PathBuf {
@@ -108,6 +112,22 @@ fn inherited_git_location_vars_are_not_where_the_decoy_goes() {
         assert!(out.status.success(), "{var}: {}", stderr(&out));
         assert!(!sentinel.exists(), "{var}");
         assert_eq!(fs::read_dir(outer.path()).unwrap().count(), 0, "{var}");
+    }
+}
+
+#[test]
+fn the_command_does_not_inherit_any_location_var_but_the_decoy_pair() {
+    for var in LOCATION_VARS {
+        let tmp = tempfile::tempdir().unwrap();
+        let outer = tempfile::tempdir().unwrap();
+        let junk = outer.path().join("junk");
+        let check = format!("test -z \"${{{var}+set}}\" || [ \"{var}\" = GIT_DIR ] || [ \"{var}\" = GIT_WORK_TREE ]");
+        let out = run(&["sh", "-c", &check], tmp.path(), &[(var, &junk)]);
+        assert!(
+            out.status.success(),
+            "{var} leaked to the command: {}",
+            stderr(&out)
+        );
     }
 }
 
