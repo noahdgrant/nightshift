@@ -5306,7 +5306,10 @@ fn without_a_cap_phases_run_directly() {
         .output()
         .unwrap();
     assert_eq!(recorded(&e, "ulimit"), String::from_utf8_lossy(&own.stdout));
-    assert!(!recorded(&e, "cgroup").contains("/ns-"));
+    assert_eq!(
+        recorded(&e, "cgroup"),
+        fs::read_to_string("/proc/self/cgroup").unwrap()
+    );
 }
 
 #[test]
