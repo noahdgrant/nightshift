@@ -4,7 +4,7 @@ Starting repos for `ns eval` cases. See `docs/EVALS.md` for the format. Each tri
 
 ## py-inventory
 
-Pure-Python stock and reservation package: `src/inventory/` (Warehouse, Reservation, StockLevel, JSON storage, argparse CLI), 23 passing tests under `tests/`, `docs/agents/` filled in for the local `.scratch/` tracker (default triage labels), `GLOSSARY.md` at the root, verify not set up.
+Pure-Python stock and reservation package: `src/inventory/` (Warehouse, Reservation, StockLevel, JSON storage, argparse CLI), 24 passing tests under `tests/`, `docs/agents/` filled in for the local `.scratch/` tracker (default triage labels), `GLOSSARY.md` at the root, verify not set up.
 
 Run the suite from the fixture root with `python3 -m pytest -q` (pytest only; `pyproject.toml` sets `pythonpath = ["src"]`).
 
@@ -14,7 +14,9 @@ Run the suite from the fixture root with `python3 -m pytest -q` (pytest only; `p
 
 **(b) Expired reservations counted in stock levels.** `Warehouse.stock_levels(now)` in `src/inventory/warehouse.py` sums every held reservation per SKU without checking expiry, so `StockLevel.reserved` and `.available` (and the CLI `status` output) still include expired reservations. `Warehouse.reserved()`/`available()`/`reserve()` go through `_active()` and are correct, so the two paths disagree after a reservation expires. Root-cause fix: make `stock_levels` use the same active-reservation logic (`self.reserved(sku, now)` or `_active`), not a second copy of the filter.
 
-No existing test covers either defect: no test reserves exactly the available quantity, and the only `stock_levels` test uses unexpired reservations.
+**(d) Multi-part SKUs rejected.** `Item.__post_init__` in `src/inventory/models.py` accepts only SKUs matching `[A-Z]+-[A-Z0-9]+`: exactly two parts, the first letters only. `GLOSSARY.md` defines a SKU as one or more parts of uppercase letters and digits, joined by single hyphens. So `BOLT-M6-40`, `WASHER` and `M6-40` are refused with `ValueError("invalid sku ...")` (CLI: `add-item` exits 1). Root-cause fix: make the pattern the glossary rule, `[A-Z0-9]+(-[A-Z0-9]+)*`. Allowing only the reported shape (an optional third part, or the reported SKU itself) is the special-case fix, and dropping the check lets malformed SKUs through. Used by `ns-tdd/evals/cases/py-special-case-fix`.
+
+No existing test covers defects (a), (b) or (d): no test reserves exactly the available quantity, the only `stock_levels` test uses unexpired reservations, and the only SKU-rule test rejects a lowercase SKU.
 
 ### Room for a feature
 
@@ -27,7 +29,7 @@ No existing test covers either defect: no test reserves exactly the available qu
 
 ### Notes for case authors
 
-- Avoid exact-capacity reservations and `stock_levels` after expiry in hidden acceptance tests unless the case is about that defect, or the test will fail for an unrelated reason.
+- Avoid exact-capacity reservations, `stock_levels` after expiry, and SKUs other than two parts (letters, then letters or digits, like `BOLT-M6`) in hidden acceptance tests unless the case is about that defect, or the test will fail for an unrelated reason.
 - The local tracker in `.scratch/` is empty except for `.gitkeep`. Triage cases add issues through their `files/` overlay at `.scratch/<feature>/issues/<NN>-<slug>.md`, with `Status:` and `Category:` lines near the top.
 
 ## zephyr-logger
