@@ -52,7 +52,7 @@ No existing test overflows a drop-oldest buffer. `test_drop_oldest_accepts_up_to
 
 ### Room for a feature
 
-- **Read timeout on the sensor reader.** `zl_sensor_reader_sample` returns `-EAGAIN` immediately when `data_ready` reports nothing. A `zl_sensor_reader_sample_timeout(reader, timeout_ms)` that polls until ready or until `hal->uptime_ms` passes the deadline (`-ETIMEDOUT`) doesn't exist yet. The HAL already has the clock, so the fake can drive it. Not used by a case yet.
+- **Read timeout on the sensor reader.** `zl_sensor_reader_sample` returns `-EAGAIN` immediately when `data_ready` reports nothing. A `zl_sensor_reader_sample_timeout(reader, timeout_ms)` that polls until ready or until `hal->uptime_ms` passes the deadline (`-ETIMEDOUT`) doesn't exist yet. The HAL already has the clock, so the fake can drive it. Used by `ns-tdd/evals/cases/zephyr-sensor-fake-hal`, whose hidden suite spends 10 ms of fake HAL time per poll (1 ms in one test) and never moves the kernel clock. A deadline on `k_uptime_get` or a fixed poll count (`timeout_ms / 10`) fails it, and checks reject kernel clock reads in `drivers/` and `include/` and sleeps or kernel clock reads in the added tests. Validated by hand: the unfixed fixture, the kernel-clock fix tested with `k_msleep`, and the fixed-count fix fail, and a HAL-clock fix with a fake-clock test passes every check.
 
 ### Notes for case authors
 
