@@ -57,10 +57,18 @@ Exit codes: 0 ok, 1 failure, 2 usage error, 3 role not configured, 4 harness mis
 5 no write command for `ns ask --write`.
 Run `ns <command> --help` for details on one command.";
 
+/// `ns --version`: the package version and the commit it was built from (`build.rs`).
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("NS_BUILD_COMMIT"),
+    ")"
+);
+
 #[derive(Parser)]
 #[command(
     name = "ns",
-    version,
+    version = VERSION,
     about = "Nightshift CLI: worktrees, headless harness calls, skill lint and install",
     after_help = ROOT_HELP,
     arg_required_else_help = true
