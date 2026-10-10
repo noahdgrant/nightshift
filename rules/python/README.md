@@ -26,7 +26,7 @@ The regex only checks that a second comment follows the suppression, so any text
 
 The `ns-setup` skill installs the pack, and [its steps](../../skills/ns-setup/references/rules-python.md) work by hand too. It copies `ruff.toml`, `sgconfig.yml`, `file-size.sh`, `rules/` and `utils/` to `.nightshift/rules/python/` in the target repo and adds the row in `stack-row.md` to `docs/agents/stack.md`, with `{pack}` and `{target}` filled in. `tests/run.sh` runs the commands of that same file. `.nightshift/**` needs a human merge, so an agent can't loosen a rule or the allowlist to get a unit through.
 
-`ruff check --config` replaces the repo's own ruff config for that run, so the repo's ignores can't hide a pack rule. Both tools must be on `PATH`: `uv tool install ruff ast-grep-cli`.
+`ruff check --config` replaces the repo's own ruff config for that run, so the repo's ignores can't hide a pack rule. `ast-grep` runs with `--no-ignore hidden --globs '!.git'` so a file under a dot directory is scanned and `.git` is not. Both tools must be on `PATH`: `uv tool install ruff ast-grep-cli`.
 
 ## The allowlist
 
@@ -39,7 +39,7 @@ rule:
 
 Use the name the code imports (`yaml`), not the one it installs (`PyYAML`). The standard library is always allowed: its public modules (`utils/stdlib-module.yml`, Python 3.12, kept by hand) and any name starting with `_` (`_thread`). Relative imports are never flagged.
 
-`import-linter` is deliberately not used: its contracts only forbid imports and have no allowlist ([D52](../../docs/DESIGN.md)).
+`import-linter` is deliberately not used: its contracts only forbid imports and have no allowlist ([D55](../../docs/DESIGN.md)).
 
 ## Duplicate helpers
 

@@ -103,6 +103,22 @@ if grep -qF "home.py" <<<"$out"; then
   failed=1
 fi
 
+# The row's commands report a failing file under a dot directory, and none under .git.
+dir="$tmp/hidden-scan"
+mkdir -p "$dir/.hid" "$dir/.git/hooks"
+printf 'import requests  # noqa\n' | tee "$dir/.hid/a.py" >"$dir/.git/hooks/b.py"
+out=$(findings "$pack" "$dir")
+for want in "$dir/.hid/a.py:1:8: error[dependency-allowlist]" "$dir/.hid/a.py:1:18: error[suppression-reason]"; do
+  grep -qF "$want" <<<"$out" || {
+    printf 'FAIL hidden directory: no "%s" finding:\n%s\n' "$want" "$out" >&2
+    failed=1
+  }
+done
+if grep -qF "/.git/" <<<"$out"; then
+  printf 'FAIL hidden directory: .git was scanned:\n%s\n' "$out" >&2
+  failed=1
+fi
+
 # file-size.sh on a directory, inside a git repo and outside one, reports a long file and
 # skips a long file under a dot directory (outside git, by name; in git, by .gitignore).
 long=$(python3 -c "print('\n'.join(f'x{i} = {i}' for i in range(1001)))")
@@ -111,6 +127,7 @@ for mode in plain git; do
   dir="$tmp/size-$mode"
   mkdir -p "$dir/.hidden"
   printf '%s\n' "$long" | tee "$dir/long.py" "$dir/é.py" "$dir/ sp ace.py" "$dir/back\\slash.py" >"$dir/.hidden/long.py"
+  printf '%s\n' "$long" | tee "$dir/big.txt" "$dir/big.pyi" >"$dir/big.py.bak"
   if [ "$mode" = git ]; then
     git -C "$dir" init -q
     echo '.hidden/' >"$dir/.gitignore"
@@ -129,7 +146,7 @@ for mode in plain git; do
       failed=1
     }
   done
-  if grep -qF -e ".hidden" -e "deleted.py" -e "rror:" <<<"$out"; then
+  if grep -qF -e ".hidden" -e "deleted.py" -e "big." -e "rror:" <<<"$out"; then
     printf 'FAIL file-size: %s directory gave:\n%s\n' "$mode" "$out" >&2
     failed=1
   fi
