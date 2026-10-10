@@ -1,0 +1,30 @@
+# Runs `ns watch` for one night as a systemd user service. Setup, and why each
+# setting is here: docs/FACTORY.md, "Starting a night".
+# Point WorkingDirectory at your checkout with `systemctl --user edit ns-watch`.
+
+[Unit]
+Description=nightshift ns watch
+
+[Service]
+Type=exec
+WorkingDirectory=%h/src/myrepo
+Environment=PATH=%h/.cargo/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Optional. Holds GH_TOKEN=... when the config's token_command can't run here.
+EnvironmentFile=-%h/.config/nightshift/ns-watch.env
+# Skip a start between 06:00 and 21:00, such as a 22:00 timer caught up after
+# a suspend: --until 06:30 means the next 06:30, so it would run all day.
+ExecCondition=/bin/sh -c 'h=$$(date +%%H); [ "$$h" -ge 21 ] || [ "$$h" -lt 6 ]'
+ExecStart=%h/.cargo/bin/ns watch --until 06:30
+
+# A child the kernel OOM-kills, such as a runaway test, doesn't end the night.
+OOMPolicy=continue
+# Optional memory cap for everything the night runs (needs cgroup v2).
+#MemoryHigh=12G
+#MemoryMax=14G
+
+# Stop sends SIGTERM to ns watch alone. It ends the phase's process group
+# (SIGTERM, then SIGKILL 5 s later), requeues the issue and exits 143.
+# If it hasn't exited by TimeoutStopSec, the whole service gets SIGKILL.
+KillMode=mixed
+TimeoutStopSec=2min
+SuccessExitStatus=143
