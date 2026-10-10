@@ -48,3 +48,4 @@ See `ns-contract` (unit size).
 - Never run a real `ns eval` (without `--dry-run`) or `ns run` / `ns watch` inside a phase. They start model runs that consume the plan's usage. Eval runs are scheduled separately.
 - A skill change runs `ns lint` and comes with eval cases or a stated reason it has none (`AGENTS.md`).
 - Committed files carry no private company names or real home paths. `scripts/check-private.sh` and CI enforce this.
+- The test harness in `cli/tests/common/` needs Linux: `/proc`, `ps` and util-linux `setsid`. Tests that start `ns` or a helper kill its whole process tree, so they do not run on macOS or Windows.
