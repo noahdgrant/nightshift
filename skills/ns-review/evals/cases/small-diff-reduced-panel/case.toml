@@ -42,6 +42,12 @@ for r in readability architecture security performance comments; do test ! -e "$
 expect_exit = 0
 
 [[check]]
+# Under the soft limit (400 by default), no brief carries the Split section.
+type = "command"
+run = "! grep -l '^## Split' .ns/1-in-stock/swarm/review-0/*.brief.md"
+expect_exit = 0
+
+[[check]]
 # Mutation runs targeted the warehouse tests, not the whole suite.
 type = "regex"
 path = ".ns/1-in-stock/review.md"

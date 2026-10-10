@@ -43,7 +43,7 @@ State what is out of scope. This keeps the agent from gold-plating or making ass
 
 ### Sized to one unit
 
-Record the size estimate in the brief; the limits and the split are in [triage](../SKILL.md) step 5.
+Record the size estimate in the brief; the soft limit and the split are in [triage](../SKILL.md) step 5.
 
 ## Template
 

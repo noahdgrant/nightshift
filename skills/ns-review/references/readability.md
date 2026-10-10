@@ -8,7 +8,7 @@ Can another engineer, or agent, understand this code without the author explaini
 
 - **Names** that reveal what a function, variable or type does or holds, consistent with the repo's conventions. `tmp`, `data`, `result`, `handle` without context are findings.
 - **Control flow** that reads straight down: no nested conditional expressions, deep nesting, or flag arguments steering a function two ways.
-- **Size**: could this be done in fewer lines? 1000 lines where 100 suffice is a failure.
+- **Verbosity**: could this be done in fewer lines? 100 lines where 10 suffice is a failure.
 - **Clever tricks** that should be plain code.
 - **Abstractions earning their cost**: no generalising before the third use, no pass-through wrappers.
 - **Dead code**: unused variables, parameters, imports, back-compat shims, `# removed` markers, commented-out code.

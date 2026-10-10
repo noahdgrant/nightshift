@@ -26,7 +26,7 @@ Use these terms exactly.
 - **Legacy dual paths**: a new API added while the old one stays alive with no external consumer. Migrate callers and delete the old path in the same change.
 - **Non-atomic updates** that can leave state half-applied, and independent work serialised for no reason.
 - **Dependencies**: a new dependency the standard library or existing code already covers. For an upgrade: changelog read, one dependency per change, lockfile diff reviewed.
-- **File growth**: a file pushed past roughly 1000 lines. Decompose first, then add.
+- **File growth**: a file pushed past roughly 1000 lines. Decompose first, then add. A Suggestion, as the bar's Size section says.
 
 ## Smell baseline
 

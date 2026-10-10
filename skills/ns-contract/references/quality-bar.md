@@ -62,7 +62,8 @@ Each item is checkable against the diff: met, or not met at a `file:line`, or no
 
 The review lead checks this once, in its sizing step, so no reviewer gets this section.
 
-- The unit stays under the hard limit in `docs/agents/stack.md`, and no file grows past roughly 1000 lines.
+- The unit stays under the soft limit in `docs/agents/stack.md` and keeps a refactor apart from new behaviour. *(Suggestion)*
+- No file grows past roughly 1000 lines. *(Suggestion)*
 
 ## Comments
 

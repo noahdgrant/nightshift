@@ -29,7 +29,7 @@ Input: `.ns/<unit-id>/brief.md` and the branch. Output: `.ns/<unit-id>/review.md
    ```
    An empty diff means there is nothing to review: stop with `status: blocked`.
 4. Collect the **standards**: the target repo's `CODING_STANDARDS.md` and `CONTRIBUTING.md` if present, plus any other file that documents how code is written there. Read `docs/agents/stack.md` for the test command. If it is missing, load the `ns-setup` skill.
-5. **Change sizing.** Count changed lines: added plus deleted lines in `diff.patch`. Step 2 uses the same count to pick the panel. Around 100 is good, 300 is fine for one logical change, around 1000 is too large: record an Important finding asking for a split (stack, by file group, horizontal or vertical slices). Also flag a refactor mixed with new behaviour, and any file the diff pushes past roughly 1000 total lines.
+5. **Change sizing.** Count changed lines: added plus deleted lines in `diff.patch`. Step 2 uses the same count to pick the panel. Around 100 is good, 300 is fine for one logical change. Size prompts a split and never blocks the unit ([unit size](../ns-contract/SKILL.md#target-repo-configuration)). Past the soft limit, step 2 asks every reviewer whether its part of the diff could ship separately, and step 3 turns their answers into one **Suggestion** for the human and a later triage: "<n> changed lines: consider splitting into …", naming each concrete seam you or they can see (a stack of PRs, a file group, the refactor apart from the behaviour), or "<n> changed lines: no split seam found". Under the soft limit, a refactor mixed with new behaviour gets the same Suggestion, naming that seam. Also record a Suggestion for any file the diff pushes past roughly 1000 total lines.
 
 Leave `build.md`, `evidence.md` and the chat history out of every reviewer's input. They carry the author's conclusions, and a reviewer handed conclusions returns agreement.
 
@@ -57,7 +57,7 @@ Use the **partition** shape, one worker per reviewer on the panel. Pick the pane
 
 Roles let the user put different providers on different axes in `~/.config/nightshift/config.toml`. Run `ns doctor` once and note which provider serves each role, for the agreement ranking in step 3. Use `review` as the fallback role when an axis role is unconfigured.
 
-Review passes are numbered from 0: pass 0 is the first review and pass n follows fix cycle n. Briefs go under `review-<pass>`, so this first pass uses `review-0`. `cycles:` in `review.md` is the number of fix cycles run. Build each worker's brief from [reviewer-brief.md](references/reviewer-brief.md): its one reference file, its axis's section of the [quality bar](../ns-contract/references/quality-bar.md), the paths to `diff.patch` and `brief.md`, and the standards list. The quality bar is the single list of what must hold; `ns-build` checks its own diff against the same list. Every reviewer stays inside its own axis.
+Review passes are numbered from 0: pass 0 is the first review and pass n follows fix cycle n. Briefs go under `review-<pass>`, so this first pass uses `review-0`. `cycles:` in `review.md` is the number of fix cycles run. Build each worker's brief from [reviewer-brief.md](references/reviewer-brief.md): its one reference file, its axis's section of the [quality bar](../ns-contract/references/quality-bar.md), the paths to `diff.patch` and `brief.md`, the standards list, and, on pass 0 past the soft limit, the Split section. The quality bar is the single list of what must hold; `ns-build` checks its own diff against the same list. Every reviewer stays inside its own axis.
 
 **Mutation check.** `ns ask` workers are read-only, so the correctness reviewer proposes mutations and you run them, up to five, exactly as the Mutation check in [correctness.md](references/correctness.md) says: only the tests covering the mutated file, each under a timeout. Record each command and result as evidence.
 
@@ -65,7 +65,7 @@ Done when every reviewer on the panel has a result or a gap entry. A gap is reru
 
 ## 3. Synthesize
 
-1. **Parse** every finding into: severity, `file:line`, one-line issue, evidence, raising reviewers (its axes) and their providers.
+1. **Parse** every finding into: severity, `file:line`, one-line issue, evidence, raising reviewers (its axes) and their providers. Past the soft limit, also gather every reviewer's `SPLIT:` line into step 1's size Suggestion.
 2. **Dedupe.** Merge findings that describe the same defect in different words. Keep every raiser.
 3. **Rank by agreement.** Raised by workers on two or more providers ranks highest. Raised by two or more reviewers on one provider ranks next. A lone finding ranks last, except that lone security and correctness findings still get your full scrutiny.
 4. **Judge** each finding against the diff text, as in [review-md.md](references/review-md.md). Trace the call path before accepting a hypothetical ("what if this is None?"). Dismiss "I would have done it differently" unless it names a concrete problem.
