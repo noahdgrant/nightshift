@@ -1,8 +1,14 @@
 import glob
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+
+REPLAY_TIMEOUT = 30
+EXPIRED = r"inventory: error: .*expired"
 
 
 def section(text, name):
@@ -22,7 +28,38 @@ def section(text, name):
     return "\n".join(body).strip()
 
 
-def failures(text):
+def fence_lines(text):
+    lines, in_fence = [], False
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("```"):
+            in_fence = not in_fence
+        elif in_fence:
+            lines.append(line.removeprefix("$ "))
+    return lines
+
+
+def replays_red(commands, root):
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(os.path.join(root, "src"), os.path.join(tmp, "src"))
+        env = dict(os.environ, PYTHONPATH="src")
+        for command in commands:
+            proc = subprocess.Popen(
+                command, shell=True, cwd=tmp, env=env, text=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True,
+            )
+            try:
+                _, err = proc.communicate(timeout=REPLAY_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
+                return False
+            if proc.returncode != 0 and re.search(EXPIRED, err):
+                return True
+    return False
+
+
+def failures(text, root):
     m = re.match(r"---\n(.*?)\n---\n", text, re.S)
     if not m:
         return ["frontmatter"]
@@ -40,8 +77,9 @@ def failures(text):
         "agent brief": "Agent Brief" in text and "- [ ]" in text,
         "repro body": repro != "",
         "repro holds a command": re.search(r"python3? -m inventory", repro) is not None,
-        "repro ran red": re.search(r"(?m)^\W*inventory: error: .*expired", repro) is not None
-        and (pinned_seconds or round_trip),
+        "repro ran red": re.search(r"(?m)^\W*" + EXPIRED, repro) is not None
+        and (pinned_seconds or round_trip)
+        and replays_red(fence_lines(repro), root),
         "root cause body": cause != "",
         "root cause names expires_at": "expires_at" in cause,
         "root cause names the truncation site": re.search(r"to_dict|models\.py", cause) is not None
@@ -65,7 +103,7 @@ def main():
         sys.exit("no .ns/02-*/brief.md in the main checkout or any worktree")
     for path in briefs:
         with open(path, encoding="utf-8") as f:
-            failed = failures(f.read())
+            failed = failures(f.read(), os.getcwd())
         print(path, failed or "ok")
         if not failed:
             sys.exit(0)
