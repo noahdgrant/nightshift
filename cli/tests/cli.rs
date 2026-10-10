@@ -900,6 +900,73 @@ fn worktree_new_runs_setup_once() {
 }
 
 #[test]
+fn own_factory_definition_turns_on_the_pre_commit_hook() {
+    let (_tmp, root) = repo();
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    factory_def(
+        &root,
+        &fs::read_to_string(src.join(".nightshift/nightshift.toml")).unwrap(),
+    );
+    fs::create_dir_all(root.join(".githooks")).unwrap();
+    fs::copy(
+        src.join(".githooks/pre-commit"),
+        root.join(".githooks/pre-commit"),
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("scripts")).unwrap();
+    fs::write(
+        root.join("scripts/ci-local.sh"),
+        "#!/bin/sh
+echo \"ci-local $*\" >&2
+exit 1
+",
+    )
+    .unwrap();
+    for f in [".githooks/pre-commit", "scripts/ci-local.sh"] {
+        StdCommand::new("chmod")
+            .arg("+x")
+            .arg(root.join(f))
+            .status()
+            .unwrap();
+    }
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "--no-verify", "-m", "hooks"]);
+
+    ns().current_dir(&root)
+        .args(["factory", "validate"])
+        .assert()
+        .success();
+    let v = json(
+        &ns()
+            .current_dir(&root)
+            .args(["worktree", "new", "u5"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    let path = PathBuf::from(v["path"].as_str().unwrap());
+    assert_eq!(git(&path, &["config", "core.hooksPath"]), ".githooks");
+
+    fs::write(path.join("README"), "changed\n").unwrap();
+    let out = StdCommand::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .arg("-C")
+        .arg(&path)
+        .args(["commit", "-qam", "change"])
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ci-local --fast"));
+}
+
+#[test]
 fn worktree_setup_failure_keeps_worktree_and_retries() {
     let (_tmp, root) = repo();
     factory_def(
