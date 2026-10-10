@@ -1,0 +1,90 @@
+description = "The broad request from broad-feature-split, but `ns watch` already moved the issue to the run state in-progress before triage ran under `ns run`. Triage should still split it: file two or more child issues and list them in the parent's Triage Notes, keep the parent's Status: in-progress and its priority, write brief.md with status: blocked and the children's links, and start no new unit."
+fixture = "py-inventory"
+skills = ["ns-triage"]
+extra_skills = ["ns-contract"]
+requires = []
+timeout_minutes = 15
+prompt = """
+Load the `ns-triage` skill and run it for unit `01-low-stock-reordering` (issue .scratch/low-stock/issues/01-low-stock-reordering.md). gates: auto.
+Phase: triage (attempt 1). End by writing the phase's artifact under .ns/01-low-stock-reordering/ with its frontmatter status.
+"""
+
+[[check]]
+type = "regex"
+path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?in-progress`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+pattern = '(?m)^\**Status:?\**:?.*(needs-define|ready-for-agent|needs-triage|ready-for-human|closed|wontfix)'
+present = false
+
+[[check]]
+type = "regex"
+path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+pattern = '(?m)^\**Priority:?\**:?\s*`?priority:medium`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+pattern = '(?m)^#+\s*Triage Notes'
+present = true
+
+[[check]]
+# Split: two or more child issues, each listed in the parent's Triage Notes and linked from a brief.md at status: blocked.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, os, re, subprocess, sys
+parent_path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+children = sorted(p for p in glob.glob(".scratch/**/*.md", recursive=True)
+                  if os.path.realpath(p) != os.path.realpath(parent_path) and "/issues/" in p)
+print("children:", children)
+if len(children) < 2:
+    sys.exit("fewer than two child issues")
+def mentions(text, path):
+    stem = os.path.splitext(os.path.basename(path))[0]
+    num = re.match(r"\d+", stem)
+    if not num:
+        sys.exit(f"{path}: file name has no numeric prefix")
+    num = num.group()
+    return stem in text or re.search(rf"(?<!\d)(?:{num}|{int(num)})(?!\d)", text)
+notes = open(parent_path, encoding="utf-8").read().split("Triage Notes", 1)[-1]
+unlisted = [p for p in children if not mentions(notes, p)]
+if unlisted:
+    sys.exit(f"children missing from the parent's Triage Notes: {unlisted}")
+roots = {os.getcwd()}
+out = subprocess.run(["git", "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+roots.update(l.split(" ", 1)[1] for l in out.splitlines() if l.startswith("worktree "))
+roots.update(glob.glob(os.path.join("..", os.path.basename(os.getcwd()) + ".worktrees", "01-*")))
+briefs = sorted({os.path.realpath(p) for r in roots for p in glob.glob(os.path.join(r, ".ns", "01-*", "brief.md"))})
+if not briefs:
+    sys.exit("no .ns/01-*/brief.md in the main checkout or any worktree")
+for path in briefs:
+    text = open(path, encoding="utf-8").read()
+    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    fm = {k: v.strip("'\"") for k, v in re.findall(r"(?m)^(\w+):[ \t]*(.*?)[ \t]*(?:#.*)?$", m.group(1))} if m else {}
+    body = text[m.end():] if m else text
+    missing = [p for p in children if not mentions(body, p)]
+    print(f"{path}: status={fm.get('status')!r} children not linked={missing}")
+    if fm.get("status") == "blocked" and not missing:
+        sys.exit(0)
+sys.exit("no brief.md with status: blocked that links every child")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# `ns run` already started the unit, and a split starts none: no worktree beyond the checkout.
+type = "command"
+run = '''
+test "$(git worktree list --porcelain | grep -c '^worktree ')" -eq 1 && ! git branch --list 'ns/*' | grep -q . && ! ls -d ../"$(basename "$PWD")".worktrees/* 2>/dev/null
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]
