@@ -1,10 +1,12 @@
 //! `ns quality` end to end: a temp repo with unit worktrees holding fixture review artifacts.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
-use assert_cmd::Command;
+use common::Ns;
 use predicates::prelude::*;
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -12,8 +14,8 @@ use tempfile::TempDir;
 /// UTC-4 with no daylight saving, so the test needs no tz database.
 const TZ: &str = "XYZ4";
 
-fn ns() -> Command {
-    let mut c = Command::cargo_bin("ns").unwrap();
+fn ns() -> Ns {
+    let mut c = common::ns();
     c.env_remove("NS_CONFIG")
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("GIT_DIR")
@@ -213,12 +215,7 @@ Change size: 150 insertions, 50 deletions in 3 files.
 }
 
 fn quality(f: &Fixture, args: &[&str]) -> Value {
-    let out = ns()
-        .current_dir(&f.root)
-        .arg("quality")
-        .args(args)
-        .output()
-        .unwrap();
+    let out = ns().current_dir(&f.root).arg("quality").args(args).output();
     assert!(
         out.status.success(),
         "{}",
@@ -399,7 +396,7 @@ fn a_repo_with_no_units_reports_zeroes() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     git(&root, &["init", "-q", "-b", "main"]);
-    let out = ns().current_dir(&root).arg("quality").output().unwrap();
+    let out = ns().current_dir(&root).arg("quality").output();
     assert!(out.status.success());
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["units"], 0);

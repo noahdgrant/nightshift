@@ -1,14 +1,18 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
+mod common;
 
-use assert_cmd::Command;
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Command as StdCommand, Stdio};
+use std::time::{Duration, Instant};
+
+use common::{Group, Ns};
 use predicates::prelude::*;
 use serde_json::Value;
 use tempfile::TempDir;
 
-fn ns() -> Command {
-    let mut c = Command::cargo_bin("ns").unwrap();
+fn ns() -> Ns {
+    let mut c = common::ns();
     c.env_remove("NS_CONFIG").env_remove("XDG_CONFIG_HOME");
     c
 }
@@ -972,4 +976,109 @@ fn an_inherited_git_dir_never_reaches_another_repo() {
     assert_eq!(git(&decoy, &["branch", "--list"]), branches_before);
     assert!(git(&root, &["branch", "--list", "ns/7-thing"]).contains("ns/7-thing"));
     assert_eq!(git(&decoy, &["rev-parse", "--is-bare-repository"]), "false");
+}
+
+/// A shell that starts a background job which would create `marker` in 1 s, then sleeps.
+fn leaves_a_grandchild(marker: &Path) -> String {
+    format!("(sleep 1; touch {marker:?}) & echo started; sleep 30")
+}
+
+#[test]
+fn a_hung_ns_fails_at_its_timeout_and_takes_its_children_with_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("survivor");
+    let cfg = tmp.path().join("config.toml");
+    let script = leaves_a_grandchild(&marker).replace('"', "\\\"");
+    fs::write(
+        &cfg,
+        format!("[harness.hang]\ncommand = [\"sh\", \"-c\", \"{script}\"]\n[roles.review]\nharness = \"hang\"\n"),
+    )
+    .unwrap();
+    let started = Instant::now();
+    let panic = std::panic::catch_unwind(|| {
+        ns().env("NS_CONFIG", &cfg)
+            .args(["ask", "--role", "review"])
+            .write_stdin("x")
+            .timeout(Duration::from_millis(500))
+            .output()
+    })
+    .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let msg = panic.downcast_ref::<String>().unwrap();
+    assert!(msg.contains("timed out after 500ms"), "{msg}");
+    assert!(msg.contains("\"ask\" \"--role\" \"review\""), "{msg}");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!marker.exists(), "the harness's background job outlived ns");
+}
+
+#[test]
+fn dropping_a_group_kills_its_grandchildren() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("survivor");
+    let mut sh = StdCommand::new("sh");
+    sh.arg("-c")
+        .arg(leaves_a_grandchild(&marker))
+        .stdout(Stdio::piped());
+    let mut group = Group(common::spawn_in_group(&mut sh));
+    let mut line = String::new();
+    BufReader::new(group.0.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line, "started\n");
+    drop(group);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!marker.exists(), "the background job outlived the group");
+}
+
+#[test]
+fn every_test_starts_ns_through_the_bounded_helper() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    // Split so this list doesn't match itself.
+    let banned = [
+        concat!("assert_cmd::", "Command"),
+        concat!("OutputAssert", "Ext"),
+        concat!("cargo", "_bin"),
+        concat!(".spawn", "()"),
+    ];
+    let mut scanned = 0;
+    for entry in fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        scanned += 1;
+        let text = fs::read_to_string(&path).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            if let Some(b) = banned.iter().find(|b| line.contains(*b)) {
+                panic!(
+                    "{}:{}: `{b}` starts a process without a timeout; use common::ns() or common::spawn_in_group()",
+                    path.display(),
+                    n + 1
+                );
+            }
+        }
+    }
+    assert!(scanned >= 3, "scanned {scanned} test files");
+}
+
+#[test]
+fn output_returns_when_ns_exits_even_if_its_child_holds_the_pipes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("survivor");
+    let cfg = tmp.path().join("config.toml");
+    fs::write(
+        &cfg,
+        format!("[harness.bg]\ncommand = [\"sh\", \"-c\", \"(sleep 1; touch {}) & echo hi\"]\n[roles.review]\nharness = \"bg\"\n", marker.display()),
+    )
+    .unwrap();
+    let started = Instant::now();
+    ns().env("NS_CONFIG", &cfg)
+        .args(["ask", "--role", "review"])
+        .write_stdin("x")
+        .assert()
+        .success()
+        .stdout("hi\n");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!marker.exists(), "the harness's background job outlived ns");
 }

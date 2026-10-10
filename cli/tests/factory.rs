@@ -1,13 +1,16 @@
 //! End-to-end tests for `ns run` and `ns watch` with a fake harness (`claude`) and a fake `gh`.
 
+mod common;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command as StdCommand, Stdio};
+use std::process::Command as StdCommand;
 use std::sync::mpsc;
 use std::thread;
+use std::time::{Duration, Instant};
 
-use assert_cmd::Command;
+use common::{Group, Ns};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -193,9 +196,9 @@ impl Env {
         fs::write(self.ghd.join(name), text).unwrap();
     }
 
-    /// `ns` with the fakes on PATH, as a std command so a test can spawn it.
-    fn ns_std(&self) -> StdCommand {
-        let mut c = StdCommand::new(assert_cmd::cargo::cargo_bin("ns"));
+    /// `ns` with the fakes on PATH.
+    fn ns(&self) -> Ns {
+        let mut c = common::ns();
         let path = format!(
             "{}:{}",
             self.bin.display(),
@@ -220,10 +223,6 @@ impl Env {
             .env_remove("CLAUDE_CODE_DISABLE_AUTO_MEMORY")
             .env_remove("GH_TOKEN");
         c
-    }
-
-    fn ns(&self) -> Command {
-        Command::from_std(self.ns_std())
     }
 
     fn run(&self, args: &[&str], code: i32) -> Value {
@@ -465,29 +464,26 @@ fn phase_ids(e: &Env) -> Vec<String> {
         .collect()
 }
 
-fn wait_ok(child: Child) {
-    let out = child.wait_with_output().unwrap();
+/// Run `ns`, which must succeed, and return the pid it ran as.
+fn ok_pid(ns: &mut Ns) -> u32 {
+    let (out, pid) = ns.output_with_pid();
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    pid
 }
 
 #[test]
 fn a_phase_runs_in_its_own_session_and_knows_the_run_pid() {
     let e = Env::new();
     record_phase_ids(&e);
-    let child = e
-        .ns_std()
-        .env("NS_WATCH_PID", "999999")
-        .args(["run", "--issue", "7"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let pid = child.id();
-    wait_ok(child);
+    let pid = ok_pid(
+        e.ns()
+            .env("NS_WATCH_PID", "999999")
+            .args(["run", "--issue", "7"]),
+    );
     let ids = phase_ids(&e);
     assert_eq!(
         ids[0],
@@ -505,15 +501,7 @@ fn a_phase_under_watch_knows_the_watch_pid() {
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");
     record_phase_ids(&e);
-    let child = e
-        .ns_std()
-        .args(["watch", "--once"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let pid = child.id();
-    wait_ok(child);
+    let pid = ok_pid(e.ns().args(["watch", "--once"]));
     assert_eq!(phase_ids(&e)[0], format!("{pid} {pid}"));
 }
 
@@ -734,10 +722,11 @@ fn a_rebuild_that_leaves_head_alone_skips_a_green_gate() {
 fn a_gate_that_times_out_goes_back_to_build_and_uses_an_attempt() {
     let e = Env::new();
     e.factory("[phases.build]\ngate = \"sleep 30\"\n");
-    let mut c = e.ns_std();
-    c.env("NS_GATE_TIMEOUT_MS", "300")
-        .args(["run", "--issue", "7"]);
-    let out = c.output().unwrap();
+    let out = e
+        .ns()
+        .env("NS_GATE_TIMEOUT_MS", "300")
+        .args(["run", "--issue", "7"])
+        .output();
     assert_eq!(out.status.code(), Some(1));
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["reason"], "build is out of attempts (2)");
@@ -1132,15 +1121,6 @@ fn leftover_content_in_a_free_runner_lock_is_overwritten() {
     assert!(lock_is_free(&lock));
 }
 
-struct Killed(Child);
-
-impl Drop for Killed {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
 enum Event {
     Entered,
     Exited(String),
@@ -1148,7 +1128,7 @@ enum Event {
 
 /// A run whose verify phase holds its lock until `release` is called.
 struct Blocked {
-    run: Killed,
+    run: Group,
     go: PathBuf,
 }
 
@@ -1166,15 +1146,8 @@ impl Blocked {
             "verify.sh",
             &format!("{before}; echo in > {entered:?}; cat {go:?} > /dev/null; {after}"),
         );
-        let mut child = e
-            .ns_std()
-            .args(["run", "--issue", "7"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut stderr = child.stderr.take().unwrap();
-        let run = Killed(child);
+        let mut run = e.ns().args(["run", "--issue", "7"]).start();
+        let mut stderr = run.0.stderr.take().unwrap();
         let (tx, rx) = mpsc::channel();
         let tx_err = tx.clone();
         thread::spawn(move || {
@@ -1195,6 +1168,54 @@ impl Blocked {
     fn release(&self) {
         fs::write(&self.go, "go\n").unwrap();
     }
+}
+
+/// Whether `pid` has exited, waiting up to 5 s for it to. A zombie counts as exited.
+fn exits(pid: &str) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let out = StdCommand::new("ps")
+            .args(["-o", "stat=", "-p", pid.trim()])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&out.stdout);
+        if stat.trim().is_empty() || stat.trim().starts_with('Z') {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn dropping_a_background_run_kills_the_phase_in_its_own_session() {
+    let e = Env::new();
+    let pid = e.ctrl.join("phase.pid");
+    let held = Blocked::start(&e, &format!("echo $$ > {pid:?}"), "true");
+    drop(held);
+    let pid = fs::read_to_string(&pid).unwrap();
+    assert!(exits(&pid), "phase {pid} outlived its run");
+}
+
+#[test]
+fn a_run_past_its_timeout_fails_and_kills_the_phase_in_its_own_session() {
+    let e = Env::new();
+    let pid = e.ctrl.join("phase.pid");
+    e.queue("build", &["pass:script"]);
+    e.ctl("build.sh", &format!("echo $$ > {pid:?}; sleep 30"));
+    let panic = std::panic::catch_unwind(|| {
+        e.ns()
+            .args(["run", "--issue", "7"])
+            .timeout(Duration::from_secs(3))
+            .output()
+    })
+    .unwrap_err();
+    let msg = panic.downcast_ref::<String>().unwrap();
+    assert!(msg.contains("timed out after 3s"), "{msg}");
+    let pid = fs::read_to_string(&pid).unwrap();
+    assert!(exits(&pid), "phase {pid} outlived its run");
 }
 
 #[test]
@@ -1270,15 +1291,11 @@ fn two_runs_needing_one_lock_serialise() {
     b.ctl("verify.sh", &format!("echo B >> {order:?}"));
 
     // A pinned clock would end B's wait at once: B waits on the real clock.
-    let mut run_b = Killed(
-        b.ns_std()
-            .env_remove("NS_NOW")
-            .args(["run", "--issue", "7"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
-    );
+    let mut run_b = b
+        .ns()
+        .env_remove("NS_NOW")
+        .args(["run", "--issue", "7"])
+        .start();
     let mut b_err = BufReader::new(run_b.0.stderr.take().unwrap()).lines();
     let waited = b_err
         .by_ref()
@@ -1886,7 +1903,7 @@ fn rebased_after_review(
     );
     e.gh_file("checks-12.json", GREEN);
     setup(&e);
-    let out = e.ns().args(["run", "--issue", "7"]).output().unwrap();
+    let out = e.ns().args(["run", "--issue", "7"]).output();
     let v = serde_json::from_slice(&out.stdout).unwrap();
     (e, v, out.status.code().unwrap())
 }
@@ -2607,7 +2624,7 @@ fn watch_restores_the_ready_label_when_a_run_errors() {
     e.queue("triage", &["pass:script"]);
     e.queue("build", &["pass:commit"]);
     e.queue("verify", &["fail:script"]);
-    let out = e.ns().args(["watch", "--once"]).output().unwrap();
+    let out = e.ns().args(["watch", "--once"]).output();
     assert!(!out.status.success(), "{out:?}");
     assert_eq!(e.labels(2), ["type:fix", "status:ready-for-agent"]);
 }
@@ -2665,7 +2682,7 @@ fn watch_fails_loudly_when_a_label_edit_does_not_land() {
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");
     e.gh_file("edit.noop", "");
-    let out = e.ns().args(["watch", "--once"]).output().unwrap();
+    let out = e.ns().args(["watch", "--once"]).output();
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -2682,7 +2699,7 @@ fn watch_fails_loudly_when_the_end_label_edit_does_not_land() {
     e.ctl("triage.sh", "touch \"$FAKE_GH_DIR/edit.noop\"\n");
     e.queue("triage", &["pass:script"]);
     e.queue("build", &["pass:commit"]);
-    let out = e.ns().args(["watch", "--once"]).output().unwrap();
+    let out = e.ns().args(["watch", "--once"]).output();
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
