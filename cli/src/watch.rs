@@ -18,7 +18,10 @@ use crate::skills_sync::{self, Sync};
 use crate::stop;
 use crate::worktree::BRANCH_PREFIX;
 
+mod snapshot;
 mod triage;
+
+pub use snapshot::NightDir;
 
 pub struct WatchArgs {
     pub once: bool,
@@ -619,7 +622,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             "cleaned": tonight.cleaned,
             "stopped": stopped,
             "until": deadline.map(clock::local_iso),
-            "cost_usd": night.shared.spent_usd,
+            "cost_usd": night.shared.spent(),
             "started_with": loaded.files,
         }))?
     );
@@ -849,7 +852,7 @@ impl Night {
             return Some("until");
         }
         fac.budget_usd()
-            .filter(|b| self.shared.spent_usd >= *b)
+            .filter(|b| self.shared.spent() >= *b)
             .map(|_| "budget")
     }
 

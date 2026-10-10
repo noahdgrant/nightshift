@@ -251,6 +251,9 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         /// Directory holding nightshift.toml (default: <main-worktree>/.nightshift)
         #[arg(long, value_name = "DIR")]
         factory: Option<PathBuf>,
+        /// Set by ns watch: the night directory with its hold, spend and facts
+        #[arg(long, value_name = "DIR", hide = true)]
+        night: Option<PathBuf>,
     },
 
     /// Pull ready issues from GitHub and run them one at a time
@@ -681,6 +684,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             base,
             dry_run,
             factory,
+            night,
         } => {
             return run::cli(run::RunArgs {
                 unit: unit_id,
@@ -691,6 +695,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 factory,
                 base,
                 triage_only: false,
+                night,
             })
         }
         Cmd::Watch {

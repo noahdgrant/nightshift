@@ -6168,3 +6168,70 @@ fn watch_tries_a_unit_that_stays_once_a_night() {
     assert_eq!(writes, 1);
     assert!(done.is_dir());
 }
+
+/// A night directory as `ns watch` writes it, with `spend` already spent and the hold `hold`.
+fn night_dir(e: &Env, spend: f64, hold: Option<i64>) -> PathBuf {
+    let dir = e.base.join("night");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("night.json"),
+        format!(
+            "{{\"watch_pid\":{},\"until\":null,\"gate\":null}}",
+            std::process::id()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("spend.jsonl"),
+        format!("{{\"unit\":\"other\",\"usd\":{spend}}}\n"),
+    )
+    .unwrap();
+    if let Some(r) = hold {
+        fs::write(dir.join("hold.json"), format!("{{\"reset_at\":{r}}}")).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn a_run_in_a_night_counts_every_unit_s_spend_against_the_budget() {
+    let e = Env::new();
+    e.factory("[limits]\nbudget_usd = 40.0\n");
+    let night = night_dir(&e, 39.75, None);
+    let v = e.run(
+        &["run", "--issue", "7", "--night", night.to_str().unwrap()],
+        3,
+    );
+    assert_eq!(v["outcome"], "budget", "{v}");
+    assert_eq!(v["reason"], "spent $40.25 of the $40.00 budget", "{v}");
+    assert_eq!(v["cost_usd"], 0.5, "{v}");
+    assert_eq!(e.calls(), ["triage"]);
+    let spend = fs::read_to_string(night.join("spend.jsonl")).unwrap();
+    assert!(
+        spend.ends_with(&format!("{{\"unit\":\"{UNIT}\",\"usd\":0.5}}\n")),
+        "{spend}"
+    );
+}
+
+#[test]
+fn a_run_in_a_night_stops_before_a_phase_while_a_hold_lasts() {
+    let e = Env::new();
+    let night = night_dir(&e, 0.0, Some(NOW + 3600));
+    let v = e.run(
+        &["run", "--issue", "7", "--night", night.to_str().unwrap()],
+        4,
+    );
+    assert_eq!(v["outcome"], "paused", "{v}");
+    assert_eq!(v["reset_at"], NOW + 3600, "{v}");
+    assert!(
+        v["reason"].as_str().unwrap().contains("another unit"),
+        "{v}"
+    );
+    assert!(e.calls().is_empty(), "{:?}", e.calls());
+    // A hold whose reset has come holds nothing.
+    let night = night_dir(&e, 0.0, Some(NOW));
+    let v = e.run(
+        &["run", "--issue", "7", "--night", night.to_str().unwrap()],
+        0,
+    );
+    assert_eq!(v["outcome"], "done", "{v}");
+}
