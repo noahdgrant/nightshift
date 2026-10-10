@@ -68,7 +68,7 @@ pub(super) fn candidates(root: &Path, fac: &Factory, done: &BTreeSet<u64>) -> Re
         let Some(why) = needs_triage(q, &i.labels) else {
             continue;
         };
-        match listing.passed_over(i) {
+        match listing.passed_over(i, false) {
             Some(reason) => skipped.push(skip(i, reason)),
             None => picked.push((i.clone(), why)),
         }
@@ -90,6 +90,7 @@ pub(super) fn pass(
 ) -> Result<Option<String>> {
     let q = &loaded.fac.queue;
     loop {
+        crate::stop::check()?;
         if let Some(stop) = night.over(deadline, &loaded.fac) {
             return Ok(Some(stop.into()));
         }
@@ -115,6 +116,7 @@ pub(super) fn pass(
         };
         let r = match run::execute(&rargs, &mut night.shared, loaded) {
             Ok(r) => r,
+            Err(e) if crate::stop::requested().is_some() => return Err(e),
             Err(e) => {
                 // One broken candidate must not end every night: record it and go on.
                 let reason = format!("{e:#}");

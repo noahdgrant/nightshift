@@ -100,6 +100,15 @@ impl Ns {
         Group::spawn(&mut self.cmd, self.timeout)
     }
 
+    /// Start `ns` in the background with stdout and stderr piped, for a test that reads both.
+    pub fn start_piped(&mut self) -> Group {
+        self.cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        Group::spawn(&mut self.cmd, self.timeout)
+    }
+
     /// Run to the end and collect its output. Panics, naming the command, at the timeout.
     pub fn output(&mut self) -> Output {
         self.output_with_pid().0

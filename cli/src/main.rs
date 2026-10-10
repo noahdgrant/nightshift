@@ -20,6 +20,7 @@ mod review_md;
 mod run;
 mod skills_sync;
 mod stats;
+mod stop;
 #[cfg(test)]
 mod testutil;
 mod watch;
@@ -338,10 +339,13 @@ Examples:
   ns watch --until 06:30 --max-units 3
 
 Lists open issues labelled [queue] ready_label with gh, drops blocked ones and ones with an
-open PR that closes them, sorts by [queue] order, and runs each with ns run --issue. Forge tokens as in ns run --help.
+open PR that closes them (not one from their own unit branch), sorts by [queue] order, and runs each with ns run --issue. Forge tokens as in ns run --help.
 --until is local time (TZ). Times printed for people, until and reset_at, are local with
 their offset (2026-10-09T06:30:00-04:00).
-Prints {units,stopped,until,cost_usd}. Exit codes as ns run's errors: 2 usage, 5 lock held.";
+At start, in-progress issues no live ns run holds go back to the ready label (requeued).
+SIGINT or SIGTERM ends the running phase and returns its issue to the ready label.
+Prints {units,requeued,stopped,until,cost_usd}. Exit codes as ns run's errors: 2 usage,
+5 lock held (another ns run or ns watch); 130 or 143 when stopped by SIGINT or SIGTERM.";
 
 const QUALITY_HELP: &str = "\
 Examples:

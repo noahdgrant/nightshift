@@ -334,9 +334,15 @@ pub fn run_process(
     };
     let deadline = started + timeout;
     let mut timed_out = false;
+    let mut stopped = false;
     let status = loop {
         if let Some(st) = child.try_wait()? {
             break Some(st);
+        }
+        if crate::stop::requested().is_some() {
+            stopped = true;
+            end_group(&mut child);
+            break None;
         }
         if Instant::now() >= deadline {
             timed_out = true;
@@ -351,15 +357,44 @@ pub fn run_process(
     if let Some(w) = writer {
         let _ = w.join();
     }
+    if stopped {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "stopped by a signal",
+        ));
+    }
     Ok((status, timed_out, started.elapsed().as_secs_f64()))
+}
+
+/// How long a process group asked to end gets before it is killed.
+const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// End the child's process group: SIGTERM, then SIGKILL once [`STOP_GRACE`] passes.
+fn end_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    signal_group(child.id(), libc::SIGTERM);
+    let deadline = Instant::now() + STOP_GRACE;
+    while Instant::now() < deadline {
+        if !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    kill_group(child.id());
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn signal_group(pid: u32, sig: libc::c_int) {
+    // SAFETY: kill(2) with a negative pid signals that process group; failures are ignored.
+    unsafe {
+        libc::kill(-(pid as libc::pid_t), sig);
+    }
 }
 
 #[cfg(unix)]
 fn kill_group(pid: u32) {
-    // SAFETY: kill(2) with a negative pid signals that process group; failures are ignored.
-    unsafe {
-        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-    }
+    signal_group(pid, libc::SIGKILL);
 }
 
 #[cfg(not(unix))]
