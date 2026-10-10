@@ -7065,6 +7065,10 @@ fn watch_hands_off_to_a_new_build_between_units_and_the_night_goes_on() {
     );
     let state = args.trim().rsplit(' ').next().unwrap();
     assert!(!Path::new(state).exists(), "{state} left behind");
+    // The check ran the new binary's dry run on a copy of that state.
+    let dry = fs::read_to_string(e.ctrl.join("dry-run-args")).unwrap();
+    let probe = dry.trim().rsplit(' ').next().unwrap();
+    assert!(dry.contains("--resume-night ") && probe != state, "{dry}");
     // The build went to the staging directory, locked, and the exec'd binary is the staged copy
     // named for the commit, not the running ns.
     let stage = fs::canonicalize(e.root.join(".git/ns/self-update")).unwrap();
@@ -7112,6 +7116,51 @@ fn the_carried_deadline_beats_the_new_binarys_own() {
     let args = fs::read_to_string(e.ctrl.join("handed-off")).unwrap();
     assert!(args.contains("--until 06:30"), "{args}");
     assert_eq!(v["until"], "2026-10-09T06:30:00+00:00", "{v}");
+}
+
+/// A carried night with nothing in it, for a `--resume-night` test.
+fn empty_night(e: &Env) -> PathBuf {
+    let path = e.root.join("night.json");
+    fs::write(&path, r#"{"version": 1}"#).unwrap();
+    path
+}
+
+#[test]
+fn a_stop_that_landed_during_the_hand_off_still_stops_the_new_binary() {
+    let e = Env::new();
+    two_ready(&e);
+    let path = empty_night(&e);
+    let out = e
+        .ns()
+        .args(["watch", "--resume-night"])
+        .arg(&path)
+        .with_pending_sigterm()
+        .output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    assert_eq!(out.status.code(), Some(143), "{err}");
+    assert_eq!(v["stopped"], "SIGTERM", "{v}");
+    assert!(units(&v).is_empty(), "{v}");
+}
+
+#[test]
+fn a_dry_run_reads_the_carried_state_and_fails_on_what_it_cannot_read() {
+    for (state, ok) in [
+        (r#"{"version": 1}"#, true),
+        (r#"{"version": 99}"#, false),
+        ("not json", false),
+    ] {
+        let e = Env::new();
+        two_ready(&e);
+        let path = e.root.join("night.json");
+        fs::write(&path, state).unwrap();
+        let out = e
+            .ns()
+            .args(["watch", "--dry-run", "--resume-night"])
+            .arg(&path)
+            .output();
+        assert_eq!(out.status.success(), ok, "{state}: {out:?}");
+    }
 }
 
 #[test]
@@ -7182,7 +7231,12 @@ fn assert_stopped_without_a_hand_off(e: &Env, v: &Value, code: Option<i32>, err:
 #[test]
 fn a_stop_during_the_build_kills_it_and_ends_the_night() {
     let (e, w) = watching_an_update("slow");
+    let give_up = Instant::now() + Duration::from_secs(60);
     while !e.ctrl.join("cargo-started").exists() {
+        assert!(
+            Instant::now() < give_up,
+            "the build never started, so there was nothing to stop"
+        );
         thread::sleep(Duration::from_millis(20));
     }
     let start = Instant::now();

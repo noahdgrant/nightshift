@@ -85,6 +85,24 @@ impl Ns {
         self
     }
 
+    /// Start `ns` with SIGTERM already pending and blocked, as a signal that landed while an
+    /// earlier `ns` was handing off to it.
+    pub fn with_pending_sigterm(&mut self) -> &mut Self {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: only sigprocmask(2), getpid(2) and kill(2), all async-signal-safe.
+        unsafe {
+            self.cmd.pre_exec(|| {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                libc::sigaddset(&mut set, libc::SIGTERM);
+                libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+                libc::kill(libc::getpid(), libc::SIGTERM);
+                Ok(())
+            });
+        }
+        self
+    }
+
     pub fn write_stdin(&mut self, input: impl Into<Vec<u8>>) -> &mut Self {
         self.stdin = input.into();
         self

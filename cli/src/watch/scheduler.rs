@@ -303,19 +303,25 @@ impl<'a> Scheduler<'a> {
         let repo = self.plan.repo;
         let u = self.plan.update.as_ref().context("no self-update")?;
         eprintln!("ns watch: self-update: building {}", short(to));
-        let built = u.build(repo, to);
-        if stop::requested().is_some() {
-            eprintln!("ns watch: self-update to {} abandoned: stopping", short(to));
-            return Ok(());
-        }
-        let staged = built?;
         let state = night
             .carry(self.plan.deadline, self.started, tonight)
             .save(&repo.common_dir)?;
-        if stop::requested().is_some() {
+        let stopping = || {
+            eprintln!("ns watch: self-update to {} abandoned: stopping", short(to));
             let _ = fs::remove_file(&state);
+        };
+        let built = u.build(repo, to, &state);
+        if stop::requested().is_some() {
+            stopping();
             return Ok(());
         }
+        let staged = match built {
+            Ok(staged) => staged,
+            Err(e) => {
+                let _ = fs::remove_file(&state);
+                return Err(e);
+            }
+        };
         eprintln!(
             "ns watch: self-update {} -> {}; handing off to {}",
             short(&u.from),
@@ -327,6 +333,10 @@ impl<'a> Scheduler<'a> {
             json!({"event": "self_update", "from": u.from, "to": to}),
         );
         let e = self_update::exec(&staged, &state);
+        if stop::requested().is_some() {
+            stopping();
+            return Ok(());
+        }
         let _ = fs::remove_file(&state);
         Err(e)
     }

@@ -6,16 +6,17 @@
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, File};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::{Command, ExitStatus, Stdio};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::{triage, Tonight};
+use crate::eval::trial::run_process;
 use crate::git::{self, Repo};
 use crate::stop;
 
@@ -35,60 +36,20 @@ fn ceiling(default: Duration) -> Duration {
         .map_or(default, Duration::from_millis)
 }
 
-/// Run `cmd` to its end, or kill it and its whole process group when a stop is requested or
-/// `ceiling` passes. A kill is an error.
-fn run_bounded(mut cmd: Command, ceiling: Duration) -> Result<Output> {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
+/// Run `cmd` to its end with its output in `log`, or kill it and its process group when a stop
+/// is requested or `ceiling` passes (both errors). Files, not pipes, so a straggler in the group
+/// can't hold anything open. The exit status and the end of the log.
+fn run_bounded(mut cmd: Command, ceiling: Duration, log: &Path) -> Result<(ExitStatus, String)> {
+    let out = File::create(log).with_context(|| format!("cannot create {}", log.display()))?;
+    cmd.stdout(out.try_clone()?).stderr(out);
+    match run_process(cmd, None, ceiling) {
+        Err(e) if e.kind() == ErrorKind::Interrupted => bail!("stopped"),
+        Err(e) => Err(e.into()),
+        Ok((Some(status), _, _)) => {
+            Ok((status, fs::read(log).map(|b| tail(&b)).unwrap_or_default()))
+        }
+        Ok((None, _, _)) => bail!("timed out after {}s", ceiling.as_secs_f32().round()),
     }
-    let mut child = cmd.spawn()?;
-    let out = drain(child.stdout.take());
-    let err = drain(child.stderr.take());
-    let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        let why = if stop::requested().is_some() {
-            "stopped"
-        } else if start.elapsed() >= ceiling {
-            "timed out"
-        } else {
-            thread::sleep(Duration::from_millis(50));
-            continue;
-        };
-        #[cfg(unix)]
-        // SAFETY: kill(2) on the process group this function made for the child.
-        unsafe {
-            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        if why == "timed out" {
-            bail!("timed out after {}s", ceiling.as_secs_f32().round());
-        }
-        bail!("{why}");
-    };
-    Ok(Output {
-        status,
-        stdout: out.join().unwrap_or_default(),
-        stderr: err.join().unwrap_or_default(),
-    })
-}
-
-fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> thread::JoinHandle<Vec<u8>> {
-    thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut p) = pipe {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
-    })
 }
 
 /// The commit this `ns` was built from: `NS_BUILD_COMMIT` in the environment, which tests set,
@@ -154,8 +115,8 @@ impl SelfUpdate {
     }
 
     /// Build `to` to `<common>/ns/self-update/ns-<to>` and check it: `--version` names `to` and
-    /// `watch --dry-run` exits 0. The new binary's path.
-    pub fn build(&self, repo: &Repo, to: &str) -> Result<PathBuf> {
+    /// `watch --dry-run` exits 0 on a copy of the night's `state`. The new binary's path.
+    pub fn build(&self, repo: &Repo, to: &str, state: &Path) -> Result<PathBuf> {
         let stage = repo.common_dir.join("ns/self-update");
         let src = stage.join("src");
         let _ = fs::remove_dir_all(&src);
@@ -168,39 +129,43 @@ impl SelfUpdate {
             .arg("--target-dir")
             .arg(stage.join("target"))
             .env("NS_BUILD_COMMIT", to);
-        let out = run_bounded(cargo, ceiling(BUILD_CEILING)).context("cargo build")?;
-        if !out.status.success() {
-            bail!("cargo build: {}: {}", out.status, tail(&out.stderr));
+        let (status, said) = run_bounded(cargo, ceiling(BUILD_CEILING), &stage.join("build.log"))
+            .context("cargo build")?;
+        if !status.success() {
+            bail!("cargo build: {status}: {said}");
         }
         let staged = stage.join(format!("ns-{to}"));
         fs::copy(stage.join("target/release/ns"), &staged)
             .with_context(|| format!("cannot copy the new ns to {}", staged.display()))?;
-        self.check(&repo.root, &staged, to)?;
+        self.check(&repo.root, &staged, to, state)?;
         Ok(staged)
     }
 
-    fn check(&self, root: &Path, staged: &Path, to: &str) -> Result<()> {
+    fn check(&self, root: &Path, staged: &Path, to: &str, state: &Path) -> Result<()> {
+        let log = staged.with_extension("log");
         let mut version = Command::new(staged);
         version.arg("--version");
-        let out = run_bounded(version, ceiling(CHECK_CEILING))
+        let (status, said) = run_bounded(version, ceiling(CHECK_CEILING), &log)
             .with_context(|| format!("{} --version", staged.display()))?;
-        let said = String::from_utf8_lossy(&out.stdout);
-        if !out.status.success() || !said.contains(to) {
+        if !status.success() || !said.contains(to) {
             bail!("the new ns --version said {:?}, not {to}", said.trim());
         }
+        // The dry run reads a copy of the state, which it consumes, so a state the new binary
+        // can't read fails the check here, not after the exec.
+        let probe = staged.with_extension("night.json");
+        fs::copy(state, &probe).with_context(|| format!("cannot copy {}", state.display()))?;
         let mut dry = Command::new(staged);
         dry.args(["watch", "--dry-run"]).current_dir(root);
         if let Some(f) = &self.factory {
             dry.arg("--factory").arg(f);
         }
-        let out = run_bounded(dry, ceiling(CHECK_CEILING))
-            .with_context(|| format!("{} watch --dry-run", staged.display()))?;
-        if !out.status.success() {
-            bail!(
-                "the new ns watch --dry-run: {}: {}",
-                out.status,
-                tail(&out.stderr)
-            );
+        dry.arg(FLAG).arg(&probe);
+        let result = run_bounded(dry, ceiling(CHECK_CEILING), &log)
+            .with_context(|| format!("{} watch --dry-run", staged.display()));
+        let _ = fs::remove_file(&probe);
+        let (status, said) = result?;
+        if !status.success() {
+            bail!("the new ns watch --dry-run: {status}: {said}");
         }
         Ok(())
     }
@@ -241,11 +206,12 @@ fn tail(stderr: &[u8]) -> String {
 }
 
 /// The night so far, which the new binary carries on from.
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(super) struct Carried {
-    /// The state file's layout. A new binary from another commit reads only its own.
-    #[serde(default)]
+    /// The state file's layout. A new binary from another commit reads only its own; a state
+    /// with no version reads as 0 and is refused. Any change to the fields below, or to
+    /// `Tonight` and `triage::Tally` inside, needs a new [`Carried::VERSION`].
     pub version: u32,
     pub deadline: Option<i64>,
     pub spent_usd: f64,
@@ -255,21 +221,6 @@ pub(super) struct Carried {
     pub finished: BTreeSet<u64>,
     pub triage: triage::Tally,
     pub tonight: Tonight,
-}
-
-impl Default for Carried {
-    fn default() -> Carried {
-        Carried {
-            version: Carried::VERSION,
-            deadline: None,
-            spent_usd: 0.0,
-            started: 0,
-            harness_fails: 0,
-            finished: BTreeSet::new(),
-            triage: triage::Tally::default(),
-            tonight: Tonight::default(),
-        }
-    }
 }
 
 impl Carried {
@@ -326,7 +277,10 @@ fn args_for(args: impl Iterator<Item = OsString>, state: &Path) -> Vec<OsString>
     out
 }
 
-/// Replace this process with `staged`, carrying the night in `state`. Returns only on failure.
+/// Replace this process with `staged`, carrying the night in `state`. Returns only on failure,
+/// which is [`std::io::ErrorKind::Interrupted`] when a stop was requested first. SIGINT and
+/// SIGTERM are held pending from the last check to the exec, so one that lands in between
+/// reaches the new `ns`, which unblocks them once its own handlers are in.
 pub(super) fn exec(staged: &Path, state: &Path) -> anyhow::Error {
     use std::io::Write;
     let _ = std::io::stdout().flush();
@@ -335,7 +289,20 @@ pub(super) fn exec(staged: &Path, state: &Path) -> anyhow::Error {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        let e = Command::new(staged).args(args).exec();
+        let mut cmd = Command::new(staged);
+        cmd.args(args);
+        // SAFETY: the closure only does pthread_sigmask(3) and an atomic load.
+        unsafe {
+            cmd.pre_exec(|| {
+                stop::block();
+                match stop::requested() {
+                    Some(_) => Err(std::io::ErrorKind::Interrupted.into()),
+                    None => Ok(()),
+                }
+            });
+        }
+        let e = cmd.exec();
+        stop::unblock();
         anyhow!("cannot exec {}: {e}", staged.display())
     }
     #[cfg(not(unix))]
@@ -393,18 +360,48 @@ mod tests {
 
     #[test]
     fn a_command_that_outlives_its_ceiling_is_killed_and_one_that_ends_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
         let mut slow = Command::new("sh");
         slow.args(["-c", "sleep 30"]);
-        let start = Instant::now();
-        let e = run_bounded(slow, Duration::from_millis(200)).unwrap_err();
+        let start = std::time::Instant::now();
+        let e = run_bounded(slow, Duration::from_millis(200), &log).unwrap_err();
         assert!(e.to_string().contains("timed out"), "{e}");
         assert!(start.elapsed() < Duration::from_secs(20));
         let mut quick = Command::new("sh");
-        quick.args(["-c", "echo out; echo err >&2; exit 3"]);
-        let o = run_bounded(quick, Duration::from_secs(30)).unwrap();
-        assert_eq!(o.status.code(), Some(3));
-        assert_eq!(String::from_utf8_lossy(&o.stdout), "out\n");
-        assert_eq!(String::from_utf8_lossy(&o.stderr), "err\n");
+        quick.args(["-c", "echo out; echo err >&2; (sleep 5 &); exit 3"]);
+        let start = std::time::Instant::now();
+        let (status, said) = run_bounded(quick, Duration::from_secs(30), &log).unwrap();
+        assert_eq!(status.code(), Some(3));
+        assert!(said.contains("out") && said.contains("err"), "{said}");
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "waited on a straggler"
+        );
+    }
+
+    #[test]
+    fn exec_holds_a_stop_pending_through_to_the_new_program() {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = Command::new("grep");
+        cmd.args(["-E", "^(SigBlk|SigPnd|ShdPnd)", "/proc/self/status"]);
+        // SAFETY: only pthread_sigmask(3) and kill(2) in the closure.
+        unsafe {
+            cmd.pre_exec(|| {
+                stop::block();
+                libc::kill(libc::getpid(), libc::SIGTERM);
+                Ok(())
+            });
+        }
+        let out = cmd.output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mask = |key: &str| {
+            let line = text.lines().find(|l| l.starts_with(key)).unwrap();
+            u64::from_str_radix(line.split_whitespace().nth(1).unwrap(), 16).unwrap()
+        };
+        let (int, term) = (1 << (libc::SIGINT - 1), 1 << (libc::SIGTERM - 1));
+        assert_eq!(mask("SigBlk") & (int | term), int | term, "{text}");
+        assert_eq!((mask("SigPnd") | mask("ShdPnd")) & term, term, "{text}");
     }
 
     #[test]

@@ -19,6 +19,7 @@ use crate::run::{self, Loaded, Outcome, RunArgs};
 
 /// The night's triage-only runs.
 #[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub(super) struct Tally {
     /// Issues given a triage-only run tonight, whatever came of it, so none is run twice.
     tried: BTreeSet<u64>,
