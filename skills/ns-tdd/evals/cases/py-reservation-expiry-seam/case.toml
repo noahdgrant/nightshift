@@ -1,4 +1,4 @@
-description = "Seeded defect (d): Warehouse.renew reads the wall clock, so `inventory renew` ignores --now. The fix needs a clock seam (renew takes `now` like every other time-dependent call); a wall-clock or sleep-based test can't pin it. Plain-words bug report, test-first fix."
+description = "Seeded defect (e): Warehouse.renew reads the wall clock, so `inventory renew` ignores --now. The fix needs a clock seam (renew takes `now` like every other time-dependent call); a wall-clock or sleep-based test can't pin it. Plain-words bug report, test-first fix."
 fixture = "py-inventory"
 # ns-tdd links to these skills by relative path (ns-contract for the quality bar, and the principles it and the bar name); ship them with it so the links resolve in the "with" arm.
 skills = ["ns-tdd", "ns-principle-test-behavior-not-implementation", "ns-principle-sequence-verifiable-units", "ns-principle-fix-root-causes", "ns-contract"]
@@ -19,7 +19,7 @@ Fix it test-first. gates: auto. Nobody is around to answer questions, so take th
 [setup]
 # Keep any .ns/ phase artifacts out of git so diff_scope only sees source and test changes.
 # renew.patch adds Warehouse.renew and the CLI renew command, with the seeded defect; see
-# evals/fixtures/README.md (d).
+# evals/fixtures/README.md (e).
 commands = [
   "mkdir -p .git/info && echo '.ns/' >> .git/info/exclude",
   "git apply ../renew.patch",
