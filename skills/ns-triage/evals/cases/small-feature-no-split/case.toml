@@ -1,0 +1,83 @@
+description = "Small, single-behaviour feature request (a NAME column in `inventory status`). Under gates: auto, triage should size it, find one shippable behaviour under the soft limit, and not split it: mark it enhancement + ready-for-agent, keep priority:low, append an Agent Brief with a Size line, file no child issues, and start one unit."
+fixture = "py-inventory"
+skills = ["ns-triage"]
+# Same skill set as bug-ready-for-agent: ns-build is not installed, so the auto hand-off stops at triage.
+extra_skills = ["ns-contract"]
+requires = []
+timeout_minutes = 15
+prompt = """
+Triage .scratch/stock-status/issues/01-show-item-name-in-status.md. gates: auto
+"""
+
+[[check]]
+type = "regex"
+path = ".scratch/stock-status/issues/01-show-item-name-in-status.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?ready-for-agent`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/stock-status/issues/01-show-item-name-in-status.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?(needs-triage|needs-define|needs-info|closed|wontfix)'
+present = false
+
+[[check]]
+type = "regex"
+path = ".scratch/stock-status/issues/01-show-item-name-in-status.md"
+pattern = '(?m)^\**Category:?\**:?\s*`?enhancement`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/stock-status/issues/01-show-item-name-in-status.md"
+pattern = '(?m)^\**Priority:?\**:?\s*`?priority:low`?\s*$'
+present = true
+
+[[check]]
+# Step 5 sized it: the Agent Brief carries a non-empty Size line.
+type = "regex"
+path = ".scratch/stock-status/issues/01-show-item-name-in-status.md"
+pattern = '(?si)#+\s*Agent Brief.*\n[*_ \t]*Size:[*_]*[ \t]*[^\s*_]'
+present = true
+
+[[check]]
+# Not split: the issue is the only Markdown file under .scratch/.
+type = "command"
+run = '''
+others=$(find .scratch -name '*.md' ! -path .scratch/stock-status/issues/01-show-item-name-in-status.md)
+echo "other issue files: ${others:-none}"
+[ -z "$others" ]
+'''
+expect_exit = 0
+
+[[check]]
+# Exactly one unit started, with brief.md at status: pass, in a worktree or, tolerated, the main checkout.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, os, re, subprocess, sys
+roots = {os.getcwd()}
+out = subprocess.run(["git", "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+roots.update(l.split(" ", 1)[1] for l in out.splitlines() if l.startswith("worktree "))
+roots.update(glob.glob(os.path.join("..", os.path.basename(os.getcwd()) + ".worktrees", "*")))
+briefs = sorted({os.path.realpath(p) for r in roots for p in glob.glob(os.path.join(r, ".ns", "*", "brief.md"))})
+print("briefs:", briefs)
+if len({os.path.basename(os.path.dirname(p)) for p in briefs}) != 1:
+    sys.exit("expected exactly one unit's brief.md")
+text = open(briefs[0], encoding="utf-8").read()
+m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+fm = dict(re.findall(r"(?m)^(\w+):[ \t]*(.*?)[ \t]*(?:#.*)?$", m.group(1))) if m else {}
+if fm.get("status") != "pass" or "Agent Brief" not in text:
+    sys.exit(f"brief.md not at status: pass with an Agent Brief: {fm}")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]
+
+[[check]]
+type = "judge"
+rubric = "Read the Agent Brief appended to .scratch/stock-status/issues/01-show-item-name-in-status.md. Pass only if: the triage records a size estimate (files or modules, new tests, rough lines) well under the soft limit and keeps the request as one unit rather than splitting it; the brief has testable acceptance criteria for the NAME column in both `status` and `status <sku>`; and it has an out-of-scope section."
+required = false
