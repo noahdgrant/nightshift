@@ -499,7 +499,7 @@ mod tests {
         assert!(!ok(d, &["merge", "-q", "--no-edit", "main"]));
         fs::write(d.join("work.txt"), "resolved\n").unwrap();
         g(d, &["add", "work.txt"]);
-        g(d, &["commit", "-q", "--no-edit"]);
+        g(d, &["commit", "-q", "-m", "resolve"]);
         let merged = g(d, &["rev-parse", "HEAD"]);
         assert!(!same_diff(d, "main", &r.rebased, &merged));
     }
