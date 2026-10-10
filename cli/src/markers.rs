@@ -246,38 +246,41 @@ pub fn describe(path: &str, r: &Region) -> String {
     }
 }
 
-/// One changed file between two commits.
-enum Change {
-    Added,
-    Deleted,
-    Modified,
+/// One changed file between two commits: its path and whether each side holds a blob. A side
+/// that is absent (`000000`) or a submodule commit (`160000`) holds no text, so no markers.
+struct Change {
+    path: String,
+    old: bool,
+    new: bool,
 }
 
-fn changes(dir: &Path, base: &str, head: &str) -> Result<Vec<(String, Change)>> {
+fn changes(dir: &Path, base: &str, head: &str) -> Result<Vec<Change>> {
     let out = git::run(
         dir,
         &[
             "--literal-pathspecs",
             "diff",
             "--no-renames",
-            "--name-status",
+            "--raw",
             "-z",
             base,
             head,
         ],
     )?;
+    let blob = |mode: Option<&str>| !matches!(mode, Some("000000" | "160000"));
     let mut parts = out.split('\0').filter(|p| !p.is_empty());
     let mut list = Vec::new();
-    while let Some(status) = parts.next() {
+    while let Some(meta) = parts.next() {
+        let mut modes = meta.trim_start_matches(':').split(' ');
+        let (old, new) = (blob(modes.next()), blob(modes.next()));
         let path = parts
             .next()
-            .ok_or_else(|| anyhow::anyhow!("unexpected git diff --name-status output"))?;
-        let change = match status.chars().next() {
-            Some('A') => Change::Added,
-            Some('D') => Change::Deleted,
-            _ => Change::Modified,
-        };
-        list.push((path.to_string(), change));
+            .ok_or_else(|| anyhow::anyhow!("unexpected git diff --raw output"))?;
+        list.push(Change {
+            path: path.to_string(),
+            old,
+            new,
+        });
     }
     Ok(list)
 }
@@ -287,35 +290,32 @@ fn changes(dir: &Path, base: &str, head: &str) -> Result<Vec<(String, Change)>> 
 /// hunks (binary, `-diff`, mode change) counts as wholly touched.
 pub fn touched_between(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
-    for (path, change) in changes(dir, base, head)? {
-        if let Some(r) = touched_file(dir, base, head, &path, change)? {
-            out.push(describe(&path, &r));
+    for change in changes(dir, base, head)? {
+        if let Some(r) = touched_file(dir, base, head, &change)? {
+            out.push(describe(&change.path, &r));
         }
     }
     Ok(out)
 }
 
 /// The region one changed file touches between two commits, if any.
-fn touched_file(
-    dir: &Path,
-    base: &str,
-    head: &str,
-    path: &str,
-    change: Change,
-) -> Result<Option<Region>> {
+fn touched_file(dir: &Path, base: &str, head: &str, change: &Change) -> Result<Option<Region>> {
+    let path = change.path.as_str();
     let show = |rev: &str| {
         git::run(
             dir,
             &["--literal-pathspecs", "show", &format!("{rev}:{path}")],
         )
     };
-    let old = match change {
-        Change::Added => String::new(),
-        _ => show(base)?,
+    let old = if change.old {
+        show(base)?
+    } else {
+        String::new()
     };
-    let new = match change {
-        Change::Deleted => String::new(),
-        _ => show(head)?,
+    let new = if change.new {
+        show(head)?
+    } else {
+        String::new()
     };
     if !has_markers(&old) && !has_markers(&new) {
         return Ok(None);
@@ -833,6 +833,98 @@ fn b() {}
             let got = touched_between(t.path(), &base, &head).unwrap();
             assert_eq!(got.len(), 1, "{got:?}");
             assert!(got[0].starts_with("f.c:"), "{got:?}");
+        }
+
+        /// A repo holding one commit, to be added as a submodule.
+        fn sub_repo() -> (tempfile::TempDir, String) {
+            let s = init();
+            write(s.path(), "s.txt", "1\n");
+            let sha = commit(s.path(), "s1");
+            (s, sha)
+        }
+
+        fn add_submodule(dir: &Path, sub: &Path) {
+            let url = sub.to_str().unwrap();
+            git_in(
+                dir,
+                &[
+                    "-c",
+                    "protocol.file.allow=always",
+                    "submodule",
+                    "add",
+                    "-q",
+                    url,
+                    "sub",
+                ],
+            );
+        }
+
+        fn bump_submodule(dir: &Path, sub: &Path) {
+            write(sub, "s.txt", "2\n");
+            let sha = commit(sub, "s2");
+            let checkout = dir.join("sub");
+            git_in(
+                &checkout,
+                &["-c", "protocol.file.allow=always", "fetch", "-q", "origin"],
+            );
+            git_in(&checkout, &["checkout", "-q", &sha]);
+        }
+
+        #[test]
+        fn a_submodule_bump_touches_nothing() {
+            let (s, _) = sub_repo();
+            let t = init();
+            write(t.path(), "f.c", FILE);
+            add_submodule(t.path(), s.path());
+            let base = commit(t.path(), "base");
+            bump_submodule(t.path(), s.path());
+            let head = commit(t.path(), "bump");
+            assert!(touched_between(t.path(), &base, &head).unwrap().is_empty());
+        }
+
+        #[test]
+        fn a_submodule_bump_beside_a_touched_region_reports_the_region() {
+            let (s, _) = sub_repo();
+            let t = init();
+            write(t.path(), "f.c", FILE);
+            add_submodule(t.path(), s.path());
+            let base = commit(t.path(), "base");
+            bump_submodule(t.path(), s.path());
+            write(t.path(), "f.c", &FILE.replace("x = 1", "x = 2"));
+            let head = commit(t.path(), "head");
+            let got = touched_between(t.path(), &base, &head).unwrap();
+            assert_eq!(got, ["f.c:2-4: limits"]);
+        }
+
+        #[test]
+        fn adding_or_removing_a_submodule_touches_nothing() {
+            let (s, _) = sub_repo();
+            let t = init();
+            write(t.path(), "k.txt", "k\n");
+            let base = commit(t.path(), "base");
+            add_submodule(t.path(), s.path());
+            let head = commit(t.path(), "add");
+            assert!(touched_between(t.path(), &base, &head).unwrap().is_empty());
+            assert!(touched_between(t.path(), &head, &base).unwrap().is_empty());
+        }
+
+        #[test]
+        fn replacing_a_marked_file_with_a_submodule_is_touched() {
+            let (s, _) = sub_repo();
+            let t = init();
+            write(t.path(), "sub", FILE);
+            let base = commit(t.path(), "base");
+            git_in(t.path(), &["rm", "-q", "sub"]);
+            add_submodule(t.path(), s.path());
+            let head = commit(t.path(), "swap");
+            assert_eq!(
+                touched_between(t.path(), &base, &head).unwrap(),
+                ["sub:2-4: limits"]
+            );
+            assert_eq!(
+                touched_between(t.path(), &head, &base).unwrap(),
+                ["sub:2-4: limits"]
+            );
         }
 
         #[test]
