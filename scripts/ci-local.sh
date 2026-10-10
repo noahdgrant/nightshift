@@ -72,6 +72,7 @@ step "cargo fmt --check" cargo fmt --manifest-path cli/Cargo.toml --check
 step "cargo clippy" cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings
 if [ "$fast" -eq 0 ]; then
   step "cargo test" cargo test --manifest-path cli/Cargo.toml
+  step "cargo test under a decoy GIT_DIR" scripts/check-git-dir-decoy.sh
 fi
 step "build ns" cargo build --manifest-path cli/Cargo.toml
 step "ns lint" "$ns" lint skills --human

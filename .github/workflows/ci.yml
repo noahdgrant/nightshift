@@ -30,6 +30,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: cargo test under a decoy GIT_DIR
+        working-directory: .
+        run: scripts/check-git-dir-decoy.sh
 
   skills-and-evals:
     name: Skills lint and eval dry-run
