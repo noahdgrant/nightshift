@@ -1744,12 +1744,13 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
     )))
 }
 
-/// Human-review regions that HEAD's changes since its merge base with `default` touch.
+/// Human-review regions that HEAD's changes since its merge base with `default` touch, counting
+/// fences at the freshly fetched tip of `default`. A failed fetch is an error, never a stale tip.
 fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
-    let _ = git::run(wt, &["fetch", "-q", "origin", default]);
-    let base = git::run(wt, &["merge-base", "HEAD", &format!("origin/{default}")])
-        .or_else(|_| git::run(wt, &["merge-base", "HEAD", default]))?;
-    markers::touched_between(wt, &base, "HEAD", None)
+    git::run(wt, &["fetch", "-q", "origin", default])?;
+    let tip = git::run(wt, &["rev-parse", "--verify", "FETCH_HEAD^{commit}"])?;
+    let base = git::run(wt, &["merge-base", "HEAD", &tip])?;
+    markers::touched_between(wt, &base, "HEAD", Some(&tip))
 }
 
 #[cfg(test)]
@@ -2055,6 +2056,82 @@ mod tests {
         assert!(marked_regions(dir.path(), "main").is_err());
         git::run(dir.path(), &["init", "-q"]).unwrap();
         assert!(marked_regions(dir.path(), "main").is_err());
+    }
+
+    /// A repo cloned from a bare `origin` whose `main` holds plain `f.c` and `g.c`.
+    fn cloned() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let t = tempfile::tempdir().unwrap();
+        let (origin, wt) = (t.path().join("origin.git"), t.path().join("wt"));
+        let g = |dir: &Path, args: &[&str]| git::run(dir, args).unwrap();
+        g(
+            t.path(),
+            &["init", "-q", "--bare", "-b", "main", "origin.git"],
+        );
+        g(t.path(), &["clone", "-q", "origin.git", "wt"]);
+        for args in [
+            &["config", "user.email", "t@example.com"][..],
+            &["config", "user.name", "t"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g(&wt, args);
+        }
+        fs::write(wt.join("f.c"), "a\nx = 1\nb\n").unwrap();
+        fs::write(wt.join("g.c"), "a\nx = 1\nb\n").unwrap();
+        g(&wt, &["add", "-A"]);
+        g(&wt, &["commit", "-q", "-m", "base"]);
+        g(&wt, &["push", "-q", "origin", "HEAD:main"]);
+        (t, origin, wt)
+    }
+
+    fn commit_all(dir: &Path, msg: &str) {
+        git::run(dir, &["add", "-A"]).unwrap();
+        git::run(dir, &["commit", "-q", "-m", msg]).unwrap();
+    }
+
+    #[test]
+    fn marked_regions_sees_a_fence_that_landed_after_the_pr_branched() {
+        let (_t, _origin, wt) = cloned();
+        git::run(&wt, &["checkout", "-q", "-b", "pr"]).unwrap();
+        fs::write(wt.join("f.c"), "a\nx = 2\nb\n").unwrap();
+        commit_all(&wt, "pr edits f.c");
+        // Spelled out at run time so this file holds no real markers.
+        let (start, end) = ("ns:human-review start", "ns:human-review end");
+        git::run(&wt, &["checkout", "-q", "-b", "fence", "main"]).unwrap();
+        fs::write(
+            wt.join("f.c"),
+            format!("a\n// {start}\nx = 1\n// {end}\nb\n"),
+        )
+        .unwrap();
+        commit_all(&wt, "fence f.c");
+        // With no fetch refspec origin/main stays at the branch point; only FETCH_HEAD sees the fence.
+        git::run(&wt, &["config", "--unset", "remote.origin.fetch"]).unwrap();
+        git::run(&wt, &["push", "-q", "origin", "fence:main"]).unwrap();
+        git::run(&wt, &["checkout", "-q", "pr"]).unwrap();
+        assert_eq!(marked_regions(&wt, "main").unwrap(), ["f.c:1-5"]);
+        fs::write(wt.join("f.c"), "a\nx = 1\nb\n").unwrap();
+        fs::write(wt.join("g.c"), "a\nx = 2\nb\n").unwrap();
+        commit_all(&wt, "pr edits only g.c");
+        assert!(marked_regions(&wt, "main").unwrap().is_empty());
+    }
+
+    #[test]
+    fn marked_regions_errors_when_the_fetch_fails() {
+        let (_t, origin, wt) = cloned();
+        assert!(marked_regions(&wt, "main").unwrap().is_empty());
+        fs::remove_dir_all(origin).unwrap();
+        let err = marked_regions(&wt, "main").unwrap_err();
+        assert!(
+            format!("{err:#}").starts_with("git fetch -q origin main failed"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn marked_regions_errors_when_head_shares_no_history_with_the_tip() {
+        let (_t, _origin, wt) = cloned();
+        git::run(&wt, &["checkout", "-q", "--orphan", "unrelated"]).unwrap();
+        commit_all(&wt, "unrelated");
+        assert!(marked_regions(&wt, "main").is_err());
     }
 
     #[test]
