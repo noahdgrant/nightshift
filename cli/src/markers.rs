@@ -72,10 +72,25 @@ pub struct Region {
     pub reason: Option<String>,
 }
 
-/// Regions in a text, read leniently so a bad file still guards its code: a nested start
-/// deepens the open region, which closes when its own end is reached, a stray end is ignored,
-/// and an unclosed start runs to the last line.
-pub fn regions(text: &str) -> Vec<Region> {
+/// What one pass over a text's markers finds.
+enum Event {
+    Closed(Region),
+    Nested { line: usize, open: usize },
+    Stray(usize),
+    Unclosed(Region),
+}
+
+/// How `scan` treats a start inside an open region.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Nesting {
+    /// The nested start deepens the open region, which closes at its own end.
+    Deepen,
+    /// The next end closes the open region.
+    Flat,
+}
+
+/// Walk the lines once. An unclosed region runs to the last line.
+fn scan(text: &str, nesting: Nesting) -> Vec<Event> {
     let mut out = Vec::new();
     let mut open: Option<(Region, usize)> = None;
     let mut last = 0;
@@ -92,22 +107,44 @@ pub fn regions(text: &str) -> Vec<Region> {
                     1,
                 ))
             }
-            (Some(Marker::Start(_)), Some((_, depth))) => *depth += 1,
+            (Some(Marker::Start(_)), Some((r, depth))) => {
+                out.push(Event::Nested {
+                    line: last,
+                    open: r.start,
+                });
+                if nesting == Nesting::Deepen {
+                    *depth += 1;
+                }
+            }
+            (Some(Marker::End), None) => out.push(Event::Stray(last)),
             (Some(Marker::End), Some((r, depth))) => {
                 *depth -= 1;
                 if *depth == 0 {
                     r.end = last;
-                    out.extend(open.take().map(|(r, _)| r));
+                    out.extend(open.take().map(|(r, _)| Event::Closed(r)));
                 }
             }
-            _ => {}
+            (None, _) => {}
         }
     }
     if let Some((mut r, _)) = open {
         r.end = last;
-        out.push(r);
+        out.push(Event::Unclosed(r));
     }
     out
+}
+
+/// Regions in a text, read leniently so a bad file still guards its code: a nested start
+/// deepens the open region, which closes when its own end is reached, a stray end is ignored,
+/// and an unclosed start runs to the last line.
+pub fn regions(text: &str) -> Vec<Region> {
+    scan(text, Nesting::Deepen)
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::Closed(r) | Event::Unclosed(r) => Some(r),
+            Event::Nested { .. } | Event::Stray(_) => None,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -118,31 +155,21 @@ pub struct MarkerError {
 
 /// Unbalanced or nested markers.
 pub fn check(text: &str) -> Vec<MarkerError> {
-    let mut errs = Vec::new();
-    let mut open: Option<usize> = None;
-    for (i, line) in text.lines().enumerate() {
-        let n = i + 1;
-        match (marker(line), open) {
-            (Some(Marker::Start(_)), Some(o)) => errs.push(MarkerError {
-                line: n,
-                message: format!("{TAG} start nested inside the region opened on line {o}"),
-            }),
-            (Some(Marker::Start(_)), None) => open = Some(n),
-            (Some(Marker::End), None) => errs.push(MarkerError {
-                line: n,
-                message: format!("{TAG} end with no start"),
-            }),
-            (Some(Marker::End), Some(_)) => open = None,
-            (None, _) => {}
-        }
-    }
-    if let Some(o) = open {
-        errs.push(MarkerError {
-            line: o,
-            message: format!("{TAG} start with no end"),
-        });
-    }
-    errs
+    scan(text, Nesting::Flat)
+        .into_iter()
+        .filter_map(|e| {
+            let (line, message) = match e {
+                Event::Closed(_) => return None,
+                Event::Nested { line, open } => (
+                    line,
+                    format!("{TAG} start nested inside the region opened on line {open}"),
+                ),
+                Event::Stray(line) => (line, format!("{TAG} end with no start")),
+                Event::Unclosed(r) => (r.start, format!("{TAG} start with no end")),
+            };
+            Some(MarkerError { line, message })
+        })
+        .collect()
 }
 
 /// One `@@ -old_start,old_len +new_start,new_len @@` hunk header.
