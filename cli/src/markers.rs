@@ -741,6 +741,17 @@ fn b() {}
         }
 
         #[test]
+        fn a_file_without_markers_is_never_touched() {
+            let t = init();
+            write(t.path(), "f.c", "a\nb\n");
+            let base = commit(t.path(), "base");
+            git_in(t.path(), &["update-index", "--chmod=+x", "f.c"]);
+            git_in(t.path(), &["commit", "-q", "-m", "mode"]);
+            let head = git::run(t.path(), &["rev-parse", "HEAD"]).unwrap();
+            assert!(touched_between(t.path(), &base, &head).unwrap().is_empty());
+        }
+
+        #[test]
         fn nul_bytes_cannot_hide_an_edit() {
             let t = init();
             write(t.path(), "g.c", &format!("\0{FILE}"));
