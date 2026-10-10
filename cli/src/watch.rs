@@ -555,11 +555,17 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 })
             })
             .collect();
+        // As in the night itself, a cleanup that can't plan doesn't stop the rest.
+        let clean = crate::clean::plan(&repo).unwrap_or_else(|e| {
+            eprintln!("ns watch: cleanup skipped: {e:#}");
+            crate::clean::Plan::default()
+        });
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "dry_run": true,
                 "requeue": requeue,
+                "clean": clean.merged.iter().map(|m| &m.unit).collect::<Vec<_>>(),
                 "queue": ready,
                 "skipped": qu.skipped,
                 "triage_pass": triage::on(fac),
@@ -610,6 +616,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             "units": tonight.units,
             "triaged": night.triage.records,
             "requeued": tonight.requeued,
+            "cleaned": tonight.cleaned,
             "stopped": stopped,
             "until": deadline.map(clock::local_iso),
             "cost_usd": night.shared.spent_usd,
@@ -630,6 +637,10 @@ struct Tonight {
     requeued: Vec<u64>,
     /// The issue taken from the queue whose unit has not ended yet.
     current: Option<u64>,
+    /// Units whose worktree and branch the night removed, their change merged.
+    cleaned: Vec<String>,
+    /// Merged units cleanup tried tonight, removed or not: each is tried once a night.
+    cleanup_tried: BTreeSet<String>,
 }
 
 /// Whether the outcome is surely the unit's own end: a merge, a split or a clean `done`. Under a
@@ -653,12 +664,20 @@ fn work(
     let fac = &loaded.fac;
     let q = &fac.queue;
     requeue_stale(repo, q, &mut tonight.requeued)?;
-    let Tonight { units, current, .. } = tonight;
+    let Tonight {
+        units,
+        current,
+        cleaned,
+        cleanup_tried,
+        ..
+    } = tonight;
     let mut started = 0u32;
     let stopped: String = 'outer: loop {
         if let Some(sig) = stop::requested() {
             break stop::name(sig).into();
         }
+        // At start and between units: units merged since go, after their records are saved.
+        cleaned.extend(crate::clean::between_units(repo, cleanup_tried));
         if max_units.is_some_and(|m| started >= m) {
             break "max_units".into();
         }

@@ -162,9 +162,11 @@ Run log: append one JSON line per event to `.git/ns/runs.jsonl` in the common gi
 
 Quality records: when a unit ends `merged`, `done` or `stuck`, `ns run` writes one record per review attempt to the `nightshift/quality` branch on `origin` and logs a `quality_record` event (see "Quality"). A unit with no review artifact adds no record. A push that fails, or a repo with no `origin`, leaves the records in the outbox and never changes the unit's outcome.
 
+Cleanup: when the merge step merged the unit's PR and its records are saved (pushed, or in the outbox), `ns run` removes the unit's worktree and its local `ns/<unit>` branch and logs a `cleanup` event. A worktree with uncommitted changes to tracked files, or a branch holding changes the merged PR head doesn't, stays. See "Cleanup".
+
 Budget: before each phase, if the cost reported so far (across the units of one `ns watch`) has reached `limits.budget_usd`, the run ends with `budget`. On a subscription the reported cost is an estimate, so the cap is notional and unset by default; `--until`, an optional `max_units`, and usage-limit pauses bound a night instead.
 
-Output: final JSON `{unit, outcome: done|merged|split|stuck|budget|paused, phase, reason, pr, cost_usd, reset_at, artifact, phases:[...]}`. A `split` names the triage phase, the archived `brief.md` as the artifact, and the reason `brief.md is split: <its first line>`. Exit 0 for done, merged or split, 1 for stuck, 2 for a usage or config error (bad definition, missing subscription login, harness not on PATH), 3 for budget, 4 for paused, 5 when another `ns run` holds the unit's run lock.
+Output: final JSON `{unit, outcome: done|merged|split|stuck|budget|paused, phase, reason, pr, cost_usd, reset_at, artifact, worktree, cleanup, phases:[...]}`. `cleanup` is null unless the unit merged; then it is `{unit, path, branch, issue, pr, removed}`, with a `reason` when the worktree stays. A `split` names the triage phase, the archived `brief.md` as the artifact, and the reason `brief.md is split: <its first line>`. Exit 0 for done, merged or split, 1 for stuck, 2 for a usage or config error (bad definition, missing subscription login, harness not on PATH), 3 for budget, 4 for paused, 5 when another `ns run` holds the unit's run lock.
 
 ### Gate
 
@@ -204,7 +206,7 @@ A phase or gate over the cap fails that attempt with "exceeded the <n> MB memory
 4. GitHub may not have registered checks on a head it just received, so the step first polls `gh api repos/{owner}/{repo}/commits/<sha>/check-runs` and `.../status` for the PR head (the one `update-branch` returned, if it ran) until either reports a check. Polls back off from 5 s to 30 s, bounded by `ci_register_timeout` minutes. None by then: `done`, needing a human merge, with reason "no CI checks registered within <n> min on PR #<pr>; needs a human merge". If the last poll's `gh api` call failed (auth, rate limit, 404) or printed something other than a count, the reason is instead "could not query CI checks on PR #<pr>: <error>; needs a human merge". Then `gh pr checks <pr> --watch`, killed after `ci_timeout_minutes` (stuck). Then `gh pr checks <pr> --json name,state,bucket,link`. No checks at all: `done`, needing a human merge. Any check not `pass` or `skipping`: back to build with the failing check names and the tail of `gh run view <id> --log-failed` as `{feedback}`, then verify, review and ship onto the same PR.
 5. `gh pr diff <pr> --name-only`. Any path matching a `human_review` glob (`**` crosses directories): `done` with reason "changes files that need human review; needs a human merge". Files that need human review cover the factory's own guardrails: CI config, the definition, the guard and merge code.
 6. Marked regions (below): HEAD is diffed against its merge base with `origin/<default>`. A changed line inside a region, in the base or the head version, or an added, removed or moved marker line: `done` with reason "changes code in a human-review region; needs a human merge (<file>:<start>-<end>: <reason>)". If the merge base can't be found, the reason says so and the unit still needs a human merge.
-7. `gh pr merge <pr> --squash --delete-branch --match-head-commit <sha>`. If `gh pr view` then reports `MERGED`, the outcome is `merged`.
+7. `gh pr merge <pr> --squash --delete-branch --match-head-commit <sha>`. If `gh pr view` then reports `MERGED`, the outcome is `merged`, and the unit is cleaned up once its quality records are saved (see "Cleanup").
 
 ### Marked regions
 
@@ -250,6 +252,8 @@ ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]
 7. On `paused`, keep `in_progress_label` and sleep until the reset time (30 minutes when unknown, then check again), then resume the same unit. If the reset is at or past `--until`, put `ready_label` back and stop cleanly.
 8. Repeat until the queue is empty, `--until` passes (no new unit starts after it), `max_units` is reached, the budget is spent, or a signal asks it to stop.
 
+At start, and again before each unit, before the triage pass, `ns watch` removes the worktrees of units whose issue has closed with their merged PR since: a PR a human merged after the unit ended `done`. It saves their quality records first and skips what `ns clean` skips (see "Cleanup"). A failure there is printed and never ends the night.
+
 `--until HH:MM` is local time, from `TZ` or the system zone, so `06:30` means 06:30 where `ns watch` runs, across DST changes. Every time `ns watch` prints for a person (`until`, `reset_at`, the "sleeping until" line) is local, in RFC 3339 form with its offset: `2026-10-09T06:30:00-04:00`. The `ts` of each event in `runs.jsonl` stays UTC (`...Z`).
 
 ### Triage pass
@@ -270,11 +274,11 @@ Under `gates = "stop"` triage only recommends and applies nothing, so the pass i
 
 Before each unit, after the fetch, `ns watch` keeps installed skills current. A unit's worktree already has the skills checked into the repo at `origin/<default>`, but a skill installed as a symlink into the main checkout (`~/.agents/skills/*`, `~/.claude/skills/*`) would otherwise run whatever the checkout held when the night began. So when any installed symlink resolves to a skill dir (one with a `SKILL.md`) in the main checkout, and that checkout is on the default branch with no changes to tracked files, `ns watch` fast-forwards it to `origin/<default>` with the checkout's git hooks off. It then reruns `ns install` for each dir of `ns-*` skills it found, so a skill added tonight is linked and a removed one is pruned. It logs all this to stderr and as a `skills_synced` event (`from`, `to`, `skills`, `relinked`) in the run log. On another branch, a detached HEAD, local changes or diverged history, it changes nothing: it prints a warning naming the reason and the skills, logs a `skills_stale` event, and runs the unit anyway. The same reason warns once, not before every unit. It never resets, stashes or switches branches. Skills installed from anywhere else, such as a consumer's nightshift checkout, are never touched.
 
-An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (unix seconds) pins the clock for tests; sleeps then advance it instead of blocking. Output: `{units:[{issue, unit, outcome, reason, pr, cost_usd}], triaged:[{issue, unit, outcome, reason, cost_usd, state}], requeued, stopped, until, cost_usd, started_with}`; `until` is null without `--until`. A triaged record's `state` lists the issue's state labels after the run (null when they couldn't be read); a paused one has `reset_at` instead, and an `error` one only `issue`, `outcome` and `reason`.
+An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (unix seconds) pins the clock for tests; sleeps then advance it instead of blocking. Output: `{units:[{issue, unit, outcome, reason, pr, cost_usd}], triaged:[{issue, unit, outcome, reason, cost_usd, state}], requeued, cleaned, stopped, until, cost_usd, started_with}`, where `cleaned` lists the units whose worktrees the night removed after a human merge; `until` is null without `--until`. A triaged record's `state` lists the issue's state labels after the run (null when they couldn't be read); a paused one has `reset_at` instead, and an `error` one only `issue`, `outcome` and `reason`.
 
 `ns watch` reads the user config and the factory definition once, at start, and every unit uses that copy. Editing or breaking either file mid-night changes nothing until the next `ns watch`. The build gate command is read at start too, so a `docs/agents/stack.md` that a fast-forward of the main checkout brings in (above) takes effect at the next `ns watch`. It logs each file's path and sha256 to stderr, and `started_with` carries the same `{config, factory}` pair of `{path, sha256}` (`sha256` is null for a missing file).
 
-`--once` takes one unit. `--dry-run` prints the ordered queue, with each issue's `priority_label` and `order_label`, and the skip reasons, then whether the triage pass runs (`triage_pass`), the triage candidates in triage order (`triage`, each with why it needs triage and its `priority_label`), their skip reasons (`triage_skipped`), and `triage_next_pass`: the candidates the next pass would take, in order. A dry run is a fresh night, so every candidate is backlog: with an issue ready, or one in `requeue`, which the night returns to the queue before its first pass, the list is empty, and with none it is every candidate, which the pass takes until one is triaged ready. `gh` and the phases get `GH_TOKEN` from `[forge.github]` in the user config (`cli/README.md`, `[forge]`). A `GH_TOKEN` already set in the environment wins, so whoever starts `ns watch` can still pick the account.
+`--once` takes one unit. `--dry-run` prints the ordered queue, with each issue's `priority_label` and `order_label`, and the skip reasons, then whether the triage pass runs (`triage_pass`), the triage candidates in triage order (`triage`, each with why it needs triage and its `priority_label`), their skip reasons (`triage_skipped`), and `triage_next_pass`: the candidates the next pass would take, in order. A dry run is a fresh night, so every candidate is backlog: with an issue ready, or one in `requeue`, which the night returns to the queue before its first pass, the list is empty, and with none it is every candidate, which the pass takes until one is triaged ready. `gh` and the phases get `GH_TOKEN` from `[forge.github]` in the user config (`cli/README.md`, `[forge]`). A `GH_TOKEN` already set in the environment wins, so whoever starts `ns watch` can still pick the account, and the units cleanup would remove (`clean`).
 
 ### Units a night didn't finish
 
@@ -292,6 +296,46 @@ On SIGINT (Ctrl-C) or SIGTERM, `ns watch` starts no new unit, triage run or phas
 Then it prints the summary with `stopped` set to `SIGINT` or `SIGTERM` and exits 128 + the signal (130 or 143). Each handler runs once: a second signal of the same kind ends `ns watch` at once, as before, without returning the issue, and the next start returns it. SIGHUP and SIGKILL aren't handled: the next `ns watch` returns that unit at start, as above.
 
 A unit stopped after ship has its own open PR, which closes the issue. The queue skips an issue an open PR closes, except a PR from the issue's own unit branch: a branch of this repo, not a fork, named `ns/<unit>` for the unit `ns run --issue <n>` would run (`<n>-<slug of the current title>`). That unit is queued again and `ns run` resumes it at the merge step.
+
+## Unit lifecycle
+
+A unit is one issue's work, from the issue to its merged change. It has the issue, a worktree `<repo>.worktrees/<unit>` on the branch `ns/<unit>`, its artifacts in the worktree's `.ns/<unit>/`, a PR, events in the run log, and quality records.
+
+1. **Queued.** Triage labels the issue `ready_label`. When `ns watch`'s triage pass does it, the triage-only run has already created the worktree and branch and written `brief.md` there.
+2. **Started.** `ns watch` swaps the label for `in_progress_label` and runs `ns run --issue <n>`. That creates the worktree from `origin/<default>`, or reuses the one an earlier run left, and runs `[worktree] setup`.
+3. **Phases.** Triage, build, verify, review and ship run in the worktree, each writing its artifact to `.ns/<unit>/`. Ship pushes `ns/<unit>` and opens the PR, whose body closes the issue.
+4. **Ended.** The unit ends `merged` (the merge step merged it), `done` (a human merges), `stuck`, `split`, `paused` or `budget`. On `merged`, `done` and `stuck`, `ns run` writes the unit's quality records.
+5. **Cleaned up.** Once the change merges and the records are saved, the worktree, its artifacts and the local branch are removed. `ns run` does it right after its own merge. `ns watch` does it at start and between units for a PR a human merged. `ns clean` does it on demand. The remote branch goes with the merge: the merge step passes `--delete-branch`, and for a human merge the repo's setting decides.
+
+After cleanup, the run log and transcripts under the git common dir, the quality records on `nightshift/quality`, the PR and the issue remain. A unit whose issue is still open keeps its worktree, so the next run resumes it: a stuck unit, a paused or interrupted one, parked work, or a triage-only run that ended needs-info or needs-define.
+
+### Cleanup
+
+```
+ns clean [--dry-run]
+```
+
+A unit's worktree goes when its change merged. For `ns run`, that is its own merge step reporting `MERGED`. For `ns watch` and `ns clean`, all of these must hold:
+
+- The unit id starts with an issue number (`142-uart-timeout`), and that issue is closed.
+- `pr.md` (or its newest archived copy) names a PR, and `gh pr view` reports it `MERGED`.
+- The PR's body closes the issue (`Closes #n`, or fixes or resolves), and its head branch is `ns/<unit>`.
+
+Its quality records are saved first, with outcome `merged`, all of the sweep's units in one push. A record that lands in the outbox counts as saved: the outbox keeps it until the next push. A record that can't be saved at all keeps the worktree, and so does a review artifact that can't be read (no frontmatter, say), since no record holds it.
+
+Cleanup never removes:
+
+- A worktree with uncommitted changes to tracked files. Untracked and ignored files, such as build output and `.ns/`, go with the worktree.
+- A worktree whose HEAD is not on `ns/<unit>`: detached, or on another branch.
+- A worktree whose branch holds changes the merged PR's head doesn't. The head holds the branch when it is the branch's tip, descends from it (`update-branch` merged the base in), or carries the same change against the default branch, whitespace included (`git patch-id --verbatim`, as after a rebase). Currency ignores whitespace; cleanup doesn't, because a re-indented line can change what code does. A head missing locally is fetched from `refs/pull/<n>/head` first, with the same timeouts as the quality push. One that still isn't there keeps the worktree.
+- A unit whose run lock (`ns-run-<unit>.lock`) a live `ns run`, or another cleanup, holds. Nothing is recorded for it either. `ns watch` and `ns clean` take each unit's run lock before they record it, and hold it while they check the worktree again and remove it, so no run starts on the unit meanwhile. `ns run` already holds it when it cleans its own unit. Only `git branch -D` runs under the worktree lock, since it edits `.git/config` as `git worktree add` does; deleting the tree doesn't hold up other units' worktrees.
+- The main checkout, or a worktree the command runs from.
+
+`ns watch` tries each merged unit once a night. One that stays, say because `git worktree remove` failed, is tried again by the next night or by `ns clean`, so its records are written once a night at most.
+
+Removal is `git worktree remove --force` (a locked worktree still refuses), then `git branch -D ns/<unit>`. Each attempt logs a `cleanup` event with `unit`, `path`, `branch`, `issue`, `pr`, `removed`, `reason` when it stayed, `error` when a git command failed, and `by` (`run`, `watch` or `clean`).
+
+`ns clean` reads every worktree on an `ns/` branch, the main checkout included, and prints `{ok, command, dry_run, status, removed, kept, records}`. `kept` lists every unit that stays, with its reason. `records` is the quality write's event. `status` is `cleaned`, `planned` (a dry run with something to remove), or `nothing-to-clean`, so a rerun is safe. `--dry-run` prints `planned` instead of `removed` and writes nothing: no record, no event, no removal. It still reads issues and PRs with `gh` and may fetch a PR head. It exits 1 when a removal failed.
 
 ## Quality
 
@@ -329,7 +373,7 @@ These are heuristics. A finding's severity comes from its `C`, `I` or `S` id pre
 
 ### Where the history lives
 
-Worktrees get removed, so the history lives in the repo, on an orphan branch `nightshift/quality` on `origin` (D39). It holds one file, `records.jsonl`, with one JSON line per review attempt. When a unit ends `merged`, `done` or `stuck`, `ns run` writes the unit's records and pushes them. Each record has the unit, issue, PR, outcome, the attempt's status, `updated:`, local day, fix cycles and change size, and each finding's id, severity, axes, scope, cycle, status and relative location. Finding titles are left out. Paths are relative, and a record holding an absolute path is never written. A location with one is dropped.
+Worktrees get removed once their change merges (see "Cleanup"), so the history lives in the repo, on an orphan branch `nightshift/quality` on `origin` (D39). It holds one file, `records.jsonl`, with one JSON line per review attempt. When a unit ends `merged`, `done` or `stuck`, `ns run` writes the unit's records and pushes them. Each record has the unit, issue, PR, outcome, the attempt's status, `updated:`, local day, fix cycles and change size, and each finding's id, severity, axes, scope, cycle, status and relative location. Finding titles are left out. Paths are relative, and a record holding an absolute path is never written. A location with one is dropped.
 
 `ns run` fetches the branch, appends on its tip and pushes. If origin rejects the push because another writer pushed first, it fetches and tries again, up to 3 more times. Any other failure (no `origin`, no access, a hook that declines the push, the network) goes straight to the outbox, as does a fourth lost race. The records wait in `<git-common-dir>/ns/quality-outbox.jsonl`, and the next `ns run` or `ns quality import` pushes them. A unit never fails because its record didn't push. The branch is data: `ns` writes it unattended, outside `human_review` and the PR flow. Commits are built with git plumbing, so writing one never touches a working tree, the index or a local branch. These git calls never prompt: credential prompts are off, ssh runs in batch mode with connect and keepalive timeouts unless you set your own ssh command, and an HTTP transfer under 1000 bytes a second for 60 seconds fails. That matters because a write holds a lock on the outbox while it talks to `origin`.
 
@@ -473,11 +517,17 @@ A `phase` event has the attempt and a `transcript` path for the phase's full out
 ns quality --since "$(date -u -d "@$(date -d 'yesterday 22:00' +%s)" +%FT%TZ)"
 ```
 
+The summary's `cleaned` lists the units whose worktrees the night removed after a human merged their PR; a unit the merge step merged was cleaned by its own run. Each attempt is a `cleanup` event, and one that stayed carries its `reason`:
+
+```bash
+jq -r 'select(.event == "cleanup") | [.unit, .removed, .reason // ""] | @tsv' .git/ns/runs.jsonl
+```
+
 On the tracker, a merged unit's issue is closed. Under `merge.policy = "human"`, a unit that ended `done` has `done_label` (`status:in-review` by default) and an open PR for you to merge. A stuck unit, or a `done` that needs a human merge, has `stuck_label` (`status:ready-for-human` by default) and a comment with the reason and the last artifact.
 
 ### Resuming a unit
 
-A unit's worktree, branch and `.ns/<unit>/` artifacts stay after it stops, so it resumes where the state table says.
+A unit's worktree, branch and `.ns/<unit>/` artifacts stay after it stops, so it resumes where the state table says. They go only once its change merges (see "Cleanup").
 
 - **Paused on a usage limit.** `ns watch` sleeps until the limit resets and resumes the same unit. If the reset falls at or after `--until`, it returns the issue to the ready label, and the next night picks it up. To resume it sooner, after the limit resets, run `ns run --issue <n>` in the checkout. Do that only when no `ns watch` is running: while one sleeps on the limit it holds no run lock, so nothing stops two runs working the same unit. `ns run` changes no labels, so set the issue's label yourself afterwards.
 - **Interrupted by a stop.** The issue is back on the ready label. The next run runs the cut-short phase again, and what that phase had written is in `.ns/<unit>/history/<artifact>-interrupted-<n>.md`.

@@ -71,6 +71,44 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
+/// A git command for `root` that never prompts for credentials, for work `ns` does unattended.
+pub fn unattended(root: &Path, args: &[&str]) -> Command {
+    let mut c = command();
+    c.arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .stdin(Stdio::null());
+    c
+}
+
+/// A transfer that moves fewer bytes a second than this, for `LOW_SPEED_SECS`, fails.
+const LOW_SPEED_BYTES: &str = "1000";
+const LOW_SPEED_SECS: &str = "60";
+/// ssh that never prompts and gives up on a dead connection: 30 s to connect, and about a
+/// minute of a server that stops answering.
+pub const SSH: &str =
+    "ssh -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4";
+
+/// [`unattended`] for a command that talks to `origin`, which must end even when origin
+/// doesn't answer: a stalled HTTP transfer fails, and ssh runs in batch mode with timeouts
+/// ([`SSH`]) unless the user chose an ssh command (`GIT_SSH_COMMAND`, `GIT_SSH` or
+/// `core.sshCommand`).
+pub fn net(root: &Path, args: &[&str]) -> Command {
+    let mut c = unattended(root, args);
+    c.env("GIT_HTTP_LOW_SPEED_LIMIT", LOW_SPEED_BYTES)
+        .env("GIT_HTTP_LOW_SPEED_TIME", LOW_SPEED_SECS);
+    let chosen = ["GIT_SSH_COMMAND", "GIT_SSH"]
+        .iter()
+        .any(|v| std::env::var_os(v).is_some())
+        || ok(root, &["config", "core.sshCommand"]);
+    if !chosen {
+        c.env("GIT_SSH_COMMAND", SSH);
+    }
+    c
+}
+
 /// Run git and report only whether it succeeded.
 /// Short shas may differ in length: compare by prefix.
 pub fn same_sha(a: &str, b: &str) -> bool {
@@ -88,8 +126,18 @@ pub fn ok(cwd: &Path, args: &[&str]) -> bool {
 }
 
 /// The `git patch-id` of `sha`'s changes since its merge base with `base`. `None` when either
-/// is not a commit here, or the diff is empty.
+/// is not a commit here, or the diff is empty. Whitespace is ignored.
 pub fn diff_id(cwd: &Path, base: &str, sha: &str) -> Option<String> {
+    patch_id(cwd, base, sha, false)
+}
+
+/// [`diff_id`] with whitespace counted (`git patch-id --verbatim`): a re-indented line is a
+/// different change. `None` as well when git is too old for `--verbatim`.
+pub fn exact_diff_id(cwd: &Path, base: &str, sha: &str) -> Option<String> {
+    patch_id(cwd, base, sha, true)
+}
+
+fn patch_id(cwd: &Path, base: &str, sha: &str, verbatim: bool) -> Option<String> {
     if sha.is_empty() || sha.starts_with('-') || base.starts_with('-') {
         return None;
     }
@@ -104,7 +152,8 @@ pub fn diff_id(cwd: &Path, base: &str, sha: &str) -> Option<String> {
     let mut child = command()
         .arg("-C")
         .arg(cwd)
-        .args(["patch-id", "--stable"])
+        // `--verbatim` is `--stable` with whitespace kept; git refuses the two together.
+        .args(["patch-id", if verbatim { "--verbatim" } else { "--stable" }])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

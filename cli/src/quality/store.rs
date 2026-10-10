@@ -16,46 +16,12 @@ pub const FILE: &str = "records.jsonl";
 pub const TRACKING: &str = "refs/remotes/origin/nightshift/quality";
 /// Pushes retried after the first one loses a race to another writer.
 pub const RETRIES: u32 = 3;
-/// A network command that moves fewer bytes a second than this, for `LOW_SPEED_SECS`, fails.
-const LOW_SPEED_BYTES: &str = "1000";
-const LOW_SPEED_SECS: &str = "60";
-/// ssh that never prompts and gives up on a dead connection: 30 s to connect, and about a
-/// minute of a server that stops answering.
-const SSH: &str =
-    "ssh -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4";
-
 pub fn outbox(common: &Path) -> PathBuf {
     common.join("ns").join("quality-outbox.jsonl")
 }
 
-/// A git command that never prompts for credentials: `ns` writes the branch unattended.
-fn cmd(root: &Path, args: &[&str]) -> Command {
-    let mut c = git::command();
-    c.arg("-C")
-        .arg(root)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
-        .stdin(Stdio::null());
-    c
-}
-
-/// [`cmd`] for a command that talks to `origin`: a stalled HTTP transfer fails, and ssh runs
-/// in batch mode with timeouts ([`SSH`]) unless the user chose an ssh command (`GIT_SSH_COMMAND`, `GIT_SSH` or
-/// `core.sshCommand`). `publish` holds the outbox lock across these calls, so they must end.
-fn net(root: &Path, args: &[&str]) -> Command {
-    let mut c = cmd(root, args);
-    c.env("GIT_HTTP_LOW_SPEED_LIMIT", LOW_SPEED_BYTES)
-        .env("GIT_HTTP_LOW_SPEED_TIME", LOW_SPEED_SECS);
-    let chosen = ["GIT_SSH_COMMAND", "GIT_SSH"]
-        .iter()
-        .any(|v| std::env::var_os(v).is_some())
-        || git::ok(root, &["config", "core.sshCommand"]);
-    if !chosen {
-        c.env("GIT_SSH_COMMAND", SSH);
-    }
-    c
-}
+// `publish` holds the outbox lock across its network calls, so they must end (git::net).
+use git::{net, unattended as cmd};
 
 fn fail(args: &[&str], stderr: &[u8]) -> anyhow::Error {
     anyhow::anyhow!(
@@ -623,7 +589,7 @@ mod tests {
             .iter()
             .any(|v| std::env::var_os(v).is_some());
         if !inherited {
-            assert_eq!(env(&c, "GIT_SSH_COMMAND").as_deref(), Some(SSH));
+            assert_eq!(env(&c, "GIT_SSH_COMMAND").as_deref(), Some(git::SSH));
         }
         g(&s.repo, &["config", "core.sshCommand", "ssh -i key"]);
         let c = net(&s.repo, &["fetch"]);
