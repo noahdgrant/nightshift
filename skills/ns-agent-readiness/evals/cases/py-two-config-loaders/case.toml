@@ -1,0 +1,72 @@
+description = "The overlay seeds two live ways to read inventory.toml (inventory.config.load_config with tomllib, inventory.settings.Settings parsing lines by hand), both called from cli.py, and a rule held only by a comment (every mutating command must be listed in cli.MUTATING or its changes are never saved). The tracker caps audit issues at 1. Under gates: auto the audit writes a ranked report naming both loaders and the comment-only rule, files exactly one needs-triage issue in .scratch/, and changes no code."
+fixture = "py-inventory"
+skills = ["ns-agent-readiness"]
+extra_skills = [
+  "ns-contract",
+  "ns-principle-pave-the-road",
+  "ns-principle-encode-lessons-in-structure",
+  "ns-principle-migrate-callers-then-delete-legacy-apis",
+]
+requires = ["python"]
+timeout_minutes = 20
+prompt = """
+Run an agent-readiness audit of this repo. gates: auto. Nobody is around to answer questions.
+"""
+
+[setup]
+commands = ["mkdir -p .git/info && echo '.ns/' >> .git/info/exclude"]
+
+[[check]]
+# One report, with every finding carrying a strength label; one finding names both loaders,
+# and one names the comment-only MUTATING rule.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, re, sys
+reports = glob.glob(".ns/agent-readiness/*/report.md")
+if len(reports) != 1:
+    sys.exit(f"expected one report, found {reports}")
+text = open(reports[0], encoding="utf-8").read()
+findings = re.split(r"(?m)^###\s+(?=\d+\.)", text)[1:]
+if len(findings) < 2:
+    sys.exit(f"expected two or more ranked findings, found {len(findings)}")
+labels = ("Strong", "Worth exploring", "Speculative")
+for f in findings:
+    if not re.search(r"(?mi)strength:?\**:?\s*\**(" + "|".join(labels) + ")", f):
+        sys.exit("finding without a strength label: " + f.splitlines()[0])
+if not any("config.py" in f and "settings.py" in f for f in findings):
+    sys.exit("no finding names both config loaders")
+if not any("MUTATING" in f for f in findings):
+    sys.exit("no finding names the comment-only MUTATING rule")
+print(f"ok: {len(findings)} findings in {reports[0]}")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# The cap from issue-tracker.md: exactly one needs-triage issue, with a category.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, re, sys
+issues = [p for p in glob.glob(".scratch/**/*.md", recursive=True) if "/issues/" in p]
+print("issues:", issues)
+if len(issues) != 1:
+    sys.exit(f"expected exactly one filed issue (cap 1), found {len(issues)}")
+text = open(issues[0], encoding="utf-8").read()
+if not re.search(r"(?m)^\**Status:?\**:?\s*`?needs-triage`?\s*$", text):
+    sys.exit("issue is not at Status: needs-triage")
+if not re.search(r"(?m)^\**Category:?\**:?\s*`?(bug|enhancement)`?\s*$", text):
+    sys.exit("issue has no bug or enhancement category")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**"]
+
+[[check]]
+type = "judge"
+rubric = "Does the report rank the two config loaders as a Strong finding near the top, say which loader to keep and that callers migrate to it, and put the fix for the MUTATING comment at a rung above a comment (a test, a lint, or a structure that makes forgetting impossible)? Is the one filed issue the top-ranked finding?"
+required = false
