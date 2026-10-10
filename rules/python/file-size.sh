@@ -13,16 +13,16 @@ for path in "$@"; do
   if [ -f "$path" ]; then
     printf '%s\n' "$path"
   elif git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git -C "$path" -c core.quotePath=false ls-files -co --exclude-standard -- '*.py' | sed "s|^|${path%/}/|"
+    git -C "$path" ls-files -z -co --exclude-standard -- '*.py' | tr '\0' '\n' | sed "s|^|${path%/}/|"
   else
     find "$path" -name '*.py' -not -path '*/.*'
   fi
 done | while IFS= read -r file; do
   [ -f "$file" ] || continue
-  awk -v file="$file" '
+  FILE=$file awk '
     /[^[:space:]]/ { last = NR }
     END {
       if (last > 1000)
-        printf "%s:%d:1: error[file-size]: file is past 1000 lines; split it\n", file, last
-    }' "$file"
+        printf "%s:%d:1: error[file-size]: file is past 1000 lines; split it\n", ENVIRON["FILE"], last
+    }' <"$file"
 done

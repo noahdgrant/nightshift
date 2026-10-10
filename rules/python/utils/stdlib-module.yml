@@ -1,5 +1,7 @@
 # Python's public standard library modules (no leading _): the names in sys.stdlib_module_names
-# of Python 3.12, kept by hand. A later Python that adds a module needs it added here.
+# of Python 3.12, kept by hand. tests/run.sh imports every such name of the running Python
+# (tests/examples/dependency-allowlist/make.sh), so it fails on a missing one, or on one a
+# later Python adds.
 # Matches an import's dotted name whose top-level package is one of them.
 id: stdlib-module
 language: python

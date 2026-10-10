@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Check each rule of the Python pack against its examples in tests/examples/<rule>/:
 # each fail*.py must give a finding for <rule>, and each pass*.py no finding at all.
-# A rule directory with a make.sh has it write its examples into a temp directory,
+# A rule directory with a make.sh also has it write examples into a temp directory,
 # for examples too long to commit.
 #
 #   rules/python/tests/run.sh
@@ -50,19 +50,25 @@ failed=0
 checked=0
 for dir in "$pack"/tests/examples/*/; do
   rule=$(basename "$dir")
-  src=$dir
+  srcs=("$dir")
   if [ -e "$dir/make.sh" ]; then
-    src="$tmp/$rule"
-    mkdir -p "$src"
-    "$dir/make.sh" "$src"
+    srcs+=("$tmp/$rule")
+    mkdir -p "$tmp/$rule"
+    "$dir/make.sh" "$tmp/$rule"
   fi
-  for example in "$src"/fail*.py "$src"/pass*.py; do
-    [ -e "$example" ] || {
-      echo "FAIL $rule: no $(basename "$example") example" >&2
+  for kind in fail pass; do
+    found=0
+    for src in "${srcs[@]}"; do
+      for example in "$src"/"$kind"*.py; do
+        [ -e "$example" ] || continue
+        found=1
+        check_example "$pack" "$rule" "$example"
+      done
+    done
+    [ "$found" -eq 1 ] || {
+      echo "FAIL $rule: no $kind*.py example" >&2
       failed=1
-      continue
     }
-    check_example "$pack" "$rule" "$example"
   done
   checked=$((checked + 1))
 done
@@ -108,7 +114,7 @@ git_as() { git -c user.name=t -c user.email=t@example.com "$@"; }
 for mode in plain git; do
   dir="$tmp/size-$mode"
   mkdir -p "$dir/.hidden"
-  printf '%s\n' "$long" | tee "$dir/long.py" "$dir/é.py" >"$dir/.hidden/long.py"
+  printf '%s\n' "$long" | tee "$dir/long.py" "$dir/é.py" "$dir/ sp ace.py" "$dir/back\\slash.py" >"$dir/.hidden/long.py"
   if [ "$mode" = git ]; then
     git -C "$dir" init -q
     echo '.hidden/' >"$dir/.gitignore"
@@ -121,7 +127,7 @@ for mode in plain git; do
     rm "$dir/deleted.py"
   fi
   out=$("$pack/file-size.sh" "$dir" 2>&1)
-  for want in long.py é.py; do
+  for want in long.py é.py ' sp ace.py' 'back\slash.py'; do
     grep -qF "$dir/$want:1001:1: error[file-size]" <<<"$out" || {
       printf 'FAIL file-size: %s directory gave no %s finding:\n%s\n' "$mode" "$want" "$out" >&2
       failed=1
@@ -148,6 +154,12 @@ grep -qF "$dir/long.py:1001:1: error[file-size]" <<<"$out" && ! grep -qF "//" <<
 out=$(cd "$dir" && "$pack/file-size.sh" 2>&1)
 grep -qF "./long.py:1001:1: error[file-size]" <<<"$out" && ! grep -qF "//" <<<"$out" || {
   printf 'FAIL file-size: no argument gave:\n%s\n' "$out" >&2
+  failed=1
+}
+# A relative file name starts its line in the loop, so its leading space must survive.
+out=$(cd "$dir" && "$pack/file-size.sh" ' sp ace.py' 2>&1)
+grep -qxF " sp ace.py:1001:1: error[file-size]: file is past 1000 lines; split it" <<<"$out" || {
+  printf 'FAIL file-size: a file name with a leading space gave:\n%s\n' "$out" >&2
   failed=1
 }
 
