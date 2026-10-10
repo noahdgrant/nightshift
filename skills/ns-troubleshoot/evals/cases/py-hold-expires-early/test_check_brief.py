@@ -166,7 +166,11 @@ class CheckBriefTest(unittest.TestCase):
         root = pathlib.Path(_tmp.name) / "zero-exit"
         seed(root)
         (root / "src" / "inventory" / "__main__.py").write_text(
-            "import sys\nprint(\"inventory: error: reservation 'R0001' has expired\", file=sys.stderr)\n",
+            "import sys\n"
+            "if 'reserve' in sys.argv:\n"
+            "    print('R0001: 4 x BOLT-M6 until 2026-03-02T09:05:30')\n"
+            "else:\n"
+            "    print(\"inventory: error: reservation 'R0001' has expired\", file=sys.stderr)\n",
             encoding="utf-8",
         )
         self.assertIn("repro ran red", check(good(), root))
@@ -232,7 +236,7 @@ class CheckBriefTest(unittest.TestCase):
     def test_chained_echo_and_false_on_one_line_fails(self):
         text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
             ERROR_LINE,
-            "python3 -m inventory --state inv.json status"
+            "python3 -m inventory --state inv.json --now 2026-03-02T09:04:50 status"
             "; echo \"inventory: error: reservation 'R0001' has expired\" >&2; false\n" + ERROR_LINE,
         )
         self.assertIn("repro ran red", check(text))
@@ -244,6 +248,7 @@ class CheckBriefTest(unittest.TestCase):
             "fulfil R0001 \"inventory: error: reservation 'R0001' has expired\"",
             "hasexpired",
             "reserve \"x has expired\" 1",
+            "reserve \"x 'R0001' has expired\" 1",
         )
         for args in echoes:
             with self.subTest(args=args):
@@ -260,7 +265,7 @@ class CheckBriefTest(unittest.TestCase):
             "import sys\nsys.exit(\"inventory: error: reservation 'R0001' has expired\")\n", encoding="utf-8"
         )
         text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
-            ERROR_LINE, "python3 -m inventory_shadow\n" + ERROR_LINE
+            ERROR_LINE, "python3 -m inventory_shadow --now 2026-03-02T09:04:50\n" + ERROR_LINE
         )
         self.assertIn("repro ran red", check(text, root))
 
@@ -274,6 +279,38 @@ class CheckBriefTest(unittest.TestCase):
     def test_different_inventory_error_with_nonzero_exit_fails(self):
         text = good().replace(
             "python3 -m inventory --state inv.json --now 2026-03-02T09:00:30 add-item BOLT-M6 Bolt\n", ""
+        )
+        self.assertIn("repro ran red", check(text))
+
+    def test_fulfil_past_the_printed_expiry_fails(self):
+        for now in ("09:06:00", "09:05:30"):
+            with self.subTest(now=now):
+                self.assertIn("repro ran red", check(good().replace("09:05:10 fulfil", f"{now} fulfil")))
+
+    def test_fulfil_on_the_wall_clock_fails(self):
+        self.assertIn("repro ran red", check(good().replace("--now 2026-03-02T09:05:10 fulfil", "fulfil")))
+
+    def test_sub_second_clock_passes(self):
+        text = good().replace("09:00:30", "09:00:00.500000").replace("09:05:10", "09:05:00.200000")
+        self.assertEqual(check(text), [])
+
+    def test_now_written_with_equals_passes(self):
+        self.assertEqual(check(good().replace("--now ", "--now=")), [])
+
+    def test_state_path_echoing_the_expired_text_fails(self):
+        text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
+            ERROR_LINE,
+            "python3 -m inventory --state 'reservation R0001 has expired/s.json' --now 2026-03-02T09:04:50 add-item A B\n"
+            "python3 -m inventory --state 'reservation R0001 has expired/../src/inventory/models.py' --now 2026-03-02T09:04:50 status\n"
+            + ERROR_LINE,
+        )
+        self.assertIn("repro ran red", check(text))
+
+    def test_inventory_named_after_another_command_is_not_replayed(self):
+        text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
+            ERROR_LINE,
+            "python3 -c \"import sys; sys.exit(\\\"inventory: error: reservation 'R0001' has expired\\\")\" "
+            "--now 2026-03-02T09:04:50 python3 -m inventory\n" + ERROR_LINE,
         )
         self.assertIn("repro ran red", check(text))
 

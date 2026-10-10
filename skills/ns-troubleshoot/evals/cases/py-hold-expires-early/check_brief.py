@@ -7,10 +7,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 
 REPLAY_TIMEOUT = 30
 EXPIRED = r"inventory: error: .*expired"
-RESERVATION_EXPIRED = re.compile(r"inventory: error: reservation \S+ has expired")
+RESERVATION_EXPIRED = re.compile(r"inventory: error: reservation '(\S+)' has expired")
+RESERVED_UNTIL = re.compile(r"(\S+): .* until (\S+)")
 REPLAYABLE = re.compile(r"python3 -m inventory(?:\s|$)")
 
 
@@ -51,9 +53,24 @@ def stays_inside(argv):
     return True
 
 
+def clock(argv):
+    for flag, value in zip(argv, argv[1:]):
+        if flag == "--now":
+            return value
+    return next((a.removeprefix("--now=") for a in argv if a.startswith("--now=")), None)
+
+
+def before(now, expiry):
+    try:
+        return datetime.fromisoformat(now) < datetime.fromisoformat(expiry)
+    except (TypeError, ValueError):
+        return False
+
+
 def replays_red(commands, root):
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(os.path.join(root, "src"), os.path.join(tmp, "src"))
+        expiries = {}
         env = {"PATH": os.environ.get("PATH", os.defpath), "PYTHONPATH": "src", "HOME": tmp}
         for command in commands:
             if not REPLAYABLE.match(command):
@@ -66,15 +83,17 @@ def replays_red(commands, root):
                 continue
             proc = subprocess.Popen(
                 argv, cwd=tmp, env=env, text=True,
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
             )
             try:
-                _, err = proc.communicate(timeout=REPLAY_TIMEOUT)
+                out, err = proc.communicate(timeout=REPLAY_TIMEOUT)
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.communicate()
                 return False
-            if proc.returncode != 0 and RESERVATION_EXPIRED.match(err):
+            expiries.update(RESERVED_UNTIL.findall(out))
+            expired = RESERVATION_EXPIRED.match(err)
+            if proc.returncode != 0 and expired and before(clock(argv), expiries.get(expired.group(1))):
                 return True
     return False
 
@@ -87,7 +106,6 @@ def failures(text, root):
     route = re.search(r"(?im)^\**Route:\**[ \t]*(ns-[a-z-]+)", text)
     repro = section(text, "repro")
     cause = section(text, "root cause")
-    pinned_seconds = re.search(r"--now[ =]\S*T\d\d:\d\d:(?!00)\d\d", repro) is not None
     checks = {
         "phase": fm.get("phase") == "troubleshoot",
         "status": fm.get("status") == "pass",
@@ -96,7 +114,6 @@ def failures(text, root):
         "repro body": repro != "",
         "repro holds a command": re.search(r"python3? -m inventory", repro) is not None,
         "repro ran red": re.search(r"(?m)^\W*" + EXPIRED, repro) is not None
-        and pinned_seconds
         and replays_red(fence_lines(repro), root),
         "root cause body": cause != "",
         "root cause names expires_at": "expires_at" in cause,
