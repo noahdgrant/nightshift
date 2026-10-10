@@ -50,6 +50,8 @@ jobs:
         run: cli/target/debug/ns lint skills --human
       - name: Check human-review markers
         run: cli/target/debug/ns check-markers --human
+      - name: Rules check (new violations only; a no-op without a rules row in docs/agents/stack.md)
+        run: cli/target/debug/ns rules check --human
       - name: Eval dry-run (validates every case and fixture, calls no model)
         run: |
           cfg="$RUNNER_TEMP/ns-config.toml"
