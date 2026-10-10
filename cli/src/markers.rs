@@ -2,10 +2,11 @@
 //! followed by `: <reason>`) and an end marker (`ns:human-review end`), in any comment syntax. A merge that changes a line inside one needs a
 //! human, and `ns check-markers` rejects unbalanced or nested markers.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::json;
 
@@ -13,6 +14,58 @@ use crate::error::SfError;
 use crate::git;
 
 const TAG: &str = "ns:human-review";
+
+#[cfg(test)]
+thread_local! {
+    /// Git processes started on this thread, so tests can bound them.
+    static SPAWNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `git::run` in `dir`, counted in tests.
+fn git(dir: &Path, args: &[&str]) -> Result<String> {
+    #[cfg(test)]
+    SPAWNS.with(|c| c.set(c.get() + 1));
+    git::run(dir, args)
+}
+
+/// Repo-root paths of the files at `rev` that hold a marker, from one `git grep` for the whole
+/// tree. Exit 1 means no match. git grep reports an unreadable blob only on stderr, with exit 0
+/// or 1, so any stderr output is an error too.
+fn marked_at(dir: &Path, rev: &str) -> Result<HashSet<String>> {
+    #[cfg(test)]
+    SPAWNS.with(|c| c.set(c.get() + 1));
+    let out = git::command()
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "--no-literal-pathspecs",
+            "grep",
+            "--full-name",
+            "-l",
+            "-z",
+            "-F",
+            "-e",
+            TAG,
+        ])
+        .args([rev, "--", ":(top)"])
+        .output()
+        .context("failed to run git; is it installed and on PATH?")?;
+    if !out.stderr.is_empty() || !matches!(out.status.code(), Some(0 | 1)) {
+        anyhow::bail!(
+            "git grep {TAG} {rev} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let prefix = format!("{rev}:");
+    String::from_utf8_lossy(&out.stdout)
+        .split_terminator('\0')
+        .map(|p| {
+            p.strip_prefix(&prefix)
+                .map(String::from)
+                .ok_or_else(|| anyhow::anyhow!("unexpected git grep output: {p}"))
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Marker {
@@ -255,7 +308,7 @@ struct Change {
 }
 
 fn changes(dir: &Path, base: &str, head: &str) -> Result<Vec<Change>> {
-    let out = git::run(
+    let out = git(
         dir,
         &[
             "--literal-pathspecs",
@@ -289,8 +342,13 @@ fn changes(dir: &Path, base: &str, head: &str) -> Result<Vec<Change>> {
 /// failure is an error, never "nothing touched". A changed file with markers whose diff shows no
 /// hunks (binary, `-diff`, mode change) counts as wholly touched.
 pub fn touched_between(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> {
+    let changes = changes(dir, base, head)?;
+    let (old, new) = (marked_at(dir, base)?, marked_at(dir, head)?);
     let mut out = Vec::new();
-    for change in changes(dir, base, head)? {
+    for change in changes {
+        if !old.contains(&change.path) && !new.contains(&change.path) {
+            continue;
+        }
         if let Some(r) = touched_file(dir, base, head, &change)? {
             out.push(describe(&change.path, &r));
         }
@@ -302,7 +360,7 @@ pub fn touched_between(dir: &Path, base: &str, head: &str) -> Result<Vec<String>
 fn touched_file(dir: &Path, base: &str, head: &str, change: &Change) -> Result<Option<Region>> {
     let path = change.path.as_str();
     let show = |rev: &str| {
-        git::run(
+        git(
             dir,
             &["--literal-pathspecs", "show", &format!("{rev}:{path}")],
         )
@@ -317,10 +375,7 @@ fn touched_file(dir: &Path, base: &str, head: &str, change: &Change) -> Result<O
     } else {
         String::new()
     };
-    if !has_markers(&old) && !has_markers(&new) {
-        return Ok(None);
-    }
-    let diff = git::run(
+    let diff = git(
         dir,
         &[
             "--literal-pathspecs",
@@ -696,6 +751,7 @@ fn b() {}
 
     mod repo {
         use super::*;
+        use std::cell::Cell;
         use std::fs;
 
         fn git_in(dir: &Path, args: &[&str]) {
@@ -726,6 +782,62 @@ fn b() {}
         }
 
         const FILE: &str = "a\n// @start: limits\nx = 1\n// @end\nb\n";
+
+        /// `touched_between`, and how many git processes it started.
+        fn touched_counting(dir: &Path, base: &str, head: &str) -> (Vec<String>, usize) {
+            SPAWNS.with(|c| c.set(0));
+            let got = touched_between(dir, base, head).unwrap();
+            (got, SPAWNS.with(Cell::get))
+        }
+
+        #[test]
+        fn unmarked_files_cost_no_git_call_each() {
+            let t = init();
+            let names = ["a.c", "b.c", "c d.c", "e.c", "f.c", "g.c"];
+            for n in names {
+                write(t.path(), n, "a\n");
+            }
+            let base = commit(t.path(), "base");
+            for n in names {
+                write(t.path(), n, "b\n");
+            }
+            let head = commit(t.path(), "head");
+            assert_eq!(touched_counting(t.path(), &base, &head), (vec![], 3));
+        }
+
+        #[test]
+        fn markers_on_one_side_only_are_touched() {
+            let t = init();
+            let plain = "a\nx = 1\nb\n";
+            write(t.path(), "was.c", FILE);
+            write(t.path(), "now.c", plain);
+            let base = commit(t.path(), "base");
+            write(t.path(), "was.c", plain);
+            write(t.path(), "now.c", FILE);
+            let head = commit(t.path(), "head");
+            let mut got = touched_between(t.path(), &base, &head).unwrap();
+            got.sort();
+            assert_eq!(got, ["now.c:2-4: limits", "was.c:2-4: limits"]);
+        }
+
+        #[test]
+        fn a_subdirectory_sees_marked_files_across_the_repo() {
+            let t = init();
+            fs::create_dir(t.path().join("d")).unwrap();
+            for n in ["top.c", "d/x y[1]*.c"] {
+                write(t.path(), n, FILE);
+            }
+            let base = commit(t.path(), "base");
+            for n in ["top.c", "d/x y[1]*.c"] {
+                write(t.path(), n, &FILE.replace("x = 1", "x = 2"));
+            }
+            let head = commit(t.path(), "head");
+            let mut got = touched_between(&t.path().join("d"), &base, &head).unwrap();
+            got.sort();
+            assert_eq!(got.len(), 2, "{got:?}");
+            assert!(got[0].starts_with("d/x y[1]*.c:"), "{got:?}");
+            assert!(got[1].starts_with("top.c:"), "{got:?}");
+        }
 
         #[test]
         fn binary_marked_files_cannot_hide_an_edit() {
@@ -942,6 +1054,31 @@ fn b() {}
                 .join(&blob[2..]);
             fs::remove_file(loose).unwrap();
             assert!(touched_between(t.path(), &base, "HEAD").is_err());
+        }
+
+        /// git grep reports an unreadable blob on stderr but exits 1 when nothing else matches,
+        /// and 0 when another file does.
+        #[test]
+        fn a_blob_git_grep_cannot_read_is_an_error() {
+            for other_match in [false, true] {
+                let t = init();
+                write(t.path(), "f.c", "a\n");
+                let base = commit(t.path(), "base");
+                write(t.path(), "f.c", FILE);
+                if other_match {
+                    write(t.path(), "g.c", FILE);
+                }
+                commit(t.path(), "head");
+                let blob = git::run(t.path(), &["rev-parse", "HEAD:f.c"]).unwrap();
+                let loose = t
+                    .path()
+                    .join(".git/objects")
+                    .join(&blob[..2])
+                    .join(&blob[2..]);
+                fs::remove_file(loose).unwrap();
+                let got = touched_between(t.path(), &base, "HEAD");
+                assert!(got.is_err(), "other_match={other_match}: {got:?}");
+            }
         }
     }
 }
