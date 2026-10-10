@@ -265,7 +265,7 @@ class CheckBriefTest(unittest.TestCase):
             "import sys\nsys.exit(\"inventory: error: reservation 'R0001' has expired\")\n", encoding="utf-8"
         )
         text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
-            ERROR_LINE, "python3 -m inventory_shadow --now 2026-03-02T09:04:50\n" + ERROR_LINE
+            ERROR_LINE, "python3 -m inventory_shadow --state inv.json --now 2026-03-02T09:04:50\n" + ERROR_LINE
         )
         self.assertIn("repro ran red", check(text, root))
 
@@ -298,19 +298,59 @@ class CheckBriefTest(unittest.TestCase):
         self.assertEqual(check(good().replace("--now ", "--now=")), [])
 
     def test_state_path_echoing_the_expired_text_fails(self):
-        text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
-            ERROR_LINE,
-            "python3 -m inventory --state 'reservation R0001 has expired/s.json' --now 2026-03-02T09:04:50 add-item A B\n"
-            "python3 -m inventory --state 'reservation R0001 has expired/../src/inventory/models.py' --now 2026-03-02T09:04:50 status\n"
-            + ERROR_LINE,
+        for prefix in ("reservation R0001 has expired", "reservation 'R0001' has expired"):
+            with self.subTest(prefix=prefix):
+                text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
+                    ERROR_LINE,
+                    f"python3 -m inventory --state \"{prefix}/s.json\" --now 2026-03-02T09:04:50 add-item A B\n"
+                    f"python3 -m inventory --state \"{prefix}/../src/inventory/models.py\" "
+                    "--now 2026-03-02T09:04:50 status\n" + ERROR_LINE,
+                )
+                self.assertIn("repro ran red", check(text))
+
+    def test_fulfil_whose_last_clock_is_past_the_expiry_fails(self):
+        for clocks in (
+            "--now 2026-03-02T09:05:10 --now 2026-03-02T09:06:00",
+            "--now 2026-03-02T09:05:10 --now=2026-03-02T09:06:00",
+            "--now 2026-03-02T09:05:10 --no 2026-03-02T09:06:00",
+        ):
+            with self.subTest(clocks=clocks):
+                self.assertIn("repro ran red", check(good().replace("--now 2026-03-02T09:05:10", clocks)))
+
+    def test_abbreviated_clock_option_passes(self):
+        self.assertEqual(check(good().replace("--now ", "--no ")), [])
+
+    def test_line_with_a_missing_option_value_is_skipped(self):
+        self.assertEqual(check(good().replace("export PYTHONPATH=src\n", "python3 -m inventory --now\n")), [])
+
+    def test_other_spellings_of_the_same_state_file_pass(self):
+        fulfil = "--state inv.json --now 2026-03-02T09:05:10 fulfil"
+        for setup, at_fulfil in (("", "--state inventory.json"), ("--state inv.json ", "--state ./inv.json")):
+            with self.subTest(setup=setup, at_fulfil=at_fulfil):
+                text = good().replace(fulfil, "FULFIL").replace("--state inv.json ", setup)
+                text = text.replace("FULFIL", fulfil.replace("--state inv.json", at_fulfil))
+                self.assertEqual(check(text), [])
+
+    def test_same_reservation_id_in_another_state_file_fails(self):
+        other = "".join(
+            f"python3 -m inventory --state b.json --now 2026-03-02T09:00:30 {cmd}\n"
+            for cmd in ("add-item BOLT-M6 Bolt", "receive BOLT-M6 10", "reserve BOLT-M6 4 --ttl 60")
         )
+        fulfil = "python3 -m inventory --state inv.json --now 2026-03-02T09:05:10 fulfil R0001\n"
+        text = good().replace(fulfil, other + fulfil.replace("09:05:10", "09:06:00"))
+        self.assertIn("repro ran red", check(text))
+
+    def test_expiry_printed_by_a_command_other_than_reserve_fails(self):
+        fulfil = "python3 -m inventory --state inv.json --now 2026-03-02T09:05:10 fulfil R0001\n"
+        fake = "python3 -m inventory --state inv.json --now 2026-03-02T09:00:30 add-item X 'x) R0001: y until 2099-01-01T00:00:00 z'\n"
+        text = good().replace(fulfil, fake + fulfil.replace("09:05:10", "09:06:00"))
         self.assertIn("repro ran red", check(text))
 
     def test_inventory_named_after_another_command_is_not_replayed(self):
         text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
             ERROR_LINE,
             "python3 -c \"import sys; sys.exit(\\\"inventory: error: reservation 'R0001' has expired\\\")\" "
-            "--now 2026-03-02T09:04:50 python3 -m inventory\n" + ERROR_LINE,
+            "--state inv.json --now 2026-03-02T09:04:50 python3 -m inventory\n" + ERROR_LINE,
         )
         self.assertIn("repro ran red", check(text))
 

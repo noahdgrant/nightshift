@@ -1,3 +1,4 @@
+import argparse
 import glob
 import os
 import re
@@ -11,8 +12,8 @@ from datetime import datetime
 
 REPLAY_TIMEOUT = 30
 EXPIRED = r"inventory: error: .*expired"
-RESERVATION_EXPIRED = re.compile(r"inventory: error: reservation '(\S+)' has expired")
-RESERVED_UNTIL = re.compile(r"(\S+): .* until (\S+)")
+RESERVATION_EXPIRED = re.compile(r"inventory: error: reservation '(R\d+)' has expired\n")
+RESERVED_UNTIL = re.compile(r"(R\d+): .* until (\S+)\n")
 REPLAYABLE = re.compile(r"python3 -m inventory(?:\s|$)")
 
 
@@ -53,11 +54,16 @@ def stays_inside(argv):
     return True
 
 
-def clock(argv):
-    for flag, value in zip(argv, argv[1:]):
-        if flag == "--now":
-            return value
-    return next((a.removeprefix("--now=") for a in argv if a.startswith("--now=")), None)
+class GlobalOptions(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
+
+
+def global_options(argv):
+    parser = GlobalOptions(add_help=False)
+    parser.add_argument("--state", default="inventory.json")
+    parser.add_argument("--now")
+    return parser.parse_known_args(argv[3:])[0]
 
 
 def before(now, expiry):
@@ -81,6 +87,11 @@ def replays_red(commands, root):
                 continue
             if not stays_inside(argv):
                 continue
+            try:
+                options = global_options(argv)
+            except ValueError:
+                continue
+            state = os.path.normpath(options.state)
             proc = subprocess.Popen(
                 argv, cwd=tmp, env=env, text=True,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
@@ -91,9 +102,10 @@ def replays_red(commands, root):
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.communicate()
                 return False
-            expiries.update(RESERVED_UNTIL.findall(out))
-            expired = RESERVATION_EXPIRED.match(err)
-            if proc.returncode != 0 and expired and before(clock(argv), expiries.get(expired.group(1))):
+            if reserved := RESERVED_UNTIL.fullmatch(out):
+                expiries[state, reserved.group(1)] = reserved.group(2)
+            expired = RESERVATION_EXPIRED.fullmatch(err)
+            if proc.returncode != 0 and expired and before(options.now, expiries.get((state, expired.group(1)))):
                 return True
     return False
 
