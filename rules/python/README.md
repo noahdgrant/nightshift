@@ -39,7 +39,7 @@ Use the name the code imports (`yaml`), not the one it installs (`PyYAML`). The 
 
 ## Duplicate helpers
 
-`duplicate-helper` ships with names the standard library already covers (`mkdir_p` for `os.makedirs(..., exist_ok=True)`, `which` for `shutil.which`, `flatten` for `itertools.chain.from_iterable`). Add the repo's own paved helpers to its regex, and each helper's home module to `ignores`, so the helper itself isn't flagged. A duplicate by shape, a new function whose body repeats an existing helper's, needs two definitions compared and stays in review.
+`duplicate-helper` flags functions outside a class body (and classes), never methods. It ships with names the standard library already covers (`mkdir_p` for `os.makedirs(..., exist_ok=True)`, `which` for `shutil.which`, `flatten` for `itertools.chain.from_iterable`). Add the repo's own paved helpers to its regex, and each helper's home module to `ignores`, so the helper itself isn't flagged. A duplicate by shape, a new function whose body repeats an existing helper's, needs two definitions compared and stays in review.
 
 ## Tests
 

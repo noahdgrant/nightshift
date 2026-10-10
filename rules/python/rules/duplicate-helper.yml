@@ -1,6 +1,7 @@
 # One road per job: a function or class named like a helper that already exists. The names
 # below are helpers the standard library has (os.makedirs(exist_ok=True), shutil.which,
 # copy.deepcopy, functools.cache, itertools.chain.from_iterable, the dict | operator).
+# A method is not a duplicate; only a function outside a class body, or nested in a method, is.
 # Add this repo's own helpers to the regex, and each one's home module to ignores.
 id: duplicate-helper
 language: python
@@ -11,6 +12,11 @@ ignores: []
 rule:
   any:
     - kind: function_definition
+      not:
+        inside:
+          kind: class_definition
+          stopBy:
+            kind: function_definition
     - kind: class_definition
   has:
     field: name
