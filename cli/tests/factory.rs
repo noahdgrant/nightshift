@@ -1342,6 +1342,8 @@ fn a_runner_lock_wait_ends_each_attempt_at_the_phase_timeout() {
     assert_eq!(gave_up[0]["lock"], "bench-1");
     assert_eq!(gave_up[0]["bound"], "timeout");
     assert_eq!(gave_up[0]["held_by"]["unit"], UNIT);
+    let attempts: Vec<_> = gave_up.iter().map(|ev| ev["attempt"].clone()).collect();
+    assert_eq!(attempts, [1, 2], "{log}");
 }
 
 #[test]
@@ -1358,9 +1360,10 @@ fn a_runner_lock_timeout_retries_the_phase_it_was_given() {
     assert!(reason.starts_with("verify is out of attempts"), "{reason}");
     assert_eq!(b.calls(), Vec::<String>::new());
     let phases = v["phases"].as_array().unwrap();
-    assert!(phases.len() > 1, "{v}");
-    for p in phases {
+    assert_eq!(phases.len(), 2, "{v}");
+    for (i, p) in phases.iter().enumerate() {
         assert_eq!(p["phase"], "verify", "{v}");
+        assert_eq!(p["attempt"], i + 1, "{v}");
         assert_eq!(p["written"], false, "{v}");
     }
 }
