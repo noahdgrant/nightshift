@@ -15,8 +15,8 @@ fn ns() -> Ns {
     c
 }
 
-fn git(dir: &Path, args: &[&str]) -> String {
-    let out = StdCommand::new("git")
+fn git_output(dir: &Path, args: &[&str]) -> std::process::Output {
+    StdCommand::new("git")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
@@ -30,7 +30,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@t")
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = git_output(dir, args);
     assert!(
         out.status.success(),
         "git {args:?}: {}",
@@ -914,21 +918,10 @@ fn own_factory_definition_turns_on_the_pre_commit_hook() {
     )
     .unwrap();
     fs::create_dir_all(root.join("scripts")).unwrap();
-    fs::write(
-        root.join("scripts/ci-local.sh"),
-        "#!/bin/sh
-echo \"ci-local $*\" >&2
-exit 1
-",
-    )
-    .unwrap();
-    for f in [".githooks/pre-commit", "scripts/ci-local.sh"] {
-        StdCommand::new("chmod")
-            .arg("+x")
-            .arg(root.join(f))
-            .status()
-            .unwrap();
-    }
+    executable(
+        &root.join("scripts/ci-local.sh"),
+        "echo \"ci-local $*\" >&2\nexit 1",
+    );
     git(&root, &["add", "."]);
     git(&root, &["commit", "-q", "--no-verify", "-m", "hooks"]);
 
@@ -949,19 +942,7 @@ exit 1
     assert_eq!(git(&path, &["config", "core.hooksPath"]), ".githooks");
 
     fs::write(path.join("README"), "changed\n").unwrap();
-    let out = StdCommand::new("git")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .arg("-C")
-        .arg(&path)
-        .args(["commit", "-qam", "change"])
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@t")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@t")
-        .output()
-        .unwrap();
+    let out = git_output(&path, &["commit", "-qam", "change"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("ci-local --fast"));
 }
