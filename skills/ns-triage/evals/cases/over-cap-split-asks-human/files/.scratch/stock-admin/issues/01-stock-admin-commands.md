@@ -19,6 +19,6 @@ Running the warehouse day to day needs a set of admin commands the tool doesn't 
 7. `inventory export <path>` writes all items and stock levels to a CSV.
 8. `inventory import <path>` loads items and stock levels from that CSV into an empty state file.
 
-None of these depends on another, except that 8 reads what 7 writes.
+Each command touches a different module and has its own acceptance criteria, so each is its own shippable unit; do not combine them. None of these depends on another, except that 8 reads what 7 writes.
 
 ## Comments

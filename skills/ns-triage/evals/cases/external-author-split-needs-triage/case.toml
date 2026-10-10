@@ -41,6 +41,7 @@ for path in children:
     checks = {
         "needs-triage": re.search(r"(?m)^\**Status:?\**:?\s*`?needs-triage`?\s*$", text),
         "Agent Brief": re.search(r"(?m)^#+\s*Agent Brief", text),
+        "criteria": re.search(r"- \[ \]", text),
         "listed in parent's Triage Notes": stem in notes or re.search(rf"(?<!\d)(?:{num.group()}|{int(num.group())})(?!\d)", notes),
     }
     missing = [k for k, v in checks.items() if not v]
