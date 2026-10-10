@@ -38,8 +38,8 @@ Each item is checkable against the diff: met, or not met at a `file:line`, or no
 
 ## Architecture
 
-- The change follows the patterns already in the code around it. A new pattern carries a reason.
-- It reuses the existing helper for a job instead of adding a near-duplicate.
+- The diff adds no second way to do a job the repo already does one way: it follows the patterns in the code around it and reuses the existing helper instead of adding a near-duplicate ([pave the road](../../ns-principle-pave-the-road/SKILL.md)).
+- A new dependency, tool or pattern states why the existing or conventional one doesn't fit ([pave the road](../../ns-principle-pave-the-road/SKILL.md)).
 - Dependencies point the right way, with no cycles and no feature logic in shared modules.
 - It adds no pass-through layer, and no `Optional`, `Any`, cast or silent fallback that hides an unclear invariant.
 - An old path the change replaces is removed in the same change.
