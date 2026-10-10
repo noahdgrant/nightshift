@@ -3247,14 +3247,47 @@ fn a_content_change_after_review_reverifies_reviews_and_ships() {
 }
 
 #[test]
+fn rerunning_a_stale_pass_uses_no_attempt() {
+    // Review's fix commit, then ship's, each leave a passing evidence.md behind HEAD: verify runs
+    // three times under max_attempts 2, as on #156.
+    let (e, v, code) = rebased_after_review(&["pass:commit", "pass"], PRINT_HEAD_SHA_CMD, |e| {
+        e.queue("review", &["pass:commit", "pass"]);
+    });
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "verify", "ship", "verify", "review", "ship"]
+    );
+}
+
+#[test]
+fn only_the_first_rerun_after_a_pass_is_free() {
+    let e = Env::new();
+    e.factory("[phases.build]\nmax_attempts = 5\n");
+    e.queue("build", &["pass:commit", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["pass", "fail", "fail", "fail"]);
+    e.queue("review", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["reason"], "verify is out of attempts (2)", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "verify", "build", "verify", "build"]
+    );
+}
+
+#[test]
 fn a_content_change_after_every_review_runs_out_of_attempts() {
     let (e, v, code) =
         rebased_after_review(&["pass:commit", "pass:commit"], PRINT_HEAD_SHA_CMD, |_| {});
     assert_eq!(code, 1, "{v}");
-    assert_eq!(v["reason"], "verify is out of attempts (2)", "{v}");
+    // Each ship moves HEAD; the reruns of verify and review are free, so ship's cap stops it.
+    assert_eq!(v["reason"], "ship is out of attempts (2)", "{v}");
     assert_eq!(
         e.calls(),
-        ["triage", "build", "verify", "review", "ship", "verify", "review", "ship"]
+        [
+            "triage", "build", "verify", "review", "ship", "verify", "review", "ship", "verify",
+            "review"
+        ]
     );
     assert!(!e.gh_calls().contains("pr merge"));
 }
