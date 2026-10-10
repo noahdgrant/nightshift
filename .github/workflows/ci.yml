@@ -102,6 +102,18 @@ jobs:
             (cd "$(dirname "$test")" && python -m unittest -q test_check_brief)
           done
 
+  rule-packs:
+    name: Rule pack tests (python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ruff==0.14.2 ast-grep-cli==0.50.0
+      - run: rules/python/tests/run.sh
+
   private-refs:
     name: Private-reference guard
     runs-on: ubuntu-latest

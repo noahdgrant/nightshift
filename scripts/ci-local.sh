@@ -63,6 +63,14 @@ fixture_tests() {
   echo "SKIPPED: py-inventory fixture tests (no python with pytest; pip install pytest to run them)" >&2
 }
 
+rule_pack_tests() {
+  if command -v ruff >/dev/null && command -v ast-grep >/dev/null; then
+    rules/python/tests/run.sh
+    return
+  fi
+  echo "SKIPPED: Python rule pack tests (needs ruff and ast-grep: uv tool install ruff ast-grep-cli)" >&2
+}
+
 brief_checker_tests() {
   command -v python3 >/dev/null || { echo "ci-local: python3 is required for the brief checker tests" >&2; return 1; }
   local test
@@ -84,6 +92,7 @@ if [ "$fast" -eq 0 ]; then
   step "ns rules check" "$ns" rules check --human
   step "ns eval --dry-run" eval_dry_run
   step "py-inventory fixture tests" fixture_tests
+  step "Python rule pack tests" rule_pack_tests
   step "ns-troubleshoot brief checker tests" brief_checker_tests
 fi
 step "private guard" scripts/check-private.sh
