@@ -90,8 +90,13 @@ class CheckBriefTest(unittest.TestCase):
     def test_vague_root_cause_fails(self):
         self.assertIn("root cause names the truncation site", failures("bad-root-cause.md"))
 
-    def test_whole_minute_clock_without_round_trip_command_fails(self):
+    def test_whole_minute_clock_fails(self):
         self.assertIn("repro ran red", check(with_repro(WHOLE_MINUTE_REPRO)))
+
+    def test_whole_minute_clock_with_round_trip_names_in_an_inventory_command_fails(self):
+        extra = "python3 -m inventory --state inv.json --now 2026-03-02T09:00:00 add-item to_dict from_dict\n"
+        repro = WHOLE_MINUTE_REPRO.replace("```bash\n", "```bash\n" + extra)
+        self.assertIn("repro ran red", check(with_repro(repro)))
 
     def test_round_trip_named_only_in_prose_fails(self):
         repro = WHOLE_MINUTE_REPRO + "The reload calls `to_dict` and `from_dict`: a save/load round trip.\n"

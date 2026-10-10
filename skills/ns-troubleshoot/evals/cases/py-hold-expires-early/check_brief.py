@@ -87,8 +87,6 @@ def failures(text, root):
     repro = section(text, "repro")
     cause = section(text, "root cause")
     pinned_seconds = re.search(r"--now[ =]\S*T\d\d:\d\d:(?!00)\d\d", repro) is not None
-    commands = [l for l in repro.splitlines() if re.match(r"\s*(\$ )?python3?\b", l)]
-    round_trip = any(re.search(r"to_dict|from_dict|\.load\(|\.save\(", l) for l in commands)
     checks = {
         "phase": fm.get("phase") == "troubleshoot",
         "status": fm.get("status") == "pass",
@@ -97,7 +95,7 @@ def failures(text, root):
         "repro body": repro != "",
         "repro holds a command": re.search(r"python3? -m inventory", repro) is not None,
         "repro ran red": re.search(r"(?m)^\W*" + EXPIRED, repro) is not None
-        and (pinned_seconds or round_trip)
+        and pinned_seconds
         and replays_red(fence_lines(repro), root),
         "root cause body": cause != "",
         "root cause names expires_at": "expires_at" in cause,
