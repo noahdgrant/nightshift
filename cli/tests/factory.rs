@@ -1990,6 +1990,20 @@ fn watch_until_is_local_time_with_its_offset() {
 }
 
 #[test]
+fn watch_until_keeps_half_hour_and_positive_offsets() {
+    let e = Env::new();
+    let (v, _) = watch_in(&e, "Asia/Kolkata", NOW, &["--dry-run", "--until", "06:30"]);
+    assert_eq!(v["until"], "2026-10-09T06:30:00+05:30");
+    let (v, _) = watch_in(
+        &e,
+        "America/St_Johns",
+        NOW,
+        &["--dry-run", "--until", "06:30"],
+    );
+    assert_eq!(v["until"], "2026-10-09T06:30:00-02:30");
+}
+
+#[test]
 fn watch_reports_until_and_the_usage_reset_in_local_time() {
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");
@@ -2006,6 +2020,7 @@ fn watch_reports_until_and_the_usage_reset_in_local_time() {
         "{err}"
     );
     let log = fs::read_to_string(e.root.join(".git/ns/runs.jsonl")).unwrap();
+    assert!(log.lines().count() > 0);
     for line in log.lines() {
         let ts = serde_json::from_str::<Value>(line).unwrap()["ts"].clone();
         assert!(ts.as_str().unwrap().ends_with('Z'), "{line}");
@@ -2025,6 +2040,7 @@ fn watch_dry_run_orders_and_skips() {
     e.issue(8, "closed blocker", "CLOSED");
     e.gh_file("prs.json", r#"[{"number":40,"body":"Closes #5"}]"#);
     let v = e.run(&["watch", "--dry-run"], 0);
+    assert!(v["until"].is_null());
     let order: Vec<u64> = v["queue"]
         .as_array()
         .unwrap()
