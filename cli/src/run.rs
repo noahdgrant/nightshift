@@ -2115,6 +2115,27 @@ mod tests {
     }
 
     #[test]
+    fn marked_regions_ignores_a_fence_the_pr_merged_in_from_the_default_branch() {
+        let (_t, _origin, wt) = cloned();
+        git::run(&wt, &["checkout", "-q", "-b", "pr"]).unwrap();
+        fs::write(wt.join("g.c"), "a\nx = 2\nb\n").unwrap();
+        commit_all(&wt, "pr edits g.c");
+        let (start, end) = ("ns:human-review start", "ns:human-review end");
+        git::run(&wt, &["checkout", "-q", "-b", "fence", "main"]).unwrap();
+        fs::write(
+            wt.join("f.c"),
+            format!("a\n// {start}\nx = 1\n// {end}\nb\n"),
+        )
+        .unwrap();
+        commit_all(&wt, "fence f.c");
+        git::run(&wt, &["config", "--unset", "remote.origin.fetch"]).unwrap();
+        git::run(&wt, &["push", "-q", "origin", "fence:main"]).unwrap();
+        git::run(&wt, &["checkout", "-q", "pr"]).unwrap();
+        git::run(&wt, &["merge", "-q", "--no-edit", "fence"]).unwrap();
+        assert!(marked_regions(&wt, "main").unwrap().is_empty());
+    }
+
+    #[test]
     fn marked_regions_errors_when_the_fetch_fails() {
         let (_t, origin, wt) = cloned();
         assert!(marked_regions(&wt, "main").unwrap().is_empty());
