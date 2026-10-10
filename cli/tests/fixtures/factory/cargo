@@ -1,0 +1,38 @@
+#!/bin/sh
+# Fake cargo for ns watch's self-update. `cargo build ... --manifest-path M --target-dir T` logs
+# its arguments to $FAKE_CTRL/cargo-calls, copies M's directory's x to $FAKE_CTRL/cargo-built,
+# and writes a stub ns to T/release/ns. The stub prints the version with $NS_BUILD_COMMIT, exits
+# 0 on `watch --dry-run`, and otherwise logs its arguments to $FAKE_CTRL/handed-off and execs
+# $REAL_NS with them and --no-self-update.
+#   $FAKE_CTRL/cargo-mode: fail (the build fails), badcheck (the stub's dry run exits 1) or
+#   badversion (the stub's version names another commit) or versionfails (it exits 1)
+ctrl="$FAKE_CTRL"
+echo "$*" >> "$ctrl/cargo-calls"
+mode=$(cat "$ctrl/cargo-mode" 2>/dev/null)
+if [ "$mode" = fail ]; then
+  echo "error: could not compile nightshift" >&2
+  exit 101
+fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --manifest-path) m=$2; shift ;;
+    --target-dir) t=$2; shift ;;
+  esac
+  shift
+done
+cat "$(dirname "$m")/x" > "$ctrl/cargo-built"
+dry=0
+[ "$mode" = badcheck ] && dry=1
+commit=$NS_BUILD_COMMIT
+[ "$mode" = badversion ] && commit=0000000
+version_exit=0
+[ "$mode" = versionfails ] && version_exit=1
+mkdir -p "$t/release"
+cat > "$t/release/ns" <<STUB
+#!/bin/sh
+if [ "\$1" = --version ]; then echo "ns 0.1.0 ($commit)"; exit $version_exit; fi
+if [ "\$1 \$2" = "watch --dry-run" ]; then echo "dry run failed" >&2; exit $dry; fi
+echo "\$*" > "$ctrl/handed-off"
+exec "\$REAL_NS" "\$@" --no-self-update
+STUB
+chmod +x "$t/release/ns"

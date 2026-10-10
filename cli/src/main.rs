@@ -285,6 +285,12 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         /// Directory holding nightshift.toml (default: <main-worktree>/.nightshift)
         #[arg(long, value_name = "DIR")]
         factory: Option<PathBuf>,
+        /// On the nightshift source repo, never drain and rebuild ns when cli/ changes
+        #[arg(long)]
+        no_self_update: bool,
+        /// The night so far, from the ns that handed off to this one (internal)
+        #[arg(long, value_name = "FILE", hide = true)]
+        resume_night: Option<PathBuf>,
     },
 
     /// Remove unit worktrees and ns/<unit> branches whose issue is closed and whose PR merged
@@ -387,6 +393,9 @@ At start, in-progress issues no live ns run holds go back to the ready label (re
 At start and between units, worktrees of units a human merged since are removed as ns clean
 removes them (cleaned; --dry-run lists them as clean).
 SIGINT or SIGTERM ends every running phase and returns each unit's issue to the ready label.
+On the nightshift source repo, when origin's default branch gains cli/ commits after the one
+ns was built from, it starts no new unit, waits for the running ones, builds the new ns and
+execs it with the night's state; --no-self-update turns that off.
 Prints {units,requeued,cleaned,stopped,until,cost_usd,error}. Exit codes as ns run's errors: 2 usage,
 5 lock held (another ns run or ns watch); 130 or 143 when stopped by SIGINT or SIGTERM.";
 
@@ -725,6 +734,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
             parallel,
             dry_run,
             factory,
+            no_self_update,
+            resume_night,
         } => {
             return watch::run(watch::WatchArgs {
                 once,
@@ -733,6 +744,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 parallel,
                 dry_run,
                 factory,
+                no_self_update,
+                resume_night,
             })
         }
         Cmd::Quality {

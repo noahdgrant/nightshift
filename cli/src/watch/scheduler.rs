@@ -13,10 +13,11 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::json;
 
+use super::self_update::{self, Carried, SelfUpdate};
 use super::snapshot::Snapshot;
 use super::{
-    comment, ended_cleanly, open_findings, queue, set_status, triage, Issue, Night, Tonight,
-    DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
+    comment, ended_cleanly, fresh_base, open_findings, queue, set_status, triage, Issue, Night,
+    Tonight, DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
 };
 use crate::clock;
 use crate::error::SfError;
@@ -41,6 +42,10 @@ pub(super) struct Plan<'a> {
     pub deadline: Option<i64>,
     pub max_units: Option<u32>,
     pub parallel: usize,
+    /// Units claimed tonight before a self-update handed the night to this `ns`.
+    pub started: u32,
+    /// `None` when the night never updates its own binary.
+    pub update: Option<SelfUpdate>,
 }
 
 /// A unit's `ns run`, running.
@@ -88,6 +93,8 @@ pub(super) struct Scheduler<'a> {
     forwarded: bool,
     /// The first error; the night stops once the running units end.
     failed: Option<anyhow::Error>,
+    /// The commit to update to once the running units end; no new unit starts meanwhile.
+    draining: Option<String>,
     started: u32,
     results: u64,
 }
@@ -95,6 +102,7 @@ pub(super) struct Scheduler<'a> {
 impl<'a> Scheduler<'a> {
     pub fn new(plan: Plan<'a>) -> Scheduler<'a> {
         Scheduler {
+            started: plan.started,
             plan,
             running: BTreeMap::new(),
             resume: Vec::new(),
@@ -102,7 +110,7 @@ impl<'a> Scheduler<'a> {
             stopping: None,
             forwarded: false,
             failed: None,
-            started: 0,
+            draining: None,
             results: 0,
         }
     }
@@ -119,6 +127,14 @@ impl<'a> Scheduler<'a> {
                     if stop::requested().is_none() {
                         self.fail(e);
                     }
+                }
+            }
+            // Units paused on a usage limit resume in the fill above, and finish first.
+            let idle = self.running.is_empty() && self.paused_until.is_none();
+            if idle && self.stopping.is_none() {
+                if let Some(to) = self.draining.take() {
+                    self.update(to, night, tonight);
+                    continue;
                 }
             }
             if self.running.is_empty() {
@@ -218,6 +234,12 @@ impl<'a> Scheduler<'a> {
             self.stopping = Some(why);
             return Ok(());
         }
+        if self.draining.is_none() {
+            self.draining = self.pending_update();
+        }
+        if self.draining.is_some() {
+            return Ok(());
+        }
         match triage::pass(plan.repo, plan.loaded, plan.deadline, night)? {
             Some(triage::Halt::Stop(why)) => {
                 self.stop_all(&why);
@@ -257,6 +279,76 @@ impl<'a> Scheduler<'a> {
             }
         }
         Ok(())
+    }
+
+    /// The commit to update to, when origin's default branch has `cli/` changes this `ns` lacks.
+    fn pending_update(&self) -> Option<String> {
+        let u = self.plan.update.as_ref()?;
+        let root = &self.plan.repo.root;
+        let base = fresh_base(root)?;
+        let to = u.pending(root, &base)?;
+        eprintln!(
+            "ns watch: {base} has cli/ changes since this ns was built ({} -> {}); draining: no new unit until the running ones end",
+            short(&u.from),
+            short(&to)
+        );
+        Some(to)
+    }
+
+    /// Build `to`, check it and exec it with the night's state. Returns only when that failed:
+    /// the night goes on with this binary and never tries `to` again.
+    fn update(&mut self, to: String, night: &Night, tonight: &Tonight) {
+        let repo = self.plan.repo;
+        let u = self
+            .plan
+            .update
+            .as_ref()
+            .expect("draining needs a self-update");
+        let from = u.from.clone();
+        eprintln!("ns watch: self-update: building {}", short(&to));
+        let err = match u.build(repo, &to) {
+            Ok(staged) => {
+                let carried = Carried {
+                    deadline: self.plan.deadline,
+                    spent_usd: night.shared.spent(),
+                    started: self.started,
+                    harness_fails: night.harness_fails,
+                    finished: night.finished.clone(),
+                    triage: night.triage.clone(),
+                    tonight: tonight.clone(),
+                };
+                match carried.save(&repo.common_dir) {
+                    Ok(state) => {
+                        eprintln!(
+                            "ns watch: self-update {} -> {}; handing off to {}",
+                            short(&from),
+                            short(&to),
+                            staged.display()
+                        );
+                        run::log_event(
+                            &repo.common_dir,
+                            json!({"event": "self_update", "from": from, "to": to}),
+                        );
+                        let e = self_update::exec(&staged, &state);
+                        let _ = fs::remove_file(&state);
+                        e
+                    }
+                    Err(e) => e,
+                }
+            }
+            Err(e) => e,
+        };
+        eprintln!(
+            "ns watch: warning: self-update to {} failed; keeping this ns: {err:#}",
+            short(&to)
+        );
+        run::log_event(
+            &repo.common_dir,
+            json!({"event": "self_update_failed", "from": from, "to": to, "error": format!("{err:#}")}),
+        );
+        if let Some(u) = self.plan.update.as_mut() {
+            u.failed.insert(to);
+        }
     }
 
     fn free(&self) -> bool {
@@ -537,6 +629,11 @@ impl Drop for Scheduler<'_> {
             let _ = w.child.wait();
         }
     }
+}
+
+/// The first 12 characters of a commit, for people.
+fn short(sha: &str) -> &str {
+    sha.get(..12).unwrap_or(sha)
 }
 
 /// When a paused unit resumes: as [`Night::resume_at`], except that a unit the hold paused

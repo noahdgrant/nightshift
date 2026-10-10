@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::{
@@ -17,7 +18,7 @@ use crate::git::Repo;
 use crate::run::{self, Loaded, Outcome, RunArgs};
 
 /// The night's triage-only runs.
-#[derive(Default)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub(super) struct Tally {
     /// Issues given a triage-only run tonight, whatever came of it, so none is run twice.
     tried: BTreeSet<u64>,

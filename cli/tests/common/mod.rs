@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
@@ -32,7 +32,12 @@ static NEXT_TREE: AtomicU32 = AtomicU32::new(0);
 
 /// `ns` built from this crate, bounded by [`TIMEOUT`].
 pub fn ns() -> Ns {
-    command(assert_cmd::cargo::cargo_bin("ns"))
+    command(ns_path())
+}
+
+/// Where `ns` built from this crate is, for a script that a bounded `ns` runs to exec it.
+pub fn ns_path() -> PathBuf {
+    assert_cmd::cargo::cargo_bin("ns")
 }
 
 /// Any program, run with the same bounds as [`ns`].

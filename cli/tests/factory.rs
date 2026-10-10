@@ -6972,3 +6972,357 @@ fn cleanup_at_a_resume_leaves_the_worktree_of_the_paused_unit() {
         run_events(&e)
     );
 }
+
+// ---------------------------------------------------------------- self-update
+
+/// Make the repo the nightshift source, `cli/Cargo.toml` naming the package `nightshift`, put the
+/// fake cargo on PATH, and return the commit pushed, which the `ns` under test counts as its
+/// build commit.
+fn nightshift_repo(e: &Env) -> String {
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/factory/cargo"),
+        e.bin.join("cargo"),
+    )
+    .unwrap();
+    fs::create_dir_all(e.root.join("cli")).unwrap();
+    fs::write(
+        e.root.join("cli/Cargo.toml"),
+        "[package]\nname = \"nightshift\"\n",
+    )
+    .unwrap();
+    land(e, "cli/x", "old\n")
+}
+
+/// Commit `text` to `path` and push it to origin's main, as a unit merged tonight would; the
+/// commit.
+fn land(e: &Env, path: &str, text: &str) -> String {
+    let p = e.root.join(path);
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(p, text).unwrap();
+    git(&e.root, &["add", "."]);
+    git(&e.root, &["commit", "-q", "-m", path]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+    git(&e.root, &["rev-parse", "HEAD"])
+}
+
+/// `ns watch` built from `from`, whose stub successor execs the `ns` under test.
+fn watch_from(e: &Env, from: &str) -> Ns {
+    let mut c = e.ns();
+    c.env("NS_BUILD_COMMIT", from)
+        .env("REAL_NS", common::ns_path());
+    c
+}
+
+fn cargo_calls(e: &Env) -> usize {
+    fs::read_to_string(e.ctrl.join("cargo-calls"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+fn events_named(e: &Env, name: &str) -> Vec<Value> {
+    run_events(e)
+        .into_iter()
+        .filter(|ev| ev["event"] == name)
+        .collect()
+}
+
+#[test]
+fn watch_hands_off_to_a_new_build_between_units_and_the_night_goes_on() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    two_ready(&e);
+    e.ready(4, "Fix c", &["type:fix"], "");
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let w = Watching::start(watch_from(&e, &from).args([
+        "watch",
+        "--until",
+        "06:30",
+        "--max-units",
+        "2",
+    ]));
+    w.entered(&in_a);
+    let to = land(&e, "cli/x", "new\n");
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    // The night's state crossed the hand-off: both units are in one summary, with all the spend
+    // and the same deadline, and unit 2 counts toward --max-units.
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+    assert_eq!(v["cost_usd"], 5.0, "{v}");
+    assert_eq!(v["until"], "2026-10-09T06:30:00+00:00", "{v}");
+    assert_eq!(v["stopped"], "max_units", "{v}");
+    // Built once, from the new commit, and exec'd with the same arguments and the state.
+    assert_eq!(cargo_calls(&e), 1);
+    assert_eq!(
+        fs::read_to_string(e.ctrl.join("cargo-built")).unwrap(),
+        "new\n"
+    );
+    let args = fs::read_to_string(e.ctrl.join("handed-off")).unwrap();
+    assert!(
+        args.starts_with("watch --until 06:30 --max-units 2 --resume-night "),
+        "{args}"
+    );
+    let state = args.trim().rsplit(' ').next().unwrap();
+    assert!(!Path::new(state).exists(), "{state} left behind");
+    let ev = events_named(&e, "self_update");
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert_eq!(
+        (&ev[0]["from"], &ev[0]["to"]),
+        (&serde_json::json!(from), &serde_json::json!(to))
+    );
+    assert!(
+        err.contains(&format!("self-update {} -> {}", &from[..12], &to[..12])),
+        "{err}"
+    );
+    // Unit 3 started after the hand-off, from the new binary.
+    let updated = event_at(&e, |ev| ev["event"] == "self_update");
+    let started_3 = event_at(&e, |ev| ev["event"] == "worker_start" && ev["issue"] == 3);
+    assert!(updated < started_3, "{:?}", run_events(&e));
+}
+
+#[test]
+fn draining_starts_no_unit_and_waits_for_the_running_one() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    two_ready(&e);
+    e.ready(4, "Fix c", &["type:fix"], "");
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = Watching::start(watch_from(&e, &from).args(["watch", "--parallel", "2"]));
+    w.entered(&in_a);
+    w.entered(&in_b);
+    land(&e, "cli/x", "new\n");
+    release(&go_b);
+    w.line("#3 done");
+    w.line("draining");
+    // Unit 2 is still in its build: nothing is built, and unit 4 waits for the update.
+    assert_eq!(cargo_calls(&e), 0);
+    assert!(events_named(&e, "self_update").is_empty());
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3, 4], "done"), "{v}");
+    assert_eq!(cargo_calls(&e), 1);
+    assert_eq!(err.matches("draining").count(), 1, "{err}");
+    let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
+    let updated = event_at(&e, |ev| ev["event"] == "self_update");
+    let started_4 = event_at(&e, |ev| ev["event"] == "worker_start" && ev["issue"] == 4);
+    assert!(
+        ended_2 < updated && updated < started_4,
+        "{:?}",
+        run_events(&e)
+    );
+}
+
+/// A night on a nightshift repo whose origin has a `cli/` change the build commit lacks, with
+/// the fake cargo in `mode`; its summary and stderr.
+fn night_with_a_failed_update(mode: &str) -> (Env, String, Value, String) {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    let to = land(&e, "cli/x", "new\n");
+    e.ctl("cargo-mode", mode);
+    two_ready(&e);
+    let out = watch_from(&e, &from)
+        .args(["watch"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    (e, to, v, err)
+}
+
+fn assert_kept_the_old_binary(e: &Env, to: &str, v: &Value, err: &str, why: &str) {
+    // The night went on without a hand-off and tried the commit once.
+    assert_eq!(by_issue(&units(v)), each(&[2, 3], "done"), "{v}");
+    assert_eq!(cargo_calls(e), 1, "{err}");
+    assert!(!e.ctrl.join("handed-off").exists());
+    assert!(events_named(e, "self_update").is_empty());
+    let warning = format!("ns watch: warning: self-update to {} failed", &to[..12]);
+    assert!(err.contains(&warning) && err.contains(why), "{err}");
+    let failed = events_named(e, "self_update_failed");
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0]["to"], to);
+    assert!(
+        failed[0]["error"].as_str().unwrap().contains(why),
+        "{failed:?}"
+    );
+}
+
+#[test]
+fn a_failed_build_keeps_the_old_binary_and_is_not_retried() {
+    let (e, to, v, err) = night_with_a_failed_update("fail");
+    assert_kept_the_old_binary(&e, &to, &v, &err, "could not compile nightshift");
+}
+
+#[test]
+fn a_failed_check_keeps_the_old_binary_and_is_not_retried() {
+    let (e, to, v, err) = night_with_a_failed_update("badcheck");
+    assert_kept_the_old_binary(&e, &to, &v, &err, "dry run failed");
+    let (e, to, v, err) = night_with_a_failed_update("versionfails");
+    assert_kept_the_old_binary(&e, &to, &v, &err, "--version said");
+    let (e, to, v, err) = night_with_a_failed_update("badversion");
+    assert_kept_the_old_binary(&e, &to, &v, &err, "--version said \"ns 0.1.0 (0000000)\"");
+}
+
+/// A night with a `cli/` change on origin the build commit lacks, which never updates; its
+/// stderr.
+fn assert_never_updates(e: &Env, ns: &mut Ns) -> String {
+    two_ready(e);
+    let out = ns.assert().code(0).get_output().clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+    assert!(!err.contains("draining"), "{err}");
+    assert_eq!(cargo_calls(e), 0, "{err}");
+    assert!(events_named(e, "self_update").is_empty());
+    assert!(events_named(e, "self_update_failed").is_empty());
+    err.into_owned()
+}
+
+#[test]
+fn watch_on_another_repo_never_drains_or_rebuilds() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    fs::write(
+        e.root.join("cli/Cargo.toml"),
+        "[package]\nname = \"other\"\n",
+    )
+    .unwrap();
+    land(&e, "cli/x", "new\n");
+    assert_never_updates(&e, watch_from(&e, &from).args(["watch"]));
+}
+
+#[test]
+fn no_self_update_turns_it_off() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    land(&e, "cli/x", "new\n");
+    assert_never_updates(
+        &e,
+        watch_from(&e, &from).args(["watch", "--no-self-update"]),
+    );
+}
+
+#[test]
+fn changes_outside_cli_do_not_drain() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    land(&e, "docs/x.md", "new\n");
+    assert_never_updates(&e, watch_from(&e, &from).args(["watch"]));
+}
+
+#[test]
+fn an_ns_with_no_build_commit_or_one_the_repo_lacks_never_updates() {
+    let off = "ns watch: self-update off: this ns has no build commit";
+    let missing = "0123456789abcdef0123456789abcdef01234567";
+    for (from, says_off) in [("unknown", true), ("", true), (missing, false)] {
+        let e = Env::new();
+        nightshift_repo(&e);
+        land(&e, "cli/x", "new\n");
+        let err = assert_never_updates(&e, watch_from(&e, from).args(["watch"]));
+        assert_eq!(err.contains(off), says_off, "{from:?}: {err}");
+    }
+}
+
+#[test]
+fn a_unit_paused_while_draining_resumes_and_finishes_before_the_update() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    two_ready(&e);
+    e.ctl("reset", &(NOW + 3600).to_string());
+    e.queue(&format!("build.{A}"), &["limit", "pass"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = Watching::start(watch_from(&e, &from).args(["watch", "--parallel", "2"]));
+    w.entered(&in_a);
+    w.entered(&in_b);
+    land(&e, "cli/x", "new\n");
+    release(&go_b);
+    w.line("draining");
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        by_issue(&units(&v)),
+        [(2, "done".into()), (2, "paused".into()), (3, "done".into())],
+        "{v}"
+    );
+    let done_2 = event_at(&e, |ev| {
+        ev["event"] == "worker_end" && ev["issue"] == 2 && ev["outcome"] == "done"
+    });
+    let updated = event_at(&e, |ev| ev["event"] == "self_update");
+    assert!(done_2 < updated, "{:?}", run_events(&e));
+}
+
+#[test]
+fn a_stop_while_draining_ends_the_night_without_an_update() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    // Unit 3 spends 2.5 and unit 2 reaches the budget at its review.
+    e.factory("[limits]\nbudget_usd = 4.0\n");
+    two_ready(&e);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = Watching::start(watch_from(&e, &from).args(["watch", "--parallel", "2"]));
+    w.entered(&in_a);
+    w.entered(&in_b);
+    land(&e, "cli/x", "new\n");
+    release(&go_b);
+    w.line("draining");
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(v["stopped"], "budget", "{v}");
+    assert_eq!(cargo_calls(&e), 0, "{err}");
+    assert!(events_named(&e, "self_update").is_empty());
+}
+
+#[test]
+fn the_harness_breaker_and_finished_issues_survive_the_hand_off() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    for n in [2, 3, 4] {
+        e.ready(n, &format!("Fix {n}"), &["type:fix"], "");
+    }
+    // Each unit's triage phase fails instantly on both attempts.
+    e.queue("triage", &["crash"; 4]);
+    let (in_2, go_2) = hold_phase(&e, "2-fix-2", "triage");
+    let w = Watching::start(watch_from(&e, &from).args(["watch"]));
+    w.entered(&in_2);
+    land(&e, "cli/x", "new\n");
+    release(&go_2);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(events_named(&e, "self_update").len(), 1, "{err}");
+    // Unit 2's failure counts toward the breaker after the hand-off, and unit 2, back to ready,
+    // is not taken again.
+    assert_eq!(v["stopped"], "harness failing", "{v}");
+    assert_eq!(
+        by_issue(&units(&v)),
+        each(&[2, 3], "harness_failing"),
+        "{v}"
+    );
+}
+
+#[test]
+fn the_triage_pass_record_survives_the_hand_off() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    e.untriaged(5, "A", &["status:needs-triage"]);
+    e.triage_sets(&["status:ready-for-agent"]);
+    e.queue("triage", &["pass:script"]);
+    let (in_5, go_5) = hold_phase(&e, "5-a", "build");
+    let w = Watching::start(watch_from(&e, &from).args(["watch"]));
+    w.entered(&in_5);
+    land(&e, "cli/x", "new\n");
+    release(&go_5);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(events_named(&e, "self_update").len(), 1, "{err}");
+    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
+    assert_eq!(by_issue(&units(&v)), each(&[5], "done"), "{v}");
+    assert_eq!(e.triage_only_runs(), 1);
+}

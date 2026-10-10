@@ -20,6 +20,7 @@ use crate::stop;
 use crate::worktree::BRANCH_PREFIX;
 
 mod scheduler;
+mod self_update;
 mod snapshot;
 mod triage;
 
@@ -32,6 +33,9 @@ pub struct WatchArgs {
     pub parallel: Option<u32>,
     pub dry_run: bool,
     pub factory: Option<PathBuf>,
+    pub no_self_update: bool,
+    /// The night so far, from the `ns` that handed off to this one.
+    pub resume_night: Option<PathBuf>,
 }
 
 pub const DISCLAIMER: &str =
@@ -509,7 +513,20 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         }
         None => None,
     };
+    // A hand-off carries the night on: its deadline wins over --until read again now.
+    let carried = match &args.resume_night {
+        Some(p) => self_update::Carried::take(p)?,
+        None => self_update::Carried::default(),
+    };
+    let deadline = if args.resume_night.is_some() {
+        carried.deadline
+    } else {
+        deadline
+    };
     night.shared.until = deadline;
+    night.harness_fails = carried.harness_fails;
+    night.finished = carried.finished;
+    night.triage = carried.triage;
     let max_units = if args.once {
         Some(1)
     } else {
@@ -614,9 +631,14 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         );
     }
     night.shared.night = Some(snap.night().clone());
+    if carried.spent_usd > 0.0 {
+        snap.night()
+            .add_spend("before the self-update", carried.spent_usd)?;
+    }
     // The triage pass, which runs here, reads the snapshot's prompts as every unit does.
     loaded.root = snap.factory();
-    let mut tonight = Tonight::default();
+    let mut tonight = carried.tonight;
+    let update = self_update::SelfUpdate::new(&repo, args.no_self_update, args.factory.clone());
     let plan = scheduler::Plan {
         repo: &repo,
         loaded: &loaded,
@@ -624,6 +646,8 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         deadline,
         max_units,
         parallel: parallel as usize,
+        started: carried.started,
+        update,
     };
     let mut failed = None;
     let stopped = match requeue_stale(&repo, &q, &mut tonight.requeued)
@@ -666,7 +690,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
 }
 
 /// What the night's work leaves for its summary.
-#[derive(Default)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 struct Tonight {
     units: Vec<Value>,
     /// Issues found in progress at start with no live `ns run`, returned to the queue.
