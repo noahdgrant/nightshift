@@ -21,14 +21,17 @@ use artifacts::Unparsed;
 use metrics::Unit;
 use runlog::RunLog;
 
-fn since_date(s: &str) -> Result<String> {
-    let ok = s.len() == 10 && clock::parse_iso(s).is_some();
-    if ok {
-        return Ok(s.to_string());
+/// `--since` as unix seconds: `YYYY-MM-DDTHH:MM:SSZ`, or `YYYY-MM-DD` for 00:00:00 UTC.
+fn since_instant(s: &str) -> Result<i64> {
+    let form = s.len() == 10 || (s.len() == 20 && s.as_bytes()[10] == b'T');
+    if let Some(t) = clock::parse_iso(s).filter(|_| form) {
+        return Ok(t);
     }
     Err(SfError::usage(
-        format!("--since {s:?} is not a date: use YYYY-MM-DD"),
-        "ns quality --since 2026-10-01",
+        format!(
+            "--since {s:?} is not a UTC time: use YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD (00:00:00 UTC)"
+        ),
+        "ns quality --since 2026-10-01T00:00:00Z",
     )
     .into())
 }
@@ -100,7 +103,7 @@ fn per_unit(u: &Unit) -> Value {
 
 fn report(
     units: &[&Unit],
-    since: Option<&str>,
+    since: Option<i64>,
     root: &Path,
     log: RunLog,
     unparsed: Vec<Unparsed>,
@@ -133,7 +136,8 @@ fn report(
             v
         })
         .collect();
-    let mut out = json!({ "ok": true, "repo": root.display().to_string(), "since": since });
+    let mut out =
+        json!({ "ok": true, "repo": root.display().to_string(), "since": since.map(clock::iso) });
     let Value::Object(summary) = json!(metrics::summarize(units)) else {
         unreachable!("a struct serialises to an object")
     };
@@ -148,14 +152,11 @@ fn report(
 }
 
 pub fn cli(since: Option<String>) -> Result<ExitCode> {
-    let since = since.as_deref().map(since_date).transpose()?;
+    let since = since.as_deref().map(since_instant).transpose()?;
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
     let mut unparsed = Vec::new();
     let mut units = artifacts::discover(&repo, &mut unparsed)?;
-    let (mut log, mut runs) = runlog::read(
-        &repo.common_dir.join("ns").join("runs.jsonl"),
-        since.as_deref(),
-    );
+    let (mut log, mut runs) = runlog::read(&repo.common_dir.join("ns").join("runs.jsonl"), since);
     let known: BTreeSet<&str> = units.iter().map(|u| u.id.as_str()).collect();
     log.units_without_artifacts = runs
         .iter()
@@ -167,13 +168,9 @@ pub fn cli(since: Option<String>) -> Result<ExitCode> {
     }
     let kept: Vec<&Unit> = units
         .iter()
-        .filter(|u| {
-            since
-                .as_deref()
-                .is_none_or(|s| u.day.as_deref().is_some_and(|d| d >= s))
-        })
+        .filter(|u| runlog::on_or_after(u.last().updated, since))
         .collect();
-    let r = report(&kept, since.as_deref(), &repo.root, log, unparsed);
+    let r = report(&kept, since, &repo.root, log, unparsed);
     println!("{}", serde_json::to_string_pretty(&r)?);
     Ok(ExitCode::SUCCESS)
 }
@@ -185,11 +182,26 @@ mod tests {
     use metrics::{Attempt, RunStats};
 
     #[test]
-    fn since_must_be_a_calendar_date() {
-        assert_eq!(since_date("2026-10-01").unwrap(), "2026-10-01");
-        for bad in ["2026-10-1", "2026-13-01", "yesterday", "2026-10-01T00:00Z"] {
-            let e = since_date(bad).unwrap_err();
-            assert_eq!(e.downcast_ref::<SfError>().unwrap().code, 2, "{bad}");
+    fn since_is_a_utc_instant_or_a_utc_date() {
+        let t = clock::parse_iso("2026-10-01T00:00:00Z").unwrap();
+        assert_eq!(since_instant("2026-10-01").unwrap(), t);
+        assert_eq!(since_instant("2026-10-01T00:00:00Z").unwrap(), t);
+        assert_eq!(since_instant("2026-10-01T02:43:09Z").unwrap(), t + 9789);
+        for bad in [
+            "2026-10-1",
+            "2026-13-01",
+            "yesterday",
+            "2026-10-01T00:00Z",
+            "2026-10-01T00:00:00",
+            "2026-10-01T00:00:00+02:00",
+            "2026-10-01 00:00:00Z",
+            "2026-10-01T24:00:00Z",
+        ] {
+            let e = since_instant(bad).unwrap_err();
+            let e = e.downcast_ref::<SfError>().unwrap();
+            assert_eq!(e.code, 2, "{bad}");
+            assert!(e.to_string().contains("YYYY-MM-DDTHH:MM:SSZ"), "{e}");
+            assert!(e.to_string().contains("YYYY-MM-DD "), "{e}");
         }
     }
 

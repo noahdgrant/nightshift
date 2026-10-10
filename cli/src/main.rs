@@ -272,8 +272,8 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
     /// Report how well units pass review: first-pass yield, findings per 100 lines, leftovers, escapes
     #[command(after_help = QUALITY_HELP)]
     Quality {
-        /// Only units whose newest review artifact was updated on or after this local date (YYYY-MM-DD)
-        #[arg(long, value_name = "DATE")]
+        /// Only units whose newest review artifact was updated, and run-log events, at or after this UTC time (YYYY-MM-DDTHH:MM:SSZ, or YYYY-MM-DD for 00:00:00 UTC)
+        #[arg(long, value_name = "TIME")]
         since: Option<String>,
         /// Print JSON (the default and only format)
         #[arg(long)]
@@ -346,13 +346,15 @@ const QUALITY_HELP: &str = "\
 Examples:
   ns quality
   ns quality --since 2026-10-01
+  ns quality --since 2026-10-09T21:04:00Z
   ns quality --json | jq .first_pass
 
 Spec: docs/FACTORY.md (Quality). Reads .ns/<unit>/review.md, review/cycle-*.md and
 history/review* in every linked worktree, plus <git-common-dir>/ns/runs.jsonl. Read-only.
 First-pass numbers come from a unit's oldest review artifact, the rest from its newest.
 Prints {units,findings,first_pass,cycles_to_clean,leftovers,escapes,leftover_findings,
-escape_findings,trend,run_log,gaps,per_unit}. Dates are local (TZ).
+escape_findings,trend,run_log,gaps,per_unit}. --since and its echo in the output are UTC;
+trend and per_unit days are local (TZ).
 
 Exit codes: 0 ok, 1 git failed, 2 usage error (bad --since, not in a git repo).";
 
