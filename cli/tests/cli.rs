@@ -898,9 +898,23 @@ fn worktree_new_runs_setup_once() {
             .stdout,
     );
     assert_eq!(v["setup"], serde_json::json!([]));
-    assert!(!PathBuf::from(v["path"].as_str().unwrap())
-        .join("setup.out")
-        .exists());
+    let path = PathBuf::from(v["path"].as_str().unwrap());
+    assert!(!path.join("setup.out").exists());
+
+    // A worktree made without setup has none on record, so the next `new` runs it.
+    let v = json(
+        &ns()
+            .current_dir(&root)
+            .args(["worktree", "new", "u2"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["setup"].as_array().unwrap().len(), 2);
+    assert!(path.join("setup.out").exists());
+    // The record lives outside the worktree's files.
+    assert_eq!(git(&path, &["status", "--porcelain"]), "?? setup.out");
 }
 
 #[test]
@@ -948,6 +962,30 @@ fn own_factory_definition_turns_on_the_pre_commit_hook() {
 }
 
 #[test]
+fn a_main_checkout_on_another_unit_runs_that_units_setup() {
+    let (_tmp, root) = repo();
+    factory_def(
+        &root,
+        "[worktree]\nsetup = [\"echo $NS_UNIT >> ../setup.log\"]\n",
+    );
+    let new = |unit: &str| {
+        ns().current_dir(&root)
+            .args(["worktree", "new", unit])
+            .assert()
+            .success();
+    };
+    git(&root, &["checkout", "-q", "-b", "ns/m1"]);
+    new("m1");
+    new("m1");
+    git(&root, &["checkout", "-q", "-b", "ns/m2"]);
+    new("m2");
+    assert_eq!(
+        fs::read_to_string(root.parent().unwrap().join("setup.log")).unwrap(),
+        "m1\nm2\n"
+    );
+}
+
+#[test]
 fn worktree_setup_failure_keeps_worktree_and_retries() {
     let (_tmp, root) = repo();
     factory_def(
@@ -970,6 +1008,19 @@ fn worktree_setup_failure_keeps_worktree_and_retries() {
     assert_eq!(v["setup"][0]["exit"], 1);
     assert!(!path.join("done").exists());
 
+    // A failed setup isn't on record, so the next `new` runs it again.
+    let new_u3 = || {
+        let out = ns()
+            .current_dir(&root)
+            .args(["worktree", "new", "u3"])
+            .output();
+        let setup = json(&out.stdout)["setup"].clone();
+        let failed = setup.as_array().unwrap().iter().any(|r| r["exit"] != 0);
+        assert_eq!(out.status.code(), Some(i32::from(failed)), "{setup}");
+        setup
+    };
+    assert_eq!(new_u3()[0]["exit"], 1);
+
     fs::write(path.join("ready"), "").unwrap();
     let v = json(
         &ns()
@@ -982,6 +1033,18 @@ fn worktree_setup_failure_keeps_worktree_and_retries() {
     );
     assert_eq!(v["setup"][1]["exit"], 0);
     assert!(path.join("done").exists());
+    assert_eq!(new_u3(), serde_json::json!([]));
+
+    // A rerun that fails takes the earlier success off the record.
+    fs::remove_file(path.join("ready")).unwrap();
+    ns().current_dir(&root)
+        .args(["worktree", "setup", "u3"])
+        .assert()
+        .code(1);
+    assert_eq!(new_u3()[0]["exit"], 1);
+    fs::write(path.join("ready"), "").unwrap();
+    assert_eq!(new_u3()[1]["exit"], 0);
+    assert_eq!(new_u3(), serde_json::json!([]));
 
     ns().current_dir(&root)
         .args(["worktree", "setup", "nope"])

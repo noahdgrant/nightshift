@@ -94,7 +94,7 @@ Write `docs/agents/*.md` from the templates in [references/](references/):
 - one of [issue-tracker-github.md](references/issue-tracker-github.md), [issue-tracker-gitlab.md](references/issue-tracker-gitlab.md), [issue-tracker-local.md](references/issue-tracker-local.md). For "other", write `docs/agents/issue-tracker.md` from the user's description, covering the same operations.
 
 If the worktree check found traps:
-- write the fix-up commands to `.nightshift/nightshift.toml` under `[worktree] setup = [...]`. `ns worktree new` runs them in each new worktree, with `NS_UNIT`, `NS_WORKTREE` and `NS_MAIN_ROOT` set.
+- write the fix-up commands to `.nightshift/nightshift.toml` under `[worktree] setup = [...]`. `ns worktree new` runs them in each new worktree, with `NS_UNIT`, `NS_WORKTREE` and `NS_MAIN_ROOT` set, and again when a stop, a crash or a failed command cut them short. Make each safe to rerun on a worktree it already set up.
 - write the worktree-correct build and test commands into `stack.md`.
 - name any shared resource in `stack.md` under "Gotchas", so phases take turns.
 

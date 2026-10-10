@@ -31,7 +31,7 @@ Code examples are Python. Where firmware changes the advice (registers, ISRs, fl
 
 A **unit** is one issue on its way to one PR. Its ID is `<issue-number>-<slug>`, or `<slug>` when there is no issue (`142-uart-timeout`).
 
-Each unit gets one worktree and one artifact folder, created by `ns worktree new <unit-id>`. The first phase that writes an artifact for the unit creates them (`ns-triage` on `ready-for-agent`, `ns-define`, `ns-troubleshoot`, or `ns-build` when started directly). Later phases reuse them, since the command is idempotent. On creation it runs the repo's `[worktree] setup` commands from `.nightshift/nightshift.toml` (submodules, workspace fix-ups). Use the build and test commands in `docs/agents/stack.md`: they are the ones proven to build the worktree's own sources, not the main checkout's:
+Each unit gets one worktree and one artifact folder, created by `ns worktree new <unit-id>`. The first phase that writes an artifact for the unit creates them (`ns-triage` on `ready-for-agent`, `ns-define`, `ns-troubleshoot`, or `ns-build` when started directly). Later phases reuse them, since the command is idempotent. On creation it runs the repo's `[worktree] setup` commands from `.nightshift/nightshift.toml` (submodules, workspace fix-ups), and runs them again on a worktree whose setup never finished. If a setup command fails, the command exits 1: fix the cause, then run `ns worktree setup <unit-id>`. Use the build and test commands in `docs/agents/stack.md`: they are the ones proven to build the worktree's own sources, not the main checkout's:
 
 ```
 <worktree>/.ns/<unit-id>/
