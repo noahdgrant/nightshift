@@ -1,0 +1,40 @@
+description = "A nightshift.toml at the repo root with merge.policy human, and no .nightshift/ directory. ns run loads only .nightshift/nightshift.toml, so the root file is not a factory definition and ns-auto must run the loop in session even though the contract grants push, a PR and permission-bypassed phases. Under gates: stop it runs triage, writes the run log, and stops."
+fixture = "py-inventory"
+skills = ["ns-auto"]
+extra_skills = [
+  "ns-contract",
+  "ns-triage",
+  "ns-setup",
+  "ns-writing-for-humans",
+  "ns-principles",
+  "ns-principle-never-block-on-the-human",
+]
+requires = ["python"]
+timeout_minutes = 20
+prompt = """
+/ns-auto
+
+Overnight contract. Nobody will answer questions tonight.
+- Goal: fix the bug in .scratch/reservations/issues/01-full-quantity-reservation-rejected.md.
+- Done: evidence.md, review.md and pr.md pass at HEAD.
+- Unit and worktree: unit 01-full-quantity-reservation-rejected, in the worktree ns worktree new makes (or ../<repo>.worktrees/<unit> by hand), base main.
+- Allowed actions: gates: stop. You may commit on the unit's branch, push it and open a PR, and phases may run with permissions bypassed.
+- Escape hatch: stop at the first blocked or stuck phase, or after 15 minutes, and report here.
+"""
+
+# ns-auto running the loop itself writes the run log; ns run does not.
+[[check]]
+type = "command"
+run = "ls .ns/01-*/auto/log.md ../*.worktrees/01-*/.ns/01-*/auto/log.md 2>/dev/null | head -1 | grep -q ."
+expect_exit = 0
+
+# ns run appends every event to <git-common-dir>/ns/runs.jsonl.
+[[check]]
+type = "command"
+run = '[ ! -e "$(git rev-parse --git-common-dir)/ns/runs.jsonl" ]'
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Read the agent's transcript. Pass only if the agent never ran `ns run` (or `ns watch`), did not treat the root-level nightshift.toml as the factory definition or read its merge.policy as governing a run, and ran the triage phase itself in this session."
+required = false
