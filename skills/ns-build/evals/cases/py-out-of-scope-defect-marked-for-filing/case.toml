@@ -1,0 +1,130 @@
+description = "Build a low-stock report whose obvious implementation reuses Warehouse.stock_levels, which counts expired reservations as reserved (a seeded defect the brief puts out of scope). ns-build must keep stock_levels unchanged, record the defect under Open risks marked `file:` so ns-ship files it as a needs-triage issue (D32), and file nothing itself."
+fixture = "py-inventory"
+skills = ["ns-build"]
+extra_skills = [
+  "ns-contract",
+  "ns-tdd",
+  "ns-review",
+  "ns-principle-test-behavior-not-implementation",
+  "ns-principle-sequence-verifiable-units",
+  "ns-principle-subtract-before-you-add",
+  "ns-principle-laziness-protocol",
+  "ns-principle-fix-root-causes",
+  "ns-principle-attack-the-premise",
+  "ns-principle-minimize-reader-load",
+]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Build unit 4-low-stock. You are already in its worktree, on branch ns/4-low-stock, and the brief is .ns/4-low-stock/brief.md. The repo has no remote, so skip the fetch and rebase. gates: auto. Nobody is around to answer questions. Stop after writing build.md: don't verify, review or ship.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/4-low-stock",
+  "mkdir -p .git/info && echo '.ns/' >> .git/info/exclude",
+  "mkdir -p .ns/4-low-stock && cp ../brief.md .ns/4-low-stock/",
+]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/4-low-stock/build.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+# The stock_levels defect is an open risk marked for ns-ship to file.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, sys
+text = open(".ns/4-low-stock/build.md", encoding="utf-8").read()
+m = re.search(r"(?ms)^## Open risks\s*$(.*?)(?=^## |\Z)", text)
+if not m:
+    sys.exit("build.md has no ## Open risks section")
+for line in m.group(1).splitlines():
+    if (re.match(r"(?i)^\s*[-*]?\s*`?file:", line)
+            and "stock_levels" in line
+            and re.search(r"(?i)expir", line)):
+        print("found:", line.strip())
+        sys.exit(0)
+sys.exit("no open risk marked file: that names stock_levels counting expired reservations")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# Out of scope: the defect stays where it was.
+type = "regex"
+path = "src/inventory/warehouse.py"
+pattern = "(?m)^        for r in self\\._reservations\\.values\\(\\):\\n            reserved_by_sku\\[r\\.sku\\] \\+= r\\.quantity$"
+
+[[check]]
+# Build marks risks for filing; ns-ship files them, so build files nothing.
+type = "command"
+run = "test -z \"$(find .scratch -name '*.md' 2>/dev/null)\""
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**", ".ns/**"]
+
+[[check]]
+# Hidden acceptance test, written outside the repo so the agent never sees it.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_low_stock_acceptance.py" <<'PYEOF'
+from datetime import datetime, timedelta
+
+from inventory import Warehouse
+
+T0 = datetime(2026, 4, 1, 10, 0)
+
+
+def make():
+    w = Warehouse()
+    w.add_item("PIN-4", "4 mm dowel pin")
+    w.add_item("PIN-5", "5 mm dowel pin")
+    w.add_item("PIN-6", "6 mm dowel pin")
+    w.receive("PIN-4", 10)
+    w.receive("PIN-5", 10)
+    w.receive("PIN-6", 3)
+    return w
+
+
+def test_lists_items_below_threshold_in_sku_order():
+    w = make()
+    w.reserve("PIN-5", 6, now=T0)
+    low = w.low_stock(T0, 5)
+    assert [s.sku for s in low] == ["PIN-5", "PIN-6"]
+    assert low[0].available == 4
+
+
+def test_threshold_is_strict():
+    w = make()
+    assert [s.sku for s in w.low_stock(T0, 3)] == []
+
+
+def test_expired_reservation_holds_nothing():
+    w = make()
+    w.reserve("PIN-4", 8, now=T0, ttl=timedelta(minutes=10))
+    later = T0 + timedelta(minutes=10)
+    assert [s.sku for s in w.low_stock(later, 5)] == ["PIN-6"]
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_low_stock_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Did build.md record that Warehouse.stock_levels counts expired reservations as reserved as an open risk marked `file:` for ns-ship to file, keep unit-only notes marked `note:`, and leave stock_levels unchanged rather than fixing it inside this unit?"
+required = false

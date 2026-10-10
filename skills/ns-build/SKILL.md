@@ -54,6 +54,11 @@ While building, apply these principles:
 
 **Scope.** Touch only what the brief requires. Something worth fixing outside it goes in `build.md` under open risks, not in the diff. A change the brief asked for that you made differently goes under deviations, with the reason.
 
+**Open risks** come in two kinds, and each line in `build.md` starts with its kind:
+
+- `file:` a concrete defect or missing work outside the unit's scope, with its location and the evidence you saw. `ns-ship` files it as a `needs-triage` issue when it opens the PR, and writes the issue number back.
+- `note:` a note about this unit only: an untested path, a seam not reached ("verify covers it"), a docs conflict.
+
 **Size.** After each commit, check the unit's changed lines against the hard limit in `docs/agents/stack.md` ([unit size](../ns-contract/SKILL.md#target-repo-configuration)). Past it with acceptance criteria still unmet, stop: write `build.md` with `status: blocked` and "unit too large, split it" as the first line of the body, and list the criteria met and the ones left so triage can split the rest.
 
 **Commit each green slice** with a Conventional Commit, `type(scope): subject` (`feat(uart): time out reads after 50 ms`). One logical change per commit, each one building and passing on its own. Run single test files during the loop and the typecheck when the stack has one.
@@ -114,7 +119,9 @@ Branches: <n> listed, all tested. One line per branch: <file:line> <branch>: <te
 <what changed and why>, or "none"
 
 ## Open risks
-<untested paths, seams not reached, things noticed but out of scope>, or "none"
+- file: <defect or missing work outside the scope>: <location, evidence>
+- note: <untested path, seam not reached, anything else about this unit>
+or "none"
 ```
 
 If any step ran inline instead of through a fresh-context agent, say so here.
