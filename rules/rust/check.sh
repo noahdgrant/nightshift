@@ -65,11 +65,12 @@ case $tool in
     done <"$tmp/lints"
     cargo clippy -q --manifest-path "$dir/Cargo.toml" --workspace --all-targets \
       --message-format=json -- -D warnings "$@" >"$report" 2>"$log" || status=$?
-    filter='select(.reason == "compiler-message") | .message | select(.code)
+    filter='select(.reason == "compiler-message") | .message | select(.code or ($failed and .level == "error"))
+      | (.code.code // "compile-error") as $rule
       | (.spans[] | select(.is_primary)) as $s
-      | {tool: "clippy", rule: .code.code, file: ($dir + "/" + $s.file_name),
+      | {tool: "clippy", rule: $rule, file: ($dir + "/" + $s.file_name),
          line: $s.line_start,
-         message: (.message + " (quality bar" + ($links[0][.code.code] | if . then ", " + . else "" end) + ": '$quality')")}'
+         message: (.message + " (quality bar" + ($links[0][$rule] | if . then ", " + . else "" end) + ": '$quality')")}'
     ;;
   deny)
     list=$pack/allowed-crates.txt
@@ -116,7 +117,7 @@ EOF
     ;;
 esac
 
-found=$(jq -cR --arg dir "$dir" --arg list "$list" --slurpfile links "$links" "fromjson? | $filter" "$report" | sort -u)
+found=$(jq -cR --arg dir "$dir" --arg list "$list" --argjson failed "$([ "$status" -ne 0 ] && echo true || echo false)" --slurpfile links "$links" "fromjson? | $filter" "$report" | sort -u)
 if [ -n "$found" ]; then
   printf '%s\n' "$found"
 elif [ "$status" -ne 0 ]; then

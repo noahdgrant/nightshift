@@ -340,6 +340,43 @@ fn clippy_lints_every_workspace_member() {
 }
 
 #[test]
+fn a_syntax_error_in_one_member_is_a_finding_next_to_another_members_lint() {
+    let r = Repo::new();
+    let root = r.read("Cargo.toml");
+    r.write(
+        "Cargo.toml",
+        &format!("{root}\n[workspace]\nmembers = [\"good\", \"bad\"]\n"),
+    );
+    for name in ["good", "bad"] {
+        r.write(
+            &format!("{name}/Cargo.toml"),
+            &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\nlicense = \"MIT\"\npublish = false\n"),
+        );
+    }
+    r.write(
+        "good/src/lib.rs",
+        "pub fn count(v: Vec<u8>) -> usize {\n    v.len()\n}\n",
+    );
+    r.write("bad/src/lib.rs", "pub fn f( {\n");
+    r.write(
+        ".nightshift/rules/rust/allowed-crates.txt",
+        "app\nextra\ngood\nbad\n",
+    );
+    let new = r.new_findings();
+    let rules: Vec<&str> = new.iter().map(|f| f["rule"].as_str().unwrap()).collect();
+    assert!(rules.contains(&"compile-error"), "{new:?}");
+    let e = new.iter().find(|f| f["rule"] == "compile-error").unwrap();
+    assert_eq!(e["file"], "bad/src/lib.rs", "{e}");
+    assert!(
+        e["message"]
+            .as_str()
+            .unwrap()
+            .contains("skills/ns-contract/references/quality-bar.md"),
+        "{e}"
+    );
+}
+
+#[test]
 fn install_adds_the_row_when_the_commands_table_ends_the_file() {
     let r = Repo::new();
     let stack = r.read("docs/agents/stack.md");
@@ -565,11 +602,11 @@ fn a_missing_tool_fails_the_check_and_names_the_tool() {
 #[test]
 fn a_tool_that_fails_with_no_findings_shows_its_output() {
     let r = Repo::new();
-    r.write("src/main.rs", "fn main( {\n");
+    r.write("Cargo.toml", "[package\n");
     let (code, v, err) = r.check();
     assert_eq!(code, Some(1), "{v} {err}");
     assert!(err.contains("with no findings it could read"), "{err}");
-    assert!(err.contains("src/main.rs"), "{err}");
+    assert!(err.contains("Cargo.toml"), "{err}");
 }
 
 #[test]
