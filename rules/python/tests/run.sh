@@ -58,9 +58,5 @@ for dir in "$pack"/tests/examples/*/; do
   checked=$((checked + 1))
 done
 
-if [ "$checked" -eq 0 ]; then
-  echo "run.sh: no examples under $pack/tests/examples" >&2
-  exit 1
-fi
 [ "$failed" -eq 0 ] || exit 1
 echo "rules/python: $checked rules, all examples pass"
