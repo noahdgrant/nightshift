@@ -3067,6 +3067,19 @@ fn rebased_after_review(
     print_pr_head_sha: &str,
     setup: impl FnOnce(&Env),
 ) -> (Env, Value, i32) {
+    let rebase = "git update-ref refs/heads/main upstream\n\
+                  git -c user.name=f -c user.email=f@f rebase -q main\n";
+    main_moves_after_review(ship, print_pr_head_sha, rebase, setup)
+}
+
+/// The commit main gains after review is on branch `upstream`; `pass:script` in ship runs
+/// `bring_in` to take it into the unit.
+fn main_moves_after_review(
+    ship: &[&str],
+    print_pr_head_sha: &str,
+    bring_in: &str,
+    setup: impl FnOnce(&Env),
+) -> (Env, Value, i32) {
     let e = Env::new();
     e.factory(AUTO);
     e.ctl("pr", "12");
@@ -3076,14 +3089,12 @@ fn rebased_after_review(
     fs::write(e.root.join("UPSTREAM"), "x\n").unwrap();
     git(&e.root, &["add", "UPSTREAM"]);
     git(&e.root, &["commit", "-q", "-m", "upstream"]);
-    let upstream = git(&e.root, &["rev-parse", "HEAD"]);
     git(&e.root, &["checkout", "-q", "main"]);
     e.ctl(
         "ship.sh",
         &format!(
             "({print_pr_head_sha}) | tee \"$FAKE_GH_DIR/pr-12.head\" > \"$FAKE_GH_DIR/pr-12.shipped\"\n\
-             git update-ref refs/heads/main {upstream}\n\
-             git -c user.name=f -c user.email=f@f rebase -q main\n"
+             {bring_in}"
         ),
     );
     e.gh_file("checks-12.json", GREEN);
@@ -3191,6 +3202,37 @@ fn a_pr_head_with_other_content_needs_a_human_merge() {
         "{v}"
     );
     assert!(!e.gh_calls().contains("pr merge"));
+}
+
+/// Ship merges main's new commit as `git pull origin main` would, leaving local main behind.
+const MERGE_UPSTREAM: &str =
+    "git -c user.name=f -c user.email=f@f merge -q --no-ff --no-edit upstream\n";
+
+#[test]
+fn a_merge_of_main_after_review_still_merges() {
+    let (e, v, code) =
+        main_moves_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, MERGE_UPSTREAM, |_| {});
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    assert_eq!(e.calls(), ["triage", "build", "verify", "review", "ship"]);
+}
+
+#[test]
+fn a_merge_of_main_that_changes_the_units_diff_reverifies() {
+    let resolve = "git merge -q --no-ff --no-commit upstream\n\
+                   echo resolved >> work.txt && git add work.txt\n\
+                   git -c user.name=f -c user.email=f@f commit -q --no-edit\n\
+                   git rev-parse HEAD > \"$FAKE_GH_DIR/pr-12.head\"\n";
+    let (e, v, code) = main_moves_after_review(
+        &["pass:script", "pass"],
+        PRINT_HEAD_SHA_CMD,
+        resolve,
+        |_| {},
+    );
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "ship", "verify", "review", "ship"]
+    );
 }
 
 #[test]
