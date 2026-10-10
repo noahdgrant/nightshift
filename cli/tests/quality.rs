@@ -357,19 +357,102 @@ fn days_are_local_and_since_filters_by_them() {
     );
     assert_eq!(v["per_unit"][0]["day"], "2026-10-08");
 
+    // --since is UTC: 02:30Z on the 9th is kept from the 9th though its local day is the 8th.
     let v = quality(&f, &["--since", "2026-10-09"]);
-    assert_eq!(v["since"], "2026-10-09");
+    assert_eq!(v["since"], "2026-10-09T00:00:00Z");
+    assert_eq!(v["units"], 2);
+    assert_eq!(v["run_log"]["review_runs"], 4);
+
+    let v = quality(&f, &["--since", "2026-10-09T02:30:01Z"]);
     assert_eq!(v["units"], 1);
     assert_eq!(v["per_unit"][0]["unit"], "2-beta");
     assert_eq!(v["run_log"]["review_runs"], 3);
 
-    let v = quality(&f, &["--since", "2026-10-08"]);
-    assert_eq!(v["units"], 2);
-
-    let v = quality(&f, &["--since", "2026-10-11"]);
+    let v = quality(&f, &["--since", "2026-10-11T03:00:01Z"]);
     assert_eq!(v["units"], 0);
     assert_eq!(v["first_pass"]["yield"], Value::Null);
     assert_eq!(v["trend"], json!([]));
+}
+
+fn quality_tz(f: &Fixture, tz: &str, args: &[&str]) -> Value {
+    let out = ns()
+        .current_dir(&f.root)
+        .env("TZ", tz)
+        .arg("quality")
+        .args(args)
+        .output();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+/// Adds unit `6-late`, reviewed at 02:43Z on the 10th: the evening of the 9th in New York.
+fn late_unit(f: &Fixture) {
+    let (wt, _) = unit_worktree(&f.root, "6-late");
+    write(
+        wt.join(".ns/6-late/review.md"),
+        &review(
+            "status: pass
+updated: 2026-10-10T02:43:00Z
+cycles: 0
+",
+            "",
+        ),
+    );
+    let log = f.root.join(".git/ns/runs.jsonl");
+    let mut text = fs::read_to_string(&log).unwrap();
+    text.push_str(
+        &json!({"event":"phase","phase":"review","cost_usd":0.75,"unit":"6-late","ts":"2026-10-10T02:43:00Z"})
+            .to_string(),
+    );
+    fs::write(log, text + "\n").unwrap();
+}
+
+fn selected(v: &Value) -> (Vec<String>, Value, Value) {
+    let units = v["per_unit"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["unit"].as_str().unwrap().to_string())
+        .collect();
+    (
+        units,
+        v["run_log"]["events"].clone(),
+        v["run_log"]["review_runs"].clone(),
+    )
+}
+
+#[test]
+fn since_a_date_does_not_depend_on_tz() {
+    let f = fixture();
+    late_unit(&f);
+    // New York's rules spelled out, so the test needs no tz database.
+    let ny = quality_tz(&f, "EST5EDT,M3.2.0,M11.1.0", &["--since", "2026-10-10"]);
+    let utc = quality_tz(&f, "UTC0", &["--since", "2026-10-10"]);
+    assert_eq!(selected(&ny), selected(&utc));
+    assert_eq!(
+        selected(&ny),
+        (
+            vec!["2-beta".to_string(), "6-late".to_string()],
+            json!(5),
+            json!(3)
+        )
+    );
+}
+
+#[test]
+fn since_a_date_is_midnight_utc() {
+    let f = fixture();
+    late_unit(&f);
+    assert_eq!(
+        quality(&f, &["--since", "2026-10-10"]),
+        quality(&f, &["--since", "2026-10-10T00:00:00Z"])
+    );
+    let v = quality(&f, &["--since", "2026-10-10T02:43:01Z"]);
+    assert_eq!(selected(&v).0, ["2-beta"]);
 }
 
 #[test]
@@ -429,8 +512,19 @@ fn usage_errors_exit_2_with_a_correct_invocation() {
         .args(["quality", "--since", "10/09/2026"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("is not a date"))
-        .stderr(predicate::str::contains("ns quality --since 2026-10-01"));
+        .stderr(predicate::str::contains(
+            "YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD",
+        ))
+        .stderr(predicate::str::contains(
+            "ns quality --since 2026-10-01T00:00:00Z",
+        ));
+    ns().current_dir(&f.root)
+        .args(["quality", "--since", "garbage"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD",
+        ));
     let tmp = tempfile::tempdir().unwrap();
     ns().current_dir(tmp.path())
         .arg("quality")

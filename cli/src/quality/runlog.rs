@@ -24,17 +24,13 @@ pub struct RunLog {
     pub units_without_artifacts: Vec<String>,
 }
 
-/// Whether an event at `ts` falls on or after the local day `since`. An undated event never
-/// does.
-pub fn on_or_after(ts: Option<i64>, since: Option<&str>) -> bool {
-    match since {
-        None => true,
-        Some(s) => ts.is_some_and(|t| clock::local_date(t).as_str() >= s),
-    }
+/// Whether `ts` is at or after the instant `since`. An undated one never is.
+pub fn on_or_after(ts: Option<i64>, since: Option<i64>) -> bool {
+    since.is_none_or(|s| ts.is_some_and(|t| t >= s))
 }
 
 /// Review runs, review cost, and the last outcome and PR, per unit.
-pub fn read(path: &Path, since: Option<&str>) -> (RunLog, BTreeMap<String, RunStats>) {
+pub fn read(path: &Path, since: Option<i64>) -> (RunLog, BTreeMap<String, RunStats>) {
     let mut log = RunLog {
         path: path.display().to_string(),
         present: path.is_file(),
@@ -126,20 +122,21 @@ not json
         assert_eq!(runs["c"].review_cost_usd, 0.3);
     }
 
-    // Day boundaries depend on TZ, so `--since` on the log is tested in tests/quality.rs,
-    // which pins it. These cases hold in every zone.
     #[test]
     fn undated_events_are_dropped_only_with_since() {
         assert!(on_or_after(None, None));
         assert!(on_or_after(Some(0), None));
-        assert!(!on_or_after(None, Some("2026-10-09")));
-        assert!(on_or_after(
-            Some(1_791_504_000 + 3 * 86_400),
-            Some("2026-10-09")
-        ));
+        assert!(!on_or_after(None, Some(0)));
+    }
+
+    #[test]
+    fn since_cuts_off_at_the_instant() {
+        let since = clock::parse_iso("2026-10-10T00:00:00Z");
+        assert!(on_or_after(clock::parse_iso("2026-10-10T02:43:00Z"), since));
+        assert!(on_or_after(since, since));
         assert!(!on_or_after(
-            Some(1_791_504_000 - 3 * 86_400),
-            Some("2026-10-09")
+            clock::parse_iso("2026-10-09T23:59:59Z"),
+            since
         ));
     }
 }
