@@ -526,6 +526,16 @@ mod tests {
     }
 
     #[test]
+    fn known_pr_breaks_updated_and_counter_ties_by_file_name() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        let same = "2026-10-08T01:00:00Z";
+        pr_art(d, "history/pr-1.md", 21, same);
+        pr_art(d, "history/pr-timeout-1.md", 23, same);
+        assert_eq!(known_pr(d), Some(23));
+    }
+
+    #[test]
     fn known_pr_skips_an_archive_whose_pr_does_not_parse() {
         let t = tempfile::tempdir().unwrap();
         let d = t.path();
