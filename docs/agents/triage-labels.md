@@ -41,7 +41,7 @@ Every issue also carries at least one area label.
 | `needs-triage` | `status:needs-triage` | New, not yet evaluated | `ns-triage` (`ns watch` triages these, and issues with no state, before each unit) |
 | `needs-info` | `status:needs-info` | Waiting on the reporter for more information | reporter, then `ns-triage` |
 | `needs-repro` | `status:needs-repro` | A bug with no reproducible failure yet | `ns-troubleshoot` |
-| `needs-define` | `status:needs-define` | Intent unclear, or the change is large | `ns-define` |
+| `needs-define` | `status:needs-define` | Intent unclear, the change is large, or a design decision is open: the issue leaves the implementer to choose a mechanism, format, interface or tool | `ns-define` |
 | `ready-for-agent` | `status:ready-for-agent` | Agent Brief written, small enough to build directly | `ns-build` (picked up by `ns watch`) |
 | `ready-for-human` | `status:ready-for-human` | Needs a human (a judgement call, credentials, a stuck run) | a person |
 | `wontfix` | `status:wontfix` | Will not be actioned; close as not planned | none |
