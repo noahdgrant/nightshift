@@ -52,7 +52,14 @@ While building, apply these principles:
 - [Attack the premise](../ns-principle-attack-the-premise/SKILL.md) when two fixes that share one assumption have failed the same test. Write the premise down before a third fix.
 - [Minimize reader load](../ns-principle-minimize-reader-load/SKILL.md) before each commit: collapse one-caller wrappers, shrink mutable state.
 
-**Scope.** Touch only what the brief requires. Something worth fixing outside it goes in `build.md` under open risks, not in the diff. A change the brief asked for that you made differently goes under deviations, with the reason.
+**Scope.** Touch only what the brief requires. Something worth fixing outside it goes in `build.md` as a `file:` line (see Open risks kinds below), not in the diff. A change the brief asked for that you made differently goes under deviations, with the reason.
+
+**Open risks** come in two kinds, and each line in `build.md` starts with its kind:
+
+- `file:` a concrete defect or missing work outside the unit's scope, with its location and the evidence you saw. `ns-ship` files it as a `needs-triage` issue when it opens the PR, and writes the issue number back.
+- `note:` a note about this unit only: an untested path, a seam not reached ("verify covers it"), a docs conflict.
+
+`ns-ship`, not build, later rewrites a `file:` line to `filed: #<n>` or `unfiled: <reason>`. Build writes only `file:` and `note:`.
 
 **Size.** After each commit, check the unit's changed lines against the hard limit in `docs/agents/stack.md` ([unit size](../ns-contract/SKILL.md#target-repo-configuration)). Past it with acceptance criteria still unmet, stop: write `build.md` with `status: blocked` and "unit too large, split it" as the first line of the body, and list the criteria met and the ones left so triage can split the rest.
 
@@ -114,8 +121,13 @@ Branches: <n> listed, all tested. One line per branch: <file:line> <branch>: <te
 <what changed and why>, or "none"
 
 ## Open risks
-<untested paths, seams not reached, things noticed but out of scope>, or "none"
+- file: <defect or missing work outside the scope>: <location, evidence>
+- note: <untested path, seam not reached, anything else about this unit>
+- filed: #<n> (written by ns-ship in place of a file: line, never by build)
+- unfiled: <reason> (written by ns-ship when the tracker was unreachable, never by build)
 ```
+
+Write `none` under the heading when there are no risks.
 
 If any step ran inline instead of through a fresh-context agent, say so here.
 
