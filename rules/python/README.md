@@ -19,19 +19,9 @@ import os  # noqa: F401  # re-exported for callers
 
 ## Install
 
-The `ns-setup` skill installs the pack. By hand:
+The `ns-setup` skill installs the pack, and [its steps](../../skills/ns-setup/references/rules-python.md) work by hand too. It copies `ruff.toml`, `sgconfig.yml`, `rules/` and `utils/` to `.nightshift/rules/python/` in the target repo and adds a `rules` row to `docs/agents/stack.md`. `.nightshift/**` needs a human merge, so an agent can't loosen a rule or the allowlist to get a unit through.
 
-1. Copy `ruff.toml`, `sgconfig.yml`, `rules/` and `utils/` to `.nightshift/rules/python/` in the target repo. `.nightshift/**` needs a human merge, so an agent can't loosen a rule or the allowlist to get a unit through.
-2. Fill in the allowlist (below).
-3. Add the `rules` row to the Commands table in `docs/agents/stack.md`:
-
-   ```markdown
-   | rules | `ruff check --config .nightshift/rules/python/ruff.toml --no-cache --output-format=concise .`, `ast-grep scan --report-style short -c .nightshift/rules/python/sgconfig.yml .` | 1 s |
-   ```
-
-4. Run `ns rules check` to see the findings, then have a human accept the existing ones with `ns rules baseline --allow-growth`.
-
-`ruff check --config` replaces the repo's own ruff config for that run, so the repo's ignores can't hide a pack rule. Both tools must be on `PATH`: `uv tool install ruff` and `uv tool install ast-grep-cli`.
+`ruff check --config` replaces the repo's own ruff config for that run, so the repo's ignores can't hide a pack rule. Both tools must be on `PATH`: `uv tool install ruff ast-grep-cli`.
 
 ## The allowlist
 
