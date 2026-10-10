@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+use super::blame::Blame;
+
 use crate::review_md::{CycleEntry, Finding, Scope, Severity, Status, AXES};
 use crate::stats::{median, round};
 
@@ -28,6 +30,9 @@ pub struct Attempt {
     pub stray_statuses: usize,
     /// The Critical and Important findings the first pass's `cycle-0.md` or `cycle-1.md` lists.
     pub first_pass_file: Vec<CycleEntry>,
+    /// Escapes already blamed, by index in `findings`: a quality record's, taken when it was
+    /// written. Empty for an attempt read from a worktree, which is blamed when reported.
+    pub introduced_by: BTreeMap<usize, Blame>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -41,7 +46,8 @@ pub struct RunStats {
 #[derive(Debug, Clone)]
 pub struct Unit {
     pub id: String,
-    pub worktree: String,
+    /// The linked worktree it was read from; `None` when it came from a quality record.
+    pub worktree: Option<String>,
     /// Oldest first; never empty.
     pub attempts: Vec<Attempt>,
     /// Local date of the newest attempt's `updated:`.
@@ -392,7 +398,7 @@ mod tests {
     fn unit(id: &str, day: Option<&str>, attempts: Vec<Attempt>) -> Unit {
         Unit {
             id: id.into(),
-            worktree: format!("/w/{id}"),
+            worktree: Some(format!("/w/{id}")),
             attempts,
             day: day.map(String::from),
             run: RunStats::default(),

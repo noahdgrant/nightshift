@@ -4,11 +4,11 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::git;
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Blame {
     pub commit: String,
     pub summary: String,

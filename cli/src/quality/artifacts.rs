@@ -29,7 +29,7 @@ fn unparsed(wt: &Path, path: &Path, reason: impl Into<String>) -> Unparsed {
 
 /// A hex sha (7 to 40 digits), or `None`. Artifact values are model-written, so nothing else
 /// reaches a git command line.
-fn sha(v: &str) -> Option<String> {
+pub(super) fn sha(v: &str) -> Option<String> {
     let ok = (7..=40).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_hexdigit());
     ok.then(|| v.to_string())
 }
@@ -84,6 +84,7 @@ fn read_attempt(
     wt: &Path,
     path: &Path,
     cycle_dir: Option<&Path>,
+    git_at: &Path,
     gaps: &mut Vec<Unparsed>,
 ) -> Option<Attempt> {
     let text = match fs::read_to_string(path) {
@@ -109,7 +110,7 @@ fn read_attempt(
         None => match base
             .as_deref()
             .zip(head.as_deref())
-            .and_then(|(b, h)| shortstat(wt, b, h))
+            .and_then(|(b, h)| shortstat(git_at, b, h))
         {
             Some(n) => (Some(n), Some("git")),
             None => (None, None),
@@ -126,13 +127,20 @@ fn read_attempt(
         findings: review_md::parse(body),
         stray_statuses: review_md::stray_statuses(body),
         first_pass_file: first_pass_file(cycle_dir),
+        introduced_by: Default::default(),
     })
 }
 
 /// A unit's review attempts, oldest first: archived `history/review*.md` by `updated:` (undated
 /// first), then `review.md`. `review/` holds the newest attempt's cycle files; an archived
-/// attempt's are in `history/<stem>/`.
-pub fn read_attempts(wt: &Path, dir: &Path, gaps: &mut Vec<Unparsed>) -> Vec<Attempt> {
+/// attempt's are in `history/<stem>/`. A change size missing from the Summary is measured in
+/// `git_at`: the worktree, or the repo an archived worktree came from.
+pub fn read_attempts(
+    wt: &Path,
+    dir: &Path,
+    git_at: &Path,
+    gaps: &mut Vec<Unparsed>,
+) -> Vec<Attempt> {
     let hist = dir.join("history");
     let mut names: Vec<String> = fs::read_dir(&hist)
         .map(|es| {
@@ -149,7 +157,7 @@ pub fn read_attempts(wt: &Path, dir: &Path, gaps: &mut Vec<Unparsed>) -> Vec<Att
         if let Some(stem) = name.strip_suffix(".md").filter(|_| path.is_file()) {
             let cycles = hist.join(stem);
             let cycles = cycles.is_dir().then_some(cycles);
-            attempts.extend(read_attempt(wt, &path, cycles.as_deref(), gaps));
+            attempts.extend(read_attempt(wt, &path, cycles.as_deref(), git_at, gaps));
         } else if path.is_dir() && !hist.join(format!("{name}.md")).is_file() {
             gaps.push(unparsed(wt, &path, "cycle files with no review artifact"));
         }
@@ -159,7 +167,7 @@ pub fn read_attempts(wt: &Path, dir: &Path, gaps: &mut Vec<Unparsed>) -> Vec<Att
     let current = current.is_dir().then_some(current);
     let review = dir.join("review.md");
     if review.exists() {
-        attempts.extend(read_attempt(wt, &review, current.as_deref(), gaps));
+        attempts.extend(read_attempt(wt, &review, current.as_deref(), git_at, gaps));
     } else if let Some(last) = attempts.last_mut() {
         if last.first_pass_file.is_empty() {
             last.first_pass_file = first_pass_file(current.as_deref());
@@ -199,7 +207,7 @@ pub fn discover(repo: &Repo, gaps: &mut Vec<Unparsed>) -> Result<Vec<Unit>> {
             if units.contains_key(&id) {
                 continue;
             }
-            let attempts = read_attempts(&wt, &dir, gaps);
+            let attempts = read_attempts(&wt, &dir, &wt, gaps);
             if attempts.is_empty() {
                 continue;
             }
@@ -211,7 +219,7 @@ pub fn discover(repo: &Repo, gaps: &mut Vec<Unparsed>) -> Result<Vec<Unit>> {
                 id.clone(),
                 Unit {
                     id,
-                    worktree: wt.display().to_string(),
+                    worktree: Some(wt.display().to_string()),
                     attempts,
                     day,
                     run: RunStats::default(),
@@ -290,7 +298,7 @@ mod tests {
         fs::write(hist.join("evidence-1.md"), art("", "")).unwrap();
         fs::write(dir.join("review/cycle-0.md"), "- I9 b\n").unwrap();
         let mut gaps = Vec::new();
-        let a = read_attempts(wt, &dir, &mut gaps);
+        let a = read_attempts(wt, &dir, wt, &mut gaps);
         let paths: Vec<_> = a.iter().map(|a| a.path.as_str()).collect();
         assert_eq!(
             paths,
@@ -309,14 +317,14 @@ mod tests {
             art("updated: 2026-10-01T00:00:00Z\n", ""),
         )
         .unwrap();
-        let a = read_attempts(wt, &dir, &mut gaps);
+        let a = read_attempts(wt, &dir, wt, &mut gaps);
         assert_eq!(a.len(), 4);
         assert_eq!(a[3].path, ".ns/u/review.md");
         assert_eq!(ids(&a[3].first_pass_file), ["I9"]);
         assert!(a[2].first_pass_file.is_empty());
 
         fs::write(dir.join("review.md"), "no frontmatter\n").unwrap();
-        let a = read_attempts(wt, &dir, &mut gaps);
+        let a = read_attempts(wt, &dir, wt, &mut gaps);
         assert_eq!(a.len(), 3);
         assert!(a[2].first_pass_file.is_empty());
         assert_eq!(
@@ -337,7 +345,7 @@ mod tests {
         fs::write(dir.join("history/review-1.md"), art("", "")).unwrap();
         fs::write(dir.join("history/review-1/cycle-1.md"), "- I5 a\n").unwrap();
         fs::write(dir.join("review/cycle-0.md"), "- I9 b\n").unwrap();
-        let a = read_attempts(tmp.path(), &dir, &mut Vec::new());
+        let a = read_attempts(tmp.path(), &dir, tmp.path(), &mut Vec::new());
         assert_eq!(ids(&a[0].first_pass_file), ["I5"]);
     }
 
@@ -348,7 +356,7 @@ mod tests {
         fs::create_dir_all(dir.join("review")).unwrap();
         fs::write(dir.join("review/cycle-1.md"), "- I1 a\n").unwrap();
         let mut gaps = Vec::new();
-        assert!(read_attempts(tmp.path(), &dir, &mut gaps).is_empty());
+        assert!(read_attempts(tmp.path(), &dir, tmp.path(), &mut gaps).is_empty());
         assert_eq!(
             gaps,
             [Unparsed {
@@ -358,7 +366,7 @@ mod tests {
         );
         fs::remove_dir_all(dir.join("review")).unwrap();
         let mut gaps = Vec::new();
-        assert!(read_attempts(tmp.path(), &dir, &mut gaps).is_empty());
+        assert!(read_attempts(tmp.path(), &dir, tmp.path(), &mut gaps).is_empty());
         assert!(gaps.is_empty());
     }
 
@@ -372,7 +380,7 @@ mod tests {
         )
         .unwrap();
         let mut gaps = Vec::new();
-        let a = read_attempt(tmp.path(), &p, None, &mut gaps).unwrap();
+        let a = read_attempt(tmp.path(), &p, None, tmp.path(), &mut gaps).unwrap();
         assert_eq!(a.path, "review.md");
         assert_eq!(a.status.as_deref(), Some("blocked"));
         assert_eq!(a.updated, Some(1_791_504_000));
@@ -384,7 +392,7 @@ mod tests {
         );
         assert_eq!((a.findings.len(), a.stray_statuses), (1, 1));
         fs::write(&p, "---\nbase: main@HEAD\nhead: abcdef0\n---\n").unwrap();
-        let a = read_attempt(tmp.path(), &p, None, &mut gaps).unwrap();
+        let a = read_attempt(tmp.path(), &p, None, tmp.path(), &mut gaps).unwrap();
         assert_eq!(
             (
                 a.blame_at.as_deref(),
@@ -398,13 +406,20 @@ mod tests {
             "---\nsha: 1234567\nbase: main@0e05787\nhead: abcdef0\n---\n",
         )
         .unwrap();
-        let a = read_attempt(tmp.path(), &p, None, &mut gaps).unwrap();
+        let a = read_attempt(tmp.path(), &p, None, tmp.path(), &mut gaps).unwrap();
         assert_eq!(a.blame_at.as_deref(), Some("1234567"));
         fs::write(&p, "---\nsha: HEAD\nbase: main@HEAD\n---\n").unwrap();
-        let a = read_attempt(tmp.path(), &p, None, &mut gaps).unwrap();
+        let a = read_attempt(tmp.path(), &p, None, tmp.path(), &mut gaps).unwrap();
         assert_eq!(a.blame_at, None);
         assert_eq!((a.status, a.updated, a.cycles), (None, None, None));
-        assert!(read_attempt(tmp.path(), &tmp.path().join("gone.md"), None, &mut gaps).is_none());
+        assert!(read_attempt(
+            tmp.path(),
+            &tmp.path().join("gone.md"),
+            None,
+            tmp.path(),
+            &mut gaps
+        )
+        .is_none());
         assert!(gaps[0].reason.starts_with("unreadable: "), "{gaps:?}");
     }
 
