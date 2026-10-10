@@ -825,66 +825,61 @@ fn compact_mode_pins_the_limit_at_200_characters() {
 }
 
 #[cfg(unix)]
-struct Locked(PathBuf, u32);
-
-#[cfg(unix)]
-impl Locked {
-    fn new(path: &Path, restore: u32) -> Self {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
-        Self(path.to_path_buf(), restore)
-    }
-}
-
-#[cfg(unix)]
-impl Drop for Locked {
-    fn drop(&mut self) {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(self.1));
-    }
-}
-
-#[cfg(unix)]
 #[test]
-fn an_unreadable_project_dir_is_skipped() {
+fn list_project_follows_a_symlink_to_the_recorded_cwd() {
     let home = home();
-    let locked = home.path().join(".claude/projects/-work-locked");
-    fs::create_dir_all(&locked).unwrap();
-    fs::write(
-        locked.join("eeee5555-0000-4000-8000-000000000005.jsonl"),
-        "{}\n",
-    )
-    .unwrap();
-    let _guard = Locked::new(&locked, 0o755);
-    if fs::read_dir(&locked).is_ok() {
-        eprintln!("skipped: chmod 000 did not block reads (running as root)");
-        return;
-    }
-    let v = run_json(home.path(), &["transcripts", "list"]);
-    assert_eq!(ids(&v).len(), 2, "{v}");
-    ns(home.path())
-        .args(["transcripts", "read", ALPHA])
-        .assert()
-        .success();
-}
-
-#[cfg(unix)]
-#[test]
-fn an_unreadable_session_file_is_skipped() {
-    let home = home();
-    let locked = write_session(
+    let real = home.path().join("real-proj");
+    fs::create_dir_all(&real).unwrap();
+    let link = home.path().join("link-proj");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let id = "cccc3333-0000-4000-8000-000000000003";
+    write_session(
         home.path(),
-        "-work-alpha",
-        "9999aaaa-0000-4000-8000-000000000099",
-        &[user_line("hi", "2026-10-02T00:00:00.000Z", "/work/alpha")],
+        "-real-proj",
+        id,
+        &[user_line(
+            "hi",
+            "2026-10-02T00:00:00.000Z",
+            real.to_str().unwrap(),
+        )],
     );
-    let _guard = Locked::new(&locked, 0o644);
-    if fs::File::open(&locked).is_ok() {
-        eprintln!("skipped: chmod 000 did not block reads (running as root)");
-        return;
-    }
-    let v = run_json(home.path(), &["transcripts", "list"]);
-    assert_eq!(ids(&v).len(), 2, "{v}");
+    let v = run_json(
+        home.path(),
+        &["transcripts", "list", "--project", link.to_str().unwrap()],
+    );
+    assert_eq!(ids(&v), vec![id.to_string()], "{v}");
+}
+
+#[cfg(unix)]
+#[test]
+fn list_project_resolves_dot_dot_segments() {
+    let home = home();
+    let real = home.path().join("real-proj");
+    fs::create_dir_all(real.join("sub")).unwrap();
+    let link = home.path().join("link-proj");
+    std::os::unix::fs::symlink(real.join("sub"), &link).unwrap();
+    let id = "dddd4444-0000-4000-8000-000000000004";
+    write_session(
+        home.path(),
+        "-real-proj",
+        id,
+        &[user_line(
+            "hi",
+            "2026-10-02T00:00:00.000Z",
+            real.to_str().unwrap(),
+        )],
+    );
+    let through = link.join("..");
+    let v = run_json(
+        home.path(),
+        &[
+            "transcripts",
+            "list",
+            "--project",
+            through.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(ids(&v), vec![id.to_string()], "{v}");
 }
 
 #[test]

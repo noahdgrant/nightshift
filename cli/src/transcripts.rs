@@ -144,11 +144,17 @@ fn project_candidates(p: &Path) -> Vec<PathBuf> {
     out
 }
 
+fn tolerate<T>(result: io::Result<T>, path: &Path) -> Result<Option<T>> {
+    match result {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if skippable(e.kind()) => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("read {}", path.display())),
+    }
+}
+
 fn read_dir_paths(dir: &Path) -> Result<Vec<PathBuf>> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if skippable(e.kind()) => return Ok(Vec::new()),
-        Err(e) => return Err(e).with_context(|| format!("read {}", dir.display())),
+    let Some(entries) = tolerate(fs::read_dir(dir), dir)? else {
+        return Ok(Vec::new());
     };
     let mut out = Vec::new();
     for entry in entries {
@@ -196,10 +202,8 @@ impl Reader for Claude {
             size,
             mtime,
         } = located;
-        let (date, cwd) = match first_timestamp_and_cwd(&path) {
-            Ok(header) => header,
-            Err(e) if skippable(e.kind()) => return Ok(None),
-            Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+        let Some((date, cwd)) = tolerate(first_timestamp_and_cwd(&path), &path)? else {
+            return Ok(None);
         };
         let dir = path.parent().map(name_of).unwrap_or_default();
         Ok(Some(Session {
@@ -608,6 +612,17 @@ fn readers() -> Result<Vec<Box<dyn Reader>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tolerate_skips_missing_and_permission_denied_but_not_other_errors() {
+        let path = Path::new("/x");
+        for kind in [io::ErrorKind::NotFound, io::ErrorKind::PermissionDenied] {
+            assert!(tolerate::<u8>(Err(kind.into()), path).unwrap().is_none());
+        }
+        assert_eq!(tolerate(Ok(7), path).unwrap(), Some(7));
+        let err = tolerate::<u8>(Err(io::ErrorKind::InvalidData.into()), path).unwrap_err();
+        assert!(err.to_string().contains("read /x"), "{err}");
+    }
 
     #[test]
     fn slug_replaces_every_non_alphanumeric() {
