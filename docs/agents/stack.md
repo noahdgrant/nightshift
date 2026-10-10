@@ -39,7 +39,7 @@ Run from the repo root. Use the binary built from this worktree (`cli/target/deb
 
 ## Unit size
 
-unit size: soft 400, hard 800
+unit size: soft 400
 
 See `ns-contract` (unit size).
 

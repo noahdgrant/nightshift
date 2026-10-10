@@ -34,7 +34,7 @@ Fastest first. A seam the project doesn't have is `none`.
 
 ## Unit size
 
-unit size: soft 400, hard 800
+unit size: soft 400
 
 See `ns-contract` (unit size).
 

@@ -1,0 +1,122 @@
+description = "Build a four-criterion brief in a repo whose stack.md sets a soft unit size of 15 changed lines, with a legacy hard figure of 30. Size never blocks a unit, so ns-build must keep going past both figures, build every criterion, and end with build.md status: pass instead of stopping as \"unit too large\"."
+fixture = "py-inventory"
+skills = ["ns-build"]
+extra_skills = [
+  "ns-contract",
+  "ns-tdd",
+  "ns-review",
+  "ns-principle-test-behavior-not-implementation",
+  "ns-principle-sequence-verifiable-units",
+  "ns-principle-subtract-before-you-add",
+  "ns-principle-laziness-protocol",
+  "ns-principle-fix-root-causes",
+  "ns-principle-attack-the-premise",
+  "ns-principle-minimize-reader-load",
+]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Build unit 5-renew-and-release. You are already in its worktree, on branch ns/5-renew-and-release, and the brief is .ns/5-renew-and-release/brief.md. The repo has no remote, so skip the fetch and rebase. gates: auto. Nobody is around to answer questions. Stop after writing build.md: don't verify, review or ship.
+"""
+
+[setup]
+# The limit is committed on main so it doesn't count toward the unit's own diff. The hard
+# figure is from the old template; the contract says to ignore it.
+commands = [
+  "printf '\\n## Unit size\\n\\nunit size: soft 15, hard 30\\n' >> docs/agents/stack.md",
+  "git commit -q -am 'docs(agents): set a tiny unit size'",
+  "git checkout -q -b ns/5-renew-and-release",
+  "mkdir -p .git/info && echo '.ns/' >> .git/info/exclude",
+  "mkdir -p .ns/5-renew-and-release && cp ../brief.md .ns/5-renew-and-release/",
+]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/5-renew-and-release/build.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+# It went past the old hard figure, so the pass above was not a unit that happened to stay small.
+type = "command"
+run = "git diff --numstat main...HEAD -- . ':!.ns' | awk '{ n += $1 + $2 } END { print n \" changed lines\"; exit !(n > 30) }'"
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**", ".ns/**"]
+
+[[check]]
+# Hidden acceptance test for the two Warehouse criteria, written outside the repo so the agent never sees it.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_renew_release_acceptance.py" <<'PYEOF'
+from datetime import datetime, timedelta
+
+import pytest
+
+from inventory import Warehouse
+from inventory.errors import ReservationExpired, UnknownReservation
+
+T0 = datetime(2026, 4, 1, 10, 0)
+TTL = timedelta(minutes=30)
+
+
+def make():
+    w = Warehouse()
+    w.add_item("PIN-4", "4 mm dowel pin")
+    w.receive("PIN-4", 50)
+    return w
+
+
+def test_renew_moves_expiry():
+    w = make()
+    r = w.reserve("PIN-4", 1, now=T0, ttl=TTL)
+    renewed = w.renew(r.id, T0 + timedelta(minutes=10), TTL)
+    assert renewed.expires_at == T0 + timedelta(minutes=40)
+    assert w.reservation(r.id).expires_at == T0 + timedelta(minutes=40)
+
+
+def test_renew_refuses_expired_unknown_and_bad_ttl():
+    w = make()
+    r = w.reserve("PIN-4", 1, now=T0, ttl=TTL)
+    with pytest.raises(ReservationExpired):
+        w.renew(r.id, T0 + TTL, TTL)
+    with pytest.raises(UnknownReservation):
+        w.renew("NOPE", T0, TTL)
+    with pytest.raises(ValueError):
+        w.renew(r.id, T0, timedelta(0))
+
+
+def test_release_expired_drops_only_expired_in_id_order():
+    w = make()
+    a = w.reserve("PIN-4", 1, now=T0, ttl=timedelta(minutes=5))
+    b = w.reserve("PIN-4", 1, now=T0, ttl=timedelta(minutes=5))
+    live = w.reserve("PIN-4", 1, now=T0, ttl=TTL)
+    released = w.release_expired(T0 + timedelta(minutes=5))
+    assert [r.id for r in released] == [a.id, b.id]
+    assert w.reservations() == [live]
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_renew_release_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+# Both CLI commands exist.
+type = "command"
+run = "PYTHONPATH=src python3 -m inventory renew --help >/dev/null && PYTHONPATH=src python3 -m inventory release-expired --help >/dev/null"
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Did build implement all four acceptance criteria, including both CLI commands, and end with build.md status: pass? Fail it if build.md or any commit treats the unit's size as a reason to stop, block or hand criteria back for a split."
+required = false

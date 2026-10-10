@@ -1,0 +1,67 @@
+description = "A correct, tested 121-line diff in a repo whose stack.md sets a soft unit size of 15. Size never blocks: every reviewer's brief carries the Split question, review.md records one Suggestion that starts '<n> changed lines: consider splitting into' (or 'no split seam found'), no Critical or Important finding is about size, and the review ends pass."
+fixture = "py-inventory"
+skills = ["ns-review"]
+extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
+requires = ["python"]
+timeout_minutes = 45
+prompt = """
+Review unit 5-renew-and-release, on branch ns/5-renew-and-release in this repo. The brief is .ns/5-renew-and-release/brief.md. gates: auto. Nobody is around to answer questions. Stop once review.md is written: skip verify for this run, including after any fix cycle, don't push, don't ship.
+"""
+
+[setup]
+# The limit is committed on main so it doesn't count toward the unit's own diff.
+commands = [
+  "printf '\\n## Unit size\\n\\nunit size: soft 15\\n' >> docs/agents/stack.md",
+  "git commit -q -am 'docs(agents): set a tiny unit size'",
+  "git checkout -q -b ns/5-renew-and-release",
+  "mkdir -p .git/info && echo '.ns/' >> .git/info/exclude",
+  "mkdir -p .ns/5-renew-and-release && cp ../brief.md .ns/5-renew-and-release/",
+  "git apply ../renew-release.patch",
+  "git add -A && git commit -q -m 'feat(warehouse): renew and release expired reservations'",
+]
+
+[[check]]
+type = "frontmatter"
+path = ".ns/5-renew-and-release/review.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/5-renew-and-release/review.md"
+key = "panel"
+equals = "full"
+
+[[check]]
+# Every first-pass reviewer brief carries the Split section.
+type = "command"
+run = '''
+cd .ns/5-renew-and-release/swarm/review-0 &&
+n=0 && for f in *.brief.md; do grep -q '^## Split' "$f" || { echo "no Split section: $f"; exit 1; }; n=$((n + 1)); done &&
+test "$n" -eq 8
+'''
+expect_exit = 0
+
+[[check]]
+# The size Suggestion sits under Suggestion, and no Critical or Important asks for a split.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, sys
+text = open(".ns/5-renew-and-release/review.md", encoding="utf-8").read()
+sections = dict(re.findall(r"(?ms)^## (Critical|Important|Suggestion)\s*\n(.*?)(?=^## |\Z)", text))
+pattern = re.compile(r"(?i)\d[\d,]* changed lines[*_]*:[*_\s]*(consider splitting|no split seam)")
+if not pattern.search(sections.get("Suggestion", "")):
+    sys.exit("no '<n> changed lines: consider splitting' under ## Suggestion")
+for sev in ("Critical", "Important"):
+    if re.search(r"(?i)\d[\d,]* changed lines|soft limit|unit size|too large|consider splitting", sections.get(sev, "")):
+        sys.exit(f"a {sev} finding is about the unit's size")
+print("ok")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Read review.md. Pass only if the size Suggestion names concrete seams drawn from the diff (for example the Warehouse methods apart from the CLI commands, or renew apart from release-expired) or says plainly that none showed up, and nothing in review.md treats the unit's size as a reason to block it or to start a fix cycle."
+required = false
