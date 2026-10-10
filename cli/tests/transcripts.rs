@@ -828,7 +828,7 @@ fn compact_mode_pins_the_limit_at_200_characters() {
 #[test]
 fn list_project_follows_a_symlink_to_the_recorded_cwd() {
     let home = home();
-    let real = home.path().join("real-proj");
+    let real = home.path().canonicalize().unwrap().join("real-proj");
     fs::create_dir_all(&real).unwrap();
     let link = home.path().join("link-proj");
     std::os::unix::fs::symlink(&real, &link).unwrap();
@@ -854,7 +854,7 @@ fn list_project_follows_a_symlink_to_the_recorded_cwd() {
 #[test]
 fn list_project_resolves_dot_dot_segments() {
     let home = home();
-    let real = home.path().join("real-proj");
+    let real = home.path().canonicalize().unwrap().join("real-proj");
     fs::create_dir_all(real.join("sub")).unwrap();
     let link = home.path().join("link-proj");
     std::os::unix::fs::symlink(real.join("sub"), &link).unwrap();
@@ -880,6 +880,34 @@ fn list_project_resolves_dot_dot_segments() {
         ],
     );
     assert_eq!(ids(&v), vec![id.to_string()], "{v}");
+}
+
+#[cfg(unix)]
+#[test]
+fn list_omits_a_session_it_cannot_open_and_keeps_the_rest() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = home();
+    let locked = session_path(home.path(), "-work-alpha", ALPHA);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = fs::File::open(&locked).is_ok();
+    let v = run_json(home.path(), &["transcripts", "list"]);
+    let listed = ids(&v);
+    assert!(listed.contains(&BETA.to_string()), "{v}");
+    assert_eq!(listed.contains(&ALPHA.to_string()), readable, "{v}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn list_fails_on_a_session_that_errors_while_reading() {
+    let home = home();
+    let bad = session_path(home.path(), "-work-alpha", ALPHA);
+    fs::remove_file(&bad).unwrap();
+    std::os::unix::fs::symlink("/proc/self/mem", &bad).unwrap();
+    ns(home.path())
+        .args(["transcripts", "list"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(bad.to_str().unwrap()));
 }
 
 #[test]
