@@ -258,6 +258,8 @@ pub struct Limits {
     pub budget_usd: Option<f64>,
     /// Unset: no cap. Set: each phase and the gate run under this many MiB (`crate::memcap`).
     pub memory_mb: Option<u64>,
+    /// Units `ns watch` runs at once; `--parallel` wins. Unset: 1.
+    pub parallel: Option<u32>,
 }
 
 /// One phase with its defaults applied.

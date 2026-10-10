@@ -1,4 +1,5 @@
-//! `ns watch`: pull ready issues from GitHub and run them one at a time (docs/FACTORY.md).
+//! `ns watch`: pull ready issues from GitHub and run them, each as its own `ns run`, up to
+//! `--parallel` at once (docs/FACTORY.md).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -13,17 +14,22 @@ use crate::factory::{Factory, Queue as QueueConfig};
 use crate::git::{self, Repo};
 use crate::install;
 use crate::review_md::{self, Status};
-use crate::run::{self, gh, gh_json, Outcome, RunArgs, RunResult, Shared};
+use crate::run::{self, gh, gh_json, Outcome, RunResult, Shared};
 use crate::skills_sync::{self, Sync};
 use crate::stop;
 use crate::worktree::BRANCH_PREFIX;
 
+mod scheduler;
+mod snapshot;
 mod triage;
+
+pub use snapshot::NightDir;
 
 pub struct WatchArgs {
     pub once: bool,
     pub until: Option<String>,
     pub max_units: Option<u32>,
+    pub parallel: Option<u32>,
     pub dry_run: bool,
     pub factory: Option<PathBuf>,
 }
@@ -476,7 +482,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     let start = std::env::current_dir().context("cannot read current directory")?;
     let repo = Repo::discover(&start)?;
     // Read once: a file broken between units must not end the night.
-    let loaded = run::Loaded::read(args.factory.as_deref(), args.dry_run)?;
+    let mut loaded = run::Loaded::read(args.factory.as_deref(), args.dry_run)?;
     let fac = &loaded.fac;
     for (what, f) in [
         ("config", &loaded.files["config"]),
@@ -509,6 +515,14 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     } else {
         args.max_units.or(fac.limits.max_units)
     };
+    let parallel = args.parallel.or(fac.limits.parallel).unwrap_or(1);
+    if parallel == 0 {
+        return Err(SfError::usage(
+            "--parallel 0 runs nothing; give 1 or more (in [limits] parallel too)",
+            "ns watch --parallel 2",
+        )
+        .into());
+    }
 
     if args.dry_run {
         let qu = queue(&repo.root, fac, &BTreeSet::new())?;
@@ -573,6 +587,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 "triage_next_pass": next_pass,
                 "triage_skipped": tr.skipped,
                 "max_units": max_units,
+                "parallel": parallel,
                 "until": deadline.map(clock::local_iso),
             }))?
         );
@@ -581,31 +596,44 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
 
     let _watch = run::Lock::watch(&repo.common_dir)?;
     stop::install().context("cannot handle SIGINT and SIGTERM")?;
+    let facts = snapshot::Facts {
+        watch_pid: std::process::id(),
+        until: deadline,
+        gate: loaded.gate.clone(),
+    };
+    let snap = snapshot::Snapshot::take(
+        &repo.common_dir,
+        &loaded.root,
+        &crate::config::path(),
+        &facts,
+    )?;
+    for link in &snap.skipped {
+        eprintln!(
+            "ns watch: warning: {} is a symlink; the units won't see it",
+            link.display()
+        );
+    }
+    night.shared.night = Some(snap.night().clone());
+    // The triage pass, which runs here, reads the snapshot's prompts as every unit does.
+    loaded.root = snap.factory();
     let mut tonight = Tonight::default();
-    let stopped = match work(
-        &repo,
-        &loaded,
+    let plan = scheduler::Plan {
+        repo: &repo,
+        loaded: &loaded,
+        snap: &snap,
         deadline,
         max_units,
-        &mut night,
-        &mut tonight,
-    ) {
+        parallel: parallel as usize,
+    };
+    let mut failed = None;
+    let stopped = match requeue_stale(&repo, &q, &mut tonight.requeued)
+        .and_then(|()| scheduler::Scheduler::new(plan).run(&mut night, &mut tonight))
+    {
         Ok(stopped) => stopped,
+        // The summary still reports what the other units did, and the error.
         Err(e) => {
-            let Some(sig) = stop::requested() else {
-                return Err(e);
-            };
-            if let Some(n) = tonight.current.take() {
-                if let Err(le) = set_status(&repo.root, &q, n, Some(&q.ready_label)) {
-                    eprintln!("ns watch: #{n} not returned to the queue: {le:#}");
-                }
-                tonight.units.push(json!({
-                    "issue": n,
-                    "outcome": "interrupted",
-                    "reason": format!("{e:#}"),
-                }));
-            }
-            stop::name(sig).into()
+            failed = Some(e);
+            "error".into()
         }
     };
     // A signal that came after the last check still decides the exit code, so name it too.
@@ -619,10 +647,18 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             "cleaned": tonight.cleaned,
             "stopped": stopped,
             "until": deadline.map(clock::local_iso),
-            "cost_usd": night.shared.spent_usd,
+            "cost_usd": night.shared.spent(),
             "started_with": loaded.files,
+            "error": failed.as_ref().map(|e| format!("{e:#}")),
         }))?
     );
+    // A stop decides the exit code over an error, which still goes to stderr as well.
+    if let Some(e) = failed {
+        if stop::requested().is_none() {
+            return Err(e);
+        }
+        eprintln!("ns watch: {e:#}");
+    }
     Ok(match stop::requested() {
         Some(sig) => ExitCode::from((128 + sig) as u8),
         None => ExitCode::SUCCESS,
@@ -635,8 +671,6 @@ struct Tonight {
     units: Vec<Value>,
     /// Issues found in progress at start with no live `ns run`, returned to the queue.
     requeued: Vec<u64>,
-    /// The issue taken from the queue whose unit has not ended yet.
-    current: Option<u64>,
     /// Units whose worktree and branch the night removed, their change merged.
     cleaned: Vec<String>,
     /// Merged units cleanup tried tonight, removed or not: each is tried once a night.
@@ -649,171 +683,6 @@ struct Tonight {
 fn ended_cleanly(r: &RunResult) -> bool {
     matches!(r.outcome, Outcome::Merged | Outcome::Split)
         || (r.outcome == Outcome::Done && !r.needs_human)
-}
-
-/// Return stale in-progress issues to the queue, then run units until the night ends; why it
-/// ended.
-fn work(
-    repo: &Repo,
-    loaded: &run::Loaded,
-    deadline: Option<i64>,
-    max_units: Option<u32>,
-    night: &mut Night,
-    tonight: &mut Tonight,
-) -> Result<String> {
-    let fac = &loaded.fac;
-    let q = &fac.queue;
-    requeue_stale(repo, q, &mut tonight.requeued)?;
-    let Tonight {
-        units,
-        current,
-        cleaned,
-        cleanup_tried,
-        ..
-    } = tonight;
-    let mut started = 0u32;
-    let stopped: String = 'outer: loop {
-        if let Some(sig) = stop::requested() {
-            break stop::name(sig).into();
-        }
-        // At start and between units: units merged since go, after their records are saved.
-        cleaned.extend(crate::clean::between_units(repo, cleanup_tried));
-        if max_units.is_some_and(|m| started >= m) {
-            break "max_units".into();
-        }
-        if let Some(stop) = night.over(deadline, fac) {
-            break stop.into();
-        }
-        if let Some(stop) = triage::pass(repo, loaded, deadline, night)? {
-            break stop;
-        }
-        let qu = queue(&repo.root, fac, &night.finished)?;
-        let Some(issue) = qu.ready.first().cloned() else {
-            break "queue empty".into();
-        };
-        started += 1;
-        *current = Some(issue.number);
-        set_status(&repo.root, q, issue.number, Some(&q.in_progress_label))?;
-        eprintln!("ns watch: #{} {}", issue.number, issue.title);
-        loop {
-            let rargs = RunArgs {
-                issue: Some(issue.number),
-                base: night.base(repo, issue.number),
-                ..RunArgs::default()
-            };
-            let r = match run::execute(&rargs, &mut night.shared, loaded) {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = set_status(&repo.root, q, issue.number, Some(&q.ready_label));
-                    return Err(e);
-                }
-            };
-            let mut rec = json!({
-                "issue": issue.number,
-                "unit": r.unit,
-                "outcome": r.outcome.label(),
-                "reason": r.reason,
-                "pr": r.json["pr"],
-                "cost_usd": r.cost_usd,
-            });
-            if let Some(sig) = stop::requested().filter(|_| !ended_cleanly(&r)) {
-                set_status(&repo.root, q, issue.number, Some(&q.ready_label))?;
-                *current = None;
-                rec["outcome"] = json!("interrupted");
-                units.push(rec);
-                break 'outer stop::name(sig).into();
-            }
-            *current = None;
-            let failing = night.harness(&r);
-            match r.outcome {
-                Outcome::Merged => {
-                    let status = set_status(&repo.root, q, issue.number, None);
-                    // GitHub may not have closed it yet; an already-closed issue makes gh fail.
-                    let n = issue.number.to_string();
-                    if let Err(e) = gh(&repo.root, &["issue", "close", &n, "--reason", "completed"])
-                    {
-                        eprintln!("ns watch: #{n} not closed: {e}");
-                    }
-                    status?;
-                }
-                Outcome::Split => {
-                    set_status(&repo.root, q, issue.number, Some(&q.split_label))?;
-                }
-                Outcome::Done if !r.needs_human => {
-                    set_status(&repo.root, q, issue.number, Some(&q.done_label))?;
-                }
-                Outcome::Stuck if failing => {
-                    set_status(&repo.root, q, issue.number, Some(&q.ready_label))?;
-                    rec["outcome"] = json!("harness_failing");
-                    if night.harness_fails >= HARNESS_FAIL_LIMIT {
-                        units.push(rec);
-                        break 'outer "harness failing".into();
-                    }
-                }
-                Outcome::Done | Outcome::Stuck => {
-                    let status = set_status(&repo.root, q, issue.number, Some(&q.stuck_label));
-                    let what = if r.outcome == Outcome::Stuck {
-                        "got stuck"
-                    } else {
-                        "needs a human"
-                    };
-                    let artifact = r
-                        .artifact
-                        .as_deref()
-                        .and_then(|a| Path::new(a).file_name())
-                        .map_or("none".to_string(), |f| {
-                            format!(
-                                "`.ns/{0}/{1}` on branch `{BRANCH_PREFIX}{0}`",
-                                r.unit,
-                                f.to_string_lossy()
-                            )
-                        });
-                    let findings = r
-                        .artifact
-                        .as_deref()
-                        .filter(|a| Path::new(a).file_name().is_some_and(|f| f == "review.md"))
-                        .and_then(|a| std::fs::read_to_string(a).ok())
-                        .map(|text| open_findings(&text))
-                        .filter(|f| !f.is_empty())
-                        .map_or(String::new(), |f| {
-                            format!(
-                                "\n\nOpen findings in `review.md`:\n```text\n{}\n```",
-                                f.join("\n")
-                            )
-                        });
-                    let body = format!(
-                        "nightshift {what} on unit `{}`: {}{findings}\n\nLast artifact: {artifact}\n\n{DISCLAIMER}",
-                        r.unit, r.reason
-                    );
-                    let posted = comment(&repo.root, issue.number, &body);
-                    status?;
-                    posted?;
-                }
-                Outcome::Budget => {
-                    set_status(&repo.root, q, issue.number, Some(&q.ready_label))?;
-                    units.push(rec);
-                    // A runner lock wait cut short by `--until` ends the run as `budget` too.
-                    break 'outer night.over(deadline, fac).unwrap_or("budget").into();
-                }
-                Outcome::Paused => {
-                    let reset = night.resume_at(&r);
-                    rec["reset_at"] = json!(clock::local_iso(reset));
-                    units.push(rec);
-                    if deadline.is_some_and(|d| reset >= d) {
-                        set_status(&repo.root, q, issue.number, Some(&q.ready_label))?;
-                        break 'outer PAUSED_PAST_UNTIL.into();
-                    }
-                    *current = Some(issue.number);
-                    night.sleep_until(reset)?;
-                    continue;
-                }
-            }
-            units.push(rec);
-            break;
-        }
-        night.finished.insert(issue.number);
-    };
-    Ok(stopped)
 }
 
 const PAUSED_PAST_UNTIL: &str = "usage limit resets after --until";
@@ -849,7 +718,7 @@ impl Night {
             return Some("until");
         }
         fac.budget_usd()
-            .filter(|b| self.shared.spent_usd >= *b)
+            .filter(|b| self.shared.spent() >= *b)
             .map(|_| "budget")
     }
 

@@ -17,16 +17,33 @@ extern "C" fn record(sig: libc::c_int) {
 
 /// Record the first SIGINT and the first SIGTERM instead of dying on them. Each handler is
 /// one-shot, so a second signal of the same kind ends the process at once.
-#[cfg(unix)]
 pub fn install() -> std::io::Result<()> {
+    handle(true)
+}
+
+/// As [`install`], for an `ns run` that `ns watch` started: every SIGINT and SIGTERM is only
+/// recorded, so a signal that reaches the run both from watch and from a service manager
+/// still lets it wind down. Watch dying sends the run SIGTERM (see `watch::scheduler`).
+pub fn install_for_watch() -> std::io::Result<()> {
+    handle(false)
+}
+
+/// Record `sig` as the stop, as if it had arrived, unless a stop is already recorded: `ns watch`
+/// stops the night when a signal stopped one of its units.
+pub fn request(sig: i32) {
+    let _ = SIGNAL.compare_exchange(0, sig, Ordering::SeqCst, Ordering::SeqCst);
+}
+
+#[cfg(unix)]
+fn handle(one_shot: bool) -> std::io::Result<()> {
     for sig in [libc::SIGINT, libc::SIGTERM] {
         // SAFETY: sigaction(2) with a zeroed struct, an empty mask and a handler that only
-        // stores an atomic. SA_RESTART keeps interrupted reads and waits going; SA_RESETHAND
-        // puts back the default action once the handler runs.
+        // stores an atomic. SA_RESTART keeps interrupted reads and waits going; SA_RESETHAND,
+        // when one-shot, puts back the default action once the handler runs.
         unsafe {
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = record as extern "C" fn(libc::c_int) as libc::sighandler_t;
-            sa.sa_flags = libc::SA_RESTART | libc::SA_RESETHAND;
+            sa.sa_flags = libc::SA_RESTART | if one_shot { libc::SA_RESETHAND } else { 0 };
             libc::sigemptyset(&mut sa.sa_mask);
             if libc::sigaction(sig, &sa, std::ptr::null_mut()) != 0 {
                 return Err(std::io::Error::last_os_error());
@@ -37,7 +54,7 @@ pub fn install() -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
-pub fn install() -> std::io::Result<()> {
+fn handle(_: bool) -> std::io::Result<()> {
     Ok(())
 }
 

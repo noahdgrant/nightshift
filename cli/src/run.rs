@@ -26,6 +26,7 @@ use crate::git::same_sha;
 use crate::git::{self, Repo};
 use crate::markers;
 use crate::memcap::{self, Cap};
+use crate::watch::NightDir;
 use crate::worktree;
 
 pub(crate) mod currency;
@@ -65,6 +66,8 @@ pub struct RunArgs {
     pub base: Option<String>,
     /// Run the triage phase once and stop (`ns watch`'s triage pass), whatever `from` says.
     pub triage_only: bool,
+    /// The night directory of the `ns watch` that started this run (`--night`).
+    pub night: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +93,19 @@ impl Outcome {
         }
     }
 
+    fn from_label(label: &str) -> Option<Outcome> {
+        [
+            Outcome::Done,
+            Outcome::Merged,
+            Outcome::Stuck,
+            Outcome::Budget,
+            Outcome::Paused,
+            Outcome::Split,
+        ]
+        .into_iter()
+        .find(|o| o.label() == label)
+    }
+
     fn exit(self) -> ExitCode {
         match self {
             Outcome::Done | Outcome::Merged | Outcome::Split => ExitCode::SUCCESS,
@@ -107,19 +123,49 @@ pub struct RunResult {
     /// A `done` that still needs a human (files that need human review, no CI, ...).
     pub needs_human: bool,
     pub reset_at: Option<i64>,
+    /// Paused by the night's hold (`ns run --night`), not by a usage limit of its own.
+    pub held: bool,
     pub artifact: Option<String>,
     pub cost_usd: f64,
+    /// When the run ended, on its clock.
+    pub ended_at: Option<i64>,
     pub json: Value,
+}
+
+impl RunResult {
+    /// The result an `ns run` printed, or `None` when `json` is no run result.
+    pub fn from_json(json: Value) -> Option<RunResult> {
+        let outcome = Outcome::from_label(json["outcome"].as_str()?)?;
+        let unit = json["unit"]
+            .as_str()
+            .filter(|u| worktree::valid_unit_id(u))?
+            .to_string();
+        Some(RunResult {
+            unit,
+            outcome,
+            reason: json["reason"].as_str().unwrap_or("").to_string(),
+            needs_human: json["needs_human"].as_bool().unwrap_or(false),
+            reset_at: json["reset_at"].as_i64(),
+            held: json["held"].as_bool().unwrap_or(false),
+            artifact: json["artifact"].as_str().map(String::from),
+            cost_usd: json["cost_usd"].as_f64().unwrap_or(0.0),
+            ended_at: json["ended_at"].as_i64(),
+            json,
+        })
+    }
 }
 
 /// State shared across the units of one `ns watch` (or the single unit of `ns run`).
 pub struct Shared {
-    pub spent_usd: f64,
+    /// What this process spent, when no night sums the spend.
+    spent_usd: f64,
     pub clock: Clock,
     /// The `ns watch` process running this unit, or `None` for a standalone `ns run`.
     pub watch_pid: Option<u32>,
     /// `ns watch --until`, or `None` for a standalone `ns run`. It bounds a runner lock wait.
     pub until: Option<i64>,
+    /// The night of the `ns watch` this runs under: its hold and the spend of all its units.
+    pub night: Option<NightDir>,
 }
 
 impl Shared {
@@ -129,16 +175,74 @@ impl Shared {
             clock: Clock::from_env(),
             watch_pid: None,
             until: None,
+            night: None,
         }
+    }
+
+    /// Dollars spent: by every unit of the night under `ns watch`, else by this process.
+    pub fn spent(&self) -> f64 {
+        match &self.night {
+            Some(n) => n.spent(),
+            None => self.spent_usd,
+        }
+    }
+
+    fn add_spend(&mut self, unit: &str, usd: f64) -> Result<()> {
+        match &self.night {
+            Some(n) => n.add_spend(unit, usd),
+            None => {
+                self.spent_usd += usd;
+                Ok(())
+            }
+        }
+    }
+
+    /// A usage limit another unit of the night hit, as the finish of a run that must not start
+    /// `phase` before it resets.
+    fn held(&self, phase: &str) -> Result<Option<Finish>> {
+        let Some(n) = &self.night else {
+            return Ok(None);
+        };
+        let now = self.clock.now();
+        Ok(n.held_until()?.filter(|r| *r > now).map(|reset| {
+            let mut f = finish(
+                Outcome::Paused,
+                format!(
+                    "usage limit: another unit of this ns watch hit it; held until {}",
+                    clock::local_iso(reset)
+                ),
+                Some(phase),
+            );
+            f.reset_at = Some(reset);
+            f.held = true;
+            f
+        }))
     }
 }
 
 pub fn cli(args: RunArgs) -> Result<ExitCode> {
     let mut shared = Shared::new();
+    let night = match &args.night {
+        Some(dir) => {
+            crate::stop::install_for_watch().context("cannot handle SIGINT and SIGTERM")?;
+            Some(NightDir::open(dir)?)
+        }
+        None => None,
+    };
     let dry = args.dry_run;
-    let loaded = Loaded::read(args.factory.as_deref(), args.dry_run)?;
+    let mut loaded = Loaded::read(args.factory.as_deref(), args.dry_run)?;
+    if let Some((dir, facts)) = night {
+        shared.watch_pid = Some(facts.watch_pid);
+        shared.until = facts.until;
+        shared.night = Some(dir);
+        loaded.gate = facts.gate;
+    }
     let r = execute(&args, &mut shared, &loaded)?;
     println!("{}", serde_json::to_string_pretty(&r.json)?);
+    // Under `ns watch`, a stop that came while the run ended still names the signal.
+    if let Some(sig) = crate::stop::requested() {
+        return Ok(ExitCode::from((128 + sig) as u8));
+    }
     Ok(if dry {
         ExitCode::SUCCESS
     } else {
@@ -901,6 +1005,8 @@ struct Finish {
     phase: Option<String>,
     needs_human: bool,
     reset_at: Option<i64>,
+    /// Paused by the night's hold, not by a usage limit of its own.
+    held: bool,
 }
 
 fn finish(outcome: Outcome, reason: impl Into<String>, phase: Option<&str>) -> Finish {
@@ -910,6 +1016,7 @@ fn finish(outcome: Outcome, reason: impl Into<String>, phase: Option<&str>) -> F
         phase: phase.map(String::from),
         needs_human: false,
         reset_at: None,
+        held: false,
     }
 }
 
@@ -1134,7 +1241,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
                 "event": "end",
                 "outcome": "interrupted",
                 "reason": format!("stopped by {}", crate::stop::name(sig)),
-                "cost_usd": shared.spent_usd,
+                "cost_usd": shared.spent(),
             }));
         }
         driven?
@@ -1146,7 +1253,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         "reason": result.reason,
         "phase": result.phase,
         "pr": pr,
-        "cost_usd": shared.spent_usd,
+        "cost_usd": shared.spent(),
     }));
     let mut record_saved = false;
     if matches!(
@@ -1174,9 +1281,12 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         "outcome": result.outcome.label(),
         "phase": result.phase,
         "reason": result.reason,
+        "needs_human": result.needs_human,
         "pr": pr,
         "cost_usd": cost,
         "reset_at": result.reset_at,
+        "held": result.held,
+        "ended_at": shared.clock.now(),
         "artifact": last_artifact,
         "worktree": ctx.worktree.to_string_lossy(),
         "cleanup": cleanup,
@@ -1188,8 +1298,10 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         reason: result.reason,
         needs_human: result.needs_human,
         reset_at: result.reset_at,
+        held: result.held,
         artifact: last_artifact,
         cost_usd: cost,
+        ended_at: Some(shared.clock.now()),
         json,
     })
 }
@@ -1288,8 +1400,10 @@ fn dry_run(
         reason: "dry run".into(),
         needs_human: false,
         reset_at: None,
+        held: false,
         artifact: None,
         cost_usd: 0.0,
+        ended_at: None,
         json,
     })
 }
@@ -1390,8 +1504,11 @@ fn drive(
             }
             return Ok(finish(Outcome::Stuck, reason, Some(phase)));
         }
-        if let Some(reason) = budget_spent(fac.budget_usd(), shared.spent_usd) {
+        if let Some(reason) = budget_spent(fac.budget_usd(), shared.spent()) {
             return Ok(finish(Outcome::Budget, reason, Some(phase)));
+        }
+        if let Some(f) = shared.held(phase)? {
+            return Ok(f);
         }
         let timeout = phase_timeout(phase, p.timeout_minutes);
         eprintln!("ns run: {} {phase} attempt {attempt} ({why})", ctx.unit);
@@ -1443,10 +1560,14 @@ fn drive(
                 continue;
             }
         };
-        let held = match recheck_budget(held, fac.budget_usd(), shared.spent_usd, phase) {
+        let held = match recheck_budget(held, fac.budget_usd(), shared.spent(), phase) {
             Ok(held) => held,
             Err(f) => return Ok(f),
         };
+        // A unit that waited for a lock while another hit a usage limit waits for the reset.
+        if let Some(f) = shared.held(phase)? {
+            return Ok(f);
+        }
         let art_path = ctx.artifacts.join(artifact_of(phase));
         let moves = archive_for(&ctx.artifacts, phase, &state)?;
         let mut prompt = ctx.prompt(&p, attempt, &feedback)?;
@@ -1494,7 +1615,7 @@ fn drive(
         let r = r?;
         let t = ClaudeStreamJson.parse(&r.stdout);
         let cost = t.cost_usd.unwrap_or(0.0);
-        shared.spent_usd += cost;
+        shared.add_spend(&ctx.unit, cost)?;
         let mut rec = json!({
             "phase": phase,
             "attempt": attempt,
@@ -2065,7 +2186,7 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
         .ok()
         .and_then(|v| v["state"].as_str().map(String::from));
     if state_now.as_deref() == Some("MERGED") {
-        ctx.log(json!({"event": "merged", "pr": n, "sha": head, "spent_usd": shared.spent_usd}));
+        ctx.log(json!({"event": "merged", "pr": n, "sha": head, "spent_usd": shared.spent()}));
         return Ok(MergeStep::Finish(finish(
             Outcome::Merged,
             format!("squash-merged PR #{n}"),

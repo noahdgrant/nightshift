@@ -44,7 +44,7 @@ ns doctor
 ns watch --until 06:30
 ```
 
-It takes `status:ready-for-agent` issues one at a time and starts no new unit after 06:30. A unit already running finishes. [`docs/FACTORY.md`](docs/FACTORY.md#ns-watch) lists the other stop conditions, such as `limits.max_units`.
+It takes `status:ready-for-agent` issues one at a time (`--parallel 3` runs three at once) and starts no new unit after 06:30. A unit already running finishes. [`docs/FACTORY.md`](docs/FACTORY.md#ns-watch) lists the other stop conditions, such as `limits.max_units`.
 
 The worktree is not a sandbox. Each phase runs claude with permissions bypassed, so it can use the `GH_TOKEN` it inherits and read or change anything your user can. Run it on a dedicated machine or VM, with a bot account or a fine-grained token limited to the repo as the only GitHub login on that machine, and mark only issues you trust as ready.
 
