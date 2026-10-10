@@ -384,6 +384,12 @@ fn exec(staged: &Path, args: Vec<OsString>) -> anyhow::Error {
             });
         }
         let e = cmd.exec();
+        // std set SIGPIPE to its default for the new program; this one goes on, and a harness
+        // that exits early must not kill it.
+        // SAFETY: signal(2) with SIG_IGN installs no handler.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        }
         stop::unblock();
         anyhow!("cannot exec {}: {e}", staged.display())
     }
@@ -489,6 +495,22 @@ mod tests {
         let (int, term) = (1 << (libc::SIGINT - 1), 1 << (libc::SIGTERM - 1));
         assert_eq!(mask("SigBlk") & (int | term), int | term, "{text}");
         assert_eq!((mask("SigPnd") | mask("ShdPnd")) & term, term, "{text}");
+    }
+
+    fn sigpipe_ignored() -> bool {
+        let status = fs::read_to_string("/proc/self/status").unwrap();
+        let line = status.lines().find(|l| l.starts_with("SigIgn:")).unwrap();
+        let mask = u64::from_str_radix(line.split_whitespace().nth(1).unwrap(), 16).unwrap();
+        mask & (1 << (libc::SIGPIPE - 1)) != 0
+    }
+
+    #[test]
+    fn a_failed_exec_leaves_sigpipe_ignored() {
+        assert!(sigpipe_ignored(), "the Rust runtime ignores SIGPIPE");
+        let dir = tempfile::tempdir().unwrap();
+        let e = exec(&dir.path().join("no-such-ns"), Vec::new());
+        assert!(e.to_string().contains("cannot exec"), "{e}");
+        assert!(sigpipe_ignored(), "a broken pipe would kill the night");
     }
 
     #[test]
