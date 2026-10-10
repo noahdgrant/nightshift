@@ -26,6 +26,7 @@ Then, in each project you want to run the factory on:
 
 1. `ns-setup`: writes `docs/agents/` (stack, verify, tracker, labels, domain, docs).
 2. `ns-setup-verify`: generates the project's verification skill and control CLI.
+3. `ns-agent-readiness`: audits what in the codebase helps or hurts agents and files the top findings. `ns-setup` offers it.
 
 ## Run it overnight
 
@@ -54,7 +55,7 @@ The worktree is not a sandbox. Each phase runs claude with permissions bypassed,
 
 | Phase | Skills |
 |---|---|
-| setup | `ns-setup`, `ns-setup-verify` |
+| setup | `ns-setup`, `ns-setup-verify`, `ns-agent-readiness` |
 | outer loop | `ns-triage`, `ns-troubleshoot` |
 | build | `ns-build`, `ns-tdd` |
 | verify | `ns-verify` |
