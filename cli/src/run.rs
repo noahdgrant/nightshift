@@ -447,6 +447,7 @@ impl RunnerLocks {
                     }));
                 }
                 if until.is_some_and(|u| clock.now() >= u) {
+                    unlock_flock(&f);
                     return Ok(Acquired::GaveUp(GaveUp {
                         lock: name.clone(),
                         held_by: by,
@@ -497,9 +498,20 @@ impl Drop for RunnerLocks {
     fn drop(&mut self) {
         for f in &self.0 {
             let _ = f.set_len(0);
+            unlock_flock(f);
         }
     }
 }
+
+#[cfg(unix)]
+fn unlock_flock(f: &File) {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: the fd is open for as long as `f` lives.
+    unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN) };
+}
+
+#[cfg(not(unix))]
+fn unlock_flock(_: &File) {}
 
 /// Try to take an exclusive `flock` on `f`; `Ok(false)` means another holds it.
 #[cfg(unix)]
@@ -1762,30 +1774,29 @@ mod tests {
         }
     }
 
+    struct Hold(File);
+
+    impl Drop for Hold {
+        fn drop(&mut self) {
+            unlock_flock(&self.0);
+        }
+    }
+
     /// Another process's hold on `<dir>/<name>.lock`, naming pid 42 and unit `other`.
-    fn hold(dir: &Path, name: &str) -> File {
+    fn hold(dir: &Path, name: &str) -> Hold {
         let path = dir.join(format!("{name}.lock"));
         fs::write(&path, "{\"pid\":42,\"unit\":\"other\"}\n").unwrap();
         let f = File::open(&path).unwrap();
         assert!(try_flock(&f).unwrap());
-        f
+        Hold(f)
     }
 
-    /// Whether `<dir>/<name>.lock` can be taken. A child that another test is spawning holds
-    /// a copy of a lock's fd until it execs, so a free lock gets a few real seconds to show it.
     fn is_free(dir: &Path, name: &str) -> bool {
         let f = File::open(dir.join(format!("{name}.lock"))).unwrap();
-        (0..500).any(|_| {
-            try_flock(&f).unwrap() || {
-                std::thread::sleep(Duration::from_millis(10));
-                false
-            }
-        })
+        let free = try_flock(&f).unwrap();
+        unlock_flock(&f);
+        free
     }
-
-    /// A timeout no test reaches: with a pinned clock, a wait spins until the holder's fd
-    /// copies are all closed (see `is_free`).
-    const LONG: Duration = Duration::from_secs(1 << 40);
 
     #[test]
     fn acquire_gives_up_at_the_phase_timeout_and_releases_what_it_took() {
@@ -1855,8 +1866,7 @@ mod tests {
         let mut a = Some(hold(dir.path(), "a"));
         let clock = Clock::pinned(1000);
         let names = vec!["a".to_string()];
-        let until = Some(1 << 50);
-        let held = RunnerLocks::acquire(dir.path(), &names, "u", &clock, LONG, until, |_, _| {
+        let held = RunnerLocks::acquire(dir.path(), &names, "u", &clock, MIN, None, |_, _| {
             a.take();
         })
         .unwrap()
