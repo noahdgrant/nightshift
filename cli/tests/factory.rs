@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use common::{Group, Ns};
+use common::{exits, Group, Ns};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -1147,7 +1147,7 @@ impl Blocked {
             &format!("{before}; echo in > {entered:?}; cat {go:?} > /dev/null; {after}"),
         );
         let mut run = e.ns().args(["run", "--issue", "7"]).start();
-        let mut stderr = run.0.stderr.take().unwrap();
+        let mut stderr = run.take_stderr();
         let (tx, rx) = mpsc::channel();
         let tx_err = tx.clone();
         thread::spawn(move || {
@@ -1159,7 +1159,7 @@ impl Blocked {
             let _ = fs::read_to_string(&entered);
             let _ = tx.send(Event::Entered);
         });
-        match rx.recv().unwrap() {
+        match run.recv(&rx) {
             Event::Entered => Blocked { run, go },
             Event::Exited(text) => panic!("the run ended before its verify phase began:\n{text}"),
         }
@@ -1167,25 +1167,6 @@ impl Blocked {
 
     fn release(&self) {
         fs::write(&self.go, "go\n").unwrap();
-    }
-}
-
-/// Whether `pid` has exited, waiting up to 5 s for it to. A zombie counts as exited.
-fn exits(pid: &str) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let out = StdCommand::new("ps")
-            .args(["-o", "stat=", "-p", pid.trim()])
-            .output()
-            .unwrap();
-        let stat = String::from_utf8_lossy(&out.stdout);
-        if stat.trim().is_empty() || stat.trim().starts_with('Z') {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -1228,8 +1209,8 @@ fn a_runner_lock_held_by_a_killed_run_is_recovered() {
     b.bench(&locks);
     let mut held = Blocked::start(&a, "true", "true");
     assert!(!lock_is_free(&lock));
-    held.run.0.kill().unwrap();
-    held.run.0.wait().unwrap();
+    held.run.kill();
+    held.run.wait();
     held.release();
     assert!(lock_is_free(&lock));
 
@@ -1243,7 +1224,7 @@ fn a_runner_lock_held_by_a_killed_run_is_recovered() {
     assert_eq!(v["outcome"], "done");
     let holder: Value =
         serde_json::from_str(&fs::read_to_string(b.ctrl.join("seen")).unwrap()).unwrap();
-    assert_ne!(holder["pid"].as_u64().unwrap(), u64::from(held.run.0.id()));
+    assert_ne!(holder["pid"].as_u64().unwrap(), u64::from(held.run.id()));
     assert!(lock_is_free(&lock));
 }
 
@@ -1296,17 +1277,19 @@ fn two_runs_needing_one_lock_serialise() {
         .env_remove("NS_NOW")
         .args(["run", "--issue", "7"])
         .start();
-    let mut b_err = BufReader::new(run_b.0.stderr.take().unwrap()).lines();
-    let waited = b_err
-        .by_ref()
-        .map_while(Result::ok)
-        .any(|l| l.contains("verify waits for lock bench-1"));
+    let b_err = run_b.take_stderr();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut lines = BufReader::new(b_err).lines().map_while(Result::ok);
+        let _ = tx.send(lines.any(|l| l.contains("verify waits for lock bench-1")));
+        lines.for_each(drop);
+    });
+    let waited = run_b.recv(&rx);
     let calls_while_waiting = b.calls();
     held.release();
-    b_err.for_each(drop);
-    assert!(run_b.0.wait().unwrap().success());
+    assert!(run_b.wait().success());
     let mut a_run = held.run;
-    assert!(a_run.0.wait().unwrap().success());
+    assert!(a_run.wait().success());
 
     assert!(waited, "B never waited for bench-1");
     assert_eq!(calls_while_waiting, ["triage", "build"]);
