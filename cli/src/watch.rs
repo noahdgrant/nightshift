@@ -476,7 +476,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     let start = std::env::current_dir().context("cannot read current directory")?;
     let repo = Repo::discover(&start)?;
     // Read once: a file broken between units must not end the night.
-    let loaded = run::Loaded::read(args.factory.as_deref())?;
+    let loaded = run::Loaded::read(args.factory.as_deref(), args.dry_run)?;
     let fac = &loaded.fac;
     for (what, f) in [
         ("config", &loaded.files["config"]),

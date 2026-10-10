@@ -15,6 +15,7 @@ mod git;
 mod install;
 mod lint;
 mod markers;
+mod memcap;
 mod quality;
 mod review_md;
 mod run;

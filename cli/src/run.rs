@@ -25,6 +25,7 @@ use crate::gate;
 use crate::git::same_sha;
 use crate::git::{self, Repo};
 use crate::markers;
+use crate::memcap::{self, Cap};
 use crate::worktree;
 
 pub(crate) mod currency;
@@ -135,7 +136,7 @@ impl Shared {
 pub fn cli(args: RunArgs) -> Result<ExitCode> {
     let mut shared = Shared::new();
     let dry = args.dry_run;
-    let loaded = Loaded::read(args.factory.as_deref())?;
+    let loaded = Loaded::read(args.factory.as_deref(), args.dry_run)?;
     let r = execute(&args, &mut shared, &loaded)?;
     println!("{}", serde_json::to_string_pretty(&r.json)?);
     Ok(if dry {
@@ -221,10 +222,13 @@ fn timeout_override(var: Option<&str>, phase: &str) -> Option<Duration> {
 struct PhaseRun {
     exit: Option<i32>,
     timed_out: bool,
+    /// Why the run failed at the memory cap or by a signal `ns` didn't send.
+    killed: Option<String>,
     wall_s: f64,
     stdout: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_harness(
     argv: &[String],
     prompt: &str,
@@ -233,14 +237,35 @@ fn run_harness(
     timeout: Duration,
     transcript: &Path,
     subscription: bool,
+    cap: Option<&Cap>,
 ) -> Result<PhaseRun> {
     if let Some(d) = transcript.parent() {
         fs::create_dir_all(d).with_context(|| format!("cannot create {}", d.display()))?;
     }
     let out = File::create(transcript)
         .with_context(|| format!("cannot create {}", transcript.display()))?;
-    let err = File::create(transcript.with_extension("stderr"))?;
-    let mut cmd = Command::new(&argv[0]);
+    let stderr = transcript.with_extension("stderr");
+    let err = File::create(&stderr)?;
+    let not_found = || -> anyhow::Error {
+        SfError::usage(
+            format!("harness binary `{}` is not on PATH", argv[0]),
+            "install it, or set [defaults] harness in nightshift.toml; check with:\n  ns factory validate",
+        )
+        .into()
+    };
+    // Under a cap the spawned program is systemd-run or prlimit, so a missing harness would
+    // be a failed attempt rather than the usage error: look for it first.
+    if cap.is_some() {
+        let found = if argv[0].contains(std::path::MAIN_SEPARATOR) {
+            crate::which::which(&cwd.join(&argv[0]).to_string_lossy())
+        } else {
+            crate::which::which(&argv[0])
+        };
+        if found.is_none() {
+            return Err(not_found());
+        }
+    }
+    let (mut cmd, watch) = memcap::command(cap, &argv[0]);
     crate::git::scrub(&mut cmd);
     cmd.args(&argv[1..])
         .current_dir(cwd)
@@ -259,18 +284,18 @@ fn run_harness(
     let (status, timed_out, wall_s) =
         match run_process(cmd, Some(prompt.as_bytes().to_vec()), timeout) {
             Ok(r) => r,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(SfError::usage(
-                    format!("harness binary `{}` is not on PATH", argv[0]),
-                    "install it, or set [defaults] harness in nightshift.toml; check with:\n  ns factory validate",
-                )
-                .into())
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_found()),
             Err(e) => return Err(e).with_context(|| format!("cannot start {}", argv[0])),
         };
+    let killed = watch
+        .cut_short(status, timed_out, || {
+            String::from_utf8_lossy(&gate::read_window(&stderr)).into_owned()
+        })
+        .map(memcap::Cut::reason);
     Ok(PhaseRun {
         exit: status.and_then(|s| s.code()),
         timed_out,
+        killed,
         wall_s,
         stdout: fs::read_to_string(transcript).unwrap_or_default(),
     })
@@ -835,6 +860,7 @@ struct Ctx<'a> {
     lock_dir: PathBuf,
     /// The CI gate command; `None` runs no gate.
     gate: Option<String>,
+    cap: Option<&'a Cap>,
 }
 
 impl Ctx<'_> {
@@ -897,11 +923,14 @@ pub struct Loaded {
     pub gate: Option<String>,
     /// The path and sha256 of each file read, so a morning reader can tell what ran.
     pub files: Value,
+    /// The memory cap phases and gates run under, probed once at start.
+    pub cap: Option<Cap>,
 }
 
 impl Loaded {
     /// Read both files and export the config's forge tokens, so every child process inherits them.
-    pub fn read(factory: Option<&Path>) -> Result<Loaded> {
+    /// A dry run probes no memory cap: it runs nothing.
+    pub fn read(factory: Option<&Path>, dry_run: bool) -> Result<Loaded> {
         let start = std::env::current_dir().context("cannot read current directory")?;
         let repo = Repo::discover(&start)?;
         let root = factory::root(factory, &repo.root);
@@ -920,12 +949,28 @@ impl Loaded {
             "factory": file_hash(&root.join(factory::FILE)),
         });
         let gate = gate::command(&fac, &repo.root);
+        let cap = match fac.limits.memory_mb.filter(|mb| *mb > 0 && !dry_run) {
+            Some(mb) => {
+                let cap = memcap::detect(mb)?;
+                match &cap.fallback {
+                    None => eprintln!(
+                        "ns: phases and gates run under a {mb} MB memory cap (cgroup, systemd-run)"
+                    ),
+                    Some(why) => eprintln!(
+                        "ns: phases and gates run under a {mb} MB memory cap (RLIMIT_AS, prlimit); no cgroup: {why}"
+                    ),
+                }
+                Some(cap)
+            }
+            None => None,
+        };
         Ok(Loaded {
             root,
             fac,
             cfg,
             gate,
             files,
+            cap,
         })
     }
 }
@@ -954,6 +999,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         fac,
         cfg,
         gate,
+        cap,
         ..
     } = loaded;
     let problems = fac.problems(cfg.as_ref());
@@ -1059,6 +1105,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         base,
         lock_dir: lock_dir(cfg.as_ref(), &repo.common_dir),
         gate: gate.clone(),
+        cap: cap.as_ref(),
     };
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
@@ -1194,6 +1241,7 @@ fn dry_run(
         base: base.unwrap_or_default(),
         lock_dir: PathBuf::new(),
         gate: gate.clone(),
+        cap: None,
     };
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
@@ -1248,7 +1296,7 @@ fn drive(
     let fac = ctx.fac;
     let subscription = fac.subscription();
     let mut attempts: BTreeMap<&'static str, u32> = BTreeMap::new();
-    let mut timed_out: BTreeMap<&'static str, String> = BTreeMap::new();
+    let mut last_failure: BTreeMap<&'static str, String> = BTreeMap::new();
     let from = args
         .triage_only
         .then_some("triage")
@@ -1266,6 +1314,11 @@ fn drive(
         "event": "start",
         "default_branch": baseline.as_ref().map(|b| &b.0),
         "default_sha": baseline.as_ref().map(|b| &b.1),
+        "memory_cap": ctx.cap.map(|c| json!({
+            "mb": c.mb,
+            "via": c.via.label(),
+            "fallback": c.fallback,
+        })),
     }));
     loop {
         crate::stop::check()?;
@@ -1323,8 +1376,8 @@ fn drive(
         let attempt = attempts.get(phase).copied().unwrap_or(0) + 1;
         if attempt > p.max_attempts {
             let mut reason = format!("{phase} is out of attempts ({})", p.max_attempts);
-            if let Some(t) = timed_out.get(phase) {
-                reason.push_str(&format!(": the last attempt {t}"));
+            if let Some(t) = last_failure.get(phase) {
+                reason.push_str(&format!(": {t}"));
             }
             return Ok(finish(Outcome::Stuck, reason, Some(phase)));
         }
@@ -1372,7 +1425,7 @@ fn drive(
                     "reason": reason,
                 }));
                 attempts.insert(phase, attempt);
-                timed_out.insert(phase, reason);
+                last_failure.insert(phase, format!("the last attempt {reason}"));
                 forced = Some(Decision::Run {
                     phase,
                     feedback,
@@ -1416,6 +1469,7 @@ fn drive(
             timeout,
             &transcript,
             subscription,
+            ctx.cap,
         );
         drop(held);
         if let Some(sig) = r.as_ref().err().and(crate::stop::requested()) {
@@ -1444,9 +1498,12 @@ fn drive(
             "output_tokens": t.output_tokens,
             "transcript": transcript.to_string_lossy(),
         });
-        if r.timed_out {
+        // A phase cut short wrote nothing, whatever it left behind.
+        let cut_short = r.timed_out || r.killed.is_some();
+        if cut_short {
             let file = artifact_of(phase);
-            let stem = format!("{}-timeout", file.trim_end_matches(".md"));
+            let kind = if r.timed_out { "timeout" } else { "killed" };
+            let stem = format!("{}-{kind}", file.trim_end_matches(".md"));
             if let Some(dst) = archive_as(&ctx.artifacts, file, &stem)? {
                 rec["archived"] = json!(dst.to_string_lossy());
             }
@@ -1467,15 +1524,17 @@ fn drive(
         }
         attempts.insert(phase, attempt);
         if r.timed_out {
-            timed_out.insert(
+            last_failure.insert(
                 phase,
                 format!(
-                    "{}; raise its timeout_minutes or split the unit",
+                    "the last attempt {}; raise its timeout_minutes or split the unit",
                     gate::timed_out_after(timeout)
                 ),
             );
+        } else if let Some(k) = &r.killed {
+            last_failure.insert(phase, format!("the last attempt {k}"));
         } else {
-            timed_out.remove(phase);
+            last_failure.remove(phase);
         }
         let art = read_art(&art_path);
         let written = art.is_some();
@@ -1494,6 +1553,8 @@ fn drive(
         } else {
             let why = if r.timed_out {
                 gate::timed_out_after(timeout)
+            } else if let Some(k) = &r.killed {
+                k.clone()
             } else {
                 match r.exit {
                     Some(0) => "no artifact written".to_string(),
@@ -1510,15 +1571,17 @@ fn drive(
             return Ok(f);
         }
         if args.triage_only {
-            return Ok(match (r.timed_out, r.exit) {
-                (false, Some(0)) => finish(Outcome::Done, "triage ran", Some(phase)),
-                (true, _) => finish(Outcome::Stuck, gate::timed_out_after(timeout), Some(phase)),
-                (false, Some(c)) => finish(Outcome::Stuck, format!("exited {c}"), Some(phase)),
-                (false, None) => finish(Outcome::Stuck, "killed by a signal", Some(phase)),
+            return Ok(match (r.timed_out, r.killed, r.exit) {
+                (true, _, _) => finish(Outcome::Stuck, gate::timed_out_after(timeout), Some(phase)),
+                (false, Some(k), _) => finish(Outcome::Stuck, k, Some(phase)),
+                (false, None, Some(0)) => finish(Outcome::Done, "triage ran", Some(phase)),
+                (false, None, Some(c)) => {
+                    finish(Outcome::Stuck, format!("exited {c}"), Some(phase))
+                }
+                (false, None, None) => finish(Outcome::Stuck, "killed by a signal", Some(phase)),
             });
         }
-        if phase == "triage" && !written && r.exit == Some(0) && !r.timed_out && !art_path.exists()
-        {
+        if phase == "triage" && !written && r.exit == Some(0) && !cut_short && !art_path.exists() {
             return Ok(finish(
                 Outcome::Stuck,
                 "triage wrote no brief: the issue needs a human or ns-define",
@@ -1526,13 +1589,18 @@ fn drive(
             ));
         }
         let head_moved = !same_sha(&state.head, &ctx.head());
-        if r.timed_out && phase == "build" {
+        if cut_short && phase == "build" {
             if let Some(fb) = gate_state.red_feedback() {
-                forced = Some(run("build", fb, "timed out with the CI gate still red"));
+                let how = r.killed.as_deref().unwrap_or("timed out");
+                forced = Some(run(
+                    "build",
+                    fb,
+                    format!("{how} with the CI gate still red"),
+                ));
             }
             continue;
         }
-        let trigger = if r.timed_out {
+        let trigger = if cut_short {
             (phase == "review" && head_moved).then_some(gate::Trigger::ReviewMovedHead)
         } else {
             gate_trigger(phase, art.as_ref(), head_moved)
@@ -1547,6 +1615,7 @@ fn drive(
                 head: ctx.head(),
                 phase,
                 attempt,
+                cap: ctx.cap,
             };
             let red = gate_state.after(trigger, &job, &|ev| ctx.log(ev));
             if let Some(sig) = red.as_ref().err().and(crate::stop::requested()) {
@@ -1560,6 +1629,9 @@ fn drive(
                 return Err(crate::stop::error(sig));
             }
             if let Some(red) = red? {
+                if let Some(k) = red.killed {
+                    last_failure.insert("build", k);
+                }
                 forced = Some(run("build", &red.feedback, red.reason));
             }
         }
