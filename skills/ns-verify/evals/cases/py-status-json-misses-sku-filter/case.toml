@@ -1,0 +1,173 @@
+description = "Verify a committed build of `inventory status --json` that ignores the SKU argument under --json (AC2), while build.md claims status: pass and its AC2 test stocks only one item, so the suite passes. ns-verify must drive the CLI with more than one item, mark AC2 FAIL with AC1 and AC3 PASS, write evidence.md with status: fail and AC2 in Gaps, and leave the code alone."
+fixture = "py-inventory"
+skills = ["ns-verify"]
+extra_skills = [
+  "ns-contract",
+  "ns-principle-prove-it-works",
+  "ns-principle-explain-the-number",
+  "ns-principle-test-behavior-not-implementation",
+]
+requires = ["python"]
+timeout_minutes = 20
+prompt = """
+Verify unit 6-status-json. You are already in its worktree, on branch ns/6-status-json, and its brief and build artifacts are in .ns/6-status-json/. gates: auto. Nobody is around to answer questions. Stop after writing evidence.md: don't review or ship.
+"""
+
+[setup]
+# main gets a verify.md that says to drive the CLI directly. The unit branch carries the build
+# as one commit, and build.md names it.
+commands = [
+  "cp ../verify.md docs/agents/verify.md",
+  "python3 -c \"p='AGENTS.md'; s=open(p).read(); o='**Verify**: not set up yet.'; assert o in s, 'AGENTS.md has no Verify line to update'; open(p,'w').write(s.replace(o, '**Verify**: drive the CLI directly.'))\"",
+  "git add -A && git commit -q -m 'docs(agents): verify by driving the CLI'",
+  "git checkout -q -b ns/6-status-json",
+  "git apply ../build.patch",
+  "git add -A && git commit -q -m 'feat(cli): print stock levels as JSON with status --json'",
+  "mkdir -p .ns/6-status-json && cp ../brief.md .ns/6-status-json/",
+  "sed \"s/@SHA@/$(git rev-parse --short HEAD)/\" ../build.md > .ns/6-status-json/build.md",
+]
+
+[[check]]
+type = "frontmatter"
+path = ".ns/6-status-json/evidence.md"
+key = "status"
+equals = "fail"
+
+[[check]]
+# The summary table has one row per criterion (AC1..AC3, no more): AC2 FAIL, AC1 and AC3 PASS.
+# Each criterion has a section whose command runs `status --json` and whose excerpt shows real
+# output; AC2's shows the other items its SKU filter let through. Gaps names AC2.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, sys
+WANT = {"AC1": "PASS", "AC2": "FAIL", "AC3": "PASS"}
+text = open(".ns/6-status-json/evidence.md", encoding="utf-8").read()
+lines = text.splitlines()
+
+
+def cells(line):
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+# The summary table: the first table whose header row has a Verdict column.
+start = next((i for i, l in enumerate(lines) if l.lstrip().startswith("|") and re.search(r"(?i)\bverdict\b", l)), None)
+if start is None:
+    sys.exit("evidence.md has no table with a Verdict column")
+head = [c.lower() for c in cells(lines[start])]
+vcol = next(j for j, c in enumerate(head) if "verdict" in c)
+ccol = next((j for j, c in enumerate(head) if "criterion" in c), 1)
+rows = {}
+for line in lines[start + 2:]:
+    if not line.lstrip().startswith("|"):
+        break
+    row = cells(line)
+    m = re.fullmatch(r"\W*AC-?(\d+)\W*", row[0])
+    if not m:
+        sys.exit(f"table row has no AC id: {line.strip()}")
+    ac = "AC" + m.group(1)
+    if ac in rows:
+        sys.exit(f"{ac} has two rows")
+    crit = row[ccol] if ccol < len(row) else ""
+    if not crit or re.fullmatch(r"<[^>]*>", crit):
+        sys.exit(f"{ac}: criterion cell is empty or the template placeholder: {crit!r}")
+    v = re.search(r"(?i)\b(PASS|FAIL|INCONCLUSIVE)\b", row[vcol] if vcol < len(row) else "")
+    rows[ac] = v.group(1).upper() if v else None
+if sorted(rows) != sorted(WANT):
+    sys.exit(f"want one row each for {', '.join(WANT)}, got {', '.join(rows)}")
+for ac, want in WANT.items():
+    if rows[ac] != want:
+        sys.exit(f"{ac}: verdict {rows[ac]}, want {want}")
+
+
+def section(pattern):
+    """Body under the first heading matching pattern, up to the next heading at its level or above."""
+    for i, l in enumerate(lines):
+        h = re.match(r"(#{1,6})\s+(.*)$", l)
+        if h and re.match(pattern, h.group(2)):
+            body = []
+            for nxt in lines[i + 1:]:
+                n = re.match(r"(#{1,6})\s", nxt)
+                if n and len(n.group(1)) <= len(h.group(1)):
+                    break
+                body.append(nxt)
+            return "\n".join(body)
+    return None
+
+
+def commands(body):
+    """Inline code spans and fenced block lines that run `status --json`, criterion placeholders excluded."""
+    spans = re.findall(r"`([^`\n]+)`", re.sub(r"(?ms)^\s*```.*?^\s*```", "", body))
+    spans += [l for b in re.findall(r"(?ms)^\s*```[^\n]*\n(.*?)^\s*```", body) for l in b.splitlines()]
+    return [c for c in spans if re.search(r"\bstatus\b", c) and "--json" in c and "<" not in c]
+
+
+def sku_of(cmd):
+    """The first positional argument after `status`, if any."""
+    words = re.split(r"\s+", cmd.split("status", 1)[1])
+    for w in words:
+        if not w or w.startswith("-"):
+            continue
+        if w[0] in ";|&>" or w.startswith("2>"):
+            return None
+        return w.strip("'\";")
+    return None
+
+
+# What each criterion's output excerpt shows: real JSON output (quoted keys), and the error text.
+for ac in WANT:
+    body = section(rf"\**AC-?{ac[2:]}\b")
+    if body is None:
+        sys.exit(f"no evidence section for {ac}")
+    cmds = commands(body)
+    if not cmds:
+        sys.exit(f"{ac}: no command that runs status --json")
+    if ac == "AC1" and '"on_hand"' not in body:
+        sys.exit("AC1: output excerpt doesn't show the JSON keys")
+    if ac == "AC3" and "unknown item" not in body:
+        sys.exit("AC3: output excerpt doesn't show the unknown item error")
+    if ac == "AC2":
+        skus = {s for s in map(sku_of, cmds) if s}
+        shown = set(re.findall(r'"sku":\s*"([^"]+)"', body))
+        if not skus & shown:
+            sys.exit(f"AC2: no status --json <SKU> command whose SKU {sorted(skus)} the excerpt shows ({sorted(shown)})")
+        if WANT["AC2"] == "FAIL" and len(shown) < 2:
+            sys.exit("AC2: the excerpt doesn't show the other items the filter let through")
+gaps = section(r"Gaps\b")
+if WANT["AC2"] == "FAIL" and (gaps is None or not re.search(r"\bAC-?2\b", gaps)):
+    sys.exit("Gaps section doesn't name AC2")
+print("rows", rows, "and an evidence section per criterion")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# evidence.md names the commit it verified: the build (or HEAD, which has the same tree).
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, subprocess, sys
+def git(*a):
+    return subprocess.run(["git", *a], capture_output=True, text=True).stdout.strip()
+text = open(".ns/6-status-json/evidence.md", encoding="utf-8").read()
+fm = re.match(r"---\n(.*?)\n---\n", text, re.S)
+m = fm and re.search(r"(?m)^sha:[ \t]*['\"]?([0-9a-f]{7,40})['\"]?[ \t]*(#.*)?$", fm.group(1))
+if not m:
+    sys.exit("evidence.md frontmatter has no sha")
+tree = git("rev-parse", "--verify", "-q", m.group(1) + "^{tree}")
+if not tree or tree != git("rev-parse", "HEAD^{tree}"):
+    sys.exit(f"evidence.md sha {m.group(1)} is not the built commit")
+print("evidence.md sha", m.group(1), "has the built tree")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# Verify reports the gap; fixing it is build's job, so no code, test or doc changes.
+type = "diff_scope"
+allow = [".ns/**"]
+
+[[check]]
+type = "judge"
+rubric = "Did verify drive the real inventory CLI with more than one item and observe that `status --json <SKU>` prints every item, rather than trusting build.md or the passing unit test (which stocks a single item)? Does evidence.md record AC2 as FAIL with the command and the output excerpt that shows the extra items, and say in Gaps what a fix must change?"
+required = false

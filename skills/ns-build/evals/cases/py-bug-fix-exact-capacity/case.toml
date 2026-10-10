@@ -1,0 +1,130 @@
+description = "Bug-fix brief for seeded defect (a): Warehouse.reserve rejects a reservation for exactly the available quantity. ns-build must fix it test-first on the unit branch, commit it, leave a clean tree, and write build.md with status: pass and sha at HEAD."
+fixture = "py-inventory"
+skills = ["ns-build"]
+extra_skills = [
+  "ns-contract",
+  "ns-tdd",
+  "ns-review",
+  "ns-principle-test-behavior-not-implementation",
+  "ns-principle-sequence-verifiable-units",
+  "ns-principle-subtract-before-you-add",
+  "ns-principle-laziness-protocol",
+  "ns-principle-fix-root-causes",
+  "ns-principle-attack-the-premise",
+  "ns-principle-minimize-reader-load",
+]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Build unit 7-reserve-exact. You are already in its worktree, on branch ns/7-reserve-exact, and the brief is .ns/7-reserve-exact/brief.md. The repo has no remote, so skip the fetch and rebase. gates: auto. Nobody is around to answer questions. Stop after writing build.md: don't verify, review or ship.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/7-reserve-exact",
+  "mkdir -p .ns/7-reserve-exact && cp ../brief.md .ns/7-reserve-exact/",
+]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/7-reserve-exact/build.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+# build.md's sha is HEAD on the unit branch, and the fix is committed: nothing outside .ns/ is left
+# uncommitted, so the sha names the code that was built.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, subprocess, sys
+def git(*a):
+    return subprocess.run(["git", *a], capture_output=True, text=True)
+text = open(".ns/7-reserve-exact/build.md", encoding="utf-8").read()
+fm = re.match(r"---\n(.*?)\n---\n", text, re.S)
+m = fm and re.search(r"(?m)^sha:[ \t]*['\"]?([0-9a-f]{7,40})['\"]?[ \t]*(#.*)?$", fm.group(1))
+if not m:
+    sys.exit("build.md frontmatter has no sha")
+sha = git("rev-parse", "--verify", "-q", m.group(1) + "^{commit}").stdout.strip()
+head = git("rev-parse", "HEAD").stdout.strip()
+if not sha or sha != head:
+    sys.exit(f"build.md sha {m.group(1)} is not HEAD {head[:12]}")
+if git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != "ns/7-reserve-exact":
+    sys.exit("HEAD is not on ns/7-reserve-exact")
+dirty = git("status", "--porcelain", "--untracked-files=all").stdout
+if dirty.strip():
+    sys.exit("uncommitted changes:\n" + dirty)
+print("build.md sha is HEAD", head[:12], "and the tree is clean")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**", ".ns/**"]
+
+[[check]]
+# Hidden acceptance test, written outside the repo so the agent never sees it. The loop over
+# quantities fails a fix that special-cases the reported 5.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_reserve_exact_acceptance.py" <<'PYEOF'
+from datetime import datetime, timedelta
+
+import pytest
+
+from inventory import InsufficientStock, Warehouse
+
+T0 = datetime(2026, 4, 1, 10, 0)
+
+
+def make(qty):
+    w = Warehouse()
+    w.add_item("PIN-4", "4 mm dowel pin")
+    w.receive("PIN-4", qty)
+    return w
+
+
+def test_reserving_exactly_the_available_quantity_succeeds():
+    w = make(5)
+    assert w.reserve("PIN-4", 5, now=T0).quantity == 5
+    assert w.available("PIN-4", T0) == 0
+
+
+def test_reserving_the_remainder_succeeds():
+    w = make(7)
+    w.reserve("PIN-4", 3, now=T0)
+    assert w.reserve("PIN-4", 4, now=T0).quantity == 4
+    assert w.available("PIN-4", T0) == 0
+
+
+def test_reserving_more_than_available_is_rejected():
+    w = make(5)
+    with pytest.raises(InsufficientStock):
+        w.reserve("PIN-4", 6, now=T0)
+    w.reserve("PIN-4", 5, now=T0)
+    with pytest.raises(InsufficientStock):
+        w.reserve("PIN-4", 1, now=T0 + timedelta(minutes=1))
+
+
+def test_exact_reservation_for_any_quantity():
+    for qty in (1, 2, 9, 40):
+        assert make(qty).reserve("PIN-4", qty, now=T0).quantity == qty
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_reserve_exact_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Did build fix the root cause (the comparison in Warehouse.reserve that decides whether enough stock is available) rather than special-casing the reported quantity or SKU, commit the fix with a test that reserves exactly the available quantity through the public Warehouse interface, and record that test and the commit in build.md?"
+required = false

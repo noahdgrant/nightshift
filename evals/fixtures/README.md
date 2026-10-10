@@ -10,7 +10,7 @@ Run the suite from the fixture root with `python3 -m pytest -q` (pytest only; `p
 
 ### Seeded defects
 
-**(a) Exact-capacity reservation rejected.** `Warehouse.reserve` in `src/inventory/warehouse.py` checks `if quantity >= available:` instead of `>`. Reserving exactly the available quantity raises `InsufficientStock` ("cannot reserve 5 of 'X': only 5 available"). Reserving less works, and reserving more is correctly rejected. Fix: `quantity > available`. The CLI shows it too: `reserve SKU <all available>` exits 1.
+**(a) Exact-capacity reservation rejected.** `Warehouse.reserve` in `src/inventory/warehouse.py` checks `if quantity >= available:` instead of `>`. Reserving exactly the available quantity raises `InsufficientStock` ("cannot reserve 5 of 'X': only 5 available"). Reserving less works, and reserving more is correctly rejected. Fix: `quantity > available`. The CLI shows it too: `reserve SKU <all available>` exits 1. Used by `ns-tdd/evals/cases/py-capacity-off-by-one` and, as a unit brief, `ns-build/evals/cases/py-bug-fix-exact-capacity`.
 
 **(b) Expired reservations counted in stock levels.** `Warehouse.stock_levels(now)` in `src/inventory/warehouse.py` sums every held reservation per SKU without checking expiry, so `StockLevel.reserved` and `.available` (and the CLI `status` output) still include expired reservations. `Warehouse.reserved()`/`available()`/`reserve()` go through `_active()` and are correct, so the two paths disagree after a reservation expires. Root-cause fix: make `stock_levels` use the same active-reservation logic (`self.reserved(sku, now)` or `_active`), not a second copy of the filter.
 
@@ -19,7 +19,11 @@ No existing test covers either defect: no test reserves exactly the available qu
 ### Room for a feature
 
 - `Warehouse.release_expired(now) -> list[Reservation]`: does not exist. Expired reservations stay in `reservations()` (and in the state file) until cancelled. Used by `ns-tdd/evals/cases/py-release-expired-feature`.
-- `status --json` in the CLI: does not exist (unused so far).
+- `status --json` in the CLI: does not exist in the fixture. The `ns-verify` cases `py-status-json-*` commit a build of it in setup (`build.patch` in the case dir), with a brief of three criteria: every item as JSON in SKU order (AC1), only the named SKU (AC2), and an unknown SKU exits 1 (AC3).
+
+### Seeded defects in case builds
+
+**(c) `status --json` ignores the SKU.** The build in `ns-verify/evals/cases/py-status-json-misses-sku-filter/build.patch` checks that the SKU exists but prints every item under `--json`, so AC2 fails while AC1 and AC3 hold. Its test for AC2 stocks a single item, so the suite passes and the seeded `build.md` says `status: pass`. Only driving the CLI with two or more items shows the defect. The sibling case `py-status-json-all-criteria-met` commits the correct build with the same brief, `build.md` and test names.
 
 ### Notes for case authors
 
