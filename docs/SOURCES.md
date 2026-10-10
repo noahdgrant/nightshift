@@ -18,6 +18,7 @@ flowchart LR
     mp_tick[to-tickets, wayfinder, codebase-design]
     mp_diag[diagnosing-bugs]
     mp_retro[retro]
+    mp_ica[improve-codebase-architecture, codebase-design]
   end
 
   subgraph PS["cursor pstack + cursor plugins"]
@@ -70,6 +71,7 @@ flowchart LR
     sf_plan[ns-plan]
     sf_ts["**ns-troubleshoot**"]
     sf_auto["**ns-auto**"]
+    sf_ar["**ns-agent-readiness**"]
     sf_imp[ns-improve]
     sf_mnt[ns-maintain + ns-maintain-verify]
   end
@@ -106,6 +108,7 @@ flowchart LR
   ps_swarm --> sf_swarm
   ps_unslop --> sf_wfh
   mp_retro --> sf_imp
+  mp_ica --> sf_ar
   ps_refl --> sf_imp
   cu_cl --> sf_imp
   ps_mvs --> sf_mnt
@@ -117,6 +120,7 @@ flowchart LR
 | ns skill | Phase | Taken from | What we change |
 |---|---|---|---|
 | **ns-setup** | setup | Matt `setup-matt-pocock-skills` | Adds `stack.md` (build/test/lint commands, test seams: host, simulator, HIL) and `verify.md`. Drops pnpm/TS detection |
+| **ns-agent-readiness** | setup | Matt `improve-codebase-architecture`, `codebase-design` | Checks grouped by `ns-principle-pave-the-road` plus navigability and the verify loop. A markdown report in `.ns/` instead of HTML, findings say what an agent would get wrong, and the top ones are filed as `needs-triage` issues up to a cap. No grilling loop |
 | **ns-writing-for-agents** | meta | Matt `writing-for-agents` | Nearly verbatim |
 | **ns-grilling** | define (leaf) | Matt `grilling` + `grill-me` | Merged into one |
 | **ns-domain-modeling** | define (leaf) | Matt `domain-modeling` | `GLOSSARY.md` + ADRs, as upstream |

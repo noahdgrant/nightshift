@@ -16,12 +16,6 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 
 Everyone with write access to the repo is the team. There are no external reporters.
 
-## Audit
-
-audit issues per run: 5
-
-The most issues one `ns-agent-readiness` run files. With no such line, it files 5.
-
 ## Linking issues
 
 - **Child of a parent**: the directory is the parent. Add `Part of: <path>` near the top when linking across features.
@@ -34,3 +28,9 @@ Create a new file under `.scratch/<feature-slug>/` (creating the directory if ne
 ## When a skill says "fetch the relevant ticket"
 
 Read the file at the referenced path. The user will normally pass the path or the issue number directly.
+
+## Audit
+
+audit issues per run: 1
+
+The most issues one `ns-agent-readiness` run files. With no such line, it files 5.

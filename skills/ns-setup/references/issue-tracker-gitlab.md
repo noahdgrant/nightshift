@@ -35,6 +35,12 @@ When set to `yes`, MRs run through the same labels and states as issues, using t
 
 GitLab numbers issues and MRs separately, so `#42` is unambiguous once you know which surface the maintainer means.
 
+## Audit
+
+audit issues per run: 5
+
+The most issues one `ns-agent-readiness` run files. With no such line, it files 5.
+
 ## Linking issues
 
 - **Child of a parent**: put `Part of #<parent>` at the top of the child's description. (On tiers with epics, an epic may hold the parent instead.)
