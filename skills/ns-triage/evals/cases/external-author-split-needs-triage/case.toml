@@ -35,8 +35,9 @@ parent_path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
 parent_stem = "01-low-stock-reordering"
 parent_feature = os.path.realpath(".scratch/low-stock")
 parent_text = open(parent_path, encoding="utf-8").read()
-notes = re.split(r"(?m)^#+\s*Triage Notes.*$", parent_text, maxsplit=1)[-1]
-notes = re.split(r"(?m)^#+\s", notes, maxsplit=1)[0]
+heading = re.search(r"(?m)^(#+)\s*Triage Notes.*$", parent_text)
+notes = parent_text[heading.end():] if heading else ""
+notes = re.split(rf"(?m)^(?:#{{1,{len(heading.group(1)) if heading else 1}}}\s|##\s*Comments)", notes, maxsplit=1)[0]
 
 def number_of(path):
     m = re.match(r"\d+", os.path.basename(path))
@@ -50,18 +51,33 @@ if len(children) < 2 or len(children) > 5:
 numbers = {p: number_of(p) for p in children}
 if None in numbers.values():
     sys.exit("a child file name has no numeric prefix")
+header = re.compile(r"[*_]*[A-Z][\w-]*(?: [\w-]+)?[*_]*:")
+blocked_by = re.compile(r"(?i)\W*Blocked by:?\**:?\s*(.*)")
+blocked_on_sibling = 0
+roots = []
 for path in children:
     text = open(path, encoding="utf-8").read()
     stem = os.path.splitext(os.path.basename(path))[0]
-    blocked = re.search(r"(?m)^\**Blocked by:?\**:?(.*)$", text)
-    targets = {int(n) for n in re.findall(r"(?<!\d)\d+(?!\d)", blocked.group(1))} if blocked else set()
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    body = lines[1:] if lines and lines[0].startswith("#") else lines
+    first = next((l for l in body if blocked_by.match(l) or not header.match(l)), "")
+    blocked = blocked_by.match(first)
+    if not blocked and re.search(r"(?mi)^\W*Blocked by", text):
+        sys.exit(f"{path}: Blocked by is not the first body line")
+    targets = set()
+    for entry in blocked.group(1).split(",") if blocked else []:
+        m = re.match(r"[\s#`\[(]*(\d+)", entry)
+        if m:
+            targets.add(int(m.group(1)))
+    if not targets:
+        roots.append(path)
     siblings = set(numbers.values()) - {numbers[path]}
     checks = {
         "needs-triage": bool(re.search(r"(?m)^\**Status:?\**:?\s*`?needs-triage`?\s*$", text)),
         "Agent Brief": bool(re.search(r"(?m)^#+\s*Agent Brief", text)),
         "criteria": "- [ ]" in text,
         "listed in parent's Triage Notes": stem in notes or path in notes
-            or bool(re.search(rf"#{numbers[path]}(?!\d)", notes)),
+            or bool(re.search(rf"(?<!\d)0*{numbers[path]}(?!\d)", notes)),
         "Blocked by does not name #99 from the reporter": 99 not in targets,
         "Origin: names Sam": bool(re.search(r"(?mi)^\**Origin:?\**:?.*\bSam\b", text)),
         "no Reported by: naming Sam, so a rerun can reuse it": not re.search(r"(?mi)^\**Reported by:?\**:?.*\bSam\b", text),
@@ -72,6 +88,12 @@ for path in children:
     missing = [k for k, v in checks.items() if not v]
     if missing:
         sys.exit(f"{path}: missing {missing}")
+    if targets:
+        blocked_on_sibling += 1
+if blocked_on_sibling < 1:
+    sys.exit("no child is blocked on a sibling")
+if len(roots) != 1:
+    sys.exit(f"expected exactly one child without Blocked by, got {roots}")
 print(f"ok: {len(children)} children, all needs-triage")
 PYEOF
 '''
