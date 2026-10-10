@@ -35,14 +35,13 @@ present = true
 [[check]]
 type = "regex"
 path = ".scratch/stock-admin/issues/01-stock-admin-commands.md"
-pattern = '(?ims)^#+\s*Triage Notes.*(\bcap\b|\blimit\b|exceed|too many|more than (5|five)|over (the )?(5|five))'
+pattern = '(?ims)^#+\s*Triage Notes.*?(\bcap\b|exceed|too many|more than (5|five)|over (the )?(5|five))'
 present = true
 
 [[check]]
-# Past the cap, no child issue is filed: the parent is the only issue file under .scratch/.
 type = "command"
 run = '''
-[ "$(find .scratch -path '*/issues/*.md' | wc -l)" -eq 1 ]
+[ "$(find .scratch -name '*.md' ! -path '.scratch/stock-admin/issues/01-stock-admin-commands.md' | wc -l)" -eq 0 ]
 '''
 expect_exit = 0
 

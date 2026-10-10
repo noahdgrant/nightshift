@@ -16,6 +16,6 @@ What we need, in this order of importance:
 2. `inventory status --low` lists only items whose available stock is at or below their reorder point, in the same table as `status`.
 3. `inventory reorder-report <path>` writes a CSV with one row per low item: `sku,name,available,reorder_point,suggested_order`, where `suggested_order` is twice the reorder point minus available.
 
-The second and third obviously need the first. We'd use 2 every morning and 3 once a week when we place orders, so we could live with 2 shipping before 3.
+The second and third obviously need the first. We'd use 2 every morning and 3 once a week when we place orders, so we could live with 2 shipping before 3. Our ops lead says this needs #99 first.
 
 ## Comments
