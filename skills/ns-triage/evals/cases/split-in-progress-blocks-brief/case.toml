@@ -45,8 +45,10 @@ children = sorted(p for p in glob.glob(".scratch/**/*.md", recursive=True)
 print("children:", children)
 if len(children) < 2:
     sys.exit("fewer than two child issues")
-def mentions(text, path):
+def mentions(text, path, strict=False):
     stem = os.path.splitext(os.path.basename(path))[0]
+    if strict:
+        return stem in text
     num = re.match(r"\d+", stem)
     if not num:
         sys.exit(f"{path}: file name has no numeric prefix")
@@ -68,7 +70,7 @@ for path in briefs:
     m = re.match(r"---\n(.*?)\n---\n", text, re.S)
     fm = {k: v.strip("'\"") for k, v in re.findall(r"(?m)^(\w+):[ \t]*(.*?)[ \t]*(?:#.*)?$", m.group(1))} if m else {}
     body = text[m.end():] if m else text
-    missing = [p for p in children if not mentions(body, p)]
+    missing = [p for p in children if not mentions(body, p, strict=True)]
     print(f"{path}: status={fm.get('status')!r} children not linked={missing}")
     if fm.get("status") == "blocked" and not missing:
         sys.exit(0)
