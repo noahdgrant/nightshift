@@ -1,0 +1,1 @@
+| rules | `ruff check --config {pack}/ruff.toml --no-cache --output-format=concise {target}`, `ast-grep scan --report-style short -c {pack}/sgconfig.yml {target}`, `{pack}/file-size.sh {target}` | 1 s |

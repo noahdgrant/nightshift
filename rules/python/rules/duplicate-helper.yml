@@ -1,8 +1,6 @@
 # One road per job: a function or class named like a helper that already exists. The names
-# below are helpers the standard library has (os.makedirs(exist_ok=True), shutil.which,
-# copy.deepcopy, functools.cache, itertools.chain.from_iterable, the dict | operator).
-# A method is not a duplicate; only a function outside a class body, or nested in a method, is.
-# Add this repo's own helpers to the regex, and each one's home module to ignores.
+# are in utils/helper-name.yml. A method is not a duplicate; only a function outside a
+# class body, or nested in a method, is.
 id: duplicate-helper
 language: python
 severity: error
@@ -21,4 +19,4 @@ rule:
   has:
     field: name
     pattern: $NAME
-    regex: '^(?:mkdir_p|ensure_dirs?|which|deep_copy|memoized?|flatten|merge_dicts)$'
+    matches: helper-name

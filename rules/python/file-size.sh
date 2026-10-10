@@ -7,15 +7,18 @@
 #   file-size.sh [path...]
 set -eu
 
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
+
 [ "$#" -gt 0 ] || set -- .
 
 for path in "$@"; do
   if [ -f "$path" ]; then
     printf '%s\n' "$path"
   elif git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git -C "$path" ls-files -z -co --exclude-standard -- '*.py' | tr '\0' '\n' | sed "s|^|${path%/}/|"
+    git -C "$path" ls-files -z -co --exclude-standard -- '*.py' | tr '\0' '\n' | PREFIX="${path%/}/" awk '{ print ENVIRON["PREFIX"] $0 }'
   else
-    find "$path" -name '*.py' -not -path '*/.*'
+    find "$path" -mindepth 1 -name '.*' -prune -o -name '*.py' -print
   fi
 done | while IFS= read -r file; do
   [ -f "$file" ] || continue

@@ -66,6 +66,7 @@ fixture_tests() {
 rule_pack_tests() {
   if command -v ruff >/dev/null && command -v ast-grep >/dev/null; then
     rules/python/tests/run.sh
+    scripts/check-git-dir-decoy.sh rules/python/tests/run.sh
     return
   fi
   echo "SKIPPED: Python rule pack tests (needs ruff and ast-grep: uv tool install ruff ast-grep-cli)" >&2

@@ -7,6 +7,9 @@
 #   rules/python/tests/run.sh
 set -euo pipefail
 
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
+
 pack=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 for tool in ruff ast-grep; do
@@ -19,13 +22,14 @@ done
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# The pack's commands as the rules row in docs/agents/stack.md runs them, on one file.
-# They exit non-zero when they find something.
+# The commands of stack-row.md, the rules row that ns-setup writes into stack.md, run on
+# target $2 with pack $1. They exit non-zero when they find something.
 findings() {
-  local p=$1
-  ruff check --config "$p/ruff.toml" --no-cache --output-format=concise "$2" 2>&1 || true
-  ast-grep scan --report-style short -c "$p/sgconfig.yml" "$2" 2>&1 || true
-  "$p/file-size.sh" "$2" 2>&1 || true
+  local cmd
+  while IFS= read -r cmd; do
+    cmd=${cmd//\{pack\}/\"\$1\"}
+    bash -c "${cmd//\{target\}/\"\$2\"}" _ "$1" "$2" 2>&1 || true
+  done < <(grep -o '`[^`]*`' "$pack/stack-row.md" | tr -d '`')
 }
 
 # Check one example against pack $1 for rule $2: a fail*.py must give a finding for
@@ -74,19 +78,9 @@ for dir in "$pack"/tests/examples/*/; do
 done
 
 # The shipped allowlist is empty, so the accept branch runs on a copy whose allowlist is
-# `inventory`, found by its marker.
-marker='# the allowlist'
-allow_rule=rules/dependency-allowlist.yml
-[ "$(grep -cF -e "$marker" "$pack/$allow_rule")" -eq 1 ] || {
-  echo "FAIL dependency-allowlist: $allow_rule needs exactly one '$marker' marker" >&2
-  failed=1
-}
+# `inventory`.
 cp -r "$pack" "$tmp/allowlist-pack"
-sed -i "/$marker/s/(?:)/(?:inventory)/" "$tmp/allowlist-pack/$allow_rule"
-grep -qF 'inventory' "$tmp/allowlist-pack/$allow_rule" || {
-  echo "FAIL dependency-allowlist: the '$marker' line holds no empty allowlist to fill" >&2
-  failed=1
-}
+sed -i "s/(?:)/(?:inventory)/" "$tmp/allowlist-pack/utils/allowed-package.yml"
 for example in "$pack"/tests/allowlist/*.py; do
   check_example "$tmp/allowlist-pack" dependency-allowlist "$example"
 done
@@ -145,6 +139,39 @@ for mode in plain git; do
   fi
 done
 
+for root in ".dot/proj" 'p&q|r' 'p\back'; do
+  for mode in plain git; do
+    dir="$tmp/odd-$mode/$root"
+    mkdir -p "$dir/.hidden"
+    printf '%s\n' "$long" | tee "$dir/long.py" >"$dir/.hidden/long.py"
+    if [ "$mode" = git ]; then
+      git -C "$dir" init -q
+      echo '.hidden/' >"$dir/.gitignore"
+    fi
+    out=$("$pack/file-size.sh" "$dir" 2>&1)
+    [ "$out" = "$dir/long.py:1001:1: error[file-size]: file is past 1000 lines; split it" ] || {
+      printf 'FAIL file-size: %s root %s gave:\n%s\n' "$mode" "$root" "$out" >&2
+      failed=1
+    }
+  done
+done
+
+decoy="$tmp/decoy"
+git init -q "$decoy"
+git_as -C "$decoy" commit -q --allow-empty -m decoy
+before=$(git -C "$decoy" rev-parse HEAD)
+for mode in plain git; do
+  out=$(GIT_DIR="$decoy/.git" GIT_WORK_TREE="$decoy" "$pack/file-size.sh" "$tmp/size-$mode" 2>&1)
+  grep -qF "$tmp/size-$mode/long.py:1001:1: error[file-size]" <<<"$out" || {
+    printf 'FAIL file-size: %s directory under an inherited GIT_DIR gave:\n%s\n' "$mode" "$out" >&2
+    failed=1
+  }
+done
+[ "$(git -C "$decoy" rev-parse HEAD)" = "$before" ] || {
+  echo "FAIL file-size: an inherited GIT_DIR was committed to" >&2
+  failed=1
+}
+
 dir="$tmp/size-git"
 out=$("$pack/file-size.sh" "$dir/" 2>&1)
 grep -qF "$dir/long.py:1001:1: error[file-size]" <<<"$out" && ! grep -qF "//" <<<"$out" || {
@@ -162,6 +189,22 @@ grep -qxF " sp ace.py:1001:1: error[file-size]: file is past 1000 lines; split i
   printf 'FAIL file-size: a file name with a leading space gave:\n%s\n' "$out" >&2
   failed=1
 }
+
+ns="$pack/../../cli/target/debug/ns"
+if [ -x "$ns" ]; then
+  repo="$tmp/ns-repo"
+  mkdir -p "$repo/docs/agents"
+  git -C "$repo" init -q
+  { printf '| Task | Command | Takes |\n|---|---|---|\n'; sed -e "s|{pack}|$pack|g" -e 's|{target}|.|g' "$pack/stack-row.md"; } >"$repo/docs/agents/stack.md"
+  printf 'import os  # noqa\n' >"$repo/bare.py"
+  out=$(cd "$repo" && timeout 60 "$ns" rules check 2>/dev/null) && rc=0 || rc=$?
+  [ "$rc" -eq 1 ] && grep -qF '"findings": 1,' <<<"$out" && grep -qF '"file": "bare.py"' <<<"$out" && grep -qF 'error[suppression-reason]' <<<"$out" || {
+    printf 'FAIL ns rules check: exit %s on a bare noqa gave:\n%s\n' "$rc" "$out" >&2
+    failed=1
+  }
+else
+  echo "run.sh: skipped the ns rules check test; build $ns with: cargo build --manifest-path cli/Cargo.toml" >&2
+fi
 
 [ "$failed" -eq 0 ] || exit 1
 echo "rules/python: $checked rules and the allowlist, all examples pass"

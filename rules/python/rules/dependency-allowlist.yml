@@ -1,8 +1,5 @@
 # One road per job: an import comes from the standard library, the repo's own packages, or
-# a dependency the repo allows. The allowlist is the regex marked below: the import names
-# (yaml, not PyYAML) of the repo's top-level packages and allowed dependencies, separated
-# by |, e.g. '^(?:inventory|pytest)(?:\.|$)'. Empty, it allows only the standard library.
-# A name starting with _ is allowed: the standard library's private modules (_thread).
+# a dependency the repo allows (utils/allowed-package.yml).
 id: dependency-allowlist
 language: python
 severity: error
@@ -19,4 +16,4 @@ rule:
     any:
       - matches: stdlib-module
       - regex: '^_'
-      - regex: '^(?:)(?:\.|$)' # the allowlist
+      - matches: allowed-package
