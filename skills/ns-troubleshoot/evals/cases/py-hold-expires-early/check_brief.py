@@ -41,6 +41,14 @@ def fence_lines(text):
     return lines
 
 
+def stays_inside(argv):
+    return not any(
+        part.startswith(("/", "~")) or part == ".." or part.startswith("../") or "/../" in part
+        for arg in argv
+        for part in arg.split("=")
+    )
+
+
 def replays_red(commands, root):
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(os.path.join(root, "src"), os.path.join(tmp, "src"))
@@ -51,6 +59,8 @@ def replays_red(commands, root):
             try:
                 argv = shlex.split(command)
             except ValueError:
+                continue
+            if not stays_inside(argv):
                 continue
             proc = subprocess.Popen(
                 argv, cwd=tmp, env=env, text=True,

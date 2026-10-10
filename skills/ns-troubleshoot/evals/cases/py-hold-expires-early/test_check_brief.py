@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import time
 import unittest
+import uuid
 from unittest import mock
 
 import check_brief
@@ -136,9 +137,34 @@ class CheckBriefTest(unittest.TestCase):
         )
         self.assertIn("repro ran red", check(text))
 
-    def test_error_with_zero_exit_fails(self):
-        text = good().replace("fulfil R0001\n", "fulfil R0001 || true\n")
-        self.assertIn("repro ran red", check(text))
+    def test_error_printed_with_zero_exit_fails(self):
+        root = pathlib.Path(_tmp.name) / "zero-exit"
+        seed(root)
+        (root / "src" / "inventory" / "__main__.py").write_text(
+            "import sys\nprint(\"inventory: error: reservation 'R0001' has expired\", file=sys.stderr)\n",
+            encoding="utf-8",
+        )
+        self.assertIn("repro ran red", check(good(), root))
+
+    def test_outside_state_path_is_not_replayed(self):
+        name = f"outside-{uuid.uuid4().hex}.json"
+        out = pathlib.Path(tempfile.mkdtemp(dir=_tmp.name))
+        escapes = (
+            f"--state {out}/{name}",
+            f"--state={out}/{name}",
+            f"--state ../{name}",
+            f"--state=../{name}",
+            f"--state ~/../{name}",
+        )
+        for flag in escapes:
+            with self.subTest(flag=flag):
+                self.assertIn("repro ran red", check(good().replace("--state inv.json", flag)))
+                self.assertEqual(list(out.iterdir()), [])
+                self.assertFalse((pathlib.Path(tempfile.gettempdir()) / name).exists())
+
+    def test_unbalanced_quote_line_is_skipped(self):
+        text = good().replace("export PYTHONPATH=src\n", "python3 -m inventory 'unbalanced\n")
+        self.assertEqual(check(text), [])
 
     def test_replay_leaves_the_root_untouched(self):
         root = pathlib.Path(_tmp.name) / "untouched"
