@@ -46,10 +46,17 @@ print("children:", children)
 if len(children) < 2:
     sys.exit("fewer than two child issues")
 blockers = {}
+numbers = {}
+header = re.compile(r"[*_]*[A-Z][\w-]*(?: [\w-]+)?[*_]*:")
+blocked_by = re.compile(r"(?i)\W*Blocked by:?\**:?\s*(.*)")
 for path in children:
     text = open(path, encoding="utf-8").read()
     stem = os.path.splitext(os.path.basename(path))[0]
-    num = stem.split("-")[0]
+    prefix = re.match(r"\d+", stem)
+    if not prefix:
+        sys.exit(f"{path}: file name has no numeric prefix")
+    num = prefix.group()
+    numbers[int(num)] = path
     checks = {
         "ready-for-agent": re.search(r"(?m)^\**Status:?\**:?\s*`?ready-for-agent`?\s*$", text),
         "priority:medium": re.search(r"(?m)^\**Priority:?\**:?\s*`?priority:medium`?\s*$", text),
@@ -63,12 +70,11 @@ for path in children:
         sys.exit(f"{path}: missing {missing}")
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     body = lines[1:] if lines and lines[0].startswith("#") else lines
-    first = body[0] if body else ""
-    m = re.match(r"(?i)\W*Blocked by:?\**:?\s*(.*)", first)
+    first = next((l for l in body if blocked_by.match(l) or not header.match(l)), "")
+    m = blocked_by.match(first)
     blockers[path] = [int(n) for n in re.findall(r"#?(\d+)", m.group(1))] if m else []
     if not m and re.search(r"(?mi)^\W*Blocked by", text):
         sys.exit(f"{path}: Blocked by is not the first body line")
-numbers = {int(os.path.basename(p).split("-")[0]): p for p in children}
 roots = [p for p, n in blockers.items() if not n]
 if len(roots) != 1:
     sys.exit(f"expected exactly one child without Blocked by, got {roots}")
