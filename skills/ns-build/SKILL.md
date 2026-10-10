@@ -50,6 +50,7 @@ While building, apply these principles:
 - [Laziness protocol](../ns-principle-laziness-protocol/SKILL.md) on every diff: the smallest change that passes, no abstraction before its third use, no signal threaded through layers when a direct path exists.
 - [Fix root causes](../ns-principle-fix-root-causes/SKILL.md) when a slice goes red for a reason you didn't expect, or an existing test breaks.
 - [Attack the premise](../ns-principle-attack-the-premise/SKILL.md) when two fixes that share one assumption have failed the same test. Write the premise down before a third fix.
+- [Pave the road](../ns-principle-pave-the-road/SKILL.md) when a slice adds a pattern, helper or dependency: reuse the repo's existing way to do that job, or state why it doesn't fit.
 - [Minimize reader load](../ns-principle-minimize-reader-load/SKILL.md) before each commit: collapse one-caller wrappers, shrink mutable state.
 
 **Scope.** Touch only what the brief requires. Something worth fixing outside it goes in `build.md` as a `file:` line (see Open risks kinds below), not in the diff. A change the brief asked for that you made differently goes under deviations, with the reason.

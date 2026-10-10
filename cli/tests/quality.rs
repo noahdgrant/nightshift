@@ -568,3 +568,348 @@ fn a_deleted_worktree_is_skipped_and_a_duplicate_unit_keeps_the_lower_path() {
     );
     assert_eq!(v["findings"]["critical"], 1);
 }
+
+/// A bare `remote.git` beside the repo, as its `origin`, with `main` pushed.
+fn with_origin(f: &Fixture) -> PathBuf {
+    let remote = f.root.with_file_name("remote.git");
+    git(
+        f.root.parent().unwrap(),
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            remote.to_str().unwrap(),
+        ],
+    );
+    git(
+        &f.root,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&f.root, &["push", "-q", "origin", "main"]);
+    remote
+}
+
+fn import(f: &Fixture, dir: &Path, args: &[&str], code: i32) -> Value {
+    let out = ns()
+        .current_dir(&f.root)
+        .args(["quality", "import"])
+        .arg(dir)
+        .args(args)
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(code),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+fn sources(v: &Value) -> Vec<(String, String)> {
+    v["per_unit"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| {
+            (
+                u["unit"].as_str().unwrap().to_string(),
+                u["source"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+    v.iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect()
+}
+
+fn branch_text(remote: &Path) -> String {
+    git(
+        remote,
+        &["show", "refs/heads/nightshift/quality:records.jsonl"],
+    )
+}
+
+fn branch_records(remote: &Path) -> Vec<Value> {
+    branch_text(remote)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn imported_records_keep_the_numbers_after_the_worktrees_are_removed() {
+    let f = fixture();
+    let remote = with_origin(&f);
+    let live = quality(&f, &[]);
+    assert_eq!(
+        sources(&live),
+        pairs(&[("1-alpha", "worktree"), ("2-beta", "worktree")])
+    );
+    assert_eq!(live["records"]["fetched"], true);
+    assert_eq!(live["records"]["units"], 0);
+
+    let live_since = quality(&f, &["--since", "2026-10-09T02:30:01Z"]);
+    let wts = f.root.with_file_name("myrepo.worktrees");
+    fs::create_dir(wts.join("Not_A_Unit")).unwrap();
+    fs::write(wts.join("notes.txt"), "x\n").unwrap();
+    let v = import(&f, &wts, &[], 0);
+    assert_eq!(v["status"], "pushed");
+    assert_eq!(v["imported"], json!(["1-alpha", "2-beta"]));
+    assert_eq!(v["records"], 3);
+    let skipped: Vec<_> = v["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["unit"].as_str().unwrap())
+        .collect();
+    assert_eq!(skipped, ["3-gamma", "Not_A_Unit", "notes.txt"]);
+    assert_eq!(v["skipped"][1]["reason"], "not a unit id");
+    let records = branch_records(&remote);
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["issue"], 1);
+    assert_eq!(records[0]["outcome"], "stuck");
+    assert_eq!(records[2]["pr"], 77);
+    assert_eq!(records[0]["findings"][1]["id"], "I1");
+    assert_eq!(records[0]["findings"][1]["introduced_by"]["pr"], 41);
+    assert!(!branch_text(&remote).contains(f.root.parent().unwrap().to_str().unwrap()));
+
+    let again = import(&f, &wts, &[], 0);
+    assert_eq!(again["status"], "already-done");
+    assert_eq!(again["already_recorded"], json!(["1-alpha", "2-beta"]));
+    assert_eq!(branch_records(&remote).len(), 3);
+
+    for u in ["1-alpha", "2-beta", "3-gamma"] {
+        let wt = wts.join(u);
+        git(
+            &f.root,
+            &["worktree", "remove", "--force", wt.to_str().unwrap()],
+        );
+        git(&f.root, &["branch", "-q", "-D", &format!("ns/{u}")]);
+    }
+    // The reviewed commits are gone, as after a squash merge and a gc: escapes keep the blame
+    // their records took.
+    git(&f.root, &["reflog", "expire", "--expire=now", "--all"]);
+    git(&f.root, &["gc", "-q", "--prune=now"]);
+    let after = quality(&f, &[]);
+    for k in [
+        "units",
+        "findings",
+        "first_pass",
+        "cycles_to_clean",
+        "leftovers",
+        "escapes",
+        "trend",
+        "run_log",
+    ] {
+        assert_eq!(live[k], after[k], "{k}");
+    }
+    for (k, field) in [
+        ("leftover_findings", "id"),
+        ("escape_findings", "id"),
+        ("escape_findings", "introduced_by"),
+    ] {
+        let pick = |v: &Value| -> Vec<Value> {
+            v[k].as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x[field].clone())
+                .collect()
+        };
+        assert_eq!(pick(&live), pick(&after), "{k}.{field}");
+    }
+    let gaps = |v: &Value| {
+        let mut g = v["gaps"].clone();
+        g.as_object_mut().unwrap().remove("unparsed");
+        g
+    };
+    assert_eq!(gaps(&live), gaps(&after));
+    assert_eq!(
+        sources(&after),
+        pairs(&[("1-alpha", "record"), ("2-beta", "record")])
+    );
+    assert_eq!(after["per_unit"][0]["worktree"], Value::Null);
+    assert_eq!(after["records"]["units"], 2);
+    assert_eq!(after["records"]["on_branch"], 3);
+    let since = quality(&f, &["--since", "2026-10-09T02:30:01Z"]);
+    assert_eq!(since["units"], 1);
+    assert_eq!(live_since["first_pass"], since["first_pass"]);
+    assert_eq!(live_since["trend"], since["trend"]);
+
+    // A fetch that fails reads the records as last fetched.
+    let gone = f.root.with_file_name("gone.git");
+    git(
+        &f.root,
+        &["remote", "set-url", "origin", gone.to_str().unwrap()],
+    );
+    let offline = quality(&f, &[]);
+    assert_eq!(offline["records"]["fetched"], false);
+    assert!(offline["records"]["fetch_error"].is_string());
+    assert_eq!(offline["records"]["on_branch"], 3);
+    assert_eq!(offline["first_pass"], live["first_pass"]);
+}
+
+#[test]
+fn an_import_with_nothing_to_import_fails_and_says_what_it_expected() {
+    let f = fixture();
+    let remote = with_origin(&f);
+    let empty = f.root.with_file_name("empty");
+    fs::create_dir_all(empty.join("1-alpha/.ns")).unwrap();
+    for args in [&[][..], &["--dry-run"][..]] {
+        let out = ns()
+            .current_dir(&f.root)
+            .args(["quality", "import"])
+            .arg(&empty)
+            .args(args)
+            .output();
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            (v["ok"].as_bool(), v["status"].as_str()),
+            (Some(false), Some("nothing-to-import"))
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("<unit>/.ns/<unit>/review.md"), "{err}");
+        assert!(err.contains("--dry-run"), "{err}");
+        assert!(err.contains("skipped:  1 (see"), "{err}");
+        assert_eq!(v["skipped"][0]["reason"], "no .ns/1-alpha/ inside");
+    }
+    assert_eq!(git(&remote, &["for-each-ref", "refs/heads/nightshift"]), "");
+}
+
+#[test]
+fn a_record_wins_over_its_worktree_and_a_unit_without_one_falls_back() {
+    let f = fixture();
+    with_origin(&f);
+    let wts = f.root.with_file_name("myrepo.worktrees");
+    let archive = f.root.with_file_name("archive");
+    write(
+        archive.join("1-alpha/.ns/1-alpha/review.md"),
+        &fs::read_to_string(wts.join("1-alpha/.ns/1-alpha/review.md")).unwrap(),
+    );
+    write(
+        archive.join("1-alpha/.ns/1-alpha/pr.md"),
+        "---\nphase: ship\nstatus: pass\npr: https://github.com/o/r/pull/5\n---\n",
+    );
+    assert_eq!(import(&f, &archive, &[], 0)["imported"], json!(["1-alpha"]));
+    write(
+        wts.join("1-alpha/.ns/1-alpha/review.md"),
+        &review("status: pass\ncycles: 0\n", ""),
+    );
+    let v = quality(&f, &[]);
+    assert_eq!(
+        sources(&v),
+        pairs(&[("1-alpha", "record"), ("2-beta", "worktree")])
+    );
+    assert_eq!(v["per_unit"][0]["critical"], 1);
+    assert_eq!(v["per_unit"][0]["status"], "blocked");
+
+    // With the run log gone, the outcome and PR come from the record.
+    fs::remove_file(f.root.join(".git/ns/runs.jsonl")).unwrap();
+    let run = &quality(&f, &[])["per_unit"][0]["run"];
+    assert_eq!(
+        (run["outcome"].as_str(), run["pr"].as_u64()),
+        (Some("stuck"), Some(5))
+    );
+}
+
+#[test]
+fn an_import_dry_run_pushes_nothing() {
+    let f = fixture();
+    let remote = with_origin(&f);
+    let wts = f.root.with_file_name("myrepo.worktrees");
+    let v = import(&f, &wts, &["--dry-run"], 0);
+    assert_eq!(v["status"], "planned");
+    import(&f, &wts, &[], 0);
+    assert_eq!(
+        import(&f, &wts, &["--dry-run"], 0)["status"],
+        "already-done"
+    );
+    git(
+        &remote,
+        &["update-ref", "-d", "refs/heads/nightshift/quality"],
+    );
+    assert_eq!(
+        (v["units"].as_u64(), v["records"].as_u64()),
+        (Some(2), Some(3))
+    );
+    assert_eq!(git(&remote, &["for-each-ref", "refs/heads/nightshift"]), "");
+    assert!(!f.root.join(".git/ns/quality-outbox.jsonl").exists());
+}
+
+#[test]
+fn an_import_with_no_origin_waits_in_the_outbox_and_still_counts() {
+    let f = fixture();
+    let wts = f.root.with_file_name("myrepo.worktrees");
+    let v = import(&f, &wts, &[], 1);
+    assert_eq!(
+        (v["ok"].as_bool(), v["status"].as_str()),
+        (Some(false), Some("outbox"))
+    );
+    let v = quality(&f, &[]);
+    assert_eq!(v["records"]["fetched"], false);
+    assert_eq!(v["records"]["in_outbox"], 3);
+    assert_eq!(sources(&v)[0].1, "record");
+    let remote = with_origin(&f);
+    let v = import(&f, &wts, &[], 0);
+    assert_eq!(v["status"], "pushed");
+    assert_eq!(v["already_recorded"], json!(["1-alpha", "2-beta"]));
+    assert_eq!(v["push"]["records"], 3);
+    assert_eq!(branch_records(&remote).len(), 3);
+    assert!(!f.root.join(".git/ns/quality-outbox.jsonl").exists());
+}
+
+#[test]
+fn an_import_without_a_git_identity_commits_as_nightshift() {
+    let f = fixture();
+    let remote = with_origin(&f);
+    let home = f.root.with_file_name("empty-home");
+    fs::create_dir(&home).unwrap();
+    let wts = f.root.with_file_name("myrepo.worktrees");
+    let out = ns()
+        .current_dir(&f.root)
+        .env("HOME", &home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+        .env("GIT_CONFIG_VALUE_0", "true")
+        .env_remove("EMAIL")
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
+        .args(["quality", "import"])
+        .arg(&wts)
+        .output();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        git(
+            &remote,
+            &["log", "-1", "--format=%an <%ae>", "nightshift/quality"]
+        ),
+        "nightshift <nightshift@localhost>"
+    );
+}
+
+#[test]
+fn import_needs_a_directory() {
+    let f = fixture();
+    ns().current_dir(&f.root)
+        .args(["quality", "import", "no-such-dir"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("not a directory"))
+        .stderr(predicate::str::contains("ns quality import"));
+    ns().current_dir(&f.root)
+        .args(["quality", "import"])
+        .assert()
+        .code(2);
+}

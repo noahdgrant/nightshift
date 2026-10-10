@@ -138,6 +138,14 @@ flowchart LR
 | ns-improve | meta | Matt `retro`; pstack `reflect`, `automate-me`, `correct`; Cursor `continual-learning`, `workflow-from-chats` | Per-session review plus weekly transcript mining, ending in a PR |
 | ns-maintain, ns-maintain-verify | meta | pstack `maintain-verification-skill`; addy evals | Upstream diffs, evals, verify-skill re-check |
 
+## Inspiration
+
+Original skills that take an idea, not text, from a source. They carry no `metadata.upstream`.
+
+| ns skill | Idea | Source |
+|---|---|---|
+| ns-principle-pave-the-road | A codebase where the shortcut is the right path, because agents take the shortest path to done | Lauren Tan (poteto), ["here's how i shipped 2,500 PRs last month to production"](https://x.com/poteto/status/2102050467505430555); Addy Osmani, ["Agent Skills"](https://addyosmani.com/blog/agent-skills/) |
+
 ## Left out
 
 | Source | Skipped | Why |
