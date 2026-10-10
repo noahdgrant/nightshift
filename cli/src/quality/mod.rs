@@ -57,6 +57,7 @@ fn gaps(units: &[&Unit], unparsed: Vec<Unparsed>) -> Value {
     json!({
         "findings_without_axis": count(&|f| f.axes.is_empty()),
         "findings_axis_from_raised_by": count(&|f| f.axes_from_raised_by && !f.axes.is_empty()),
+        "findings_without_severity": count(&|f| f.severity == Severity::Unknown),
         "findings_without_scope": count(&|f| f.scope == Scope::Unknown),
         "findings_without_cycle": count(&|f| f.cycle.is_none()),
         "findings_without_location": count(&|f| f.location.is_none()),
@@ -209,7 +210,7 @@ mod tests {
     fn gaps_count_missing_fields_on_the_newest_attempt() {
         let a = Attempt {
             findings: review_md::parse(
-                "### I1. a\n- Raised by: spec\n### I2. b\n- Axis: tests\n- Scope: changed\n- Cycle: 1\n- Location: x:1\n- Status: open\n### I3. c\n",
+                "### I1. a\n- Raised by: spec\n### I2. b\n- Axis: tests\n- Scope: changed\n- Cycle: 1\n- Location: x:1\n- Status: open\n### I3. c\n### E1. d\n- Axis: tests\n- Scope: changed\n- Cycle: 1\n- Location: x:2\n- Status: open\n",
             ),
             stray_statuses: 2,
             ..Attempt::default()
@@ -222,6 +223,7 @@ mod tests {
             run: RunStats::default(),
         };
         let g = gaps(&[&u], Vec::new());
+        assert_eq!(g["findings_without_severity"], 1);
         assert_eq!(g["findings_without_axis"], 1);
         assert_eq!(g["findings_axis_from_raised_by"], 1);
         assert_eq!(g["findings_without_scope"], 2);

@@ -73,6 +73,8 @@ pub enum Outcome {
     Stuck,
     Budget,
     Paused,
+    /// Triage split the issue into child issues: nothing left for this unit to do.
+    Split,
 }
 
 impl Outcome {
@@ -83,12 +85,13 @@ impl Outcome {
             Outcome::Stuck => "stuck",
             Outcome::Budget => "budget",
             Outcome::Paused => "paused",
+            Outcome::Split => "split",
         }
     }
 
     fn exit(self) -> ExitCode {
         match self {
-            Outcome::Done | Outcome::Merged => ExitCode::SUCCESS,
+            Outcome::Done | Outcome::Merged | Outcome::Split => ExitCode::SUCCESS,
             Outcome::Stuck => ExitCode::from(EXIT_STUCK),
             Outcome::Budget => ExitCode::from(EXIT_BUDGET),
             Outcome::Paused => ExitCode::from(EXIT_PAUSED),
@@ -1025,6 +1028,7 @@ fn dry_run(
         }
         Decision::Done => (json!({"action": "done"}), None, None),
         Decision::Stuck(r) => (json!({"action": "stuck", "reason": r}), None, None),
+        Decision::Split(r) => (json!({"action": "split", "reason": r}), None, None),
     };
     let json = json!({
         "unit": unit,
@@ -1107,6 +1111,12 @@ fn drive(
                         });
                 }
                 return Ok(finish(Outcome::Stuck, r, None));
+            }
+            Decision::Split(r) => {
+                let brief = artifact_of("triage");
+                let kept = archive_as(&ctx.artifacts, brief, brief.trim_end_matches(".md"))?;
+                *last_artifact = kept.map(|p| p.to_string_lossy().into_owned());
+                return Ok(finish(Outcome::Split, r, Some("triage")));
             }
             Decision::Done => {
                 if !fac.merge.auto() {

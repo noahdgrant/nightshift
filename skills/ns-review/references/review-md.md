@@ -93,8 +93,8 @@ Options: fix by hand on the unit's branch then delete `.ns/<unit>/review.md` so 
 
 Every finding, in `review.md` and in `review/cycle-<n>.md`, carries the fields in the template above, in that order; `ns watch` and `ns quality` parse them. Their values:
 
-- `Axis`: the axes of the reviewers that raised it, from `correctness`, `readability`, `architecture`, `security`, `performance`, `tests`, `spec`, `comments`. Comma-separated when several raised it. A change-size finding from step 1 takes `architecture`.
-- `Scope`: `changed` or `pre-existing`, as step 3 of `SKILL.md` defines them.
+- `Axis`: the axes of the reviewers that raised it, from `correctness`, `readability`, `architecture`, `security`, `performance`, `tests`, `spec`, `comments`. Comma-separated when several raised it. The size Suggestions from step 1 take `architecture`.
+- `Scope`: `changed` or `pre-existing`, as step 3 of `SKILL.md` defines them. `pre-existing` is what marks an escape. An escape sits in its severity's section with that section's ID prefix, like any finding (`### I4.` under `## Important`), since `ns quality` reads severity from the prefix. It gets no `## Escapes` section and no `E` prefix of its own.
 - `Cycle`: the review pass that first raised it, `0` for the first review.
 - `Status`: `deferred: #<n>` only for an escape filed as issue `#<n>`.
 

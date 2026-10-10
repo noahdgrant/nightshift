@@ -1,0 +1,163 @@
+diff --git a/src/inventory/cli.py b/src/inventory/cli.py
+index 38ae3ed..935c9b7 100644
+--- a/src/inventory/cli.py
++++ b/src/inventory/cli.py
+@@ -64,6 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
+     p = sub.add_parser("fulfil", help="ship a reservation")
+     p.add_argument("reservation_id")
+ 
++    p = sub.add_parser("renew", help="extend a reservation")
++    p.add_argument("reservation_id")
++    p.add_argument("--ttl", type=_positive_int, default=30, help="minutes (default: 30)")
++
++    sub.add_parser("release-expired", help="drop expired reservations")
++
+     p = sub.add_parser("status", help="show stock levels")
+     p.add_argument("sku", nargs="?", default=None)
+ 
+@@ -102,6 +108,12 @@ def run(args: argparse.Namespace, out: TextIO | None = None) -> None:
+     elif args.command == "fulfil":
+         r = warehouse.fulfil(args.reservation_id, now)
+         print(f"fulfilled {r.id}: {r.quantity} x {r.sku}", file=out)
++    elif args.command == "renew":
++        r = warehouse.renew(args.reservation_id, now, timedelta(minutes=args.ttl))
++        print(f"{r.id}: renewed until {r.expires_at.isoformat()}", file=out)
++    elif args.command == "release-expired":
++        for r in warehouse.release_expired(now):
++            print(f"released {r.id}", file=out)
+     elif args.command == "status":
+         changed = False
+         for line in _status(warehouse, args.sku, now):
+diff --git a/src/inventory/warehouse.py b/src/inventory/warehouse.py
+index da52c45..e26331f 100644
+--- a/src/inventory/warehouse.py
++++ b/src/inventory/warehouse.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ from collections import defaultdict
++from dataclasses import replace
+ from datetime import datetime, timedelta
+ 
+ from inventory.errors import (
+@@ -122,6 +123,24 @@ class Warehouse:
+         del self._reservations[reservation_id]
+         return reservation
+ 
++    def renew(self, reservation_id: str, now: datetime, ttl: timedelta) -> Reservation:
++        """Hold a live reservation until `now + ttl` instead of its old expiry."""
++        if ttl <= timedelta(0):
++            raise ValueError("ttl must be positive")
++        reservation = self.reservation(reservation_id)
++        if reservation.is_expired(now):
++            raise ReservationExpired(reservation_id)
++        renewed = replace(reservation, expires_at=now + ttl)
++        self._reservations[reservation_id] = renewed
++        return renewed
++
++    def release_expired(self, now: datetime) -> list[Reservation]:
++        """Drop every reservation expired at `now`, returning them in ID order."""
++        expired = [r for r in self.reservations() if r.is_expired(now)]
++        for r in expired:
++            del self._reservations[r.id]
++        return expired
++
+     # Reporting
+ 
+     def stock_levels(self, now: datetime) -> list[StockLevel]:
+diff --git a/tests/test_renew_release.py b/tests/test_renew_release.py
+new file mode 100644
+index 0000000..5e50c07
+--- /dev/null
++++ b/tests/test_renew_release.py
+@@ -0,0 +1,90 @@
++from datetime import timedelta
++
++import pytest
++
++from inventory import ReservationExpired, UnknownReservation
++from inventory.cli import main
++
++from conftest import T0
++
++TTL = timedelta(minutes=30)
++
++
++def test_renew_moves_expiry_from_now(warehouse):
++    r = warehouse.reserve("BOLT-M6", 2, now=T0, ttl=TTL)
++    renewed = warehouse.renew(r.id, T0 + timedelta(minutes=10), TTL)
++    assert renewed.expires_at == T0 + timedelta(minutes=40)
++    assert warehouse.reservation(r.id) == renewed
++
++
++def test_renew_refuses_a_reservation_expired_at_now(warehouse):
++    r = warehouse.reserve("BOLT-M6", 2, now=T0, ttl=TTL)
++    with pytest.raises(ReservationExpired):
++        warehouse.renew(r.id, T0 + TTL, TTL)
++
++
++def test_renew_refuses_an_unknown_id(warehouse):
++    with pytest.raises(UnknownReservation):
++        warehouse.renew("R9999", T0, TTL)
++
++
++@pytest.mark.parametrize("ttl", [timedelta(0), timedelta(minutes=-1)])
++def test_renew_refuses_a_non_positive_ttl(warehouse, ttl):
++    r = warehouse.reserve("BOLT-M6", 2, now=T0, ttl=TTL)
++    with pytest.raises(ValueError):
++        warehouse.renew(r.id, T0, ttl)
++
++
++def test_release_expired_drops_expired_in_id_order(warehouse):
++    a = warehouse.reserve("BOLT-M6", 1, now=T0, ttl=timedelta(minutes=5))
++    live = warehouse.reserve("BOLT-M6", 1, now=T0, ttl=TTL)
++    b = warehouse.reserve("BOLT-M6", 1, now=T0, ttl=timedelta(minutes=5))
++    released = warehouse.release_expired(T0 + timedelta(minutes=5))
++    assert released == [a, b]
++    assert warehouse.reservations() == [live]
++
++
++def test_release_expired_with_nothing_expired(warehouse):
++    r = warehouse.reserve("BOLT-M6", 1, now=T0, ttl=TTL)
++    assert warehouse.release_expired(T0) == []
++    assert warehouse.reservations() == [r]
++
++
++@pytest.fixture
++def inv(tmp_path):
++    state = tmp_path / "inventory.json"
++
++    def run(*args: str, now: str = "2026-03-02T09:00:00") -> int:
++        return main(["--state", str(state), "--now", now, *args])
++
++    run("add-item", "BOLT-M6", "M6 hex bolt")
++    run("receive", "BOLT-M6", "10")
++    return run
++
++
++def test_cli_renew_prints_and_saves(inv, capsys):
++    inv("reserve", "BOLT-M6", "2", "--ttl", "15")
++    capsys.readouterr()
++    assert inv("renew", "R0001", now="2026-03-02T09:10:00") == 0
++    assert capsys.readouterr().out.strip() == "R0001: renewed until 2026-03-02T09:40:00"
++    assert inv("renew", "R0001", "--ttl", "5", now="2026-03-02T09:39:00") == 0
++    assert capsys.readouterr().out.strip() == "R0001: renewed until 2026-03-02T09:44:00"
++
++
++def test_cli_renew_errors_exit_non_zero(inv, capsys):
++    inv("reserve", "BOLT-M6", "2", "--ttl", "15")
++    capsys.readouterr()
++    assert inv("renew", "R9999") == 1
++    assert "R9999" in capsys.readouterr().err
++    assert inv("renew", "R0001", now="2026-03-02T09:15:00") == 1
++    assert "R0001" in capsys.readouterr().err
++
++
++def test_cli_release_expired_prints_and_saves(inv, capsys):
++    inv("reserve", "BOLT-M6", "1", "--ttl", "5")
++    inv("reserve", "BOLT-M6", "1", "--ttl", "60")
++    capsys.readouterr()
++    assert inv("release-expired", now="2026-03-02T09:05:00") == 0
++    assert capsys.readouterr().out.splitlines() == ["released R0001"]
++    assert inv("release-expired", now="2026-03-02T09:05:00") == 0
++    assert capsys.readouterr().out == ""

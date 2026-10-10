@@ -49,6 +49,7 @@ ready_label = "status:ready-for-agent"
 in_progress_label = "status:in-progress"
 done_label = "status:in-review"    # set when the unit ends with an open PR
 stuck_label = "status:ready-for-human"
+split_label = "status:needs-define"   # set when triage split the issue into child issues
 triage_label = "status:needs-triage"   # issues ns watch triages before it picks a unit
 triage_per_night = 10              # cap on triage-only runs per `ns watch`; 0 turns the pass off
 priority = ["priority:high", "priority:medium", "priority:low"]  # sorted on first; no match goes last
@@ -119,12 +120,13 @@ Steps:
 5. The attempt wrote its artifact if P's artifact exists after the run. If not, the attempt failed with "no artifact written" (or the timeout or exit code), and the files archived in step 3 move back, so the next decision sees the state as it was. A triage run that exits 0 without writing `brief.md` is the "triage decided a human or define is needed" row: stuck, no retry. A usage-limit stop also moves the files back (see "Billing").
    A phase killed at its timeout wrote nothing, whatever it left behind: its artifact moves to `.ns/<unit>/history/<artifact>-timeout-<n>.md` (n one past the highest timeout archive for that artifact), the attempt fails with "timed out after <n> min", and the run log's `phase` event names the archive as `archived`. When the phase then runs out of attempts, the stuck reason says the last attempt timed out and suggests raising its `timeout_minutes` or splitting the unit. `NS_PHASE_TIMEOUT_MS` overrides phase timeouts, for tests: `<ms>` for every phase, or `<phase>=<ms>[,<phase>=<ms>]` for the named ones.
 6. Run the CI gate after a build that wrote `status: pass`, and after a review that moved HEAD (see "Gate"). A red gate sends the unit back to build.
-7. Repeat until the unit is done, merged, stuck, paused, or out of budget.
+7. Repeat until the unit is done, merged, split, stuck, paused, or out of budget.
 
 An artifact is current when its frontmatter `sha` matches `git rev-parse --short HEAD` in the worktree by prefix (the lengths may differ), or when the unit's diff at that sha has the same `git patch-id` as at HEAD. The unit's diff is `git diff $(git merge-base <base> <sha>) <sha>`, with `<base>` the one the worktree was cut from (`origin/<base>` instead when that is ahead of the local branch): `--base`, else `origin/HEAD`'s branch (the local branch when present), else the branch checked out in the main worktree (not the literal `HEAD`, a deliberate change from the issue's text), else the detached sha. `git patch-id` ignores whitespace, so a whitespace-only change after review counts as current. A rebase that leaves the change alone keeps every artifact current. A sha no longer in the repo is not current. "`sha` ≠ HEAD" below means not current. Because of step 3, an artifact that exists is current. The table, as implemented, checked top to bottom:
 
 | State | Next |
 |---|---|
+| `brief` split | **split**: child issues replaced the unit; `brief.md` moves to `history/`, so a parent sent back to the queue is triaged afresh |
 | any artifact `blocked` | stuck |
 | `pr`, `evidence` and `review` pass at HEAD | **done** (then the merge step under `merge.policy = auto`) |
 | no `brief.md` | triage with an issue, else stuck "no brief" |
@@ -156,7 +158,7 @@ Run log: append one JSON line per event to `.git/ns/runs.jsonl` in the common gi
 
 Budget: before each phase, if the cost reported so far (across the units of one `ns watch`) has reached `limits.budget_usd`, the run ends with `budget`. On a subscription the reported cost is an estimate, so the cap is notional and unset by default; `--until`, an optional `max_units`, and usage-limit pauses bound a night instead.
 
-Output: final JSON `{unit, outcome: done|merged|stuck|budget|paused, phase, reason, pr, cost_usd, reset_at, artifact, phases:[...]}`. Exit 0 for done or merged, 1 for stuck, 2 for a usage or config error (bad definition, missing subscription login, harness not on PATH), 3 for budget, 4 for paused, 5 when another runner holds the lock.
+Output: final JSON `{unit, outcome: done|merged|split|stuck|budget|paused, phase, reason, pr, cost_usd, reset_at, artifact, phases:[...]}`. A `split` names the triage phase, the archived `brief.md` as the artifact, and the reason `brief.md is split: <its first line>`. Exit 0 for done, merged or split, 1 for stuck, 2 for a usage or config error (bad definition, missing subscription login, harness not on PATH), 3 for budget, 4 for paused, 5 when another runner holds the lock.
 
 ### Gate
 
@@ -226,7 +228,7 @@ ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]
 3. Drop issues whose author is outside the team (see Trust), issues whose first-line `Blocked by: #a, #b` names any open issue, and issues that already have an open PR whose body says `Closes #n`.
 4. Sort by the first matching `priority` label, then the first matching `order` label, then issue number. An issue with no `priority` label sorts after the last one.
 5. Take the first. Swap `ready_label` for `in_progress_label`. `git fetch origin`, then `ns run --issue <n> --base origin/<default>` (in process, sharing the budget).
-6. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`. On `stuck`, or a `done` that needs a human merge (files that need human review, no CI), swap to `stuck_label` and comment the reason and the last artifact path. When the last artifact is a `review.md`, the comment also lists its open Critical and Important findings, each with its title and location. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
+6. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`. On `split`, swap to `split_label` and post nothing: triage's notes already list the children, and the parent waits on them, neither queued nor triaged again, until a human closes it. On `stuck`, or a `done` that needs a human merge (files that need human review, no CI), swap to `stuck_label` and comment the reason and the last artifact path. When the last artifact is a `review.md`, the comment also lists its open Critical and Important findings, each with its title and location. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
 7. On `paused`, keep `in_progress_label` and sleep until the reset time (30 minutes when unknown, then check again), then resume the same unit. If the reset is at or past `--until`, put `ready_label` back and stop cleanly.
 8. Repeat until the queue is empty, `--until` passes (no new unit starts after it), `max_units` is reached, or the budget is spent.
 
@@ -269,7 +271,7 @@ ns quality [--since YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--json]
 | Leftovers | Critical and Important findings in changed code still `open` after the third fix cycle | 0 |
 | Escapes | Findings with `Scope: pre-existing` (D29): defects in code the unit didn't change, so an earlier unit's review let them through. Each is blamed (`git blame` at the reviewed commit, the frontmatter's `sha:`, else `head:`, else `base:`) to the commit that introduced the line, and to the PR in its subject (`(#123)`) | Falling |
 
-An escape counts only as an escape: it never makes a unit's first pass dirty, never counts toward findings per 100 lines, and never blocks. A finding dismissed in review counts toward none of these: review judged it wrong. `trend` repeats the numbers for each local day (the newest artifact's `updated:`), and `--since` keeps only units whose newest artifact was updated, and run-log events, at or after a UTC instant. A bare date means 00:00:00 UTC, whatever `TZ` is, and an undated unit or event is dropped. `per_unit` has each unit's numbers, with `reached_clean` (`clean`, `not_clean` or `unknown`) and its review runs, review cost and outcome from the run log. `run_log.units_without_artifacts` names units the log shows reviewed whose worktree is gone.
+An escape counts only as an escape: it never makes a unit's first pass dirty, never counts toward findings per 100 lines, and never blocks. A finding dismissed in review counts toward none of these: review judged it wrong. `trend` repeats the numbers for each local day (the newest artifact's `updated:`), and `--since` keeps only units whose newest artifact was updated, and run-log events, at or after a UTC instant. A bare date means 00:00:00 UTC, whatever `TZ` is, and an undated unit or event is dropped. `per_unit` has each unit's numbers, with `changed_lines`, which keeps the review cost of a large unit visible now that size never blocks one (D37), `reached_clean` (`clean`, `not_clean` or `unknown`) and its review runs, review cost and outcome from the run log. `run_log.units_without_artifacts` names units the log shows reviewed whose worktree is gone.
 
 The numbers need the finding fields `ns-review` writes: `Axis`, `Scope`, `Cycle` and `Status`. Older artifacts lack some of them, so `ns quality` falls back:
 
@@ -279,11 +281,12 @@ The numbers need the finding fields `ns-review` writes: `Axis`, `Scope`, `Cycle`
 - `cycles:` of 1 or more with no Critical or Important `fixed`: cycles to clean is `unknown`, because older artifacts counted review passes there.
 - No `Change size:` in the Summary: `git diff --shortstat <base>...<head> -- . ':!.ns'` from the frontmatter shas.
 - A heading such as `### I1-I7 (cycle 1). ...` is seven findings sharing its fields. One-line `- S1. ... (axis). Open.` items inside a severity section are findings too.
+- An id prefix other than `C`, `I` or `S`, such as `### E1.` under an `## Escapes` section or `### D1.` under `## Dismissed`, is still a finding. Its severity comes from a `raised as Important` note in its fields, else it is unknown: counted in `findings.unknown_severity`, never blocking. Its `Scope: pre-existing` still makes it an escape, whatever its section.
 - A first attempt that ended without `pass` and lists no findings (a reviewer slice couldn't run, a timeout) has an unknown first pass, not a clean one.
 
-These are heuristics. A finding's severity comes from its id, so an `I5` noted as downgraded to a Suggestion still counts as Important, and a first-pass cycle file's ids all count, including any it lists as dismissed. An archived attempt's cycle files are read from `history/<stem>/` when present; `ns run` archives only `review.md`, so usually only the newest attempt has them.
+These are heuristics. A finding's severity comes from its `C`, `I` or `S` id prefix, so an `I5` noted as downgraded to a Suggestion still counts as Important, and a first-pass cycle file's ids all count, including any it lists as dismissed. An archived attempt's cycle files are read from `history/<stem>/` when present; `ns run` archives only `review.md`, so usually only the newest attempt has them.
 
-`gaps` reports what was missing: findings without each field, headings with a `Status:` that didn't parse as findings (`### C3-1.`, `### D1.`), units whose first pass, first-pass count or change size is unknown, and artifacts that couldn't be read (no frontmatter, or cycle files with no review artifact). Read the numbers alongside them.
+`gaps` reports what was missing: findings without a severity or each field, headings with a `Status:` that didn't parse as findings (`### C3-1.`), units whose first pass, first-pass count or change size is unknown, and artifacts that couldn't be read (no frontmatter, or cycle files with no review artifact). Read the numbers alongside them.
 
 ## Trust
 

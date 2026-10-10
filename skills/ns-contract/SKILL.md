@@ -14,7 +14,7 @@ Skills don't name a language, test runner, framework or board. They read the tar
 
 | File | Holds |
 |---|---|
-| `docs/agents/stack.md` | language, build, test, lint and format commands. Test seams: host unit, simulator/emulator, hardware-in-the-loop. Unit size limits in changed lines |
+| `docs/agents/stack.md` | language, build, test, lint and format commands. Test seams: host unit, simulator/emulator, hardware-in-the-loop. Unit size soft limit in changed lines |
 | `docs/agents/verify.md` | pointer to the project's verification skill and control CLI |
 | `docs/agents/issue-tracker.md` | tracker, CLI used to reach it, how issues are created and linked |
 | `docs/agents/triage-labels.md` | label names for each triage category and state |
@@ -23,7 +23,7 @@ Skills don't name a language, test runner, framework or board. They read the tar
 
 If a file is missing, load `ns-setup` instead of guessing.
 
-**Unit size.** `stack.md` sets two limits on a unit's changed lines with a line `unit size: soft 400, hard 800`. With no such line, use 400 and 800. Changed lines are the insertions plus deletions that `git diff --shortstat <base>...HEAD -- . ':!.ns'` reports. `ns-triage` splits work estimated past the soft limit; its estimate is advisory. `ns-build` stops when the diff passes the hard limit.
+**Unit size.** `stack.md` sets a soft limit on a unit's changed lines with a line `unit size: soft 400`. With no such line, use 400. A `hard` figure on that line, left from an older template, is ignored. Changed lines are the insertions plus deletions that `git diff --shortstat <base>...HEAD -- . ':!.ns'` reports. The limit prompts a split; a unit's measured size never blocks it. `ns-triage` splits work estimated past it before the work starts. `ns-build` builds every acceptance criterion whatever the diff's size. `ns-review` records a size Suggestion past it (its step 1).
 
 Code examples are Python. Where firmware changes the advice (registers, ISRs, flash/RAM budgets, on-target tests), add a short firmware note. Don't add a second full example in C.
 
@@ -54,7 +54,7 @@ Every artifact opens with frontmatter recording the gate result:
 ---
 unit: 142-uart-timeout
 phase: verify
-status: pass        # pass | fail | blocked
+status: pass        # pass | fail | blocked, or split for brief.md
 sha: 3f9c2e1        # HEAD commit the artifact describes (build, verify, review, ship)
 updated: 2026-10-08T21:14:00Z
 ---
@@ -68,6 +68,7 @@ updated: 2026-10-08T21:14:00Z
 - `fail`: the gate condition doesn't hold. The body's first line says what is missing, in one sentence; `ns watch` quotes it. A phase that can fix it itself retries first. Otherwise the phase that owns the fix picks it up, usually the previous one.
 - An `inconclusive` check with no failures gives `blocked` when a missing resource caused it, and `fail` otherwise.
 - `blocked`: progress needs something an agent can't get (hardware, credentials, a human decision). The body's first line names the blocker, in one sentence. After the review's last fix cycle, an open Critical or Important in code the unit changed is a blocker. A finding in pre-existing code never blocks, whatever its severity: it is an escape, filed as a prioritised issue. A Suggestion never blocks (see `ns-review`).
+- `split` (`brief.md` only): triage split the issue into child issues, which replace the unit. The body's first line names the children, in one sentence. Nothing waits on a human, so `ns run` ends the unit as `split`, not stuck.
 
 A phase reads only its input artifact and the repo. It never relies on chat history, so every phase can start in a fresh context.
 

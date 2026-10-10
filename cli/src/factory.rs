@@ -205,6 +205,9 @@ pub struct Queue {
     pub in_progress_label: String,
     pub done_label: String,
     pub stuck_label: String,
+    /// Set on an issue whose triage split it into child issues: it waits on them, neither
+    /// stuck nor queued.
+    pub split_label: String,
     /// Sorted on before `order`; an issue with no match goes after the last.
     pub priority: Vec<String>,
     pub order: Vec<String>,
@@ -222,6 +225,7 @@ impl Default for Queue {
             in_progress_label: "status:in-progress".into(),
             done_label: "status:in-review".into(),
             stuck_label: "status:ready-for-human".into(),
+            split_label: "status:needs-define".into(),
             triage_label: "status:needs-triage".into(),
             triage_per_night: 10,
             priority: ["priority:high", "priority:medium", "priority:low"]
@@ -744,6 +748,7 @@ ci_timeout_minutes = 30
         assert_eq!(f.merge.ci_register_timeout, 3);
         assert_eq!(f.queue.triage_label, "status:needs-triage");
         assert_eq!(f.queue.triage_per_night, 10);
+        assert_eq!(f.queue.split_label, "status:needs-define");
         let f = parse("[queue]\ntriage_per_night = 3\ntriage_label = \"triage\"\n").unwrap();
         assert_eq!(
             (f.queue.triage_per_night, f.queue.triage_label.as_str()),

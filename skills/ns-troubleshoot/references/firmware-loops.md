@@ -4,6 +4,8 @@ Loop recipes for firmware bugs, fastest first. Each one ends in **one command** 
 
 Prefer the highest loop on the list that still reaches the bug. A host loop runs in seconds and needs no bench; a HIL loop takes minutes and holds a shared resource.
 
+`$OUT` is the unit's troubleshoot directory, `.ns/<unit-id>/troubleshoot/`, as in the skill. Set it once (`export OUT=.ns/<unit-id>/troubleshoot`) from the worktree root. Every recipe keeps its builds, captures, logs and checker scripts there.
+
 Contents: [ztest on native_sim](#twister-and-ztest-on-native_sim) · [Emulator](#emulator) · [Serial capture](#serial-capture) · [HIL case runner](#hil-case-runner) · [Logic analyzer](#logic-analyzer-capture) · [git bisect on target](#git-bisect-run-on-target)
 
 ## Twister and ztest on native_sim
@@ -28,11 +30,13 @@ Use when the bug needs the target's instruction set, memory map or a peripheral 
 Loop: boot the image in QEMU or Renode, feed it the stimulus, and assert on the console.
 
 ```bash
-west build -b qemu_cortex_m3 app -d "$OUT/build" || exit 2   # a failed build is a broken loop (2), never red (1) or green (0)
-timeout 30 west build -d "$OUT/build" -t run > "$OUT/console.log" 2>&1 || true   # timeout ends a QEMU that never exits
-grep -q 'Booting Zephyr' "$OUT/console.log" || exit 2   # no boot marker: also a broken loop
-! grep -q -E 'FATAL|Fault|ASSERTION FAIL' "$OUT/console.log"   # red, exit 1: the fault line appeared
+west build -b qemu_cortex_m3 app -d "$OUT/build" || exit 2
+timeout 30 west build -d "$OUT/build" -t run > "$OUT/console.log" 2>&1 || true
+grep -q 'Booting Zephyr' "$OUT/console.log" || exit 2
+! grep -q -E 'FATAL|Fault|ASSERTION FAIL' "$OUT/console.log"
 ```
+
+Exit 2 means the loop is broken, never red or green: the build failed, or the console has no boot marker. `timeout` ends a QEMU that never exits. Exit 1 is red: a fault line appeared.
 
 Renode scripts the same loop with a robot test (`renode-test tests/rx_overflow.robot`), drives UART, GPIO and sensor models, and exits non-zero on a failed `Wait For Line On Uart`. It can also run a board model for the exact target, which QEMU often can't.
 
@@ -42,22 +46,25 @@ Tighten: replace the grep on the console stream with the emulator's own expect s
 
 Use when the bug shows on real hardware and the device logs to a UART or RTT. The loop resets the board, captures the log, and asserts on the symptom line.
 
-Save this as `serial_check.py`. It exits 1 when the symptom appears (red), 2 when the board never printed its boot banner (the loop is broken, not green), and 0 when the banner appeared and the symptom did not.
+Save this as `$OUT/serial_check.py`. It resets the board after clearing the input buffer, so every run starts from boot, then exits 1 when the symptom appears (red), 2 when the board never printed its boot banner (the loop is broken, not green), and 0 when the banner appeared and the symptom did not.
 
 ```python
 import re
+import subprocess
 import sys
 import time
 
-import serial  # pyserial
+import serial
 
 PORT, BAUD, TIMEOUT, POLL = "/dev/ttyACM0", 115200, 10.0, 0.1
+RESET = ["probe-rs", "reset", "--chip", "nRF52840_xxAA"]
 BANNER, PATTERN = rb"Booting Zephyr", rb"rx overrun"
 
 
 def run(log_path):
     with serial.Serial(PORT, BAUD, timeout=POLL) as s, open(log_path, "wb") as log:
         s.reset_input_buffer()
+        subprocess.run(RESET, check=True, capture_output=True)
         buf = b""
         deadline = time.monotonic() + TIMEOUT
         while time.monotonic() < deadline:
@@ -76,7 +83,7 @@ except Exception as e:
     sys.exit(2)
 ```
 
-Reset the board inside `run`, after `reset_input_buffer()` (probe-rs reset, or a reset GPIO), so every run starts from boot. An exception such as a missing port exits 2: the loop is broken, not red.
+It needs pyserial. `RESET` is whatever resets the project's board (a probe-rs reset, a reset GPIO). An exception such as a missing port or a failed reset exits 2: the loop is broken, not red.
 
 Red: exit 1 and the symptom line in the saved log. Assert on the reporter's exact line, never on "no output".
 
@@ -96,8 +103,10 @@ def test_rx_overrun_at_921600(bench):
 ```
 
 ```bash
-python3 -m pytest -q hil/test_rx_overrun.py --count 20   # pytest-repeat raises the rate for a flaky case
+python3 -m pytest -q hil/test_rx_overrun.py --count 20
 ```
+
+`--count` comes from pytest-repeat; it raises the reproduction rate for a flaky case.
 
 Red: the case fails with the symptom in the assertion message. Save the serial log and any capture next to the result.
 
@@ -112,8 +121,10 @@ sigrok-cli -d fx2lafw --config samplerate=24m --time 200ms -C D0,D1 \
   --triggers D1=f -o "$OUT/cap.sr"
 sigrok-cli -i "$OUT/cap.sr" -P i2c:scl=D0:sda=D1 -A i2c=address-write:data-write \
   > "$OUT/decoded.txt"
-python3 check_i2c.py "$OUT/decoded.txt"   # your checker: exits 1 when the decoded frames show the bug
+python3 "$OUT/check_i2c.py" "$OUT/decoded.txt"
 ```
+
+`check_i2c.py` is your checker: it exits 1 when the decoded frames show the bug.
 
 Red: the checker exits 1 and names the frame that is wrong (a NACK at address 0x48, a 3 µs SCL high time against a 4 µs minimum).
 
@@ -121,11 +132,10 @@ Tighten: trigger on the event that precedes the bug (here SDA falling, the I2C s
 
 ## git bisect run on target
 
-Use when the bug appeared between two known commits and one of the loops above can tell good from bad. Wrap that loop in a script that builds, flashes, runs, and exits with git bisect's codes: 0 good, 1 bad, 125 skip (the commit can't be judged: a build break, a flash failure, a board that never booted, a checker that crashed).
+Use when the bug appeared between two known commits and one of the loops above can tell good from bad. Wrap that loop in `$OUT/bisect-check.sh`, a script that builds, flashes, runs, and exits with git bisect's codes: 0 good, 1 bad, 125 skip (the commit can't be judged: a build break, a flash failure, a board that never booted, a checker that crashed). This one wraps the serial-capture checker.
 
 ```bash
 #!/usr/bin/env bash
-# bisect-check.sh: serial_check.py is your checker from the serial-capture recipe.
 west build -b <board> app -d "$OUT/build" --pristine >/dev/null 2>&1 || exit 125
 west flash -d "$OUT/build" >/dev/null 2>&1 || exit 125
 rc=0
@@ -135,10 +145,10 @@ case "$rc" in 0 | 1) exit "$rc" ;; *) exit 125 ;; esac
 
 ```bash
 git bisect start <bad-sha> <good-sha>
-git bisect run ./bisect-check.sh
+git bisect run "$OUT/bisect-check.sh"
 git bisect log > "$OUT/bisect.log"; git bisect reset
 ```
 
 Red: `git bisect run` names the first bad commit. That commit is evidence for a hypothesis, not the root cause: read what it changed, then form hypotheses in Phase 3.
 
-Tighten: exit 125 for every reason other than the bug (a build break, a flash failure, a board that never booted), so bisect skips instead of blaming the wrong commit. For a flaky bug, run the check several times per commit and call it bad on any failure. Keep the script in an untracked, git-ignored path (`.ns/<unit-id>/troubleshoot/`) so checkouts during the bisect don't remove it. Bisect submodules or the west manifest together with the app when the bug might be in a module.
+Tighten: exit 125 for every reason other than the bug (a build break, a flash failure, a board that never booted), so bisect skips instead of blaming the wrong commit. For a flaky bug, run the check several times per commit and call it bad on any failure. `$OUT` is untracked and git-ignored, so checkouts during the bisect don't remove it. Bisect submodules or the west manifest together with the app when the bug might be in a module.

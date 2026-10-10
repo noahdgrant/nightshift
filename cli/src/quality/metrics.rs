@@ -220,6 +220,7 @@ pub struct FindingCounts {
     pub critical: usize,
     pub important: usize,
     pub suggestion: usize,
+    pub unknown_severity: usize,
     pub by_status: BTreeMap<&'static str, usize>,
     pub by_axis: BTreeMap<String, usize>,
 }
@@ -283,6 +284,7 @@ fn count_findings<'a>(fs: impl Iterator<Item = &'a Finding>) -> FindingCounts {
             Severity::Critical => c.critical += 1,
             Severity::Important => c.important += 1,
             Severity::Suggestion => c.suggestion += 1,
+            Severity::Unknown => c.unknown_severity += 1,
         }
         *c.by_status.entry(status_name(f.status)).or_insert(0) += 1;
         for axis in axes_or_unknown(f) {
@@ -572,6 +574,47 @@ mod tests {
             .map(|f| f.id.clone())
             .collect();
         assert_eq!(ids, ["I1", "S1"]);
+    }
+
+    /// Unit 114's review wrote its escape under its own section with an `E` id.
+    const ESCAPE_SECTION: &str = "\
+## Critical
+### C1. Unresolved merge-conflict markers in docs/FACTORY.md
+- Location: `docs/FACTORY.md:274`
+- Axis: correctness, spec
+- Scope: changed
+- Cycle: 0
+- Status: fixed (cycle 1, abc1234)
+
+## Escapes
+### E1. Non-Unix `clock::local_date` returns the UTC date
+- Location: `cli/src/clock.rs:242`
+- Axis: architecture
+- Scope: pre-existing
+- Cycle: 1
+- Raised by: architecture (claude), raised as Important
+- Finding: `iso(t)[..10]` contradicts its doc comment (\"in the zone `TZ` names\"). Used only by `ns quality`, unchanged by the diff.
+- Evidence: the function is not in the diff; `git diff main...HEAD -- cli/src/clock.rs` never touches it.
+- Status: deferred: #172
+
+## Dismissed
+- D1. Non-Unix `next_local` has no runtime test (tests, Important). dismissed: the brief verifies it with `cargo check`.
+";
+
+    #[test]
+    fn an_escape_under_its_own_section_with_an_e_id_counts() {
+        let a = attempt(Some(1), "pass", ESCAPE_SECTION);
+        let got: Vec<_> = escapes(&a)
+            .iter()
+            .map(|f| (f.id.clone(), f.severity))
+            .collect();
+        assert_eq!(got, [("E1".to_string(), Severity::Important)]);
+        let s = summarize(&[&unit("u", None, vec![a])]);
+        assert_eq!(s.escapes, 1);
+        assert_eq!((s.findings.total, s.findings.important), (2, 1));
+        let unsure = attempt(Some(0), "pass", "### E2. no note\n- Scope: pre-existing\n");
+        let s = summarize(&[&unit("u", None, vec![unsure])]);
+        assert_eq!((s.escapes, s.findings.unknown_severity), (1, 1));
     }
 
     #[test]

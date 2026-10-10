@@ -175,6 +175,7 @@ mod tests {
         let q = QueueConfig {
             triage_label: "triage-me".into(),
             ready_label: "go".into(),
+            split_label: "tracking".into(),
             ..QueueConfig::default()
         };
         let l = |ls: &[&str]| ls.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -189,6 +190,8 @@ mod tests {
         assert_eq!(needs_triage(&q, &[]).as_deref(), Some("no status label"));
         assert_eq!(needs_triage(&q, &l(&["status:needs-info"])), None);
         assert_eq!(needs_triage(&q, &l(&["go"])), None);
+        // A split parent waits on its children: the pass leaves it alone.
+        assert_eq!(needs_triage(&q, &l(&["tracking"])), None);
         // A custom triage label is a state, so starting a unit removes it like any other.
         assert!(is_status(&q, "triage-me"));
         assert!(!is_status(&q, "type:fix"));

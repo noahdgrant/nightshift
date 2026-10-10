@@ -25,6 +25,12 @@ Check the diff against every item below. Each one not met is a finding, at the s
 
 {REVIEWER_REFERENCE_CONTENTS}
 
+## Split
+
+Only when the diff is past the soft limit; otherwise leave this section out.
+
+The diff is {CHANGED_LINES} changed lines, past the unit's soft limit of {SOFT_LIMIT}. Size alone is not a finding. Say whether the part of the diff your axis covers could ship as its own PR, and name the seam: the files, the commits, or a refactor apart from the behaviour it enables. Answer on a `SPLIT:` line in your report.
+
 ## What makes a finding
 
 - It names specific code: `file:line` in the post-change tree.
@@ -47,6 +53,7 @@ The bar says how its items map to severity. Use these definitions for anything e
 VERDICT: PASS | ISSUES | BLOCKED
 SCOPE: {REVIEWER}
 METHOD: <what you read and ran>
+SPLIT: <only when the brief has a Split section: yes, with the seam | no, with why>
 
 ### 1. [Critical|Important|Suggestion] <short title>
 Location: <file:line>

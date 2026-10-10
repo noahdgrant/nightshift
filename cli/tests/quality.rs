@@ -233,7 +233,7 @@ fn reports_every_metric_from_fixture_artifacts() {
     assert_eq!(
         v["findings"],
         json!({
-            "total": 5, "critical": 1, "important": 2, "suggestion": 2,
+            "total": 5, "critical": 1, "important": 2, "suggestion": 2, "unknown_severity": 0,
             "by_status": {"deferred": 1, "fixed": 1, "open": 3},
             "by_axis": {"correctness": 2, "readability": 2, "security": 1, "tests": 1}
         })

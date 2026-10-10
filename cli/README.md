@@ -24,7 +24,7 @@ cargo install --path cli
 | 4 | `ns ask`, `ns eval`: harness binary not on PATH |
 | 5 | `ns ask --write`: the harness has no `command_write` |
 
-`ns run` has its own codes: 0 done or merged, 1 stuck, 2 usage or config error, 3 budget, 4 paused on a usage limit, 5 another `ns run` holds the lock.
+`ns run` has its own codes: 0 done, merged or split, 1 stuck, 2 usage or config error, 3 budget, 4 paused on a usage limit, 5 another `ns run` holds the lock.
 
 ## Commands
 
@@ -130,7 +130,7 @@ Parses `<dir>/nightshift.toml` (default `<main-worktree>/.nightshift/`) and chec
 
 ### `ns run [<unit-id>] [--issue <n>] [--from <phase>] [--gates stop|auto] [--base <ref>] [--dry-run] [--factory <dir>]`
 
-Implements `ns run` in [docs/FACTORY.md](../docs/FACTORY.md): creates or reuses the unit's worktree, reads `.ns/<unit>/*.md`, picks the next phase from the state table, runs the phase's harness headless in the worktree with the rendered prompt on stdin, and repeats until the unit is done, merged, stuck, paused or out of budget. With only `--issue`, the unit id is `<n>-<slug of the issue title>` (read with `gh issue view`).
+Implements `ns run` in [docs/FACTORY.md](../docs/FACTORY.md): creates or reuses the unit's worktree, reads `.ns/<unit>/*.md`, picks the next phase from the state table, runs the phase's harness headless in the worktree with the rendered prompt on stdin, and repeats until the unit is done, merged, split, stuck, paused or out of budget. With only `--issue`, the unit id is `<n>-<slug of the issue title>` (read with `gh issue view`).
 
 - **Harness.** Each phase uses the `command_write` of its harness: `[harness.<name>]` from the user config, else the built-in. The built-in claude command for `ns run` is `claude -p --permission-mode bypassPermissions --model {model} --output-format stream-json --verbose`. Headless `acceptEdits` can't run shell commands, and the phases need Bash. Permissions are bypassed, so the agent can run any command as your user; cwd is always the unit's worktree, but nothing else confines it. Run it on a machine where that is acceptable. A configured claude command gets `--output-format stream-json --verbose` added if it lacks them.
 - **Files.** Transcripts: `<git-common-dir>/ns/transcripts/<unit>/<phase>-<attempt>.jsonl` (plus `.stderr`). Run log: `<git-common-dir>/ns/runs.jsonl`. Lock: `<git-common-dir>/ns-run.lock`.
@@ -141,7 +141,7 @@ Implements `ns run` in [docs/FACTORY.md](../docs/FACTORY.md): creates or reuses 
 
 ### `ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]`
 
-Lists open issues labelled `[queue] ready_label` with `gh`, drops issues whose first line is `Blocked by: #a, #b` with any blocker open, and issues an open PR closes, then sorts by the first matching `[queue] order` label and the issue number. For each unit it swaps the ready label for the in-progress label, fetches `origin`, and runs `ns run --issue <n> --base origin/<default>` in process. Afterwards: `merged` removes the in-progress label, `done` sets `done_label`, `stuck` (or a `done` that needs a human merge) sets `stuck_label` and comments the reason with an AI disclaimer, `budget` (also a runner lock wait cut short by `--until`, or a budget found spent once the locks are held) returns the issue to the ready label and stops, and `paused` sleeps until the usage limit resets and resumes the same unit, or returns the issue and stops if the reset is past `--until`. `--dry-run` prints the ordered queue and the skip reasons. `gh` and every phase get `GH_TOKEN` from `[forge.github]` in the config, or from the environment when it is already set (see [`[forge]`](#forge)). `--until` is local time, and the `until` and `reset_at` it prints are local with their offset (`2026-10-09T06:30:00-04:00`). `NS_NOW` (unix seconds) pins the clock for tests.
+Lists open issues labelled `[queue] ready_label` with `gh`, drops issues whose first line is `Blocked by: #a, #b` with any blocker open, and issues an open PR closes, then sorts by the first matching `[queue] order` label and the issue number. For each unit it swaps the ready label for the in-progress label, fetches `origin`, and runs `ns run --issue <n> --base origin/<default>` in process. Afterwards: `merged` removes the in-progress label, `done` sets `done_label`, `split` (triage split the issue into child issues) sets `split_label`, `stuck` (or a `done` that needs a human merge) sets `stuck_label` and comments the reason with an AI disclaimer, `budget` (also a runner lock wait cut short by `--until`, or a budget found spent once the locks are held) returns the issue to the ready label and stops, and `paused` sleeps until the usage limit resets and resumes the same unit, or returns the issue and stops if the reset is past `--until`. `--dry-run` prints the ordered queue and the skip reasons. `gh` and every phase get `GH_TOKEN` from `[forge.github]` in the config, or from the environment when it is already set (see [`[forge]`](#forge)). `--until` is local time, and the `until` and `reset_at` it prints are local with their offset (`2026-10-09T06:30:00-04:00`). `NS_NOW` (unix seconds) pins the clock for tests.
 
 ### `ns quality [--since <date>] [--json]`
 

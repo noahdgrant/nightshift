@@ -26,15 +26,31 @@ pub enum Severity {
     Critical,
     Important,
     Suggestion,
+    /// An id prefix other than `C`, `I` or `S` (such as `E1`) with no `raised as` note.
+    Unknown,
 }
 
 impl Severity {
-    fn from_letter(c: &str) -> Severity {
+    fn from_letter(c: &str) -> Option<Severity> {
         match c {
-            "C" => Severity::Critical,
-            "I" => Severity::Important,
-            _ => Severity::Suggestion,
+            "C" => Some(Severity::Critical),
+            "I" => Some(Severity::Important),
+            "S" => Some(Severity::Suggestion),
+            _ => None,
         }
+    }
+
+    /// The severity a `raised as Important` note names, anywhere in a finding's lines.
+    fn raised_as(lines: &[&str]) -> Option<Severity> {
+        static R: OnceLock<Regex> = OnceLock::new();
+        let r = re(
+            &R,
+            r"(?i)\braised as\s+(?:an?\s+)?(critical|important|suggestion)\b",
+        );
+        lines
+            .iter()
+            .find_map(|l| r.captures(l))
+            .and_then(|c| Severity::from_section(&c[1]))
     }
 
     fn from_section(heading: &str) -> Option<Severity> {
@@ -88,7 +104,8 @@ pub struct Finding {
 impl Finding {
     /// Critical or Important, and not dismissed.
     pub fn blocking(&self) -> bool {
-        self.severity != Severity::Suggestion && self.status != Status::Dismissed
+        matches!(self.severity, Severity::Critical | Severity::Important)
+            && self.status != Status::Dismissed
     }
 
     /// Blocking and not `pre-existing`: what holds the unit back. A pre-existing finding is an
@@ -102,8 +119,9 @@ fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).unwrap())
 }
 
-/// `I3.`, `**I3**:`, or a range `I1-I7` that one heading covers.
-const ID: &str = r"\**([CIS])(\d+)(?:\s*[-–]\s*([CIS])(\d+))?\**[.:)]?";
+/// `I3.`, `**I3**:`, or a range `I1-I7` that one heading covers. Any capital prefix is an id:
+/// `C`, `I` and `S` name a severity, and others (`E1`) take it from a `raised as` note.
+const ID: &str = r"\**([A-Z])(\d+)(?:\s*[-–]\s*([A-Z])(\d+))?\**[.:)]?";
 
 /// Largest range a heading may cover; anything wider is a typo.
 const MAX_RANGE: u32 = 50;
@@ -251,7 +269,7 @@ fn parenthesised(line: &str) -> String {
 
 struct Block<'a> {
     ids: Vec<String>,
-    severity: Severity,
+    severity: Option<Severity>,
     title: String,
     lines: Vec<&'a str>,
     one_line: bool,
@@ -295,7 +313,10 @@ impl<'a> Block<'a> {
         });
         let finding = Finding {
             id: String::new(),
-            severity: self.severity,
+            severity: self
+                .severity
+                .or_else(|| Severity::raised_as(&self.lines))
+                .unwrap_or(Severity::Unknown),
             title: self.title.replace(['`', '*'], "").trim().to_string(),
             location: get(&["location"]).filter(|l| !l.is_empty()),
             axes,
@@ -383,8 +404,8 @@ pub fn cycle_entries(text: &str) -> Vec<CycleEntry> {
     entries
 }
 
-/// Headings that are not findings yet carry a `Status:` field, such as `### C3-1. ...` or
-/// `### D1. ...`: findings in a shape the parser can't number.
+/// Headings that are not findings yet carry a `Status:` field, such as `### C3-1. ...`:
+/// findings in a shape the parser can't number.
 pub fn stray_statuses(text: &str) -> usize {
     let mut count = 0;
     let mut stray = false;
@@ -671,6 +692,72 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_prefix_is_a_finding_with_severity_from_raised_as() {
+        let f = parse(
+            "\
+## Escapes
+### E1. Reads the UTC date
+- Scope: pre-existing
+- Raised by: architecture (provider-a), raised as Important
+- Status: deferred: #7
+### E2. No note
+- Scope: pre-existing
+### X3-X4. A range
+- Finding: raised as critical by two reviewers
+## Important
+### C5. The prefix wins over a raised-as note
+- Raised by: spec, raised as Suggestion
+## Dismissed
+- D1. one-line items outside a severity section stay unread
+## Suggestion
+- E6. a one-line item, raised as Important. Open.
+- E7. a one-line item with no note (tests). Open.
+",
+        );
+        let got: Vec<_> = f
+            .iter()
+            .map(|f| (f.id.as_str(), f.severity, f.scope, f.status))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    "E1",
+                    Severity::Important,
+                    Scope::PreExisting,
+                    Status::Deferred
+                ),
+                ("E2", Severity::Unknown, Scope::PreExisting, Status::Unknown),
+                ("X3", Severity::Critical, Scope::Unknown, Status::Unknown),
+                ("X4", Severity::Critical, Scope::Unknown, Status::Unknown),
+                ("C5", Severity::Critical, Scope::Unknown, Status::Unknown),
+                ("E6", Severity::Important, Scope::Unknown, Status::Open),
+                ("E7", Severity::Unknown, Scope::Unknown, Status::Open),
+            ]
+        );
+    }
+
+    #[test]
+    fn raised_as_names_any_of_the_three_severities() {
+        let sev = |note: &str| one(&format!("### E1. t\n- Raised by: x, {note}\n")).severity;
+        assert_eq!(sev("raised as Critical"), Severity::Critical);
+        assert_eq!(sev("Raised As a Suggestion"), Severity::Suggestion);
+        assert_eq!(sev("raised as an important"), Severity::Important);
+        assert_eq!(sev("raised as Nit"), Severity::Unknown);
+        assert_eq!(sev("praised as Important"), Severity::Unknown);
+    }
+
+    #[test]
+    fn an_unknown_severity_never_blocks() {
+        let f = one("### E1. t\n- Scope: changed\n- Status: open\n");
+        assert_eq!(f.severity, Severity::Unknown);
+        assert!(!f.blocking() && !f.against_unit());
+        assert!(one("### I1. t\n- Status: open\n").blocking());
+        assert!(one("### C1. t\n- Status: open\n").blocking());
+        assert!(!one("### S1. t\n- Status: open\n").blocking());
+    }
+
+    #[test]
     fn cycle_entries_read_free_form_cycle_files() {
         let text = "# Cycle 1\n\n## I1. a (spec + architecture)\nI2 Important (spec): b, not tests\n- I3 perf: c\n- **C1** d\n  - I4 nested\n- S1 not counted\nI1 again (tests)\nIn I5 prose\n";
         let e = cycle_entries(text);
@@ -685,7 +772,7 @@ mod tests {
 
     #[test]
     fn stray_statuses_counts_headings_the_parser_skipped() {
-        let text = "## Important\n### I1. real\n- Status: open\n### C3-1. cycle note\n- Status: open\n### D1. dismissed\n- **Status:** dismissed\n- Status: again\n### Notes\n- no status\n# Top\n- Status: open\n```\n### X1\n- Status: open\n```\n";
+        let text = "## Important\n### I1. real\n- Status: open\n### C3-1. cycle note\n- Status: open\n### D1. dismissed, now a finding\n- **Status:** dismissed\n### Cycle 2 notes\n- **Status:** open\n- Status: again\n### Notes\n- no status\n# Top\n- Status: open\n```\n### X1\n- Status: open\n```\n";
         assert_eq!(stray_statuses(text), 2);
     }
 

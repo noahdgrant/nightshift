@@ -7,8 +7,10 @@ Agent skills that take an issue to a merged PR (`skills/ns-*`), plus the `ns` CL
 - **Adapted skills**: `metadata.upstream` names the source. Upstream copies are in `NOTICE.md`'s projects. Keep a skill's structure close to its upstream where it still fits, so `ns-maintain` diffs stay readable.
 - **CLI**: `cd cli && cargo test`. Every command follows `skills/ns-setup-verify/references/cli-for-agents.md`.
 - **Evals**: `docs/EVALS.md`. A skill change comes with eval cases or a reason it has none.
-- **CI**: `.github/workflows/ci.yml` runs cargo fmt/clippy/test, `ns lint`, `ns eval --dry-run`, the py-inventory fixture tests, and `scripts/check-private.sh`. The guard's denylist lives in the repo variable `PRIVATE_DENYLIST`; run it locally with `PRIVATE_DENYLIST=a,b scripts/check-private.sh`. Run `scripts/ci-local.sh` before committing; it runs all of CI locally, and `--fast` (the `.githooks/pre-commit` hook) runs the quick subset.
+- **CI**: `.github/workflows/ci.yml` runs cargo fmt/clippy/test, `ns lint`, `ns eval --dry-run`, the py-inventory fixture tests, `cargo test` under a decoy `GIT_DIR` (`scripts/check-git-dir-decoy.sh`), and `scripts/check-private.sh`. The guard's denylist lives in the repo variable `PRIVATE_DENYLIST`; run it locally with `PRIVATE_DENYLIST=a,b scripts/check-private.sh`. Run `scripts/ci-local.sh` before committing; it runs all of CI locally, and `--fast` (the `.githooks/pre-commit` hook) runs the quick subset.
 - **Committed files**: generic names and example paths only (`~/zephyrproject/zephyr`), never a private company name or a real home directory path.
+- **Tests**: a flaky test is a bug. Reproduce it under load (the test binary in a loop with `--test-threads=16` while busy loops hold the CPU), fix the root cause rather than adding a retry or a longer timeout, and prove the fix with repeated stressed runs.
+- **Where knowledge goes**: a harness's per-user memory holds facts about that user only (their accounts, time zone, private context). A rule, convention or decision a contributor needs goes in the repo: this file, `docs/`, or the skill it governs.
 
 ## Issues, PRs and labels
 
@@ -21,6 +23,8 @@ Issues live on GitHub at `noahdgrant/nightshift`, managed with `gh`.
   - at least one `area:*` (`area:cli`, `area:skills`, `area:evals`, `area:factory`, `area:repo` for repo-wide docs and config)
   - `breaking change` when the title has `!`
 - **Blockers**: put `Blocked by: #N` on the first line of the issue body.
+- **Design needs a human**: an issue that asks the implementer to choose a design (a mechanism, format, interface or tool) stays `status:needs-define` until the human agrees it. File the build work once the design is settled.
+- **Debt before features**: tech debt (review follow-ups, escapes, fixes, refactors, missing tests, CI) is `priority:high`, ahead of new features. See `docs/agents/triage-labels.md`.
 - **Merging**: squash-merge. The PR title becomes the commit on `main`, so it must be a Conventional Commit.
 
 ## Agent skills

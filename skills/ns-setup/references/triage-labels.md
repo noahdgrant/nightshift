@@ -24,7 +24,7 @@ The `ns-*` skills speak in canonical triage roles. This file maps each role to t
 | `needs-triage` | `needs-triage` | New, not yet evaluated | `ns-triage` |
 | `needs-info` | `needs-info` | Waiting on the reporter for more information | reporter, then `ns-triage` |
 | `needs-repro` | `needs-repro` | A bug with no reproducible failure yet | `ns-troubleshoot` |
-| `needs-define` | `needs-define` | Intent unclear, or the change is large | `ns-define` |
+| `needs-define` | `needs-define` | Intent unclear, the change is large, or a design decision is open: the issue leaves the implementer to choose a mechanism, format, interface or tool | `ns-define` |
 | `ready-for-agent` | `ready-for-agent` | Agent Brief written, small enough to build directly | `ns-build` |
 | `ready-for-human` | `ready-for-human` | Brief written, but needs a human (hardware, a judgement call, credentials) | a person |
 | `wontfix` | `wontfix` | Will not be actioned | none |
