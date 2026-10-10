@@ -399,11 +399,11 @@ mod tests {
     }
 
     #[test]
-    fn this_repos_gate_is_ci_local_sh() {
+    fn this_repos_gate_is_ci_local_sh_then_the_rule_pack() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let cmd = command(&parse("").unwrap(), repo, Path::new(NS_EXE)).unwrap();
-        assert_eq!(cmd, "scripts/ci-local.sh");
-        assert!(repo.join(&cmd).is_file());
+        assert_eq!(cmd, "(scripts/ci-local.sh) && '/opt/ns bin/ns' rules check");
+        assert!(repo.join("scripts/ci-local.sh").is_file());
     }
 
     #[test]
