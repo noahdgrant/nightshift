@@ -368,7 +368,7 @@ mod tests {
         let p = tmp.path().join("review.md");
         fs::write(
             &p,
-            "---\nstatus: blocked\nupdated: 2026-10-09T00:00:00Z\nbase: origin/main@0e05787\nhead: HEAD\ncycles: 3\n---\n## Summary\nChange size: 12 lines.\n### I1. x\n### D1. not a finding\n- Status: open\n",
+            "---\nstatus: blocked\nupdated: 2026-10-09T00:00:00Z\nbase: origin/main@0e05787\nhead: HEAD\ncycles: 3\n---\n## Summary\nChange size: 12 lines.\n### I1. x\n### C3-1. not a finding\n- Status: open\n",
         )
         .unwrap();
         let mut gaps = Vec::new();
