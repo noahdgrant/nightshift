@@ -192,6 +192,9 @@ class CheckBriefTest(unittest.TestCase):
         text = good().replace("export PYTHONPATH=src\n", "python3 -m inventory 'unbalanced\n")
         self.assertEqual(check(text), [])
 
+    def test_unbalanced_quote_lines_are_not_replayed_even_when_a_plain_split_would_go_red(self):
+        self.assertIn("repro ran red", check(good().replace("--state inv.json", "--state it's.json")))
+
     def test_replay_leaves_the_root_untouched(self):
         root = pathlib.Path(_tmp.name) / "untouched"
         seed(root)
