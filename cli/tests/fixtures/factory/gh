@@ -4,6 +4,8 @@ d="$FAKE_GH_DIR"
 printf '%s\n' "$*" >> "$d/calls"
 printf '%s\n' "${GH_TOKEN:-}" >> "$d/tokens"
 printf '%s\n' "${GH_HOST:-}" >> "$d/hosts"
+# hook.sh, when it exists, is sourced first with gh's arguments: a test's way to act mid-run.
+[ -f "$d/hook.sh" ] && . "$d/hook.sh"
 case "$1 $2" in
   "api --paginate")
     # Each issue is listed with its current labels from labels-<n> when that file exists, so an

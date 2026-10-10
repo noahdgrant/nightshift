@@ -278,70 +278,105 @@ fn run_harness(
 
 // ---------------------------------------------------------------- lock
 
+/// A per-repo lock: an OS `flock` on a file in the git common dir, so the kernel drops a dead
+/// process's hold. While held the file records the holder as JSON; it is empty otherwise.
 pub struct Lock {
-    path: PathBuf,
+    file: File,
 }
 
-fn pid_alive(pid: i32) -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: signal 0 only checks that the process exists.
-        let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
-        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        true
-    }
-}
+/// The run lock: one `ns run` at a time per repo.
+const RUN_LOCK: &str = "ns-run.lock";
+/// The watch lock: one `ns watch` at a time per repo.
+const WATCH_LOCK: &str = "ns-watch.lock";
+/// How many times, 10 ms apart, a lock whose holder names no one is tried before refusing.
+const BRIEF_HOLD_TRIES: u32 = 10;
 
 impl Lock {
-    pub fn acquire(common: &Path, unit: &str) -> Result<Lock> {
-        let path = common.join("ns-run.lock");
-        for _ in 0..2 {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut f) => {
-                    writeln!(f, "{}", json!({"pid": std::process::id(), "unit": unit}))?;
-                    return Ok(Lock { path });
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let text = fs::read_to_string(&path).unwrap_or_default();
-                    let held: Value = serde_json::from_str(text.trim()).unwrap_or(Value::Null);
-                    let pid = held.get("pid").and_then(Value::as_i64).unwrap_or(0) as i32;
-                    if pid > 0 && pid_alive(pid) {
-                        return Err(SfError::new(
-                            EXIT_LOCKED,
-                            format!(
-                                "another ns run (pid {pid}, unit {}) holds {}",
-                                held.get("unit").and_then(Value::as_str).unwrap_or("?"),
-                                path.display()
-                            ),
-                        )
-                        .hint("one unit at a time per repo; wait for it to finish, or stop it")
-                        .into());
-                    }
-                    let _ = fs::remove_file(&path);
-                }
-                Err(e) => {
-                    return Err(e).with_context(|| format!("cannot create {}", path.display()))
-                }
+    /// Take `<common>/<name>` and record `holder` in it, or return who holds it now.
+    fn take(common: &Path, name: &str, holder: Value) -> Result<Result<Lock, Value>> {
+        let path = common.join(name);
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("cannot open {}", path.display()))?;
+        let mut tries = 0;
+        while !try_flock(&f).with_context(|| format!("cannot lock {}", path.display()))? {
+            // A holder that hasn't written its record yet, or `run_holder` checking the lock,
+            // holds it only for a moment.
+            let held = read_holder(&path);
+            tries += 1;
+            if !held.is_null() || tries >= BRIEF_HOLD_TRIES {
+                return Ok(Err(held));
             }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        Err(SfError::general(format!("cannot take {}", path.display())).into())
+        let lock = Lock { file: f };
+        lock.file.set_len(0)?;
+        writeln!(&lock.file, "{holder}")?;
+        Ok(Ok(lock))
     }
+
+    /// The run lock for `unit`, refused with exit 5 while another `ns run` holds it.
+    pub fn acquire(common: &Path, unit: &str, issue: Option<u64>) -> Result<Lock> {
+        let me = json!({"pid": std::process::id(), "unit": unit, "issue": issue});
+        Self::take(common, RUN_LOCK, me)?.map_err(|held| {
+            SfError::new(
+                EXIT_LOCKED,
+                format!(
+                    "another ns run (pid {}, unit {}) holds {}",
+                    held["pid"],
+                    held["unit"].as_str().unwrap_or("?"),
+                    common.join(RUN_LOCK).display()
+                ),
+            )
+            .hint("one unit at a time per repo; wait for it to finish, or stop it")
+            .into()
+        })
+    }
+
+    /// The watch lock, held for the whole of one `ns watch`, refused with exit 5 while another
+    /// `ns watch` holds it.
+    pub fn watch(common: &Path) -> Result<Lock> {
+        let me = json!({"pid": std::process::id()});
+        Self::take(common, WATCH_LOCK, me)?.map_err(|held| {
+            SfError::new(
+                EXIT_LOCKED,
+                format!("another ns watch (pid {}) is running", held["pid"]),
+            )
+            .hint("one ns watch at a time per repo; stop it first")
+            .into()
+        })
+    }
+
+    /// Who holds the run lock now (`{pid, unit, issue}`, or null when its file is not written
+    /// yet), or `None` when no live `ns run` does.
+    pub fn run_holder(common: &Path) -> Result<Option<Value>> {
+        let path = common.join(RUN_LOCK);
+        let f = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("cannot open {}", path.display())),
+        };
+        if try_flock(&f).with_context(|| format!("cannot lock {}", path.display()))? {
+            unlock_flock(&f);
+            return Ok(None);
+        }
+        Ok(Some(read_holder(&path)))
+    }
+}
+
+fn read_holder(path: &Path) -> Value {
+    let text = fs::read_to_string(path).unwrap_or_default();
+    serde_json::from_str(text.trim()).unwrap_or(Value::Null)
 }
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        let mine = fs::read_to_string(&self.path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<Value>(t.trim()).ok())
-            .and_then(|v| v.get("pid").and_then(Value::as_u64))
-            == Some(u64::from(std::process::id()));
-        if mine {
-            let _ = fs::remove_file(&self.path);
-        }
+        let _ = self.file.set_len(0);
+        unlock_flock(&self.file);
     }
 }
 
@@ -887,7 +922,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         );
     }
 
-    let _lock = Lock::acquire(&repo.common_dir, &unit)?;
+    let _lock = Lock::acquire(&repo.common_dir, &unit, args.issue)?;
     let base = resolve_base(&repo, args)?;
     let wt = worktree::ensure(&repo, &unit, Some(&base), &fac.worktree.setup)?;
     let ctx = Ctx {
@@ -913,14 +948,23 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
             None,
         )
     } else {
-        drive(
+        let driven = drive(
             &ctx,
             args,
             shared,
             &commands,
             &mut phases,
             &mut last_artifact,
-        )?
+        );
+        if let Some(sig) = driven.as_ref().err().and(crate::stop::requested()) {
+            ctx.log(json!({
+                "event": "end",
+                "outcome": "interrupted",
+                "reason": format!("stopped by {}", crate::stop::name(sig)),
+                "cost_usd": shared.spent_usd,
+            }));
+        }
+        driven?
     };
     let pr = known_pr(&ctx.artifacts);
     ctx.log(json!({
@@ -1086,6 +1130,7 @@ fn drive(
         "default_sha": baseline.as_ref().map(|b| &b.1),
     }));
     loop {
+        crate::stop::check()?;
         let state = read_state(
             &ctx.artifacts,
             ctx.head(),
@@ -1235,6 +1280,16 @@ fn drive(
             subscription,
         );
         drop(held);
+        if let Some(sig) = r.as_ref().err().and(crate::stop::requested()) {
+            let ev = json!({
+                "event": "phase",
+                "phase": phase,
+                "attempt": attempt,
+                "decision": why,
+                "transcript": transcript.to_string_lossy(),
+            });
+            return Err(set_aside(ctx, phase, &moves, sig, ev)?);
+        }
         let r = r?;
         let t = ClaudeStreamJson.parse(&r.stdout);
         let cost = t.cost_usd.unwrap_or(0.0);
@@ -1355,11 +1410,42 @@ fn drive(
                 phase,
                 attempt,
             };
-            if let Some(red) = gate_state.after(trigger, &job, &|ev| ctx.log(ev))? {
+            let red = gate_state.after(trigger, &job, &|ev| ctx.log(ev));
+            if let Some(sig) = red.as_ref().err().and(crate::stop::requested()) {
+                let mut ev = json!({"event": "gate", "phase": phase, "attempt": attempt});
+                if written {
+                    return Err(set_aside(ctx, phase, &moves, sig, ev)?);
+                }
+                // The phase wrote nothing and its moves are already undone: nothing to set aside.
+                ev["interrupted"] = json!(crate::stop::name(sig));
+                ctx.log(ev);
+                return Err(crate::stop::error(sig));
+            }
+            if let Some(red) = red? {
                 forced = Some(run("build", &red.feedback, red.reason));
             }
         }
     }
+}
+
+/// A stop ended `phase`, or the gate run after it, before it was done: set aside what the phase
+/// wrote and put back what it replaced, so the next run decides from the state before the
+/// phase, and log `ev` with what happened. Returns the stop's error.
+fn set_aside(
+    ctx: &Ctx<'_>,
+    phase: &str,
+    moves: &[(PathBuf, PathBuf)],
+    sig: i32,
+    mut ev: Value,
+) -> Result<anyhow::Error> {
+    let file = artifact_of(phase);
+    let stem = format!("{}-interrupted", file.trim_end_matches(".md"));
+    let archived = archive_as(&ctx.artifacts, file, &stem)?;
+    restore(moves);
+    ev["interrupted"] = json!(crate::stop::name(sig));
+    ev["archived"] = json!(archived.map(|d| d.to_string_lossy().into_owned()));
+    ctx.log(ev);
+    Ok(crate::stop::error(sig))
 }
 
 fn gate_trigger(phase: &str, art: Option<&Art>, head_moved: bool) -> Option<gate::Trigger> {

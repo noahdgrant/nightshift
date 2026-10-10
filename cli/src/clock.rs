@@ -15,6 +15,9 @@ pub const MAX_STALLED_SLEEPS: u32 = 1000;
 /// the clock moves. A real clock has no cap.
 pub const MAX_PINNED_POLLS: u32 = 1000;
 
+/// The longest a real sleep goes without checking for a stop.
+const STOP_POLL: Duration = Duration::from_millis(250);
+
 pub struct Clock {
     pinned: Cell<Option<i64>>,
     stalls: Cell<u32>,
@@ -64,13 +67,14 @@ impl Clock {
                 self.stalls.set(self.stalls.get() + 1);
             }
             None => {
-                let d = t - real_now();
-                if d > 0 {
-                    std::thread::sleep(Duration::from_secs(d as u64));
+                // In short naps, so a stop that `ns watch` is asked for ends the sleep.
+                while real_now() < t {
+                    crate::stop::check()?;
+                    std::thread::sleep(STOP_POLL);
                 }
             }
         }
-        Ok(())
+        crate::stop::check()
     }
 }
 

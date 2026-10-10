@@ -15,6 +15,7 @@ use crate::install;
 use crate::review_md::{self, Status};
 use crate::run::{self, gh, gh_json, Outcome, RunArgs, RunResult, Shared};
 use crate::skills_sync::{self, Sync};
+use crate::stop;
 use crate::worktree::BRANCH_PREFIX;
 
 mod triage;
@@ -105,8 +106,9 @@ struct Queue {
     skipped: Vec<Value>,
 }
 
-/// Issue number -> the PR whose body closes it, from `gh pr list --state <state>`.
-fn closing_prs(root: &Path, state: &str) -> Result<BTreeMap<u64, u64>> {
+/// Issue number -> the PR whose body closes it and that PR's head branch, from
+/// `gh pr list --state <state>`.
+fn closing_prs(root: &Path, state: &str) -> Result<BTreeMap<u64, (u64, String)>> {
     let prs = gh_json(
         root,
         &[
@@ -117,13 +119,18 @@ fn closing_prs(root: &Path, state: &str) -> Result<BTreeMap<u64, u64>> {
             "--limit",
             "200",
             "--json",
-            "number,body",
+            "number,body,headRefName,isCrossRepository",
         ],
     )?;
     let mut by_issue = BTreeMap::new();
     for p in prs.as_array().cloned().unwrap_or_default() {
         for n in closed_by(p["body"].as_str().unwrap_or("")) {
-            by_issue.insert(n, p["number"].as_u64().unwrap_or(0));
+            // A fork's branch name says nothing about this repo's units.
+            let head = match p["isCrossRepository"].as_bool() {
+                Some(false) => p["headRefName"].as_str().unwrap_or("").to_string(),
+                _ => String::new(),
+            };
+            by_issue.insert(n, (p["number"].as_u64().unwrap_or(0), head));
         }
     }
     Ok(by_issue)
@@ -132,26 +139,31 @@ fn closing_prs(root: &Path, state: &str) -> Result<BTreeMap<u64, u64>> {
 /// Open issues, never PRs, and the open and merged PRs that close each.
 struct Listing {
     issues: Vec<Issue>,
-    has_pr: BTreeMap<u64, u64>,
-    merged_pr: BTreeMap<u64, u64>,
+    has_pr: BTreeMap<u64, (u64, String)>,
+    merged_pr: BTreeMap<u64, (u64, String)>,
+}
+
+/// Open issues, never PRs; `labels` narrows the list to issues carrying that label.
+fn open_issues(root: &Path, labels: Option<&str>) -> Result<Vec<Issue>> {
+    let filter = labels.map_or(String::new(), |l| format!("&labels={l}"));
+    let path = format!("repos/{{owner}}/{{repo}}/issues?state=open{filter}&per_page=100");
+    // `gh issue list --json` has no author association, so read the REST list.
+    Ok(parse_issues(&gh(
+        root,
+        &[
+            "api",
+            "--paginate",
+            &path,
+            "--jq",
+            ".[] | select(.pull_request | not) | {number, title, labels, body, authorAssociation: .author_association}",
+        ],
+    )?))
 }
 
 impl Listing {
     /// `labels` narrows the list to issues carrying that label.
     fn read(root: &Path, labels: Option<&str>) -> Result<Listing> {
-        let filter = labels.map_or(String::new(), |l| format!("&labels={l}"));
-        let path = format!("repos/{{owner}}/{{repo}}/issues?state=open{filter}&per_page=100");
-        // `gh issue list --json` has no author association, so read the REST list.
-        let issues = parse_issues(&gh(
-            root,
-            &[
-                "api",
-                "--paginate",
-                &path,
-                "--jq",
-                ".[] | select(.pull_request | not) | {number, title, labels, body, authorAssociation: .author_association}",
-            ],
-        )?);
+        let issues = open_issues(root, labels)?;
         Ok(Listing {
             issues,
             has_pr: closing_prs(root, "open")?,
@@ -160,16 +172,29 @@ impl Listing {
     }
 
     /// Why `ns watch` leaves the issue alone: its author is outside the team, or a PR closes it.
-    fn passed_over(&self, i: &Issue) -> Option<String> {
+    /// With `resume_own`, an open PR from the issue's own unit branch doesn't count: that unit
+    /// stopped before its merge step ended, and `ns run` resumes it there.
+    fn passed_over(&self, i: &Issue, resume_own: bool) -> Option<String> {
         if !i.team {
             return Some("author outside the team".into());
         }
-        if let Some(pr) = self.has_pr.get(&i.number) {
-            return Some(format!("open PR #{pr} closes it"));
+        if let Some((pr, head)) = self.has_pr.get(&i.number) {
+            if !(resume_own && *head == unit_branch(i)) {
+                return Some(format!("open PR #{pr} closes it"));
+            }
         }
         self.merged_pr
             .get(&i.number)
-            .map(|pr| format!("merged PR #{pr} closes it"))
+            .map(|(pr, _)| format!("merged PR #{pr} closes it"))
+    }
+}
+
+/// The branch of the unit `ns run --issue <n>` runs for the issue: `ns/<n>-<slug of the title>`,
+/// or `ns/<n>` for a title with no slug.
+fn unit_branch(i: &Issue) -> String {
+    match run::slug(&i.title) {
+        s if s.is_empty() => format!("{BRANCH_PREFIX}{}", i.number),
+        s => format!("{BRANCH_PREFIX}{}-{s}", i.number),
     }
 }
 
@@ -198,7 +223,7 @@ fn queue(root: &Path, fac: &Factory, finished: &BTreeSet<u64>) -> Result<Queue> 
         if finished.contains(&i.number) {
             continue;
         }
-        if let Some(why) = listing.passed_over(i) {
+        if let Some(why) = listing.passed_over(i, true) {
             skipped.push(skip(i, why));
             continue;
         }
@@ -326,6 +351,70 @@ fn comment(root: &Path, n: u64, body: &str) -> Result<()> {
     gh(root, &["issue", "comment", &n.to_string(), "--body", body]).map(|_| ())
 }
 
+/// Open issues carrying `in_progress_label`: those no live `ns run` holds, left so by a night
+/// that ended mid-unit, and those one does, each with the run lock's holder.
+struct InProgress {
+    stale: Vec<Issue>,
+    held: Vec<(Issue, Value)>,
+}
+
+fn in_progress(repo: &Repo, q: &QueueConfig) -> Result<InProgress> {
+    let holder = run::Lock::run_holder(&repo.common_dir)?;
+    let mut found = InProgress {
+        stale: Vec::new(),
+        held: Vec::new(),
+    };
+    for i in open_issues(&repo.root, Some(&q.in_progress_label))? {
+        if !i.labels.contains(&q.in_progress_label) {
+            continue;
+        }
+        match holder.as_ref().filter(|h| holds(h, i.number)) {
+            Some(h) => found.held.push((i, h.clone())),
+            None => found.stale.push(i),
+        }
+    }
+    found.stale.sort_by_key(|i| i.number);
+    Ok(found)
+}
+
+/// Whether the run lock's `holder` is running issue `n`'s unit. A holder that hasn't written
+/// its record yet could be running any unit.
+fn holds(holder: &Value, n: u64) -> bool {
+    if holder.is_null() || holder["issue"].as_u64() == Some(n) {
+        return true;
+    }
+    holder["unit"]
+        .as_str()
+        .is_some_and(|u| u == n.to_string() || u.starts_with(&format!("{n}-")))
+}
+
+/// Put each stale in-progress issue back to `ready_label`, keeping its worktree and artifacts so
+/// its unit resumes, and push its number onto `requeued`.
+fn requeue_stale(repo: &Repo, q: &QueueConfig, requeued: &mut Vec<u64>) -> Result<()> {
+    let found = in_progress(repo, q)?;
+    for (i, h) in &found.held {
+        eprintln!(
+            "ns watch: #{} is held by a live ns run (pid {}, unit {}); left in progress",
+            i.number,
+            h["pid"],
+            h["unit"].as_str().unwrap_or("?")
+        );
+    }
+    for i in &found.stale {
+        set_status(&repo.root, q, i.number, Some(&q.ready_label))?;
+        eprintln!(
+            "ns watch: #{} was in progress with no live ns run; back to {}",
+            i.number, q.ready_label
+        );
+        run::log_event(
+            &repo.common_dir,
+            json!({"event": "requeued", "issue": i.number, "reason": "in progress with no live ns run"}),
+        );
+        requeued.push(i.number);
+    }
+    Ok(())
+}
+
 /// `git fetch origin` and the `origin/<default>` ref to base new worktrees on.
 fn fresh_base(root: &Path) -> Option<String> {
     let (branch, _) = run::remote_default(root)?;
@@ -441,10 +530,16 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             0 => triage::Candidates::default(),
             _ => triage::candidates(&repo.root, fac, &BTreeSet::new())?,
         };
+        let requeue: Vec<u64> = in_progress(&repo, &q)?
+            .stale
+            .iter()
+            .map(|i| i.number)
+            .collect();
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "dry_run": true,
+                "requeue": requeue,
                 "queue": ready,
                 "skipped": qu.skipped,
                 "triage": tr.issues.iter().map(|(i, why)| json!({"number": i.number, "title": i.title, "reason": why})).collect::<Vec<_>>(),
@@ -457,16 +552,99 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let mut units: Vec<Value> = Vec::new();
+    let _watch = run::Lock::watch(&repo.common_dir)?;
+    stop::install().context("cannot handle SIGINT and SIGTERM")?;
+    let mut tonight = Tonight::default();
+    let stopped = match work(
+        &repo,
+        &loaded,
+        deadline,
+        max_units,
+        &mut night,
+        &mut tonight,
+    ) {
+        Ok(stopped) => stopped,
+        Err(e) => {
+            let Some(sig) = stop::requested() else {
+                return Err(e);
+            };
+            if let Some(n) = tonight.current.take() {
+                if let Err(le) = set_status(&repo.root, &q, n, Some(&q.ready_label)) {
+                    eprintln!("ns watch: #{n} not returned to the queue: {le:#}");
+                }
+                tonight.units.push(json!({
+                    "issue": n,
+                    "outcome": "interrupted",
+                    "reason": format!("{e:#}"),
+                }));
+            }
+            stop::name(sig).into()
+        }
+    };
+    // A signal that came after the last check still decides the exit code, so name it too.
+    let stopped = stop::requested().map_or(stopped, |sig| stop::name(sig).into());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "units": tonight.units,
+            "triaged": night.triage.records,
+            "requeued": tonight.requeued,
+            "stopped": stopped,
+            "until": deadline.map(clock::local_iso),
+            "cost_usd": night.shared.spent_usd,
+            "started_with": loaded.files,
+        }))?
+    );
+    Ok(match stop::requested() {
+        Some(sig) => ExitCode::from((128 + sig) as u8),
+        None => ExitCode::SUCCESS,
+    })
+}
+
+/// What the night's work leaves for its summary.
+#[derive(Default)]
+struct Tonight {
+    units: Vec<Value>,
+    /// Issues found in progress at start with no live `ns run`, returned to the queue.
+    requeued: Vec<u64>,
+    /// The issue taken from the queue whose unit has not ended yet.
+    current: Option<u64>,
+}
+
+/// Whether the outcome is surely the unit's own end: a merge, a split or a clean `done`. Under a
+/// stop, any other outcome may come from the stop itself, such as a `gh` call that Ctrl-C killed,
+/// so the issue goes back to the queue instead.
+fn ended_cleanly(r: &RunResult) -> bool {
+    matches!(r.outcome, Outcome::Merged | Outcome::Split)
+        || (r.outcome == Outcome::Done && !r.needs_human)
+}
+
+/// Return stale in-progress issues to the queue, then run units until the night ends; why it
+/// ended.
+fn work(
+    repo: &Repo,
+    loaded: &run::Loaded,
+    deadline: Option<i64>,
+    max_units: Option<u32>,
+    night: &mut Night,
+    tonight: &mut Tonight,
+) -> Result<String> {
+    let fac = &loaded.fac;
+    let q = &fac.queue;
+    requeue_stale(repo, q, &mut tonight.requeued)?;
+    let Tonight { units, current, .. } = tonight;
     let mut started = 0u32;
     let stopped: String = 'outer: loop {
+        if let Some(sig) = stop::requested() {
+            break stop::name(sig).into();
+        }
         if max_units.is_some_and(|m| started >= m) {
             break "max_units".into();
         }
         if let Some(stop) = night.over(deadline, fac) {
             break stop.into();
         }
-        if let Some(stop) = triage::pass(&repo, &loaded, deadline, &mut night)? {
+        if let Some(stop) = triage::pass(repo, loaded, deadline, night)? {
             break stop;
         }
         let qu = queue(&repo.root, fac, &night.finished)?;
@@ -474,18 +652,19 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             break "queue empty".into();
         };
         started += 1;
-        set_status(&repo.root, &q, issue.number, Some(&q.in_progress_label))?;
+        *current = Some(issue.number);
+        set_status(&repo.root, q, issue.number, Some(&q.in_progress_label))?;
         eprintln!("ns watch: #{} {}", issue.number, issue.title);
         loop {
             let rargs = RunArgs {
                 issue: Some(issue.number),
-                base: night.base(&repo, issue.number),
+                base: night.base(repo, issue.number),
                 ..RunArgs::default()
             };
-            let r = match run::execute(&rargs, &mut night.shared, &loaded) {
+            let r = match run::execute(&rargs, &mut night.shared, loaded) {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = set_status(&repo.root, &q, issue.number, Some(&q.ready_label));
+                    let _ = set_status(&repo.root, q, issue.number, Some(&q.ready_label));
                     return Err(e);
                 }
             };
@@ -497,10 +676,18 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 "pr": r.json["pr"],
                 "cost_usd": r.cost_usd,
             });
+            if let Some(sig) = stop::requested().filter(|_| !ended_cleanly(&r)) {
+                set_status(&repo.root, q, issue.number, Some(&q.ready_label))?;
+                *current = None;
+                rec["outcome"] = json!("interrupted");
+                units.push(rec);
+                break 'outer stop::name(sig).into();
+            }
+            *current = None;
             let failing = night.harness(&r);
             match r.outcome {
                 Outcome::Merged => {
-                    let status = set_status(&repo.root, &q, issue.number, None);
+                    let status = set_status(&repo.root, q, issue.number, None);
                     // GitHub may not have closed it yet; an already-closed issue makes gh fail.
                     let n = issue.number.to_string();
                     if let Err(e) = gh(&repo.root, &["issue", "close", &n, "--reason", "completed"])
@@ -510,13 +697,13 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                     status?;
                 }
                 Outcome::Split => {
-                    set_status(&repo.root, &q, issue.number, Some(&q.split_label))?;
+                    set_status(&repo.root, q, issue.number, Some(&q.split_label))?;
                 }
                 Outcome::Done if !r.needs_human => {
-                    set_status(&repo.root, &q, issue.number, Some(&q.done_label))?;
+                    set_status(&repo.root, q, issue.number, Some(&q.done_label))?;
                 }
                 Outcome::Stuck if failing => {
-                    set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
+                    set_status(&repo.root, q, issue.number, Some(&q.ready_label))?;
                     rec["outcome"] = json!("harness_failing");
                     if night.harness_fails >= HARNESS_FAIL_LIMIT {
                         units.push(rec);
@@ -524,7 +711,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                     }
                 }
                 Outcome::Done | Outcome::Stuck => {
-                    let status = set_status(&repo.root, &q, issue.number, Some(&q.stuck_label));
+                    let status = set_status(&repo.root, q, issue.number, Some(&q.stuck_label));
                     let what = if r.outcome == Outcome::Stuck {
                         "got stuck"
                     } else {
@@ -563,7 +750,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                     posted?;
                 }
                 Outcome::Budget => {
-                    set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
+                    set_status(&repo.root, q, issue.number, Some(&q.ready_label))?;
                     units.push(rec);
                     // A runner lock wait cut short by `--until` ends the run as `budget` too.
                     break 'outer night.over(deadline, fac).unwrap_or("budget").into();
@@ -573,9 +760,10 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                     rec["reset_at"] = json!(clock::local_iso(reset));
                     units.push(rec);
                     if deadline.is_some_and(|d| reset >= d) {
-                        set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
+                        set_status(&repo.root, q, issue.number, Some(&q.ready_label))?;
                         break 'outer PAUSED_PAST_UNTIL.into();
                     }
+                    *current = Some(issue.number);
                     night.sleep_until(reset)?;
                     continue;
                 }
@@ -585,18 +773,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         }
         night.finished.insert(issue.number);
     };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "units": units,
-            "triaged": night.triage.records,
-            "stopped": stopped,
-            "until": deadline.map(clock::local_iso),
-            "cost_usd": night.shared.spent_usd,
-            "started_with": loaded.files,
-        }))?
-    );
-    Ok(ExitCode::SUCCESS)
+    Ok(stopped)
 }
 
 const PAUSED_PAST_UNTIL: &str = "usage limit resets after --until";
@@ -781,6 +958,34 @@ Open after 3 fix cycles: C1, I2, I4.
                 "C1. One-line finding (security). Open."
             ]
         );
+    }
+
+    #[test]
+    fn a_run_lock_holder_holds_its_issue_or_any_when_unreadable() {
+        let h = json!({"pid": 1, "unit": "13-fix-uart", "issue": 13});
+        assert!(holds(&h, 13));
+        assert!(!holds(&h, 1));
+        assert!(!holds(&h, 130));
+        // A unit run without --issue names its issue only through the unit id.
+        let by_unit = json!({"pid": 1, "unit": "13-fix-uart", "issue": null});
+        assert!(holds(&by_unit, 13));
+        assert!(!holds(&by_unit, 1));
+        assert!(holds(&json!({"pid": 1, "unit": "13"}), 13));
+        assert!(!holds(&json!({"pid": 1, "unit": "130-x"}), 13));
+        assert!(holds(&Value::Null, 99));
+    }
+
+    #[test]
+    fn a_unit_branch_is_the_one_ns_run_names_for_the_issue() {
+        let issue = |title: &str| Issue {
+            number: 13,
+            title: title.into(),
+            labels: Vec::new(),
+            body: String::new(),
+            team: true,
+        };
+        assert_eq!(unit_branch(&issue("Fix UART")), "ns/13-fix-uart");
+        assert_eq!(unit_branch(&issue("")), "ns/13");
     }
 
     #[test]
