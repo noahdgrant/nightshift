@@ -14,7 +14,7 @@ REPLAY_TIMEOUT = 30
 EXPIRED = r"inventory: error: .*expired"
 RESERVATION_EXPIRED = re.compile(r"inventory: error: reservation '(R\d+)' has expired\n")
 RESERVED_UNTIL = re.compile(r"(R\d+): .* until (\S+)\n")
-REPLAYABLE = re.compile(r"python3 -m inventory(?:\s|$)")
+REPLAYABLE = re.compile(r"(?:\w+=\S*\s+)*python3 -m inventory(?:\s|$)")
 
 
 def section(text, name):
@@ -82,9 +82,10 @@ def replays_red(commands, root):
             if not REPLAYABLE.match(command):
                 continue
             try:
-                argv = shlex.split(command)
+                argv = shlex.split(command, comments=True)
             except ValueError:
                 continue
+            argv = argv[argv.index("python3"):]
             if not stays_inside(argv):
                 continue
             try:

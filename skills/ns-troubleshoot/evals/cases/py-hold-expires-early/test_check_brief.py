@@ -212,6 +212,18 @@ class CheckBriefTest(unittest.TestCase):
             check(good().replace("--state inv.json", "--state sub/../inv.json"))
         self.assertGreater(popen.call_count, 0)
 
+    def test_env_prefix_and_trailing_comment_are_replayed(self):
+        fulfil = "--now 2026-03-02T09:05:10 fulfil R0001"
+        for spelling, text in (
+            ("env prefix", good().replace("python3 -m inventory", "PYTHONPATH=src python3 -m inventory")),
+            ("trailing comment", good().replace(fulfil, fulfil + "  # goes red")),
+        ):
+            with self.subTest(spelling):
+                self.assertEqual(check(text), [])
+
+    def test_help_line_is_harmless(self):
+        self.assertEqual(check(good().replace("export PYTHONPATH=src\n", "python3 -m inventory --help\n")), [])
+
     def test_unbalanced_quote_line_is_skipped(self):
         text = good().replace("export PYTHONPATH=src\n", "python3 -m inventory 'unbalanced\n")
         self.assertEqual(check(text), [])
