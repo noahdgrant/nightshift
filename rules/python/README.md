@@ -4,7 +4,7 @@ The rules `ns rules check` runs on a Python repo. They compose `ruff`, `ast-grep
 
 | Rule | Tool | Fails on | Enforces |
 |---|---|---|---|
-| `suppression-reason` | ast-grep | a suppression (`noqa`, `type: ignore`, `pyright: ignore`, `pylint: disable`, `ruff: noqa`) with no reason after it on the same line | [quality bar](https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md): no suppression hides a real bug |
+| `suppression-reason` | ast-grep | a suppression (`noqa`, `type: ignore`, `pyright: ignore`, `pylint: disable`, `ruff: noqa`, `flake8: noqa`) with no reason after it on the same line | [quality bar](https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md): no suppression hides a real bug |
 | `dependency-allowlist` | ast-grep | an import from outside the standard library and the allowlist | [pave the road](https://github.com/noahdgrant/nightshift/blob/main/skills/ns-principle-pave-the-road/SKILL.md): one road per job |
 | `duplicate-helper` | ast-grep | a function or class named like a helper that already exists | the same |
 | `F401` | ruff | an import nothing uses | [quality bar](https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md): nothing is dead: no unused code, parameters or imports |

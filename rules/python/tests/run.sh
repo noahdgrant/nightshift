@@ -232,6 +232,9 @@ if [ -x "$ns" ]; then
     printf 'FAIL ns rules check: exit %s on a bare noqa gave:\n%s\n' "$rc" "$out" >&2
     failed=1
   }
+elif [ -n "${CI:-}" ]; then
+  echo "FAIL ns rules check: $ns is missing; build it with: cargo build --manifest-path cli/Cargo.toml" >&2
+  failed=1
 else
   echo "run.sh: skipped the ns rules check test; build $ns with: cargo build --manifest-path cli/Cargo.toml" >&2
 fi

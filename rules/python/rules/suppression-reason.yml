@@ -7,6 +7,6 @@ message: a suppression needs its reason on the same line, as a comment after it
 url: https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md
 rule:
   kind: comment
-  regex: '(?i)#\s*(?:noqa|type:\s*ignore|pyright:\s*ignore|pylint:\s*disable|ruff:\s*noqa)'
+  regex: '(?i)#\s*(?:noqa|flake8:\s*noqa|type:\s*ignore|pyright:\s*ignore|pylint:\s*disable|ruff:\s*noqa)'
   not:
-    regex: '(?i)#\s*(?:noqa|type:\s*ignore|pyright:\s*ignore|pylint:\s*disable|ruff:\s*noqa)[^#]*#\s*\S'
+    regex: '(?i)#\s*(?:noqa|flake8:\s*noqa|type:\s*ignore|pyright:\s*ignore|pylint:\s*disable|ruff:\s*noqa)[^#]*#\s*\S'
