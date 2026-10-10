@@ -91,7 +91,7 @@ pub fn run(
         .stderr(out);
     let (status, timed_out, wall_s) =
         run_process(c, None, timeout).with_context(|| format!("cannot run gate {cmd:?}"))?;
-    let tail = tail(&read_window(log));
+    let tail = tail(&read_window(log), TAIL_LINES, TAIL_BYTES, false);
     let cut = watch.cut_short(status, timed_out, || tail.clone());
     Ok(GateRun {
         exit: status.and_then(|s| s.code()),
@@ -145,11 +145,17 @@ pub fn feedback(cmd: &str, r: &GateRun, timeout: Duration, head: &str) -> String
     )
 }
 
-fn tail(bytes: &[u8]) -> String {
+/// The last `lines` lines of `bytes`, cut to at most `max_bytes` on a char boundary. Trailing
+/// blank lines never count; `skip_blank` drops the others too.
+pub fn tail(bytes: &[u8], lines: usize, max_bytes: usize, skip_blank: bool) -> String {
     let text = String::from_utf8_lossy(bytes);
-    let lines: Vec<&str> = text.trim_end().lines().collect();
-    let kept = lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n");
-    let start = kept.len().saturating_sub(TAIL_BYTES);
+    let all: Vec<&str> = text
+        .trim_end()
+        .lines()
+        .filter(|l| !(skip_blank && l.trim().is_empty()))
+        .collect();
+    let kept = all[all.len().saturating_sub(lines)..].join("\n");
+    let start = kept.len().saturating_sub(max_bytes);
     let start = (start..kept.len())
         .find(|i| kept.is_char_boundary(*i))
         .unwrap_or(0);
@@ -487,6 +493,12 @@ mod tests {
     }
 
     #[test]
+    fn the_tail_keeps_blank_lines_between_output_but_not_after_it() {
+        let (r, _tmp) = gate("printf 'a\\n\\nb\\n\\n\\n'", Duration::from_secs(30));
+        assert_eq!(r.tail, "a\n\nb");
+    }
+
+    #[test]
     fn a_non_zero_exit_is_red_with_stdout_and_stderr_in_the_tail() {
         let (r, _tmp) = gate("echo out; echo err >&2; exit 3", Duration::from_secs(30));
         assert!(!r.green());
@@ -505,12 +517,12 @@ mod tests {
     #[test]
     fn the_tail_keeps_the_last_lines_within_the_byte_cap() {
         let many: String = (1..=100).map(|i| format!("line {i}\n")).collect();
-        let t = tail(many.as_bytes());
+        let t = tail(many.as_bytes(), TAIL_LINES, TAIL_BYTES, false);
         assert_eq!(t.lines().count(), TAIL_LINES);
         assert!(t.ends_with("line 100"));
         assert!(t.starts_with("line 61"));
         let long = format!("x{}", "é".repeat(4000));
-        let t = tail(long.as_bytes());
+        let t = tail(long.as_bytes(), TAIL_LINES, TAIL_BYTES, false);
         assert!(t.len() <= TAIL_BYTES);
         assert!(t.chars().all(|c| c == 'é'));
         assert!(t.len() > TAIL_BYTES - 2);
