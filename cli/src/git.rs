@@ -132,8 +132,9 @@ pub fn diff_id(cwd: &Path, base: &str, sha: &str) -> Option<String> {
     patch_id(cwd, base, sha, false)
 }
 
-/// [`diff_id`] with whitespace counted (`git patch-id --verbatim`): a re-indented line is a
-/// different change. `None` as well when git is too old for `--verbatim`.
+/// A stricter [`diff_id`] for deciding a branch holds everything: whitespace and context lines
+/// count (`git patch-id --verbatim`), and the start is the plain merge base, so work merged in
+/// from anywhere stays in the diff. `None` as well when git is too old for `--verbatim`.
 pub fn exact_diff_id(cwd: &Path, base: &str, sha: &str) -> Option<String> {
     patch_id(cwd, base, sha, true)
 }
@@ -142,11 +143,24 @@ fn patch_id(cwd: &Path, base: &str, sha: &str, verbatim: bool) -> Option<String>
     if sha.is_empty() || sha.starts_with('-') || base.starts_with('-') {
         return None;
     }
-    let mb = unit_start(cwd, base, sha)?;
+    let mb = if verbatim {
+        run(cwd, &["merge-base", sha, &freshest(cwd, base)]).ok()?
+    } else {
+        unit_start(cwd, base, sha)?
+    };
+    let context = if verbatim { "-U3" } else { "-U0" };
     let diff = command()
         .arg("-C")
         .arg(cwd)
-        .args(["diff-tree", "-p", "-U0", "--binary", "--no-color", &mb, sha])
+        .args([
+            "diff-tree",
+            "-p",
+            context,
+            "--binary",
+            "--no-color",
+            &mb,
+            sha,
+        ])
         .output()
         .ok()
         .filter(|o| o.status.success())?;
@@ -171,8 +185,9 @@ fn patch_id(cwd: &Path, base: &str, sha: &str, verbatim: bool) -> Option<String>
 }
 
 /// Where `sha`'s own changes start: the newest common ancestor of `sha` with `base` and with every
-/// commit merged into `sha` since. A merge of the base brings in its newer commits even when the
-/// `base` ref is behind them, as after `git pull origin <base>`.
+/// commit merged into `sha` since that is already in the base. A merge of the base brings in its
+/// newer commits even when the `base` ref is behind them, as after `git pull origin <base>`; a
+/// merged-in parent that is not an ancestor of the base is the unit's own work.
 fn unit_start(cwd: &Path, base: &str, sha: &str) -> Option<String> {
     let base = freshest(cwd, base);
     let not_base = format!("^{base}");
@@ -190,7 +205,12 @@ fn unit_start(cwd: &Path, base: &str, sha: &str) -> Option<String> {
     )
     .ok()?;
     let mut args = vec!["merge-base", sha, &base];
-    args.extend(merges.lines().flat_map(|l| l.split_whitespace().skip(2)));
+    args.extend(
+        merges
+            .lines()
+            .flat_map(|l| l.split_whitespace().skip(2))
+            .filter(|p| ok(cwd, &["merge-base", "--is-ancestor", p, &base])),
+    );
     run(cwd, &args).ok()
 }
 
@@ -408,12 +428,12 @@ mod tests {
         g(&d, &["checkout", "-qb", "unit"]);
         let reviewed = commit_file(&d, "work.txt", "one\n");
         g(&d, &["checkout", "-q", "main"]);
-        commit_file(&d, "UPSTREAM", "x\n");
+        let upstream = commit_file(&d, "UPSTREAM", "x\n");
         g(&d, &["checkout", "-q", "unit"]);
         g(&d, &["merge", "-q", "--no-ff", "--no-edit", "main"]);
         let merged = g(&d, &["rev-parse", "HEAD"]);
         g(&d, &["update-ref", "refs/heads/main", &old]);
-        g(&d, &["update-ref", "refs/remotes/origin/main", &old]);
+        g(&d, &["update-ref", "refs/remotes/origin/main", &upstream]);
         (tmp, d, reviewed, merged)
     }
 
@@ -421,12 +441,52 @@ mod tests {
     fn a_merge_of_a_newer_base_keeps_the_diff_id_though_the_base_ref_is_behind() {
         let (_tmp, d, reviewed, merged) = merged_behind_a_stale_base();
         assert!(same_diff(&d, "main", &reviewed, &merged));
-        g(&d, &["checkout", "-q", "main"]);
-        commit_file(&d, "LATER", "y\n");
+        g(
+            &d,
+            &["checkout", "-q", "--detach", "refs/remotes/origin/main"],
+        );
+        let later = commit_file(&d, "LATER", "y\n");
+        g(&d, &["update-ref", "refs/remotes/origin/main", &later]);
+        g(&d, &["checkout", "-q", "unit"]);
         assert!(same_diff(&d, "main", &reviewed, &merged));
         g(&d, &["checkout", "-q", "unit"]);
         let changed = commit_file(&d, "work.txt", "two\n");
         assert!(!same_diff(&d, "main", &reviewed, &changed));
+    }
+
+    #[test]
+    fn a_merge_of_a_side_branch_is_not_the_same_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = &tmp.path().canonicalize().unwrap();
+        g(d, &["init", "-q", "-b", "main"]);
+        commit_file(d, "README", "hi\n");
+        g(d, &["checkout", "-qb", "unit"]);
+        let reviewed = commit_file(d, "work.txt", "one\n");
+        g(d, &["checkout", "-qb", "side", "main"]);
+        commit_file(d, "side.txt", "unreviewed\n");
+        g(d, &["checkout", "-q", "unit"]);
+        g(d, &["merge", "-q", "--no-ff", "--no-edit", "side"]);
+        let merged = g(d, &["rev-parse", "HEAD"]);
+        assert!(!same_diff(d, "main", &reviewed, &merged));
+    }
+
+    #[test]
+    fn exact_diff_id_counts_context_and_merged_in_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = &tmp.path().canonicalize().unwrap();
+        g(d, &["init", "-q", "-b", "main"]);
+        commit_file(d, "f.txt", "a\nb\nc\nd\ne\nf\ng\n");
+        g(d, &["checkout", "-qb", "unit"]);
+        let reviewed = commit_file(d, "f.txt", "a\nb\nc\nd\nE\nf\ng\n");
+        g(d, &["checkout", "-q", "main"]);
+        commit_file(d, "f.txt", "a\nb\nC\nd\ne\nf\ng\n");
+        g(d, &["checkout", "-q", "unit"]);
+        g(d, &["merge", "-q", "--no-edit", "main"]);
+        let merged = g(d, &["rev-parse", "HEAD"]);
+        assert_ne!(
+            exact_diff_id(d, "main", &reviewed),
+            exact_diff_id(d, "main", &merged)
+        );
     }
 
     #[test]

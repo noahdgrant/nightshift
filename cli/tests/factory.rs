@@ -3204,9 +3204,11 @@ fn a_pr_head_with_other_content_needs_a_human_merge() {
     assert!(!e.gh_calls().contains("pr merge"));
 }
 
-/// Ship merges main's new commit as `git pull origin main` would, leaving local main behind.
+/// Ship merges main's new commit as `git pull origin main` would: `origin/main` moves, local main
+/// stays behind.
 const MERGE_UPSTREAM: &str =
-    "git -c user.name=f -c user.email=f@f merge -q --no-ff --no-edit upstream\n";
+    "git -c user.name=f -c user.email=f@f merge -q --no-ff --no-edit upstream\n\
+     git update-ref refs/remotes/origin/main upstream\n";
 
 #[test]
 fn a_merge_of_main_after_review_still_merges() {
