@@ -2,6 +2,7 @@
 //! handler only records the signal; the code polls `requested()` between steps, while a phase
 //! runs and while it sleeps, and winds down from there.
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::error::SfError;
@@ -48,17 +49,35 @@ pub fn requested() -> Option<i32> {
     }
 }
 
-pub fn name(sig: i32) -> &'static str {
+/// "SIGKILL", or "signal 40" for one without a common name.
+pub fn name(sig: i32) -> Cow<'static, str> {
     #[cfg(unix)]
     {
-        match sig {
-            libc::SIGINT => return "SIGINT",
-            libc::SIGTERM => return "SIGTERM",
-            _ => {}
+        const NAMES: &[(libc::c_int, &str)] = &[
+            (libc::SIGHUP, "SIGHUP"),
+            (libc::SIGINT, "SIGINT"),
+            (libc::SIGQUIT, "SIGQUIT"),
+            (libc::SIGILL, "SIGILL"),
+            (libc::SIGTRAP, "SIGTRAP"),
+            (libc::SIGABRT, "SIGABRT"),
+            (libc::SIGBUS, "SIGBUS"),
+            (libc::SIGFPE, "SIGFPE"),
+            (libc::SIGKILL, "SIGKILL"),
+            (libc::SIGUSR1, "SIGUSR1"),
+            (libc::SIGSEGV, "SIGSEGV"),
+            (libc::SIGUSR2, "SIGUSR2"),
+            (libc::SIGPIPE, "SIGPIPE"),
+            (libc::SIGALRM, "SIGALRM"),
+            (libc::SIGTERM, "SIGTERM"),
+            (libc::SIGXCPU, "SIGXCPU"),
+            (libc::SIGXFSZ, "SIGXFSZ"),
+            (libc::SIGSYS, "SIGSYS"),
+        ];
+        if let Some((_, n)) = NAMES.iter().find(|(s, _)| *s == sig) {
+            return Cow::Borrowed(n);
         }
     }
-    let _ = sig;
-    "signal"
+    Cow::Owned(format!("signal {sig}"))
 }
 
 /// The error a step returns when it stops for `sig`; its exit code is 128 + the signal.
@@ -71,5 +90,17 @@ pub fn check() -> anyhow::Result<()> {
     match requested() {
         Some(sig) => Err(error(sig)),
         None => Ok(()),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    #[test]
+    fn name_knows_the_common_signals() {
+        assert_eq!(super::name(libc::SIGKILL), "SIGKILL");
+        assert_eq!(super::name(libc::SIGSEGV), "SIGSEGV");
+        assert_eq!(super::name(libc::SIGTERM), "SIGTERM");
+        let rt = libc::SIGRTMIN() + 1;
+        assert_eq!(super::name(rt), format!("signal {rt}"));
     }
 }

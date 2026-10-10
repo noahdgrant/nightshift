@@ -3,7 +3,6 @@
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -12,6 +11,7 @@ use serde_json::{json, Value};
 use crate::eval::trial::run_process;
 use crate::factory::Factory;
 use crate::git::same_sha;
+use crate::memcap::{self, Cap, Cut};
 
 /// Lines of gate output kept for `{feedback}`.
 const TAIL_LINES: usize = 40;
@@ -50,6 +50,8 @@ pub fn ci_local(stack_md: &str) -> Option<String> {
 pub struct GateRun {
     pub exit: Option<i32>,
     pub timed_out: bool,
+    /// The memory cap or a signal `ns` didn't send, when either ended it.
+    pub cut: Option<Cut>,
     pub wall_s: f64,
     /// The last lines of stdout and stderr together.
     pub tail: String,
@@ -57,17 +59,28 @@ pub struct GateRun {
 
 impl GateRun {
     pub fn green(&self) -> bool {
-        !self.timed_out && self.exit == Some(0)
+        !self.timed_out && self.cut.is_none() && self.exit == Some(0)
+    }
+
+    /// How it failed at the cap or by a signal, which a plain exit code would hide.
+    pub fn killed(&self) -> Option<String> {
+        self.cut.map(Cut::reason)
     }
 }
 
-/// Run `cmd` with `sh -c` in `cwd`, output to `log`, killed at `timeout`.
-pub fn run(cmd: &str, cwd: &Path, timeout: Duration, log: &Path) -> Result<GateRun> {
+/// Run `cmd` with `sh -c` in `cwd` under the memory `cap`, output to `log`, killed at `timeout`.
+pub fn run(
+    cmd: &str,
+    cwd: &Path,
+    timeout: Duration,
+    log: &Path,
+    cap: Option<&Cap>,
+) -> Result<GateRun> {
     if let Some(d) = log.parent() {
         fs::create_dir_all(d).with_context(|| format!("cannot create {}", d.display()))?;
     }
     let out = File::create(log).with_context(|| format!("cannot create {}", log.display()))?;
-    let mut c = Command::new("sh");
+    let (mut c, watch) = memcap::command(cap, "sh");
     crate::git::scrub(&mut c);
     c.arg("-c")
         .arg(cmd)
@@ -76,16 +89,19 @@ pub fn run(cmd: &str, cwd: &Path, timeout: Duration, log: &Path) -> Result<GateR
         .stderr(out);
     let (status, timed_out, wall_s) =
         run_process(c, None, timeout).with_context(|| format!("cannot run gate {cmd:?}"))?;
+    let tail = tail(&read_window(log));
+    let cut = watch.cut_short(status, timed_out, || tail.clone());
     Ok(GateRun {
         exit: status.and_then(|s| s.code()),
         timed_out,
+        cut,
         wall_s,
-        tail: tail(&read_window(log)),
+        tail,
     })
 }
 
 /// The end of the file, from a line start unless the whole file fits.
-fn read_window(path: &Path) -> Vec<u8> {
+pub fn read_window(path: &Path) -> Vec<u8> {
     let read = || -> std::io::Result<Vec<u8>> {
         let mut f = File::open(path)?;
         let len = f.metadata()?.len();
@@ -115,10 +131,11 @@ pub fn timed_out_after(timeout: Duration) -> String {
 
 /// The `{feedback}` for a red gate.
 pub fn feedback(cmd: &str, r: &GateRun, timeout: Duration, head: &str) -> String {
-    let how = match (r.timed_out, r.exit) {
-        (true, _) => timed_out_after(timeout),
-        (false, Some(c)) => format!("exited {c}"),
-        (false, None) => "was killed by a signal".into(),
+    let how = match (r.timed_out, r.killed(), r.exit) {
+        (true, _, _) => timed_out_after(timeout),
+        (false, Some(k), _) => k,
+        (false, None, Some(c)) => format!("exited {c}"),
+        (false, None, None) => "was killed by a signal".into(),
     };
     format!(
         "The CI gate `{cmd}` {how} at {head}. Make it pass. The last lines of its output:\n\n{}\n",
@@ -147,8 +164,14 @@ pub fn timeout(build_minutes: u64) -> Duration {
 }
 
 enum Verdict {
-    Green { sha: String },
-    Red { sha: String, feedback: String },
+    Green {
+        sha: String,
+    },
+    Red {
+        sha: String,
+        feedback: String,
+        killed: Option<String>,
+    },
 }
 
 /// What the gate last said about this unit's HEAD.
@@ -166,6 +189,7 @@ pub struct Job<'a> {
     pub head: String,
     pub phase: &'a str,
     pub attempt: u32,
+    pub cap: Option<&'a Cap>,
 }
 
 /// Why the gate may need to run.
@@ -180,6 +204,9 @@ pub enum Trigger {
 pub struct Red {
     pub feedback: String,
     pub reason: String,
+    /// "the CI gate exceeded the 64 MB memory limit" or "the CI gate was killed by SIGKILL",
+    /// when it failed that way.
+    pub killed: Option<String>,
 }
 
 impl Gate {
@@ -206,9 +233,14 @@ impl Gate {
 
     fn after_silent_build(&mut self, job: &Job<'_>, log: &dyn Fn(Value)) -> Result<Option<Red>> {
         match &self.verdict {
-            Some(Verdict::Red { sha, feedback }) if same_sha(sha, &job.head) => Ok(Some(Red {
+            Some(Verdict::Red {
+                sha,
+                feedback,
+                killed,
+            }) if same_sha(sha, &job.head) => Ok(Some(Red {
                 feedback: feedback.clone(),
                 reason: "the CI gate is still red".into(),
+                killed: killed.clone(),
             })),
             Some(Verdict::Red { .. }) => self.run_at_head(job, log),
             _ => Ok(None),
@@ -223,7 +255,7 @@ impl Gate {
             .log_dir
             .join(format!("gate-{}-{}.log", job.phase, job.attempt));
         eprintln!("ns run: {} gate after {}: {}", job.unit, job.phase, job.cmd);
-        let r = run(job.cmd, job.worktree, job.timeout, &log_path)?;
+        let r = run(job.cmd, job.worktree, job.timeout, &log_path, job.cap)?;
         log(json!({
             "event": "gate",
             "phase": job.phase,
@@ -232,6 +264,11 @@ impl Gate {
             "sha": job.head,
             "exit": r.exit,
             "timed_out": r.timed_out,
+            "signal": match r.cut {
+                Some(Cut::Signal(sig)) => Some(crate::stop::name(sig)),
+                _ => None,
+            },
+            "memory_exceeded": matches!(r.cut, Some(Cut::Exceeded(_))),
             "wall_s": (r.wall_s * 10.0).round() / 10.0,
             "green": r.green(),
             "log": log_path.to_string_lossy(),
@@ -243,13 +280,20 @@ impl Gate {
             return Ok(None);
         }
         let feedback = feedback(job.cmd, &r, job.timeout, &job.head);
+        let killed = r.killed().map(|k| format!("the CI gate {k}"));
         self.verdict = Some(Verdict::Red {
             sha: job.head.clone(),
             feedback: feedback.clone(),
+            killed: killed.clone(),
         });
+        let reason = match &killed {
+            Some(k) => format!("{k} after {}", job.phase),
+            None => format!("the CI gate failed after {}", job.phase),
+        };
         Ok(Some(Red {
             feedback,
-            reason: format!("the CI gate failed after {}", job.phase),
+            reason,
+            killed,
         }))
     }
 }
@@ -329,9 +373,76 @@ mod tests {
     }
 
     fn gate(cmd: &str, timeout: Duration) -> (GateRun, tempfile::TempDir) {
+        gate_capped(cmd, timeout, None)
+    }
+
+    fn gate_capped(
+        cmd: &str,
+        timeout: Duration,
+        cap: Option<&Cap>,
+    ) -> (GateRun, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
-        let r = run(cmd, tmp.path(), timeout, &tmp.path().join("logs/gate.log")).unwrap();
+        let log = tmp.path().join("logs/gate.log");
+        let r = run(cmd, tmp.path(), timeout, &log, cap).unwrap();
         (r, tmp)
+    }
+
+    const HOG: &str = "python3 -c \"b = b'x' * (256 << 20)\"";
+
+    #[test]
+    fn a_gate_past_the_memory_cap_is_red_and_says_so() {
+        let cap = memcap::detect(64).unwrap();
+        let (r, _tmp) = gate_capped(HOG, Duration::from_secs(60), Some(&cap));
+        assert!(!r.green());
+        assert_eq!(r.cut, Some(Cut::Exceeded(64)));
+        let f = feedback(HOG, &r, Duration::from_secs(60), "abc123");
+        assert!(
+            f.contains("exceeded the 64 MB memory limit at abc123"),
+            "{f}"
+        );
+        let (r, _tmp) = gate_capped("echo fits", Duration::from_secs(60), Some(&cap));
+        assert!(r.green(), "{}", r.tail);
+        assert_eq!(r.cut, None);
+    }
+
+    #[test]
+    fn a_gate_past_the_rlimit_fallback_is_red_and_says_so() {
+        let cap = Cap {
+            mb: 64,
+            via: memcap::Via::Rlimit,
+            fallback: None,
+        };
+        let (r, _tmp) = gate_capped(HOG, Duration::from_secs(60), Some(&cap));
+        assert!(!r.green());
+        assert_eq!(r.cut, Some(Cut::Exceeded(64)));
+        assert_eq!(
+            r.killed().as_deref(),
+            Some("exceeded the 64 MB memory limit")
+        );
+    }
+
+    #[test]
+    fn a_capped_gate_that_times_out_is_a_timeout_whatever_it_printed() {
+        let cap = Cap {
+            mb: 64,
+            via: memcap::Via::Rlimit,
+            fallback: None,
+        };
+        let (r, _tmp) = gate_capped(
+            "echo MemoryError; exec sleep 30",
+            Duration::from_millis(300),
+            Some(&cap),
+        );
+        assert!(r.timed_out);
+        assert_eq!(r.cut, None);
+    }
+
+    #[test]
+    fn an_uncapped_gate_that_fails_with_an_allocation_message_is_an_ordinary_failure() {
+        let (r, _tmp) = gate("echo MemoryError; exit 1", Duration::from_secs(30));
+        assert_eq!(r.cut, None);
+        assert_eq!(r.killed(), None);
+        assert_eq!(r.exit, Some(1));
     }
 
     #[test]
@@ -377,8 +488,19 @@ mod tests {
     fn a_signal_kill_is_red_with_no_exit_code() {
         let (r, _tmp) = gate("kill -9 $$", Duration::from_secs(30));
         assert_eq!(r.exit, None);
+        assert_eq!(r.cut, Some(Cut::Signal(libc::SIGKILL)));
         assert!(!r.timed_out);
         assert!(!r.green());
+        assert_eq!(r.killed().as_deref(), Some("was killed by SIGKILL"));
+        let f = feedback("x", &r, Duration::from_secs(30), "a");
+        assert!(f.contains("`x` was killed by SIGKILL at a"), "{f}");
+    }
+
+    #[test]
+    fn a_timed_out_gate_is_not_called_killed() {
+        let (r, _tmp) = gate("sleep 30", Duration::from_millis(200));
+        assert!(r.timed_out);
+        assert_eq!(r.killed(), None);
     }
 
     #[test]
@@ -435,6 +557,7 @@ mod tests {
     fn red(timed_out: bool, exit: Option<i32>) -> GateRun {
         GateRun {
             exit,
+            cut: None,
             timed_out,
             wall_s: 0.0,
             tail: "last line".into(),
@@ -461,5 +584,23 @@ mod tests {
         assert!(f.contains("exited 3"), "{f}");
         let f = feedback("make ci", &red(false, None), t, "a");
         assert!(f.contains("was killed by a signal"), "{f}");
+        let mut r = red(false, Some(1));
+        r.cut = Some(Cut::Exceeded(64));
+        let f = feedback("make ci", &r, t, "a");
+        assert!(
+            f.contains("`make ci` exceeded the 64 MB memory limit at a"),
+            "{f}"
+        );
+        r.timed_out = true;
+        let f = feedback("make ci", &r, t, "a");
+        assert!(f.contains("timed out after 90 min"), "{f}");
+    }
+
+    #[test]
+    fn a_zero_exit_past_the_cap_is_not_green() {
+        let mut r = red(false, Some(0));
+        assert!(r.green());
+        r.cut = Some(Cut::Exceeded(64));
+        assert!(!r.green());
     }
 }

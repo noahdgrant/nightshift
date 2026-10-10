@@ -4970,7 +4970,7 @@ fn a_killed_triage_is_recorded_and_the_night_goes_on() {
     e.queue("triage", &["pass:script", "none"]);
     let v = e.run(&["watch"], 0);
     assert_eq!(outcomes(&v["triaged"]), ["stuck", "done"], "{v}");
-    assert_eq!(v["triaged"][0]["reason"], "killed by a signal");
+    assert_eq!(v["triaged"][0]["reason"], "was killed by SIGKILL");
     assert_eq!(numbers(&v["triaged"]), [5, 6], "{v}");
 }
 
@@ -5096,4 +5096,367 @@ fn a_follow_up_filed_by_a_unit_is_triaged_before_the_next_unit() {
     assert!(e.prompt(6, "triage").contains("Triage only"));
     assert!(e.prompt(6, "triage").contains("unit `9-follow-up`"));
     assert!(!e.prompt(7, "triage").contains("Triage only"));
+}
+
+// ---------------------------------------------------------------- memory cap
+
+/// Allocates and touches 256 MB: past a 64 MB cap, never near a real machine's memory.
+const HOG: &str = "python3 -c \"b = b'x' * (256 << 20)\"";
+
+/// The `start` event's `memory_cap` for the first unit in the run log.
+fn memory_cap(e: &Env) -> Value {
+    fs::read_to_string(e.root.join(".git/ns/runs.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|v| v["event"] == "start")
+        .unwrap()["memory_cap"]
+        .clone()
+}
+
+/// Shadow `name` on the fakes' PATH with a command that fails, as if it were missing.
+fn break_tool(e: &Env, name: &str) {
+    let p = e.bin.join(name);
+    fs::write(&p, "#!/bin/sh\necho \"$0: not here\" >&2\nexit 1\n").unwrap();
+    StdCommand::new("chmod").arg("+x").arg(&p).status().unwrap();
+}
+
+/// The build script records how its process is capped: `ulimit -v` and its cgroup.
+fn record_limits(e: &Env) {
+    e.ctl(
+        "build.sh",
+        &format!(
+            "ulimit -v > {c}/ulimit; cat /proc/self/cgroup > {c}/cgroup\n",
+            c = e.ctrl.display()
+        ),
+    );
+}
+
+fn recorded(e: &Env, name: &str) -> String {
+    fs::read_to_string(e.ctrl.join(name)).unwrap()
+}
+
+#[test]
+fn a_phase_past_the_memory_cap_fails_its_attempt_and_watch_goes_on() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ready(3, "Fix b", &["type:fix"], "");
+    e.ctl(
+        "build.sh",
+        &format!("case \"$NS_UNIT\" in 2-*) {HOG} ;; esac\n"),
+    );
+    e.queue("build", &["pass:script", "pass:script", "pass:script"]);
+    let v = e.run(&["watch"], 0);
+    let units = v["units"].as_array().unwrap();
+    assert_eq!(units.len(), 2, "{v}");
+    assert_eq!(units[0]["outcome"], "stuck", "{v}");
+    assert_eq!(
+        units[0]["reason"],
+        "build is out of attempts (2): the last attempt exceeded the 64 MB memory limit"
+    );
+    assert_eq!(units[1]["outcome"], "done", "{v}");
+    let failed: Vec<Value> = phase_events(&e)
+        .into_iter()
+        .filter(|p| p["phase"] == "build" && p["unit"] == "2-fix-a")
+        .collect();
+    assert_eq!(failed.len(), 2);
+    for p in failed {
+        assert_eq!(p["reason"], "exceeded the 64 MB memory limit", "{p}");
+        assert_eq!(p["written"], false);
+    }
+    assert_eq!(memory_cap(&e)["mb"], 64);
+}
+
+#[test]
+fn a_capped_phase_runs_in_a_scope_or_under_an_rlimit_and_logs_which() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    record_limits(&e);
+    e.queue("build", &["pass:script"]);
+    let out = e.ns().args(["run", "--issue", "7"]).assert().code(0);
+    let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    let cap = memory_cap(&e);
+    match cap["via"].as_str().unwrap() {
+        "systemd-run" => {
+            assert!(cap["fallback"].is_null(), "{cap}");
+            assert!(
+                err.contains("64 MB memory cap (cgroup, systemd-run)"),
+                "{err}"
+            );
+            let cg = recorded(&e, "cgroup");
+            assert!(cg.contains("/ns-") && cg.contains(".scope"), "{cg}");
+        }
+        "prlimit" => {
+            assert!(
+                err.contains("64 MB memory cap (RLIMIT_AS, prlimit)"),
+                "{err}"
+            );
+            assert_eq!(recorded(&e, "ulimit").trim(), "65536");
+        }
+        other => panic!("{other}"),
+    }
+}
+
+#[test]
+fn without_systemd_run_the_cap_falls_back_to_prlimit() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    break_tool(&e, "systemd-run");
+    let flag = e.ctrl.join("hogged");
+    e.ctl(
+        "build.sh",
+        &format!(
+            "ulimit -v > {c}/ulimit\ntest -f {f} || {{ touch {f}; {HOG}; }}\n",
+            c = e.ctrl.display(),
+            f = flag.display()
+        ),
+    );
+    e.queue("build", &["pass:script", "pass:script"]);
+    let out = e.ns().args(["run", "--issue", "7"]).assert().code(0);
+    let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(
+        err.contains("64 MB memory cap (RLIMIT_AS, prlimit); no cgroup: systemd-run failed"),
+        "{err}"
+    );
+    let cap = memory_cap(&e);
+    assert_eq!(cap["via"], "prlimit", "{cap}");
+    assert!(
+        cap["fallback"].as_str().unwrap().contains("systemd-run"),
+        "{cap}"
+    );
+    assert_eq!(recorded(&e, "ulimit").trim(), "65536");
+    assert_eq!(
+        build_event(&e, 1)["reason"],
+        "exceeded the 64 MB memory limit"
+    );
+    assert_eq!(build_event(&e, 2)["written"], true);
+}
+
+#[test]
+fn a_capped_phase_that_times_out_fails_on_the_timeout() {
+    let e = Env::new();
+    let flag = e.ctrl.join("gate-green");
+    e.factory(&format!(
+        "[limits]\nmemory_mb = 64\n[phases.build]\nmax_attempts = 3\ngate = \"test -f {f} || {{ touch {f}; exit 1; }}\"\n",
+        f = flag.display()
+    ));
+    break_tool(&e, "systemd-run");
+    // Under RLIMIT_AS this message alone would read as the cap; the timeout must win.
+    e.ctl("build.sh", "echo MemoryError >&2\n");
+    e.queue(
+        "build",
+        &["pass:commit", "pass:script+sleep", "pass:commit"],
+    );
+    let v = run_with_phase_timeout(&e, 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(build_event(&e, 2)["reason"], "timed out after 1.5 s");
+    assert_eq!(
+        build_event(&e, 3)["decision"],
+        "timed out with the CI gate still red"
+    );
+}
+
+#[test]
+fn a_cap_nothing_here_can_enforce_is_a_usage_error_before_any_phase() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    break_tool(&e, "systemd-run");
+    break_tool(&e, "prlimit");
+    let out = e.ns().args(["run", "--issue", "7"]).assert().code(2);
+    let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(
+        err.contains("limits.memory_mb = 64, but no memory cap works here"),
+        "{err}"
+    );
+    assert!(e.calls().is_empty());
+}
+
+#[test]
+fn without_a_cap_phases_run_directly() {
+    let e = Env::new();
+    record_limits(&e);
+    e.queue("build", &["pass:script"]);
+    let out = e.ns().args(["run", "--issue", "7"]).assert().code(0);
+    let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(!err.contains("memory cap"), "{err}");
+    assert!(memory_cap(&e).is_null());
+    let own = StdCommand::new("sh")
+        .args(["-c", "ulimit -v"])
+        .output()
+        .unwrap();
+    assert_eq!(recorded(&e, "ulimit"), String::from_utf8_lossy(&own.stdout));
+    assert!(!recorded(&e, "cgroup").contains("/ns-"));
+}
+
+#[test]
+fn a_gate_past_the_memory_cap_sends_build_back_and_names_the_cap() {
+    let e = Env::new();
+    e.factory(&format!(
+        "[limits]\nmemory_mb = 64\n[phases.build]\ngate = {HOG:?}\n"
+    ));
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(
+        v["reason"],
+        "build is out of attempts (2): the CI gate exceeded the 64 MB memory limit"
+    );
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[0]["memory_exceeded"], true);
+    assert_eq!(g[0]["green"], false);
+    let p = e.prompt(3, "build");
+    assert!(p.contains("exceeded the 64 MB memory limit"), "{p}");
+    assert_eq!(
+        build_event(&e, 2)["decision"],
+        "the CI gate exceeded the 64 MB memory limit after build"
+    );
+}
+
+#[test]
+fn a_phase_killed_by_a_signal_fails_its_attempt_naming_it() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit+kill", "pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let p = build_event(&e, 1);
+    assert_eq!(p["reason"], "was killed by SIGKILL", "{p}");
+    assert_eq!(p["written"], false);
+    let dir = e.worktree(UNIT).join(".ns").join(UNIT);
+    assert!(fs::read_to_string(dir.join("history/build-killed-1.md"))
+        .unwrap()
+        .contains("status: pass"));
+    assert_eq!(
+        p["archived"],
+        dir.join("history/build-killed-1.md").to_str().unwrap()
+    );
+}
+
+#[test]
+fn a_phase_killed_on_every_attempt_is_stuck_naming_the_signal() {
+    let e = Env::new();
+    e.factory("[phases.build]\nmax_attempts = 1\n");
+    e.queue("build", &["pass:commit+kill"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(
+        v["reason"],
+        "build is out of attempts (1): the last attempt was killed by SIGKILL"
+    );
+}
+
+#[test]
+fn a_gate_killed_by_a_signal_names_it() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"kill -9 $$\"\n");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(
+        v["reason"],
+        "build is out of attempts (2): the CI gate was killed by SIGKILL"
+    );
+    let g = gate_events(&e);
+    assert_eq!(g[0]["signal"], "SIGKILL");
+    assert_eq!(g[0]["memory_exceeded"], false);
+    assert!(e.prompt(3, "build").contains("was killed by SIGKILL"));
+}
+
+#[test]
+fn a_killed_rebuild_keeps_the_red_gate_feedback() {
+    let e = Env::new();
+    let flag = e.ctrl.join("gate-green");
+    e.factory(&format!(
+        "[phases.build]\nmax_attempts = 3\ngate = \"test -f {f} || {{ touch {f}; echo boom; exit 1; }}\"\n",
+        f = flag.display()
+    ));
+    e.queue("build", &["pass:commit", "pass:commit+kill", "pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        build_event(&e, 3)["decision"],
+        "was killed by SIGKILL with the CI gate still red"
+    );
+    assert!(e.prompt(4, "build").contains("boom"));
+}
+
+#[test]
+fn a_gate_still_red_after_a_silent_build_still_names_the_signal() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"kill -9 $$\"\n");
+    e.queue("build", &["pass:commit", "none"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(
+        v["reason"],
+        "build is out of attempts (2): the CI gate was killed by SIGKILL"
+    );
+    assert_eq!(gate_events(&e).len(), 1);
+}
+
+#[test]
+fn a_systemd_run_that_does_not_enforce_memory_max_falls_back_to_prlimit() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    // Starts and exits 0 but sets no limit, as a systemd with no memory controller would.
+    let p = e.bin.join("systemd-run");
+    fs::write(&p, "#!/bin/sh\necho max\n").unwrap();
+    StdCommand::new("chmod").arg("+x").arg(&p).status().unwrap();
+    e.run(&["run", "--issue", "7"], 0);
+    let cap = memory_cap(&e);
+    assert_eq!(cap["via"], "prlimit", "{cap}");
+    assert!(
+        cap["fallback"]
+            .as_str()
+            .unwrap()
+            .contains("did not set the scope's memory.max to 67108864"),
+        "{cap}"
+    );
+}
+
+#[test]
+fn a_systemd_run_that_rejects_a_scope_property_falls_back_to_prlimit() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    // Sets memory.max but rejects OOMPolicy, as a systemd older than 253 does on a scope.
+    let p = e.bin.join("systemd-run");
+    fs::write(
+        &p,
+        "#!/bin/sh\nfor a; do [ \"$a\" = OOMPolicy=stop ] && { echo 'Unknown assignment' >&2; exit 1; }; done\necho 67108864\n",
+    )
+    .unwrap();
+    StdCommand::new("chmod").arg("+x").arg(&p).status().unwrap();
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(memory_cap(&e)["via"], "prlimit");
+}
+
+#[test]
+fn a_missing_harness_under_a_cap_is_still_a_usage_error() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n[defaults]\nharness = \"gone\"\n");
+    e.config("[harness.gone]\ncommand = [\"ns-no-such-harness\"]\ncommand_write = [\"ns-no-such-harness\"]\n");
+    let out = e.ns().args(["run", "--issue", "7"]).assert().code(2);
+    let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(
+        err.contains("harness binary `ns-no-such-harness` is not on PATH"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_dry_run_probes_no_memory_cap() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    break_tool(&e, "systemd-run");
+    break_tool(&e, "prlimit");
+    e.run(&["run", "--issue", "7", "--dry-run"], 0);
+}
+
+#[test]
+fn a_plain_gate_failure_names_no_signal() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"exit 1\"\n");
+    e.run(&["run", "--issue", "7"], 1);
+    let g = gate_events(&e);
+    assert!(g[0]["signal"].is_null());
+    assert_eq!(
+        build_event(&e, 2)["decision"],
+        "the CI gate failed after build"
+    );
 }

@@ -256,6 +256,8 @@ pub struct Limits {
     pub max_units: Option<u32>,
     /// Unset: no cap under `billing = "subscription"`, 25.0 under `api`.
     pub budget_usd: Option<f64>,
+    /// Unset: no cap. Set: each phase and the gate run under this many MiB (`crate::memcap`).
+    pub memory_mb: Option<u64>,
 }
 
 /// One phase with its defaults applied.
@@ -420,6 +422,9 @@ impl Factory {
             if b < 0.0 {
                 out.push("limits.budget_usd must not be negative".into());
             }
+        }
+        if self.limits.memory_mb == Some(0) {
+            out.push("limits.memory_mb must be at least 1; remove it for no cap".into());
         }
         out
     }
@@ -756,6 +761,20 @@ ci_timeout_minutes = 30
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn memory_mb_is_off_by_default_and_must_be_positive() {
+        assert_eq!(parse("").unwrap().limits.memory_mb, None);
+        let f = parse("[limits]\nmemory_mb = 8192\n").unwrap();
+        assert_eq!(f.limits.memory_mb, Some(8192));
+        assert!(f.problems(None).is_empty());
+        let f = parse("[limits]\nmemory_mb = 0\n").unwrap();
+        assert_eq!(
+            f.problems(None),
+            ["limits.memory_mb must be at least 1; remove it for no cap"]
+        );
+        assert!(parse("[limits]\nmemory_mb = -1\n").is_err());
     }
 
     #[test]

@@ -6,6 +6,7 @@
 #   commit and push append to work.txt, or run $FAKE_CTRL/edit instead when it exists
 #   script runs $FAKE_CTRL/<phase>.sh in the worktree
 #   <extra>+sleep (e.g. commit+sleep) does the extra, then sleeps
+#   <extra>+kill (e.g. commit+kill) does the extra, writes the artifact, then SIGKILLs itself
 #   $FAKE_CTRL/<phase>.body, when it exists, is appended to the artifact body
 #   ship's pr.md names PR $FAKE_CTRL/pr-$NS_UNIT, else $FAKE_CTRL/pr, else none
 #   sleep writes the artifact last, then execs sleep so a short timeout kills it with no orphan
@@ -48,6 +49,8 @@ case $phase in
 esac
 sleepy=0
 case "$extra" in *+sleep) sleepy=1; extra=${extra%+sleep} ;; esac
+killself=0
+case "$extra" in *+kill) killself=1; extra=${extra%+kill} ;; esac
 dir=".ns/$NS_UNIT"
 mkdir -p "$dir"
 case "$extra" in
@@ -77,3 +80,4 @@ sha=$(git rev-parse --short HEAD)
   [ -f "$ctrl/$phase.body" ] && cat "$ctrl/$phase.body"
 } > "$dir/$art.md"
 if [ "$extra" = sleep ] || [ "$sleepy" = 1 ]; then exec sleep 30; fi
+if [ "$killself" = 1 ]; then kill -9 $$; fi
