@@ -2569,6 +2569,22 @@ fn watch_given_back_leaves_only_the_ready_label() {
 }
 
 #[test]
+fn watch_budget_leaves_only_the_ready_label() {
+    let e = Env::new();
+    e.factory("[limits]\nbudget_usd = 1.0\n");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl(
+        "triage.sh",
+        &format!("gh issue edit 2 --add-label {READY}\n"),
+    );
+    e.queue("triage", &["pass:script"]);
+    e.queue("build", &["pass:commit"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "budget", "{v}");
+    assert_eq!(e.labels(2), ["type:fix", "status:ready-for-agent"]);
+}
+
+#[test]
 fn watch_done_removes_an_unconfigured_status_label() {
     let e = Env::new();
     e.queue("build", &["pass:commit"]);
