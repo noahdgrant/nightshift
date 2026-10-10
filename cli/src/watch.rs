@@ -526,14 +526,35 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             })
             .collect();
         // With the pass off, nothing would be triaged, so list nothing.
-        let tr = match triage::cap(fac) {
-            0 => triage::Candidates::default(),
-            _ => triage::candidates(&repo.root, fac, &BTreeSet::new())?,
+        let tr = if triage::on(fac) {
+            triage::candidates(&repo.root, fac, &BTreeSet::new())?
+        } else {
+            triage::Candidates::default()
         };
         let requeue: Vec<u64> = in_progress(&repo, &q)?
             .stale
             .iter()
             .map(|i| i.number)
+            .collect();
+        // The night's first pass treats every candidate as backlog: it takes them in order
+        // while no issue is ready, and none while one is. The night requeues stale issues
+        // before that pass, so they count as ready.
+        let next_pass: Vec<u64> = if qu.ready.is_empty() && requeue.is_empty() {
+            tr.issues.iter().map(|(i, _)| i.number).collect()
+        } else {
+            Vec::new()
+        };
+        let triage: Vec<Value> = tr
+            .issues
+            .iter()
+            .map(|(i, why)| {
+                json!({
+                    "number": i.number,
+                    "title": i.title,
+                    "reason": why,
+                    "priority_label": q.priority.get(rank(&q.priority, &i.labels)),
+                })
+            })
             .collect();
         println!(
             "{}",
@@ -542,9 +563,10 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 "requeue": requeue,
                 "queue": ready,
                 "skipped": qu.skipped,
-                "triage": tr.issues.iter().map(|(i, why)| json!({"number": i.number, "title": i.title, "reason": why})).collect::<Vec<_>>(),
+                "triage_pass": triage::on(fac),
+                "triage": triage,
+                "triage_next_pass": next_pass,
                 "triage_skipped": tr.skipped,
-                "triage_per_night": triage::cap(fac),
                 "max_units": max_units,
                 "until": deadline.map(clock::local_iso),
             }))?

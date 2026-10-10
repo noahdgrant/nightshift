@@ -213,8 +213,10 @@ pub struct Queue {
     pub order: Vec<String>,
     /// The state of an issue nobody has triaged yet; `ns watch` triages these.
     pub triage_label: String,
-    /// The most triage-only runs one `ns watch` starts.
-    pub triage_per_night: u32,
+    /// Removed (D42): `--until` and the budget bound the triage pass, not a count. Read only so
+    /// an old file still loads, with a warning.
+    #[serde(rename = "triage_per_night")]
+    pub removed_triage_per_night: Option<toml::Value>,
 }
 
 impl Default for Queue {
@@ -227,7 +229,7 @@ impl Default for Queue {
             stuck_label: "status:ready-for-human".into(),
             split_label: "status:needs-define".into(),
             triage_label: "status:needs-triage".into(),
-            triage_per_night: 10,
+            removed_triage_per_night: None,
             priority: ["priority:high", "priority:medium", "priority:low"]
                 .iter()
                 .map(|s| s.to_string())
@@ -303,6 +305,21 @@ impl Factory {
             None if self.subscription() => None,
             None => Some(25.0),
         }
+    }
+
+    /// Keys that load but do nothing; each string is one warning.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        match &self.queue.removed_triage_per_night {
+            Some(v) if v.as_integer() == Some(0) => out.push(
+                "[queue] triage_per_night is no longer used, so 0 no longer turns the triage pass off: it runs tonight. Only gates = \"stop\" turns it off (docs/FACTORY.md, Triage pass); remove the key".into(),
+            ),
+            Some(_) => out.push(
+                "[queue] triage_per_night is no longer used: --until and the budget bound the triage pass (docs/FACTORY.md, Triage pass); remove it".into(),
+            ),
+            None => {}
+        }
+        out
     }
 
     /// Semantic checks beyond parsing; each string is one problem.
@@ -600,6 +617,7 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
     let file = root.join(FILE);
     let cfg = config::load(&config::path()).ok().flatten();
     let mut problems = Vec::new();
+    let mut warnings = Vec::new();
     let mut phases = Vec::new();
     let mut name = None;
     let exists = file.is_file();
@@ -620,6 +638,7 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
                 problems.extend(bad);
                 problems.extend(f.problems(cfg.as_ref()));
                 problems.extend(agent_problems(&root));
+                warnings = f.warnings();
                 for name in PHASES {
                     let p = f.phase(name);
                     let custom = root.join("agents").join(name).join("agent.md").is_file();
@@ -649,6 +668,7 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
             "name": name,
             "phases": phases,
             "errors": problems,
+            "warnings": warnings,
         }))?
     );
     Ok(if ok {
@@ -747,17 +767,33 @@ ci_timeout_minutes = 30
         assert_eq!(f.budget_usd(), None);
         assert_eq!(f.merge.ci_register_timeout, 3);
         assert_eq!(f.queue.triage_label, "status:needs-triage");
-        assert_eq!(f.queue.triage_per_night, 10);
         assert_eq!(f.queue.split_label, "status:needs-define");
-        let f = parse("[queue]\ntriage_per_night = 3\ntriage_label = \"triage\"\n").unwrap();
-        assert_eq!(
-            (f.queue.triage_per_night, f.queue.triage_label.as_str()),
-            (3, "triage")
-        );
+        let f = parse("[queue]\ntriage_label = \"triage\"\n").unwrap();
+        assert_eq!(f.queue.triage_label, "triage");
         let f = parse("[merge]\nci_register_timeout = 7\n").unwrap();
         assert_eq!(f.merge.ci_register_timeout, 7);
         let f = parse("[defaults]\nbilling = \"api\"\n").unwrap();
         assert_eq!(f.budget_usd(), Some(25.0));
+    }
+
+    #[test]
+    fn a_removed_triage_per_night_parses_with_a_warning() {
+        assert!(parse("").unwrap().warnings().is_empty());
+        assert!(parse(FULL).unwrap().warnings().is_empty());
+        for old in ["10", "0", "\"ten\""] {
+            let f = parse(&format!("[queue]\ntriage_per_night = {old}\n")).unwrap();
+            let w = f.warnings();
+            assert_eq!(w.len(), 1, "{w:?}");
+            assert!(
+                w[0].starts_with("[queue] triage_per_night is no longer used"),
+                "{w:?}"
+            );
+            // A 0 meant "off", so its warning says the pass runs and names the real switch.
+            let off = w[0].contains("0 no longer turns the triage pass off")
+                && w[0].contains("gates = \"stop\"");
+            assert_eq!(off, old == "0", "{w:?}");
+            assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+        }
     }
 
     #[test]

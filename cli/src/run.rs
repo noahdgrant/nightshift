@@ -788,6 +788,9 @@ impl Loaded {
         let repo = Repo::discover(&start)?;
         let root = factory::root(factory, &repo.root);
         let fac = factory::load(&root)?;
+        for w in fac.warnings() {
+            eprintln!("ns: warning: {}: {w}", root.join(factory::FILE).display());
+        }
         let cfg_path = config::path();
         let cfg = config::load(&cfg_path)
             .map_err(|e| SfError::usage(format!("{e:#}"), "check it with:\n  ns doctor"))?;
