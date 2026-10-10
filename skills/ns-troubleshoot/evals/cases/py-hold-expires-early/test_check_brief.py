@@ -3,6 +3,7 @@ import io
 import os
 import pathlib
 import shutil
+import signal
 import tempfile
 import time
 import unittest
@@ -50,6 +51,25 @@ def seed(dest):
 
 def snapshot(root):
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+def alive(pid):
+    try:
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def kill_leftovers(pidfile):
+    if not pidfile.exists():
+        return
+    for pid in map(int, pidfile.read_text().split()):
+        try:
+            if alive(pid) and b"sleep" in pathlib.Path(f"/proc/{pid}/cmdline").read_bytes():
+                os.kill(pid, signal.SIGKILL)
+        except (FileNotFoundError, ProcessLookupError):
+            pass
 
 
 def tearDownModule():
@@ -277,15 +297,17 @@ class CheckBriefTest(unittest.TestCase):
             self.assertIn("repro ran red", check(good()))
         self.assertLess(time.monotonic() - start, 10)
 
-    def test_hung_command_is_killed_and_later_commands_are_not_run(self):
-        pidfile = pathlib.Path(_tmp.name) / "hung.pid"
+    def test_hung_command_and_its_children_are_killed_and_later_commands_are_not_run(self):
+        pidfile = pathlib.Path(_tmp.name) / "hung.pids"
         root = pathlib.Path(_tmp.name) / "hung"
         seed(root)
         (root / "src" / "inventory" / "__main__.py").write_text(
-            "import os, sys, time\n"
+            "import os, subprocess, sys, time\n"
             "if 'sleep' in sys.argv:\n"
-            f"    open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
-            "    time.sleep(60)\n"
+            "    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+            f"    open({str(pidfile) + '.tmp'!r}, 'w').write(f'{{os.getpid()}} {{child.pid}}')\n"
+            f"    os.replace({str(pidfile) + '.tmp'!r}, {str(pidfile)!r})\n"
+            "    time.sleep(30)\n"
             "sys.exit(\"inventory: error: reservation 'R0001' has expired\")\n",
             encoding="utf-8",
         )
@@ -296,15 +318,29 @@ class CheckBriefTest(unittest.TestCase):
             f"{ERROR_LINE}\n"
             "```\n"
         )
-        start = time.monotonic()
-        with mock.patch.object(check_brief, "REPLAY_TIMEOUT", 1):
+        self.addCleanup(kill_leftovers, pidfile)
+        ready = []
+
+        class StartsTheClockOnceBothRun(check_brief.subprocess.Popen):
+            def communicate(self, input=None, timeout=None):
+                if timeout is not None:
+                    deadline = time.monotonic() + 30
+                    while not pidfile.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    ready.append(time.monotonic())
+                return super().communicate(input, timeout)
+
+        with mock.patch.object(check_brief, "REPLAY_TIMEOUT", 1), mock.patch.object(
+            check_brief.subprocess, "Popen", StartsTheClockOnceBothRun
+        ):
             self.assertIn("repro ran red", check(with_repro(repro), root))
-        self.assertLess(time.monotonic() - start, 10)
-        pid = int(pidfile.read_text())
+        self.assertEqual(len(ready), 1)
+        self.assertLess(time.monotonic() - ready[0], 10)
+        pids = [int(p) for p in pidfile.read_text().split()]
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and pathlib.Path(f"/proc/{pid}").exists():
+        while time.monotonic() < deadline and any(map(alive, pids)):
             time.sleep(0.05)
-        self.assertFalse(pathlib.Path(f"/proc/{pid}").exists())
+        self.assertEqual([p for p in pids if alive(p)], [])
 
     def test_status_fail_fails(self):
         self.assertIn("status", check(good().replace("status: pass", "status: fail")))
