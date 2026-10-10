@@ -128,7 +128,11 @@ pub fn iso(t: i64) -> String {
 
 /// `YYYY-MM-DDTHH:MM:SS±HH:MM` in the local zone, for times a person reads.
 pub fn local_iso(t: i64) -> String {
-    let off = utc_offset(t);
+    offset_iso(t, utc_offset(t))
+}
+
+/// `YYYY-MM-DDTHH:MM:SS±HH:MM` of `t` in a zone `off` seconds ahead of UTC.
+fn offset_iso(t: i64, off: i64) -> String {
     let sign = if off < 0 { '-' } else { '+' };
     let a = off.abs();
     format!("{}{sign}{:02}:{:02}", civil(t + off), a / 3600, a / 60 % 60)
@@ -240,7 +244,7 @@ pub fn local_date(t: i64) -> String {
 
 #[cfg(not(unix))]
 pub fn local_date(t: i64) -> String {
-    iso(t)[..10].to_string()
+    local_iso(t)[..10].to_string()
 }
 
 #[cfg(test)]
@@ -306,6 +310,21 @@ mod tests {
         ] {
             assert_eq!(parse_iso(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn offset_iso_shifts_the_date_across_midnight() {
+        let late = 1_791_588_600; // 2026-10-09T23:30:00Z
+        assert_eq!(offset_iso(late, 0), "2026-10-09T23:30:00+00:00");
+        assert_eq!(offset_iso(late, 3600), "2026-10-10T00:30:00+01:00");
+        assert_eq!(
+            offset_iso(late + 3600, -4 * 3600),
+            "2026-10-09T20:30:00-04:00"
+        );
+        assert_eq!(
+            offset_iso(late, 5 * 3600 + 1800),
+            "2026-10-10T05:00:00+05:30"
+        );
     }
 
     #[test]
