@@ -103,6 +103,8 @@ pub fn archive_for(dir: &Path, phase: &str, s: &State) -> Result<Vec<(PathBuf, P
 }
 
 /// The unit's PR number: from `pr.md`, else the newest archived `pr-<n>.md` or `pr-timeout-<n>.md` that names one.
+/// Newest is the latest `updated` (ISO-8601 UTC, so string order is time order), then the higher
+/// counter, then the file name; an archive with no `updated` is oldest.
 pub fn known_pr(dir: &Path) -> Option<u64> {
     if let Some(n) = read_art(&dir.join("pr.md"))
         .and_then(|a| a.pr)
@@ -110,21 +112,24 @@ pub fn known_pr(dir: &Path) -> Option<u64> {
     {
         return Some(n);
     }
-    let mut archived: Vec<(u32, PathBuf)> = fs::read_dir(dir.join("history"))
+    let mut archived: Vec<(Option<String>, u32, PathBuf)> = fs::read_dir(dir.join("history"))
         .ok()?
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             let rest = name.strip_prefix("pr-")?.strip_suffix(".md")?;
             let n = rest.strip_prefix("timeout-").unwrap_or(rest).parse().ok()?;
-            Some((n, e.path()))
+            let updated = fs::read_to_string(e.path())
+                .ok()
+                .and_then(|t| frontmatter::field(&t, "updated"));
+            Some((updated, n, e.path()))
         })
         .collect();
     archived.sort();
     archived
         .iter()
         .rev()
-        .find_map(|(_, p)| read_art(p).and_then(|a| a.pr).and_then(|v| pr_number(&v)))
+        .find_map(|(_, _, p)| read_art(p).and_then(|a| a.pr).and_then(|v| pr_number(&v)))
 }
 
 pub struct State {
@@ -466,12 +471,12 @@ mod tests {
         assert!(d.join("history/build-2.md").exists());
     }
 
-    fn pr_art(dir: &Path, name: &str, pr: u64) {
+    fn pr_art(dir: &Path, name: &str, pr: u64, updated: &str) {
         fs::create_dir_all(dir.join("history")).unwrap();
         fs::write(
             dir.join(name),
             format!(
-                "---\nunit: u\nphase: ship\nstatus: pass\nsha: abc1234\npr: https://github.com/o/r/pull/{pr}\nupdated: 2026-10-08T00:00:00Z\n---\nbody\n"
+                "---\nunit: u\nphase: ship\nstatus: pass\nsha: abc1234\npr: https://github.com/o/r/pull/{pr}\nupdated: {updated}\n---\nbody\n"
             ),
         )
         .unwrap();
@@ -482,14 +487,55 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let d = t.path();
         assert_eq!(known_pr(d), None);
-        pr_art(d, "history/pr-timeout-1.md", 21);
+        fs::create_dir_all(d.join("history")).unwrap();
+        assert_eq!(known_pr(d), None);
+        pr_art(d, "history/pr-timeout-1.md", 21, "2026-10-08T01:00:00Z");
         assert_eq!(known_pr(d), Some(21));
-        pr_art(d, "history/pr-2.md", 22);
+        pr_art(d, "history/pr-2.md", 22, "2026-10-08T02:00:00Z");
         assert_eq!(known_pr(d), Some(22));
-        pr_art(d, "history/pr-timeout-3.md", 23);
+        pr_art(d, "history/pr-timeout-3.md", 23, "2026-10-08T03:00:00Z");
         assert_eq!(known_pr(d), Some(23));
-        pr_art(d, "pr.md", 24);
+        pr_art(d, "pr.md", 24, "2026-10-08T04:00:00Z");
         assert_eq!(known_pr(d), Some(24));
+    }
+
+    #[test]
+    fn known_pr_picks_the_latest_archive_of_either_kind() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        pr_art(d, "history/pr-1.md", 21, "2026-10-08T01:00:00Z");
+        pr_art(d, "history/pr-2.md", 22, "2026-10-08T02:00:00Z");
+        pr_art(d, "history/pr-timeout-1.md", 23, "2026-10-08T03:00:00Z");
+        assert_eq!(known_pr(d), Some(23));
+        // The reverse: a later pr-<n> beats an earlier pr-timeout-<m> with m > n.
+        pr_art(d, "history/pr-timeout-5.md", 25, "2026-10-08T04:00:00Z");
+        pr_art(d, "history/pr-3.md", 26, "2026-10-08T05:00:00Z");
+        assert_eq!(known_pr(d), Some(26));
+    }
+
+    #[test]
+    fn known_pr_breaks_updated_ties_by_counter_and_ranks_undated_oldest() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        let same = "2026-10-08T01:00:00Z";
+        pr_art(d, "history/pr-2.md", 22, same);
+        pr_art(d, "history/pr-timeout-1.md", 21, same);
+        assert_eq!(known_pr(d), Some(22));
+        pr_art(d, "history/pr-timeout-9.md", 29, "");
+        assert_eq!(known_pr(d), Some(22));
+    }
+
+    #[test]
+    fn known_pr_skips_an_archive_whose_pr_does_not_parse() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        pr_art(d, "history/pr-1.md", 21, "2026-10-08T01:00:00Z");
+        fs::write(
+            d.join("history/pr-timeout-1.md"),
+            "---\nstatus: fail\npr: none\nupdated: 2026-10-08T02:00:00Z\n---\nbody\n",
+        )
+        .unwrap();
+        assert_eq!(known_pr(d), Some(21));
     }
 
     fn real_state(r: &Rebased) -> State {
