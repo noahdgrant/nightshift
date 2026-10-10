@@ -35,6 +35,11 @@ pub fn ns() -> Ns {
     command(assert_cmd::cargo::cargo_bin("ns"))
 }
 
+/// The path of the `ns` binary built from this crate.
+pub fn ns_path() -> std::path::PathBuf {
+    assert_cmd::cargo::cargo_bin("ns")
+}
+
 /// Any program, run with the same bounds as [`ns`].
 pub fn command(program: impl AsRef<OsStr>) -> Ns {
     Ns {

@@ -160,7 +160,7 @@ fn run_pack(root: &Path, cmds: &[String]) -> Result<Run> {
             .stderr(log.try_clone()?);
         let (status, timed_out, _) = run_process(c, None, timeout)
             .with_context(|| format!("cannot run rule command `{cmd}`"))?;
-        let text = read_capped(log)?;
+        let text = read_capped(log, cmd)?;
         let exit = status.and_then(|s| s.code());
         let broken = if timed_out {
             Some(format!("timed out after {}s", timeout.as_secs_f64()))
@@ -208,10 +208,27 @@ fn timeout() -> Duration {
         .map_or(RULE_TIMEOUT, Duration::from_millis)
 }
 
-fn read_capped(mut log: File) -> Result<String> {
+fn max_output() -> u64 {
+    std::env::var("NS_RULES_MAX_OUTPUT_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(MAX_OUTPUT_BYTES)
+}
+
+fn read_capped(mut log: File, cmd: &str) -> Result<String> {
+    let cap = max_output();
     log.seek(SeekFrom::Start(0))?;
     let mut buf = Vec::new();
-    log.take(MAX_OUTPUT_BYTES).read_to_end(&mut buf)?;
+    log.take(cap.saturating_add(1)).read_to_end(&mut buf)?;
+    if buf.len() as u64 > cap {
+        return Err(SfError::general(format!(
+            "rule command `{cmd}` printed more than {cap} bytes"
+        ))
+        .hint(format!(
+            "narrow the command, or raise the cap with NS_RULES_MAX_OUTPUT_BYTES; run it by hand:\n  {cmd}"
+        ))
+        .into());
+    }
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
@@ -297,6 +314,23 @@ pub fn check(human: bool) -> Result<ExitCode> {
     let c = ctx("ns rules check")?;
     if c.commands.is_empty() {
         eprintln!("ns rules: no rules row in {STACK}; nothing to check");
+        let v = json!({
+            "ok": true,
+            "command": "rules check",
+            "baseline": BASELINE,
+            "commands": [],
+            "findings": 0,
+            "baselined": 0,
+            "new": [],
+            "fixed": [],
+        });
+        print(
+            &v,
+            &[],
+            "0 findings, 0 baselined, 0 new, 0 fixed".into(),
+            human,
+        )?;
+        return Ok(ExitCode::SUCCESS);
     }
     let run = run_pack(&c.root, &c.commands)?;
     let baseline = load_baseline(&c.root.join(BASELINE))?.unwrap_or_default();

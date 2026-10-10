@@ -495,7 +495,9 @@ Each output line (stdout or stderr) that is a JSON object with \"file\" (and opt
 finding {tool,rule,file,line,message,snippet}. tool defaults to the command's first word,
 snippet to the source line with whitespace collapsed. A finding matches a baseline entry in
 .nightshift/rules-baseline.json on (tool, rule, file, snippet), so a moved line still matches.
-A command that exits non-zero and prints no finding is an error. No rules row: nothing runs.
+A command that exits non-zero and prints no finding is an error, as is one that is killed,
+exits 126 or 127, runs over 300 s (NS_RULES_TIMEOUT_MS) or prints over 8 MiB
+(NS_RULES_MAX_OUTPUT_BYTES), whatever it printed first. No rules row: nothing runs.
 
 Prints {ok,command,baseline,commands,findings,baselined,new,fixed}; fixed lists baseline
 entries nothing matched (drop them with ns rules baseline).
@@ -510,7 +512,8 @@ Examples:
 Runs the rule pack as ns rules check does (see its --help) and writes every current violation
 to .nightshift/rules-baseline.json, dropping entries that are gone. A violation the baseline
 lacks, including every one when there is no baseline yet, is growth: without --allow-growth
-it writes nothing and exits 1. A rerun with nothing added or dropped writes nothing.
+it writes nothing and exits 1. A rerun with nothing added or dropped writes nothing. A command
+that fails, is killed, times out or prints too much is an error, as in ns rules check.
 
 Prints {ok,command,status,dry_run,baseline,commands,violations,added,dropped}; status is
 written, planned, already-done or refused.

@@ -434,3 +434,125 @@ fn a_malformed_baseline_is_an_error_that_names_the_fix() {
     }
     assert_eq!(fs::read_to_string(r.path(BASELINE)).unwrap(), "{not json");
 }
+
+fn ns_with_env(r: &Repo, args: &[&str], env: (&str, &str)) -> (Option<i32>, String) {
+    let out = common::ns()
+        .arg("rules")
+        .args(args)
+        .env(env.0, env.1)
+        .current_dir(&r.root)
+        .output();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn output_over_the_cap_is_an_error_not_a_truncation() {
+    let r = Repo::with_stack(
+        "| rules | `i=0; while [ $i -lt 200 ]; do echo \"src.py:2:5: eval $i\"; i=$((i+1)); done` |\n",
+    );
+    let (code, err) = ns_with_env(&r, &["check"], ("NS_RULES_MAX_OUTPUT_BYTES", "500"));
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("printed more than 500 bytes"), "{err}");
+    assert!(err.contains("while [ $i -lt 200 ]"), "{err}");
+    let (code, err) = ns_with_env(
+        &r,
+        &["baseline", "--allow-growth"],
+        ("NS_RULES_MAX_OUTPUT_BYTES", "500"),
+    );
+    assert_eq!(code, Some(1), "{err}");
+    assert!(r.baseline().is_none());
+
+    let (code, v, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(v["findings"], 200);
+}
+
+#[test]
+fn no_rules_row_succeeds_before_reading_the_baseline() {
+    let r = Repo::with_stack("| build | `make` |\n");
+    fs::create_dir_all(r.path(".nightshift")).unwrap();
+    fs::write(r.path(BASELINE), "{not json").unwrap();
+    let (code, v, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["new"], serde_json::json!([]));
+    assert_eq!(v["fixed"], serde_json::json!([]));
+}
+
+#[test]
+fn dry_run_status_follows_the_same_precedence_as_a_real_run() {
+    let r = Repo::new();
+    r.findings("lint-a", "src.py:2:5: eval is banned\n");
+    let (code, v, _) = r.ns(&["baseline", "--dry-run"]);
+    assert_eq!(code, Some(1), "{v}");
+    assert_eq!(v["status"], "refused");
+    assert!(r.baseline().is_none());
+
+    r.ns(&["baseline", "--allow-growth"]);
+    let before = fs::read_to_string(r.path(BASELINE)).unwrap();
+    r.findings("lint-a", "");
+    let (code, v, _) = r.ns(&["baseline", "--dry-run"]);
+    assert_eq!(code, Some(0), "{v}");
+    assert_eq!(v["status"], "planned");
+    assert_eq!(fs::read_to_string(r.path(BASELINE)).unwrap(), before);
+
+    r.ns(&["baseline"]);
+    let (code, v, _) = r.ns(&["baseline", "--dry-run"]);
+    assert_eq!(code, Some(0), "{v}");
+    assert_eq!(v["status"], "already-done");
+}
+
+#[test]
+fn the_error_shows_only_the_last_twenty_lines() {
+    let r = Repo::with_stack("| rules | `seq 1 30; exit 3` |\n");
+    let (code, _, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("\n11\n") && err.contains("\n30"), "{err}");
+    assert!(!err.contains("\n10\n"), "{err}");
+}
+
+#[test]
+fn a_non_numeric_timeout_falls_back_to_the_default() {
+    let r = Repo::new();
+    let (code, err) = ns_with_env(&r, &["check"], ("NS_RULES_TIMEOUT_MS", "soon"));
+    assert_eq!(code, Some(0), "{err}");
+}
+
+fn gate(r: &Repo, base: &str) -> (Option<i32>, String) {
+    let ns = common::ns_path();
+    let cmd = format!("({base}) && '{}' rules check", ns.display());
+    let out = common::command("sh")
+        .args(["-c", &cmd])
+        .current_dir(&r.root)
+        .output();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn the_gate_shape_fails_on_a_new_violation_and_passes_once_baselined() {
+    let r = Repo::new();
+    r.findings("lint-a", "src.py:2:5: eval is banned\n");
+    let (code, err) = gate(&r, "true");
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("1 new violations"), "{err}");
+
+    r.ns(&["baseline", "--allow-growth"]);
+    let (code, err) = gate(&r, "true");
+    assert_eq!(code, Some(0), "{err}");
+}
+
+#[test]
+fn a_failing_base_command_short_circuits_the_rules_check() {
+    let r = Repo::new();
+    r.findings("lint-a", "src.py:2:5: eval is banned\n");
+    let (code, err) = gate(&r, "echo base failed >&2; exit 7");
+    assert_eq!(code, Some(7), "{err}");
+    assert!(err.contains("base failed"), "{err}");
+    assert!(!err.contains("ns rules:"), "{err}");
+}
