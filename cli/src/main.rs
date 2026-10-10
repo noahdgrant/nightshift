@@ -256,7 +256,7 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         night: Option<PathBuf>,
     },
 
-    /// Pull ready issues from GitHub and run them one at a time
+    /// Pull ready issues from GitHub and run them, up to --parallel at once
     #[command(after_help = WATCH_HELP)]
     Watch {
         /// Take one unit, then stop
@@ -268,6 +268,9 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         /// Units per invocation (default: [limits] max_units, else no cap)
         #[arg(long, value_name = "N")]
         max_units: Option<u32>,
+        /// Units running at once, each its own ns run (default: [limits] parallel, else 1)
+        #[arg(long, value_name = "N")]
+        parallel: Option<u32>,
         /// Print the ordered queue with skip reasons; change nothing
         #[arg(long)]
         dry_run: bool,
@@ -360,16 +363,20 @@ Examples:
   ns watch --dry-run
   ns watch --once
   ns watch --until 06:30 --max-units 3
+  ns watch --until 06:30 --parallel 3
 
 Lists open issues labelled [queue] ready_label with gh, drops blocked ones and ones with an
-open PR that closes them (not one from their own unit branch), sorts by [queue] order, and runs each with ns run --issue. Forge tokens as in ns run --help.
+open PR that closes them (not one from their own unit branch), sorts by [queue] order, and runs
+each as a child ns run --issue, up to --parallel at once, every one on the config and factory
+definition read at start. A usage limit in one unit pauses the others at their next phase,
+and the budget counts what every unit spent. Forge tokens as in ns run --help.
 --until is local time (TZ). Times printed for people, until and reset_at, are local with
 their offset (2026-10-09T06:30:00-04:00).
 At start, in-progress issues no live ns run holds go back to the ready label (requeued).
 At start and between units, worktrees of units a human merged since are removed as ns clean
 removes them (cleaned; --dry-run lists them as clean).
-SIGINT or SIGTERM ends the running phase and returns its issue to the ready label.
-Prints {units,requeued,cleaned,stopped,until,cost_usd}. Exit codes as ns run's errors: 2 usage,
+SIGINT or SIGTERM ends every running phase and returns each unit's issue to the ready label.
+Prints {units,requeued,cleaned,stopped,until,cost_usd,error}. Exit codes as ns run's errors: 2 usage,
 5 lock held (another ns run or ns watch); 130 or 143 when stopped by SIGINT or SIGTERM.";
 
 const CLEAN_HELP: &str = "\
@@ -702,6 +709,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             once,
             until,
             max_units,
+            parallel,
             dry_run,
             factory,
         } => {
@@ -709,6 +717,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 once,
                 until,
                 max_units,
+                parallel,
                 dry_run,
                 factory,
             })

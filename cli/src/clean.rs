@@ -403,7 +403,13 @@ fn sweep(repo: &Repo, by: &str, merged: &[Merged]) -> (Value, Vec<(Merged, Outco
 /// `ns watch`'s cleanup at start and between units: remove what merged since, and never end
 /// the night over it. A unit in `tried` was tried tonight and is left for the next night, so
 /// one that stays is recorded once. Returns the units removed.
-pub fn between_units(repo: &Repo, tried: &mut BTreeSet<String>) -> Vec<String> {
+/// `busy` names the issues of units running or paused tonight: their worktrees stay, whatever
+/// their PR, and they are tried again once they end.
+pub fn between_units(
+    repo: &Repo,
+    tried: &mut BTreeSet<String>,
+    busy: &BTreeSet<u64>,
+) -> Vec<String> {
     let plan = match plan(repo) {
         Ok(p) => p,
         Err(e) => {
@@ -414,6 +420,7 @@ pub fn between_units(repo: &Repo, tried: &mut BTreeSet<String>) -> Vec<String> {
     let merged: Vec<Merged> = plan
         .merged
         .into_iter()
+        .filter(|m| !m.issue.is_some_and(|i| busy.contains(&i)))
         .filter(|m| tried.insert(m.unit.clone()))
         .collect();
     sweep(repo, "watch", &merged)

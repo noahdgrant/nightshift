@@ -1,6 +1,6 @@
-//! The night directory an `ns run` reads under `ns watch` (`ns run --night <dir>`): the night's
-//! facts in `night.json`, the hold file a usage limit writes, and the spend file every unit adds
-//! its phase costs to.
+//! What `ns watch` hands each `ns run` it starts (docs/FACTORY.md, "Parallel units"): a copy of
+//! the config and factory definition it read at start, the night's facts in `night.json`, the
+//! hold file a usage limit writes, and the spend file every unit adds its phase costs to.
 
 use std::fs;
 use std::io::{ErrorKind, Write};
@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
+const DIR_PREFIX: &str = "watch-";
 const NIGHT: &str = "night.json";
 const HOLD: &str = "hold.json";
 const SPEND: &str = "spend.jsonl";
@@ -28,6 +29,10 @@ pub struct Facts {
 pub struct NightDir(PathBuf);
 
 impl NightDir {
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
     /// Open `dir` and read its facts.
     pub fn open(dir: &Path) -> Result<(NightDir, Facts)> {
         let path = dir.join(NIGHT);
@@ -71,6 +76,24 @@ impl NightDir {
             .ok_or_else(|| anyhow!("{}: a hold needs reset_at", path.display()))
     }
 
+    /// Hold every unit at its next phase until `reset_at`.
+    pub fn hold(&self, reset_at: i64) -> Result<()> {
+        let path = self.hold_file();
+        let tmp = path.with_extension("tmp");
+        fs::write(&tmp, json!({"reset_at": reset_at}).to_string())
+            .with_context(|| format!("cannot write {}", tmp.display()))?;
+        fs::rename(&tmp, &path).with_context(|| format!("cannot write {}", path.display()))
+    }
+
+    pub fn release(&self) -> Result<()> {
+        match fs::remove_file(self.hold_file()) {
+            Err(e) if e.kind() != ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("cannot remove {}", self.hold_file().display()))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Add one phase's cost in a single append, so units running together never split a line.
     pub fn add_spend(&self, unit: &str, usd: f64) -> Result<()> {
         let path = self.spend_file();
@@ -94,36 +117,234 @@ impl NightDir {
     }
 }
 
+/// The night directory `ns watch` owns: `<git-common-dir>/ns/watch-<pid>/`, private to its user
+/// and removed when the night ends.
+pub struct Snapshot {
+    night: NightDir,
+    /// Symlinks in the factory directory the copy left out.
+    pub skipped: Vec<PathBuf>,
+}
+
+impl Snapshot {
+    /// Copy the factory directory and the config file, and write `facts`. A night directory a
+    /// dead `ns watch` left behind is removed first.
+    pub fn take(common: &Path, factory_root: &Path, config: &Path, facts: &Facts) -> Result<Self> {
+        let ns = common.join("ns");
+        sweep_dead(&ns);
+        let dir = ns.join(format!("{DIR_PREFIX}{}", facts.watch_pid));
+        let _ = fs::remove_dir_all(&dir);
+        create_private_dir(&dir)?;
+        let mut snap = Snapshot {
+            night: NightDir(dir),
+            skipped: Vec::new(),
+        };
+        let to = snap.factory();
+        copy_tree(factory_root, &to, &mut snap.skipped)?;
+        if config.is_file() {
+            fs::copy(config, snap.config())
+                .with_context(|| format!("cannot copy {}", config.display()))?;
+        }
+        let night = snap.night.path().join(NIGHT);
+        let v = json!({"watch_pid": facts.watch_pid, "until": facts.until, "gate": facts.gate});
+        fs::write(&night, v.to_string())
+            .with_context(|| format!("cannot write {}", night.display()))?;
+        Ok(snap)
+    }
+
+    pub fn night(&self) -> &NightDir {
+        &self.night
+    }
+
+    pub fn factory(&self) -> PathBuf {
+        self.night.path().join("factory")
+    }
+
+    /// Where the config copy is; no file there when there was no config to copy.
+    pub fn config(&self) -> PathBuf {
+        self.night.path().join("config.toml")
+    }
+}
+
+impl Drop for Snapshot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(self.night.path());
+    }
+}
+
+fn pid_alive(pid: i32) -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: signal 0 only checks that the process exists.
+        let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+/// Remove the night directories of `ns watch` processes that are gone.
+fn sweep_dead(ns: &Path) {
+    let Ok(entries) = fs::read_dir(ns) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let pid = e
+            .file_name()
+            .to_str()
+            .and_then(|n| n.strip_prefix(DIR_PREFIX))
+            .and_then(|p| p.parse::<i32>().ok())
+            .filter(|p| *p > 0);
+        if pid.is_some_and(|p| !pid_alive(p)) {
+            let _ = fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+fn create_private_dir(dir: &Path) -> Result<()> {
+    if let Some(parent) = dir.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("cannot create {}", parent.display()))?;
+    }
+    fs::create_dir(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("cannot restrict {}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// Copy `from` to `to`, leaving out symlinks, which could reach outside the definition or loop.
+/// A missing `from` copies nothing: the factory then has its defaults, as it would unsnapshotted.
+fn copy_tree(from: &Path, to: &Path, skipped: &mut Vec<PathBuf>) -> Result<()> {
+    fs::create_dir_all(to).with_context(|| format!("cannot create {}", to.display()))?;
+    let entries = match fs::read_dir(from) {
+        Ok(e) => e,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", from.display())),
+    };
+    for e in entries {
+        let e = e.with_context(|| format!("cannot read {}", from.display()))?;
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        let kind = e
+            .file_type()
+            .with_context(|| format!("cannot read {}", src.display()))?;
+        if kind.is_symlink() {
+            skipped.push(src);
+        } else if kind.is_dir() {
+            copy_tree(&src, &dst, skipped)?;
+        } else {
+            fs::copy(&src, &dst).with_context(|| format!("cannot copy {}", src.display()))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_unit_reads_the_night_s_facts() {
-        let tmp = tempfile::tempdir().unwrap();
-        fs::write(
-            tmp.path().join(NIGHT),
-            r#"{"watch_pid":42,"until":1000,"gate":"make check"}"#,
-        )
-        .unwrap();
-        let (_, facts) = NightDir::open(tmp.path()).unwrap();
-        let want = Facts {
-            watch_pid: 42,
+    fn facts() -> Facts {
+        Facts {
+            watch_pid: std::process::id(),
             until: Some(1000),
             gate: Some("make check".into()),
-        };
-        assert_eq!(facts, want);
-        fs::write(tmp.path().join(NIGHT), "{}").unwrap();
-        assert!(NightDir::open(tmp.path()).is_err());
+        }
     }
 
     #[test]
-    fn a_hold_names_its_reset() {
+    fn a_snapshot_copies_the_definition_and_config_and_a_unit_reads_its_facts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let def = tmp.path().join("def");
+        fs::create_dir_all(def.join("runners")).unwrap();
+        fs::write(def.join("nightshift.toml"), "gates = \"auto\"\n").unwrap();
+        fs::write(def.join("runners/bench.toml"), "kind = \"bench\"\n").unwrap();
+        std::os::unix::fs::symlink(&def, def.join("loop")).unwrap();
+        let cfg = tmp.path().join("config.toml");
+        fs::write(&cfg, "[roles.default]\n").unwrap();
+        let common = tmp.path().join("git");
+        let snap = Snapshot::take(&common, &def, &cfg, &facts()).unwrap();
+        assert_eq!(snap.skipped, [def.join("loop")]);
+        // The originals change; the copies don't.
+        fs::write(def.join("nightshift.toml"), "broken = [").unwrap();
+        fs::write(&cfg, "broken = [").unwrap();
+        let copied = fs::read_to_string(snap.factory().join("nightshift.toml")).unwrap();
+        assert_eq!(copied, "gates = \"auto\"\n");
+        assert!(snap.factory().join("runners/bench.toml").is_file());
+        assert!(!snap.factory().join("loop").exists());
+        assert_eq!(
+            fs::read_to_string(snap.config()).unwrap(),
+            "[roles.default]\n"
+        );
+        let (_, read) = NightDir::open(snap.night().path()).unwrap();
+        assert_eq!(read, facts());
+        let dir = snap.night().path().to_path_buf();
+        drop(snap);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn no_config_file_copies_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = Snapshot::take(
+            tmp.path(),
+            &tmp.path().join("no-def"),
+            &tmp.path().join("no-config.toml"),
+            &facts(),
+        )
+        .unwrap();
+        assert!(!snap.config().exists());
+        assert!(snap.factory().is_dir());
+    }
+
+    #[test]
+    fn the_night_dir_is_private_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ns").join("watch-5");
+        create_private_dir(&dir).unwrap();
+        let mode = fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
+    fn a_snapshot_sweeps_the_dirs_of_dead_watches_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead = child.id();
+        child.wait().unwrap();
+        let ns = tmp.path().join("ns");
+        let alive = format!("watch-{}", std::process::id());
+        for name in [
+            format!("watch-{dead}"),
+            alive.clone(),
+            "watch-x".into(),
+            "other".into(),
+        ] {
+            fs::create_dir_all(ns.join(name)).unwrap();
+        }
+        sweep_dead(&ns);
+        assert!(!ns.join(format!("watch-{dead}")).exists());
+        for kept in [alive.as_str(), "watch-x", "other"] {
+            assert!(ns.join(kept).exists(), "{kept}");
+        }
+    }
+
+    #[test]
+    fn a_hold_reads_back_until_released() {
         let tmp = tempfile::tempdir().unwrap();
         let night = NightDir(tmp.path().to_path_buf());
         assert_eq!(night.held_until().unwrap(), None);
-        fs::write(night.hold_file(), r#"{"reset_at":900}"#).unwrap();
+        night.hold(500).unwrap();
+        night.hold(900).unwrap();
         assert_eq!(night.held_until().unwrap(), Some(900));
+        night.release().unwrap();
+        night.release().unwrap();
+        assert_eq!(night.held_until().unwrap(), None);
         fs::write(night.hold_file(), "{}").unwrap();
         assert!(night.held_until().is_err());
     }

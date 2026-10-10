@@ -43,6 +43,19 @@ impl Clock {
         }
     }
 
+    /// The pinned time (`NS_NOW`), or `None` on a real clock.
+    pub fn pinned_at(&self) -> Option<i64> {
+        self.pinned.get()
+    }
+
+    /// Move a pinned clock forward to `t`, as another process's pinned clock moved while it
+    /// ran; a real clock, or a pinned one already past `t`, stays put.
+    pub fn catch_up(&self, t: i64) {
+        if self.pinned.get().is_some_and(|p| t > p) {
+            self.pinned.set(Some(t));
+        }
+    }
+
     pub fn now(&self) -> i64 {
         self.pinned.get().unwrap_or_else(real_now)
     }

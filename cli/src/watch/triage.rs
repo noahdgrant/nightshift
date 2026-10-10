@@ -29,7 +29,17 @@ pub(super) struct Tally {
     /// Two runs failed to start with the same error: something global, such as a missing
     /// login, not the issue. The pass is off for the rest of the night.
     off: bool,
+    /// A candidate a usage limit stopped before it triaged: the next pass runs it first.
+    retry: Option<u64>,
     pub records: Vec<Value>,
+}
+
+/// Why the pass ended before it ran out of candidates.
+pub(super) enum Halt {
+    /// The night ends, for this reason.
+    Stop(String),
+    /// A usage limit stopped a run; it resets at this time.
+    Paused(i64),
 }
 
 #[derive(Default)]
@@ -103,14 +113,14 @@ fn next(
 }
 
 /// Triage-only runs: every candidate filed since the last pass, then the backlog until the queue
-/// has a ready issue, so a big backlog never holds up the next unit. Returns why the night ends,
-/// when it does.
+/// has a ready issue, so a big backlog never holds up the next unit. Returns why the pass halted,
+/// when it did.
 pub(super) fn pass(
     repo: &Repo,
     loaded: &Loaded,
     deadline: Option<i64>,
     night: &mut Night,
-) -> Result<Option<String>> {
+) -> Result<Option<Halt>> {
     let q = &loaded.fac.queue;
     if !on(&loaded.fac) {
         return Ok(None);
@@ -119,7 +129,7 @@ pub(super) fn pass(
     loop {
         crate::stop::check()?;
         if let Some(stop) = night.over(deadline, &loaded.fac) {
-            return Ok(Some(stop.into()));
+            return Ok(Some(Halt::Stop(stop.into())));
         }
         if night.triage.off {
             return Ok(None);
@@ -136,7 +146,13 @@ pub(super) fn pass(
                 .ready
                 .is_empty())
         };
-        let Some(issue) = next(found, before.as_ref(), ready)? else {
+        let retry = night.triage.retry.take();
+        let again = found.iter().find(|(i, _)| Some(i.number) == retry);
+        let picked = match again {
+            Some((i, _)) => Some(i.clone()),
+            None => next(found, before.as_ref(), ready)?,
+        };
+        let Some(issue) = picked else {
             return Ok(None);
         };
         night.triage.tried.insert(issue.number);
@@ -180,12 +196,12 @@ pub(super) fn pass(
             rec["reset_at"] = json!(clock::local_iso(reset));
             night.triage.records.push(rec);
             if deadline.is_some_and(|d| reset >= d) {
-                return Ok(Some(PAUSED_PAST_UNTIL.into()));
+                return Ok(Some(Halt::Stop(PAUSED_PAST_UNTIL.into())));
             }
-            // The limit stopped the run before it triaged: run it again.
+            // The limit stopped the run before it triaged: run it again after the reset.
             night.triage.tried.remove(&issue.number);
-            night.sleep_until(reset)?;
-            continue;
+            night.triage.retry = Some(issue.number);
+            return Ok(Some(Halt::Paused(reset)));
         }
         rec["state"] = json!(labels(&repo.root, &issue.number.to_string())
             .ok()
@@ -195,7 +211,7 @@ pub(super) fn pass(
                 .collect::<Vec<_>>()));
         night.triage.records.push(rec);
         if failing && night.harness_fails >= HARNESS_FAIL_LIMIT {
-            return Ok(Some("harness failing".into()));
+            return Ok(Some(Halt::Stop("harness failing".into())));
         }
     }
 }

@@ -93,6 +93,19 @@ impl Outcome {
         }
     }
 
+    fn from_label(label: &str) -> Option<Outcome> {
+        [
+            Outcome::Done,
+            Outcome::Merged,
+            Outcome::Stuck,
+            Outcome::Budget,
+            Outcome::Paused,
+            Outcome::Split,
+        ]
+        .into_iter()
+        .find(|o| o.label() == label)
+    }
+
     fn exit(self) -> ExitCode {
         match self {
             Outcome::Done | Outcome::Merged | Outcome::Split => ExitCode::SUCCESS,
@@ -110,9 +123,36 @@ pub struct RunResult {
     /// A `done` that still needs a human (files that need human review, no CI, ...).
     pub needs_human: bool,
     pub reset_at: Option<i64>,
+    /// Paused by the night's hold (`ns run --night`), not by a usage limit of its own.
+    pub held: bool,
     pub artifact: Option<String>,
     pub cost_usd: f64,
+    /// When the run ended, on its clock.
+    pub ended_at: Option<i64>,
     pub json: Value,
+}
+
+impl RunResult {
+    /// The result an `ns run` printed, or `None` when `json` is no run result.
+    pub fn from_json(json: Value) -> Option<RunResult> {
+        let outcome = Outcome::from_label(json["outcome"].as_str()?)?;
+        let unit = json["unit"]
+            .as_str()
+            .filter(|u| worktree::valid_unit_id(u))?
+            .to_string();
+        Some(RunResult {
+            unit,
+            outcome,
+            reason: json["reason"].as_str().unwrap_or("").to_string(),
+            needs_human: json["needs_human"].as_bool().unwrap_or(false),
+            reset_at: json["reset_at"].as_i64(),
+            held: json["held"].as_bool().unwrap_or(false),
+            artifact: json["artifact"].as_str().map(String::from),
+            cost_usd: json["cost_usd"].as_f64().unwrap_or(0.0),
+            ended_at: json["ended_at"].as_i64(),
+            json,
+        })
+    }
 }
 
 /// State shared across the units of one `ns watch` (or the single unit of `ns run`).
@@ -1258,8 +1298,10 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         reason: result.reason,
         needs_human: result.needs_human,
         reset_at: result.reset_at,
+        held: result.held,
         artifact: last_artifact,
         cost_usd: cost,
+        ended_at: Some(shared.clock.now()),
         json,
     })
 }
@@ -1358,8 +1400,10 @@ fn dry_run(
         reason: "dry run".into(),
         needs_human: false,
         reset_at: None,
+        held: false,
         artifact: None,
         cost_usd: 0.0,
+        ended_at: None,
         json,
     })
 }

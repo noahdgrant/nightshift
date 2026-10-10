@@ -23,9 +23,15 @@ pub fn install() -> std::io::Result<()> {
 
 /// As [`install`], for an `ns run` that `ns watch` started: every SIGINT and SIGTERM is only
 /// recorded, so a signal that reaches the run both from watch and from a service manager
-/// still lets it wind down.
+/// still lets it wind down. Watch dying sends the run SIGTERM (see `watch::scheduler`).
 pub fn install_for_watch() -> std::io::Result<()> {
     handle(false)
+}
+
+/// Record `sig` as the stop, as if it had arrived, unless a stop is already recorded: `ns watch`
+/// stops the night when a signal stopped one of its units.
+pub fn request(sig: i32) {
+    let _ = SIGNAL.compare_exchange(0, sig, Ordering::SeqCst, Ordering::SeqCst);
 }
 
 #[cfg(unix)]

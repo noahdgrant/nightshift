@@ -505,7 +505,14 @@ fn a_phase_under_watch_knows_the_watch_pid() {
     e.ready(2, "Fix a", &["type:fix"], "");
     record_phase_ids(&e);
     let pid = ok_pid(e.ns().args(["watch", "--once"]));
-    assert_eq!(phase_ids(&e)[0], format!("{pid} {pid}"));
+    // The unit ran in its own ns run, which ns watch started.
+    let run = run_events(&e)
+        .into_iter()
+        .find(|ev| ev["event"] == "worker_start")
+        .unwrap()["run_pid"]
+        .clone();
+    assert_ne!(run, pid);
+    assert_eq!(phase_ids(&e)[0], format!("{run} {pid}"));
 }
 
 #[test]
@@ -6169,6 +6176,696 @@ fn watch_tries_a_unit_that_stays_once_a_night() {
     assert!(done.is_dir());
 }
 
+// ---------------------------------------------------------------- parallel units
+
+const A: &str = "2-fix-a";
+const B: &str = "3-fix-b";
+
+fn two_ready(e: &Env) {
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ready(3, "Fix b", &["type:fix"], "");
+}
+
+fn mkfifo(p: &Path) {
+    assert!(StdCommand::new("mkfifo").arg(p).status().unwrap().success());
+}
+
+/// Hold `unit`'s next `phase` at its start: the fake harness writes its pid to the first fifo
+/// returned, then waits for a line on the second.
+fn hold_phase(e: &Env, unit: &str, phase: &str) -> (PathBuf, PathBuf) {
+    let entered = e.ctrl.join(format!("entered-{unit}-{phase}"));
+    let go = e.ctrl.join(format!("go-{unit}-{phase}"));
+    mkfifo(&entered);
+    mkfifo(&go);
+    (entered, go)
+}
+
+/// Write a line to `go` from a thread, since a fifo write blocks until someone reads it.
+fn release(go: &Path) {
+    let go = go.to_path_buf();
+    thread::spawn(move || fs::write(go, "go\n"));
+}
+
+/// A running `ns watch`, its stderr lines on a channel and its stdout collected.
+struct Watching {
+    g: Group,
+    rx: mpsc::Receiver<Option<String>>,
+    stdout: mpsc::Receiver<Vec<u8>>,
+    seen: Vec<String>,
+}
+
+impl Watching {
+    fn start(ns: &mut Ns) -> Watching {
+        let mut g = ns.start_piped();
+        let stdout = read_all(g.take_stdout());
+        let (tx, rx) = mpsc::channel();
+        send_lines(g.take_stderr(), tx);
+        Watching {
+            g,
+            rx,
+            stdout,
+            seen: Vec::new(),
+        }
+    }
+
+    /// Wait until the phase held on `entered` starts; the harness's pid.
+    fn entered(&self, entered: &Path) -> String {
+        let (tx, rx) = mpsc::channel();
+        let f = entered.to_path_buf();
+        thread::spawn(move || {
+            let _ = tx.send(fs::read_to_string(f));
+        });
+        self.g.recv(&rx).unwrap().trim().to_string()
+    }
+
+    /// Read stderr until a line contains `want`; panics with what it read if watch ends first.
+    fn line(&mut self, want: &str) -> String {
+        if !line_until(&self.g, &self.rx, want, &mut self.seen) {
+            panic!("no line with {want:?}:\n{}", self.seen.join("\n"));
+        }
+        self.seen.last().unwrap().clone()
+    }
+
+    fn signal(&self, sig: i32, group: bool) {
+        let pid = self.g.id() as libc::pid_t;
+        // SAFETY: kill(2) on the ns process, or its process group, that this test started.
+        assert_eq!(
+            unsafe { libc::kill(if group { -pid } else { pid }, sig) },
+            0
+        );
+    }
+
+    /// Wait for watch to end: its exit code, summary and whole stderr.
+    fn finish(mut self) -> (Option<i32>, Value, String) {
+        let code = self.g.wait().code();
+        while let Some(l) = self.g.recv(&self.rx) {
+            self.seen.push(l);
+        }
+        let err = self.seen.join("\n");
+        let out = self.g.recv(&self.stdout);
+        let v = serde_json::from_slice(&out).unwrap_or_else(|x| {
+            panic!("{x}: stdout={} stderr={err}", String::from_utf8_lossy(&out))
+        });
+        (code, v, err)
+    }
+}
+
+/// Each unit record's issue and outcome, sorted by issue.
+fn by_issue(units: &[Value]) -> Vec<(u64, String)> {
+    let mut o: Vec<(u64, String)> = units
+        .iter()
+        .map(|u| {
+            (
+                u["issue"].as_u64().unwrap(),
+                u["outcome"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    o.sort();
+    o
+}
+
+fn units(v: &Value) -> Vec<Value> {
+    v["units"].as_array().unwrap().clone()
+}
+
+fn each(issues: &[u64], outcome: &str) -> Vec<(u64, String)> {
+    issues.iter().map(|n| (*n, outcome.to_string())).collect()
+}
+
+/// The pid of each `ns run` that started a unit, by unit, from the run log's start events.
+fn run_pids(e: &Env) -> Vec<(String, u64)> {
+    let mut pids: Vec<(String, u64)> = run_events(e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "start")
+        .map(|ev| {
+            (
+                ev["unit"].as_str().unwrap().to_string(),
+                ev["pid"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    pids.sort();
+    pids
+}
+
+fn phase_count(e: &Env, phase: &str) -> usize {
+    e.calls().iter().filter(|c| *c == phase).count()
+}
+
+#[test]
+fn watch_parallel_runs_two_units_together_each_in_its_own_ns_run() {
+    let e = Env::new();
+    two_ready(&e);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
+    let watch_pid = u64::from(w.g.id());
+    // Both builds are in at once: one unit at a time never reaches the second.
+    w.entered(&in_a);
+    w.entered(&in_b);
+    release(&go_a);
+    release(&go_b);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+    assert_eq!(v["stopped"], "queue empty", "{v}");
+    assert_eq!(v["cost_usd"], 5.0, "{v}");
+    let pids = run_pids(&e);
+    assert_eq!(pids.len(), 2, "{pids:?}");
+    assert_ne!(pids[0].1, pids[1].1, "{pids:?}");
+    assert!(pids.iter().all(|(_, p)| *p != watch_pid), "{pids:?}");
+    // The output and the run log name the worker that ran each unit.
+    let mut workers: Vec<u64> = units(&v)
+        .iter()
+        .map(|u| u["worker"].as_u64().unwrap())
+        .collect();
+    workers.sort();
+    assert_eq!(workers, [1, 2], "{v}");
+    for u in units(&v) {
+        let title = if u["issue"] == 2 { "Fix a" } else { "Fix b" };
+        let line = format!("ns watch: #{} {title} (worker {})", u["issue"], u["worker"]);
+        assert!(err.contains(&line), "{line}\n{err}");
+    }
+    let starts: Vec<Value> = run_events(&e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "worker_start")
+        .collect();
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    for s in &starts {
+        let unit = format!(
+            "{}-fix-{}",
+            s["issue"],
+            if s["issue"] == 2 { "a" } else { "b" }
+        );
+        let run = pids.iter().find(|(u, _)| *u == unit).unwrap();
+        assert_eq!(s["run_pid"], run.1, "{s}");
+        assert!(s["worker"] == 1 || s["worker"] == 2, "{s}");
+    }
+}
+
+#[test]
+fn watch_parallel_units_take_a_runner_lock_one_at_a_time() {
+    let e = Env::new();
+    let locks = e.base.join("locks");
+    e.bench(&locks);
+    e.factory("[limits]\nparallel = 2\n[phases.verify]\nrunner = \"bench\"\n");
+    two_ready(&e);
+    let holds = [hold_phase(&e, A, "verify"), hold_phase(&e, B, "verify")];
+    // A pinned clock would end a lock wait at once: watch runs on the real clock.
+    let mut w = Watching::start(e.ns().env_remove("NS_NOW").arg("watch"));
+    let line = w.line("verify waits for lock bench-1");
+    let (waiter, holder) = if line.contains(&format!("ns run: {A} ")) {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    w.entered(&holds[holder].0);
+    release(&holds[holder].1);
+    // The waiter enters only once the holder's verify ends and lets the lock go.
+    w.entered(&holds[waiter].0);
+    release(&holds[waiter].1);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+    let waits: Vec<Value> = run_events(&e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "lock_wait" && ev["lock"] == "bench-1")
+        .collect();
+    assert_eq!(waits.len(), 1, "{waits:?}");
+}
+
+#[test]
+fn watch_parallel_units_merge_one_at_a_time() {
+    let e = Env::new();
+    e.factory(AUTO);
+    two_ready(&e);
+    e.ctl(&format!("pr-{A}"), "12");
+    e.ctl(&format!("pr-{B}"), "13");
+    e.queue(&format!("build.{A}"), &["pass:commit"]);
+    e.queue(&format!("build.{B}"), &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file("checks-13.json", GREEN);
+    let go = merges_in_order(&e, &[12, 13]);
+    let mut w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
+    w.line("merge waits for the merge lock (held by pid ");
+    release(&go);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "merged"), "{v}");
+    let order = fs::read_to_string(e.ctrl.join("order")).unwrap();
+    let order: Vec<&str> = order.lines().collect();
+    assert_eq!(order.len(), 4, "{order:?}");
+    let pr = |l: &str| l.split(' ').nth(1).unwrap().to_string();
+    assert_eq!(
+        order,
+        [
+            format!("in {}", pr(order[0])),
+            format!("out {}", pr(order[0])),
+            format!("in {}", pr(order[2])),
+            format!("out {}", pr(order[2])),
+        ]
+    );
+    assert_ne!(pr(order[0]), pr(order[2]), "{order:?}");
+}
+
+#[test]
+fn watch_parallel_never_takes_an_issue_twice() {
+    let e = Env::new();
+    two_ready(&e);
+    // GitHub keeps listing a claimed issue as ready for a while.
+    e.gh_file("ready-sticks", "");
+    let reread = e.ctrl.join("reread");
+    mkfifo(&reread);
+    e.gh_file(
+        "hook.sh",
+        &format!(
+            "case \"$1 $2 $3\" in \"api --paginate \"*labels=status:ready-for-agent*)\n\
+               echo x >> \"$d/reads\"\n\
+               [ \"$(wc -l < \"$d/reads\")\" -eq 2 ] && echo reread > {reread:?} ;;\n\
+             esac\n"
+        ),
+    );
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
+    w.entered(&in_b);
+    // Unit 2 ended and its slot refills from a queue that still lists #3, mid build.
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(fs::read_to_string(&reread));
+    });
+    w.g.recv(&rx).unwrap();
+    release(&go_b);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+    let calls = e.gh_calls();
+    assert_eq!(
+        calls.matches("--add-label status:in-progress").count(),
+        2,
+        "{calls}"
+    );
+    assert_eq!(run_pids(&e).len(), 2, "{:?}", run_pids(&e));
+}
+
+#[test]
+fn watch_parallel_claims_an_issue_before_its_unit_starts() {
+    let e = Env::new();
+    two_ready(&e);
+    let seen = e.ctrl.join("seen");
+    e.ctl(
+        "triage.sh",
+        &format!("cat \"$FAKE_GH_DIR/labels-${{NS_UNIT%%-*}}\" >> {seen:?}\n"),
+    );
+    e.queue(&format!("triage.{A}"), &["pass:script"]);
+    e.queue(&format!("triage.{B}"), &["pass:script"]);
+    // Each claim leaves a mark in the run log, which watch also writes each unit's start to.
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *\"--add-label status:in-progress\"*)\n\
+           echo \"{\\\"event\\\":\\\"test_claim\\\",\\\"issue\\\":$3}\" >> \"$(git rev-parse --git-common-dir)/ns/runs.jsonl\" ;;\n\
+         esac\n",
+    );
+    let v = e.run(&["watch", "--parallel", "2"], 0);
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+    for n in [2, 3] {
+        let claimed = event_at(&e, |v| v["event"] == "test_claim" && v["issue"] == n);
+        let started = event_at(&e, |v| v["event"] == "worker_start" && v["issue"] == n);
+        assert!(claimed < started, "#{n}: {:?}", run_events(&e));
+    }
+    let at_start = fs::read_to_string(&seen).unwrap();
+    assert_eq!(
+        at_start.matches("status:in-progress").count(),
+        2,
+        "{at_start}"
+    );
+    assert!(!at_start.contains("status:ready-for-agent"), "{at_start}");
+}
+
+#[test]
+fn watch_parallel_pauses_every_unit_on_a_usage_limit_and_resumes_them_together() {
+    let e = Env::new();
+    two_ready(&e);
+    e.ctl("reset", &(NOW + 3600).to_string());
+    e.queue(&format!("build.{A}"), &["limit", "pass:commit"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = Watching::start(
+        e.ns()
+            .args(["watch", "--parallel", "2", "--until", "06:30"]),
+    );
+    // Unit 2's build hits its limit only once unit 3's build has begun.
+    w.entered(&in_b);
+    w.entered(&in_a);
+    release(&go_a);
+    w.line("ns watch: #2 paused on a usage limit until 2026-10-09T01:00:00+00:00");
+    // Unit 3's build ends after the pause began; it pauses before its next phase.
+    release(&go_b);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    let us = units(&v);
+    assert_eq!(us.len(), 4, "{v}");
+    assert_eq!(by_issue(&us[..1]), each(&[2], "paused"), "{v}");
+    assert_eq!(by_issue(&us[1..2]), each(&[3], "paused"), "{v}");
+    for u in &us[..2] {
+        assert_eq!(u["reset_at"], "2026-10-09T01:00:00+00:00", "{v}");
+    }
+    assert!(
+        us[1]["reason"].as_str().unwrap().contains("another unit"),
+        "{v}"
+    );
+    assert_eq!(by_issue(&us[2..]), each(&[2, 3], "done"), "{v}");
+    assert_eq!(v["stopped"], "queue empty", "{v}");
+    assert_eq!(
+        err.matches("usage limit, sleeping until").count(),
+        1,
+        "{err}"
+    );
+    assert!(err.contains("usage limit, sleeping until 2026-10-09T01:00:00+00:00"));
+    // Unit 3 resumed at verify; unit 2 ran its build again.
+    assert_eq!(phase_count(&e, "build"), 3, "{:?}", e.calls());
+    assert_eq!(phase_count(&e, "verify"), 2, "{:?}", e.calls());
+    let calls = e.gh_calls();
+    assert_eq!(
+        calls.matches("--add-label status:in-progress").count(),
+        2,
+        "{calls}"
+    );
+}
+
+#[test]
+fn watch_parallel_resumes_at_the_later_of_two_resets() {
+    let e = Env::new();
+    two_ready(&e);
+    // The later reset comes first: a pause must not shrink to the earlier one that follows.
+    e.ctl("reset", &(NOW + 7200).to_string());
+    e.ctl(&format!("reset.{B}"), &(NOW + 3600).to_string());
+    e.queue(&format!("build.{A}"), &["limit", "pass:commit"]);
+    e.queue(&format!("build.{B}"), &["limit", "pass:commit"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = Watching::start(
+        e.ns()
+            .args(["watch", "--parallel", "2", "--until", "06:30"]),
+    );
+    // Unit 2's build hits its limit only once unit 3's build has begun.
+    w.entered(&in_b);
+    w.entered(&in_a);
+    release(&go_a);
+    w.line("ns watch: #2 paused on a usage limit until 2026-10-09T02:00:00+00:00");
+    release(&go_b);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    let us = units(&v);
+    assert_eq!(us[1]["issue"], 3, "{v}");
+    assert_eq!(us[1]["reset_at"], "2026-10-09T01:00:00+00:00", "{v}");
+    assert!(
+        err.contains("ns watch: #3 paused on a usage limit until 2026-10-09T02:00:00+00:00"),
+        "{err}"
+    );
+    assert_eq!(by_issue(&us[2..]), each(&[2, 3], "done"), "{v}");
+    assert!(
+        err.contains("usage limit, sleeping until 2026-10-09T02:00:00+00:00"),
+        "{err}"
+    );
+    assert!(!err.contains("sleeping until 2026-10-09T01:00:00"), "{err}");
+}
+
+#[test]
+fn watch_parallel_gives_every_paused_unit_back_when_the_reset_is_past_until() {
+    let e = Env::new();
+    two_ready(&e);
+    e.ctl("reset", &(NOW + 8 * 3600).to_string());
+    e.queue(&format!("build.{A}"), &["limit"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = Watching::start(
+        e.ns()
+            .args(["watch", "--parallel", "2", "--until", "06:30"]),
+    );
+    // Unit 2's build hits its limit only once unit 3's build has begun.
+    w.entered(&in_b);
+    w.entered(&in_a);
+    release(&go_a);
+    w.line("ns watch: #2 paused on a usage limit until");
+    release(&go_b);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(v["stopped"], "usage limit resets after --until", "{v}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "paused"), "{v}");
+    for n in [2, 3] {
+        assert_eq!(e.labels(n), ["type:fix", "status:ready-for-agent"]);
+    }
+}
+
+#[test]
+fn watch_parallel_budget_stop_reaches_every_unit() {
+    let e = Env::new();
+    e.factory("[limits]\nbudget_usd = 2.0\nparallel = 2\n");
+    two_ready(&e);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = Watching::start(e.ns().args(["watch"]));
+    // Both triages ran: $1.00 of $2.00 spent.
+    w.entered(&in_a);
+    w.entered(&in_b);
+    // Unit 2's build and verify bring the night to $2.00; it stops before review.
+    release(&go_a);
+    w.line("ns watch: #2 budget");
+    // Unit 3's build brings it to $2.50, and unit 3 stops before verify: it counts unit 2's spend.
+    release(&go_b);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "budget"), "{v}");
+    assert_eq!(v["stopped"], "budget", "{v}");
+    assert_eq!(v["cost_usd"], 2.5, "{v}");
+    assert_eq!(phase_count(&e, "verify"), 1, "{:?}", e.calls());
+    assert_eq!(phase_count(&e, "review"), 0, "{:?}", e.calls());
+    for n in [2, 3] {
+        assert_eq!(e.labels(n), ["type:fix", "status:ready-for-agent"]);
+    }
+}
+
+#[test]
+fn watch_parallel_runs_the_triage_pass_when_a_worker_finishes() {
+    let e = Env::new();
+    two_ready(&e);
+    e.untriaged(5, "Escape", &["status:needs-triage"]);
+    e.triage_sets(&["status:ready-for-agent"]);
+    e.queue("triage.5-escape", &["pass:script"]);
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let (in_t, go_t) = hold_phase(&e, "5-escape", "triage");
+    let w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
+    w.entered(&in_b);
+    // Unit 2 ended; the pass triages #5 before its slot refills, while unit 3 still builds.
+    w.entered(&in_t);
+    release(&go_t);
+    release(&go_b);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3, 5], "done"), "{v}");
+    // Units' harnesses ran at once and may share a call number, so count the prompts, not the
+    // calls; the triage-only run ran with no other harness beside it.
+    let triage_only = fs::read_dir(&e.ctrl)
+        .unwrap()
+        .filter_map(|f| fs::read_to_string(f.unwrap().path()).ok())
+        .filter(|t| t.contains("Triage only") && t.contains("unit `5-escape`"))
+        .count();
+    assert_eq!(triage_only, 1, "{err}");
+}
+
+#[test]
+fn watch_runs_one_unit_at_a_time_unless_told_otherwise() {
+    for (factory, args) in [
+        ("", vec!["watch"]),
+        ("[limits]\nparallel = 3\n", vec!["watch", "--parallel", "1"]),
+    ] {
+        let e = Env::new();
+        e.factory(factory);
+        two_ready(&e);
+        let v = e.run(&args, 0);
+        assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+        let calls = e.gh_calls();
+        let last_of_2 = calls.rfind("issue edit 2 ").unwrap();
+        let claim_3 = calls
+            .find(
+                "issue edit 3 --remove-label status:ready-for-agent --add-label status:in-progress",
+            )
+            .unwrap();
+        assert!(last_of_2 < claim_3, "{args:?}: {calls}");
+        assert!(units(&v).iter().all(|u| u["worker"] == 1), "{v}");
+    }
+}
+
+#[test]
+fn watch_parallel_must_be_at_least_one_and_the_flag_wins() {
+    let e = Env::new();
+    e.ns()
+        .args(["watch", "--parallel", "0"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("--parallel"));
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(v["parallel"], 1, "{v}");
+    e.factory("[limits]\nparallel = 3\n");
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(v["parallel"], 3, "{v}");
+    let v = e.run(&["watch", "--dry-run", "--parallel", "2"], 0);
+    assert_eq!(v["parallel"], 2, "{v}");
+    e.factory("[limits]\nparallel = 0\n");
+    e.ns()
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("parallel"));
+}
+
+#[test]
+fn watch_parallel_once_and_max_units_cap_the_units_started() {
+    let e = Env::new();
+    two_ready(&e);
+    e.ready(4, "Fix c", &["type:fix"], "");
+    let v = e.run(&["watch", "--parallel", "3", "--max-units", "2"], 0);
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+    assert_eq!(v["stopped"], "max_units", "{v}");
+    assert!(!e.gh_calls().contains("issue edit 4"), "{}", e.gh_calls());
+    let v = e.run(&["watch", "--parallel", "3", "--once"], 0);
+    assert_eq!(by_issue(&units(&v)), each(&[4], "done"), "{v}");
+}
+
+#[test]
+fn watch_parallel_settles_the_other_unit_when_one_ends_without_a_result() {
+    let e = Env::new();
+    two_ready(&e);
+    // ns run can't name unit 2's worktree without its issue, and fails.
+    fs::remove_file(e.ghd.join("issue-2.json")).unwrap();
+    let out = e.ns().args(["watch", "--parallel", "2"]).output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert!(err.contains("cannot read issue #2"), "{err}");
+    assert!(err.contains("ns run --issue 2 ended with exit 2"), "{err}");
+    assert_eq!(e.labels(2), ["type:fix", "status:ready-for-agent"]);
+    let three = e.labels(3);
+    assert!(
+        !three
+            .iter()
+            .any(|l| l == "status:in-progress" || l == "status:ready-for-agent"),
+        "{three:?}"
+    );
+    // The summary still reports the unit that finished, and the error.
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|x| panic!("{x}: {err}"));
+    assert_eq!(v["stopped"], "error", "{v}");
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("ns run --issue 2 ended with exit 2"),
+        "{v}"
+    );
+    assert_eq!(by_issue(&units(&v)), each(&[3], "done"), "{v}");
+}
+
+#[test]
+fn watch_parallel_starts_an_issue_listed_twice_once() {
+    let e = Env::new();
+    // The listing shifted between pages and names #2 twice.
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    let v = e.run(&["watch", "--parallel", "2"], 0);
+    assert_eq!(by_issue(&units(&v)), each(&[2], "done"), "{v}");
+    assert_eq!(run_pids(&e).len(), 1, "{:?}", run_pids(&e));
+    let calls = e.gh_calls();
+    assert_eq!(
+        calls.matches("--add-label status:in-progress").count(),
+        1,
+        "{calls}"
+    );
+}
+
+#[test]
+fn cleanup_between_units_leaves_the_worktree_of_a_unit_still_running() {
+    let e = Env::new();
+    // Unit 3's worktree looks merged to cleanup once its setup starts: issue closed, PR merged.
+    unit_with_pr(&e, 3, "3-done", 30, "OPEN", "OPEN");
+    e.ready(3, "done", &["type:fix"], "");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    let entered = e.ctrl.join("entered-setup");
+    let go = e.ctrl.join("go-setup");
+    mkfifo(&entered);
+    mkfifo(&go);
+    let setup = format!(
+        "if [ \"$NS_UNIT\" = 3-done ]; then sed -i 's/OPEN/CLOSED/' \"$FAKE_GH_DIR/issue-3.json\"; \
+         echo MERGED > \"$FAKE_GH_DIR/pr-30.state\"; echo in > {entered:?}; cat {go:?} > /dev/null; fi"
+    );
+    e.factory(&format!("[worktree]\nsetup = [{setup:?}]\n"));
+    let mut w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
+    // Unit 3 holds its run lock in setup while unit 2 runs to its end and cleanup runs after it.
+    w.entered(&entered);
+    w.line("ns watch: #2 done (worker");
+    let looked = e.ctrl.join("looked");
+    mkfifo(&looked);
+    e.gh_file(
+        "hook.sh",
+        &format!(
+            "[ \"$*\" = \"pr view 30 --json state,headRefOid,headRefName,body\" ] && echo x > {looked:?}\n"
+        ),
+    );
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(fs::read_to_string(&looked));
+    });
+    w.g.recv(&rx).unwrap();
+    fs::remove_file(e.ghd.join("hook.sh")).unwrap();
+    release(&go);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    // The worktree went only after unit 3's run ended and let its lock go.
+    let ended = event_at(&e, |v| v["event"] == "end" && v["unit"] == "3-done");
+    let cleaned = event_at(&e, |v| v["event"] == "cleanup" && v["unit"] == "3-done");
+    assert!(ended < cleaned, "{:?}", run_events(&e));
+    assert_eq!(v["cleaned"], serde_json::json!(["3-done"]), "{v}");
+}
+
+/// Both units mid build when `sig` reaches `ns watch` (its process group, when `group`): every
+/// unit goes back to the queue and no process it started outlives it.
+fn assert_a_stop_requeues_every_running_unit(sig: i32, group: bool, name: &str) {
+    let e = Env::new();
+    two_ready(&e);
+    let (in_a, _go_a) = hold_phase(&e, A, "build");
+    let (in_b, _go_b) = hold_phase(&e, B, "build");
+    let w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
+    let harnesses = [w.entered(&in_a), w.entered(&in_b)];
+    w.signal(sig, group);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(128 + sig), "{err}");
+    assert_eq!(v["stopped"], name, "{v}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "interrupted"), "{v}");
+    for n in [2, 3] {
+        assert_eq!(e.labels(n), ["type:fix", "status:ready-for-agent"]);
+    }
+    let runs: Vec<String> = run_pids(&e).iter().map(|(_, p)| p.to_string()).collect();
+    assert_eq!(runs.len(), 2, "{err}");
+    for pid in harnesses.iter().chain(&runs) {
+        assert!(exits(pid), "process {pid} outlived ns watch: {err}");
+    }
+    let ends = run_events(&e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "end" && ev["outcome"] == "interrupted")
+        .count();
+    assert_eq!(ends, 2, "{err}");
+}
+
+#[test]
+fn sigterm_returns_every_running_unit_to_the_queue() {
+    assert_a_stop_requeues_every_running_unit(libc::SIGTERM, false, "SIGTERM");
+}
+
+#[test]
+fn ctrl_c_returns_every_running_unit_to_the_queue() {
+    assert_a_stop_requeues_every_running_unit(libc::SIGINT, true, "SIGINT");
+}
+
 /// A night directory as `ns watch` writes it, with `spend` already spent and the hold `hold`.
 fn night_dir(e: &Env, spend: f64, hold: Option<i64>) -> PathBuf {
     let dir = e.base.join("night");
@@ -6234,4 +6931,37 @@ fn a_run_in_a_night_stops_before_a_phase_while_a_hold_lasts() {
         0,
     );
     assert_eq!(v["outcome"], "done", "{v}");
+}
+
+#[test]
+fn cleanup_at_a_resume_leaves_the_worktree_of_the_paused_unit() {
+    let e = Env::new();
+    // Unit 2's worktree has a PR from an earlier night; a human merges it during the pause.
+    unit_with_pr(&e, 2, A, 20, "OPEN", "OPEN");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("reset", &(NOW + 3600).to_string());
+    e.queue(&format!("triage.{A}"), &["limit"]);
+    let (entered, go) = hold_phase(&e, A, "triage");
+    let w = Watching::start(e.ns().args(["watch", "--once", "--until", "06:30"]));
+    w.entered(&entered);
+    e.issue(2, "Fix a", "CLOSED");
+    e.gh_file("pr-20.state", "MERGED");
+    release(&go);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    let us = units(&v);
+    assert_eq!(us[0]["outcome"], "paused", "{v}");
+    assert_eq!(us[1]["issue"], 2, "{v}");
+    // The unit resumed in its own worktree; cleanup removed it only once the unit had ended.
+    let starts: Vec<usize> = run_events(&e)
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v["event"] == "worker_start" && v["issue"] == 2)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(starts.len(), 2, "{err}");
+    let removed = run_events(&e)
+        .iter()
+        .position(|v| v["event"] == "cleanup" && v["unit"] == A && v["removed"] == true);
+    assert!(removed.is_none_or(|r| r > starts[1]), "{:?}", run_events(&e));
 }

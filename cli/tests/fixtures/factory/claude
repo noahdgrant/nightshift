@@ -1,6 +1,7 @@
 #!/bin/bash
 # Fake harness for ns run tests. Reads the phase from the prompt, pops the next action from
-# $FAKE_CTRL/<phase> (default: pass) and writes that phase's artifact.
+# $FAKE_CTRL/<phase>.<unit>, else $FAKE_CTRL/<phase> (default: pass) and writes that phase's
+# artifact.
 #   action = status[:extra]; status: pass | fail | blocked | none | limit | session | crash
 #   extra:   commit | push | merge | script | any text (lands in the body, e.g. "review")
 #   commit and push append to work.txt, or run $FAKE_CTRL/edit instead when it exists
@@ -10,6 +11,9 @@
 #   $FAKE_CTRL/<phase>.body, when it exists, is appended to the artifact body
 #   ship's pr.md names PR $FAKE_CTRL/pr-$NS_UNIT, else $FAKE_CTRL/pr, else none
 #   sleep writes the artifact last, then execs sleep so a short timeout kills it with no orphan
+#   the usage limit's reset time is $FAKE_CTRL/reset.<unit>, else $FAKE_CTRL/reset
+#   a fifo $FAKE_CTRL/entered-<unit>-<phase> holds the phase before its action: the harness
+#   writes its pid there, then waits for a line on $FAKE_CTRL/go-<unit>-<phase>, once
 set -e
 ctrl="$FAKE_CTRL"
 prompt=$(cat)
@@ -24,16 +28,25 @@ printf '%s\n' "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >> "$ctrl/bgwait"
 printf '%s\n' "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset}" >> "$ctrl/automem"
 [ -n "${ANTHROPIC_API_KEY:-}" ] && echo "ANTHROPIC_API_KEY" >> "$ctrl/leak"
 action=pass
-if [ -s "$ctrl/$phase" ]; then
-  action=$(head -1 "$ctrl/$phase")
-  sed -i 1d "$ctrl/$phase"
+q="$ctrl/$phase"
+[ -s "$ctrl/$phase.$NS_UNIT" ] && q="$ctrl/$phase.$NS_UNIT"
+if [ -s "$q" ]; then
+  action=$(head -1 "$q")
+  sed -i 1d "$q"
 fi
+held="$ctrl/entered-$NS_UNIT-$phase"
+if [ -p "$held" ]; then
+  echo $$ > "$held"
+  cat "$ctrl/go-$NS_UNIT-$phase" > /dev/null
+  rm -f "$held" "$ctrl/go-$NS_UNIT-$phase"
+fi
+rf="$ctrl/reset"; [ -s "$ctrl/reset.$NS_UNIT" ] && rf="$ctrl/reset.$NS_UNIT"
 status=${action%%:*}
 extra=""
 [ "$status" != "$action" ] && extra=${action#*:}
 if [ "$status" = session ]; then
   # The shape claude -p emits for a subscription session limit: structured fields, no "usage limit" text.
-  printf '{"type":"assistant","error":"rate_limit","api_error_params":{"rate_limit_info":{"status":"rejected","resetsAt":%s}}}\n' "$(cat "$ctrl/reset")"
+  printf '{"type":"assistant","error":"rate_limit","api_error_params":{"rate_limit_info":{"status":"rejected","resetsAt":%s}}}\n' "$(cat "$rf")"
   printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"api_error":"usage_limit_reached","result":"You have hit your session limit - resets 3am"}\n'
   exit 1
 fi
@@ -41,7 +54,7 @@ if [ "$status" = crash ]; then
   exit 1
 fi
 if [ "$status" = limit ]; then
-  printf '{"type":"result","is_error":true,"result":"Claude AI usage limit reached|%s"}\n' "$(cat "$ctrl/reset")"
+  printf '{"type":"result","is_error":true,"result":"Claude AI usage limit reached|%s"}\n' "$(cat "$rf")"
   exit 1
 fi
 case $phase in
