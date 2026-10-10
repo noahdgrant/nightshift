@@ -23,6 +23,11 @@ def test_adding_an_item_twice_is_rejected(warehouse):
         warehouse.add_item("BOLT-M6", "duplicate")
 
 
+def test_sku_with_lowercase_letters_is_rejected():
+    with pytest.raises(ValueError, match="invalid sku"):
+        Warehouse().add_item("bolt-m6", "M6 hex bolt")
+
+
 def test_receive_adds_to_stock_on_hand(warehouse):
     assert warehouse.receive("BOLT-M6", 5) == 15
     assert warehouse.on_hand("BOLT-M6") == 15

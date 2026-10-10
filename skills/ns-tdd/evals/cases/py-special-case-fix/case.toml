@@ -1,0 +1,87 @@
+description = "Seeded defect (d): Item accepts only two-part SKUs (`[A-Z]+-[A-Z0-9]+`), narrower than the GLOSSARY rule. The report names one three-part SKU, so the tempting fix allows exactly that shape; a hidden acceptance test covers the general rule."
+fixture = "py-inventory"
+# ns-tdd links to these skills by relative path (ns-contract for the quality bar, and the principles it and the bar name); ship them with it so the links resolve in the "with" arm.
+skills = ["ns-tdd", "ns-principle-test-behavior-not-implementation", "ns-principle-sequence-verifiable-units", "ns-principle-fix-root-causes", "ns-contract"]
+extra_skills = []
+requires = []
+timeout_minutes = 15
+prompt = """
+Bug from goods-in: the supplier's new long bolts come with SKU BOLT-M6-40, and `inventory add-item BOLT-M6-40 "M6x40 hex bolt"` is refused with "invalid sku 'BOLT-M6-40'". BOLT-M6 itself still works. We can't book the delivery until the item exists.
+
+Fix it test-first. gates: auto. Nobody is around to answer questions, so take the seams from this report and carry on. Don't commit.
+"""
+
+[setup]
+# Keep any .ns/ phase artifacts out of git so diff_scope only sees source and test changes.
+commands = ["mkdir -p .git/info && echo '.ns/' >> .git/info/exclude"]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**"]
+
+[[check]]
+# Hidden acceptance test, written outside the repo so the agent never sees it. It covers the
+# GLOSSARY rule (one or more parts of uppercase letters and digits, joined by single hyphens),
+# not just the reported SKU: a fix that only allows a third part fails the one-part, four-part and
+# digit-first SKUs, and a fix that drops the check fails the malformed ones.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_sku_acceptance.py" <<'PYEOF'
+from datetime import datetime
+
+import pytest
+
+from inventory import Warehouse
+from inventory.cli import main
+
+T0 = datetime(2026, 4, 1, 10, 0)
+
+
+@pytest.mark.parametrize(
+    "sku",
+    ["BOLT-M6-40", "WASHER", "HEX-BOLT-M6-40", "M6-40", "A-B-C-D-E", "BRACKET-2X4-L-ZN", "12-7"],
+)
+def test_sku_following_the_rule_is_accepted(sku):
+    w = Warehouse()
+    w.add_item(sku, "part")
+    w.receive(sku, 7)
+    assert w.reserve(sku, 3, now=T0).quantity == 3
+    assert w.available(sku, T0) == 4
+
+
+@pytest.mark.parametrize(
+    "sku",
+    ["bolt-m6-40", "BOLT-m6", "BOLT--M6", "-BOLT-M6", "BOLT-M6-", "BOLT M6", "BOLT_M6", "BOLT-M6.40"],
+)
+def test_sku_breaking_the_rule_is_rejected(sku):
+    with pytest.raises(ValueError):
+        Warehouse().add_item(sku, "part")
+
+
+def test_cli_books_a_delivery_of_the_reported_item(tmp_path, capsys):
+    base = ["--state", str(tmp_path / "inv.json"), "--now", "2026-04-01T10:00:00"]
+    assert main([*base, "add-item", "BOLT-M6-40", "M6x40 hex bolt"]) == 0
+    assert main([*base, "receive", "BOLT-M6-40", "50"]) == 0
+    assert main([*base, "reserve", "BOLT-M6-40", "20"]) == 0
+    capsys.readouterr()
+    assert main([*base, "status", "BOLT-M6-40"]) == 0
+    row = capsys.readouterr().out.splitlines()[1].split()
+    assert row == ["BOLT-M6-40", "50", "20", "30"]
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_sku_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Did the change fix the root cause by making the SKU check match the documented rule (GLOSSARY.md: one or more parts of uppercase letters and digits, joined by single hyphens) rather than allowing just the reported SKU or its three-part shape, or dropping the check? Do the new tests go beyond the reported SKU (other part counts, and at least one SKU that must still be rejected), through the public Warehouse or CLI interface?"
+required = false
