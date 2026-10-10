@@ -232,6 +232,31 @@ def test_status_prints_every_item_in_sku_order(inv, capsys):
     )
 
 
+def test_status_with_a_sku_lists_only_that_sku(inv, capsys):
+    assert inv("add-item", "NUT-M6", "M6 hex nut") == 0
+    stocked(inv, capsys)
+    assert inv("receive", "NUT-M6", "4") == 0
+    capsys.readouterr()
+    assert inv("status", "BOLT-M6") == 0
+    assert capsys.readouterr().out == (
+        "SKU           ON HAND RESERVED AVAILABLE\n"
+        "BOLT-M6            10        0        10\n"
+    )
+
+
+def test_status_of_an_unknown_sku_fails_and_saves_nothing(inv, capsys):
+    assert inv("status", "NOPE") == 1
+    captured = capsys.readouterr()
+    assert captured.err == "inventory: error: unknown item 'NOPE'\n"
+    assert captured.out == ""
+    assert not inv.state.exists()
+    stocked(inv, capsys)
+    os.utime(inv.state, ns=(0, 0))
+    assert inv("status", "NOPE") == 1
+    assert capsys.readouterr().err == "inventory: error: unknown item 'NOPE'\n"
+    assert inv.state.stat().st_mtime_ns == 0
+
+
 def test_status_never_writes_the_state_file(inv, capsys):
     assert inv("status") == 0
     assert not inv.state.exists()
