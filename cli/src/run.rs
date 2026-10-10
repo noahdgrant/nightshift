@@ -1,6 +1,6 @@
 //! `ns run`: drive one unit through the phases (docs/FACTORY.md).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1055,7 +1055,8 @@ impl Loaded {
             "config": file_hash(&cfg_path),
             "factory": file_hash(&root.join(factory::FILE)),
         });
-        let gate = gate::command(&fac, &repo.root);
+        let ns = std::env::current_exe().context("cannot find the ns binary")?;
+        let gate = gate::command(&fac, &repo.root, &ns);
         let cap = match fac.limits.memory_mb.filter(|mb| *mb > 0 && !dry_run) {
             Some(mb) => {
                 let cap = memcap::detect(mb)?;
@@ -1420,6 +1421,8 @@ fn drive(
     let subscription = fac.subscription();
     let mut attempts: BTreeMap<&'static str, u32> = BTreeMap::new();
     let mut last_failure: BTreeMap<&'static str, String> = BTreeMap::new();
+    let mut reruns: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let mut passed: BTreeSet<&'static str> = BTreeSet::new();
     let from = args
         .triage_only
         .then_some("triage")
@@ -1497,7 +1500,12 @@ fn drive(
         };
         let p = fac.phase(phase);
         let attempt = attempts.get(phase).copied().unwrap_or(0) + 1;
-        if attempt > p.max_attempts {
+        // The first run of a verify or review after it passed fails nothing: HEAD moved under
+        // it. Ship moves HEAD, so its attempts still bound a ship that changes the diff each time.
+        if matches!(phase, "verify" | "review") && passed.remove(phase) {
+            *reruns.entry(phase).or_default() += 1;
+        }
+        if attempt - reruns.get(phase).copied().unwrap_or(0) > p.max_attempts {
             let mut reason = format!("{phase} is out of attempts ({})", p.max_attempts);
             if let Some(t) = last_failure.get(phase) {
                 reason.push_str(&format!(": {t}"));
@@ -1668,6 +1676,9 @@ fn drive(
         }
         let art = read_art(&art_path);
         let written = art.is_some();
+        if art.as_ref().is_some_and(|a| a.status == "pass") {
+            passed.insert(phase);
+        }
         if !written {
             restore(&moves);
         }
