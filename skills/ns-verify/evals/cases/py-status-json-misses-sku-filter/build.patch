@@ -1,0 +1,111 @@
+diff --git a/src/inventory/cli.py b/src/inventory/cli.py
+index 38ae3ed..29616d7 100644
+--- a/src/inventory/cli.py
++++ b/src/inventory/cli.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import argparse
++import json
+ import sys
+ from datetime import datetime, timedelta
+ from pathlib import Path
+@@ -66,10 +67,27 @@ def build_parser() -> argparse.ArgumentParser:
+ 
+     p = sub.add_parser("status", help="show stock levels")
+     p.add_argument("sku", nargs="?", default=None)
++    p.add_argument("--json", action="store_true", help="print the levels as a JSON array")
+ 
+     return parser
+ 
+ 
++def _status_json(warehouse: Warehouse, sku: str | None, now: datetime) -> str:
++    if sku is not None:
++        warehouse.item(sku)
++    return json.dumps(
++        [
++            {
++                "sku": lvl.sku,
++                "on_hand": lvl.on_hand,
++                "reserved": lvl.reserved,
++                "available": lvl.available,
++            }
++            for lvl in warehouse.stock_levels(now)
++        ]
++    )
++
++
+ def _status(warehouse: Warehouse, sku: str | None, now: datetime) -> list[str]:
+     levels = warehouse.stock_levels(now)
+     if sku is not None:
+@@ -104,8 +122,11 @@ def run(args: argparse.Namespace, out: TextIO | None = None) -> None:
+         print(f"fulfilled {r.id}: {r.quantity} x {r.sku}", file=out)
+     elif args.command == "status":
+         changed = False
+-        for line in _status(warehouse, args.sku, now):
+-            print(line, file=out)
++        if args.json:
++            print(_status_json(warehouse, args.sku, now), file=out)
++        else:
++            for line in _status(warehouse, args.sku, now):
++                print(line, file=out)
+ 
+     if changed:
+         storage.save(warehouse, args.state)
+diff --git a/tests/test_cli_status_json.py b/tests/test_cli_status_json.py
+new file mode 100644
+index 0000000..29f734c
+--- /dev/null
++++ b/tests/test_cli_status_json.py
+@@ -0,0 +1,51 @@
++import json
++
++import pytest
++
++from inventory.cli import main
++
++
++@pytest.fixture
++def inv(tmp_path):
++    state = tmp_path / "inventory.json"
++
++    def run(*args: str) -> int:
++        return main(["--state", str(state), "--now", "2026-03-02T09:00:00", *args])
++
++    return run
++
++
++def stock(inv, capsys):
++    inv("add-item", "NUT-M6", "M6 hex nut")
++    inv("receive", "NUT-M6", "3")
++    capsys.readouterr()
++
++
++def test_status_json_lists_every_item_in_sku_order(inv, capsys):
++    inv("add-item", "NUT-M6", "M6 hex nut")
++    inv("add-item", "BOLT-M6", "M6 hex bolt")
++    inv("receive", "BOLT-M6", "10")
++    inv("receive", "NUT-M6", "3")
++    inv("reserve", "BOLT-M6", "4")
++    capsys.readouterr()
++    assert inv("status", "--json") == 0
++    assert json.loads(capsys.readouterr().out) == [
++        {"sku": "BOLT-M6", "on_hand": 10, "reserved": 4, "available": 6},
++        {"sku": "NUT-M6", "on_hand": 3, "reserved": 0, "available": 3},
++    ]
++
++
++def test_status_json_for_one_sku(inv, capsys):
++    stock(inv, capsys)
++    assert inv("status", "--json", "NUT-M6") == 0
++    assert json.loads(capsys.readouterr().out) == [
++        {"sku": "NUT-M6", "on_hand": 3, "reserved": 0, "available": 3},
++    ]
++
++
++def test_status_json_for_unknown_sku_fails(inv, capsys):
++    stock(inv, capsys)
++    assert inv("status", "--json", "SCREW-M3") == 1
++    captured = capsys.readouterr()
++    assert captured.out == ""
++    assert captured.err.strip() == "inventory: error: unknown item 'SCREW-M3'"
