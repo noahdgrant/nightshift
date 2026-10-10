@@ -230,6 +230,8 @@ ns watch [--once] [--until HH:MM] [--max-units N] [--dry-run] [--factory <dir>]
 7. On `paused`, keep `in_progress_label` and sleep until the reset time (30 minutes when unknown, then check again), then resume the same unit. If the reset is at or past `--until`, put `ready_label` back and stop cleanly.
 8. Repeat until the queue is empty, `--until` passes (no new unit starts after it), `max_units` is reached, or the budget is spent.
 
+`--until HH:MM` is local time, from `TZ` or the system zone, so `06:30` means 06:30 where `ns watch` runs, across DST changes. Every time `ns watch` prints for a person (`until`, `reset_at`, the "sleeping until" line) is local, in RFC 3339 form with its offset: `2026-10-09T06:30:00-04:00`. The `ts` of each event in `runs.jsonl` stays UTC (`...Z`).
+
 ### Triage pass
 
 Review files escapes and follow-ups as `needs-triage` issues, and only `ready_label` issues are queued, so before each unit `ns watch` triages what nobody has yet:
@@ -271,11 +273,6 @@ An escape counts only as an escape: it never makes a unit's first pass dirty, ne
 
 The numbers need the finding fields `ns-review` writes: `Axis`, `Scope`, `Cycle` and `Status`. Older artifacts lack some of them, so `ns quality` falls back:
 
-<<<<<<< ours
-`--until HH:MM` is local time, from `TZ` or the system zone, so `06:30` means 06:30 where `ns watch` runs, across DST changes. Every time `ns watch` prints for a person (`until`, `reset_at`, the "sleeping until" line) is local, in RFC 3339 form with its offset: `2026-10-09T06:30:00-04:00`. The `ts` of each event in `runs.jsonl` stays UTC (`...Z`).
-
-An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (unix seconds) pins the clock for tests; sleeps then advance it instead of blocking. Output: `{units:[{issue, unit, outcome, reason, pr, cost_usd, reset_at}], stopped, until, cost_usd, started_with}`; `reset_at` only on a paused unit, `until` null without `--until`.
-=======
 - No `Axis`: the axes named in `Raised by`.
 - No `Cycle`: a finding is first-pass when the attempt ran 0 fix cycles, or when it was `fixed (cycle 1, ...)`. Otherwise the first pass's cycle file (`cycle-0.md` or `cycle-1.md`) is its record, counted from the ids it lists and the axes on their lines; its ids are not matched against `review.md`, because old artifacts reuse ids across passes. With neither, a unit with fix cycles still counts as dirty, because fix cycles only run for an open Critical or Important, but it is left out of the per-100-lines numbers.
 - No `Scope`: not an escape.
@@ -283,7 +280,6 @@ An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (un
 - No `Change size:` in the Summary: `git diff --shortstat <base>...<head> -- . ':!.ns'` from the frontmatter shas.
 - A heading such as `### I1-I7 (cycle 1). ...` is seven findings sharing its fields. One-line `- S1. ... (axis). Open.` items inside a severity section are findings too.
 - A first attempt that ended without `pass` and lists no findings (a reviewer slice couldn't run, a timeout) has an unknown first pass, not a clean one.
->>>>>>> theirs
 
 These are heuristics. A finding's severity comes from its id, so an `I5` noted as downgraded to a Suggestion still counts as Important, and a first-pass cycle file's ids all count, including any it lists as dismissed. An archived attempt's cycle files are read from `history/<stem>/` when present; `ns run` archives only `review.md`, so usually only the newest attempt has them.
 
