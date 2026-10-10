@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use crate::error::{SfError, EXIT_HARNESS_MISSING};
+use crate::install::symlink;
 
 use super::spec::Case;
 
@@ -93,17 +94,6 @@ pub fn copy_dir(src: &Path, dst: &Path, skip: &dyn Fn(&Path) -> bool) -> Result<
         }
     }
     Ok(())
-}
-
-#[cfg(unix)]
-fn symlink(target: &Path, link: &Path) -> Result<()> {
-    std::os::unix::fs::symlink(target, link)
-        .with_context(|| format!("cannot link {} -> {}", link.display(), target.display()))
-}
-
-#[cfg(not(unix))]
-fn symlink(_target: &Path, link: &Path) -> Result<()> {
-    anyhow::bail!("symlinks are not supported here: {}", link.display())
 }
 
 /// Throwaway home with `skills` copied into `.claude/skills` and `.agents/skills`, and the
