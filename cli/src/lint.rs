@@ -28,28 +28,45 @@ pub struct Report {
     pub errors: Vec<LintError>,
 }
 
-/// `owner/repo@hex:path`, hex being 7 to 40 lowercase hex digits.
-pub fn valid_upstream(s: &str) -> bool {
-    let Some((repo, rest)) = s.split_once('@') else {
-        return false;
-    };
-    let Some((sha, path)) = rest.split_once(':') else {
-        return false;
-    };
-    let Some((owner, name)) = repo.split_once('/') else {
-        return false;
-    };
+/// One parsed `metadata.upstream` entry: `owner/repo@sha:path`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upstream<'a> {
+    /// `owner/repo`.
+    pub repo: &'a str,
+    pub sha: &'a str,
+    pub path: &'a str,
+}
+
+/// Parse `owner/repo@hex:path`, hex being 7 to 40 lowercase hex digits.
+pub fn parse_upstream(s: &str) -> Option<Upstream<'_>> {
+    let (repo, rest) = s.split_once('@')?;
+    let (sha, path) = rest.split_once(':')?;
+    let (owner, name) = repo.split_once('/')?;
     let ident = |x: &str| {
         !x.is_empty()
             && x.chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     };
-    ident(owner)
+    let valid = ident(owner)
         && ident(name)
         && (7..=40).contains(&sha.len())
         && sha.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
         && !path.is_empty()
-        && !path.chars().any(char::is_whitespace)
+        && !path.chars().any(char::is_whitespace);
+    valid.then_some(Upstream { repo, sha, path })
+}
+
+pub fn valid_upstream(s: &str) -> bool {
+    parse_upstream(s).is_some()
+}
+
+/// The `metadata.upstream` entries of parsed frontmatter: a single value or a list.
+pub fn upstream_entries(fm: &Value) -> Vec<&Value> {
+    match fm.get("metadata").and_then(|m| m.get("upstream")) {
+        None => Vec::new(),
+        Some(Value::Sequence(s)) => s.iter().collect(),
+        Some(v) => vec![v],
+    }
 }
 
 /// Check frontmatter of one SKILL.md. Returns messages (no skill/file context).
@@ -97,19 +114,13 @@ pub fn check_frontmatter(dir_name: &str, text: &str) -> Vec<String> {
         errs.push("disable-model-invocation: true is required".into());
     }
 
-    if let Some(up) = fm.get("metadata").and_then(|m| m.get("upstream")) {
-        let entries: Vec<&Value> = match up {
-            Value::Sequence(s) => s.iter().collect(),
-            v => vec![v],
-        };
-        for e in entries {
-            match e.as_str() {
-                Some(s) if valid_upstream(s) => {}
-                Some(s) => errs.push(format!(
-                    "metadata.upstream {s:?} must look like owner/repo@<hex sha>:path"
-                )),
-                None => errs.push("metadata.upstream entries must be strings".into()),
-            }
+    for e in upstream_entries(&fm) {
+        match e.as_str() {
+            Some(s) if valid_upstream(s) => {}
+            Some(s) => errs.push(format!(
+                "metadata.upstream {s:?} must look like owner/repo@<hex sha>:path"
+            )),
+            None => errs.push("metadata.upstream entries must be strings".into()),
         }
     }
     errs
@@ -307,6 +318,14 @@ mod tests {
         assert!(!valid_upstream("cursor/plugins@ccb5507cec15"));
         assert!(!valid_upstream("plugins@ccb5507cec15:x"));
         assert!(!valid_upstream("cursor/plugins@ABCDEF0:x"));
+        assert_eq!(
+            parse_upstream("a/b@1234567:p/q.md"),
+            Some(Upstream {
+                repo: "a/b",
+                sha: "1234567",
+                path: "p/q.md"
+            })
+        );
         let list = "---\nname: ns-a\ndescription: x\nmetadata:\n  upstream:\n    - a/b@1234567:p\n    - a/b@nothex:p\n---\n";
         let e = check_frontmatter("ns-a", list);
         assert_eq!(e.len(), 1);
