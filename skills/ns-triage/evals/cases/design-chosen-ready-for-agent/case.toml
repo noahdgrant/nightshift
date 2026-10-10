@@ -1,0 +1,77 @@
+description = "Near miss for design-choice-needs-define: the same stock movement history request, but the team reporter has chosen the mechanism (a movements list in the existing state file). Under gates: auto, triage should mark it ready-for-agent, append an Agent Brief that records the storage choice as settled by the reporter, and start one unit."
+fixture = "py-inventory"
+skills = ["ns-triage"]
+# Same skill set as bug-ready-for-agent: ns-build is not installed, so the auto hand-off stops at triage.
+extra_skills = ["ns-contract"]
+requires = []
+timeout_minutes = 15
+prompt = """
+Triage .scratch/stock-history/issues/01-stock-movement-history.md. gates: auto
+"""
+
+[[check]]
+type = "regex"
+path = ".scratch/stock-history/issues/01-stock-movement-history.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?ready-for-agent`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/stock-history/issues/01-stock-movement-history.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?(needs-triage|needs-define|needs-info|ready-for-human|wontfix|closed)'
+present = false
+
+[[check]]
+type = "regex"
+path = ".scratch/stock-history/issues/01-stock-movement-history.md"
+pattern = '(?m)^#+\s*Agent Brief'
+present = true
+
+[[check]]
+# The brief carries the reporter's storage choice.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, sys
+text = open(".scratch/stock-history/issues/01-stock-movement-history.md", encoding="utf-8").read()
+m = re.search(r"(?m)^#+\s*Agent Brief", text)
+if not m:
+    sys.exit("no Agent Brief heading")
+brief = text[m.end():]
+if not re.search(r"movements", brief) or not re.search(r"(?i)state[ -]file", brief):
+    sys.exit("the brief doesn't name the movements list in the state file")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# Exactly one unit started, with brief.md at status: pass, in a worktree or, tolerated, the main checkout.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, os, re, subprocess, sys
+roots = {os.getcwd()}
+out = subprocess.run(["git", "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+roots.update(l.split(" ", 1)[1] for l in out.splitlines() if l.startswith("worktree "))
+roots.update(glob.glob(os.path.join("..", os.path.basename(os.getcwd()) + ".worktrees", "*")))
+briefs = sorted({os.path.realpath(p) for r in roots for p in glob.glob(os.path.join(r, ".ns", "*", "brief.md"))})
+print("briefs:", briefs)
+if len({os.path.basename(os.path.dirname(p)) for p in briefs}) != 1:
+    sys.exit("expected exactly one unit's brief.md")
+text = open(briefs[0], encoding="utf-8").read()
+m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+fm = dict(re.findall(r"(?m)^(\w+):[ \t]*(.*?)[ \t]*(?:#.*)?$", m.group(1))) if m else {}
+if fm.get("status") != "pass" or "Agent Brief" not in text:
+    sys.exit(f"brief.md not at status: pass with an Agent Brief: {fm}")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]
+
+[[check]]
+type = "judge"
+rubric = "Read the Agent Brief appended to .scratch/stock-history/issues/01-stock-movement-history.md. Pass only if it states the storage mechanism (a movements list on each item in the existing state file) as settled and attributes that decision to the reporter, Sam, rather than to triage; it has testable acceptance criteria for recording receive and fulfil, for `inventory history <sku>`, and for loading older state files; and it has an out-of-scope section."
+required = false

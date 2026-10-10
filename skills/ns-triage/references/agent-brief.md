@@ -62,6 +62,8 @@ For enhancements, this is the status quo the feature builds on.
 Describe what should happen after the agent's work is complete.
 Be specific about edge cases and error conditions.
 
+**Decisions:** each settled design decision and who settled it, quoted (omit when none; see [design decisions](../SKILL.md#design-decisions))
+
 **Key interfaces:**
 - `ClassName`: what needs to change and why
 - `function_name()` return type: what it currently returns vs what it should return
