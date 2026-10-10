@@ -3,6 +3,9 @@
 **Item**: a stock-keeping unit the warehouse tracks, identified by its SKU.
 _Avoid_: product, article.
 
+**SKU**: an item's identifier. One or more parts of uppercase letters and digits, joined by single hyphens: `WASHER`, `BOLT-M6`, `BOLT-M6-40`.
+_Avoid_: part number, code.
+
 **On hand**: the physical quantity of an item in the warehouse. Only receiving and fulfilling change it.
 _Avoid_: in stock, inventory count.
 
