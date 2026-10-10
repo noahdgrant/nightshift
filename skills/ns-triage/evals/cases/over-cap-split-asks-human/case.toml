@@ -35,7 +35,7 @@ present = true
 [[check]]
 type = "regex"
 path = ".scratch/stock-admin/issues/01-stock-admin-commands.md"
-pattern = '(?is)Triage Notes.*(cap|too many|more than (5|five)|human)'
+pattern = '(?ims)^#+\s*Triage Notes.*(\bcap\b|too many|more than (5|five)|\bhuman\b)'
 present = true
 
 [[check]]

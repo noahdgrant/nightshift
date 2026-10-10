@@ -30,6 +30,7 @@ notes = open(parent_path, encoding="utf-8").read().split("Triage Notes", 1)[-1]
 children = sorted(p for p in glob.glob(".scratch/**/*.md", recursive=True)
                   if os.path.realpath(p) != os.path.realpath(parent_path) and "/issues/" in p)
 print("children:", children)
+sibling_nums = {int(re.match(r"\d+", os.path.basename(p)).group()) for p in children if re.match(r"\d+", os.path.basename(p))}
 if len(children) < 2:
     sys.exit("fewer than two child issues")
 for path in children:
@@ -38,11 +39,16 @@ for path in children:
     num = re.match(r"\d+", stem)
     if not num:
         sys.exit(f"{path}: file name has no numeric prefix")
+    blocked = re.search(r"(?m)^\**Blocked by:?\**:?(.*)$", text)
+    targets = {int(n) for n in re.findall(r"(?<!\d)\d+(?!\d)", blocked.group(1))} if blocked else set()
     checks = {
         "needs-triage": re.search(r"(?m)^\**Status:?\**:?\s*`?needs-triage`?\s*$", text),
         "Agent Brief": re.search(r"(?m)^#+\s*Agent Brief", text),
         "criteria": re.search(r"- \[ \]", text),
-        "listed in parent's Triage Notes": stem in notes or re.search(rf"(?<!\d)(?:{num.group()}|{int(num.group())})(?!\d)", notes),
+        "listed in parent's Triage Notes": stem in notes or path in notes,
+        "Reported by ... outside the team": re.search(r"(?mi)^\**Reported by:?\**:?.*outside the team", text),
+        "parent link": os.path.dirname(path) == os.path.dirname(parent_path) or re.search(r"(?m)^\**Part of:?\**:?.*01-low-stock-reordering", text),
+        "Blocked by names only siblings": targets <= sibling_nums - {int(num.group())},
     }
     missing = [k for k, v in checks.items() if not v]
     if missing:
