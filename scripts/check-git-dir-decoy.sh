@@ -30,8 +30,7 @@ g -c user.name=decoy -c user.email=decoy@localhost commit -q --allow-empty -m de
 g branch decoy-branch
 
 snapshot() {
-  cp "$decoy/.git/config" "$tmp/config.$1"
-  g for-each-ref > "$tmp/refs.$1"
+  cp "$decoy/.git/config" "$tmp/config.$1" && g for-each-ref > "$tmp/refs.$1"
 }
 
 snapshot before
@@ -39,7 +38,11 @@ snapshot before
 rc=0
 GIT_DIR="$decoy/.git" GIT_WORK_TREE="$decoy" "$@" || rc=$?
 
-snapshot after
+if ! snapshot after 2>/dev/null; then
+  echo "check-git-dir-decoy: the decoy repo was removed or unreadable: $decoy" >&2
+  [ "$rc" -eq 0 ] || echo "check-git-dir-decoy: command failed (exit $rc): $*" >&2
+  exit 1
+fi
 changed=0
 if ! diff -u "$tmp/config.before" "$tmp/config.after" >&2; then
   echo "check-git-dir-decoy: the decoy's .git/config changed" >&2

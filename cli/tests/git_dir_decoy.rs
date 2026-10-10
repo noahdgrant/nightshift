@@ -60,7 +60,10 @@ fn the_command_runs_from_the_repo_root() {
 #[test]
 fn each_kind_of_mutation_fails_naming_what_changed() {
     for (cmd, changed) in [
-        ("git config ns.touched 1", ".git/config"),
+        (
+            "git config ns.touched 1",
+            "check-git-dir-decoy: the decoy's .git/config changed",
+        ),
         ("git branch extra", "git for-each-ref"),
         (
             "git update-ref -d refs/heads/decoy-branch",
@@ -117,7 +120,7 @@ fn with_no_arguments_it_runs_cargo_test_on_the_cli_manifest_from_the_repo_root()
     fs::write(
         &stub,
         format!(
-            "#!/bin/sh\n{{ echo \"args=$*\"; echo \"pwd=$PWD\"; echo \"git_dir=$GIT_DIR\"; echo \"work_tree=$GIT_WORK_TREE\"; }} > '{}'\n",
+            "#!/bin/sh\n{{ echo \"args=$*\"; echo \"pwd=$PWD\"; echo \"git_dir=$GIT_DIR\"; echo \"work_tree=$GIT_WORK_TREE\"; echo \"top=$(git -C \"$GIT_WORK_TREE\" rev-parse --show-toplevel)\"; echo \"branch=$(git -C \"$GIT_WORK_TREE\" rev-parse --verify -q refs/heads/decoy-branch >/dev/null && echo yes)\"; [ -d \"$GIT_WORK_TREE\" ] && echo is_dir=yes; }} > '{}'\n",
             record.display()
         ),
     )
@@ -148,12 +151,54 @@ fn with_no_arguments_it_runs_cargo_test_on_the_cli_manifest_from_the_repo_root()
         "{rec}"
     );
     assert!(rec.contains(&format!("pwd={}\n", root.display())), "{rec}");
-    assert!(
-        rec.contains("git_dir=") && !rec.contains("git_dir=\n"),
-        "{rec}"
+    let field = |name: &str| {
+        rec.lines()
+            .find_map(|l| l.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("no {name} in {rec}"))
+            .to_string()
+    };
+    let (git_dir, work_tree) = (field("git_dir"), field("work_tree"));
+    assert!(!work_tree.is_empty(), "{rec}");
+    assert_eq!(git_dir, format!("{work_tree}/.git"), "{rec}");
+    assert_eq!(field("is_dir"), "yes", "{rec}");
+    assert_eq!(field("top"), work_tree, "{rec}");
+    assert_eq!(field("branch"), "yes", "{rec}");
+    for p in [&git_dir, &work_tree] {
+        assert!(
+            !Path::new(p).starts_with(&root),
+            "{p} is inside the repo: {rec}"
+        );
+    }
+}
+
+#[test]
+fn a_command_that_removes_the_decoy_or_its_config_fails_naming_the_decoy() {
+    for cmd in ["rm -rf \"$GIT_DIR\"", "rm \"$GIT_DIR/config\""] {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = run(&["sh", "-c", cmd], tmp.path(), &[]);
+        let err = stderr(&out);
+        assert_eq!(out.status.code(), Some(1), "{cmd}: {err}");
+        assert!(
+            err.contains("the decoy repo was removed or unreadable"),
+            "{cmd}: {err}"
+        );
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 0, "{cmd}");
+    }
+}
+
+#[test]
+fn a_command_that_removes_the_decoy_and_fails_reports_both() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = run(
+        &["sh", "-c", "rm -rf \"$GIT_DIR\"; exit 4"],
+        tmp.path(),
+        &[],
     );
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(1), "{err}");
     assert!(
-        rec.contains("work_tree=") && !rec.contains("work_tree=\n"),
-        "{rec}"
+        err.contains("the decoy repo was removed or unreadable"),
+        "{err}"
     );
+    assert!(err.contains("command failed (exit 4)"), "{err}");
 }
