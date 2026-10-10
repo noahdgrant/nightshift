@@ -84,7 +84,7 @@ Read the frontmatter of every artifact in `.ns/<unit-id>/`, skipping `history/`.
 
 Then two checks on P:
 
-- **Attempts.** Count P's lines in the run log after the last invocation marker, so each invocation gets fresh attempts. Two attempts per run unless the contract says otherwise. A P that has used them is stuck.
+- **Attempts.** Count P's lines in the run log after the last invocation marker, so each invocation gets fresh attempts. A verify or review line right after a P line that passed is free: HEAD moved under the pass, and the rerun failed nothing. Two attempts per run unless the contract says otherwise. A P that has used them is stuck.
 - **Push.** When P is ship and the contract grants no push, stop: an escape-hatch stop, reported as such.
 
 ### Archive and capture feedback
