@@ -25,7 +25,7 @@ When two official sources conflict, check which one holds against the detected v
 
 ## 3. Implement
 
-Use the signatures and patterns the docs show for that version. Avoid deprecated APIs. When the docs disagree with how the codebase already does it, follow the codebase and record the conflict under deviations or open risks in `build.md`. Where the docs say nothing, mark the code path as unverified there too.
+Use the signatures and patterns the docs show for that version. Avoid deprecated APIs. When the docs disagree with how the codebase already does it, follow the codebase and record the conflict under deviations, or as a `note:` open risk, in `build.md`. Where the docs say nothing, mark the code path as unverified there too.
 
 ## 4. Cite
 

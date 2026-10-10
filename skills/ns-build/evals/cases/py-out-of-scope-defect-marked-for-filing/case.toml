@@ -42,7 +42,6 @@ key = "status"
 equals = "pass"
 
 [[check]]
-# The stock_levels defect is an open risk marked for ns-ship to file.
 type = "command"
 run = '''
 python3 - <<'PYEOF'
@@ -51,11 +50,12 @@ text = open(".ns/4-low-stock/build.md", encoding="utf-8").read()
 m = re.search(r"(?ms)^## Open risks\s*$(.*?)(?=^## |\Z)", text)
 if not m:
     sys.exit("build.md has no ## Open risks section")
-for line in m.group(1).splitlines():
-    if (re.match(r"(?i)^\s*[-*]?\s*`?file:", line)
-            and "stock_levels" in line
-            and re.search(r"(?i)expir", line)):
-        print("found:", line.strip())
+blocks = re.split(r"(?m)^(?=\s{0,3}[-*]\s)", m.group(1))
+for block in blocks:
+    if (re.match(r"(?i)^\s*[-*]?\s*`?file:", block)
+            and "stock_levels" in block
+            and re.search(r"(?i)expir", block)):
+        print("found:", " ".join(block.split()))
         sys.exit(0)
 sys.exit("no open risk marked file: that names stock_levels counting expired reservations")
 PYEOF
@@ -63,13 +63,11 @@ PYEOF
 expect_exit = 0
 
 [[check]]
-# Out of scope: the defect stays where it was.
 type = "regex"
 path = "src/inventory/warehouse.py"
 pattern = "(?m)^        for r in self\\._reservations\\.values\\(\\):\\n            reserved_by_sku\\[r\\.sku\\] \\+= r\\.quantity$"
 
 [[check]]
-# Build marks risks for filing; ns-ship files them, so build files nothing.
 type = "command"
 run = "test -z \"$(find .scratch -name '*.md' 2>/dev/null)\""
 expect_exit = 0

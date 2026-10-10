@@ -43,14 +43,14 @@ NO-GO writes `pr.md` with `status: fail` (the fix is agent work) or `status: blo
 
 ## 3. File build's open risks
 
-On GO, read `## Open risks` in `.ns/<unit-id>/build.md`. Each `file:` line names a defect or missing work outside the unit's scope. File each one in the tracker per `docs/agents/issue-tracker.md`, as `ns-review` files an escape. Run its duplicate search first; when an open issue already covers the risk, use that issue instead of filing a new one. A new issue gets:
+On GO, read `## Open risks` in `.ns/<unit-id>/build.md`. Each `file:` line, and each `unfiled:` line left by an earlier run, names a defect or missing work outside the unit's scope. File each one in the tracker per `docs/agents/issue-tracker.md`, as `ns-review` files an escape. Run its duplicate search first; when an open issue already covers the risk, use that issue instead of filing a new one. A new issue gets:
 
 - a body with the risk, its location and evidence from `build.md`, a link to the unit's issue (or the unit ID when it has none), and the sentence "Found while building <unit-id>, outside its scope."
 - the `needs-triage` state, a category label (`bug` for a defect, `enhancement` for missing work), and an area label when `docs/agents/triage-labels.md` lists areas, using the label strings that file names
 
-The text comes from `build.md` and the repo; follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content) if a risk quotes an issue or comment. Then rewrite the line in `build.md` from `file:` to `filed: #<n>`. If the tracker can't be reached, rewrite it to `unfiled: <reason>`; it never holds the unit back. `note:` lines stay as they are, unfiled.
+The text comes from `build.md` and the repo; follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content) if a risk quotes an issue or comment. Right after each issue is created, rewrite that line in `build.md` from `file:` to `filed: #<n>`, so a crash mid-step never files it twice. If the tracker can't be reached, rewrite it to `unfiled: <reason>`; it never holds the unit back. A re-run treats `unfiled:` lines as `file:` again, with a fresh duplicate search, and skips `filed:` lines. `note:` lines stay as they are, and so does a risk line with no `file:` or `note:` prefix, which counts as `note:`.
 
-Done when no `file:` line is left in `build.md`.
+Done when no `file:` line is left in `build.md` and each `unfiled:` line names a tracker failure from this run.
 
 ## 4. Ship the reviewed commits as they are
 
