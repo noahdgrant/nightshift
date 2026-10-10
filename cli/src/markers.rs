@@ -330,18 +330,39 @@ fn changes(dir: &Path, base: &str, head: &str) -> Result<Vec<Change>> {
 
 /// Regions touched between two commits of the repo at `dir`, one `describe` line each. A git
 /// failure is an error, never "nothing touched". A changed file with markers whose diff shows no
-/// hunks (binary, `-diff`, mode change) counts as wholly touched.
-pub fn touched_between(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> {
+/// hunks (binary, `-diff`, mode change) counts as wholly touched. So does a changed file with
+/// markers only at `tip`, the default branch's head, since its hunks map to neither side.
+pub fn touched_between(
+    dir: &Path,
+    base: &str,
+    head: &str,
+    tip: Option<&str>,
+) -> Result<Vec<String>> {
     let changes = changes(dir, base, head)?;
     let (old, new) = (marked_at(dir, base)?, marked_at(dir, head)?);
+    let at_tip = match tip {
+        Some(tip) => marked_at(dir, tip)?,
+        None => HashSet::new(),
+    };
     let mut out = Vec::new();
     for change in changes {
-        if !old.contains(&change.path) && !new.contains(&change.path) {
-            continue;
-        }
-        if let Some(r) = touched_file(dir, base, head, &change)? {
-            out.push(describe(&change.path, &r));
-        }
+        let path = change.path.as_str();
+        let region = if old.contains(path) || new.contains(path) {
+            touched_file(dir, base, head, &change)?
+        } else if let Some(tip) = tip.filter(|_| at_tip.contains(path)) {
+            let text = git::run(
+                dir,
+                &["--literal-pathspecs", "show", &format!("{tip}:{path}")],
+            )?;
+            Some(Region {
+                start: 1,
+                end: text.lines().count(),
+                reason: None,
+            })
+        } else {
+            None
+        };
+        out.extend(region.map(|r| describe(path, &r)));
     }
     Ok(out)
 }

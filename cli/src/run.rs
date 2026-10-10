@@ -1749,7 +1749,7 @@ fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
     let _ = git::run(wt, &["fetch", "-q", "origin", default]);
     let base = git::run(wt, &["merge-base", "HEAD", &format!("origin/{default}")])
         .or_else(|_| git::run(wt, &["merge-base", "HEAD", default]))?;
-    markers::touched_between(wt, &base, "HEAD")
+    markers::touched_between(wt, &base, "HEAD", None)
 }
 
 #[cfg(test)]
