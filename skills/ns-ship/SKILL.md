@@ -54,9 +54,9 @@ Done when no `file:` line is left in `build.md` and each `unfiled:` line names a
 
 ## 4. Ship the reviewed commits as they are
 
-Leave the history alone. Don't rebase, squash, reorder or amend: `review.md` and `evidence.md` vouch for these exact commits, and any rewrite makes them stale, so the unit can't merge. `ns-build` already shaped the history and rebased onto the base before review.
+Leave the history alone. Don't rebase, squash, reorder or amend: `ns-build` already shaped the history and rebased onto the base before review, and published commits stay as they are.
 
-If the base moved since review, leave that too. `ns run`'s merge step updates the branch after checking the review, and babysit merges the base for conflicts.
+If the base moved since review, leave that too. `ns run`'s merge step updates the branch after checking the review, and babysit merges the base in for conflicts. Ship merges the base, never rebases onto it. `review.md` and `evidence.md` vouch for the unit's own diff, so they stay current across a merge that leaves the unit's lines alone. A merge that resolves a conflict in the unit's lines changes that diff and sends the unit back through verify and review.
 
 ## 5. Write the PR body
 
