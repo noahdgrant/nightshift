@@ -536,6 +536,15 @@ mod tests {
     }
 
     #[test]
+    fn known_pr_prefers_pr_md_over_a_newer_archive() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        pr_art(d, "pr.md", 24, "2026-10-08T01:00:00Z");
+        pr_art(d, "history/pr-timeout-1.md", 21, "2026-10-08T05:00:00Z");
+        assert_eq!(known_pr(d), Some(24));
+    }
+
+    #[test]
     fn known_pr_skips_an_archive_whose_pr_does_not_parse() {
         let t = tempfile::tempdir().unwrap();
         let d = t.path();
