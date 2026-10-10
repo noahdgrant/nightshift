@@ -125,8 +125,9 @@ pub fn ok(cwd: &Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-/// The `git patch-id` of `sha`'s changes since its merge base with `base`. `None` when either
-/// is not a commit here, or the diff is empty. Whitespace is ignored.
+/// The `git patch-id` of `sha`'s own changes, from [`unit_start`]. `None` when either is not a
+/// commit here, or the diff is empty. Whitespace and context lines are ignored, so a base change
+/// next to the unit's lines keeps the id.
 pub fn diff_id(cwd: &Path, base: &str, sha: &str) -> Option<String> {
     patch_id(cwd, base, sha, false)
 }
@@ -141,11 +142,11 @@ fn patch_id(cwd: &Path, base: &str, sha: &str, verbatim: bool) -> Option<String>
     if sha.is_empty() || sha.starts_with('-') || base.starts_with('-') {
         return None;
     }
-    let mb = run(cwd, &["merge-base", &freshest(cwd, base), sha]).ok()?;
+    let mb = unit_start(cwd, base, sha)?;
     let diff = command()
         .arg("-C")
         .arg(cwd)
-        .args(["diff-tree", "-p", "--binary", "--no-color", &mb, sha])
+        .args(["diff-tree", "-p", "-U0", "--binary", "--no-color", &mb, sha])
         .output()
         .ok()
         .filter(|o| o.status.success())?;
@@ -167,6 +168,30 @@ fn patch_id(cwd: &Path, base: &str, sha: &str, verbatim: bool) -> Option<String>
         .split_whitespace()
         .next()
         .map(String::from)
+}
+
+/// Where `sha`'s own changes start: the newest common ancestor of `sha` with `base` and with every
+/// commit merged into `sha` since. A merge of the base brings in its newer commits even when the
+/// `base` ref is behind them, as after `git pull origin <base>`.
+fn unit_start(cwd: &Path, base: &str, sha: &str) -> Option<String> {
+    let base = freshest(cwd, base);
+    let not_base = format!("^{base}");
+    let merges = run(
+        cwd,
+        &[
+            "rev-list",
+            "--first-parent",
+            "--merges",
+            "--parents",
+            sha,
+            &not_base,
+            "--",
+        ],
+    )
+    .ok()?;
+    let mut args = vec!["merge-base", sha, &base];
+    args.extend(merges.lines().flat_map(|l| l.split_whitespace().skip(2)));
+    run(cwd, &args).ok()
 }
 
 /// `origin/<base>` when it is strictly ahead of the local `base`, else `base`. A unit rebased
@@ -319,6 +344,7 @@ mod tests {
 
     use super::*;
     use crate::testutil::{commit_file, g, rebased_unit, write_commit};
+    use std::fs;
 
     fn same_diff(cwd: &Path, base: &str, a: &str, b: &str) -> bool {
         diff_id(cwd, base, a).is_some_and(|x| diff_id(cwd, base, b) == Some(x))
@@ -370,6 +396,72 @@ mod tests {
         assert!(same_diff(d, "main", &r.reviewed, &r.rebased));
         let changed = commit_file(d, "work.txt", "two\n");
         assert!(!same_diff(d, "main", &r.reviewed, &changed));
+    }
+
+    /// A unit reviewed at `reviewed` that then merged a newer `main`, at `merged`, with
+    /// local `main` and `origin/main` left at the old tip, as after `git pull origin main`.
+    fn merged_behind_a_stale_base() -> (tempfile::TempDir, PathBuf, String, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path().canonicalize().unwrap();
+        g(&d, &["init", "-q", "-b", "main"]);
+        let old = commit_file(&d, "README", "hi\n");
+        g(&d, &["checkout", "-qb", "unit"]);
+        let reviewed = commit_file(&d, "work.txt", "one\n");
+        g(&d, &["checkout", "-q", "main"]);
+        commit_file(&d, "UPSTREAM", "x\n");
+        g(&d, &["checkout", "-q", "unit"]);
+        g(&d, &["merge", "-q", "--no-ff", "--no-edit", "main"]);
+        let merged = g(&d, &["rev-parse", "HEAD"]);
+        g(&d, &["update-ref", "refs/heads/main", &old]);
+        g(&d, &["update-ref", "refs/remotes/origin/main", &old]);
+        (tmp, d, reviewed, merged)
+    }
+
+    #[test]
+    fn a_merge_of_a_newer_base_keeps_the_diff_id_though_the_base_ref_is_behind() {
+        let (_tmp, d, reviewed, merged) = merged_behind_a_stale_base();
+        assert!(same_diff(&d, "main", &reviewed, &merged));
+        g(&d, &["checkout", "-q", "main"]);
+        commit_file(&d, "LATER", "y\n");
+        assert!(same_diff(&d, "main", &reviewed, &merged));
+        g(&d, &["checkout", "-q", "unit"]);
+        let changed = commit_file(&d, "work.txt", "two\n");
+        assert!(!same_diff(&d, "main", &reviewed, &changed));
+    }
+
+    #[test]
+    fn a_merge_that_resolves_a_conflict_differently_is_not_the_same_diff() {
+        let r = rebased_unit();
+        let d = &r.dir;
+        g(d, &["checkout", "-q", "main"]);
+        commit_file(d, "work.txt", "main's\n");
+        g(d, &["checkout", "-q", "unit"]);
+        assert!(!ok(d, &["merge", "-q", "--no-edit", "main"]));
+        fs::write(d.join("work.txt"), "resolved\n").unwrap();
+        g(d, &["add", "work.txt"]);
+        g(d, &["commit", "-q", "--no-edit"]);
+        let merged = g(d, &["rev-parse", "HEAD"]);
+        assert!(!same_diff(d, "main", &r.rebased, &merged));
+    }
+
+    #[test]
+    fn a_base_change_next_to_the_units_lines_keeps_the_diff_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = &tmp.path().canonicalize().unwrap();
+        g(d, &["init", "-q", "-b", "main"]);
+        commit_file(d, "f.txt", "a\nb\nc\nd\ne\nf\ng\n");
+        g(d, &["checkout", "-qb", "unit"]);
+        let reviewed = commit_file(d, "f.txt", "a\nb\nc\nd\nE\nf\ng\n");
+        g(d, &["checkout", "-q", "main"]);
+        commit_file(d, "f.txt", "a\nb\nC\nd\ne\nf\ng\n");
+        g(d, &["checkout", "-q", "unit"]);
+        g(d, &["merge", "-q", "--no-edit", "main"]);
+        let merged = g(d, &["rev-parse", "HEAD"]);
+        assert!(same_diff(d, "main", &reviewed, &merged));
+        g(d, &["reset", "-q", "--hard", &reviewed]);
+        g(d, &["rebase", "-q", "main"]);
+        let rebased = g(d, &["rev-parse", "HEAD"]);
+        assert!(same_diff(d, "main", &reviewed, &rebased));
     }
 
     #[test]
