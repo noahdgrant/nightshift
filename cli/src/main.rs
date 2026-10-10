@@ -333,9 +333,10 @@ are resolved once and exported as GH_TOKEN / GITLAB_TOKEN to every child; a set 
 
 Exit codes: 0 done, merged or split (triage split the issue into child issues), 1 stuck,
 2 usage or config error (incl. missing subscription login, harness not on PATH, forge token
-that does not resolve), 3 budget, 4 paused on a usage limit, 5 another ns run holds the repo's
-run lock. A phase whose runner names a lock another
-run holds waits for it instead ([runners] lock_dir in the ns config shares locks across repos).";
+that does not resolve), 3 budget, 4 paused on a usage limit, 5 another ns run holds this unit's
+run lock (runs of other units go ahead). A phase whose runner names a lock another
+run holds waits for it instead ([runners] lock_dir in the ns config shares locks across repos),
+and so does the merge step for the repo's merge lock.";
 
 const WATCH_HELP: &str = "\
 Examples:

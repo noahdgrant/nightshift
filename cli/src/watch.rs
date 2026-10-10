@@ -352,14 +352,14 @@ fn comment(root: &Path, n: u64, body: &str) -> Result<()> {
 }
 
 /// Open issues carrying `in_progress_label`: those no live `ns run` holds, left so by a night
-/// that ended mid-unit, and those one does, each with the run lock's holder.
+/// that ended mid-unit, and those one does, each with its run lock's holder.
 struct InProgress {
     stale: Vec<Issue>,
     held: Vec<(Issue, Value)>,
 }
 
 fn in_progress(repo: &Repo, q: &QueueConfig) -> Result<InProgress> {
-    let holder = run::Lock::run_holder(&repo.common_dir)?;
+    let holders = run::Lock::run_holders(&repo.common_dir)?;
     let mut found = InProgress {
         stale: Vec::new(),
         held: Vec::new(),
@@ -368,7 +368,7 @@ fn in_progress(repo: &Repo, q: &QueueConfig) -> Result<InProgress> {
         if !i.labels.contains(&q.in_progress_label) {
             continue;
         }
-        match holder.as_ref().filter(|h| holds(h, i.number)) {
+        match holders.iter().find(|h| holds(h, i.number)) {
             Some(h) => found.held.push((i, h.clone())),
             None => found.stale.push(i),
         }
@@ -377,10 +377,9 @@ fn in_progress(repo: &Repo, q: &QueueConfig) -> Result<InProgress> {
     Ok(found)
 }
 
-/// Whether the run lock's `holder` is running issue `n`'s unit. A holder that hasn't written
-/// its record yet could be running any unit.
+/// Whether a run lock's `holder` is running issue `n`'s unit.
 fn holds(holder: &Value, n: u64) -> bool {
-    if holder.is_null() || holder["issue"].as_u64() == Some(n) {
+    if holder["issue"].as_u64() == Some(n) {
         return true;
     }
     holder["unit"]
@@ -396,7 +395,7 @@ fn requeue_stale(repo: &Repo, q: &QueueConfig, requeued: &mut Vec<u64>) -> Resul
         eprintln!(
             "ns watch: #{} is held by a live ns run (pid {}, unit {}); left in progress",
             i.number,
-            h["pid"],
+            run::holder_pid(h),
             h["unit"].as_str().unwrap_or("?")
         );
     }
@@ -983,7 +982,7 @@ Open after 3 fix cycles: C1, I2, I4.
     }
 
     #[test]
-    fn a_run_lock_holder_holds_its_issue_or_any_when_unreadable() {
+    fn a_run_lock_holder_holds_its_issue_or_its_unit_ids_issue() {
         let h = json!({"pid": 1, "unit": "13-fix-uart", "issue": 13});
         assert!(holds(&h, 13));
         assert!(!holds(&h, 1));
@@ -994,7 +993,15 @@ Open after 3 fix cycles: C1, I2, I4.
         assert!(!holds(&by_unit, 1));
         assert!(holds(&json!({"pid": 1, "unit": "13"}), 13));
         assert!(!holds(&json!({"pid": 1, "unit": "130-x"}), 13));
-        assert!(holds(&Value::Null, 99));
+        // A holder that hasn't written its record yet is known by its lock's file name.
+        assert!(holds(
+            &json!({"pid": null, "unit": "99-x", "issue": null}),
+            99
+        ));
+        assert!(!holds(
+            &json!({"pid": null, "unit": "uart", "issue": null}),
+            99
+        ));
     }
 
     #[test]

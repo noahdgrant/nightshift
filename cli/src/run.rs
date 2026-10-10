@@ -284,27 +284,52 @@ pub struct Lock {
     file: File,
 }
 
-/// The run lock: one `ns run` at a time per repo.
-const RUN_LOCK: &str = "ns-run.lock";
+/// The run lock's file prefix: `ns-run-<unit>.lock`, one `ns run` at a time per unit.
+const RUN_LOCK_PREFIX: &str = "ns-run-";
 /// The watch lock: one `ns watch` at a time per repo.
 const WATCH_LOCK: &str = "ns-watch.lock";
+/// The merge lock: one merge step's update, CI wait and merge at a time per repo.
+const MERGE_LOCK: &str = "ns-merge.lock";
+/// The worktree lock: one `ns worktree new` creating a worktree at a time per repo.
+pub const WORKTREE_LOCK: &str = "ns-worktree.lock";
 /// How many times, 10 ms apart, a lock whose holder names no one is tried before refusing.
 const BRIEF_HOLD_TRIES: u32 = 10;
+/// How long a wait for the merge or worktree lock sleeps between tries.
+const LOCK_WAIT_POLL: Duration = Duration::from_millis(50);
+
+fn run_lock(unit: &str) -> String {
+    format!("{RUN_LOCK_PREFIX}{unit}.lock")
+}
+
+fn open_lock(path: &Path) -> Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .with_context(|| format!("cannot open {}", path.display()))
+}
+
+fn try_lock(f: &File, path: &Path) -> Result<bool> {
+    try_flock(f).with_context(|| format!("cannot lock {}", path.display()))
+}
 
 impl Lock {
+    fn held(file: File, holder: &Value) -> Result<Lock> {
+        let lock = Lock { file };
+        lock.file.set_len(0)?;
+        writeln!(&lock.file, "{holder}")?;
+        Ok(lock)
+    }
+
     /// Take `<common>/<name>` and record `holder` in it, or return who holds it now.
     fn take(common: &Path, name: &str, holder: Value) -> Result<Result<Lock, Value>> {
         let path = common.join(name);
-        let f = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .with_context(|| format!("cannot open {}", path.display()))?;
+        let f = open_lock(&path)?;
         let mut tries = 0;
-        while !try_flock(&f).with_context(|| format!("cannot lock {}", path.display()))? {
-            // A holder that hasn't written its record yet, or `run_holder` checking the lock,
+        while !try_lock(&f, &path)? {
+            // A holder that hasn't written its record yet, or `run_holders` checking the lock,
             // holds it only for a moment.
             let held = read_holder(&path);
             tries += 1;
@@ -313,26 +338,53 @@ impl Lock {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        let lock = Lock { file: f };
-        lock.file.set_len(0)?;
-        writeln!(&lock.file, "{holder}")?;
-        Ok(Ok(lock))
+        Ok(Ok(Lock::held(f, &holder)?))
+    }
+
+    /// Take `<common>/<name>` and record `holder` in it, waiting while another process holds
+    /// it. `waiting` hears who holds it once, when the wait begins. The wait sleeps in real
+    /// time, since the holder is another process, and ends on a stop. It gives up, returning
+    /// who holds the lock, once the clock reaches the `deadline`.
+    pub fn wait(
+        common: &Path,
+        name: &str,
+        holder: Value,
+        deadline: Option<(&Clock, i64)>,
+        mut waiting: impl FnMut(&Value),
+    ) -> Result<Result<Lock, Value>> {
+        let path = common.join(name);
+        let f = open_lock(&path)?;
+        let mut first = true;
+        while !try_lock(&f, &path)? {
+            let held = read_holder(&path);
+            if first {
+                waiting(&held);
+                first = false;
+            }
+            if deadline.is_some_and(|(clock, at)| clock.now() >= at) {
+                return Ok(Err(held));
+            }
+            crate::stop::check()?;
+            std::thread::sleep(LOCK_WAIT_POLL);
+        }
+        Ok(Ok(Lock::held(f, &holder)?))
     }
 
     /// The run lock for `unit`, refused with exit 5 while another `ns run` holds it.
     pub fn acquire(common: &Path, unit: &str, issue: Option<u64>) -> Result<Lock> {
         let me = json!({"pid": std::process::id(), "unit": unit, "issue": issue});
-        Self::take(common, RUN_LOCK, me)?.map_err(|held| {
+        let name = run_lock(unit);
+        Self::take(common, &name, me)?.map_err(|held| {
             SfError::new(
                 EXIT_LOCKED,
                 format!(
                     "another ns run (pid {}, unit {}) holds {}",
                     held["pid"],
-                    held["unit"].as_str().unwrap_or("?"),
-                    common.join(RUN_LOCK).display()
+                    held["unit"].as_str().unwrap_or(unit),
+                    common.join(&name).display()
                 ),
             )
-            .hint("one unit at a time per repo; wait for it to finish, or stop it")
+            .hint("one run per unit; wait for it to finish, or stop it")
             .into()
         })
     }
@@ -351,21 +403,49 @@ impl Lock {
         })
     }
 
-    /// Who holds the run lock now (`{pid, unit, issue}`, or null when its file is not written
-    /// yet), or `None` when no live `ns run` does.
-    pub fn run_holder(common: &Path) -> Result<Option<Value>> {
-        let path = common.join(RUN_LOCK);
-        let f = match File::open(&path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e).with_context(|| format!("cannot open {}", path.display())),
+    /// Who holds a run lock now: `{pid, unit, issue}` for each live `ns run`, sorted by unit.
+    /// A holder that hasn't written its record yet is `{pid: null, unit, issue: null}`, its
+    /// unit read from the file name.
+    pub fn run_holders(common: &Path) -> Result<Vec<Value>> {
+        let entries = match fs::read_dir(common) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e).with_context(|| format!("cannot read {}", common.display())),
         };
-        if try_flock(&f).with_context(|| format!("cannot lock {}", path.display()))? {
-            unlock_flock(&f);
-            return Ok(None);
+        let mut holders = Vec::new();
+        for entry in entries {
+            let entry = entry.with_context(|| format!("cannot read {}", common.display()))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(unit) = name
+                .strip_prefix(RUN_LOCK_PREFIX)
+                .and_then(|n| n.strip_suffix(".lock"))
+                .filter(|u| worktree::valid_unit_id(u))
+            else {
+                continue;
+            };
+            let path = entry.path();
+            let f = File::open(&path).with_context(|| format!("cannot open {}", path.display()))?;
+            if try_lock(&f, &path)? {
+                unlock_flock(&f);
+                continue;
+            }
+            let held = read_holder(&path);
+            holders.push(if held.is_object() {
+                held
+            } else {
+                json!({"pid": null, "unit": unit, "issue": null})
+            });
         }
-        Ok(Some(read_holder(&path)))
+        holders.sort_by(|a, b| a["unit"].as_str().cmp(&b["unit"].as_str()));
+        Ok(holders)
     }
+}
+
+/// A lock holder's pid for a message: `?` when the holder hasn't written its record yet.
+pub fn holder_pid(holder: &Value) -> String {
+    holder["pid"]
+        .as_u64()
+        .map_or_else(|| "?".into(), |p| p.to_string())
 }
 
 fn read_holder(path: &Path) -> Value {
@@ -378,6 +458,43 @@ impl Drop for Lock {
         let _ = self.file.set_len(0);
         unlock_flock(&self.file);
     }
+}
+
+/// Take the merge lock for `unit`, waiting while another unit merges, each wait logged by
+/// `log`. A wait that reaches `until` ends the run as `budget`.
+fn take_merge_lock(
+    common: &Path,
+    unit: &str,
+    clock: &Clock,
+    until: Option<i64>,
+    log: impl Fn(Value),
+) -> Result<Result<Lock, Finish>> {
+    let me = json!({"pid": std::process::id(), "unit": unit});
+    let deadline = until.map(|u| (clock, u));
+    let taken = Lock::wait(common, MERGE_LOCK, me, deadline, |by| {
+        eprintln!(
+            "ns run: {unit} merge waits for the merge lock (held by pid {}, unit {})",
+            holder_pid(by),
+            by["unit"].as_str().unwrap_or("?")
+        );
+        log(json!({"event": "lock_wait", "phase": "merge", "lock": "merge", "held_by": by}));
+    })?;
+    Ok(taken.map_err(|by| {
+        let reason = format!(
+            "gave up waiting for the merge lock (held by pid {}, unit {}) at --until",
+            holder_pid(&by),
+            by["unit"].as_str().unwrap_or("?")
+        );
+        eprintln!("ns run: {unit} merge {reason}");
+        log(json!({
+            "event": "lock_wait_timeout",
+            "phase": "merge",
+            "lock": "merge",
+            "held_by": by,
+            "bound": Bound::Until.label(),
+        }));
+        finish(Outcome::Budget, reason, Some("merge"))
+    }))
 }
 
 /// The locks a phase's runner names, held from before the phase starts until it ends. Each is
@@ -634,7 +751,8 @@ pub fn log_event(common: &Path, mut ev: Value) {
         .append(true)
         .open(dir.join("runs.jsonl"))
     {
-        let _ = writeln!(f, "{ev}");
+        // One write per line, so lines from runs of other units never interleave.
+        let _ = f.write_all(format!("{ev}\n").as_bytes());
     }
 }
 
@@ -1585,6 +1703,28 @@ fn checks_registered(
     }
 }
 
+/// The PR's merge state once GitHub has worked it out. Right after its base moves, as when the
+/// unit before it merged, GitHub reports `UNKNOWN` while it recomputes, so poll with the register
+/// backoff until it reports anything else, or `timeout_minutes` pass, and return the last read.
+fn merge_state(wt: &Path, pr: &str, timeout_minutes: u64, clock: &Clock) -> Result<Value> {
+    let deadline = clock.now() + (timeout_minutes * 60) as i64;
+    let mut wait = REGISTER_BACKOFF_START;
+    let mut polls = 0;
+    loop {
+        clock.check_polls(polls)?;
+        polls += 1;
+        let state = gh_json(wt, &["pr", "view", pr, "--json", "mergeStateStatus"])?
+            ["mergeStateStatus"]
+            .take();
+        let now = clock.now();
+        if state != "UNKNOWN" || now >= deadline {
+            return Ok(state);
+        }
+        clock.sleep_until((now + wait).min(deadline))?;
+        wait = (wait * 2).min(REGISTER_BACKOFF_MAX);
+    }
+}
+
 enum UpdatedHead {
     Moved(String),
     Dirty,
@@ -1649,16 +1789,7 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
     };
     let ns = n.to_string();
     let wt = &ctx.worktree;
-    let view = gh_json(
-        wt,
-        &[
-            "pr",
-            "view",
-            &ns,
-            "--json",
-            "state,headRefOid,mergeStateStatus",
-        ],
-    )?;
+    let view = gh_json(wt, &["pr", "view", &ns, "--json", "state,headRefOid"])?;
     match view["state"].as_str() {
         Some("OPEN") => {}
         Some("MERGED") => {
@@ -1689,6 +1820,16 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
         ));
     }
 
+    // One merge at a time per repo, so a PR is updated and checked against the main the merge
+    // before it left. Its merge state is read once the lock is held.
+    let _merging =
+        match take_merge_lock(&ctx.common, &ctx.unit, &shared.clock, shared.until, |ev| {
+            ctx.log(ev)
+        })? {
+            Ok(lock) => lock,
+            Err(f) => return Ok(MergeStep::Finish(f)),
+        };
+
     // Strict required checks: a PR behind its base gets the base merged in, then fresh checks.
     let default = remote_default(wt)
         .map(|d| d.0)
@@ -1701,7 +1842,7 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
     };
     let register_minutes = ctx.fac.merge.ci_register_timeout;
     let mut merge_head = pr_head.to_string();
-    match view["mergeStateStatus"].as_str() {
+    match merge_state(wt, &ns, register_minutes, &shared.clock)?.as_str() {
         Some("DIRTY") => return Ok(conflict()),
         Some("BEHIND") => {
             if gh(wt, &["pr", "update-branch", &ns]).is_err() {
@@ -2322,5 +2463,122 @@ mod tests {
         let c = phase_command(None, &f.phase("build"), true).unwrap();
         assert!(c.contains(&"bypassPermissions".to_string()));
         assert!(!c.contains(&"--model".to_string()));
+    }
+
+    #[test]
+    fn a_lock_wait_takes_the_lock_once_its_holder_lets_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut other = Some(hold(dir.path(), "ns-merge"));
+        let mut waits = Vec::new();
+        let me = json!({"pid": 1, "unit": "u"});
+        let lock = Lock::wait(dir.path(), MERGE_LOCK, me, None, |by| {
+            waits.push(by.clone());
+            other = None;
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(waits, [json!({"pid": 42, "unit": "other"})]);
+        let path = dir.path().join(MERGE_LOCK);
+        assert_eq!(read_holder(&path), json!({"pid": 1, "unit": "u"}));
+        assert!(!is_free(dir.path(), "ns-merge"));
+        drop(lock);
+        assert!(is_free(dir.path(), "ns-merge"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn a_free_lock_is_taken_without_a_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = json!({"pid": 1, "unit": "u"});
+        let lock = Lock::wait(dir.path(), WORKTREE_LOCK, me, None, |_| panic!("waited")).unwrap();
+        assert!(lock.is_ok());
+    }
+
+    #[test]
+    fn a_merge_lock_wait_at_until_ends_the_run_as_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let _other = hold(dir.path(), "ns-merge");
+        let events = std::cell::RefCell::new(Vec::new());
+        let clock = Clock::pinned(1000);
+        let f = take_merge_lock(dir.path(), "u", &clock, Some(1000), |ev| {
+            events.borrow_mut().push(ev)
+        })
+        .unwrap()
+        .err()
+        .unwrap();
+        assert_eq!(f.outcome, Outcome::Budget);
+        assert_eq!(f.phase.as_deref(), Some("merge"));
+        assert_eq!(
+            f.reason,
+            "gave up waiting for the merge lock (held by pid 42, unit other) at --until"
+        );
+        let events = events.into_inner();
+        let by = json!({"pid": 42, "unit": "other"});
+        assert_eq!(
+            events,
+            [
+                json!({"event": "lock_wait", "phase": "merge", "lock": "merge", "held_by": by}),
+                json!({"event": "lock_wait_timeout", "phase": "merge", "lock": "merge", "held_by": by, "bound": "until"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_merge_lock_before_until_is_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = std::cell::RefCell::new(Vec::new());
+        let clock = Clock::pinned(1000);
+        let taken = take_merge_lock(dir.path(), "u", &clock, Some(1001), |ev| {
+            events.borrow_mut().push(ev)
+        })
+        .unwrap();
+        assert!(taken.is_ok());
+        assert!(events.into_inner().is_empty());
+    }
+
+    #[test]
+    fn run_holders_lists_each_held_run_lock_by_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(Lock::run_holders(&dir.path().join("missing"))
+            .unwrap()
+            .is_empty());
+        let _b = hold(dir.path(), "ns-run-b-2");
+        // Taken, but its record not yet written.
+        let _a = hold(dir.path(), "ns-run-a-1");
+        fs::write(dir.path().join("ns-run-a-1.lock"), "").unwrap();
+        fs::write(
+            dir.path().join("ns-run-c.lock"),
+            "{\"pid\":7,\"unit\":\"c\"}",
+        )
+        .unwrap();
+        let _bad = hold(dir.path(), "ns-run-Bad");
+        let _watch = hold(dir.path(), "ns-watch");
+        let _merge = hold(dir.path(), "ns-merge");
+        assert_eq!(
+            Lock::run_holders(dir.path()).unwrap(),
+            [
+                json!({"pid": null, "unit": "a-1", "issue": null}),
+                json!({"pid": 42, "unit": "other"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_run_lock_is_per_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Lock::acquire(dir.path(), "a", Some(1)).unwrap();
+        let _b = Lock::acquire(dir.path(), "b", None).unwrap();
+        let err = Lock::acquire(dir.path(), "a", None).err().unwrap();
+        let sf = err.downcast_ref::<SfError>().unwrap();
+        assert_eq!(sf.code, EXIT_LOCKED);
+        assert!(
+            err.to_string().starts_with(&format!(
+                "another ns run (pid {}, unit a) holds ",
+                std::process::id()
+            )),
+            "{err}"
+        );
+        drop(a);
+        Lock::acquire(dir.path(), "a", None).unwrap();
     }
 }

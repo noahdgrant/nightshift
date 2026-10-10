@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use crate::error::SfError;
 use crate::frontmatter;
 use crate::git::{self, Repo, WorktreeEntry};
+use crate::run::{holder_pid, Lock, WORKTREE_LOCK};
 
 pub const BRANCH_PREFIX: &str = "ns/";
 
@@ -208,8 +209,22 @@ pub fn existing(repo: &Repo, unit: &str) -> Result<Option<PathBuf>> {
 }
 
 /// Create or reuse the unit's worktree; run `setup` unless the worktree records it finished.
+/// Worktrees are created one at a time per repo, under the worktree lock; setup runs after it.
 pub fn ensure(repo: &Repo, unit: &str, base: Option<&str>, setup: &[String]) -> Result<NewOutput> {
     let branch = format!("{BRANCH_PREFIX}{unit}");
+    // `git worktree add` from a remote base writes the branch's upstream to `.git/config`,
+    // which only one git at a time can lock.
+    let me = json!({"pid": std::process::id(), "unit": unit});
+    let Ok(creating) = Lock::wait(&repo.common_dir, WORKTREE_LOCK, me, None, |by| {
+        eprintln!(
+            "ns worktree: {unit} waits for the worktree lock (held by pid {}, unit {})",
+            holder_pid(by),
+            by["unit"].as_str().unwrap_or("?")
+        )
+    })?
+    else {
+        unreachable!("a lock wait with no deadline never gives up");
+    };
     let list = git::worktrees(&repo.root)?;
 
     let path: PathBuf = if let Some(existing) = find_unit(&list, unit) {
@@ -276,6 +291,7 @@ pub fn ensure(repo: &Repo, unit: &str, base: Option<&str>, setup: &[String]) -> 
     fs::create_dir_all(&artifacts)
         .with_context(|| format!("cannot create {}", artifacts.display()))?;
     ensure_excluded(&repo.common_dir)?;
+    drop(creating);
 
     let results = if setup.is_empty() || setup_finished(&path, unit)? {
         Vec::new()

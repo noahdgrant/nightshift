@@ -400,8 +400,9 @@ fn happy_path_triage_to_done() {
     assert!(e
         .prompt(1, "triage")
         .contains("https://github.com/o/r/issues/7"));
-    assert!(lock_is_free(&common.join("ns-run.lock")));
-    assert_eq!(fs::read_to_string(common.join("ns-run.lock")).unwrap(), "");
+    let lock = common.join(format!("ns-run-{UNIT}.lock"));
+    assert_eq!(fs::read_to_string(&lock).unwrap(), "");
+    assert!(lock_is_free(&lock));
 }
 
 #[test]
@@ -1168,22 +1169,22 @@ fn a_failed_push_keeps_the_record_in_the_outbox_and_the_next_unit_pushes_it() {
 #[test]
 fn lock_refuses_a_second_runner_and_takes_over_a_free_one() {
     let e = Env::new();
-    let lock = e.root.join(".git/ns-run.lock");
-    let held = hold(&lock, r#"{"pid":42,"unit":"other","issue":9}"#);
+    let lock = e.root.join(format!(".git/ns-run-{UNIT}.lock"));
+    let held = hold(&lock, r#"{"pid":42,"unit":"7-fix-the-thing","issue":7}"#);
     e.ns()
         .args(["run", "--issue", "7"])
         .assert()
         .code(5)
-        .stderr(predicates::str::contains(
-            "another ns run (pid 42, unit other) holds",
-        ));
+        .stderr(predicates::str::contains(format!(
+            "another ns run (pid 42, unit {UNIT}) holds"
+        )));
     assert!(e.calls().is_empty());
     drop(held);
 
     // A file nobody holds is free, even when it names a live pid (this test's).
     fs::write(
         &lock,
-        format!("{{\"pid\":{},\"unit\":\"other\"}}\n", std::process::id()),
+        format!("{{\"pid\":{},\"unit\":\"{UNIT}\"}}\n", std::process::id()),
     )
     .unwrap();
     e.queue("build", &["pass:commit"]);
@@ -1238,7 +1239,7 @@ fn watch_returns_a_stale_in_progress_issue_to_the_queue_and_resumes_its_unit() {
     fs::remove_file(e.ctrl.join("calls")).unwrap();
     // The crashed night's lock file names a live pid (this test's), but nobody holds it.
     fs::write(
-        e.root.join(".git/ns-run.lock"),
+        e.root.join(".git/ns-run-2-fix-a.lock"),
         format!(
             "{{\"pid\":{},\"unit\":\"2-fix-a\",\"issue\":2}}\n",
             std::process::id()
@@ -1276,21 +1277,32 @@ fn watch_leaves_an_in_progress_issue_a_live_run_holds() {
     let wip = ["type:fix", "status:in-progress"];
     e.open_by(2, "Fix a", &wip, "", Some("MEMBER"));
     e.open_by(3, "Fix b", &wip, "", Some("MEMBER"));
+    e.open_by(4, "Fix c", &wip, "", Some("MEMBER"));
     let _held = hold(
-        &e.root.join(".git/ns-run.lock"),
+        &e.root.join(".git/ns-run-3-fix-b.lock"),
         r#"{"pid":42,"unit":"3-fix-b","issue":3}"#,
     );
+    // A run that has taken its lock but not yet written its record is known by the file name.
+    let _starting = hold(&e.root.join(".git/ns-run-4-fix-c.lock"), "");
     let out = e.ns().args(["watch", "--max-units", "0"]).output();
     assert!(out.status.success(), "{out:?}");
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["requeued"], serde_json::json!([2]), "{v}");
     assert_eq!(e.labels(2), ["type:fix", "status:ready-for-agent"]);
     assert_eq!(e.labels(3), wip);
+    assert_eq!(e.labels(4), wip);
     assert!(!e.gh_calls().contains("issue edit 3"));
+    assert!(!e.gh_calls().contains("issue edit 4"));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
         err.contains(
             "ns watch: #3 is held by a live ns run (pid 42, unit 3-fix-b); left in progress"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "ns watch: #4 is held by a live ns run (pid ?, unit 4-fix-c); left in progress"
         ),
         "{err}"
     );
@@ -1329,6 +1341,318 @@ fn a_second_watch_on_the_repo_is_refused() {
         ));
     assert!(e.calls().is_empty());
     assert!(!e.gh_calls().contains("issue edit"));
+}
+
+#[test]
+fn two_runs_on_different_units_in_one_repo_run_together() {
+    let e = Env::new();
+    e.issue(8, "Fix the other", "OPEN");
+    // Unit 7 holds its run lock, blocked in verify, while unit 8 runs from start to end.
+    let held = Blocked::start(&e, "true", "true");
+    let v = e.run(&["run", "--issue", "8"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    e.ns()
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(5)
+        .stderr(predicates::str::contains(format!(
+            "another ns run (pid {}, unit {UNIT}) holds",
+            held.run.id()
+        )));
+    held.release();
+    let mut run = held.run;
+    assert!(run.wait().success());
+    for unit in [UNIT, "8-fix-the-other"] {
+        let lock = e.root.join(format!(".git/ns-run-{unit}.lock"));
+        assert!(lock_is_free(&lock), "{}", lock.display());
+    }
+}
+
+#[test]
+fn worktrees_cut_at_once_from_a_remote_base_all_land() {
+    let e = Env::new();
+    git(&e.root, &["fetch", "-q", "origin"]);
+    // `git worktree add` from a remote base writes the branch's upstream to .git/config, which
+    // only one git at a time can lock.
+    let mut runs: Vec<Group> = (0..12)
+        .map(|i| {
+            e.ns()
+                .args(["worktree", "new", &format!("u{i}"), "--base", "origin/main"])
+                .start()
+        })
+        .collect();
+    for r in &mut runs {
+        let err = read_all(r.take_stderr());
+        let status = r.wait();
+        let err = String::from_utf8_lossy(&r.recv(&err)).into_owned();
+        assert!(status.success(), "{err}");
+    }
+    let list = git(&e.root, &["worktree", "list"]);
+    assert_eq!(list.lines().count(), 13, "{list}");
+    assert!(lock_is_free(&e.root.join(".git/ns-worktree.lock")));
+}
+
+/// Gh's CI wait blocks for whichever PR reaches it first, until `go` gets a line, and each
+/// wait's start and end land in `ctrl/order`. Merging a PR puts every other open one in `prs`
+/// behind main, reported as `UNKNOWN` for one view while GitHub works that out.
+fn merges_in_order(e: &Env, prs: &[u64]) -> PathBuf {
+    let go = e.ctrl.join("go");
+    assert!(StdCommand::new("mkfifo")
+        .arg(&go)
+        .status()
+        .unwrap()
+        .success());
+    let others: Vec<String> = prs.iter().map(u64::to_string).collect();
+    e.gh_file(
+        "hook.sh",
+        &format!(
+            "case \"$1 $2 $4\" in\n\
+             \"pr checks --watch\")\n\
+               echo \"in $3\" >> {order:?}\n\
+               mkdir {first:?} 2>/dev/null && cat {go:?} > /dev/null\n\
+               echo \"out $3\" >> {order:?} ;;\n\
+             \"pr merge \"*)\n\
+               for n in {others}; do\n\
+                 [ \"$n\" != \"$3\" ] && [ \"$(cat \"$d/pr-$n.state\" 2>/dev/null)\" != MERGED ] \\\n\
+                   && echo UNKNOWN > \"$d/pr-$n.merge\"\n\
+               done ;;\n\
+             \"pr view \"*)\n\
+               if [ \"$(cat \"$d/pr-$3.merge\" 2>/dev/null)\" = UNKNOWN ]; then\n\
+                 [ -f \"$d/unknown-$3\" ] && echo BEHIND > \"$d/pr-$3.merge\"\n\
+                 touch \"$d/unknown-$3\"\n\
+               fi ;;\n\
+             esac\n",
+            order = e.ctrl.join("order"),
+            first = e.ctrl.join("first"),
+            others = others.join(" "),
+        ),
+    );
+    go
+}
+
+/// Start `ns run --issue <n>` for each of `issues`, their stderr lines merged into one channel,
+/// with `None` when one of them closes its stderr.
+fn start_runs(e: &Env, issues: &[u64]) -> (Vec<Group>, mpsc::Receiver<Option<String>>) {
+    let (tx, rx) = mpsc::channel();
+    let runs = issues
+        .iter()
+        .map(|n| {
+            let mut g = e.ns().args(["run", "--issue", &n.to_string()]).start();
+            send_lines(g.take_stderr(), tx.clone());
+            g
+        })
+        .collect();
+    (runs, rx)
+}
+
+/// Send each line `r` gives on `tx`, then `None` when it closes.
+fn send_lines(r: impl Read + Send + 'static, tx: mpsc::Sender<Option<String>>) {
+    thread::spawn(move || {
+        for l in BufReader::new(r).lines().map_while(Result::ok) {
+            let _ = tx.send(Some(l));
+        }
+        let _ = tx.send(None);
+    });
+}
+
+/// Read `rx` until a line contains `want` (true) or a stream closes (false), keeping every
+/// line read in `seen`.
+fn line_until(
+    g: &Group,
+    rx: &mpsc::Receiver<Option<String>>,
+    want: &str,
+    seen: &mut Vec<String>,
+) -> bool {
+    while let Some(l) = g.recv(rx) {
+        let hit = l.contains(want);
+        seen.push(l);
+        if hit {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn two_units_merge_one_at_a_time_each_against_the_main_the_other_left() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.issue(8, "Fix the other", "OPEN");
+    e.ctl(&format!("pr-{UNIT}"), "12");
+    e.ctl("pr-8-fix-the-other", "13");
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file("checks-13.json", GREEN);
+    let go = merges_in_order(&e, &[12, 13]);
+    let (mut runs, rx) = start_runs(&e, &[7, 8]);
+    // One run waits for the merge lock while the other is in its CI wait. Without the lock, the
+    // second run's CI wait doesn't block, and it ends without waiting.
+    let mut seen = Vec::new();
+    let waited = line_until(
+        &runs[0],
+        &rx,
+        "merge waits for the merge lock (held by pid ",
+        &mut seen,
+    );
+    assert!(
+        waited,
+        "neither run waited for the merge lock:\n{}",
+        seen.join("\n")
+    );
+    // A thread, since a fifo write blocks until someone reads, and a broken run may not.
+    thread::spawn(move || fs::write(&go, "go\n"));
+    for r in &mut runs {
+        assert!(r.wait().success());
+    }
+
+    let order = fs::read_to_string(e.ctrl.join("order")).unwrap();
+    let order: Vec<&str> = order.lines().collect();
+    assert_eq!(order.len(), 4, "{order:?}");
+    let pr = |l: &str| l.split(' ').nth(1).unwrap().to_string();
+    let (first, second) = (pr(order[0]), pr(order[2]));
+    assert_ne!(first, second, "{order:?}");
+    assert_eq!(
+        order,
+        [
+            format!("in {first}"),
+            format!("out {first}"),
+            format!("in {second}"),
+            format!("out {second}")
+        ],
+    );
+    // After the first merge, the second PR is read again, updated to the main that merge left,
+    // and checked again before it merges.
+    let calls: Vec<String> = e.gh_calls().lines().map(String::from).collect();
+    let merged = calls
+        .iter()
+        .position(|c| c.starts_with(&format!("pr merge {first} ")))
+        .unwrap_or_else(|| panic!("{calls:?}"));
+    let after: Vec<&str> = calls[merged + 1..]
+        .iter()
+        .map(String::as_str)
+        .filter(|c| c.split(' ').nth(2) == Some(second.as_str()))
+        .collect();
+    let want = [
+        format!("pr view {second} --json mergeStateStatus"),
+        format!("pr view {second} --json mergeStateStatus"),
+        format!("pr update-branch {second}"),
+        format!("pr checks {second} --watch"),
+        format!("pr merge {second} --squash"),
+    ];
+    let mut at = 0;
+    for c in &after {
+        if at < want.len() && c.starts_with(&want[at]) {
+            at += 1;
+        }
+    }
+    assert_eq!(at, want.len(), "{after:?}");
+    assert!(lock_is_free(&e.root.join(".git/ns-merge.lock")));
+    let waits: Vec<Value> = run_events(&e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "lock_wait" && ev["lock"] == "merge")
+        .collect();
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert_eq!(waits[0]["phase"], "merge");
+}
+
+#[test]
+fn a_unit_with_nothing_to_merge_does_not_wait_for_the_merge_lock() {
+    let e = Env::new();
+    e.factory(AUTO);
+    let _held = hold(
+        &e.root.join(".git/ns-merge.lock"),
+        r#"{"pid":42,"unit":"other"}"#,
+    );
+    // ship's pr.md names no PR, so the merge step ends before it needs the lock.
+    let out = e.ns().args(["run", "--issue", "7"]).output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        v["reason"], "pr.md has no pr: number; needs a human merge",
+        "{v}"
+    );
+    assert!(!err.contains("merge lock"), "{err}");
+}
+
+#[test]
+fn a_merge_state_github_never_works_out_is_merged_on_after_the_register_timeout() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("pr-12.merge", "UNKNOWN");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let calls = e.gh_calls();
+    let views = calls
+        .lines()
+        .filter(|l| *l == "pr view 12 --json mergeStateStatus")
+        .count();
+    assert!(views > 1, "{calls}");
+    assert!(!calls.contains("pr update-branch"), "{calls}");
+}
+
+#[test]
+fn a_worktree_waits_for_the_worktree_lock() {
+    let e = Env::new();
+    let held = hold(
+        &e.root.join(".git/ns-worktree.lock"),
+        r#"{"pid":42,"unit":"other"}"#,
+    );
+    let mut g = e.ns().args(["worktree", "new", "u1"]).start();
+    let (tx, rx) = mpsc::channel();
+    send_lines(g.take_stderr(), tx);
+    let mut seen = Vec::new();
+    let waited = line_until(
+        &g,
+        &rx,
+        "ns worktree: u1 waits for the worktree lock (held by pid 42, unit other)",
+        &mut seen,
+    );
+    assert!(waited, "{}", seen.join("\n"));
+    assert!(!e.worktree("u1").exists());
+    drop(held);
+    assert!(g.wait().success());
+    assert!(e.worktree("u1").is_dir());
+}
+
+#[test]
+fn a_stop_during_a_merge_lock_wait_returns_the_issue_to_the_queue() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.gh_file("checks-12.json", GREEN);
+    let _held = hold(
+        &e.root.join(".git/ns-merge.lock"),
+        r#"{"pid":42,"unit":"other"}"#,
+    );
+    let mut g = e.ns().args(["watch", "--once"]).start_piped();
+    let stdout = read_all(g.take_stdout());
+    let (tx, rx) = mpsc::channel();
+    send_lines(g.take_stderr(), tx);
+    let mut seen = Vec::new();
+    let waited = line_until(
+        &g,
+        &rx,
+        "ns run: 2-fix-a merge waits for the merge lock (held by pid 42, unit other)",
+        &mut seen,
+    );
+    assert!(waited, "{}", seen.join("\n"));
+    // SAFETY: kill(2) on the ns process this test started.
+    assert_eq!(
+        unsafe { libc::kill(g.id() as libc::pid_t, libc::SIGTERM) },
+        0
+    );
+    assert_eq!(g.wait().code(), Some(143));
+    let v: Value = serde_json::from_slice(&g.recv(&stdout)).unwrap();
+    assert_eq!(v["stopped"], "SIGTERM", "{v}");
+    assert_eq!(v["units"][0]["outcome"], "interrupted", "{v}");
+    assert_eq!(e.labels(2), ["type:fix", "status:ready-for-agent"]);
+    assert!(!e.gh_calls().contains("pr checks"));
 }
 
 fn read_all(mut r: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
