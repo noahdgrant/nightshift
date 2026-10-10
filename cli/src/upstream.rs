@@ -3,40 +3,45 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_yaml::Value;
 
 use crate::error::SfError;
-use crate::{frontmatter, git, lint};
+use crate::{frontmatter, git, install, lint};
 
 /// Where `owner/repo` is fetched from: `<base>/owner/repo`. git's `url.<base>.insteadOf`
 /// redirects it, to a mirror or, in tests, to a local bare repo.
-pub const GITHUB: &str = "https://github.com";
+const GITHUB: &str = "https://github.com";
 
-/// The ref each cached repo keeps upstream HEAD in.
 const HEAD_REF: &str = "refs/ns/upstream-head";
 
-/// Commits the first deepen adds when a recorded sha is older than the cached history.
 const FIRST_DEEPEN: u32 = 64;
+
+const MAX_DEEPEN: u32 = 4096;
 
 /// Bare clones of upstream repos under `<git-common-dir>/ns/upstream/<owner>/<repo>`, each
 /// fetched at most once per invocation.
-pub struct Cache {
+struct Cache {
     root: PathBuf,
     base: String,
+    max_deepen: u32,
     heads: HashMap<String, Result<String, String>>,
+    unreachable: HashMap<(String, String), String>,
 }
 
 impl Cache {
-    pub fn new(root: PathBuf, base: &str) -> Cache {
+    fn new(root: PathBuf, base: &str) -> Cache {
         Cache {
             root,
             base: base.to_string(),
+            max_deepen: MAX_DEEPEN,
             heads: HashMap::new(),
+            unreachable: HashMap::new(),
         }
     }
 
@@ -85,12 +90,25 @@ impl Cache {
         git::run(&dir, &["rev-parse", HEAD_REF])
     }
 
-    /// The full sha of `sha`, deepening the shallow cache until it holds the commit or the
-    /// whole history.
-    fn resolve(&self, repo: &str, sha: &str) -> Result<String> {
+    /// The full sha of `sha`, deepening the shallow cache until it holds the commit, the whole
+    /// history, or `max_deepen` more commits. A failure is remembered per `(repo, sha)`.
+    fn resolve(&mut self, repo: &str, sha: &str) -> Result<String> {
+        let key = (repo.to_string(), sha.to_string());
+        if let Some(e) = self.unreachable.get(&key) {
+            return Err(SfError::general(e.clone()).into());
+        }
+        let resolved = self.deepen_to(repo, sha);
+        if let Err(e) = &resolved {
+            self.unreachable.insert(key, format!("{e:#}"));
+        }
+        resolved
+    }
+
+    fn deepen_to(&self, repo: &str, sha: &str) -> Result<String> {
         let dir = self.dir(repo);
         let commit = format!("{sha}^{{commit}}");
-        let mut depth = FIRST_DEEPEN;
+        let mut step = FIRST_DEEPEN;
+        let mut deepened = 0;
         loop {
             if let Ok(full) = git::run(&dir, &["rev-parse", "--verify", "--quiet", &commit]) {
                 return Ok(full);
@@ -101,25 +119,55 @@ impl Cache {
                 ))
                 .into());
             }
-            self.fetch(repo, &[&format!("--deepen={depth}")])?;
-            depth = depth.saturating_mul(2);
+            if deepened >= self.max_deepen {
+                return Err(SfError::general(format!(
+                    "recorded sha {sha} is not in {repo}'s history within {deepened} commits of HEAD"
+                ))
+                .into());
+            }
+            step = step.min(self.max_deepen - deepened);
+            self.fetch(repo, &[&format!("--deepen={step}")])?;
+            deepened += step;
+            step = step.saturating_mul(2);
         }
     }
 
-    /// Fetch `up`'s repo and return `(recorded sha, upstream head)`, both full.
     fn range(&mut self, up: &lint::Upstream) -> Result<(String, String)> {
         let head = self.head(up.repo)?;
         let from = self.resolve(up.repo, up.sha)?;
         Ok((from, head))
     }
 
-    /// Whether `up.path` differs between the recorded sha and upstream HEAD.
+    fn in_tree(&self, repo: &str, rev: &str, path: &str) -> Result<bool> {
+        let out = git::run(
+            &self.dir(repo),
+            &["ls-tree", "--name-only", rev, "--", path],
+        )?;
+        Ok(!out.is_empty())
+    }
+
     fn changed(&mut self, up: &lint::Upstream) -> Result<(String, bool)> {
         let (from, head) = self.range(up)?;
+        if !self.in_tree(up.repo, &from, up.path)? && !self.in_tree(up.repo, &head, up.path)? {
+            return Err(SfError::general(format!(
+                "path {} not found at recorded sha or HEAD",
+                up.path
+            ))
+            .into());
+        }
         let out = git::command()
             .arg("-C")
             .arg(self.dir(up.repo))
-            .args(["diff", "--quiet", &from, &head, "--", up.path])
+            .args([
+                "diff",
+                "--quiet",
+                "--no-ext-diff",
+                "--no-textconv",
+                &from,
+                &head,
+                "--",
+                up.path,
+            ])
             .output()?;
         match out.status.code() {
             Some(0) => Ok((head, false)),
@@ -132,11 +180,22 @@ impl Cache {
         }
     }
 
-    /// The diff of `up.path` from the recorded sha to upstream HEAD.
     fn diff(&mut self, up: &lint::Upstream) -> Result<(String, String)> {
         let (from, head) = self.range(up)?;
         let dir = self.dir(up.repo);
-        let diff = git::run(&dir, &["diff", "--no-color", &from, &head, "--", up.path])?;
+        let diff = git::run(
+            &dir,
+            &[
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                &from,
+                &head,
+                "--",
+                up.path,
+            ],
+        )?;
         Ok((head, diff))
     }
 }
@@ -165,23 +224,27 @@ pub struct StatusReport {
     pub skills: Vec<SkillStatus>,
 }
 
-/// `metadata.upstream` of one skill's SKILL.md, as written. `None` without SKILL.md or valid
-/// frontmatter; non-string entries come back as their YAML text so the caller can report them.
-fn entries(skill_dir: &Path) -> Option<Vec<String>> {
-    let text = fs::read_to_string(skill_dir.join("SKILL.md")).ok()?;
-    let fm = frontmatter::parse(&text).ok()??;
-    Some(
-        lint::upstream_entries(&fm)
-            .into_iter()
-            .map(|v| match v {
-                Value::String(s) => s.clone(),
-                v => serde_yaml::to_string(v)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string(),
-            })
-            .collect(),
-    )
+/// `metadata.upstream` of one skill's SKILL.md, as written. Empty without frontmatter or the
+/// key; non-string entries come back as their YAML text so the caller can report them.
+fn entries(skill_dir: &Path) -> Result<Vec<String>> {
+    let md = skill_dir.join("SKILL.md");
+    let text = fs::read_to_string(&md).with_context(|| format!("cannot read {}", md.display()))?;
+    let fm = frontmatter::parse(&text)
+        .map_err(|e| anyhow::anyhow!("{}: invalid frontmatter: {e}", md.display()))?;
+    Ok(fm
+        .map(|fm| {
+            lint::upstream_entries(&fm)
+                .into_iter()
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    v => serde_yaml::to_string(v)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 fn parse(raw: &str) -> Result<lint::Upstream<'_>> {
@@ -194,41 +257,45 @@ fn parse(raw: &str) -> Result<lint::Upstream<'_>> {
 }
 
 /// Every `ns-*` skill under `skills_dir` with a `metadata.upstream`, and whether each entry's
-/// path changed upstream since its recorded sha.
-pub fn status(skills_dir: &Path, cache: &mut Cache) -> Result<StatusReport> {
-    let mut dirs: Vec<PathBuf> = fs::read_dir(skills_dir)
-        .map_err(|_| no_skills_dir(skills_dir))?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("ns-"))
-        })
-        .collect();
-    dirs.sort();
+/// path changed upstream since its recorded sha. A skill whose SKILL.md cannot be read or parsed
+/// is one error entry.
+fn status(skills_dir: &Path, cache: &mut Cache) -> Result<StatusReport> {
+    let dirs =
+        install::skill_dirs(skills_dir).map_err(|e| match e.downcast_ref::<io::Error>() {
+            Some(io) if io.kind() == io::ErrorKind::NotFound => {
+                anyhow::Error::from(no_skills_dir(skills_dir))
+            }
+            _ => e,
+        })?;
     let mut skills = Vec::new();
     for dir in dirs {
-        let raws = entries(&dir).unwrap_or_default();
-        if raws.is_empty() {
+        let upstreams = match entries(&dir) {
+            Err(e) => vec![EntryStatus {
+                upstream: "SKILL.md".to_string(),
+                head: None,
+                changed: None,
+                error: Some(format!("{e:#}")),
+            }],
+            Ok(raws) => raws
+                .into_iter()
+                .map(|raw| {
+                    let result = parse(&raw).and_then(|up| cache.changed(&up));
+                    let (head, changed, error) = match result {
+                        Ok((head, changed)) => (Some(head), Some(changed), None),
+                        Err(e) => (None, None, Some(format!("{e:#}"))),
+                    };
+                    EntryStatus {
+                        upstream: raw,
+                        head,
+                        changed,
+                        error,
+                    }
+                })
+                .collect(),
+        };
+        if upstreams.is_empty() {
             continue;
         }
-        let upstreams = raws
-            .into_iter()
-            .map(|raw| {
-                let result = parse(&raw).and_then(|up| cache.changed(&up));
-                let (head, changed, error) = match result {
-                    Ok((head, changed)) => (Some(head), Some(changed), None),
-                    Err(e) => (None, None, Some(format!("{e:#}"))),
-                };
-                EntryStatus {
-                    upstream: raw,
-                    head,
-                    changed,
-                    error,
-                }
-            })
-            .collect();
         skills.push(SkillStatus {
             skill: dir.file_name().unwrap().to_string_lossy().into_owned(),
             upstreams,
@@ -255,8 +322,7 @@ pub struct DiffReport {
     pub upstreams: Vec<EntryDiff>,
 }
 
-/// The upstream diff of each of `skill`'s `metadata.upstream` paths, recorded sha to HEAD.
-pub fn diff(skills_dir: &Path, skill: &str, cache: &mut Cache) -> Result<DiffReport> {
+fn diff(skills_dir: &Path, skill: &str, cache: &mut Cache) -> Result<DiffReport> {
     let name = if skill.starts_with("ns-") {
         skill.to_string()
     } else {
@@ -273,7 +339,7 @@ pub fn diff(skills_dir: &Path, skill: &str, cache: &mut Cache) -> Result<DiffRep
         )
         .into());
     }
-    let raws = entries(&dir).unwrap_or_default();
+    let raws = entries(&dir)?;
     if raws.is_empty() {
         return Err(SfError::usage(
             format!("{name} records no metadata.upstream, so it has no upstream to diff"),
@@ -304,7 +370,15 @@ fn no_skills_dir(dir: &Path) -> SfError {
 }
 
 fn cache_here() -> Result<Cache> {
-    let repo = git::Repo::discover(&std::env::current_dir()?)?;
+    let here = std::env::current_dir()?;
+    if !git::ok(&here, &["rev-parse", "--git-dir"]) {
+        return Err(SfError::usage(
+            format!("{} is not inside a git repository", here.display()),
+            "the upstream cache lives in the repo's .git; run from inside the nightshift checkout:\n  cd path/to/repo && ns upstream status",
+        )
+        .into());
+    }
+    let repo = git::Repo::discover(&here)?;
     Ok(Cache::new(
         repo.common_dir.join("ns").join("upstream"),
         GITHUB,
@@ -430,6 +504,7 @@ mod tests {
         let w = World::new();
         let work = w.upstream("acme/skills");
         commit_file(&work, "README", "hi\n");
+        commit_file(&work, "stable.md", "s\n");
         fs::create_dir_all(work.join("tdd")).unwrap();
         let recorded = commit_file(&work, "tdd/SKILL.md", "v1\n");
         commit_file(&work, "other.md", "o1\n");
@@ -439,7 +514,7 @@ mod tests {
         w.skill("ns-tdd", &format!(" acme/skills@{}:tdd", short(&recorded)));
         w.skill(
             "ns-other",
-            &format!(" acme/skills@{}:README-missing", short(&recorded)),
+            &format!(" acme/skills@{}:stable.md", short(&recorded)),
         );
         let plain = w.skills().join("ns-plain");
         fs::create_dir_all(&plain).unwrap();
@@ -615,6 +690,176 @@ mod tests {
         );
         assert_eq!(es[3].upstream, "1234567");
         assert!(es[3].error.is_some());
+    }
+
+    #[test]
+    fn a_path_in_neither_the_recorded_sha_nor_head_is_an_error_entry() {
+        let w = World::new();
+        let work = w.upstream("acme/skills");
+        let recorded = commit_file(&work, "a.md", "a\n");
+        commit_file(&work, "a.md", "b\n");
+        w.push(&work, "acme/skills");
+        w.skill(
+            "ns-a",
+            &format!(" acme/skills@{}:typo.md", short(&recorded)),
+        );
+        let r = status(&w.skills(), &mut w.cache()).unwrap();
+        assert!(!r.ok);
+        let e = &entry(&r, "ns-a")[0];
+        assert_eq!(e.changed, None);
+        assert!(
+            e.error
+                .as_deref()
+                .unwrap()
+                .contains("path typo.md not found at recorded sha or HEAD"),
+            "{e:?}"
+        );
+    }
+
+    #[test]
+    fn a_path_added_or_removed_upstream_is_changed() {
+        let w = World::new();
+        let work = w.upstream("acme/skills");
+        let recorded = commit_file(&work, "gone.md", "g\n");
+        g(&work, &["rm", "-q", "gone.md"]);
+        g(&work, &["commit", "-qm", "rm"]);
+        commit_file(&work, "new.md", "n\n");
+        w.push(&work, "acme/skills");
+        w.skill(
+            "ns-a",
+            &format!(
+                "\n    - acme/skills@{0}:gone.md\n    - acme/skills@{0}:new.md",
+                short(&recorded)
+            ),
+        );
+        let r = status(&w.skills(), &mut w.cache()).unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(r.changed, 2);
+    }
+
+    #[test]
+    fn an_owner_or_repo_of_dots_is_an_error_entry_and_touches_no_cache_dir() {
+        let w = World::new();
+        w.skill(
+            "ns-a",
+            "\n    - ../..@abc1234:x\n    - a/..@abc1234:x\n    - a/.b@abc1234:x",
+        );
+        let mut cache = w.cache();
+        git::reset_spawns();
+        let r = status(&w.skills(), &mut cache).unwrap();
+        assert!(!r.ok);
+        for e in entry(&r, "ns-a") {
+            assert!(e.error.as_deref().unwrap().contains("owner/repo@"), "{e:?}");
+        }
+        assert_eq!(git::spawns(), 0);
+        assert!(!w.root.join("cache").exists());
+    }
+
+    #[test]
+    fn a_skill_with_unparseable_frontmatter_is_an_error_entry_and_diff_fails() {
+        let w = World::new();
+        let broken = w.skills().join("ns-broken");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join("SKILL.md"), "---\nname: [unclosed\n---\nbody\n").unwrap();
+        let r = status(&w.skills(), &mut w.cache()).unwrap();
+        assert!(!r.ok);
+        let e = &entry(&r, "ns-broken")[0];
+        assert!(
+            e.error.as_deref().unwrap().contains("invalid frontmatter"),
+            "{e:?}"
+        );
+        let e = diff(&w.skills(), "ns-broken", &mut w.cache()).unwrap_err();
+        assert!(e.to_string().contains("invalid frontmatter"), "{e}");
+    }
+
+    #[test]
+    fn an_unreadable_skill_md_is_an_error_entry() {
+        let w = World::new();
+        let dir = w.skills().join("ns-bin");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), [0xff, 0xfe, 0xfd]).unwrap();
+        let r = status(&w.skills(), &mut w.cache()).unwrap();
+        assert!(!r.ok);
+        let e = &entry(&r, "ns-bin")[0];
+        assert!(e.error.as_deref().unwrap().contains("cannot read"), "{e:?}");
+    }
+
+    #[test]
+    fn a_sha_beyond_the_deepen_ceiling_is_an_error_naming_the_ceiling() {
+        let w = World::new();
+        let work = w.upstream("acme/skills");
+        commit_file(&work, "a.md", "a\n");
+        let tree = g(&work, &["rev-parse", "HEAD^{tree}"]);
+        let mut tip = g(&work, &["rev-parse", "HEAD"]);
+        for i in 0..300 {
+            tip = g(
+                &work,
+                &["commit-tree", &tree, "-p", &tip, "-m", &i.to_string()],
+            );
+        }
+        g(&work, &["reset", "-q", "--hard", &tip]);
+        w.push(&work, "acme/skills");
+        w.skill("ns-a", " acme/skills@0123456789ab:a.md");
+        let mut cache = w.cache();
+        cache.max_deepen = 100;
+        let r = status(&w.skills(), &mut cache).unwrap();
+        let e = &entry(&r, "ns-a")[0];
+        assert!(
+            e.error
+                .as_deref()
+                .unwrap()
+                .contains("not in acme/skills's history within 100 commits"),
+            "{e:?}"
+        );
+        assert_eq!(
+            git::run(
+                &cache.dir("acme/skills"),
+                &["rev-list", "--count", HEAD_REF]
+            )
+            .unwrap(),
+            "101"
+        );
+    }
+
+    #[test]
+    fn two_entries_on_one_unreachable_repo_both_error_after_one_failed_fetch() {
+        let w = World::new();
+        w.skill("ns-a", " acme/gone@1234567:a.md");
+        w.skill("ns-b", " acme/gone@1234567:b.md");
+        let spawns = |skills: &Path| {
+            git::reset_spawns();
+            let r = status(skills, &mut w.cache()).unwrap();
+            (r, git::spawns())
+        };
+        let (r, two) = spawns(&w.skills());
+        assert!(entry(&r, "ns-a")[0].error.is_some());
+        assert!(entry(&r, "ns-b")[0].error.is_some());
+        fs::remove_dir_all(w.skills().join("ns-b")).unwrap();
+        fs::remove_dir_all(w.root.join("cache")).unwrap();
+        let (_, one) = spawns(&w.skills());
+        assert_eq!(two, one, "the second entry spawned git again");
+    }
+
+    #[test]
+    fn a_git_diff_failure_is_an_error_entry() {
+        let w = World::new();
+        let work = w.upstream("acme/skills");
+        let recorded = commit_file(&work, "a.md", "a\n");
+        commit_file(&work, "a.md", "b\n");
+        w.push(&work, "acme/skills");
+        w.skill("ns-a", &format!(" acme/skills@{}:a.md", short(&recorded)));
+        let mut cache = w.cache();
+        status(&w.skills(), &mut cache).unwrap();
+        g(
+            &cache.dir("acme/skills"),
+            &["config", "diff.algorithm", "bogus"],
+        );
+        let r = status(&w.skills(), &mut w.cache()).unwrap();
+        let e = &entry(&r, "ns-a")[0];
+        assert!(
+            e.error.as_deref().unwrap().contains("git diff failed"),
+            "{e:?}"
+        );
     }
 
     #[test]

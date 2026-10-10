@@ -43,7 +43,8 @@ pub fn parse_upstream(s: &str) -> Option<Upstream<'_>> {
     let (sha, path) = rest.split_once(':')?;
     let (owner, name) = repo.split_once('/')?;
     let ident = |x: &str| {
-        !x.is_empty()
+        !x.starts_with('.')
+            && !x.is_empty()
             && x.chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     };
@@ -318,6 +319,15 @@ mod tests {
         assert!(!valid_upstream("cursor/plugins@ccb5507cec15"));
         assert!(!valid_upstream("plugins@ccb5507cec15:x"));
         assert!(!valid_upstream("cursor/plugins@ABCDEF0:x"));
+        for bad in [
+            "../..@abc1234:x",
+            "./x@abc1234:x",
+            "a/..@abc1234:x",
+            "a/.git@abc1234:x",
+            ".a/b@abc1234:x",
+        ] {
+            assert!(!valid_upstream(bad), "{bad}");
+        }
         assert_eq!(
             parse_upstream("a/b@1234567:p/q.md"),
             Some(Upstream {

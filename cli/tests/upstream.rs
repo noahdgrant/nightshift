@@ -41,6 +41,7 @@ fn world() -> World {
     let work = root.join("work");
     fs::create_dir_all(&work).unwrap();
     git(&work, &["init", "-q", "-b", "main"]);
+    commit(&work, "b.md", "b\n");
     let recorded = commit(&work, "a.md", "old a\n");
     commit(&work, "a.md", "new a\n");
     let bare = root.join("up/acme/skills");
@@ -189,4 +190,66 @@ fn diff_of_an_unknown_skill_exits_2_and_names_the_status_command() {
         .clone();
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.contains("ns upstream status"), "{err}");
+}
+
+#[test]
+fn status_outside_a_git_repo_exits_2_with_a_hint() {
+    let w = world();
+    let out = ns(&w)
+        .current_dir(&w.root)
+        .args(["upstream", "status", "--skills-dir", "repo/skills"])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("is not inside a git repository"), "{err}");
+    assert!(
+        err.contains("run from inside the nightshift checkout"),
+        "{err}"
+    );
+    assert!(!err.contains("--repo"), "{err}");
+}
+
+#[test]
+fn skills_dir_selects_another_skills_directory() {
+    let w = world();
+    let other = w.root.join("other");
+    fs::create_dir_all(&other).unwrap();
+    fs::rename(w.root.join("repo/skills/ns-a"), other.join("ns-a")).unwrap();
+    let out = ns(&w)
+        .args(["upstream", "status", "--skills-dir"])
+        .arg(&other)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["skills"][0]["skill"], "ns-a");
+    let out = ns(&w)
+        .args(["upstream", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["skills"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn a_missing_skills_dir_exits_2_and_names_the_flag() {
+    let w = world();
+    for args in [&["status"][..], &["diff", "ns-a"][..]] {
+        let out = ns(&w)
+            .arg("upstream")
+            .args(args)
+            .args(["--skills-dir", "nowhere"])
+            .assert()
+            .code(2)
+            .get_output()
+            .clone();
+        let err = String::from_utf8(out.stderr).unwrap();
+        assert!(err.contains("does not exist"), "{err}");
+        assert!(err.contains("--skills-dir"), "{err}");
+    }
 }
