@@ -30,8 +30,25 @@ pub fn scrub(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
+#[cfg(test)]
+thread_local! {
+    static SPAWNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub fn reset_spawns() {
+    SPAWNS.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+pub fn spawns() -> usize {
+    SPAWNS.with(std::cell::Cell::get)
+}
+
 /// A `git` command with inherited location variables removed.
 pub fn command() -> Command {
+    #[cfg(test)]
+    SPAWNS.with(|c| c.set(c.get() + 1));
     let mut c = Command::new("git");
     scrub(&mut c);
     c
