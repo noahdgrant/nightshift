@@ -44,6 +44,37 @@ PYEOF
 expect_exit = 0
 
 [[check]]
+# Every escape sits in its severity's section with that section's id prefix, so ns quality reads it (#205).
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, sys
+text = open(".ns/01-cap-reservation-ttl/review.md", encoding="utf-8").read()
+prefix = {"critical": "C", "important": "I", "suggestion": "S"}
+blocks, section = [], None
+for line in text.splitlines():
+    h2 = re.match(r"^##\s+(\w+)", line)
+    h3 = re.match(r"^###\s+\**([A-Z])\d+", line)
+    if h2:
+        section = prefix.get(h2[1].lower().rstrip("s"))
+        blocks.append(None)
+    elif h3:
+        blocks.append([h3[1] == section, line, ""])
+    elif blocks and blocks[-1]:
+        blocks[-1][2] += line + "\n"
+field = lambda k, b: re.search(r"(?mi)^-\s*\**" + k + r":\**\s*`?([\w-]*)", b)
+escapes = [(ok, h) for ok, h, b in filter(None, blocks)
+           if (field("Scope", b) or [0, ""])[1].lower() == "pre-existing"
+           and (field("Status", b) or [0, ""])[1].lower() != "dismissed"]
+bad = [h for ok, h in escapes if not ok]
+if bad or not escapes:
+    sys.exit("escapes outside their severity section or prefix: %s" % (bad or "no ### escape"))
+print("ok:", [h for _, h in escapes])
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
 # The escape is a new needs-triage bug at high priority that names the unit and says it escaped an earlier review.
 type = "command"
 run = '''
