@@ -2974,10 +2974,19 @@ fn a_rebase_after_review_still_merges() {
     let (e, v, code) = rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |_| {});
     assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
     assert_eq!(e.calls(), ["triage", "build", "verify", "review", "ship"]);
-    let wt = e.worktree(UNIT);
-    let review = fs::read_to_string(wt.join(format!(".ns/{UNIT}/review.md"))).unwrap();
-    let head = git(&wt, &["rev-parse", "--short", "HEAD"]);
-    assert!(!review.contains(&format!("sha: {head}")), "{review}");
+    // The rebased branch carries the merged change, so it goes.
+    assert_eq!(v["cleanup"]["removed"], true, "{v}");
+    assert!(!e.worktree(UNIT).exists());
+}
+
+/// The sha `ns run` merged at: the unit's HEAD when its merge step ran.
+fn merged_sha(e: &Env) -> String {
+    let ev = run_events(e);
+    let merged = ev
+        .iter()
+        .find(|v| v["event"] == "merged")
+        .expect("merged event");
+    merged["sha"].as_str().unwrap().to_string()
 }
 
 #[test]
@@ -2985,8 +2994,7 @@ fn a_pr_head_from_before_the_rebase_merges_at_that_head() {
     let (e, v, code) = rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |_| {});
     assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
     let old = fs::read_to_string(e.ghd.join("pr-12.head")).unwrap();
-    let wt = e.worktree(UNIT);
-    assert_ne!(old.trim(), git(&wt, &["rev-parse", "HEAD"]));
+    assert_ne!(old.trim(), merged_sha(&e));
     let want = format!("--match-head-commit {}", old.trim());
     assert!(e.gh_calls().contains(&want), "{}", e.gh_calls());
 }
@@ -3032,14 +3040,16 @@ fn a_behind_pr_without_an_updated_head_merges_at_the_pre_update_head() {
     let head = merge.rsplit(' ').next().unwrap();
     let shipped = fs::read_to_string(e.ghd.join("pr-12.shipped")).unwrap();
     assert_eq!(head, shipped.trim(), "{merge}");
-    assert_ne!(head, git(&e.worktree(UNIT), &["rev-parse", "HEAD"]));
+    assert_ne!(head, merged_sha(&e));
     assert_ne!(head, UPDATED_HEAD);
 }
 
 #[test]
 fn a_dry_run_on_a_rebased_unit_sees_its_reviewed_artifacts_as_current() {
-    let (e, v, code) = rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |_| {});
-    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    // A human merge keeps the worktree to look at.
+    let (e, v, code) =
+        rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |e| e.factory(""));
+    assert_eq!((code, &v["outcome"]), (0, &"done".into()), "{v}");
     let v = e.run(&["run", "--issue", "7", "--dry-run"], 0);
     assert_eq!(v["decision"]["action"], "done", "{v}");
 }
@@ -3067,8 +3077,7 @@ fn a_content_change_after_review_reverifies_reviews_and_ships() {
         e.calls(),
         ["triage", "build", "verify", "review", "ship", "verify", "review", "ship"]
     );
-    let hist = e.worktree(UNIT).join(format!(".ns/{UNIT}/history"));
-    assert!(hist.join("pr-1.md").is_file());
+    assert_eq!(v["cleanup"]["removed"], true, "{v}");
 }
 
 #[test]
@@ -4028,8 +4037,12 @@ fn watch_merged_removes_in_progress_and_bases_on_origin() {
         calls.contains("issue edit 2 --remove-label status:in-progress\n"),
         "{calls}"
     );
-    let wt = e.worktree("2-fix-a");
-    assert!(git(&wt, &["merge-base", "--is-ancestor", &upstream, "HEAD"]).is_empty());
+    let merged = merged_sha(&e);
+    assert!(git(
+        &e.root,
+        &["merge-base", "--is-ancestor", &upstream, &merged]
+    )
+    .is_empty());
 }
 
 #[test]
@@ -5459,4 +5472,699 @@ fn a_plain_gate_failure_names_no_signal() {
         build_event(&e, 2)["decision"],
         "the CI gate failed after build"
     );
+}
+
+// ---------------------------------------------------------------- cleanup (#211)
+
+fn branch_exists(e: &Env, unit: &str) -> bool {
+    !git(&e.root, &["branch", "--list", &format!("ns/{unit}")]).is_empty()
+}
+
+/// Index of the first run-log event matching `pred`.
+fn event_at(e: &Env, pred: impl Fn(&Value) -> bool) -> usize {
+    run_events(e)
+        .iter()
+        .position(pred)
+        .unwrap_or_else(|| panic!("no such event in {:?}", run_events(e)))
+}
+
+fn cleanup_events(e: &Env) -> Vec<Value> {
+    run_events(e)
+        .into_iter()
+        .filter(|v| v["event"] == "cleanup")
+        .collect()
+}
+
+/// A pre-receive hook on `origin` that declines every push to the quality branch.
+fn decline_quality_pushes(e: &Env) {
+    let hook = e.base.join("remote.git/hooks/pre-receive");
+    fs::write(
+        &hook,
+        "#!/bin/sh\nwhile read old new ref; do\n  [ \"$ref\" = refs/heads/nightshift/quality ] && { echo declined >&2; exit 1; }\ndone\nexit 0\n",
+    )
+    .unwrap();
+    StdCommand::new("chmod")
+        .arg("+x")
+        .arg(&hook)
+        .status()
+        .unwrap();
+}
+
+/// Make the outbox unwritable too: its temp file's path is a directory.
+fn break_outbox(e: &Env) {
+    fs::create_dir_all(e.root.join(".git/ns/quality-outbox.jsonl.tmp")).unwrap();
+}
+
+fn auto_merge_env() -> Env {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.ctl("review.body", FINDING);
+    e
+}
+
+#[test]
+fn auto_merge_removes_the_worktree_and_branch_after_saving_the_record() {
+    let e = auto_merge_env();
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(v["cleanup"]["removed"], true, "{v}");
+    assert!(!e.worktree(UNIT).exists());
+    assert!(!branch_exists(&e, UNIT));
+    assert!(!git(&e.root, &["worktree", "list"]).contains(UNIT));
+    let r = &quality_records(&e)[0];
+    assert_eq!(
+        (r["unit"].as_str(), r["outcome"].as_str()),
+        (Some(UNIT), Some("merged"))
+    );
+    let saved = event_at(&e, |v| v["event"] == "quality_record");
+    let removed = event_at(&e, |v| v["event"] == "cleanup");
+    assert!(saved < removed);
+    let ev = &cleanup_events(&e)[0];
+    assert_eq!(
+        (
+            ev["by"].as_str(),
+            ev["removed"].as_bool(),
+            ev["pr"].as_u64()
+        ),
+        (Some("run"), Some(true), Some(12))
+    );
+}
+
+#[test]
+fn auto_merge_with_the_record_in_the_outbox_still_cleans() {
+    let e = auto_merge_env();
+    decline_quality_pushes(&e);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["cleanup"]["removed"], true, "{v}");
+    assert!(!e.worktree(UNIT).exists());
+    assert_eq!(quality_events(&e)[0]["status"], "outbox");
+    let outbox = fs::read_to_string(e.root.join(".git/ns/quality-outbox.jsonl")).unwrap();
+    assert!(outbox.contains(UNIT), "{outbox}");
+    assert!(quality_records(&e).is_empty());
+}
+
+#[test]
+fn auto_merge_keeps_the_worktree_when_its_record_is_not_saved() {
+    let e = auto_merge_env();
+    decline_quality_pushes(&e);
+    break_outbox(&e);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(v["cleanup"]["removed"], false, "{v}");
+    assert_eq!(
+        v["cleanup"]["reason"], "its quality record is not saved",
+        "{v}"
+    );
+    assert!(e
+        .worktree(UNIT)
+        .join(format!(".ns/{UNIT}/review.md"))
+        .is_file());
+    assert!(branch_exists(&e, UNIT));
+}
+
+#[test]
+fn auto_merge_keeps_a_worktree_with_uncommitted_tracked_changes() {
+    let e = auto_merge_env();
+    e.queue("ship", &["pass:script"]);
+    e.ctl("ship.sh", "echo edited >> README\n");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(
+        v["cleanup"]["reason"], "uncommitted changes to tracked files (1 paths)",
+        "{v}"
+    );
+    assert_eq!(
+        fs::read_to_string(e.worktree(UNIT).join("README")).unwrap(),
+        "hi\nedited\n"
+    );
+    assert!(branch_exists(&e, UNIT));
+}
+
+#[test]
+fn a_merge_that_leaves_a_pr_head_not_here_keeps_the_worktree() {
+    let e = auto_merge_env();
+    e.gh_file("pr-12.merge", "BEHIND");
+    e.gh_file(
+        "updated-12.head",
+        "0123456789abcdef0123456789abcdef01234567",
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let reason = v["cleanup"]["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("has changes merged PR #12 (head 0123456789abcdef0123456789abcdef01234567) does not hold"),
+        "{v}"
+    );
+    assert!(e.worktree(UNIT).exists());
+}
+
+/// A unit worktree on `ns/<unit>` with one commit, a review and a `pr.md` naming PR `pr`,
+/// issue `n` in `issue_state`, and the PR in `pr_state` with a body that closes the issue.
+fn unit_with_pr(
+    e: &Env,
+    n: u64,
+    unit: &str,
+    pr: u64,
+    issue_state: &str,
+    pr_state: &str,
+) -> PathBuf {
+    let wt = e.worktree(unit);
+    git(
+        &e.root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            &format!("ns/{unit}"),
+            wt.to_str().unwrap(),
+            "main",
+        ],
+    );
+    fs::write(wt.join(format!("{unit}.txt")), "work\n").unwrap();
+    git(&wt, &["add", &format!("{unit}.txt")]);
+    git(&wt, &["commit", "-q", "-m", unit]);
+    let dir = wt.join(".ns").join(unit);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("pr.md"),
+        format!("---\nunit: {unit}\nphase: ship\nstatus: pass\npr: https://github.com/o/r/pull/{pr}\n---\n"),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("review.md"),
+        format!("---\nunit: {unit}\nphase: review\nstatus: pass\nupdated: 2026-10-08T00:00:00Z\n---\n{FINDING}"),
+    )
+    .unwrap();
+    e.issue(n, unit, issue_state);
+    e.gh_file(&format!("pr-{pr}.state"), pr_state);
+    e.gh_file(&format!("pr-{pr}.body"), &format!("Closes #{n}"));
+    wt
+}
+
+fn reasons(v: &Value) -> std::collections::BTreeMap<String, String> {
+    v["kept"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| {
+            (
+                k["unit"].as_str().unwrap().to_string(),
+                k["reason"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn units_in(v: &Value) -> Vec<String> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["unit"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn clean_removes_a_merged_unit_after_saving_its_record_and_keeps_open_ones() {
+    let e = Env::new();
+    let done = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    let open = unit_with_pr(&e, 4, "4-open", 40, "OPEN", "MERGED");
+    let v = e.run(&["clean"], 0);
+    assert_eq!(v["status"], "cleaned", "{v}");
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert_eq!(v["removed"][0]["pr"], 30);
+    assert_eq!(reasons(&v)["4-open"], "issue #4 is open", "{v}");
+    assert!(!done.exists());
+    assert!(!branch_exists(&e, "3-done"));
+    assert!(open.join(".ns/4-open/pr.md").is_file());
+    assert!(branch_exists(&e, "4-open"));
+    let records = quality_records(&e);
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        (
+            records[0]["unit"].as_str(),
+            records[0]["outcome"].as_str(),
+            records[0]["pr"].as_u64(),
+            records[0]["issue"].as_u64()
+        ),
+        (Some("3-done"), Some("merged"), Some(30), Some(3))
+    );
+    assert!(
+        event_at(&e, |v| v["event"] == "quality_record")
+            < event_at(&e, |v| v["event"] == "cleanup" && v["unit"] == "3-done")
+    );
+    assert_eq!(cleanup_events(&e)[0]["by"], "clean");
+
+    // A rerun has nothing to do.
+    let v = e.run(&["clean"], 0);
+    assert_eq!(v["status"], "nothing-to-clean", "{v}");
+    assert_eq!(units_in(&v["removed"]), Vec::<String>::new());
+}
+
+#[test]
+fn clean_keeps_units_it_cannot_prove_merged_and_says_why() {
+    let e = Env::new();
+    let dirty = unit_with_pr(&e, 5, "5-dirty", 50, "CLOSED", "MERGED");
+    fs::write(dirty.join("5-dirty.txt"), "changed\n").unwrap();
+    let ahead = unit_with_pr(&e, 6, "6-ahead", 60, "CLOSED", "MERGED");
+    let pr_head = git(&ahead, &["rev-parse", "HEAD"]);
+    e.gh_file("pr-60.head", &pr_head);
+    fs::write(ahead.join("more.txt"), "more\n").unwrap();
+    git(&ahead, &["add", "more.txt"]);
+    git(&ahead, &["commit", "-q", "-m", "more"]);
+    unit_with_pr(&e, 8, "8-open-pr", 80, "CLOSED", "OPEN");
+    unit_with_pr(&e, 9, "9-other", 90, "CLOSED", "MERGED");
+    e.gh_file("pr-90.body", "Closes #1");
+    unit_with_pr(&e, 10, "10-elsewhere", 100, "CLOSED", "MERGED");
+    e.gh_file("pr-100.ref", "someone/branch");
+    let nopr = unit_with_pr(&e, 11, "11-nopr", 110, "CLOSED", "MERGED");
+    fs::remove_file(nopr.join(".ns/11-nopr/pr.md")).unwrap();
+    unit_with_pr(&e, 12, "scratch", 120, "CLOSED", "MERGED");
+    unit_with_pr(&e, 13, "13-unread", 130, "CLOSED", "MERGED");
+    fs::remove_file(e.ghd.join("issue-13.json")).unwrap();
+    // Untracked files never keep a worktree: they are not work the PR could hold.
+    let untracked = unit_with_pr(&e, 14, "14-untracked", 140, "CLOSED", "MERGED");
+    fs::write(untracked.join("build.log"), "noise\n").unwrap();
+
+    let v = e.run(&["clean"], 0);
+    let r = reasons(&v);
+    assert_eq!(
+        r["5-dirty"], "uncommitted changes to tracked files (1 paths)",
+        "{v}"
+    );
+    let tip = git(&ahead, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        r["6-ahead"],
+        format!("ns/6-ahead at {tip} has changes merged PR #60 (head {pr_head}) does not hold"),
+        "{v}"
+    );
+    assert_eq!(r["8-open-pr"], "PR #80 is OPEN");
+    assert_eq!(r["9-other"], "PR #90 does not close #9");
+    assert_eq!(
+        r["10-elsewhere"],
+        "PR #100 is from branch \"someone/branch\", not ns/10-elsewhere"
+    );
+    assert_eq!(r["11-nopr"], "no PR in .ns/11-nopr/pr.md");
+    assert_eq!(r["scratch"], "the unit id names no issue");
+    assert!(r["13-unread"].starts_with("cannot read issue #13: "), "{v}");
+    assert_eq!(r.len(), 8, "{v}");
+    assert_eq!(units_in(&v["removed"]), ["14-untracked"], "{v}");
+    for unit in [
+        "5-dirty",
+        "6-ahead",
+        "8-open-pr",
+        "9-other",
+        "10-elsewhere",
+        "11-nopr",
+        "scratch",
+        "13-unread",
+    ] {
+        assert!(e.worktree(unit).is_dir(), "{unit}");
+        assert!(branch_exists(&e, unit), "{unit}");
+    }
+    assert_eq!(
+        fs::read_to_string(dirty.join("5-dirty.txt")).unwrap(),
+        "changed\n"
+    );
+}
+
+#[test]
+fn clean_dry_run_lists_the_plan_and_changes_nothing() {
+    let e = Env::new();
+    let done = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    unit_with_pr(&e, 4, "4-open", 40, "OPEN", "MERGED");
+    let v = e.run(&["clean", "--dry-run"], 0);
+    assert_eq!(
+        (v["dry_run"].as_bool(), v["status"].as_str()),
+        (Some(true), Some("planned")),
+        "{v}"
+    );
+    assert_eq!(units_in(&v["planned"]), ["3-done"], "{v}");
+    assert_eq!(reasons(&v)["4-open"], "issue #4 is open");
+    assert!(v.get("removed").is_none(), "{v}");
+    assert!(done.join(".ns/3-done/pr.md").is_file());
+    assert!(branch_exists(&e, "3-done"));
+    assert!(quality_records(&e).is_empty());
+    assert!(run_events(&e).is_empty(), "{:?}", run_events(&e));
+}
+
+#[test]
+fn clean_keeps_a_unit_a_live_run_holds_and_removes_the_rest() {
+    let e = Env::new();
+    let held = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    let free = unit_with_pr(&e, 4, "4-done", 40, "CLOSED", "MERGED");
+    let _held = hold(
+        &e.root.join(".git/ns-run-3-done.lock"),
+        r#"{"pid":42,"unit":"3-done","issue":3}"#,
+    );
+    let want = "a live ns run (pid 42) holds its run lock";
+    let v = e.run(&["clean", "--dry-run"], 0);
+    assert_eq!(units_in(&v["planned"]), ["4-done"], "{v}");
+    assert_eq!(reasons(&v)["3-done"], want, "{v}");
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["4-done"], "{v}");
+    assert_eq!(reasons(&v)["3-done"], want, "{v}");
+    // Only the unit that goes is recorded.
+    let units: Vec<_> = quality_records(&e)
+        .iter()
+        .map(|r| r["unit"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(units, ["4-done"]);
+    assert!(held.is_dir());
+    assert!(branch_exists(&e, "3-done"));
+    assert!(!free.exists());
+}
+
+#[test]
+fn clean_keeps_a_unit_whose_run_starts_after_the_plan() {
+    let e = Env::new();
+    let a = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    let b = unit_with_pr(&e, 4, "4-done", 40, "CLOSED", "MERGED");
+    // Reading one unit's PR starts a run on the other: whichever is read second was planned
+    // with its lock free, and must find it taken when it is checked again.
+    let lock = |unit: &str| e.root.join(format!(".git/ns-run-{unit}.lock"));
+    let start = |unit: &str| {
+        format!(
+            "( flock {0} sleep 30 >/dev/null 2>&1 & ); until ! flock -n {0} true; do sleep 0.01; done",
+            lock(unit).display()
+        )
+    };
+    e.gh_file(
+        "hook.sh",
+        &format!(
+            "case \"$*\" in\n  \"pr view 30 \"*) {} ;;\n  \"pr view 40 \"*) {} ;;\nesac\n",
+            start("4-done"),
+            start("3-done")
+        ),
+    );
+    let v = e.run(&["clean"], 0);
+    let r = reasons(&v);
+    let want = "a live ns run (pid ?) holds its run lock";
+    assert_eq!(
+        (r["3-done"].as_str(), r["4-done"].as_str()),
+        (want, want),
+        "{v}"
+    );
+    // One of them got past the plan and was refused at the run lock.
+    let refused = cleanup_events(&e);
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(refused[0]["reason"], want);
+    // The lock is taken before the record: neither unit is recorded.
+    assert!(quality_records(&e).is_empty());
+    assert!(a.is_dir() && b.is_dir());
+}
+
+#[test]
+fn clean_names_another_cleanup_and_a_run_lock_it_cannot_take() {
+    let e = Env::new();
+    let a = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    let b = unit_with_pr(&e, 4, "4-done", 40, "CLOSED", "MERGED");
+    let _other = hold(
+        &e.root.join(".git/ns-run-3-done.lock"),
+        r#"{"pid":42,"unit":"3-done","issue":3,"by":"watch"}"#,
+    );
+    fs::create_dir(e.root.join(".git/ns-run-4-done.lock")).unwrap();
+    let v = e.run(&["clean"], 0);
+    let r = reasons(&v);
+    assert_eq!(r["3-done"], "ns watch (pid 42) is cleaning it up", "{v}");
+    assert!(r["4-done"].starts_with("cannot take its run lock: "), "{v}");
+    assert!(a.is_dir() && b.is_dir());
+    assert!(quality_records(&e).is_empty());
+}
+
+#[test]
+fn clean_with_the_record_in_the_outbox_still_removes() {
+    let e = Env::new();
+    let done = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    decline_quality_pushes(&e);
+    let v = e.run(&["clean"], 0);
+    assert_eq!(v["records"]["status"], "outbox", "{v}");
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert!(!done.exists());
+    let outbox = fs::read_to_string(e.root.join(".git/ns/quality-outbox.jsonl")).unwrap();
+    assert!(outbox.contains("\"unit\":\"3-done\""), "{outbox}");
+}
+
+#[test]
+fn clean_keeps_a_unit_whose_record_is_not_saved() {
+    let e = Env::new();
+    let done = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    decline_quality_pushes(&e);
+    break_outbox(&e);
+    let v = e.run(&["clean"], 0);
+    assert!(v["records"]["error"].is_string(), "{v}");
+    let r = reasons(&v);
+    assert!(
+        r["3-done"].starts_with("its quality record is not saved: "),
+        "{v}"
+    );
+    assert!(done.join(".ns/3-done/review.md").is_file());
+    assert!(branch_exists(&e, "3-done"));
+}
+
+#[test]
+fn clean_fails_when_a_removal_fails() {
+    let e = Env::new();
+    let done = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    // A locked worktree refuses a single --force.
+    git(&e.root, &["worktree", "lock", done.to_str().unwrap()]);
+    let v = e.run(&["clean"], 1);
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["kept"][0]["error"], true, "{v}");
+    assert!(
+        reasons(&v)["3-done"].starts_with("worktree not removed: "),
+        "{v}"
+    );
+    assert!(done.is_dir());
+}
+
+#[test]
+fn watch_cleans_a_unit_a_human_merged_at_start_and_keeps_open_ones() {
+    let e = Env::new();
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    // A stuck unit's issue stays open: its worktree stays.
+    let stuck = unit_with_pr(&e, 4, "4-stuck", 40, "OPEN", "OPEN");
+
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(v["clean"], serde_json::json!([]), "{v}");
+
+    // A human merges PR 12, which closes #7.
+    e.issue(7, "Fix the thing", "CLOSED");
+    e.gh_file("pr-12.state", "MERGED");
+    e.gh_file("pr-12.body", "Closes #7");
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(v["clean"], serde_json::json!([UNIT]), "{v}");
+    assert!(e.worktree(UNIT).is_dir());
+
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["cleaned"], serde_json::json!([UNIT]), "{v}");
+    assert!(!e.worktree(UNIT).exists());
+    assert!(!branch_exists(&e, UNIT));
+    assert!(stuck.is_dir());
+    // The record is written again with the merge as its outcome.
+    let last = quality_records(&e).pop().unwrap();
+    assert_eq!(
+        (last["unit"].as_str(), last["outcome"].as_str()),
+        (Some(UNIT), Some("merged"))
+    );
+    assert_eq!(cleanup_events(&e)[0]["by"], "watch");
+}
+
+#[test]
+fn watch_cleans_a_unit_merged_while_another_unit_ran() {
+    let e = Env::new();
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    e.ctl("pr", "13");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    // A human merges PR 12 while unit 2 runs.
+    e.gh_file(
+        "hook.sh",
+        "if [ \"$1 $2\" = \"issue edit\" ] && [ \"$3\" = 2 ]; then\n  sed -i 's/\"OPEN\"/\"CLOSED\"/' \"$d/issue-7.json\"\n  echo MERGED > \"$d/pr-12.state\"\n  echo 'Closes #7' > \"$d/pr-12.body\"\nfi\n",
+    );
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["issue"], 2, "{v}");
+    assert_eq!(v["cleaned"], serde_json::json!([UNIT]), "{v}");
+    assert!(!e.worktree(UNIT).exists());
+    let unit2_ended = event_at(&e, |v| v["event"] == "end" && v["unit"] == "2-fix-a");
+    let cleaned = event_at(&e, |v| v["event"] == "cleanup" && v["unit"] == UNIT);
+    assert!(unit2_ended < cleaned);
+}
+
+#[test]
+fn auto_merge_keeps_the_worktree_when_the_merged_head_cannot_be_read() {
+    let e = auto_merge_env();
+    e.gh_file(
+        "hook.sh",
+        "[ \"$*\" = \"pr view 12 --json headRefOid\" ] && { echo 'HTTP 502' >&2; exit 1; }\n",
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let reason = v["cleanup"]["reason"].as_str().unwrap();
+    assert!(reason.starts_with("cannot read PR #12: "), "{v}");
+    assert!(e.worktree(UNIT).is_dir());
+}
+
+#[test]
+fn clean_keeps_the_worktree_it_runs_from() {
+    let e = Env::new();
+    let done = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    let out = e.ns().current_dir(&done).args(["clean"]).output();
+    assert!(out.status.success(), "{out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        reasons(&v)["3-done"],
+        "the current directory is inside it",
+        "{v}"
+    );
+    assert!(done.is_dir());
+}
+
+#[test]
+fn clean_keeps_the_main_checkout_and_a_worktree_git_cannot_read() {
+    let e = Env::new();
+    // The main checkout on a merged unit's branch.
+    git(&e.root, &["checkout", "-qb", "ns/15-main"]);
+    let art = e.root.join(".ns/15-main");
+    fs::create_dir_all(&art).unwrap();
+    fs::write(art.join("pr.md"), "---\nstatus: pass\npr: 150\n---\n").unwrap();
+    e.issue(15, "main", "CLOSED");
+    e.gh_file("pr-150.state", "MERGED");
+    e.gh_file("pr-150.body", "Closes #15");
+    // A worktree whose .git link is broken.
+    let broken = unit_with_pr(&e, 16, "16-broken", 160, "CLOSED", "MERGED");
+    let head = git(&broken, &["rev-parse", "HEAD"]);
+    e.gh_file("pr-160.head", &head);
+    e.gh_file("pr-160.ref", "ns/16-broken");
+    fs::write(broken.join(".git"), "gitdir: /nonexistent\n").unwrap();
+
+    let v = e.run(&["clean"], 0);
+    let r = reasons(&v);
+    assert_eq!(r["15-main"], "the main checkout is on its branch", "{v}");
+    assert!(
+        r["16-broken"].starts_with("cannot read its status: "),
+        "{v}"
+    );
+    assert!(art.join("pr.md").is_file());
+    assert!(broken.is_dir());
+}
+
+#[test]
+fn clean_reports_a_branch_it_could_not_delete() {
+    let e = Env::new();
+    let done = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    fs::write(e.root.join(".git/refs/heads/ns/3-done.lock"), "").unwrap();
+    let v = e.run(&["clean"], 1);
+    let reason = &reasons(&v)["3-done"];
+    assert!(
+        reason.starts_with("worktree removed, branch ns/3-done kept: "),
+        "{v}"
+    );
+    assert!(!done.exists());
+    assert!(branch_exists(&e, "3-done"));
+}
+
+#[test]
+fn auto_merge_in_the_main_checkout_keeps_it() {
+    let e = auto_merge_env();
+    git(&e.root, &["checkout", "-qb", &format!("ns/{UNIT}")]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(v["worktree"], e.root.to_str().unwrap(), "{v}");
+    assert_eq!(
+        v["cleanup"]["reason"], "the main checkout is on its branch",
+        "{v}"
+    );
+    assert!(e.root.join(format!(".ns/{UNIT}/pr.md")).is_file());
+    assert!(branch_exists(&e, UNIT));
+}
+
+#[test]
+fn auto_merge_keeps_a_worktree_whose_head_left_the_branch() {
+    // Detached, or on another branch at the same commit: what HEAD holds is not the branch's.
+    for leave in ["git checkout -q --detach", "git checkout -qb elsewhere"] {
+        let e = auto_merge_env();
+        e.queue("ship", &["pass:script"]);
+        e.ctl("ship.sh", &format!("{leave}\n"));
+        let v = e.run(&["run", "--issue", "7"], 0);
+        assert_eq!(v["outcome"], "merged", "{leave}: {v}");
+        assert_eq!(
+            v["cleanup"]["reason"],
+            format!("its HEAD is not on ns/{UNIT}"),
+            "{leave}: {v}"
+        );
+        assert!(e.worktree(UNIT).is_dir(), "{leave}");
+        assert!(branch_exists(&e, UNIT), "{leave}");
+    }
+}
+
+#[test]
+fn auto_merge_keeps_a_worktree_with_a_review_artifact_no_record_holds() {
+    let e = auto_merge_env();
+    e.queue("ship", &["pass:script"]);
+    e.ctl(
+        "ship.sh",
+        "mkdir -p .ns/$NS_UNIT/history && echo notes > .ns/$NS_UNIT/history/review-1.md\n",
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(
+        v["cleanup"]["reason"], "its quality record is not saved",
+        "{v}"
+    );
+    assert_eq!(
+        quality_events(&e)[0]["unparsed"][0]["reason"],
+        "no frontmatter"
+    );
+    assert!(e
+        .worktree(UNIT)
+        .join(format!(".ns/{UNIT}/history/review-1.md"))
+        .is_file());
+}
+
+#[test]
+fn clean_keeps_a_unit_with_a_review_artifact_no_record_holds() {
+    let e = Env::new();
+    let wt = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    fs::write(wt.join(".ns/3-done/review.md"), "notes, no frontmatter\n").unwrap();
+    let v = e.run(&["clean"], 0);
+    assert_eq!(
+        reasons(&v)["3-done"],
+        "its quality record is not saved: cannot read .ns/3-done/review.md: no frontmatter",
+        "{v}"
+    );
+    assert!(wt.join(".ns/3-done/review.md").is_file());
+}
+
+#[test]
+fn watch_tries_a_unit_that_stays_once_a_night() {
+    let e = Env::new();
+    let done = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    git(&e.root, &["worktree", "lock", done.to_str().unwrap()]);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ready(4, "Fix b", &["type:fix"], "");
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    let v = e.run(&["watch"], 0);
+    assert_eq!(numbers(&v["units"]), [2, 4], "{v}");
+    assert_eq!(v["cleaned"], serde_json::json!([]), "{v}");
+    let tries: Vec<Value> = cleanup_events(&e)
+        .into_iter()
+        .filter(|v| v["unit"] == "3-done")
+        .collect();
+    assert_eq!(tries.len(), 1, "{tries:?}");
+    assert_eq!(tries[0]["error"], true);
+    let writes = run_events(&e)
+        .into_iter()
+        .filter(|v| v["event"] == "quality_record" && v["units"] == serde_json::json!(["3-done"]))
+        .count();
+    assert_eq!(writes, 1);
+    assert!(done.is_dir());
 }

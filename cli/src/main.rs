@@ -2,6 +2,7 @@
 
 mod ask;
 mod billing;
+mod clean;
 mod clock;
 mod config;
 mod doctor;
@@ -49,6 +50,7 @@ Examples:
   ns factory validate
   ns run --issue 142 --dry-run
   ns watch --until 06:30
+  ns clean --dry-run
   ns quality --since 2026-10-01
 
 Exit codes: 0 ok, 1 failure, 2 usage error, 3 role not configured, 4 harness missing,
@@ -271,6 +273,14 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         factory: Option<PathBuf>,
     },
 
+    /// Remove unit worktrees and ns/<unit> branches whose issue is closed and whose PR merged
+    #[command(after_help = CLEAN_HELP)]
+    Clean {
+        /// Print what would be removed and why the rest stay; remove and record nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Report how well units pass review: first-pass yield, findings per 100 lines, leftovers, escapes
     #[command(after_help = QUALITY_HELP, args_conflicts_with_subcommands = true)]
     Quality {
@@ -326,6 +336,9 @@ Spec: docs/FACTORY.md. Prints {unit,outcome,phase,reason,pr,cost_usd,phases}. Ev
 A unit that ends merged, done or stuck pushes its review quality records to origin's
 nightshift/quality branch (network); a failed push leaves them in
 <git-common-dir>/ns/quality-outbox.jsonl for the next run and never fails the unit.
+After its merge step merges the PR and the records are saved, it removes the unit's worktree and
+local ns/<unit> branch, unless it has uncommitted tracked changes or commits the PR lacks (see
+ns clean --help); `cleanup` in the output says which.
 
 Forge tokens: [forge.github] / [forge.gitlab] in the ns config (see ns ask --help for the path)
 are resolved once and exported as GH_TOKEN / GITLAB_TOKEN to every child; a set variable wins.
@@ -350,9 +363,32 @@ open PR that closes them (not one from their own unit branch), sorts by [queue] 
 --until is local time (TZ). Times printed for people, until and reset_at, are local with
 their offset (2026-10-09T06:30:00-04:00).
 At start, in-progress issues no live ns run holds go back to the ready label (requeued).
+At start and between units, worktrees of units a human merged since are removed as ns clean
+removes them (cleaned; --dry-run lists them as clean).
 SIGINT or SIGTERM ends the running phase and returns its issue to the ready label.
-Prints {units,requeued,stopped,until,cost_usd}. Exit codes as ns run's errors: 2 usage,
+Prints {units,requeued,cleaned,stopped,until,cost_usd}. Exit codes as ns run's errors: 2 usage,
 5 lock held (another ns run or ns watch); 130 or 143 when stopped by SIGINT or SIGTERM.";
+
+const CLEAN_HELP: &str = "\
+Examples:
+  ns clean --dry-run
+  ns clean
+
+Spec: docs/FACTORY.md (Cleanup). For each worktree on a branch ns/<unit>, reads the issue
+the unit id starts with and the PR in .ns/<unit>/pr.md with gh (network). A unit goes when the
+issue is closed and the PR merged, closes the issue and comes from ns/<unit>. Its quality record
+is written first (a push to origin's nightshift/quality, or the outbox when that fails); then the
+worktree, untracked files and .ns/ included, and the local branch are removed. A worktree stays,
+with its reason in `kept`, while its issue is open, it has uncommitted changes to tracked files,
+its HEAD is not on ns/<unit>, its branch holds changes the merged PR head does not (whitespace
+counts), its record could not be saved or a review artifact read, it is the current directory,
+or a live ns run or another cleanup holds the unit's run lock (nothing is recorded for it). A PR head missing
+locally is fetched from refs/pull/<n>/head. --dry-run writes nothing but may fetch.
+ns run cleans its own unit after its merge step; ns watch cleans at start and between units.
+
+Prints {ok,command,dry_run,status,planned|removed,kept,records}; status is planned, cleaned or
+nothing-to-clean, so a rerun is safe.
+Exit codes: 0 ok, 1 a removal failed (its kept entry has \"error\": true), 2 usage error.";
 
 const QUALITY_HELP: &str = "\
 Examples:
@@ -681,6 +717,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             since,
             json: _,
         } => return quality::cli(since),
+        Cmd::Clean { dry_run } => return clean::cli(dry_run),
         Cmd::Doctor => doctor::run()?,
     }
     Ok(ExitCode::SUCCESS)

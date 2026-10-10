@@ -322,7 +322,7 @@ const BRIEF_HOLD_TRIES: u32 = 10;
 /// How long a wait for the merge or worktree lock sleeps between tries.
 const LOCK_WAIT_POLL: Duration = Duration::from_millis(50);
 
-fn run_lock(unit: &str) -> String {
+pub fn run_lock(unit: &str) -> String {
     format!("{RUN_LOCK_PREFIX}{unit}.lock")
 }
 
@@ -1148,6 +1148,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         "pr": pr,
         "cost_usd": shared.spent_usd,
     }));
+    let mut record_saved = false;
     if matches!(
         result.outcome,
         Outcome::Done | Outcome::Merged | Outcome::Stuck
@@ -1158,8 +1159,15 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
             pr,
             outcome: Some(result.outcome.label().to_string()),
         };
-        ctx.log(crate::quality::record_unit(&repo, &ctx.worktree, &meta));
+        let ev = crate::quality::record_unit(&repo, &ctx.worktree, &meta);
+        record_saved = ev["error"].is_null() && ev["unparsed"].is_null();
+        ctx.log(ev);
     }
+    // A merge needs a PR number, so a merged unit always has one.
+    let cleanup = pr.filter(|_| result.outcome == Outcome::Merged).map(|pr| {
+        let issue = ctx.issue.or_else(|| crate::quality::issue_of(&unit));
+        crate::clean::after_merge(&repo, &unit, &ctx.worktree, issue, pr, record_saved)
+    });
     let cost: f64 = phases.iter().filter_map(|p| p["cost_usd"].as_f64()).sum();
     let json = json!({
         "unit": unit,
@@ -1171,6 +1179,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         "reset_at": result.reset_at,
         "artifact": last_artifact,
         "worktree": ctx.worktree.to_string_lossy(),
+        "cleanup": cleanup,
         "phases": phases,
     });
     Ok(RunResult {

@@ -25,7 +25,7 @@ use artifacts::Unparsed;
 use metrics::{RunStats, Unit};
 pub use record::{issue_of, Meta};
 use runlog::RunLog;
-pub use sync::{import, record_unit};
+pub use sync::{import, record_unit, record_units};
 
 /// `--since` as unix seconds: `YYYY-MM-DDTHH:MM:SSZ`, or `YYYY-MM-DD` for 00:00:00 UTC.
 fn since_instant(s: &str) -> Result<i64> {

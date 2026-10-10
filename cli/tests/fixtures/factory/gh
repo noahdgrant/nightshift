@@ -84,7 +84,11 @@ case "$1 $2" in
     ms=$(cat "$d/pr-$3.merge" 2>/dev/null || echo CLEAN)
     hd=$(cat "$d/pr-$3.head" 2>/dev/null || git rev-parse HEAD 2>/dev/null)
     oid="\"$hd\""; [ "$hd" = none ] && oid=null
-    printf '{"state":"%s","headRefOid":%s,"mergeStateStatus":"%s"}\n' "$st" "$oid" "$ms"
+    # pr-<n>.body: the PR body (no quotes or backslashes); pr-<n>.ref: its head branch, else the
+    # branch checked out where gh runs.
+    body=$(cat "$d/pr-$3.body" 2>/dev/null)
+    ref=$(cat "$d/pr-$3.ref" 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    printf '{"state":"%s","headRefOid":%s,"mergeStateStatus":"%s","body":"%s","headRefName":"%s"}\n' "$st" "$oid" "$ms" "$body" "$ref"
     ;;
   "pr checks")
     [[ " $* " == *" --watch "* ]] && exit 0

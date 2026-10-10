@@ -67,14 +67,29 @@ fn sent_json(sent: &Sent) -> Value {
     }
 }
 
+/// The review attempts the unit in `worktree` has, their records as JSON lines, and the
+/// review artifacts that couldn't be read, which no record holds.
+fn unit_lines(
+    worktree: &Path,
+    meta: &Meta,
+    now: i64,
+) -> (usize, Result<Vec<String>>, Vec<Unparsed>) {
+    let dir = worktree.join(".ns").join(&meta.unit);
+    let mut gaps = Vec::new();
+    let attempts = artifacts::read_attempts(worktree, &dir, worktree, &mut gaps);
+    let lines = record::build(meta, &attempts, now, worktree).and_then(|r| lines(&r));
+    (attempts.len(), lines, gaps)
+}
+
 /// Write the quality records of a unit that ended, and flush the outbox. Never fails: the
 /// result is returned as a run-log event, and anything unpushed waits in the outbox.
 pub fn record_unit(repo: &Repo, worktree: &Path, meta: &Meta) -> Value {
-    let dir = worktree.join(".ns").join(&meta.unit);
-    let attempts = artifacts::read_attempts(worktree, &dir, worktree, &mut Vec::new());
-    let now = Clock::from_env().now();
-    let mut ev = json!({"event": "quality_record", "attempts": attempts.len()});
-    let new = match record::build(meta, &attempts, now, worktree).and_then(|r| lines(&r)) {
+    let (attempts, built, gaps) = unit_lines(worktree, meta, Clock::from_env().now());
+    let mut ev = json!({"event": "quality_record", "attempts": attempts});
+    if !gaps.is_empty() {
+        ev["unparsed"] = json!(gaps);
+    }
+    let new = match built {
         Ok(l) => l,
         Err(e) => {
             ev["error"] = json!(format!("{e:#}"));
@@ -96,6 +111,54 @@ pub fn record_unit(repo: &Repo, worktree: &Path, meta: &Meta) -> Value {
         eprintln!("ns: quality record not written: {e}");
     }
     ev
+}
+
+/// Write the quality records of several units in one push, and flush the outbox: before their
+/// worktrees are removed. Never fails. Returns the run-log event and, for each unit in order,
+/// why its records are not saved, or `None` when they are: pushed, waiting in the outbox, or
+/// none to write. A review artifact that can't be read is not saved: no record holds it.
+pub fn record_units(repo: &Repo, units: &[(&Path, &Meta)]) -> (Value, Vec<Option<String>>) {
+    let now = Clock::from_env().now();
+    let mut unsaved = vec![None; units.len()];
+    let mut new = Vec::new();
+    for (i, (worktree, meta)) in units.iter().enumerate() {
+        let (_, built, gaps) = unit_lines(worktree, meta, now);
+        match built {
+            Ok(l) => new.extend(l),
+            Err(e) => unsaved[i] = Some(format!("{e:#}")),
+        }
+        if let Some(g) = gaps.first().filter(|_| unsaved[i].is_none()) {
+            unsaved[i] = Some(format!("cannot read {}: {}", g.path, g.reason));
+        }
+    }
+    let names: Vec<&str> = units.iter().map(|(_, m)| m.unit.as_str()).collect();
+    let mut ev = json!({"event": "quality_record", "units": names});
+    match store::publish(&repo.root, &repo.common_dir, &new) {
+        Ok(sent) => {
+            if let Sent::Outbox { reason, .. } = &sent {
+                eprintln!("ns: quality records kept in the outbox: {reason}");
+            }
+            ev.as_object_mut()
+                .unwrap()
+                .extend(sent_json(&sent).as_object().unwrap().clone());
+        }
+        Err(e) => {
+            let e = format!("{e:#}");
+            ev["error"] = json!(e);
+            for u in unsaved.iter_mut().filter(|u| u.is_none()) {
+                *u = Some(e.clone());
+            }
+        }
+    }
+    let failed: Vec<Value> = names
+        .iter()
+        .zip(&unsaved)
+        .filter_map(|(n, u)| Some(json!({"unit": n, "error": u.as_ref()?})))
+        .collect();
+    if !failed.is_empty() {
+        ev["unsaved"] = json!(failed);
+    }
+    (ev, unsaved)
 }
 
 /// `ns quality import <dir>`: records for each archived `<dir>/<unit>/.ns/<unit>/` that origin's
@@ -220,6 +283,42 @@ pub fn import(dir: &Path, dry_run: bool) -> Result<ExitCode> {
 mod tests {
     use super::*;
     use crate::testutil::{commit_file, g};
+
+    #[test]
+    fn a_unit_whose_records_cannot_be_built_is_unsaved_and_the_others_are_saved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        g(&root, &["init", "-q", "-b", "main"]);
+        commit_file(&root, "README", "hi\n");
+        let repo = Repo::discover(&root).unwrap();
+        let metas: Vec<Meta> = ["x /srv/y", "7-fine"]
+            .iter()
+            .map(|u| {
+                let dir = root.join(".ns").join(u);
+                fs::create_dir_all(&dir).unwrap();
+                fs::write(dir.join("review.md"), "---\nstatus: pass\n---\n").unwrap();
+                Meta {
+                    unit: u.to_string(),
+                    ..Meta::default()
+                }
+            })
+            .collect();
+        let units: Vec<(&Path, &Meta)> = metas.iter().map(|m| (root.as_path(), m)).collect();
+        let (ev, unsaved) = record_units(&repo, &units);
+        assert!(
+            unsaved[0].as_deref().unwrap().contains("absolute path"),
+            "{ev}"
+        );
+        assert_eq!(unsaved[1], None);
+        // No origin: the good unit's record waits in the outbox, which counts as saved.
+        assert_eq!(
+            (ev["status"].as_str(), ev["records"].as_u64()),
+            (Some("outbox"), Some(1))
+        );
+        assert_eq!(ev["unsaved"][0]["unit"], "x /srv/y");
+        let outbox = fs::read_to_string(store::outbox(&repo.common_dir)).unwrap();
+        assert!(outbox.contains("\"unit\":\"7-fine\""), "{outbox}");
+    }
 
     #[test]
     fn a_record_that_fails_the_privacy_check_is_reported_and_the_outbox_still_flushes() {
