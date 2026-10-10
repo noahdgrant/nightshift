@@ -388,19 +388,24 @@ mod repo {
     fn a_subdirectory_sees_marked_files_across_the_repo() {
         let t = init();
         fs::create_dir(t.path().join("d")).unwrap();
-        for n in ["top.c", "d/x y[1]*.c"] {
+        for n in ["top.c", "d/x y[1]*.c", "d/:z.c"] {
             write(t.path(), n, FILE);
         }
         let base = commit(t.path(), "base");
-        for n in ["top.c", "d/x y[1]*.c"] {
+        for n in ["top.c", "d/x y[1]*.c", "d/:z.c"] {
             write(t.path(), n, &FILE.replace("x = 1", "x = 2"));
         }
         let head = commit(t.path(), "head");
         let mut got = touched_between(&t.path().join("d"), &base, &head, None).unwrap();
         got.sort();
-        assert_eq!(got.len(), 2, "{got:?}");
-        assert!(got[0].starts_with("d/x y[1]*.c:"), "{got:?}");
-        assert!(got[1].starts_with("top.c:"), "{got:?}");
+        assert_eq!(
+            got,
+            [
+                "d/:z.c:2-4: limits",
+                "d/x y[1]*.c:2-4: limits",
+                "top.c:2-4: limits"
+            ]
+        );
     }
 
     #[test]
@@ -455,6 +460,20 @@ mod repo {
         let head = commit(t.path(), "head");
         let got = touched_between(t.path(), &base, &head, None).unwrap();
         assert_eq!(got, ["a[1]*.c:2-4: limits"]);
+    }
+
+    #[test]
+    fn a_glob_name_in_a_subdirectory_matches_only_itself() {
+        let t = init();
+        fs::create_dir(t.path().join("d")).unwrap();
+        write(t.path(), "d/[ab].c", FILE);
+        write(t.path(), "d/a.c", FILE);
+        let base = commit(t.path(), "base");
+        write(t.path(), "d/[ab].c", &FILE.replace("\nb\n", "\nc\n"));
+        write(t.path(), "d/a.c", &FILE.replace("x = 1", "x = 2"));
+        let head = commit(t.path(), "head");
+        let got = touched_between(&t.path().join("d"), &base, &head, None).unwrap();
+        assert_eq!(got, ["d/a.c:2-4: limits"]);
     }
 
     #[test]

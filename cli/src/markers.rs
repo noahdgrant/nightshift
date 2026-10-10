@@ -389,7 +389,7 @@ fn touched_file(dir: &Path, base: &str, head: &str, change: &Change) -> Result<O
     let diff = git::run(
         dir,
         &[
-            "--literal-pathspecs",
+            "--no-literal-pathspecs",
             "diff",
             "--no-renames",
             "--no-ext-diff",
@@ -398,7 +398,7 @@ fn touched_file(dir: &Path, base: &str, head: &str, change: &Change) -> Result<O
             base,
             head,
             "--",
-            path,
+            &format!(":(top,literal){path}"),
         ],
     )?;
     let hunks = hunks(&diff);
