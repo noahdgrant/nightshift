@@ -65,13 +65,17 @@ fixture_tests() {
 
 brief_checker_tests() {
   command -v python3 >/dev/null || { echo "ci-local: python3 is required for the brief checker tests" >&2; return 1; }
-  (cd skills/ns-troubleshoot/evals/cases/py-hold-expires-early && python3 -m unittest -q test_check_brief)
+  local test
+  for test in skills/ns-troubleshoot/evals/cases/*/test_check_brief.py; do
+    (cd "$(dirname "$test")" && python3 -m unittest -q test_check_brief) || return 1
+  done
 }
 
 step "cargo fmt --check" cargo fmt --manifest-path cli/Cargo.toml --check
 step "cargo clippy" cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings
 if [ "$fast" -eq 0 ]; then
   step "cargo test" cargo test --manifest-path cli/Cargo.toml
+  step "cargo test under a decoy GIT_DIR" scripts/check-git-dir-decoy.sh
 fi
 step "build ns" cargo build --manifest-path cli/Cargo.toml
 step "ns lint" "$ns" lint skills --human

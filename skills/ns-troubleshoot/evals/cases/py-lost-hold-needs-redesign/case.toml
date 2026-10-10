@@ -1,0 +1,41 @@
+description = "Seeded design bug: every CLI run does storage.load, a change, then storage.save, with no lock and no revision check, so two stations reserving at once lose one hold and reuse its ID. ADR-0001 rules out file locks on the shared drive, so the fix needs a redesign. Troubleshoot must build a red loop (two interleaved load/save cycles, or parallel CLI runs), find the lost update, and write brief.md with status blocked and Route ns-define, without fixing it."
+fixture = "py-inventory"
+skills = ["ns-troubleshoot", "ns-triage"]
+extra_skills = ["ns-contract"]
+requires = ["python"]
+timeout_minutes = 20
+prompt = """
+Troubleshoot .scratch/reservations/issues/06-holds-lost-between-stations.md. gates: auto
+"""
+
+[setup]
+commands = [
+  "cp ../check_brief.py .git/check_brief.py",
+  "git rev-parse HEAD > .git/case-base",
+  "sed -i 's|There is no `docs/adr/` yet.|ADRs live in `docs/adr/`.|' docs/agents/domain.md",
+  "grep -q 'ADRs live in `docs/adr/`' docs/agents/domain.md",
+]
+
+[[check]]
+type = "command"
+run = "python3 -I .git/check_brief.py"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''
+base=$(cat "$(git rev-parse --git-common-dir)/case-base")
+git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r wt; do
+  git -C "$wt" diff --quiet "$base" -- src tests || { echo "source changed in $wt"; exit 1; }
+done
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**"]
+
+[[check]]
+type = "judge"
+rubric = "Read the trial's transcript and the brief.md it wrote under .ns/06-*/. Pass only if: (1) before forming hypotheses about the cause, the agent built and ran a loop that went red on the reported symptom (two reservations sharing one ID, one hold lost), by interleaving two load/save cycles or by running reserves in parallel; (2) it recorded several ranked, falsifiable hypotheses and the probe that confirmed the survivor; (3) the root cause is the unlocked load-change-save cycle in which the last write wins, not the ID counter alone or the CLI's argument handling; (4) it changed no source, set status blocked with Route ns-define, and its first body line says the fix needs a redesign because ADR-0001 rules out locks."
+required = false

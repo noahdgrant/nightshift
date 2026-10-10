@@ -15,8 +15,8 @@ fn ns() -> Ns {
     c
 }
 
-fn git(dir: &Path, args: &[&str]) -> String {
-    let out = StdCommand::new("git")
+fn git_output(dir: &Path, args: &[&str]) -> std::process::Output {
+    StdCommand::new("git")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
@@ -30,7 +30,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@t")
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = git_output(dir, args);
     assert!(
         out.status.success(),
         "git {args:?}: {}",
@@ -897,6 +901,50 @@ fn worktree_new_runs_setup_once() {
     assert!(!PathBuf::from(v["path"].as_str().unwrap())
         .join("setup.out")
         .exists());
+}
+
+#[test]
+fn own_factory_definition_turns_on_the_pre_commit_hook() {
+    let (_tmp, root) = repo();
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    factory_def(
+        &root,
+        &fs::read_to_string(src.join(".nightshift/nightshift.toml")).unwrap(),
+    );
+    fs::create_dir_all(root.join(".githooks")).unwrap();
+    fs::copy(
+        src.join(".githooks/pre-commit"),
+        root.join(".githooks/pre-commit"),
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("scripts")).unwrap();
+    executable(
+        &root.join("scripts/ci-local.sh"),
+        "echo \"ci-local $*\" >&2\nexit 1",
+    );
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "--no-verify", "-m", "hooks"]);
+
+    ns().current_dir(&root)
+        .args(["factory", "validate"])
+        .assert()
+        .success();
+    let v = json(
+        &ns()
+            .current_dir(&root)
+            .args(["worktree", "new", "u5"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    let path = PathBuf::from(v["path"].as_str().unwrap());
+    assert_eq!(git(&path, &["config", "core.hooksPath"]), ".githooks");
+
+    fs::write(path.join("README"), "changed\n").unwrap();
+    let out = git_output(&path, &["commit", "-qam", "change"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ci-local --fast"));
 }
 
 #[test]

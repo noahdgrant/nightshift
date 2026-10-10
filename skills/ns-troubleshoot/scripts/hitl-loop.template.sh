@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# HITL loop: a human performs the steps, you read what they capture.
 # Usage: bash hitl-loop.template.sh
 # step "<instruction>"      shows the instruction, waits for Enter
 # capture VAR "<question>"  reads the answer into VAR
-# Captured values print as KEY=VALUE at the end. Capture observations only; sign-in is a step.
+# Capture observations only; sign-in is a step.
 
 set -euo pipefail
 
