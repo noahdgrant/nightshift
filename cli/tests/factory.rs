@@ -85,10 +85,11 @@ impl Env {
             ghd,
         };
         e.issue(7, "Fix the thing", "OPEN");
+        e.with_remote();
         e
     }
 
-    /// Add a bare `origin` with `main` pushed and origin/HEAD set.
+    /// Add a bare `origin` (`base/remote.git`) with `main` pushed and origin/HEAD set.
     fn with_remote(&self) -> PathBuf {
         let remote = self.base.join("remote.git");
         git(
@@ -1463,7 +1464,6 @@ fn runner_problems_fail_validate_and_run() {
 #[test]
 fn default_branch_guard_stops_a_push_to_main() {
     let e = Env::new();
-    e.with_remote();
     e.queue("build", &["pass:push"]);
     let v = e.run(&["run", "--issue", "7"], 1);
     assert!(
@@ -2035,6 +2035,7 @@ fn marked(edit: &str) -> Value {
     .unwrap();
     git(&e.root, &["add", "work.txt"]);
     git(&e.root, &["commit", "-q", "-m", "marked"]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
     e.factory(AUTO);
     e.ctl("pr", "12");
     e.ctl("edit", edit);
@@ -2067,11 +2068,11 @@ fn an_edit_outside_a_human_review_region_merges() {
 }
 
 #[test]
-fn an_unreadable_merge_base_needs_a_human_merge() {
+fn a_failed_fetch_of_the_default_branch_needs_a_human_merge() {
     let e = Env::new();
     e.factory(AUTO);
     e.ctl("pr", "12");
-    e.ctl("edit", "git update-ref -d refs/heads/main");
+    e.ctl("edit", "git remote set-url origin /nonexistent");
     e.queue("build", &["pass:commit"]);
     e.gh_file("checks-12.json", GREEN);
     e.gh_file("diff-12.txt", "work.txt\n");
@@ -2081,7 +2082,7 @@ fn an_unreadable_merge_base_needs_a_human_merge() {
         v["reason"]
             .as_str()
             .unwrap()
-            .starts_with("cannot check human-review regions:"),
+            .starts_with("cannot check human-review regions: git fetch -q origin main failed"),
         "{v}"
     );
     assert!(!e.gh_calls().contains("pr merge"));
@@ -2852,7 +2853,7 @@ fn watch_gives_back_the_issue_when_the_limit_resets_after_until() {
 #[test]
 fn watch_merged_removes_in_progress_and_bases_on_origin() {
     let e = Env::new();
-    let remote = e.with_remote();
+    let remote = e.base.join("remote.git");
     // Someone else lands a commit on origin/main; the local main lags behind.
     let other = e.base.join("other");
     git(

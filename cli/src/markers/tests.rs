@@ -321,7 +321,7 @@ mod repo {
     /// `touched_between`, and how many git processes it started.
     fn touched_counting(dir: &Path, base: &str, head: &str) -> (Vec<String>, usize) {
         git::reset_spawns();
-        let got = touched_between(dir, base, head).unwrap();
+        let got = touched_between(dir, base, head, None).unwrap();
         (got, git::spawns())
     }
 
@@ -350,9 +350,38 @@ mod repo {
         write(t.path(), "was.c", plain);
         write(t.path(), "now.c", FILE);
         let head = commit(t.path(), "head");
-        let mut got = touched_between(t.path(), &base, &head).unwrap();
+        let mut got = touched_between(t.path(), &base, &head, None).unwrap();
         got.sort();
         assert_eq!(got, ["now.c:2-4: limits", "was.c:2-4: limits"]);
+    }
+
+    /// A fence that lands on the tip after the PR branched is on neither the base nor the head.
+    #[test]
+    fn a_fence_added_at_the_tip_touches_the_whole_file() {
+        let t = init();
+        let plain = "a\nx = 1\nb\n";
+        write(t.path(), "f.c", plain);
+        write(t.path(), "g.c", plain);
+        let base = commit(t.path(), "base");
+        write(t.path(), "f.c", FILE);
+        let tip = commit(t.path(), "fence on the default branch");
+        git_in(t.path(), &["checkout", "-q", "-b", "pr", &base]);
+        write(t.path(), "f.c", &plain.replace("x = 1", "x = 2"));
+        let head = commit(t.path(), "pr edits f.c");
+        assert_eq!(
+            touched_between(t.path(), &base, &head, Some(&tip)).unwrap(),
+            ["f.c:1-5"]
+        );
+        assert!(touched_between(t.path(), &base, &head, None)
+            .unwrap()
+            .is_empty());
+        git_in(t.path(), &["checkout", "-q", "-b", "other", &base]);
+        write(t.path(), "g.c", &plain.replace("x = 1", "x = 2"));
+        let head = commit(t.path(), "pr edits g.c");
+        assert!(touched_between(t.path(), &base, &head, Some(&tip))
+            .unwrap()
+            .is_empty());
+        assert!(touched_between(t.path(), &base, &head, Some("no-such-rev")).is_err());
     }
 
     #[test]
@@ -367,7 +396,7 @@ mod repo {
             write(t.path(), n, &FILE.replace("x = 1", "x = 2"));
         }
         let head = commit(t.path(), "head");
-        let mut got = touched_between(&t.path().join("d"), &base, &head).unwrap();
+        let mut got = touched_between(&t.path().join("d"), &base, &head, None).unwrap();
         got.sort();
         assert_eq!(got.len(), 2, "{got:?}");
         assert!(got[0].starts_with("d/x y[1]*.c:"), "{got:?}");
@@ -382,7 +411,7 @@ mod repo {
         let base = commit(t.path(), "base");
         write(t.path(), "f.c", &FILE.replace("x = 1", "x = 2"));
         let head = commit(t.path(), "head");
-        let got = touched_between(t.path(), &base, &head).unwrap();
+        let got = touched_between(t.path(), &base, &head, None).unwrap();
         assert_eq!(got.len(), 1, "{got:?}");
         assert!(got[0].starts_with("f.c:"), "{got:?}");
     }
@@ -395,7 +424,9 @@ mod repo {
         git_in(t.path(), &["update-index", "--chmod=+x", "f.c"]);
         git_in(t.path(), &["commit", "-q", "-m", "mode"]);
         let head = git::run(t.path(), &["rev-parse", "HEAD"]).unwrap();
-        assert!(touched_between(t.path(), &base, &head).unwrap().is_empty());
+        assert!(touched_between(t.path(), &base, &head, None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -409,7 +440,10 @@ mod repo {
             &format!("\0{}", FILE.replace("x = 1", "x = 2")),
         );
         let head = commit(t.path(), "head");
-        assert_eq!(touched_between(t.path(), &base, &head).unwrap().len(), 1);
+        assert_eq!(
+            touched_between(t.path(), &base, &head, None).unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -419,7 +453,7 @@ mod repo {
         let base = commit(t.path(), "base");
         write(t.path(), "a[1]*.c", &FILE.replace("x = 1", "x = 2"));
         let head = commit(t.path(), "head");
-        let got = touched_between(t.path(), &base, &head).unwrap();
+        let got = touched_between(t.path(), &base, &head, None).unwrap();
         assert_eq!(got, ["a[1]*.c:2-4: limits"]);
     }
 
@@ -432,7 +466,7 @@ mod repo {
         fs::remove_file(t.path().join("gone.c")).unwrap();
         write(t.path(), "new.c", FILE);
         let head = commit(t.path(), "head");
-        let mut got = touched_between(t.path(), &base, &head).unwrap();
+        let mut got = touched_between(t.path(), &base, &head, None).unwrap();
         got.sort();
         assert_eq!(got, ["gone.c:2-4: limits", "new.c:2-4: limits"]);
     }
@@ -448,9 +482,11 @@ mod repo {
             &FILE.replace("a\n", "a2\n").replace("b\n", "b2\n"),
         );
         let head = commit(t.path(), "head");
-        assert!(touched_between(t.path(), &base, &head).unwrap().is_empty());
-        assert!(touched_between(t.path(), &base, "no-such-rev").is_err());
-        assert!(touched_between(&t.path().join("missing"), &base, &head).is_err());
+        assert!(touched_between(t.path(), &base, &head, None)
+            .unwrap()
+            .is_empty());
+        assert!(touched_between(t.path(), &base, "no-such-rev", None).is_err());
+        assert!(touched_between(&t.path().join("missing"), &base, &head, None).is_err());
     }
 
     #[test]
@@ -461,7 +497,7 @@ mod repo {
         git_in(t.path(), &["update-index", "--chmod=+x", "f.c"]);
         git_in(t.path(), &["commit", "-q", "-m", "mode"]);
         let head = git::run(t.path(), &["rev-parse", "HEAD"]).unwrap();
-        let got = touched_between(t.path(), &base, &head).unwrap();
+        let got = touched_between(t.path(), &base, &head, None).unwrap();
         let whole = Region {
             start: 1,
             end: FILE.lines().count(),
@@ -477,7 +513,7 @@ mod repo {
         let base = commit(t.path(), "base");
         write(t.path(), "f.c", &FILE.replace("// @end\n", ""));
         let head = commit(t.path(), "head");
-        let got = touched_between(t.path(), &base, &head).unwrap();
+        let got = touched_between(t.path(), &base, &head, None).unwrap();
         assert_eq!(got.len(), 1, "{got:?}");
         assert!(got[0].starts_with("f.c:"), "{got:?}");
     }
@@ -526,7 +562,9 @@ mod repo {
         let base = commit(t.path(), "base");
         bump_submodule(t.path(), s.path());
         let head = commit(t.path(), "bump");
-        assert!(touched_between(t.path(), &base, &head).unwrap().is_empty());
+        assert!(touched_between(t.path(), &base, &head, None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -539,7 +577,7 @@ mod repo {
         bump_submodule(t.path(), s.path());
         write(t.path(), "f.c", &FILE.replace("x = 1", "x = 2"));
         let head = commit(t.path(), "head");
-        let got = touched_between(t.path(), &base, &head).unwrap();
+        let got = touched_between(t.path(), &base, &head, None).unwrap();
         assert_eq!(got, ["f.c:2-4: limits"]);
     }
 
@@ -551,8 +589,12 @@ mod repo {
         let base = commit(t.path(), "base");
         add_submodule(t.path(), s.path());
         let head = commit(t.path(), "add");
-        assert!(touched_between(t.path(), &base, &head).unwrap().is_empty());
-        assert!(touched_between(t.path(), &head, &base).unwrap().is_empty());
+        assert!(touched_between(t.path(), &base, &head, None)
+            .unwrap()
+            .is_empty());
+        assert!(touched_between(t.path(), &head, &base, None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -565,11 +607,11 @@ mod repo {
         add_submodule(t.path(), s.path());
         let head = commit(t.path(), "swap");
         assert_eq!(
-            touched_between(t.path(), &base, &head).unwrap(),
+            touched_between(t.path(), &base, &head, None).unwrap(),
             ["sub:2-4: limits"]
         );
         assert_eq!(
-            touched_between(t.path(), &head, &base).unwrap(),
+            touched_between(t.path(), &head, &base, None).unwrap(),
             ["sub:2-4: limits"]
         );
     }
@@ -588,7 +630,7 @@ mod repo {
             .join(&blob[..2])
             .join(&blob[2..]);
         fs::remove_file(loose).unwrap();
-        assert!(touched_between(t.path(), &base, "HEAD").is_err());
+        assert!(touched_between(t.path(), &base, "HEAD", None).is_err());
     }
 
     /// git grep reports an unreadable blob on stderr but exits 1 when nothing else matches,
@@ -611,7 +653,7 @@ mod repo {
                 .join(&blob[..2])
                 .join(&blob[2..]);
             fs::remove_file(loose).unwrap();
-            let got = touched_between(t.path(), &base, "HEAD");
+            let got = touched_between(t.path(), &base, "HEAD", None);
             assert!(got.is_err(), "other_match={other_match}: {got:?}");
         }
     }
