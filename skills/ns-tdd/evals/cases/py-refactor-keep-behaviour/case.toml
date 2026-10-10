@@ -253,13 +253,34 @@ def test_a_failed_command_saves_nothing(inv, capsys):
     assert inv.state.stat().st_mtime_ns == 0
 
 
-def test_run_writes_to_the_stream_it_is_given(tmp_path):
+def test_run_writes_to_the_stream_it_is_given(tmp_path, capsys):
     state = str(tmp_path / "inv.json")
     out = io.StringIO()
-    run(build_parser().parse_args(["--state", state, "--now", NOW, "add-item", "BOLT-M6", "bolt"]), out)
-    run(build_parser().parse_args(["--state", state, "--now", NOW, "status"]), out=out)
-    assert out.getvalue().splitlines()[0] == "added BOLT-M6 (bolt)"
-    assert out.getvalue().splitlines()[2].split() == ["BOLT-M6", "0", "0", "0"]
+
+    def go(*argv):
+        return run(build_parser().parse_args(["--state", state, "--now", NOW, *argv]), out=out)
+
+    for argv in [
+        ("add-item", "BOLT-M6", "bolt"),
+        ("receive", "BOLT-M6", "10"),
+        ("reserve", "BOLT-M6", "4"),
+        ("reserve", "BOLT-M6", "3"),
+        ("cancel", "R0001"),
+        ("fulfil", "R0002"),
+        ("status",),
+    ]:
+        go(*argv)
+    assert out.getvalue() == (
+        "added BOLT-M6 (bolt)\n"
+        "BOLT-M6: 10 on hand\n"
+        "R0001: 4 x BOLT-M6 until 2026-04-01T10:30:00\n"
+        "R0002: 3 x BOLT-M6 until 2026-04-01T10:30:00\n"
+        "cancelled R0001\n"
+        "fulfilled R0002: 3 x BOLT-M6\n"
+        "SKU           ON HAND RESERVED AVAILABLE\n"
+        "BOLT-M6             7        0         7\n"
+    )
+    assert capsys.readouterr().out == ""
 PYEOF
 PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_cli_behaviour_acceptance.py"; s=$?; rm -rf "$T"; exit $s
 '''
