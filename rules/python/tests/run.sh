@@ -85,5 +85,39 @@ for example in "$pack"/tests/allowlist/*.py; do
   check_example "$tmp/allowlist-pack" dependency-allowlist "$example"
 done
 
+# A rule's `ignores` lists the files it skips, which is how a helper's own module escapes
+# duplicate-helper. The shipped list is empty, so a copy ignores `home.py` but not `other.py`.
+cp -r "$pack" "$tmp/ignores-pack"
+sed -i 's|^ignores: \[\]|ignores: ["**/home.py"]|' "$tmp/ignores-pack/rules/duplicate-helper.yml"
+mkdir "$tmp/ignores"
+printf 'def which(cmd):\n    pass\n' | tee "$tmp/ignores/home.py" >"$tmp/ignores/other.py"
+out=$(findings "$tmp/ignores-pack" "$tmp/ignores")
+grep -qF "other.py:1:1: error[duplicate-helper]" <<<"$out" || {
+  printf 'FAIL duplicate-helper: ignores skipped other.py too:\n%s\n' "$out" >&2
+  failed=1
+}
+if grep -qF "home.py" <<<"$out"; then
+  printf 'FAIL duplicate-helper: ignores did not skip home.py:\n%s\n' "$out" >&2
+  failed=1
+fi
+
+# file-size.sh on a directory, inside a git repo and outside one, reports a long file and
+# skips a long file under a dot directory (outside git, by name; in git, by .gitignore).
+long=$(python3 -c "print('\n'.join(f'x{i} = {i}' for i in range(1001)))")
+for mode in plain git; do
+  dir="$tmp/size-$mode"
+  mkdir -p "$dir/.hidden"
+  printf '%s\n' "$long" | tee "$dir/long.py" >"$dir/.hidden/long.py"
+  if [ "$mode" = git ]; then
+    git -C "$dir" init -q
+    echo '.hidden/' >"$dir/.gitignore"
+  fi
+  out=$("$pack/file-size.sh" "$dir")
+  grep -qF "long.py:1001:1: error[file-size]" <<<"$out" && ! grep -qF ".hidden" <<<"$out" || {
+    printf 'FAIL file-size: %s directory gave:\n%s\n' "$mode" "$out" >&2
+    failed=1
+  }
+done
+
 [ "$failed" -eq 0 ] || exit 1
 echo "rules/python: $checked rules and the allowlist, all examples pass"
