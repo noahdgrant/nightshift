@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-const ALL_STEPS: [&str; 11] = [
+const ALL_STEPS: [&str; 12] = [
     "cargo fmt --check",
     "cargo clippy",
     "cargo test",
@@ -15,15 +15,17 @@ const ALL_STEPS: [&str; 11] = [
     "build ns",
     "ns lint",
     "ns check-markers",
+    "ns rules check",
     "ns eval --dry-run",
     "py-inventory fixture tests",
     "ns-troubleshoot brief checker tests",
     "private guard",
 ];
 
-const FAST_ONLY_SKIPS: [&str; 5] = [
+const FAST_ONLY_SKIPS: [&str; 6] = [
     "cargo test",
     "cargo test under a decoy GIT_DIR",
+    "ns rules check",
     "ns eval --dry-run",
     "py-inventory fixture tests",
     "ns-troubleshoot brief checker tests",
@@ -158,6 +160,7 @@ fn a_failing_step_stops_the_run() {
         ("cargo clippy", "cargo clippy"),
         ("decoy", "cargo test under a decoy GIT_DIR"),
         ("ns check-markers", "ns check-markers"),
+        ("ns rules", "ns rules check"),
         ("ns eval", "ns eval --dry-run"),
         (
             "python ran in py-hold-expires-early",
