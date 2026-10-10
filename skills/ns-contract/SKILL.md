@@ -54,7 +54,7 @@ Every artifact opens with frontmatter recording the gate result:
 ---
 unit: 142-uart-timeout
 phase: verify
-status: pass        # pass | fail | blocked
+status: pass        # pass | fail | blocked, or split for brief.md
 sha: 3f9c2e1        # HEAD commit the artifact describes (build, verify, review, ship)
 updated: 2026-10-08T21:14:00Z
 ---
@@ -68,6 +68,7 @@ updated: 2026-10-08T21:14:00Z
 - `fail`: the gate condition doesn't hold. The body's first line says what is missing, in one sentence; `ns watch` quotes it. A phase that can fix it itself retries first. Otherwise the phase that owns the fix picks it up, usually the previous one.
 - An `inconclusive` check with no failures gives `blocked` when a missing resource caused it, and `fail` otherwise.
 - `blocked`: progress needs something an agent can't get (hardware, credentials, a human decision). The body's first line names the blocker, in one sentence. After the review's last fix cycle, an open Critical or Important in code the unit changed is a blocker. A finding in pre-existing code never blocks, whatever its severity: it is an escape, filed as a prioritised issue. A Suggestion never blocks (see `ns-review`).
+- `split` (`brief.md` only): triage split the issue into child issues, which replace the unit. The body's first line names the children, in one sentence. Nothing waits on a human, so `ns run` ends the unit as `split`, not stuck.
 
 A phase reads only its input artifact and the repo. It never relies on chat history, so every phase can start in a fresh context.
 

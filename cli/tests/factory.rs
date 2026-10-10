@@ -2550,6 +2550,72 @@ fn watch_stuck_leaves_only_the_stuck_label() {
 }
 
 #[test]
+fn a_split_brief_ends_the_run_as_split_not_stuck() {
+    let e = Env::new();
+    e.queue(
+        "triage",
+        &["split:into #8 and #9.", "split:into #8 and #9."],
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(e.calls(), ["triage"]);
+    assert_eq!(v["outcome"], "split", "{v}");
+    assert_eq!(v["phase"], "triage", "{v}");
+    assert_eq!(
+        v["reason"], "brief.md is split: triage said split into #8 and #9.",
+        "{v}"
+    );
+    let artifacts = Path::new(v["worktree"].as_str().unwrap()).join(".ns/7-fix-the-thing");
+    assert_eq!(
+        v["artifact"].as_str().unwrap(),
+        artifacts.join("history/brief-1.md").to_str().unwrap(),
+        "{v}"
+    );
+    assert!(!artifacts.join("brief.md").exists());
+    // The split brief is history, so a parent sent back to the queue is triaged afresh.
+    let again = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(again["outcome"], "split", "{again}");
+    assert_eq!(e.calls(), ["triage", "triage"]);
+}
+
+#[test]
+fn dry_run_reports_a_split_brief() {
+    let e = Env::new();
+    e.queue("triage", &["blocked"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    let brief = Path::new(v["worktree"].as_str().unwrap()).join(".ns/7-fix-the-thing/brief.md");
+    fs::write(&brief, "---\nstatus: split\n---\nSplit into #8 and #9.\n").unwrap();
+    let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+    assert_eq!(d["decision"]["action"], "split", "{d}");
+    assert_eq!(
+        d["decision"]["reason"], "brief.md is split: Split into #8 and #9.",
+        "{d}"
+    );
+}
+
+#[test]
+fn watch_split_moves_the_parent_to_needs_define_without_a_comment() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("triage", &["split:into #8 and #9."]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "split", "{v}");
+    assert_eq!(e.labels(2), ["type:fix", "status:needs-define"]);
+    let calls = e.gh_calls();
+    assert!(!calls.contains("issue comment 2"), "{calls}");
+    assert!(!calls.contains("status:ready-for-human"), "{calls}");
+}
+
+#[test]
+fn watch_split_sets_a_custom_split_label() {
+    let e = Env::new();
+    e.factory("[queue]\nsplit_label = \"tracking\"\n");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("triage", &["split:into #8 and #9."]);
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(2), ["type:fix", "tracking"]);
+}
+
+#[test]
 fn watch_merged_leaves_no_status_label() {
     let e = Env::new();
     e.factory(AUTO);

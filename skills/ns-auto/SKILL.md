@@ -69,6 +69,7 @@ Read the frontmatter of every artifact in `.ns/<unit-id>/`, skipping `history/`.
 
 | State | Next |
 |---|---|
+| `brief.md` `split` | split: child issues replaced the unit. Move `brief.md` to `history/` |
 | any artifact `blocked` | stuck |
 | the contract's done condition holds | done |
 | no `brief.md` | triage, when the goal names an issue. Otherwise stuck, "no brief" |
@@ -130,7 +131,7 @@ Append one line to the run log: `- <phase> attempt <n> <status> <sha>: <first li
 
 When two attempts that share one premise fail the same gate, apply [attack the premise](../ns-principle-attack-the-premise/SKILL.md) before the next one. For any other call that is yours (a contract default, a retry, a send-back), read the [principles index](../ns-principles/SKILL.md) and apply the principles whose trigger fits. Name each one in the run log with the choice it changed.
 
-Done when the table says done or stuck, or the escape hatch fires.
+Done when the table says done, split or stuck, or the escape hatch fires.
 
 ## 4. Report
 
