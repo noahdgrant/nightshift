@@ -3,6 +3,8 @@
 //! nightshift"). A `NS_BUILD_COMMIT` already set, as the self-update sets it for a source tree
 //! with no `.git`, wins; a tree that is neither gets `unknown`.
 
+mod build_stamp;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -23,19 +25,15 @@ fn git(args: &[&str]) -> Option<String> {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=NS_BUILD_COMMIT");
-    let commit = match std::env::var("NS_BUILD_COMMIT") {
-        Ok(c) if !c.is_empty() => c,
-        _ => {
-            // HEAD moves on a checkout, and the reflog on every commit too.
-            for p in ["HEAD", "logs/HEAD"] {
-                if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", p]) {
-                    if Path::new(&path).exists() {
-                        println!("cargo:rerun-if-changed={path}");
-                    }
+    let commit = build_stamp::commit(std::env::var("NS_BUILD_COMMIT").ok(), || {
+        for p in ["HEAD", "logs/HEAD"] {
+            if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", p]) {
+                if Path::new(&path).exists() {
+                    println!("cargo:rerun-if-changed={path}");
                 }
             }
-            git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into())
         }
-    };
+        git(&["rev-parse", "HEAD"])
+    });
     println!("cargo:rustc-env=NS_BUILD_COMMIT={commit}");
 }

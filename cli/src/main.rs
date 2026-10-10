@@ -2,6 +2,9 @@
 
 mod ask;
 mod billing;
+#[cfg(test)]
+#[path = "../build_stamp.rs"]
+mod build_stamp;
 mod clean;
 mod clock;
 mod config;
