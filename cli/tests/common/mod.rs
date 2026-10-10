@@ -32,8 +32,13 @@ static NEXT_TREE: AtomicU32 = AtomicU32::new(0);
 
 /// `ns` built from this crate, bounded by [`TIMEOUT`].
 pub fn ns() -> Ns {
+    command(assert_cmd::cargo::cargo_bin("ns"))
+}
+
+/// Any program, run with the same bounds as [`ns`].
+pub fn command(program: impl AsRef<OsStr>) -> Ns {
     Ns {
-        cmd: Command::new(assert_cmd::cargo::cargo_bin("ns")),
+        cmd: Command::new(program),
         stdin: Vec::new(),
         timeout: TIMEOUT,
     }
