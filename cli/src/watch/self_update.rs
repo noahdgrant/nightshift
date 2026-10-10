@@ -437,6 +437,13 @@ mod tests {
     }
 
     #[test]
+    fn a_warning_keeps_the_last_five_non_blank_lines_of_stderr() {
+        let stderr = "one\n\ntwo\nthree\n  \nfour\nfive\n\nsix\n\n";
+        assert_eq!(tail(stderr.as_bytes()), "two\nthree\nfour\nfive\nsix");
+        assert_eq!(tail(b"\n \n"), "");
+    }
+
+    #[test]
     fn the_state_file_layout_is_pinned_to_its_version() {
         let c: Carried = serde_json::from_value(full_night()).unwrap();
         let mut keys = BTreeSet::new();
