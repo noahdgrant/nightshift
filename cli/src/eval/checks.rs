@@ -85,7 +85,7 @@ pub fn is_test_path(path: &str) -> bool {
         || file.contains(".spec.")
 }
 
-fn shell_quote(s: &str) -> String {
+pub fn shell_quote(s: &str) -> String {
     if !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c))

@@ -1055,7 +1055,8 @@ impl Loaded {
             "config": file_hash(&cfg_path),
             "factory": file_hash(&root.join(factory::FILE)),
         });
-        let gate = gate::command(&fac, &repo.root);
+        let ns = std::env::current_exe().context("cannot find the ns binary")?;
+        let gate = gate::command(&fac, &repo.root, &ns);
         let cap = match fac.limits.memory_mb.filter(|mb| *mb > 0 && !dry_run) {
             Some(mb) => {
                 let cap = memcap::detect(mb)?;

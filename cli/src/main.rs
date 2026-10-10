@@ -19,6 +19,7 @@ mod markers;
 mod memcap;
 mod quality;
 mod review_md;
+mod rules;
 mod run;
 mod skills_sync;
 mod stats;
@@ -52,6 +53,7 @@ Examples:
   ns watch --until 06:30
   ns clean --dry-run
   ns quality --since 2026-10-01
+  ns rules check
 
 Exit codes: 0 ok, 1 failure, 2 usage error, 3 role not configured, 4 harness missing,
 5 no write command for `ns ask --write`.
@@ -303,6 +305,13 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         json: bool,
     },
 
+    /// Run the repo's rule pack and fail only on violations not in its baseline
+    #[command(arg_required_else_help = true)]
+    Rules {
+        #[command(subcommand)]
+        command: RulesCmd,
+    },
+
     /// Report config path and validity, configured roles, harnesses on PATH, and forge accounts
     #[command(after_help = "\
 Examples:
@@ -407,6 +416,7 @@ const QUALITY_HELP: &str = "\
 Examples:
   ns quality
   ns quality --since 2026-10-01
+  ns rules check
   ns quality --since 2026-10-09T21:04:00Z
   ns quality --since 2026-10-01 --until 2026-10-09
   ns quality --json | jq .first_pass
@@ -468,6 +478,65 @@ outbox (the next ns run or import pushes them); 2 usage error.")]
         /// Print what would be imported; push nothing
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+const RULES_CHECK_HELP: &str = "\
+Examples:
+  ns rules check
+  ns rules check --human
+  ns rules check | jq .new
+
+Spec: docs/FACTORY.md (Rules). Runs each command in the `rules` row of docs/agents/stack.md
+with sh -c at the top of the git checkout, e.g.
+  | rules | `ruff check --output-format=concise .`, `./scripts/rules-json` | 10 s |
+Each output line (stdout or stderr) that is a JSON object with \"file\" (and optionally
+\"tool\", \"rule\", \"line\", \"message\", \"snippet\"), or reads file:line[:col]: message, is a
+finding {tool,rule,file,line,message,snippet}. tool defaults to the command's first word,
+snippet to the source line with whitespace collapsed. A finding matches a baseline entry in
+.nightshift/rules-baseline.json on (tool, rule, file, snippet), so a moved line still matches.
+A command that exits non-zero and prints no finding is an error. No rules row: nothing runs.
+
+Prints {ok,command,baseline,commands,findings,baselined,new,fixed}; fixed lists baseline
+entries nothing matched (drop them with ns rules baseline).
+Exit codes: 0 no new violations, 1 new violations or a command failed, 2 not in a git repo.";
+
+const RULES_BASELINE_HELP: &str = "\
+Examples:
+  ns rules baseline
+  ns rules baseline --dry-run
+  ns rules baseline --allow-growth
+
+Runs the rule pack as ns rules check does (see its --help) and writes every current violation
+to .nightshift/rules-baseline.json, dropping entries that are gone. A violation the baseline
+lacks, including every one when there is no baseline yet, is growth: without --allow-growth
+it writes nothing and exits 1. A rerun with nothing added or dropped writes nothing.
+
+Prints {ok,command,status,dry_run,baseline,commands,violations,added,dropped}; status is
+written, planned, already-done or refused.
+Exit codes: 0 ok, 1 refused growth or a command failed, 2 no rules row or not in a git repo.";
+
+#[derive(Subcommand)]
+enum RulesCmd {
+    /// Fail on violations the baseline doesn't list; report the ones that are gone
+    #[command(after_help = RULES_CHECK_HELP)]
+    Check {
+        /// Print one readable line per new or fixed violation instead of JSON
+        #[arg(long)]
+        human: bool,
+    },
+    /// Rewrite the baseline from the current violations; it may only shrink
+    #[command(after_help = RULES_BASELINE_HELP)]
+    Baseline {
+        /// Let the baseline gain entries (a human decision: they become accepted debt)
+        #[arg(long)]
+        allow_growth: bool,
+        /// Print what would change; write nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Print one readable line per added or dropped violation instead of JSON
+        #[arg(long)]
+        human: bool,
     },
 }
 
@@ -738,6 +807,14 @@ fn run(cli: Cli) -> Result<ExitCode> {
             json: _,
         } => return quality::cli(since, until),
         Cmd::Clean { dry_run } => return clean::cli(dry_run),
+        Cmd::Rules { command } => match command {
+            RulesCmd::Check { human } => return rules::check(human),
+            RulesCmd::Baseline {
+                allow_growth,
+                dry_run,
+                human,
+            } => return rules::baseline(allow_growth, dry_run, human),
+        },
         Cmd::Doctor => doctor::run()?,
     }
     Ok(ExitCode::SUCCESS)

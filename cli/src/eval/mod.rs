@@ -1,6 +1,6 @@
 //! `ns eval`: measure whether skills help. The spec is docs/EVALS.md.
 
-mod checks;
+pub(crate) mod checks;
 pub(crate) mod parser;
 mod spec;
 pub(crate) mod trial;
