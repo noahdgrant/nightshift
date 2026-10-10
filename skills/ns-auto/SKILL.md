@@ -21,14 +21,14 @@ Before any phase runs, every term below has a value. Take the terms the prompt a
 | Goal | the issue or brief this run delivers | none: without a goal, stop and ask |
 | Done | the checkable condition that ends the run | `evidence.md`, `review.md` and `pr.md` pass at HEAD |
 | Unit and worktree | unit ID, worktree path, base branch | `<issue>-<slug>`, the path `ns worktree new` prints, `main` |
-| Allowed actions | the gate policy, and whether the run may push `ns/<unit-id>`, open a PR and comment on the tracker | `gates: stop`, no push |
+| Allowed actions | the gate policy; whether the run may push `ns/<unit-id>`, open a PR and comment on the tracker; and whether phases may run with permissions bypassed | `gates: stop`, no push, no bypass |
 | Escape hatch | when to stop early and hand back: a deadline, a budget, a phase to stop after, where the report goes | stop at the first stuck unit, report in this session |
 
 When the prompt says nobody will answer (an overnight or headless run), fill each missing term with its default instead of asking, except the goal. Apply [never block on the human](../ns-principle-never-block-on-the-human/SKILL.md) there.
 
 Some actions wait for a human whatever the contract grants: merging, approving, pushing to the default branch, and the rest of the contract's always-human list. A run that may not push ends before `ns-ship`, which pushes and opens the PR (the push check in Pick the phase runs each turn).
 
-Say the gate policy in your first message: `Running <unit-id> under gates: <policy>.`
+Say the gate policy in your first message, naming the bypass when the contract grants it: `Running <unit-id> under gates: <policy>.` or `Running <unit-id> under gates: <policy>, phases with permissions bypassed.`
 
 Done when all five terms have a value and you have stated the policy.
 
@@ -37,9 +37,10 @@ Done when all five terms have a value and you have stated the policy.
 Defer to `ns run` only when all hold:
 
 - `command -v ns` finds the CLI.
-- A factory definition exists: `.nightshift/nightshift.toml` in the main worktree's root, or `nightshift.toml` at the root of a factory repo.
-- The factory's `merge.policy` is not `auto`, because ns-auto never merges and `ns run` would.
+- `.nightshift/nightshift.toml` exists in the main worktree's root. It is the only factory definition `ns run` loads; a `nightshift.toml` anywhere else does not count.
+- That file's `merge.policy` is not `auto`, because ns-auto never merges and `ns run` would.
 - The contract allows pushing `ns/<unit-id>` and opening a PR, and names no phase to stop after, because `ns run` cannot honour either.
+- The contract's allowed actions grant phases that run with permissions bypassed. `ns run` starts every phase with `--permission-mode bypassPermissions`.
 
 Then run one of these and wait for it:
 
