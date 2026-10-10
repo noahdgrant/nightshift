@@ -22,6 +22,12 @@ Overnight contract. Nobody will answer questions tonight.
 - Escape hatch: stop at the first blocked or stuck phase, or after 15 minutes, and report here.
 """
 
+# Without ns on PATH the skill would run in session anyway, so the case would pass vacuously.
+[[check]]
+type = "command"
+run = "command -v ns"
+expect_exit = 0
+
 # ns-auto running the loop itself writes the run log; ns run does not.
 [[check]]
 type = "command"

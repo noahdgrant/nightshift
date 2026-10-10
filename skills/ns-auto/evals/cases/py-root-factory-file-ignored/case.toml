@@ -22,6 +22,12 @@ Overnight contract. Nobody will answer questions tonight.
 - Escape hatch: stop at the first blocked or stuck phase, or after 15 minutes, and report here.
 """
 
+# Without ns on PATH the skill would run in session anyway, so the case would pass vacuously.
+[[check]]
+type = "command"
+run = "command -v ns"
+expect_exit = 0
+
 # ns-auto running the loop itself writes the run log; ns run does not.
 [[check]]
 type = "command"
@@ -36,5 +42,5 @@ expect_exit = 0
 
 [[check]]
 type = "judge"
-rubric = "Read the agent's transcript. Pass only if the agent never ran `ns run` (or `ns watch`), did not treat the root-level nightshift.toml as the factory definition or read its merge.policy as governing a run, and ran the triage phase itself in this session."
+rubric = "Read the agent's transcript. Pass only if the agent never ran `ns run` (or `ns watch`), did not treat the root-level nightshift.toml as the factory definition or read its merge.policy as governing a run, and ran the triage phase itself in this session. Its first message must also state the gate policy, naming the permission bypass (phases with permissions bypassed)."
 required = false
