@@ -72,10 +72,25 @@ pub struct Region {
     pub reason: Option<String>,
 }
 
-/// Regions in a text, read leniently so a bad file still guards its code: a nested start
-/// deepens the open region, which closes when its own end is reached, a stray end is ignored,
-/// and an unclosed start runs to the last line.
-pub fn regions(text: &str) -> Vec<Region> {
+/// What one pass over a text's markers finds.
+enum Event {
+    Closed(Region),
+    Nested { line: usize, open: usize },
+    Stray(usize),
+    Unclosed(Region),
+}
+
+/// How `scan` treats a start inside an open region.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Nesting {
+    /// The nested start deepens the open region, which closes at its own end.
+    Deepen,
+    /// The next end closes the open region.
+    Flat,
+}
+
+/// Walk the lines once. An unclosed region runs to the last line.
+fn scan(text: &str, nesting: Nesting) -> Vec<Event> {
     let mut out = Vec::new();
     let mut open: Option<(Region, usize)> = None;
     let mut last = 0;
@@ -92,22 +107,44 @@ pub fn regions(text: &str) -> Vec<Region> {
                     1,
                 ))
             }
-            (Some(Marker::Start(_)), Some((_, depth))) => *depth += 1,
+            (Some(Marker::Start(_)), Some((r, depth))) => {
+                out.push(Event::Nested {
+                    line: last,
+                    open: r.start,
+                });
+                if nesting == Nesting::Deepen {
+                    *depth += 1;
+                }
+            }
+            (Some(Marker::End), None) => out.push(Event::Stray(last)),
             (Some(Marker::End), Some((r, depth))) => {
                 *depth -= 1;
                 if *depth == 0 {
                     r.end = last;
-                    out.extend(open.take().map(|(r, _)| r));
+                    out.extend(open.take().map(|(r, _)| Event::Closed(r)));
                 }
             }
-            _ => {}
+            (None, _) => {}
         }
     }
     if let Some((mut r, _)) = open {
         r.end = last;
-        out.push(r);
+        out.push(Event::Unclosed(r));
     }
     out
+}
+
+/// Regions in a text, read leniently so a bad file still guards its code: a nested start
+/// deepens the open region, which closes when its own end is reached, a stray end is ignored,
+/// and an unclosed start runs to the last line.
+pub fn regions(text: &str) -> Vec<Region> {
+    scan(text, Nesting::Deepen)
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::Closed(r) | Event::Unclosed(r) => Some(r),
+            Event::Nested { .. } | Event::Stray(_) => None,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -118,31 +155,21 @@ pub struct MarkerError {
 
 /// Unbalanced or nested markers.
 pub fn check(text: &str) -> Vec<MarkerError> {
-    let mut errs = Vec::new();
-    let mut open: Option<usize> = None;
-    for (i, line) in text.lines().enumerate() {
-        let n = i + 1;
-        match (marker(line), open) {
-            (Some(Marker::Start(_)), Some(o)) => errs.push(MarkerError {
-                line: n,
-                message: format!("{TAG} start nested inside the region opened on line {o}"),
-            }),
-            (Some(Marker::Start(_)), None) => open = Some(n),
-            (Some(Marker::End), None) => errs.push(MarkerError {
-                line: n,
-                message: format!("{TAG} end with no start"),
-            }),
-            (Some(Marker::End), Some(_)) => open = None,
-            (None, _) => {}
-        }
-    }
-    if let Some(o) = open {
-        errs.push(MarkerError {
-            line: o,
-            message: format!("{TAG} start with no end"),
-        });
-    }
-    errs
+    scan(text, Nesting::Flat)
+        .into_iter()
+        .filter_map(|e| {
+            let (line, message) = match e {
+                Event::Closed(_) => return None,
+                Event::Nested { line, open } => (
+                    line,
+                    format!("{TAG} start nested inside the region opened on line {open}"),
+                ),
+                Event::Stray(line) => (line, format!("{TAG} end with no start")),
+                Event::Unclosed(r) => (r.start, format!("{TAG} start with no end")),
+            };
+            Some(MarkerError { line, message })
+        })
+        .collect()
 }
 
 /// One `@@ -old_start,old_len +new_start,new_len @@` hunk header.
@@ -261,54 +288,63 @@ fn changes(dir: &Path, base: &str, head: &str) -> Result<Vec<(String, Change)>> 
 pub fn touched_between(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for (path, change) in changes(dir, base, head)? {
-        let show = |rev: &str| {
-            git::run(
-                dir,
-                &["--literal-pathspecs", "show", &format!("{rev}:{path}")],
-            )
-        };
-        let old = match change {
-            Change::Added => String::new(),
-            _ => show(base)?,
-        };
-        let new = match change {
-            Change::Deleted => String::new(),
-            _ => show(head)?,
-        };
-        if !has_markers(&old) && !has_markers(&new) {
-            continue;
-        }
-        let diff = git::run(
-            dir,
-            &[
-                "--literal-pathspecs",
-                "diff",
-                "--no-renames",
-                "--no-ext-diff",
-                "--text",
-                "-U0",
-                base,
-                head,
-                "--",
-                &path,
-            ],
-        )?;
-        let hunks = hunks(&diff);
-        let region = if hunks.is_empty() {
-            let end = old.lines().count().max(new.lines().count()).max(1);
-            Some(Region {
-                start: 1,
-                end,
-                reason: None,
-            })
-        } else {
-            touched(&old, &new, &hunks)
-        };
-        if let Some(r) = region {
+        if let Some(r) = touched_file(dir, base, head, &path, change)? {
             out.push(describe(&path, &r));
         }
     }
     Ok(out)
+}
+
+/// The region one changed file touches between two commits, if any.
+fn touched_file(
+    dir: &Path,
+    base: &str,
+    head: &str,
+    path: &str,
+    change: Change,
+) -> Result<Option<Region>> {
+    let show = |rev: &str| {
+        git::run(
+            dir,
+            &["--literal-pathspecs", "show", &format!("{rev}:{path}")],
+        )
+    };
+    let old = match change {
+        Change::Added => String::new(),
+        _ => show(base)?,
+    };
+    let new = match change {
+        Change::Deleted => String::new(),
+        _ => show(head)?,
+    };
+    if !has_markers(&old) && !has_markers(&new) {
+        return Ok(None);
+    }
+    let diff = git::run(
+        dir,
+        &[
+            "--literal-pathspecs",
+            "diff",
+            "--no-renames",
+            "--no-ext-diff",
+            "--text",
+            "-U0",
+            base,
+            head,
+            "--",
+            path,
+        ],
+    )?;
+    let hunks = hunks(&diff);
+    if hunks.is_empty() {
+        let end = old.lines().count().max(new.lines().count()).max(1);
+        return Ok(Some(Region {
+            start: 1,
+            end,
+            reason: None,
+        }));
+    }
+    Ok(touched(&old, &new, &hunks))
 }
 
 #[derive(Debug, Serialize)]
@@ -558,6 +594,27 @@ fn b() {}
     }
 
     #[test]
+    fn regions_and_check_read_one_nested_file_differently() {
+        let text = m("@end\n@start: r\n@start\na\n@end\nb\n@end\n");
+        assert_eq!(regions(&text), [region(2, 7, Some("r"))]);
+        let errs: Vec<_> = check(&text)
+            .into_iter()
+            .map(|e| (e.line, e.message))
+            .collect();
+        assert_eq!(
+            errs,
+            [
+                (1, format!("{TAG} end with no start")),
+                (
+                    3,
+                    format!("{TAG} start nested inside the region opened on line 2")
+                ),
+                (7, format!("{TAG} end with no start")),
+            ]
+        );
+    }
+
+    #[test]
     fn a_bad_file_still_guards_its_code() {
         let text = m("a\n# @start: r\nb\n# @start\nc\n");
         assert_eq!(regions(&text), [region(2, 5, Some("r"))]);
@@ -681,6 +738,17 @@ fn b() {}
             let got = touched_between(t.path(), &base, &head).unwrap();
             assert_eq!(got.len(), 1, "{got:?}");
             assert!(got[0].starts_with("f.c:"), "{got:?}");
+        }
+
+        #[test]
+        fn a_file_without_markers_is_never_touched() {
+            let t = init();
+            write(t.path(), "f.c", "a\nb\n");
+            let base = commit(t.path(), "base");
+            git_in(t.path(), &["update-index", "--chmod=+x", "f.c"]);
+            git_in(t.path(), &["commit", "-q", "-m", "mode"]);
+            let head = git::run(t.path(), &["rev-parse", "HEAD"]).unwrap();
+            assert!(touched_between(t.path(), &base, &head).unwrap().is_empty());
         }
 
         #[test]
