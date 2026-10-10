@@ -6973,8 +6973,6 @@ fn cleanup_at_a_resume_leaves_the_worktree_of_the_paused_unit() {
     );
 }
 
-// ---------------------------------------------------------------- self-update
-
 /// Make the repo the nightshift source, `cli/Cargo.toml` naming the package `nightshift`, put the
 /// fake cargo on PATH, and return the commit pushed, which the `ns` under test counts as its
 /// build commit.

@@ -93,7 +93,6 @@ impl Drop for StateFile {
     }
 }
 
-/// The first 12 characters of a commit, for people.
 fn short(sha: &str) -> &str {
     sha.get(..12).unwrap_or(sha)
 }
@@ -292,9 +291,7 @@ fn tail(stderr: &[u8]) -> String {
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(super) struct Carried {
-    /// The state file's layout. A new binary from another commit reads only its own; a state
-    /// with no version reads as 0 and is refused. Any change to the fields below, or to
-    /// `Tonight` and `triage::Tally` inside, needs a new [`Carried::VERSION`].
+    /// The state file's layout version; a state with none reads as 0.
     pub version: u32,
     pub deadline: Option<i64>,
     pub spent_usd: f64,
@@ -408,9 +405,8 @@ mod tests {
         v.iter().map(OsString::from).collect()
     }
 
-    #[test]
-    fn the_night_survives_the_state_file_and_the_file_goes() {
-        let night = serde_json::json!({
+    fn full_night() -> serde_json::Value {
+        serde_json::json!({
             "version": 1, "deadline": 1000, "spent_usd": 2.5, "started": 3, "harness_fails": 1,
             "finished": [2, 3],
             "triage": {
@@ -421,7 +417,66 @@ mod tests {
                 "units": [{"issue": 2, "outcome": "done"}], "requeued": [5],
                 "cleaned": ["1-a"], "cleanup_tried": ["1-a"],
             },
-        });
+        })
+    }
+
+    fn key_paths(v: &serde_json::Value, at: &str, out: &mut BTreeSet<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, v) in m {
+                    let path = format!("{at}.{k}");
+                    out.insert(path.clone());
+                    key_paths(v, &path, out);
+                }
+            }
+            serde_json::Value::Array(a) => {
+                a.iter().for_each(|v| key_paths(v, &format!("{at}[]"), out))
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn the_state_file_layout_is_pinned_to_its_version() {
+        let c: Carried = serde_json::from_value(full_night()).unwrap();
+        let mut keys = BTreeSet::new();
+        key_paths(&serde_json::to_value(&c).unwrap(), "", &mut keys);
+        let keys: Vec<_> = keys.iter().map(String::as_str).collect();
+        let pinned = [
+            ".deadline",
+            ".finished",
+            ".harness_fails",
+            ".spent_usd",
+            ".started",
+            ".tonight",
+            ".tonight.cleaned",
+            ".tonight.cleanup_tried",
+            ".tonight.requeued",
+            ".tonight.units",
+            ".tonight.units[].issue",
+            ".tonight.units[].outcome",
+            ".triage",
+            ".triage.last_error",
+            ".triage.off",
+            ".triage.records",
+            ".triage.records[].issue",
+            ".triage.records[].outcome",
+            ".triage.retry",
+            ".triage.seen",
+            ".triage.tried",
+            ".version",
+        ];
+        assert_eq!(
+            keys, pinned,
+            "the night state layout changed: bump Carried::VERSION (a new binary refuses another \
+             version's state), then update this list"
+        );
+        assert_eq!(Carried::VERSION, 1);
+    }
+
+    #[test]
+    fn the_night_survives_the_state_file_and_the_file_goes() {
+        let night = full_night();
         let c: Carried = serde_json::from_value(night.clone()).unwrap();
         let common = tempfile::tempdir().unwrap();
         let path = c.save(common.path()).unwrap();
