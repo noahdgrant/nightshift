@@ -15,7 +15,7 @@ use crate::stats::round;
 pub struct RunLog {
     pub path: String,
     pub present: bool,
-    /// Events that name a unit, on or after `--since`.
+    /// Events that name a unit, within `--since` and `--until`.
     pub events: usize,
     pub bad_lines: usize,
     pub review_runs: u32,
@@ -24,13 +24,26 @@ pub struct RunLog {
     pub units_without_artifacts: Vec<String>,
 }
 
-/// Whether `ts` is at or after the instant `since`. An undated one never is.
-pub fn on_or_after(ts: Option<i64>, since: Option<i64>) -> bool {
-    since.is_none_or(|s| ts.is_some_and(|t| t >= s))
+/// The closed range of instants `--since` and `--until` select, as unix seconds.
+/// The default is unbounded.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Window {
+    pub since: Option<i64>,
+    pub until: Option<i64>,
+}
+
+impl Window {
+    /// Whether `ts` falls in the window. An undated one does only when the window is unbounded.
+    pub fn contains(&self, ts: Option<i64>) -> bool {
+        match ts {
+            None => self.since.is_none() && self.until.is_none(),
+            Some(t) => self.since.is_none_or(|s| t >= s) && self.until.is_none_or(|u| t <= u),
+        }
+    }
 }
 
 /// Review runs, review cost, and the last outcome and PR, per unit.
-pub fn read(path: &Path, since: Option<i64>) -> (RunLog, BTreeMap<String, RunStats>) {
+pub fn read(path: &Path, window: Window) -> (RunLog, BTreeMap<String, RunStats>) {
     let mut log = RunLog {
         path: path.display().to_string(),
         present: path.is_file(),
@@ -50,7 +63,7 @@ pub fn read(path: &Path, since: Option<i64>) -> (RunLog, BTreeMap<String, RunSta
         let Some(unit) = ev["unit"].as_str() else {
             continue;
         };
-        if !on_or_after(ev["ts"].as_str().and_then(clock::parse_iso), since) {
+        if !window.contains(ev["ts"].as_str().and_then(clock::parse_iso)) {
             continue;
         }
         log.events += 1;
@@ -86,7 +99,7 @@ mod tests {
     fn runs_are_counted_per_unit() {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("runs.jsonl");
-        assert!(!read(&p, None).0.present);
+        assert!(!read(&p, Window::default()).0.present);
         fs::write(
             &p,
             r#"{"event":"phase","phase":"review","cost_usd":1.25,"unit":"a","ts":"2026-10-08T10:00:00Z"}
@@ -103,7 +116,7 @@ not json
 "#,
         )
         .unwrap();
-        let (log, runs) = read(&p, None);
+        let (log, runs) = read(&p, Window::default());
         assert!(log.present);
         assert_eq!(
             (
@@ -123,20 +136,42 @@ not json
     }
 
     #[test]
-    fn undated_events_are_dropped_only_with_since() {
-        assert!(on_or_after(None, None));
-        assert!(on_or_after(Some(0), None));
-        assert!(!on_or_after(None, Some(0)));
+    fn undated_events_are_dropped_only_with_a_bound() {
+        assert!(Window::default().contains(None));
+        assert!(Window::default().contains(Some(0)));
+        let since = Window {
+            since: Some(0),
+            ..Window::default()
+        };
+        let until = Window {
+            until: Some(0),
+            ..Window::default()
+        };
+        assert!(!since.contains(None));
+        assert!(!until.contains(None));
     }
 
     #[test]
-    fn since_cuts_off_at_the_instant() {
-        let since = clock::parse_iso("2026-10-10T00:00:00Z");
-        assert!(on_or_after(clock::parse_iso("2026-10-10T02:43:00Z"), since));
-        assert!(on_or_after(since, since));
-        assert!(!on_or_after(
-            clock::parse_iso("2026-10-09T23:59:59Z"),
-            since
-        ));
+    fn the_window_is_closed_at_both_instants() {
+        let at = |s| clock::parse_iso(s).unwrap();
+        let w = Window {
+            since: Some(at("2026-10-10T00:00:00Z")),
+            until: Some(at("2026-10-10T23:59:59Z")),
+        };
+        for (ts, inside) in [
+            ("2026-10-09T23:59:59Z", false),
+            ("2026-10-10T00:00:00Z", true),
+            ("2026-10-10T02:43:00Z", true),
+            ("2026-10-10T23:59:59Z", true),
+            ("2026-10-11T00:00:00Z", false),
+        ] {
+            assert_eq!(w.contains(Some(at(ts))), inside, "{ts}");
+        }
+        let until = Window { since: None, ..w };
+        assert!(until.contains(Some(0)));
+        assert!(!until.contains(Some(at("2026-10-11T00:00:00Z"))));
+        let since = Window { until: None, ..w };
+        assert!(since.contains(Some(i64::MAX)));
+        assert!(!since.contains(Some(at("2026-10-09T23:59:59Z"))));
     }
 }

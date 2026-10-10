@@ -295,6 +295,9 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         /// Only units whose newest review artifact was updated, and run-log events, at or after this UTC time (YYYY-MM-DDTHH:MM:SSZ, or YYYY-MM-DD for 00:00:00 UTC)
         #[arg(long, value_name = "TIME")]
         since: Option<String>,
+        /// Only units whose newest review artifact was updated, and run-log events, at or before this UTC time (YYYY-MM-DDTHH:MM:SSZ, or YYYY-MM-DD for 23:59:59 UTC)
+        #[arg(long, value_name = "TIME")]
+        until: Option<String>,
         /// Print JSON (the default and only format)
         #[arg(long)]
         json: bool,
@@ -405,6 +408,7 @@ Examples:
   ns quality
   ns quality --since 2026-10-01
   ns quality --since 2026-10-09T21:04:00Z
+  ns quality --since 2026-10-01 --until 2026-10-09
   ns quality --json | jq .first_pass
   ns quality import /tmp/unit-artifacts --dry-run
 
@@ -417,10 +421,11 @@ review/cycle-*.md and history/review* in its linked worktree. Also reads
 First-pass numbers come from a unit's oldest review artifact, the rest from its newest.
 Prints {units,findings,first_pass,cycles_to_clean,leftovers,escapes,leftover_findings,
 escape_findings,trend,run_log,gaps,per_unit,records}; per_unit[].source is record or worktree.
---since and its echo in the output are UTC;
-trend and per_unit days are local (TZ).
+--since and --until are inclusive and UTC, and so is their echo in the output: a bare date
+is 00:00:00 for --since and 23:59:59 for --until. trend and per_unit days are local (TZ).
 
-Exit codes: 0 ok, 1 git failed, 2 usage error (bad --since, not in a git repo).";
+Exit codes: 0 ok, 1 git failed, 2 usage error (bad --since or --until, --until before --since,
+not in a git repo).";
 
 const EVAL_HELP: &str = "\
 Examples:
@@ -729,8 +734,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Quality {
             command: None,
             since,
+            until,
             json: _,
-        } => return quality::cli(since),
+        } => return quality::cli(since, until),
         Cmd::Clean { dry_run } => return clean::cli(dry_run),
         Cmd::Doctor => doctor::run()?,
     }

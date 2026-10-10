@@ -24,22 +24,50 @@ use crate::review_md::{Finding, Scope, Severity, Status};
 use artifacts::Unparsed;
 use metrics::{RunStats, Unit};
 pub use record::{issue_of, Meta};
-use runlog::RunLog;
+use runlog::{RunLog, Window};
 pub use sync::{import, record_unit, record_units};
 
-/// `--since` as unix seconds: `YYYY-MM-DDTHH:MM:SSZ`, or `YYYY-MM-DD` for 00:00:00 UTC.
-fn since_instant(s: &str) -> Result<i64> {
+/// `--<flag>` as unix seconds: `YYYY-MM-DDTHH:MM:SSZ`, or `YYYY-MM-DD` for `day_time` UTC.
+fn instant(flag: &str, s: &str, day_time: &str) -> Result<i64> {
     let form = s.len() == 10 || (s.len() == 20 && s.as_bytes()[10] == b'T');
-    if let Some(t) = clock::parse_iso(s).filter(|_| form) {
+    let full = if s.len() == 10 {
+        format!("{s}T{day_time}Z")
+    } else {
+        s.to_string()
+    };
+    if let Some(t) = clock::parse_iso(&full).filter(|_| form) {
         return Ok(t);
     }
     Err(SfError::usage(
         format!(
-            "--since {s:?} is not a UTC time: use YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD (00:00:00 UTC)"
+            "--{flag} {s:?} is not a UTC time: use YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD ({day_time} UTC)"
         ),
-        "ns quality --since 2026-10-01T00:00:00Z",
+        format!("ns quality --{flag} 2026-10-01T{day_time}Z"),
     )
     .into())
+}
+
+fn window(since: Option<String>, until: Option<String>) -> Result<Window> {
+    let since = since
+        .map(|s| instant("since", &s, "00:00:00"))
+        .transpose()?;
+    let until = until
+        .map(|u| instant("until", &u, "23:59:59"))
+        .transpose()?;
+    if let (Some(s), Some(u)) = (since, until) {
+        if u < s {
+            return Err(SfError::usage(
+                format!(
+                    "--until {} is before --since {}",
+                    clock::iso(u),
+                    clock::iso(s)
+                ),
+                "ns quality --since 2026-10-01 --until 2026-10-09",
+            )
+            .into());
+        }
+    }
+    Ok(Window { since, until })
 }
 
 fn item(u: &Unit, f: &Finding) -> Value {
@@ -111,7 +139,7 @@ fn per_unit(u: &Unit) -> Value {
 
 fn report(
     units: &[&Unit],
-    since: Option<i64>,
+    window: Window,
     root: &Path,
     log: RunLog,
     unparsed: Vec<Unparsed>,
@@ -153,8 +181,12 @@ fn report(
             v
         })
         .collect();
-    let mut out =
-        json!({ "ok": true, "repo": root.display().to_string(), "since": since.map(clock::iso) });
+    let mut out = json!({
+        "ok": true,
+        "repo": root.display().to_string(),
+        "since": window.since.map(clock::iso),
+        "until": window.until.map(clock::iso),
+    });
     let Value::Object(summary) = json!(metrics::summarize(units)) else {
         unreachable!("a struct serialises to an object")
     };
@@ -168,8 +200,8 @@ fn report(
     out
 }
 
-pub fn cli(since: Option<String>) -> Result<ExitCode> {
-    let since = since.as_deref().map(since_instant).transpose()?;
+pub fn cli(since: Option<String>, until: Option<String>) -> Result<ExitCode> {
+    let window = window(since, until)?;
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
     let mut unparsed = Vec::new();
     let (mut units, records) = sync::stored_units(&repo);
@@ -180,7 +212,7 @@ pub fn cli(since: Option<String>) -> Result<ExitCode> {
             .filter(|u| !recorded.contains(&u.id)),
     );
     units.sort_by(|a, b| a.id.cmp(&b.id));
-    let (mut log, mut runs) = runlog::read(&repo.common_dir.join("ns").join("runs.jsonl"), since);
+    let (mut log, mut runs) = runlog::read(&repo.common_dir.join("ns").join("runs.jsonl"), window);
     let known: BTreeSet<&str> = units.iter().map(|u| u.id.as_str()).collect();
     log.units_without_artifacts = runs
         .iter()
@@ -197,9 +229,9 @@ pub fn cli(since: Option<String>) -> Result<ExitCode> {
     }
     let kept: Vec<&Unit> = units
         .iter()
-        .filter(|u| runlog::on_or_after(u.last().updated, since))
+        .filter(|u| window.contains(u.last().updated))
         .collect();
-    let mut r = report(&kept, since, &repo.root, log, unparsed);
+    let mut r = report(&kept, window, &repo.root, log, unparsed);
     r["records"] = records;
     println!("{}", serde_json::to_string_pretty(&r)?);
     Ok(ExitCode::SUCCESS)
@@ -212,11 +244,15 @@ mod tests {
     use metrics::{Attempt, RunStats};
 
     #[test]
-    fn since_is_a_utc_instant_or_a_utc_date() {
+    fn a_bound_is_a_utc_instant_or_a_utc_date() {
         let t = clock::parse_iso("2026-10-01T00:00:00Z").unwrap();
-        assert_eq!(since_instant("2026-10-01").unwrap(), t);
-        assert_eq!(since_instant("2026-10-01T00:00:00Z").unwrap(), t);
-        assert_eq!(since_instant("2026-10-01T02:43:09Z").unwrap(), t + 9789);
+        let since = |s| instant("since", s, "00:00:00");
+        assert_eq!(since("2026-10-01").unwrap(), t);
+        assert_eq!(since("2026-10-01T00:00:00Z").unwrap(), t);
+        assert_eq!(since("2026-10-01T02:43:09Z").unwrap(), t + 9789);
+        let until = |s| instant("until", s, "23:59:59");
+        assert_eq!(until("2026-10-01").unwrap(), t + 86_399);
+        assert_eq!(until("2026-10-01T02:43:09Z").unwrap(), t + 9789);
         for bad in [
             "2026-10-1",
             "2026-13-01",
@@ -227,12 +263,35 @@ mod tests {
             "2026-10-01 00:00:00Z",
             "2026-10-01T24:00:00Z",
         ] {
-            let e = since_instant(bad).unwrap_err();
-            let e = e.downcast_ref::<SfError>().unwrap();
-            assert_eq!(e.code, 2, "{bad}");
-            assert!(e.to_string().contains("YYYY-MM-DDTHH:MM:SSZ"), "{e}");
-            assert!(e.to_string().contains("YYYY-MM-DD "), "{e}");
+            for (flag, day_time) in [("since", "00:00:00"), ("until", "23:59:59")] {
+                let e = instant(flag, bad, day_time).unwrap_err();
+                let e = e.downcast_ref::<SfError>().unwrap();
+                assert_eq!(e.code, 2, "{bad}");
+                assert!(e.to_string().starts_with(&format!("--{flag} ")), "{e}");
+                assert!(e.to_string().contains("YYYY-MM-DDTHH:MM:SSZ"), "{e}");
+                assert!(
+                    e.to_string()
+                        .contains(&format!("YYYY-MM-DD ({day_time} UTC)")),
+                    "{e}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn until_may_equal_since_but_not_precede_it() {
+        let w = |s: &str, u: &str| window(Some(s.into()), Some(u.into()));
+        let t = clock::parse_iso("2026-10-09T00:00:00Z").unwrap();
+        let same = w("2026-10-09T00:00:00Z", "2026-10-09T00:00:00Z").unwrap();
+        assert_eq!((same.since, same.until), (Some(t), Some(t)));
+        let day = w("2026-10-09", "2026-10-09").unwrap();
+        assert_eq!((day.since, day.until), (Some(t), Some(t + 86_399)));
+        let e = w("2026-10-09T00:00:01Z", "2026-10-09T00:00:00Z").unwrap_err();
+        assert_eq!(e.downcast_ref::<SfError>().unwrap().code, 2);
+        assert!(window(None, Some("bad".into())).is_err());
+        assert!(window(Some("bad".into()), None).is_err());
+        let open = window(None, None).unwrap();
+        assert_eq!((open.since, open.until), (None, None));
     }
 
     #[test]

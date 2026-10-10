@@ -210,25 +210,9 @@ Read these with care:
 - Tests findings per 100 lines rose. The self-check asks for a test on every branch, so the tests axis is the one to watch.
 - `ns quality --since 2026-10-10` finds 13 units, not 17: `--since` cuts at local midnight (EDT here), and 96, 131, 133 and 172 were reviewed on the evening of 2026-10-09 local time.
 
-Commands. `ns quality` has no `--until` or unit filter, so a `git` wrapper on `PATH` hides the other worktrees from `git worktree list`:
+Commands. These split at the merge instant on each unit's newest review, not on `build.md`, so unit 114 lands in the after set and the counts differ from the table:
 
 ```bash
-# run inside the repo; $d/before.txt and $d/after.txt list one unit id per line,
-# split on build.md's "## Self-check"
-d=$(mktemp -d)
-ns quality --json > "$d/all.json"
-mkdir -p "$d/bin" && cat > "$d/bin/git" <<'SH'
-#!/usr/bin/env bash
-if [[ "$*" == *"worktree list --porcelain" ]]; then
-  /usr/bin/git "$@" | awk -v list="$(cat "$UNITS")" '
-    BEGIN { RS=""; ORS="\n\n"; n = split(list, us, "\n"); for (i = 1; i <= n; i++) keep["/" us[i]] = 1 }
-    NR == 1 { print; next }
-    { split($0, l, "\n"); p = substr(l[1], 10); sub(/.*\//, "/", p); if (p in keep) print }'
-else
-  exec /usr/bin/git "$@"
-fi
-SH
-chmod +x "$d/bin/git"
-for s in before after; do PATH="$d/bin:$PATH" UNITS="$d/$s.txt" ns quality --json > "$d/$s.json"; done
-jq '.first_pass, .gaps' "$d/before.json" "$d/after.json"
+ns quality --until 2026-10-09T21:04:38Z --json | jq '.first_pass, .gaps'
+ns quality --since 2026-10-09T21:04:39Z --json | jq '.first_pass, .gaps'
 ```

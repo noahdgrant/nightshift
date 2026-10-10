@@ -367,7 +367,7 @@ Removal is `git worktree remove --force` (a locked worktree still refuses), then
 ## Quality
 
 ```
-ns quality [--since YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--json]
+ns quality [--since YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--until YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--json]
 ns quality import <dir> [--dry-run]
 ```
 
@@ -381,7 +381,7 @@ ns quality import <dir> [--dry-run]
 | Leftovers | Critical and Important findings in changed code still `open` after the third fix cycle | 0 |
 | Escapes | Findings with `Scope: pre-existing` (D29): defects in code the unit didn't change, so an earlier unit's review let them through. Each is blamed (`git blame` at the reviewed commit, the frontmatter's `sha:`, else `head:`, else `base:`) to the commit that introduced the line, and to the PR in its subject (`(#123)`) | Falling |
 
-An escape counts only as an escape: it never makes a unit's first pass dirty, never counts toward findings per 100 lines, and never blocks. A finding dismissed in review counts toward none of these: review judged it wrong. `trend` repeats the numbers for each local day (the newest artifact's `updated:`), and `--since` keeps only units whose newest artifact was updated, and run-log events, at or after a UTC instant. A bare date means 00:00:00 UTC, whatever `TZ` is, and an undated unit or event is dropped. `per_unit` has each unit's numbers, with `changed_lines`, which keeps the review cost of a large unit visible now that size never blocks one (D37), `reached_clean` (`clean`, `not_clean` or `unknown`) and its review runs, review cost and outcome from the run log. `run_log.units_without_artifacts` names units the log shows reviewed that have neither a record nor a worktree.
+An escape counts only as an escape: it never makes a unit's first pass dirty, never counts toward findings per 100 lines, and never blocks. A finding dismissed in review counts toward none of these: review judged it wrong. `trend` repeats the numbers for each local day (the newest artifact's `updated:`), `--since` keeps only units whose newest artifact was updated, and run-log events, at or after a UTC instant, and `--until` only those at or before one. A bare date means 00:00:00 UTC for `--since` and 23:59:59 UTC for `--until`, whatever `TZ` is, so `--until 2026-10-09` and `--since 2026-10-10` split units and events with no overlap and no gap. With either bound set, an undated unit or event is dropped. A malformed bound, or `--until` before `--since`, exits 2. The output echoes both as `since` and `until`, null when unset. `per_unit` has each unit's numbers, with `changed_lines`, which keeps the review cost of a large unit visible now that size never blocks one (D37), `reached_clean` (`clean`, `not_clean` or `unknown`) and its review runs, review cost and outcome from the run log. `run_log.units_without_artifacts` names units the log shows reviewed that have neither a record nor a worktree.
 
 The numbers need the finding fields `ns-review` writes: `Axis`, `Scope`, `Cycle` and `Status`. Older artifacts lack some of them, so `ns quality` falls back:
 

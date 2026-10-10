@@ -174,7 +174,10 @@ pub fn import(dir: &Path, dry_run: bool) -> Result<ExitCode> {
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
     let (existing, info) = stored(&repo);
     let have: BTreeSet<&str> = existing.iter().map(|r| r.unit.as_str()).collect();
-    let (_, runs) = runlog::read(&repo.common_dir.join("ns").join("runs.jsonl"), None);
+    let (_, runs) = runlog::read(
+        &repo.common_dir.join("ns").join("runs.jsonl"),
+        runlog::Window::default(),
+    );
     let now = Clock::from_env().now();
     let mut names: Vec<String> = fs::read_dir(dir)
         .with_context(|| format!("cannot read {}", dir.display()))?
