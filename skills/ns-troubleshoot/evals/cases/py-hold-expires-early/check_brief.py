@@ -1,8 +1,20 @@
+import argparse
 import glob
 import os
 import re
+import shlex
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+from datetime import datetime
+
+REPLAY_TIMEOUT = 30
+EXPIRED = r"inventory: error: .*expired"
+RESERVATION_EXPIRED = re.compile(r"inventory: error: reservation '(R\d+)' has expired\n")
+RESERVED_UNTIL = re.compile(r"(R\d+): .* until (\S+)\n")
+REPLAYABLE = re.compile(r"(?:\w+=\S*\s+)*python3 -m inventory(?:\s|$)")
 
 
 def section(text, name):
@@ -22,7 +34,84 @@ def section(text, name):
     return "\n".join(body).strip()
 
 
-def failures(text):
+def fence_lines(text):
+    lines, in_fence = [], False
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("```"):
+            in_fence = not in_fence
+        elif in_fence:
+            lines.append(line.removeprefix("$ "))
+    return lines
+
+
+def stays_inside(argv):
+    for arg in argv:
+        for part in arg.split("="):
+            norm = os.path.normpath(part) if part else part
+            if part.startswith(("/", "~")) or norm == ".." or norm.startswith("../"):
+                return False
+    return True
+
+
+class GlobalOptions(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
+
+
+def global_options(argv):
+    parser = GlobalOptions(add_help=False)
+    parser.add_argument("--state", default="inventory.json")
+    parser.add_argument("--now")
+    return parser.parse_known_args(argv[3:])[0]
+
+
+def before(now, expiry):
+    try:
+        return datetime.fromisoformat(now) < datetime.fromisoformat(expiry)
+    except (TypeError, ValueError):
+        return False
+
+
+def replays_red(commands, root):
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(os.path.join(root, "src"), os.path.join(tmp, "src"))
+        expiries = {}
+        env = {"PATH": os.environ.get("PATH", os.defpath), "PYTHONPATH": "src", "HOME": tmp}
+        for command in commands:
+            if not REPLAYABLE.match(command):
+                continue
+            try:
+                argv = shlex.split(command, comments=True)
+            except ValueError:
+                continue
+            argv = argv[argv.index("python3"):]
+            if not stays_inside(argv):
+                continue
+            try:
+                options = global_options(argv)
+            except ValueError:
+                continue
+            state = os.path.normpath(options.state)
+            proc = subprocess.Popen(
+                argv, cwd=tmp, env=env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+            )
+            try:
+                out, err = proc.communicate(timeout=REPLAY_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
+                return False
+            if reserved := RESERVED_UNTIL.fullmatch(out):
+                expiries[state, reserved.group(1)] = reserved.group(2)
+            expired = RESERVATION_EXPIRED.fullmatch(err)
+            if proc.returncode != 0 and expired and before(options.now, expiries.get((state, expired.group(1)))):
+                return True
+    return False
+
+
+def failures(text, root):
     m = re.match(r"---\n(.*?)\n---\n", text, re.S)
     if not m:
         return ["frontmatter"]
@@ -30,9 +119,6 @@ def failures(text):
     route = re.search(r"(?im)^\**Route:\**[ \t]*(ns-[a-z-]+)", text)
     repro = section(text, "repro")
     cause = section(text, "root cause")
-    pinned_seconds = re.search(r"--now[ =]\S*T\d\d:\d\d:(?!00)\d\d", repro) is not None
-    commands = [l for l in repro.splitlines() if re.match(r"\s*(\$ )?python3?\b", l)]
-    round_trip = any(re.search(r"to_dict|from_dict|\.load\(|\.save\(", l) for l in commands)
     checks = {
         "phase": fm.get("phase") == "troubleshoot",
         "status": fm.get("status") == "pass",
@@ -40,8 +126,8 @@ def failures(text):
         "agent brief": "Agent Brief" in text and "- [ ]" in text,
         "repro body": repro != "",
         "repro holds a command": re.search(r"python3? -m inventory", repro) is not None,
-        "repro ran red": re.search(r"(?m)^\W*inventory: error: .*expired", repro) is not None
-        and (pinned_seconds or round_trip),
+        "repro ran red": re.search(r"(?m)^\W*" + EXPIRED, repro) is not None
+        and replays_red(fence_lines(repro), root),
         "root cause body": cause != "",
         "root cause names expires_at": "expires_at" in cause,
         "root cause names the truncation site": re.search(r"to_dict|models\.py", cause) is not None
@@ -65,7 +151,7 @@ def main():
         sys.exit("no .ns/02-*/brief.md in the main checkout or any worktree")
     for path in briefs:
         with open(path, encoding="utf-8") as f:
-            failed = failures(f.read())
+            failed = failures(f.read(), os.getcwd())
         print(path, failed or "ok")
         if not failed:
             sys.exit(0)
