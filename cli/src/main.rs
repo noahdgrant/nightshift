@@ -338,7 +338,9 @@ Examples:
 
 Lists open issues labelled [queue] ready_label with gh, drops blocked ones and ones with an
 open PR that closes them, sorts by [queue] order, and runs each with ns run --issue. Forge tokens as in ns run --help.
-Prints {units,stopped,cost_usd}. Exit codes as ns run's errors: 2 usage, 5 lock held.";
+--until is local time (TZ). Times printed for people, until and reset_at, are local with
+their offset (2026-10-09T06:30:00-04:00).
+Prints {units,stopped,until,cost_usd}. Exit codes as ns run's errors: 2 usage, 5 lock held.";
 
 const QUALITY_HELP: &str = "\
 Examples:

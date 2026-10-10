@@ -142,7 +142,7 @@ pub(super) fn pass(
         });
         if r.outcome == Outcome::Paused {
             let reset = night.resume_at(&r);
-            rec["reset_at"] = json!(clock::iso(reset));
+            rec["reset_at"] = json!(clock::local_iso(reset));
             night.triage.records.push(rec);
             if deadline.is_some_and(|d| reset >= d) {
                 return Ok(Some(PAUSED_PAST_UNTIL.into()));

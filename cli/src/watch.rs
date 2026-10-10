@@ -449,7 +449,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 "triage_skipped": tr.skipped,
                 "triage_per_night": triage::cap(fac),
                 "max_units": max_units,
-                "until": deadline.map(clock::iso),
+                "until": deadline.map(clock::local_iso),
             }))?
         );
         return Ok(ExitCode::SUCCESS);
@@ -564,7 +564,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 }
                 Outcome::Paused => {
                     let reset = night.resume_at(&r);
-                    rec["reset_at"] = json!(clock::iso(reset));
+                    rec["reset_at"] = json!(clock::local_iso(reset));
                     units.push(rec);
                     if deadline.is_some_and(|d| reset >= d) {
                         set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
@@ -585,6 +585,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             "units": units,
             "triaged": night.triage.records,
             "stopped": stopped,
+            "until": deadline.map(clock::local_iso),
             "cost_usd": night.shared.spent_usd,
             "started_with": loaded.files,
         }))?
@@ -656,7 +657,7 @@ impl Night {
     fn sleep_until(&mut self, reset: i64) {
         eprintln!(
             "ns watch: usage limit, sleeping until {}",
-            clock::iso(reset)
+            clock::local_iso(reset)
         );
         self.shared.clock.sleep_until(reset);
     }
