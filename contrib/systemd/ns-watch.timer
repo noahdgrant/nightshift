@@ -1,0 +1,12 @@
+# Starts ns-watch.service every night. See docs/FACTORY.md, "Starting a night".
+# No Persistent=: --until 06:30 means the next 06:30, so a 22:00 start missed
+# while powered off and caught up at 08:00 would run all day.
+
+[Unit]
+Description=Start ns watch every night
+
+[Timer]
+OnCalendar=*-*-* 22:00:00
+
+[Install]
+WantedBy=timers.target
