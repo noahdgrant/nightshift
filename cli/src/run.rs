@@ -1284,6 +1284,44 @@ fn checks_registered(wt: &Path, sha: &str, timeout_minutes: u64, clock: &Clock) 
     }
 }
 
+enum UpdatedHead {
+    Moved(String),
+    Dirty,
+    Unchanged,
+}
+
+/// GitHub may still report the old head right after update-branch. A view with no head keeps the
+/// old one.
+fn head_after_update(
+    wt: &Path,
+    pr: &str,
+    old: &str,
+    timeout_minutes: u64,
+    clock: &Clock,
+) -> Result<UpdatedHead> {
+    let deadline = clock.now() + (timeout_minutes * 60) as i64;
+    let mut wait = REGISTER_BACKOFF_START;
+    loop {
+        let v = gh_json(
+            wt,
+            &["pr", "view", pr, "--json", "headRefOid,mergeStateStatus"],
+        )?;
+        if v["mergeStateStatus"].as_str() == Some("DIRTY") {
+            return Ok(UpdatedHead::Dirty);
+        }
+        match v["headRefOid"].as_str() {
+            Some(h) if h == old => {}
+            h => return Ok(UpdatedHead::Moved(h.unwrap_or(old).to_string())),
+        }
+        let now = clock.now();
+        if now >= deadline {
+            return Ok(UpdatedHead::Unchanged);
+        }
+        clock.sleep_until((now + wait).min(deadline));
+        wait = (wait * 2).min(REGISTER_BACKOFF_MAX);
+    }
+}
+
 enum MergeStep {
     Finish(Finish),
     Rebuild(String),
@@ -1357,6 +1395,7 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
             "PR #{n} conflicts with {default}: rebase onto {default} and resolve conflicts, then force-push with --force-with-lease"
         ))
     };
+    let register_minutes = ctx.fac.merge.ci_register_timeout;
     let mut merge_head = pr_head.to_string();
     match view["mergeStateStatus"].as_str() {
         Some("DIRTY") => return Ok(conflict()),
@@ -1364,20 +1403,20 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
             if gh(wt, &["pr", "update-branch", &ns]).is_err() {
                 return Ok(conflict());
             }
-            let v = gh_json(
-                wt,
-                &["pr", "view", &ns, "--json", "headRefOid,mergeStateStatus"],
-            )?;
-            if v["mergeStateStatus"].as_str() == Some("DIRTY") {
-                return Ok(conflict());
+            match head_after_update(wt, &ns, pr_head, register_minutes, &shared.clock)? {
+                UpdatedHead::Moved(h) => merge_head = h,
+                UpdatedHead::Dirty => return Ok(conflict()),
+                UpdatedHead::Unchanged => {
+                    return Ok(human(format!(
+                        "PR #{n} head {pr_head} did not change after update-branch within {register_minutes} min; needs a human merge"
+                    )));
+                }
             }
             ctx.log(json!({"event": "update_branch", "pr": n}));
-            merge_head = v["headRefOid"].as_str().unwrap_or(pr_head).to_string();
         }
         _ => {}
     }
 
-    let register_minutes = ctx.fac.merge.ci_register_timeout;
     match checks_registered(wt, &merge_head, register_minutes, &shared.clock) {
         Registered::Yes => {}
         Registered::No => {

@@ -1490,6 +1490,92 @@ fn auto_merge_conflict_goes_back_to_build() {
     assert!(!e.gh_calls().contains("pr merge"));
 }
 
+fn update_branch_events(e: &Env) -> usize {
+    fs::read_to_string(e.root.join(".git/ns/runs.jsonl"))
+        .unwrap()
+        .lines()
+        .filter(|l| serde_json::from_str::<Value>(l).unwrap()["event"] == "update_branch")
+        .count()
+}
+
+fn head_polls(e: &Env) -> usize {
+    e.gh_calls()
+        .lines()
+        .filter(|l| *l == "pr view 12 --json headRefOid,mergeStateStatus")
+        .count()
+}
+
+#[test]
+fn a_lagging_head_after_update_branch_is_waited_for() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("pr-12.merge", "BEHIND");
+    e.gh_file("updated-12.head", UPDATED_HEAD);
+    e.gh_file("updated-12.lag", "2");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let calls = e.gh_calls();
+    assert_eq!(head_polls(&e), 3, "{calls}");
+    assert_eq!(update_branch_events(&e), 1);
+    let polls = register_polls(&e);
+    assert!(!polls.is_empty(), "{calls}");
+    assert!(
+        polls
+            .iter()
+            .all(|p| p.contains(&format!("/commits/{UPDATED_HEAD}/"))),
+        "{calls}"
+    );
+    assert!(
+        calls.contains(&format!("--match-head-commit {UPDATED_HEAD}")),
+        "{calls}"
+    );
+}
+
+#[test]
+fn a_head_that_never_changes_after_update_branch_needs_a_human_merge() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("pr-12.merge", "BEHIND");
+    e.gh_file("updated-12.lag", "1000");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let head = git(&e.worktree(UNIT), &["rev-parse", "HEAD"]);
+    assert_eq!(
+        v["reason"],
+        format!(
+            "PR #12 head {head} did not change after update-branch within 3 min; needs a human merge"
+        )
+    );
+    let calls = e.gh_calls();
+    assert_eq!(head_polls(&e), 9, "{calls}");
+    assert_eq!(update_branch_events(&e), 0);
+    assert!(register_polls(&e).is_empty(), "{calls}");
+    assert!(!calls.contains("pr merge"), "{calls}");
+}
+
+#[test]
+fn a_dirty_view_while_waiting_for_the_head_goes_back_to_build() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    e.gh_file("pr-12.merge", "BEHIND");
+    e.gh_file("updated-12.merge", "DIRTY");
+    e.gh_file("updated-12.lag", "1000");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    let p = e.prompt(6, "build");
+    assert!(p.contains("rebase onto main"), "{p}");
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
 #[test]
 fn ci_failure_rebuilds_then_merges_on_the_same_pr() {
     let e = Env::new();
