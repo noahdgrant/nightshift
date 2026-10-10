@@ -22,21 +22,33 @@ pub struct Credentials {
     pub host: Option<String>,
 }
 
+impl Credentials {
+    /// Set the host, and the token when this run fetched it, on `cmd`'s environment.
+    pub fn apply_to(&self, kind: ForgeKind, cmd: &mut Command) {
+        if let Some(h) = &self.host {
+            cmd.env(kind.host_var(), h);
+        }
+        if let Token::Fetched(t) = &self.token {
+            cmd.env(kind.token_var(), t);
+        }
+    }
+}
+
 pub fn resolve(kind: ForgeKind, forge: &Forge) -> Result<Credentials, SfError> {
-    let host = forge.host.clone().filter(|_| !is_set(kind.host_var));
+    let host = forge.host.clone().filter(|_| !is_set(kind.host_var()));
     if host
         .as_deref()
         .is_some_and(|h| h.is_empty() || h.contains(['\0', '=']))
     {
         return Err(SfError::usage(
-            format!("forge {}: host is empty or has a NUL or `=`", kind.name),
+            format!("forge {}: host is empty or has a NUL or `=`", kind.name()),
             HINT,
         ));
     }
-    let token = if is_set(kind.token_var) {
+    let token = if is_set(kind.token_var()) {
         Token::AlreadySet
     } else {
-        Token::Fetched(fetch(kind.name, &forge.token)?)
+        Token::Fetched(fetch(kind, &forge.token)?)
     };
     Ok(Credentials { token, host })
 }
@@ -46,10 +58,10 @@ pub fn export(forges: &Forges) -> Result<(), SfError> {
         if let Some(f) = forge {
             let creds = resolve(kind, f)?;
             if let Some(h) = creds.host {
-                std::env::set_var(kind.host_var, h);
+                std::env::set_var(kind.host_var(), h);
             }
             if let Token::Fetched(t) = creds.token {
-                std::env::set_var(kind.token_var, t);
+                std::env::set_var(kind.token_var(), t);
             }
         }
     }
@@ -59,7 +71,8 @@ pub fn export(forges: &Forges) -> Result<(), SfError> {
 const HINT: &str =
     "check it with:\n  ns doctor\nor export the token variable yourself before starting ns";
 
-fn fetch(name: &str, source: &TokenSource) -> Result<String, SfError> {
+fn fetch(kind: ForgeKind, source: &TokenSource) -> Result<String, SfError> {
+    let name = kind.name();
     let token = match source {
         TokenSource::Command(c) => {
             let out = crate::git::scrub(&mut Command::new("sh"))
@@ -114,19 +127,71 @@ mod tests {
 
     #[test]
     fn command_output_is_trimmed() {
-        let t = fetch("github", &TokenSource::Command("printf '  tok\\n'".into())).unwrap();
+        let t = fetch(
+            ForgeKind::Github,
+            &TokenSource::Command("printf '  tok\\n'".into()),
+        )
+        .unwrap();
         assert_eq!(t, "tok");
     }
 
     #[test]
     fn errors_name_the_forge_and_command_but_not_the_output() {
         let c = "printf 'secret-%s' out; exit 3";
-        let e = fetch("gitlab", &TokenSource::Command(c.into())).unwrap_err();
+        let e = fetch(ForgeKind::Gitlab, &TokenSource::Command(c.into())).unwrap_err();
         assert_eq!(e.code, crate::error::EXIT_USAGE);
         assert!(e.message.contains("forge gitlab"), "{}", e.message);
         assert!(e.message.contains(c), "{}", e.message);
         assert!(!e.message.contains("secret-out"), "{}", e.message);
-        let e = fetch("github", &TokenSource::Command("true".into())).unwrap_err();
+        let e = fetch(ForgeKind::Github, &TokenSource::Command("true".into())).unwrap_err();
         assert!(e.message.contains("printed no token"), "{}", e.message);
+    }
+
+    fn envs(cmd: &Command) -> Vec<(String, String)> {
+        cmd.get_envs()
+            .map(|(k, v)| {
+                let s = |o: &std::ffi::OsStr| o.to_string_lossy().into_owned();
+                (s(k), v.map(s).unwrap_or_default())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn apply_to_sets_a_fetched_token_and_the_host() {
+        let creds = Credentials {
+            token: Token::Fetched("tok".into()),
+            host: Some("ghe.example.com".into()),
+        };
+        let mut cmd = Command::new("gh");
+        creds.apply_to(ForgeKind::Github, &mut cmd);
+        let mut got = envs(&cmd);
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                ("GH_HOST".to_string(), "ghe.example.com".to_string()),
+                ("GH_TOKEN".to_string(), "tok".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_to_leaves_an_already_set_token_alone() {
+        let creds = Credentials {
+            token: Token::AlreadySet,
+            host: None,
+        };
+        let mut cmd = Command::new("glab");
+        creds.apply_to(ForgeKind::Gitlab, &mut cmd);
+        assert!(envs(&cmd).is_empty(), "{:?}", envs(&cmd));
+        let creds = Credentials {
+            token: Token::AlreadySet,
+            host: Some("gl.example.com".into()),
+        };
+        creds.apply_to(ForgeKind::Gitlab, &mut cmd);
+        assert_eq!(
+            envs(&cmd),
+            [("GITLAB_HOST".to_string(), "gl.example.com".to_string())]
+        );
     }
 }

@@ -36,36 +36,40 @@ pub struct Forges {
     pub gitlab: Option<Forge>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ForgeKind {
-    pub name: &'static str,
-    pub token_var: &'static str,
-    pub host_var: &'static str,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForgeKind {
+    Github,
+    Gitlab,
 }
 
-const GITHUB: ForgeKind = ForgeKind {
-    name: "github",
-    token_var: "GH_TOKEN",
-    host_var: "GH_HOST",
-};
-
-const GITLAB: ForgeKind = ForgeKind {
-    name: "gitlab",
-    token_var: "GITLAB_TOKEN",
-    host_var: "GITLAB_HOST",
-};
-
 impl ForgeKind {
-    pub fn is_github(&self) -> bool {
-        self.name == GITHUB.name
+    pub fn name(self) -> &'static str {
+        match self {
+            ForgeKind::Github => "github",
+            ForgeKind::Gitlab => "gitlab",
+        }
+    }
+
+    pub fn token_var(self) -> &'static str {
+        match self {
+            ForgeKind::Github => "GH_TOKEN",
+            ForgeKind::Gitlab => "GITLAB_TOKEN",
+        }
+    }
+
+    pub fn host_var(self) -> &'static str {
+        match self {
+            ForgeKind::Github => "GH_HOST",
+            ForgeKind::Gitlab => "GITLAB_HOST",
+        }
     }
 }
 
 impl Forges {
     pub fn each(&self) -> [(ForgeKind, Option<&Forge>); 2] {
         [
-            (GITHUB, self.github.as_ref()),
-            (GITLAB, self.gitlab.as_ref()),
+            (ForgeKind::Github, self.github.as_ref()),
+            (ForgeKind::Gitlab, self.gitlab.as_ref()),
         ]
     }
 }
