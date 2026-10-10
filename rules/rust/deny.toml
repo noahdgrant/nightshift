@@ -1,6 +1,3 @@
-# cargo-deny configuration for rules/rust/check.sh deny. The script appends
-# `allow = [...]` from allowed-crates.txt, so [bans] must stay the last table.
-
 [graph]
 all-features = true
 
@@ -21,7 +18,3 @@ unused-allowed-license = "allow"
 
 [licenses.private]
 ignore = true
-
-[bans]
-multiple-versions = "deny"
-wildcards = "allow"

@@ -46,19 +46,30 @@ entries() {
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-out=$tmp/out
+report=$tmp/report
+log=$tmp/log
+list=
+links=$tmp/links
+echo '{}' >"$links"
 status=0
 
 case $tool in
   clippy)
-    lints=$(entries "$pack/clippy-lints.txt" | sed 's/^/-W /')
-    # shellcheck disable=SC2086 # one word per flag
-    cargo clippy -q --manifest-path "$dir/Cargo.toml" --all-targets --message-format=json \
-      -- -D warnings $lints >"$out" 2>"$tmp/err" || status=$?
+    quality=skills/ns-contract/references/quality-bar.md
+    sed -n 's/^\([a-z_:][a-z_:]*\)[[:space:]]*#[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1\t\2/p' \
+      "$pack/clippy-lints.txt" | jq -Rn '[inputs | split("\t") | {(.[0]): .[1]}] | add' >"$links"
+    entries "$pack/clippy-lints.txt" >"$tmp/lints"
+    set --
+    while read -r lint; do
+      set -- "$@" -W "$lint"
+    done <"$tmp/lints"
+    cargo clippy -q --manifest-path "$dir/Cargo.toml" --workspace --all-targets \
+      --message-format=json -- -D warnings "$@" >"$report" 2>"$log" || status=$?
     filter='select(.reason == "compiler-message") | .message | select(.code)
       | (.spans[] | select(.is_primary)) as $s
       | {tool: "clippy", rule: .code.code, file: ($dir + "/" + $s.file_name),
-         line: $s.line_start, message: .message}'
+         line: $s.line_start,
+         message: (.message + " (quality bar" + ($links[0][.code.code] | if . then ", " + . else "" end) + ": '$quality')")}'
     ;;
   deny)
     list=$pack/allowed-crates.txt
@@ -68,17 +79,17 @@ case $tool in
     fi
     {
       cat "$pack/deny.toml"
-      echo "allow = ["
+      printf '\n[bans]\nmultiple-versions = "deny"\nwildcards = "allow"\nallow = [\n'
       entries "$list" | sed 's/.*/  { crate = "&" },/'
       echo "]"
     } >"$tmp/deny.toml"
     cargo deny --manifest-path "$dir/Cargo.toml" --format json --config "$tmp/deny.toml" \
-      check bans licenses >"$tmp/err" 2>"$out" || status=$?
+      check bans licenses >"$log" 2>"$report" || status=$?
     filter='select(.type == "diagnostic") | .fields
       | {tool: "cargo-deny", rule: .code, file: ($dir + "/Cargo.toml"),
          message: (.message + if .code == "not-allowed"
            then "; add it to \($list) only if no listed crate does its job (one road per job: ns-principle-pave-the-road)"
-           else "" end),
+           else " (one road per job: ns-principle-pave-the-road)" end),
          snippet: (.graphs[0].Krate.name // .message)}'
     ;;
   ast-grep)
@@ -99,16 +110,16 @@ EOF
       done
     } >"$tmp/rules.yml"
     ast-grep scan --inline-rules "$(cat "$tmp/rules.yml")" --json=stream "$dir" \
-      >"$out" 2>"$tmp/err" || status=$?
+      >"$report" 2>"$log" || status=$?
     filter='{tool: "ast-grep", rule: .ruleId, file: .file, line: (.range.start.line + 1),
       message: .message}'
     ;;
 esac
 
-found=$(jq -cR --arg dir "$dir" --arg list "${list:-}" "fromjson? | $filter" "$out" | sort -u)
+found=$(jq -cR --arg dir "$dir" --arg list "$list" --slurpfile links "$links" "fromjson? | $filter" "$report" | sort -u)
 if [ -n "$found" ]; then
   printf '%s\n' "$found"
 elif [ "$status" -ne 0 ]; then
-  cat "$out" "$tmp/err" >&2
+  cat "$report" "$log" >&2
 fi
 exit "$status"

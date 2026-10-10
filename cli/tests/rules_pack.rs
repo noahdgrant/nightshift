@@ -41,12 +41,29 @@ fn need_tools() {
 struct Repo {
     _tmp: TempDir,
     root: PathBuf,
+    krate: String,
 }
 
 impl Repo {
     /// A git repo holding a clean crate `app` with a path dependency `extra`, and the pack
     /// installed with `install.sh`.
     fn new() -> Repo {
+        let r = Repo::uninstalled(".");
+        let (code, out) = r.install();
+        assert_eq!(code, Some(0), "{out}");
+        r
+    }
+
+    /// Like `new`, with the crate in `krate` (a subdirectory of the repo) instead of the root.
+    fn in_dir(krate: &str) -> Repo {
+        let r = Repo::uninstalled(krate);
+        let (code, out) = r.install();
+        assert_eq!(code, Some(0), "{out}");
+        r
+    }
+
+    /// The fixture repo before `install.sh` has run.
+    fn uninstalled(krate: &str) -> Repo {
         need_tools();
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
@@ -58,22 +75,32 @@ impl Repo {
             .output()
             .unwrap();
         assert!(git.status.success());
-        let r = Repo { _tmp: tmp, root };
+        let r = Repo {
+            _tmp: tmp,
+            root,
+            krate: krate.to_string(),
+        };
         r.write("docs/agents/stack.md", STACK);
         r.write(".gitignore", "target/\n");
         r.write(
-            "Cargo.toml",
+            &r.at("Cargo.toml"),
             "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\nlicense = \"MIT\"\npublish = false\n\n[dependencies]\nextra = { path = \"extra\" }\n",
         );
-        r.write("src/main.rs", MAIN);
+        r.write(&r.at("src/main.rs"), MAIN);
         r.write(
-            "extra/Cargo.toml",
+            &r.at("extra/Cargo.toml"),
             "[package]\nname = \"extra\"\nversion = \"0.1.0\"\nedition = \"2021\"\nlicense = \"MIT\"\npublish = false\n",
         );
-        r.write("extra/src/lib.rs", "pub const ONE: u32 = 1;\n");
-        let (code, out) = r.install();
-        assert_eq!(code, Some(0), "{out}");
+        r.write(&r.at("extra/src/lib.rs"), "pub const ONE: u32 = 1;\n");
         r
+    }
+
+    fn at(&self, rel: &str) -> String {
+        if self.krate == "." {
+            rel.to_string()
+        } else {
+            format!("{}/{rel}", self.krate)
+        }
     }
 
     fn write(&self, rel: &str, text: &str) {
@@ -89,7 +116,7 @@ impl Repo {
     fn install(&self) -> (Option<i32>, String) {
         let out = common::command(pack().join("install.sh"))
             .arg(&self.root)
-            .arg(".")
+            .arg(&self.krate)
             .timeout(CHECK_TIMEOUT)
             .output();
         let text = String::from_utf8_lossy(&out.stdout).into_owned()
@@ -203,6 +230,112 @@ fn install_copies_the_pack_and_writes_one_rules_row_and_the_check_passes() {
     assert_eq!(
         r.read(".nightshift/rules/rust/allowed-crates.txt"),
         "app\nextra\nkept\n"
+    );
+}
+
+#[test]
+fn a_failed_install_writes_nothing() {
+    for cargo_toml in [None, Some("not toml [")] {
+        let r = Repo::uninstalled(".");
+        fs::remove_file(r.root.join("Cargo.toml")).unwrap();
+        if let Some(text) = cargo_toml {
+            r.write("Cargo.toml", text);
+        }
+        let stack = r.read("docs/agents/stack.md");
+        let (code, out) = r.install();
+        assert_eq!(code, Some(2), "{out}");
+        assert!(out.contains("cargo metadata failed"), "{out}");
+        assert!(!r.root.join(".nightshift").exists());
+        assert_eq!(r.read("docs/agents/stack.md"), stack);
+    }
+}
+
+#[test]
+fn a_stack_without_a_commands_table_leaves_the_repo_untouched() {
+    let r = Repo::uninstalled(".");
+    r.write("docs/agents/stack.md", "# Stack\n");
+    let (code, out) = r.install();
+    assert_eq!(code, Some(2), "{out}");
+    assert!(!r.root.join(".nightshift").exists());
+}
+
+#[test]
+fn a_crate_in_a_subdirectory_is_checked_with_paths_from_the_repo_root() {
+    let r = Repo::in_dir("sub");
+    assert!(r
+        .read("docs/agents/stack.md")
+        .contains("check.sh clippy sub`"));
+    r.assert_clean();
+    r.write(
+        ".nightshift/rules/rust/roads.txt",
+        "tail sub/extra/src/lib.rs\n",
+    );
+    r.write(
+        "sub/extra/src/lib.rs",
+        "pub const ONE: u32 = 1;\npub fn tail() {}\n",
+    );
+    r.write(
+        "sub/src/main.rs",
+        "fn count(v: Vec<u8>) -> usize {\n    v.len()\n}\n\nfn tail() {}\n\nfn main() {\n    tail();\n    println!(\"{} {}\", extra::ONE, count(vec![1]));\n}\n",
+    );
+    r.write(
+        ".nightshift/rules/rust/allowed-crates.txt",
+        "# crates\napp\n",
+    );
+    let found = |tool: &str, rule: &str, file: &str, line| (s(tool), s(rule), s(file), line, s(""));
+    let mut got: Vec<_> = r
+        .new_findings()
+        .iter()
+        .map(|f| {
+            let mut k = key(f);
+            k.4 = s("");
+            k
+        })
+        .collect();
+    got.sort();
+    let mut want = vec![
+        found(
+            "clippy",
+            "clippy::needless_pass_by_value",
+            "sub/src/main.rs",
+            Some(1),
+        ),
+        found("ast-grep", "duplicate-helper", "sub/src/main.rs", Some(5)),
+        found("cargo-deny", "not-allowed", "sub/Cargo.toml", None),
+    ];
+    want.sort();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn clippy_lints_every_workspace_member() {
+    let r = Repo::new();
+    let root = r.read("Cargo.toml");
+    r.write(
+        "Cargo.toml",
+        &format!("{root}\n[workspace]\nmembers = [\"member\"]\n"),
+    );
+    r.write(
+        "member/Cargo.toml",
+        "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2021\"\nlicense = \"MIT\"\npublish = false\n",
+    );
+    r.write(
+        "member/src/lib.rs",
+        "pub fn count(v: Vec<u8>) -> usize {\n    v.len()\n}\n",
+    );
+    r.write(
+        ".nightshift/rules/rust/allowed-crates.txt",
+        "app\nextra\nmember\n",
+    );
+    assert_eq!(
+        r.new_findings().iter().map(key).collect::<Vec<_>>(),
+        [(
+            s("clippy"),
+            s("clippy::needless_pass_by_value"),
+            s("member/src/lib.rs"),
+            Some(1),
+            s("pub fn count(v: Vec<u8>) -> usize {")
+        )]
     );
 }
 
@@ -377,8 +510,14 @@ fn clippy_findings_carry_the_lint_as_their_rule() {
         "src/main.rs",
         "fn count(v: Vec<u8>) -> usize {\n    v.len()\n}\n\nfn main() {\n    println!(\"{} {}\", extra::ONE, count(vec![1]));\n}\n",
     );
+    let new = r.new_findings();
+    let msg = new[0]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("Performance: no needless copies") && msg.contains("quality-bar.md"),
+        "{msg}"
+    );
     assert_eq!(
-        r.new_findings().iter().map(key).collect::<Vec<_>>(),
+        new.iter().map(key).collect::<Vec<_>>(),
         [(
             s("clippy"),
             s("clippy::needless_pass_by_value"),
