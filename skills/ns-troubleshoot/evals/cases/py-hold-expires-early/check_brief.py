@@ -10,7 +10,8 @@ import tempfile
 
 REPLAY_TIMEOUT = 30
 EXPIRED = r"inventory: error: .*expired"
-REPLAYABLE = re.compile(r"python3 -m inventory(?: [^;&|<>`$()\\\n]*)?$")
+RESERVATION_EXPIRED = re.compile(r"inventory: error: reservation \S+ has expired")
+REPLAYABLE = re.compile(r"python3 -m inventory(?:\s|$)")
 
 
 def section(text, name):
@@ -73,7 +74,7 @@ def replays_red(commands, root):
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.communicate()
                 return False
-            if proc.returncode != 0 and re.search(EXPIRED, err):
+            if proc.returncode != 0 and RESERVATION_EXPIRED.match(err):
                 return True
     return False
 

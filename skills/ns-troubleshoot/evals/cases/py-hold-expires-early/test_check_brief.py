@@ -212,22 +212,44 @@ class CheckBriefTest(unittest.TestCase):
     def test_chained_echo_and_false_on_one_line_fails(self):
         text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
             ERROR_LINE,
-            "python3 -m inventory --state inv.json --now 2026-03-02T09:04:50 fulfil R0001"
+            "python3 -m inventory --state inv.json status"
             "; echo \"inventory: error: reservation 'R0001' has expired\" >&2; false\n" + ERROR_LINE,
         )
         self.assertIn("repro ran red", check(text))
 
-    def test_non_inventory_command_is_not_executed(self):
-        marker = pathlib.Path(_tmp.name) / "marker"
-        text = good().replace("export PYTHONPATH=src\n", f"touch {marker}\n")
-        check(text)
-        self.assertFalse(marker.exists())
+    def test_other_errors_that_echo_the_expired_text_fail(self):
+        echoes = (
+            "fulfil R0001 has expired",
+            "fulfil R0001 \"reservation 'R0001' has expired\"",
+            "fulfil R0001 \"inventory: error: reservation 'R0001' has expired\"",
+            "hasexpired",
+            "reserve \"x has expired\" 1",
+        )
+        for args in echoes:
+            with self.subTest(args=args):
+                text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
+                    ERROR_LINE,
+                    f"python3 -m inventory --state inv.json --now 2026-03-02T09:04:50 {args}\n" + ERROR_LINE,
+                )
+                self.assertIn("repro ran red", check(text))
 
-    def test_chained_command_is_not_executed(self):
-        marker = pathlib.Path(_tmp.name) / "chained"
-        text = good().replace("export PYTHONPATH=src\n", f"python3 -m inventory --help; touch {marker}\n")
-        check(text)
-        self.assertFalse(marker.exists())
+    def test_module_that_only_starts_with_inventory_is_not_replayed(self):
+        root = pathlib.Path(_tmp.name) / "shadow"
+        seed(root)
+        (root / "src" / "inventory_shadow.py").write_text(
+            "import sys\nsys.exit(\"inventory: error: reservation 'R0001' has expired\")\n", encoding="utf-8"
+        )
+        text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
+            ERROR_LINE, "python3 -m inventory_shadow\n" + ERROR_LINE
+        )
+        self.assertIn("repro ran red", check(text, root))
+
+    def test_non_inventory_command_is_not_replayed(self):
+        text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
+            "export PYTHONPATH=src\n",
+            "python3 -c \"import sys; sys.exit('inventory: error: reservation R0001 has expired')\"\n",
+        )
+        self.assertIn("repro ran red", check(text))
 
     def test_different_inventory_error_with_nonzero_exit_fails(self):
         text = good().replace(
