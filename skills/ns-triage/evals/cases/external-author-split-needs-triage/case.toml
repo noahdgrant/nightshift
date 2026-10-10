@@ -62,13 +62,15 @@ for path in children:
     body = lines[1:] if lines and lines[0].startswith("#") else lines
     first = next((l for l in body if blocked_by.match(l) or not header.match(l)), "")
     blocked = blocked_by.match(first)
-    if not blocked and re.search(r"(?mi)^\W*Blocked by", text):
+    if not blocked and re.search(r"(?mi)^\W*Blocked by", re.split(r"(?m)^##", text)[0]):
         sys.exit(f"{path}: Blocked by is not the first body line")
     targets = set()
     for entry in blocked.group(1).split(",") if blocked else []:
         m = re.match(r"[\s#`\[(]*(\d+)", entry)
         if m:
             targets.add(int(m.group(1)))
+    if any(n >= numbers[path] for n in targets):
+        sys.exit(f"{path}: Blocked by must name only lower-numbered siblings")
     if not targets:
         roots.append(path)
     siblings = set(numbers.values()) - {numbers[path]}
