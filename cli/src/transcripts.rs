@@ -57,7 +57,7 @@ pub struct Located {
 pub trait Reader {
     fn locate(&self) -> Result<Vec<Located>>;
     fn load(&self, located: Located) -> Result<Option<Session>>;
-    fn entries(&self, session: &Session) -> Result<Vec<Entry>>;
+    fn entries(&self, session: &Session, limit: usize) -> Result<Vec<Entry>>;
     fn in_project(&self, session: &Session, project: &Path) -> bool;
 }
 
@@ -216,14 +216,14 @@ impl Reader for Claude {
         }))
     }
 
-    fn entries(&self, session: &Session) -> Result<Vec<Entry>> {
+    fn entries(&self, session: &Session, limit: usize) -> Result<Vec<Entry>> {
         let path = &session.path;
         let lines = json_lines(path).with_context(|| format!("open {}", path.display()))?;
         let mut out = Vec::new();
         for v in lines {
             let v = v.with_context(|| format!("read {}", path.display()))?;
             if v["isMeta"] != true {
-                out.extend(line_entries(&v));
+                out.extend(line_entries(&v, limit));
             }
         }
         Ok(out)
@@ -238,50 +238,76 @@ impl Reader for Claude {
     }
 }
 
-fn truncate(s: String, limit: usize) -> String {
-    match s.char_indices().nth(limit) {
-        None => s,
-        Some((cut, _)) => format!(
-            "{}…[truncated {} chars]",
-            &s[..cut],
-            s[cut..].chars().count()
-        ),
+struct Capped {
+    text: String,
+    kept: usize,
+    dropped: usize,
+    limit: usize,
+}
+
+impl Capped {
+    fn new(limit: usize) -> Self {
+        Capped {
+            text: String::new(),
+            kept: 0,
+            dropped: 0,
+            limit,
+        }
+    }
+
+    fn push(&mut self, piece: &str) {
+        for c in piece.chars() {
+            if self.kept < self.limit {
+                self.text.push(c);
+                self.kept += 1;
+            } else {
+                self.dropped += 1;
+            }
+        }
+    }
+
+    fn finish(self) -> String {
+        if self.dropped == 0 {
+            self.text
+        } else {
+            format!("{}…[truncated {} chars]", self.text, self.dropped)
+        }
     }
 }
 
-fn truncate_entries(entries: Vec<Entry>, limit: usize) -> Vec<Entry> {
-    let cap = |text| truncate(text, limit);
-    entries
-        .into_iter()
-        .map(|entry| match entry {
-            Entry::User { text } => Entry::User { text: cap(text) },
-            Entry::Assistant { text } => Entry::Assistant { text: cap(text) },
-            Entry::Tool { name, input } => Entry::Tool {
-                name: cap(name),
-                input: cap(input),
-            },
-            Entry::Output { text } => Entry::Output { text: cap(text) },
-            Entry::Error { text } => Entry::Error { text: cap(text) },
-        })
-        .collect()
+impl io::Write for Capped {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.push(&String::from_utf8_lossy(buf));
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
-fn line_entries(v: &Value) -> Vec<Entry> {
+fn capped_json(v: &Value, limit: usize) -> String {
+    let mut out = Capped::new(limit);
+    let _ = serde_json::to_writer(&mut out, v);
+    out.finish()
+}
+
+fn line_entries(v: &Value, limit: usize) -> Vec<Entry> {
     let content = &v["message"]["content"];
     match v["type"].as_str() {
-        Some("user") => user_entries(content),
-        Some("assistant") => assistant_entries(content),
+        Some("user") => user_entries(content, limit),
+        Some("assistant") => assistant_entries(content, limit),
         Some("system") if v["level"] == "error" => vec![Entry::Error {
-            text: text_of(&v["content"]),
+            text: text_of(&v["content"], limit),
         }],
         _ => Vec::new(),
     }
 }
 
-fn user_entries(content: &Value) -> Vec<Entry> {
+fn user_entries(content: &Value, limit: usize) -> Vec<Entry> {
     if content.is_string() {
         return vec![Entry::User {
-            text: text_of(content),
+            text: text_of(content, limit),
         }];
     }
     content
@@ -290,10 +316,10 @@ fn user_entries(content: &Value) -> Vec<Entry> {
         .flatten()
         .filter_map(|item| match item["type"].as_str() {
             Some("text") => Some(Entry::User {
-                text: text_of(&item["text"]),
+                text: text_of(&item["text"], limit),
             }),
             Some("tool_result") => {
-                let text = text_of(&item["content"]);
+                let text = text_of(&item["content"], limit);
                 Some(if item["is_error"] == true {
                     Entry::Error { text }
                 } else {
@@ -305,35 +331,42 @@ fn user_entries(content: &Value) -> Vec<Entry> {
         .collect()
 }
 
-fn assistant_entries(content: &Value) -> Vec<Entry> {
+fn assistant_entries(content: &Value, limit: usize) -> Vec<Entry> {
     content
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|item| match item["type"].as_str() {
             Some("text") => Some(Entry::Assistant {
-                text: text_of(&item["text"]),
+                text: text_of(&item["text"], limit),
             }),
             Some("tool_use") => Some(Entry::Tool {
-                name: text_of(&item["name"]),
-                input: item["input"].to_string(),
+                name: text_of(&item["name"], limit),
+                input: capped_json(&item["input"], limit),
             }),
             _ => None,
         })
         .collect()
 }
 
-fn text_of(v: &Value) -> String {
+fn text_of(v: &Value, limit: usize) -> String {
+    let mut out = Capped::new(limit);
     match v {
-        Value::String(s) => s.clone(),
-        Value::Array(items) => items
-            .iter()
-            .filter_map(|i| i["text"].as_str())
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Value::Null => String::new(),
-        other => other.to_string(),
+        Value::String(s) => out.push(s),
+        Value::Array(items) => {
+            for (n, text) in items.iter().filter_map(|i| i["text"].as_str()).enumerate() {
+                if n > 0 {
+                    out.push("\n");
+                }
+                out.push(text);
+            }
+        }
+        Value::Null => {}
+        other => {
+            let _ = serde_json::to_writer(&mut out, other);
+        }
     }
+    out.finish()
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -413,31 +446,6 @@ pub struct ListArgs {
     pub mark: bool,
 }
 
-fn valid_date(s: &str) -> bool {
-    let b = s.as_bytes();
-    let shaped = b.len() == 10
-        && b.iter().enumerate().all(|(i, c)| match i {
-            4 | 7 => *c == b'-',
-            _ => c.is_ascii_digit(),
-        });
-    if !shaped {
-        return false;
-    }
-    let (Ok(year), Ok(month), Ok(day)) = (s[..4].parse::<u32>(), s[5..7].parse(), s[8..].parse())
-    else {
-        return false;
-    };
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => return false,
-    };
-    (1..=days).contains(&day)
-}
-
 fn before_since(timestamp: &str, since: &str) -> bool {
     timestamp.get(..10).is_none_or(|day| day < since)
 }
@@ -482,7 +490,7 @@ fn scan(reader: &dyn Reader, args: &ListArgs, index: &Index) -> Result<Vec<(Sess
 }
 
 fn check_since(since: &str) -> Result<()> {
-    if valid_date(since) {
+    if since.len() == 10 && clock::parse_iso(since).is_some() {
         return Ok(());
     }
     Err(SfError::usage(
@@ -578,7 +586,7 @@ pub fn read(id: &str, compact: bool) -> Result<ExitCode> {
     }
     let (reader, located) = resolve(found, id)?;
     let session = reader.load(located)?.ok_or_else(|| no_session(id))?;
-    let entries = truncate_entries(reader.entries(&session)?, limit);
+    let entries = reader.entries(&session, limit)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
@@ -612,34 +620,24 @@ mod tests {
     #[test]
     fn truncate_marks_the_dropped_count_on_a_char_boundary() {
         assert_eq!(
-            truncate(text_of(&json!("héllo wörld")), 4),
+            text_of(&json!("héllo wörld"), 4),
             "héll…[truncated 7 chars]"
         );
-        assert_eq!(truncate(text_of(&json!("ok")), 4), "ok");
-        assert_eq!(truncate(text_of(&json!("ééé")), 3), "ééé");
+        assert_eq!(text_of(&json!("ok"), 4), "ok");
+        assert_eq!(text_of(&json!("ééé"), 3), "ééé");
         let arr = json!([{"text": "ab"}, {"text": "cd"}]);
-        assert_eq!(truncate(text_of(&arr), 3), "ab\n…[truncated 2 chars]");
+        assert_eq!(text_of(&arr, 3), "ab\n…[truncated 2 chars]");
         assert_eq!(
-            truncate(text_of(&json!("😀😀😀😀😀")), 3),
+            text_of(&json!("😀😀😀😀😀"), 3),
             "😀😀😀…[truncated 2 chars]"
         );
     }
 
     #[test]
-    fn valid_date_takes_only_yyyy_mm_dd() {
-        assert!(valid_date("2026-10-01"));
-        assert!(!valid_date("2026-1-01"));
-        assert!(!valid_date("2026/10/01"));
-        assert!(!valid_date("yesterday"));
-    }
-
-    #[test]
-    fn valid_date_rejects_impossible_calendar_dates() {
-        assert!(valid_date("2024-02-29"));
-        assert!(!valid_date("2025-02-29"));
-        assert!(!valid_date("2026-13-01"));
-        assert!(!valid_date("2026-04-31"));
-        assert!(!valid_date("2026-10-00"));
+    fn capped_json_cuts_the_serialized_input_on_a_char_boundary() {
+        let v = json!({"k": "héllo"});
+        assert_eq!(capped_json(&v, 100), v.to_string());
+        assert_eq!(capped_json(&v, 8), "{\"k\":\"hé…[truncated 5 chars]");
     }
 
     #[test]
@@ -659,8 +657,8 @@ mod tests {
     #[test]
     fn text_of_joins_content_blocks() {
         let v = json!([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]);
-        assert_eq!(text_of(&v), "a\nb");
-        assert_eq!(text_of(&json!("s")), "s");
+        assert_eq!(text_of(&v, 100), "a\nb");
+        assert_eq!(text_of(&json!("s"), 100), "s");
     }
 
     struct FailsAfter(&'static [u8]);
