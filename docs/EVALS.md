@@ -176,3 +176,59 @@ Trigger evals parse the harness transcript for the skill being loaded. `claude-s
 ## Results
 
 `ns eval` writes a summary JSON per skill to `skills/ns-<skill>/evals/results/<date>-<short-sha>.json`, holding the config, per-case metrics and skill-level metrics, without transcripts. Commit these. Raw transcripts go under `[eval].transcripts`.
+
+## Quality results
+
+`ns quality` results (docs/FACTORY.md, Quality), newest first.
+
+### ns-build self-check (#150), measured 2026-10-10
+
+The self-check merged as a5ca0f3 at 2026-10-09 21:04:39 UTC. Units split by their `build.md`: the 25 built before the cut-off (2026-10-09 02:16 to 19:45 UTC) have no `## Self-check` section, and the 17 built after it (2026-10-10 02:43 to 07:46 UTC) all have one. Unit 114 is left out: it was built before the cut-off and reviewed again after it.
+
+| First pass | Before (25 units) | After (17 units) |
+|---|---|---|
+| Yield (clean / units) | 0.20 (5 / 25) | 0.59 (10 / 17) |
+| Blocking findings / changed lines | 55 / 7008 | 30 / 4639 |
+| Per 100 changed lines | 0.78 | 0.65 |
+| architecture | 14, 0.20 | 7, 0.15 |
+| comments | 1, 0.01 | 1, 0.02 |
+| correctness | 14, 0.20 | 9, 0.19 |
+| performance | 3, 0.04 | 0, 0.00 |
+| readability | 6, 0.09 | 3, 0.06 |
+| security | 2, 0.03 | 2, 0.04 |
+| spec | 8, 0.11 | 7, 0.15 |
+| tests | 17, 0.24 | 17, 0.37 |
+| unknown axis | 12, 0.17 | 5, 0.11 |
+
+Axis rows are first-pass blocking findings, then findings per 100 changed lines. A finding that names several axes counts once under each, so the axis rows sum to 77 before and 51 after, against 55 and 30 blocking findings.
+
+Read these with care:
+
+- Before, 9 of the 25 units have no first-pass finding count, so the per-100-lines numbers cover 16 units. After covers all 17.
+- Axes are partly guessed before. 96 of its findings have no axis and 261 take theirs from `Raised by`. After, 15 findings have no axis and none fall back.
+- Review changed too. #166 (findings in unchanged code never block) merged at 23:12 UTC, after the cut-off and before every after-set review, so part of the yield gain may be review's, not build's.
+- Tests findings per 100 lines rose. The self-check asks for a test on every branch, so the tests axis is the one to watch.
+- `ns quality --since 2026-10-10` finds 13 units, not 17: `--since` cuts at local midnight (EDT here), and 96, 131, 133 and 172 were reviewed on the evening of 2026-10-09 local time.
+
+Commands. `ns quality` has no `--until` or unit filter, so a `git` wrapper on `PATH` hides the other worktrees from `git worktree list`:
+
+```bash
+# run inside the repo; $d/before.txt and $d/after.txt list one unit id per line,
+# split on build.md's "## Self-check"
+d=$(mktemp -d)
+ns quality --json > "$d/all.json"
+mkdir -p "$d/bin" && cat > "$d/bin/git" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"worktree list --porcelain" ]]; then
+  /usr/bin/git "$@" | awk -v list="$(cat "$UNITS")" '
+    BEGIN { RS=""; ORS="\n\n"; n = split(list, us, "\n"); for (i = 1; i <= n; i++) keep["/" us[i]] = 1 }
+    NR == 1 { print; next }
+    { split($0, l, "\n"); p = substr(l[1], 10); sub(/.*\//, "/", p); if (p in keep) print }'
+else
+  exec /usr/bin/git "$@"
+fi
+SH
+chmod +x "$d/bin/git"
+for s in before after; do PATH="$d/bin:$PATH" UNITS="$d/$s.txt" ns quality --json > "$d/$s.json"; done
+jq '.first_pass, .gaps' "$d/before.json" "$d/after.json"
+```
