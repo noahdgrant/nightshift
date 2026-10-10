@@ -1,0 +1,12 @@
+# Lints rules/rust/check.sh adds to clippy's defaults, each with the quality-bar item it backs
+# (skills/ns-contract/references/quality-bar.md). Every warning is denied (-D warnings).
+clippy::needless_pass_by_value  # Performance: no needless copies
+clippy::implicit_clone          # Performance: no needless copies
+clippy::manual_let_else         # Readability: control flow reads top to bottom
+clippy::redundant_else          # Readability: control flow reads top to bottom
+clippy::if_not_else             # Readability: control flow reads top to bottom
+clippy::needless_continue       # Readability: control flow reads top to bottom
+clippy::too_many_lines          # Readability: no function too long to hold in your head
+clippy::match_same_arms         # Readability: nothing duplicated
+clippy::unused_self             # Readability: nothing is dead
+clippy::unnecessary_wraps       # Architecture: no Option or Result that hides an invariant

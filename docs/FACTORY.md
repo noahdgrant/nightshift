@@ -207,6 +207,8 @@ The baseline is `.nightshift/rules-baseline.json`: `{"version": 1, "violations":
 
 `ns rules baseline` writes every current finding to the baseline. It is a ratchet: entries that are gone are dropped, and a finding the baseline lacks, every finding when there is no baseline yet, is growth. Without `--allow-growth`, growth writes nothing and exits 1 with status `refused`. `--allow-growth` is for a human accepting debt, never for an agent. A run that adds and drops nothing writes nothing (`already-done`), and `--dry-run` writes nothing (`planned`). `.nightshift/**` needs a human merge, so every baseline change, a shrink too, does.
 
+A Rust pack ships in `rules/rust/` (D52): clippy, cargo-deny and ast-grep behind `check.sh`, which `ns-setup` installs into a Rust repo's `.nightshift/rules/rust/` with `install.sh`. Its repo-owned lists are `allowed-crates.txt` (every crate the dependency graph may hold) and `roads.txt` (the helpers a second definition of would duplicate).
+
 ### Memory cap
 
 One runaway test binary can take all of a machine's memory and, with it, the night. `[limits] memory_mb` caps each phase and each gate run at that many MiB. It is off by default. Under the cgroup the cap covers the run with everything it starts; under the RLIMIT_AS fallback it applies to each process on its own (see below).
