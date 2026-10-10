@@ -1,0 +1,317 @@
+description = "Pure refactor: split cli.run's if/elif chain into one handler per command without changing behaviour. Pinning tests must come first and pass on the base; public signatures and CLI behaviour (output, exit codes, what gets saved) must not change."
+fixture = "py-inventory"
+# ns-tdd links to these skills by relative path (ns-contract for the quality bar, and the principles it and the bar name); ship them with it so the links resolve in the "with" arm.
+skills = ["ns-tdd", "ns-principle-test-behavior-not-implementation", "ns-principle-sequence-verifiable-units", "ns-principle-fix-root-causes", "ns-contract"]
+extra_skills = []
+requires = []
+timeout_minutes = 15
+prompt = """
+`run()` in src/inventory/cli.py has grown into one if/elif chain over `args.command`, and the next few commands we add will make it worse. Refactor it so each command is its own handler function and `run` only dispatches. This is a pure refactor: every command must behave exactly as it does now, and nothing that imports the package may need to change.
+
+Do it test-first. gates: auto. Nobody is around to answer questions, so carry on. Don't commit.
+"""
+
+[setup]
+# Keep any .ns/ phase artifacts out of git so diff_scope only sees source and test changes.
+commands = ["mkdir -p .git/info && echo '.ns/' >> .git/info/exclude"]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**"]
+
+[[check]]
+# The refactor happened: nothing under src/inventory still branches on `.command` with a
+# comparison or a match statement. A dispatch table or argparse set_defaults(func=...) passes.
+type = "command"
+run = '''
+python3 -I -B - <<'PYEOF'
+import ast, pathlib, sys
+bad = []
+for f in sorted(pathlib.Path("src/inventory").rglob("*.py")):
+    for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Compare):
+            exprs = [node.left, *node.comparators]
+        elif isinstance(node, ast.Match):
+            exprs = [node.subject]
+        else:
+            continue
+        if any(isinstance(e, ast.Attribute) and e.attr == "command" for e in exprs):
+            bad.append(f"{f}:{node.lineno}")
+print("still branches on .command:", *bad) if bad else None
+sys.exit(1 if bad else 0)
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# Pinning tests: the trial added at least one test function, in a test file that imports the CLI,
+# and its new or changed test files pass on the base commit. A refactor has no red; the test that
+# comes first pins today's behaviour, so it must already be green before the code moves.
+type = "command"
+run = '''
+B=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+F=$( { git diff --name-only --diff-filter=AM "$B" -- tests/ ; git ls-files -o --exclude-standard tests/ ; } | grep '\.py$' | sort -u )
+[ -n "$F" ] || { echo "no test file added or changed"; exit 1; }
+{ git diff "$B" -U0 -- tests/ | grep '^+' ; git ls-files -o --exclude-standard tests/ | xargs -r cat ; } | grep -Eq '^\+?[[:space:]]*def test_' || { echo "no new test function"; exit 1; }
+grep -Elq 'inventory\.cli|from inventory import .*\bcli\b' $F || { echo "no changed test file imports inventory.cli"; exit 1; }
+T=$(mktemp -d)
+git archive "$B" | tar -x -C "$T"
+for f in $F; do mkdir -p "$T/$(dirname "$f")" && cp "$f" "$T/$f"; done
+(cd "$T" && python3 -m pytest -q -p no:cacheprovider $F); s=$?
+rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+# No public signature changed. Dumps every public function, class, method, property, module
+# constant and __all__ entry of every inventory module, with parameter names, kinds and defaults
+# (annotations ignored), on the base commit and on the trial's tree. Every base line must still be
+# there; new public names are allowed.
+type = "command"
+run = '''
+B=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+T=$(mktemp -d)
+mkdir "$T/base" && git archive "$B" src | tar -x -C "$T/base"
+cat > "$T/sigs.py" <<'PYEOF'
+import ast, importlib, inspect, pkgutil, sys
+
+sys.path.insert(0, sys.argv[1])
+import inventory
+
+
+def sig(obj):
+    try:
+        s = inspect.signature(obj)
+    except (TypeError, ValueError):
+        return "?"
+    return "(" + ", ".join(
+        f"{p.kind.name} {p.name}" + ("" if p.default is p.empty else f"={p.default!r}")
+        for p in s.parameters.values()
+    ) + ")"
+
+
+def assigned(mod):
+    names = set()
+    for node in ast.parse(inspect.getsource(mod)).body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        names.update(t.id for t in targets if isinstance(t, ast.Name))
+    return names
+
+
+mods = ["inventory"] + ["inventory." + m.name for m in pkgutil.iter_modules(inventory.__path__) if not m.name.startswith("_")]
+for modname in mods:
+    mod = importlib.import_module(modname)
+    own = assigned(mod)
+    for name, v in sorted(vars(mod).items()):
+        if name.startswith("_"):
+            continue
+        q = f"{modname}.{name}"
+        if inspect.isclass(v) and v.__module__ == modname:
+            print(f"{q} class {sig(v)}")
+            for m, mv in vars(v).items():
+                if m.startswith("_"):
+                    continue
+                if isinstance(mv, property):
+                    print(f"{q}.{m} property")
+                elif isinstance(mv, (staticmethod, classmethod)):
+                    print(f"{q}.{m} {type(mv).__name__} {sig(mv.__func__)}")
+                elif inspect.isfunction(mv):
+                    print(f"{q}.{m} method {sig(mv)}")
+        elif inspect.isfunction(v) and v.__module__ == modname:
+            print(f"{q} function {sig(v)}")
+        elif name in own:
+            print(f"{q} = {v!r}")
+    for name in getattr(mod, "__all__", []):
+        print(f"{modname}.{name} exported")
+PYEOF
+python3 -I -B "$T/sigs.py" "$T/base/src" | sort > "$T/before" && python3 -I -B "$T/sigs.py" "$PWD/src" | sort > "$T/after" || { rm -rf "$T"; exit 1; }
+comm -23 "$T/before" "$T/after" > "$T/gone"
+[ -s "$T/before" ] && [ ! -s "$T/gone" ]; s=$?
+[ $s -eq 0 ] || { echo "public signatures changed or removed:"; cat "$T/gone"; }
+rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+# Hidden acceptance test, written outside the repo so the agent never sees it. It pins what each
+# command prints, its exit code, and what it saves: status and failed commands never write the
+# state file, and run() writes to the stream it is given. It passes on the base commit.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_cli_behaviour_acceptance.py" <<'PYEOF'
+import io
+import os
+
+import pytest
+
+from inventory.cli import build_parser, main, run
+
+NOW = "2026-04-01T10:00:00"
+
+
+@pytest.fixture
+def inv(tmp_path):
+    state = tmp_path / "inv.json"
+
+    def call(*args, now=NOW):
+        return main(["--state", str(state), "--now", now, *args])
+
+    call.state = state
+    return call
+
+
+def stocked(inv, capsys):
+    assert inv("add-item", "BOLT-M6", "M6 hex bolt") == 0
+    assert inv("receive", "BOLT-M6", "10") == 0
+    capsys.readouterr()
+
+
+def test_add_item_and_receive_print_and_save(inv, capsys):
+    assert inv("add-item", "BOLT-M6", "M6 hex bolt") == 0
+    assert capsys.readouterr().out == "added BOLT-M6 (M6 hex bolt)\n"
+    assert inv.state.exists()
+    assert inv("receive", "BOLT-M6", "10") == 0
+    assert inv("receive", "BOLT-M6", "5") == 0
+    assert capsys.readouterr().out == "BOLT-M6: 10 on hand\nBOLT-M6: 15 on hand\n"
+
+
+def test_reserve_defaults_to_a_30_minute_hold(inv, capsys):
+    stocked(inv, capsys)
+    assert inv("reserve", "BOLT-M6", "3") == 0
+    assert capsys.readouterr().out == "R0001: 3 x BOLT-M6 until 2026-04-01T10:30:00\n"
+
+
+def test_cancel_returns_stock(inv, capsys):
+    stocked(inv, capsys)
+    inv("reserve", "BOLT-M6", "4")
+    capsys.readouterr()
+    assert inv("cancel", "R0001") == 0
+    assert capsys.readouterr().out == "cancelled R0001\n"
+    assert inv("status", "BOLT-M6") == 0
+    assert capsys.readouterr().out.splitlines()[1].split() == ["BOLT-M6", "10", "0", "10"]
+
+
+def test_fulfil_ships_and_lowers_on_hand(inv, capsys):
+    stocked(inv, capsys)
+    inv("reserve", "BOLT-M6", "4")
+    capsys.readouterr()
+    assert inv("fulfil", "R0001", now="2026-04-01T10:10:00") == 0
+    assert capsys.readouterr().out == "fulfilled R0001: 4 x BOLT-M6\n"
+    assert inv("status") == 0
+    assert capsys.readouterr().out.splitlines()[1].split() == ["BOLT-M6", "6", "0", "6"]
+
+
+def test_fulfil_after_expiry_fails(inv, capsys):
+    stocked(inv, capsys)
+    inv("reserve", "BOLT-M6", "4", "--ttl", "5")
+    capsys.readouterr()
+    assert inv("fulfil", "R0001", now="2026-04-01T10:05:00") == 1
+    err = capsys.readouterr().err
+    assert err == "inventory: error: reservation 'R0001' has expired\n"
+
+
+def test_unknown_reservation_fails(inv, capsys):
+    stocked(inv, capsys)
+    assert inv("cancel", "R0042") == 1
+    assert capsys.readouterr().err == "inventory: error: unknown reservation 'R0042'\n"
+
+
+def test_status_prints_every_item_in_sku_order(inv, capsys):
+    assert inv("add-item", "NUT-M6", "M6 hex nut") == 0
+    stocked(inv, capsys)
+    assert inv("status") == 0
+    assert capsys.readouterr().out == (
+        "SKU           ON HAND RESERVED AVAILABLE\n"
+        "BOLT-M6            10        0        10\n"
+        "NUT-M6              0        0         0\n"
+    )
+
+
+def test_status_with_a_sku_lists_only_that_sku(inv, capsys):
+    assert inv("add-item", "NUT-M6", "M6 hex nut") == 0
+    stocked(inv, capsys)
+    assert inv("receive", "NUT-M6", "4") == 0
+    capsys.readouterr()
+    assert inv("status", "BOLT-M6") == 0
+    assert capsys.readouterr().out == (
+        "SKU           ON HAND RESERVED AVAILABLE\n"
+        "BOLT-M6            10        0        10\n"
+    )
+
+
+def test_status_of_an_unknown_sku_fails_and_saves_nothing(inv, capsys):
+    assert inv("status", "NOPE") == 1
+    captured = capsys.readouterr()
+    assert captured.err == "inventory: error: unknown item 'NOPE'\n"
+    assert captured.out == ""
+    assert not inv.state.exists()
+    stocked(inv, capsys)
+    os.utime(inv.state, ns=(0, 0))
+    assert inv("status", "NOPE") == 1
+    assert capsys.readouterr().err == "inventory: error: unknown item 'NOPE'\n"
+    assert inv.state.stat().st_mtime_ns == 0
+
+
+def test_status_never_writes_the_state_file(inv, capsys):
+    assert inv("status") == 0
+    assert not inv.state.exists()
+    stocked(inv, capsys)
+    os.utime(inv.state, ns=(0, 0))
+    assert inv("status") == 0
+    assert inv("status", "BOLT-M6") == 0
+    assert inv.state.stat().st_mtime_ns == 0
+
+
+def test_a_failed_command_saves_nothing(inv, capsys):
+    assert inv("add-item", "bolt-m6", "lower case") == 1
+    assert not inv.state.exists()
+    stocked(inv, capsys)
+    os.utime(inv.state, ns=(0, 0))
+    assert inv("reserve", "BOLT-M6", "11") == 1
+    assert inv("add-item", "BOLT-M6", "again") == 1
+    assert inv("fulfil", "R0042") == 1
+    assert inv.state.stat().st_mtime_ns == 0
+
+
+def test_run_writes_to_the_stream_it_is_given(tmp_path, capsys):
+    state = str(tmp_path / "inv.json")
+    out = io.StringIO()
+
+    def go(*argv):
+        return run(build_parser().parse_args(["--state", state, "--now", NOW, *argv]), out=out)
+
+    for argv in [
+        ("add-item", "BOLT-M6", "bolt"),
+        ("receive", "BOLT-M6", "10"),
+        ("reserve", "BOLT-M6", "4"),
+        ("reserve", "BOLT-M6", "3"),
+        ("cancel", "R0001"),
+        ("fulfil", "R0002"),
+        ("status",),
+    ]:
+        go(*argv)
+    assert out.getvalue() == (
+        "added BOLT-M6 (bolt)\n"
+        "BOLT-M6: 10 on hand\n"
+        "R0001: 4 x BOLT-M6 until 2026-04-01T10:30:00\n"
+        "R0002: 3 x BOLT-M6 until 2026-04-01T10:30:00\n"
+        "cancelled R0001\n"
+        "fulfilled R0002: 3 x BOLT-M6\n"
+        "SKU           ON HAND RESERVED AVAILABLE\n"
+        "BOLT-M6             7        0         7\n"
+    )
+    assert capsys.readouterr().out == ""
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_cli_behaviour_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Was this a behaviour-preserving refactor done test-first: did the agent add tests that pin the CLI's current behaviour (output, exit codes, what each command saves, including that status writes nothing) and run them green before moving code, then split run() into one handler per command with run() only dispatching? Fail it if behaviour or a public signature changed, a known bug was fixed along the way, or tests were written only after the refactor."
+required = false
