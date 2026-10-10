@@ -85,6 +85,25 @@ class CheckBriefTest(unittest.TestCase):
         text = good().replace("## Agent Brief", "## Summary")
         self.assertIn("agent brief", check_brief.failures(text))
 
+    def test_empty_base_fails(self):
+        self.assertIn("base", check_brief.failures(good().replace("base: main", "base:")))
+
+    def test_agent_brief_without_open_criterion_fails(self):
+        text = good().replace("- [ ] the minimised repro", "- the minimised repro")
+        self.assertIn("agent brief", check_brief.failures(text))
+
+    def test_truncation_site_without_minute_fails(self):
+        cause = "`Reservation.to_dict` in `models.py` writes `expires_at` wrong, so a reload loses up to 59 s."
+        self.assertIn("root cause names the truncation site", check_brief.failures(with_cause(cause)))
+
+    def test_minute_without_truncation_site_fails(self):
+        cause = "The state file stores `expires_at` cut to the minute, so a reload loses up to 59 s."
+        self.assertIn("root cause names the truncation site", check_brief.failures(with_cause(cause)))
+
+    def test_error_line_after_prose_fails(self):
+        text = good().replace("# inventory: error:", "# see inventory: error:")
+        self.assertIn("repro ran red", check_brief.failures(text))
+
     def test_route_define_fails(self):
         text = good().replace("**Route:** ns-build", "**Route:** ns-define")
         self.assertIn("routes to ns-build", check_brief.failures(text))
