@@ -6963,5 +6963,9 @@ fn cleanup_at_a_resume_leaves_the_worktree_of_the_paused_unit() {
     let removed = run_events(&e)
         .iter()
         .position(|v| v["event"] == "cleanup" && v["unit"] == A && v["removed"] == true);
-    assert!(removed.is_none_or(|r| r > starts[1]), "{:?}", run_events(&e));
+    assert!(
+        removed.is_none_or(|r| r > starts[1]),
+        "{:?}",
+        run_events(&e)
+    );
 }
