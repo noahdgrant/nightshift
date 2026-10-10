@@ -72,6 +72,12 @@ case "$1 $2" in
     cat "$d/$f" 2>/dev/null || echo "[]"
     ;;
   "pr view")
+    # updated-<n>.lag: how many views after update-branch still report the old head.
+    if [ -f "$d/lag-$3" ]; then
+      left=$(cat "$d/lag-$3")
+      if [ "$left" -le 0 ]; then mv "$d/pending-$3.head" "$d/pr-$3.head"; rm "$d/lag-$3"
+      else echo $((left - 1)) > "$d/lag-$3"; fi
+    fi
     st=$(cat "$d/pr-$3.state" 2>/dev/null || echo OPEN)
     ms=$(cat "$d/pr-$3.merge" 2>/dev/null || echo CLEAN)
     hd=$(cat "$d/pr-$3.head" 2>/dev/null || git rev-parse HEAD 2>/dev/null)
@@ -87,8 +93,10 @@ case "$1 $2" in
   "pr diff") cat "$d/diff-$3.txt" 2>/dev/null || true ;;
   "pr update-branch")
     [ -f "$d/update-$3.fail" ] && { echo "conflict" >&2; exit 1; }
-    echo CLEAN > "$d/pr-$3.merge"
-    [ -f "$d/updated-$3.head" ] && cp "$d/updated-$3.head" "$d/pr-$3.head"
+    cat "$d/updated-$3.merge" 2>/dev/null > "$d/pr-$3.merge" || echo CLEAN > "$d/pr-$3.merge"
+    cat "$d/updated-$3.head" 2>/dev/null > "$d/pending-$3.head" \
+      || echo 00000000000000000000000000000000000000aa > "$d/pending-$3.head"
+    cat "$d/updated-$3.lag" 2>/dev/null > "$d/lag-$3" || echo 0 > "$d/lag-$3"
     ;;
   "pr merge") echo MERGED > "$d/pr-$3.state" ;;
   "run view") echo "FAILED tests/test_x.py::test_y - assert 1 == 2" ;;
