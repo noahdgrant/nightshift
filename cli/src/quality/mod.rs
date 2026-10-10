@@ -1,10 +1,14 @@
-//! `ns quality`: how well units pass review, read from the review artifacts in every unit
-//! worktree and the run log (docs/FACTORY.md, Quality).
+//! `ns quality`: how well units pass review, read from the quality records on the
+//! `nightshift/quality` branch, the review artifacts in every unit worktree that has no record,
+//! and the run log (docs/FACTORY.md, Quality).
 
 mod artifacts;
 mod blame;
 mod metrics;
+mod record;
 mod runlog;
+mod store;
+mod sync;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -18,8 +22,10 @@ use crate::error::SfError;
 use crate::git::Repo;
 use crate::review_md::{Finding, Scope, Severity, Status};
 use artifacts::Unparsed;
-use metrics::Unit;
+use metrics::{RunStats, Unit};
+pub use record::{issue_of, Meta};
 use runlog::RunLog;
+pub use sync::{import, record_unit};
 
 /// `--since` as unix seconds: `YYYY-MM-DDTHH:MM:SSZ`, or `YYYY-MM-DD` for 00:00:00 UTC.
 fn since_instant(s: &str) -> Result<i64> {
@@ -78,6 +84,7 @@ fn per_unit(u: &Unit) -> Value {
     let cycles = metrics::cycles_to_clean(last);
     json!({
         "unit": u.id,
+        "source": if u.worktree.is_some() { "worktree" } else { "record" },
         "worktree": u.worktree,
         "artifact": last.path,
         "attempts": u.attempts.len(),
@@ -116,12 +123,21 @@ fn report(
     let escapes: Vec<Value> = units
         .iter()
         .flat_map(|u| {
-            metrics::escapes(u.last()).into_iter().map(|f| {
-                let b = blame::blame(
-                    Path::new(&u.worktree),
-                    u.last().blame_at.as_deref(),
-                    f.location.as_deref(),
-                );
+            let last = u.last();
+            metrics::escapes(last).into_iter().map(|f| {
+                let recorded = last
+                    .findings
+                    .iter()
+                    .position(|x| std::ptr::eq(x, f))
+                    .and_then(|i| last.introduced_by.get(&i));
+                let b = match recorded {
+                    Some(b) => Ok(b.clone()),
+                    None => blame::blame(
+                        u.worktree.as_deref().map_or(root, Path::new),
+                        last.blame_at.as_deref(),
+                        f.location.as_deref(),
+                    ),
+                };
                 let mut v = item(u, f);
                 v["introduced_by"] = b.as_ref().map_or(Value::Null, |b| json!(b));
                 v["blame_error"] = b.err().map_or(Value::Null, Value::String);
@@ -156,7 +172,14 @@ pub fn cli(since: Option<String>) -> Result<ExitCode> {
     let since = since.as_deref().map(since_instant).transpose()?;
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
     let mut unparsed = Vec::new();
-    let mut units = artifacts::discover(&repo, &mut unparsed)?;
+    let (mut units, records) = sync::stored_units(&repo);
+    let recorded: BTreeSet<String> = units.iter().map(|u| u.id.clone()).collect();
+    units.extend(
+        artifacts::discover(&repo, &mut unparsed)?
+            .into_iter()
+            .filter(|u| !recorded.contains(&u.id)),
+    );
+    units.sort_by(|a, b| a.id.cmp(&b.id));
     let (mut log, mut runs) = runlog::read(&repo.common_dir.join("ns").join("runs.jsonl"), since);
     let known: BTreeSet<&str> = units.iter().map(|u| u.id.as_str()).collect();
     log.units_without_artifacts = runs
@@ -165,13 +188,19 @@ pub fn cli(since: Option<String>) -> Result<ExitCode> {
         .map(|(id, _)| id.clone())
         .collect();
     for u in &mut units {
-        u.run = runs.remove(&u.id).unwrap_or_default();
+        let logged = runs.remove(&u.id).unwrap_or_default();
+        u.run = RunStats {
+            outcome: logged.outcome.or(u.run.outcome.take()),
+            pr: logged.pr.or(u.run.pr),
+            ..logged
+        };
     }
     let kept: Vec<&Unit> = units
         .iter()
         .filter(|u| runlog::on_or_after(u.last().updated, since))
         .collect();
-    let r = report(&kept, since, &repo.root, log, unparsed);
+    let mut r = report(&kept, since, &repo.root, log, unparsed);
+    r["records"] = records;
     println!("{}", serde_json::to_string_pretty(&r)?);
     Ok(ExitCode::SUCCESS)
 }
@@ -217,7 +246,7 @@ mod tests {
         };
         let u = Unit {
             id: "u".into(),
-            worktree: "/w".into(),
+            worktree: Some("/w".into()),
             attempts: vec![a],
             day: None,
             run: RunStats::default(),

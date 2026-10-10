@@ -271,8 +271,10 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
     },
 
     /// Report how well units pass review: first-pass yield, findings per 100 lines, leftovers, escapes
-    #[command(after_help = QUALITY_HELP)]
+    #[command(after_help = QUALITY_HELP, args_conflicts_with_subcommands = true)]
     Quality {
+        #[command(subcommand)]
+        command: Option<QualityCmd>,
         /// Only units whose newest review artifact was updated, and run-log events, at or after this UTC time (YYYY-MM-DDTHH:MM:SSZ, or YYYY-MM-DD for 00:00:00 UTC)
         #[arg(long, value_name = "TIME")]
         since: Option<String>,
@@ -320,6 +322,9 @@ Examples:
 
 Spec: docs/FACTORY.md. Prints {unit,outcome,phase,reason,pr,cost_usd,phases}. Events go to
 <git-common-dir>/ns/runs.jsonl, harness transcripts to <git-common-dir>/ns/transcripts/.
+A unit that ends merged, done or stuck pushes its review quality records to origin's
+nightshift/quality branch (network); a failed push leaves them in
+<git-common-dir>/ns/quality-outbox.jsonl for the next run and never fails the unit.
 
 Forge tokens: [forge.github] / [forge.gitlab] in the ns config (see ns ask --help for the path)
 are resolved once and exported as GH_TOKEN / GITLAB_TOKEN to every child; a set variable wins.
@@ -353,12 +358,18 @@ Examples:
   ns quality --since 2026-10-01
   ns quality --since 2026-10-09T21:04:00Z
   ns quality --json | jq .first_pass
+  ns quality import /tmp/unit-artifacts --dry-run
 
-Spec: docs/FACTORY.md (Quality). Reads .ns/<unit>/review.md, review/cycle-*.md and
-history/review* in every linked worktree, plus <git-common-dir>/ns/runs.jsonl. Read-only.
+Spec: docs/FACTORY.md (Quality). Fetches origin's nightshift/quality branch (network) and reads
+its records.jsonl plus <git-common-dir>/ns/quality-outbox.jsonl: one record per review attempt,
+written by ns run when a unit ends. A unit with no record is read from .ns/<unit>/review.md,
+review/cycle-*.md and history/review* in its linked worktree. Also reads
+<git-common-dir>/ns/runs.jsonl. Changes nothing but the remote-tracking ref.
+`records` says how many records came from the branch and the outbox, and why a fetch failed.
 First-pass numbers come from a unit's oldest review artifact, the rest from its newest.
 Prints {units,findings,first_pass,cycles_to_clean,leftovers,escapes,leftover_findings,
-escape_findings,trend,run_log,gaps,per_unit}. --since and its echo in the output are UTC;
+escape_findings,trend,run_log,gaps,per_unit,records}; per_unit[].source is record or worktree.
+--since and its echo in the output are UTC;
 trend and per_unit days are local (TZ).
 
 Exit codes: 0 ok, 1 git failed, 2 usage error (bad --since, not in a git repo).";
@@ -379,6 +390,33 @@ baseline cache live under [eval].transcripts.
 
 Exit codes: 1 failure, 2 usage error, 3 eval harness not configured or bad config,
 4 harness binary not on PATH.";
+
+#[derive(Subcommand)]
+enum QualityCmd {
+    /// Turn archived unit worktrees into quality records and push them to origin's nightshift/quality
+    #[command(after_help = "\
+Examples:
+  ns quality import /tmp/unit-artifacts --dry-run
+  ns quality import /tmp/unit-artifacts
+
+<DIR> holds one directory per unit, laid out as in its worktree: <DIR>/<unit>/.ns/<unit>/review.md.
+Units origin's branch (or the outbox) already has a record for are skipped, so a rerun is safe
+and reports status already-done. Issue numbers come from the unit id, PRs from pr.md or the run
+log, outcomes from <git-common-dir>/ns/runs.jsonl. A missing change size is measured with git in
+this repo. --dry-run fetches the branch (network) to find what's recorded, and pushes nothing.
+
+Prints {ok,status,units,records,imported,already_recorded,skipped,unparsed,branch,push}.
+Exit codes: 0 pushed, planned or already-done; 1 nothing-to-import (no unit in <DIR> has a
+review artifact), or outbox: the push failed and the records wait in the
+outbox (the next ns run or import pushes them); 2 usage error.")]
+    Import {
+        /// Directory holding <unit>/.ns/<unit>/ for each archived unit
+        dir: PathBuf,
+        /// Print what would be imported; push nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
 
 #[derive(Subcommand)]
 enum FactoryCmd {
@@ -632,7 +670,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 factory,
             })
         }
-        Cmd::Quality { since, json: _ } => return quality::cli(since),
+        Cmd::Quality {
+            command: Some(QualityCmd::Import { dir, dry_run }),
+            ..
+        } => return quality::import(&dir, dry_run),
+        Cmd::Quality {
+            command: None,
+            since,
+            json: _,
+        } => return quality::cli(since),
         Cmd::Doctor => doctor::run()?,
     }
     Ok(ExitCode::SUCCESS)

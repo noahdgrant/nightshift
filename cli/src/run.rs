@@ -27,7 +27,7 @@ use crate::git::{self, Repo};
 use crate::markers;
 use crate::worktree;
 
-mod currency;
+pub(crate) mod currency;
 
 use currency::{
     archive_as, archive_for, decide, known_pr, read_art, read_state, restore, run, Art, Decision,
@@ -980,6 +980,18 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         "pr": pr,
         "cost_usd": shared.spent_usd,
     }));
+    if matches!(
+        result.outcome,
+        Outcome::Done | Outcome::Merged | Outcome::Stuck
+    ) {
+        let meta = crate::quality::Meta {
+            unit: unit.clone(),
+            issue: ctx.issue.or_else(|| crate::quality::issue_of(&unit)),
+            pr,
+            outcome: Some(result.outcome.label().to_string()),
+        };
+        ctx.log(crate::quality::record_unit(&repo, &ctx.worktree, &meta));
+    }
     let cost: f64 = phases.iter().filter_map(|p| p["cost_usd"].as_f64()).sum();
     let json = json!({
         "unit": unit,

@@ -1017,6 +1017,154 @@ fn blocked_artifact_is_stuck() {
     assert!(v["artifact"].as_str().unwrap().ends_with("evidence.md"));
 }
 
+const QUALITY_BRANCH: &str = "refs/heads/nightshift/quality";
+
+/// The quality records on the bare `origin`'s data branch.
+fn quality_records(e: &Env) -> Vec<Value> {
+    let remote = e.base.join("remote.git");
+    if git(&remote, &["for-each-ref", QUALITY_BRANCH]).is_empty() {
+        return Vec::new();
+    }
+    git(
+        &remote,
+        &["show", &format!("{QUALITY_BRANCH}:records.jsonl")],
+    )
+    .lines()
+    .map(|l| serde_json::from_str(l).unwrap())
+    .collect()
+}
+
+fn quality_events(e: &Env) -> Vec<Value> {
+    fs::read_to_string(e.root.join(".git/ns/runs.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["event"] == "quality_record")
+        .collect()
+}
+
+const FINDING: &str = "## Important\n### I1. Untested branch\n- Location: `work.txt:1`\n- Axis: tests\n- Scope: changed\n- Cycle: 0\n- Status: fixed (cycle 1, abc1234)\n";
+
+#[test]
+fn a_unit_that_ends_pushes_its_quality_record() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit"]);
+    e.ctl("review.body", FINDING);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    let records = quality_records(&e);
+    assert_eq!(records.len(), 1);
+    let r = &records[0];
+    assert_eq!(r["unit"], UNIT);
+    assert_eq!(
+        (r["issue"].as_u64(), r["outcome"].as_str()),
+        (Some(7), Some("done"))
+    );
+    assert_eq!(r["artifact"], format!(".ns/{UNIT}/review.md"));
+    assert_eq!(r["status"], "pass");
+    assert_eq!(r["findings"][0]["id"], "I1");
+    assert_eq!(r["findings"][0]["axes"], serde_json::json!(["tests"]));
+    let ev = quality_events(&e);
+    assert_eq!(ev.len(), 1);
+    assert_eq!(
+        (ev[0]["status"].as_str(), ev[0]["records"].as_u64()),
+        (Some("pushed"), Some(1))
+    );
+    assert_eq!(ev[0]["unit"], UNIT);
+}
+
+#[test]
+fn every_review_attempt_gets_a_record() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    e.queue("review", &["fail", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    let got: Vec<_> = quality_records(&e)
+        .iter()
+        .map(|r| {
+            (
+                r["attempt"].as_u64().unwrap(),
+                r["attempts"].as_u64().unwrap(),
+                r["status"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [(1, 2, "fail".to_string()), (2, 2, "pass".to_string())]
+    );
+}
+
+#[test]
+fn a_blocked_review_is_recorded_as_stuck() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["blocked:Open after 3 fix cycles: I1."]);
+    e.ctl("review.body", FINDING);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck");
+    let records = quality_records(&e);
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        (
+            records[0]["outcome"].as_str(),
+            records[0]["status"].as_str()
+        ),
+        (Some("stuck"), Some("blocked"))
+    );
+}
+
+#[test]
+fn a_unit_with_no_review_writes_no_record() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit"]);
+    e.queue("verify", &["blocked:needs hardware"]);
+    e.run(&["run", "--issue", "7"], 1);
+    assert!(quality_records(&e).is_empty());
+    let ev = quality_events(&e);
+    assert_eq!(
+        (ev[0]["status"].as_str(), ev[0]["attempts"].as_u64()),
+        (Some("nothing"), Some(0))
+    );
+}
+
+#[test]
+fn a_failed_push_keeps_the_record_in_the_outbox_and_the_next_unit_pushes_it() {
+    let e = Env::new();
+    let remote = e.base.join("remote.git");
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            e.base.join("gone.git").to_str().unwrap(),
+        ],
+    );
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done");
+    let outbox = e.root.join(".git/ns/quality-outbox.jsonl");
+    assert_eq!(fs::read_to_string(&outbox).unwrap().lines().count(), 1);
+    assert_eq!(quality_events(&e)[0]["status"], "outbox");
+    assert!(quality_records(&e).is_empty());
+
+    git(
+        &e.root,
+        &["remote", "set-url", "origin", remote.to_str().unwrap()],
+    );
+    e.issue(8, "Other thing", "OPEN");
+    let v = e.run(&["run", "--issue", "8"], 0);
+    assert_eq!(v["outcome"], "done");
+    let units: Vec<_> = quality_records(&e)
+        .iter()
+        .map(|r| r["unit"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(units, [UNIT, "8-other-thing"]);
+    assert!(!outbox.exists());
+}
+
 #[test]
 fn lock_refuses_a_second_runner_and_takes_over_a_free_one() {
     let e = Env::new();
@@ -2153,6 +2301,11 @@ fn auto_merge_squashes_when_green_and_no_human_review_files() {
         "{calls}"
     );
     assert!(!calls.contains("update-branch"));
+    let r = &quality_records(&e)[0];
+    assert_eq!(
+        (r["outcome"].as_str(), r["pr"].as_u64()),
+        (Some("merged"), Some(12))
+    );
 }
 
 #[test]
