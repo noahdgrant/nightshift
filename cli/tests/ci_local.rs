@@ -7,10 +7,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-const ALL_STEPS: [&str; 10] = [
+const ALL_STEPS: [&str; 11] = [
     "cargo fmt --check",
     "cargo clippy",
     "cargo test",
+    "cargo test under a decoy GIT_DIR",
     "build ns",
     "ns lint",
     "ns check-markers",
@@ -20,8 +21,9 @@ const ALL_STEPS: [&str; 10] = [
     "private guard",
 ];
 
-const FAST_ONLY_SKIPS: [&str; 4] = [
+const FAST_ONLY_SKIPS: [&str; 5] = [
     "cargo test",
+    "cargo test under a decoy GIT_DIR",
     "ns eval --dry-run",
     "py-inventory fixture tests",
     "ns-troubleshoot brief checker tests",
@@ -30,6 +32,11 @@ const FAST_ONLY_SKIPS: [&str; 4] = [
 /// Fails when its command line contains `$FAIL_ON`.
 const CARGO: &str = r#"#!/bin/sh
 case "$FAIL_ON" in ?*) case "cargo $*" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
+"#;
+
+/// Fails when `$FAIL_ON` is `decoy`.
+const DECOY: &str = r#"#!/bin/sh
+[ "$FAIL_ON" != decoy ]
 "#;
 
 /// Prints `$PLAN` for `eval --dry-run`, even when it then fails because its command line
@@ -82,6 +89,7 @@ impl Repo {
             &fs::read_to_string(script).unwrap(),
         );
         write_exe(&root.join("scripts/check-private.sh"), "#!/bin/sh\n");
+        write_exe(&root.join("scripts/check-git-dir-decoy.sh"), DECOY);
         write_exe(&root.join("cli/target/debug/ns"), NS);
         write_exe(&root.join("bin/cargo"), CARGO);
         let python = python_stub(&real_python3());
@@ -137,6 +145,7 @@ fn every_step_runs_in_order_and_the_run_passes() {
 fn a_failing_step_stops_the_run() {
     for (fail_on, step) in [
         ("cargo clippy", "cargo clippy"),
+        ("decoy", "cargo test under a decoy GIT_DIR"),
         ("ns check-markers", "ns check-markers"),
         ("ns eval", "ns eval --dry-run"),
     ] {
