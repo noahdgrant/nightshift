@@ -1,0 +1,64 @@
+description = "The broad request from broad-feature-split under gates: stop, with the maintainer's go-ahead in the prompt so the recommendation gets applied. Triage should split it as under gates: auto, except that the children take the needs-triage state, not ready-for-agent: two or more child issues, the parent at needs-define with Triage Notes listing them, and no unit started."
+fixture = "py-inventory"
+skills = ["ns-triage"]
+extra_skills = ["ns-contract"]
+requires = []
+timeout_minutes = 15
+prompt = """
+Triage .scratch/low-stock/issues/01-low-stock-reordering.md. gates: stop
+I'm the maintainer and I won't be around to answer: apply your recommendation as soon as you have it, then stop.
+"""
+
+[[check]]
+type = "regex"
+path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?needs-define`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+pattern = '(?m)^#+\s*Triage Notes'
+present = true
+
+[[check]]
+# Split under gates: stop: two or more children, each at needs-triage, none at ready-for-agent, all listed in the parent's Triage Notes.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, os, re, sys
+parent_path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+children = sorted(p for p in glob.glob(".scratch/**/*.md", recursive=True)
+                  if os.path.realpath(p) != os.path.realpath(parent_path) and "/issues/" in p)
+print("children:", children)
+if len(children) < 2:
+    sys.exit("fewer than two child issues")
+notes = open(parent_path, encoding="utf-8").read().split("Triage Notes", 1)[-1]
+for path in children:
+    text = open(path, encoding="utf-8").read()
+    stem = os.path.splitext(os.path.basename(path))[0]
+    num = re.match(r"\d+", stem)
+    if not num:
+        sys.exit(f"{path}: file name has no numeric prefix")
+    num = num.group()
+    if re.search(r"(?m)^\**Status:?\**:?.*ready-for-agent", text):
+        sys.exit(f"{path}: child is ready-for-agent under gates: stop")
+    if not re.search(r"(?m)^\**Status:?\**:?\s*`?needs-triage`?\s*$", text):
+        sys.exit(f"{path}: child is not at Status: needs-triage")
+    if not (stem in notes or re.search(rf"(?<!\d)(?:{num}|{int(num)})(?!\d)", notes)):
+        sys.exit(f"{path}: not listed in the parent's Triage Notes")
+print(f"ok: {len(children)} children, all needs-triage")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''
+! ls .ns/*/brief.md ../"$(basename "$PWD")".worktrees/*/.ns/*/brief.md 2>/dev/null | grep -q . && ! git branch --list 'ns/*' | grep -q . && [ "$(git worktree list | wc -l)" -eq 1 ]
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]
