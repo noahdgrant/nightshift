@@ -187,7 +187,7 @@ impl Shared {
         }
     }
 
-    fn add_spend(&mut self, unit: &str, usd: f64) -> Result<()> {
+    pub(crate) fn add_spend(&mut self, unit: &str, usd: f64) -> Result<()> {
         match &self.night {
             Some(n) => n.add_spend(unit, usd),
             None => {

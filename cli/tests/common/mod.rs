@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
@@ -32,7 +32,12 @@ static NEXT_TREE: AtomicU32 = AtomicU32::new(0);
 
 /// `ns` built from this crate, bounded by [`TIMEOUT`].
 pub fn ns() -> Ns {
-    command(assert_cmd::cargo::cargo_bin("ns"))
+    command(ns_path())
+}
+
+/// Where `ns` built from this crate is, for a script that a bounded `ns` runs to exec it.
+pub fn ns_path() -> PathBuf {
+    assert_cmd::cargo::cargo_bin("ns")
 }
 
 /// Any program, run with the same bounds as [`ns`].
@@ -77,6 +82,24 @@ impl Ns {
 
     pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
         self.cmd.current_dir(dir);
+        self
+    }
+
+    /// Start `ns` with SIGTERM already pending and blocked, as a signal that landed while an
+    /// earlier `ns` was handing off to it.
+    pub fn with_pending_sigterm(&mut self) -> &mut Self {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: only sigprocmask(2), getpid(2) and kill(2), all async-signal-safe.
+        unsafe {
+            self.cmd.pre_exec(|| {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                libc::sigaddset(&mut set, libc::SIGTERM);
+                libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+                libc::kill(libc::getpid(), libc::SIGTERM);
+                Ok(())
+            });
+        }
         self
     }
 

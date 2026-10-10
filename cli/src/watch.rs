@@ -20,6 +20,7 @@ use crate::stop;
 use crate::worktree::BRANCH_PREFIX;
 
 mod scheduler;
+mod self_update;
 mod snapshot;
 mod triage;
 
@@ -32,6 +33,9 @@ pub struct WatchArgs {
     pub parallel: Option<u32>,
     pub dry_run: bool,
     pub factory: Option<PathBuf>,
+    pub no_self_update: bool,
+    /// The night so far, from the `ns` that handed off to this one.
+    pub resume_night: Option<PathBuf>,
 }
 
 pub const DISCLAIMER: &str =
@@ -509,6 +513,19 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         }
         None => None,
     };
+    // A hand-off carries the night on: its deadline wins over --until read again now. A state
+    // this ns can't read starts a fresh night rather than ending the one the old ns began, but
+    // fails a dry run, which is how the old ns checks this ns before it hands off.
+    let carried = match args.resume_night.as_deref().map(self_update::Carried::take) {
+        Some(Ok(c)) => Some(c),
+        Some(Err(e)) if args.dry_run => return Err(e),
+        Some(Err(e)) => {
+            eprintln!("ns watch: warning: starting a fresh night: {e:#}");
+            None
+        }
+        None => None,
+    };
+    let deadline = carried.as_ref().map_or(deadline, |c| c.deadline);
     night.shared.until = deadline;
     let max_units = if args.once {
         Some(1)
@@ -522,6 +539,22 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             "ns watch --parallel 2",
         )
         .into());
+    }
+
+    if args.dry_run && args.resume_night.is_some() {
+        // The old ns's check of this binary: the arguments and the state are what it validates.
+        // The queue is not, and a gh or network failure here must not blacklist a good commit.
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "dry_run": true,
+                "resume_night": "ok",
+                "max_units": max_units,
+                "parallel": parallel,
+                "until": deadline.map(clock::local_iso),
+            }))?
+        );
+        return Ok(ExitCode::SUCCESS);
     }
 
     if args.dry_run {
@@ -596,6 +629,8 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
 
     let _watch = run::Lock::watch(&repo.common_dir)?;
     stop::install().context("cannot handle SIGINT and SIGTERM")?;
+    // A stop the old ns held pending across its exec arrives now, at the handler just set.
+    stop::unblock();
     let facts = snapshot::Facts {
         watch_pid: std::process::id(),
         until: deadline,
@@ -614,9 +649,17 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         );
     }
     night.shared.night = Some(snap.night().clone());
+    let (mut tonight, started) = match carried {
+        Some(c) => night.resume(c)?,
+        None => (Tonight::default(), 0),
+    };
     // The triage pass, which runs here, reads the snapshot's prompts as every unit does.
     loaded.root = snap.factory();
-    let mut tonight = Tonight::default();
+    let update = self_update::SelfUpdate::new(
+        &repo,
+        args.no_self_update,
+        std::env::args_os().skip(1).collect(),
+    );
     let plan = scheduler::Plan {
         repo: &repo,
         loaded: &loaded,
@@ -624,6 +667,8 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         deadline,
         max_units,
         parallel: parallel as usize,
+        started,
+        update,
     };
     let mut failed = None;
     let stopped = match requeue_stale(&repo, &q, &mut tonight.requeued)
@@ -666,7 +711,8 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
 }
 
 /// What the night's work leaves for its summary.
-#[derive(Default)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct Tonight {
     units: Vec<Value>,
     /// Issues found in progress at start with no live `ns run`, returned to the queue.
@@ -700,6 +746,48 @@ struct Night {
 }
 
 impl Night {
+    /// The night so far, for the new `ns` to resume. `started` is the units claimed.
+    fn carry(
+        &self,
+        deadline: Option<i64>,
+        started: u32,
+        tonight: &Tonight,
+    ) -> self_update::Carried {
+        self_update::Carried {
+            version: self_update::Carried::VERSION,
+            deadline,
+            spent_usd: self.shared.spent(),
+            started,
+            harness_fails: self.harness_fails,
+            finished: self.finished.clone(),
+            triage: self.triage.clone(),
+            tonight: tonight.clone(),
+        }
+    }
+
+    /// Take on the night a previous `ns` carried, once `shared.night` exists to take its spend.
+    /// The rest of it, for the caller: the night's `Tonight` and the units claimed so far. The
+    /// deadline is the caller's, read before this.
+    fn resume(&mut self, carried: self_update::Carried) -> Result<(Tonight, u32)> {
+        let self_update::Carried {
+            version: _,
+            deadline: _,
+            spent_usd,
+            started,
+            harness_fails,
+            finished,
+            triage,
+            tonight,
+        } = carried;
+        self.harness_fails = harness_fails;
+        self.finished = finished;
+        self.triage = triage;
+        if spent_usd > 0.0 {
+            self.shared.add_spend("before the self-update", spent_usd)?;
+        }
+        Ok((tonight, started))
+    }
+
     fn new() -> Night {
         let mut shared = Shared::new();
         shared.watch_pid = Some(std::process::id());
