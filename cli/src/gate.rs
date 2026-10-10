@@ -12,6 +12,8 @@ use crate::eval::trial::run_process;
 use crate::factory::Factory;
 use crate::git::same_sha;
 use crate::memcap::{self, Cap, Cut};
+use crate::shell::shell_quote;
+use crate::stack::rows;
 
 /// Lines of gate output kept for `{feedback}`.
 const TAIL_LINES: usize = 40;
@@ -20,23 +22,23 @@ const TAIL_BYTES: usize = 3000;
 /// Bytes read from the end of the log to build the tail.
 const WINDOW_BYTES: u64 = 16 * 1024;
 
-/// `[phases.build] gate`, else the `ci-local` row of `<repo>/docs/agents/stack.md`, else none.
-pub fn command(fac: &Factory, repo_root: &Path) -> Option<String> {
-    fac.phase("build").gate.or_else(|| {
-        fs::read_to_string(repo_root.join("docs/agents/stack.md"))
-            .ok()
-            .and_then(|t| ci_local(&t))
-    })
+/// `[phases.build] gate`, else the `ci-local` row of `<repo>/docs/agents/stack.md`, then
+/// `<ns> rules check` when that file has a `rules` row; none when there is neither.
+pub fn command(fac: &Factory, repo_root: &Path, ns: &Path) -> Option<String> {
+    let stack = fs::read_to_string(repo_root.join("docs/agents/stack.md")).unwrap_or_default();
+    let base = fac.phase("build").gate.or_else(|| ci_local(&stack));
+    let rules = (!crate::rules::commands(&stack).is_empty())
+        .then(|| format!("{} rules check", shell_quote(&ns.to_string_lossy())));
+    match (base, rules) {
+        (Some(b), Some(r)) => Some(format!("({b}) && {r}")),
+        (b, r) => b.or(r),
+    }
 }
 
 /// The command in a table row `| ci-local | `<command>` | ... |`: the first cell is `ci-local`
 /// (backticks optional), the command is the backticked span that opens the second cell (it may contain `|`).
 pub fn ci_local(stack_md: &str) -> Option<String> {
-    stack_md.lines().find_map(|line| {
-        let (first, rest) = line.trim().strip_prefix('|')?.split_once('|')?;
-        if first.trim().trim_matches('`') != "ci-local" {
-            return None;
-        }
+    rows(stack_md, "ci-local").find_map(|rest| {
         let cmd = rest
             .trim_start()
             .strip_prefix('`')?
@@ -338,21 +340,51 @@ mod tests {
     fn the_configured_gate_wins_over_stack_md_and_neither_is_none() {
         let tmp = tempfile::tempdir().unwrap();
         let none = parse("").unwrap();
-        assert_eq!(command(&none, tmp.path()), None);
+        assert_eq!(command(&none, tmp.path(), Path::new(NS_EXE)), None);
         fs::create_dir_all(tmp.path().join("docs/agents")).unwrap();
         fs::write(tmp.path().join("docs/agents/stack.md"), STACK).unwrap();
         assert_eq!(
-            command(&none, tmp.path()).as_deref(),
+            command(&none, tmp.path(), Path::new(NS_EXE)).as_deref(),
             Some("scripts/ci-local.sh --fast")
         );
         let set = parse("[phases.build]\ngate = \"make ci\"\n").unwrap();
-        assert_eq!(command(&set, tmp.path()).as_deref(), Some("make ci"));
+        assert_eq!(
+            command(&set, tmp.path(), Path::new(NS_EXE)).as_deref(),
+            Some("make ci")
+        );
+    }
+
+    const NS_EXE: &str = "/opt/ns bin/ns";
+
+    #[test]
+    fn a_rules_row_adds_ns_rules_check_after_the_gate_or_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("docs/agents")).unwrap();
+        let stack = tmp.path().join("docs/agents/stack.md");
+        fs::write(&stack, format!("{STACK}| rules | `ruff check .` |\n")).unwrap();
+        let none = parse("").unwrap();
+        assert_eq!(
+            command(&none, tmp.path(), Path::new(NS_EXE)).as_deref(),
+            Some("(scripts/ci-local.sh --fast) && '/opt/ns bin/ns' rules check")
+        );
+        let set = parse("[phases.build]\ngate = \"make ci\"\n").unwrap();
+        assert_eq!(
+            command(&set, tmp.path(), Path::new(NS_EXE)).as_deref(),
+            Some("(make ci) && '/opt/ns bin/ns' rules check")
+        );
+        fs::write(&stack, "| rules | `ruff check .` |\n").unwrap();
+        assert_eq!(
+            command(&none, tmp.path(), Path::new(NS_EXE)).as_deref(),
+            Some("'/opt/ns bin/ns' rules check")
+        );
+        fs::write(&stack, "| rules | none yet |\n").unwrap();
+        assert_eq!(command(&none, tmp.path(), Path::new(NS_EXE)), None);
     }
 
     #[test]
     fn this_repos_gate_is_ci_local_sh() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let cmd = command(&parse("").unwrap(), repo).unwrap();
+        let cmd = command(&parse("").unwrap(), repo, Path::new(NS_EXE)).unwrap();
         assert_eq!(cmd, "scripts/ci-local.sh");
         assert!(repo.join(&cmd).is_file());
     }
