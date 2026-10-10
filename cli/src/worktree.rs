@@ -90,6 +90,44 @@ fn run_setup(
     Ok(results)
 }
 
+/// Where a worktree records that its setup finished: the worktree's own git dir, so the record
+/// goes when the worktree does and never shows among its files.
+fn setup_record(path: &Path) -> Result<PathBuf> {
+    let dir = git::run(path, &["rev-parse", "--absolute-git-dir"])?;
+    Ok(PathBuf::from(dir).join("ns-setup-done"))
+}
+
+/// Whether setup finished for `unit` in the worktree at `path`. The record names the unit, so
+/// a main checkout that moves to another unit's branch doesn't count the earlier unit's setup.
+fn setup_finished(path: &Path, unit: &str) -> Result<bool> {
+    let text = fs::read_to_string(setup_record(path)?).unwrap_or_default();
+    Ok(text.trim_end() == unit)
+}
+
+/// Run setup, taking any earlier record away first, and record it once every command passed.
+/// A stop or crash partway leaves no record, so the next `ensure` runs setup again.
+fn run_recorded(
+    commands: &[String],
+    unit: &str,
+    path: &Path,
+    root: &Path,
+) -> Result<Vec<SetupResult>> {
+    let record = setup_record(path)?;
+    match fs::remove_file(&record) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("cannot remove {}", record.display()))
+        }
+        _ => {}
+    }
+    let results = run_setup(commands, unit, path, root)?;
+    // run_setup stops at the first failure, so all passing means all ran.
+    if results.iter().all(|r| r.exit == Some(0)) {
+        fs::write(&record, format!("{unit}\n"))
+            .with_context(|| format!("cannot write {}", record.display()))?;
+    }
+    Ok(results)
+}
+
 fn setup_failed(results: &[SetupResult], unit: &str) -> Option<ExitCode> {
     let failed = results.iter().find(|r| r.exit != Some(0))?;
     let code = failed
@@ -169,16 +207,14 @@ pub fn existing(repo: &Repo, unit: &str) -> Result<Option<PathBuf>> {
     Ok(find_unit(&list, unit).map(|e| e.path.clone()))
 }
 
-/// Create or reuse the unit's worktree; run `setup` only when it is newly created.
+/// Create or reuse the unit's worktree; run `setup` unless the worktree records it finished.
 pub fn ensure(repo: &Repo, unit: &str, base: Option<&str>, setup: &[String]) -> Result<NewOutput> {
     let branch = format!("{BRANCH_PREFIX}{unit}");
     let list = git::worktrees(&repo.root)?;
 
-    let mut created = false;
     let path: PathBuf = if let Some(existing) = find_unit(&list, unit) {
         existing.path.clone()
     } else {
-        created = true;
         let path = planned_path(repo, unit);
         if path.exists() {
             return Err(SfError::general(format!(
@@ -241,10 +277,10 @@ pub fn ensure(repo: &Repo, unit: &str, base: Option<&str>, setup: &[String]) -> 
         .with_context(|| format!("cannot create {}", artifacts.display()))?;
     ensure_excluded(&repo.common_dir)?;
 
-    let results = if created {
-        run_setup(setup, unit, &path, &repo.root)?
-    } else {
+    let results = if setup.is_empty() || setup_finished(&path, unit)? {
         Vec::new()
+    } else {
+        run_recorded(setup, unit, &path, &repo.root)?
     };
     Ok(NewOutput {
         unit: unit.to_string(),
@@ -266,7 +302,7 @@ pub fn setup(unit: &str, repo: Option<&Path>) -> Result<ExitCode> {
             .hint(format!("create it first:\n  ns worktree new {unit}"))
             .into());
     };
-    let results = run_setup(&commands, unit, &entry.path, &repo.root)?;
+    let results = run_recorded(&commands, unit, &entry.path, &repo.root)?;
     let out = json!({
         "unit": unit,
         "path": entry.path.to_string_lossy(),

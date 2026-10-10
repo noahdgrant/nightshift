@@ -941,21 +941,26 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
     };
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
-    let result = if let Some(failed) = wt.setup.iter().find(|r| r.exit != Some(0)) {
-        finish(
-            Outcome::Stuck,
-            format!("worktree setup command {:?} failed", failed.run),
-            None,
-        )
-    } else {
-        let driven = drive(
-            &ctx,
-            args,
-            shared,
-            &commands,
-            &mut phases,
-            &mut last_artifact,
-        );
+    let result = {
+        // A stop that killed a setup command interrupts the unit rather than leaving it stuck.
+        let driven = if let Some(failed) = wt.setup.iter().find(|r| r.exit != Some(0)) {
+            crate::stop::check().map(|()| {
+                finish(
+                    Outcome::Stuck,
+                    format!("worktree setup command {:?} failed", failed.run),
+                    None,
+                )
+            })
+        } else {
+            drive(
+                &ctx,
+                args,
+                shared,
+                &commands,
+                &mut phases,
+                &mut last_artifact,
+            )
+        };
         if let Some(sig) = driven.as_ref().err().and(crate::stop::requested()) {
             ctx.log(json!({
                 "event": "end",

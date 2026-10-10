@@ -1480,6 +1480,76 @@ fn watch_still_skips_an_issue_a_pr_from_another_branch_closes() {
     }
 }
 
+/// `[worktree] setup` that logs each start to `setup.log` beside the repo, runs `cut` (which
+/// ends setup partway) the first time only, then logs the finish to `setup.done`.
+fn setup_cut_once(e: &Env, cut: &str) {
+    let commands = [
+        "echo run >> \"$NS_MAIN_ROOT/../setup.log\"".to_string(),
+        format!(
+            "if [ ! -e \"$NS_MAIN_ROOT/../cut\" ]; then touch \"$NS_MAIN_ROOT/../cut\"; {cut}; fi"
+        ),
+        "echo done >> \"$NS_MAIN_ROOT/../setup.done\"".to_string(),
+    ];
+    e.factory(&format!("[worktree]\nsetup = {commands:?}\n"));
+}
+
+/// How many times setup started and finished.
+fn setup_runs(e: &Env) -> (usize, usize) {
+    let count = |f: &str| {
+        fs::read_to_string(e.base.join(f))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    (count("setup.log"), count("setup.done"))
+}
+
+#[test]
+fn a_crash_during_setup_reruns_setup_on_the_next_run() {
+    use std::os::unix::process::ExitStatusExt;
+    let e = Env::new();
+    // Setup's shell is a child of ns.
+    setup_cut_once(&e, "kill -KILL \"$PPID\"");
+    let out = e.ns().args(["run", "--issue", "7"]).output();
+    assert_eq!(out.status.signal(), Some(libc::SIGKILL), "{out:?}");
+    assert!(e.worktree(UNIT).is_dir());
+    assert_eq!(setup_runs(&e), (1, 0));
+    assert!(e.calls().is_empty());
+
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(setup_runs(&e), (2, 1));
+
+    // Finished setup is on record, so reusing the worktree doesn't run it again.
+    let v = e.run(&["worktree", "new", UNIT], 0);
+    assert_eq!(v["setup"], serde_json::json!([]));
+    assert_eq!(setup_runs(&e), (2, 1));
+}
+
+#[test]
+fn a_stop_during_setup_reruns_setup_on_the_next_run() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    let f = fifo(&e);
+    setup_cut_once(&e, &blocks(&f));
+    // SIGTERM to the group, as a service manager stopping ns watch sends it.
+    let r = interrupt(&e, f, libc::SIGTERM, true);
+    assert_interrupted(&e, &r, "SIGTERM", 143);
+    assert!(
+        !run_events(&e)
+            .iter()
+            .any(|ev| ev["event"] == "end" && ev["outcome"] == "stuck"),
+        "{}",
+        r.stderr
+    );
+    assert_eq!(setup_runs(&e), (1, 0));
+    assert!(e.calls().is_empty());
+
+    let v = e.run(&["run", "--issue", "2"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(setup_runs(&e), (2, 1));
+}
+
 /// Run `ns watch --once` on ready issue 2 through to the merge step, with a `gh` that sends ns
 /// SIGTERM when it is called with `call`, then answers normally.
 fn stop_at_gh(e: &Env, call: &str) -> (std::process::Output, Value) {

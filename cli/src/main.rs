@@ -410,6 +410,8 @@ prints {\"unit\",\"path\",\"branch\",\"artifacts\",\"setup\"}. Re-running prints
 
 A new worktree runs the [worktree] setup commands from <main-root>/.nightshift/nightshift.toml
 (env NS_UNIT, NS_WORKTREE, NS_MAIN_ROOT); \"setup\" lists {\"run\",\"exit\"} per command.
+An existing worktree whose setup never finished (stopped, crashed, failed) runs them again;
+one whose setup finished prints \"setup\":[].
 A failing command exits 1 and leaves the worktree; retry with ns worktree setup <unit-id>.")]
     New {
         /// Unit id: [a-z0-9][a-z0-9-]*, e.g. 142-uart-timeout
@@ -431,7 +433,8 @@ Examples:
   ns worktree setup 142-uart-timeout --repo ~/src/firmware
 
 Reads [worktree] setup from <main-root>/.nightshift/nightshift.toml and runs each
-command with sh -c in the worktree, stopping at the first failure. Prints
+command with sh -c in the worktree, stopping at the first failure. It runs them even
+when an earlier setup finished, and records setup as finished only when all pass. Prints
 {\"unit\",\"path\",\"setup\":[{\"run\",\"exit\"}]}; exits 1 if a command fails.")]
     Setup {
         unit_id: String,
