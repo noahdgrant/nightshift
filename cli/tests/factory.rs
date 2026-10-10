@@ -7065,10 +7065,17 @@ fn watch_hands_off_to_a_new_build_between_units_and_the_night_goes_on() {
     );
     let state = args.trim().rsplit(' ').next().unwrap();
     assert!(!Path::new(state).exists(), "{state} left behind");
-    // The check ran the new binary's dry run on a copy of that state.
+    // The check ran the new binary's dry run with the hand-off's own arguments, on a copy of
+    // that state.
     let dry = fs::read_to_string(e.ctrl.join("dry-run-args")).unwrap();
-    let probe = dry.trim().rsplit(' ').next().unwrap();
-    assert!(dry.contains("--resume-night ") && probe != state, "{dry}");
+    let dry = dry.trim();
+    assert!(
+        dry.starts_with("watch --until 06:30 --max-units 2 --resume-night ")
+            && dry.ends_with(" --dry-run"),
+        "{dry}"
+    );
+    let probe = dry.rsplit(' ').nth(1).unwrap();
+    assert!(probe != state, "{dry}");
     // The build went to the staging directory, locked, and the exec'd binary is the staged copy
     // named for the commit, not the running ns.
     let stage = fs::canonicalize(e.root.join(".git/ns/self-update")).unwrap();
@@ -7161,6 +7168,25 @@ fn a_dry_run_reads_the_carried_state_and_fails_on_what_it_cannot_read() {
             .output();
         assert_eq!(out.status.success(), ok, "{state}: {out:?}");
     }
+}
+
+#[test]
+fn a_dry_run_that_resumes_a_night_asks_gh_nothing() {
+    let e = Env::new();
+    two_ready(&e);
+    let path = empty_night(&e);
+    let out = e
+        .ns()
+        .args(["watch", "--dry-run", "--resume-night"])
+        .arg(&path)
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["dry_run"], true, "{v}");
+    let calls = fs::read_to_string(e.ghd.join("calls")).unwrap_or_default();
+    assert_eq!(calls, "", "a hand-off check must not depend on the network");
 }
 
 #[test]
@@ -7452,7 +7478,7 @@ fn a_unit_paused_while_draining_resumes_and_finishes_before_the_update() {
 }
 
 #[test]
-fn a_stop_while_draining_ends_the_night_without_an_update() {
+fn the_budget_stop_while_draining_ends_the_night_without_an_update() {
     let e = Env::new();
     let from = nightshift_repo(&e);
     // Unit 3 spends 2.5 and unit 2 reaches the budget at its review.
@@ -7472,6 +7498,36 @@ fn a_stop_while_draining_ends_the_night_without_an_update() {
     assert_eq!(v["stopped"], "budget", "{v}");
     assert_eq!(cargo_calls(&e), 0, "{err}");
     assert!(events_named(&e, "self_update").is_empty());
+}
+
+#[test]
+fn a_signal_while_draining_ends_the_night_without_an_update() {
+    for sig in [libc::SIGTERM, libc::SIGINT] {
+        let e = Env::new();
+        let from = nightshift_repo(&e);
+        two_ready(&e);
+        let (in_a, go_a) = hold_phase(&e, A, "build");
+        let (in_b, go_b) = hold_phase(&e, B, "build");
+        let mut w = Watching::start(watch_from(&e, &from).args(["watch", "--parallel", "2"]));
+        w.entered(&in_a);
+        w.entered(&in_b);
+        land(&e, "cli/x", "new\n");
+        release(&go_b);
+        w.line("draining");
+        w.signal(sig, false);
+        release(&go_a);
+        let (code, v, err) = w.finish();
+        let name = if sig == libc::SIGTERM {
+            "SIGTERM"
+        } else {
+            "SIGINT"
+        };
+        assert_eq!(code, Some(128 + sig), "{err}");
+        assert_eq!(v["stopped"], name, "{v}");
+        assert_eq!(cargo_calls(&e), 0, "{err}");
+        assert!(events_named(&e, "self_update").is_empty(), "{err}");
+        assert!(!e.ctrl.join("handed-off").exists(), "{err}");
+    }
 }
 
 #[test]

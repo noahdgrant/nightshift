@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use super::self_update::{self, SelfUpdate};
+use super::self_update::{HandOff, SelfUpdate};
 use super::snapshot::Snapshot;
 use super::{
     comment, ended_cleanly, fresh_base, open_findings, queue, set_status, triage, Issue, Night,
@@ -130,14 +130,9 @@ impl<'a> Scheduler<'a> {
                 }
             }
             // Units paused on a usage limit resume in the fill above, and finish first.
-            let idle = self.running.is_empty() && self.paused_until.is_none();
-            if idle && self.stopping.is_none() {
-                if let Some(to) = self.draining.take() {
-                    if let Err(e) = self.hand_off(&to, night, tonight) {
-                        self.give_up(to, e);
-                    }
-                    continue;
-                }
+            if self.ready_to_hand_off() {
+                self.hand_off(night, tonight);
+                continue;
             }
             if self.running.is_empty() {
                 let Some(reset) = self.paused_until.filter(|_| self.may_resume()) else {
@@ -285,76 +280,35 @@ impl<'a> Scheduler<'a> {
 
     /// The commit to update to, when origin's default branch has `cli/` changes this `ns` lacks.
     fn pending_update(&self) -> Option<String> {
-        let u = self.plan.update.as_ref()?;
-        let root = &self.plan.repo.root;
-        let base = fresh_base(root)?;
-        let to = u.pending(root, &base)?;
-        eprintln!(
-            "ns watch: {base} has cli/ changes since this ns was built ({} -> {}); draining: no new unit until the running ones end",
-            short(&u.from),
-            short(&to)
-        );
-        Some(to)
+        let base = fresh_base(&self.plan.repo.root)?;
+        self.plan
+            .update
+            .as_ref()?
+            .pending(&self.plan.repo.root, &base)
     }
 
-    /// Build `to`, check it and exec it with the night's state. Returns when that failed, or when
-    /// a stop came first and the night winds down instead.
-    fn hand_off(&self, to: &str, night: &Night, tonight: &Tonight) -> Result<()> {
-        let repo = self.plan.repo;
-        let u = self.plan.update.as_ref().context("no self-update")?;
-        eprintln!("ns watch: self-update: building {}", short(to));
-        let state = night
-            .carry(self.plan.deadline, self.started, tonight)
-            .save(&repo.common_dir)?;
-        let stopping = || {
-            eprintln!("ns watch: self-update to {} abandoned: stopping", short(to));
-            let _ = fs::remove_file(&state);
-        };
-        let built = u.build(repo, to, &state);
-        if stop::requested().is_some() {
-            stopping();
-            return Ok(());
-        }
-        let staged = match built {
-            Ok(staged) => staged,
-            Err(e) => {
-                let _ = fs::remove_file(&state);
-                return Err(e);
-            }
-        };
-        eprintln!(
-            "ns watch: self-update {} -> {}; handing off to {}",
-            short(&u.from),
-            short(to),
-            staged.display()
-        );
-        run::log_event(
-            &repo.common_dir,
-            json!({"event": "self_update", "from": u.from, "to": to}),
-        );
-        let e = self_update::exec(&staged, &state);
-        if stop::requested().is_some() {
-            stopping();
-            return Ok(());
-        }
-        let _ = fs::remove_file(&state);
-        Err(e)
+    /// Draining, with nothing left running or paused, and no stop: time to update.
+    fn ready_to_hand_off(&self) -> bool {
+        self.draining.is_some()
+            && self.running.is_empty()
+            && self.paused_until.is_none()
+            && self.stopping.is_none()
     }
 
-    /// Keep this ns after a failed hand-off to `to`, and never try `to` again tonight.
-    fn give_up(&mut self, to: String, err: anyhow::Error) {
-        eprintln!(
-            "ns watch: warning: self-update to {} failed; keeping this ns: {err:#}",
-            short(&to)
-        );
-        let Some(u) = self.plan.update.as_mut() else {
+    /// Hand off to the commit being drained for. Returns when that failed, which is logged and
+    /// kept from being tried again, or when a stop came first and the loop's top winds down.
+    fn hand_off(&mut self, night: &Night, tonight: &Tonight) {
+        let Some(to) = self.draining.take() else {
             return;
         };
-        run::log_event(
-            &self.plan.repo.common_dir,
-            json!({"event": "self_update_failed", "from": u.from, "to": to, "error": format!("{err:#}")}),
-        );
-        u.failed.insert(to);
+        let carried = night.carry(self.plan.deadline, self.started, tonight);
+        let repo = self.plan.repo;
+        let Some(update) = self.plan.update.as_mut() else {
+            return;
+        };
+        if let HandOff::Failed(e) = update.hand_off(repo, &to, &carried) {
+            update.give_up(repo, to, e);
+        }
     }
 
     fn free(&self) -> bool {
@@ -635,11 +589,6 @@ impl Drop for Scheduler<'_> {
             let _ = w.child.wait();
         }
     }
-}
-
-/// The first 12 characters of a commit, for people.
-fn short(sha: &str) -> &str {
-    sha.get(..12).unwrap_or(sha)
 }
 
 /// When a paused unit resumes: as [`Night::resume_at`], except that a unit the hold paused

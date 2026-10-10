@@ -541,6 +541,22 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         .into());
     }
 
+    if args.dry_run && args.resume_night.is_some() {
+        // The old ns's check of this binary: the arguments and the state are what it validates.
+        // The queue is not, and a gh or network failure here must not blacklist a good commit.
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "dry_run": true,
+                "resume_night": "ok",
+                "max_units": max_units,
+                "parallel": parallel,
+                "until": deadline.map(clock::local_iso),
+            }))?
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
     if args.dry_run {
         let qu = queue(&repo.root, fac, &BTreeSet::new())?;
         let ready: Vec<Value> = qu
@@ -639,7 +655,11 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     };
     // The triage pass, which runs here, reads the snapshot's prompts as every unit does.
     loaded.root = snap.factory();
-    let update = self_update::SelfUpdate::new(&repo, args.no_self_update, args.factory.clone());
+    let update = self_update::SelfUpdate::new(
+        &repo,
+        args.no_self_update,
+        std::env::args_os().skip(1).collect(),
+    );
     let plan = scheduler::Plan {
         repo: &repo,
         loaded: &loaded,

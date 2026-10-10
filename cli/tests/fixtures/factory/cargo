@@ -40,7 +40,8 @@ mkdir -p "$t/release"
 cat > "$t/release/ns" <<STUB
 #!/bin/sh
 if [ "\$1" = --version ]; then echo "ns 0.1.0 ($commit)"; exit $version_exit; fi
-if [ "\$1 \$2" = "watch --dry-run" ]; then echo "\$*" > "$ctrl/dry-run-args"; echo "dry run failed" >&2; exit $dry; fi
+case " \$* " in *" --dry-run "*) is_dry=1 ;; *) is_dry=0 ;; esac
+if [ \$is_dry = 1 ]; then echo "\$*" > "$ctrl/dry-run-args"; echo "dry run failed" >&2; exit $dry; fi
 echo "\$*" > "$ctrl/handed-off"
 echo "\$0" > "$ctrl/staged"
 n=\$#

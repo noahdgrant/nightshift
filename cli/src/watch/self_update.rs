@@ -14,10 +14,12 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use super::{triage, Tonight};
 use crate::eval::trial::run_process;
 use crate::git::{self, Repo};
+use crate::run;
 use crate::stop;
 
 const FLAG: &str = "--resume-night";
@@ -73,20 +75,43 @@ fn is_nightshift(root: &Path) -> bool {
         })
 }
 
+/// How a hand-off that returned ended. A successful one never returns: the process is replaced.
+pub(super) enum HandOff {
+    /// The build, the check or the exec failed; the night goes on with this `ns`.
+    Failed(anyhow::Error),
+    /// A stop was requested first; the night winds down and nothing is logged as a failure.
+    Stopped,
+}
+
+/// The night's state file, removed when the hand-off ends without an exec. After an exec the
+/// guard never drops, and the new binary removes the file when it reads it.
+struct StateFile(PathBuf);
+
+impl Drop for StateFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// The first 12 characters of a commit, for people.
+fn short(sha: &str) -> &str {
+    sha.get(..12).unwrap_or(sha)
+}
+
 pub(super) struct SelfUpdate {
     /// The commit this `ns` was built from.
-    pub from: String,
+    from: String,
     /// Commits whose build or check failed tonight; none is tried again. A hand-off needs none
     /// of them: the new binary's commit comes after every one.
-    pub failed: BTreeSet<String>,
-    /// `--factory`, for the new binary's dry run.
-    factory: Option<PathBuf>,
+    failed: BTreeSet<String>,
+    /// This `ns watch`'s own arguments, which the new binary runs with and its check too.
+    args: Vec<OsString>,
 }
 
 impl SelfUpdate {
     /// Self-update for `repo`, or `None` when it is off: `off` (`--no-self-update`), another repo,
     /// or an `ns` with no build commit.
-    pub fn new(repo: &Repo, off: bool, factory: Option<PathBuf>) -> Option<SelfUpdate> {
+    pub fn new(repo: &Repo, off: bool, args: Vec<OsString>) -> Option<SelfUpdate> {
         if off || !is_nightshift(&repo.root) {
             return None;
         }
@@ -97,13 +122,13 @@ impl SelfUpdate {
         Some(SelfUpdate {
             from,
             failed: BTreeSet::new(),
-            factory,
+            args,
         })
     }
 
     /// The commit at `base` (`origin/<default>`) to update to: one with `cli/` changes since
-    /// this `ns`'s commit that hasn't failed tonight. A base or build commit git can't read
-    /// gives none.
+    /// this `ns`'s commit that hasn't failed tonight, announced on stderr. A base or build commit
+    /// git can't read gives none.
     pub fn pending(&self, root: &Path, base: &str) -> Option<String> {
         let to = git::run(root, &["rev-parse", &format!("{base}^{{commit}}")]).ok()?;
         if self.failed.contains(&to) {
@@ -111,12 +136,70 @@ impl SelfUpdate {
         }
         let range = format!("{}..{to}", self.from);
         let n = git::run(root, &["rev-list", "--count", &range, "--", "cli"]).ok()?;
-        (n != "0").then_some(to)
+        if n == "0" {
+            return None;
+        }
+        eprintln!(
+            "ns watch: {base} has cli/ changes since this ns was built ({} -> {}); draining: no new unit until the running ones end",
+            short(&self.from),
+            short(&to)
+        );
+        Some(to)
+    }
+
+    /// Build `to`, check it and exec it with `night`. Returns only when that failed or a stop
+    /// came first.
+    pub fn hand_off(&self, repo: &Repo, to: &str, night: &Carried) -> HandOff {
+        eprintln!("ns watch: self-update: building {}", short(to));
+        let state = match night.save(&repo.common_dir) {
+            Ok(path) => StateFile(path),
+            Err(e) => return HandOff::Failed(e),
+        };
+        let abandoned = || {
+            eprintln!("ns watch: self-update to {} abandoned: stopping", short(to));
+            HandOff::Stopped
+        };
+        let built = self.build(repo, to, &state.0);
+        if stop::requested().is_some() {
+            return abandoned();
+        }
+        let staged = match built {
+            Ok(staged) => staged,
+            Err(e) => return HandOff::Failed(e),
+        };
+        eprintln!(
+            "ns watch: self-update {} -> {}; handing off to {}",
+            short(&self.from),
+            short(to),
+            staged.display()
+        );
+        run::log_event(
+            &repo.common_dir,
+            json!({"event": "self_update", "from": self.from, "to": to}),
+        );
+        let e = exec(&staged, args_for(self.args.iter().cloned(), &state.0));
+        if stop::requested().is_some() {
+            return abandoned();
+        }
+        HandOff::Failed(e)
+    }
+
+    /// Keep this ns after a failed hand-off to `to`, and never try `to` again tonight.
+    pub fn give_up(&mut self, repo: &Repo, to: String, err: anyhow::Error) {
+        eprintln!(
+            "ns watch: warning: self-update to {} failed; keeping this ns: {err:#}",
+            short(&to)
+        );
+        run::log_event(
+            &repo.common_dir,
+            json!({"event": "self_update_failed", "from": self.from, "to": to, "error": format!("{err:#}")}),
+        );
+        self.failed.insert(to);
     }
 
     /// Build `to` to `<common>/ns/self-update/ns-<to>` and check it: `--version` names `to` and
     /// `watch --dry-run` exits 0 on a copy of the night's `state`. The new binary's path.
-    pub fn build(&self, repo: &Repo, to: &str, state: &Path) -> Result<PathBuf> {
+    fn build(&self, repo: &Repo, to: &str, state: &Path) -> Result<PathBuf> {
         let stage = repo.common_dir.join("ns/self-update");
         let src = stage.join("src");
         let _ = fs::remove_dir_all(&src);
@@ -137,11 +220,12 @@ impl SelfUpdate {
         let staged = stage.join(format!("ns-{to}"));
         fs::copy(stage.join("target/release/ns"), &staged)
             .with_context(|| format!("cannot copy the new ns to {}", staged.display()))?;
-        self.check(&repo.root, &staged, to, state)?;
+        self.check(&staged, to, state)?;
         Ok(staged)
     }
 
-    fn check(&self, root: &Path, staged: &Path, to: &str, state: &Path) -> Result<()> {
+    /// `--version` names `to`, and `watch --dry-run` takes the arguments the exec will give it.
+    fn check(&self, staged: &Path, to: &str, state: &Path) -> Result<()> {
         let log = staged.with_extension("log");
         let mut version = Command::new(staged);
         version.arg("--version");
@@ -155,11 +239,10 @@ impl SelfUpdate {
         let probe = staged.with_extension("night.json");
         fs::copy(state, &probe).with_context(|| format!("cannot copy {}", state.display()))?;
         let mut dry = Command::new(staged);
-        dry.args(["watch", "--dry-run"]).current_dir(root);
-        if let Some(f) = &self.factory {
-            dry.arg("--factory").arg(f);
+        dry.args(args_for(self.args.iter().cloned(), &probe));
+        if !self.args.iter().any(|a| a == "--dry-run") {
+            dry.arg("--dry-run");
         }
-        dry.arg(FLAG).arg(&probe);
         let result = run_bounded(dry, ceiling(CHECK_CEILING), &log)
             .with_context(|| format!("{} watch --dry-run", staged.display()));
         let _ = fs::remove_file(&probe);
@@ -277,15 +360,14 @@ fn args_for(args: impl Iterator<Item = OsString>, state: &Path) -> Vec<OsString>
     out
 }
 
-/// Replace this process with `staged`, carrying the night in `state`. Returns only on failure,
+/// Replace this process with `staged` run with `args`. Returns only on failure,
 /// which is [`std::io::ErrorKind::Interrupted`] when a stop was requested first. SIGINT and
 /// SIGTERM are held pending from the last check to the exec, so one that lands in between
 /// reaches the new `ns`, which unblocks them once its own handlers are in.
-pub(super) fn exec(staged: &Path, state: &Path) -> anyhow::Error {
+fn exec(staged: &Path, args: Vec<OsString>) -> anyhow::Error {
     use std::io::Write;
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
-    let args = args_for(std::env::args_os().skip(1), state);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -359,23 +441,28 @@ mod tests {
     }
 
     #[test]
-    fn a_command_that_outlives_its_ceiling_is_killed_and_one_that_ends_is_not() {
+    fn a_command_that_outlives_its_ceiling_is_killed() {
         let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("log");
         let mut slow = Command::new("sh");
-        slow.args(["-c", "sleep 30"]);
+        slow.args(["-c", "sleep 300"]);
         let start = std::time::Instant::now();
-        let e = run_bounded(slow, Duration::from_millis(200), &log).unwrap_err();
+        let e = run_bounded(slow, Duration::from_millis(200), &dir.path().join("log")).unwrap_err();
         assert!(e.to_string().contains("timed out"), "{e}");
-        assert!(start.elapsed() < Duration::from_secs(20));
+        assert!(start.elapsed() < Duration::from_secs(120));
+    }
+
+    #[test]
+    fn a_command_that_ends_is_not_held_by_a_straggler_in_its_group() {
+        let dir = tempfile::tempdir().unwrap();
         let mut quick = Command::new("sh");
-        quick.args(["-c", "echo out; echo err >&2; (sleep 5 &); exit 3"]);
+        quick.args(["-c", "echo out; echo err >&2; (sleep 300 &); exit 3"]);
         let start = std::time::Instant::now();
-        let (status, said) = run_bounded(quick, Duration::from_secs(30), &log).unwrap();
+        let (status, said) =
+            run_bounded(quick, Duration::from_secs(600), &dir.path().join("log")).unwrap();
         assert_eq!(status.code(), Some(3));
         assert!(said.contains("out") && said.contains("err"), "{said}");
         assert!(
-            start.elapsed() < Duration::from_secs(4),
+            start.elapsed() < Duration::from_secs(120),
             "waited on a straggler"
         );
     }
