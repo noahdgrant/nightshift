@@ -558,6 +558,27 @@ fn b() {}
     }
 
     #[test]
+    fn regions_and_check_read_one_nested_file_differently() {
+        let text = m("@end\n@start: r\n@start\na\n@end\nb\n@end\n");
+        assert_eq!(regions(&text), [region(2, 7, Some("r"))]);
+        let errs: Vec<_> = check(&text)
+            .into_iter()
+            .map(|e| (e.line, e.message))
+            .collect();
+        assert_eq!(
+            errs,
+            [
+                (1, format!("{TAG} end with no start")),
+                (
+                    3,
+                    format!("{TAG} start nested inside the region opened on line 2")
+                ),
+                (7, format!("{TAG} end with no start")),
+            ]
+        );
+    }
+
+    #[test]
     fn a_bad_file_still_guards_its_code() {
         let text = m("a\n# @start: r\nb\n# @start\nc\n");
         assert_eq!(regions(&text), [region(2, 5, Some("r"))]);
