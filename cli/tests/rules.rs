@@ -358,3 +358,79 @@ fn the_baseline_is_sorted_whatever_order_the_tools_print() {
         ]
     );
 }
+
+#[test]
+fn findings_printed_only_on_stderr_are_read() {
+    let r = Repo::with_stack("| rules | `echo 'src.py:2:5: eval is banned' >&2; exit 1` |\n");
+    let (code, v, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(1), "{v} {err}");
+    assert_eq!(v["findings"], 1);
+    assert_eq!(files_and_lines(&v["new"]), [("src.py".into(), 2)]);
+}
+
+#[test]
+fn changed_text_at_the_same_line_is_one_new_and_one_fixed() {
+    let r = Repo::new();
+    r.findings("lint-a", "src.py:2:5: eval is banned\n");
+    r.ns(&["baseline", "--allow-growth"]);
+    fs::write(r.path("src.py"), "import os\nx = exec(s)\ny = eval(s)\n").unwrap();
+    let (code, v, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(1), "{v} {err}");
+    assert_eq!(v["baselined"], 0);
+    assert_eq!(v["new"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["new"][0]["snippet"], "x = exec(s)");
+    assert_eq!(v["fixed"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["fixed"][0]["snippet"], "x = eval(s)");
+}
+
+#[test]
+fn a_finding_on_line_one_takes_its_snippet_from_the_source() {
+    let r = Repo::new();
+    fs::write(r.path("src.py"), "import   os\n").unwrap();
+    r.findings("lint-a", "src.py:1:1: unused import\n");
+    let (code, v, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(1), "{v} {err}");
+    assert_eq!(v["new"][0]["snippet"], "import os");
+}
+
+#[test]
+fn a_tool_that_cannot_run_is_an_error_even_after_printing_a_finding() {
+    let r = Repo::with_stack("| rules | `echo 'src.py:2:5: eval is banned'; exit 127` |\n");
+    let (code, v, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(1), "{v} {err}");
+    assert_eq!(v, Value::Null);
+    assert!(err.contains("exited 127"), "{err}");
+
+    let r = Repo::with_stack("| rules | `echo 'src.py:2:5: eval is banned'; kill -9 $$` |\n");
+    let (code, _, err) = r.ns(&["baseline", "--allow-growth"]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("was killed by a signal"), "{err}");
+    assert!(r.baseline().is_none());
+}
+
+#[test]
+fn a_tool_that_outlives_the_timeout_is_an_error_naming_it() {
+    let r = Repo::with_stack("| rules | `sleep 30` |\n");
+    let out = common::ns()
+        .args(["rules", "check"])
+        .env("NS_RULES_TIMEOUT_MS", "300")
+        .current_dir(&r.root)
+        .output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("`sleep 30` timed out"), "{err}");
+}
+
+#[test]
+fn a_malformed_baseline_is_an_error_that_names_the_fix() {
+    let r = Repo::new();
+    fs::create_dir_all(r.path(".nightshift")).unwrap();
+    fs::write(r.path(BASELINE), "{not json").unwrap();
+    for args in [&["check"][..], &["baseline"][..]] {
+        let (code, _, err) = r.ns(args);
+        assert_eq!(code, Some(1), "{args:?} {err}");
+        assert!(err.contains("is not a rules baseline"), "{err}");
+        assert!(err.contains("ns rules baseline --allow-growth"), "{err}");
+    }
+    assert_eq!(fs::read_to_string(r.path(BASELINE)).unwrap(), "{not json");
+}

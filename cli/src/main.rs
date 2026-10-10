@@ -21,7 +21,9 @@ mod quality;
 mod review_md;
 mod rules;
 mod run;
+mod shell;
 mod skills_sync;
+mod stack;
 mod stats;
 mod stop;
 #[cfg(test)]
@@ -53,7 +55,6 @@ Examples:
   ns watch --until 06:30
   ns clean --dry-run
   ns quality --since 2026-10-01
-  ns rules check
 
 Exit codes: 0 ok, 1 failure, 2 usage error, 3 role not configured, 4 harness missing,
 5 no write command for `ns ask --write`.
@@ -416,7 +417,6 @@ const QUALITY_HELP: &str = "\
 Examples:
   ns quality
   ns quality --since 2026-10-01
-  ns rules check
   ns quality --since 2026-10-09T21:04:00Z
   ns quality --since 2026-10-01 --until 2026-10-09
   ns quality --json | jq .first_pass

@@ -2,19 +2,23 @@
 //! against a committed baseline (docs/FACTORY.md, "Rules").
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::SfError;
-use crate::gate;
+use crate::eval::trial::run_process;
 
 pub const BASELINE: &str = ".nightshift/rules-baseline.json";
 const STACK: &str = "docs/agents/stack.md";
+const RULE_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
 
 /// One violation. `snippet` is the offending source line with whitespace collapsed; with
 /// `tool`, `rule` and `file` it is what matches a baseline entry, so the line number may move.
@@ -43,7 +47,7 @@ struct Baseline {
 /// The commands in a table row `| rules | `<cmd>`, `<cmd>` | ... |`: every backticked span
 /// that opens the second cell, separated by commas or spaces (a span may contain `|`).
 pub fn commands(stack_md: &str) -> Vec<String> {
-    gate::rows(stack_md, "rules")
+    crate::stack::rows(stack_md, "rules")
         .map(|mut rest| {
             let mut cmds = Vec::new();
             while let Some(span) = rest
@@ -135,39 +139,56 @@ struct Run {
     commands: Vec<Value>,
 }
 
-/// Run each command with `sh -c` in `root` and collect what it printed on stdout and stderr.
+/// Run each command with `sh -c` in `root`, stdin closed, and collect what it printed on stdout
+/// and stderr. A command that outlives its timeout, is killed by a signal or exits 126 or 127
+/// is an error whatever it printed first.
 fn run_pack(root: &Path, cmds: &[String]) -> Result<Run> {
+    let timeout = timeout();
     let mut sources = HashMap::new();
     let mut findings = Vec::new();
     let mut commands = Vec::new();
     for cmd in cmds {
         eprintln!("ns rules: {cmd}");
         let tool = tool_name(cmd);
+        let log = tempfile::tempfile().context("cannot create a file for rule output")?;
         let mut c = Command::new("sh");
         crate::git::scrub(&mut c);
-        let out = c
-            .arg("-c")
+        c.arg("-c")
             .arg(cmd)
             .current_dir(root)
-            .output()
+            .stdout(log.try_clone()?)
+            .stderr(log.try_clone()?);
+        let (status, timed_out, _) = run_process(c, None, timeout)
             .with_context(|| format!("cannot run rule command `{cmd}`"))?;
-        let text = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
+        let text = read_capped(log)?;
+        let exit = status.and_then(|s| s.code());
+        let broken = if timed_out {
+            Some(format!("timed out after {}s", timeout.as_secs_f64()))
+        } else {
+            match exit {
+                None => Some("was killed by a signal".to_string()),
+                Some(c @ (126 | 127)) => Some(format!("exited {c}")),
+                _ => None,
+            }
+        };
         let found: Vec<Finding> = text
             .lines()
             .filter_map(|l| parse_line(&tool, l))
             .map(|f| settle(f, root, &mut sources))
             .collect();
-        let exit = out.status.code();
-        if found.is_empty() && exit != Some(0) {
-            let how = exit.map_or("was killed by a signal".into(), |c| format!("exited {c}"));
+        let how = broken.or_else(|| {
+            (found.is_empty() && exit != Some(0)).then(|| {
+                format!(
+                    "exited {} with no findings it could read",
+                    exit.unwrap_or_default()
+                )
+            })
+        });
+        if let Some(how) = how {
             let tail: Vec<&str> = text.trim().lines().rev().take(20).collect();
             let tail: Vec<&str> = tail.into_iter().rev().collect();
             return Err(SfError::general(format!(
-                "rule command `{cmd}` {how} with no findings it could read:\n{}",
+                "rule command `{cmd}` {how}:\n{}",
                 tail.join("\n")
             ))
             .hint(format!("run it by hand in {}:\n  {cmd}", root.display()))
@@ -178,6 +199,20 @@ fn run_pack(root: &Path, cmds: &[String]) -> Result<Run> {
     }
     findings.sort();
     Ok(Run { findings, commands })
+}
+
+fn timeout() -> Duration {
+    std::env::var("NS_RULES_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(RULE_TIMEOUT, Duration::from_millis)
+}
+
+fn read_capped(mut log: File) -> Result<String> {
+    log.seek(SeekFrom::Start(0))?;
+    let mut buf = Vec::new();
+    log.take(MAX_OUTPUT_BYTES).read_to_end(&mut buf)?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// Split `current` into new findings and baselined ones, and return the baseline entries

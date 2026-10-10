@@ -8,6 +8,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::shell::shell_quote;
+
 use super::spec::Check;
 use super::trial::{self, Scratch};
 
@@ -83,17 +85,6 @@ pub fn is_test_path(path: &str) -> bool {
         || stem.ends_with("Tests")
         || file.contains(".test.")
         || file.contains(".spec.")
-}
-
-pub fn shell_quote(s: &str) -> String {
-    if !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c))
-    {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    }
 }
 
 fn expand(run: &str, changes: &Changes) -> String {
