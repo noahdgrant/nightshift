@@ -36,11 +36,19 @@ def setUpModule():
     PRISTINE = pathlib.Path(_tmp.name) / "pristine"
     SEEDED = pathlib.Path(_tmp.name) / "seeded"
     shutil.copytree(FIXTURE, PRISTINE)
-    shutil.copytree(FIXTURE, SEEDED)
-    models = SEEDED / "src" / "inventory" / "models.py"
+    seed(SEEDED)
+
+
+def seed(dest):
+    shutil.copytree(FIXTURE, dest, dirs_exist_ok=True)
+    models = pathlib.Path(dest) / "src" / "inventory" / "models.py"
     source = models.read_text(encoding="utf-8")
     assert TRUNCATION[0] in source, "the case's [setup] sed no longer matches models.py"
     models.write_text(source.replace(*TRUNCATION), encoding="utf-8")
+
+
+def snapshot(root):
+    return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
 def tearDownModule():
@@ -88,7 +96,7 @@ class CheckBriefTest(unittest.TestCase):
         repro = WHOLE_MINUTE_REPRO + "The reload calls `to_dict` and `from_dict`: a save/load round trip.\n"
         self.assertIn("repro ran red", check(with_repro(repro)))
 
-    def test_round_trip_command_without_pinned_seconds_passes(self):
+    def test_round_trip_command_that_is_not_an_inventory_run_fails(self):
         repro = (
             "```bash\n"
             "python3 -c 'import sys; from datetime import datetime as D; from inventory.models import Reservation as R; "
@@ -97,7 +105,7 @@ class CheckBriefTest(unittest.TestCase):
             f"{ERROR_LINE}\n"
             "```\n"
         )
-        self.assertNotIn("repro ran red", check(with_repro(repro)))
+        self.assertIn("repro ran red", check(with_repro(repro)))
 
     def test_typed_error_line_after_commands_that_pass_fails(self):
         text = good().replace("09:05:10 fulfil", "09:04:50 fulfil")
@@ -133,10 +141,44 @@ class CheckBriefTest(unittest.TestCase):
         self.assertIn("repro ran red", check(text))
 
     def test_replay_leaves_the_root_untouched(self):
-        before = sorted(p.relative_to(SEEDED) for p in SEEDED.rglob("*") if "__pycache__" not in p.parts)
-        self.assertEqual(check(good()), [])
-        after = sorted(p.relative_to(SEEDED) for p in SEEDED.rglob("*") if "__pycache__" not in p.parts)
-        self.assertEqual(before, after)
+        root = pathlib.Path(_tmp.name) / "untouched"
+        seed(root)
+        before = snapshot(root)
+        self.assertEqual(check(good(), root), [])
+        self.assertEqual(snapshot(root), before)
+
+    def test_echoed_error_after_commands_that_pass_fails(self):
+        text = good().replace("09:05:10 fulfil", "09:04:50 fulfil").replace(
+            ERROR_LINE,
+            "echo \"inventory: error: reservation 'R0001' has expired\" >&2; false\n" + ERROR_LINE,
+        )
+        self.assertIn("repro ran red", check(text))
+
+    def test_chained_echo_and_false_on_one_line_fails(self):
+        text = good().replace("09:05:10 fulfil R0001", "09:04:50 fulfil R0001").replace(
+            ERROR_LINE,
+            "python3 -m inventory --state inv.json --now 2026-03-02T09:04:50 fulfil R0001"
+            "; echo \"inventory: error: reservation 'R0001' has expired\" >&2; false\n" + ERROR_LINE,
+        )
+        self.assertIn("repro ran red", check(text))
+
+    def test_non_inventory_command_is_not_executed(self):
+        marker = pathlib.Path(_tmp.name) / "marker"
+        text = good().replace("export PYTHONPATH=src\n", f"touch {marker}\n")
+        check(text)
+        self.assertFalse(marker.exists())
+
+    def test_chained_command_is_not_executed(self):
+        marker = pathlib.Path(_tmp.name) / "chained"
+        text = good().replace("export PYTHONPATH=src\n", f"python3 -m inventory --help; touch {marker}\n")
+        check(text)
+        self.assertFalse(marker.exists())
+
+    def test_different_inventory_error_with_nonzero_exit_fails(self):
+        text = good().replace(
+            "python3 -m inventory --state inv.json --now 2026-03-02T09:00:30 add-item BOLT-M6 Bolt\n", ""
+        )
+        self.assertIn("repro ran red", check(text))
 
     def test_main_replays_against_the_current_checkout(self):
         trial = pathlib.Path(_tmp.name) / "trial"
@@ -153,10 +195,9 @@ class CheckBriefTest(unittest.TestCase):
         self.assertEqual(exit.exception.code, 0)
 
     def test_command_past_the_timeout_fails_promptly(self):
-        text = good().replace("export PYTHONPATH=src\n", "sleep 30; true\n")
         start = time.monotonic()
-        with mock.patch.object(check_brief, "REPLAY_TIMEOUT", 1):
-            self.assertIn("repro ran red", check(text))
+        with mock.patch.object(check_brief, "REPLAY_TIMEOUT", 0.001):
+            self.assertIn("repro ran red", check(good()))
         self.assertLess(time.monotonic() - start, 10)
 
     def test_status_fail_fails(self):

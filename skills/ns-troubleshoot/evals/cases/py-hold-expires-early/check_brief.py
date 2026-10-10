@@ -1,6 +1,7 @@
 import glob
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -9,6 +10,7 @@ import tempfile
 
 REPLAY_TIMEOUT = 30
 EXPIRED = r"inventory: error: .*expired"
+REPLAYABLE = re.compile(r"python3 -m inventory(?: [^;&|<>`$()\\\n]*)?$")
 
 
 def section(text, name):
@@ -42,10 +44,16 @@ def fence_lines(text):
 def replays_red(commands, root):
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(os.path.join(root, "src"), os.path.join(tmp, "src"))
-        env = dict(os.environ, PYTHONPATH="src")
+        env = {"PATH": os.environ.get("PATH", os.defpath), "PYTHONPATH": "src", "HOME": tmp}
         for command in commands:
+            if not REPLAYABLE.match(command):
+                continue
+            try:
+                argv = shlex.split(command)
+            except ValueError:
+                continue
             proc = subprocess.Popen(
-                command, shell=True, cwd=tmp, env=env, text=True,
+                argv, cwd=tmp, env=env, text=True,
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True,
             )
             try:
