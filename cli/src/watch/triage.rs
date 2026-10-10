@@ -8,7 +8,8 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use super::{
-    is_status, labels, order, skip, Issue, Listing, Night, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
+    is_status, labels, queue, rank, skip, Issue, Listing, Night, HARNESS_FAIL_LIMIT,
+    PAUSED_PAST_UNTIL,
 };
 use crate::clock;
 use crate::factory::{Factory, Queue as QueueConfig};
@@ -20,8 +21,9 @@ use crate::run::{self, Loaded, Outcome, RunArgs};
 pub(super) struct Tally {
     /// Issues given a triage-only run tonight, whatever came of it, so none is run twice.
     tried: BTreeSet<u64>,
-    /// Runs started, against `triage_per_night`. A run resumed after a usage limit counts once.
-    runs: u32,
+    /// Every candidate an earlier pass tonight listed; `None` until the first pass. A candidate
+    /// outside it was filed, or became a candidate, since the last pass.
+    seen: Option<BTreeSet<u64>>,
     /// The error the latest run that failed to start gave.
     last_error: Option<String>,
     /// Two runs failed to start with the same error: something global, such as a missing
@@ -32,19 +34,21 @@ pub(super) struct Tally {
 
 #[derive(Default)]
 pub(super) struct Candidates {
-    /// Each issue to triage, in queue order, with why it needs triage.
+    /// Each issue to triage, in triage order, with why it needs triage.
     pub issues: Vec<(Issue, String)>,
     pub skipped: Vec<Value>,
 }
 
-/// The night's cap on triage-only runs. Under `gates = "stop"` triage applies nothing, so a run
-/// would only spend the night: none run.
-pub(super) fn cap(fac: &Factory) -> u32 {
-    if fac.gates == "stop" {
-        0
-    } else {
-        fac.queue.triage_per_night
-    }
+/// Whether the pass runs. Under `gates = "stop"` triage applies nothing, so a run would only
+/// spend the night.
+pub(super) fn on(fac: &Factory) -> bool {
+    fac.gates != "stop"
+}
+
+/// Triage order: a priority label first, highest first, then the oldest issue. The queue's
+/// category order is left out: triage may well change the category.
+fn triage_order(q: &QueueConfig, i: &Issue) -> (usize, u64) {
+    (rank(&q.priority, &i.labels), i.number)
 }
 
 /// Why an issue needs triage: it carries the triage label, or no state label at all.
@@ -73,15 +77,34 @@ pub(super) fn candidates(root: &Path, fac: &Factory, done: &BTreeSet<u64>) -> Re
             None => picked.push((i.clone(), why)),
         }
     }
-    picked.sort_by_key(|(i, _)| order(q, i));
+    picked.sort_by_key(|(i, _)| triage_order(q, i));
     Ok(Candidates {
         issues: picked,
         skipped,
     })
 }
 
-/// Triage-only runs, best candidate first, until none is left or `triage_per_night` is spent.
-/// Returns why the night ends, when it does.
+/// The candidate to triage next: the first one `before`, the candidates of earlier passes,
+/// lacks; else, while `ready()` says the queue has no ready issue, the first of the backlog.
+/// At the night's first pass, with no `before`, every candidate is backlog.
+fn next(
+    found: Vec<(Issue, String)>,
+    before: Option<&BTreeSet<u64>>,
+    ready: impl FnOnce() -> Result<bool>,
+) -> Result<Option<Issue>> {
+    let is_new = |i: &Issue| before.is_some_and(|b| !b.contains(&i.number));
+    if let Some((i, _)) = found.iter().find(|(i, _)| is_new(i)) {
+        return Ok(Some(i.clone()));
+    }
+    match found.into_iter().next() {
+        Some((i, _)) if !ready()? => Ok(Some(i)),
+        _ => Ok(None),
+    }
+}
+
+/// Triage-only runs: every candidate filed since the last pass, then the backlog until the queue
+/// has a ready issue, so a big backlog never holds up the next unit. Returns why the night ends,
+/// when it does.
 pub(super) fn pass(
     repo: &Repo,
     loaded: &Loaded,
@@ -89,23 +112,33 @@ pub(super) fn pass(
     night: &mut Night,
 ) -> Result<Option<String>> {
     let q = &loaded.fac.queue;
+    if !on(&loaded.fac) {
+        return Ok(None);
+    }
+    let before = night.triage.seen.clone();
     loop {
         crate::stop::check()?;
         if let Some(stop) = night.over(deadline, &loaded.fac) {
             return Ok(Some(stop.into()));
         }
-        if night.triage.off || night.triage.runs >= cap(&loaded.fac) {
+        if night.triage.off {
             return Ok(None);
         }
         let done = night.triage.tried.union(&night.finished).copied().collect();
-        let Some((issue, _)) = candidates(&repo.root, &loaded.fac, &done)?
-            .issues
-            .into_iter()
-            .next()
-        else {
+        let found = candidates(&repo.root, &loaded.fac, &done)?.issues;
+        night
+            .triage
+            .seen
+            .get_or_insert_with(BTreeSet::new)
+            .extend(found.iter().map(|(i, _)| i.number));
+        let ready = || {
+            Ok(!queue(&repo.root, &loaded.fac, &night.finished)?
+                .ready
+                .is_empty())
+        };
+        let Some(issue) = next(found, before.as_ref(), ready)? else {
             return Ok(None);
         };
-        night.triage.runs += 1;
         night.triage.tried.insert(issue.number);
         eprintln!("ns watch: triage #{} {}", issue.number, issue.title);
         let rargs = RunArgs {
@@ -149,8 +182,7 @@ pub(super) fn pass(
             if deadline.is_some_and(|d| reset >= d) {
                 return Ok(Some(PAUSED_PAST_UNTIL.into()));
             }
-            // The limit stopped the run before it triaged: run it again, uncounted.
-            night.triage.runs -= 1;
+            // The limit stopped the run before it triaged: run it again.
             night.triage.tried.remove(&issue.number);
             night.sleep_until(reset)?;
             continue;
@@ -171,6 +203,83 @@ pub(super) fn pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn found(ns: &[u64]) -> Vec<(Issue, String)> {
+        ns.iter()
+            .map(|&number| {
+                let i = Issue {
+                    number,
+                    title: String::new(),
+                    labels: Vec::new(),
+                    body: String::new(),
+                    team: true,
+                };
+                (i, String::new())
+            })
+            .collect()
+    }
+
+    fn pick(ns: &[u64], before: Option<&[u64]>, ready: Option<bool>) -> Option<u64> {
+        let before: Option<BTreeSet<u64>> = before.map(|b| b.iter().copied().collect());
+        let ready = || {
+            ready
+                .map(Ok)
+                .expect("the queue was read with a new candidate left")
+        };
+        next(found(ns), before.as_ref(), ready)
+            .unwrap()
+            .map(|i| i.number)
+    }
+
+    #[test]
+    fn a_new_candidate_goes_first_whatever_the_queue_holds() {
+        // Candidates arrive in triage order; #9 is the only one no earlier pass listed.
+        assert_eq!(pick(&[4, 9, 5], Some(&[4, 5]), None), Some(9));
+        assert_eq!(pick(&[9, 8], Some(&[]), None), Some(9));
+    }
+
+    #[test]
+    fn the_backlog_runs_only_while_no_issue_is_ready() {
+        assert_eq!(pick(&[4, 5], Some(&[4, 5]), Some(false)), Some(4));
+        assert_eq!(pick(&[4, 5], Some(&[4, 5]), Some(true)), None);
+        // The night's first pass has no earlier one: every candidate is backlog.
+        assert_eq!(pick(&[4, 5], None, Some(false)), Some(4));
+        assert_eq!(pick(&[4, 5], None, Some(true)), None);
+    }
+
+    #[test]
+    fn no_candidate_needs_no_queue_read() {
+        assert_eq!(pick(&[], Some(&[4]), None), None);
+        assert_eq!(pick(&[], None, None), None);
+    }
+
+    #[test]
+    fn a_queue_that_cannot_be_read_fails_the_pick() {
+        let err = next(found(&[4]), None, || anyhow::bail!("gh down")).unwrap_err();
+        assert_eq!(err.to_string(), "gh down");
+    }
+
+    #[test]
+    fn triage_order_is_priority_then_number_not_category() {
+        let q = QueueConfig::default();
+        let issue = |number, labels: &[&str]| Issue {
+            number,
+            title: String::new(),
+            labels: labels.iter().map(|s| s.to_string()).collect(),
+            body: String::new(),
+            team: true,
+        };
+        let mut is = [
+            issue(3, &["type:fix"]),
+            issue(2, &["type:docs"]),
+            issue(6, &["priority:high", "type:fix"]),
+            issue(5, &["priority:high", "type:docs"]),
+            issue(4, &["priority:low"]),
+        ];
+        is.sort_by_key(|i| triage_order(&q, i));
+        let ns: Vec<u64> = is.iter().map(|i| i.number).collect();
+        assert_eq!(ns, [5, 6, 4, 2, 3]);
+    }
 
     #[test]
     fn needs_triage_is_the_triage_label_or_no_state_at_all() {
