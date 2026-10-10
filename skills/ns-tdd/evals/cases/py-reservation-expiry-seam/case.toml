@@ -1,0 +1,133 @@
+description = "Seeded defect (d): Warehouse.renew reads the wall clock, so `inventory renew` ignores --now. The fix needs a clock seam (renew takes `now` like every other time-dependent call); a wall-clock or sleep-based test can't pin it. Plain-words bug report, test-first fix."
+fixture = "py-inventory"
+# ns-tdd links to these skills by relative path (ns-contract for the quality bar, and the principles it and the bar name); ship them with it so the links resolve in the "with" arm.
+skills = ["ns-tdd", "ns-principle-test-behavior-not-implementation", "ns-principle-sequence-verifiable-units", "ns-principle-fix-root-causes", "ns-contract"]
+extra_skills = []
+requires = []
+timeout_minutes = 20
+prompt = """
+Bug from the audit team: we replay a day's floor log through the CLI with --now to check what happened. At 10:00 we reserved 4 M6 bolts with a 5 minute hold, and at 10:03 the picker renewed it for 30 minutes:
+
+    inventory --now 2026-04-01T10:00:00 reserve BOLT-M6 4 --ttl 5
+    inventory --now 2026-04-01T10:03:00 renew R0001 --ttl 30
+
+The replay refuses the renewal with "reservation 'R0001' has expired", but at 10:03 the hold still had two minutes left. The renewed hold should run until 10:33.
+
+Fix it test-first. gates: auto. Nobody is around to answer questions, so take the seams from this report and carry on. Don't commit.
+"""
+
+[setup]
+# Keep any .ns/ phase artifacts out of git so diff_scope only sees source and test changes.
+# renew.patch adds Warehouse.renew and the CLI renew command, with the seeded defect; see
+# evals/fixtures/README.md (d).
+commands = [
+  "mkdir -p .git/info && echo '.ns/' >> .git/info/exclude",
+  "git apply ../renew.patch",
+]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**"]
+
+[[check]]
+# The seam: no wall clock in the package outside the CLI, which turns --now (or the real time) into `now`.
+type = "command"
+run = '''
+! grep -rnE 'datetime\.(now|utcnow|today)|date\.today|time\.(time|monotonic)\(' src/inventory --include='*.py' | grep -v '^src/inventory/cli\.py:'
+'''
+expect_exit = 0
+
+[[check]]
+# A test added by the trial drives renew at fixed times: it names renew, and neither sleeps nor reads the wall clock.
+# regex checks take one fixed path and the agent picks the test file, so grep the lines the trial added
+# under tests/ (diff against the setup commit, the second in history, plus untracked files).
+type = "command"
+run = '''
+B=$(git rev-list --reverse HEAD | sed -n 2p)
+A=$( { git diff "$B" -U0 -- tests/ | grep '^+' ; git ls-files -o --exclude-standard tests/ | xargs -r cat ; } )
+printf '%s\n' "$A" | grep -q 'renew' && ! printf '%s\n' "$A" | grep -Eq 'sleep\(|datetime\.(now|utcnow|today)|date\.today|time\.(time|monotonic)\('
+'''
+expect_exit = 0
+
+[[check]]
+# Hidden acceptance test, written outside the repo so the agent never sees it. It drives the CLI only,
+# so any seam that carries --now into renew passes. The 2020 timeline is in the wall clock's past and
+# the 2099 one in its future, so code that still reads the real time fails one or the other.
+# Avoids exact-capacity reservations and stock_levels so seeded defects (a) and (b) can't fail it.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_renew_acceptance.py" <<'PYEOF'
+import pytest
+
+from inventory.cli import main
+
+
+@pytest.fixture
+def inv(tmp_path):
+    state = str(tmp_path / "inv.json")
+
+    def run(now, *args):
+        return main(["--state", state, "--now", now, *args])
+
+    return run
+
+
+def stock(inv, day):
+    assert inv(f"{day}T09:00:00", "add-item", "PIN-4", "4 mm dowel pin") == 0
+    assert inv(f"{day}T09:00:00", "receive", "PIN-4", "10") == 0
+    assert inv(f"{day}T10:00:00", "reserve", "PIN-4", "4", "--ttl", "5") == 0
+
+
+def test_renewal_inside_the_hold_runs_ttl_from_now(inv, capsys):
+    stock(inv, "2020-06-01")
+    capsys.readouterr()
+    assert inv("2020-06-01T10:03:00", "renew", "R0001", "--ttl", "30") == 0
+    assert capsys.readouterr().out.strip() == "R0001: 4 x PIN-4 until 2020-06-01T10:33:00"
+
+
+def test_renewed_hold_still_holds_after_its_old_expiry(inv, capsys):
+    stock(inv, "2020-06-01")
+    assert inv("2020-06-01T10:03:00", "renew", "R0001", "--ttl", "30") == 0
+    assert inv("2020-06-01T10:20:00", "reserve", "PIN-4", "7") == 1
+    assert "only 6 available" in capsys.readouterr().err
+    assert inv("2020-06-01T10:20:00", "fulfil", "R0001") == 0
+
+
+def test_renewed_hold_lapses_at_its_new_expiry(inv, capsys):
+    stock(inv, "2020-06-01")
+    assert inv("2020-06-01T10:03:00", "renew", "R0001", "--ttl", "30") == 0
+    assert inv("2020-06-01T10:33:00", "fulfil", "R0001") == 1
+    assert "has expired" in capsys.readouterr().err
+
+
+def test_renewing_a_lapsed_hold_is_refused(inv, capsys):
+    stock(inv, "2099-06-01")
+    capsys.readouterr()
+    assert inv("2099-06-01T10:20:00", "renew", "R0001", "--ttl", "30") == 1
+    assert "has expired" in capsys.readouterr().err
+    assert inv("2099-06-01T10:20:00", "fulfil", "R0001") == 1
+
+
+def test_renewing_at_the_expiry_instant_is_refused(inv, capsys):
+    stock(inv, "2099-06-01")
+    capsys.readouterr()
+    assert inv("2099-06-01T10:05:00", "renew", "R0001", "--ttl", "30") == 1
+    assert "has expired" in capsys.readouterr().err
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_renew_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Did the change fix the root cause by giving renew a clock seam in the repo's existing style (renew takes `now`, and the CLI passes the --now time), rather than special-casing the CLI, dropping the expiry check, or patching datetime in tests? Does the new test drive renew at fixed, literal times through a public interface (Warehouse.renew or the CLI) and assert literal expected values, with no sleeps and no wall clock?"
+required = false
