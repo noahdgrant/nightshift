@@ -1,0 +1,63 @@
+description = "The broad-feature-split request, reported by a customer outside the team. Under gates: auto, triage should still split it, but every child stays needs-triage instead of ready-for-agent because the parent's author is external. The parent moves to needs-define with Triage Notes listing the children, nothing closes, and no unit starts."
+fixture = "py-inventory"
+skills = ["ns-triage"]
+extra_skills = ["ns-contract"]
+requires = []
+timeout_minutes = 15
+prompt = """
+Triage .scratch/low-stock/issues/01-low-stock-reordering.md. gates: auto
+"""
+
+[[check]]
+type = "regex"
+path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?needs-define`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+pattern = '(?m)^#+\s*Triage Notes'
+present = true
+
+[[check]]
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, os, re, sys
+parent_path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+notes = open(parent_path, encoding="utf-8").read().split("Triage Notes", 1)[-1]
+children = sorted(p for p in glob.glob(".scratch/**/*.md", recursive=True)
+                  if os.path.realpath(p) != os.path.realpath(parent_path) and "/issues/" in p)
+print("children:", children)
+if len(children) < 2:
+    sys.exit("fewer than two child issues")
+for path in children:
+    text = open(path, encoding="utf-8").read()
+    stem = os.path.splitext(os.path.basename(path))[0]
+    num = re.match(r"\d+", stem)
+    if not num:
+        sys.exit(f"{path}: file name has no numeric prefix")
+    checks = {
+        "needs-triage": re.search(r"(?m)^\**Status:?\**:?\s*`?needs-triage`?\s*$", text),
+        "Agent Brief": re.search(r"(?m)^#+\s*Agent Brief", text),
+        "listed in parent's Triage Notes": stem in notes or re.search(rf"(?<!\d)(?:{num.group()}|{int(num.group())})(?!\d)", notes),
+    }
+    missing = [k for k, v in checks.items() if not v]
+    if missing:
+        sys.exit(f"{path}: missing {missing}")
+print(f"ok: {len(children)} children, all needs-triage")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''
+! ls .ns/*/brief.md ../"$(basename "$PWD")".worktrees/*/.ns/*/brief.md 2>/dev/null | grep -q . && ! git branch --list 'ns/*' | grep -q . && [ "$(git worktree list | wc -l)" -eq 1 ]
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]
