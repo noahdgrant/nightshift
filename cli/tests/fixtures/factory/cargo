@@ -7,8 +7,9 @@
 # --no-self-update: a new ns that does not read the deadline again.
 #   $FAKE_CTRL/cargo-mode: fail (the build fails), badcheck (the stub's dry run exits 1) or
 #   badversion (the stub's version names another commit), versionfails (it exits 1), slow (the
-#   build writes $FAKE_CTRL/cargo-started and hangs) or stopped (the build sends ns SIGTERM and
-#   succeeds)
+#   build writes $FAKE_CTRL/cargo-started and hangs), stopped (the build sends ns SIGTERM and
+#   succeeds) or unexecutable (the stub's dry run passes, then it makes itself unexecutable, so
+#   the exec fails)
 ctrl="$FAKE_CTRL"
 echo "$*" >> "$ctrl/cargo-calls"
 mode=$(cat "$ctrl/cargo-mode" 2>/dev/null)
@@ -35,13 +36,15 @@ dry=0
 commit=$NS_BUILD_COMMIT
 [ "$mode" = badversion ] && commit=0000000
 version_exit=0
+after_dry=:
+[ "$mode" = unexecutable ] && after_dry='chmod -x "$0"'
 [ "$mode" = versionfails ] && version_exit=1
 mkdir -p "$t/release"
 cat > "$t/release/ns" <<STUB
 #!/bin/sh
 if [ "\$1" = --version ]; then echo "ns 0.1.0 ($commit)"; exit $version_exit; fi
 case " \$* " in *" --dry-run "*) is_dry=1 ;; *) is_dry=0 ;; esac
-if [ \$is_dry = 1 ]; then echo "\$*" > "$ctrl/dry-run-args"; echo "dry run failed" >&2; exit $dry; fi
+if [ \$is_dry = 1 ]; then echo "\$*" > "$ctrl/dry-run-args"; echo "dry run failed" >&2; $after_dry; exit $dry; fi
 echo "\$*" > "$ctrl/handed-off"
 echo "\$0" > "$ctrl/staged"
 n=\$#

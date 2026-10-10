@@ -7355,11 +7355,15 @@ fn night_with_a_failed_update(mode: &str) -> (Env, String, Value, String) {
 }
 
 fn assert_kept_the_old_binary(e: &Env, to: &str, v: &Value, err: &str, why: &str) {
-    // The night went on without a hand-off and tried the commit once.
+    assert!(events_named(e, "self_update").is_empty());
+    assert_kept_after_an_attempt(e, to, v, err, why);
+}
+
+fn assert_kept_after_an_attempt(e: &Env, to: &str, v: &Value, err: &str, why: &str) {
     assert_eq!(by_issue(&units(v)), each(&[2, 3], "done"), "{v}");
     assert_eq!(cargo_calls(e), 1, "{err}");
     assert!(!e.ctrl.join("handed-off").exists());
-    assert!(events_named(e, "self_update").is_empty());
+    assert_no_night_state(e);
     let warning = format!("ns watch: warning: self-update to {} failed", &to[..12]);
     assert!(err.contains(&warning) && err.contains(why), "{err}");
     let failed = events_named(e, "self_update_failed");
@@ -7369,6 +7373,17 @@ fn assert_kept_the_old_binary(e: &Env, to: &str, v: &Value, err: &str, why: &str
         failed[0]["error"].as_str().unwrap().contains(why),
         "{failed:?}"
     );
+}
+
+fn assert_no_night_state(e: &Env) {
+    let dir = e.root.join(".git/ns/self-update");
+    let left: Vec<_> = fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .map(|f| f.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("night-"))
+        .collect();
+    assert!(left.is_empty(), "state left behind: {left:?}");
 }
 
 #[test]
@@ -7413,6 +7428,13 @@ fn fetches(e: &Env) -> usize {
         .unwrap_or_default()
         .lines()
         .count()
+}
+
+#[test]
+fn a_failed_exec_keeps_the_old_binary_and_is_not_retried() {
+    let (e, to, v, err) = night_with_a_failed_update("unexecutable");
+    assert_kept_after_an_attempt(&e, &to, &v, &err, "cannot exec");
+    assert_eq!(events_named(&e, "self_update").len(), 1, "{err}");
 }
 
 /// A night with a `cli/` change on origin the build commit lacks, which never updates; its
