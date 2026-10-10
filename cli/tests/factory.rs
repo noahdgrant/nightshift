@@ -2554,6 +2554,123 @@ fn default_branch_guard_stops_a_push_to_main() {
         "{v}"
     );
     assert_eq!(e.calls(), ["triage", "build"]);
+    let main = git(&e.base.join("remote.git"), &["rev-parse", "main"]);
+    assert!(
+        e.gh_calls().contains(&format!(
+            "api repos/{{owner}}/{{repo}}/commits/{main}/pulls"
+        )),
+        "{}",
+        e.gh_calls()
+    );
+}
+
+/// The build phase commits to the unit, runs `pre` in the worktree, then another actor lands
+/// `land` on origin's main from a clone, GitHub links the new main commit to `pulls`, and the
+/// build rebases onto it.
+fn another_actor_lands(e: &Env, pre: &str, land: &str, pulls: &str) {
+    e.ctl(
+        "build.sh",
+        &format!(
+            r#"set -e
+c="git -c user.name=f -c user.email=f@f"
+echo own >> work.txt && git add work.txt && $c commit -qm own
+{pre}
+o="$FAKE_CTRL/other"
+rm -rf "$o" && git clone -q "$(git remote get-url origin)" "$o"
+(cd "$o" && {land} && git push -q origin main &&
+  printf '%s' '{pulls}' > "$FAKE_GH_DIR/pulls-$(git rev-parse HEAD).json")
+git fetch -q origin && $c rebase -q origin/main"#
+        ),
+    );
+    e.queue("build", &["pass:script"]);
+}
+
+const SQUASH_B: &str = r#"echo b > b.txt && git add b.txt && $c commit -qm "Fix b (#3)""#;
+const MERGED_B: &str =
+    r#"[{"number":3,"merged_at":"2026-10-09T00:00:00Z","head":{"ref":"ns/3-fix-b"}}]"#;
+
+fn run_log(e: &Env) -> String {
+    fs::read_to_string(e.root.join(".git/ns/runs.jsonl")).unwrap()
+}
+
+#[test]
+fn another_units_merge_then_a_rebase_is_not_this_units_push() {
+    let e = Env::new();
+    another_actor_lands(&e, "", SQUASH_B, MERGED_B);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let main = git(&e.base.join("remote.git"), &["rev-parse", "main"]);
+    let wt = e.worktree(UNIT);
+    assert!(git(&wt, &["merge-base", "--is-ancestor", &main, "HEAD"]).is_empty());
+    let log = run_log(&e);
+    assert!(
+        log.contains(&format!("\"to\":\"{main}\""))
+            && log.contains("\"event\":\"default_moved_by_other_actor\"")
+            && log.contains("\"prs\":[3]")
+            && !log.contains("\"breach\""),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_human_merge_commit_then_a_rebase_is_not_this_units_push() {
+    let e = Env::new();
+    another_actor_lands(
+        &e,
+        "",
+        r#"git checkout -qb human-fix && echo h > h.txt && git add h.txt && $c commit -qm h &&
+  git checkout -q main && $c merge -q --no-ff human-fix -m "Merge pull request #50""#,
+        r#"[{"number":50,"merged_at":"2026-10-09T00:00:00Z","head":{"ref":"human-fix"}}]"#,
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let log = run_log(&e);
+    assert!(
+        log.contains("\"prs\":[50]") && !log.contains("\"breach\""),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_push_of_its_own_under_another_merge_is_still_stuck() {
+    let e = Env::new();
+    another_actor_lands(&e, "git push -q origin HEAD:main", SQUASH_B, MERGED_B);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.starts_with("default branch moved"), "{v}");
+    assert!(
+        reason.contains("is in no merged PR of another branch"),
+        "{v}"
+    );
+    assert_eq!(e.calls(), ["triage", "build"]);
+}
+
+#[test]
+fn a_merged_pr_from_this_units_branch_is_still_stuck() {
+    let e = Env::new();
+    another_actor_lands(
+        &e,
+        "",
+        SQUASH_B,
+        &MERGED_B.replace("ns/3-fix-b", &format!("ns/{UNIT}")),
+    );
+    let v = e.run(&["run", "--issue", "7"], 1);
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("is in no merged PR of another branch"),
+        "{v}"
+    );
+}
+
+#[test]
+fn a_merge_github_cannot_attribute_is_stuck() {
+    let e = Env::new();
+    another_actor_lands(&e, "", SQUASH_B, MERGED_B);
+    e.gh_file("pulls.fail", "");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.contains("cannot tell who made"), "{v}");
+    assert_eq!(e.calls(), ["triage", "build"]);
 }
 
 #[test]
