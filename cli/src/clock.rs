@@ -4,8 +4,16 @@
 use std::cell::Cell;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use anyhow::{bail, Result};
+
+/// Sleeps on a pinned clock never block, so a polling loop that sleeps without moving the clock
+/// forward would spin. Past this many such sleeps in a row, `sleep_until` fails instead. A real
+/// clock has no cap.
+pub const MAX_STALLED_SLEEPS: u32 = 1000;
+
 pub struct Clock {
     pinned: Cell<Option<i64>>,
+    stalls: Cell<u32>,
 }
 
 impl Clock {
@@ -16,6 +24,7 @@ impl Clock {
                     .ok()
                     .and_then(|v| v.trim().parse().ok()),
             ),
+            stalls: Cell::new(0),
         }
     }
 
@@ -23,6 +32,7 @@ impl Clock {
     pub fn pinned(t: i64) -> Self {
         Self {
             pinned: Cell::new(Some(t)),
+            stalls: Cell::new(0),
         }
     }
 
@@ -30,9 +40,18 @@ impl Clock {
         self.pinned.get().unwrap_or_else(real_now)
     }
 
-    pub fn sleep_until(&self, t: i64) {
+    pub fn sleep_until(&self, t: i64) -> Result<()> {
         match self.pinned.get() {
-            Some(p) => self.pinned.set(Some(p.max(t))),
+            Some(p) if t > p => {
+                self.stalls.set(0);
+                self.pinned.set(Some(t));
+            }
+            Some(_) => {
+                if self.stalls.get() >= MAX_STALLED_SLEEPS {
+                    bail!("a polling loop slept {MAX_STALLED_SLEEPS} times in a row on the pinned clock (NS_NOW) without time passing");
+                }
+                self.stalls.set(self.stalls.get() + 1);
+            }
             None => {
                 let d = t - real_now();
                 if d > 0 {
@@ -40,6 +59,7 @@ impl Clock {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -269,13 +289,57 @@ mod tests {
 
     #[test]
     fn pinned_clock_advances_on_sleep() {
-        let c = Clock {
-            pinned: Cell::new(Some(100)),
+        let c = Clock::pinned(100);
+        c.sleep_until(250).unwrap();
+        assert_eq!(c.now(), 250);
+        c.sleep_until(10).unwrap();
+        assert_eq!(c.now(), 250);
+    }
+
+    #[test]
+    fn a_frozen_polling_loop_ends_at_the_stall_cap() {
+        let c = Clock::pinned(100);
+        let mut polls = 0;
+        let err = loop {
+            polls += 1;
+            if let Err(e) = c.sleep_until(c.now()) {
+                break e;
+            }
         };
-        c.sleep_until(250);
-        assert_eq!(c.now(), 250);
-        c.sleep_until(10);
-        assert_eq!(c.now(), 250);
+        assert_eq!(polls, 1001);
+        assert_eq!(c.now(), 100);
+        assert_eq!(
+            err.to_string(),
+            "a polling loop slept 1000 times in a row on the pinned clock (NS_NOW) without time passing"
+        );
+    }
+
+    #[test]
+    fn a_sleep_that_moves_the_pinned_clock_resets_the_stall_count() {
+        let c = Clock::pinned(100);
+        for t in 101..3000 {
+            c.sleep_until(t).unwrap();
+            c.sleep_until(t).unwrap();
+        }
+        for _ in 0..MAX_STALLED_SLEEPS - 1 {
+            c.sleep_until(0).unwrap();
+        }
+        c.sleep_until(3000).unwrap();
+        for _ in 0..MAX_STALLED_SLEEPS {
+            c.sleep_until(0).unwrap();
+        }
+        assert!(c.sleep_until(0).is_err());
+    }
+
+    #[test]
+    fn a_real_clock_has_no_stall_cap() {
+        let c = Clock {
+            pinned: Cell::new(None),
+            stalls: Cell::new(0),
+        };
+        for _ in 0..=MAX_STALLED_SLEEPS {
+            c.sleep_until(0).unwrap();
+        }
     }
 
     #[test]

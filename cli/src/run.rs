@@ -474,7 +474,7 @@ fn poll_until(clock: &Clock, at: i64, mut try_once: impl FnMut() -> Result<bool>
         if now >= at {
             return Ok(false);
         }
-        clock.sleep_until((now + step).min(at));
+        clock.sleep_until((now + step).min(at))?;
         step = (step * 2).min(LOCK_POLL_MAX_S);
     }
     Ok(true)
@@ -1436,22 +1436,27 @@ fn check_count(wt: &Path, sha: &str, kind: &str) -> Result<u64> {
 }
 
 /// GitHub may not have registered any check run or status right after a push or update-branch.
-fn checks_registered(wt: &Path, sha: &str, timeout_minutes: u64, clock: &Clock) -> Registered {
+fn checks_registered(
+    wt: &Path,
+    sha: &str,
+    timeout_minutes: u64,
+    clock: &Clock,
+) -> Result<Registered> {
     let deadline = clock.now() + (timeout_minutes * 60) as i64;
     let mut wait = REGISTER_BACKOFF_START;
     loop {
         let counts = ["check-runs", "status"].map(|kind| check_count(wt, sha, kind));
         if counts.iter().any(|c| matches!(c, Ok(n) if *n > 0)) {
-            return Registered::Yes;
+            return Ok(Registered::Yes);
         }
         let now = clock.now();
         if now >= deadline {
-            return match counts.into_iter().find_map(|c| c.err()) {
+            return Ok(match counts.into_iter().find_map(|c| c.err()) {
                 Some(e) => Registered::QueryFailed(e.to_string()),
                 None => Registered::No,
-            };
+            });
         }
-        clock.sleep_until((now + wait).min(deadline));
+        clock.sleep_until((now + wait).min(deadline))?;
         wait = (wait * 2).min(REGISTER_BACKOFF_MAX);
     }
 }
@@ -1489,7 +1494,7 @@ fn head_after_update(
         if now >= deadline {
             return Ok(UpdatedHead::Unchanged);
         }
-        clock.sleep_until((now + wait).min(deadline));
+        clock.sleep_until((now + wait).min(deadline))?;
         wait = (wait * 2).min(REGISTER_BACKOFF_MAX);
     }
 }
@@ -1589,7 +1594,7 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
         _ => {}
     }
 
-    match checks_registered(wt, &merge_head, register_minutes, &shared.clock) {
+    match checks_registered(wt, &merge_head, register_minutes, &shared.clock)? {
         Registered::Yes => {}
         Registered::No => {
             return Ok(human(format!(
@@ -1907,7 +1912,7 @@ mod tests {
         let names: Vec<String> = ["a", "b"].map(String::from).into();
         let g = RunnerLocks::acquire(dir.path(), &names, "u", &clock, MIN, None, |l, _| {
             if l == "a" {
-                clock.sleep_until(1030);
+                clock.sleep_until(1030).unwrap();
                 a.take();
                 assert!(is_free(dir.path(), "a"));
             }
@@ -1925,7 +1930,7 @@ mod tests {
         let clock = Clock::pinned(1000);
         let names: Vec<String> = ["a", "b"].map(String::from).into();
         let g = RunnerLocks::acquire(dir.path(), &names, "u", &clock, MIN, Some(1030), |_, _| {
-            clock.sleep_until(1030);
+            clock.sleep_until(1030).unwrap();
             b.take();
         })
         .unwrap()
