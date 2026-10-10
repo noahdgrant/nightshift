@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use super::self_update::{self, Carried, SelfUpdate};
+use super::self_update::{self, SelfUpdate};
 use super::snapshot::Snapshot;
 use super::{
     comment, ended_cleanly, fresh_base, open_findings, queue, set_status, triage, Issue, Night,
@@ -133,7 +133,9 @@ impl<'a> Scheduler<'a> {
             let idle = self.running.is_empty() && self.paused_until.is_none();
             if idle && self.stopping.is_none() {
                 if let Some(to) = self.draining.take() {
-                    self.update(to, night, tonight);
+                    if let Err(e) = self.hand_off(&to, night, tonight) {
+                        self.give_up(to, e);
+                    }
                     continue;
                 }
             }
@@ -295,60 +297,54 @@ impl<'a> Scheduler<'a> {
         Some(to)
     }
 
-    /// Build `to`, check it and exec it with the night's state. Returns only when that failed:
-    /// the night goes on with this binary and never tries `to` again.
-    fn update(&mut self, to: String, night: &Night, tonight: &Tonight) {
+    /// Build `to`, check it and exec it with the night's state. Returns when that failed, or when
+    /// a stop came first and the night winds down instead.
+    fn hand_off(&self, to: &str, night: &Night, tonight: &Tonight) -> Result<()> {
         let repo = self.plan.repo;
-        let u = self
-            .plan
-            .update
-            .as_ref()
-            .expect("draining needs a self-update");
-        let from = u.from.clone();
-        eprintln!("ns watch: self-update: building {}", short(&to));
-        let err = match u.build(repo, &to) {
-            Ok(staged) => {
-                let carried = Carried {
-                    deadline: self.plan.deadline,
-                    spent_usd: night.shared.spent(),
-                    started: self.started,
-                    harness_fails: night.harness_fails,
-                    finished: night.finished.clone(),
-                    triage: night.triage.clone(),
-                    tonight: tonight.clone(),
-                };
-                match carried.save(&repo.common_dir) {
-                    Ok(state) => {
-                        eprintln!(
-                            "ns watch: self-update {} -> {}; handing off to {}",
-                            short(&from),
-                            short(&to),
-                            staged.display()
-                        );
-                        run::log_event(
-                            &repo.common_dir,
-                            json!({"event": "self_update", "from": from, "to": to}),
-                        );
-                        let e = self_update::exec(&staged, &state);
-                        let _ = fs::remove_file(&state);
-                        e
-                    }
-                    Err(e) => e,
-                }
-            }
-            Err(e) => e,
-        };
+        let u = self.plan.update.as_ref().context("no self-update")?;
+        eprintln!("ns watch: self-update: building {}", short(to));
+        let built = u.build(repo, to);
+        if stop::requested().is_some() {
+            eprintln!("ns watch: self-update to {} abandoned: stopping", short(to));
+            return Ok(());
+        }
+        let staged = built?;
+        let state = night
+            .carry(self.plan.deadline, self.started, tonight)
+            .save(&repo.common_dir)?;
+        if stop::requested().is_some() {
+            let _ = fs::remove_file(&state);
+            return Ok(());
+        }
+        eprintln!(
+            "ns watch: self-update {} -> {}; handing off to {}",
+            short(&u.from),
+            short(to),
+            staged.display()
+        );
+        run::log_event(
+            &repo.common_dir,
+            json!({"event": "self_update", "from": u.from, "to": to}),
+        );
+        let e = self_update::exec(&staged, &state);
+        let _ = fs::remove_file(&state);
+        Err(e)
+    }
+
+    /// Keep this ns after a failed hand-off to `to`, and never try `to` again tonight.
+    fn give_up(&mut self, to: String, err: anyhow::Error) {
         eprintln!(
             "ns watch: warning: self-update to {} failed; keeping this ns: {err:#}",
             short(&to)
         );
+        let Some(u) = self.plan.update.as_mut() else {
+            return;
+        };
         run::log_event(
-            &repo.common_dir,
-            json!({"event": "self_update_failed", "from": from, "to": to, "error": format!("{err:#}")}),
+            &self.plan.repo.common_dir,
+            json!({"event": "self_update_failed", "from": u.from, "to": to, "error": format!("{err:#}")}),
         );
-        if let Some(u) = self.plan.update.as_mut() {
-            u.failed.insert(to);
-        }
+        u.failed.insert(to);
     }
 
     fn free(&self) -> bool {

@@ -8,15 +8,88 @@ use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::{triage, Tonight};
 use crate::git::{self, Repo};
+use crate::stop;
 
 const FLAG: &str = "--resume-night";
+
+/// The ceiling on the cargo build.
+const BUILD_CEILING: Duration = Duration::from_secs(30 * 60);
+/// The ceiling on each check of the staged binary.
+const CHECK_CEILING: Duration = Duration::from_secs(60);
+/// Tests set this (milliseconds) to shorten both ceilings.
+const CEILING_ENV: &str = "NS_SELF_UPDATE_TIMEOUT_MS";
+
+fn ceiling(default: Duration) -> Duration {
+    std::env::var(CEILING_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(default, Duration::from_millis)
+}
+
+/// Run `cmd` to its end, or kill it and its whole process group when a stop is requested or
+/// `ceiling` passes. A kill is an error.
+fn run_bounded(mut cmd: Command, ceiling: Duration) -> Result<Output> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn()?;
+    let out = drain(child.stdout.take());
+    let err = drain(child.stderr.take());
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        let why = if stop::requested().is_some() {
+            "stopped"
+        } else if start.elapsed() >= ceiling {
+            "timed out"
+        } else {
+            thread::sleep(Duration::from_millis(50));
+            continue;
+        };
+        #[cfg(unix)]
+        // SAFETY: kill(2) on the process group this function made for the child.
+        unsafe {
+            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        if why == "timed out" {
+            bail!("timed out after {}s", ceiling.as_secs_f32().round());
+        }
+        bail!("{why}");
+    };
+    Ok(Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
+}
+
+fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut p) = pipe {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
 
 /// The commit this `ns` was built from: `NS_BUILD_COMMIT` in the environment, which tests set,
 /// else the one `build.rs` stamped. `None` for a build from outside a git checkout, or an empty
@@ -88,15 +161,14 @@ impl SelfUpdate {
         let _ = fs::remove_dir_all(&src);
         fs::create_dir_all(&src).with_context(|| format!("cannot create {}", src.display()))?;
         extract(&repo.root, to, &src)?;
-        let out = Command::new("cargo")
+        let mut cargo = Command::new("cargo");
+        cargo
             .args(["build", "--release", "--locked", "--manifest-path"])
             .arg(src.join("cli/Cargo.toml"))
             .arg("--target-dir")
             .arg(stage.join("target"))
-            .env("NS_BUILD_COMMIT", to)
-            .stdin(Stdio::null())
-            .output()
-            .context("cannot run cargo")?;
+            .env("NS_BUILD_COMMIT", to);
+        let out = run_bounded(cargo, ceiling(BUILD_CEILING)).context("cargo build")?;
         if !out.status.success() {
             bail!("cargo build: {}: {}", out.status, tail(&out.stderr));
         }
@@ -108,11 +180,10 @@ impl SelfUpdate {
     }
 
     fn check(&self, root: &Path, staged: &Path, to: &str) -> Result<()> {
-        let out = Command::new(staged)
-            .arg("--version")
-            .stdin(Stdio::null())
-            .output()
-            .with_context(|| format!("cannot run {}", staged.display()))?;
+        let mut version = Command::new(staged);
+        version.arg("--version");
+        let out = run_bounded(version, ceiling(CHECK_CEILING))
+            .with_context(|| format!("{} --version", staged.display()))?;
         let said = String::from_utf8_lossy(&out.stdout);
         if !out.status.success() || !said.contains(to) {
             bail!("the new ns --version said {:?}, not {to}", said.trim());
@@ -122,11 +193,8 @@ impl SelfUpdate {
         if let Some(f) = &self.factory {
             dry.arg("--factory").arg(f);
         }
-        let out = dry
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .output()
-            .with_context(|| format!("cannot run {}", staged.display()))?;
+        let out = run_bounded(dry, ceiling(CHECK_CEILING))
+            .with_context(|| format!("{} watch --dry-run", staged.display()))?;
         if !out.status.success() {
             bail!(
                 "the new ns watch --dry-run: {}: {}",
@@ -173,8 +241,12 @@ fn tail(stderr: &[u8]) -> String {
 }
 
 /// The night so far, which the new binary carries on from.
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
 pub(super) struct Carried {
+    /// The state file's layout. A new binary from another commit reads only its own.
+    #[serde(default)]
+    pub version: u32,
     pub deadline: Option<i64>,
     pub spent_usd: f64,
     /// Units claimed tonight, toward `--max-units`.
@@ -185,13 +257,41 @@ pub(super) struct Carried {
     pub tonight: Tonight,
 }
 
+impl Default for Carried {
+    fn default() -> Carried {
+        Carried {
+            version: Carried::VERSION,
+            deadline: None,
+            spent_usd: 0.0,
+            started: 0,
+            harness_fails: 0,
+            finished: BTreeSet::new(),
+            triage: triage::Tally::default(),
+            tonight: Tonight::default(),
+        }
+    }
+}
+
 impl Carried {
-    /// Read the state `--resume-night` names, and remove its file.
+    pub const VERSION: u32 = 1;
+
+    /// Read the state `--resume-night` names, and remove its file. Fields a state lacks take
+    /// their defaults; a state of another version is an error.
     pub fn take(path: &Path) -> Result<Carried> {
         let text =
             fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
         let _ = fs::remove_file(path);
-        serde_json::from_str(&text).with_context(|| format!("{} is not a night", path.display()))
+        let c: Carried = serde_json::from_str(&text)
+            .with_context(|| format!("{} is not a night", path.display()))?;
+        if c.version != Carried::VERSION {
+            bail!(
+                "{} is night state version {}, not {}",
+                path.display(),
+                c.version,
+                Carried::VERSION
+            );
+        }
+        Ok(c)
     }
 
     /// Write the state to a file for the new binary to read.
@@ -256,7 +356,7 @@ mod tests {
     #[test]
     fn the_night_survives_the_state_file_and_the_file_goes() {
         let night = serde_json::json!({
-            "deadline": 1000, "spent_usd": 2.5, "started": 3, "harness_fails": 1,
+            "version": 1, "deadline": 1000, "spent_usd": 2.5, "started": 3, "harness_fails": 1,
             "finished": [2, 3],
             "triage": {
                 "tried": [9], "seen": [9, 10], "last_error": "no login", "off": true,
@@ -274,6 +374,37 @@ mod tests {
         assert_eq!(serde_json::to_value(&back).unwrap(), night);
         assert!(!path.exists());
         assert!(Carried::take(&path).is_err());
+    }
+
+    #[test]
+    fn state_of_another_version_or_none_is_refused_and_missing_fields_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |text: &str| {
+            let p = dir.path().join("night.json");
+            fs::write(&p, text).unwrap();
+            p
+        };
+        for bad in [r#"{"version": 2}"#, r#"{"deadline": 5}"#, "not json"] {
+            assert!(Carried::take(&write(bad)).is_err(), "{bad}");
+        }
+        let c = Carried::take(&write(r#"{"version": 1, "started": 4}"#)).unwrap();
+        assert_eq!((c.started, c.deadline, c.harness_fails), (4, None, 0));
+    }
+
+    #[test]
+    fn a_command_that_outlives_its_ceiling_is_killed_and_one_that_ends_is_not() {
+        let mut slow = Command::new("sh");
+        slow.args(["-c", "sleep 30"]);
+        let start = Instant::now();
+        let e = run_bounded(slow, Duration::from_millis(200)).unwrap_err();
+        assert!(e.to_string().contains("timed out"), "{e}");
+        assert!(start.elapsed() < Duration::from_secs(20));
+        let mut quick = Command::new("sh");
+        quick.args(["-c", "echo out; echo err >&2; exit 3"]);
+        let o = run_bounded(quick, Duration::from_secs(30)).unwrap();
+        assert_eq!(o.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&o.stdout), "out\n");
+        assert_eq!(String::from_utf8_lossy(&o.stderr), "err\n");
     }
 
     #[test]

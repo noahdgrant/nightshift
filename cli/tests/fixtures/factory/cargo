@@ -2,10 +2,13 @@
 # Fake cargo for ns watch's self-update. `cargo build ... --manifest-path M --target-dir T` logs
 # its arguments to $FAKE_CTRL/cargo-calls, copies M's directory's x to $FAKE_CTRL/cargo-built,
 # and writes a stub ns to T/release/ns. The stub prints the version with $NS_BUILD_COMMIT, exits
-# 0 on `watch --dry-run`, and otherwise logs its arguments to $FAKE_CTRL/handed-off and execs
-# $REAL_NS with them and --no-self-update.
+# 0 on `watch --dry-run`, and otherwise logs its arguments to $FAKE_CTRL/handed-off and its own
+# path to $FAKE_CTRL/staged, then execs $REAL_NS with them minus any --until, plus
+# --no-self-update: a new ns that does not read the deadline again.
 #   $FAKE_CTRL/cargo-mode: fail (the build fails), badcheck (the stub's dry run exits 1) or
-#   badversion (the stub's version names another commit) or versionfails (it exits 1)
+#   badversion (the stub's version names another commit), versionfails (it exits 1), slow (the
+#   build writes $FAKE_CTRL/cargo-started and hangs) or stopped (the build sends ns SIGTERM and
+#   succeeds)
 ctrl="$FAKE_CTRL"
 echo "$*" >> "$ctrl/cargo-calls"
 mode=$(cat "$ctrl/cargo-mode" 2>/dev/null)
@@ -13,6 +16,12 @@ if [ "$mode" = fail ]; then
   echo "error: could not compile nightshift" >&2
   exit 101
 fi
+if [ "$mode" = slow ]; then
+  touch "$ctrl/cargo-started"
+  sleep 60
+  exit 0
+fi
+[ "$mode" = stopped ] && kill -TERM "$PPID"
 while [ $# -gt 0 ]; do
   case "$1" in
     --manifest-path) m=$2; shift ;;
@@ -33,6 +42,15 @@ cat > "$t/release/ns" <<STUB
 if [ "\$1" = --version ]; then echo "ns 0.1.0 ($commit)"; exit $version_exit; fi
 if [ "\$1 \$2" = "watch --dry-run" ]; then echo "dry run failed" >&2; exit $dry; fi
 echo "\$*" > "$ctrl/handed-off"
+echo "\$0" > "$ctrl/staged"
+n=\$#
+skip=0
+while [ \$n -gt 0 ]; do
+  a=\$1; shift; n=\$((n - 1))
+  if [ \$skip = 1 ]; then skip=0; continue; fi
+  if [ "\$a" = --until ]; then skip=1; continue; fi
+  set -- "\$@" "\$a"
+done
 exec "\$REAL_NS" "\$@" --no-self-update
 STUB
 chmod +x "$t/release/ns"

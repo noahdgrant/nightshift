@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::{exits, Group, Ns};
 use serde_json::Value;
@@ -7065,6 +7065,21 @@ fn watch_hands_off_to_a_new_build_between_units_and_the_night_goes_on() {
     );
     let state = args.trim().rsplit(' ').next().unwrap();
     assert!(!Path::new(state).exists(), "{state} left behind");
+    // The build went to the staging directory, locked, and the exec'd binary is the staged copy
+    // named for the commit, not the running ns.
+    let stage = fs::canonicalize(e.root.join(".git/ns/self-update")).unwrap();
+    let calls = fs::read_to_string(e.ctrl.join("cargo-calls")).unwrap();
+    assert!(calls.starts_with("build --release --locked "), "{calls}");
+    assert!(
+        calls
+            .trim()
+            .ends_with(&format!("--target-dir {}", stage.join("target").display())),
+        "{calls} vs {}",
+        stage.display()
+    );
+    let staged = PathBuf::from(fs::read_to_string(e.ctrl.join("staged")).unwrap().trim());
+    assert_eq!(staged, stage.join(format!("ns-{to}")));
+    assert_ne!(staged, common::ns_path());
     let ev = events_named(&e, "self_update");
     assert_eq!(ev.len(), 1, "{ev:?}");
     assert_eq!(
@@ -7079,6 +7094,131 @@ fn watch_hands_off_to_a_new_build_between_units_and_the_night_goes_on() {
     let updated = event_at(&e, |ev| ev["event"] == "self_update");
     let started_3 = event_at(&e, |ev| ev["event"] == "worker_start" && ev["issue"] == 3);
     assert!(updated < started_3, "{:?}", run_events(&e));
+}
+
+#[test]
+fn the_carried_deadline_beats_the_new_binarys_own() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    two_ready(&e);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let w = Watching::start(watch_from(&e, &from).args(["watch", "--until", "06:30"]));
+    w.entered(&in_a);
+    land(&e, "cli/x", "new\n");
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    // The stub drops --until when it execs, so only the carried deadline can be 06:30.
+    let args = fs::read_to_string(e.ctrl.join("handed-off")).unwrap();
+    assert!(args.contains("--until 06:30"), "{args}");
+    assert_eq!(v["until"], "2026-10-09T06:30:00+00:00", "{v}");
+}
+
+#[test]
+fn state_the_new_binary_cannot_read_starts_a_fresh_night() {
+    for (state, why) in [
+        ("{\"version\": 99}", "version 99"),
+        ("not json", "is not a night"),
+    ] {
+        let e = Env::new();
+        two_ready(&e);
+        let path = e.root.join("night.json");
+        fs::write(&path, state).unwrap();
+        let out = e
+            .ns()
+            .args(["watch", "--until", "06:30", "--resume-night"])
+            .arg(&path)
+            .assert()
+            .code(0)
+            .get_output()
+            .clone();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("starting a fresh night") && err.contains(why),
+            "{err}"
+        );
+        assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+        assert_eq!(v["until"], "2026-10-09T06:30:00+00:00", "{v}");
+    }
+    let e = Env::new();
+    two_ready(&e);
+    let err = e
+        .ns()
+        .args(["watch", "--resume-night"])
+        .arg(e.root.join("missing.json"))
+        .assert()
+        .code(0)
+        .get_output()
+        .stderr
+        .clone();
+    assert!(String::from_utf8_lossy(&err).contains("starting a fresh night"));
+}
+
+/// A night held in a build, with an update on origin, whose fake cargo runs in `mode`.
+fn watching_an_update(mode: &str) -> (Env, Watching) {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    two_ready(&e);
+    e.ctl("cargo-mode", mode);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let mut w = Watching::start(watch_from(&e, &from).args(["watch"]));
+    w.entered(&in_a);
+    land(&e, "cli/x", "new\n");
+    release(&go_a);
+    w.line("self-update: building");
+    (e, w)
+}
+
+fn assert_stopped_without_a_hand_off(e: &Env, v: &Value, code: Option<i32>, err: &str) {
+    assert_eq!(code, Some(143), "{err}");
+    assert_eq!(v["stopped"], "SIGTERM", "{v}");
+    assert!(!e.ctrl.join("handed-off").exists(), "{err}");
+    assert!(events_named(e, "self_update").is_empty());
+    assert!(events_named(e, "self_update_failed").is_empty(), "{err}");
+    assert!(err.contains("abandoned: stopping"), "{err}");
+}
+
+#[test]
+fn a_stop_during_the_build_kills_it_and_ends_the_night() {
+    let (e, w) = watching_an_update("slow");
+    while !e.ctrl.join("cargo-started").exists() {
+        thread::sleep(Duration::from_millis(20));
+    }
+    let start = Instant::now();
+    w.signal(libc::SIGTERM, false);
+    let (code, v, err) = w.finish();
+    assert_stopped_without_a_hand_off(&e, &v, code, &err);
+    assert!(
+        start.elapsed() < Duration::from_secs(30),
+        "build not killed"
+    );
+}
+
+#[test]
+fn a_stop_that_arrives_as_the_build_ends_is_not_lost_at_the_hand_off() {
+    let (e, w) = watching_an_update("stopped");
+    let (code, v, err) = w.finish();
+    assert_stopped_without_a_hand_off(&e, &v, code, &err);
+}
+
+#[test]
+fn a_build_past_its_ceiling_is_killed_and_the_night_goes_on() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    let to = land(&e, "cli/x", "new\n");
+    e.ctl("cargo-mode", "slow");
+    two_ready(&e);
+    let out = watch_from(&e, &from)
+        .env("NS_SELF_UPDATE_TIMEOUT_MS", "300")
+        .args(["watch"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_kept_the_old_binary(&e, &to, &v, &err, "timed out");
 }
 
 #[test]

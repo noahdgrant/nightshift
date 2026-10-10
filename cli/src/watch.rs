@@ -513,20 +513,16 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         }
         None => None,
     };
-    // A hand-off carries the night on: its deadline wins over --until read again now.
-    let carried = match &args.resume_night {
-        Some(p) => self_update::Carried::take(p)?,
-        None => self_update::Carried::default(),
-    };
-    let deadline = if args.resume_night.is_some() {
-        carried.deadline
-    } else {
-        deadline
-    };
+    // A hand-off carries the night on: its deadline wins over --until read again now. A state
+    // this ns can't read starts a fresh night rather than ending the one the old ns began.
+    let resumed = args.resume_night.as_ref().and_then(|p| {
+        self_update::Carried::take(p)
+            .map_err(|e| eprintln!("ns watch: warning: starting a fresh night: {e:#}"))
+            .ok()
+    });
+    let deadline = resumed.as_ref().map_or(deadline, |c| c.deadline);
+    let resumed = resumed.map(|c| night.resume(c)).unwrap_or_default();
     night.shared.until = deadline;
-    night.harness_fails = carried.harness_fails;
-    night.finished = carried.finished;
-    night.triage = carried.triage;
     let max_units = if args.once {
         Some(1)
     } else {
@@ -631,13 +627,13 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         );
     }
     night.shared.night = Some(snap.night().clone());
-    if carried.spent_usd > 0.0 {
+    if resumed.spent_usd > 0.0 {
         snap.night()
-            .add_spend("before the self-update", carried.spent_usd)?;
+            .add_spend("before the self-update", resumed.spent_usd)?;
     }
     // The triage pass, which runs here, reads the snapshot's prompts as every unit does.
     loaded.root = snap.factory();
-    let mut tonight = carried.tonight;
+    let mut tonight = resumed.tonight;
     let update = self_update::SelfUpdate::new(&repo, args.no_self_update, args.factory.clone());
     let plan = scheduler::Plan {
         repo: &repo,
@@ -646,7 +642,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         deadline,
         max_units,
         parallel: parallel as usize,
-        started: carried.started,
+        started: resumed.started,
         update,
     };
     let mut failed = None;
@@ -723,7 +719,57 @@ struct Night {
     triage: triage::Tally,
 }
 
+/// What a hand-off's state gives the new `ns` beyond what `Night::resume` restores in the night
+/// and the deadline, which the caller reads first.
+#[derive(Default)]
+struct Resumed {
+    spent_usd: f64,
+    started: u32,
+    tonight: Tonight,
+}
+
 impl Night {
+    /// The night so far, for the new `ns` to resume. `started` is the units claimed.
+    fn carry(
+        &self,
+        deadline: Option<i64>,
+        started: u32,
+        tonight: &Tonight,
+    ) -> self_update::Carried {
+        self_update::Carried {
+            version: self_update::Carried::VERSION,
+            deadline,
+            spent_usd: self.shared.spent(),
+            started,
+            harness_fails: self.harness_fails,
+            finished: self.finished.clone(),
+            triage: self.triage.clone(),
+            tonight: tonight.clone(),
+        }
+    }
+
+    /// Take on the night a previous `ns` carried; the rest of it is for the caller.
+    fn resume(&mut self, carried: self_update::Carried) -> Resumed {
+        let self_update::Carried {
+            version: _,
+            deadline: _,
+            spent_usd,
+            started,
+            harness_fails,
+            finished,
+            triage,
+            tonight,
+        } = carried;
+        self.harness_fails = harness_fails;
+        self.finished = finished;
+        self.triage = triage;
+        Resumed {
+            spent_usd,
+            started,
+            tonight,
+        }
+    }
+
     fn new() -> Night {
         let mut shared = Shared::new();
         shared.watch_pid = Some(std::process::id());
