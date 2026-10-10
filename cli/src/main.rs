@@ -573,6 +573,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 dry_run,
                 factory,
                 base,
+                triage_only: false,
             })
         }
         Cmd::Watch {

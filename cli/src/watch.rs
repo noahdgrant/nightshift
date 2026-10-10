@@ -12,9 +12,11 @@ use crate::error::SfError;
 use crate::factory::{Factory, Queue as QueueConfig};
 use crate::git::{self, Repo};
 use crate::install;
-use crate::run::{self, gh, gh_json, Outcome, RunArgs, Shared};
+use crate::run::{self, gh, gh_json, Outcome, RunArgs, RunResult, Shared};
 use crate::skills_sync::{self, Sync};
 use crate::worktree::BRANCH_PREFIX;
+
+mod triage;
 
 pub struct WatchArgs {
     pub once: bool,
@@ -126,46 +128,77 @@ fn closing_prs(root: &Path, state: &str) -> Result<BTreeMap<u64, u64>> {
     Ok(by_issue)
 }
 
+/// Open issues, never PRs, and the open and merged PRs that close each.
+struct Listing {
+    issues: Vec<Issue>,
+    has_pr: BTreeMap<u64, u64>,
+    merged_pr: BTreeMap<u64, u64>,
+}
+
+impl Listing {
+    /// `labels` narrows the list to issues carrying that label.
+    fn read(root: &Path, labels: Option<&str>) -> Result<Listing> {
+        let filter = labels.map_or(String::new(), |l| format!("&labels={l}"));
+        let path = format!("repos/{{owner}}/{{repo}}/issues?state=open{filter}&per_page=100");
+        // `gh issue list --json` has no author association, so read the REST list.
+        let issues = parse_issues(&gh(
+            root,
+            &[
+                "api",
+                "--paginate",
+                &path,
+                "--jq",
+                ".[] | select(.pull_request | not) | {number, title, labels, body, authorAssociation: .author_association}",
+            ],
+        )?);
+        Ok(Listing {
+            issues,
+            has_pr: closing_prs(root, "open")?,
+            merged_pr: closing_prs(root, "merged")?,
+        })
+    }
+
+    /// Why `ns watch` leaves the issue alone: its author is outside the team, or a PR closes it.
+    fn passed_over(&self, i: &Issue) -> Option<String> {
+        if !i.team {
+            return Some("author outside the team".into());
+        }
+        if let Some(pr) = self.has_pr.get(&i.number) {
+            return Some(format!("open PR #{pr} closes it"));
+        }
+        self.merged_pr
+            .get(&i.number)
+            .map(|pr| format!("merged PR #{pr} closes it"))
+    }
+}
+
+fn skip(i: &Issue, reason: impl Into<Value>) -> Value {
+    json!({"number": i.number, "title": i.title, "reason": reason.into()})
+}
+
+/// The queue's sort key: higher priority first, then category, then the oldest issue.
+fn order(q: &QueueConfig, i: &Issue) -> (usize, usize, u64) {
+    (
+        rank(&q.priority, &i.labels),
+        rank(&q.order, &i.labels),
+        i.number,
+    )
+}
+
 /// Ready issues, minus those in `finished`: GitHub can list an issue as open
 /// for a few seconds after its closing PR merges.
 fn queue(root: &Path, fac: &Factory, finished: &BTreeSet<u64>) -> Result<Queue> {
     let q = &fac.queue;
-    // `gh issue list --json` has no author association, so read the REST list.
-    let path = format!(
-        "repos/{{owner}}/{{repo}}/issues?state=open&labels={}&per_page=100",
-        q.ready_label
-    );
-    let issues = parse_issues(&gh(
-        root,
-        &[
-            "api",
-            "--paginate",
-            &path,
-            "--jq",
-            ".[] | select(.pull_request | not) | {number, title, labels, body, authorAssociation: .author_association}",
-        ],
-    )?);
-    let has_pr = closing_prs(root, "open")?;
-    let merged_pr = closing_prs(root, "merged")?;
+    let listing = Listing::read(root, Some(&q.ready_label))?;
     let mut open_cache: BTreeMap<u64, bool> = BTreeMap::new();
     let mut ready = Vec::new();
     let mut skipped = Vec::new();
-    for i in issues {
+    for i in &listing.issues {
         if finished.contains(&i.number) {
             continue;
         }
-        if !i.team {
-            skipped.push(
-                json!({"number": i.number, "title": i.title, "reason": "author outside the team"}),
-            );
-            continue;
-        }
-        if let Some(pr) = has_pr.get(&i.number) {
-            skipped.push(json!({"number": i.number, "title": i.title, "reason": format!("open PR #{pr} closes it")}));
-            continue;
-        }
-        if let Some(pr) = merged_pr.get(&i.number) {
-            skipped.push(json!({"number": i.number, "title": i.title, "reason": format!("merged PR #{pr} closes it")}));
+        if let Some(why) = listing.passed_over(i) {
+            skipped.push(skip(i, why));
             continue;
         }
         let mut open_blockers = Vec::new();
@@ -187,18 +220,15 @@ fn queue(root: &Path, fac: &Factory, finished: &BTreeSet<u64>) -> Result<Queue> 
             }
         }
         if !open_blockers.is_empty() {
-            skipped.push(json!({"number": i.number, "title": i.title, "reason": format!("blocked by open {}", open_blockers.join(", "))}));
+            skipped.push(skip(
+                i,
+                format!("blocked by open {}", open_blockers.join(", ")),
+            ));
             continue;
         }
-        ready.push(i);
+        ready.push(i.clone());
     }
-    ready.sort_by_key(|i| {
-        (
-            rank(&q.priority, &i.labels),
-            rank(&q.order, &i.labels),
-            i.number,
-        )
-    });
+    ready.sort_by_key(|i| order(q, i));
     Ok(Queue { ready, skipped })
 }
 
@@ -215,28 +245,40 @@ impl StatusDrift {
     }
 }
 
-fn status_drift(root: &Path, q: &QueueConfig, n: &str, end: Option<&str>) -> Result<StatusDrift> {
+/// A state label: any `status:` label, or one of the queue's own.
+fn is_status(q: &QueueConfig, label: &str) -> bool {
+    label.starts_with("status:")
+        || [
+            &q.ready_label,
+            &q.in_progress_label,
+            &q.done_label,
+            &q.stuck_label,
+            &q.triage_label,
+        ]
+        .iter()
+        .any(|o| *o == label)
+}
+
+fn labels(root: &Path, n: &str) -> Result<Vec<String>> {
     let v = gh_json(root, &["issue", "view", n, "--json", "labels"])?;
-    let labels: Vec<&str> = v["labels"]
+    Ok(v["labels"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|l| l["name"].as_str())
-        .collect();
-    let ours = [
-        &q.ready_label,
-        &q.in_progress_label,
-        &q.done_label,
-        &q.stuck_label,
-    ];
+        .filter_map(|l| l["name"].as_str().map(String::from))
+        .collect())
+}
+
+fn status_drift(root: &Path, q: &QueueConfig, n: &str, end: Option<&str>) -> Result<StatusDrift> {
+    let labels = labels(root, n)?;
     let stray = labels
         .iter()
-        .filter(|l| Some(**l) != end && (l.starts_with("status:") || ours.iter().any(|o| o == *l)))
-        .map(|l| l.to_string())
+        .filter(|l| Some(l.as_str()) != end && is_status(q, l))
+        .cloned()
         .collect();
     Ok(StatusDrift {
         stray,
-        missing: end.is_some_and(|e| !labels.contains(&e)),
+        missing: end.is_some_and(|e| !labels.iter().any(|l| l == e)),
     })
 }
 
@@ -357,8 +399,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         );
     }
     let q = fac.queue.clone();
-    let mut shared = Shared::new();
-    shared.watch_pid = Some(std::process::id());
+    let mut night = Night::new();
     let deadline = match &args.until {
         Some(s) => {
             let Some((h, m)) = clock::parse_hm(s) else {
@@ -368,7 +409,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 )
                 .into());
             };
-            Some(clock::next_local(shared.clock.now(), h, m))
+            Some(clock::next_local(night.shared.clock.now(), h, m))
         }
         None => None,
     };
@@ -392,12 +433,20 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 })
             })
             .collect();
+        // With the pass off, nothing would be triaged, so list nothing.
+        let tr = match triage::cap(fac) {
+            0 => triage::Candidates::default(),
+            _ => triage::candidates(&repo.root, fac, &BTreeSet::new())?,
+        };
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "dry_run": true,
                 "queue": ready,
                 "skipped": qu.skipped,
+                "triage": tr.issues.iter().map(|(i, why)| json!({"number": i.number, "title": i.title, "reason": why})).collect::<Vec<_>>(),
+                "triage_skipped": tr.skipped,
+                "triage_per_night": triage::cap(fac),
                 "max_units": max_units,
                 "until": deadline.map(clock::iso),
             }))?
@@ -406,24 +455,18 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     }
 
     let mut units: Vec<Value> = Vec::new();
-    // Consecutive units whose every attempt failed instantly: the harness, not the work.
-    let mut harness_fails = 0u32;
     let mut started = 0u32;
-    let mut finished: BTreeSet<u64> = BTreeSet::new();
-    let mut skills_warned: Option<String> = None;
     let stopped: String = 'outer: loop {
         if max_units.is_some_and(|m| started >= m) {
             break "max_units".into();
         }
-        if deadline.is_some_and(|d| shared.clock.now() >= d) {
-            break "until".into();
+        if let Some(stop) = night.over(deadline, fac) {
+            break stop.into();
         }
-        if let Some(b) = fac.budget_usd() {
-            if shared.spent_usd >= b {
-                break "budget".into();
-            }
+        if let Some(stop) = triage::pass(&repo, &loaded, deadline, &mut night)? {
+            break stop;
         }
-        let qu = queue(&repo.root, fac, &finished)?;
+        let qu = queue(&repo.root, fac, &night.finished)?;
         let Some(issue) = qu.ready.first().cloned() else {
             break "queue empty".into();
         };
@@ -431,16 +474,12 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         set_status(&repo.root, &q, issue.number, Some(&q.in_progress_label))?;
         eprintln!("ns watch: #{} {}", issue.number, issue.title);
         loop {
-            let base = fresh_base(&repo.root);
-            if let Some(b) = &base {
-                sync_skills(&repo, b, issue.number, &mut skills_warned);
-            }
             let rargs = RunArgs {
                 issue: Some(issue.number),
-                base,
+                base: night.base(&repo, issue.number),
                 ..RunArgs::default()
             };
-            let r = match run::execute(&rargs, &mut shared, &loaded) {
+            let r = match run::execute(&rargs, &mut night.shared, &loaded) {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = set_status(&repo.root, &q, issue.number, Some(&q.ready_label));
@@ -455,9 +494,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 "pr": r.json["pr"],
                 "cost_usd": r.cost_usd,
             });
-            if !(r.outcome == Outcome::Stuck && harness_failing(&r.json)) {
-                harness_fails = 0;
-            }
+            let failing = night.harness(&r);
             match r.outcome {
                 Outcome::Merged => {
                     let status = set_status(&repo.root, &q, issue.number, None);
@@ -472,11 +509,10 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 Outcome::Done if !r.needs_human => {
                     set_status(&repo.root, &q, issue.number, Some(&q.done_label))?;
                 }
-                Outcome::Stuck if harness_failing(&r.json) => {
+                Outcome::Stuck if failing => {
                     set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
-                    harness_fails += 1;
                     rec["outcome"] = json!("harness_failing");
-                    if harness_fails >= HARNESS_FAIL_LIMIT {
+                    if night.harness_fails >= HARNESS_FAIL_LIMIT {
                         units.push(rec);
                         break 'outer "harness failing".into();
                     }
@@ -526,40 +562,103 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                     break 'outer "budget".into();
                 }
                 Outcome::Paused => {
-                    let now = shared.clock.now();
-                    let reset = r
-                        .reset_at
-                        .filter(|t| *t > now)
-                        .unwrap_or(now + PAUSE_RETRY_S);
+                    let reset = night.resume_at(&r);
                     rec["reset_at"] = json!(clock::iso(reset));
                     units.push(rec);
                     if deadline.is_some_and(|d| reset >= d) {
                         set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
-                        break 'outer "usage limit resets after --until".into();
+                        break 'outer PAUSED_PAST_UNTIL.into();
                     }
-                    eprintln!(
-                        "ns watch: usage limit, sleeping until {}",
-                        clock::iso(reset)
-                    );
-                    shared.clock.sleep_until(reset);
+                    night.sleep_until(reset);
                     continue;
                 }
             }
             units.push(rec);
             break;
         }
-        finished.insert(issue.number);
+        night.finished.insert(issue.number);
     };
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "units": units,
+            "triaged": night.triage.records,
             "stopped": stopped,
-            "cost_usd": shared.spent_usd,
+            "cost_usd": night.shared.spent_usd,
             "started_with": loaded.files,
         }))?
     );
     Ok(ExitCode::SUCCESS)
+}
+
+const PAUSED_PAST_UNTIL: &str = "usage limit resets after --until";
+
+/// What one `ns watch` carries from run to run.
+struct Night {
+    shared: Shared,
+    /// Consecutive runs, units or triage-only, whose every attempt failed instantly: the
+    /// harness, not the work.
+    harness_fails: u32,
+    /// Issues whose unit ended tonight.
+    finished: BTreeSet<u64>,
+    skills_warned: Option<String>,
+    triage: triage::Tally,
+}
+
+impl Night {
+    fn new() -> Night {
+        let mut shared = Shared::new();
+        shared.watch_pid = Some(std::process::id());
+        Night {
+            shared,
+            harness_fails: 0,
+            finished: BTreeSet::new(),
+            skills_warned: None,
+            triage: triage::Tally::default(),
+        }
+    }
+
+    /// Why the night ends before the next run: `--until` has passed or the budget is spent.
+    fn over(&self, deadline: Option<i64>, fac: &Factory) -> Option<&'static str> {
+        if deadline.is_some_and(|d| self.shared.clock.now() >= d) {
+            return Some("until");
+        }
+        fac.budget_usd()
+            .filter(|b| self.shared.spent_usd >= *b)
+            .map(|_| "budget")
+    }
+
+    /// `git fetch origin`, then keep installed skills current; the base for the run's worktree.
+    fn base(&mut self, repo: &Repo, issue: u64) -> Option<String> {
+        let base = fresh_base(&repo.root);
+        if let Some(b) = &base {
+            sync_skills(repo, b, issue, &mut self.skills_warned);
+        }
+        base
+    }
+
+    /// Count a finished run toward the harness breaker; true when the harness is failing.
+    fn harness(&mut self, r: &RunResult) -> bool {
+        let failing = r.outcome == Outcome::Stuck && harness_failing(&r.json);
+        self.harness_fails = if failing { self.harness_fails + 1 } else { 0 };
+        failing
+    }
+
+    /// When a paused run can resume: its reset time, or a retry later when it gave none.
+    fn resume_at(&self, r: &RunResult) -> i64 {
+        let now = self.shared.clock.now();
+        r.reset_at
+            .filter(|t| *t > now)
+            .unwrap_or(now + PAUSE_RETRY_S)
+    }
+
+    fn sleep_until(&mut self, reset: i64) {
+        eprintln!(
+            "ns watch: usage limit, sleeping until {}",
+            clock::iso(reset)
+        );
+        self.shared.clock.sleep_until(reset);
+    }
 }
 
 /// The Critical and Important findings `review.md` leaves open, one `<id>. <title> (<location>)`

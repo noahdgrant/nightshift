@@ -38,7 +38,7 @@ Every issue also carries at least one area label.
 
 | Role | Label in our tracker | Meaning | Next |
 |---|---|---|---|
-| `needs-triage` | `status:needs-triage` | New, not yet evaluated | `ns-triage` |
+| `needs-triage` | `status:needs-triage` | New, not yet evaluated | `ns-triage` (`ns watch` triages these, and issues with no state, before each unit) |
 | `needs-info` | `status:needs-info` | Waiting on the reporter for more information | reporter, then `ns-triage` |
 | `needs-repro` | `status:needs-repro` | A bug with no reproducible failure yet | `ns-troubleshoot` |
 | `needs-define` | `status:needs-define` | Intent unclear, or the change is large | `ns-define` |

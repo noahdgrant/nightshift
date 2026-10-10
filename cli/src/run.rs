@@ -54,6 +54,8 @@ pub struct RunArgs {
     pub dry_run: bool,
     pub factory: Option<PathBuf>,
     pub base: Option<String>,
+    /// Run the triage phase once and stop (`ns watch`'s triage pass), whatever `from` says.
+    pub triage_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1211,13 +1213,13 @@ fn drive(
     let subscription = fac.subscription();
     let mut attempts: BTreeMap<&'static str, u32> = BTreeMap::new();
     let mut timed_out: BTreeMap<&'static str, String> = BTreeMap::new();
-    let mut forced: Option<Decision> = args.from.as_ref().map(|f| {
+    let from = args
+        .triage_only
+        .then_some("triage")
+        .or(args.from.as_deref());
+    let mut forced: Option<Decision> = from.map(|f| {
         run(
-            PHASES
-                .iter()
-                .find(|p| **p == f.as_str())
-                .copied()
-                .unwrap_or("build"),
+            PHASES.iter().find(|p| **p == f).copied().unwrap_or("build"),
             "",
             "--from",
         )
@@ -1296,7 +1298,10 @@ fn drive(
         }
         let art_path = ctx.artifacts.join(artifact_of(phase));
         let moves = archive_for(&ctx.artifacts, phase, &state)?;
-        let prompt = ctx.prompt(&p, attempt, &feedback)?;
+        let mut prompt = ctx.prompt(&p, attempt, &feedback)?;
+        if args.triage_only {
+            prompt.push_str(factory::TRIAGE_ONLY);
+        }
         let transcript = ctx
             .common
             .join("ns")
@@ -1411,6 +1416,14 @@ fn drive(
 
         if let Some(f) = guards(ctx, &mut baseline, phase)? {
             return Ok(f);
+        }
+        if args.triage_only {
+            return Ok(match (r.timed_out, r.exit) {
+                (false, Some(0)) => finish(Outcome::Done, "triage ran", Some(phase)),
+                (true, _) => finish(Outcome::Stuck, gate::timed_out_after(timeout), Some(phase)),
+                (false, Some(c)) => finish(Outcome::Stuck, format!("exited {c}"), Some(phase)),
+                (false, None) => finish(Outcome::Stuck, "killed by a signal", Some(phase)),
+            });
         }
         if phase == "triage" && !written && r.exit == Some(0) && !r.timed_out && !art_path.exists()
         {
