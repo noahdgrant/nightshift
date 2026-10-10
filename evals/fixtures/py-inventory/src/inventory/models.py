@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -20,6 +21,8 @@ class Item:
             raise ValueError("sku must not be empty")
         if self.sku != self.sku.strip():
             raise ValueError("sku must not have surrounding whitespace")
+        if not re.fullmatch(r"[A-Z]+-[A-Z0-9]+", self.sku):
+            raise ValueError(f"invalid sku {self.sku!r}")
 
 
 @dataclass(frozen=True)
