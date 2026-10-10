@@ -12,6 +12,7 @@ use crate::error::SfError;
 use crate::factory::{Factory, Queue as QueueConfig};
 use crate::git::{self, Repo};
 use crate::install;
+use crate::review_md::{self, Status};
 use crate::run::{self, gh, gh_json, Outcome, RunArgs, RunResult, Shared};
 use crate::skills_sync::{self, Sync};
 use crate::worktree::BRANCH_PREFIX;
@@ -661,55 +662,18 @@ impl Night {
     }
 }
 
-/// The Critical and Important findings `review.md` leaves open, one `<id>. <title> (<location>)`
-/// line each, so the stuck comment tells a human what is left to finish.
+/// The Critical and Important findings in changed code `review.md` leaves open, one
+/// `<id>. <title> (<location>)` line each, so the stuck comment tells a human what is left to
+/// finish. A pre-existing finding is an escape filed elsewhere (D29), not the unit's to finish.
 fn open_findings(review: &str) -> Vec<String> {
-    let id = regex::Regex::new(r"^[CI]\d+\.\s").unwrap();
-    let field = |line: &str, name: &str| {
-        let l = line.trim_start().strip_prefix('-')?.replace('*', "");
-        let (k, v) = l.split_once(':')?;
-        k.trim()
-            .eq_ignore_ascii_case(name)
-            .then(|| v.trim().replace('`', ""))
-    };
-    struct Finding {
-        heading: String,
-        location: String,
-        open: bool,
-    }
-    let mut finding: Option<Finding> = None;
-    let mut found = Vec::new();
-    let mut flush = |f: Option<Finding>| {
-        if let Some(f) = f.filter(|f| f.open) {
-            found.push(if f.location.is_empty() {
-                f.heading
-            } else {
-                format!("{} ({})", f.heading, f.location)
-            });
-        }
-    };
-    for line in review.lines() {
-        if line.starts_with('#') {
-            flush(finding.take());
-            finding = line
-                .strip_prefix("### ")
-                .map(str::trim)
-                .filter(|h| id.is_match(h))
-                .map(|h| Finding {
-                    heading: h.replace('`', ""),
-                    location: String::new(),
-                    open: false,
-                });
-        } else if let Some(f) = finding.as_mut() {
-            if let Some(l) = field(line, "location") {
-                f.location = l;
-            } else if let Some(st) = field(line, "status") {
-                f.open = st.to_lowercase().starts_with("open");
-            }
-        }
-    }
-    flush(finding);
-    found
+    review_md::parse(review)
+        .into_iter()
+        .filter(|f| f.against_unit() && f.status == Status::Open)
+        .map(|f| match f.location {
+            Some(l) => format!("{}. {} ({l})", f.id, f.title),
+            None => format!("{}. {}", f.id, f.title),
+        })
+        .collect()
 }
 
 /// Two units in a row that fail like this stop the night instead of draining the queue.
@@ -781,6 +745,35 @@ Open after 3 fix cycles: C1, I2, I4.
             ]
         );
         assert!(open_findings("no findings here").is_empty());
+    }
+
+    #[test]
+    fn open_findings_reads_packed_one_line_and_range_forms() {
+        let review = "\
+## Important
+### I1. Packed fields
+- Location: `a.rs:585-605`. Raised by: architecture. Fix: split it. Status: open
+### I2-I3 (cycle 1). Grouped
+- Status: fixed (cycle 1, abc)
+- I4. Two-line bullet inside a heading finding is not its own finding
+## Critical
+- C1. One-line finding (security). Open.
+- C2. One-line finding, fixed in cycle 2 (correctness). Fixed.
+### C3. An escape
+- Scope: pre-existing
+- Status: open
+```
+### I9. In a code fence
+- Status: open
+```
+";
+        assert_eq!(
+            open_findings(review),
+            [
+                "I1. Packed fields (a.rs:585-605)",
+                "C1. One-line finding (security). Open."
+            ]
+        );
     }
 
     #[test]
