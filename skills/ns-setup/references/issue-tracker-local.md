@@ -16,6 +16,12 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 
 Everyone with write access to the repo is the team. There are no external reporters.
 
+## Audit
+
+audit issues per run: 5
+
+The most issues one `ns-agent-readiness` run files. With no such line, it files 5.
+
 ## Linking issues
 
 - **Child of a parent**: the directory is the parent. Add `Part of: <path>` near the top when linking across features.

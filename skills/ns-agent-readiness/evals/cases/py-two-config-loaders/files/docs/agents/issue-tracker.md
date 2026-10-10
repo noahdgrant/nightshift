@@ -33,4 +33,4 @@ Read the file at the referenced path. The user will normally pass the path or th
 
 audit issues per run: 1
 
-`ns-agent-readiness` files at most this many issues per run.
+The most issues one `ns-agent-readiness` run files. With no such line, it files 5.
