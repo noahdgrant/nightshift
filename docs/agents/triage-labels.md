@@ -18,8 +18,8 @@ Categories are the Conventional Commit type labels.
 | Role | Label in our tracker | Meaning |
 |---|---|---|
 | `critical` | `priority:critical` | Fix next: a Critical or security finding, including one that escaped an earlier review |
-| `high` | `priority:high` | Blocks other open issues, or breaks the factory or CI |
-| `medium` | `priority:medium` | Normal work |
+| `high` | `priority:high` | Blocks other open issues, breaks the factory or CI, or is tech debt: review follow-ups, escapes, fixes, refactors, missing tests. Debt goes ahead of new features |
+| `medium` | `priority:medium` | Normal work, including new features |
 | `low` | `priority:low` | Nice to have |
 
 ## Areas
