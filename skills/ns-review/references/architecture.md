@@ -16,7 +16,7 @@ Use these terms exactly.
 
 ## Look for
 
-- **Patterns**: does the change follow existing patterns? A new pattern needs a reason.
+- **Patterns**: does the change follow existing patterns? A second way to do a job the repo already does one way is a finding, and a new pattern needs a reason ([pave the road](../../ns-principle-pave-the-road/SKILL.md)).
 - **Module boundaries**: dependencies flowing the right way, no cycles, feature logic kept out of shared or general-purpose modules.
 - **Canonical helpers**: a bespoke near-duplicate of an existing helper is a finding. Name the helper to reuse.
 - **Complexity relocated, not reduced**: count the concepts a reader must hold. If a "cleaner" version keeps that count, it isn't cleaner. Prefer the restructuring that makes branches, modes or layers disappear.
@@ -25,7 +25,7 @@ Use these terms exactly.
 - **Bolted-on vs integrated**: if the requirement had been known from the start, would the code look like this?
 - **Legacy dual paths**: a new API added while the old one stays alive with no external consumer. Migrate callers and delete the old path in the same change.
 - **Non-atomic updates** that can leave state half-applied, and independent work serialised for no reason.
-- **Dependencies**: a new dependency the standard library or existing code already covers. For an upgrade: changelog read, one dependency per change, lockfile diff reviewed.
+- **Dependencies**: a new dependency the standard library or existing code already covers, or a new dependency or tool with no stated reason. For an upgrade: changelog read, one dependency per change, lockfile diff reviewed.
 - **File growth**: a file pushed past roughly 1000 lines. Decompose first, then add. A Suggestion, as the bar's Size section says.
 
 ## Smell baseline

@@ -1,0 +1,173 @@
+description = "The repo already parses durations in one helper (inventory.durations.parse_duration, used by reserve --ttl). The brief adds an extend command and spells the duration format out in its own words, so the quickest build writes a second parser. Pave the road: the build reuses the helper and adds no second duration parser."
+fixture = "py-inventory"
+skills = ["ns-principle-pave-the-road"]
+extra_skills = [
+  "ns-build",
+  "ns-contract",
+  "ns-tdd",
+  "ns-review",
+  "ns-principle-test-behavior-not-implementation",
+  "ns-principle-sequence-verifiable-units",
+  "ns-principle-subtract-before-you-add",
+  "ns-principle-laziness-protocol",
+  "ns-principle-fix-root-causes",
+  "ns-principle-attack-the-premise",
+  "ns-principle-minimize-reader-load",
+  "ns-principle-migrate-callers-then-delete-legacy-apis",
+  "ns-principle-encode-lessons-in-structure",
+]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Build unit 5-extend-reservation. You are already in its worktree, on branch ns/5-extend-reservation, and the brief is .ns/5-extend-reservation/brief.md. The repo has no remote, so skip the fetch and rebase. gates: auto. Nobody is around to answer questions. Stop after writing build.md: don't verify, review or ship.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/5-extend-reservation",
+  "mkdir -p .git/info && echo '.ns/' >> .git/info/exclude",
+  "mkdir -p .ns/5-extend-reservation && cp ../brief.md .ns/5-extend-reservation/",
+]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "frontmatter"
+path = ".ns/5-extend-reservation/build.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**", ".ns/**"]
+
+[[check]]
+# Hidden acceptance test, written outside the repo so the agent never sees it.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_extend_acceptance.py" <<'PYEOF'
+from datetime import datetime, timedelta
+
+import pytest
+
+from inventory import ReservationExpired, UnknownReservation, Warehouse
+from inventory.cli import main
+
+T0 = datetime(2026, 3, 2, 9, 0)
+
+
+def held():
+    w = Warehouse()
+    w.add_item("BOLT-M6", "M6 hex bolt")
+    w.receive("BOLT-M6", 10)
+    return w, w.reserve("BOLT-M6", 2, now=T0, ttl=timedelta(minutes=15))
+
+
+def test_extend_moves_only_the_expiry():
+    w, r = held()
+    got = w.extend(r.id, timedelta(hours=2), T0 + timedelta(minutes=5))
+    assert got.expires_at == datetime(2026, 3, 2, 11, 15)
+    assert (got.id, got.sku, got.quantity, got.created_at) == (r.id, r.sku, r.quantity, r.created_at)
+    assert w.reservation(r.id).expires_at == datetime(2026, 3, 2, 11, 15)
+
+
+def test_expired_and_unknown_are_refused():
+    w, r = held()
+    with pytest.raises(ReservationExpired):
+        w.extend(r.id, timedelta(hours=1), T0 + timedelta(minutes=15))
+    with pytest.raises(UnknownReservation):
+        w.extend("R9999", timedelta(hours=1), T0)
+
+
+def cli(tmp_path):
+    state = tmp_path / "inventory.json"
+
+    def run(*args):
+        try:
+            return main(["--state", str(state), "--now", "2026-03-02T09:00:00", *args])
+        except SystemExit as e:
+            return e.code
+
+    assert run("add-item", "BOLT-M6", "M6 hex bolt") == 0
+    assert run("receive", "BOLT-M6", "10") == 0
+    assert run("reserve", "BOLT-M6", "2", "--ttl", "15m") == 0
+    return run, state
+
+
+def test_cli_extend_prints_like_reserve(tmp_path, capsys):
+    run, _ = cli(tmp_path)
+    capsys.readouterr()
+    assert run("extend", "R0001", "2h") == 0
+    assert capsys.readouterr().out.strip() == "R0001: 2 x BOLT-M6 until 2026-03-02T11:15:00"
+
+
+@pytest.mark.parametrize("bad", ["0m", "2x", "h"])
+def test_cli_bad_duration_fails_and_keeps_state(tmp_path, bad):
+    run, state = cli(tmp_path)
+    before = state.read_text()
+    assert run("extend", "R0001", bad) not in (0, None)
+    assert state.read_text() == before
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_extend_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+# The paved road: the extend command parses its duration through the existing helper. A spy
+# replaces parse_duration wherever it is bound and adds a minute, so the printed expiry shows
+# that extend used the helper's result.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_extend_reuses_helper.py" <<'PYEOF'
+import sys
+from datetime import timedelta
+
+import inventory.durations as durations
+from inventory.cli import main
+
+
+def test_extend_parses_through_parse_duration(tmp_path, monkeypatch, capsys):
+    state = tmp_path / "inventory.json"
+
+    def run(*args):
+        return main(["--state", str(state), "--now", "2026-03-02T09:00:00", *args])
+
+    assert run("add-item", "BOLT-M6", "M6 hex bolt") == 0
+    assert run("receive", "BOLT-M6", "10") == 0
+    assert run("reserve", "BOLT-M6", "2", "--ttl", "15m") == 0
+    capsys.readouterr()
+
+    real = durations.parse_duration
+    seen = []
+
+    def spy(text):
+        seen.append(text)
+        return real(text) + timedelta(minutes=1)
+
+    for name, module in list(sys.modules.items()):
+        if (name == "inventory" or name.startswith("inventory.")) and getattr(module, "parse_duration", None) is real:
+            monkeypatch.setattr(module, "parse_duration", spy)
+
+    assert run("extend", "R0001", "2h") == 0
+    assert "2h" in seen
+    assert capsys.readouterr().out.strip() == "R0001: 2 x BOLT-M6 until 2026-03-02T11:16:00"
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_extend_reuses_helper.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+# No second duration parser: hour and day units are spelled out only in durations.py.
+type = "command"
+run = '''
+! grep -nE "timedelta\(\s*(hours|days)\s*=|[\"'](h|d|hours?|days?)[\"']" -r src/inventory --include='*.py' | grep -v '^src/inventory/durations\.py:'
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Did the build reuse inventory.durations.parse_duration for the extend command's duration, rather than writing a second parser or a near-duplicate helper? Does build.md or the diff state a reason for any new pattern, helper or dependency it added?"
+required = false
