@@ -200,7 +200,7 @@ The self-check merged as a5ca0f3 at 2026-10-09 21:04:39 UTC. Units split by thei
 | tests | 17, 0.24 | 17, 0.37 |
 | unknown axis | 12, 0.17 | 5, 0.11 |
 
-Axis rows are first-pass blocking findings, then findings per 100 changed lines.
+Axis rows are first-pass blocking findings, then findings per 100 changed lines. A finding that names several axes counts once under each, so the axis rows sum to 77 before and 51 after, against 55 and 30 blocking findings.
 
 Read these with care:
 
