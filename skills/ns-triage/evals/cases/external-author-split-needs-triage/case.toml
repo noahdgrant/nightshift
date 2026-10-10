@@ -58,7 +58,8 @@ for path in children:
         "needs-triage": bool(re.search(r"(?m)^\**Status:?\**:?\s*`?needs-triage`?\s*$", text)),
         "Agent Brief": bool(re.search(r"(?m)^#+\s*Agent Brief", text)),
         "criteria": "- [ ]" in text,
-        "listed in parent's Triage Notes": stem in notes or path in notes,
+        "listed in parent's Triage Notes": stem in notes or path in notes
+            or bool(re.search(rf"(?<!\d){re.escape(stem[:2])}(?!\d)", notes)),
         "Origin: names Sam": bool(re.search(r"(?mi)^\**Origin:?\**:?.*\bSam\b", text)),
         "no Reported by: naming Sam, so a rerun can reuse it": not re.search(r"(?mi)^\**Reported by:?\**:?.*\bSam\b", text),
         "linked to the parent by directory or Part of:": os.path.dirname(os.path.dirname(os.path.realpath(path))) == parent_feature
