@@ -1,10 +1,12 @@
 //! `ns eval` end to end against a fake harness that emits canned claude-stream-json.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
-use assert_cmd::Command;
+use common::Ns;
 use predicates::prelude::*;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -152,8 +154,8 @@ fn setup() -> Env {
 }
 
 impl Env {
-    fn ns(&self) -> Command {
-        let mut c = Command::cargo_bin("ns").unwrap();
+    fn ns(&self) -> Ns {
+        let mut c = common::ns();
         c.env_remove("XDG_CONFIG_HOME")
             .env_remove("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS")
             .env_remove("CLAUDE_CODE_DISABLE_AUTO_MEMORY")

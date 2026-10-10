@@ -1,14 +1,16 @@
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
-use assert_cmd::Command;
+use common::Ns;
 use predicates::prelude::*;
 use serde_json::Value;
 use tempfile::TempDir;
 
-fn ns() -> Command {
-    let mut c = Command::cargo_bin("ns").unwrap();
+fn ns() -> Ns {
+    let mut c = common::ns();
     c.env_remove("NS_CONFIG").env_remove("XDG_CONFIG_HOME");
     c
 }

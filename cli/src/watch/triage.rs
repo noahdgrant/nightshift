@@ -150,7 +150,7 @@ pub(super) fn pass(
             // The limit stopped the run before it triaged: run it again, uncounted.
             night.triage.runs -= 1;
             night.triage.tried.remove(&issue.number);
-            night.sleep_until(reset);
+            night.sleep_until(reset)?;
             continue;
         }
         rec["state"] = json!(labels(&repo.root, &issue.number.to_string())

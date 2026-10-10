@@ -572,7 +572,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                         set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
                         break 'outer PAUSED_PAST_UNTIL.into();
                     }
-                    night.sleep_until(reset);
+                    night.sleep_until(reset)?;
                     continue;
                 }
             }
@@ -656,12 +656,12 @@ impl Night {
             .unwrap_or(now + PAUSE_RETRY_S)
     }
 
-    fn sleep_until(&mut self, reset: i64) {
+    fn sleep_until(&mut self, reset: i64) -> Result<()> {
         eprintln!(
             "ns watch: usage limit, sleeping until {}",
             clock::local_iso(reset)
         );
-        self.shared.clock.sleep_until(reset);
+        self.shared.clock.sleep_until(reset)
     }
 }
 
