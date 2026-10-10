@@ -470,6 +470,94 @@ fn since_a_date_is_midnight_utc() {
 }
 
 #[test]
+fn until_a_date_keeps_that_whole_utc_day() {
+    let f = fixture();
+    let v = quality(&f, &["--until", "2026-10-09"]);
+    assert_eq!(v["until"], "2026-10-09T23:59:59Z");
+    assert_eq!(v["since"], Value::Null);
+    // 1-alpha's runs at 02:00Z and 02:31Z and 8-gone's at 12:00Z, all on the 9th.
+    assert_eq!(
+        selected(&v),
+        (vec!["1-alpha".to_string()], json!(3), json!(2))
+    );
+    assert_eq!(
+        quality(&f, &["--until", "2026-10-09"]),
+        quality(&f, &["--until", "2026-10-09T23:59:59Z"])
+    );
+    assert_eq!(quality(&f, &["--until", "2026-10-08"])["units"], 0);
+}
+
+#[test]
+fn until_an_instant_is_inclusive_and_filters_a_unit_by_its_last_attempt() {
+    let f = fixture();
+    assert_eq!(
+        selected(&quality(&f, &["--until", "2026-10-09T02:30:00Z"])).0,
+        ["1-alpha"]
+    );
+    assert_eq!(
+        quality(&f, &["--until", "2026-10-09T02:29:59Z"])["units"],
+        0
+    );
+    // 2-beta's first attempt is 12:00Z on the 10th, its last 03:00Z on the 11th.
+    assert_eq!(
+        selected(&quality(&f, &["--until", "2026-10-10T12:00:00Z"])).0,
+        ["1-alpha"]
+    );
+    assert_eq!(
+        quality(&f, &["--until", "2026-10-11T03:00:00Z"])["units"],
+        2
+    );
+}
+
+#[test]
+fn since_and_until_select_a_closed_range() {
+    let f = fixture();
+    let v = quality(&f, &["--since", "2026-10-09", "--until", "2026-10-09"]);
+    assert_eq!(
+        (v["since"].clone(), v["until"].clone()),
+        (json!("2026-10-09T00:00:00Z"), json!("2026-10-09T23:59:59Z"))
+    );
+    assert_eq!(
+        selected(&v),
+        (vec!["1-alpha".to_string()], json!(3), json!(2))
+    );
+    let at = "2026-10-09T02:30:00Z";
+    let v = quality(&f, &["--since", at, "--until", at]);
+    assert_eq!(
+        selected(&v),
+        (vec!["1-alpha".to_string()], json!(0), json!(0))
+    );
+    assert_eq!(
+        quality(
+            &f,
+            &[
+                "--since",
+                "2026-10-09T02:30:01Z",
+                "--until",
+                "2026-10-11T02:59:59Z"
+            ]
+        )["units"],
+        0
+    );
+}
+
+#[test]
+fn until_a_day_and_since_the_next_split_with_no_overlap_or_gap() {
+    let f = fixture();
+    late_unit(&f);
+    let all = selected(&quality(&f, &[]));
+    for tz in ["EST5EDT,M3.2.0,M11.1.0", "UTC0"] {
+        let before = selected(&quality_tz(&f, tz, &["--until", "2026-10-09"]));
+        let after = selected(&quality_tz(&f, tz, &["--since", "2026-10-10"]));
+        assert_eq!(before.0, ["1-alpha"], "{tz}");
+        assert_eq!([before.0, after.0].concat(), all.0, "{tz}");
+        let n = |v: &Value| v.as_u64().unwrap();
+        assert_eq!(n(&before.1) + n(&after.1), n(&all.1), "{tz}");
+        assert_eq!(n(&before.2) + n(&after.2), n(&all.2), "{tz}");
+    }
+}
+
+#[test]
 fn a_blame_that_cannot_run_is_reported_not_fatal() {
     let f = fixture();
     let p = f
@@ -517,6 +605,7 @@ fn an_undated_unit_trends_last_and_since_drops_it() {
     );
     assert_eq!(v["gaps"]["units_without_updated"], 1);
     assert_eq!(quality(&f, &["--since", "2026-01-01"])["units"], 2);
+    assert_eq!(quality(&f, &["--until", "2099-01-01"])["units"], 2);
 }
 
 #[test]
@@ -538,6 +627,26 @@ fn usage_errors_exit_2_with_a_correct_invocation() {
         .code(2)
         .stderr(predicate::str::contains(
             "YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD",
+        ));
+    ns().current_dir(&f.root)
+        .args(["quality", "--until", "2026-10-9"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "--until \"2026-10-9\" is not a UTC time: use YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD (23:59:59 UTC)",
+        ))
+        .stderr(predicate::str::contains(
+            "ns quality --until 2026-10-01T23:59:59Z",
+        ));
+    ns().current_dir(&f.root)
+        .args(["quality", "--since", "2026-10-10", "--until", "2026-10-09"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "--until 2026-10-09T23:59:59Z is before --since 2026-10-10T00:00:00Z",
+        ))
+        .stderr(predicate::str::contains(
+            "ns quality --since 2026-10-01 --until 2026-10-09",
         ));
     let tmp = tempfile::tempdir().unwrap();
     ns().current_dir(tmp.path())
