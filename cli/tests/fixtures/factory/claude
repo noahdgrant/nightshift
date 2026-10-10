@@ -7,6 +7,7 @@
 #   script runs $FAKE_CTRL/<phase>.sh in the worktree
 #   <extra>+sleep (e.g. commit+sleep) does the extra, then sleeps
 #   $FAKE_CTRL/<phase>.body, when it exists, is appended to the artifact body
+#   ship's pr.md names PR $FAKE_CTRL/pr-$NS_UNIT, else $FAKE_CTRL/pr, else none
 #   sleep writes the artifact last, then execs sleep so a short timeout kills it with no orphan
 set -e
 ctrl="$FAKE_CTRL"
@@ -68,7 +69,8 @@ sha=$(git rev-parse --short HEAD)
   echo "phase: $phase"
   echo "status: $status"
   echo "sha: $sha"
-  if [ "$art" = pr ] && [ -s "$ctrl/pr" ]; then echo "pr: https://github.com/o/r/pull/$(cat "$ctrl/pr")"; fi
+  prf="$ctrl/pr"; [ -s "$ctrl/pr-$NS_UNIT" ] && prf="$ctrl/pr-$NS_UNIT"
+  if [ "$art" = pr ] && [ -s "$prf" ]; then echo "pr: https://github.com/o/r/pull/$(cat "$prf")"; fi
   echo "updated: 2026-10-08T00:00:00Z"
   echo ---
   echo "$phase said $status $extra"
