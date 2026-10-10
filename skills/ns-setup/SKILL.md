@@ -93,6 +93,13 @@ Write `docs/agents/*.md` from the templates in [references/](references/):
 - [stack.md](references/stack.md), [verify.md](references/verify.md), [triage-labels.md](references/triage-labels.md), [domain.md](references/domain.md), [docs.md](references/docs.md)
 - one of [issue-tracker-github.md](references/issue-tracker-github.md), [issue-tracker-gitlab.md](references/issue-tracker-gitlab.md), [issue-tracker-local.md](references/issue-tracker-local.md). For "other", write `docs/agents/issue-tracker.md` from the user's description, covering the same operations. Every tracker file keeps the template's `## Audit` section with `audit issues per run: 5`.
 
+If the repo has a `Cargo.toml`, install the Rust rule pack, which `ns rules check` runs:
+
+1. Find the pack: `rules/rust/` in the nightshift checkout this skill comes from (`realpath` this skill's directory, then `../../rules/rust`).
+2. Run `<pack>/install.sh <repo> <crate-dir>`, where `<crate-dir>` is the directory of the workspace's root `Cargo.toml`, relative to the repo. It copies the pack to `.nightshift/rules/rust/`, writes `allowed-crates.txt` from today's dependency graph, and adds the `rules` row to the Commands table of `docs/agents/stack.md`. Rerunning it refreshes the pack and keeps the repo's lists.
+3. Fill `.nightshift/rules/rust/roads.txt` with the helpers that own a job (`<name> <file>` per line: the git wrapper, the subprocess runner), from what Explore found. A second definition of one of those names is a `duplicate-helper` finding.
+4. Run `ns rules check --human`. It needs `jq`, `ast-grep` and `cargo-deny` on PATH; a missing one fails naming it. Show the user the findings, and have them accept today's with `ns rules baseline --allow-growth`, a human's act.
+
 If the worktree check found traps:
 - write the fix-up commands to `.nightshift/nightshift.toml` under `[worktree] setup = [...]`. `ns worktree new` runs them in each new worktree, with `NS_UNIT`, `NS_WORKTREE` and `NS_MAIN_ROOT` set, and again when a stop, a crash or a failed command cut them short. Make each safe to rerun on a worktree it already set up.
 - write the worktree-correct build and test commands into `stack.md`.
@@ -119,6 +126,6 @@ Repo settings the `ns-*` skills read. Edit the files directly to change them.
 
 ### 5. Done
 
-Done when all six `docs/agents/` files exist with no unfilled placeholders, and the instructions file holds the block. Tell the user which seams are `none` or unmeasured, and, if verify isn't set up, that `ns-setup-verify` is the next step. They can edit `docs/agents/*.md` directly later. Re-run this skill to switch trackers or start over.
+Done when all six `docs/agents/` files exist with no unfilled placeholders, the instructions file holds the block, and a Rust repo has the `rules` row with `ns rules check` exiting 0. Tell the user which seams are `none` or unmeasured, and, if verify isn't set up, that `ns-setup-verify` is the next step. They can edit `docs/agents/*.md` directly later. Re-run this skill to switch trackers or start over.
 
 Then offer an agent-readiness audit: it finds what in the codebase helps or hurts agents and files the top findings as issues. On yes, load the `ns-agent-readiness` skill and run it under `gates: stop`, so the user picks what to file.
