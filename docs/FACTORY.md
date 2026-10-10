@@ -180,11 +180,32 @@ The command is `[phases.build] gate`. Unset, it is the `ci-local` row of the Com
 | ci-local | `scripts/ci-local.sh` | 2 min |
 ```
 
-With neither, no gate runs. Both are read from the main checkout when `ns run` starts, so a phase can't change the command. The script it runs lives in the worktree, though, so the gate is not tamper-proof.
+With neither, no gate runs. When `stack.md` has a `rules` row (see "Rules"), the gate is the command above followed by `&& <ns> rules check`, or `<ns> rules check` alone when there is no command, where `<ns>` is the path of the running `ns` binary. Both are read from the main checkout when `ns run` starts, so a phase can't change the command. The script it runs lives in the worktree, though, so the gate is not tamper-proof.
 
 `ns run` runs the command with `sh -c` in the worktree after a build that wrote `status: pass`, and again after a review that moved HEAD (a fix cycle that committed). It doesn't run again at a HEAD where it already went green in this invocation. It is killed at the build phase's `timeout_minutes` (`NS_GATE_TIMEOUT_MS` overrides it, for tests). Only the last 16 KiB of its log are read for the tail. Output goes to `<git-common-dir>/ns/transcripts/<unit>/gate-<phase>-<attempt>.log`.
 
 Exit 0 is green and the run goes on as the state table says. A non-zero exit, a signal, the memory cap or the timeout is red: the next phase is build, with the command, how it failed and the last 40 lines of its output (at most 3000 bytes) as `{feedback}`. How it failed names the signal ("was killed by SIGKILL") or the cap ("exceeded the 16384 MB memory limit") when one ended it, and so does the stuck reason: "build is out of attempts (2): the CI gate exceeded the 16384 MB memory limit". That build uses an attempt against `max_attempts`, so a gate that stays red ends with "build is out of attempts". Each run is a `gate` event in the run log with `phase` (what triggered it), `attempt`, `command`, `sha`, `exit`, `signal`, `timed_out`, `memory_exceeded`, `wall_s`, `green` and `log`. `ns run --dry-run` shows the command as `gate`.
+
+### Rules
+
+A rule pack is the set of linters and pattern checkers a repo runs to enforce its rules (`ruff check`, `ast-grep scan`, `cargo clippy`, `cargo deny check`). `ns rules check` runs it and fails only on violations a committed baseline doesn't list, so existing code never blocks a unit. The commands are every backticked span that opens the second cell of the `rules` row in `docs/agents/stack.md`, separated by commas or spaces:
+
+```markdown
+| rules | `ruff check --output-format=concise .`, `./scripts/rules-ast-grep` | 10 s |
+```
+
+Each command runs with `sh -c` at the top of the git checkout it is started in. Every line it prints, on stdout or stderr, that is a finding is read as one:
+
+- a JSON object with `file`, and optionally `tool`, `rule`, `line`, `message` and `snippet`
+- `file:line[:col]: message`, the format most compilers and linters can print; its `rule` is empty
+
+`tool` defaults to the command's first word without its directory (`./scripts/rules-ast-grep` is `rules-ast-grep`). A path under the checkout is made relative to it. `snippet` defaults to the source line at `file:line` with whitespace collapsed, else the message. Other lines are ignored, so a tool that prints neither format needs a wrapper script that converts its output (for example its JSON, with `jq`). A command that exits non-zero and prints no finding is an error: a linter that isn't installed must not read as clean.
+
+The baseline is `.nightshift/rules-baseline.json`: `{"version": 1, "violations": [<finding>...]}`, sorted. A finding matches a baseline entry when `tool`, `rule`, `file` and `snippet` are equal, so a line that moves still matches, and matching counts: two identical findings need two entries.
+
+`ns rules check` prints `{ok, command, baseline, commands, findings, baselined, new, fixed}` and exits 1 when `new` is not empty. `fixed` lists baseline entries nothing matched. With no `rules` row it runs nothing and exits 0, which is why CI and `scripts/ci-local.sh` can run it unconditionally.
+
+`ns rules baseline` writes every current finding to the baseline. It is a ratchet: entries that are gone are dropped, and a finding the baseline lacks, every finding when there is no baseline yet, is growth. Without `--allow-growth`, growth writes nothing and exits 1 with status `refused`. `--allow-growth` is for a human accepting debt, never for an agent. A run that adds and drops nothing writes nothing (`already-done`), and `--dry-run` writes nothing (`planned`). `.nightshift/**` needs a human merge, so every baseline change, a shrink too, does.
 
 ### Memory cap
 
