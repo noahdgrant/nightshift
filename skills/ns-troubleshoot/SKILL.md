@@ -136,7 +136,9 @@ Find the seam for the regression test. A correct seam is one where the test exer
 Set the route from what you found:
 
 - **`ns-build`**: a correct seam exists and the fix is local to the root cause.
-- **`ns-define`**: no correct seam exists, or the fix needs a redesign (an interface change, a data format change, a decision with trade-offs). A missing seam is itself the finding: the architecture is keeping the bug from being locked down. Say so. Status and Route follow the Gate table.
+- **`ns-define`**: no correct seam exists, or the fix needs a redesign (an interface change, a data format change, a decision with trade-offs). A missing seam is itself the finding: the architecture is keeping the bug from being locked down. Say so.
+
+The Gate table maps the route to `status` and the tracker state.
 
 ## Phase 6: Cleanup
 
@@ -177,23 +179,17 @@ The seam the regression test belongs at, or why no correct seam exists.
 The hypothesis that survived, the probe that confirmed it, and the ones falsified.
 ```
 
-Re-read the brief for secrets before posting it (see Redact). Then post it to the tracker as `ns-triage` does (its steps cover posting a brief and moving state):
-
-- Route `ns-build`: move the issue to `ready-for-agent`.
-- Route `ns-define`: move it to `needs-define`.
-- `blocked` or `fail`: post the brief as a comment and leave the state.
-
-While the issue is `status:in-progress`, `ns run` is working it: post the comment and leave the labels alone.
+Re-read the brief for secrets before posting it (see Redact). Then post it to the tracker as `ns-triage` does (its steps cover posting a brief and moving state), and move the issue to the Gate table's tracker state. While the issue is `status:in-progress`, `ns run` is working it: post the comment and leave the labels alone.
 
 ## Gate
 
 The gate passes when the brief's repro command has been run and shown red and a root cause has survived a falsifying probe. The Route line is `ns-build`, `ns-define` or `none`, and the status follows the table. `ns run` reads only `status`, so a redesign is `blocked`: a `pass` would make unattended `ns run` build.
 
-| status | when | Route | sections kept | first line of the body, above `Issue:` |
-| --- | --- | --- | --- | --- |
-| `pass` | gate passes, route `ns-build` | `ns-build` | Agent Brief, Repro, Root cause | none |
-| `blocked` | gate passes, route `ns-define` (redesign) | `ns-define` | Agent Brief, Repro, Root cause | `needs redesign: route ns-define` plus the reason, in one sentence |
-| `blocked` | no red loop: a resource is missing, or only a HITL loop under `gates: auto` | none | Repro (what you tried) | the blocker and what would unblock it, in one sentence |
-| `fail` | a red loop, but no hypothesis survived | none | Repro, and the hypotheses falsified | why no hypothesis survived, in one sentence |
+| status | when | Route | tracker state | sections kept | first line of the body, above `Issue:` |
+| --- | --- | --- | --- | --- | --- |
+| `pass` | gate passes, route `ns-build` | `ns-build` | `ready-for-agent` | Agent Brief, Repro, Root cause | none |
+| `blocked` | gate passes, route `ns-define` (redesign) | `ns-define` | `needs-define` | Agent Brief, Repro, Root cause | `needs redesign: route ns-define` plus the reason, in one sentence |
+| `blocked` | no red loop: a resource is missing, or only a HITL loop under `gates: auto` | none | unchanged, brief posted as a comment | Repro (what you tried) | the blocker and what would unblock it, in one sentence |
+| `fail` | a red loop, but no hypothesis survived | none | unchanged, brief posted as a comment | Repro, and the hypotheses falsified | why no hypothesis survived, in one sentence |
 
 Under `gates: stop` (the default), stop and report the path to `brief.md`. Under `gates: auto`, load the skill named by **Route** if `status: pass`, and stop otherwise. If it isn't installed, report the routing and stop.

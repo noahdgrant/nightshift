@@ -37,6 +37,10 @@ The agent needs to know when it's done. Every Agent Brief has concrete, testable
 
 State what is out of scope. This keeps the agent from gold-plating or making assumptions about adjacent features.
 
+### Route when the next phase isn't obvious
+
+`**Route:**` is optional. A brief that moves to `ready-for-agent` goes to `ns-build`, so triage usually leaves it out. `ns-troubleshoot` always writes it, because its brief can go to `ns-build`, to `ns-define` for a redesign, or nowhere. `ns run` reads only the frontmatter `status`, so the Route never overrides it.
+
 ### Sized to one unit
 
 Record the size estimate in the brief; the limits and the split are in [triage](../SKILL.md) step 5.
@@ -47,6 +51,7 @@ Record the size estimate in the brief; the limits and the split are in [triage](
 ## Agent Brief
 
 **Category:** bug / enhancement
+**Route:** ns-build / ns-define / none (optional: the phase that picks the brief up)
 **Summary:** one-line description of what needs to happen
 
 **Current behavior:**

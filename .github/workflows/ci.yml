@@ -86,8 +86,11 @@ jobs:
       - run: python -m pip install pytest
       - run: python -m pytest -q
       - name: ns-troubleshoot brief checker tests
-        working-directory: skills/ns-troubleshoot/evals/cases/py-hold-expires-early
-        run: python -m unittest -q test_check_brief
+        working-directory: skills/ns-troubleshoot/evals/cases
+        run: |
+          for test in */test_check_brief.py; do
+            (cd "$(dirname "$test")" && python -m unittest -q test_check_brief)
+          done
 
   private-refs:
     name: Private-reference guard

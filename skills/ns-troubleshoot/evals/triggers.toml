@@ -57,3 +57,23 @@ expect = false
 [[trigger]]
 prompt = "Add a glossary entry for 'backorder' to GLOSSARY.md."
 expect = false
+
+[[trigger]]
+prompt = "We know why holds expire early: to_dict cuts expires_at to the minute. Write the regression test and fix it."
+expect = false
+
+[[trigger]]
+prompt = "The fix for issue 02 is built. Drive the CLI, prove holds now last until the printed expiry, and write the evidence."
+expect = false
+
+[[trigger]]
+prompt = "Issue 06 has a repro and a root cause, but fixing it needs a new state file format. Lay out the design options."
+expect = false
+
+[[trigger]]
+prompt = "File an issue: fulfil sometimes refuses a hold early. Just write it up, don't investigate."
+expect = false
+
+[[trigger]]
+prompt = "CI on my PR is red because clippy flags an unused variable. Get the PR green."
+expect = false

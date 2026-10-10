@@ -49,14 +49,17 @@ exit 0
 "#;
 
 /// Imports pytest only when `$PYTEST` is set, and hands the eval plan filter (`-I -`) to the
-/// real python3 so the filter itself is what runs.
+/// real python3 so the filter itself is what runs. Any other run logs its directory and fails
+/// when that log line contains `$FAIL_ON`.
 fn python_stub(real: &Path) -> String {
     format!(
         r#"#!/bin/sh
 case "$*" in
   "-I -c import pytest") [ -n "$PYTEST" ] ;;
   "-I - "*) exec {real:?} "$@" ;;
-  *) echo "python ran: $*" >&2 ;;
+  *) line="python ran in ${{PWD##*/}}: $*"
+     echo "$line" >&2
+     case "$FAIL_ON" in ?*) case "$line" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac ;;
 esac
 "#
     )
@@ -96,8 +99,11 @@ impl Repo {
         write_exe(&root.join("bin/python3"), &python);
         write_exe(&root.join("bin/python"), &python);
         fs::create_dir_all(root.join("evals/fixtures/py-inventory")).unwrap();
-        fs::create_dir_all(root.join("skills/ns-troubleshoot/evals/cases/py-hold-expires-early"))
-            .unwrap();
+        let cases = root.join("skills/ns-troubleshoot/evals/cases");
+        for case in ["py-hold-expires-early", "py-lost-hold-needs-redesign"] {
+            write_exe(&cases.join(case).join("test_check_brief.py"), "");
+        }
+        fs::create_dir_all(cases.join("py-no-checker")).unwrap();
         Repo { dir }
     }
 
@@ -136,8 +142,13 @@ fn every_step_runs_in_order_and_the_run_passes() {
     let out = Repo::new().run(&[], &[("PYTEST", "1")]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(steps(&out), ALL_STEPS);
-    assert!(stderr(&out).contains("python ran: -m pytest -q"));
-    assert!(stderr(&out).contains("python ran: -m unittest -q test_check_brief"));
+    assert!(stderr(&out).contains("python ran in py-inventory: -m pytest -q"));
+    for case in ["py-hold-expires-early", "py-lost-hold-needs-redesign"] {
+        assert!(stderr(&out).contains(&format!(
+            "python ran in {case}: -m unittest -q test_check_brief"
+        )));
+    }
+    assert!(!stderr(&out).contains("python ran in py-no-checker"));
     assert!(stderr(&out).contains("ci-local: all checks passed"));
 }
 
@@ -148,6 +159,10 @@ fn a_failing_step_stops_the_run() {
         ("decoy", "cargo test under a decoy GIT_DIR"),
         ("ns check-markers", "ns check-markers"),
         ("ns eval", "ns eval --dry-run"),
+        (
+            "python ran in py-hold-expires-early",
+            "ns-troubleshoot brief checker tests",
+        ),
     ] {
         let out = Repo::new().run(&[], &[("FAIL_ON", fail_on)]);
         assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
