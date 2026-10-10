@@ -1086,3 +1086,15 @@ fn an_inherited_git_dir_never_reaches_another_repo() {
     assert!(git(&root, &["branch", "--list", "ns/7-thing"]).contains("ns/7-thing"));
     assert_eq!(git(&decoy, &["rev-parse", "--is-bare-repository"]), "false");
 }
+
+#[test]
+fn version_names_the_commit_ns_was_built_from() {
+    let head = git(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        &["rev-parse", "HEAD"],
+    );
+    ns().arg("--version")
+        .assert()
+        .success()
+        .stdout(format!("ns {} ({head})\n", env!("CARGO_PKG_VERSION")));
+}

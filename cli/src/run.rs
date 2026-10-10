@@ -187,7 +187,7 @@ impl Shared {
         }
     }
 
-    fn add_spend(&mut self, unit: &str, usd: f64) -> Result<()> {
+    pub(crate) fn add_spend(&mut self, unit: &str, usd: f64) -> Result<()> {
         match &self.night {
             Some(n) => n.add_spend(unit, usd),
             None => {
@@ -1817,19 +1817,25 @@ fn guards(
     if let Some((branch, sha)) = baseline.clone() {
         if let Some(now) = remote_sha(&ctx.worktree, &branch) {
             if now != sha {
-                let ours = git::ok(
+                let reachable = git::ok(
                     &ctx.worktree,
                     &["merge-base", "--is-ancestor", &now, "HEAD"],
                 );
-                if ours {
-                    ctx.log(json!({"event": "breach", "rule": "default branch moved", "phase": phase, "from": sha, "to": now}));
-                    return Ok(Some(finish(
-                        Outcome::Stuck,
-                        format!("default branch moved: {branch} went from {sha} to {now}, a commit of this unit"),
-                        Some(phase),
-                    )));
+                let mut prs = vec![];
+                if reachable {
+                    match merged_by_others(ctx, &sha, &now) {
+                        Ok(p) => prs = p,
+                        Err(why) => {
+                            ctx.log(json!({"event": "breach", "rule": "default branch moved", "phase": phase, "from": sha, "to": now, "why": why}));
+                            return Ok(Some(finish(
+                                Outcome::Stuck,
+                                format!("default branch moved: {branch} went from {sha} to {now}, which this unit holds and may have pushed: {why}"),
+                                Some(phase),
+                            )));
+                        }
+                    }
                 }
-                ctx.log(json!({"event": "default_moved_by_other_actor", "phase": phase, "from": sha, "to": now}));
+                ctx.log(json!({"event": "default_moved_by_other_actor", "phase": phase, "from": sha, "to": now, "prs": prs}));
                 *baseline = Some((branch, now));
             }
         }
@@ -1851,6 +1857,70 @@ fn guards(
         }
     }
     Ok(None)
+}
+
+/// The most commits one move of the default branch is checked for, so a long push is still
+/// decided with a bounded number of GitHub queries.
+const MOVE_CHECK_MAX: usize = 50;
+
+/// The default branch moved from `from` to `now`, a commit the unit's HEAD holds. That is
+/// another actor's move only when every commit it added along the first-parent line came from
+/// a merged PR that isn't this unit's: the unit holds `now` because it rebased onto it. Returns
+/// those PRs, or why the move counts as this unit's.
+fn merged_by_others(ctx: &Ctx<'_>, from: &str, now: &str) -> std::result::Result<Vec<u64>, String> {
+    let text = git::run(
+        &ctx.worktree,
+        &[
+            "rev-list",
+            "--first-parent",
+            &format!("--max-count={}", MOVE_CHECK_MAX + 1),
+            &format!("{from}..{now}"),
+        ],
+    )
+    .map_err(|e| format!("cannot list the commits it added: {e:#}"))?;
+    let commits: Vec<&str> = text.split_whitespace().collect();
+    if commits.is_empty() {
+        return Err("it added no commit".into());
+    }
+    if commits.len() > MOVE_CHECK_MAX {
+        return Err(format!("it added more than {MOVE_CHECK_MAX} commits"));
+    }
+    let own_pr = known_pr(&ctx.artifacts);
+    let own_branch = format!("{}{}", worktree::BRANCH_PREFIX, ctx.unit);
+    let mut prs = vec![];
+    for c in commits {
+        let pulls = gh_json(
+            &ctx.worktree,
+            &[
+                "api",
+                &format!("repos/{{owner}}/{{repo}}/commits/{c}/pulls"),
+            ],
+        )
+        .map_err(|e| format!("cannot tell who made {c}: {e:#}"))?;
+        let n = other_merged_pr(&pulls, own_pr, &own_branch)
+            .ok_or_else(|| format!("{c} is in no merged PR of another branch"))?;
+        if !prs.contains(&n) {
+            prs.push(n);
+        }
+    }
+    Ok(prs)
+}
+
+/// A merged PR in GitHub's `commits/<sha>/pulls` list, when the list names no PR that is
+/// `own_pr` or comes from `own_branch`.
+fn other_merged_pr(pulls: &Value, own_pr: Option<u64>, own_branch: &str) -> Option<u64> {
+    let pulls = pulls.as_array()?;
+    let own = |p: &Value| {
+        p["number"].as_u64().is_some_and(|n| Some(n) == own_pr)
+            || p["head"]["ref"].as_str() == Some(own_branch)
+    };
+    if pulls.iter().any(own) {
+        return None;
+    }
+    pulls.iter().find_map(|p| {
+        let merged = p["merged_at"].as_str().is_some_and(|s| !s.is_empty());
+        p["number"].as_u64().filter(|_| merged)
+    })
 }
 
 const REGISTER_BACKOFF_START: i64 = 5;
@@ -2216,6 +2286,42 @@ fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn other_merged_pr_names_only_a_merged_pr_of_another_branch() {
+        let pr = |n: u64, merged: Value, head: &str| json!({"number": n, "merged_at": merged, "head": {"ref": head}});
+        let when = json!("2026-10-10T01:00:00Z");
+        let mine = "ns/7-fix";
+        let check = |list: Vec<Value>, own: Option<u64>| other_merged_pr(&json!(list), own, mine);
+        assert_eq!(check(vec![pr(3, when.clone(), "ns/3-b")], None), Some(3));
+        assert_eq!(
+            check(vec![pr(3, when.clone(), "ns/3-b")], Some(12)),
+            Some(3)
+        );
+        assert_eq!(check(vec![], None), None);
+        assert_eq!(check(vec![pr(3, Value::Null, "ns/3-b")], None), None);
+        assert_eq!(check(vec![pr(3, json!(""), "ns/3-b")], None), None);
+        assert_eq!(check(vec![pr(12, when.clone(), "ns/3-b")], Some(12)), None);
+        assert_eq!(check(vec![pr(9, when.clone(), mine)], None), None);
+        assert_eq!(
+            check(
+                vec![pr(3, when.clone(), "ns/3-b"), pr(12, Value::Null, "x")],
+                Some(12)
+            ),
+            None
+        );
+        assert_eq!(
+            check(
+                vec![pr(3, Value::Null, "a"), pr(4, when.clone(), "b")],
+                Some(12)
+            ),
+            Some(4)
+        );
+        assert_eq!(
+            other_merged_pr(&json!({"message": "Not Found"}), None, mine),
+            None
+        );
+    }
 
     #[test]
     fn lock_dir_defaults_under_the_common_dir_and_expands_a_tilde() {

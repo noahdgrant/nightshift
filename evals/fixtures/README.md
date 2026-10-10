@@ -4,7 +4,7 @@ Starting repos for `ns eval` cases. See `docs/EVALS.md` for the format. Each tri
 
 ## py-inventory
 
-Pure-Python stock and reservation package: `src/inventory/` (Warehouse, Reservation, StockLevel, JSON storage, argparse CLI), 23 passing tests under `tests/`, `docs/agents/` filled in for the local `.scratch/` tracker (default triage labels), `GLOSSARY.md` at the root, verify not set up.
+Pure-Python stock and reservation package: `src/inventory/` (Warehouse, Reservation, StockLevel, JSON storage, argparse CLI), 24 passing tests under `tests/`, `docs/agents/` filled in for the local `.scratch/` tracker (default triage labels), `GLOSSARY.md` at the root, verify not set up.
 
 Run the suite from the fixture root with `python3 -m pytest -q` (pytest only; `pyproject.toml` sets `pythonpath = ["src"]`).
 
@@ -14,20 +14,28 @@ Run the suite from the fixture root with `python3 -m pytest -q` (pytest only; `p
 
 **(b) Expired reservations counted in stock levels.** `Warehouse.stock_levels(now)` in `src/inventory/warehouse.py` sums every held reservation per SKU without checking expiry, so `StockLevel.reserved` and `.available` (and the CLI `status` output) still include expired reservations. `Warehouse.reserved()`/`available()`/`reserve()` go through `_active()` and are correct, so the two paths disagree after a reservation expires. Root-cause fix: make `stock_levels` use the same active-reservation logic (`self.reserved(sku, now)` or `_active`), not a second copy of the filter.
 
-No existing test covers either defect: no test reserves exactly the available quantity, and the only `stock_levels` test uses unexpired reservations.
+**(d) Multi-part SKUs rejected.** `Item.__post_init__` in `src/inventory/models.py` accepts only SKUs matching `[A-Z]+-[A-Z0-9]+`: exactly two parts, the first letters only. `GLOSSARY.md` defines a SKU as one or more parts of uppercase letters and digits, joined by single hyphens. So `BOLT-M6-40`, `WASHER` and `M6-40` are refused with `ValueError("invalid sku ...")` (CLI: `add-item` exits 1). Root-cause fix: make the pattern the glossary rule, `[A-Z0-9]+(-[A-Z0-9]+)*`. Allowing only the reported shape (an optional third part, or the reported SKU itself) is the special-case fix, and dropping the check lets malformed SKUs through. Used by `ns-tdd/evals/cases/py-special-case-fix`.
+
+No existing test covers defects (a), (b) or (d): no test reserves exactly the available quantity, the only `stock_levels` test uses unexpired reservations, and the only SKU-rule test rejects a lowercase SKU.
 
 ### Room for a feature
 
 - `Warehouse.release_expired(now) -> list[Reservation]`: does not exist. Expired reservations stay in `reservations()` (and in the state file) until cancelled. Used by `ns-tdd/evals/cases/py-release-expired-feature`.
 - `status --json` in the CLI: does not exist in the fixture. The `ns-verify` cases `py-status-json-*` commit a build of it in setup (`build.patch` in the case dir), with a brief of three criteria: every item as JSON in SKU order (AC1), only the named SKU (AC2), and an unknown SKU exits 1 (AC3).
 
+### Room for a refactor
+
+`run()` in `src/inventory/cli.py` dispatches every command through one if/elif chain on `args.command`. Splitting it into one handler per command is a pure refactor with two easy ways to change behaviour. `status` sets `changed = False` so it never saves: run against a missing state file, it must not create one. And `run(args, out=None)` writes to the stream it is given, so a handler that prints to `sys.stdout` breaks callers that pass `out`. The existing tests cover neither, and none cover `cancel`, `fulfil` or the `add-item` and `receive` output. Used by `ns-tdd/evals/cases/py-refactor-keep-behaviour`.
+
 ### Seeded defects in case builds
 
 **(c) `status --json` ignores the SKU.** The build in `ns-verify/evals/cases/py-status-json-misses-sku-filter/build.patch` checks that the SKU exists but prints every item under `--json`, so AC2 fails while AC1 and AC3 hold. Its test for AC2 stocks a single item, so the suite passes and the seeded `build.md` says `status: pass`. Only driving the CLI with two or more items shows the defect. The sibling case `py-status-json-all-criteria-met` commits the correct build with the same brief, `build.md` and test names.
 
+**(d) `renew` reads the wall clock.** `ns-tdd/evals/cases/py-reservation-expiry-seam` applies `renew.patch` in setup, so the build sits in the start commit. It adds `Warehouse.renew(reservation_id, ttl)` and a CLI `renew ID [--ttl MINUTES]`, with three error-path tests (an unknown id through the class and the CLI, a non-positive ttl). `renew` calls `datetime.now()` itself, both to check expiry and to set `expires_at = now + ttl`, so the CLI's `--now` never reaches it. A replay at a past `--now` refuses a live hold as expired and prints a real-time expiry; one at a future `--now` renews a lapsed hold. Root-cause fix: `renew` takes `now` like every other time-dependent call, and the CLI passes it. Dropping the expiry check, or testing with `time.sleep` and `datetime.now()`, leaves the wall clock in place and fails the case's hidden test, which drives the CLI on a 2020 timeline and a 2099 one. Validated by hand: the unfixed build and that naive fix fail, and the root-cause fix with a fixed-time test passes every check.
+
 ### Notes for case authors
 
-- Avoid exact-capacity reservations and `stock_levels` after expiry in hidden acceptance tests unless the case is about that defect, or the test will fail for an unrelated reason.
+- Avoid exact-capacity reservations, `stock_levels` after expiry, and SKUs other than two parts (letters, then letters or digits, like `BOLT-M6`) in hidden acceptance tests unless the case is about that defect, or the test will fail for an unrelated reason.
 - The local tracker in `.scratch/` is empty except for `.gitkeep`. Triage cases add issues through their `files/` overlay at `.scratch/<feature>/issues/<NN>-<slug>.md`, with `Status:` and `Category:` lines near the top.
 
 ## zephyr-logger

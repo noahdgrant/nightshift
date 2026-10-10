@@ -58,6 +58,37 @@ fn handle(_: bool) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Hold SIGINT and SIGTERM pending instead of delivering them to this thread, so one that lands
+/// while this process is replaced by `exec` reaches the new program rather than being lost.
+#[cfg(unix)]
+pub fn block() {
+    change_mask(libc::SIG_BLOCK);
+}
+
+/// Deliver the SIGINT and SIGTERM [`block`] held back, now to the handlers [`install`] set.
+#[cfg(unix)]
+pub fn unblock() {
+    change_mask(libc::SIG_UNBLOCK);
+}
+
+#[cfg(unix)]
+fn change_mask(how: libc::c_int) {
+    // SAFETY: pthread_sigmask(3) with a set made here; async-signal-safe enough for `pre_exec`.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::pthread_sigmask(how, &set, std::ptr::null_mut());
+    }
+}
+
+#[cfg(not(unix))]
+pub fn block() {}
+
+#[cfg(not(unix))]
+pub fn unblock() {}
+
 /// The signal that asked for a stop, if one has.
 pub fn requested() -> Option<i32> {
     match SIGNAL.load(Ordering::SeqCst) {

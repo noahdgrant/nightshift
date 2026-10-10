@@ -155,7 +155,7 @@ Attempts are counted per invocation, so re-running `ns run` on a stuck unit give
 Hard rules, enforced in code whatever the prompts say:
 
 - Phases never merge, never approve, and never push to the default branch. Only `ns run`'s own merge step merges (see "Merge").
-- Before the first phase, `ns run` records `git ls-remote origin` for the default branch (skipped without an `origin` remote). After every phase it reads it again. If it moved to a commit reachable from the unit's HEAD, this run pushed to it: stuck with "default branch moved". A move to anything else is another actor (a human merge, another machine): it is logged as `default_moved_by_other_actor` and becomes the new baseline.
+- Before the first phase, `ns run` records `git ls-remote origin` for the default branch (skipped without an `origin` remote). After every phase it reads it again. A move to a commit the unit's HEAD doesn't hold is another actor (a human merge, another machine): it is logged as `default_moved_by_other_actor` and becomes the new baseline. A move to a commit the HEAD holds is either this run's push or a merge the phase then rebased onto, as `ns-build` does when another unit or a human merges mid-phase. `ns run` asks GitHub (`gh api repos/{owner}/{repo}/commits/<sha>/pulls`) about each commit the move added along the first-parent line, at most 50. When every one belongs to a merged PR, none of them this unit's PR (from `pr.md` or its newest archived copy) or from its branch `ns/<unit>`, the move is another actor's, logged as above with `prs` naming those PRs. Otherwise this run may have pushed to it: stuck with "default branch moved" and the reason. That fails closed, so a unit also goes stuck when the query fails, when someone pushes straight to the default branch with no PR and the phase rebases onto it, or when one phase sees more than 50 such commits (a large rebase merge).
 - After every phase, if the unit has a known PR (`pr:` in `pr.md` or its newest archived copy, a number or a URL ending in one), `gh pr view <n> --json state`. `MERGED` means a phase merged it: stuck with "PR merged by run".
 - Phases don't write the operator's personal memory. Every claude phase and `ns eval` trial runs with `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, set over whatever the operator's environment says, so nothing lands in `~/.claude/projects/`. Other harnesses don't get the variable. A lesson worth keeping goes through `ns-improve` into a skill, where review sees it. `ns doctor` reports this as `claude_phases.auto_memory: false`.
 - One run at a time per unit. The run lock, an OS `flock` on `ns-run-<unit>.lock` in the common git dir, refuses a second `ns run` of the same unit with exit 5; runs of other units in the repo go ahead. While held, the file records the holder's pid, unit and issue; otherwise it is empty. The kernel drops a dead run's hold, so a file left by a crash is taken over at once. Runner locks, the merge lock (see "Merge") and the worktree lock (step 1) are separate and wait instead (see "Runners").
@@ -289,7 +289,7 @@ At start, and again each time a unit ends (outside a usage-limit pause), before 
 
 **The scheduler** fills free slots, records each unit that ends and refills:
 
-- Filling: units paused on a usage limit resume first. Then `--max-units`, `--until` and the budget are checked, the triage pass runs, the queue is read once, and its first ready issues fill the free slots. Each is claimed, `ready_label` swapped for `in_progress_label`, before its `ns run` starts, and an issue running, paused or finished tonight is never taken again, even while GitHub still lists it as ready.
+- Filling: units paused on a usage limit resume first. Then `--max-units`, `--until` and the budget are checked, a nightshift source repo is checked for a new `ns` to drain for (see "When the watched repo is nightshift"), the triage pass runs, the queue is read once, and its first ready issues fill the free slots. Each is claimed, `ready_label` swapped for `in_progress_label`, before its `ns run` starts, and an issue running, paused or finished tonight is never taken again, even while GitHub still lists it as ready.
 - Running: when a unit ends, `ns watch` records its outcome and labels the issue as in the loop above, then fills again, so the triage pass runs between finished units. An empty queue with units still running waits for them; the night ends `queue empty` only when nothing runs, nothing is paused and nothing is ready.
 - Paused: a usage limit in any unit, or in a triage-only run, holds every unit. `ns watch` writes the reset time to the snapshot's `hold.json`, and each unit's `ns run` reads it before every phase, and again after waiting for runner locks: while the reset is still to come, the unit ends `paused` with reason `usage limit: another unit of this ns watch hit it` and `held: true` in its result, its artifacts untouched. A held unit resumes at the hold's reset, at once if that came while it ended; a unit that hits the limit itself waits for its own reset, or 30 minutes when that has passed. A phase already running finishes. Nothing new starts while the hold lasts. A later reset moves the hold later, and every paused unit resumes together at the latest one. A reset at or past `--until` stops the night, and every paused unit goes back to `ready_label`.
 - Stopping: `--until`, the budget and the harness breaker start nothing new, not even a paused unit, and let running units finish. The budget is summed across units: every phase's cost, a unit's or a triage-only run's, is appended to the snapshot's `spend.jsonl`, and every unit checks the total before each phase, so a spent budget ends every running unit at its next phase. `--max-units` and `--once` claim nothing new but still resume paused units. A signal is passed on to every unit (see "Units a night didn't finish").
@@ -516,26 +516,21 @@ What the other settings in `ns-watch.service` do:
 
 ### When the watched repo is nightshift
 
-The night runs the `ns` binary that was installed when it started. Units that merge changes to `cli/` don't reach it until the next build. Before each night, pull the default branch and rebuild, here with the nightshift checkout as the watched one:
+On the nightshift source, `ns watch` updates its own binary, so units that merge changes to `cli/` reach the rest of the night. The repo counts as the nightshift source when its `cli/Cargo.toml` names the package `nightshift`. `ns --version` shows the commit the binary was built from (`ns 0.1.0 (<sha>)`); `build.rs` records it.
 
-```bash
-git -C ~/src/nightshift pull --ff-only
-cargo install --path ~/src/nightshift/cli
-```
+Each time `ns watch` fills its slots, it fetches and looks for commits on `origin/<default>` that touch `cli/` and that the build commit lacks. When it finds some, it enters DRAINING: it prints `ns watch: origin/<default> has cli/ changes since this ns was built (<from> -> <to>); draining: no new unit until the running ones end`, claims nothing and runs no triage pass. Running units finish undisturbed, and paused ones still resume. Idle slots are fine. With `--parallel 1` the update comes between units; at the start of a night with an old binary, it comes before the first unit.
 
-To have the service do it, add this to its drop-in. A failed pull or build then fails the start, and the night doesn't run on a stale binary:
+When no unit runs or is paused, it updates:
 
-```ini
-[Service]
-WorkingDirectory=%h/src/nightshift
-TimeoutStartSec=30min
-ExecStartPre=git pull --ff-only
-ExecStartPre=%h/.cargo/bin/cargo install --path cli
-```
+1. Extract `cli/` at the new commit (`git archive`) into `<git-common-dir>/ns/self-update/src`, and build it with `cargo build --release --locked`, its target directory `<git-common-dir>/ns/self-update/target`, then copy the binary to `<git-common-dir>/ns/self-update/ns-<sha>`. The installed `ns` is never touched.
+2. Check that `ns-<sha> --version` names the new commit and that `ns-<sha> watch --dry-run` exits 0, run with this `ns watch`'s own arguments and a copy of the night's state, so an argument the new binary no longer takes fails the check here, not after the exec. A dry run given `--resume-night` only reads the arguments and the state: it lists no queue and calls neither `gh` nor the network, so a flaky connection cannot fail the check.
+3. Write the night's state to `<git-common-dir>/ns/self-update/night-<pid>.json`, print `ns watch: self-update <from> -> <to>; handing off to <path>`, log a `self_update` event (`from`, `to`) in the run log, and `exec` the new binary with the same arguments plus a hidden `--resume-night <file>`. The process keeps its pid. The new binary reads the state, removes the file, and carries on: the deadline, the spend, the units run so far and the issues finished, the triage pass's runs and the issues it tried, the harness-failure count, the units claimed toward `--max-units`. Its summary covers the whole night.
 
-`git pull` here runs before `ns`, so it doesn't get the `GH_TOKEN` that `ns` resolves from `token_command`. A public repo needs no token. For a private one, put `GH_TOKEN` in `ns-watch.env`, which `ExecStartPre=` reads too, with the HTTPS remote and `gh auth setup-git` from above.
+If the build or the check fails, the night goes on with the current binary. `ns watch` prints `ns watch: warning: self-update to <to> failed; keeping this ns: <error>`, logs a `self_update_failed` event (`from`, `to`, `error`), leaves DRAINING and never tries that commit again tonight. A later commit is tried when it lands.
 
-#156 will let `ns watch` update its own binary between units, and this step goes away.
+A stop (`--until`, the budget, a signal) ends a drain without an update. For any other repo `ns watch` never drains or rebuilds, and `--no-self-update` turns it off on nightshift too. An `ns` built outside a git checkout has no build commit and prints `ns watch: self-update off: this ns has no build commit`.
+
+The new binary lives under the git dir, so the next night starts with the installed one, and updates at once if `cli/` moved. A pull and rebuild before each night is no longer needed; to start nights on a current binary anyway, keep the installed one current with `cargo install --path cli` after merging.
 
 ### Stopping a night
 

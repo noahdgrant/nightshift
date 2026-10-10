@@ -13,10 +13,11 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::json;
 
+use super::self_update::{HandOff, SelfUpdate};
 use super::snapshot::Snapshot;
 use super::{
-    comment, ended_cleanly, open_findings, queue, set_status, triage, Issue, Night, Tonight,
-    DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
+    comment, ended_cleanly, fresh_base, open_findings, queue, set_status, triage, Issue, Night,
+    Tonight, DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
 };
 use crate::clock;
 use crate::error::SfError;
@@ -41,6 +42,10 @@ pub(super) struct Plan<'a> {
     pub deadline: Option<i64>,
     pub max_units: Option<u32>,
     pub parallel: usize,
+    /// Units claimed tonight before a self-update handed the night to this `ns`.
+    pub started: u32,
+    /// `None` when the night never updates its own binary.
+    pub update: Option<SelfUpdate>,
 }
 
 /// A unit's `ns run`, running.
@@ -88,6 +93,8 @@ pub(super) struct Scheduler<'a> {
     forwarded: bool,
     /// The first error; the night stops once the running units end.
     failed: Option<anyhow::Error>,
+    /// The commit to update to once the running units end; no new unit starts meanwhile.
+    draining: Option<String>,
     started: u32,
     results: u64,
 }
@@ -95,6 +102,7 @@ pub(super) struct Scheduler<'a> {
 impl<'a> Scheduler<'a> {
     pub fn new(plan: Plan<'a>) -> Scheduler<'a> {
         Scheduler {
+            started: plan.started,
             plan,
             running: BTreeMap::new(),
             resume: Vec::new(),
@@ -102,7 +110,7 @@ impl<'a> Scheduler<'a> {
             stopping: None,
             forwarded: false,
             failed: None,
-            started: 0,
+            draining: None,
             results: 0,
         }
     }
@@ -120,6 +128,11 @@ impl<'a> Scheduler<'a> {
                         self.fail(e);
                     }
                 }
+            }
+            // Units paused on a usage limit resume in the fill above, and finish first.
+            if self.ready_to_hand_off() {
+                self.hand_off(night, tonight);
+                continue;
             }
             if self.running.is_empty() {
                 let Some(reset) = self.paused_until.filter(|_| self.may_resume()) else {
@@ -218,6 +231,12 @@ impl<'a> Scheduler<'a> {
             self.stopping = Some(why);
             return Ok(());
         }
+        if self.draining.is_none() {
+            self.draining = self.pending_update();
+        }
+        if self.draining.is_some() {
+            return Ok(());
+        }
         match triage::pass(plan.repo, plan.loaded, plan.deadline, night)? {
             Some(triage::Halt::Stop(why)) => {
                 self.stop_all(&why);
@@ -257,6 +276,37 @@ impl<'a> Scheduler<'a> {
             }
         }
         Ok(())
+    }
+
+    /// The commit to update to, when origin's default branch has `cli/` changes this `ns` lacks.
+    fn pending_update(&self) -> Option<String> {
+        let update = self.plan.update.as_ref()?;
+        let base = fresh_base(&self.plan.repo.root)?;
+        update.pending(&self.plan.repo.root, &base)
+    }
+
+    /// Draining, with nothing left running or paused, and no stop: time to update.
+    fn ready_to_hand_off(&self) -> bool {
+        self.draining.is_some()
+            && self.running.is_empty()
+            && self.paused_until.is_none()
+            && self.stopping.is_none()
+    }
+
+    /// Hand off to the commit being drained for. Returns when that failed, which is logged and
+    /// kept from being tried again, or when a stop came first and the loop's top winds down.
+    fn hand_off(&mut self, night: &Night, tonight: &Tonight) {
+        let Some(to) = self.draining.take() else {
+            return;
+        };
+        let carried = night.carry(self.plan.deadline, self.started, tonight);
+        let repo = self.plan.repo;
+        let Some(update) = self.plan.update.as_mut() else {
+            return;
+        };
+        if let HandOff::Failed(e) = update.hand_off(repo, &to, &carried) {
+            update.give_up(repo, to, e);
+        }
     }
 
     fn free(&self) -> bool {

@@ -34,6 +34,12 @@ case "$1 $2" in
     echo $c > "$d/register.count"
     [ "$c" -gt "$(cat "$d/register.after" 2>/dev/null || echo 0)" ] && echo 1 || echo 0
     ;;
+  "api repos/"*/pulls)
+    # pulls-<sha>.json: the PRs GitHub links to commit <sha>; pulls.fail makes the query fail.
+    if [ -f "$d/pulls.fail" ]; then echo "HTTP 502" >&2; exit 1; fi
+    sha=${2%/pulls}; sha=${sha##*/}
+    cat "$d/pulls-$sha.json" 2>/dev/null || echo "[]"
+    ;;
   "api repos/"*/status)
     if [ -f "$d/status.fail" ]; then cat "$d/status.fail" >&2; exit 1; fi
     c=$(( $(cat "$d/status.count" 2>/dev/null || echo 0) + 1 ))
