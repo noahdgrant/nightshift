@@ -162,6 +162,27 @@ class CheckBriefTest(unittest.TestCase):
                 self.assertEqual(list(out.iterdir()), [])
                 self.assertFalse((pathlib.Path(tempfile.gettempdir()) / name).exists())
 
+    def test_escaping_state_paths_are_never_spawned(self):
+        name = f"outside-{uuid.uuid4().hex}.json"
+        escapes = (
+            "--state ..",
+            f"--state sub/../../{name}",
+            f"--state ~/{name}",
+            "--state ./..",
+            f"--state=sub/../../{name}",
+        )
+        for flag in escapes:
+            with self.subTest(flag=flag):
+                with mock.patch.object(check_brief.subprocess, "Popen", wraps=check_brief.subprocess.Popen) as popen:
+                    self.assertIn("repro ran red", check(good().replace("--state inv.json", flag)))
+                self.assertEqual(popen.call_count, 0)
+                self.assertFalse((pathlib.Path(tempfile.gettempdir()) / name).exists())
+
+    def test_inside_state_path_with_dotdot_is_still_spawned(self):
+        with mock.patch.object(check_brief.subprocess, "Popen", wraps=check_brief.subprocess.Popen) as popen:
+            check(good().replace("--state inv.json", "--state sub/../inv.json"))
+        self.assertGreater(popen.call_count, 0)
+
     def test_unbalanced_quote_line_is_skipped(self):
         text = good().replace("export PYTHONPATH=src\n", "python3 -m inventory 'unbalanced\n")
         self.assertEqual(check(text), [])
@@ -225,6 +246,35 @@ class CheckBriefTest(unittest.TestCase):
         with mock.patch.object(check_brief, "REPLAY_TIMEOUT", 0.001):
             self.assertIn("repro ran red", check(good()))
         self.assertLess(time.monotonic() - start, 10)
+
+    def test_hung_command_is_killed_and_later_commands_are_not_run(self):
+        pidfile = pathlib.Path(_tmp.name) / "hung.pid"
+        root = pathlib.Path(_tmp.name) / "hung"
+        seed(root)
+        (root / "src" / "inventory" / "__main__.py").write_text(
+            "import os, sys, time\n"
+            "if 'sleep' in sys.argv:\n"
+            f"    open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+            "    time.sleep(60)\n"
+            "sys.exit(\"inventory: error: reservation 'R0001' has expired\")\n",
+            encoding="utf-8",
+        )
+        repro = (
+            "```bash\n"
+            "python3 -m inventory sleep\n"
+            "python3 -m inventory --now 2026-03-02T09:05:10 fulfil R0001\n"
+            f"{ERROR_LINE}\n"
+            "```\n"
+        )
+        start = time.monotonic()
+        with mock.patch.object(check_brief, "REPLAY_TIMEOUT", 1):
+            self.assertIn("repro ran red", check(with_repro(repro), root))
+        self.assertLess(time.monotonic() - start, 10)
+        pid = int(pidfile.read_text())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and pathlib.Path(f"/proc/{pid}").exists():
+            time.sleep(0.05)
+        self.assertFalse(pathlib.Path(f"/proc/{pid}").exists())
 
     def test_status_fail_fails(self):
         self.assertIn("status", check(good().replace("status: pass", "status: fail")))

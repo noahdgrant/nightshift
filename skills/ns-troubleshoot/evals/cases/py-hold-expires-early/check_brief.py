@@ -42,11 +42,12 @@ def fence_lines(text):
 
 
 def stays_inside(argv):
-    return not any(
-        part.startswith(("/", "~")) or part == ".." or part.startswith("../") or "/../" in part
-        for arg in argv
-        for part in arg.split("=")
-    )
+    for arg in argv:
+        for part in arg.split("="):
+            norm = os.path.normpath(part) if part else part
+            if part.startswith(("/", "~")) or norm == ".." or norm.startswith("../"):
+                return False
+    return True
 
 
 def replays_red(commands, root):
