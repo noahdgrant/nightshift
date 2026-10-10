@@ -437,12 +437,14 @@ impl RunnerLocks {
             if !try_lock(&f)? {
                 let (at, bound) =
                     *give_up.get_or_insert_with(|| give_up_at(clock.now(), timeout, until));
-                let by = holder(&path);
-                waiting(name, &by);
+                let first = holder(&path);
+                waiting(name, &first);
                 if !poll_until(clock, at, || try_lock(&f))? {
                     return Ok(Acquired::GaveUp(GaveUp {
                         lock: name.clone(),
-                        held_by: holder(&path),
+                        held_by: Some(holder(&path))
+                            .filter(|h| !h.is_null())
+                            .unwrap_or(first),
                         bound,
                     }));
                 }
@@ -450,7 +452,7 @@ impl RunnerLocks {
                     unlock_flock(&f);
                     return Ok(Acquired::GaveUp(GaveUp {
                         lock: name.clone(),
-                        held_by: by,
+                        held_by: first,
                         bound: Bound::Until,
                     }));
                 }
@@ -482,6 +484,20 @@ fn poll_until(clock: &Clock, at: i64, mut try_once: impl FnMut() -> Result<bool>
 fn budget_spent(budget: Option<f64>, spent: f64) -> Option<String> {
     let b = budget.filter(|b| spent >= *b)?;
     Some(format!("spent ${spent:.2} of the ${b:.2} budget"))
+}
+
+/// A budget spent while the runner locks were awaited stops the phase before its harness
+/// starts, with the locks released.
+fn recheck_budget(
+    held: RunnerLocks,
+    budget: Option<f64>,
+    spent: f64,
+    phase: &str,
+) -> Result<RunnerLocks, Finish> {
+    match budget_spent(budget, spent) {
+        Some(reason) => Err(finish(Outcome::Budget, reason, Some(phase))),
+        None => Ok(held),
+    }
 }
 
 /// When a wait that begins at `now` gives up: `timeout` later (a partial second counts as a
@@ -1167,10 +1183,10 @@ fn drive(
                 continue;
             }
         };
-        if let Some(reason) = budget_spent(fac.budget_usd(), shared.spent_usd) {
-            drop(held);
-            return Ok(finish(Outcome::Budget, reason, Some(phase)));
-        }
+        let held = match recheck_budget(held, fac.budget_usd(), shared.spent_usd, phase) {
+            Ok(held) => held,
+            Err(f) => return Ok(f),
+        };
         let art_path = ctx.artifacts.join(artifact_of(phase));
         let moves = archive_for(&ctx.artifacts, phase, &state)?;
         let mut prompt = ctx.prompt(&p, attempt, &feedback)?;
@@ -1964,6 +1980,34 @@ mod tests {
         assert_eq!(give_up_at(1000, MIN, Some(1060)), (1060, Bound::Until));
         assert_eq!(give_up_at(1000, MIN, Some(1061)), (1060, Bound::Timeout));
         assert_eq!(give_up_at(1000, MIN, Some(1059)), (1059, Bound::Until));
+    }
+
+    #[test]
+    fn a_budget_spent_during_a_lock_wait_stops_the_phase_and_frees_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = vec!["a".to_string()];
+        let acquire = || {
+            RunnerLocks::acquire(
+                dir.path(),
+                &names,
+                "u",
+                &Clock::pinned(1000),
+                MIN,
+                None,
+                |_, _| {},
+            )
+            .unwrap()
+            .held()
+        };
+        let held = recheck_budget(acquire(), Some(5.0), 4.0, "build");
+        drop(held.ok().expect("under budget"));
+        let Err(f) = recheck_budget(acquire(), Some(5.0), 5.0, "build") else {
+            panic!("a spent budget kept the locks")
+        };
+        assert!(matches!(f.outcome, Outcome::Budget));
+        assert_eq!(f.reason, "spent $5.00 of the $5.00 budget");
+        assert_eq!(f.phase.as_deref(), Some("build"));
+        acquire();
     }
 
     #[test]
