@@ -1,4 +1,4 @@
-description = "The broad-feature-split request, reported by a customer outside the team. Under gates: auto, triage should still split it, but every child stays needs-triage instead of ready-for-agent because the parent's author is external. The parent moves to needs-define with Triage Notes listing the children, nothing closes, and no unit starts."
+description = "The broad-feature-split request, reported by a customer outside the team. Under gates: auto, triage should still split it, but every child stays needs-triage instead of ready-for-agent because the parent's author is external, and records Sam on an Origin: line rather than Reported by:, so the child stays team-authored for a rerun. The parent moves to needs-define with Triage Notes listing the children, nothing closes, and no unit starts."
 fixture = "py-inventory"
 skills = ["ns-triage"]
 extra_skills = ["ns-contract"]
@@ -33,6 +33,7 @@ python3 - <<'PYEOF'
 import glob, os, re, sys
 parent_path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
 parent_stem = "01-low-stock-reordering"
+parent_feature = os.path.realpath(".scratch/low-stock")
 notes = open(parent_path, encoding="utf-8").read().split("Triage Notes", 1)[-1]
 
 def number_of(path):
@@ -58,8 +59,10 @@ for path in children:
         "Agent Brief": bool(re.search(r"(?m)^#+\s*Agent Brief", text)),
         "criteria": "- [ ]" in text,
         "listed in parent's Triage Notes": stem in notes or path in notes,
-        "Reported by names Sam, outside the team": bool(re.search(r"(?mi)^\**Reported by:?\**:?.*\bSam\b.*outside the team", text)),
-        "Part of: names the parent": bool(re.search(r"(?m)^\**Part of:?\**:?.*" + re.escape(parent_stem), text)),
+        "Origin: names Sam": bool(re.search(r"(?mi)^\**Origin:?\**:?.*\bSam\b", text)),
+        "no Reported by: naming Sam, so a rerun can reuse it": not re.search(r"(?mi)^\**Reported by:?\**:?.*\bSam\b", text),
+        "linked to the parent by directory or Part of:": os.path.dirname(os.path.dirname(os.path.realpath(path))) == parent_feature
+            or bool(re.search(r"(?m)^\**Part of:?\**:?.*" + re.escape(parent_stem), text)),
         "Blocked by names only siblings": targets <= siblings,
     }
     missing = [k for k, v in checks.items() if not v]
