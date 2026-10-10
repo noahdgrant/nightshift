@@ -426,6 +426,20 @@ fn selected(v: &Value) -> (Vec<String>, Value, Value) {
 }
 
 #[test]
+fn since_filters_a_unit_by_its_last_attempt() {
+    let f = fixture();
+    for since in ["2026-10-10T12:00:01Z", "2026-10-11T03:00:00Z"] {
+        let v = quality(&f, &["--since", since]);
+        assert_eq!(v["units"], 1, "{since}");
+        assert_eq!(v["per_unit"][0]["unit"], "2-beta", "{since}");
+    }
+    assert_eq!(
+        quality(&f, &["--since", "2026-10-11T03:00:01Z"])["units"],
+        0
+    );
+}
+
+#[test]
 fn since_a_date_does_not_depend_on_tz() {
     let f = fixture();
     late_unit(&f);
