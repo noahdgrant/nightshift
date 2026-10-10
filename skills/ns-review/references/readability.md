@@ -1,5 +1,7 @@
 # Readability and simplicity reviewer
 
+What must hold on this axis is the **Readability** section of the [quality bar](../../ns-contract/references/quality-bar.md). This file is how to find where it doesn't.
+
 Can another engineer, or agent, understand this code without the author explaining it?
 
 ## Look for

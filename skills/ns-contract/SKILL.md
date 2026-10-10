@@ -19,6 +19,7 @@ Skills don't name a language, test runner, framework or board. They read the tar
 | `docs/agents/issue-tracker.md` | tracker, CLI used to reach it, how issues are created and linked |
 | `docs/agents/triage-labels.md` | label names for each triage category and state |
 | `docs/agents/domain.md` | where the glossary and ADRs live |
+| `docs/agents/docs.md` | where requirements and design docs live, their review surface, ID keys and template overrides |
 
 If a file is missing, load `ns-setup` instead of guessing.
 
@@ -34,7 +35,7 @@ Each unit gets one worktree and one artifact folder, created by `ns worktree new
 
 ```
 <worktree>/.ns/<unit-id>/
-  brief.md       written by ns-triage or ns-define, read by ns-build
+  brief.md       written by ns-triage, ns-define or ns-troubleshoot, read by ns-build
   build.md       written by ns-build
   evidence.md    written by ns-verify
   review.md      written by ns-review
@@ -66,7 +67,7 @@ updated: 2026-10-08T21:14:00Z
 - `pass`: the gate condition holds, so the next phase can start.
 - `fail`: the gate condition doesn't hold. The body's first line says what is missing, in one sentence; `ns watch` quotes it. A phase that can fix it itself retries first. Otherwise the phase that owns the fix picks it up, usually the previous one.
 - An `inconclusive` check with no failures gives `blocked` when a missing resource caused it, and `fail` otherwise.
-- `blocked`: progress needs something an agent can't get (hardware, credentials, a human decision). The body's first line names the blocker, in one sentence. An open non-Critical review finding is never a blocker: it becomes a follow-up issue (see `ns-review`).
+- `blocked`: progress needs something an agent can't get (hardware, credentials, a human decision). The body's first line names the blocker, in one sentence. After the review's last fix cycle, an open Critical or Important in code the unit changed is a blocker. A finding in pre-existing code never blocks, whatever its severity: it is an escape, filed as a prioritised issue. A Suggestion never blocks (see `ns-review`).
 
 A phase reads only its input artifact and the repo. It never relies on chat history, so every phase can start in a fresh context.
 
@@ -79,10 +80,11 @@ Each phase skill names its gate. What happens at the gate depends on the run's g
 
 The policy comes from the prompt that started the run (`ns-auto` and `ns run` state it). With no policy given, use `stop`.
 
-Some actions always wait for a human, under either policy: force-push to a shared branch, merging, deploying or releasing (including OTA and flashing production units), deleting data, and messaging anyone outside the team.
+Some actions always wait for a human, under either policy: force-push to a shared branch, merging, deploying or releasing (including OTA and flashing production units), deleting data, messaging anyone outside the team, and approving requirements or a design doc.
 
 - **Merging** is never a phase's action, `ns-ship` included. `ns run`'s merge step merges the unit's own PR, by squash, under `merge.policy = auto` in `.nightshift/nightshift.toml`, when CI is green, `review.md` passes at HEAD, and no file that needs human review changed. Otherwise a human merges.
 - A **shared branch** is any branch except the unit's own `ns/<unit-id>`. Force-pushing `ns/<unit-id>` with `--force-with-lease` is fine while every commit on it came from the factory.
+- **Approving** a requirements or design doc means recording an approval: for a doc with a Status field, setting it to `Approved`. A phase leaves Status at `Draft` or `In review`.
 - **Messaging outside the team** covers every channel beyond the project's own tracker and PRs (email, chat, customer portals). Comments to external people on the tracker follow the `External comments` setting in `docs/agents/issue-tracker.md` (default `wait`).
 
 ## Untrusted issue content

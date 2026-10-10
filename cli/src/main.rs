@@ -15,7 +15,11 @@ mod git;
 mod install;
 mod lint;
 mod markers;
+mod quality;
+mod review_md;
 mod run;
+mod skills_sync;
+mod stats;
 #[cfg(test)]
 mod testutil;
 mod watch;
@@ -43,6 +47,7 @@ Examples:
   ns factory validate
   ns run --issue 142 --dry-run
   ns watch --until 06:30
+  ns quality --since 2026-10-01
 
 Exit codes: 0 ok, 1 failure, 2 usage error, 3 role not configured, 4 harness missing,
 5 no write command for `ns ask --write`.
@@ -264,6 +269,17 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         factory: Option<PathBuf>,
     },
 
+    /// Report how well units pass review: first-pass yield, findings per 100 lines, leftovers, escapes
+    #[command(after_help = QUALITY_HELP)]
+    Quality {
+        /// Only units whose newest review artifact was updated on or after this local date (YYYY-MM-DD)
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
+        /// Print JSON (the default and only format)
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Report config path and validity, configured roles, harnesses on PATH, and forge accounts
     #[command(after_help = "\
 Examples:
@@ -325,6 +341,20 @@ open PR that closes them, sorts by [queue] order, and runs each with ns run --is
 --until is local time (TZ). Times printed for people, until and reset_at, are local with
 their offset (2026-10-09T06:30:00-04:00).
 Prints {units,stopped,until,cost_usd}. Exit codes as ns run's errors: 2 usage, 5 lock held.";
+
+const QUALITY_HELP: &str = "\
+Examples:
+  ns quality
+  ns quality --since 2026-10-01
+  ns quality --json | jq .first_pass
+
+Spec: docs/FACTORY.md (Quality). Reads .ns/<unit>/review.md, review/cycle-*.md and
+history/review* in every linked worktree, plus <git-common-dir>/ns/runs.jsonl. Read-only.
+First-pass numbers come from a unit's oldest review artifact, the rest from its newest.
+Prints {units,findings,first_pass,cycles_to_clean,leftovers,escapes,leftover_findings,
+escape_findings,trend,run_log,gaps,per_unit}. Dates are local (TZ).
+
+Exit codes: 0 ok, 1 git failed, 2 usage error (bad --since, not in a git repo).";
 
 const EVAL_HELP: &str = "\
 Examples:
@@ -574,6 +604,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 dry_run,
                 factory,
                 base,
+                triage_only: false,
             })
         }
         Cmd::Watch {
@@ -591,6 +622,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 factory,
             })
         }
+        Cmd::Quality { since, json: _ } => return quality::cli(since),
         Cmd::Doctor => doctor::run()?,
     }
     Ok(ExitCode::SUCCESS)

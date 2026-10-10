@@ -1,0 +1,39 @@
+description = "Seeded intermittent bug: Reservation.to_dict writes expires_at truncated to the minute, so a hold reloaded from the state file expires up to 59 s early. The reporter sees it 'about half the time' because it depends on the wall-clock seconds at reserve time; triage pinned whole-minute timestamps and couldn't reproduce it. Troubleshoot must build a red loop (a --now with seconds, or a save/load round trip), find the truncation, and write brief.md routing to ns-build, without fixing it."
+fixture = "py-inventory"
+skills = ["ns-troubleshoot", "ns-triage"]
+extra_skills = ["ns-contract"]
+requires = ["python"]
+timeout_minutes = 20
+prompt = """
+Troubleshoot .scratch/reservations/issues/02-holds-expire-early.md. gates: auto
+"""
+
+[setup]
+commands = [
+  "cp ../check_brief.py .git/check_brief.py",
+  "sed -i 's/\"expires_at\": self.expires_at.isoformat(),/\"expires_at\": self.expires_at.isoformat(timespec=\"minutes\"),/' src/inventory/models.py",
+  "grep -q 'isoformat(timespec=\"minutes\")' src/inventory/models.py",
+]
+
+[[check]]
+type = "command"
+run = "python3 -I .git/check_brief.py"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''
+git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r wt; do
+  grep -q 'expires_at.isoformat(timespec="minutes")' "$wt/src/inventory/models.py" || { echo "fixed in $wt"; exit 1; }
+done
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**"]
+
+[[check]]
+type = "judge"
+rubric = "Read the trial's transcript and the brief.md it wrote under .ns/02-*/. Pass only if: (1) before forming hypotheses about the cause, the agent built and ran a loop that went red on the reported symptom (a fulfil refused before the printed expiry), with a pinned clock rather than the wall clock or sleeps; (2) it recorded several ranked, falsifiable hypotheses and the probe that confirmed the survivor; (3) the root cause is the minute-truncated expires_at written by the state file (Reservation.to_dict), not the TTL arithmetic or the CLI; (4) it changed no source and routed to ns-build with a repro that ns-build can turn into a failing test."
+required = false

@@ -1,4 +1,4 @@
-description = "The bug from bug-ready-for-agent, but `ns watch` already moved the issue to the run state in-progress before triage ran under `ns run`. Triage should keep Status: in-progress, set the category, append the Agent Brief and write brief.md, as #59 needed."
+description = "The bug from bug-ready-for-agent, but `ns watch` already moved the issue to the run state in-progress before triage ran under `ns run`. Triage should keep Status: in-progress, set the category, append the Agent Brief and write brief.md, as #59 needed, without starting a new unit (no new worktree)."
 fixture = "py-inventory"
 skills = ["ns-triage"]
 extra_skills = ["ns-contract"]
@@ -57,6 +57,14 @@ for path in briefs:
         sys.exit(0)
 sys.exit("no brief.md with status: pass, a base, and an Agent Brief with acceptance criteria")
 PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# `ns run` already started the unit, so triage must not start another: no worktree beyond the checkout.
+type = "command"
+run = '''
+test "$(git worktree list --porcelain | grep -c '^worktree ')" -eq 1 && ! ls -d ../"$(basename "$PWD")".worktrees/01-* 2>/dev/null
 '''
 expect_exit = 0
 

@@ -15,6 +15,7 @@ jobs:
   rust:
     name: Rust (fmt, clippy, test)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: cli
@@ -33,6 +34,7 @@ jobs:
   skills-and-evals:
     name: Skills lint and eval dry-run
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -43,6 +45,8 @@ jobs:
         run: cargo build --manifest-path cli/Cargo.toml
       - name: Lint skills
         run: cli/target/debug/ns lint skills --human
+      - name: Check human-review markers
+        run: cli/target/debug/ns check-markers --human
       - name: Eval dry-run (validates every case and fixture, calls no model)
         run: |
           cfg="$RUNNER_TEMP/ns-config.toml"
@@ -67,6 +71,7 @@ jobs:
   fixtures:
     name: Fixture tests (py-inventory)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: evals/fixtures/py-inventory
@@ -77,10 +82,14 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install pytest
       - run: python -m pytest -q
+      - name: ns-troubleshoot brief checker tests
+        working-directory: skills/ns-troubleshoot/evals/cases/py-hold-expires-early
+        run: python -m unittest -q test_check_brief
 
   private-refs:
     name: Private-reference guard
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Check tracked files

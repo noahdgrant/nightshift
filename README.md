@@ -24,7 +24,7 @@ ns install                   # symlinks skills/ns-* into ~/.agents/skills and ~/
 
 Then, in each project you want to run the factory on:
 
-1. `ns-setup`: writes `docs/agents/` (stack, tracker, labels, domain).
+1. `ns-setup`: writes `docs/agents/` (stack, verify, tracker, labels, domain, docs).
 2. `ns-setup-verify`: generates the project's verification skill and control CLI.
 
 ## Run it overnight
@@ -55,11 +55,12 @@ The worktree is not a sandbox. Each phase runs claude with permissions bypassed,
 | Phase | Skills |
 |---|---|
 | setup | `ns-setup`, `ns-setup-verify` |
-| outer loop | `ns-triage` |
+| outer loop | `ns-triage`, `ns-troubleshoot` |
 | build | `ns-build`, `ns-tdd` |
 | verify | `ns-verify` |
 | review | `ns-review`, `ns-no-comments` |
 | ship | `ns-ship` |
+| all phases, in one session | `ns-auto` |
 | shared | `ns-grilling`, `ns-domain-modeling`, `ns-swarm`, `ns-writing-for-agents`, `ns-writing-for-humans`, `ns-principle-*` |
 
 ## Credits

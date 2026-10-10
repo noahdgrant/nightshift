@@ -1,5 +1,7 @@
 # Tests reviewer
 
+What must hold on this axis is the **Tests** section of the [quality bar](../../ns-contract/references/quality-bar.md). This file is how to find where it doesn't.
+
 Do the tests prove the change works, and would they catch it breaking? Read the tests before the implementation: they reveal intent and coverage.
 
 ## Look for
@@ -25,4 +27,4 @@ Firmware: logic that can run on the host should have host unit tests. Hardware-d
 
 ## Report
 
-For each gap, name the missing test: what it verifies and why it matters. Priority maps to severity: missing tests for data loss, security, or the contract's acceptance criteria are Important; edge-case and utility gaps are Suggestions.
+For each gap, name the missing test: what it verifies and why it matters. Severity: a missing test for a behaviour, branch or error path the diff adds is Important. In code the diff didn't touch, a missing test for data loss, security or an acceptance criterion is Important; other gaps are Suggestions.

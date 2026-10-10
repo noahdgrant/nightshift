@@ -49,7 +49,7 @@ Never dismiss these yourself, even when a similar comment was dismissed before:
 
 ## Human comments
 
-Apply the same check, with a different reply. A human's question gets an answer, not a code change. A preference that is cheap and in scope gets done. A request that grows the PR past the brief gets pushed back to a follow-up issue, with a link. Leave a human's thread open after you dismiss or escalate, so they decide.
+Apply the same check, with a different reply. A human's question gets an answer, not a code change. A preference that is cheap and in scope gets done. A request that grows the PR past the brief gets pushed back to a follow-up issue, with a link. File it per `docs/agents/issue-tracker.md` with the `needs-triage` state, a category label, and an area label when `docs/agents/triage-labels.md` lists areas, so `ns watch` triages it. Leave a human's thread open after you dismiss or escalate, so they decide.
 
 ## Repeat bot passes
 

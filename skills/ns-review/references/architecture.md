@@ -1,5 +1,7 @@
 # Architecture reviewer
 
+What must hold on this axis is the **Architecture** section of the [quality bar](../../ns-contract/references/quality-bar.md). This file is how to find where it doesn't.
+
 Does the change fit the system's design, and does it leave the structure better or worse?
 
 ## Vocabulary

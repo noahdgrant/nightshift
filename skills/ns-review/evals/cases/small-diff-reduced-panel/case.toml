@@ -1,7 +1,7 @@
 description = "A 10-line feature diff (its test checks only the true answer) gets the reduced panel (correctness, spec, tests; no security trigger) and review.md records the panel and the cycle count."
 fixture = "py-inventory"
 skills = ["ns-review"]
-extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments"]
+extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
 requires = ["python"]
 timeout_minutes = 30
 prompt = """

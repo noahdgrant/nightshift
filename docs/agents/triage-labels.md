@@ -17,15 +17,28 @@ Categories are the Conventional Commit type labels.
 
 | Role | Label in our tracker | Meaning |
 |---|---|---|
-| `high` | `priority:high` | Blocks other open issues, breaks the factory or CI, or is a security issue |
+| `critical` | `priority:critical` | Fix next: a Critical or security finding, including one that escaped an earlier review |
+| `high` | `priority:high` | Blocks other open issues, or breaks the factory or CI |
 | `medium` | `priority:medium` | Normal work |
 | `low` | `priority:low` | Nice to have |
+
+## Areas
+
+Every issue also carries at least one area label.
+
+| Label | Covers |
+|---|---|
+| `area:cli` | the `ns` CLI in `cli/` |
+| `area:skills` | the skills under `skills/` |
+| `area:evals` | eval cases, fixtures and `ns eval` |
+| `area:factory` | the overnight factory: `ns watch`, `ns run`, `.nightshift/` |
+| `area:repo` | repo-wide docs and config |
 
 ## States
 
 | Role | Label in our tracker | Meaning | Next |
 |---|---|---|---|
-| `needs-triage` | `status:needs-triage` | New, not yet evaluated | `ns-triage` |
+| `needs-triage` | `status:needs-triage` | New, not yet evaluated | `ns-triage` (`ns watch` triages these, and issues with no state, before each unit) |
 | `needs-info` | `status:needs-info` | Waiting on the reporter for more information | reporter, then `ns-triage` |
 | `needs-repro` | `status:needs-repro` | A bug with no reproducible failure yet | `ns-troubleshoot` |
 | `needs-define` | `status:needs-define` | Intent unclear, or the change is large | `ns-define` |

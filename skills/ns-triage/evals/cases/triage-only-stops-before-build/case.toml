@@ -1,0 +1,50 @@
+description = "The bug from bug-ready-for-agent, triaged by `ns watch`'s triage pass: the prompt carries the `Triage only` line and ns-build is installed. Triage should mark it ready-for-agent, write brief.md, and stop without handing off to ns-build, so the source stays untouched (#98)."
+fixture = "py-inventory"
+skills = ["ns-triage"]
+# ns-build and ns-tdd are installed on purpose: without the Triage only rule, gates: auto would
+# load ns-build and fix the bug, which the diff_scope check catches.
+extra_skills = ["ns-contract", "ns-build", "ns-tdd"]
+requires = []
+timeout_minutes = 15
+prompt = """
+Load the `ns-triage` skill and run it for unit `01-full-quantity-reservation-rejected` (issue .scratch/reservations/issues/01-full-quantity-reservation-rejected.md). gates: auto.
+Phase: triage (attempt 1). End by writing the phase's artifact under .ns/01-full-quantity-reservation-rejected/ with its frontmatter status.
+Never merge, never approve, and never push to the default branch.
+
+Triage only: `ns watch` is triaging this issue between units. Apply the outcome, then stop and hand off to no other phase.
+"""
+
+[[check]]
+type = "regex"
+path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?ready-for-agent`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
+pattern = '(?m)^\**Priority:?\**:?\s*`?priority:(critical|high|medium|low)`?\s*$'
+present = true
+
+[[check]]
+# Triage stopped at its own artifact: no build.md anywhere.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, os, subprocess, sys
+roots = {os.getcwd()}
+out = subprocess.run(["git", "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+roots.update(l.split(" ", 1)[1] for l in out.splitlines() if l.startswith("worktree "))
+roots.update(glob.glob(os.path.join("..", os.path.basename(os.getcwd()) + ".worktrees", "01-*")))
+briefs = [p for r in roots for p in glob.glob(os.path.join(r, ".ns", "01-*", "brief.md"))]
+builds = [p for r in roots for p in glob.glob(os.path.join(r, ".ns", "01-*", "build.md"))]
+print(f"briefs={briefs} builds={builds}")
+sys.exit(0 if briefs and not builds else 1)
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# The fix belongs to the unit the queue starts later, not to triage.
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]

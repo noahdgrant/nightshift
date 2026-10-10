@@ -1,5 +1,7 @@
 # Security reviewer
 
+What must hold on this axis is the **Security** section of the [quality bar](../../ns-contract/references/quality-bar.md). This file is how to find where it doesn't.
+
 Find practical, exploitable issues, not theoretical ones. Start from the **trust boundaries**: every place untrusted data enters the diff. For each, run STRIDE (spoofing, tampering, repudiation, information disclosure, denial of service, elevation of privilege) before listing findings.
 
 For every finding, trace the input path from the boundary to the sink and show it. Critical and High findings carry an exploitation scenario.

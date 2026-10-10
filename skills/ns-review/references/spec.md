@@ -1,5 +1,7 @@
 # Spec reviewer
 
+What must hold on this axis is the **Spec** section of the [quality bar](../../ns-contract/references/quality-bar.md). This file is how to find where it doesn't.
+
 Does the diff do what `brief.md` asked, and no more? Ignore how well the code is written. Other reviewers cover that.
 
 Read the brief's goal, acceptance criteria and out-of-scope notes first. Then walk the diff.

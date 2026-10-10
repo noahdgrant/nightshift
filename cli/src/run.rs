@@ -54,6 +54,8 @@ pub struct RunArgs {
     pub dry_run: bool,
     pub factory: Option<PathBuf>,
     pub base: Option<String>,
+    /// Run the triage phase once and stop (`ns watch`'s triage pass), whatever `from` says.
+    pub triage_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -731,6 +733,23 @@ pub fn gh_json(cwd: &Path, args: &[&str]) -> Result<Value> {
         .with_context(|| format!("gh {} gave bad JSON", args.join(" ")))
 }
 
+/// Append one event to `<common>/ns/runs.jsonl`, stamped with `ts` and `pid`.
+pub fn log_event(common: &Path, mut ev: Value) {
+    if let Some(o) = ev.as_object_mut() {
+        o.insert("ts".into(), json!(clock::iso(Clock::from_env().now())));
+        o.insert("pid".into(), json!(std::process::id()));
+    }
+    let dir = common.join("ns");
+    let _ = fs::create_dir_all(&dir);
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("runs.jsonl"))
+    {
+        let _ = writeln!(f, "{ev}");
+    }
+}
+
 /// `origin`'s default branch and its sha, or `None` without an origin remote.
 pub fn remote_default(dir: &Path) -> Option<(String, String)> {
     git::run(dir, &["remote", "get-url", "origin"]).ok()?;
@@ -834,19 +853,9 @@ impl Ctx<'_> {
 
     fn log(&self, mut ev: Value) {
         if let Some(o) = ev.as_object_mut() {
-            o.insert("ts".into(), json!(clock::iso(Clock::from_env().now())));
             o.insert("unit".into(), json!(self.unit));
-            o.insert("pid".into(), json!(std::process::id()));
         }
-        let dir = self.common.join("ns");
-        let _ = fs::create_dir_all(&dir);
-        if let Ok(mut f) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("runs.jsonl"))
-        {
-            let _ = writeln!(f, "{ev}");
-        }
+        log_event(&self.common, ev);
     }
 
     fn head(&self) -> String {
@@ -877,6 +886,9 @@ pub struct Loaded {
     pub root: PathBuf,
     pub fac: Factory,
     pub cfg: Option<Config>,
+    /// The build gate command, read at start like the files: `ns watch` moves the main checkout
+    /// between units, and its `docs/agents/stack.md` must not change the night's gate.
+    pub gate: Option<String>,
     /// The path and sha256 of each file read, so a morning reader can tell what ran.
     pub files: Value,
 }
@@ -898,10 +910,12 @@ impl Loaded {
             "config": file_hash(&cfg_path),
             "factory": file_hash(&root.join(factory::FILE)),
         });
+        let gate = gate::command(&fac, &repo.root);
         Ok(Loaded {
             root,
             fac,
             cfg,
+            gate,
             files,
         })
     }
@@ -926,7 +940,13 @@ fn file_hash(p: &Path) -> Value {
 pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<RunResult> {
     let start = std::env::current_dir().context("cannot read current directory")?;
     let repo = Repo::discover(&start)?;
-    let Loaded { root, fac, cfg, .. } = loaded;
+    let Loaded {
+        root,
+        fac,
+        cfg,
+        gate,
+        ..
+    } = loaded;
     let problems = fac.problems(cfg.as_ref());
     if !problems.is_empty() {
         return Err(SfError::usage(
@@ -1009,7 +1029,9 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
     worktree::check_unit_id(&unit, "ns run 142-uart-timeout --issue 142")?;
 
     if args.dry_run {
-        return dry_run(&repo, fac, root, &unit, args, &issue_url, &gates, &commands);
+        return dry_run(
+            &repo, fac, root, gate, &unit, args, &issue_url, &gates, &commands,
+        );
     }
 
     let _lock = Lock::acquire(&repo.common_dir, &unit)?;
@@ -1027,7 +1049,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         gates,
         base,
         lock_dir: lock_dir(cfg.as_ref(), &repo.common_dir),
-        gate: gate::command(fac, &repo.root),
+        gate: gate.clone(),
     };
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
@@ -1086,6 +1108,7 @@ fn dry_run(
     repo: &Repo,
     fac: &Factory,
     root: &Path,
+    gate: &Option<String>,
     unit: &str,
     args: &RunArgs,
     issue_url: &str,
@@ -1135,7 +1158,7 @@ fn dry_run(
         gates: gates.to_string(),
         base: base.unwrap_or_default(),
         lock_dir: PathBuf::new(),
-        gate: gate::command(fac, &repo.root),
+        gate: gate.clone(),
     };
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
@@ -1190,13 +1213,13 @@ fn drive(
     let subscription = fac.subscription();
     let mut attempts: BTreeMap<&'static str, u32> = BTreeMap::new();
     let mut timed_out: BTreeMap<&'static str, String> = BTreeMap::new();
-    let mut forced: Option<Decision> = args.from.as_ref().map(|f| {
+    let from = args
+        .triage_only
+        .then_some("triage")
+        .or(args.from.as_deref());
+    let mut forced: Option<Decision> = from.map(|f| {
         run(
-            PHASES
-                .iter()
-                .find(|p| **p == f.as_str())
-                .copied()
-                .unwrap_or("build"),
+            PHASES.iter().find(|p| **p == f).copied().unwrap_or("build"),
             "",
             "--from",
         )
@@ -1221,7 +1244,20 @@ fn drive(
         );
         let decision = forced.take().unwrap_or_else(|| decide(&state));
         let (phase, feedback, why) = match decision {
-            Decision::Stuck(r) => return Ok(finish(Outcome::Stuck, r, None)),
+            Decision::Stuck(r) => {
+                if last_artifact.is_none() {
+                    *last_artifact = PHASES
+                        .iter()
+                        .find(|p| state.arts.get(**p).is_some_and(|a| a.status == "blocked"))
+                        .map(|p| {
+                            ctx.artifacts
+                                .join(artifact_of(p))
+                                .to_string_lossy()
+                                .into_owned()
+                        });
+                }
+                return Ok(finish(Outcome::Stuck, r, None));
+            }
             Decision::Done => {
                 if !fac.merge.auto() {
                     return Ok(finish(Outcome::Done, "pr.md passed", Some("ship")));
@@ -1262,7 +1298,10 @@ fn drive(
         }
         let art_path = ctx.artifacts.join(artifact_of(phase));
         let moves = archive_for(&ctx.artifacts, phase, &state)?;
-        let prompt = ctx.prompt(&p, attempt, &feedback)?;
+        let mut prompt = ctx.prompt(&p, attempt, &feedback)?;
+        if args.triage_only {
+            prompt.push_str(factory::TRIAGE_ONLY);
+        }
         let transcript = ctx
             .common
             .join("ns")
@@ -1377,6 +1416,14 @@ fn drive(
 
         if let Some(f) = guards(ctx, &mut baseline, phase)? {
             return Ok(f);
+        }
+        if args.triage_only {
+            return Ok(match (r.timed_out, r.exit) {
+                (false, Some(0)) => finish(Outcome::Done, "triage ran", Some(phase)),
+                (true, _) => finish(Outcome::Stuck, gate::timed_out_after(timeout), Some(phase)),
+                (false, Some(c)) => finish(Outcome::Stuck, format!("exited {c}"), Some(phase)),
+                (false, None) => finish(Outcome::Stuck, "killed by a signal", Some(phase)),
+            });
         }
         if phase == "triage" && !written && r.exit == Some(0) && !r.timed_out && !art_path.exists()
         {

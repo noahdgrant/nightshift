@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{self, EvalConfig, EvalHarness};
 use crate::error::{SfError, EXIT_HARNESS_MISSING, EXIT_NOT_CONFIGURED};
+use crate::stats::{median, round};
 use crate::which::which;
 
 use checks::CheckResult;
@@ -1182,24 +1183,6 @@ fn run_trial(
     })
 }
 
-fn round(x: f64, places: i32) -> f64 {
-    let m = 10f64.powi(places);
-    (x * m).round() / m
-}
-
-fn median(mut v: Vec<f64>) -> Option<f64> {
-    if v.is_empty() {
-        return None;
-    }
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let m = v.len() / 2;
-    Some(if v.len().is_multiple_of(2) {
-        (v[m - 1] + v[m]) / 2.0
-    } else {
-        v[m]
-    })
-}
-
 fn arm_metrics(trials: &[TrialRecord]) -> Value {
     let pick =
         |f: &dyn Fn(&TrialRecord) -> Option<f64>| median(trials.iter().filter_map(f).collect());
@@ -1516,13 +1499,6 @@ mod tests {
         assert!(!needs_more(&t));
         t.insert(Arm::Without, vec![rec(true), rec(false)]);
         assert!(needs_more(&t));
-    }
-
-    #[test]
-    fn medians() {
-        assert_eq!(median(vec![]), None);
-        assert_eq!(median(vec![3.0, 1.0, 2.0]), Some(2.0));
-        assert_eq!(median(vec![4.0, 1.0, 2.0, 3.0]), Some(2.5));
     }
 
     #[test]

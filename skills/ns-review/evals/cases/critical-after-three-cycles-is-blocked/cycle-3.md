@@ -5,6 +5,9 @@ cycle: 3
 ## Critical
 ### C1. cancel_all drops reservations of every SKU
 - Location: `src/inventory/warehouse.py:119`
+- Axis: correctness, spec
+- Scope: changed
+- Cycle: 0
 - Raised by: correctness, spec
 - Finding: `cancel_all` counts and clears `self._reservations` without filtering on `sku`, so cancelling one SKU destroys every other SKU's holds.
 - Evidence: reserve NUT-M6 and BOLT-M6, call `cancel_all("BOLT-M6")`; `reservations("NUT-M6")` is empty.

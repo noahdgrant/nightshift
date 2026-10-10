@@ -48,7 +48,7 @@ pub fn default_targets() -> Vec<PathBuf> {
     vec![home.join(".agents/skills"), home.join(".claude/skills")]
 }
 
-fn skill_dirs(source: &Path) -> Result<Vec<PathBuf>> {
+pub fn skill_dirs(source: &Path) -> Result<Vec<PathBuf>> {
     let mut dirs: Vec<PathBuf> = fs::read_dir(source)?
         .flatten()
         .map(|e| e.path())

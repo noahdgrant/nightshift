@@ -28,10 +28,11 @@ Every comment or issue posted to the issue tracker during triage **must** start 
 
 Two **category** roles: `bug` (something is broken) and `enhancement` (new feature or improvement).
 
-Three **priority** roles, which decide what `ns watch` works first:
+**Priority** roles, which decide what `ns watch` works first:
 
 | Priority | Meaning |
 |---|---|
+| `critical` | optional: a Critical or security finding, fix next. A repo whose `triage-labels.md` has no `critical` row uses `high` |
 | `high` | blocks other open issues, breaks the factory or CI, or is a security issue |
 | `medium` | normal work |
 | `low` | nice to have |
@@ -97,12 +98,11 @@ Show counts and a one-line summary per item. Let the maintainer pick.
 
 5. **Size it.** For work headed to `ready-for-agent`, estimate the change from the codebase: files and modules touched, new tests, rough changed lines. Read the soft limit from `docs/agents/stack.md` ([unit size](../ns-contract/SKILL.md#target-repo-configuration)). Past the soft limit, or holding more than one independently shippable behaviour, the outcome is a split (step 6).
 
-6. **Apply the outcome.** Set the category, priority and state labels. An issue that already carries a priority keeps it unless the maintainer says otherwise.
+6. **Apply the outcome.** Set the category, priority and state labels. An issue that already carries a priority keeps it unless the maintainer says otherwise. Then:
 
-   While the issue is `status:in-progress`, `ns run` is working it: triage adds and removes no status label, writes `brief.md` and posts the brief comment. A split there files the children, posts the Triage Notes listing them, and writes `brief.md` with `status: blocked` and the children's links. The parent's labels stay for `ns run`.
-
+   - **`status:in-progress`** (check this first): `ns run` is already working the issue. Add and remove no status label, write `brief.md` into the unit's existing `.ns/<unit-id>/`, post the brief comment, and do not start the unit. A split files the children, posts the Triage Notes listing them, and writes `brief.md` with `status: blocked` and the children's links. The parent's labels stay for `ns run`.
    - `ready-for-agent`: post an Agent Brief comment ([agent-brief.md](references/agent-brief.md)), then start the unit (below).
-   - **Split**: file one child issue per shippable behaviour, each with its own Agent Brief and testable criteria, and `Blocked by: #N` where one needs another first, as the first line of the child body (`ns watch` reads only that line). Children take the parent's category and priority, and the `needs-triage` state (`ready-for-agent` under `gates: auto`). Child bodies and briefs follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content): non-team text appears only as an attributed quote, and scope comes from your own analysis. Close nothing. Move the parent to `needs-define` with Triage Notes listing the children (unless `status:in-progress`, above). Start no unit here: each child becomes its own unit when it is picked up.
+   - **Split**: file one child issue per shippable behaviour, each with its own Agent Brief and testable criteria, and `Blocked by: #N` where one needs another first, as the first line of the child body (`ns watch` reads only that line). Children take the parent's category, priority and area labels, and the `needs-triage` state (`ready-for-agent` under `gates: auto`). Child bodies and briefs follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content): non-team text appears only as an attributed quote, and scope comes from your own analysis. Close nothing. Move the parent to `needs-define` with Triage Notes listing the children (unless `status:in-progress`, above). Start no unit here: each child becomes its own unit when it is picked up.
    - `ready-for-human`: same structure as an Agent Brief, plus why it can't be delegated (judgement calls, hardware or external access, design decisions, manual testing).
    - `needs-repro`: post Triage Notes with the reporter's steps, what you tried, and what happened. Next: `ns-troubleshoot`.
    - `needs-define`: post Triage Notes with what's settled and the open questions. Next: `ns-define`.
@@ -114,9 +114,11 @@ Show counts and a one-line summary per item. Let the maintainer pick.
      - **Rejected (enhancement)**: write to `.out-of-scope/`, link to it from a comment, then close ([out-of-scope.md](references/out-of-scope.md)).
    - `needs-triage`: apply the label. Optional comment if there's partial progress.
 
-7. **Hand off.** Under `stop`, report the outcome and the next phase, and stop. Under `auto`, load the next phase's skill (`ns-build`, `ns-troubleshoot` or `ns-define`) for `ready-for-agent`, `needs-repro` and `needs-define`. If that skill isn't installed, report the routing and stop. A split and every other state stop.
+7. **Hand off.** A prompt with a `Triage only` line is `ns watch` triaging between units: report the outcome and the next phase, and stop, under either policy. The queue picks up a ready issue. Otherwise, under `stop`, report the outcome and the next phase, and stop. Under `auto`, load the next phase's skill (`ns-build`, `ns-troubleshoot` or `ns-define`) for `ready-for-agent`, `needs-repro` and `needs-define`. If that skill isn't installed, report the routing and stop. A split and every other state stop.
 
 ## Start the unit (ready-for-agent)
+
+A `status:in-progress` issue is already a started unit: skip this section (step 6).
 
 The unit ID is `<issue-number>-<slug>`, with a short kebab-case slug from the title (`142-uart-timeout`).
 
