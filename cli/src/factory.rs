@@ -208,6 +208,10 @@ pub struct Queue {
     /// Sorted on before `order`; an issue with no match goes after the last.
     pub priority: Vec<String>,
     pub order: Vec<String>,
+    /// The state of an issue nobody has triaged yet; `ns watch` triages these.
+    pub triage_label: String,
+    /// The most triage-only runs one `ns watch` starts.
+    pub triage_per_night: u32,
 }
 
 impl Default for Queue {
@@ -218,6 +222,8 @@ impl Default for Queue {
             in_progress_label: "status:in-progress".into(),
             done_label: "status:in-review".into(),
             stuck_label: "status:ready-for-human".into(),
+            triage_label: "status:needs-triage".into(),
+            triage_per_night: 10,
             priority: ["priority:high", "priority:medium", "priority:low"]
                 .iter()
                 .map(|s| s.to_string())
@@ -482,6 +488,11 @@ Phase: {phase} (attempt {attempt}). End by writing the phase's artifact under .n
 Never merge, never approve, and never push to the default branch.
 ";
 
+/// Appended to the prompt of a triage-only run (`ns watch`'s triage pass), whatever the template.
+pub const TRIAGE_ONLY: &str = "
+Triage only: `ns watch` is triaging this issue between units. Apply the outcome, then stop and hand off to no other phase.
+";
+
 pub struct PromptVars<'a> {
     pub skill: &'a str,
     pub unit: &'a str,
@@ -731,6 +742,13 @@ ci_timeout_minutes = 30
         assert_eq!(f.phase("verify").max_attempts, 2);
         assert_eq!(f.budget_usd(), None);
         assert_eq!(f.merge.ci_register_timeout, 3);
+        assert_eq!(f.queue.triage_label, "status:needs-triage");
+        assert_eq!(f.queue.triage_per_night, 10);
+        let f = parse("[queue]\ntriage_per_night = 3\ntriage_label = \"triage\"\n").unwrap();
+        assert_eq!(
+            (f.queue.triage_per_night, f.queue.triage_label.as_str()),
+            (3, "triage")
+        );
         let f = parse("[merge]\nci_register_timeout = 7\n").unwrap();
         assert_eq!(f.merge.ci_register_timeout, 7);
         let f = parse("[defaults]\nbilling = \"api\"\n").unwrap();
