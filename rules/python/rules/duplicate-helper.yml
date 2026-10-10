@@ -1,0 +1,18 @@
+# One road per job: a function or class named like a helper that already exists. The names
+# below are helpers the standard library has (os.makedirs(exist_ok=True), shutil.which,
+# copy.deepcopy, functools.cache, itertools.chain.from_iterable, the dict | operator).
+# Add this repo's own helpers to the regex, and each one's home module to ignores.
+id: duplicate-helper
+language: python
+severity: error
+message: "`$NAME` duplicates a helper that already exists; call that one instead"
+url: https://github.com/noahdgrant/nightshift/blob/main/skills/ns-principle-pave-the-road/SKILL.md
+ignores: []
+rule:
+  any:
+    - kind: function_definition
+    - kind: class_definition
+  has:
+    field: name
+    pattern: $NAME
+    regex: '^(?:mkdir_p|ensure_dirs?|which|deep_copy|memoized?|flatten|merge_dicts)$'

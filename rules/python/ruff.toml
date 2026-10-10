@@ -1,0 +1,7 @@
+# The Python rule pack's ruff rules (README.md). Passed with `ruff check --config`, so it
+# replaces the repo's own ruff config for this run and the repo's ignores can't hide them.
+[lint]
+select = [
+    "PGH003", # blanket `# type: ignore`
+    "PGH004", # blanket `# noqa`
+]

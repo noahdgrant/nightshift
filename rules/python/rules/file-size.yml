@@ -1,0 +1,9 @@
+# A file past 1000 lines is hard for an agent to hold; split it along its seams.
+id: file-size
+language: python
+severity: error
+message: file is past 1000 lines; split it
+url: https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md
+rule:
+  kind: module
+  regex: '\A(?:[^\n]*\n){1000}[\s\S]*\S'
