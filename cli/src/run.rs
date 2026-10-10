@@ -112,6 +112,8 @@ pub struct Shared {
     pub clock: Clock,
     /// The `ns watch` process running this unit, or `None` for a standalone `ns run`.
     pub watch_pid: Option<u32>,
+    /// `ns watch --until`, or `None` for a standalone `ns run`. It bounds a runner lock wait.
+    pub until: Option<i64>,
 }
 
 impl Shared {
@@ -120,6 +122,7 @@ impl Shared {
             spent_usd: 0.0,
             clock: Clock::from_env(),
             watch_pid: None,
+            until: None,
         }
     }
 }
@@ -339,25 +342,87 @@ impl Drop for Lock {
 
 /// The locks a phase's runner names, held from before the phase starts until it ends. Each is
 /// an OS lock (`flock`) on `<dir>/<name>.lock`, so the kernel drops a dead run's hold and its
-/// file is taken over. A lock held by a live run makes this one wait.
+/// file is taken over. A lock held by a live run makes this one wait, up to a bound.
+#[derive(Debug)]
 pub struct RunnerLocks(Vec<File>);
+
+/// The longest pause between two tries at a held lock.
+const LOCK_POLL_MAX_S: i64 = 5;
+
+/// Which bound ended a wait for a runner lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bound {
+    /// The waiting phase's own timeout, counted from when the wait began.
+    Timeout,
+    /// `ns watch --until`.
+    Until,
+}
+
+impl Bound {
+    fn label(self) -> &'static str {
+        match self {
+            Bound::Timeout => "timeout",
+            Bound::Until => "until",
+        }
+    }
+}
+
+/// How a wait for the runner locks ended.
+#[derive(Debug)]
+pub enum Acquired {
+    Held(RunnerLocks),
+    GaveUp(GaveUp),
+}
+
+/// A wait for a runner lock that hit its bound. Every lock taken before it is released.
+#[derive(Debug)]
+pub struct GaveUp {
+    pub lock: String,
+    pub held_by: Value,
+    pub bound: Bound,
+}
+
+impl GaveUp {
+    pub fn reason(&self) -> String {
+        format!(
+            "gave up waiting for lock {} (held by pid {}, unit {}) at {}",
+            self.lock,
+            self.held_by["pid"],
+            self.held_by["unit"].as_str().unwrap_or("?"),
+            match self.bound {
+                Bound::Timeout => "the phase timeout",
+                Bound::Until => "--until",
+            }
+        )
+    }
+}
 
 impl RunnerLocks {
     /// Take `names` sorted and without duplicates, so two runs can't deadlock.
-    /// `waiting` hears each lock this run has to wait for, and who holds it.
+    /// `waiting` hears each lock this run has to wait for, and who holds it. A held lock is
+    /// retried with a backoff on `clock` until `timeout` after the wait began, or `until`,
+    /// whichever is first; a lock taken at or past `until` counts as a give-up too.
     pub fn acquire(
         dir: &Path,
         names: &[String],
         unit: &str,
+        clock: &Clock,
+        timeout: Duration,
+        until: Option<i64>,
         mut waiting: impl FnMut(&str, &Value),
-    ) -> Result<RunnerLocks> {
+    ) -> Result<Acquired> {
         let mut names = names.to_vec();
         names.sort();
         names.dedup();
         if !names.is_empty() {
             fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
         }
-        let mut held = Vec::new();
+        let holder = |path: &Path| {
+            let text = fs::read_to_string(path).unwrap_or_default();
+            serde_json::from_str(text.trim()).unwrap_or(Value::Null)
+        };
+        let mut give_up = None;
+        let mut held = RunnerLocks(Vec::new());
         for name in &names {
             let path = dir.join(format!("{name}.lock"));
             let mut f = OpenOptions::new()
@@ -367,19 +432,81 @@ impl RunnerLocks {
                 .truncate(false)
                 .open(&path)
                 .with_context(|| format!("cannot open {}", path.display()))?;
-            if !flock(&f, false).with_context(|| format!("cannot lock {}", path.display()))? {
-                let text = fs::read_to_string(&path).unwrap_or_default();
-                waiting(
-                    name,
-                    &serde_json::from_str(text.trim()).unwrap_or(Value::Null),
-                );
-                flock(&f, true).with_context(|| format!("cannot lock {}", path.display()))?;
+            let try_lock =
+                |f: &File| try_flock(f).with_context(|| format!("cannot lock {}", path.display()));
+            if !try_lock(&f)? {
+                let (at, bound) =
+                    *give_up.get_or_insert_with(|| give_up_at(clock.now(), timeout, until));
+                let first = holder(&path);
+                waiting(name, &first);
+                if !poll_until(clock, at, || try_lock(&f))? {
+                    return Ok(Acquired::GaveUp(GaveUp {
+                        lock: name.clone(),
+                        held_by: Some(holder(&path))
+                            .filter(|h| !h.is_null())
+                            .unwrap_or(first),
+                        bound,
+                    }));
+                }
+                if until.is_some_and(|u| clock.now() >= u) {
+                    unlock_flock(&f);
+                    return Ok(Acquired::GaveUp(GaveUp {
+                        lock: name.clone(),
+                        held_by: first,
+                        bound: Bound::Until,
+                    }));
+                }
             }
             f.set_len(0)?;
             writeln!(f, "{}", json!({"pid": std::process::id(), "unit": unit}))?;
-            held.push(f);
+            held.0.push(f);
         }
-        Ok(RunnerLocks(held))
+        Ok(Acquired::Held(held))
+    }
+}
+
+/// Run `try_once` until it succeeds, backing off from 1 s to `LOCK_POLL_MAX_S` between tries
+/// on `clock`. `Ok(false)` once the clock reaches `at` without a success.
+fn poll_until(clock: &Clock, at: i64, mut try_once: impl FnMut() -> Result<bool>) -> Result<bool> {
+    let mut step = 1;
+    while !try_once()? {
+        let now = clock.now();
+        if now >= at {
+            return Ok(false);
+        }
+        clock.sleep_until((now + step).min(at));
+        step = (step * 2).min(LOCK_POLL_MAX_S);
+    }
+    Ok(true)
+}
+
+/// Why a spend of `spent` dollars is over `budget`, or `None` while it is under it.
+fn budget_spent(budget: Option<f64>, spent: f64) -> Option<String> {
+    let b = budget.filter(|b| spent >= *b)?;
+    Some(format!("spent ${spent:.2} of the ${b:.2} budget"))
+}
+
+/// A budget spent while the runner locks were awaited stops the phase before its harness
+/// starts, with the locks released.
+fn recheck_budget(
+    held: RunnerLocks,
+    budget: Option<f64>,
+    spent: f64,
+    phase: &str,
+) -> Result<RunnerLocks, Finish> {
+    match budget_spent(budget, spent) {
+        Some(reason) => Err(finish(Outcome::Budget, reason, Some(phase))),
+        None => Ok(held),
+    }
+}
+
+/// When a wait that begins at `now` gives up: `timeout` later (a partial second counts as a
+/// whole one), or at `until` if that comes first.
+fn give_up_at(now: i64, timeout: Duration, until: Option<i64>) -> (i64, Bound) {
+    let t = now + timeout.as_millis().div_ceil(1000) as i64;
+    match until {
+        Some(u) if u <= t => (u, Bound::Until),
+        _ => (t, Bound::Timeout),
     }
 }
 
@@ -387,35 +514,41 @@ impl Drop for RunnerLocks {
     fn drop(&mut self) {
         for f in &self.0 {
             let _ = f.set_len(0);
+            unlock_flock(f);
         }
     }
 }
 
-/// Take an exclusive `flock` on `f`. Without `block`, `Ok(false)` means another holds it.
 #[cfg(unix)]
-fn flock(f: &File, block: bool) -> std::io::Result<bool> {
+fn unlock_flock(f: &File) {
     use std::os::unix::io::AsRawFd;
-    let op = if block {
-        libc::LOCK_EX
-    } else {
-        libc::LOCK_EX | libc::LOCK_NB
-    };
+    // SAFETY: the fd is open for as long as `f` lives.
+    unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN) };
+}
+
+#[cfg(not(unix))]
+fn unlock_flock(_: &File) {}
+
+/// Try to take an exclusive `flock` on `f`; `Ok(false)` means another holds it.
+#[cfg(unix)]
+fn try_flock(f: &File) -> std::io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
     loop {
         // SAFETY: the fd is open for as long as `f` lives.
-        if unsafe { libc::flock(f.as_raw_fd(), op) } == 0 {
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
             return Ok(true);
         }
         let e = std::io::Error::last_os_error();
         match e.raw_os_error() {
             Some(libc::EINTR) => continue,
-            Some(libc::EWOULDBLOCK) if !block => return Ok(false),
+            Some(libc::EWOULDBLOCK) => return Ok(false),
             _ => return Err(e),
         }
     }
 }
 
 #[cfg(not(unix))]
-fn flock(_: &File, _: bool) -> std::io::Result<bool> {
+fn try_flock(_: &File) -> std::io::Result<bool> {
     Ok(true)
 }
 
@@ -993,21 +1126,67 @@ fn drive(
         if attempt > p.max_attempts {
             let mut reason = format!("{phase} is out of attempts ({})", p.max_attempts);
             if let Some(t) = timed_out.get(phase) {
-                reason.push_str(&format!(
-                    ": the last attempt {t}; raise its timeout_minutes or split the unit"
-                ));
+                reason.push_str(&format!(": the last attempt {t}"));
             }
             return Ok(finish(Outcome::Stuck, reason, Some(phase)));
         }
-        if let Some(b) = fac.budget_usd() {
-            if shared.spent_usd >= b {
-                return Ok(finish(
-                    Outcome::Budget,
-                    format!("spent ${:.2} of the ${b:.2} budget", shared.spent_usd),
-                    Some(phase),
-                ));
-            }
+        if let Some(reason) = budget_spent(fac.budget_usd(), shared.spent_usd) {
+            return Ok(finish(Outcome::Budget, reason, Some(phase)));
         }
+        let timeout = phase_timeout(phase, p.timeout_minutes);
+        eprintln!("ns run: {} {phase} attempt {attempt} ({why})", ctx.unit);
+        let locks = RunnerLocks::acquire(
+            &ctx.lock_dir,
+            &fac.locks(&p),
+            &ctx.unit,
+            &shared.clock,
+            timeout,
+            shared.until,
+            |lock, by| {
+                eprintln!(
+                    "ns run: {} {phase} waits for lock {lock} (held by pid {}, unit {})",
+                    ctx.unit, by["pid"], by["unit"]
+                );
+                ctx.log(json!({"event": "lock_wait", "phase": phase, "lock": lock, "held_by": by}));
+            },
+        )?;
+        let held = match locks {
+            Acquired::Held(held) => held,
+            Acquired::GaveUp(g) => {
+                let reason = g.reason();
+                eprintln!("ns run: {} {phase} {reason}", ctx.unit);
+                ctx.log(json!({
+                    "event": "lock_wait_timeout",
+                    "phase": phase,
+                    "attempt": attempt,
+                    "lock": g.lock,
+                    "held_by": g.held_by,
+                    "bound": g.bound.label(),
+                }));
+                if g.bound == Bound::Until {
+                    return Ok(finish(Outcome::Budget, reason, Some(phase)));
+                }
+                phases.push(json!({
+                    "phase": phase,
+                    "attempt": attempt,
+                    "decision": why,
+                    "written": false,
+                    "reason": reason,
+                }));
+                attempts.insert(phase, attempt);
+                timed_out.insert(phase, reason);
+                forced = Some(Decision::Run {
+                    phase,
+                    feedback,
+                    why,
+                });
+                continue;
+            }
+        };
+        let held = match recheck_budget(held, fac.budget_usd(), shared.spent_usd, phase) {
+            Ok(held) => held,
+            Err(f) => return Ok(f),
+        };
         let art_path = ctx.artifacts.join(artifact_of(phase));
         let moves = archive_for(&ctx.artifacts, phase, &state)?;
         let mut prompt = ctx.prompt(&p, attempt, &feedback)?;
@@ -1031,29 +1210,16 @@ fn drive(
                 shared.watch_pid.map(|p| p.to_string()).unwrap_or_default(),
             ),
         ];
-        let timeout = phase_timeout(phase, p.timeout_minutes);
-        eprintln!("ns run: {} {phase} attempt {attempt} ({why})", ctx.unit);
-        let r = {
-            let _held =
-                RunnerLocks::acquire(&ctx.lock_dir, &fac.locks(&p), &ctx.unit, |lock, by| {
-                    eprintln!(
-                        "ns run: {} {phase} waits for lock {lock} (held by pid {}, unit {})",
-                        ctx.unit, by["pid"], by["unit"]
-                    );
-                    ctx.log(
-                        json!({"event": "lock_wait", "phase": phase, "lock": lock, "held_by": by}),
-                    );
-                })?;
-            run_harness(
-                &commands[phase],
-                &prompt,
-                &ctx.worktree,
-                &env,
-                timeout,
-                &transcript,
-                subscription,
-            )
-        };
+        let r = run_harness(
+            &commands[phase],
+            &prompt,
+            &ctx.worktree,
+            &env,
+            timeout,
+            &transcript,
+            subscription,
+        );
+        drop(held);
         let r = r?;
         let t = ClaudeStreamJson.parse(&r.stdout);
         let cost = t.cost_usd.unwrap_or(0.0);
@@ -1093,7 +1259,13 @@ fn drive(
         }
         attempts.insert(phase, attempt);
         if r.timed_out {
-            timed_out.insert(phase, gate::timed_out_after(timeout));
+            timed_out.insert(
+                phase,
+                format!(
+                    "{}; raise its timeout_minutes or split the unit",
+                    gate::timed_out_after(timeout)
+                ),
+            );
         } else {
             timed_out.remove(phase);
         }
@@ -1591,11 +1763,261 @@ mod tests {
     fn acquire_takes_a_repeated_name_once() {
         let dir = tempfile::tempdir().unwrap();
         let names: Vec<String> = ["b", "a", "b"].map(String::from).into();
-        let held = RunnerLocks::acquire(dir.path(), &names, "u", |lock, _| {
+        let clock = Clock::pinned(1000);
+        let held = RunnerLocks::acquire(dir.path(), &names, "u", &clock, MIN, None, |lock, _| {
             panic!("waited on {lock}")
         })
-        .unwrap();
+        .unwrap()
+        .held();
         assert_eq!(held.0.len(), 2);
+    }
+
+    const MIN: Duration = Duration::from_secs(60);
+
+    impl Acquired {
+        fn held(self) -> RunnerLocks {
+            match self {
+                Acquired::Held(h) => h,
+                Acquired::GaveUp(g) => panic!("gave up: {}", g.reason()),
+            }
+        }
+
+        fn gave_up(self) -> GaveUp {
+            match self {
+                Acquired::GaveUp(g) => g,
+                Acquired::Held(_) => panic!("took the locks"),
+            }
+        }
+    }
+
+    struct Hold(File);
+
+    impl Drop for Hold {
+        fn drop(&mut self) {
+            unlock_flock(&self.0);
+        }
+    }
+
+    /// Another process's hold on `<dir>/<name>.lock`, naming pid 42 and unit `other`.
+    fn hold(dir: &Path, name: &str) -> Hold {
+        let path = dir.join(format!("{name}.lock"));
+        fs::write(&path, "{\"pid\":42,\"unit\":\"other\"}\n").unwrap();
+        let f = File::open(&path).unwrap();
+        assert!(try_flock(&f).unwrap());
+        Hold(f)
+    }
+
+    fn is_free(dir: &Path, name: &str) -> bool {
+        let f = File::open(dir.join(format!("{name}.lock"))).unwrap();
+        let free = try_flock(&f).unwrap();
+        unlock_flock(&f);
+        free
+    }
+
+    #[test]
+    fn acquire_gives_up_at_the_phase_timeout_and_releases_what_it_took() {
+        let dir = tempfile::tempdir().unwrap();
+        let _b = hold(dir.path(), "b");
+        let clock = Clock::pinned(1000);
+        let names: Vec<String> = ["b", "a"].map(String::from).into();
+        let mut waits = Vec::new();
+        let g = RunnerLocks::acquire(dir.path(), &names, "u", &clock, MIN, Some(2000), |l, by| {
+            waits.push((l.to_string(), by.clone()))
+        })
+        .unwrap()
+        .gave_up();
+        assert_eq!(clock.now(), 1060);
+        assert_eq!((g.lock.as_str(), g.bound), ("b", Bound::Timeout));
+        assert_eq!(g.held_by, json!({"pid": 42, "unit": "other"}));
+        assert_eq!(waits, [("b".to_string(), g.held_by.clone())]);
+        assert!(is_free(dir.path(), "a"));
+        assert_eq!(fs::read_to_string(dir.path().join("a.lock")).unwrap(), "");
+        assert_eq!(
+            g.reason(),
+            "gave up waiting for lock b (held by pid 42, unit other) at the phase timeout"
+        );
+    }
+
+    #[test]
+    fn acquire_gives_up_at_until_when_it_comes_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let _a = hold(dir.path(), "a");
+        let clock = Clock::pinned(1000);
+        let names = vec!["a".to_string()];
+        let g = RunnerLocks::acquire(dir.path(), &names, "u", &clock, MIN, Some(1030), |_, _| {})
+            .unwrap()
+            .gave_up();
+        assert_eq!(clock.now(), 1030);
+        assert_eq!(g.bound, Bound::Until);
+        assert_eq!(
+            g.reason(),
+            "gave up waiting for lock a (held by pid 42, unit other) at --until"
+        );
+    }
+
+    #[test]
+    fn acquire_counts_a_partial_second_of_timeout_as_a_whole_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let _a = hold(dir.path(), "a");
+        let clock = Clock::pinned(1000);
+        let names = vec!["a".to_string()];
+        let timeout = Duration::from_millis(1500);
+        let g = RunnerLocks::acquire(
+            dir.path(),
+            &names,
+            "u",
+            &clock,
+            timeout,
+            Some(1002),
+            |_, _| {},
+        )
+        .unwrap()
+        .gave_up();
+        assert_eq!((clock.now(), g.bound), (1002, Bound::Until));
+    }
+
+    #[test]
+    fn acquire_takes_a_lock_its_holder_releases_in_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = Some(hold(dir.path(), "a"));
+        let clock = Clock::pinned(1000);
+        let names = vec!["a".to_string()];
+        let held = RunnerLocks::acquire(dir.path(), &names, "u", &clock, MIN, None, |_, _| {
+            a.take();
+        })
+        .unwrap()
+        .held();
+        let other = File::open(dir.path().join("a.lock")).unwrap();
+        assert!(!try_flock(&other).unwrap());
+        let text = fs::read_to_string(dir.path().join("a.lock")).unwrap();
+        assert!(
+            text.contains(&format!("\"pid\":{}", std::process::id())),
+            "{text}"
+        );
+        drop(held);
+        assert!(is_free(dir.path(), "a"));
+    }
+
+    #[test]
+    fn acquire_times_out_from_when_the_first_wait_began() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = Some(hold(dir.path(), "a"));
+        let _b = hold(dir.path(), "b");
+        let clock = Clock::pinned(1000);
+        let names: Vec<String> = ["a", "b"].map(String::from).into();
+        let g = RunnerLocks::acquire(dir.path(), &names, "u", &clock, MIN, None, |l, _| {
+            if l == "a" {
+                clock.sleep_until(1030);
+                a.take();
+                assert!(is_free(dir.path(), "a"));
+            }
+        })
+        .unwrap()
+        .gave_up();
+        assert_eq!((g.lock.as_str(), g.bound), ("b", Bound::Timeout));
+        assert_eq!(clock.now(), 1060);
+    }
+
+    #[test]
+    fn acquire_gives_up_when_until_passed_while_it_waited() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = Some(hold(dir.path(), "b"));
+        let clock = Clock::pinned(1000);
+        let names: Vec<String> = ["a", "b"].map(String::from).into();
+        let g = RunnerLocks::acquire(dir.path(), &names, "u", &clock, MIN, Some(1030), |_, _| {
+            clock.sleep_until(1030);
+            b.take();
+        })
+        .unwrap()
+        .gave_up();
+        assert_eq!((g.lock.as_str(), g.bound), ("b", Bound::Until));
+        assert!(is_free(dir.path(), "a"));
+        assert!(is_free(dir.path(), "b"));
+    }
+
+    #[test]
+    fn polling_backs_off_one_two_four_then_five_seconds() {
+        let clock = Clock::pinned(1000);
+        let mut seen = Vec::new();
+        let got = poll_until(&clock, 1 << 40, || {
+            seen.push(clock.now());
+            Ok(seen.len() == 6)
+        })
+        .unwrap();
+        assert!(got);
+        assert_eq!(seen, [1000, 1001, 1003, 1007, 1012, 1017]);
+    }
+
+    #[test]
+    fn polling_at_the_bound_tries_once_and_does_not_sleep() {
+        let clock = Clock::pinned(1000);
+        let mut tries = 0;
+        let got = poll_until(&clock, 1000, || {
+            tries += 1;
+            Ok(false)
+        })
+        .unwrap();
+        assert!(!got);
+        assert_eq!((tries, clock.now()), (1, 1000));
+    }
+
+    #[test]
+    fn polling_never_sleeps_past_the_bound() {
+        let clock = Clock::pinned(1000);
+        assert!(!poll_until(&clock, 1004, || Ok(false)).unwrap());
+        assert_eq!(clock.now(), 1004);
+    }
+
+    #[test]
+    fn a_partial_second_of_timeout_rounds_up() {
+        let t = Duration::from_millis(1500);
+        assert_eq!(give_up_at(1000, t, None), (1002, Bound::Timeout));
+        assert_eq!(give_up_at(1000, MIN, None), (1060, Bound::Timeout));
+    }
+
+    #[test]
+    fn a_tie_between_the_timeout_and_until_goes_to_until() {
+        assert_eq!(give_up_at(1000, MIN, Some(1060)), (1060, Bound::Until));
+        assert_eq!(give_up_at(1000, MIN, Some(1061)), (1060, Bound::Timeout));
+        assert_eq!(give_up_at(1000, MIN, Some(1059)), (1059, Bound::Until));
+    }
+
+    #[test]
+    fn a_budget_spent_during_a_lock_wait_stops_the_phase_and_frees_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = vec!["a".to_string()];
+        let acquire = || {
+            RunnerLocks::acquire(
+                dir.path(),
+                &names,
+                "u",
+                &Clock::pinned(1000),
+                MIN,
+                None,
+                |_, _| {},
+            )
+            .unwrap()
+            .held()
+        };
+        let held = recheck_budget(acquire(), Some(5.0), 4.0, "build");
+        drop(held.ok().expect("under budget"));
+        let Err(f) = recheck_budget(acquire(), Some(5.0), 5.0, "build") else {
+            panic!("a spent budget kept the locks")
+        };
+        assert!(matches!(f.outcome, Outcome::Budget));
+        assert_eq!(f.reason, "spent $5.00 of the $5.00 budget");
+        assert_eq!(f.phase.as_deref(), Some("build"));
+        acquire();
+    }
+
+    #[test]
+    fn a_spent_budget_names_the_spend_and_the_limit() {
+        assert_eq!(budget_spent(None, 99.0), None);
+        assert_eq!(budget_spent(Some(5.0), 4.99), None);
+        assert_eq!(
+            budget_spent(Some(5.0), 5.0).as_deref(),
+            Some("spent $5.00 of the $5.00 budget")
+        );
     }
 
     #[test]

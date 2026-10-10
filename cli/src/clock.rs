@@ -19,6 +19,13 @@ impl Clock {
         }
     }
 
+    #[cfg(test)]
+    pub fn pinned(t: i64) -> Self {
+        Self {
+            pinned: Cell::new(Some(t)),
+        }
+    }
+
     pub fn now(&self) -> i64 {
         self.pinned.get().unwrap_or_else(real_now)
     }
