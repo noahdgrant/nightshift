@@ -414,6 +414,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         }
         None => None,
     };
+    night.shared.until = deadline;
     let max_units = if args.once {
         Some(1)
     } else {
@@ -560,7 +561,8 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 Outcome::Budget => {
                     set_status(&repo.root, &q, issue.number, Some(&q.ready_label))?;
                     units.push(rec);
-                    break 'outer "budget".into();
+                    // A runner lock wait cut short by `--until` ends the run as `budget` too.
+                    break 'outer night.over(deadline, fac).unwrap_or("budget").into();
                 }
                 Outcome::Paused => {
                     let reset = night.resume_at(&r);

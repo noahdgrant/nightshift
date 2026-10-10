@@ -1269,8 +1269,10 @@ fn two_runs_needing_one_lock_serialise() {
     b.queue("verify", &["pass:script"]);
     b.ctl("verify.sh", &format!("echo B >> {order:?}"));
 
+    // A pinned clock would end B's wait at once: B waits on the real clock.
     let mut run_b = Killed(
         b.ns_std()
+            .env_remove("NS_NOW")
             .args(["run", "--issue", "7"])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -1300,6 +1302,106 @@ fn two_runs_needing_one_lock_serialise() {
     );
     let log = fs::read_to_string(b.root.join(".git/ns/runs.jsonl")).unwrap();
     assert!(log.contains("\"event\":\"lock_wait\""), "{log}");
+}
+
+#[test]
+fn a_runner_lock_wait_ends_each_attempt_at_the_phase_timeout() {
+    let a = Env::new();
+    let b = Env::new();
+    let locks = a.base.join("locks");
+    a.bench(&locks);
+    b.bench(&locks);
+    let held = Blocked::start(&a, "true", "true");
+    b.queue("build", &["pass:commit"]);
+    b.queue("verify", &["pass:script"]);
+    let out = b
+        .ns()
+        .env("NS_PHASE_TIMEOUT_MS", "verify=60000")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+    held.release();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.starts_with("verify is out of attempts"), "{reason}");
+    assert!(
+        reason.contains("gave up waiting for lock bench-1 (held by pid ")
+            && reason.ends_with("at the phase timeout"),
+        "{reason}"
+    );
+    assert_eq!(b.calls(), ["triage", "build"]);
+    let log = fs::read_to_string(b.root.join(".git/ns/runs.jsonl")).unwrap();
+    let gave_up: Vec<Value> = log
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|ev| ev["event"] == "lock_wait_timeout")
+        .collect();
+    assert!(!gave_up.is_empty(), "{log}");
+    assert_eq!(gave_up[0]["lock"], "bench-1");
+    assert_eq!(gave_up[0]["bound"], "timeout");
+    assert_eq!(gave_up[0]["held_by"]["unit"], UNIT);
+}
+
+#[test]
+fn a_runner_lock_timeout_retries_the_phase_it_was_given() {
+    let a = Env::new();
+    let b = Env::new();
+    let locks = a.base.join("locks");
+    a.bench(&locks);
+    b.bench(&locks);
+    let held = Blocked::start(&a, "true", "true");
+    let v = b.run(&["run", "--issue", "7", "--from", "verify"], 1);
+    held.release();
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.starts_with("verify is out of attempts"), "{reason}");
+    assert_eq!(b.calls(), Vec::<String>::new());
+    let phases = v["phases"].as_array().unwrap();
+    assert!(phases.len() > 1, "{v}");
+    for p in phases {
+        assert_eq!(p["phase"], "verify", "{v}");
+        assert_eq!(p["written"], false, "{v}");
+    }
+}
+
+#[test]
+fn a_runner_lock_wait_past_until_ends_the_night() {
+    let a = Env::new();
+    let b = Env::new();
+    let locks = a.base.join("locks");
+    a.bench(&locks);
+    b.bench(&locks);
+    let held = Blocked::start(&a, "true", "true");
+    b.ready(2, "Fix a", &["type:fix"], "");
+    b.queue("build", &["pass:commit"]);
+    b.queue("verify", &["pass:script"]);
+    let out = b
+        .ns()
+        .env("NS_PHASE_TIMEOUT_MS", "verify=86400000")
+        .args(["watch", "--until", "00:30"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    held.release();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["stopped"], "until", "{v}");
+    assert_eq!(v["units"][0]["outcome"], "budget", "{v}");
+    let reason = v["units"][0]["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("gave up waiting for lock bench-1") && reason.ends_with("at --until"),
+        "{reason}"
+    );
+    assert_eq!(b.calls(), ["triage", "build"]);
+    assert!(b.gh_calls().contains(
+        "issue edit 2 --remove-label status:in-progress --add-label status:ready-for-agent"
+    ));
+    let log = fs::read_to_string(b.root.join(".git/ns/runs.jsonl")).unwrap();
+    assert!(
+        log.contains("\"event\":\"lock_wait_timeout\"") && log.contains("\"bound\":\"until\""),
+        "{log}"
+    );
 }
 
 #[test]
