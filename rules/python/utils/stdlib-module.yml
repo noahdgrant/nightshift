@@ -1,4 +1,5 @@
-# Python's public standard library modules, from sys.stdlib_module_names (Python 3.12).
+# Python's public standard library modules (no leading _): the names in sys.stdlib_module_names
+# of Python 3.12, kept by hand. A later Python that adds a module needs it added here.
 # Matches an import's dotted name whose top-level package is one of them.
 id: stdlib-module
 language: python
