@@ -23,6 +23,10 @@ No existing test covers defects (a), (b) or (d): no test reserves exactly the av
 - `Warehouse.release_expired(now) -> list[Reservation]`: does not exist. Expired reservations stay in `reservations()` (and in the state file) until cancelled. Used by `ns-tdd/evals/cases/py-release-expired-feature`.
 - `status --json` in the CLI: does not exist in the fixture. The `ns-verify` cases `py-status-json-*` commit a build of it in setup (`build.patch` in the case dir), with a brief of three criteria: every item as JSON in SKU order (AC1), only the named SKU (AC2), and an unknown SKU exits 1 (AC3).
 
+### Room for a refactor
+
+`run()` in `src/inventory/cli.py` dispatches every command through one if/elif chain on `args.command`. Splitting it into one handler per command is a pure refactor with two easy ways to change behaviour. `status` sets `changed = False` so it never saves: run against a missing state file, it must not create one. And `run(args, out=None)` writes to the stream it is given, so a handler that prints to `sys.stdout` breaks callers that pass `out`. The existing tests cover neither, and none cover `cancel`, `fulfil` or the `add-item` and `receive` output. Used by `ns-tdd/evals/cases/py-refactor-keep-behaviour`.
+
 ### Seeded defects in case builds
 
 **(c) `status --json` ignores the SKU.** The build in `ns-verify/evals/cases/py-status-json-misses-sku-filter/build.patch` checks that the SKU exists but prints every item under `--json`, so AC2 fails while AC1 and AC3 hold. Its test for AC2 stocks a single item, so the suite passes and the seeded `build.md` says `status: pass`. Only driving the CLI with two or more items shows the defect. The sibling case `py-status-json-all-criteria-met` commits the correct build with the same brief, `build.md` and test names.
