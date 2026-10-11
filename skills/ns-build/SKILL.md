@@ -36,6 +36,8 @@ Read `.ns/<unit-id>/brief.md`. If the worktree is new and the brief sits in the 
 
 Stop with `status: blocked` in `build.md` when the brief is missing, or when its acceptance criteria can't each be turned into a test that goes red today. Name the gap, and point to the `ns-triage` skill (for a missing brief) or `ns-define` (for unclear intent).
 
+Then [surface the assumptions](../ns-principle-surface-assumptions/SKILL.md) the map rests on. When the brief, the code, the docs or a test disagree, [manage the confusion](../ns-principle-manage-confusion/SKILL.md) before the first slice.
+
 Done when every acceptance criterion is mapped to a seam where a test can observe it. Write the map down; it seeds the test list.
 
 If the work touches an external API, a library version or a vendor SDK, read [source-driven.md](references/source-driven.md) before writing that code.
@@ -52,8 +54,8 @@ While building, apply these principles:
 - [Attack the premise](../ns-principle-attack-the-premise/SKILL.md) when two fixes that share one assumption have failed the same test. Write the premise down before a third fix.
 - [Pave the road](../ns-principle-pave-the-road/SKILL.md) when a slice adds a pattern, helper or dependency: reuse the repo's existing way to do that job, or state why it doesn't fit.
 - [Minimize reader load](../ns-principle-minimize-reader-load/SKILL.md) before each commit: collapse one-caller wrappers, shrink mutable state.
-
-**Scope.** Touch only what the brief requires. Something worth fixing outside it goes in `build.md` as a `file:` line (see Open risks kinds below), not in the diff. A change the brief asked for that you made differently goes under deviations, with the reason.
+- [Keep scope tight](../ns-principle-keep-scope-tight/SKILL.md) on every diff: work outside the brief goes in `build.md` as a `file:` line (Open risks, below).
+- [Push back](../ns-principle-push-back/SKILL.md) when the brief asks for something the code or a test shows is wrong.
 
 **Open risks** come in two kinds, and each line in `build.md` starts with its kind:
 
