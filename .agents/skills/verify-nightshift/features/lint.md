@@ -1,12 +1,13 @@
 # Lint
 
-`ns lint` checks every `ns-*/SKILL.md` under a skills directory: frontmatter parses, `name` matches the directory and starts with `ns-`, `description` is set, `metadata.upstream` is well formed, and relative links resolve.
+`ns lint` checks every skill under a skills directory (each `ns-*` directory and each directory holding a `SKILL.md`): frontmatter parses, `name` matches the directory and starts with `ns-` (not required under `.agents/skills/`), `description` is set, `metadata.upstream` is well formed, relative links resolve, and each `features/*.md` has the four H2 sections in order.
 
 ## Sub-features
 
 - `lint-clean` passes on this repo's `skills/`.
 - `lint-errors` reports a bad name, a missing description and a broken link, and exits `1`.
 - `lint-human` prints one line per error instead of JSON.
+- `lint-local` passes on this repo's `.agents/skills/`, whose `verify-nightshift` has no `ns-` prefix.
 
 ## How to get to it (user POV)
 
@@ -20,9 +21,11 @@ Preconditions:
 
 - **Clean.** Run `cap lint-clean "$NS" lint skills`. Exit `0`; `ok` is `true`, `errors` is `[]`, `skills` counts every `ns-*` directory.
 - **Errors.** Make a broken skill: `mkdir -p $V/sk/ns-x && printf -- '---\nname: ns-y\n---\n[a](./missing.md)\n' > $V/sk/ns-x/SKILL.md`. Run `cap lint-errors "$NS" lint $V/sk`. Exit `1`; `ok` is `false` and `errors` holds three entries for the bad name, the missing description and the broken link.
+- **Local.** Run `cap lint-local "$NS" lint .agents/skills`. Exit `0`; `ok` is `true` and `skills` is at least `1`.
 - **Human.** Run `cap lint-human "$NS" lint $V/sk --human`. Exit `1` and three lines: `name "ns-y" does not match directory "ns-x"`, `missing description`, `broken link: ./missing.md`.
 
 ## Gotchas
 
-- Only `ns-*` directories are linted. `verify-nightshift` and anything else under `.agents/skills/` is skipped, so `ns lint .agents/skills` proves nothing about it.
+- The `ns-` prefix exemption comes from the lint root's parent being named `.agents`. The same skill under any other root, `skills/` included, fails the prefix rule.
+- A directory with neither an `ns-` name nor a `SKILL.md` is skipped, not reported.
 - Links inside fenced code blocks are not checked.
