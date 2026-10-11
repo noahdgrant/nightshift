@@ -203,12 +203,13 @@ impl Env {
         fs::write(self.ghd.join(format!("labels-{n}")), lines).unwrap();
     }
 
-    /// GitLab project members as `(id, access level)`.
-    fn gl_members(&self, members: &[(u64, u64)]) {
-        let v: Vec<Value> = members
+    /// GitLab project members as `(id, access level)`, plus any `extra` member rows.
+    fn gl_members(&self, members: &[(u64, u64)], extra: &[Value]) {
+        let mut v: Vec<Value> = members
             .iter()
             .map(|(id, level)| serde_json::json!({"id": id, "username": format!("u{id}"), "access_level": level}))
             .collect();
+        v.extend(extra.iter().cloned());
         self.gh_file("gl-members.json", &Value::from(v).to_string());
     }
 
@@ -8558,11 +8559,17 @@ fn watch_refuses_an_unknown_source() {
     watch_refuses_source(&e, "\"bitbucket\"");
 }
 
-/// A GitLab project: member ids 1-6 at Developer, Maintainer, Owner, Reporter, Planner and Guest.
+/// A GitLab project: member ids 1-6 at Developer, Maintainer, Owner, Reporter, Planner and Guest,
+/// and 7 a Developer whose invitation is still awaiting.
 fn gitlab_env() -> Env {
     let e = Env::new();
     e.factory("[queue]\nsource = \"gitlab\"\n");
-    e.gl_members(&[(1, 30), (2, 40), (3, 50), (4, 20), (5, 15), (6, 10)]);
+    let awaiting =
+        serde_json::json!({"id": 7, "username": "u7", "access_level": 30, "state": "awaiting"});
+    e.gl_members(
+        &[(1, 30), (2, 40), (3, 50), (4, 20), (5, 15), (6, 10)],
+        &[awaiting],
+    );
     e
 }
 
@@ -8592,7 +8599,16 @@ fn skipped(v: &Value) -> Vec<(u64, String)> {
 #[test]
 fn watch_on_gitlab_queues_developers_and_above_and_skips_the_rest() {
     let e = gitlab_env();
-    for (n, author) in [(2, 1), (3, 2), (4, 3), (5, 4), (6, 5), (7, 6), (8, 99)] {
+    for (n, author) in [
+        (2, 1),
+        (3, 2),
+        (4, 3),
+        (5, 4),
+        (6, 5),
+        (7, 6),
+        (8, 99),
+        (10, 7),
+    ] {
         e.gl_issue(n, &[READY, "type:fix"], "", author);
     }
     e.gl_issue(9, &["type:fix"], "", 1);
@@ -8601,7 +8617,7 @@ fn watch_on_gitlab_queues_developers_and_above_and_skips_the_rest() {
     let outside = "author outside the team".to_string();
     assert_eq!(
         skipped(&v),
-        [5, 6, 7, 8].map(|n| (n, outside.clone())),
+        [5, 6, 7, 8, 10].map(|n| (n, outside.clone())),
         "{v}"
     );
     assert!(e.gh_calls().is_empty(), "{}", e.gh_calls());
@@ -8696,6 +8712,25 @@ fn watch_on_gitlab_swaps_labels_and_comments_through_glab() {
 }
 
 #[test]
+fn watch_on_gitlab_closes_a_merged_issue_and_drops_its_status_label() {
+    let e = gitlab_env();
+    e.factory(&format!("[queue]\nsource = \"gitlab\"\n{AUTO}"));
+    e.gl_issue(2, &["type:fix", READY], "", 1);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "merged", "{v}");
+    assert_eq!(e.labels(2), ["type:fix"]);
+    let calls = e.glab_calls();
+    assert!(calls.contains("issue close 2"), "{calls}");
+    assert!(
+        calls.contains("issue update 2 --unlabel status:in-progress"),
+        "{calls}"
+    );
+}
+
+#[test]
 fn watch_on_gitlab_keeps_the_token_out_of_its_errors() {
     let e = gitlab_env();
     e.config("[forge.gitlab]\ntoken_env = \"MY_GL_TOKEN\"\n");
@@ -8718,7 +8753,7 @@ fn watch_on_gitlab_keeps_the_token_out_of_its_errors() {
 #[test]
 fn watch_detects_a_gitlab_origin_when_source_is_unset() {
     let e = Env::new();
-    e.gl_members(&[(1, 30)]);
+    e.gl_members(&[(1, 30)], &[]);
     e.gl_issue(2, &[READY], "", 1);
     e.ready(3, "Fix b", &["type:fix"], "");
     for origin in ["https://gitlab.com/o/r.git", "git@code.example.com:o/r.git"] {

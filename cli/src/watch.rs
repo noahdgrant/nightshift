@@ -131,10 +131,7 @@ impl Listing {
 /// The unit `ns watch` runs for the issue, `<n>-<slug of the title>` or `<n>` for a title with
 /// no slug: the name `ns run --issue <n>` would read from the forge.
 fn unit_id(i: &Issue) -> String {
-    match run::slug(&i.title) {
-        s if s.is_empty() => i.number.to_string(),
-        s => format!("{}-{s}", i.number),
-    }
+    run::unit_name(i.number, &i.title)
 }
 
 fn skip(i: &Issue, reason: impl Into<Value>) -> Value {

@@ -80,11 +80,12 @@ impl GitLab {
         serde_json::from_str(text.trim()).with_context(|| format!("glab api {path} gave bad JSON"))
     }
 
-    /// Ids of the members, inherited ones too, at Developer or above.
+    /// Ids of the active members, inherited ones too, at Developer or above.
     fn team(&self) -> Result<BTreeSet<u64>> {
         Ok(self
             .list("projects/:id/members/all?per_page=100")?
             .iter()
+            .filter(|m| m["state"].as_str().is_none_or(|s| s == "active"))
             .filter(|m| m["access_level"].as_u64().unwrap_or(0) >= DEVELOPER)
             .filter_map(|m| m["id"].as_u64())
             .collect())
