@@ -9959,3 +9959,64 @@ fn a_moved_pr_head_runs_the_merge_result_gate_again() {
     assert_ne!(merges[0]["sha"], merges[1]["sha"]);
     assert_eq!(merge_gate_bases(&e), [base.clone(), base]);
 }
+
+#[test]
+fn the_queue_leaves_the_worktree_on_the_pr_head_when_a_rebase_moved_head() {
+    let (e, v, code) = rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |e| {
+        e.factory(&format!("{AUTO}[phases.build]\ngate = \"true\"\n"));
+        main_moves(e, "from-main", "x\n");
+        e.gh_file(
+            "hook.sh",
+            "case \"$1 $2\" in \"pr merge\") git rev-parse HEAD > \"$FAKE_GH_DIR/head-at-merge\";; esac\n",
+        );
+    });
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    let old = fs::read_to_string(e.ghd.join("pr-12.head")).unwrap();
+    let at_merge = fs::read_to_string(e.ghd.join("head-at-merge")).unwrap();
+    assert_eq!(at_merge.trim(), old.trim());
+    assert!(gate_events(&e).iter().any(|g| g["merge_result"] == true));
+    assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
+}
+
+#[test]
+fn a_moved_main_with_the_queue_off_gates_the_pr_head_only() {
+    let e = Env::new();
+    let log = e.ctrl.join("gates");
+    e.factory(&format!(
+        "{AUTO}{LEGACY}[phases.build]\n{}",
+        where_gate(&log)
+    ));
+    e.ctl("pr", "12");
+    e.gh_file("checks-12.json", GREEN);
+    e.queue("build", &["pass:commit"]);
+    main_moves(&e, "from-main", "x\n");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(fs::read_to_string(&log).unwrap(), "branch\n");
+    let gates = gate_events(&e);
+    assert!(
+        gates.iter().all(|g| g.get("merge_result").is_none()),
+        "{gates:?}"
+    );
+    assert!(merge_gate_failures(&e).is_empty());
+    assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
+}
+
+#[test]
+fn a_dirty_pr_under_the_queue_takes_the_conflict_path_without_a_merge_gate() {
+    let e = Env::new();
+    let log = e.ctrl.join("gates");
+    local_queue(&e, &where_gate(&log));
+    e.queue("build", &["pass:commit", "fail"]);
+    main_moves(&e, "from-main", "x\n");
+    e.gh_file("pr-12.merge", "DIRTY");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    let p = e.prompt(6, "build");
+    assert!(p.contains("PR #12 conflicts with main"), "{p}");
+    assert!(run_events(&e).iter().any(|ev| ev["event"] == "conflict"));
+    assert!(gate_events(&e).iter().all(|g| g["phase"] != "merge"));
+    assert!(merge_gate_failures(&e).is_empty());
+    assert!(!e.gh_calls().contains("pr merge"));
+    assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
+}

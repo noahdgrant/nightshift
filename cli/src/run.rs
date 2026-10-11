@@ -2120,6 +2120,11 @@ fn gate_merge_result(
             ))))
         }
     };
+    if let Err(e) = check_out(wt, pr_head) {
+        return Ok(Some(human(format!(
+            "cannot check out PR #{n} head {pr_head} for the local merge queue: {e:#}; needs a human merge"
+        ))));
+    }
     // Merging a base the PR head already holds leaves the PR head: gate it as the head.
     if git::ok(wt, &["merge-base", "--is-ancestor", &base, pr_head]) {
         return gate_before_merge(ctx, gate_state, cmd, n, pr_head, run);
