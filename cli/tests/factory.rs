@@ -3771,6 +3771,71 @@ fn factory_validate_reports_problems() {
 }
 
 #[test]
+fn factory_validate_prints_the_supervise_settings() {
+    let e = Env::new();
+    let validate = || -> Value {
+        let out = e
+            .ns()
+            .args(["factory", "validate"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice(&out).unwrap()
+    };
+    e.factory("");
+    let v = validate();
+    assert_eq!(v["supervise"]["notify"], Value::Null);
+    assert_eq!(v["supervise"]["silence_minutes"], 45);
+    e.factory("[supervise]\nnotify = \"notify-send ns\"\nsilence_minutes = 20\n");
+    let v = validate();
+    assert_eq!(v["supervise"]["notify"], "notify-send ns");
+    assert_eq!(v["supervise"]["silence_minutes"], 20);
+    e.factory("[supervise]\nsilence = 20\n");
+    let out = e
+        .ns()
+        .args(["factory", "validate"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["supervise"], Value::Null);
+
+    e.factory("[supervise]\nsilence_minutes = 0\n");
+    let out = e
+        .ns()
+        .args(["factory", "validate"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["supervise"]["silence_minutes"], 0);
+    assert!(
+        v["errors"]
+            .to_string()
+            .contains("[supervise] silence_minutes must be at least 1"),
+        "{v}"
+    );
+
+    fs::remove_file(e.root.join(".nightshift/nightshift.toml")).unwrap();
+    let out = e
+        .ns()
+        .args(["factory", "validate"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["supervise"], Value::Null);
+}
+
+#[test]
 fn factory_validate_checks_scorers() {
     let e = Env::new();
     e.factory("");

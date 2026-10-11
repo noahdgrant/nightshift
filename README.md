@@ -65,6 +65,7 @@ The worktree is not a sandbox. Each phase runs claude with permissions bypassed,
 | review | `ns-review`, `ns-no-comments` |
 | ship | `ns-ship` |
 | all phases, in one session | `ns-auto` |
+| supervising a night of `ns watch` | `ns-supervise` |
 | upkeep | `ns-maintain` |
 | shared | `ns-grilling`, `ns-domain-modeling`, `ns-swarm`, `ns-writing-for-agents`, `ns-writing-for-humans`, `ns-principle-*` |
 

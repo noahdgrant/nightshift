@@ -102,6 +102,10 @@ ZEPHYR_BASE = "{capability.zephyr.base}"
 
 Capabilities come from the eval config (below). A case or fixture whose capability isn't configured is reported as `skipped`, never as failed.
 
+A fixture's `path_prepend` lists directories, relative to the fixture's own, that go first on `PATH` for the whole trial, ahead of any capability's. Each must exist, or the case is skipped. Use it for fakes a trial must find before the real tool, kept outside the fixture so the agent doesn't see them in its repo.
+
+The `night-log` fixture sets `path_prepend = ["../../fakes/systemd/bin"]`, which puts fake `systemctl`, `systemd-run`, `journalctl`, `gh` and `ns` first on `PATH`, so an `ns-supervise` trial can start, watch and stop a night without touching a real one. Each fake records its call in `<git-common-dir>/fake/calls.log` and keeps unit state under `fake/units/` and `fake/active/`. The fake `ns` refuses `watch`, `run`, `ask` and `eval`, which start model runs, and passes the rest to the next `ns` on `PATH`. `evals/fakes/systemd/test.sh` checks them, and `cargo test` runs it (`cli/tests/eval_fakes.rs`).
+
 The fixture's `[env]` applies to everything in a trial: setup commands, the harness run, and every check. `{capability.<name>.<key>}` expands to that capability's value, with `~` expanded. A capability's `path_prepend` list is added to the front of `PATH` for the whole trial (e.g. a venv's `bin/` carrying a toolchain's Python requirements).
 
 ## Arms and isolation

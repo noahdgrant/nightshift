@@ -138,6 +138,9 @@ pub struct FixtureFile {
     pub requires: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Directories, relative to the fixture's own, put first on `PATH` for the whole trial.
+    #[serde(default)]
+    pub path_prepend: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

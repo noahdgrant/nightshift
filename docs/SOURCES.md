@@ -74,6 +74,7 @@ flowchart LR
     sf_plan[ns-plan]
     sf_ts["**ns-troubleshoot**"]
     sf_auto["**ns-auto**"]
+    sf_sup["**ns-supervise**"]
     sf_ar["**ns-agent-readiness**"]
     sf_imp[ns-improve]
     sf_mnt["**ns-maintain**"]
@@ -143,6 +144,7 @@ flowchart LR
 | **ns-swarm** | shared leaf | pstack `swarm` | Harness-neutral fan-out: subagents, or `ns ask` per worker. Used by ns-review and ns-verify |
 | **ns-principle-\*** (30) | shared leaf | pstack `principle-*`; addyosmani `using-agent-skills` (surface assumptions, manage confusion, push back, keep scope tight), `api-and-interface-design` (Hyrum's law, contract first), `context-engineering` (guard the context window) | One skill each, user-invoked, referenced by path. Python/firmware examples |
 | **ns-auto** | all | pstack `poteto-mode` (`autonomous-run` playbook), overnight contract, selected principles | User-invoked. Chains the phases in one session, or defers to `ns run`. Never merges |
+| **ns-supervise** | all | none (original, D63) | Watches a night of `ns watch` from outside the loop: pings the operator, stops the night on a factory-wide failure, and keeps a status report |
 | ns-define | define | Matt `grill-with-docs`, `to-spec`; addy `interview-me`, `idea-refine`, `spec-driven-development` | Writes `brief.md` or `SPEC.md` |
 | ns-plan | plan | Matt `to-tickets`, `wayfinder`, `codebase-design` | |
 | **ns-troubleshoot** | outer loop | Matt `diagnosing-bugs` | Runs in a worktree and writes no fix: ends with `brief.md` (repro and root cause) routed to `ns-build` or `ns-define`. Firmware loop recipes: native_sim, emulators, serial, HIL, logic analyzer, `git bisect run` on target |

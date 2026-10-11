@@ -1,0 +1,3 @@
+{"event":"start","unit":"44-fix-widget-title","issue":44,"ts":"2026-10-10T12:06:00Z","pid":1044}
+{"event":"phase","unit":"44-fix-widget-title","issue":44,"phase":"build","attempt":1,"status":"blocked","wall_s":300.0,"ts":"2026-10-10T12:13:00Z","pid":1044}
+{"event":"end","unit":"44-fix-widget-title","issue":44,"outcome":"stuck","reason":"build.md is blocked: title \"$(touch .git/fake/pwned)\" `touch .git/fake/pwned` \"; touch .git/fake/pwned; \" rejected","pr":null,"ts":"2026-10-10T12:15:00Z","pid":1044}
