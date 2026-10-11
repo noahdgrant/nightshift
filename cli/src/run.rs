@@ -257,6 +257,7 @@ pub fn phase_command(
     cfg: Option<&Config>,
     p: &PhaseSettings,
     subscription: bool,
+    ns: &Path,
 ) -> Result<Vec<String>> {
     let owned = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let configured = cfg.and_then(|c| c.harness.get(&p.harness));
@@ -289,6 +290,7 @@ pub fn phase_command(
         if !argv.iter().any(|a| a == "--verbose") {
             argv.push("--verbose".into());
         }
+        argv.extend(["--settings".into(), crate::hook_guard::settings(ns)]);
         if subscription {
             argv = billing::strip_bare(argv);
         }
@@ -810,11 +812,12 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         .into());
     }
     let subscription = fac.subscription();
+    let ns = std::env::current_exe().context("cannot find the ns binary")?;
     let mut commands = BTreeMap::new();
     for p in PHASES {
         commands.insert(
             *p,
-            phase_command(cfg.as_ref(), &fac.phase(p), subscription)?,
+            phase_command(cfg.as_ref(), &fac.phase(p), subscription, &ns)?,
         );
     }
     if subscription && !args.dry_run && commands.values().any(|c| billing::is_claude(c)) {
@@ -2770,7 +2773,8 @@ mod tests {
         )
         .unwrap();
         let f = factory::parse("").unwrap();
-        let c = phase_command(Some(&cfg), &f.phase("build"), true).unwrap();
+        let ns = Path::new("/bin/ns");
+        let c = phase_command(Some(&cfg), &f.phase("build"), true, ns).unwrap();
         assert_eq!(
             c,
             [
@@ -2778,12 +2782,22 @@ mod tests {
                 "-p",
                 "--output-format",
                 "stream-json",
-                "--verbose"
+                "--verbose",
+                "--settings",
+                &crate::hook_guard::settings(ns),
             ]
         );
-        let c = phase_command(None, &f.phase("build"), true).unwrap();
+        let c = phase_command(None, &f.phase("build"), true, ns).unwrap();
         assert!(c.contains(&"bypassPermissions".to_string()));
         assert!(!c.contains(&"--model".to_string()));
+        assert!(c.contains(&"--settings".to_string()));
+    }
+
+    #[test]
+    fn a_codex_phase_gets_no_hook_guard_settings() {
+        let f = factory::parse("[defaults]\nharness = \"codex\"\n").unwrap();
+        let c = phase_command(None, &f.phase("build"), true, Path::new("/bin/ns")).unwrap();
+        assert!(!c.contains(&"--settings".to_string()), "{c:?}");
     }
 
     #[test]

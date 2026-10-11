@@ -17,6 +17,7 @@ mod forge;
 mod frontmatter;
 mod gate;
 mod git;
+mod hook_guard;
 mod install;
 mod lint;
 mod log;
@@ -277,6 +278,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             } => return upstream::diff_cli(&skills_dir, &skill, human),
         },
         Cmd::Doctor => doctor::run()?,
+        Cmd::GuardHooks => hook_guard::run()?,
     }
     Ok(ExitCode::SUCCESS)
 }
