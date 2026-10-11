@@ -198,7 +198,7 @@ Compare adapted skills with the upstream each records in `metadata.upstream` (`o
 
 ### `ns doctor`
 
-Prints the config path, whether it exists and parses, and each configured role with its resolved harness, model, read-only and write commands, and whether the binary is on PATH. `distinct_harnesses` lists the providers in use, so a skill can tell whether two roles get a cross-provider check. `harnesses` reports which of `claude`, `codex`, `cursor-agent`, `gemini` and `opencode` are on PATH. `forge` reports, per forge, whether it is `configured` and whether a token resolved (`token_resolved`), and for GitHub the `account` that `gh api user` returns with that token. The token itself is never printed. `claude_phases` reports that `ns run` phases and `ns eval` trials run claude with auto-memory off (`auto_memory: false`) and the variable that does it (`env`). `skill_dirs` reports, per harness (`claude`, `codex`, `agents`, `cursor`), the `path` that `ns install --harness` links into and `ns_skills`, how many `ns-*` skills it holds (0 when the directory is missing). `problems` lists anything that would make `ns ask` fail, and a forge token that doesn't resolve.
+Prints the config path, whether it exists and parses, and each configured role with its resolved harness, model, read-only and write commands, and whether the binary is on PATH. `distinct_harnesses` lists the providers in use, so a skill can tell whether two roles get a cross-provider check. `harnesses` reports which of `claude`, `codex`, `cursor-agent`, `gemini` and `opencode` are on PATH. `forge` reports, per forge, whether it is `configured`, whether a token resolved (`token_resolved`), the `account` the forge's API returns for that token (`gh api user`, `glab api user`), and the `table` it came from. For the forge `origin` is on it also reports the `repo` from `origin`'s URL, whether the token can read it (`repo_readable`; false is a problem), and for an SSH origin the account `ssh -T` greets (`ssh: {dest, account}`). Fields that don't apply are null. The token itself is never printed. `warnings` lists what doesn't stop a night: an SSH account that differs from the token's, an SSH host that greets no account, and a set `GH_TOKEN` or `GITLAB_TOKEN` that overrides the config. `claude_phases` reports that `ns run` phases and `ns eval` trials run claude with auto-memory off (`auto_memory: false`) and the variable that does it (`env`). `skill_dirs` reports, per harness (`claude`, `codex`, `agents`, `cursor`), the `path` that `ns install --harness` links into and `ns_skills`, how many `ns-*` skills it holds (0 when the directory is missing). `problems` lists anything that would make `ns ask` fail, and a forge token that doesn't resolve.
 
 ## Config
 
@@ -284,7 +284,29 @@ host = "gitlab.example.com"                        # optional; exported as GITLA
 
 - Set exactly one of `token_command` and `token_env` per forge.
 - At start, `ns run` and `ns watch` resolve each token once and export it as `GH_TOKEN` or `GITLAB_TOKEN`. Every child (`gh`, `git`, each phase's harness) inherits it.
-- A variable that is already set and non-empty wins, and no command runs. `host` likewise doesn't override a set `GH_HOST` or `GITLAB_HOST`.
+- A variable that is already set and non-empty wins, and no command runs. `ns run`, `ns watch` and `ns doctor` warn when it overrides a configured forge: `GH_TOKEN from the environment overrides the config's choice`. `host` likewise doesn't override a set `GH_HOST` or `GITLAB_HOST`.
+
+An operator with more than one account picks the token per owner or per repo, in the same file:
+
+```toml
+[forge.github]                                  # the default
+token_command = "gh auth token --user personal-account"
+
+[forge.github.owners."example-org"]             # every repo under an owner
+token_command = "gh auth token --user work-account"
+
+[forge.github.repos."example-org/backend"]      # one repo
+token_env = "BACKEND_TOKEN"
+```
+
+- The owner and repo come from `origin`'s URL: `https://github.com/example-org/backend.git`, `git@github.com:example-org/backend.git`, or an SSH host alias such as `git@github-work:example-org/backend.git`. A local path or `file://` URL names no repo, so the default table applies.
+- The most specific table wins: the repo's, then its owner's, then `[forge.github]`. Keys match without regard to case.
+- Each override takes `token_command` or `token_env`, exactly one, and no other key. An override needs the default table too, since that's where `host` goes.
+- GitLab has the same tables, `[forge.gitlab.owners."<group>"]` and `[forge.gitlab.repos."<group>/<project>"]`. A nested group matches on its full path: `owners."team/sub"` covers `team/sub/project` but not `team/project`. The overrides belong to the one `[forge.gitlab]` table, so with `host` set they are that host's.
+- Overrides apply to the forge `origin` is on (`[queue] source`, else its host, as for `ns watch`). The other forge gets its default table.
+- After exporting the token, `ns run` and `ns watch` check that it can read the repo (`gh api repos/<owner>/<repo>`, or `glab api projects/<path>`). When it can't, they exit 2 before any phase, naming the account the token belongs to (else the table) and the table it came from. A unit `ns watch` starts inherits the night's check and doesn't repeat it.
+- Keep these tables in the user config, never in a committed file, so account names stay out of repos.
+- `NS_CONFIG` still selects a whole other config file. That works as an escape hatch, but the overrides are the recommended way: they apply in every shell and in the systemd unit without setting a variable.
 - A failing command, empty output or an unset `token_env` stops with exit 2. The error names the forge and the command, never the token or the command's output.
 - The token is never written to `runs.jsonl`, transcripts, errors or `ns doctor` output.
 

@@ -542,12 +542,24 @@ The phases run with permissions bypassed inside worktrees. Run on a machine wher
 
 1. Log in to claude with the subscription account (`claude /login`). Without the login `ns run` refuses to start, with exit 2 (see "Billing").
 2. Install `ns` and the skills from a nightshift checkout: `cargo install --path cli`, then `ns install`.
-3. Put the account PRs should come from in the user config, `~/.config/nightshift/config.toml`, and run `ns doctor`. Its `forge` entry should show `token_resolved: true` and that account.
+3. Put the account PRs should come from in the user config, `~/.config/nightshift/config.toml`, and run `ns doctor` in the checkout. Its `forge` entry should show `token_resolved: true`, that account, `repo_readable: true` and, for an SSH `origin`, the same account under `ssh`.
 
    ```toml
    [forge.github]
    token_command = "gh auth token --user <account>"
    ```
+
+   With repos under more than one account, add a table per owner or per repo. The most specific one wins: the repo's, then the owner's, then `[forge.github]`. The owner and repo come from `origin`'s URL, SSH host aliases included. GitLab takes `[forge.gitlab.owners."<group>"]` and `[forge.gitlab.repos."<group>/<project>"]`, with nested groups on their full path.
+
+   ```toml
+   [forge.github.owners."example-org"]
+   token_command = "gh auth token --user work-account"
+
+   [forge.github.repos."example-org/backend"]
+   token_command = "gh auth token --user other-account"
+   ```
+
+   `ns run` and `ns watch` check at start that the chosen token can read the repo, and exit 2 naming the account and the table when it can't. A `GH_TOKEN` set in the environment still wins over every table, with a warning. `NS_CONFIG`, which points `ns` at another config file, remains an escape hatch, but it has to be set in every shell and in the systemd unit, so prefer the tables. See `cli/README.md` (`[forge]`).
 
 4. Keep the watched checkout on the default branch with no changes to tracked files. `ns watch` reads the gate command from it at start. When your skills are symlinks into it, `ns watch` also fast-forwards it before each unit so they stay current; on another branch or with local changes it only warns, and the night runs on the old skills. Skills linked from a separate nightshift checkout are never updated by `ns watch`, so pull that checkout yourself.
 5. Run `ns watch --dry-run` in the checkout to see the queue it would work.
