@@ -392,3 +392,104 @@ fn invalid_or_missing_scorers_are_errors() {
     assert!(err.contains("no scorers in"), "{err}");
     assert_eq!(e.ledger(), "");
 }
+
+#[test]
+fn run_from_a_unit_worktree_the_ledger_is_in_the_common_git_dir() {
+    let e = Env::new("pass");
+    let wt = e.base.join("myrepo.worktrees").join(UNIT);
+    git(
+        &e.root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            wt.to_str().unwrap(),
+            "-b",
+            &format!("ns/{UNIT}"),
+        ],
+    );
+    let out = e
+        .ns()
+        .current_dir(&wt)
+        .args(["score", UNIT])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["ledger"].as_str().unwrap(),
+        e.root.join(".git/ns/scores.jsonl").to_str().unwrap()
+    );
+    assert_eq!(e.ledger().lines().count(), 1, "{}", e.ledger());
+    assert!(!e.root.join(".git/worktrees").join(UNIT).join("ns").exists());
+    assert!(!wt.join(".git/ns").exists());
+}
+
+#[test]
+fn a_ledger_that_cannot_be_written_is_an_error() {
+    let e = Env::new("pass");
+    fs::write(e.root.join(".git/ns"), "in the way").unwrap();
+    let out = e
+        .ns()
+        .args(["score", UNIT])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("cannot create"), "{err}");
+    assert!(out.stdout.is_empty(), "{:?}", out.stdout);
+}
+
+#[test]
+fn a_ledger_file_that_cannot_be_appended_to_is_an_error() {
+    let e = Env::new("pass");
+    fs::create_dir_all(e.root.join(".git/ns/scores.jsonl")).unwrap();
+    let out = e
+        .ns()
+        .args(["score", UNIT])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("cannot append to"), "{err}");
+    assert!(out.stdout.is_empty(), "{:?}", out.stdout);
+}
+
+#[test]
+fn factory_selects_the_directory_the_scorers_come_from() {
+    let e = Env::new("pass");
+    fs::remove_dir_all(e.root.join(".nightshift/scorers")).unwrap();
+    let other = e.base.join("other-factory");
+    fs::create_dir_all(other.join("scorers")).unwrap();
+    fs::write(
+        other.join("scorers/custom.md"),
+        SCORER.replace("Grade evidence.md", "Grade custom things"),
+    )
+    .unwrap();
+    let (_, err) = e.run(&["score", UNIT], 1);
+    assert!(err.contains("no scorers in"), "{err}");
+    let (v, _) = e.run(&["score", UNIT, "--factory", other.to_str().unwrap()], 0);
+    assert_eq!(v["scores"][0]["scorer"], "custom");
+    assert!(e.prompt().contains("Grade custom things"), "{}", e.prompt());
+    assert_eq!(e.ledger().lines().count(), 1);
+}
+
+#[test]
+fn a_malformed_user_config_is_reported_not_swallowed() {
+    let e = Env::new("pass");
+    fs::write(e.base.join("config.toml"), "this is [not toml").unwrap();
+    let out = e
+        .ns()
+        .args(["score", UNIT])
+        .assert()
+        .code(3)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("config.toml"), "{err}");
+    assert!(!err.contains("role not configured"), "{err}");
+    assert_eq!(e.ledger(), "");
+}

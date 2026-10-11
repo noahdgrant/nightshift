@@ -93,10 +93,10 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
 }
 
 /// Run `role` read-only, as `ns ask --role <role>` does, and return what it printed.
-pub fn answer(role: &str, prompt: &str, cwd: Option<&Path>) -> Result<String> {
+pub fn answer(role: &str, prompt: &str) -> Result<String> {
     let plan = plan(role, false)?;
     let bin = plan.bin()?;
-    let out = plan.exec(&bin, prompt.as_bytes(), cwd, Stdio::piped())?;
+    let out = plan.exec(&bin, prompt.as_bytes(), None, Stdio::piped())?;
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 

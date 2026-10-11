@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::error::SfError;
+use crate::error::{SfError, EXIT_NOT_CONFIGURED};
 use crate::git::{self, Repo};
 use crate::run::{currency::known_pr, gh_json};
 use crate::scorer::Scorer;
@@ -57,7 +57,7 @@ pub fn cli(
 
     let mut scores = Vec::new();
     for (s, p) in &prompts {
-        let reply = ask::answer(&s.role, p, None)?;
+        let reply = ask::answer(&s.role, p)?;
         scores.push(grade(s, unit, &reply)?);
     }
     let ledger = repo.common_dir.join("ns").join("scores.jsonl");
@@ -69,7 +69,13 @@ pub fn cli(
 
 /// The valid scorers under the factory root, or the one `--scorer` names.
 fn scorers(root: &Path, only: Option<&str>) -> Result<Vec<Scorer>> {
-    let cfg = config::load(&config::path()).ok().flatten();
+    let path = config::path();
+    let cfg = config::load(&path).map_err(|e| {
+        SfError::new(EXIT_NOT_CONFIGURED, format!("{e:#}")).hint(format!(
+            "fix the file; a valid example:\n\n{}",
+            config::EXAMPLE
+        ))
+    })?;
     let (found, problems) = scorer::load(root, cfg.as_ref());
     if !problems.is_empty() {
         return Err(
