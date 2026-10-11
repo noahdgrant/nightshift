@@ -3776,6 +3776,36 @@ fn factory_validate_prints_the_supervise_settings() {
         .clone();
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["supervise"], Value::Null);
+
+    e.factory("[supervise]\nsilence_minutes = 0\n");
+    let out = e
+        .ns()
+        .args(["factory", "validate"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["supervise"]["silence_minutes"], 0);
+    assert!(
+        v["errors"]
+            .to_string()
+            .contains("[supervise] silence_minutes must be at least 1"),
+        "{v}"
+    );
+
+    fs::remove_file(e.root.join(".nightshift/nightshift.toml")).unwrap();
+    let out = e
+        .ns()
+        .args(["factory", "validate"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["supervise"], Value::Null);
 }
 
 #[test]

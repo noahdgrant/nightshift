@@ -44,10 +44,10 @@ Done when the mode is recorded, a night is running with its unit known (or the o
 
 Run two loops until the shift ends.
 
-- **Event stream.** Follow `ns log -f --json --since <night start, UTC>` in the background, and handle each event as it arrives against the tables in steps 3 and 4.
+- **Event stream.** Follow `ns log -f --json --since <night start, UTC>` in the background, and handle each event as it arrives against the tables in steps 3 and 4. On a re-attach the stream replays the whole night. An event whose ping or stop the report's Timeline already records is **seen**: do not handle it again. Derive that from the report, not from memory.
 - **Slow check**, about every 20 minutes, for what the log can't show:
   - the unit: `systemctl --user show <unit> -p ActiveState,Result,ActiveEnterTimestamp`, and `journalctl --user -u <unit> --since -20min` for OOM kills (`oom-kill`, `Out of memory`, `memory.max`).
-  - silence: `ns status --json`. Its `running` is not empty and the newest event is older than `silence_minutes`.
+  - silence: `ns status --json` shows `running` is not empty (units are running), and the newest `ts` in your own `ns log -f` stream is older than `silence_minutes`.
   - the forge: issues with the stuck label (`status:ready-for-human` unless `[queue] stuck_label` says otherwise), and PRs that need a human merge. Use the needs-human-merge PR label when `gh label list` has one (#336); else the PRs of units that ended `done`.
 
 The **shift ends** when `ns watch` exits: the unit leaves `active`, or the lock's pid is gone. Then finish the report (step 5).
@@ -84,8 +84,8 @@ Record each ping as a Timeline line in the report.
 Stop the night only when the operator is **away** and one of these happens:
 
 - `main`'s CI goes red after a factory merge: after an `end` event with outcome `merged`, take its `pr` field (`ns log --json` keeps no sha), get the merge commit with `gh pr view <pr> --json mergeCommit`, and compare it with `headSha` in `gh run list --branch main --limit 1 --json conclusion,headSha`. A `conclusion` of `failure` for that sha is a red `main`. A run that is pending, or not registered yet for that sha, is not a failure: check again on the next slow check.
-- three units in a row end `stuck` for the same reason: consecutive `end` events with outcome `stuck` whose reasons match once unit names, finding ids, paths and numbers are dropped.
-- a `self_update_failed` event, or more than two `self_update` events within an hour (each is a re-exec of `ns watch` in place).
+- three units in a row end `stuck` for the same reason: the newest consecutive `end` events up to now, all with outcome `stuck` and reasons that match once unit names, finding ids, paths and numbers are dropped. A later `end` with any other outcome breaks the streak, so a streak that old history shows and a merge since then ended is not a stop.
+- a `self_update_failed` event, or more than two `self_update` events in the last hour (each is a re-exec of `ns watch` in place).
 - the memory cap or an OOM kill triggers repeatedly: two or more in the shift.
 
 When the operator is around, each of these is a ping and the night runs on. A single stuck unit is always just a ping.

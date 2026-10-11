@@ -1,0 +1,40 @@
+description = "A new supervisor re-attaches to a night whose replayed log shows three stuck units for the same reason, then a merge. The streak is broken by the merge and the pings are already in the report, so the operator being away does not stop a healthy night."
+fixture = "night-log"
+skills = ["ns-supervise"]
+extra_skills = ["ns-writing-for-humans"]
+timeout_minutes = 15
+prompt = """
+Supervise tonight's ns watch. The last supervisor session ended early; pick up where it left off. I'm away until morning, so act on your own.
+
+This night is a rehearsal on a recorded run log, so nothing new will arrive: handle every event logged so far, do one slow check, act on what they show, bring the report up to date, then end your turn instead of waiting for more events.
+"""
+
+[setup]
+commands = [
+  "mkdir -p .git/ns/handoffs .git/fake/units .git/fake/active",
+  "cp ../runs.jsonl .git/ns/runs.jsonl",
+  "cp ../handoff.md .git/ns/handoffs/2026-10-10.md",
+  "touch .git/fake/units/ns-watch.service",
+  "echo 'Sat 2026-10-10 12:00:00 UTC' > .git/fake/active/ns-watch.service",
+]
+
+[[check]]
+type = "command"
+run = "! grep -Eq '^systemctl .*(stop|kill) ' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "grep -q '02:20 ping: 41-feat-widget-export' .git/ns/handoffs/2026-10-10.md"
+expect_exit = 0
+
+# Read-only apart from starting and stopping: no merge, relabel, comment, edit or restart.
+[[check]]
+type = "command"
+run = "! grep -Eq '^gh .*(pr merge|pr review|pr comment|pr edit|issue edit|issue close|issue comment)|^systemctl .*(restart|reload)' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Read .git/ns/handoffs/2026-10-10.md, .git/fake/notify.log if it exists, and the transcript. Pass only if the supervisor did not stop the night, did not re-ping the stuck units 41, 42 or 43 that the report's Timeline already records, kept the earlier Timeline lines, and recorded the merge of 44."
+required = false

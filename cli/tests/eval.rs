@@ -636,6 +636,37 @@ fn a_fixture_path_prepend_goes_first_on_path() {
 }
 
 #[test]
+fn fixture_path_prepend_precedes_capability_dirs_and_dedupes() {
+    let e = setup();
+    let fixture = e.repo.join("evals/fixtures/tiny/fixture.toml");
+    let text = fs::read_to_string(&fixture).unwrap();
+    fs::write(
+        &fixture,
+        format!("path_prepend = [\"../../fakes/bin\"]\nrequires = [\"zephyr\"]\n{text}"),
+    )
+    .unwrap();
+    fs::create_dir_all(e.repo.join("evals/fakes/bin")).unwrap();
+    let fakes = e.repo.join("evals/fakes/bin").canonicalize().unwrap();
+    let mut cfg = fs::read_to_string(&e.cfg).unwrap();
+    cfg.push_str(&format!(
+        "[eval.capability.zephyr]\npath_prepend = [\"/opt/zbin\", \"{0}\"]\n",
+        fakes.display()
+    ));
+    fs::write(&e.cfg, cfg).unwrap();
+    let v = e.eval(&["ns-demo", "--case", "fix-add", "--dry-run"]);
+    let c = case(&v, "fix-add");
+    assert!(c["skipped"].is_null(), "{c}");
+    let path = c["env"]["PATH"].as_str().unwrap();
+    let want = format!("{}:/opt/zbin:", fakes.display());
+    assert!(path.starts_with(&want), "{path}");
+    assert_eq!(
+        path.matches(&fakes.display().to_string()).count(),
+        1,
+        "{path}"
+    );
+}
+
+#[test]
 fn trigger_evals_detect_skill_loads() {
     let e = setup();
     let v = e.eval(&["ns-demo", "--triggers-only"]);
