@@ -532,6 +532,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 "triage": triage,
                 "triage_next_pass": next_pass,
                 "triage_skipped": tr.skipped,
+                "human_merge_label": q.human_merge_label,
                 "max_units": max_units,
                 "parallel": parallel,
                 "until": deadline.map(clock::local_iso),
@@ -947,6 +948,15 @@ Open after at least 2 fix attempts: C1, I2, I4.
             Ok(())
         }
         fn close(&self, _: u64) -> Result<()> {
+            Ok(())
+        }
+        fn add_pr_label(&self, _: u64, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn remove_pr_label(&self, _: u64, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn comment_pr(&self, _: u64, _: &str) -> Result<()> {
             Ok(())
         }
     }

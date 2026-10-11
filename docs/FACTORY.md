@@ -49,6 +49,7 @@ source = "github"                  # github or gitlab. Unset: from origin's host
 ready_label = "status:ready-for-agent"
 in_progress_label = "status:in-progress"
 done_label = "status:in-review"    # set when the unit ends with an open PR
+human_merge_label = "needs-human-merge"   # set on that PR; created in red if missing
 stuck_label = "status:ready-for-human"
 split_label = "status:needs-define"   # set when triage split the issue into child issues
 triage_label = "status:needs-triage"   # issues ns watch triages before it picks a unit
@@ -327,7 +328,7 @@ The loop below is for one unit at a time, the default. With `--parallel N` the s
 3. Drop issues whose author is outside the team (see Trust), issues whose first-line `Blocked by: #a, #b` names any open issue, and issues that already have an open PR whose body says `Closes #n`, unless that PR comes from the issue's own unit branch (see "Units a night didn't finish").
 4. Sort by the first matching `priority` label, then the first matching `order` label, then issue number. An issue with no `priority` label sorts after the last one.
 5. Take the first. Swap `ready_label` for `in_progress_label`, so no other worker takes it. `git fetch origin`, then start `ns run <n>-<slug of the title> --issue <n> --base origin/<default>` as a child process on the night's snapshot (see "Parallel units"), sharing the budget.
-6. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`. On `split`, swap to `split_label` and post nothing: triage's notes already list the children, and the parent waits on them, neither queued nor triaged again, until a human closes it. On `stuck`, or a `done` that needs a human merge (files that need human review, no CI), swap to `stuck_label` and comment the reason and the last artifact path. When the last artifact is a `review.md`, the comment also lists its open Critical and Important findings, each with its title and location. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
+6. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`, then add `human_merge_label` to the unit's PR, if `pr.md` names one, and comment on the PR why it needs a human merge, with the AI disclaimer. A missing label is created first, red (`d73a4a`) with a description. A merged unit's PR loses the label if it carries it. On `split`, swap to `split_label` and post nothing: triage's notes already list the children, and the parent waits on them, neither queued nor triaged again, until a human closes it. On `stuck`, or a `done` that needs a human merge (files that need human review, no CI), swap to `stuck_label` and comment the reason and the last artifact path; that `done` labels its PR as above too. When the last artifact is a `review.md`, the comment also lists its open Critical and Important findings, each with its title and location. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
 7. On `paused`, keep `in_progress_label` and sleep until the reset time (30 minutes when unknown, then check again), then resume the same unit. If the reset is at or past `--until`, put `ready_label` back and stop cleanly. With more than one unit running, a usage limit pauses them all (see "Parallel units").
 8. Repeat until the queue is empty, `--until` passes (no new unit starts after it), `max_units` is reached, the budget is spent, or a signal asks it to stop.
 
@@ -624,7 +625,11 @@ The summary's `cleaned` lists the units whose worktrees the night removed after 
 jq -r 'select(.event == "cleanup") | [.unit, .removed, .reason // ""] | @tsv' .git/ns/runs.jsonl
 ```
 
-On the tracker, a merged unit's issue is closed. Under `merge.policy = "human"`, a unit that ended `done` has `done_label` (`status:in-review` by default) and an open PR for you to merge. A stuck unit, or a `done` that needs a human merge, has `stuck_label` (`status:ready-for-human` by default) and a comment with the reason and the last artifact.
+On the tracker, a merged unit's issue is closed. Under `merge.policy = "human"`, a unit that ended `done` has `done_label` (`status:in-review` by default) and an open PR for you to merge. A stuck unit, or a `done` that needs a human merge, has `stuck_label` (`status:ready-for-human` by default) and a comment with the reason and the last artifact. Every PR waiting on a human merge carries `human_merge_label`, with a comment saying why, so the merge queue is:
+
+```bash
+gh pr list --label needs-human-merge
+```
 
 ### Resuming a unit
 
