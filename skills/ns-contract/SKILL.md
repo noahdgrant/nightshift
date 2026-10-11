@@ -72,6 +72,8 @@ updated: 2026-10-08T21:14:00Z
 
 A phase reads only its input artifact and the repo. It never relies on chat history, so every phase can start in a fresh context.
 
+A unit's diff must clear the [quality bar](references/quality-bar.md). `ns-build` checks its own diff against it, and `ns-review` grades the diff against it.
+
 ## Gates
 
 Each phase skill names its gate. What happens at the gate depends on the run's gate policy:
