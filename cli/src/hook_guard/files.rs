@@ -19,6 +19,31 @@ pub(super) fn is_protected_directory(dir: &str) -> bool {
     is_protected(dir) || components(dir).last() == Some(&".git")
 }
 
+/// How many directories below a protected path the directory `dir` is, or `None` when it is
+/// not in one.
+pub(super) fn protected_depth(dir: &str) -> Option<usize> {
+    if !is_protected_directory(dir) {
+        return None;
+    }
+    let parts = components(dir);
+    let root =
+        (0..parts.len()).find(|&i| parts[i] == ".git" || is_protected(&parts[..=i].join("/")))?;
+    Some(parts.len() - root - 1)
+}
+
+/// The relative `path` from `depth` directories below a protected path stays in it.
+pub(super) fn stays_inside(mut depth: usize, path: &str) -> bool {
+    for part in components(path) {
+        if part == ".." {
+            match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return false,
+            }
+        }
+    }
+    true
+}
+
 /// The parts of `path` between slashes, without the empty and `.` ones.
 pub(super) fn components(path: &str) -> Vec<&str> {
     path.split('/')
@@ -83,6 +108,10 @@ pub(super) fn edits_in_place(prog: &str, args: &[Word]) -> bool {
     })
 }
 
+fn names_hooks(pattern: &str) -> bool {
+    pattern.contains("githooks") || pattern.contains("git/hooks")
+}
+
 pub(super) fn find(args: &[Word], scan: &mut Scan) -> Option<String> {
     let acts = |a: &Word| {
         matches!(
@@ -93,6 +122,15 @@ pub(super) fn find(args: &[Word], scan: &mut Scan) -> Option<String> {
     if args.iter().any(acts) {
         if let Some(dir) = args.iter().find(|a| scan.touches_hooks(&a.text)) {
             return Some(format!("find {} in {PROTECTED}", dir.text));
+        }
+        if let Some(pattern) = args.windows(2).find_map(|p| {
+            let matches_path = matches!(
+                p[0].text.as_str(),
+                "-path" | "-ipath" | "-wholename" | "-iwholename" | "-regex" | "-iregex"
+            );
+            (matches_path && names_hooks(&p[1].text)).then_some(&p[1])
+        }) {
+            return Some(format!("find {} in {PROTECTED}", pattern.text));
         }
     }
     let mut rest = args;

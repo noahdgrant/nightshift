@@ -85,7 +85,7 @@ pub fn check(call: &Value) -> Option<String> {
     match call["tool_name"].as_str()? {
         BASH_TOOL => {
             let mut scan = Scan {
-                cwd_is_hooks: call["cwd"].as_str().is_some_and(is_protected_directory),
+                hooks_depth: call["cwd"].as_str().and_then(protected_depth),
                 ..Scan::default()
             };
             check_command(input["command"].as_str()?, &mut scan)
@@ -105,11 +105,12 @@ fn unreadable(what: &str) -> String {
 
 #[derive(Default)]
 struct Scan {
-    /// An earlier `cd` or `pushd`, or this git's `-C`, went into a protected path.
-    cwd_is_hooks: bool,
+    /// An earlier `cd` or `pushd`, or this git's `-C`, went into a protected path: how many
+    /// directories below it the working directory is.
+    hooks_depth: Option<usize>,
     depth: usize,
-    /// `cwd_is_hooks` outside each subshell the scan is in.
-    outer_cwds: Vec<bool>,
+    /// `hooks_depth` outside each subshell the scan is in.
+    outer_cwds: Vec<Option<usize>>,
     /// The command's stdin is a heredoc or herestring, which a shell would run.
     stdin_is_text: bool,
 }
@@ -119,7 +120,10 @@ impl Scan {
     fn touches_hooks(&self, path: &str) -> bool {
         let path = option_value(path);
         is_protected(path)
-            || (self.cwd_is_hooks && !path.starts_with(['-', '/']) && !path.starts_with(".."))
+            || (!path.starts_with(['-', '/'])
+                && self
+                    .hooks_depth
+                    .is_some_and(|depth| stays_inside(depth, path)))
     }
 }
 
@@ -171,10 +175,10 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
                 words.clear();
                 stdin_is_text = false;
                 match tok {
-                    Tok::SubshellOpen => scan.outer_cwds.push(scan.cwd_is_hooks),
+                    Tok::SubshellOpen => scan.outer_cwds.push(scan.hooks_depth),
                     Tok::SubshellClose => {
                         if let Some(outer) = scan.outer_cwds.pop() {
-                            scan.cwd_is_hooks = outer;
+                            scan.hooks_depth = outer;
                         }
                     }
                     _ => {}
@@ -231,7 +235,7 @@ fn check_segment(words: &[Word], scan: &mut Scan) -> Option<String> {
                 None
             }
             "popd" => {
-                scan.cwd_is_hooks = false;
+                scan.hooks_depth = None;
                 None
             }
             "eval" => check_words(&w[1..], scan),
@@ -258,11 +262,13 @@ fn check_words(words: &[Word], scan: &mut Scan) -> Option<String> {
 
 /// A command named by an expansion is unreadable; deny it when git or the hooks are near.
 fn opaque_command(words: &[Word]) -> Option<String> {
-    let near_git = words.iter().any(|w| {
-        w.text.split(['{', '}', ',']).any(|p| basename(p) == "git")
-            || is_guarded_subcommand(&w.text)
-            || is_protected(&w.text)
-    });
+    let names_git = words.first().is_some_and(|w| w.text.starts_with("git"));
+    let near_git = names_git
+        || words.iter().any(|w| {
+            w.text.split(['{', '}', ',']).any(|p| basename(p) == "git")
+                || is_guarded_subcommand(&w.text)
+                || is_protected(&w.text)
+        });
     near_git.then(|| "a command named by a shell expansion next to git or .githooks".to_string())
 }
 
@@ -272,9 +278,9 @@ fn change_directory(args: &[Word], scan: &mut Scan) {
         .map(|a| a.text.as_str())
         .find(|a| *a == "-" || !a.starts_with('-'));
     match dir {
-        Some(d) if is_protected_directory(d) => scan.cwd_is_hooks = true,
+        Some(d) if is_protected_directory(d) => scan.hooks_depth = protected_depth(d),
         Some(d) if !d.starts_with(['/', '~']) => {}
-        _ => scan.cwd_is_hooks = false,
+        _ => scan.hooks_depth = None,
     }
 }
 
@@ -286,15 +292,22 @@ fn env_assignment(word: &str) -> Option<(&str, &str)> {
     ok.then_some((name, value))
 }
 
-/// Variables that make git skip a hook or move `core.hooksPath`. A command that sets one is
+/// Variables that make git skip a hook, move `core.hooksPath` or read another config or repo. A command that sets one is
 /// denied whether or not it runs git: an `export` lasts past the call.
 fn env_bypass(name: &str, value: &str) -> Option<String> {
     let hit = match name {
         "HUSKY" => value == "0",
-        "SKIP" | "GIT_CONFIG_COUNT" | "GIT_CONFIG_PARAMETERS" => true,
+        "SKIP"
+        | "GIT_CONFIG_COUNT"
+        | "GIT_CONFIG_PARAMETERS"
+        | "GIT_CONFIG_GLOBAL"
+        | "GIT_CONFIG_SYSTEM"
+        | "GIT_DIR" => true,
         n => n.starts_with("GIT_CONFIG_KEY_") || n.starts_with("GIT_CONFIG_VALUE_"),
     };
-    hit.then(|| format!("{name}= makes git hooks skip or moves core.hooksPath"))
+    hit.then(|| {
+        format!("{name}= makes git hooks skip, or moves core.hooksPath or the config git reads")
+    })
 }
 
 fn basename(prog: &str) -> &str {

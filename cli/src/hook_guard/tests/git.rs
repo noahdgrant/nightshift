@@ -278,3 +278,19 @@ fn git_config_section_writes_read_both_names_and_the_subcommand_form() {
     assert!(!denied("git config user.name edit"));
     assert!(!denied("git config alias.rm remove-section"));
 }
+
+#[test]
+fn env_and_options_that_redirect_gits_config_or_dir_are_denied() {
+    for c in [
+        "GIT_CONFIG_GLOBAL=/tmp/c git commit -m x",
+        "GIT_CONFIG_SYSTEM=/tmp/c git commit -m x",
+        "GIT_DIR=/tmp/o git commit -m x",
+        "git --git-dir=/tmp/o commit -m x",
+        "git --git-dir /tmp/o commit -m x",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in ["HOME=/tmp git status", "XDG_CONFIG_HOME=/tmp git status"] {
+        assert!(!denied(c), "{c}");
+    }
+}

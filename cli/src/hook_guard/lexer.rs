@@ -61,7 +61,7 @@ impl WordBuf {
     fn finish(self) -> Word {
         let opaque = self
             .expansion_at
-            .is_some_and(|at| could_be_flag_or_command(&self.text[..at]));
+            .is_some_and(|at| hides_flag_or_command(&self.text[..at]));
         Word {
             text: self.text,
             opaque,
@@ -70,12 +70,11 @@ impl WordBuf {
     }
 }
 
-/// The opacity rule: an expansion hides what the word is when it stands where a command or a
-/// flag could be written, that is at the start of the word, right after a lone `-`, or inside a
-/// long option's name (`--$x`, but not `--name=$x`, whose value is data). `before` is the text
-/// ahead of the expansion.
-fn could_be_flag_or_command(before: &str) -> bool {
-    before.is_empty() || before == "-" || (before.starts_with("--") && !before.contains('='))
+/// The opacity rule: an expansion hides what the word is unless the text ahead of it ends an
+/// `--option=` or an assignment, whose value is data. `before` is the text ahead of the
+/// expansion.
+fn hides_flag_or_command(before: &str) -> bool {
+    !before.contains('=')
 }
 
 struct Heredoc {
@@ -273,8 +272,8 @@ impl<'a> Lexer<'a> {
     }
 
     fn escape(&mut self) {
-        self.buf().quoted = true;
         if let Some(c) = self.chars.next().filter(|c| *c != '\n') {
+            self.buf().quoted = true;
             self.push(c);
         }
     }

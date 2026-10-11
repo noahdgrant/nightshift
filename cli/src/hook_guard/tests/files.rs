@@ -244,3 +244,41 @@ fn each_find_exec_command_ends_at_its_terminator() {
     assert!(denied(r"find . -exec true \; -exec git commit -n \;"));
     assert!(denied(r"find . -exec true {} + -execdir git commit -n \;"));
 }
+
+#[test]
+fn dot_dot_resolves_against_the_depth_of_a_protected_cwd() {
+    for c in [
+        "cd .githooks/sub && rm ../pre-commit",
+        "cd .githooks/a/b && rm ../../pre-commit",
+        "cd .githooks/sub && rm ../../.githooks/pre-commit",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "cd .githooks && rm ../x",
+        "cd .githooks/sub && rm ../../x",
+        "cd .githooks && rm /tmp/x",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn chmod_and_find_delete_on_hooks_are_denied() {
+    for c in [
+        "chmod -x .githooks/pre-commit",
+        "chmod -R a-x .githooks",
+        "find .githooks -delete",
+        "find . -path '*githooks*' -delete",
+        "find .git/hooks -delete",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "chmod +x build.sh",
+        "find . -name '*.tmp' -delete",
+        "find .githooks -name x",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}

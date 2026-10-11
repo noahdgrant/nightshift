@@ -43,6 +43,9 @@ pub(super) fn attached_option(arg: &str) -> Option<(&str, &str)> {
     if let Some(kv) = arg.strip_prefix("--config-env=") {
         return Some(("--config-env", kv));
     }
+    if let Some(dir) = arg.strip_prefix("--git-dir=") {
+        return Some(("--git-dir", dir));
+    }
     if arg.starts_with("--") {
         return None;
     }
@@ -96,19 +99,24 @@ pub(super) fn global_option(
     let denial = match option {
         "-c" => config_pair(value, scan, aliases),
         "-C" => {
-            scan.cwd_is_hooks |= is_protected(value);
+            if is_protected(value) {
+                scan.hooks_depth = protected_depth(value);
+            }
             None
         }
         "--config-env" => config_env(value),
+        "--git-dir" => Some(format!(
+            "git --git-dir={value} makes git use other hooks and config"
+        )),
         _ => None,
     };
     denial.map_or(Ok(()), Err)
 }
 
 pub(super) fn git(args: &[Word], scan: &mut Scan) -> Option<String> {
-    let outer_cwd = scan.cwd_is_hooks;
+    let outer_cwd = scan.hooks_depth;
     let why = git_command(args, scan);
-    scan.cwd_is_hooks = outer_cwd;
+    scan.hooks_depth = outer_cwd;
     why
 }
 
@@ -171,21 +179,18 @@ pub(super) fn rebase_exec(rest: &[Word], scan: &mut Scan) -> Option<String> {
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         let text = a.text.as_str();
-        let script = match text {
-            "-x" | "--exec" => {
-                let script = it.next()?;
-                if script.opaque {
-                    return Some(unreadable("git rebase --exec"));
-                }
-                script.text.as_str()
+        let script = if matches!(text, "-x" | "--exec") {
+            let script = it.next()?;
+            if script.opaque {
+                return Some(unreadable("git rebase --exec"));
             }
-            _ => match text.strip_prefix("--exec=") {
-                Some(script) => script,
-                None => match text.strip_prefix("-x").filter(|_| !text.starts_with("--")) {
-                    Some(script) => script,
-                    None => continue,
-                },
-            },
+            script.text.as_str()
+        } else if let Some(script) = text.strip_prefix("--exec=") {
+            script
+        } else if let Some(script) = text.strip_prefix("-x").filter(|_| !text.starts_with("--")) {
+            script
+        } else {
+            continue;
         };
         if let Some(why) = check_command(script, scan) {
             return Some(why);

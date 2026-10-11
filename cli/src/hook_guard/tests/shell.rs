@@ -354,3 +354,35 @@ fn heredoc_stdin_reaches_nested_shells_and_ends_with_its_command() {
     assert!(!denied("cat <<< x; bash script.sh"));
     assert!(!denied("eval 'cat <<< x'; bash script.sh"));
 }
+
+#[test]
+fn a_line_continuation_before_the_command_does_not_hide_it() {
+    for c in [
+        "cd x && \\\n  git commit --no-verify -m x",
+        "FOO=1 \\\n git commit -n",
+        "\\\ngit commit -n",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    assert!(!denied("cd x && \\\n  git commit -m x"));
+}
+
+#[test]
+fn an_expansion_inside_a_command_name_or_flag_is_opaque() {
+    for c in [
+        "git${IFS}commit${IFS}--no-verify",
+        "gi$X commit -n",
+        "X=n; git commit -a$X -m x",
+        "git commit -$X",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "git commit --message=$X",
+        "git commit -m $X",
+        "git commit -m x$Y",
+        "echo a$X",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
