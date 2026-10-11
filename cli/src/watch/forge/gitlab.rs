@@ -293,7 +293,16 @@ mod tests {
             statuses_path(&sha, "dev/x").unwrap(),
             format!("projects/:id/repository/commits/{sha}/statuses?ref=dev%2Fx&per_page=100")
         );
-        for bad in ["", "abc", "../../x", "a/../b?x=1", &format!("{sha}\n")] {
+        let bad = ["", "abc", "../../x", "a/../b?x=1"].map(String::from);
+        let wrong_shape = [
+            format!("{sha}\n"),
+            format!("{}/", "a".repeat(39)),
+            format!("{}..", "a".repeat(38)),
+            "a".repeat(41),
+            "a".repeat(63),
+            "a".repeat(65),
+        ];
+        for bad in bad.iter().chain(&wrong_shape) {
             assert!(statuses_path(bad, "main").is_err(), "{bad}");
         }
     }

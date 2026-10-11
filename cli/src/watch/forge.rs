@@ -565,9 +565,20 @@ mod tests {
 
     #[test]
     fn main_checks_refuses_a_head_that_is_not_a_commit_id() {
-        for bad in ["abc", "../x?y=1", &"g".repeat(40), &format!("{SHA}/x")] {
+        let bad = [
+            "abc".to_string(),
+            "../x?y=1".to_string(),
+            "g".repeat(40),
+            format!("{SHA}/x"),
+            format!("{}/", "a".repeat(39)),
+            format!("{}..", "a".repeat(38)),
+            "a".repeat(41),
+            "a".repeat(63),
+            "a".repeat(65),
+        ];
+        for bad in &bad {
             let mut v = answer(&serde_json::json!([]), &serde_json::json!([]));
-            v["data"]["repository"]["defaultBranchRef"]["target"]["oid"] = bad.into();
+            v["data"]["repository"]["defaultBranchRef"]["target"]["oid"] = bad.as_str().into();
             assert!(parse_main_checks(&v).is_err(), "{bad}");
         }
         assert_eq!(head_sha(&"a".repeat(64)).unwrap().len(), 64);
