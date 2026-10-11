@@ -45,7 +45,7 @@ skill = "ns-review"
 skill = "ns-ship"
 
 [queue]
-source = "github"                  # only github works; gitlab is recognised, not supported yet. Unset: from origin's host. See below
+source = "github"                  # github or gitlab. Unset: from origin's host. See below
 ready_label = "status:ready-for-agent"
 in_progress_label = "status:in-progress"
 done_label = "status:in-review"    # set when the unit ends with an open PR
@@ -71,7 +71,7 @@ ci_timeout_minutes = 30
 ci_register_timeout = 3            # minutes to wait for the PR head's first check before "no CI"
 ```
 
-`[queue] source` names the forge `ns watch` reads issues and PRs from and keeps labels and comments on. `github` uses `gh`. `gitlab` is accepted as a name but not supported yet, so it is refused. Unset, `origin`'s host decides: a host containing `gitlab` means `gitlab`, and anything else, including no `origin` or a local path, means `github`. `ns watch` refuses an unknown value, `gitlab`, or an unset key with a GitLab `origin`, with exit 2 and a message naming `[queue] source`. `ns factory validate` reports a set value that is unknown or `gitlab`.
+`[queue] source` names the forge `ns watch` reads issues and PRs from and keeps labels and comments on. `github` uses `gh`; `gitlab` uses `glab` (its `api`, `issue update`, `issue note` and `issue close`), with `GITLAB_TOKEN` and `GITLAB_HOST` from `[forge.gitlab]`. Unset, `origin`'s host decides: a host containing `gitlab`, or equal to `GITLAB_HOST` (which `[forge.gitlab] host` sets), means `gitlab`, and anything else, including no `origin` or a local path, means `github`. A set value wins over `origin`. `ns watch` refuses an unknown value with exit 2 and a message naming `[queue] source`, and `ns factory validate` reports one. On GitLab only `ns watch`'s queue, labels and comments go through `glab`: `ns run`'s merge step still uses `gh` (#57). An error from `glab` shows its stderr with the token replaced by `[token]`.
 
 Every table and key is optional; the defaults are the values above, except `queue.source` (unset: from `origin`, above), `limits.max_units` and `limits.memory_mb` (unset: no cap), `limits.parallel` (unset: 1), `limits.budget_usd` and `merge` as noted. A phase table may override `harness`, `model`, `timeout_minutes` and `max_attempts`, may set `runner`, and its `skill` defaults to `ns-<phase>`. Only `[phases.build]` may set `gate`, and not to an empty string. Unknown keys and unknown phases are errors. One removed key is not: `[queue] triage_per_night` still loads, does nothing, and gets a warning, on stderr from `ns run` and `ns watch` and in the `warnings` list of `ns factory validate`, which still passes. A file that set it to 0 to turn the triage pass off now runs the pass, and the warning says so: only `gates = "stop"` turns it off. `ns factory validate` checks the file, every `runners/<name>.toml`, every `agents/<role>/agent.md` (role matches the directory, placeholders are known) and every `scorers/<name>.md` (see "Scorers"), lists the valid scorers under `scorers`, and exits 1 on any problem.
 
@@ -319,10 +319,10 @@ ns watch [--once] [--until HH:MM] [--max-units N] [--parallel N] [--dry-run] [--
 The loop below is for one unit at a time, the default. With `--parallel N` the same steps run for up to N units at once; see "Parallel units".
 
 1. Run the triage pass (see "Triage pass"), so issues filed tonight can join tonight's queue.
-2. List open issues with `ready_label` via `gh api --paginate repos/{owner}/{repo}/issues`. The REST list carries each author's association, which `gh issue list --json` lacks.
+2. List open issues with `ready_label` via `gh api --paginate repos/{owner}/{repo}/issues`. The REST list carries each author's association, which `gh issue list --json` lacks. On GitLab, `glab api --paginate projects/:id/issues?state=opened`, and the project's members (`projects/:id/members/all`) for the team. Merge requests count as PRs. GitHub reads the newest 200 open and 200 merged PRs, GitLab the 100 most recently updated open and merged merge requests.
 3. Drop issues whose author is outside the team (see Trust), issues whose first-line `Blocked by: #a, #b` names any open issue, and issues that already have an open PR whose body says `Closes #n`, unless that PR comes from the issue's own unit branch (see "Units a night didn't finish").
 4. Sort by the first matching `priority` label, then the first matching `order` label, then issue number. An issue with no `priority` label sorts after the last one.
-5. Take the first. Swap `ready_label` for `in_progress_label`, so no other worker takes it. `git fetch origin`, then start `ns run --issue <n> --base origin/<default>` as a child process on the night's snapshot (see "Parallel units"), sharing the budget.
+5. Take the first. Swap `ready_label` for `in_progress_label`, so no other worker takes it. `git fetch origin`, then start `ns run <n>-<slug of the title> --issue <n> --base origin/<default>` as a child process on the night's snapshot (see "Parallel units"), sharing the budget.
 6. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`. On `split`, swap to `split_label` and post nothing: triage's notes already list the children, and the parent waits on them, neither queued nor triaged again, until a human closes it. On `stuck`, or a `done` that needs a human merge (files that need human review, no CI), swap to `stuck_label` and comment the reason and the last artifact path. When the last artifact is a `review.md`, the comment also lists its open Critical and Important findings, each with its title and location. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
 7. On `paused`, keep `in_progress_label` and sleep until the reset time (30 minutes when unknown, then check again), then resume the same unit. If the reset is at or past `--until`, put `ready_label` back and stop cleanly. With more than one unit running, a usage limit pauses them all (see "Parallel units").
 8. Repeat until the queue is empty, `--until` passes (no new unit starts after it), `max_units` is reached, the budget is spent, or a signal asks it to stop.
@@ -483,9 +483,9 @@ To read the trend, run `ns quality` from any clone and look at `trend`: one summ
 
 ## Trust
 
-Phases run unattended with permissions bypassed, and on a public repo anyone can open an issue or comment on one. The team is the authors whose association is `OWNER`, `MEMBER` or `COLLABORATOR`.
+Phases run unattended with permissions bypassed, and on a public repo anyone can open an issue or comment on one. On GitHub the team is the authors whose association is `OWNER`, `MEMBER` or `COLLABORATOR`. On GitLab, which has no association, it is the project's members, inherited group members included, at Developer access (30) or above: Developer, Maintainer and Owner. Reporter, Planner, Guest and non-members are outside it.
 
-- **Only team-authored issues are queued.** `ns watch` skips any other issue with reason `author outside the team`. A missing association counts as outside the team.
+- **Only team-authored issues are queued.** `ns watch` skips any other issue with reason `author outside the team`. A missing association, or an author not among the members, counts as outside the team.
 - **Only team comments are instructions.** Phases quote other text as data and never act on it. The rule lives in `skills/ns-contract/SKILL.md` under "Untrusted issue content", and the skills that read issues point there.
 
 What remains: the team's own text is trusted in full, so a team member who pastes untrusted text into an issue or comment passes it through as instructions. `ns run --issue <n>` started by hand runs any issue, whoever wrote it, and only the skills' rule guards its comments.

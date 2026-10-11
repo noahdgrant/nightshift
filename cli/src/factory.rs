@@ -10,7 +10,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::config;
+use crate::config::{self, ForgeKind};
 use crate::error::SfError;
 use crate::frontmatter;
 
@@ -440,14 +440,18 @@ pub fn root(factory: Option<&Path>, main_root: &Path) -> PathBuf {
 
 /// Why `ns watch` can't read its queue from `source`, a `[queue] source` value.
 pub fn source_problem(source: &str) -> Option<String> {
-    match source {
-        "github" => None,
-        "gitlab" => Some(format!(
-            "[queue] source = {source:?}: GitLab is not supported yet; only \"github\" is"
-        )),
-        _ => Some(format!(
-            "[queue] source = {source:?}: unknown; use \"github\""
-        )),
+    match ForgeKind::parse(source) {
+        Some(_) => None,
+        None => {
+            let names: Vec<String> = ForgeKind::ALL
+                .iter()
+                .map(|k| format!("{:?}", k.name()))
+                .collect();
+            Some(format!(
+                "[queue] source = {source:?}: unknown; use {}",
+                names.join(" or ")
+            ))
+        }
     }
 }
 
@@ -867,20 +871,18 @@ ci_timeout_minutes = 30
     }
 
     #[test]
-    fn queue_source_is_unset_by_default_and_only_github_is_no_problem() {
+    fn queue_source_is_unset_by_default_and_github_or_gitlab_is_no_problem() {
         assert_eq!(parse("").unwrap().queue.source, None);
-        let f = parse("[queue]\nsource = \"github\"\n").unwrap();
-        assert_eq!(f.queue.source.as_deref(), Some("github"));
-        assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
-        let p = parse("[queue]\nsource = \"gitlab\"\n")
-            .unwrap()
-            .problems(None);
+        for source in ["github", "gitlab"] {
+            let f = parse(&format!("[queue]\nsource = {source:?}\n")).unwrap();
+            assert_eq!(f.queue.source.as_deref(), Some(source));
+            assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+        }
+        let p = parse("[queue]\nsource = \"svn\"\n").unwrap().problems(None);
         assert_eq!(
             p,
-            ["[queue] source = \"gitlab\": GitLab is not supported yet; only \"github\" is"]
+            ["[queue] source = \"svn\": unknown; use \"github\" or \"gitlab\""]
         );
-        let p = parse("[queue]\nsource = \"svn\"\n").unwrap().problems(None);
-        assert_eq!(p, ["[queue] source = \"svn\": unknown; use \"github\""]);
     }
 
     #[test]

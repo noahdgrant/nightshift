@@ -1,6 +1,8 @@
 //! The forge `ns watch` reads its queue from and keeps issue state on, chosen by `[queue] source`
 //! (docs/FACTORY.md). Credentials are `crate::forge`'s job, not this module's.
 
+mod gitlab;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +10,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use super::{closed_by, Issue};
+use crate::config::ForgeKind;
 use crate::error::SfError;
 use crate::factory::{self, Queue as QueueConfig};
 use crate::git;
@@ -35,42 +38,52 @@ pub trait Forge {
 
 const HINT: &str = "set the forge in .nightshift/nightshift.toml:\n  [queue]\n  source = \"github\"\n\nsee docs/FACTORY.md";
 
-/// The forge `[queue] source` names or, unset, the one `origin`'s host is on.
+/// The forge `[queue] source` names or, unset, the one `origin`'s host is on. `GITLAB_HOST`, set
+/// from `[forge.gitlab] host` by then, names one more GitLab host.
 pub fn open(q: &QueueConfig, root: &Path) -> Result<Box<dyn Forge>, SfError> {
     let origin = git::run(root, &["remote", "get-url", "origin"]).ok();
-    check(q.source.as_deref(), origin.as_deref())?;
-    Ok(Box::new(GitHub {
-        root: root.to_path_buf(),
-    }))
+    let gitlab_host = std::env::var(ForgeKind::Gitlab.host_var()).ok();
+    let root = root.to_path_buf();
+    Ok(
+        match check(
+            q.source.as_deref(),
+            origin.as_deref(),
+            gitlab_host.as_deref(),
+        )? {
+            ForgeKind::Gitlab => Box::new(gitlab::GitLab { root }),
+            ForgeKind::Github => Box::new(GitHub { root }),
+        },
+    )
 }
 
-/// Whether `ns watch` can use the forge `source` and `origin` resolve to. Names the host, never
-/// the origin URL, which may carry credentials.
-fn check(source: Option<&str>, origin: Option<&str>) -> Result<(), SfError> {
-    let name = source_name(source, origin);
-    match factory::source_problem(&name) {
-        None => Ok(()),
-        Some(p) if source.is_some() => Err(SfError::usage(p, HINT)),
-        Some(p) => {
-            let host = origin.and_then(host).unwrap_or("");
-            Err(SfError::usage(
-                format!("{p} (unset, inferred from origin host {host})"),
-                HINT,
-            ))
-        }
+/// The forge `source` and `origin` resolve to, if `ns watch` can use it. Only a set `source` can
+/// name one it can't.
+fn check(
+    source: Option<&str>,
+    origin: Option<&str>,
+    gitlab_host: Option<&str>,
+) -> Result<ForgeKind, SfError> {
+    match source {
+        None => Ok(inferred(origin, gitlab_host)),
+        Some(s) => ForgeKind::parse(s).ok_or_else(|| {
+            let problem = factory::source_problem(s).unwrap_or_default();
+            SfError::usage(problem, HINT)
+        }),
     }
 }
 
-/// The configured source name or, unset, the one inferred from `origin`: `gitlab` for a host
-/// containing it (hosts are case-insensitive), else `github`, also for no origin or a local path.
-fn source_name(source: Option<&str>, origin: Option<&str>) -> String {
-    if let Some(s) = source {
-        return s.to_string();
+/// The forge inferred from `origin`: gitlab for a host containing it or equal to `gitlab_host`
+/// (hosts are case-insensitive), else github, also for no origin or a local path.
+fn inferred(origin: Option<&str>, gitlab_host: Option<&str>) -> ForgeKind {
+    let gitlab = origin.and_then(host).is_some_and(|h| {
+        h.to_ascii_lowercase().contains("gitlab")
+            || gitlab_host.is_some_and(|g| host(g).unwrap_or(g).eq_ignore_ascii_case(h))
+    });
+    if gitlab {
+        ForgeKind::Gitlab
+    } else {
+        ForgeKind::Github
     }
-    let gitlab = origin
-        .and_then(host)
-        .is_some_and(|h| h.to_ascii_lowercase().contains("gitlab"));
-    if gitlab { "gitlab" } else { "github" }.to_string()
 }
 
 /// The host of a remote URL, `scheme://[user@]host[:port]/path` or scp-like `[user@]host:path`;
@@ -229,35 +242,56 @@ mod tests {
             (None, "github"),
         ];
         for (origin, want) in cases {
-            assert_eq!(source_name(None, origin), want, "{origin:?}");
+            assert_eq!(inferred(origin, None).name(), want, "{origin:?}");
         }
         assert_eq!(
-            source_name(Some("github"), Some("https://gitlab.com/o/r")),
+            check(Some("github"), Some("https://gitlab.com/o/r"), None)
+                .unwrap()
+                .name(),
             "github"
         );
     }
 
     #[test]
-    fn check_refuses_gitlab_and_unknown_with_the_hint() {
-        assert!(check(None, Some("https://github.com/o/r")).is_ok());
-        assert!(check(Some("github"), None).is_ok());
-        for (s, o) in [
-            (Some("gitlab"), None),
-            (Some("bitbucket"), None),
-            (None, Some("https://gitlab.com/o/r")),
-        ] {
-            let e = check(s, o).unwrap_err().to_string();
-            assert!(e.contains("[queue] source"), "{e}");
+    fn source_is_gitlab_on_the_configured_gitlab_host() {
+        let origin = Some("git@Code.example.com:o/r.git");
+        for h in ["code.example.com", "https://CODE.example.com"] {
+            assert_eq!(inferred(origin, Some(h)).name(), "gitlab", "{h}");
         }
+        assert_eq!(inferred(origin, Some("other.example")).name(), "github");
+        assert_eq!(
+            check(Some("github"), origin, Some("code.example.com"))
+                .unwrap()
+                .name(),
+            "github"
+        );
     }
 
     #[test]
-    fn check_error_never_prints_origin_credentials() {
-        let e = check(None, Some("https://user:s3cret@gitlab.example/o/r.git"))
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("gitlab.example"), "{e}");
-        assert!(!e.contains("s3cret") && !e.contains("user"), "{e}");
+    fn check_takes_github_and_gitlab_and_refuses_unknown_with_the_hint() {
+        assert_eq!(
+            check(None, Some("https://github.com/o/r"), None).unwrap(),
+            ForgeKind::Github
+        );
+        assert_eq!(
+            check(Some("github"), None, None).unwrap(),
+            ForgeKind::Github
+        );
+        assert_eq!(
+            check(Some("gitlab"), None, None).unwrap(),
+            ForgeKind::Gitlab
+        );
+        assert_eq!(
+            check(None, Some("https://gitlab.com/o/r"), None).unwrap(),
+            ForgeKind::Gitlab
+        );
+        for (s, o) in [
+            (Some("bitbucket"), None),
+            (Some("svn"), Some("https://github.com/o/r")),
+        ] {
+            let e = check(s, o, None).unwrap_err().to_string();
+            assert!(e.contains("[queue] source"), "{e}");
+        }
     }
 
     #[test]

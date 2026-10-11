@@ -554,6 +554,14 @@ pub fn pr_number(v: &str) -> Option<u64> {
     digits.chars().rev().collect::<String>().parse().ok()
 }
 
+/// The unit for issue `n`: `<n>-<slug of the title>`, or `<n>` for a title with no slug.
+pub fn unit_name(n: u64, title: &str) -> String {
+    match slug(title) {
+        s if s.is_empty() => n.to_string(),
+        s => format!("{n}-{s}"),
+    }
+}
+
 pub fn slug(title: &str) -> String {
     let mut s = String::new();
     for c in title.to_lowercase().chars() {
@@ -788,12 +796,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
             Ok(v) => {
                 issue_url = v["url"].as_str().unwrap_or("").to_string();
                 if unit.is_none() {
-                    let s = slug(v["title"].as_str().unwrap_or(""));
-                    unit = Some(if s.is_empty() {
-                        n.to_string()
-                    } else {
-                        format!("{n}-{s}")
-                    });
+                    unit = Some(unit_name(n, v["title"].as_str().unwrap_or("")));
                 }
             }
             Err(e) if unit.is_none() => {
