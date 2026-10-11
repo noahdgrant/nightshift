@@ -21,7 +21,7 @@ Preconditions:
 
 - **Healthy.** Run `cap doctor-ok "$NS" doctor`. `ok` is `true`, `problems` is `[]`, `harnesses.claude.path` is `$V/bin/claude`, `harnesses.codex.on_path` is `false`.
 - **Problem.** Run `: > $V/c-empty.toml` and `cap doctor-problems env NS_CONFIG=$V/c-empty.toml "$NS" doctor`. `problems` contains `no [roles.default]`.
-- **Skill dirs.** Read `skill_dirs` from `$OUT/doctor-ok.out`, or run `cap doctor-skill-dirs "$NS" doctor` after [install](./install.md). Each path is under `$V/home`; `ns_skills` is `0` before [install](./install.md) and the installed count after.
+- **Skill dirs.** Read `skill_dirs` from `$OUT/doctor-ok.out`, or run `cap doctor-skill-dirs "$NS" doctor` after [install](./install.md). Each path is under `$V/home`; `ns_skills` is `0` in a fresh sandbox before [install](./install.md), and the number of links install made after it (the Install recipes end with every link restored, so doctor run after them shows the full count).
 
 ## Gotchas
 
