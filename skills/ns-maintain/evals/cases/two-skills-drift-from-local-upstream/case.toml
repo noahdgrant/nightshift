@@ -1,0 +1,76 @@
+description = "Three adapted skills under skills/ record acme/skills at its first commit. setup.sh builds that upstream as a local repo inside .git with a second commit, and redirects https://github.com/ to it with git's insteadOf, so no network is used. Upstream greet gains a by-name greeting and a Tone section (both fit). Upstream farewell gains a step posting to Slack, which the adapted ns-farewell rules out (no chat integration). Upstream stable is unchanged. The repo has no git remote, so no PR can open. ns-maintain should make one branch per drifted skill, touching only that skill: ns-greet with the change ported, ns-farewell with the Slack step skipped and the reason recorded, both with the recorded sha moved to upstream HEAD, and no branch for ns-stable."
+fixture = "py-inventory"
+skills = ["ns-maintain"]
+extra_skills = ["ns-contract", "ns-writing-for-humans"]
+requires = ["python"]
+timeout_minutes = 20
+prompt = """
+Sync the adapted skills in skills/ with their upstream. gates: auto. Nobody is around to answer questions.
+"""
+
+[setup]
+commands = ["sh ../setup.sh"]
+
+# The skill drives ns upstream; without ns on PATH the case can't tell anything.
+[[check]]
+type = "command"
+run = "command -v ns"
+expect_exit = 0
+
+# One branch per drifted skill, each touching that skill only, with the sha moved to upstream
+# HEAD. ns-greet carries the ported change; ns-farewell skips the Slack step and says why in
+# its commits. No branch touches ns-stable.
+[[check]]
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, subprocess, sys
+
+def git(*args, cwd="."):
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout
+
+head = git("rev-parse", "--short=12", "HEAD", cwd=".git/fake-upstream/acme/skills").strip()
+current = git("rev-parse", "--abbrev-ref", "HEAD").strip()
+branches = [b for b in git("for-each-ref", "--format=%(refname:short)", "refs/heads").split() if b != current]
+touching = {}
+for b in branches:
+    files = [f for f in git("diff", "--name-only", f"HEAD...{b}").split() if f.startswith("skills/")]
+    skills = {f.split("/")[1] for f in files}
+    if len(skills) > 1:
+        sys.exit(f"branch {b} touches several skills: {sorted(skills)}")
+    for s in skills:
+        touching.setdefault(s, []).append(b)
+print("branches by skill:", touching)
+if "ns-stable" in touching:
+    sys.exit("ns-stable did not drift, but a branch changes it")
+for s in ("ns-greet", "ns-farewell"):
+    if len(touching.get(s, [])) != 1:
+        sys.exit(f"expected exactly one branch for {s}, found {touching.get(s, [])}")
+    b = touching[s][0]
+    md = git("show", f"{b}:skills/{s}/SKILL.md")
+    if f"acme/skills@{head}:skills/" not in md:
+        sys.exit(f"{s} on {b} does not record upstream HEAD {head}")
+greet = git("show", f"{touching['ns-greet'][0]}:skills/ns-greet/SKILL.md")
+if not re.search(r"(?i)by name", greet):
+    sys.exit("ns-greet does not greet by name: the applicable upstream change was not ported")
+b = touching["ns-farewell"][0]
+farewell = git("show", f"{b}:skills/ns-farewell/SKILL.md")
+if re.search(r"(?i)slack", farewell):
+    sys.exit("ns-farewell took the Slack step, which the adapted skill rules out")
+log = git("log", "--format=%B", f"HEAD..{b}")
+if not re.search(r"(?i)slack", log):
+    sys.exit("ns-farewell's commits do not record the skipped Slack step")
+print("ok")
+PYEOF
+'''
+expect_exit = 0
+
+# The main checkout is left as it was; each skill's work lives on its own branch.
+[[check]]
+type = "diff_scope"
+allow = [".ns/**"]
+
+[[check]]
+type = "judge"
+rubric = "Read the agent's transcript and the ns-greet and ns-farewell branches. Pass only if the agent used `ns upstream status` and `ns upstream diff` rather than fetching the upstream by hand, gave every upstream hunk a verdict (ported, already covered, or skipped with a one-sentence reason, the Slack step skipped because the repo has no chat integration), ran `ns eval --dry-run` and never a real `ns eval`, and reported that no PR could open because the repo has no remote, rather than claiming one opened."
+required = false
