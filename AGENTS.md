@@ -16,6 +16,7 @@ Agent skills that take an issue to a merged PR (`skills/ns-*`), plus the `ns` CL
 
 Issues live on GitHub at `noahdgrant/nightshift`, managed with `gh`.
 
+- **AI agents mark what they post.** Every issue body, comment and PR body an AI agent posts starts with a 🤖 line naming the agent, such as `🤖 *Posted by an AI agent (Claude Code).*` (nightshift's own posts: #379). Titles and commit messages stay plain Conventional Commits.
 - **Every PR closes an issue.** The PR body says `Closes #N`. Work with no issue gets one first.
 - **Titles** of issues, PRs and commits are Conventional Commits: `type(scope): subject`, scoped to the skill or `cli`. Append `!` to the type for a breaking change.
 - **Labels**, on every issue and PR:
