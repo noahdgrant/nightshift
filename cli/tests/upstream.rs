@@ -253,3 +253,23 @@ fn a_missing_skills_dir_exits_2_and_names_the_flag() {
         assert!(err.contains("--skills-dir"), "{err}");
     }
 }
+
+#[test]
+fn diff_exits_1_when_the_upstream_cannot_be_fetched() {
+    let w = world();
+    let skill = w.root.join("repo/skills/ns-gone");
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: ns-gone\ndescription: x\nmetadata:\n  upstream: acme/gone@abcdef1:a.md\n---\n",
+    )
+    .unwrap();
+    let out = ns(&w)
+        .args(["upstream", "diff", "ns-gone"])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("git fetch"), "{err}");
+}

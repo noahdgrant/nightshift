@@ -126,6 +126,12 @@ impl Cache {
                 .into());
             }
             step = step.min(self.max_deepen - deepened);
+            if step == 0 {
+                return Err(SfError::general(format!(
+                    "cannot deepen {repo}: step is zero (FIRST_DEEPEN {FIRST_DEEPEN})"
+                ))
+                .into());
+            }
             self.fetch(repo, &[&format!("--deepen={step}")])?;
             deepened += step;
             step = step.saturating_mul(2);
@@ -135,6 +141,13 @@ impl Cache {
     fn range(&mut self, up: &lint::Upstream) -> Result<(String, String)> {
         let head = self.head(up.repo)?;
         let from = self.resolve(up.repo, up.sha)?;
+        if !self.in_tree(up.repo, &from, up.path)? && !self.in_tree(up.repo, &head, up.path)? {
+            return Err(SfError::general(format!(
+                "path {} not found at recorded sha or HEAD",
+                up.path
+            ))
+            .into());
+        }
         Ok((from, head))
     }
 
@@ -148,13 +161,6 @@ impl Cache {
 
     fn changed(&mut self, up: &lint::Upstream) -> Result<(String, bool)> {
         let (from, head) = self.range(up)?;
-        if !self.in_tree(up.repo, &from, up.path)? && !self.in_tree(up.repo, &head, up.path)? {
-            return Err(SfError::general(format!(
-                "path {} not found at recorded sha or HEAD",
-                up.path
-            ))
-            .into());
-        }
         let out = git::command()
             .arg("-C")
             .arg(self.dir(up.repo))
@@ -901,6 +907,7 @@ mod tests {
     fn diff_prints_each_entrys_path_diff_from_its_sha_to_head() {
         let w = World::new();
         let work = w.upstream("acme/skills");
+        commit_file(&work, "c.md", "c\n");
         let recorded = commit_file(&work, "a.md", "old a\n");
         commit_file(&work, "b.md", "b1\n");
         commit_file(&work, "a.md", "new a\n");
@@ -921,6 +928,60 @@ mod tests {
         assert!(a.diff.contains("-old a\n+new a"), "{}", a.diff);
         assert!(!a.diff.contains("b.md"), "{}", a.diff);
         assert_eq!(r.upstreams[1].diff, "");
+    }
+
+    #[test]
+    fn diff_of_a_path_in_neither_revision_is_an_error() {
+        let w = World::new();
+        let work = w.upstream("acme/skills");
+        let recorded = commit_file(&work, "a.md", "a\n");
+        commit_file(&work, "a.md", "b\n");
+        w.push(&work, "acme/skills");
+        w.skill(
+            "ns-a",
+            &format!(" acme/skills@{}:typo.md", short(&recorded)),
+        );
+        let e = diff(&w.skills(), "ns-a", &mut w.cache()).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("path typo.md not found at recorded sha or HEAD"),
+            "{e}"
+        );
+        assert_eq!(usage_code(e), 1);
+    }
+
+    #[test]
+    fn two_entries_recording_one_missing_sha_deepen_once() {
+        let w = World::new();
+        let work = w.upstream("acme/skills");
+        commit_file(&work, "a.md", "a\n");
+        commit_file(&work, "a.md", "b\n");
+        w.push(&work, "acme/skills");
+        w.skill("ns-a", " acme/skills@0123456789ab:a.md");
+        w.skill("ns-b", " acme/skills@0123456789ab:b.md");
+        let spawns = |skills: &Path| {
+            git::reset_spawns();
+            let r = status(skills, &mut w.cache()).unwrap();
+            (r, git::spawns())
+        };
+        let (r, two) = spawns(&w.skills());
+        assert!(entry(&r, "ns-a")[0].error.is_some());
+        assert!(entry(&r, "ns-b")[0].error.is_some());
+        fs::remove_dir_all(w.skills().join("ns-b")).unwrap();
+        fs::remove_dir_all(w.root.join("cache")).unwrap();
+        let (_, one) = spawns(&w.skills());
+        assert_eq!(two, one, "the second entry deepened again");
+    }
+
+    #[test]
+    fn a_skill_md_without_frontmatter_is_left_out_of_status() {
+        let w = World::new();
+        let dir = w.skills().join("ns-bare");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), "just a body\n").unwrap();
+        let r = status(&w.skills(), &mut w.cache()).unwrap();
+        assert!(r.ok);
+        assert!(r.skills.is_empty(), "{r:?}");
     }
 
     fn usage_code(e: anyhow::Error) -> i32 {
