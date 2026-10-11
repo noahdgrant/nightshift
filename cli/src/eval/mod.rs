@@ -582,6 +582,32 @@ fn plan(args: &Args, env: &Env) -> Result<Vec<SkillPlan>> {
     Ok(plans)
 }
 
+/// The directories a trial puts first on `PATH`: the fixture's own, then each required
+/// capability's. Err names a fixture entry that is not a directory.
+fn path_prepend(
+    fixture: &Path,
+    file: &spec::FixtureFile,
+    requires: &[String],
+    env: &Env,
+) -> std::result::Result<Vec<String>, String> {
+    let mut prepend: Vec<String> = Vec::new();
+    for d in &file.path_prepend {
+        match fixture.join(d).canonicalize() {
+            Ok(abs) if abs.is_dir() => prepend.push(abs.to_string_lossy().into_owned()),
+            _ => return Err(format!("fixture path_prepend {d:?} is not a directory")),
+        }
+    }
+    for r in requires {
+        for d in &env.cfg.capability[r].path_prepend {
+            let d = config::expand_tilde(d).to_string_lossy().into_owned();
+            if !prepend.contains(&d) {
+                prepend.push(d);
+            }
+        }
+    }
+    Ok(prepend)
+}
+
 fn plan_case(args: &Args, env: &Env, skill: &Skill, case: Case) -> Result<CasePlan> {
     let mut p = CasePlan {
         case,
@@ -637,15 +663,13 @@ fn plan_case(args: &Args, env: &Env, skill: &Skill, case: Case) -> Result<CasePl
             }
         }
     }
-    let mut prepend: Vec<String> = Vec::new();
-    for r in &requires {
-        for d in &env.cfg.capability[r].path_prepend {
-            let d = config::expand_tilde(d).to_string_lossy().into_owned();
-            if !prepend.contains(&d) {
-                prepend.push(d);
-            }
+    let mut prepend = match path_prepend(&fixture, &fixture_file, &requires, env) {
+        Ok(dirs) => dirs,
+        Err(e) => {
+            p.skip = Some(e);
+            return Ok(p);
         }
-    }
+    };
     if !prepend.is_empty() {
         let base = p
             .env

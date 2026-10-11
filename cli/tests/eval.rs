@@ -600,6 +600,42 @@ fn dry_run_plans_without_calling_the_harness() {
 }
 
 #[test]
+fn a_fixture_path_prepend_goes_first_on_path() {
+    let e = setup();
+    let fixture = e.repo.join("evals/fixtures/tiny/fixture.toml");
+    let text = fs::read_to_string(&fixture).unwrap();
+    fs::write(
+        &fixture,
+        format!("path_prepend = [\"../../fakes/bin\"]\n{text}"),
+    )
+    .unwrap();
+    let v = e.eval(&["ns-demo", "--case", "fix-add", "--dry-run"]);
+    let c = case(&v, "fix-add");
+    assert_eq!(
+        c["skipped"],
+        "fixture path_prepend \"../../fakes/bin\" is not a directory"
+    );
+
+    fs::create_dir_all(e.repo.join("evals/fakes")).unwrap();
+    fs::write(e.repo.join("evals/fakes/bin"), "").unwrap();
+    let v = e.eval(&["ns-demo", "--case", "fix-add", "--dry-run"]);
+    let c = case(&v, "fix-add");
+    assert_eq!(
+        c["skipped"],
+        "fixture path_prepend \"../../fakes/bin\" is not a directory"
+    );
+
+    fs::remove_file(e.repo.join("evals/fakes/bin")).unwrap();
+    fs::create_dir_all(e.repo.join("evals/fakes/bin")).unwrap();
+    let v = e.eval(&["ns-demo", "--case", "fix-add", "--dry-run"]);
+    let c = case(&v, "fix-add");
+    assert!(c["skipped"].is_null(), "{c}");
+    let want = format!("{}:", e.repo.join("evals/fakes/bin").display());
+    let path = c["env"]["PATH"].as_str().unwrap();
+    assert!(path.starts_with(&want), "{path}");
+}
+
+#[test]
 fn trigger_evals_detect_skill_loads() {
     let e = setup();
     let v = e.eval(&["ns-demo", "--triggers-only"]);

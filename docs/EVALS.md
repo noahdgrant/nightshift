@@ -102,6 +102,8 @@ ZEPHYR_BASE = "{capability.zephyr.base}"
 
 Capabilities come from the eval config (below). A case or fixture whose capability isn't configured is reported as `skipped`, never as failed.
 
+A fixture's `path_prepend` lists directories, relative to the fixture's own, that go first on `PATH` for the whole trial, ahead of any capability's. Each must exist, or the case is skipped. Use it for fakes a trial must find before the real tool, kept outside the fixture so the agent doesn't see them in its repo.
+
 The fixture's `[env]` applies to everything in a trial: setup commands, the harness run, and every check. `{capability.<name>.<key>}` expands to that capability's value, with `~` expanded. A capability's `path_prepend` list is added to the front of `PATH` for the whole trial (e.g. a venv's `bin/` carrying a toolchain's Python requirements).
 
 ## Arms and isolation
