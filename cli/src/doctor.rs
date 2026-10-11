@@ -284,26 +284,34 @@ fn greeted(text: &str) -> Option<String> {
 mod tests {
     use super::{greeted, ssh_account_within};
     use crate::forge::SshTarget;
+    use std::process::Command;
     use std::time::{Duration, Instant};
 
     #[test]
     fn ssh_account_gives_up_on_a_host_that_stalls() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("ssh");
-        std::fs::write(&fake, "#!/bin/sh\nsleep 30\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        let started_marker = dir.path().join("started");
+        let made = Command::new("sh")
+            .arg("-c")
+            .arg(r#"printf '%s\n' '#!/bin/sh' "touch '$1'" 'sleep 30' > "$0" && chmod 755 "$0""#)
+            .arg(&fake)
+            .arg(&started_marker)
+            .status()
+            .unwrap();
+        assert!(made.success());
         let t = SshTarget {
             dest: "git@example".into(),
             port: None,
         };
+        let limit = Duration::from_millis(300);
         let started = Instant::now();
-        let got = ssh_account_within(fake.as_os_str(), &t, Duration::from_millis(300));
+        let got = ssh_account_within(fake.as_os_str(), &t, limit);
+        let elapsed = started.elapsed();
         assert_eq!(got, None);
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(started_marker.exists(), "the fake ssh never ran");
+        assert!(elapsed >= limit, "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
     }
 
     #[test]

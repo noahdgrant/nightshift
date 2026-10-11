@@ -1269,6 +1269,8 @@ struct Doctor<'a> {
     unreadable: bool,
     ssh_account: &'a str,
     factory: Option<&'a str>,
+    glab_user: &'a str,
+    ssh_greeting: Option<&'a str>,
 }
 
 impl Default for Doctor<'_> {
@@ -1281,6 +1283,8 @@ impl Default for Doctor<'_> {
             unreadable: false,
             ssh_account: "work-account",
             factory: None,
+            glab_user: "",
+            ssh_greeting: None,
         }
     }
 }
@@ -1307,13 +1311,32 @@ impl Doctor<'_> {
 esac"#
             ),
         );
+        let glab_user = self.glab_user;
+        executable(
+            &bin.join("glab"),
+            &format!(
+                r#"case "$*" in
+  "api user") printf '%s\n' '{glab_user}' ;;
+  "api projects/team%2Fsub%2Fproject") [ {unreadable} = false ] && echo '{{"path_with_namespace":"team/sub/project"}}' || {{ echo "404 Project Not Found, token $GITLAB_TOKEN" >&2; exit 1; }} ;;
+  *) exit 1 ;;
+esac"#
+            ),
+        );
         let ssh_args = tmp.path().join("ssh-args");
+        let greeting = self.ssh_greeting.map_or_else(
+            || {
+                format!(
+                    "Hi {}! You've successfully authenticated, but GitHub does not provide shell access.",
+                    self.ssh_account
+                )
+            },
+            String::from,
+        );
         executable(
             &bin.join("ssh"),
             &format!(
-                "echo \"$*\" > {}\necho \"Hi {}! You've successfully authenticated, but GitHub does not provide shell access.\" >&2\nexit 1",
+                "echo \"$*\" > {}\necho \"{greeting}\" >&2\nexit 1",
                 ssh_args.display(),
-                self.ssh_account
             ),
         );
         let cfg = tmp.path().join("config.toml");
@@ -1394,6 +1417,79 @@ fn doctor_warns_when_ssh_greets_another_account_or_none() {
         warnings.contains("ssh -T git@github-work greeted no account"),
         "{warnings}"
     );
+}
+
+const GITLAB_CONFIG: &str = "[forge.gitlab]
+token_env = \"PERSONAL\"
+[forge.gitlab.owners.\"team/sub\"]
+token_env = \"WORK\"
+";
+
+fn gitlab_doctor<'a>() -> Doctor<'a> {
+    Doctor {
+        origin: "git@gitlab.com:team/sub/project.git",
+        config: GITLAB_CONFIG,
+        glab_user: r#"{"username":"gl-work"}"#,
+        ssh_greeting: Some("Welcome to GitLab, @gl-work!"),
+        ..Doctor::default()
+    }
+}
+
+#[test]
+fn doctor_reports_a_gitlab_nested_group_repo_and_its_ssh_account() {
+    let (v, err, ssh_args) = gitlab_doctor().run();
+    assert_eq!(
+        v["forge"]["gitlab"],
+        serde_json::json!({"configured": true, "token_resolved": true, "account": "gl-work",
+            "table": "[forge.gitlab.owners.\"team/sub\"]", "repo": "team/sub/project",
+            "repo_readable": true, "ssh": {"dest": "git@gitlab.com", "account": "gl-work"}})
+    );
+    assert_eq!(v["forge"]["github"]["repo"], Value::Null);
+    assert_eq!(v["warnings"], serde_json::json!([]), "{err}");
+    assert!(ssh_args.ends_with("-- git@gitlab.com\n"), "{ssh_args}");
+
+    let (v, _, _) = Doctor {
+        unreadable: true,
+        ..gitlab_doctor()
+    }
+    .run();
+    assert_eq!(v["forge"]["gitlab"]["repo_readable"], false);
+    let problems = v["problems"].to_string();
+    assert!(
+        problems.contains("account gl-work cannot read team/sub/project"),
+        "{problems}"
+    );
+    assert!(!problems.contains("work-tok"), "{problems}");
+}
+
+#[test]
+fn doctor_warns_when_ssh_greets_another_gitlab_account() {
+    let (v, err, _) = Doctor {
+        ssh_greeting: Some("Welcome to GitLab, @gl-personal!"),
+        ..gitlab_doctor()
+    }
+    .run();
+    assert_eq!(v["forge"]["gitlab"]["ssh"]["account"], "gl-personal");
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("ssh to git@gitlab.com authenticates as gl-personal"),
+        "{warnings}"
+    );
+    assert!(warnings.contains("account gl-work"), "{warnings}");
+    assert!(err.contains("authenticates as gl-personal"), "{err}");
+}
+
+#[test]
+fn doctor_shows_no_gitlab_account_for_malformed_or_empty_user_json() {
+    for user in ["not json", "", "{}", r#"{"username":""}"#] {
+        let (v, _, _) = Doctor {
+            glab_user: user,
+            ..gitlab_doctor()
+        }
+        .run();
+        assert_eq!(v["forge"]["gitlab"]["account"], Value::Null, "{user:?}");
+        assert_eq!(v["forge"]["gitlab"]["token_resolved"], true, "{user:?}");
+    }
 }
 
 #[test]

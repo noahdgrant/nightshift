@@ -5547,6 +5547,20 @@ fn a_gitlab_nested_group_picks_its_table_and_an_unreadable_project_exits_2() {
     );
     assert!(!err.contains(FAKE_TOKEN), "{err}");
     assert!(err.contains("[token]"), "{err}");
+    assert!(
+        e.glab_calls().contains("api projects/team%2Fsub%2Fproject"),
+        "the project was not read by its encoded path: {}",
+        e.glab_calls()
+    );
+
+    fs::remove_file(e.ghd.join("gl-repo.fail")).unwrap();
+    let _ = fs::remove_file(e.ghd.join("glab-calls"));
+    ns().args(["watch", "--once"]).assert().code(0);
+    assert!(
+        e.glab_calls().contains("api projects/team%2Fsub%2Fproject"),
+        "a readable project was not checked: {}",
+        e.glab_calls()
+    );
 
     let _ = fs::remove_file(e.ghd.join("glab-tokens"));
     let out = ns()

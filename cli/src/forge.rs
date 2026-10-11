@@ -246,36 +246,63 @@ pub struct SshTarget {
 
 pub fn ssh_target(url: &str) -> Option<SshTarget> {
     repo_path(url)?;
-    let target = match url.split_once("://") {
+    let (userinfo, hostport) = match url.split_once("://") {
         Some(("ssh" | "git+ssh" | "ssh+git", rest)) => {
             let authority = rest.split('/').next()?;
-            let (dest, port) = match authority.rsplit_once(':') {
-                Some((d, p)) => (d, Some(p.to_string())),
-                None => (authority, None),
-            };
-            SshTarget {
-                dest: dest.to_string(),
-                port,
+            match authority.rsplit_once('@') {
+                Some((u, h)) => (Some(u), h),
+                None => (None, authority),
             }
         }
         Some(_) => return None,
-        None => SshTarget {
-            dest: url.split_once(':')?.0.to_string(),
-            port: None,
-        },
+        None => {
+            let dest = url.split_once(':')?.0;
+            match dest.rsplit_once('@') {
+                Some((u, h)) => (Some(u), h),
+                None => (None, dest),
+            }
+        }
     };
-    safe_destination(&target.dest).then_some(target)
+    let scp = !url.contains("://");
+    let (host, port) = if scp {
+        (hostport, None)
+    } else {
+        split_port(hostport)
+    };
+    if !safe_host(host) || !userinfo.is_none_or(safe_name) {
+        return None;
+    }
+    let dest = match userinfo {
+        Some(u) => format!("{u}@{host}"),
+        None => host.to_string(),
+    };
+    Some(SshTarget { dest, port })
 }
 
-/// Whether `dest` can't be taken for an `ssh` option or hide one: neither it nor its host starts
-/// with `-`, and it has no whitespace or control characters.
-fn safe_destination(dest: &str) -> bool {
-    let host = dest.rsplit_once('@').map_or(dest, |(_, h)| h);
-    !dest.is_empty()
-        && !host.is_empty()
-        && !dest.starts_with('-')
-        && !host.starts_with('-')
-        && !dest.contains(|c: char| c.is_whitespace() || c.is_control())
+fn split_port(hostport: &str) -> (&str, Option<String>) {
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) if !hostport.ends_with(']') => (h, p),
+        _ => (hostport, ""),
+    };
+    let port = port
+        .parse::<u16>()
+        .ok()
+        .filter(|p| *p >= 1)
+        .map(|p| p.to_string());
+    (host, port)
+}
+
+fn safe_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+fn safe_host(host: &str) -> bool {
+    match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        Some(v6) => !v6.is_empty() && v6.chars().all(|c| c.is_ascii_hexdigit() || c == ':'),
+        None => safe_name(host) && !host.starts_with('-'),
+    }
 }
 
 /// `kind`'s CLI (`gh` or `glab`), scrubbed, with `creds` on its environment.
@@ -521,6 +548,51 @@ mod tests {
     }
 
     #[test]
+    fn ssh_target_refuses_shell_metacharacters_ssh_would_expand() {
+        for url in [
+            "git@h$(cmd):o/r",
+            "git@h`cmd`:o/r",
+            "git@h;cmd:o/r",
+            "git@h|cmd:o/r",
+            "git@h&cmd:o/r",
+            "git@h%h:o/r",
+            "g$x@host:o/r",
+            "g(x)@host:o/r",
+            "ssh://git@h$(cmd)/o/r",
+            "ssh://git@h%h:22/o/r",
+            "ssh://git@h;cmd:22/o/r",
+        ] {
+            assert_eq!(ssh_target(url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn ssh_target_uses_the_default_port_unless_the_url_names_a_valid_one() {
+        let dest = |url: &str| ssh_target(url).map(|t| (t.dest, t.port));
+        let plain = Some(("git@host".to_string(), None));
+        assert_eq!(dest("ssh://git@host:/o/r"), plain);
+        assert_eq!(dest("ssh://git@host:abc/o/r"), plain);
+        assert_eq!(dest("ssh://git@host:0/o/r"), plain);
+        assert_eq!(dest("ssh://git@host:65536/o/r"), plain);
+        assert_eq!(
+            dest("ssh://git@host:65535/o/r"),
+            Some(("git@host".to_string(), Some("65535".to_string())))
+        );
+        assert_eq!(
+            dest("ssh://git@[::1]:2222/o/r"),
+            Some(("git@[::1]".to_string(), Some("2222".to_string())))
+        );
+        assert_eq!(
+            dest("ssh://git@[::1]/o/r"),
+            Some(("git@[::1]".to_string(), None))
+        );
+        assert_eq!(
+            dest("git@my-alias_1.example:o/r"),
+            Some(("git@my-alias_1.example".to_string(), None))
+        );
+    }
+
+    #[test]
     fn ssh_target_refuses_a_destination_ssh_would_read_as_an_option() {
         for url in [
             "-oProxyCommand=x:o/r",
@@ -569,12 +641,12 @@ mod tests {
     #[test]
     fn output_within_keeps_the_output_when_a_descendant_holds_the_pipe() {
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", "sleep 5 & echo hi; exit 3"]);
+        cmd.args(["-c", "sleep 30 & echo hi; exit 3"]);
         let started = Instant::now();
         let out = output_within(cmd, Duration::from_secs(30)).unwrap();
         assert_eq!(out.status.code(), Some(3));
         assert_eq!(out.stdout, b"hi\n");
-        assert!(started.elapsed() < Duration::from_secs(4));
+        assert!(started.elapsed() < Duration::from_secs(20));
     }
 
     #[test]
