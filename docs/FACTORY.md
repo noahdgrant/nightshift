@@ -66,7 +66,7 @@ parallel = 2                       # units ns watch runs at once; --parallel win
 
 [merge]                            # absent table: policy = "human"
 policy = "auto"                    # auto | human. See "Merge"
-human_review = [".github/**", "scripts/check-private.sh", ".nightshift/**"]
+human_review = [".github/**", "scripts/check-private.sh", ".nightshift/**", ".githooks/**"]
 ci_timeout_minutes = 30
 ci_register_timeout = 3            # minutes to wait for the PR head's first check before "no CI"
 ```
