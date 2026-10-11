@@ -104,21 +104,24 @@ pub fn run(
 
 /// The end of the file, from a line start unless the whole file fits.
 pub fn read_window(path: &Path) -> Vec<u8> {
-    let read = || -> std::io::Result<Vec<u8>> {
-        let mut f = File::open(path)?;
-        let len = f.metadata()?.len();
-        let start = len.saturating_sub(WINDOW_BYTES);
-        f.seek(SeekFrom::Start(start))?;
-        let mut buf = Vec::new();
-        f.read_to_end(&mut buf)?;
-        if start > 0 {
-            if let Some(i) = buf.iter().position(|b| *b == b'\n') {
-                buf.drain(..=i);
-            }
+    tail(path, WINDOW_BYTES).unwrap_or_default()
+}
+
+/// The last `n` bytes of `path`, from a line start unless the whole file fits or they hold no
+/// line break.
+pub fn tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
+    let mut f = File::open(path)?;
+    let len = f.metadata()?.len();
+    let start = len.saturating_sub(n);
+    f.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)?;
+    if start > 0 {
+        if let Some(i) = buf.iter().position(|b| *b == b'\n') {
+            buf.drain(..=i);
         }
-        Ok(buf)
-    };
-    read().unwrap_or_default()
+    }
+    Ok(buf)
 }
 
 /// "timed out after 90 min", or in seconds when `timeout` is not whole minutes.
