@@ -79,7 +79,29 @@ case "$1 $2" in
     f=prs.json; [[ " $* " == *" --state merged "* ]] && f=prs-merged.json
     cat "$d/$f" 2>/dev/null || echo "[]"
     ;;
+  "label create")
+    # label.exists: the label is already there; label.fail: GitHub refuses with the file's text.
+    [ -f "$d/label.exists" ] && { echo "label with name \"$3\" already exists; use \`--force\` to update its color and description" >&2; exit 1; }
+    if [ -f "$d/label.fail" ]; then cat "$d/label.fail" >&2; exit 1; fi
+    ;;
+  "pr edit")
+    f="$d/pr-labels-$3"; touch "$f"; a=("$@")
+    for ((i = 3; i < ${#a[@]}; i++)); do
+      l=${a[$((i + 1))]}
+      case "${a[$i]}" in
+        --remove-label) grep -vxF -- "$l" "$f" > "$f.tmp" || true; mv "$f.tmp" "$f" ;;
+        --add-label) grep -qxF -- "$l" "$f" || echo "$l" >> "$f" ;;
+      esac
+    done
+    ;;
+  "pr comment") ;;
   "pr view")
+    if [[ " $* " == *" --json labels "* ]]; then
+      sep=""; printf '{"labels":['
+      while read -r l; do printf '%s{"name":"%s"}' "$sep" "$l"; sep=,; done < <(cat "$d/pr-labels-$3" 2>/dev/null)
+      printf ']}\n'
+      exit 0
+    fi
     # updated-<n>.lag: how many views after update-branch still report the old head.
     if [ -f "$d/lag-$3" ]; then
       left=$(cat "$d/lag-$3")
