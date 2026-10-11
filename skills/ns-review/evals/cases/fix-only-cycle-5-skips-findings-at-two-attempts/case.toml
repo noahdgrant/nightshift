@@ -1,0 +1,65 @@
+# Checks not yet validated against a real run; cycle 5 is the last cycle, so the review ends blocked on I3 whatever happens to I4.
+description = "After full cycles 1 to 3 and fix-only cycle 4, I3 (raised in cycle 2) is open with 2 fix attempts and I4 (raised in cycle 3) is open with 1. Cycle 5 is due for I4 only: I3 must not be handed over again. After cycle 5, review.md must be blocked with cycles 5 and a first body line naming I3, and no cycle 6."
+fixture = "py-inventory"
+skills = ["ns-review"]
+extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Review unit 2-cancel-all, on branch ns/2-cancel-all in this repo. The brief is .ns/2-cancel-all/brief.md. The fix loop has run full cycles 1 to 3 and fix-only cycle 4, and cycle 4's check is done; their records are .ns/2-cancel-all/review/cycle-1.md to cycle-4.md. Continue the review from there: run whatever fix cycles the skill still calls for, then write review.md. gates: auto. Nobody is around to answer questions. Skip verify, don't push, don't ship.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/2-cancel-all",
+  "mkdir -p .ns/2-cancel-all/review && cp ../brief.md .ns/2-cancel-all/",
+  "for n in 1 2 3 4; do cp ../cycle-$n.md .ns/2-cancel-all/review/; done",
+  "git apply ../cancel-all.patch",
+  "git add src tests && git commit -q -m 'feat(warehouse): add cancel_all'",
+]
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/review.md"
+key = "status"
+equals = "blocked"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/review.md"
+key = "cycles"
+equals = "5"
+
+[[check]]
+type = "command"
+run = '''
+awk 'f==2 && NF {print; exit} /^---$/ {f++}' .ns/2-cancel-all/review.md | grep -E '^Open after at least 2 fix attempts.*I3'
+'''
+expect_exit = 0
+
+[[check]]
+# Cycle 5 ran, because I4 had only 1 attempt after cycle 4.
+type = "command"
+run = "test -e .ns/2-cancel-all/review/cycle-5.md"
+expect_exit = 0
+
+[[check]]
+# The loop ends at cycle 5.
+type = "command"
+run = "test ! -e .ns/2-cancel-all/review/cycle-6.md"
+expect_exit = 0
+
+[[check]]
+# I3 already had 2 attempts: cycle 5 must not hand it over again.
+type = "command"
+run = "! grep -E '^- Attempts: [3-9]' .ns/2-cancel-all/review/cycle-5.md"
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".ns/**", ".scratch/**", "tests/**"]
+
+[[check]]
+type = "judge"
+rubric = "Did the review run exactly one more cycle, cycle 5, handing the build agent only I4 (the finding with 1 attempt) and not I3 (already at 2), then end blocked because I3 stayed open after two fix attempts?"
+required = false

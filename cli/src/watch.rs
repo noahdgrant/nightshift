@@ -805,7 +805,7 @@ mod tests {
     #[test]
     fn open_findings_keeps_open_criticals_and_importants() {
         let review = "\
-Open after 3 fix cycles: C1, I2, I4.
+Open after at least 2 fix attempts: C1, I2, I4.
 
 ### C1. Drops every `SKU`
 - Location: `a.py:1`
