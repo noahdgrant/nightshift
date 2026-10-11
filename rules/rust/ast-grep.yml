@@ -1,0 +1,19 @@
+id: suppression-without-reason
+language: rust
+severity: error
+message: "#[allow] or #[expect] with no reason = \"...\": give the reason on the same line, or fix what it hides (quality bar, Comments: skills/ns-contract/references/quality-bar.md)"
+rule:
+  any:
+    - kind: attribute_item
+    - kind: inner_attribute_item
+  regex: '\b(allow|expect)\s*\('
+  not:
+    regex: '\breason\s*='
+---
+id: file-too-long
+language: rust
+severity: error
+message: "file is past 1000 lines; split it along a seam (quality bar, Size: skills/ns-contract/references/quality-bar.md)"
+rule:
+  kind: source_file
+  regex: '^(?:[^\n]*\n){1000}[\s\S]'
