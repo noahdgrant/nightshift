@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -33,6 +33,19 @@ const SIGTERM: i32 = 15;
 
 /// How often the scheduler looks for a unit that ended, a stop, or a reset that came.
 const POLL: Duration = Duration::from_millis(50);
+
+/// How long a free slot waits beside running units before the scheduler fills again, so an
+/// issue triaged or labelled ready since the last fill starts without waiting for a unit to end.
+const REFILL: Duration = Duration::from_secs(60);
+/// Tests set this (milliseconds) to shorten [`REFILL`].
+const REFILL_ENV: &str = "NS_REFILL_MS";
+
+fn refill_interval() -> Duration {
+    std::env::var(REFILL_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(REFILL, Duration::from_millis)
+}
 
 /// What the night is set to do, fixed at start.
 pub(super) struct Plan<'a> {
@@ -61,6 +74,8 @@ enum Wake {
     Ended(usize, Option<ExitStatus>),
     Reset,
     Stop,
+    /// A slot has been free for [`REFILL`]: fill again.
+    Refill,
 }
 
 /// Why no new unit starts.
@@ -155,7 +170,7 @@ impl<'a> Scheduler<'a> {
                     }
                 }
                 Wake::Reset => self.lift_pause(),
-                Wake::Stop => {}
+                Wake::Stop | Wake::Refill => {}
             }
         }
         self.give_back_paused(tonight);
@@ -309,6 +324,12 @@ impl<'a> Scheduler<'a> {
         }
     }
 
+    /// A slot is free and a fill could start something: nothing stopping or draining. A fill
+    /// while paused does nothing at all.
+    fn may_refill(&self) -> bool {
+        self.free() && self.stopping.is_none() && self.draining.is_none()
+    }
+
     fn free(&self) -> bool {
         self.running.len() < self.plan.parallel
     }
@@ -363,10 +384,11 @@ impl<'a> Scheduler<'a> {
         Ok(())
     }
 
-    /// Wait for a unit to end, the pause's reset to come, or a stop to pass on. On a pinned
-    /// clock (`NS_NOW`) time doesn't pass while units run, so a pause lasts until every unit
-    /// has ended.
+    /// Wait for a unit to end, the pause's reset to come, a stop to pass on, or a free slot's
+    /// time to fill again. On a pinned clock (`NS_NOW`) time doesn't pass while units run, so a
+    /// pause lasts until every unit has ended; the refill counts real time either way.
     fn next(&mut self, night: &Night) -> Wake {
+        let refill_at = Instant::now() + refill_interval();
         loop {
             if stop::requested().is_some() && !self.forwarded {
                 return Wake::Stop;
@@ -388,6 +410,9 @@ impl<'a> Scheduler<'a> {
                 && self.may_resume()
             {
                 return Wake::Reset;
+            }
+            if self.may_refill() && Instant::now() >= refill_at {
+                return Wake::Refill;
             }
             std::thread::sleep(POLL);
         }
