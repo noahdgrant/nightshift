@@ -101,7 +101,7 @@ fn defaults_and_budget_by_billing() {
     assert_eq!(f.merge.ci_register_timeout, 3);
     assert!(f.merge.local_queue);
     assert_eq!(f.queue.triage_label, "status:needs-triage");
-    assert_eq!(f.queue.split_label, "status:needs-define");
+    assert_eq!(f.queue.split_label, "status:split");
     let f = parse("[queue]\ntriage_label = \"triage\"\n").unwrap();
     assert_eq!(f.queue.triage_label, "triage");
     let f = parse("[merge]\nci_register_timeout = 7\n").unwrap();

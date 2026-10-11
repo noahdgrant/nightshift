@@ -226,7 +226,7 @@ fn part(out: &mut String, heading: &str, events: &[Event]) {
 mod tests {
     use super::*;
     use crate::log::PrBase;
-    use crate::watch::forge::{ClosingPrs, PrState};
+    use crate::watch::forge::{ClosingPrs, IssueState, PrState};
     use crate::watch::Issue;
 
     const SINCE: &str = "2026-10-09T00:00:00Z";
@@ -443,6 +443,21 @@ next (1)
         }
         fn is_closed(&self, _: u64) -> Result<bool> {
             Ok(false)
+        }
+        fn state(&self, _: u64) -> Result<IssueState> {
+            unreachable!("ns status only reads the queue")
+        }
+        fn sub_issues(&self, _: u64) -> Result<Vec<u64>> {
+            unreachable!("ns status only reads the queue")
+        }
+        fn team_comments(&self, _: u64) -> Result<Vec<String>> {
+            unreachable!("ns status only reads the queue")
+        }
+        fn part_of(&self, _: u64) -> Result<Vec<Issue>> {
+            unreachable!("ns status only reads the queue")
+        }
+        fn ensure_label(&self, _: &str, _: &str) -> Result<()> {
+            unreachable!("ns status only reads the queue")
         }
         fn labels(&self, _: u64) -> Result<Vec<String>> {
             unreachable!("ns status only reads the queue")

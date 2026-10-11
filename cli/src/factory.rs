@@ -270,7 +270,7 @@ impl Default for Queue {
             done_label: "status:in-review".into(),
             human_merge_label: "needs-human-merge".into(),
             stuck_label: "status:ready-for-human".into(),
-            split_label: "status:needs-define".into(),
+            split_label: "status:split".into(),
             triage_label: "status:needs-triage".into(),
             fix_main_first: true,
             removed_triage_per_night: None,
