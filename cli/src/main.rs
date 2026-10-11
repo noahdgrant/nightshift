@@ -12,6 +12,7 @@ mod config;
 mod doctor;
 mod error;
 mod eval;
+mod exe;
 mod factory;
 mod forge;
 mod frontmatter;

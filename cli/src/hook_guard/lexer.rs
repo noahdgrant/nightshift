@@ -26,8 +26,12 @@ pub(super) enum Tok {
     RedirectOut,
     /// `<`: the next word is a file read.
     RedirectIn,
-    /// `;`, `&&`, `|`, a newline, a subshell paren or a brace: one command ends.
+    /// `;`, `&&`, `|`, a newline or a brace: one command ends.
     CommandEnd,
+    /// `(`: one command ends and a subshell begins, so a `cd` inside it is undone at `)`.
+    SubshellOpen,
+    /// `)`: the subshell ends.
+    SubshellClose,
 }
 
 #[derive(Default)]
@@ -157,12 +161,14 @@ impl<'a> Lexer<'a> {
                 '`' => self.expansion(Close::Backtick),
                 '(' => {
                     depth += 1;
-                    self.command_end();
+                    self.end_word();
+                    self.out.push(Tok::SubshellOpen);
                 }
                 ')' if close == Close::Paren && depth == 0 => return,
                 ')' => {
                     depth = depth.saturating_sub(1);
-                    self.command_end();
+                    self.end_word();
+                    self.out.push(Tok::SubshellClose);
                 }
                 ';' | '|' => self.command_end(),
                 '&' => self.ampersand(),

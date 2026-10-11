@@ -750,7 +750,7 @@ impl Loaded {
             "config": file_hash(&cfg_path),
             "factory": file_hash(&root.join(factory::FILE)),
         });
-        let ns = crate::hook_guard::ns_exe()?;
+        let ns = crate::exe::ns_exe()?;
         let gate = gate::command(&fac, &repo.root, &ns);
         let cap = match fac.limits.memory_mb.filter(|mb| *mb > 0 && !dry_run) {
             Some(mb) => {
@@ -829,7 +829,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         .into());
     }
     let subscription = fac.subscription();
-    let ns = crate::hook_guard::ns_exe()?;
+    let ns = crate::exe::ns_exe()?;
     let mut commands = BTreeMap::new();
     for p in PHASES {
         commands.insert(

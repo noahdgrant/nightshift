@@ -289,18 +289,21 @@ fn shell_expansion_cannot_hide_a_bypass() {
     }
 }
 
+fn nested(levels: usize) -> String {
+    let mut c = "git status".to_string();
+    for _ in 0..levels {
+        c = format!("sh -c {}", shell_quote(&c));
+    }
+    c
+}
+
 #[test]
-fn nesting_past_the_cap_is_denied() {
-    let mut c = "git status".to_string();
-    for _ in 0..12 {
-        c = format!("sh -c {}", shell_quote(&c));
-    }
-    assert!(denied(&c));
-    let mut c = "git status".to_string();
-    for _ in 0..3 {
-        c = format!("sh -c {}", shell_quote(&c));
-    }
-    assert!(!denied(&c));
+fn nesting_is_allowed_below_the_cap_and_denied_at_it() {
+    assert!(!denied(&nested(MAX_NESTING - 1)));
+    let why = check(&bash_call(&nested(MAX_NESTING))).expect("denied at the cap");
+    assert!(why.contains("nested more than"), "{why}");
+    assert!(why.contains(&MAX_NESTING.to_string()), "{why}");
+    assert!(denied(&nested(MAX_NESTING + 4)));
 }
 
 #[test]
@@ -482,30 +485,35 @@ fn commit_value_flags_swallow_a_dash_leading_value() {
     }
 }
 
-#[test]
-fn the_hook_command_fails_closed_when_ns_cannot_run() {
-    let s: Value = serde_json::from_str(&settings(Path::new("/nonexistent/ns"))).unwrap();
+fn hook_exit_code(ns: &Path) -> Option<i32> {
+    let s: Value = serde_json::from_str(&settings(ns)).unwrap();
     let cmd = s["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap();
-    let st = std::process::Command::new("sh")
+    std::process::Command::new("sh")
         .args(["-c", cmd])
         .stdin(std::process::Stdio::null())
         .output()
-        .unwrap();
-    assert_eq!(st.status.code(), Some(2));
+        .unwrap()
+        .status
+        .code()
 }
 
 #[test]
-fn a_deleted_binary_path_loses_the_kernel_suffix() {
-    assert_eq!(
-        strip_deleted(PathBuf::from("/a/ns (deleted)")),
-        PathBuf::from("/a/ns")
-    );
-    assert_eq!(
-        strip_deleted(PathBuf::from("/a/ns")),
-        PathBuf::from("/a/ns")
-    );
+fn the_hook_command_fails_closed_when_ns_cannot_run() {
+    assert_eq!(hook_exit_code(Path::new("/nonexistent/ns")), Some(2));
+}
+
+#[test]
+fn the_hook_command_fails_closed_when_ns_crashes() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    for (name, body) in [("fails", "exit 1"), ("panics", "echo boom >&2; exit 101")] {
+        let stub = dir.path().join(name);
+        std::fs::write(&stub, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(hook_exit_code(&stub), Some(2), "{name}");
+    }
 }
 
 #[test]
@@ -517,4 +525,243 @@ fn settings_run_this_binary_on_every_tool_that_can_bypass() {
         hook["hooks"][0]["command"],
         "'/opt/my ns/ns' guard-hooks || exit 2"
     );
+}
+
+fn reason(cmd: &str) -> String {
+    check(&bash_call(cmd)).unwrap_or_else(|| panic!("not denied: {cmd}"))
+}
+
+#[test]
+fn each_rule_names_itself_in_the_denial() {
+    for (cmd, rule) in [
+        ("git commit -n", "skips the hooks"),
+        ("git push --no-verify", "skips the hooks"),
+        ("git merge --no-verify x", "skips the hooks"),
+        ("git -c core.hooksPath=x commit", "overrides core.hooksPath"),
+        (
+            "git --config-env core.hooksPath=V commit",
+            "overrides core.hooksPath",
+        ),
+        (
+            "git config core.hooksPath x",
+            "core.hooksPath moves the hooks",
+        ),
+        ("HUSKY=0 git commit", "makes git hooks skip"),
+        ("SKIP=a git commit", "makes git hooks skip"),
+        ("GIT_CONFIG_COUNT=1 git commit", "makes git hooks skip"),
+        ("rm .githooks/pre-commit", "in .githooks/"),
+        ("echo x > .githooks/pre-commit", "in .githooks/"),
+        ("git rm .githooks/pre-commit", "in .githooks/"),
+        ("git commit $FLAG", "built by a shell expansion"),
+        ("$G commit -n", "named by a shell expansion"),
+    ] {
+        let why = reason(cmd);
+        assert!(why.contains(rule), "{cmd}: {why}");
+    }
+    let edit = json!({"tool_name": "Edit", "tool_input": {"file_path": "/r/.githooks/x"}});
+    assert!(check(&edit).unwrap().contains("in .githooks/"));
+}
+
+#[test]
+fn standalone_env_forms_are_denied() {
+    for c in [
+        "GIT_CONFIG_COUNT=1 git commit",
+        "env -Sgit\\ commit\\ -n",
+        "env -S 'git commit -n'",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn every_wrapper_option_that_takes_a_value_is_skipped() {
+    for w in WRAPPERS {
+        let tail = format!("{}git commit -n", "5 ".repeat(w.positional));
+        let mut forms = vec![format!("{} {tail}", w.name)];
+        for c in w.short_values.chars() {
+            forms.push(format!("{} -{c} V {tail}", w.name));
+        }
+        for l in w.long_values {
+            forms.push(format!("{} {l} V {tail}", w.name));
+            forms.push(format!("{} {l}=V {tail}", w.name));
+        }
+        for c in forms {
+            let why = check(&bash_call(&c)).unwrap_or_else(|| panic!("not denied: {c}"));
+            assert!(why.contains("skips the hooks"), "{c}: {why}");
+        }
+    }
+}
+
+#[test]
+fn nice_adjustment_and_env_long_options_are_skipped() {
+    for c in [
+        "nice --adjustment=5 git commit -n",
+        "env --unset FOO git commit -n",
+        "env --unset=FOO git commit -n",
+        "env --chdir /x git commit -n",
+        "ionice -c 2 -n 4 git commit -n",
+        "builtin command git commit -n",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn an_alias_set_with_c_is_checked_with_its_arguments() {
+    for c in [
+        "git -c alias.ci=commit ci -n",
+        "git -c alias.c=commit c --no-verify",
+        "git -c 'alias.x=!git commit' x -n",
+        "git -c 'alias.x=!git commit' x --no-verify -m y",
+        "git -c alias.p='push origin' p --no-verify",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "git -c alias.ci=commit ci -m x",
+        "git -c 'alias.x=!git commit' x -m y",
+        "git -c alias.ci=commit status",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn git_commands_that_run_a_command_string_are_read() {
+    for c in [
+        "git rebase -x 'git commit -n' HEAD~1",
+        "git rebase --exec 'git commit -n'",
+        "git rebase --exec='git commit -n'",
+        "git rebase -i -x 'HUSKY=0 git push'",
+        "git rebase -x'git commit -n' HEAD~1",
+        "git submodule foreach 'git commit -n'",
+        "git submodule foreach --recursive 'git commit -n'",
+        "git submodule foreach \"$CMD\"",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "git rebase -x 'cargo test' HEAD~1",
+        "git rebase --exec 'cargo test'",
+        "git submodule foreach 'git status'",
+        "git submodule update --init",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn config_writes_that_set_up_a_bypass_are_denied() {
+    for c in [
+        "git config alias.ci 'commit -n'",
+        "git config --global alias.ci 'commit --no-verify'",
+        "git config alias.x '!git commit'",
+        "git config include.path /tmp/f",
+        "git config --global includeIf.gitdir:/x/.path /tmp/f",
+        "git config --add include.path /tmp/f",
+        "git -c include.path=/tmp/f commit -m x",
+        "git -c includeIf.gitdir:/x/.path=/tmp/f commit -m x",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "git config alias.ci commit",
+        "git config alias.st 'status -s'",
+        "git config --get alias.ci",
+        "git config alias.ci",
+        "git config --get include.path",
+        "git config --get core.hooksPath --global",
+        "git config core.hooksPath --global",
+        "git config --list",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn env_options_are_walked_with_their_values() {
+    for c in [
+        "env -iS 'git commit -n'",
+        "env -u FOO -S 'git commit -n'",
+        "env -uFOO -S 'git commit -n'",
+        "env -C /x -S 'git commit -n'",
+        "env -i -u FOO -C /x --split-string 'git commit -n'",
+        "env -iSgit\\ commit\\ -n",
+        "env -i -S 'HUSKY=0 git push'",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "env -u FOO -S 'cargo test'",
+        "env -iS 'cargo test'",
+        "env -i cargo test",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn declaring_an_exported_skip_variable_is_denied() {
+    for c in [
+        "declare -x HUSKY=0",
+        "typeset -x SKIP=lint",
+        "readonly HUSKY=0",
+        "local -x SKIP=all",
+        "declare -x GIT_CONFIG_COUNT=1",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in ["declare -x A=1", "readonly HUSKY=1", "declare -p"] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_subshell_cd_ends_with_the_subshell() {
+    for c in [
+        "(cd .githooks && rm pre-commit)",
+        "(cd .githooks); cd .githooks; rm x",
+        "cd .githooks; (rm x)",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in ["(cd .githooks); rm x", "(cd .githooks && cat x); rm x"] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn git_dir_hooks_and_config_are_protected_like_githooks() {
+    for c in [
+        "rm .git/hooks/pre-commit",
+        "echo x > .git/config",
+        "sed -i s/a/b/ .git/config",
+        "git rm .git/hooks/pre-commit",
+        "cd .git/hooks && rm pre-commit",
+        "chmod -x /r/.git/hooks/pre-commit",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "cat .git/config",
+        "rm .git/index.lock",
+        "ls .git/hooks",
+        "git -C .git log",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    for (tool, path) in [
+        ("Edit", "/r/.git/hooks/pre-commit"),
+        ("Write", "/r/.git/config"),
+    ] {
+        let call = json!({"tool_name": tool, "tool_input": {"file_path": path}});
+        assert!(check(&call).is_some(), "{path}");
+    }
+}
+
+#[test]
+fn global_options_that_take_a_value_are_skipped() {
+    assert!(denied("git --attr-source HEAD commit -n"));
+    assert!(denied("git --attr-source=HEAD commit -n"));
+    assert!(!denied("git --attr-source HEAD commit -m x"));
 }
