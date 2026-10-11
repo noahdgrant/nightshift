@@ -53,7 +53,7 @@ pub fn cli(since: Option<String>, as_json: bool) -> Result<ExitCode> {
         None => Clock::from_env().now() - DEFAULT_SINCE_S,
     };
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
-    let path = log::run_log(&repo);
+    let path = repo.run_log();
     let running: Vec<String> = run::Lock::run_holders(&repo.common_dir)?
         .iter()
         .filter_map(|h| h["unit"].as_str().map(String::from))
@@ -380,6 +380,7 @@ not json
             number: 120,
             title: "Add\u{1b}[31m x".into(),
         }]);
+        assert_eq!(s.to_json()["since"], SINCE);
         assert_eq!(
             s.text(),
             "since 2026-10-09T00:00:00Z

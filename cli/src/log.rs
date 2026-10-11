@@ -42,7 +42,7 @@ pub fn cli(
         .map(|s| quality::instant("log", "since", &s, "00:00:00"))
         .transpose()?;
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
-    let path = run_log(&repo);
+    let path = repo.run_log();
     let base = pr_base(&repo);
     let filter = Filter {
         unit,
@@ -63,11 +63,6 @@ pub fn cli(
         Err(e) => return Err(e).with_context(|| format!("ns log on {}", path.display())),
     }
     Ok(ExitCode::SUCCESS)
-}
-
-/// The run log, `<git-common-dir>/ns/runs.jsonl`.
-pub fn run_log(repo: &Repo) -> PathBuf {
-    repo.common_dir.join("ns").join("runs.jsonl")
 }
 
 /// The lines of the run log at `path`. A log that does not exist yet reads as empty, with a

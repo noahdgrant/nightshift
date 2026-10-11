@@ -1547,6 +1547,7 @@ fn status_summarises_the_log_and_reports_an_unreadable_queue() {
 
     let out = status(&["--json", "--since", "2026-10-08"]);
     let v = json(&out.stdout);
+    assert_eq!(v["since"], "2026-10-08T00:00:00Z");
     assert_eq!(v["ended"]["merged"][0]["unit"], "141-old");
     assert_eq!(v["ended"]["stuck"][0]["reason"], "ci failed");
     assert!(v["next"].is_null());
