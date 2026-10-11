@@ -107,6 +107,9 @@ pub struct Merge {
     pub ci_timeout_minutes: u64,
     /// Minutes to wait for the first check to register on the PR head before concluding no CI.
     pub ci_register_timeout: u64,
+    /// Gate the merge of the PR head into the fresh default branch under the merge lock, in
+    /// place of update-branch and the gate on the PR head (docs/FACTORY.md, "Merge").
+    pub local_queue: bool,
 }
 
 impl Default for Merge {
@@ -116,6 +119,7 @@ impl Default for Merge {
             human_review: Vec::new(),
             ci_timeout_minutes: 30,
             ci_register_timeout: 3,
+            local_queue: true,
         }
     }
 }

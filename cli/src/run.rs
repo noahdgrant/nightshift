@@ -648,18 +648,30 @@ impl Ctx<'_> {
         phase: &str,
         attempt: u32,
     ) -> Result<Option<gate::Red>> {
-        let job = gate::Job {
+        let job = self.gate_job(cmd, &self.worktree, self.head(), phase, attempt);
+        gate_state.after(trigger, &job, &|ev| self.log(ev))
+    }
+
+    /// The gate `cmd` run in `worktree`, which holds `head`.
+    fn gate_job<'j>(
+        &'j self,
+        cmd: &'j str,
+        worktree: &'j Path,
+        head: String,
+        phase: &'j str,
+        attempt: u32,
+    ) -> gate::Job<'j> {
+        gate::Job {
             cmd,
-            worktree: &self.worktree,
+            worktree,
             log_dir: self.common.join("ns").join("transcripts").join(&self.unit),
             unit: &self.unit,
             timeout: gate::timeout(self.fac.phase("build").timeout_minutes),
-            head: self.head(),
+            head,
             phase,
             attempt,
             cap: self.cap,
-        };
-        gate_state.after(trigger, &job, &|ev| self.log(ev))
+        }
     }
 }
 
@@ -1710,6 +1722,14 @@ fn ci_failed(feedback: String) -> MergeStep {
     })
 }
 
+/// Back to build to rebase PR #`n` onto `default`, which it conflicts with.
+fn conflicts(ctx: &Ctx<'_>, n: u64, default: &str) -> MergeStep {
+    ctx.log(json!({"event": "conflict", "pr": n}));
+    ci_failed(format!(
+        "PR #{n} conflicts with {default}: rebase onto {default} and resolve conflicts, then force-push with --force-with-lease"
+    ))
+}
+
 fn human(reason: impl Into<String>) -> MergeStep {
     let mut f = finish(Outcome::Done, reason, Some("merge"));
     f.needs_human = true;
@@ -1745,30 +1765,33 @@ fn merge_step(
             Err(f) => return Ok(MergeStep::Finish(f)),
         };
 
-    // Strict required checks: a PR behind its base gets the base merged in, then fresh checks.
+    // Strict required checks: a PR behind its base gets the base merged in, then fresh checks,
+    // unless the local merge queue gates the merge result instead.
+    let queued = ctx.fac.merge.local_queue && ctx.gate.is_some();
     let default = remote_default(wt)
         .map(|d| d.0)
         .unwrap_or_else(|| "main".into());
-    let conflict = || {
-        ctx.log(json!({"event": "conflict", "pr": n}));
-        ci_failed(format!(
-            "PR #{n} conflicts with {default}: rebase onto {default} and resolve conflicts, then force-push with --force-with-lease"
-        ))
-    };
+    let conflict = || conflicts(ctx, n, &default);
     let register_minutes = ctx.fac.merge.ci_register_timeout;
     let mut merge_head = pr_head.to_string();
     match merge_state(wt, &ns, register_minutes, &shared.clock)?.as_str() {
         Some("DIRTY") => return Ok(conflict()),
-        Some("BEHIND") => match update_branch(ctx, n, pr_head, &default, &shared.clock, &conflict)?
-        {
-            Ok(h) => merge_head = h,
-            Err(step) => return Ok(step),
-        },
+        Some("BEHIND") if !queued => {
+            match update_branch(ctx, n, pr_head, &default, &shared.clock, &conflict)? {
+                Ok(h) => merge_head = h,
+                Err(step) => return Ok(step),
+            }
+        }
         _ => {}
     }
 
     if let Some(cmd) = &ctx.gate {
-        if let Some(step) = gate_before_merge(ctx, gate_state, cmd, n, &merge_head, run)? {
+        let step = if queued {
+            gate_merge_result(ctx, gate_state, cmd, n, pr_head, &default, run)?
+        } else {
+            gate_before_merge(ctx, gate_state, cmd, n, &merge_head, run)?
+        };
+        if let Some(step) = step {
             return Ok(step);
         }
     }
@@ -2055,6 +2078,15 @@ fn gate_before_merge(
         ))));
     }
     let red = ctx.gate(gate_state, gate::Trigger::BeforeMerge, cmd, "merge", run);
+    Ok(merge_gate_stopped(ctx, red, run)?.map(MergeStep::Rebuild))
+}
+
+/// `red`, or the stop that interrupted the merge step's gate, logged.
+fn merge_gate_stopped(
+    ctx: &Ctx<'_>,
+    red: Result<Option<gate::Red>>,
+    run: u32,
+) -> Result<Option<gate::Red>> {
     if let Some(sig) = red.as_ref().err().and(crate::stop::requested()) {
         ctx.log(json!({
             "event": "gate",
@@ -2064,7 +2096,174 @@ fn gate_before_merge(
         }));
         return Err(crate::stop::error(sig));
     }
-    Ok(red?.map(MergeStep::Rebuild))
+    red
+}
+
+/// The local merge queue: merge the PR head `pr_head` into the fresh tip of `origin/<default>`
+/// in a scratch worktree, no push, and run the gate `cmd` on the result, unless it already ran
+/// on that pair. `None` to go on to the merge, else how the merge step ends.
+fn gate_merge_result(
+    ctx: &Ctx<'_>,
+    gate_state: &mut gate::Gate,
+    cmd: &str,
+    n: u64,
+    pr_head: &str,
+    default: &str,
+    run: u32,
+) -> Result<Option<MergeStep>> {
+    let wt = &ctx.worktree;
+    let base = match fetch_tip(wt, default) {
+        Ok(b) => b,
+        Err(e) => {
+            return Ok(Some(human(format!(
+                "cannot fetch {default} for the local merge queue: {e:#}; needs a human merge"
+            ))))
+        }
+    };
+    if let Err(e) = check_out(wt, pr_head) {
+        return Ok(Some(human(format!(
+            "cannot check out PR #{n} head {pr_head} for the local merge queue: {e:#}; needs a human merge"
+        ))));
+    }
+    // Merging a base the PR head already holds leaves the PR head: gate it as the head.
+    if git::ok(wt, &["merge-base", "--is-ancestor", &base, pr_head]) {
+        let step = gate_before_merge(ctx, gate_state, cmd, n, pr_head, run)?;
+        if matches!(step, Some(MergeStep::Rebuild(_))) {
+            log_merge_gate_failed(ctx, n, pr_head, &base, false);
+        }
+        return Ok(step);
+    }
+    let reused = gate_state.merge_verdict(pr_head, &base);
+    let red = match reused.clone() {
+        Some(red) => red,
+        None => {
+            let scratch = match Scratch::add(wt, &ctx.common, &ctx.unit, pr_head) {
+                Ok(s) => s,
+                Err(e) => {
+                    return Ok(Some(human(format!(
+                    "cannot add a worktree for the local merge queue: {e:#}; needs a human merge"
+                ))))
+                }
+            };
+            match merge_into(&scratch.path, &base) {
+                Ok(true) => {}
+                Ok(false) => return Ok(Some(conflicts(ctx, n, default))),
+                Err(e) => {
+                    return Ok(Some(human(format!(
+                        "cannot merge PR #{n} into {default} for the local merge queue: {e:#}; needs a human merge"
+                    ))))
+                }
+            }
+            let job = ctx.gate_job(cmd, &scratch.path, pr_head.to_string(), "merge", run);
+            let red = gate_state.on_merge_result(&job, default, &base, &|ev| ctx.log(ev));
+            merge_gate_stopped(ctx, red, run)?
+        }
+    };
+    if red.is_some() {
+        log_merge_gate_failed(ctx, n, pr_head, &base, reused.is_some());
+    }
+    Ok(red.map(MergeStep::Rebuild))
+}
+
+fn log_merge_gate_failed(ctx: &Ctx<'_>, n: u64, pr_head: &str, base: &str, reused: bool) {
+    ctx.log(json!({
+        "event": "merge_gate_failed",
+        "pr": n,
+        "sha": pr_head,
+        "base": base,
+        "reused": reused,
+    }));
+}
+
+/// The tip of `origin/<branch>`, freshly fetched.
+fn fetch_tip(wt: &Path, branch: &str) -> Result<String> {
+    let out = git::net(wt, &["fetch", "-q", "origin", branch])
+        .output()
+        .context("failed to run git")?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "git fetch origin {branch} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    git::run(wt, &["rev-parse", "--verify", "FETCH_HEAD^{commit}"])
+}
+
+/// A detached worktree under `<common>/ns/merge-queue/<unit>` for the local merge queue,
+/// removed when dropped, so a failure or a stop leaves none behind.
+struct Scratch {
+    repo: PathBuf,
+    path: PathBuf,
+}
+
+impl Scratch {
+    /// Add it at `sha`, first removing one a killed run left at that path. No hook runs.
+    fn add(repo: &Path, common: &Path, unit: &str, sha: &str) -> Result<Scratch> {
+        let dir = common.join("ns").join("merge-queue");
+        let s = Scratch {
+            repo: repo.to_path_buf(),
+            path: dir.join(unit),
+        };
+        s.remove();
+        fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+        let path = s.path.to_string_lossy();
+        git::run(
+            repo,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                &path,
+                sha,
+            ],
+        )?;
+        Ok(s)
+    }
+
+    fn remove(&self) {
+        let _ = fs::remove_dir_all(&self.path);
+        let _ = git::run(&self.repo, &["worktree", "prune"]);
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        self.remove();
+    }
+}
+
+/// Merge `base` into the detached HEAD at `dir` without committing, so no merge hook runs:
+/// `Ok(false)` is a conflict. The identity is a placeholder git asks for anyway.
+fn merge_into(dir: &Path, base: &str) -> Result<bool> {
+    let out = git::command()
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=ns",
+            "-c",
+            "user.email=ns@localhost",
+            "merge",
+            "-q",
+            "--no-ff",
+            "--no-commit",
+            base,
+        ])
+        .output()
+        .context("failed to run git")?;
+    if out.status.success() {
+        return Ok(true);
+    }
+    if git::run(dir, &["diff", "--name-only", "--diff-filter=U"]).is_ok_and(|p| !p.is_empty()) {
+        return Ok(false);
+    }
+    Err(anyhow!(
+        "git merge {base} failed: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    ))
 }
 
 /// Point the worktree's branch at exactly `sha`, fetched from origin when it is not here: the PR
@@ -2301,6 +2500,81 @@ mod tests {
     fn commit_all(dir: &Path, msg: &str) {
         git::run(dir, &["add", "-A"]).unwrap();
         git::run(dir, &["commit", "-q", "-m", msg]).unwrap();
+    }
+
+    /// The local merge queue's scratch worktree is `ns` plumbing that commits nothing: its
+    /// checkout and its merge run no hook, and the merge needs no identity of the user's. One a killed run left behind is replaced, and a drop
+    /// removes it from disk and from `git worktree list`.
+    #[test]
+    fn the_merge_queue_scratch_worktree_runs_no_hook_and_is_removed_on_drop() {
+        use std::os::unix::fs::PermissionsExt;
+        let (t, _origin, wt) = cloned();
+        let g = |dir: &Path, args: &[&str]| git::run(dir, args).unwrap();
+        g(&wt, &["switch", "-q", "-c", "ns/9-x"]);
+        fs::write(wt.join("f.c"), "a\nx = 2\nb\n").unwrap();
+        commit_all(&wt, "unit");
+        let head = g(&wt, &["rev-parse", "HEAD"]);
+        g(&wt, &["switch", "-q", "main"]);
+        fs::write(wt.join("g.c"), "a\nx = 3\nb\n").unwrap();
+        commit_all(&wt, "main moves");
+        let base = g(&wt, &["rev-parse", "HEAD"]);
+        let hooks = [
+            "post-checkout",
+            "pre-merge-commit",
+            "commit-msg",
+            "post-merge",
+        ];
+        for name in hooks {
+            let hook = wt.join(".git/hooks").join(name);
+            let ran = t.path().join(format!("ran-{name}"));
+            fs::write(
+                &hook,
+                format!("#!/bin/sh\ntouch '{}'\nexit 1\n", ran.display()),
+            )
+            .unwrap();
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let common = t.path().join("common");
+        std::mem::forget(Scratch::add(&wt, &common, "9-x", &head).unwrap());
+        let s = Scratch::add(&wt, &common, "9-x", &head).unwrap();
+        g(&wt, &["config", "user.name", ""]);
+        g(&wt, &["config", "user.email", ""]);
+        assert!(merge_into(&s.path, &base).unwrap());
+        assert_eq!(g(&s.path, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            fs::read_to_string(s.path.join("f.c")).unwrap(),
+            "a\nx = 2\nb\n"
+        );
+        assert_eq!(
+            fs::read_to_string(s.path.join("g.c")).unwrap(),
+            "a\nx = 3\nb\n"
+        );
+        let path = s.path.clone();
+        drop(s);
+        assert!(!path.exists());
+        let list = g(&wt, &["worktree", "list", "--porcelain"]);
+        assert!(!list.contains("9-x"), "{list}");
+        for name in hooks {
+            assert!(!t.path().join(format!("ran-{name}")).exists(), "{name} ran");
+        }
+    }
+
+    /// A killed run can leave the scratch path as a plain directory git doesn't know, or as a
+    /// registered worktree whose directory is gone: either way the next one is added there.
+    #[test]
+    fn a_scratch_worktree_replaces_whatever_a_killed_run_left_at_its_path() {
+        let (t, _origin, wt) = cloned();
+        let head = git::run(&wt, &["rev-parse", "HEAD"]).unwrap();
+        let common = t.path().join("common");
+        let path = common.join("ns/merge-queue/9-x");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("junk"), "left behind").unwrap();
+        drop(Scratch::add(&wt, &common, "9-x", &head).unwrap());
+        let s = Scratch::add(&wt, &common, "9-x", &head).unwrap();
+        std::mem::forget(s);
+        fs::remove_dir_all(&path).unwrap();
+        let s = Scratch::add(&wt, &common, "9-x", &head).unwrap();
+        assert!(s.path.join("f.c").is_file());
     }
 
     /// The update-branch merge runs with no hook (`--no-verify` would leave `post-merge`) and its
