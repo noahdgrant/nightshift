@@ -12,7 +12,7 @@ Problem before solution, always, even when the author arrives with the solution.
 4. **The design.** Let them talk it through, then read it back as an ordered walkthrough and ask where you got it wrong.
 5. **Boundaries.** Which contracts does this touch? What does an old peer do when it meets a new one? Ask this even when they say nothing changes.
 6. **Alternatives.** What else did you consider, and what did anyone else want to do? Ask directly why do-nothing loses. For an as-built doc, ask which decisions were argued and which were assumed.
-7. **Failure.** Go part by part: what happens if this fails, and how do you find out? Then offer the boring ones from the template's Failure modes prompt and see which land.
+7. **Failure.** Go part by part: what happens if this fails, and how do you find out? Then offer the boring ones from [domain-checklists.md](domain-checklists.md) and see which land.
 8. **Privacy and Security.** What data does the path carry, and does anything new get a way in? Both sections are in every doc, so both need an answer, even a one-line one.
 9. **Validation and rollout.** How do you know before the field knows? What is the back-out? For an as-built doc, ask what coverage exists and what is missing.
 10. **Non-goals.** Ask last, when the shape is clear. "What are people going to ask you to add to this that you want to refuse?"
