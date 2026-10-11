@@ -1,4 +1,4 @@
-//! `ns lint [path]`: structural checks on `ns-*/SKILL.md` skills.
+//! `ns lint [path]`: structural checks on the skills under a directory.
 
 use std::collections::HashSet;
 use std::fs;
@@ -72,7 +72,8 @@ pub fn upstream_entries(fm: &Value) -> Vec<&Value> {
 }
 
 /// Check frontmatter of one SKILL.md. Returns messages (no skill/file context).
-pub fn check_frontmatter(dir_name: &str, text: &str) -> Vec<String> {
+/// `require_prefix` is false for repo-local skills, which need no `ns-` name.
+pub fn check_frontmatter(dir_name: &str, text: &str, require_prefix: bool) -> Vec<String> {
     let mut errs = Vec::new();
     let fm = match frontmatter::parse(text) {
         Ok(Some(Value::Mapping(m))) => Value::Mapping(m),
@@ -88,7 +89,7 @@ pub fn check_frontmatter(dir_name: &str, text: &str) -> Vec<String> {
                     "name {name:?} does not match directory {dir_name:?}"
                 ));
             }
-            if !name.starts_with("ns-") {
+            if require_prefix && !name.starts_with("ns-") {
                 errs.push(format!("name {name:?} must start with \"ns-\""));
             }
         }
@@ -206,14 +207,20 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
         )
         .into());
     }
+    // Repo-local skills live in `.agents/skills/` and need no `ns-` prefix.
+    let require_prefix = fs::canonicalize(root)?
+        .parent()
+        .and_then(Path::file_name)
+        .is_none_or(|n| n != ".agents");
     let mut dirs: Vec<PathBuf> = fs::read_dir(root)?
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
             p.is_dir()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("ns-"))
+                && (p.join("SKILL.md").is_file()
+                    || p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("ns-")))
         })
         .collect();
     dirs.sort();
@@ -238,7 +245,7 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
             }
         };
         skills += 1;
-        for m in check_frontmatter(&name, &text) {
+        for m in check_frontmatter(&name, &text, require_prefix) {
             push(&mut errors, &skill_md, m);
         }
         let mut files = Vec::new();
@@ -286,56 +293,59 @@ mod tests {
 
     #[test]
     fn good_frontmatter() {
-        assert!(check_frontmatter("ns-tdd", GOOD).is_empty());
+        assert!(check_frontmatter("ns-tdd", GOOD, true).is_empty());
     }
 
     #[test]
     fn name_mismatch_and_prefix() {
-        let e = check_frontmatter("tdd", GOOD);
+        let e = check_frontmatter("tdd", GOOD, true);
         assert_eq!(e.len(), 1, "{e:?}");
-        let e = check_frontmatter("tdd", "---\nname: tdd\ndescription: x\n---\n");
+        let e = check_frontmatter("tdd", "---\nname: tdd\ndescription: x\n---\n", true);
         assert_eq!(e.len(), 1, "{e:?}");
         assert!(e[0].contains("ns-"));
     }
 
     #[test]
     fn description_rules() {
-        let e = check_frontmatter("ns-a", "---\nname: ns-a\ndescription: \"  \"\n---\n");
+        let e = check_frontmatter("ns-a", "---\nname: ns-a\ndescription: \"  \"\n---\n", true);
         assert_eq!(e, ["description is empty"]);
         let long = "x".repeat(1025);
         let e = check_frontmatter(
             "ns-a",
             &format!("---\nname: ns-a\ndescription: {long}\n---\n"),
+            true,
         );
         assert!(e[0].contains("1025"));
-        let e = check_frontmatter("ns-a", "---\nname: ns-a\n---\n");
+        let e = check_frontmatter("ns-a", "---\nname: ns-a\n---\n", true);
         assert_eq!(e, ["missing description"]);
     }
 
     #[test]
     fn user_invoked_skills_disable_model_invocation() {
         let without = "---\nname: ns-auto\ndescription: x\n---\n";
-        let e = check_frontmatter("ns-auto", without);
+        let e = check_frontmatter("ns-auto", without, true);
         assert_eq!(e.len(), 1, "{e:?}");
         assert!(e[0].contains("disable-model-invocation"));
         let with = "---\nname: ns-auto\ndescription: x\ndisable-model-invocation: true\n---\n";
-        assert!(check_frontmatter("ns-auto", with).is_empty());
+        assert!(check_frontmatter("ns-auto", with, true).is_empty());
         for bad in ["false", "\"true\""] {
             let src = format!(
                 "---\nname: ns-auto\ndescription: x\ndisable-model-invocation: {bad}\n---\n"
             );
             assert!(
-                !check_frontmatter("ns-auto", &src).is_empty(),
+                !check_frontmatter("ns-auto", &src, true).is_empty(),
                 "{bad} must error"
             );
         }
-        assert!(check_frontmatter("ns-a", "---\nname: ns-a\ndescription: x\n---\n").is_empty());
+        assert!(
+            check_frontmatter("ns-a", "---\nname: ns-a\ndescription: x\n---\n", true).is_empty()
+        );
     }
 
     #[test]
     fn bad_yaml_and_missing() {
-        assert!(check_frontmatter("ns-a", "---\nname: [unclosed\n---\n")[0].contains("YAML"));
-        assert!(check_frontmatter("ns-a", "# no fm\n")[0].contains("missing frontmatter"));
+        assert!(check_frontmatter("ns-a", "---\nname: [unclosed\n---\n", true)[0].contains("YAML"));
+        assert!(check_frontmatter("ns-a", "# no fm\n", true)[0].contains("missing frontmatter"));
     }
 
     #[test]
@@ -365,7 +375,7 @@ mod tests {
             })
         );
         let list = "---\nname: ns-a\ndescription: x\nmetadata:\n  upstream:\n    - a/b@1234567:p\n    - a/b@nothex:p\n---\n";
-        let e = check_frontmatter("ns-a", list);
+        let e = check_frontmatter("ns-a", list, true);
         assert_eq!(e.len(), 1);
         assert!(e[0].contains("nothex"));
     }
@@ -437,6 +447,40 @@ mod tests {
         assert_eq!(
             messages(&tmp),
             ["unlinked reference: references/ex/README.md"]
+        );
+    }
+
+    fn write_skill_at(root: &Path, name: &str, extra: &str) {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: A.\n---\n{extra}"),
+        )
+        .unwrap();
+    }
+
+    fn lint_messages(root: &Path) -> (usize, Vec<String>) {
+        let report = lint_dir(root).unwrap();
+        let msgs = report.errors.into_iter().map(|e| e.message).collect();
+        (report.skills, msgs)
+    }
+
+    #[test]
+    fn repo_local_skill_is_exempt_from_the_prefix_rule() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join(".agents/skills");
+        write_skill_at(&local, "verify-x", "");
+        assert_eq!(lint_messages(&local), (1, vec![]));
+
+        let shipped = tmp.path().join("skills");
+        write_skill_at(&shipped, "verify-x", "");
+        assert_eq!(
+            lint_messages(&shipped),
+            (
+                1,
+                vec!["name \"verify-x\" must start with \"ns-\"".to_string()]
+            )
         );
     }
 
