@@ -320,6 +320,17 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         json: bool,
     },
 
+    /// Summarise the night: units running now, units ended since --since by outcome, and what is next
+    #[command(after_help = STATUS_HELP)]
+    Status {
+        /// Count units that ended at or after this UTC time (YYYY-MM-DDTHH:MM:SSZ, or YYYY-MM-DD for 00:00:00 UTC; default: 24 hours ago)
+        #[arg(long, value_name = "TIME")]
+        since: Option<String>,
+        /// Print one JSON object instead of the summary
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Report how well units pass review: first-pass yield, findings per 100 lines, leftovers, escapes
     #[command(after_help = QUALITY_HELP, args_conflicts_with_subcommands = true)]
     Quality {
@@ -484,6 +495,24 @@ ns run cleans its own unit after its merge step; ns watch cleans at start and be
 Prints {ok,command,dry_run,status,planned|removed,kept,records}; status is planned, cleaned or
 nothing-to-clean, so a rerun is safe.
 Exit codes: 0 ok, 1 a removal failed (its kept entry has \"error\": true), 2 usage error.";
+
+const STATUS_HELP: &str = "\
+Examples:
+  ns status
+  ns status --since 2026-10-09T22:00:00Z
+  ns status --json | jq -r '.ended.stuck[].unit'
+
+Running: each unit a live ns run holds, with its last logged phase. Ended: each other unit by
+the outcome of its last run that ended at or after --since: merged; PR for a human (done);
+stuck (stuck or budget); paused; split; other (anything else, such as interrupted, shown only
+when present). Next: the ready issues ns watch would take, in its order, read from the forge;
+when the forge can't be read it says queue unavailable (null in --json) and gives the reason on
+stderr. Entries hold only the fields ns log prints. --json prints one object with since,
+running, ended and next.
+Changes nothing.
+
+Exit codes: 0 ok, 1 the run log or run locks could not be read, 2 usage error (bad --since, not
+in a git repo).";
 
 const LOG_HELP: &str = "\
 Examples:

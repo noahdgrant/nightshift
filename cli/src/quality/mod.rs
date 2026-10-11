@@ -214,7 +214,7 @@ pub fn cli(since: Option<String>, until: Option<String>) -> Result<ExitCode> {
             .filter(|u| !recorded.contains(&u.id)),
     );
     units.sort_by(|a, b| a.id.cmp(&b.id));
-    let (mut log, mut runs) = runlog::read(&repo.common_dir.join("ns").join("runs.jsonl"), window);
+    let (mut log, mut runs) = runlog::read(&repo.run_log(), window);
     let known: BTreeSet<&str> = units.iter().map(|u| u.id.as_str()).collect();
     log.units_without_artifacts = runs
         .iter()

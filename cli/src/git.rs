@@ -276,6 +276,11 @@ pub struct Repo {
 }
 
 impl Repo {
+    /// The run log, `<git-common-dir>/ns/runs.jsonl`.
+    pub fn run_log(&self) -> PathBuf {
+        self.common_dir.join("ns").join("runs.jsonl")
+    }
+
     /// Resolve the main worktree from any directory inside the repo (or a linked worktree).
     pub fn discover(start: &Path) -> Result<Repo> {
         if !ok(start, &["rev-parse", "--git-dir"]) {

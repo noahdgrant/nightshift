@@ -32,6 +32,7 @@ mod shell;
 mod skills_sync;
 mod stack;
 mod stats;
+mod status;
 mod stop;
 #[cfg(test)]
 mod testutil;
@@ -231,6 +232,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             follow,
             json,
         } => return log::cli(unit, since, follow, json),
+        Cmd::Status { since, json } => return status::cli(since, json),
         Cmd::Rules { command } => match command {
             RulesCmd::Check { human } => return rules::check(human),
             RulesCmd::Baseline {

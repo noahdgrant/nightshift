@@ -1,9 +1,10 @@
 //! `ns log`: the run log `<git-common-dir>/ns/runs.jsonl`, one line or one JSON object per
 //! event, and with `--follow` the events appended after it starts.
 
+use std::cell::Cell;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -41,16 +42,8 @@ pub fn cli(
         .map(|s| quality::instant("log", "since", &s, "00:00:00"))
         .transpose()?;
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
-    let path = repo.common_dir.join("ns").join("runs.jsonl");
-    let origin = git::run(&repo.root, &["remote", "get-url", "origin"]).ok();
-    let source = factory::load(&factory::root(None, &repo.root))
-        .ok()
-        .and_then(|f| f.queue.source);
-    let cfg = config::load(&config::path()).ok().flatten();
-    let gitlab_host = watch_forge::gitlab_host(cfg.as_ref());
-    let base = origin
-        .as_deref()
-        .and_then(|o| PrBase::new(o.trim(), source.as_deref(), gitlab_host.as_deref()));
+    let path = repo.run_log();
+    let base = pr_base(&repo);
     let filter = Filter {
         unit,
         since: Window { since, until: None },
@@ -61,34 +54,51 @@ pub fn cli(
         let tail = Tail::new(path.clone(), || std::thread::sleep(POLL));
         render(tail, &filter, show, base.as_ref(), &mut out)
     } else {
-        match File::open(&path) {
-            Ok(f) => render(
-                byte_lines(BufReader::new(f)),
-                &filter,
-                show,
-                base.as_ref(),
-                &mut out,
-            ),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                eprintln!(
-                    "no run log at {} yet; ns run and ns watch write one",
-                    path.display()
-                );
-                Ok(0)
-            }
-            Err(e) => Err(e),
-        }
+        open_lines(&path).and_then(|lines| render(lines, &filter, show, base.as_ref(), &mut out))
     };
     match printed {
         Ok(0) => {}
-        Ok(bad) => eprintln!(
-            "skipped {bad} line(s) of {} that are not UTF-8 JSON objects",
-            path.display()
-        ),
+        Ok(bad) => report_bad(bad, &path),
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
         Err(e) => return Err(e).with_context(|| format!("ns log on {}", path.display())),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The lines of the run log at `path`. A log that does not exist yet reads as empty, with a
+/// note on stderr.
+pub fn open_lines(path: &Path) -> io::Result<Box<dyn Iterator<Item = io::Result<Vec<u8>>>>> {
+    match File::open(path) {
+        Ok(f) => Ok(Box::new(byte_lines(BufReader::new(f)))),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            eprintln!(
+                "no run log at {} yet; ns run and ns watch write one",
+                path.display()
+            );
+            Ok(Box::new(std::iter::empty()))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+pub fn report_bad(bad: usize, path: &Path) {
+    if bad > 0 {
+        eprintln!(
+            "skipped {bad} line(s) of {} that are not UTF-8 JSON objects",
+            path.display()
+        );
+    }
+}
+
+/// Where the repo's PRs live, from `origin` and the forge `ns watch` would pick.
+pub fn pr_base(repo: &Repo) -> Option<PrBase> {
+    let origin = git::run(&repo.root, &["remote", "get-url", "origin"]).ok()?;
+    let source = factory::load(&factory::root(None, &repo.root))
+        .ok()
+        .and_then(|f| f.queue.source);
+    let cfg = config::load(&config::path()).ok().flatten();
+    let gitlab_host = watch_forge::gitlab_host(cfg.as_ref());
+    PrBase::new(origin.trim(), source.as_deref(), gitlab_host.as_deref())
 }
 
 /// How one event is printed: [`text`] or [`json_line`].
@@ -103,31 +113,45 @@ pub fn render(
     pr_base: Option<&PrBase>,
     out: &mut impl Write,
 ) -> io::Result<usize> {
-    let mut bad = 0;
-    for line in lines {
-        let line = line?;
-        let Ok(line) = std::str::from_utf8(&line) else {
-            bad += 1;
-            continue;
-        };
-        if line.trim().is_empty() {
-            continue;
+    let bad = Cell::new(0);
+    for ev in events(lines, pr_base, &bad) {
+        let ev = ev?;
+        if keep(&ev, filter) {
+            writeln!(out, "{}", show(&ev))?;
         }
-        let Some(ev) = event(line, pr_base) else {
-            bad += 1;
-            continue;
-        };
-        if !keep(&ev, filter) {
-            continue;
-        }
-        writeln!(out, "{}", show(&ev))?;
     }
-    Ok(bad)
+    Ok(bad.get())
+}
+
+/// The events of `lines`, counting in `bad` each non-blank line that is not a UTF-8 JSON object.
+pub fn events<'a>(
+    lines: impl Iterator<Item = io::Result<Vec<u8>>> + 'a,
+    pr_base: Option<&'a PrBase>,
+    bad: &'a Cell<usize>,
+) -> impl Iterator<Item = io::Result<Map<String, Value>>> + 'a {
+    lines.filter_map(move |line| {
+        let line = match line {
+            Ok(line) => line,
+            Err(e) => return Some(Err(e)),
+        };
+        let Ok(text) = std::str::from_utf8(&line) else {
+            bad.set(bad.get() + 1);
+            return None;
+        };
+        if text.trim().is_empty() {
+            return None;
+        }
+        let ev = event(text, pr_base);
+        if ev.is_none() {
+            bad.set(bad.get() + 1);
+        }
+        ev.map(Ok)
+    })
 }
 
 /// The allowlisted, non-null fields of one run-log line, with `issue` taken from the unit id
 /// when the line has none, and `pr_url` built from `pr_base` whenever the line has a `pr`. `None` when it is not a JSON object.
-fn event(line: &str, pr_base: Option<&PrBase>) -> Option<Map<String, Value>> {
+pub fn event(line: &str, pr_base: Option<&PrBase>) -> Option<Map<String, Value>> {
     let Ok(Value::Object(mut all)) = serde_json::from_str::<Value>(line) else {
         return None;
     };
@@ -158,7 +182,7 @@ fn json_line(ev: &Map<String, Value>) -> String {
 
 /// `<ts> <event> #<issue> <phase> attempt <n> status <s> <wall_s>s outcome <o> <pr> reason: <r>`,
 /// leaving out what the event lacks.
-fn text(ev: &Map<String, Value>) -> String {
+pub fn text(ev: &Map<String, Value>) -> String {
     let field = |k: &str| {
         let v = ev.get(k)?;
         let raw = match v.as_str() {
@@ -183,7 +207,7 @@ fn text(ev: &Map<String, Value>) -> String {
     parts.into_iter().flatten().collect::<Vec<_>>().join(" ")
 }
 
-fn printable(c: char) -> impl Iterator<Item = char> {
+pub fn printable(c: char) -> impl Iterator<Item = char> {
     let hidden = c.is_control()
         || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
     let escaped = hidden.then(|| c.escape_default());
@@ -199,7 +223,7 @@ pub struct PrBase {
 impl PrBase {
     /// From `origin`'s URL, with the forge chosen as `ns watch` chooses it (`[queue] source`,
     /// else the host). `None` when `origin` is not a remote URL, such as a local path.
-    fn new(origin: &str, source: Option<&str>, gitlab_host: Option<&str>) -> Option<PrBase> {
+    pub fn new(origin: &str, source: Option<&str>, gitlab_host: Option<&str>) -> Option<PrBase> {
         Some(PrBase {
             web: web_base(origin)?,
             kind: watch_forge::kind(source, Some(origin), gitlab_host),

@@ -88,8 +88,8 @@ fn rank(order: &[String], labels: &[String]) -> usize {
         .unwrap_or(order.len())
 }
 
-struct Queue {
-    ready: Vec<Issue>,
+pub(crate) struct Queue {
+    pub(crate) ready: Vec<Issue>,
     skipped: Vec<Value>,
 }
 
@@ -149,7 +149,7 @@ fn order(q: &QueueConfig, i: &Issue) -> (usize, usize, u64) {
 
 /// Ready issues, minus those in `finished`: GitHub can list an issue as open
 /// for a few seconds after its closing PR merges.
-fn queue(forge: &dyn Forge, fac: &Factory, finished: &BTreeSet<u64>) -> Result<Queue> {
+pub(crate) fn queue(forge: &dyn Forge, fac: &Factory, finished: &BTreeSet<u64>) -> Result<Queue> {
     let q = &fac.queue;
     let listing = Listing::read(forge, Some(&q.ready_label))?;
     let mut open_cache: BTreeMap<u64, bool> = BTreeMap::new();
