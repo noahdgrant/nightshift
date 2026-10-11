@@ -22,6 +22,7 @@ mod lint;
 mod log;
 mod markers;
 mod memcap;
+mod phase_output;
 mod quality;
 mod review_md;
 mod rules;
@@ -228,9 +229,17 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Clean { dry_run } => return clean::cli(dry_run),
         Cmd::Log {
             unit,
+            since: _,
+            follow,
+            json,
+            phase_output: true,
+        } => return phase_output::cli(unit.as_deref(), follow, json),
+        Cmd::Log {
+            unit,
             since,
             follow,
             json,
+            phase_output: false,
         } => return log::cli(unit, since, follow, json),
         Cmd::Status { since, json } => return status::cli(since, json),
         Cmd::Rules { command } => match command {

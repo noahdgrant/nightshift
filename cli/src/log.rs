@@ -25,7 +25,7 @@ const RETAINED: [&str; 11] = [
 ];
 
 /// How long `--follow` waits at the end of the file before reading again.
-const POLL: Duration = Duration::from_millis(500);
+pub(crate) const POLL: Duration = Duration::from_millis(500);
 
 pub struct Filter {
     pub unit: Option<String>,

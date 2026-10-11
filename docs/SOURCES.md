@@ -50,6 +50,7 @@ flowchart LR
     ao_eval[evals: structure, routing, behaviour]
     ao_using[using-agent-skills: standing behaviours]
     ao_api[api-and-interface-design]
+    ao_ctx[context-engineering]
   end
 
   subgraph SF["nightshift"]
@@ -110,6 +111,7 @@ flowchart LR
   ps_prin --> sf_prin
   ao_using --> sf_prin
   ao_api --> sf_prin
+  ao_ctx --> sf_prin
   ps_swarm --> sf_swarm
   ps_unslop --> sf_wfh
   mp_retro --> sf_imp
@@ -139,7 +141,7 @@ flowchart LR
 | **ns-ship** | ship | pstack `opening-a-pr`, `babysit`, `bugbot-triage`; Matt `pr`; addy `shipping-and-launch` | PR body, triage of review comments, GO/NO-GO with a rollback plan. Rollout thinking adapted for OTA/flash. Never merges without a human |
 | **ns-writing-for-humans** | define (leaf) | pstack `unslop`, `technical-writing` | Renamed. Python examples |
 | **ns-swarm** | shared leaf | pstack `swarm` | Harness-neutral fan-out: subagents, or `ns ask` per worker. Used by ns-review and ns-verify |
-| **ns-principle-\*** (30) | shared leaf | pstack `principle-*`; addyosmani `using-agent-skills` (surface assumptions, manage confusion, push back, keep scope tight), `api-and-interface-design` (Hyrum's law, contract first) | One skill each, user-invoked, referenced by path. Python/firmware examples |
+| **ns-principle-\*** (30) | shared leaf | pstack `principle-*`; addyosmani `using-agent-skills` (surface assumptions, manage confusion, push back, keep scope tight), `api-and-interface-design` (Hyrum's law, contract first), `context-engineering` (guard the context window) | One skill each, user-invoked, referenced by path. Python/firmware examples |
 | **ns-auto** | all | pstack `poteto-mode` (`autonomous-run` playbook), overnight contract, selected principles | User-invoked. Chains the phases in one session, or defers to `ns run`. Never merges |
 | ns-define | define | Matt `grill-with-docs`, `to-spec`; addy `interview-me`, `idea-refine`, `spec-driven-development` | Writes `brief.md` or `SPEC.md` |
 | ns-plan | plan | Matt `to-tickets`, `wayfinder`, `codebase-design` | |
