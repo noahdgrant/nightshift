@@ -128,8 +128,14 @@ impl Repo {
     /// time, as on a loaded machine, so a member that clippy skips after another member fails
     /// can show up here rather than only in CI.
     fn check(&self) -> (Option<i32>, Value, String) {
+        self.rules(&["check"])
+    }
+
+    /// `ns rules <args>`, run as `check` runs it.
+    fn rules(&self, args: &[&str]) -> (Option<i32>, Value, String) {
         let out = common::ns()
-            .args(["rules", "check"])
+            .arg("rules")
+            .args(args)
             .env("CARGO_BUILD_JOBS", "1")
             .current_dir(&self.root)
             .timeout(CHECK_TIMEOUT)
@@ -342,10 +348,22 @@ fn clippy_lints_every_workspace_member() {
     );
 }
 
+/// Assert that `ns rules check` failed as broken, naming each of `want` on stderr, and return it.
+fn assert_broken(r: &Repo, want: &[&str]) -> String {
+    let (code, v, err) = r.check();
+    assert_eq!(code, Some(1), "{v} {err}");
+    assert!(err.contains("exited 2 with no findings"), "{err}");
+    assert!(err.contains("has compile errors"), "{err}");
+    for w in want {
+        assert!(err.contains(w), "{w} in {err}");
+    }
+    err
+}
+
 /// `user` depends on `good`, so cargo's one job lints `good` before `bad`, and a clippy that
 /// stops at the first failing member never compiles `bad`.
 #[test]
-fn a_syntax_error_in_one_member_is_a_finding_next_to_another_members_lint() {
+fn a_syntax_error_in_one_member_fails_as_broken_and_still_lints_the_others() {
     let r = Repo::new();
     let root = r.read("Cargo.toml");
     r.write(
@@ -372,18 +390,18 @@ fn a_syntax_error_in_one_member_is_a_finding_next_to_another_members_lint() {
         ".nightshift/rules/rust/allowed-crates.txt",
         "app\nextra\ngood\nbad\nuser\n",
     );
-    let new = r.new_findings();
-    let rules: Vec<&str> = new.iter().map(|f| f["rule"].as_str().unwrap()).collect();
-    assert!(rules.contains(&"compile-error"), "{new:?}");
-    let e = new.iter().find(|f| f["rule"] == "compile-error").unwrap();
-    assert_eq!(e["file"], "bad/src/lib.rs", "{e}");
-    assert!(
-        e["message"]
-            .as_str()
-            .unwrap()
-            .contains("skills/ns-contract/references/quality-bar.md"),
-        "{e}"
+    assert_broken(
+        &r,
+        &[
+            "./bad/src/lib.rs:1: error: ",
+            "also found clippy::needless_pass_by_value at ./good/src/lib.rs:1",
+        ],
     );
+
+    let (code, v, err) = r.rules(&["baseline", "--allow-growth"]);
+    assert_eq!(code, Some(1), "{v} {err}");
+    assert!(err.contains("has compile errors"), "{err}");
+    assert!(!r.root.join(".nightshift/rules-baseline.json").exists());
 }
 
 #[test]
@@ -635,20 +653,28 @@ fn an_unknown_tool_or_a_missing_crate_dir_is_a_usage_error() {
 }
 
 #[test]
-fn a_compile_error_is_one_finding_at_its_primary_span() {
+fn a_type_error_fails_as_broken_at_its_primary_span() {
     let r = Repo::new();
     r.write(
         "src/main.rs",
         &format!("{MAIN}\nfn word() -> u32 {{\n    \"one\"\n}}\n"),
     );
+    let err = assert_broken(&r, &["./src/main.rs:6: E0308: mismatched types"]);
+    assert!(!err.contains("also found"), "{err}");
+}
+
+#[test]
+fn a_rustc_lint_is_a_finding_not_a_compile_error() {
+    let r = Repo::new();
+    r.write("src/main.rs", &format!("{MAIN}\nfn unused() {{}}\n"));
     assert_eq!(
         r.new_findings().iter().map(key).collect::<Vec<_>>(),
         [(
             s("clippy"),
-            s("E0308"),
+            s("dead_code"),
             s("src/main.rs"),
-            Some(6),
-            s("\"one\"")
+            Some(5),
+            s("fn unused() {}")
         )]
     );
 }

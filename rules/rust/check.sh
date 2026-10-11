@@ -5,7 +5,8 @@
 #   check.sh clippy|deny|ast-grep <crate-dir>
 #
 # Exits with the tool's status. When the tool fails and nothing it printed is a finding, its
-# output goes to stderr instead, so `ns rules check` reports the failure.
+# output goes to stderr instead, so `ns rules check` reports the failure. A compile error exits 2
+# with no findings: the findings it did get and the errors go to stderr.
 set -eu
 
 usage() {
@@ -49,6 +50,7 @@ trap 'rm -rf "$tmp"' EXIT
 report=$tmp/report
 log=$tmp/log
 list=
+errors=
 links=$tmp/links
 echo '{}' >"$links"
 status=0
@@ -66,12 +68,19 @@ case $tool in
     # --keep-going (cargo 1.74+): one failing member mustn't stop the others being linted.
     cargo clippy -q --keep-going --manifest-path "$dir/Cargo.toml" --workspace --all-targets \
       --message-format=json -- -D warnings "$@" >"$report" 2>"$log" || status=$?
-    filter='select(.reason == "compiler-message") | .message | select(.code or ($failed and .level == "error"))
-      | (.code.code // "compile-error") as $rule
-      | (.spans[] | select(.is_primary)) as $s
+    # A compiler error (no code, or an E code) is not a lint: cargo skips the crates that
+    # depend on its crate, so a finding for it would hide theirs, and a baseline would keep them
+    # hidden. It fails the run instead.
+    compiled='select(.reason == "compiler-message") | .message
+      | (.level == "error" and (.code.code // "" | test("^(E[0-9]+)?$"))) as $error
+      | (.spans[] | select(.is_primary)) as $s'
+    filter="$compiled"'| select(.code and ($error | not))
+      | .code.code as $rule
       | {tool: "clippy", rule: $rule, file: ($dir + "/" + $s.file_name),
          line: $s.line_start,
-         message: (.message + " (quality bar" + ($links[0][$rule] | if . then ", " + . else "" end) + ": '$quality')")}'
+         message: (.message + " (quality bar" + ($links[0][$rule] | if . then ", " + . else "" end) + ": '"$quality"')")}'
+    errors="$compiled"'| select($error)
+      | "\($dir)/\($s.file_name):\($s.line_start): \(.code.code // "error"): \(.message)"'
     ;;
   deny)
     list=$pack/allowed-crates.txt
@@ -118,7 +127,19 @@ EOF
     ;;
 esac
 
-found=$(jq -cR --arg dir "$dir" --arg list "$list" --argjson failed "$([ "$status" -ne 0 ] && echo true || echo false)" --slurpfile links "$links" "fromjson? | $filter" "$report" | sort -u)
+found=$(jq -cR --arg dir "$dir" --arg list "$list" --slurpfile links "$links" "fromjson? | $filter" "$report" | sort -u)
+if [ -n "$errors" ]; then
+  broken=$(jq -rR --arg dir "$dir" "fromjson? | $errors" "$report" | sort -u)
+  if [ -n "$broken" ]; then
+    # Each line starts with `check.sh:` so `ns rules check` reads none of them as a finding.
+    {
+      printf '%s\n' "$found" | jq -r 'select(.) | "check.sh: also found \(.rule) at \(.file):\(.line)"'
+      echo "check.sh: $dir has compile errors, so clippy skipped every crate that depends on a failing one:"
+      printf '%s\n' "$broken" | sed 's/^/check.sh:   /'
+    } >&2
+    exit 2
+  fi
+fi
 if [ -n "$found" ]; then
   printf '%s\n' "$found"
 elif [ "$status" -ne 0 ]; then
