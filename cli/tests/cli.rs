@@ -333,6 +333,41 @@ fn lint_passes_this_repos_local_skills() {
 }
 
 #[test]
+fn lint_passes_relative_repo_local_skills_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let local = tmp.path().join(".agents/skills");
+    write_skill(
+        &local,
+        "verify-x",
+        "---\nname: verify-x\ndescription: X.\n---\n",
+    );
+
+    let v = json(
+        &ns()
+            .current_dir(tmp.path())
+            .args(["lint", ".agents/skills"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(v["skills"].as_u64().unwrap() > 0, "{v}");
+
+    let v = json(
+        &ns()
+            .current_dir(&local)
+            .args(["lint", "."])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(v["skills"].as_u64().unwrap() > 0, "{v}");
+}
+
+#[test]
 fn lint_passes_clean_dir_and_rejects_missing_dir() {
     let tmp = tempfile::tempdir().unwrap();
     write_skill(

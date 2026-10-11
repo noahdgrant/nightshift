@@ -670,6 +670,34 @@ mod tests {
     }
 
     #[test]
+    fn extra_or_missing_h2s_fail() {
+        let extra = format!("{FEATURE}\n## Appendix\n\n- more\n");
+        assert!(check_feature(&extra)
+            .unwrap()
+            .ends_with("Gotchas, Appendix"));
+        assert!(check_feature("# F\n\nNo sections.\n")
+            .unwrap()
+            .ends_with("found: "));
+        assert_eq!(check_feature(FEATURE), None);
+    }
+
+    #[test]
+    fn setup_verify_feature_map_example_passes() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../skills/ns-setup-verify/references/feature-map-example");
+        let mut checked = 0;
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "md") && !path.ends_with("README.md") {
+                let body = fs::read_to_string(&path).unwrap();
+                assert_eq!(check_feature(&body), None, "{}", path.display());
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+    }
+
+    #[test]
     fn reference_linked_from_another_reference_passes() {
         let tmp = skill(
             "[a](./references/a.md#top)\n",
