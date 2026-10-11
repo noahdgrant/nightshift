@@ -39,7 +39,7 @@ The changelog is a separate file, `changelog.md`, shared by every version. Its t
 | Reviewers | <names, and what you want from each of them> |
 | Kind | Proposal \| As-built |
 | Version | <1, 2... and one clause on why this version exists> |
-| Key | <the ID prefix for the Values table, such as GATEWAY; only with a Values table> |
+| Key | <the Values table key, such as GATEWAY, per the Values rule in SKILL.md; only with a Values table> |
 | Status | Draft \| In review \| Approved \| Superseded by v<n> |
 | Last updated | <YYYY-MM-DD> |
 | Review copy | <link to the copy on the review surface in docs/agents/docs.md, if it isn't the repo itself> |
@@ -75,7 +75,7 @@ Values other docs restate, which they cite by ID so a change here reaches them.
 |---|---|---|
 | <KEY>-1 | <the value in words, with its number and unit: "Heartbeat: a check-in every 30 minutes"> | <decided (name, date), estimate, measured, datasheet, or config> |
 
-> Only values another doc states. Number them from 1 in the Key from the header, and never renumber or reuse an ID. Where this doc restates a value in its prose, bind it to the ID: "every 30 minutes (GATEWAY-1)".
+> Only values another doc states. Number them from 1 in the header's Key, and never renumber or reuse an ID. Where this doc restates a value in its prose, bind it to the ID: "every 30 minutes (GATEWAY-1)".
 
 ### Non-goals
 

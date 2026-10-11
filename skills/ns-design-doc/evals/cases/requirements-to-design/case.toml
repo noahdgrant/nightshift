@@ -15,7 +15,7 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = 'f=$(ls docs/design/*/v1.md) && [ -f "$(dirname "$f")/changelog.md" ]'
+run = '''f=$(ls docs/design/*/v1.md) && c="$(dirname "$f")/changelog.md" && [ -f "$c" ] && grep -Eq '^\| *[^|]*\| *v?1 *\|' "$c"'''
 expect_exit = 0
 
 [[check]]
@@ -42,12 +42,27 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = '''f=$(ls docs/design/*/v1.md) && s=$(grep -Ei '^\| *\**Status' "$f" | tr -d '*') && ! printf '%s' "$s" | grep -Eiq 'Approved' && printf '%s' "$s" | grep -Eiq '\| *(Draft|In review) *\|' '''
+run = '''f=$(ls docs/design/*/v1.md) && s=$(grep -Ei '^\| *\**Status' "$f" | tr -d '*') && ! printf '%s' "$s" | grep -Eiq 'Approved' && ! printf '%s' "$s" | grep -Eiq 'Superseded' && printf '%s' "$s" | grep -Eiq '^\| *Status *\| *(Draft|In review)' '''
 expect_exit = 0
 
 [[check]]
 type = "command"
 run = '''f=$(ls docs/design/*/v1.md) && ! grep -Eq '^>' "$f" && ! grep -Eqw 'N/A' "$f"'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/design/*/v1.md) && ! awk -F'|' 'tolower($0) ~ /^#+ *open questions/{o=1;next} /^#+ /{o=0} o && /^\|/ && $0 !~ /^\|[-| ]+\|?$/ && tolower($2) !~ /question/ {g=$3; gsub(/ /,"",g); q=$2; gsub(/ /,"",q); if (q != "" && g == "") bad=1} END{exit !bad}' "$f"'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/design/*/v1.md) && ! grep -F '10%' "$f" | grep -Fvq 'STOCK-3' '''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/design/*/v1.md) && awk 'tolower($0) ~ /^#+ *non-goals/{o=1;next} /^#+ /{o=0} o' "$f" | grep -Eq 'STOCK-5([^0-9]|$)' '''
 expect_exit = 0
 
 [[check]]
