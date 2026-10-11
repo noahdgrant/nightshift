@@ -1,6 +1,6 @@
 # Docs
 
-Where this repo keeps requirements and design docs, and how they are reviewed. `ns-requirements` reads this file.
+Where this repo keeps requirements and design docs, and how they are reviewed. `ns-requirements` and `ns-design-doc` read this file.
 
 ## Requirements
 
@@ -9,7 +9,8 @@ Where this repo keeps requirements and design docs, and how they are reviewed. `
 
 ## Design docs
 
-- **Directory**: `[docs/design/]`.
+- **Directory**: `[docs/design/]`. `ns-design-doc` fixes the layout under it, as for requirements.
+- **Template**: `docs/agents/templates/design.md` when it exists, else the skill's own.
 
 ## IDs
 
