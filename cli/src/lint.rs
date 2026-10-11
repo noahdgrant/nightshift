@@ -139,7 +139,41 @@ fn has_scheme(target: &str) -> bool {
     })
 }
 
-/// Relative link targets (`x`, `./x`, `../x`) outside fenced code blocks, anchors stripped.
+/// `line` with its inline code spans removed. A backtick run opens a span that the next
+/// run of the same length closes; a run with no closer is literal text.
+fn strip_code_spans(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(i) = rest.find('`') {
+        out.push_str(&rest[..i]);
+        let tick = &rest[i..];
+        let n = tick.len() - tick.trim_start_matches('`').len();
+        let after = &tick[n..];
+        let mut search = 0;
+        let close = loop {
+            let Some(j) = after[search..].find('`') else {
+                break None;
+            };
+            let start = search + j;
+            let m = after[start..].len() - after[start..].trim_start_matches('`').len();
+            if m == n {
+                break Some(start + m);
+            }
+            search = start + m;
+        };
+        match close {
+            Some(end) => rest = &after[end..],
+            None => {
+                out.push_str(&tick[..n]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Relative link targets (`x`, `./x`, `../x`) outside code blocks and code spans, anchors stripped.
 /// URLs with a scheme, absolute paths and bare `#anchor` links are skipped.
 pub fn relative_links(text: &str) -> Vec<String> {
     let mut links = Vec::new();
@@ -164,7 +198,8 @@ pub fn relative_links(text: &str) -> Vec<String> {
         if fence.is_some() {
             continue;
         }
-        let mut rest = line;
+        let line = strip_code_spans(line);
+        let mut rest = line.as_str();
         while let Some(i) = rest.find("](") {
             rest = &rest[i + 2..];
             let end = rest.find(')').unwrap_or(rest.len());
@@ -395,6 +430,12 @@ mod tests {
                 ":c.md"
             ]
         );
+    }
+
+    #[test]
+    fn links_inside_code_spans_are_skipped() {
+        let text = "Run `printf '[a](./gone.md)'` or ``x [b](./gone2.md) ` y`` then [c](./c.md), and `[d](./d.md)\n";
+        assert_eq!(relative_links(text), ["./c.md", "./d.md"]);
     }
 
     fn skill(body: &str, refs: &[(&str, &str)]) -> tempfile::TempDir {
