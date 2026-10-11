@@ -63,7 +63,8 @@ case $tool in
     while read -r lint; do
       set -- "$@" -W "$lint"
     done <"$tmp/lints"
-    cargo clippy -q --manifest-path "$dir/Cargo.toml" --workspace --all-targets \
+    # --keep-going (cargo 1.74+): one failing member mustn't stop the others being linted.
+    cargo clippy -q --keep-going --manifest-path "$dir/Cargo.toml" --workspace --all-targets \
       --message-format=json -- -D warnings "$@" >"$report" 2>"$log" || status=$?
     filter='select(.reason == "compiler-message") | .message | select(.code or ($failed and .level == "error"))
       | (.code.code // "compile-error") as $rule
