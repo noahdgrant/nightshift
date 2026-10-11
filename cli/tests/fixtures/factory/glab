@@ -8,6 +8,9 @@
 #   gl-issue-<n>.raw what reading issue <n> prints instead
 #   gl-statuses.json the commit statuses on main's head, default none
 #   gl-project.json, gl-branch.json  what reading the project or main's branch prints instead
+#   gl-pipelines-green.json  the newest successful pipeline on main, default none
+#   a POST to projects/:id/issues files issue next-issue (default 100) by member 1; its
+#   description goes to created-<n>.body; gl-create.raw is what it prints instead
 #   glab.fail        every call fails, echoing GITLAB_TOKEN on stderr as a leaky server might
 d="$FAKE_GH_DIR"
 printf '%s\n' "$*" >> "$d/glab-calls"
@@ -44,11 +47,32 @@ case "$1 $2" in
       "projects/:id/repository/branches/"*)
         cat "$d/gl-branch.json" 2>/dev/null || printf '{"commit":{"id":"%s"}}\n' "$(git rev-parse HEAD)" ;;
       "projects/:id/repository/commits/"*/statuses*) cat "$d/gl-statuses.json" 2>/dev/null || echo "[]" ;;
+      "projects/:id/pipelines?"*) cat "$d/gl-pipelines-green.json" 2>/dev/null || echo "[]" ;;
+      "projects/:id/jobs/"*/trace) echo "ERROR: Job failed: assert 1 == 2" ;;
       "projects/:id/members/all"*) cat "$d/gl-members.json" 2>/dev/null || echo "[]" ;;
       "projects/:id/merge_requests?state=opened"*) cat "$d/gl-mrs.json" 2>/dev/null || echo "[]" ;;
       "projects/:id/merge_requests?state=merged"*) cat "$d/gl-mrs-merged.json" 2>/dev/null || echo "[]" ;;
       *) echo "fake glab: unsupported api path: $path" >&2; exit 1 ;;
     esac
+    ;;
+  "api --method")
+    [ "$3 $4" = "POST projects/:id/issues" ] || { echo "fake glab: unsupported: $*" >&2; exit 1; }
+    [ -f "$d/gl-create.raw" ] && { cat "$d/gl-create.raw"; exit 0; }
+    n=$(cat "$d/next-issue" 2>/dev/null || echo 100); echo $((n + 1)) > "$d/next-issue"
+    a=("$@"); title=; labels=
+    for ((i = 4; i < ${#a[@]}; i++)); do
+      [ "${a[$i]}" = --raw-field ] || continue
+      f=${a[$((i + 1))]}
+      case "$f" in
+        title=*) title=${f#title=} ;;
+        description=*) printf '%s' "${f#description=}" > "$d/created-$n.body" ;;
+        labels=*) labels=${f#labels=} ;;
+      esac
+    done
+    printf '%s\n' ${labels//,/ } > "$d/labels-$n"
+    printf '{"iid":%s,"title":"%s","labels":[],"description":"","author":{"id":1,"username":"u1"}}\n' "$n" "$title" >> "$d/gl-issues.jsonl"
+    printf '{"number":%s,"title":"%s","url":"u","state":"OPEN"}\n' "$n" "$title" > "$d/issue-$n.json"
+    printf '{"iid":%s}\n' "$n"
     ;;
   "issue update")
     f="$d/labels-$3"; touch "$f"; a=("$@")

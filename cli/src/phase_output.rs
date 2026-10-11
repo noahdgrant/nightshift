@@ -22,6 +22,13 @@ use crate::worktree;
 mod redact;
 use redact::redact;
 
+/// `text` with every secret-like value hidden, as `ns log --phase-output` shows a transcript.
+pub(crate) fn redact_text(text: &str) -> String {
+    let mut v = Value::String(text.into());
+    redact(&mut v);
+    v.as_str().unwrap_or_default().to_string()
+}
+
 /// How many entries the transcript so far is cut to before printing or following.
 const LATEST: usize = 20;
 

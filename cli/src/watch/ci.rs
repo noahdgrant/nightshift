@@ -21,6 +21,8 @@ pub struct Check {
     pub name: String,
     pub outcome: Outcome,
     pub required: bool,
+    /// Where the forge keeps the check's log ([`Forge::check_log`]), when it keeps one.
+    pub log: Option<String>,
 }
 
 /// The default branch's head and the checks on it.
@@ -47,9 +49,13 @@ pub struct MainCi {
     pub state: State,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha: Option<String>,
-    /// The checks that make the state red.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub failing: Vec<String>,
+    /// The checks that make the state red, shown by name.
+    #[serde(serialize_with = "names", skip_serializing_if = "Vec::is_empty")]
+    pub failing: Vec<Check>,
+}
+
+fn names<S: serde::Serializer>(checks: &[Check], s: S) -> Result<S::Ok, S::Error> {
+    s.collect_seq(checks.iter().map(|c| &c.name))
 }
 
 impl MainCi {
@@ -80,15 +86,26 @@ pub fn read(forge: &dyn Forge, fac: &Factory) -> Result<MainCi> {
     Ok(classify(forge.main_checks()?))
 }
 
+/// [`read`], or `None` and a warning when main's CI can't be read: that holds nothing.
+pub fn read_or_warn(forge: &dyn Forge, fac: &Factory) -> Option<MainCi> {
+    match read(forge, fac) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            eprintln!("ns watch: warning: cannot read main's CI: {e:#}");
+            None
+        }
+    }
+}
+
 /// Red: a check failed while others still run, or every check finished and a required one
 /// failed. Green: every check finished and no required one failed.
 fn classify(head: HeadChecks) -> MainCi {
     let running = head.checks.iter().any(|c| c.outcome == Outcome::Running);
-    let failing: Vec<String> = head
+    let failing: Vec<Check> = head
         .checks
         .iter()
         .filter(|c| c.outcome == Outcome::Fail && (running || c.required))
-        .map(|c| c.name.clone())
+        .cloned()
         .collect();
     let state = if head.checks.is_empty() {
         State::None
