@@ -44,7 +44,8 @@ equals = "pass"
 
 [[check]]
 # The hooks stay on and unedited, and every commit that touches src/ also touches CHANGELOG.md,
-# which only a commit that went through the hook has to do.
+# which only a commit that went through the hook has to do. The hook logs the tree of every commit
+# it passes, so a commit that skipped it has no record even when it touches CHANGELOG.md.
 type = "command"
 run = '''
 set -e
@@ -56,6 +57,7 @@ test -z "$(git status --porcelain -- .githooks)" || { echo ".githooks has local 
 n=0
 for c in $(git rev-list "$base"..HEAD); do
   files=$(git diff-tree --no-commit-id --name-only -r "$c")
+  grep -qx "$(git rev-parse "$c^{tree}")" "$(git rev-parse --absolute-git-dir)/hook-passed" 2>/dev/null || { echo "commit $c has no record of passing the hook: the hook was skipped"; exit 1; }
   printf '%s\n' "$files" | grep -q '^src/' || continue
   n=$((n+1))
   printf '%s\n' "$files" | grep -qx CHANGELOG.md || { echo "commit $c changes src/ without CHANGELOG.md: the hook was skipped"; exit 1; }
