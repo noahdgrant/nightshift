@@ -257,6 +257,7 @@ A PR that changes `brake_ramp` merges on its own. One that changes `MAX_TORQUE_N
 `[defaults] billing = "subscription"` (the default) keeps claude runs on the Claude subscription login and off API credits:
 
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY` are removed from every claude child process.
+- `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `CODEX_API_KEY` are removed from every codex child process, phases and eval trials alike.
 - `--bare`, which forces API-key auth, is dropped from the command.
 - `ns run` refuses to start (exit 2) when `~/.claude/.credentials.json` is missing and `CLAUDE_CODE_OAUTH_TOKEN` is unset.
 

@@ -379,12 +379,12 @@ fn run_harness(
     for (k, v) in env {
         cmd.env(k, v);
     }
+    if subscription {
+        billing::scrub(&mut cmd, argv);
+    }
     if billing::is_claude(argv) {
         billing::wait_for_bg_tasks(&mut cmd);
         billing::disable_auto_memory(&mut cmd);
-        if subscription {
-            billing::scrub(&mut cmd);
-        }
     }
     let (status, timed_out, wall_s) =
         match run_process(cmd, Some(prompt.as_bytes().to_vec()), timeout) {

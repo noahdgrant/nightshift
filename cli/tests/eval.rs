@@ -18,7 +18,7 @@ const FAKE_HARNESS: &str = r#"#!/bin/sh
 prompt=$(cat)
 cred=no
 [ -L "$HOME/.fake-cred" ] && cred=yes
-echo "call model=$1 pwd=$PWD home=$HOME mode=$CALC_MODE cred=$cred mem=${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset} bg=${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >> "$FAKE_LOG"
+echo "call model=$1 pwd=$PWD home=$HOME mode=$CALC_MODE cred=$cred keys=${OPENAI_API_KEY-}${OPENAI_BASE_URL-}${CODEX_API_KEY-}${ANTHROPIC_API_KEY-} mem=${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset} bg=${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >> "$FAKE_LOG"
 echo '{"type":"system","subtype":"init"}'
 if [ -d "$HOME/.claude/skills/ns-demo" ] && [ -d "$HOME/.agents/skills/ns-demo" ]; then
   case "$prompt" in
@@ -95,13 +95,16 @@ fn setup_with(output: &str) -> Env {
     let fake = base.join("fake.sh");
     fs::write(&fake, FAKE_HARNESS).unwrap();
     let claude = base.join("bin/claude");
+    let codex = base.join("bin/codex");
     fs::create_dir_all(claude.parent().unwrap()).unwrap();
-    fs::write(&claude, FAKE_HARNESS).unwrap();
-    StdCommand::new("chmod")
-        .arg("+x")
-        .arg(&claude)
-        .status()
-        .unwrap();
+    for bin in [&claude, &codex] {
+        fs::write(bin, FAKE_HARNESS).unwrap();
+        StdCommand::new("chmod")
+            .arg("+x")
+            .arg(bin)
+            .status()
+            .unwrap();
+    }
     let home = base.join("realhome");
     fs::create_dir_all(&home).unwrap();
     fs::write(home.join(".fake-cred"), "secret").unwrap();
@@ -129,6 +132,11 @@ command = ["{claude}", "{{model}}"]
 carry = [".fake-cred"]
 output = "{output}"
 
+[eval.harnesses.codex]
+command = ["{codex}", "{{model}}"]
+carry = [".fake-cred"]
+output = "{output}"
+
 [harness.judge]
 command = ["sh", "-c", "cat > /dev/null; echo PASS; echo root cause fixed"]
 [roles."eval.judge"]
@@ -137,6 +145,7 @@ harness = "judge"
             t = base.join("transcripts").display(),
             fake = fake.display(),
             claude = claude.display(),
+            codex = codex.display(),
         ),
     )
     .unwrap();
@@ -402,6 +411,58 @@ fn claude_trials_wait_for_background_tasks_under_api_billing() {
     let calls = e.calls();
     assert_eq!(calls.len(), 1);
     assert!(calls[0].ends_with(" bg=0"), "{}", calls[0]);
+}
+
+/// One trial of `harness` with every API credential set, under `billing`; returns the call log line.
+fn trial_with_api_keys(harness: &str, billing: &str) -> String {
+    let e = setup();
+    let cfg = fs::read_to_string(&e.cfg).unwrap();
+    let cfg = cfg.replacen("harness = \"fake\"", &format!("harness = \"{harness}\""), 1);
+    let cfg = cfg.replacen(
+        "trials = 1",
+        &format!("billing = \"{billing}\"\ntrials = 1"),
+        1,
+    );
+    fs::write(&e.cfg, cfg).unwrap();
+    e.ns()
+        .env("CLAUDE_CODE_OAUTH_TOKEN", "t")
+        .env("OPENAI_API_KEY", "O")
+        .env("OPENAI_BASE_URL", "B")
+        .env("CODEX_API_KEY", "C")
+        .env("ANTHROPIC_API_KEY", "A")
+        .args([
+            "ns-demo",
+            "--case",
+            "fix-add",
+            "--arms",
+            "with",
+            "--no-write-results",
+        ])
+        .assert()
+        .success();
+    let calls = e.calls();
+    assert_eq!(calls.len(), 1);
+    calls[0].clone()
+}
+
+#[test]
+fn codex_trials_on_a_subscription_drop_only_the_openai_keys() {
+    let call = trial_with_api_keys("codex", "subscription");
+    assert!(call.contains(" keys=A "), "{call}");
+}
+
+#[test]
+fn claude_trials_on_a_subscription_drop_only_the_anthropic_keys() {
+    let call = trial_with_api_keys("claude", "subscription");
+    assert!(call.contains(" keys=OBC "), "{call}");
+}
+
+#[test]
+fn trials_under_api_billing_keep_every_key() {
+    for harness in ["codex", "claude"] {
+        let call = trial_with_api_keys(harness, "api");
+        assert!(call.contains(" keys=OBCA "), "{harness}: {call}");
+    }
 }
 
 #[test]
