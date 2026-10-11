@@ -140,7 +140,10 @@ impl<'a> Scheduler<'a> {
             if self.failed.is_none() && stop::requested().is_none() {
                 // A stop that cut the fill short is handled at the loop's top, not as a failure.
                 if let Err(e) = self.fill(night, tonight, refill) {
-                    if stop::requested().is_none() {
+                    if refill {
+                        // A refill runs every interval for hours: a blip waits for the next.
+                        eprintln!("ns watch: refill failed: {e:#}");
+                    } else if stop::requested().is_none() {
                         self.fail(e);
                     }
                 }

@@ -6670,6 +6670,19 @@ fn an_idle_slot_triages_the_backlog_and_starts_it_while_a_unit_runs() {
     assert!(started_5 < ended_2, "{:?}", run_events(&e));
 }
 
+/// Poll until a refill has listed issues, then return the `gh` calls made from there for `wait`.
+fn refill_calls_during(e: &Env, wait: Duration) -> String {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let before = e.gh_calls().len();
+    while !e.gh_calls()[before..].contains("issues?state=open") {
+        assert!(Instant::now() < deadline, "no refill listed issues");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let start = e.gh_calls().len();
+    thread::sleep(wait);
+    e.gh_calls()[start..].to_string()
+}
+
 #[test]
 fn an_idle_slot_with_nothing_to_start_does_not_spin() {
     let e = Env::new();
@@ -6680,7 +6693,7 @@ fn an_idle_slot_with_nothing_to_start_does_not_spin() {
     w.entered(&in_a);
     w.line("ns watch: triage #5");
     let wait = Duration::from_millis(1500);
-    let calls = gh_calls_during(&e, wait);
+    let calls = refill_calls_during(&e, wait);
     let listings = calls.matches("issues?state=open").count();
     // At most one fill each 500 ms, two listings each, and one fill under way at either end.
     let most = 2 * (wait.as_millis() as usize / 500 + 2);
@@ -6703,18 +6716,37 @@ fn an_idle_refill_skips_the_worktree_cleanup() {
     let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
     w.entered(&in_a);
     w.line("ns watch: triage #5");
-    thread::sleep(Duration::from_millis(300));
-    let calls = gh_calls_during(&e, Duration::from_millis(1000));
-    assert!(
-        calls.contains("issues?state=open"),
-        "no refill ran:\n{calls}"
-    );
+    let calls = refill_calls_during(&e, Duration::from_millis(1000));
     for view in ["issue view", "pr view"] {
         assert!(!calls.contains(view), "{view} on a refill:\n{calls}");
     }
     release(&go_a);
     let (code, _, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
+}
+
+#[test]
+fn a_failed_listing_on_a_refill_does_not_fail_the_night() {
+    let e = Env::new();
+    e.queue("triage.5-fix-e", &["none"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
+    w.entered(&in_a);
+    w.line("ns watch: triage #5");
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *issues?state=open*)\n\
+           if [ -f \"$d/boom\" ]; then echo 'HTTP 502' >&2; touch \"$d/failed\"; exit 1; fi ;;\n\
+         esac\n",
+    );
+    e.gh_file("boom", "");
+    w.line("refill failed");
+    assert!(e.ghd.join("failed").exists());
+    fs::remove_file(e.ghd.join("boom")).unwrap();
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2], "done"), "{v}");
 }
 
 #[test]
