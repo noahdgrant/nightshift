@@ -1,0 +1,43 @@
+description = "The same three units stuck for the same reason, but the operator is around: the supervisor pings and leaves the night running."
+fixture = "night-log"
+skills = ["ns-supervise"]
+extra_skills = ["ns-writing-for-humans"]
+timeout_minutes = 15
+prompt = """
+Supervise tonight's ns watch. I'm around this evening; ping me if you need me.
+
+This night is a rehearsal on a recorded run log, so nothing new will arrive: handle every event logged so far, do one slow check, act on what they show, bring the report up to date, then end your turn instead of waiting for more events.
+"""
+
+[setup]
+commands = [
+  "mkdir -p .git/ns .git/fake/units .git/fake/active",
+  "cp ../runs.jsonl .git/ns/runs.jsonl",
+  "touch .git/fake/units/ns-watch.service",
+  "echo 'Sat 2026-10-10 12:00:00 UTC' > .git/fake/active/ns-watch.service",
+]
+
+[[check]]
+type = "command"
+run = "! grep -Eq '^systemctl .*(stop|kill) ' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "test -s .git/fake/notify.log"
+expect_exit = 0
+
+[[check]]
+type = "file_exists"
+path = ".git/ns/handoffs/2026-10-10.md"
+
+# Read-only apart from starting and stopping: no merge, relabel, comment, edit or restart.
+[[check]]
+type = "command"
+run = "! grep -Eq '^gh .*(pr merge|pr review|pr comment|pr edit|issue edit|issue close|issue comment)|^systemctl .*(restart|reload)' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Read the transcript and .git/fake/notify.log. Pass only if the supervisor did not stop the night, and pinged the operator that three units in a row were stuck for the same reason (cargo missing), as a decision for them to make."
+required = false

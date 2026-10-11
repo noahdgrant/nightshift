@@ -1,0 +1,97 @@
+---
+name: ns-supervise
+description: Supervise a night of `ns watch` from one level above it. Attaches to the night or starts it, pings the operator when they're needed, stops the night on a factory-wide failure, and keeps a status report. Use when asked to supervise, babysit or watch over a night, or to keep an eye on ns watch.
+---
+
+# Supervise
+
+You are the night's **supervisor**. `ns watch` and its phases do the work. The operator does what only a human does (merges, hand fixes, design sessions), in another session. You watch, ping, and keep the report they work from.
+
+You are **read-only**. Two actions are yours: starting a night (step 1) and stopping one (step 4). Everything else the night needs, a merge, a restart, a relabel, a comment, an edit, goes in a ping or the report for the operator.
+
+Paths below use `<common>` for `git rev-parse --path-format=absolute --git-common-dir` in the watched checkout.
+
+## 1. Start
+
+1. **Mode.** Ask whether the operator will be around tonight. They are **around** or **away**; no answer means away. The operator can switch at any time with a message in your thread. Each switch is a Timeline line in the report.
+2. **Settings.** Run `ns factory validate` and keep `supervise.notify` and `supervise.silence_minutes`. Take `--until` and `--parallel` from the prompt. Without them, `ns watch` uses `[limits] parallel` itself, and `--until` falls back to `06:30`, the packaged service's end. Ask for `--until` in your mode question when the prompt lacks it.
+3. **Find the night.** A night is running when either holds:
+   - `systemctl --user is-active ns-watch.service` (or `ns-watch-supervised.service`, the unit you start below) prints `active`. That unit is the night's **unit**.
+   - `<common>/ns-watch.lock` holds `{"pid":N}`, N is alive with `watch` as its first argument (`/proc/N/cmdline`; a self-updated `ns` runs as `ns-<sha>`), and no unit above is active. The night runs in a terminal and has no unit: you can't stop it, so every stop in step 4 becomes a ping.
+
+   Attach to a running night. Starting a second one is refused anyway (exit 5).
+4. **Start a night** when none is running:
+   - `systemctl --user cat ns-watch.service` succeeds: the operator installed `contrib/systemd`. Run `systemctl --user start ns-watch.service`. Its `ExecCondition=` skips a daytime start, so check `is-active` after; if it is not active, say so and ask the operator.
+   - Else, when `systemd-run` exists, start a transient unit with the OOM-safe settings of the packaged service. They keep an OOM kill inside the night from ending it, and let a stop requeue unfinished units before anything is killed:
+
+     ```bash
+     main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+     systemd-run --user --unit=ns-watch-supervised --working-directory="$main" \
+       --setenv=PATH="$PATH" \
+       -p OOMPolicy=continue -p KillMode=mixed -p TimeoutStopSec=2min \
+       -p SuccessExitStatus=143 -p MemoryHigh=75% -p MemoryMax=85% \
+       "$(command -v ns)" watch --until <HH:MM> [--parallel <n>]
+     ```
+
+   - Else there is no systemd. Say so, and ask the operator to start the night (`ns watch --until <HH:MM>` in a terminal, or the timer). Find the night again when they reply.
+5. **Open the report** at `<common>/ns/handoffs/<night>.md`, where `<night>` is the local date the night started (`YYYY-MM-DD`, from the unit's `ActiveEnterTimestamp`, else the lock file's mtime, else today). Read [references/status-report.md](references/status-report.md) for the template. When the file exists, a supervisor already ran this night: **continue** it. Keep every line, and add a Timeline line `re-attached (<mode>)`. Otherwise create it from the template. The report is never committed.
+
+Done when the mode is recorded, a night is running with its unit known (or the operator has been asked to start it), and the report has a Timeline line for this start.
+
+## 2. Watch
+
+Run two loops until the shift ends.
+
+- **Event stream.** Follow `ns log -f --json --since <night start, UTC>` in the background, and handle each event as it arrives against the tables in steps 3 and 4.
+- **Slow check**, about every 20 minutes, for what the log can't show:
+  - the unit: `systemctl --user show <unit> -p ActiveState,Result,NRestarts,ActiveEnterTimestamp`, and `journalctl --user -u <unit> --since -20min` for OOM kills (`oom-kill`, `Out of memory`, `memory.max`).
+  - silence: `ns status --json`. Its `running` is not empty and the newest event is older than `silence_minutes`.
+  - the forge: issues with the stuck label (`status:ready-for-human` unless `[queue] stuck_label` says otherwise), and PRs that need a human merge. Use the needs-human-merge PR label when `gh label list` has one (#336); else the PRs of units that ended `done`.
+
+The **shift ends** when `ns watch` exits: the unit leaves `active`, or the lock's pid is gone. Then finish the report (step 5).
+
+Done when the shift has ended and every event in the log since the night started has been handled.
+
+## 3. Ping
+
+Ping when the night needs the operator:
+
+| Trigger | Seen in |
+|---|---|
+| a unit ends `stuck` or `budget` | `end` event |
+| a unit ends `done` with a PR that needs a human merge | `end` event, then the forge check |
+| an issue gets the stuck label | slow check |
+| the night dies early: `ns watch` exits before `--until` with a failed result, or an OOM kill ends it | slow check |
+| a usage-limit pause | `end` event with outcome `paused` |
+| the harness breaker trips: the night stops with `harness failing` | the summary at the end of `journalctl --user -u <unit>` |
+| no run-log event for `silence_minutes` while units run | slow check |
+| a stop condition from step 4 while the operator is around | step 4 |
+
+A merge, a unit that ends `done` needing no human, and other progress wait for the report.
+
+A ping is one line: `ns-supervise: <what happened> <unit or #issue> <link>: <what the operator should do>`. Send each one to every channel that exists:
+
+- the harness's notification, when it has one
+- a message in your own thread, always
+- `supervise.notify`, when set: `printf '%s\n' "$ping" | sh -c "$notify"`. A failing command is a Timeline line, never a stop.
+
+Record each ping as a Timeline line in the report.
+
+## 4. Act
+
+Stop the night only when the operator is **away** and one of these happens:
+
+- `main`'s CI goes red after a factory merge: after a `merged` event, `gh run list --branch main --limit 1 --json conclusion,headSha` gives `failure` for the merge commit.
+- three units in a row end `stuck` for the same reason: consecutive `end` events with outcome `stuck` whose reasons match once unit names, finding ids, paths and numbers are dropped.
+- a `self_update_failed` event, or `NRestarts` grows by more than two within an hour.
+- the memory cap or an OOM kill triggers repeatedly: two or more in the shift.
+
+When the operator is around, each of these is a ping and the night runs on. A single stuck unit is always just a ping.
+
+To stop: `systemctl --user stop <unit>`. `ns watch` requeues every unfinished unit (#209) and exits 143. Then ping with the reason, and put the reason in the report's ending. With no unit, ping the operator to stop the night themselves.
+
+## 5. Report
+
+Write the report as events happen, not only at the end: each ping, stop, mode switch and re-attach is a Timeline line when it happens. When the shift ends, fill every section of [references/status-report.md](references/status-report.md), with the `ns-writing-for-humans` skill. Diagnose stuck units read-only, from their `.ns/<unit>/` artifacts in the unit's worktree.
+
+Done when every section of the template is filled for the shift, and your last message gives the report's path.
