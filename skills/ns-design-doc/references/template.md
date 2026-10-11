@@ -1,6 +1,6 @@
 # Design doc template
 
-Lines beginning with `>` are prompts. Delete every one before the doc goes out.
+Lines beginning with `>` are prompts. Delete every one before the doc goes out. What good looks like for each section is in [section-guide.md](section-guide.md).
 
 ## Which sections to include
 
