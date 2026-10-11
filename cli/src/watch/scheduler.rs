@@ -596,6 +596,9 @@ impl<'a> Scheduler<'a> {
             r.outcome.label()
         };
         eprintln!("ns watch: #{} {shown} (worker {n})", issue.number);
+        if !failing {
+            self.stop_if_unfixed(issue.number, r.outcome);
+        }
         match r.outcome {
             Outcome::Merged => {
                 let status = set_status(forge, q, issue.number, None);

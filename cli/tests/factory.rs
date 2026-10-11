@@ -4626,6 +4626,118 @@ fn watch_resumes_the_queue_when_main_is_pending_with_nothing_failing() {
     assert_eq!(green[0]["state"], "pending");
 }
 
+/// A night with main red, #2 ready and the fix issue #100, set up further by `setup`.
+fn fix_ends(setup: impl Fn(&Env)) -> (Env, Value) {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    main_red(&e);
+    setup(&e);
+    // A cap above one: a night that goes on would file or start more.
+    let v = e.run(&["watch", "--max-units", "3"], 0);
+    (e, v)
+}
+
+/// The fix issue's unit, set up by `setup`, ends `outcome` with main still red: the night stops.
+fn stops_unfixed(outcome: &str, setup: impl Fn(&Env)) {
+    let (e, v) = fix_ends(setup);
+    assert_eq!(by_issue(&units(&v)), each(&[100], outcome), "{v}");
+    assert_eq!(v["stopped"], "main_red_unfixed", "{v}");
+    let unfixed = events_named(&e, "main_red_unfixed");
+    assert_eq!(unfixed.len(), 1, "{unfixed:?}");
+    assert_eq!(unfixed[0]["sha"], MAIN_SHA);
+    assert_eq!(unfixed[0]["issue"], 100);
+    assert_eq!(unfixed[0]["outcome"], outcome);
+    let calls = e.gh_calls();
+    assert_eq!(calls.matches("issue create").count(), 1, "{calls}");
+    assert!(!calls.contains("issue edit 2 "), "{calls}");
+}
+
+#[test]
+fn a_fix_unit_that_ends_unfixed_stops_the_night() {
+    stops_unfixed("stuck", |e| e.queue("triage", &["none"]));
+    stops_unfixed("split", |e| e.queue("triage", &["split:into #8 and #9."]));
+    stops_unfixed("budget", |e| {
+        e.factory("[limits]\nbudget_usd = 1.0\n");
+        e.ctl(
+            "triage.sh",
+            &format!("gh issue edit 100 --add-label {READY}\n"),
+        );
+        e.queue("triage", &["pass:script"]);
+        e.queue("build", &["pass:commit"]);
+    });
+}
+
+#[test]
+fn a_fix_unit_that_ends_unfixed_after_main_turned_green_stops_nothing() {
+    let (e, v) = fix_ends(|e| {
+        e.queue("triage", &["none", "none"]);
+        e.gh_file(
+            "main-ci.green",
+            &main_ci_at(MAIN_SHA, &[], &[("test", "COMPLETED", "SUCCESS")]),
+        );
+        // Main turns green, by another hand, while the fix unit runs.
+        e.gh_file(
+            "hook.sh",
+            "[ \"$1 $2 $3\" = \"issue edit 100\" ] && cp \"$d/main-ci.green\" \"$d/main-ci.json\"\n",
+        );
+    });
+    assert_eq!(by_issue(&units(&v)), each(&[2, 100], "stuck"), "{v}");
+    assert_eq!(v["stopped"], "queue empty", "{v}");
+    assert!(events_named(&e, "main_red_unfixed").is_empty());
+}
+
+#[test]
+fn a_fix_unit_that_ends_unfixed_when_main_ci_cannot_be_read_stops_nothing() {
+    let (e, v) = fix_ends(|e| {
+        e.queue("triage", &["none", "none"]);
+        e.gh_file(
+            "hook.sh",
+            "[ \"$1 $2 $3\" = \"issue edit 100\" ] && echo 'HTTP 502' > \"$d/main-ci.fail\"\n",
+        );
+    });
+    assert_eq!(by_issue(&units(&v)), each(&[2, 100], "stuck"), "{v}");
+    assert_eq!(v["stopped"], "queue empty", "{v}");
+    assert!(events_named(&e, "main_red_unfixed").is_empty());
+}
+
+#[test]
+fn a_fix_unit_the_harness_fails_does_not_stop_the_night() {
+    let (e, v) = fix_ends(|e| e.queue("triage", &["crash", "crash"]));
+    assert_eq!(by_issue(&units(&v)), each(&[100], "harness_failing"), "{v}");
+    assert_eq!(v["stopped"], "queue empty", "{v}");
+    assert!(events_named(&e, "main_red_unfixed").is_empty());
+}
+
+#[test]
+fn a_stuck_unit_that_is_not_the_fix_does_not_stop_the_night() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue(&format!("build.{A}"), &["pass:commit", "pass:commit"]);
+    e.queue(&format!("verify.{A}"), &["fail", "fail"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let mut w = Watching::start(e.ns().env("NS_REFILL_MS", "100").args([
+        "watch",
+        "--parallel",
+        "2",
+        "--max-units",
+        "3",
+    ]));
+    w.entered(&in_a);
+    main_red(&e);
+    // #2 ends stuck after the fix issue is filed and started.
+    w.line("ns watch: main is red");
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        by_issue(&units(&v)),
+        [(2, "stuck".into()), (100, "done".into())],
+        "{v}"
+    );
+    assert_eq!(v["stopped"], "queue empty", "{v}");
+    assert!(events_named(&e, "main_red_unfixed").is_empty());
+}
+
 #[test]
 fn watch_with_fix_main_first_off_runs_the_queue_while_main_is_red() {
     let e = Env::new();
