@@ -43,7 +43,7 @@ pub trait Forge {
 
 /// The colour and description a missing PR label is created with.
 const PR_LABEL_COLOR: &str = "d73a4a";
-const PR_LABEL_DESCRIPTION: &str = "nightshift could not merge this PR; a human needs to";
+const PR_LABEL_DESCRIPTION: &str = "nightshift left this PR for a human to merge";
 
 const HINT: &str = "set the forge in .nightshift/nightshift.toml:\n  [queue]\n  source = \"github\"\n\nsee docs/FACTORY.md";
 

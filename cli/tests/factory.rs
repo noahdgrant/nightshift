@@ -4077,7 +4077,7 @@ fn watch_done_with_a_pr_labels_it_for_a_human_merge_and_says_why() {
     let calls = e.gh_calls();
     assert!(
         calls.contains(&format!(
-            "label create {HUMAN_MERGE} --color d73a4a --description "
+            "label create {HUMAN_MERGE} --color d73a4a --description nightshift left this PR for a human to merge"
         )),
         "{calls}"
     );

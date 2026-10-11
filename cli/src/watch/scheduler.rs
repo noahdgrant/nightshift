@@ -675,9 +675,9 @@ fn resume_at(r: &RunResult, night: &Night) -> i64 {
     }
 }
 
-/// Label the PR of a `done` unit, if it has one, `label` and say why it needs a human merge, so
-/// the PRs waiting on a human are one `gh pr list --label` away. A failure is reported, never
-/// fatal: the issue already has its status.
+/// Label a `done` unit's PR, if it has one, with `label` and comment why it needs a human merge,
+/// so the PRs waiting on a human are one `gh pr list --label` away. A failure is reported, never
+/// fatal.
 fn flag_human_merge(forge: &dyn Forge, label: &str, r: &RunResult) {
     let Some(pr) = r.json["pr"].as_u64() else {
         return;
