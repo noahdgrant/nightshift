@@ -1,4 +1,17 @@
 #!/bin/sh
 # Enable with: git config core.hooksPath .githooks
-# Checks the working tree, which is the commit being pushed when the tree is clean.
+# ci-local.sh checks the working tree, so it only counts as checking a push when the tree is
+# clean and every ref pushed (deletions aside) points at HEAD.
+head=$(git rev-parse HEAD) || exit 1
+if [ -n "$(git status --porcelain)" ]; then
+  echo "pre-push: the working tree is not clean, so ci-local.sh would not check what is pushed. Commit or remove the changes." >&2
+  exit 1
+fi
+while read -r _ sha _ _; do
+  case $sha in *[!0]*) ;; *) continue ;; esac
+  if [ "$sha" != "$head" ]; then
+    echo "pre-push: pushing $sha, but ci-local.sh checks HEAD ($head). Check out what you push." >&2
+    exit 1
+  fi
+done
 exec scripts/ci-local.sh
