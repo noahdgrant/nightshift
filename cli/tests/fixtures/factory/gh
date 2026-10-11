@@ -104,7 +104,11 @@ case "$1 $2" in
     ;;
   "pr diff") cat "$d/diff-$3.txt" 2>/dev/null || true ;;
   "pr update-branch")
-    [ -f "$d/update-$3.fail" ] && { echo "conflict" >&2; exit 1; }
+    # update-<n>.fail: update-branch fails with the file's text, else "conflict".
+    if [ -f "$d/update-$3.fail" ]; then
+      if [ -s "$d/update-$3.fail" ]; then cat "$d/update-$3.fail" >&2; else echo conflict >&2; fi
+      exit 1
+    fi
     cat "$d/updated-$3.merge" 2>/dev/null > "$d/pr-$3.merge" || echo CLEAN > "$d/pr-$3.merge"
     cat "$d/updated-$3.head" 2>/dev/null > "$d/pending-$3.head" \
       || echo 00000000000000000000000000000000000000aa > "$d/pending-$3.head"

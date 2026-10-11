@@ -2812,6 +2812,7 @@ fn auto_merge_updates_a_branch_behind_main_first() {
     let watch = calls.find("pr checks 12 --watch").unwrap();
     let merge = calls.find("pr merge 12 --squash").unwrap();
     assert!(upd < watch && watch < merge, "{calls}");
+    assert_eq!(update_branch_vias(&e), ["api"]);
 }
 
 #[test]
@@ -2839,11 +2840,18 @@ fn auto_merge_conflict_goes_back_to_build() {
 }
 
 fn update_branch_events(e: &Env) -> usize {
+    update_branch_vias(e).len()
+}
+
+/// How each logged branch update was made: `api` or `git`.
+fn update_branch_vias(e: &Env) -> Vec<String> {
     fs::read_to_string(e.root.join(".git/ns/runs.jsonl"))
         .unwrap()
         .lines()
-        .filter(|l| serde_json::from_str::<Value>(l).unwrap()["event"] == "update_branch")
-        .count()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["event"] == "update_branch")
+        .map(|v| v["via"].as_str().unwrap_or_default().to_string())
+        .collect()
 }
 
 fn head_polls(e: &Env) -> usize {
@@ -2921,6 +2929,182 @@ fn a_dirty_view_while_waiting_for_the_head_goes_back_to_build() {
     assert_eq!(v["outcome"], "stuck", "{v}");
     let p = e.prompt(6, "build");
     assert!(p.contains("rebase onto main"), "{p}");
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
+fn update_failures(e: &Env) -> Vec<Value> {
+    run_log(e)
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["event"] == "update_branch_failed")
+        .collect()
+}
+
+#[test]
+fn a_failed_update_branch_logs_its_cause() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    e.gh_file("pr-12.merge", "BEHIND");
+    e.gh_file(
+        "update-12.fail",
+        "GraphQL: merge conflict between base and head",
+    );
+    e.run(&["run", "--issue", "7"], 1);
+    let failed = update_failures(&e);
+    assert_eq!(failed.len(), 2, "{failed:?}");
+    let err = failed[0]["error"].as_str().unwrap();
+    assert!(
+        err.contains("merge conflict between base and head"),
+        "{err}"
+    );
+    assert!(failed[0].get("workflow_scope").is_none(), "{failed:?}");
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
+#[test]
+fn a_pr_still_behind_after_update_branch_logs_its_merge_state() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("pr-12.merge", "BEHIND");
+    e.gh_file("updated-12.merge", "BEHIND");
+    e.gh_file("updated-12.lag", "1000");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let failed = update_failures(&e);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0]["merge_state"], "BEHIND", "{failed:?}");
+    let err = failed[0]["error"].as_str().unwrap();
+    assert!(err.contains("did not change"), "{err}");
+}
+
+const WORKFLOW_REFUSAL: &str = "GraphQL: refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope (updatePullRequestBranch)";
+
+/// Ship pushes the unit's branch, then another actor lands `land` on origin's main from a clone,
+/// and `after` runs in the worktree. GitHub reports the PR `BEHIND` and refuses `update-branch`
+/// for the workflow scope.
+fn workflow_refused(land: &str, after: &str) -> (Env, Value, i32) {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    e.queue("ship", &["pass:script", "pass:script"]);
+    e.ctl(
+        "ship.sh",
+        &format!(
+            r#"set -e
+c="git -c user.name=f -c user.email=f@f"
+git push -q -f origin HEAD
+o="$FAKE_CTRL/other"
+if [ ! -d "$o" ]; then
+  git clone -q "$(git remote get-url origin)" "$o"
+  (cd "$o" && {land} && git push -q origin main)
+fi
+{after}"#
+        ),
+    );
+    e.gh_file("pr-12.merge", "BEHIND");
+    e.gh_file("update-12.fail", WORKFLOW_REFUSAL);
+    e.gh_file("checks-12.json", GREEN);
+    let out = e.ns().args(["run", "--issue", "7"]).output();
+    let v = serde_json::from_slice(&out.stdout).unwrap();
+    (e, v, out.status.code().unwrap())
+}
+
+const LAND_UP: &str = r#"echo up > UP && git add UP && $c commit -qm up"#;
+
+#[test]
+fn a_workflow_refusal_merges_main_with_git_and_pushes() {
+    let (e, v, code) = workflow_refused(LAND_UP, "");
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    let remote = e.base.join("remote.git");
+    let head = git(&remote, &["rev-parse", &format!("ns/{UNIT}")]);
+    let main = git(&remote, &["rev-parse", "main"]);
+    git(&remote, &["merge-base", "--is-ancestor", &main, &head]);
+    assert_eq!(
+        git(&remote, &["rev-list", "--count", "--merges", "-1", &head]),
+        "1"
+    );
+    let calls = e.gh_calls();
+    let polls = register_polls(&e);
+    assert!(!polls.is_empty(), "{calls}");
+    assert!(
+        polls
+            .iter()
+            .all(|p| p.contains(&format!("/commits/{head}/"))),
+        "{calls}"
+    );
+    let upd = calls.find("pr update-branch 12").unwrap();
+    let watch = calls.find("pr checks 12 --watch").unwrap();
+    assert!(upd < watch, "{calls}");
+    assert!(
+        calls.contains(&format!("--match-head-commit {head}")),
+        "{calls}"
+    );
+    let failed = update_failures(&e);
+    assert_eq!(failed[0]["workflow_scope"], true, "{failed:?}");
+    assert!(
+        failed[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("without `workflow` scope"),
+        "{failed:?}"
+    );
+    assert_eq!(update_branch_vias(&e), ["git"]);
+}
+
+#[test]
+fn a_conflict_in_the_git_fallback_goes_back_to_build() {
+    let (e, v, code) = workflow_refused(
+        r#"echo theirs > work.txt && git add work.txt && $c commit -qm theirs"#,
+        "",
+    );
+    assert_eq!((code, &v["outcome"]), (1, &"stuck".into()), "{v}");
+    let p = e.prompt(6, "build");
+    assert!(p.contains("conflicts with main"), "{p}");
+    assert_eq!(update_failures(&e)[0]["workflow_scope"], true);
+    let wt = e.worktree(UNIT);
+    assert_eq!(
+        git(&wt, &["status", "--porcelain"]),
+        "",
+        "the failed merge is aborted"
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
+#[test]
+fn a_failed_fetch_in_the_git_fallback_needs_a_human_merge() {
+    let (e, v, code) = workflow_refused(LAND_UP, "git remote set-url origin /nonexistent");
+    assert_eq!((code, &v["outcome"]), (0, &"done".into()), "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.contains("`workflow` scope"), "{reason}");
+    assert!(reason.contains("git fetch"), "{reason}");
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
+#[test]
+fn a_failed_push_in_the_git_fallback_needs_a_human_merge() {
+    // Someone else moves the PR branch after ship, so the lease on the PR head fails.
+    let moved = r#"(cd "$o" && git fetch -q origin "$(git -C "$OLDPWD" symbolic-ref --short HEAD)" \
+  && git checkout -q FETCH_HEAD && echo other > OTHER && git add OTHER && $c commit -qm other \
+  && git push -q origin "HEAD:$(git -C "$OLDPWD" symbolic-ref --short HEAD)")"#;
+    let (e, v, code) = workflow_refused(LAND_UP, moved);
+    assert_eq!((code, &v["outcome"]), (0, &"done".into()), "{v}");
+    assert_eq!(v["needs_human"], true, "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.contains("`workflow` scope"), "{reason}");
+    assert!(reason.contains("git push"), "{reason}");
+    assert!(reason.contains("needs a human merge"), "{reason}");
+    assert!(!reason.contains("required status checks"), "{reason}");
+    let wt = e.worktree(UNIT);
+    let shipped = git(&wt, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        git(&wt, &["rev-list", "--count", "--merges", "-1", &shipped]),
+        "0"
+    );
     assert!(!e.gh_calls().contains("pr merge"));
 }
 
