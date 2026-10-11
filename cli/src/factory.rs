@@ -63,6 +63,9 @@ pub struct Factory {
     /// Absent table: `policy = "human"`.
     #[serde(default)]
     pub merge: Merge,
+    /// Read by the `ns-supervise` skill through `ns factory validate`, not by `ns run` or `ns watch`.
+    #[serde(default)]
+    pub supervise: Supervise,
     /// `runners/<name>.toml`, read by `load`, not part of `nightshift.toml`.
     #[serde(skip)]
     pub runners: BTreeMap<String, Runner>,
@@ -139,6 +142,37 @@ impl Merge {
             .filter(|f| pats.iter().any(|p| p.matches_with(f, opts)))
             .cloned()
             .collect()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Supervise {
+    /// A shell command each ping is also sent to, with the message on stdin.
+    pub notify: Option<String>,
+    /// Minutes with no run-log event, while units run, before the supervisor pings.
+    pub silence_minutes: u64,
+}
+
+impl Default for Supervise {
+    fn default() -> Self {
+        Self {
+            notify: None,
+            silence_minutes: 45,
+        }
+    }
+}
+
+impl Supervise {
+    fn problems(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.silence_minutes == 0 {
+            out.push("[supervise] silence_minutes must be at least 1".into());
+        }
+        if self.notify.as_deref().is_some_and(|n| n.trim().is_empty()) {
+            out.push("[supervise] notify is empty; remove it or name a command".into());
+        }
+        out
     }
 }
 
@@ -426,6 +460,7 @@ impl Factory {
         if self.limits.memory_mb == Some(0) {
             out.push("limits.memory_mb must be at least 1; remove it for no cap".into());
         }
+        out.extend(self.supervise.problems());
         out
     }
 }
@@ -643,6 +678,7 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
     let mut phases = Vec::new();
     let mut scorers = Vec::new();
     let mut name = None;
+    let mut supervise = None;
     let exists = file.is_file();
     if !exists {
         problems.push(format!(
@@ -656,6 +692,10 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
         {
             Ok(mut f) => {
                 name = f.name.clone();
+                supervise = Some(json!({
+                    "notify": f.supervise.notify,
+                    "silence_minutes": f.supervise.silence_minutes,
+                }));
                 let (runners, bad) = load_runners(&root);
                 f.runners = runners;
                 problems.extend(bad);
@@ -694,6 +734,7 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
             "name": name,
             "phases": phases,
             "scorers": scorers,
+            "supervise": supervise,
             "errors": problems,
             "warnings": warnings,
         }))?

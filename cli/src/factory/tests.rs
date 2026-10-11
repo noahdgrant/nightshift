@@ -71,6 +71,7 @@ fn rejects_unknown_keys_everywhere() {
         "[worktree]\nsetups = []\n",
         "[automations]\n",
         "[merge]\npolcy = \"auto\"\n",
+        "[supervise]\nsilence = 45\n",
     ] {
         assert!(parse(bad).is_err(), "{bad}");
     }
@@ -147,6 +148,32 @@ fn a_gate_off_build_or_empty_is_a_problem() {
     let f = parse("[phases.build]\ngate = \" \"\n").unwrap();
     let p = f.problems(None).join("\n");
     assert!(p.contains("phase build: gate"), "{p}");
+}
+
+#[test]
+fn supervise_defaults_to_no_notify_and_45_minutes_of_silence() {
+    let f = parse("").unwrap();
+    assert_eq!(f.supervise.notify, None);
+    assert_eq!(f.supervise.silence_minutes, 45);
+    let f = parse("[supervise]\nnotify = \"notify-send ns\"\nsilence_minutes = 30\n").unwrap();
+    assert_eq!(f.supervise.notify.as_deref(), Some("notify-send ns"));
+    assert_eq!(f.supervise.silence_minutes, 30);
+    assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+}
+
+#[test]
+fn a_zero_silence_or_empty_notify_is_a_problem() {
+    let p = parse("[supervise]\nsilence_minutes = 0\n")
+        .unwrap()
+        .problems(None);
+    assert_eq!(p, ["[supervise] silence_minutes must be at least 1"]);
+    let p = parse("[supervise]\nnotify = \" \"\n")
+        .unwrap()
+        .problems(None);
+    assert_eq!(
+        p,
+        ["[supervise] notify is empty; remove it or name a command"]
+    );
 }
 
 #[test]
