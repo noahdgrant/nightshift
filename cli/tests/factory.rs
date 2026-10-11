@@ -9057,6 +9057,68 @@ fn an_update_branch_head_that_cannot_be_checked_out_needs_a_human_merge() {
 }
 
 #[test]
+fn a_green_update_branch_head_is_gated_and_merged_at_that_head() {
+    let e = Env::new();
+    behind_with_a_broken_update(&e, "gate = \"true\"\n");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(e.calls(), ["triage", "build", "verify", "review", "ship"]);
+    assert_eq!(
+        gate_verdicts(&e),
+        verdicts(&[("build", true), ("merge", true)])
+    );
+    let updated = git(&e.ctrl.join("other"), &["rev-parse", "HEAD"]);
+    let merge = &gate_events(&e)[1];
+    assert!(
+        updated.starts_with(merge["sha"].as_str().unwrap()),
+        "{merge}"
+    );
+    let want = format!("--match-head-commit {updated}");
+    assert!(e.gh_calls().contains(&want), "{}", e.gh_calls());
+}
+
+#[test]
+fn a_rebased_pr_head_is_gated_at_that_head_and_merged() {
+    let (e, v, code) = rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |e| {
+        e.factory(&format!("{AUTO}[phases.build]\ngate = \"true\"\n"));
+    });
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    let old = fs::read_to_string(e.ghd.join("pr-12.head")).unwrap();
+    let old = old.trim();
+    let merge = gate_events(&e)
+        .into_iter()
+        .find(|g| g["phase"] == "merge")
+        .expect("merge gate");
+    assert_eq!(merge["green"], true, "{merge}");
+    assert!(old.starts_with(merge["sha"].as_str().unwrap()), "{merge}");
+    let want = format!("--match-head-commit {old}");
+    assert!(e.gh_calls().contains(&want), "{}", e.gh_calls());
+}
+
+#[test]
+fn an_update_branch_head_missing_after_a_good_fetch_needs_a_human_merge() {
+    let e = Env::new();
+    e.factory(&format!("{AUTO}[phases.build]\ngate = \"true\"\n"));
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.queue("ship", &["pass:script"]);
+    e.ctl("ship.sh", "git push -q -f origin HEAD");
+    e.gh_file("pr-12.merge", "BEHIND");
+    e.gh_file(
+        "updated-12.head",
+        "0123456789abcdef0123456789abcdef01234567",
+    );
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["needs_human"], true, "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.contains("cannot check out PR #12 head"), "{reason}");
+    assert!(!reason.contains("git fetch"), "{reason}");
+    assert!(!e.gh_calls().contains("pr merge"));
+    assert_eq!(gate_verdicts(&e), verdicts(&[("build", true)]));
+}
+
+#[test]
 fn an_unmoved_head_does_not_rerun_the_gate_through_ship_and_the_merge_step() {
     let e = Env::new();
     let log = e.ctrl.join("gates");

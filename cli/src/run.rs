@@ -2067,23 +2067,26 @@ fn gate_before_merge(
     Ok(red?.map(MergeStep::Rebuild))
 }
 
-/// Fast-forward the worktree's branch to `sha`, fetched from origin when it is not here: the PR
-/// head after GitHub merged the base into it.
+/// Point the worktree's branch at exactly `sha`, fetched from origin when it is not here: the PR
+/// head the merge goes ahead with, which after a rebase need not descend from HEAD.
 fn check_out(wt: &Path, sha: &str) -> Result<()> {
     if git::run(wt, &["rev-parse", "HEAD"]).is_ok_and(|h| same_sha(&h, sha)) {
         return Ok(());
     }
-    let branch = git::run(wt, &["symbolic-ref", "--short", "HEAD"])?;
-    let out = git::net(wt, &["fetch", "-q", "origin", &branch])
-        .output()
-        .context("failed to run git")?;
-    if !out.status.success() {
-        return Err(anyhow!(
-            "git fetch origin {branch} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+    let here = git::run(wt, &["cat-file", "-e", &format!("{sha}^{{commit}}")]).is_ok();
+    if !here {
+        let branch = git::run(wt, &["symbolic-ref", "--short", "HEAD"])?;
+        let out = git::net(wt, &["fetch", "-q", "origin", &branch])
+            .output()
+            .context("failed to run git")?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "git fetch origin {branch} failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
     }
-    git::run(wt, &["merge", "-q", "--ff-only", sha])?;
+    git::run(wt, &["reset", "-q", "--hard", &format!("{sha}^{{commit}}")])?;
     Ok(())
 }
 
