@@ -25,12 +25,12 @@ Done when you have the list of drifted skills, each with its entries' recorded s
 
 Each drifted skill is its own **unit**: one worktree, one branch, one PR. Never put two skills in one branch or PR, so each can be reviewed, merged or reverted alone.
 
-Read the PR rules first: `docs/agents/issue-tracker.md` (its pull request section) and the repo's `AGENTS.md`. When they say every PR closes an issue, find or file an issue per skill, titled like the PR, and name the unit `<issue-number>-maintain-<skill>`. Search for an existing issue for the skill first (the tracker's duplicate search) and reuse it; never file a second. Otherwise name the unit `maintain-<skill>`.
+Read the PR rules first: `docs/agents/issue-tracker.md` (its pull request section) and the repo's `AGENTS.md`. When they say every PR closes an issue, find or file an issue per skill, titled like the PR, and name the unit `<issue-number>-maintain-<skill>`. Reuse an existing OPEN issue for the skill (the tracker's duplicate search); otherwise file a new one. Without issues, name the unit `maintain-<skill>`. End the unit id with the skill's `head12` (the first 12 characters of its upstream `head`), so each drift gets a fresh branch.
 
-Before creating a worktree, look for an existing branch and an open PR for the unit, as the tracker doc says.
+Decide by state, not by whether a branch exists. Look up the unit's PR: `gh pr list --head <branch> --state all --json url,state` (or the tracker's equivalent).
 
 - **Open PR**: leave the skill out of this run and list it in step 7 as `PR already open: <url>`.
-- **Branch, no PR** (step 6 keeps the branch on `fail` or `blocked`): resume, don't restart. Reuse its worktree, read its `.ns/<unit-id>/maintain.md` and commits, and continue at step 5 or 6. Skip steps 3 and 4: step 4 already moved the sha there, so a new diff would be empty and would overwrite the recorded verdicts. Never print a PR URL that doesn't exist.
+- **Otherwise** (no PR, or a merged or closed one): create or reuse the worktree below and run `ns upstream status` in it. When every entry of the skill is `changed: false`, an earlier run finished the port (step 6 keeps the branch on `fail` or `blocked`): read its `.ns/<unit-id>/maintain.md` and continue at step 5 or 6. A new diff would be empty and would overwrite the recorded verdicts. When any entry is still `changed: true`, run steps 3 and 4 as normal. Never print a PR URL that doesn't exist.
 
 ```bash
 ns worktree new <unit-id>
