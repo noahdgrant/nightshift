@@ -16,8 +16,8 @@ use serde_json::json;
 use super::self_update::{HandOff, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
 use super::{
-    ended_cleanly, fresh_base, open_findings, queue, set_status, triage, Forge, Issue, Night,
-    Tonight, DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
+    ended_cleanly, fresh_base, open_findings, queue, set_status, triage, unit_id, Forge, Issue,
+    Night, Tonight, DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
 };
 use crate::clock;
 use crate::error::SfError;
@@ -700,7 +700,7 @@ fn stuck_comment(r: &RunResult) -> String {
     )
 }
 
-/// Start `ns run --issue <n>` on the night's snapshot, its result written to `result`. It gets
+/// Start `ns run <unit> --issue <n>` on the night's snapshot, its result written to `result`. It gets
 /// its own process group, so a terminal's Ctrl-C reaches only `ns watch`, which passes it on
 /// once; and on Linux it gets SIGTERM if `ns watch` dies, so no unit outlives its night. The
 /// kernel sends that signal when the thread that spawned the child ends, so units must be
@@ -721,7 +721,9 @@ fn spawn(
     let out =
         File::create(result).with_context(|| format!("cannot create {}", result.display()))?;
     let mut cmd = Command::new(exe);
-    cmd.args(["run", "--issue", &issue.number.to_string()])
+    // Naming the unit here spares `ns run` reading the title back through `gh`, which a GitLab
+    // project has no answer for.
+    cmd.args(["run", &unit_id(issue), "--issue", &issue.number.to_string()])
         .arg("--night")
         .arg(snap.night().path())
         .arg("--factory")

@@ -118,7 +118,7 @@ impl Listing {
             return Some("author outside the team".into());
         }
         if let Some((pr, head)) = self.has_pr.get(&i.number) {
-            if !(resume_own && *head == unit_branch(i)) {
+            if !(resume_own && *head == format!("{BRANCH_PREFIX}{}", unit_id(i))) {
                 return Some(format!("open PR #{pr} closes it"));
             }
         }
@@ -128,12 +128,12 @@ impl Listing {
     }
 }
 
-/// The branch of the unit `ns run --issue <n>` runs for the issue: `ns/<n>-<slug of the title>`,
-/// or `ns/<n>` for a title with no slug.
-fn unit_branch(i: &Issue) -> String {
+/// The unit `ns watch` runs for the issue, `<n>-<slug of the title>` or `<n>` for a title with
+/// no slug: the name `ns run --issue <n>` would read from the forge.
+fn unit_id(i: &Issue) -> String {
     match run::slug(&i.title) {
-        s if s.is_empty() => format!("{BRANCH_PREFIX}{}", i.number),
-        s => format!("{BRANCH_PREFIX}{}-{s}", i.number),
+        s if s.is_empty() => i.number.to_string(),
+        s => format!("{}-{s}", i.number),
     }
 }
 
@@ -898,7 +898,7 @@ Open after 3 fix cycles: C1, I2, I4.
     }
 
     #[test]
-    fn a_unit_branch_is_the_one_ns_run_names_for_the_issue() {
+    fn a_unit_id_is_the_one_ns_run_names_for_the_issue() {
         let issue = |title: &str| Issue {
             number: 13,
             title: title.into(),
@@ -906,8 +906,8 @@ Open after 3 fix cycles: C1, I2, I4.
             body: String::new(),
             team: true,
         };
-        assert_eq!(unit_branch(&issue("Fix UART")), "ns/13-fix-uart");
-        assert_eq!(unit_branch(&issue("")), "ns/13");
+        assert_eq!(unit_id(&issue("Fix UART")), "13-fix-uart");
+        assert_eq!(unit_id(&issue("")), "13");
     }
 
     /// A forge in memory: issues, the closed ones, and each issue's labels, edited in place.

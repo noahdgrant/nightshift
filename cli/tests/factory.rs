@@ -7544,13 +7544,17 @@ fn watch_parallel_once_and_max_units_cap_the_units_started() {
 fn watch_parallel_settles_the_other_unit_when_one_ends_without_a_result() {
     let e = Env::new();
     two_ready(&e);
-    // ns run can't name unit 2's worktree without its issue, and fails.
-    fs::remove_file(e.ghd.join("issue-2.json")).unwrap();
+    // A file where unit 2's worktree goes makes its ns run fail.
+    fs::create_dir(e.base.join("myrepo.worktrees")).unwrap();
+    fs::write(e.base.join("myrepo.worktrees/2-fix-a"), "").unwrap();
     let out = e.ns().args(["watch", "--parallel", "2"]).output();
     let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(2), "{err}");
-    assert!(err.contains("cannot read issue #2"), "{err}");
-    assert!(err.contains("ns run --issue 2 ended with exit 2"), "{err}");
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("is not the worktree for branch ns/2-fix-a"),
+        "{err}"
+    );
+    assert!(err.contains("ns run --issue 2 ended with exit 1"), "{err}");
     assert_eq!(e.labels(2), ["type:fix", "status:ready-for-agent"]);
     let three = e.labels(3);
     assert!(
@@ -7566,7 +7570,7 @@ fn watch_parallel_settles_the_other_unit_when_one_ends_without_a_result() {
         v["error"]
             .as_str()
             .unwrap()
-            .contains("ns run --issue 2 ended with exit 2"),
+            .contains("ns run --issue 2 ended with exit 1"),
         "{v}"
     );
     assert_eq!(by_issue(&units(&v)), each(&[3], "done"), "{v}");
