@@ -269,6 +269,39 @@ fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+fn requires_ns_prefix(root: &Path) -> Result<bool> {
+    // Repo-local skills live in `.agents/skills/` and need no `ns-` prefix.
+    Ok(fs::canonicalize(root)?
+        .parent()
+        .and_then(Path::file_name)
+        .is_none_or(|n| n != ".agents"))
+}
+
+fn is_skill_dir(p: &Path, require_prefix: bool) -> bool {
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    p.is_dir()
+        && if require_prefix {
+            p.join("SKILL.md").is_file() || name.starts_with("ns-")
+        } else {
+            !name.starts_with('.')
+        }
+}
+
+fn feature_files(skill_dir: &Path) -> Vec<PathBuf> {
+    let mut features: Vec<PathBuf> = fs::read_dir(skill_dir.join("features"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension().is_some_and(|e| e == "md")
+                && p.file_name().is_some_and(|n| n != "README.md")
+        })
+        .collect();
+    features.sort();
+    features
+}
+
 pub fn lint_dir(root: &Path) -> Result<Report> {
     if !root.is_dir() {
         return Err(SfError::usage(
@@ -277,23 +310,11 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
         )
         .into());
     }
-    // Repo-local skills live in `.agents/skills/` and need no `ns-` prefix.
-    let require_prefix = fs::canonicalize(root)?
-        .parent()
-        .and_then(Path::file_name)
-        .is_none_or(|n| n != ".agents");
+    let require_prefix = requires_ns_prefix(root)?;
     let mut dirs: Vec<PathBuf> = fs::read_dir(root)?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| {
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            p.is_dir()
-                && if require_prefix {
-                    p.join("SKILL.md").is_file() || name.starts_with("ns-")
-                } else {
-                    !name.starts_with('.')
-                }
-        })
+        .filter(|p| is_skill_dir(p, require_prefix))
         .collect();
     dirs.sort();
 
@@ -341,18 +362,7 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
                 }
             }
         }
-        let mut features: Vec<PathBuf> = fs::read_dir(dir.join("features"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                p.extension().is_some_and(|e| e == "md")
-                    && p.file_name().is_some_and(|n| n != "README.md")
-            })
-            .collect();
-        features.sort();
-        for f in features {
+        for f in feature_files(dir) {
             let Ok(body) = fs::read_to_string(&f) else {
                 continue;
             };
