@@ -1194,7 +1194,10 @@ fn every_review_attempt_gets_a_record() {
 fn a_blocked_review_is_recorded_as_stuck() {
     let e = Env::new();
     e.queue("build", &["pass:commit"]);
-    e.queue("review", &["blocked:Open after 3 fix cycles: I1."]);
+    e.queue(
+        "review",
+        &["blocked:Open after at least 2 fix attempts: I1."],
+    );
     e.ctl("review.body", FINDING);
     let v = e.run(&["run", "--issue", "7"], 1);
     assert_eq!(v["outcome"], "stuck");
@@ -4161,7 +4164,10 @@ fn a_blocked_review_comment_lists_its_open_findings() {
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");
     e.queue("build", &["pass:commit"]);
-    e.queue("review", &["blocked:Open after 3 fix cycles: C1, I2."]);
+    e.queue(
+        "review",
+        &["blocked:Open after at least 2 fix attempts: C1, I2."],
+    );
     e.ctl(
         "review.body",
         "\n## Critical\n### C1. cancel_all drops every SKU\n- Location: `src/w.py:119`\n- Status: open\n\
@@ -4189,7 +4195,10 @@ fn a_blocked_review_comment_lists_its_open_findings() {
 fn a_run_stopped_by_an_earlier_blocked_review_names_it() {
     let e = Env::new();
     e.queue("build", &["pass:commit"]);
-    e.queue("review", &["blocked:Open after 3 fix cycles: I2."]);
+    e.queue(
+        "review",
+        &["blocked:Open after at least 2 fix attempts: I2."],
+    );
     let first = e.run(&["run", "--issue", "7"], 1);
     let again = e.run(&["run", "--issue", "7"], 1);
     assert_eq!(e.calls(), ["triage", "build", "verify", "review"]);
