@@ -6780,6 +6780,38 @@ fn a_claim_that_fails_on_a_refill_does_not_spend_a_max_units_claim() {
 }
 
 #[test]
+fn a_hold_that_cannot_be_written_on_a_refill_fails_the_night() {
+    let e = Env::new();
+    e.ctl("reset", &(NOW + 3600).to_string());
+    e.queue("triage.5-fix-e", &["limit"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_e, go_e) = hold_phase(&e, "5-fix-e", "triage");
+    let w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
+    w.entered(&in_a);
+    w.entered(&in_e);
+    let night = fs::read_dir(e.root.join(".git/ns"))
+        .unwrap()
+        .map(|d| d.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("watch-")
+        })
+        .unwrap();
+    // A directory where the hold's temp file goes: the hold write on the refill fails.
+    fs::create_dir(night.join("hold.tmp")).unwrap();
+    release(&go_e);
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_ne!(code, Some(0), "{v}\n{err}");
+    assert!(err.contains("cannot write"), "{err}");
+    assert!(!err.contains("refill failed"), "{err}");
+    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
+    assert_eq!(by_issue(&units(&v)), each(&[2], "done"), "{v}");
+}
+
+#[test]
 fn no_refill_while_every_slot_is_busy_or_no_claim_may_start() {
     for args in [
         &["--parallel", "1"][..],

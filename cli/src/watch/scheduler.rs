@@ -268,7 +268,14 @@ impl<'a> Scheduler<'a> {
                 self.stop_all(&why);
                 return Ok(());
             }
-            Some(triage::Halt::Paused(reset)) => return self.pause(reset),
+            Some(triage::Halt::Paused(reset)) => {
+                // Fatal even on a refill, which only logs its errors: no unit may run on
+                // unheld through a usage limit.
+                if let Err(e) = self.pause(reset) {
+                    self.fail(e);
+                }
+                return Ok(());
+            }
             None => {}
         }
         let mut taken: BTreeSet<u64> = night.finished.clone();
@@ -432,10 +439,11 @@ impl<'a> Scheduler<'a> {
     }
 
     /// Pause every unit until `reset`, or until the latest reset tonight when that's later.
+    /// The hold is written first, so a hold that can't be written leaves the pause unchanged.
     fn pause(&mut self, reset: i64) -> Result<()> {
         let until = self.paused_until.map_or(reset, |p| p.max(reset));
-        self.paused_until = Some(until);
         self.plan.snap.night().hold(until)?;
+        self.paused_until = Some(until);
         if self.plan.deadline.is_some_and(|d| until >= d) {
             self.stop_all(PAUSED_PAST_UNTIL);
         }
