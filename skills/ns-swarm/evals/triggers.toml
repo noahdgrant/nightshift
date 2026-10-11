@@ -1,0 +1,57 @@
+# Does the ns-swarm description fire on the right prompts? 7 positive, 7 negative.
+
+[[trigger]]
+prompt = "Fan out parallel workers on these five independent tickets and give me one report."
+expect = true
+
+[[trigger]]
+prompt = "Race three attempts at the brief in .ns/12-low-stock-alert/brief.md and keep the best."
+expect = true
+
+[[trigger]]
+prompt = "Split this migration into independent slices and run each in a fresh-context worker."
+expect = true
+
+[[trigger]]
+prompt = "Spawn subagents to fix each of these lint categories in parallel, then summarise PASS, ISSUES or BLOCKED."
+expect = true
+
+[[trigger]]
+prompt = "These four modules need the same refactor and don't touch each other. Do them in parallel."
+expect = true
+
+[[trigger]]
+prompt = "Run several fresh agents on the same bug independently and compare what they find."
+expect = true
+
+[[trigger]]
+prompt = "Fan out a worker per directory to add missing docstrings, then drain them into one report."
+expect = true
+
+[[trigger]]
+prompt = "Implement the brief for 7-reserve-overflow."
+expect = false
+
+[[trigger]]
+prompt = "Review this branch's diff."
+expect = false
+
+[[trigger]]
+prompt = "Fix the off-by-one in reserve(), test first."
+expect = false
+
+[[trigger]]
+prompt = "Explain how Python's asyncio.gather works."
+expect = false
+
+[[trigger]]
+prompt = "Write a shell script that runs the tests in parallel."
+expect = false
+
+[[trigger]]
+prompt = "Triage the open issues on the tracker."
+expect = false
+
+[[trigger]]
+prompt = "Summarise what changed in the last five commits."
+expect = false

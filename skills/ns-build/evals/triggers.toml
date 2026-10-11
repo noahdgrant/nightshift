@@ -1,0 +1,57 @@
+# Does the ns-build description fire on the right prompts? 7 positive, 7 negative.
+
+[[trigger]]
+prompt = "Build unit 12-low-stock-alert from its brief in .ns/12-low-stock-alert/brief.md. gates: auto"
+expect = true
+
+[[trigger]]
+prompt = "The brief for 7-reserve-overflow is ready. Implement it in the worktree and write build.md."
+expect = true
+
+[[trigger]]
+prompt = "Implement ticket #42: add a --since flag to the report command."
+expect = true
+
+[[trigger]]
+prompt = "Pick up the unit 31-cancel-unknown-id and build it, slice by slice, test-first."
+expect = true
+
+[[trigger]]
+prompt = "Run the build phase for 18-json-status. The brief is already in .ns/."
+expect = true
+
+[[trigger]]
+prompt = "Implement the Agent Brief on issue 9 and commit each green slice."
+expect = true
+
+[[trigger]]
+prompt = "This ticket has a brief and acceptance criteria. Go build it."
+expect = true
+
+[[trigger]]
+prompt = "Write a failing test for parse_duration with a negative value, then make it pass."
+expect = false
+
+[[trigger]]
+prompt = "Do red-green-refactor on the retry backoff function."
+expect = false
+
+[[trigger]]
+prompt = "Verify that unit 7-reserve-overflow meets its acceptance criteria and write evidence.md."
+expect = false
+
+[[trigger]]
+prompt = "Review the diff on this branch before I push it."
+expect = false
+
+[[trigger]]
+prompt = "Triage issue 14 and write an Agent Brief for it."
+expect = false
+
+[[trigger]]
+prompt = "Open a PR for the reviewed unit and get CI green."
+expect = false
+
+[[trigger]]
+prompt = "Explain what the scheduler module does."
+expect = false

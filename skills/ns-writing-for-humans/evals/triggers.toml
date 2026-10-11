@@ -1,0 +1,57 @@
+# Does the ns-writing-for-humans description fire on the right prompts? 7 positive, 7 negative.
+
+[[trigger]]
+prompt = "Rewrite the README so it doesn't read like AI wrote it."
+expect = true
+
+[[trigger]]
+prompt = "Write the PR description for this branch."
+expect = true
+
+[[trigger]]
+prompt = "Draft an email to the team explaining yesterday's outage."
+expect = true
+
+[[trigger]]
+prompt = "Edit docs/getting-started.md to be plainer and shorter."
+expect = true
+
+[[trigger]]
+prompt = "Write a commit body explaining why we dropped the cache."
+expect = true
+
+[[trigger]]
+prompt = "This issue text is full of buzzwords. Make it plain."
+expect = true
+
+[[trigger]]
+prompt = "Proofread the release notes and cut the filler."
+expect = true
+
+[[trigger]]
+prompt = "Write a new skill for releasing the crate."
+expect = false
+
+[[trigger]]
+prompt = "Add a rule to AGENTS.md about running the formatter."
+expect = false
+
+[[trigger]]
+prompt = "Update CLAUDE.md to point to the new docs layout."
+expect = false
+
+[[trigger]]
+prompt = "Fix the failing test in tests/test_report.py."
+expect = false
+
+[[trigger]]
+prompt = "Strip the comments out of this diff."
+expect = false
+
+[[trigger]]
+prompt = "Translate this paragraph into French."
+expect = false
+
+[[trigger]]
+prompt = "Explain how the scheduler module works."
+expect = false

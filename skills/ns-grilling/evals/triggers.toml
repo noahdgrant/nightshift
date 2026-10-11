@@ -1,0 +1,57 @@
+# Does the ns-grilling description fire on the right prompts? 7 positive, 7 negative.
+
+[[trigger]]
+prompt = "Grill me on my plan to move the queue from Redis to Postgres."
+expect = true
+
+[[trigger]]
+prompt = "I want to switch the API to GraphQL. Stress-test that idea."
+expect = true
+
+[[trigger]]
+prompt = "Grill me."
+expect = true
+
+[[trigger]]
+prompt = "Poke holes in this design before I commit to it: a single SQLite file shared by three services."
+expect = true
+
+[[trigger]]
+prompt = "Here's my plan for the migration. Ask me the hard questions, one at a time."
+expect = true
+
+[[trigger]]
+prompt = "I've decided to rewrite the CLI in Go. Push back hard on that decision."
+expect = true
+
+[[trigger]]
+prompt = "Play devil's advocate on my idea to drop the staging environment."
+expect = true
+
+[[trigger]]
+prompt = "Write a requirements doc for the low-stock alerts feature."
+expect = false
+
+[[trigger]]
+prompt = "Review the diff on this branch."
+expect = false
+
+[[trigger]]
+prompt = "Implement the plan in docs/plan.md."
+expect = false
+
+[[trigger]]
+prompt = "Summarise the tradeoffs between Redis and Postgres for a job queue."
+expect = false
+
+[[trigger]]
+prompt = "Fix the failing test in tests/test_queue.py."
+expect = false
+
+[[trigger]]
+prompt = "Triage issue 14."
+expect = false
+
+[[trigger]]
+prompt = "Write a design doc for the new caching layer."
+expect = false
