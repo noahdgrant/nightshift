@@ -139,8 +139,8 @@ pub(super) struct Scheduler<'a> {
     results: u64,
     /// The head main was last found red at, until it is found not red.
     red_at: Option<String>,
-    /// The fix issue this night filed, reused while it stays open.
-    filed: Option<Issue>,
+    /// The fix issue this night used, kept while it stays open: GitHub may not list a new one yet.
+    fix: Option<Issue>,
 }
 
 impl<'a> Scheduler<'a> {
@@ -157,7 +157,7 @@ impl<'a> Scheduler<'a> {
             draining: None,
             results: 0,
             red_at: None,
-            filed: None,
+            fix: None,
         }
     }
 
@@ -300,7 +300,16 @@ impl<'a> Scheduler<'a> {
         if self.draining.is_some() {
             return Ok(());
         }
-        match triage::pass(plan.repo, plan.forge, plan.loaded, plan.deadline, night)? {
+        let main = self.main_ci();
+        let held = main.as_ref().is_some_and(|m| m.holds_queue());
+        match triage::pass(
+            plan.repo,
+            plan.forge,
+            plan.loaded,
+            plan.deadline,
+            night,
+            held,
+        )? {
             Some(triage::Halt::Stop(why)) => {
                 self.stop_all(&why);
                 return Ok(());
@@ -313,10 +322,9 @@ impl<'a> Scheduler<'a> {
         let mut taken: BTreeSet<u64> = night.finished.clone();
         taken.extend(self.running.values().map(|w| w.issue.number));
         taken.extend(self.resume.iter().map(|i| i.number));
-        let fix = self.main_fix()?;
         let plan = &self.plan;
         let mut ready = queue(plan.forge, fac, &taken)?.ready;
-        match fix {
+        match self.main_fix(main, &ready, &taken)? {
             // GitHub may not list an issue filed a moment ago.
             Some((issue, true)) => ready = vec![issue],
             Some((issue, false)) => ready.retain(|i| i.number == issue.number),
@@ -349,16 +357,31 @@ impl<'a> Scheduler<'a> {
         Ok(())
     }
 
-    /// While main is red, the issue that fixes it, the only one to start, and whether it was filed
-    /// just now. A state that can't be read holds nothing, as at the night's start.
-    fn main_fix(&mut self) -> Result<Option<(Issue, bool)>> {
+    /// Main's CI, read once per fill. A state that can't be read holds nothing, as at the
+    /// night's start.
+    fn main_ci(&self) -> Option<ci::MainCi> {
         let plan = &self.plan;
-        let main = match ci::read(plan.forge, &plan.loaded.fac) {
-            Ok(m) => m,
+        match ci::read(plan.forge, &plan.loaded.fac) {
+            Ok(m) => Some(m),
             Err(e) => {
                 eprintln!("ns watch: warning: cannot read main's CI: {e:#}");
-                return Ok(None);
+                None
             }
+        }
+    }
+
+    /// While main is red, the issue that fixes it, the only one to start, and whether it was filed
+    /// just now. `ready` is what the queue would start and `taken` what runs or is done tonight:
+    /// an open fix issue outside both is not used, since nothing would start it.
+    fn main_fix(
+        &mut self,
+        main: Option<ci::MainCi>,
+        ready: &[Issue],
+        taken: &BTreeSet<u64>,
+    ) -> Result<Option<(Issue, bool)>> {
+        let plan = &self.plan;
+        let Some(main) = main else {
+            return Ok(None);
         };
         if !main.holds_queue() {
             if self.red_at.take().is_some() {
@@ -371,11 +394,24 @@ impl<'a> Scheduler<'a> {
             return Ok(None);
         }
         let fac = &plan.loaded.fac;
-        let (issue, filed) =
-            fix_main::issue(plan.repo, plan.forge, fac, &main, self.filed.as_ref())?;
-        if filed {
-            self.filed = Some(issue.clone());
+        let startable =
+            |i: &Issue| taken.contains(&i.number) || ready.iter().any(|r| r.number == i.number);
+        let (issue, filed) = fix_main::issue(
+            plan.repo,
+            plan.forge,
+            fac,
+            &main,
+            self.fix.as_ref(),
+            &startable,
+        )?;
+        if !startable(&issue) {
+            eprintln!(
+                "ns watch: warning: fix issue #{} is open but the queue will not start it; \
+                 check its labels and blockers",
+                issue.number
+            );
         }
+        self.fix = Some(issue.clone());
         if self.red_at != main.sha {
             let failing: Vec<&str> = main.failing.iter().map(|c| c.name.as_str()).collect();
             eprintln!(

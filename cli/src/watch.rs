@@ -999,11 +999,11 @@ Open after at least 2 fix attempts: C1, I2, I4.
                 None => anyhow::bail!("no log at {log}"),
             }
         }
-        fn last_green(&self) -> Result<Option<String>> {
+        fn last_green(&self, red: &str) -> Result<Option<String>> {
             if self.green_fails {
                 anyhow::bail!("HTTP 502");
             }
-            Ok(self.green.clone())
+            Ok(self.green.clone().filter(|g| g != red))
         }
     }
 

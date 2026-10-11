@@ -273,14 +273,14 @@ impl Forge for GitLab {
         )
     }
 
-    fn last_green(&self) -> Result<Option<String>> {
+    fn last_green(&self, red: &str) -> Result<Option<String>> {
         let branch = self.default_branch()?;
         let path = format!(
-            "projects/:id/pipelines?ref={}&status=success&per_page=1",
+            "projects/:id/pipelines?ref={}&status=success&per_page=30",
             encode(&branch)
         );
         let v = self.get(&path)?;
-        Ok(v[0]["sha"].as_str().map(String::from))
+        Ok(super::first_other(&v, "sha", red))
     }
 }
 

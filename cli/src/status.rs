@@ -474,7 +474,7 @@ next (1)
         fn check_log(&self, _: &str) -> Result<String> {
             unreachable!("ns status only reads the queue")
         }
-        fn last_green(&self) -> Result<Option<String>> {
+        fn last_green(&self, _: &str) -> Result<Option<String>> {
             unreachable!("ns status only reads the queue")
         }
     }

@@ -46,8 +46,10 @@ pub trait Forge {
     fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64>;
     /// The log of a failed check, at the [`Check::log`] the forge gave it.
     fn check_log(&self, log: &str) -> Result<String>;
-    /// The newest commit on the default branch that a CI run passed, if the forge knows one.
-    fn last_green(&self) -> Result<Option<String>>;
+    /// The newest commit on the default branch, other than `red`, that a CI run passed, if the
+    /// forge knows one. A passing run on `red` itself (another workflow's) says nothing of when
+    /// main broke.
+    fn last_green(&self, red: &str) -> Result<Option<String>>;
 }
 
 /// The colour a missing label is created with, and the description of each kind.
@@ -262,6 +264,15 @@ fn status_outcome(state: &str) -> Outcome {
 }
 
 /// The issue number at the end of the URL `gh issue create` prints.
+/// The first of the runs in `v` whose `key` is a sha other than `red`.
+pub(super) fn first_other(v: &Value, key: &str, red: &str) -> Option<String> {
+    v.as_array()?
+        .iter()
+        .filter_map(|r| r[key].as_str())
+        .find(|sha| *sha != red)
+        .map(String::from)
+}
+
 fn created_number(out: &str) -> Result<u64> {
     out.trim()
         .rsplit('/')
@@ -453,19 +464,18 @@ impl Forge for GitHub {
         gh(&self.root, &["run", "view", "--job", log, "--log-failed"])
     }
 
-    /// The head of the newest Actions run on the default branch that succeeded.
-    fn last_green(&self) -> Result<Option<String>> {
+    fn last_green(&self, red: &str) -> Result<Option<String>> {
         let Some((branch, _)) = crate::run::remote_default(&self.root) else {
             anyhow::bail!("cannot read origin's default branch");
         };
         let v = gh_json(
             &self.root,
             &[
-                "run", "list", "--branch", &branch, "--status", "success", "--limit", "1",
+                "run", "list", "--branch", &branch, "--status", "success", "--limit", "30",
                 "--json", "headSha",
             ],
         )?;
-        Ok(v[0]["headSha"].as_str().map(String::from))
+        Ok(first_other(&v, "headSha", red))
     }
 }
 
@@ -632,11 +642,25 @@ mod tests {
         let gh = GitHub {
             root: "/nonexistent".into(),
         };
-        let e = gh.last_green().unwrap_err();
+        let e = gh.last_green("abc").unwrap_err();
         assert!(
             format!("{e:#}").contains("origin's default branch"),
             "{e:#}"
         );
+    }
+
+    #[test]
+    fn last_green_skips_runs_on_the_red_head() {
+        let runs = serde_json::json!([
+            {"headSha": "red"}, {"headSha": "red"}, {"headSha": "good"}, {"headSha": "older"}
+        ]);
+        assert_eq!(
+            first_other(&runs, "headSha", "red").as_deref(),
+            Some("good")
+        );
+        let only = serde_json::json!([{"headSha": "red"}]);
+        assert_eq!(first_other(&only, "headSha", "red"), None);
+        assert_eq!(first_other(&serde_json::json!([]), "headSha", "red"), None);
     }
 
     #[test]
