@@ -55,6 +55,7 @@ split_label = "status:needs-define"   # set when triage split the issue into chi
 triage_label = "status:needs-triage"   # issues ns watch triages before it picks a unit
 priority = ["priority:high", "priority:medium", "priority:low"]  # sorted on first; no match goes last
 order = ["type:fix", "type:feat", "type:refactor", "type:test", "type:docs", "type:chore"]
+fix_main_first = true              # read main's CI at start. See "Main's CI"
 
 [limits]
 max_units = 8                      # optional cap per `ns watch` invocation; unset means no cap
@@ -381,7 +382,20 @@ An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (un
 
 `ns watch` reads the user config and the factory definition once, at start, and copies both into the night's snapshot, which every unit's `ns run` reads. Editing or breaking either file mid-night changes nothing until the next `ns watch`. The build gate command is read at start too, so a `docs/agents/stack.md` that a fast-forward of the main checkout brings in (above) takes effect at the next `ns watch`. It logs each file's path and sha256 to stderr, and `started_with` carries the same `{config, factory}` pair of `{path, sha256}` (`sha256` is null for a missing file).
 
-`--once` takes one unit. `--dry-run` prints the ordered queue, with each issue's `priority_label` and `order_label`, and the skip reasons, then whether the triage pass runs (`triage_pass`), the triage candidates in triage order (`triage`, each with why it needs triage and its `priority_label`), their skip reasons (`triage_skipped`), and `triage_next_pass`: the candidates the next pass would take, in order. A dry run is a fresh night, so every candidate is backlog: with an issue ready, or one in `requeue`, which the night returns to the queue before its first pass, the list is empty, and with none it is every candidate, which the pass takes until one is triaged ready. `gh` and the phases get `GH_TOKEN` from `[forge.github]` in the user config (`cli/README.md`, `[forge]`). A `GH_TOKEN` already set in the environment wins, so whoever starts `ns watch` can still pick the account, and the units cleanup would remove (`clean`).
+`--once` takes one unit. `--dry-run` prints the ordered queue, with each issue's `priority_label` and `order_label`, and the skip reasons, then whether the triage pass runs (`triage_pass`), the triage candidates in triage order (`triage`, each with why it needs triage and its `priority_label`), their skip reasons (`triage_skipped`), and `triage_next_pass`: the candidates the next pass would take, in order. It shows main's CI as `main_ci` and `queue_held` (see "Main's CI"). A dry run is a fresh night, so every candidate is backlog: with an issue ready, or one in `requeue`, which the night returns to the queue before its first pass, the list is empty, and with none it is every candidate, which the pass takes until one is triaged ready. `gh` and the phases get `GH_TOKEN` from `[forge.github]` in the user config (`cli/README.md`, `[forge]`). A `GH_TOKEN` already set in the environment wins, so whoever starts `ns watch` can still pick the account, and the units cleanup would remove (`clean`).
+
+### Main's CI
+
+With `[queue] fix_main_first = true`, the default, `ns watch` reads the CI state of the default branch's head from the forge. Nothing holds the queue on it yet (#377).
+
+- **red**: a check failed while others still run, or every check finished and a required one failed. `failing` names the checks.
+- **green**: every check finished and no required one failed.
+- **pending**: checks still run and none has failed yet.
+- **none**: no check ran on the head.
+
+Pending and none are not red. A night that starts with `none` says once on stderr that `fix_main_first` does nothing, and one that can't read the state warns and runs on. With `fix_main_first = false` nothing is read and the state is `off`, which a night start also says once. `--dry-run` shows the state as `main_ci` (`{state, sha, failing}`, with `sha` and `failing` left out when empty) and `queue_held`, true when the state is red, and fails when the state can't be read.
+
+GitHub reads the head's check runs and commit statuses in one GraphQL query (`gh api graphql`), the first 100 of them. A list cut off at 100, of checks or of rules, is an error, not a green: a failing check past the cut would read as passing. A check is required when a ruleset on the branch names it. A reader can't see classic branch protection, so when no ruleset names a check on the head, every check counts as required. GitLab reads the head's commit statuses (`glab api projects/:id/repository/commits/<sha>/statuses`), which hold each pipeline job's latest state and any external status. A job that may fail (`allow_failure`) is not required. `failed` and `canceled` fail, `success`, `skipped` and `manual` pass, and the rest still run.
 
 ### Units a night didn't finish
 

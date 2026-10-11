@@ -6,6 +6,8 @@
 #   gl-mrs.json, gl-mrs-merged.json  open and merged merge requests
 #   gl-state-<n>     an issue's state, default opened
 #   gl-issue-<n>.raw what reading issue <n> prints instead
+#   gl-statuses.json the commit statuses on main's head, default none
+#   gl-project.json, gl-branch.json  what reading the project or main's branch prints instead
 #   glab.fail        every call fails, echoing GITLAB_TOKEN on stderr as a leaky server might
 d="$FAKE_GH_DIR"
 printf '%s\n' "$*" >> "$d/glab-calls"
@@ -38,6 +40,10 @@ case "$1 $2" in
         printf '{"iid":%s,"state":"%s","labels":[%s]}\n' "$n" \
           "$(cat "$d/gl-state-$n" 2>/dev/null || echo opened)" "$(labels_of "$n")"
         ;;
+      "projects/:id") cat "$d/gl-project.json" 2>/dev/null || echo '{"default_branch":"main"}' ;;
+      "projects/:id/repository/branches/"*)
+        cat "$d/gl-branch.json" 2>/dev/null || printf '{"commit":{"id":"%s"}}\n' "$(git rev-parse HEAD)" ;;
+      "projects/:id/repository/commits/"*/statuses*) cat "$d/gl-statuses.json" 2>/dev/null || echo "[]" ;;
       "projects/:id/members/all"*) cat "$d/gl-members.json" 2>/dev/null || echo "[]" ;;
       "projects/:id/merge_requests?state=opened"*) cat "$d/gl-mrs.json" 2>/dev/null || echo "[]" ;;
       "projects/:id/merge_requests?state=merged"*) cat "$d/gl-mrs-merged.json" 2>/dev/null || echo "[]" ;;

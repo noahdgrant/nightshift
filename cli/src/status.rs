@@ -465,6 +465,9 @@ next (1)
         fn comment_pr(&self, _: u64, _: &str) -> Result<()> {
             unreachable!("ns status only reads the queue")
         }
+        fn main_checks(&self) -> Result<crate::watch::ci::HeadChecks> {
+            unreachable!("ns status only reads the queue")
+        }
     }
 
     #[test]
