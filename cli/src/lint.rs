@@ -139,6 +139,61 @@ fn has_scheme(target: &str) -> bool {
     })
 }
 
+/// The lines of `text` outside fenced code blocks, fence lines dropped.
+fn prose_lines(text: &str) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let mut fence: Option<&str> = None;
+    for line in text.lines() {
+        let t = line.trim_start();
+        let marker = if t.starts_with("```") {
+            Some("```")
+        } else if t.starts_with("~~~") {
+            Some("~~~")
+        } else {
+            None
+        };
+        if let Some(m) = marker {
+            match fence {
+                None => fence = Some(m),
+                Some(open) if open == m => fence = None,
+                Some(_) => {}
+            }
+        } else if fence.is_none() {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+/// The H2 sections a `features/*.md` file holds, in order. `None` matches any
+/// heading starting with `Driving it with `, since the harness name varies.
+const FEATURE_H2S: [Option<&str>; 4] = [
+    Some("Sub-features"),
+    Some("How to get to it (user POV)"),
+    None,
+    Some("Gotchas"),
+];
+
+/// Check a feature file's H2 headings against `FEATURE_H2S`.
+fn check_feature(text: &str) -> Option<String> {
+    let found: Vec<&str> = prose_lines(text)
+        .into_iter()
+        .filter_map(|l| l.strip_prefix("## "))
+        .map(str::trim)
+        .collect();
+    let ok = found.len() == FEATURE_H2S.len()
+        && found.iter().zip(FEATURE_H2S).all(|(h, want)| match want {
+            Some(w) => *h == w,
+            None => h.starts_with("Driving it with "),
+        });
+    (!ok).then(|| {
+        format!(
+            "H2 headings must be, in order: Sub-features, How to get to it (user POV), Driving it with <tool>, Gotchas; found: {}",
+            found.join(", ")
+        )
+    })
+}
+
 /// `line` with its inline code spans removed. A backtick run opens a span that the next
 /// run of the same length closes; a run with no closer is literal text.
 fn strip_code_spans(line: &str) -> String {
@@ -177,27 +232,7 @@ fn strip_code_spans(line: &str) -> String {
 /// URLs with a scheme, absolute paths and bare `#anchor` links are skipped.
 pub fn relative_links(text: &str) -> Vec<String> {
     let mut links = Vec::new();
-    let mut fence: Option<&str> = None;
-    for line in text.lines() {
-        let t = line.trim_start();
-        let marker = if t.starts_with("```") {
-            Some("```")
-        } else if t.starts_with("~~~") {
-            Some("~~~")
-        } else {
-            None
-        };
-        if let Some(m) = marker {
-            match fence {
-                None => fence = Some(m),
-                Some(open) if open == m => fence = None,
-                Some(_) => {}
-            }
-            continue;
-        }
-        if fence.is_some() {
-            continue;
-        }
+    for line in prose_lines(text) {
         let line = strip_code_spans(line);
         let mut rest = line.as_str();
         while let Some(i) = rest.find("](") {
@@ -302,6 +337,26 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
                     }
                     Err(_) => push(&mut errors, file, format!("broken link: {link}")),
                 }
+            }
+        }
+        let mut features: Vec<PathBuf> = fs::read_dir(dir.join("features"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().is_some_and(|e| e == "md")
+                    && p.file_name().is_some_and(|n| n != "README.md")
+            })
+            .collect();
+        features.sort();
+        for f in features {
+            let Ok(body) = fs::read_to_string(&f) else {
+                continue;
+            };
+            if let Some(m) = check_feature(&body) {
+                let rel = f.strip_prefix(dir).unwrap_or(&f).to_string_lossy();
+                push(&mut errors, &f, format!("{rel}: {m}"));
             }
         }
         let mut refs = Vec::new();
@@ -522,6 +577,58 @@ mod tests {
                 1,
                 vec!["name \"verify-x\" must start with \"ns-\"".to_string()]
             )
+        );
+    }
+
+    fn feature(root: &Path, file: &str, body: &str) {
+        let dir = root.join("verify-x/features");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(file), body).unwrap();
+    }
+
+    const FEATURE: &str = "# F\n\nWhat it does.\n\n## Sub-features\n\n- `f-a` a.\n\n## How to get to it (user POV)\n\n- `x`\n\n## Driving it with control-x\n\nPreconditions:\n\n```\n## not a heading\n```\n\n## Gotchas\n\n- none\n";
+
+    #[test]
+    fn feature_files_need_the_four_h2s_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join(".agents/skills");
+        write_skill_at(&local, "verify-x", "");
+        feature(&local, "README.md", "# Index\n\n## Features\n");
+        feature(&local, "good.md", FEATURE);
+        assert_eq!(lint_messages(&local), (1, vec![]));
+
+        feature(
+            &local,
+            "missing.md",
+            &FEATURE.replace("## Gotchas", "Gotchas"),
+        );
+        feature(
+            &local,
+            "swapped.md",
+            &FEATURE
+                .replace("## Sub-features", "## TMP")
+                .replace("## How to get to it (user POV)", "## Sub-features")
+                .replace("## TMP", "## How to get to it (user POV)"),
+        );
+        let report = lint_dir(&local).unwrap();
+        let errs: Vec<_> = report
+            .errors
+            .iter()
+            .map(|e| (e.file.rsplit('/').next().unwrap(), e.message.as_str()))
+            .collect();
+        let want = "H2 headings must be, in order: Sub-features, How to get to it (user POV), Driving it with <tool>, Gotchas";
+        assert_eq!(
+            errs,
+            [
+                (
+                    "missing.md",
+                    format!("features/missing.md: {want}; found: Sub-features, How to get to it (user POV), Driving it with control-x").as_str()
+                ),
+                (
+                    "swapped.md",
+                    format!("features/swapped.md: {want}; found: How to get to it (user POV), Sub-features, Driving it with control-x, Gotchas").as_str()
+                ),
+            ]
         );
     }
 
