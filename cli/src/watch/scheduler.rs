@@ -140,11 +140,13 @@ impl<'a> Scheduler<'a> {
             if self.failed.is_none() && stop::requested().is_none() {
                 // A stop that cut the fill short is handled at the loop's top, not as a failure.
                 if let Err(e) = self.fill(night, tonight, refill) {
-                    if refill {
-                        // A refill runs every interval for hours: a blip waits for the next.
-                        eprintln!("ns watch: refill failed: {e:#}");
-                    } else if stop::requested().is_none() {
-                        self.fail(e);
+                    if stop::requested().is_none() {
+                        if refill {
+                            // A refill runs every interval for hours: a blip waits for the next.
+                            eprintln!("ns watch: refill failed: {e:#}");
+                        } else {
+                            self.fail(e);
+                        }
                     }
                 }
             }
@@ -285,7 +287,6 @@ impl<'a> Scheduler<'a> {
                 self.stopping = Some(why);
                 break;
             }
-            self.started += 1;
             let q = &self.plan.loaded.fac.queue;
             set_status(
                 &self.plan.repo.root,
@@ -298,6 +299,7 @@ impl<'a> Scheduler<'a> {
                 let _ = set_status(&self.plan.repo.root, q, n, Some(&q.ready_label));
                 return Err(e);
             }
+            self.started += 1;
         }
         Ok(())
     }

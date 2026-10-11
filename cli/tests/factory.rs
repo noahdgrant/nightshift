@@ -6750,6 +6750,36 @@ fn a_failed_listing_on_a_refill_does_not_fail_the_night() {
 }
 
 #[test]
+fn a_claim_that_fails_on_a_refill_does_not_spend_a_max_units_claim() {
+    let e = Env::new();
+    e.triage_sets(&["status:ready-for-agent"]);
+    e.queue("triage.5-fix-e", &["pass:script"]);
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *\"issue edit 5 \"*\"--add-label status:in-progress\"*)\n\
+           if [ -f \"$d/boom\" ]; then echo 'HTTP 502' >&2; echo x >> \"$d/failed\"; exit 1; fi ;;\n\
+         esac\n",
+    );
+    e.gh_file("boom", "");
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_e, go_e) = hold_phase(&e, "5-fix-e", "build");
+    let w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2", "--max-units", "2"]);
+    w.entered(&in_a);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while fs::read_to_string(e.ghd.join("failed")).map_or(0, |s| s.lines().count()) < 3 {
+        assert!(Instant::now() < deadline, "the claim never failed 3 times");
+        thread::sleep(Duration::from_millis(20));
+    }
+    fs::remove_file(e.ghd.join("boom")).unwrap();
+    w.entered(&in_e);
+    release(&go_a);
+    release(&go_e);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 5], "done"), "{v}");
+}
+
+#[test]
 fn no_refill_while_every_slot_is_busy_or_no_claim_may_start() {
     for args in [
         &["--parallel", "1"][..],
