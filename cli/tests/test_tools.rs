@@ -374,3 +374,73 @@ echo "$( (twentysix); twentyseven )" ${a//\}/;bogus;}
         ]
     );
 }
+
+fn ci_workflow() -> String {
+    fs::read_to_string(root().join(".github/workflows/ci.yml")).unwrap()
+}
+
+/// The tools each `scripts/ci-tools.sh install ...` line in `text` installs.
+fn installed_by(text: &str) -> BTreeSet<String> {
+    let re = Regex::new(r"ci-tools\.sh install([^\n]*)").unwrap();
+    re.captures_iter(text)
+        .flat_map(|c| {
+            c[1].split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn ci_pins_no_tool_version_outside_the_list() {
+    let pin = Regex::new(r"[A-Za-z0-9_.-]+(==|@v?)\d+(\.\d+)+").unwrap();
+    let bad: Vec<String> = ci_workflow()
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#') && !l.contains("uses:"))
+        .filter(|l| pin.is_match(l))
+        .map(|l| l.trim().to_owned())
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "pin these in scripts/ci-tools.toml instead:\n{}",
+        bad.join("\n")
+    );
+}
+
+#[test]
+fn the_job_that_runs_cargo_test_installs_every_listed_tool_the_tests_name() {
+    let yml = ci_workflow();
+    let jobs = Regex::new(r"(?m)^  [a-z][\w-]*:\s*$").unwrap();
+    let job = jobs
+        .split(&yml)
+        .find(|j| j.contains("- run: cargo test\n"))
+        .expect("a job runs cargo test");
+    let installed = installed_by(job);
+    let listed = listed();
+    let mut needed = BTreeSet::new();
+    for (path, src) in test_sources() {
+        let stubs = ["test_tools.rs", "ci_tools.rs", "ci_local.rs"];
+        if path.starts_with("cli/tests/") && !stubs.iter().any(|f| path.ends_with(f)) {
+            needed.extend(listed.iter().filter(|t| {
+                let word = format!(r"(^|[^\w-]){}($|[^\w-])", regex::escape(t));
+                Regex::new(&word).unwrap().is_match(&src)
+            }));
+        }
+    }
+    assert!(needed.contains(&"ast-grep".to_owned()), "{needed:?}");
+    let missing: Vec<_> = needed
+        .into_iter()
+        .filter(|t| !installed.contains(*t))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the cargo test job must run `scripts/ci-tools.sh install` for: {missing:?}"
+    );
+}
+
+#[test]
+fn ci_installs_every_listed_tool_somewhere() {
+    let installed = installed_by(&ci_workflow());
+    let unused: Vec<_> = listed().difference(&installed).cloned().collect();
+    assert!(unused.is_empty(), "no job installs these tools: {unused:?}");
+}

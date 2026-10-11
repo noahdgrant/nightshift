@@ -300,3 +300,19 @@ fn an_empty_list_has_nothing_to_check_or_install() {
         assert_eq!(repo.log(), "", "{mode}");
     }
 }
+
+#[test]
+fn a_pip_tool_installs_and_hints_by_its_package_name() {
+    let list = "[sprocket]\nversion = \"3.4.5\"\ninstall = \"pip\"\npackage = \"sprocket-cli\"\ncheck = \"sprocket --version\"\n";
+    let repo = Repo::new(list);
+    let out = repo.run(&["install"], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(repo.log(), "python3 -m pip install sprocket-cli==3.4.5\n");
+
+    let out = repo.run(&["check"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        "ci-tools: sprocket is not on PATH; install it with: uv tool install sprocket-cli==3.4.5\n"
+    );
+}
