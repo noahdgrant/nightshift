@@ -1,4 +1,4 @@
-//! Subscription billing guard and usage-limit detection for claude runs.
+//! Subscription billing guard for claude and codex runs, and usage-limit detection for claude.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,10 +17,21 @@ pub const API_ENV: &[&str] = &[
     "CLAUDE_CODE_USE_FOUNDRY",
 ];
 
-pub fn is_claude(argv: &[String]) -> bool {
+/// Variables that make codex bill an OpenAI API key instead of the ChatGPT subscription.
+pub const CODEX_API_ENV: &[&str] = &["OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"];
+
+fn runs(argv: &[String], bin: &str) -> bool {
     argv.first()
         .and_then(|a| Path::new(a).file_name())
-        .is_some_and(|n| n == "claude")
+        .is_some_and(|n| n == bin)
+}
+
+pub fn is_claude(argv: &[String]) -> bool {
+    runs(argv, "claude")
+}
+
+pub fn is_codex(argv: &[String]) -> bool {
+    runs(argv, "codex")
 }
 
 /// Headless claude kills background tasks this long after its last turn (default 10 minutes).
@@ -48,8 +59,19 @@ pub fn strip_bare(argv: Vec<String>) -> Vec<String> {
     argv.into_iter().filter(|a| a != "--bare").collect()
 }
 
-pub fn scrub(cmd: &mut Command) {
-    for k in API_ENV {
+/// The variables that would make `argv`'s harness bill an API instead of the subscription.
+pub fn api_env(argv: &[String]) -> &'static [&'static str] {
+    if is_claude(argv) {
+        API_ENV
+    } else if is_codex(argv) {
+        CODEX_API_ENV
+    } else {
+        &[]
+    }
+}
+
+pub fn scrub(cmd: &mut Command, argv: &[String]) {
+    for k in api_env(argv) {
         cmd.env_remove(k);
     }
 }
@@ -216,6 +238,26 @@ mod tests {
         );
         assert!(is_claude(&v(&["/usr/bin/claude"])));
         assert!(!is_claude(&v(&["codex"])));
+        assert!(is_codex(&v(&["/usr/bin/codex", "exec"])));
+        assert!(!is_codex(&v(&["claude"])));
+        assert!(!is_codex(&v(&["codex-wrapper"])));
+        assert!(!is_codex(&[]));
+    }
+
+    #[test]
+    fn each_harness_scrubs_only_its_own_api_variables() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(api_env(&v(&["claude", "-p"])), API_ENV);
+        assert_eq!(api_env(&v(&["codex", "exec"])), CODEX_API_ENV);
+        assert!(api_env(&v(&["sh", "-c", "true"])).is_empty());
+        let mut cmd = Command::new("codex");
+        cmd.env("OPENAI_API_KEY", "k");
+        scrub(&mut cmd, &v(&["codex", "exec"]));
+        let removed: Vec<_> = cmd.get_envs().filter(|(_, v)| v.is_none()).collect();
+        assert_eq!(removed.len(), CODEX_API_ENV.len());
+        assert!(removed
+            .iter()
+            .all(|(k, _)| !k.to_string_lossy().starts_with("ANTHROPIC")));
     }
 
     #[test]

@@ -194,7 +194,7 @@ A rule pack is the set of linters and pattern checkers a repo runs to enforce it
 | rules | `ruff check --output-format=concise .`, `./scripts/rules-ast-grep` | 10 s |
 ```
 
-The Python pack in `rules/python/` is one such set; its README lists the rules, and `ns-setup` installs it.
+Nightshift ships packs under `rules/<language>/`, and `ns-setup` installs one into a repo with its row. The Rust pack is `rules/rust/` (D54); the Python pack, `rules/python/`, and the C pack, `rules/c/`, list their rules in their READMEs.
 
 Each command runs with `sh -c` at the top of the git checkout it is started in. Every line it prints, on stdout or stderr, that is a finding is read as one:
 
@@ -257,6 +257,7 @@ A PR that changes `brake_ramp` merges on its own. One that changes `MAX_TORQUE_N
 `[defaults] billing = "subscription"` (the default) keeps claude runs on the Claude subscription login and off API credits:
 
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY` are removed from every claude child process.
+- `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `CODEX_API_KEY` are removed from every codex child process, phases and eval trials alike.
 - `--bare`, which forces API-key auth, is dropped from the command.
 - `ns run` refuses to start (exit 2) when `~/.claude/.credentials.json` is missing and `CLAUDE_CODE_OAUTH_TOKEN` is unset.
 

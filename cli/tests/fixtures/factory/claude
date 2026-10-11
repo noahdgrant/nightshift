@@ -27,6 +27,10 @@ printf '%s %s\n' "${GITLAB_TOKEN:-}" "${GITLAB_HOST:-}" >> "$ctrl/gitlab"
 printf '%s\n' "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >> "$ctrl/bgwait"
 printf '%s\n' "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset}" >> "$ctrl/automem"
 [ -n "${ANTHROPIC_API_KEY:-}" ] && echo "ANTHROPIC_API_KEY" >> "$ctrl/leak"
+for k in OPENAI_API_KEY OPENAI_BASE_URL CODEX_API_KEY; do
+  eval "v=\${$k:-}"
+  [ -n "$v" ] && echo "$k" >> "$ctrl/openai"
+done
 action=pass
 q="$ctrl/$phase"
 [ -s "$ctrl/$phase.$NS_UNIT" ] && q="$ctrl/$phase.$NS_UNIT"

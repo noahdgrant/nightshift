@@ -338,6 +338,45 @@ fn a_non_claude_harness_gets_no_bg_wait_ceiling() {
     assert_eq!(seen.lines().collect::<Vec<_>>(), ["unset"; 5], "{seen}");
 }
 
+/// `ns run` on a codex harness with every OpenAI API variable set; the variables codex saw.
+fn codex_phases_saw(factory: &str) -> String {
+    let e = Env::new();
+    let codex = e.bin.join("codex");
+    fs::copy(e.bin.join("claude"), &codex).unwrap();
+    e.config(&format!(
+        "[harness.codex]\ncommand = [{c:?}]\ncommand_write = [{c:?}]\n",
+        c = codex.to_str().unwrap()
+    ));
+    e.factory(&format!("[defaults]\nharness = \"codex\"\n{factory}"));
+    e.ns()
+        .env("OPENAI_API_KEY", "k")
+        .env("OPENAI_BASE_URL", "u")
+        .env("CODEX_API_KEY", "c")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    assert!(
+        e.ctrl.join("leak").exists(),
+        "the codex scrub removed ANTHROPIC_API_KEY"
+    );
+    fs::read_to_string(e.ctrl.join("openai")).unwrap_or_default()
+}
+
+#[test]
+fn codex_phases_on_a_subscription_run_without_openai_api_keys() {
+    assert_eq!(codex_phases_saw(""), "");
+}
+
+#[test]
+fn codex_phases_under_api_billing_keep_openai_api_keys() {
+    let seen = codex_phases_saw("billing = \"api\"\n");
+    assert_eq!(
+        seen.lines().collect::<Vec<_>>(),
+        ["OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"].repeat(5),
+        "{seen}"
+    );
+}
+
 #[test]
 fn claude_phases_wait_for_background_tasks_under_api_billing() {
     let e = Env::new();

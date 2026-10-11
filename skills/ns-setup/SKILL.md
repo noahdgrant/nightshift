@@ -46,6 +46,7 @@ Read whatever exists. Assume nothing:
   - shared resources only one agent may use at a time (a workspace, a bench)
 
   Read any worktree notes in `AGENTS.md`. Then prove it: create a scratch worktree, run the build, and check that its outputs name the worktree path (e.g. `compile_commands.json`, `build.ninja`). Remove the scratch worktree afterwards.
+- **Rule pack**: nightshift ships a pack per language under `rules/`. A `Cargo.toml` takes the Rust pack, a Python stack the Python pack, and C sources (`*.c`, `*.h`) the [C rule pack](../../rules/c/README.md). For C, note whether `ast-grep` and `clang-tidy` are on `PATH`, and how the build writes `compile_commands.json`.
 - **Verify**: a `verify-<project>` skill in the repo and a control CLI it drives.
 - **Tracker**: `git remote -v`. GitHub or GitLab? A `.scratch/` directory means local markdown issues are already in use.
 - **Labels**: on GitHub, `gh label list`. On GitLab, `glab label list`.
@@ -59,7 +60,7 @@ Time the fast commands (lint, host unit tests) by running each once. Take slow o
 
 Summarise what's present and what's missing. Then take the sections in order: one section, one answer, then the next. Lead each with the recommended answer so the user can accept it in a word. Skip a section when exploration settled it.
 
-**Section A: Stack.** Show the drafted commands and seams. Ask only about the gaps: usually the HIL setup (what hardware, how to reach it, how long a run takes), and which command to trust when two disagree. A seam the project lacks is recorded as `none`. On a Python stack, also offer the Python rule pack (recommended: **yes**). It checks every unit for suppressions without a reason, imports outside an allowlist, duplicate helpers and files past 1000 lines.
+**Section A: Stack.** Show the drafted commands and seams. Ask only about the gaps: usually the HIL setup (what hardware, how to reach it, how long a run takes), and which command to trust when two disagree. A seam the project lacks is recorded as `none`. On a Python stack, also offer the Python rule pack (recommended: **yes**). It checks every unit for suppressions without a reason, imports outside an allowlist, duplicate helpers and files past 1000 lines. When the repo has C sources, offer the C rule pack (recommended: **yes**) and show its `rules` row.
 
 **Section B: Verify.** If a verify skill and control CLI exist, confirm their names. Otherwise record "not set up yet: run ns-setup-verify" without asking.
 
@@ -100,7 +101,11 @@ If the repo has a `Cargo.toml`, install the Rust rule pack, which `ns rules chec
 3. Fill `.nightshift/rules/rust/roads.txt` with the helpers that own a job (`<name> <file>` per line: the git wrapper, the subprocess runner), from what Explore found. A second definition of one of those names is a `duplicate-helper` finding.
 4. Run `ns rules check --human`. It needs `jq`, `ast-grep` and `cargo-deny` on PATH; a missing one fails naming it. Show the user the findings, and have them accept today's with `ns rules baseline --allow-growth`, a human's act.
 
-If the user took the Python rule pack in Section A, install it as [rules-python.md](references/rules-python.md) says. If no pack was installed, give the `rules` row the command `none`.
+If the user took the Python rule pack in Section A, install it as [rules-python.md](references/rules-python.md) says.
+
+If the user took the C rule pack in Section A, install it as its [README](../../rules/c/README.md)'s Install section says: the pack's files, the seeded include allowlist and the `rules` row in `stack.md`. Run `ns rules check` and show the user its findings. Accepting them into the baseline is the user's act: give them the `ns rules baseline --allow-growth` command to run.
+
+If no pack was installed, give the `rules` row the command `none`.
 
 If the worktree check found traps:
 - write the fix-up commands to `.nightshift/nightshift.toml` under `[worktree] setup = [...]`. `ns worktree new` runs them in each new worktree, with `NS_UNIT`, `NS_WORKTREE` and `NS_MAIN_ROOT` set, and again when a stop, a crash or a failed command cut them short. Make each safe to rerun on a worktree it already set up.

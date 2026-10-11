@@ -1,0 +1,25 @@
+# Feeds c-duplicate-function in rules-c, which reports a non-static name defined in more than one file
+# (skills/ns-principle-pave-the-road). On its own it is not a finding.
+id: c-function-definition
+language: c
+severity: hint
+message: 'function definition'
+rule:
+  all:
+    - kind: identifier
+    - inside:
+        kind: function_declarator
+        field: declarator
+    - inside:
+        kind: function_definition
+        stopBy:
+          not:
+            any:
+              - kind: function_declarator
+              - kind: pointer_declarator
+              - kind: parenthesized_declarator
+    - inside:
+        kind: function_definition
+        stopBy: end
+        not:
+          has: {kind: storage_class_specifier, regex: '^static$'}
