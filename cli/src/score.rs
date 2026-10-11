@@ -287,6 +287,23 @@ mod tests {
     }
 
     #[test]
+    fn only_a_line_keyed_label_is_read_even_with_lines_after_it() {
+        for reply in [
+            "label: pass\nNote: thanks\n",
+            "Label: pass\nSee https://example.com/pr/7\n",
+            "**LABEL:** pass\nReviewer: judge\nConfidence: high\n",
+        ] {
+            assert_eq!(
+                label(reply).unwrap(),
+                ("pass".into(), 1.0, true),
+                "{reply:?}"
+            );
+        }
+        let e = label("Final label: pass").unwrap_err().to_string();
+        assert!(e.contains("said nothing"), "{e}");
+    }
+
+    #[test]
     fn a_reply_naming_no_known_label_is_an_error() {
         for (reply, said) in [
             ("It passes.", "said nothing"),
