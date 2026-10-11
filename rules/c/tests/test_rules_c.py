@@ -17,6 +17,7 @@ from pathlib import Path
 PACK = Path(__file__).resolve().parent.parent
 CASES = Path(__file__).resolve().parent / "cases"
 RULES_C = str(PACK / "rules-c")
+INSTALLED = Path(".nightshift", "rules", "c")
 
 
 def run(args, cwd, env=None):
@@ -165,11 +166,19 @@ class Size(unittest.TestCase):
             self.assertIn("rules-c error: cannot read missing.c", proc.stderr)
 
 
+class Install(unittest.TestCase):
+    def test_readme_installs_the_pack_under_nightshift(self):
+        install = (PACK / "README.md").read_text().split("## Install", 1)[1].split("\n## ", 1)[0]
+        self.assertIn('mkdir -p .nightshift/rules/c && cp -r "$src/." .nightshift/rules/c && rm -rf .nightshift/rules/c/tests', install)
+        self.assertIn("| rules | `.nightshift/rules/c/rules-c grep`, `.nightshift/rules/c/rules-c size`,", install)
+        self.assertNotRegex(install, r"(?<![./])rules/c/rules-c")
+
+
 class Wrapper(unittest.TestCase):
     def git_repo(self, tmp):
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         subprocess.run(["git", "init", "-q", tmp], check=True, env=env)
-        shutil.copytree(PACK, Path(tmp, "rules", "c"), ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(PACK, Path(tmp, INSTALLED), ignore=shutil.ignore_patterns("__pycache__"))
         Path(tmp, "src").mkdir()
         Path(tmp, "src", "long.c").write_text("int x;\n" * 1001)
         Path(tmp, "src", "long.h").write_text("int y;\n" * 1001)
@@ -181,7 +190,7 @@ class Wrapper(unittest.TestCase):
     def test_without_paths_checks_tracked_files_outside_the_pack(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = self.git_repo(tmp)
-            pack = str(Path(tmp, "rules", "c", "rules-c"))
+            pack = str(Path(tmp, INSTALLED, "rules-c"))
             proc = subprocess.run(
                 [sys.executable, pack, "size", "--max", "5"], cwd=tmp, capture_output=True, text=True, env=env
             )
@@ -219,7 +228,7 @@ class Wrapper(unittest.TestCase):
     def test_from_a_subdirectory_paths_follow_the_working_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = self.git_repo(tmp)
-            pack = str(Path(tmp, "rules", "c", "rules-c"))
+            pack = str(Path(tmp, INSTALLED, "rules-c"))
             proc = subprocess.run(
                 [sys.executable, pack, "size", "--max", "5"],
                 cwd=Path(tmp, "src"),
@@ -234,7 +243,7 @@ class Wrapper(unittest.TestCase):
     def test_a_tracked_file_deleted_from_the_working_tree_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = self.git_repo(tmp)
-            pack = str(Path(tmp, "rules", "c", "rules-c"))
+            pack = str(Path(tmp, INSTALLED, "rules-c"))
             Path(tmp, "src", "uses.c").unlink()
             for sub in (["size", "--max", "5"], ["grep", "--allowlist", "/dev/null"], ["tidy"]):
                 with self.subTest(sub[0]):
@@ -318,6 +327,7 @@ class Wrapper(unittest.TestCase):
         proc = case("c-include-not-allowed", "pass", "grep", "--allowlist", "nope.txt")
         self.assertEqual((proc.returncode, proc.stdout), (2, ""))
         self.assertIn("rules-c error: cannot read the include allowlist nope.txt", proc.stderr)
+        self.assertIn("seed it with: .nightshift/rules/c/rules-c allowlist > .nightshift/rules-c-includes.txt", proc.stderr)
 
     def test_missing_tool_is_an_error(self):
         env = dict(os.environ, PATH="")
@@ -325,7 +335,7 @@ class Wrapper(unittest.TestCase):
             with self.subTest(sub[0]):
                 proc = run([*sub, "include.c"], CASES / "c-include-not-allowed" / "pass", env)
                 self.assertEqual((proc.returncode, proc.stdout), (2, ""))
-                self.assertIn("is not on PATH", proc.stderr)
+                self.assertIn("is not on PATH; install it (.nightshift/rules/c/README.md, Install)", proc.stderr)
 
     def test_a_compile_error_under_a_warning_flag_is_an_error_not_a_finding(self):
         with tempfile.TemporaryDirectory() as tmp:

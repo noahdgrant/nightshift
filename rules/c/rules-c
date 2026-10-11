@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The C rule pack for `ns rules check` (rules/c/README.md).
+"""The C rule pack for `ns rules check` (README.md beside this file).
 
 Each subcommand runs one tool and prints one JSON finding per line,
 {tool, rule, file, line, message[, snippet]}. It exits 0 with no findings, 1 with findings,
@@ -42,7 +42,7 @@ def finding(tool, rule, file, line, message, snippet=None):
 def tool_path(name):
     path = shutil.which(name)
     if path is None:
-        raise Broken(f"{name} is not on PATH; install it (rules/c/README.md, Install)")
+        raise Broken(f"{name} is not on PATH; install it (.nightshift/rules/c/README.md, Install)")
     return path
 
 
@@ -89,7 +89,7 @@ def read_allowlist(path):
     except OSError as e:
         raise Broken(
             f"cannot read the include allowlist {path} ({e.strerror}); "
-            "seed it with: rules/c/rules-c allowlist > " + ALLOWLIST
+            "seed it with: .nightshift/rules/c/rules-c allowlist > " + ALLOWLIST
         ) from e
     return [line.split("#", 1)[0].strip() for line in text.splitlines() if line.split("#", 1)[0].strip()]
 
