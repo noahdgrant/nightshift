@@ -56,6 +56,8 @@ jobs:
         run: cargo build --manifest-path cli/Cargo.toml
       - name: Lint skills
         run: cli/target/debug/ns lint skills --human
+      - name: Lint repo-local skills
+        run: cli/target/debug/ns lint .agents/skills --human
       - name: Check human-review markers
         run: cli/target/debug/ns check-markers --human
       - name: Rules check (new violations only, against .nightshift/rules-baseline.json)

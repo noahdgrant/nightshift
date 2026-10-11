@@ -317,6 +317,22 @@ fn lint_reports_good_and_bad_skills() {
 }
 
 #[test]
+fn lint_passes_this_repos_local_skills() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let v = json(
+        &ns()
+            .arg("lint")
+            .arg(src.join(".agents/skills"))
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(v["skills"].as_u64().unwrap() > 0, "{v}");
+}
+
+#[test]
 fn lint_passes_clean_dir_and_rejects_missing_dir() {
     let tmp = tempfile::tempdir().unwrap();
     write_skill(
