@@ -59,7 +59,7 @@ Time the fast commands (lint, host unit tests) by running each once. Take slow o
 
 Summarise what's present and what's missing. Then take the sections in order: one section, one answer, then the next. Lead each with the recommended answer so the user can accept it in a word. Skip a section when exploration settled it.
 
-**Section A: Stack.** Show the drafted commands and seams. Ask only about the gaps: usually the HIL setup (what hardware, how to reach it, how long a run takes), and which command to trust when two disagree. A seam the project lacks is recorded as `none`.
+**Section A: Stack.** Show the drafted commands and seams. Ask only about the gaps: usually the HIL setup (what hardware, how to reach it, how long a run takes), and which command to trust when two disagree. A seam the project lacks is recorded as `none`. On a Python stack, also offer the Python rule pack (recommended: **yes**). It checks every unit for suppressions without a reason, imports outside an allowlist, duplicate helpers and files past 1000 lines.
 
 **Section B: Verify.** If a verify skill and control CLI exist, confirm their names. Otherwise record "not set up yet: run ns-setup-verify" without asking.
 
@@ -100,6 +100,8 @@ If the repo has a `Cargo.toml`, install the Rust rule pack, which `ns rules chec
 3. Fill `.nightshift/rules/rust/roads.txt` with the helpers that own a job (`<name> <file>` per line: the git wrapper, the subprocess runner), from what Explore found. A second definition of one of those names is a `duplicate-helper` finding.
 4. Run `ns rules check --human`. It needs `jq`, `ast-grep` and `cargo-deny` on PATH; a missing one fails naming it. Show the user the findings, and have them accept today's with `ns rules baseline --allow-growth`, a human's act.
 
+If the user took the Python rule pack in Section A, install it as [rules-python.md](references/rules-python.md) says. If no pack was installed, give the `rules` row the command `none`.
+
 If the worktree check found traps:
 - write the fix-up commands to `.nightshift/nightshift.toml` under `[worktree] setup = [...]`. `ns worktree new` runs them in each new worktree, with `NS_UNIT`, `NS_WORKTREE` and `NS_MAIN_ROOT` set, and again when a stop, a crash or a failed command cut them short. Make each safe to rerun on a worktree it already set up.
 - write the worktree-correct build and test commands into `stack.md`.
@@ -126,6 +128,6 @@ Repo settings the `ns-*` skills read. Edit the files directly to change them.
 
 ### 5. Done
 
-Done when all six `docs/agents/` files exist with no unfilled placeholders, the instructions file holds the block, and a Rust repo has the `rules` row with `ns rules check` exiting 0. Tell the user which seams are `none` or unmeasured, and, if verify isn't set up, that `ns-setup-verify` is the next step. They can edit `docs/agents/*.md` directly later. Re-run this skill to switch trackers or start over.
+Done when all six `docs/agents/` files exist with no unfilled placeholders, the instructions file holds the block, and every rule pack that applies (Rust for a `Cargo.toml`, Python if the user took it) is installed with `ns rules check` exiting 0. Tell the user which seams are `none` or unmeasured, and, if verify isn't set up, that `ns-setup-verify` is the next step. They can edit `docs/agents/*.md` directly later. Re-run this skill to switch trackers or start over.
 
 Then offer an agent-readiness audit: it finds what in the codebase helps or hurts agents and files the top findings as issues. On yes, load the `ns-agent-readiness` skill and run it under `gates: stop`, so the user picks what to file.

@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-const ALL_STEPS: [&str; 12] = [
+const ALL_STEPS: [&str; 13] = [
     "cargo fmt --check",
     "cargo clippy",
     "cargo test",
@@ -18,16 +18,18 @@ const ALL_STEPS: [&str; 12] = [
     "ns rules check",
     "ns eval --dry-run",
     "py-inventory fixture tests",
+    "Python rule pack tests",
     "ns-troubleshoot brief checker tests",
     "private guard",
 ];
 
-const FAST_ONLY_SKIPS: [&str; 6] = [
+const FAST_ONLY_SKIPS: [&str; 7] = [
     "cargo test",
     "cargo test under a decoy GIT_DIR",
     "ns rules check",
     "ns eval --dry-run",
     "py-inventory fixture tests",
+    "Python rule pack tests",
     "ns-troubleshoot brief checker tests",
 ];
 
@@ -48,6 +50,13 @@ const NS: &str = r#"#!/bin/sh
 [ "$1" = eval ] && printf '%s\n' "$PLAN"
 case "$FAIL_ON" in ?*) case "ns $*" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
 exit 0
+"#;
+
+/// Logs that it ran, and fails when that log line contains `$FAIL_ON`.
+const RULE_PACK_TESTS: &str = r#"#!/bin/sh
+line="rule pack tests ran"
+echo "$line" >&2
+case "$FAIL_ON" in ?*) case "$line" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
 "#;
 
 /// Imports pytest only when `$PYTEST` is set, and hands the eval plan filter (`-I -`) to the
@@ -101,12 +110,21 @@ impl Repo {
         write_exe(&root.join("bin/python3"), &python);
         write_exe(&root.join("bin/python"), &python);
         fs::create_dir_all(root.join("evals/fixtures/py-inventory")).unwrap();
+        write_exe(&root.join("rules/python/tests/run.sh"), RULE_PACK_TESTS);
         let cases = root.join("skills/ns-troubleshoot/evals/cases");
         for case in ["py-hold-expires-early", "py-lost-hold-needs-redesign"] {
             write_exe(&cases.join(case).join("test_check_brief.py"), "");
         }
         fs::create_dir_all(cases.join("py-no-checker")).unwrap();
         Repo { dir }
+    }
+
+    /// Puts stub `ruff` and `ast-grep` on the run's PATH.
+    fn with_rule_tools(self) -> Repo {
+        for tool in ["ruff", "ast-grep"] {
+            write_exe(&self.dir.path().join("bin").join(tool), "#!/bin/sh\n");
+        }
+        self
     }
 
     fn run(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
@@ -141,7 +159,7 @@ fn steps(out: &Output) -> Vec<String> {
 
 #[test]
 fn every_step_runs_in_order_and_the_run_passes() {
-    let out = Repo::new().run(&[], &[("PYTEST", "1")]);
+    let out = Repo::new().with_rule_tools().run(&[], &[("PYTEST", "1")]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(steps(&out), ALL_STEPS);
     assert!(stderr(&out).contains("python ran in py-inventory: -m pytest -q"));
@@ -151,6 +169,7 @@ fn every_step_runs_in_order_and_the_run_passes() {
         )));
     }
     assert!(!stderr(&out).contains("python ran in py-no-checker"));
+    assert!(stderr(&out).contains("rule pack tests ran"));
     assert!(stderr(&out).contains("ci-local: all checks passed"));
 }
 
@@ -162,12 +181,15 @@ fn a_failing_step_stops_the_run() {
         ("ns check-markers", "ns check-markers"),
         ("ns rules", "ns rules check"),
         ("ns eval", "ns eval --dry-run"),
+        ("rule pack tests ran", "Python rule pack tests"),
         (
             "python ran in py-hold-expires-early",
             "ns-troubleshoot brief checker tests",
         ),
     ] {
-        let out = Repo::new().run(&[], &[("FAIL_ON", fail_on)]);
+        let out = Repo::new()
+            .with_rule_tools()
+            .run(&[], &[("FAIL_ON", fail_on)]);
         assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
         let at = ALL_STEPS.iter().position(|s| *s == step).unwrap();
         assert_eq!(steps(&out), ALL_STEPS[..=at]);
@@ -195,6 +217,21 @@ fn fixture_tests_skip_without_pytest() {
     assert!(stderr(&out).contains("SKIPPED: py-inventory fixture tests"));
     assert!(!stderr(&out).contains("-m pytest"));
     assert_eq!(steps(&out), ALL_STEPS);
+}
+
+#[test]
+fn rule_pack_tests_skip_without_ruff_or_ast_grep() {
+    for tool in ["", "ruff", "ast-grep"] {
+        let repo = Repo::new();
+        if !tool.is_empty() {
+            write_exe(&repo.dir.path().join("bin").join(tool), "#!/bin/sh\n");
+        }
+        let out = repo.run(&[], &[]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert!(stderr(&out).contains("SKIPPED: Python rule pack tests"));
+        assert!(!stderr(&out).contains("rule pack tests ran"));
+        assert_eq!(steps(&out), ALL_STEPS);
+    }
 }
 
 fn plan(reasons: &[&str]) -> String {
