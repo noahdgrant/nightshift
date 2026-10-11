@@ -200,7 +200,8 @@ pub struct Phase {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Queue {
-    pub source: String,
+    /// The forge `ns watch` reads issues from; unset, the `origin` remote's host decides.
+    pub source: Option<String>,
     pub ready_label: String,
     pub in_progress_label: String,
     pub done_label: String,
@@ -222,7 +223,7 @@ pub struct Queue {
 impl Default for Queue {
     fn default() -> Self {
         Self {
-            source: "github".into(),
+            source: None,
             ready_label: "status:ready-for-agent".into(),
             in_progress_label: "status:in-progress".into(),
             done_label: "status:in-review".into(),
@@ -341,11 +342,8 @@ impl Factory {
                 self.defaults.billing
             ));
         }
-        if self.queue.source != "github" {
-            out.push(format!(
-                "queue.source = {:?}: only \"github\" is supported",
-                self.queue.source
-            ));
+        if let Some(p) = self.queue.source.as_deref().and_then(source_problem) {
+            out.push(p);
         }
         for name in self.phases.keys() {
             if !PHASES.contains(&name.as_str()) {
@@ -437,6 +435,19 @@ pub fn root(factory: Option<&Path>, main_root: &Path) -> PathBuf {
     match factory {
         Some(d) => d.to_path_buf(),
         None => main_root.join(".nightshift"),
+    }
+}
+
+/// Why `ns watch` can't read its queue from `source`, a `[queue] source` value.
+pub fn source_problem(source: &str) -> Option<String> {
+    match source {
+        "github" => None,
+        "gitlab" => Some(format!(
+            "[queue] source = {source:?}: GitLab is not supported yet; only \"github\" is"
+        )),
+        _ => Some(format!(
+            "[queue] source = {source:?}: unknown; use \"github\""
+        )),
     }
 }
 
@@ -853,6 +864,23 @@ ci_timeout_minutes = 30
         let f = parse("[queue]\npriority = [\"p0\", \"p1\"]\n").unwrap();
         assert_eq!(f.queue.priority, ["p0", "p1"]);
         assert_eq!(f.queue.order[0], "type:fix");
+    }
+
+    #[test]
+    fn queue_source_is_unset_by_default_and_only_github_is_no_problem() {
+        assert_eq!(parse("").unwrap().queue.source, None);
+        let f = parse("[queue]\nsource = \"github\"\n").unwrap();
+        assert_eq!(f.queue.source.as_deref(), Some("github"));
+        assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+        let p = parse("[queue]\nsource = \"gitlab\"\n")
+            .unwrap()
+            .problems(None);
+        assert_eq!(
+            p,
+            ["[queue] source = \"gitlab\": GitLab is not supported yet; only \"github\" is"]
+        );
+        let p = parse("[queue]\nsource = \"svn\"\n").unwrap().problems(None);
+        assert_eq!(p, ["[queue] source = \"svn\": unknown; use \"github\""]);
     }
 
     #[test]

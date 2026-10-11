@@ -8488,3 +8488,51 @@ fn the_triage_pass_record_survives_the_hand_off() {
     assert_eq!(by_issue(&units(&v)), each(&[5], "done"), "{v}");
     assert_eq!(e.triage_only_runs(), 1);
 }
+
+fn watch_refuses_source(e: &Env, says: &str) {
+    e.ns()
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("[queue] source"))
+        .stderr(predicates::str::contains(says))
+        .stderr(predicates::str::contains("source = \"github\""));
+    assert!(e.gh_calls().is_empty(), "{}", e.gh_calls());
+}
+
+#[test]
+fn watch_reads_github_when_source_says_so_or_origin_is_not_gitlab() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.factory("[queue]\nsource = \"github\"\n");
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(v["queue"][0]["number"], 2, "{v}");
+    e.factory("");
+    git(
+        &e.root,
+        &["remote", "set-url", "origin", "git@github.com:o/r.git"],
+    );
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(v["queue"][0]["number"], 2, "{v}");
+}
+
+#[test]
+fn watch_refuses_an_unknown_source_and_gitlab_until_it_is_supported() {
+    let e = Env::new();
+    e.factory("[queue]\nsource = \"bitbucket\"\n");
+    watch_refuses_source(&e, "\"bitbucket\"");
+    e.factory("[queue]\nsource = \"gitlab\"\n");
+    watch_refuses_source(&e, "GitLab");
+}
+
+#[test]
+fn watch_detects_a_gitlab_origin_when_source_is_unset() {
+    let e = Env::new();
+    git(
+        &e.root,
+        &["remote", "set-url", "origin", "https://gitlab.com/o/r.git"],
+    );
+    watch_refuses_source(&e, "gitlab.com");
+    e.factory("[queue]\nsource = \"github\"\n");
+    e.run(&["watch", "--dry-run"], 0);
+}

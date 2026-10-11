@@ -16,13 +16,13 @@ use serde_json::json;
 use super::self_update::{HandOff, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
 use super::{
-    comment, ended_cleanly, fresh_base, open_findings, queue, set_status, triage, Issue, Night,
+    ended_cleanly, fresh_base, open_findings, queue, set_status, triage, Forge, Issue, Night,
     Tonight, DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
 };
 use crate::clock;
 use crate::error::SfError;
 use crate::git::Repo;
-use crate::run::{self, gh, Loaded, Outcome, RunResult};
+use crate::run::{self, Loaded, Outcome, RunResult};
 use crate::stop;
 use crate::worktree::BRANCH_PREFIX;
 
@@ -50,6 +50,7 @@ fn refill_interval() -> Duration {
 /// What the night is set to do, fixed at start.
 pub(super) struct Plan<'a> {
     pub repo: &'a Repo,
+    pub forge: &'a dyn Forge,
     pub loaded: &'a Loaded,
     pub snap: &'a Snapshot,
     pub deadline: Option<i64>,
@@ -274,7 +275,7 @@ impl<'a> Scheduler<'a> {
             let n = issue.number;
             if let Err(e) = self.start(issue, night, true) {
                 let q = &self.plan.loaded.fac.queue;
-                let _ = set_status(&self.plan.repo.root, q, n, Some(&q.ready_label));
+                let _ = set_status(self.plan.forge, q, n, Some(&q.ready_label));
                 return Err(e.into());
             }
         }
@@ -293,7 +294,7 @@ impl<'a> Scheduler<'a> {
         if self.draining.is_some() {
             return Ok(());
         }
-        match triage::pass(plan.repo, plan.loaded, plan.deadline, night)? {
+        match triage::pass(plan.repo, plan.forge, plan.loaded, plan.deadline, night)? {
             Some(triage::Halt::Stop(why)) => {
                 self.stop_all(&why);
                 return Ok(());
@@ -306,7 +307,7 @@ impl<'a> Scheduler<'a> {
         let mut taken: BTreeSet<u64> = night.finished.clone();
         taken.extend(self.running.values().map(|w| w.issue.number));
         taken.extend(self.resume.iter().map(|i| i.number));
-        let ready = queue(&plan.repo.root, fac, &taken)?.ready;
+        let ready = queue(plan.forge, fac, &taken)?.ready;
         for issue in ready {
             // A listing can name an issue twice; a stop during the read claims nothing more.
             if !self.free() || stop::requested().is_some() {
@@ -321,12 +322,12 @@ impl<'a> Scheduler<'a> {
             }
             let q = &self.plan.loaded.fac.queue;
             let n = issue.number;
-            if let Err(e) = set_status(&self.plan.repo.root, q, n, Some(&q.in_progress_label)) {
-                let _ = set_status(&self.plan.repo.root, q, n, Some(&q.ready_label));
+            if let Err(e) = set_status(self.plan.forge, q, n, Some(&q.in_progress_label)) {
+                let _ = set_status(self.plan.forge, q, n, Some(&q.ready_label));
                 return Err(e.into());
             }
             if let Err(e) = self.start(issue, night, false) {
-                let _ = set_status(&self.plan.repo.root, q, n, Some(&q.ready_label));
+                let _ = set_status(self.plan.forge, q, n, Some(&q.ready_label));
                 return Err(e.into());
             }
             self.started += 1;
@@ -502,7 +503,7 @@ impl<'a> Scheduler<'a> {
             night.shared.clock.catch_up(t);
         }
         let q = &self.plan.loaded.fac.queue;
-        let root = &self.plan.repo.root;
+        let forge = self.plan.forge;
         run::log_event(
             &self.plan.repo.common_dir,
             json!({
@@ -515,7 +516,7 @@ impl<'a> Scheduler<'a> {
             }),
         );
         let Some(r) = r else {
-            let _ = set_status(root, q, issue.number, Some(&q.ready_label));
+            let _ = set_status(forge, q, issue.number, Some(&q.ready_label));
             if let Some(s) = stop::requested() {
                 eprintln!("ns watch: #{} interrupted (worker {n})", issue.number);
                 tonight.units.push(json!({
@@ -550,7 +551,7 @@ impl<'a> Scheduler<'a> {
             "cost_usd": r.cost_usd,
         });
         if stop::requested().is_some() && !ended_cleanly(&r) {
-            set_status(root, q, issue.number, Some(&q.ready_label))?;
+            set_status(forge, q, issue.number, Some(&q.ready_label))?;
             rec["outcome"] = json!("interrupted");
             eprintln!("ns watch: #{} interrupted (worker {n})", issue.number);
             tonight.units.push(rec);
@@ -565,33 +566,32 @@ impl<'a> Scheduler<'a> {
         eprintln!("ns watch: #{} {shown} (worker {n})", issue.number);
         match r.outcome {
             Outcome::Merged => {
-                let status = set_status(root, q, issue.number, None);
+                let status = set_status(forge, q, issue.number, None);
                 // GitHub may not have closed it yet; an already-closed issue makes gh fail.
-                let ns = issue.number.to_string();
-                if let Err(e) = gh(root, &["issue", "close", &ns, "--reason", "completed"]) {
-                    eprintln!("ns watch: #{ns} not closed: {e}");
+                if let Err(e) = forge.close(issue.number) {
+                    eprintln!("ns watch: #{} not closed: {e}", issue.number);
                 }
                 status?;
             }
-            Outcome::Split => set_status(root, q, issue.number, Some(&q.split_label))?,
+            Outcome::Split => set_status(forge, q, issue.number, Some(&q.split_label))?,
             Outcome::Done if !r.needs_human => {
-                set_status(root, q, issue.number, Some(&q.done_label))?
+                set_status(forge, q, issue.number, Some(&q.done_label))?
             }
             Outcome::Stuck if failing => {
-                set_status(root, q, issue.number, Some(&q.ready_label))?;
+                set_status(forge, q, issue.number, Some(&q.ready_label))?;
                 rec["outcome"] = json!("harness_failing");
                 if night.harness_fails >= HARNESS_FAIL_LIMIT {
                     self.stop_all("harness failing");
                 }
             }
             Outcome::Done | Outcome::Stuck => {
-                let status = set_status(root, q, issue.number, Some(&q.stuck_label));
-                let posted = comment(root, issue.number, &stuck_comment(&r));
+                let status = set_status(forge, q, issue.number, Some(&q.stuck_label));
+                let posted = forge.comment(issue.number, &stuck_comment(&r));
                 status?;
                 posted?;
             }
             Outcome::Budget => {
-                set_status(root, q, issue.number, Some(&q.ready_label))?;
+                set_status(forge, q, issue.number, Some(&q.ready_label))?;
                 // A runner lock wait cut short by `--until` ends the run as `budget` too.
                 let why = night
                     .over(self.plan.deadline, &self.plan.loaded.fac)
@@ -623,8 +623,7 @@ impl<'a> Scheduler<'a> {
     fn give_back_paused(&mut self, tonight: &mut Tonight) {
         let q = &self.plan.loaded.fac.queue;
         for issue in self.resume.drain(..) {
-            if let Err(e) = set_status(&self.plan.repo.root, q, issue.number, Some(&q.ready_label))
-            {
+            if let Err(e) = set_status(self.plan.forge, q, issue.number, Some(&q.ready_label)) {
                 eprintln!(
                     "ns watch: #{} not returned to the queue: {e:#}",
                     issue.number
