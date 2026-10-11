@@ -16,11 +16,11 @@ use crate::git::{self, Repo};
 use crate::quality::{self, issue_of, Window};
 use crate::watch::forge as watch_forge;
 
-/// The only fields `ns log` prints. The rest (prompts, transcripts, errors, paths) stay in the
-/// file, so no output carries what a run happened to log.
-const FIELDS: [&str; 12] = [
+/// The only fields `ns log` reads from a line. The rest (prompts, transcripts, errors, paths)
+/// stay in the file, so no output carries what a run happened to log. `pr_url` is built, never read.
+const RETAINED: [&str; 11] = [
     "ts", "event", "unit", "issue", "phase", "attempt", "status", "wall_s", "outcome", "pr",
-    "pr_url", "reason",
+    "reason",
 ];
 
 /// How long `--follow` waits at the end of the file before reading again.
@@ -46,12 +46,8 @@ pub fn cli(
     let source = factory::load(&factory::root(None, &repo.root))
         .ok()
         .and_then(|f| f.queue.source);
-    let gitlab_host = std::env::var(ForgeKind::Gitlab.host_var())
-        .ok()
-        .or_else(|| {
-            let cfg = config::load(&config::path()).ok().flatten()?;
-            cfg.forge.gitlab?.host
-        });
+    let cfg = config::load(&config::path()).ok().flatten();
+    let gitlab_host = watch_forge::gitlab_host(cfg.as_ref());
     let base = origin
         .as_deref()
         .and_then(|o| PrBase::new(o.trim(), source.as_deref(), gitlab_host.as_deref()));
@@ -135,7 +131,7 @@ fn event(line: &str, pr_base: Option<&PrBase>) -> Option<Map<String, Value>> {
     let Ok(Value::Object(mut all)) = serde_json::from_str::<Value>(line) else {
         return None;
     };
-    all.retain(|k, v| FIELDS.contains(&k.as_str()) && !v.is_null());
+    all.retain(|k, v| RETAINED.contains(&k.as_str()) && !v.is_null());
     if !all.contains_key("issue") {
         if let Some(n) = all.get("unit").and_then(Value::as_str).and_then(issue_of) {
             all.insert("issue".into(), json!(n));
@@ -187,11 +183,10 @@ fn text(ev: &Map<String, Value>) -> String {
 }
 
 fn printable(c: char) -> impl Iterator<Item = char> {
-    let escaped = c.is_control().then(|| c.escape_default());
-    escaped
-        .into_iter()
-        .flatten()
-        .chain((!c.is_control()).then_some(c))
+    let hidden = c.is_control()
+        || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    let escaped = hidden.then(|| c.escape_default());
+    escaped.into_iter().flatten().chain((!hidden).then_some(c))
 }
 
 /// Where an event's PR lives: the repo's web address and the forge that serves it.
@@ -381,6 +376,25 @@ not json
     }
 
     #[test]
+    fn a_logged_pr_url_is_not_emitted_without_an_origin() {
+        let line = r#"{"event":"end","pr":3,"pr_url":"https://evil.example/x"}"#;
+        let ev = event(line, None).unwrap();
+        assert!(ev.get("pr_url").is_none(), "{ev:?}");
+    }
+
+    #[test]
+    fn bidi_and_format_characters_are_escaped() {
+        let line = "{\"event\":\"end\",\"reason\":\"a\u{202e}b\u{200b}c\u{2066}d\"}";
+        let mut out = Vec::new();
+        let input = [Ok(line.as_bytes().to_vec())];
+        render(input.into_iter(), &all(), text, None, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "end reason: a\\u{202e}b\\u{200b}c\\u{2066}d\n"
+        );
+    }
+
+    #[test]
     fn a_logged_issue_wins_over_the_unit_ids() {
         let ev = event(r#"{"unit":"7-a","issue":8}"#, None).unwrap();
         assert_eq!(ev["issue"], 8);
@@ -435,7 +449,10 @@ not json
         for line in &out {
             let v: Value = serde_json::from_str(line).unwrap();
             for k in v.as_object().unwrap().keys() {
-                assert!(FIELDS.contains(&k.as_str()), "{k} in {line}");
+                assert!(
+                    RETAINED.contains(&k.as_str()) || k == "pr_url",
+                    "{k} in {line}"
+                );
             }
         }
         let build: Value = serde_json::from_str(&out[1]).unwrap();

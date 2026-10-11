@@ -1457,12 +1457,30 @@ fn log_follow_prints_the_log_so_far_and_keeps_running() {
     let stdout = child.take_stdout();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut line = String::new();
-        let read = std::io::BufReader::new(stdout).read_line(&mut line);
-        let _ = tx.send(read.map(|_| line));
+        let mut reader = std::io::BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            let read = reader.read_line(&mut line).map(|n| (n, line));
+            let done = !matches!(read, Ok((n, _)) if n > 0);
+            if tx.send(read).is_err() || done {
+                break;
+            }
+        }
     });
-    let first = child.recv(&rx).unwrap();
+    let first = child.recv(&rx).unwrap().1;
     assert_eq!(first, "2026-10-09T10:00:00Z start #9\n");
+    let mut log = fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("runs.jsonl"))
+        .unwrap();
+    std::io::Write::write_all(
+        &mut log,
+        b"{\"event\":\"end\",\"unit\":\"9-a\",\"outcome\":\"merged\",\"ts\":\"2026-10-09T11:00:00Z\"}\n",
+    )
+    .unwrap();
+    let second = child.recv(&rx).unwrap().1;
+    assert_eq!(second, "2026-10-09T11:00:00Z end #9 outcome merged\n");
+    assert!(child.is_running());
     child.kill();
 }
 

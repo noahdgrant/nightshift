@@ -10,7 +10,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use super::{closed_by, Issue};
-use crate::config::ForgeKind;
+use crate::config::{Config, ForgeKind};
 use crate::error::SfError;
 use crate::factory::{self, Queue as QueueConfig};
 use crate::git;
@@ -42,7 +42,7 @@ const HINT: &str = "set the forge in .nightshift/nightshift.toml:\n  [queue]\n  
 /// from `[forge.gitlab] host` by then, names one more GitLab host.
 pub fn open(q: &QueueConfig, root: &Path) -> Result<Box<dyn Forge>, SfError> {
     let origin = git::run(root, &["remote", "get-url", "origin"]).ok();
-    let gitlab_host = std::env::var(ForgeKind::Gitlab.host_var()).ok();
+    let gitlab_host = gitlab_host(None);
     let root = root.to_path_buf();
     Ok(
         match check(
@@ -70,6 +70,15 @@ fn check(
             SfError::usage(problem, HINT)
         }),
     }
+}
+
+/// The GitLab host `GITLAB_HOST` names, else `[forge.gitlab] host` from `cfg`.
+pub fn gitlab_host(cfg: Option<&Config>) -> Option<String> {
+    pick_host(std::env::var(ForgeKind::Gitlab.host_var()).ok(), cfg)
+}
+
+fn pick_host(env: Option<String>, cfg: Option<&Config>) -> Option<String> {
+    env.or_else(|| cfg?.forge.gitlab.as_ref()?.host.clone())
 }
 
 /// The forge `source` names, else the one inferred from `origin` and `gitlab_host`: what a
@@ -237,6 +246,19 @@ impl Forge for GitHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_env_host_wins_over_the_configured_one() {
+        let cfg: Config =
+            toml::from_str("[forge.gitlab]\ntoken_env = \"X\"\nhost = \"cfg.example\"").unwrap();
+        let pick = |env: Option<&str>, cfg| pick_host(env.map(String::from), cfg);
+        assert_eq!(
+            pick(Some("env.example"), Some(&cfg)).as_deref(),
+            Some("env.example")
+        );
+        assert_eq!(pick(None, Some(&cfg)).as_deref(), Some("cfg.example"));
+        assert_eq!(pick(None, None), None);
+    }
 
     #[test]
     fn source_is_inferred_from_the_origin_host() {
