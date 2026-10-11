@@ -62,7 +62,7 @@ Standalone and system docs start from user stories when a person is on the other
 4. **Save and hand off.** Write the version file and its changelog entry to the thing's directory, with every `>` prompt line removed, and add a new key to the table in `docs/agents/docs.md` if the thing needed one. Set Status to `Draft`, or `In review` once it goes to reviewers. Tell the author:
    - The repo file is the source of truth, changed through pull requests.
    - How it reaches reviewers, per the review surface in `docs/agents/docs.md`. Review comments come back as edits to the repo file.
-   - When the next step is a design, the `ns-design-doc` skill picks up from here, once it exists.
+   - When the next step is a design, the `ns-design-doc` skill picks up from here.
 
 ## Approval
 
@@ -87,7 +87,7 @@ Every change is a check on everything built against the doc.
 1. If the current version is approved, start the next one as "Versions and the changelog" says, as a copy with Status `Draft`. Edit the draft's repo file, the source of truth, in a pull request, and add its changelog line.
 2. A dropped requirement moves to Won't with its ID and the reason. It keeps its ID so older citations still resolve.
 3. In a system doc, check each child doc's rows that cite the changed ID, and fix any priority or refinement the change broke.
-4. Update `Last updated` in the header. Search the design docs directory from `docs/agents/docs.md` for the changed IDs and for the doc's name. List each approved design doc that cites a changed ID and flag it for a human; the `ns-design-doc` skill will own the fuller procedure once it exists. In a draft design doc, fix any goal or decision the change broke, and point its Requirements row at the new version if the change started one.
+4. Update `Last updated` in the header. Search the design docs directory from `docs/agents/docs.md` for the changed IDs and for the doc's name. List each approved design doc that cites a changed ID and flag it for a human. What to do with each flagged or draft design is in [when requirements change](../ns-design-doc/SKILL.md#when-requirements-change).
 
 ## Reviewing an existing doc
 

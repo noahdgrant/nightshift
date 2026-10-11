@@ -92,7 +92,7 @@ Status: draft v2, for discussion. Sources: mattpocock/skills, cursor/plugins/pst
 
 | Phase | Phase skill | Leaf skills | Input | Output artifact | Gate |
 |---|---|---|---|---|---|
-| define | `define` | grill-me, grilling, domain-modeling, requirements, design-doc, writing-for-agents, writing-for-humans, design-doc | issue / idea | `SPEC.md`, or an Agent Brief on the issue | human approves the spec |
+| define | `define` | grill-me, grilling, domain-modeling, requirements, design-doc, writing-for-agents, writing-for-humans | issue / idea | `SPEC.md`, or an Agent Brief on the issue | human approves the spec |
 | plan | `plan` | to-tickets, codebase-design, wayfinder | spec | tickets with blocking edges (tracer bullets) | none by default |
 | build | `build` | tdd, implement, prototype | ticket | commits on a branch in a worktree | tests green |
 | verify | `verify` | prove-it-works, project verify recipe, the factory CLI | branch | evidence report (commands run, output, HIL/serial logs) | evidence matches acceptance criteria |
