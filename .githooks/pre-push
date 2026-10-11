@@ -1,0 +1,4 @@
+#!/bin/sh
+# Enable with: git config core.hooksPath .githooks
+# Checks the working tree, which is the commit being pushed when the tree is clean.
+exec scripts/ci-local.sh

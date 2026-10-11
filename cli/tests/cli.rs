@@ -1201,26 +1201,37 @@ fn worktree_new_runs_setup_once() {
 }
 
 #[test]
-fn own_factory_definition_turns_on_the_pre_commit_hook() {
-    let (_tmp, root) = repo();
+fn own_factory_definition_turns_on_hooks_that_run_full_ci_on_commit_and_push() {
+    let (tmp, root) = repo();
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     factory_def(
         &root,
         &fs::read_to_string(src.join(".nightshift/nightshift.toml")).unwrap(),
     );
     fs::create_dir_all(root.join(".githooks")).unwrap();
-    fs::copy(
-        src.join(".githooks/pre-commit"),
-        root.join(".githooks/pre-commit"),
-    )
-    .unwrap();
+    for hook in ["pre-commit", "pre-push"] {
+        fs::copy(
+            src.join(".githooks").join(hook),
+            root.join(".githooks").join(hook),
+        )
+        .unwrap();
+    }
     fs::create_dir_all(root.join("scripts")).unwrap();
     executable(
         &root.join("scripts/ci-local.sh"),
-        "echo \"ci-local $*\" >&2\nexit 1",
+        "echo \"ci-local ran with [$*]\" >&2\nexit 1",
     );
     git(&root, &["add", "."]);
     git(&root, &["commit", "-q", "--no-verify", "-m", "hooks"]);
+    let remote = tmp.path().join("remote.git");
+    git(
+        tmp.path(),
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    git(
+        &root,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
 
     ns().current_dir(&root)
         .args(["factory", "validate"])
@@ -1241,7 +1252,12 @@ fn own_factory_definition_turns_on_the_pre_commit_hook() {
     fs::write(path.join("README"), "changed\n").unwrap();
     let out = git_output(&path, &["commit", "-qam", "change"]);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("ci-local --fast"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ci-local ran with []"));
+
+    let out = git_output(&path, &["push", "-q", "origin", "HEAD:refs/heads/u5"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ci-local ran with []"));
+    assert_eq!(git(&remote, &["for-each-ref"]), "");
 }
 
 #[test]

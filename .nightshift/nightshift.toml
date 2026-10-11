@@ -3,7 +3,7 @@ name = "nightshift"
 gates = "auto"
 
 [worktree]
-setup = ["git config core.hooksPath .githooks"]   # runs .githooks/pre-commit (scripts/ci-local.sh --fast) on every commit
+setup = ["git config core.hooksPath .githooks"]   # .githooks runs scripts/ci-local.sh (all of CI) on every commit and push
 
 [defaults]
 billing = "subscription"        # Max plan login only; API keys are stripped from child processes

@@ -24,17 +24,6 @@ const ALL_STEPS: [&str; 14] = [
     "private guard",
 ];
 
-const FAST_ONLY_SKIPS: [&str; 8] = [
-    "cargo test",
-    "cargo test under a decoy GIT_DIR",
-    "ns rules check",
-    "ns eval --dry-run",
-    "py-inventory fixture tests",
-    "Python rule pack tests",
-    "C rule pack tests",
-    "ns-troubleshoot brief checker tests",
-];
-
 /// Fails when its command line contains `$FAIL_ON`.
 const CARGO: &str = r#"#!/bin/sh
 case "$FAIL_ON" in ?*) case "cargo $*" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
@@ -225,18 +214,6 @@ fn a_failing_step_stops_the_run() {
 }
 
 #[test]
-fn fast_skips_tests_eval_and_python_checks() {
-    let out = Repo::new().run(&["--fast"], &[]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    let want: Vec<_> = ALL_STEPS
-        .iter()
-        .copied()
-        .filter(|s| !FAST_ONLY_SKIPS.contains(s))
-        .collect();
-    assert_eq!(steps(&out), want);
-}
-
-#[test]
 fn fixture_tests_skip_without_pytest() {
     let out = Repo::new().run(&[], &[]);
     assert!(out.status.success(), "{}", stderr(&out));
@@ -311,8 +288,10 @@ fn the_eval_filter_allows_only_zephyr_skips() {
 }
 
 #[test]
-fn an_unknown_argument_prints_usage_and_exits_2() {
-    let out = Repo::new().run(&["--bogus"], &[]);
-    assert_eq!(out.status.code(), Some(2));
-    assert_eq!(stderr(&out), "usage: scripts/ci-local.sh [--fast]\n");
+fn any_argument_prints_usage_and_exits_2() {
+    for arg in ["--bogus", "--fast"] {
+        let out = Repo::new().run(&[arg], &[]);
+        assert_eq!(out.status.code(), Some(2), "{arg}");
+        assert_eq!(stderr(&out), "usage: scripts/ci-local.sh\n");
+    }
 }
