@@ -28,6 +28,11 @@ run = "grep -Eq '#42|42-fix-widget-sort' .git/fake/notify.log"
 expect_exit = 0
 
 [[check]]
+type = "command"
+run = "! grep -Eq '#41|#43|41-feat|43-feat' .git/fake/notify.log"
+expect_exit = 0
+
+[[check]]
 type = "file_exists"
 path = ".git/ns/handoffs/2026-10-10.md"
 

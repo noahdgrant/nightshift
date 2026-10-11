@@ -27,7 +27,6 @@ show() {
   local all="ActiveState=$(active && echo active || echo inactive)
 SubState=$(active && echo running || echo dead)
 Result=success
-NRestarts=0
 ActiveEnterTimestamp=$since"
   if [ -n "$props" ]; then
     all=$(printf '%s\n' "$all" | grep -E "^($(echo "${props#,}" | tr ',' '|'))=")

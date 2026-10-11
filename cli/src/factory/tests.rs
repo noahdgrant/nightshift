@@ -177,6 +177,12 @@ fn a_zero_silence_or_empty_notify_is_a_problem() {
 }
 
 #[test]
+fn one_minute_of_silence_is_not_a_problem() {
+    let f = parse("[supervise]\nsilence_minutes = 1\n").unwrap();
+    assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+}
+
+#[test]
 fn queue_priority_defaults_and_overrides() {
     let f = parse("").unwrap();
     assert_eq!(

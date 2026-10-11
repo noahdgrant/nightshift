@@ -28,6 +28,11 @@ run = "test -s .git/fake/notify.log"
 expect_exit = 0
 
 [[check]]
+type = "command"
+run = "grep -Eqi 'cargo|toolchain|three|3 units' .git/fake/notify.log"
+expect_exit = 0
+
+[[check]]
 type = "file_exists"
 path = ".git/ns/handoffs/2026-10-10.md"
 
