@@ -196,14 +196,6 @@
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
-      "file": "cli/src/ask.rs",
-      "line": 32,
-      "message": "this function has too many lines (156/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "pub fn run(args: AskArgs<'_>) -> Result<()> {"
-    },
-    {
-      "tool": "clippy",
-      "rule": "clippy::too_many_lines",
       "file": "cli/src/eval/mod.rs",
       "line": 149,
       "message": "this function has too many lines (151/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
@@ -216,14 +208,6 @@
       "line": 850,
       "message": "this function has too many lines (161/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn execute(args: &Args, env: &Env, plans: Vec<SkillPlan>) -> Result<ExitCode> {"
-    },
-    {
-      "tool": "clippy",
-      "rule": "clippy::too_many_lines",
-      "file": "cli/src/factory.rs",
-      "line": 330,
-      "message": "this function has too many lines (101/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "pub fn problems(&self, cfg: Option<&config::Config>) -> Vec<String> {"
     },
     {
       "tool": "clippy",
