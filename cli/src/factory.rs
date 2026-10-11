@@ -205,6 +205,7 @@ pub struct Queue {
     pub ready_label: String,
     pub in_progress_label: String,
     pub done_label: String,
+    pub human_merge_label: String,
     pub stuck_label: String,
     /// Set on an issue whose triage split it into child issues: it waits on them, neither
     /// stuck nor queued.
@@ -227,6 +228,7 @@ impl Default for Queue {
             ready_label: "status:ready-for-agent".into(),
             in_progress_label: "status:in-progress".into(),
             done_label: "status:in-review".into(),
+            human_merge_label: "needs-human-merge".into(),
             stuck_label: "status:ready-for-human".into(),
             split_label: "status:needs-define".into(),
             triage_label: "status:needs-triage".into(),
@@ -809,6 +811,7 @@ ci_timeout_minutes = 30
         assert_eq!(f.merge.ci_register_timeout, 3);
         assert_eq!(f.queue.triage_label, "status:needs-triage");
         assert_eq!(f.queue.split_label, "status:needs-define");
+        assert_eq!(f.queue.human_merge_label, "needs-human-merge");
         let f = parse("[queue]\ntriage_label = \"triage\"\n").unwrap();
         assert_eq!(f.queue.triage_label, "triage");
         let f = parse("[merge]\nci_register_timeout = 7\n").unwrap();

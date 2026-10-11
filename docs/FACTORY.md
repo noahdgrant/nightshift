@@ -49,6 +49,7 @@ source = "github"                  # github or gitlab. Unset: from origin's host
 ready_label = "status:ready-for-agent"
 in_progress_label = "status:in-progress"
 done_label = "status:in-review"    # set when the unit ends with an open PR
+human_merge_label = "needs-human-merge"   # set on that PR; created in red if missing
 stuck_label = "status:ready-for-human"
 split_label = "status:needs-define"   # set when triage split the issue into child issues
 triage_label = "status:needs-triage"   # issues ns watch triages before it picks a unit
@@ -323,7 +324,7 @@ The loop below is for one unit at a time, the default. With `--parallel N` the s
 3. Drop issues whose author is outside the team (see Trust), issues whose first-line `Blocked by: #a, #b` names any open issue, and issues that already have an open PR whose body says `Closes #n`, unless that PR comes from the issue's own unit branch (see "Units a night didn't finish").
 4. Sort by the first matching `priority` label, then the first matching `order` label, then issue number. An issue with no `priority` label sorts after the last one.
 5. Take the first. Swap `ready_label` for `in_progress_label`, so no other worker takes it. `git fetch origin`, then start `ns run <n>-<slug of the title> --issue <n> --base origin/<default>` as a child process on the night's snapshot (see "Parallel units"), sharing the budget.
-6. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`. On `split`, swap to `split_label` and post nothing: triage's notes already list the children, and the parent waits on them, neither queued nor triaged again, until a human closes it. On `stuck`, or a `done` that needs a human merge (files that need human review, no CI), swap to `stuck_label` and comment the reason and the last artifact path. When the last artifact is a `review.md`, the comment also lists its open Critical and Important findings, each with its title and location. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
+6. On `merged`, remove `in_progress_label`; GitHub closes the issue through the PR's `Closes #n`. On `done`, swap to `done_label`, then add `human_merge_label` to the unit's PR, if `pr.md` names one, and comment on the PR why it needs a human merge, with the AI disclaimer. A missing label is created first, red (`d73a4a`) with a description. A merged unit's PR loses the label if it carries it. On `split`, swap to `split_label` and post nothing: triage's notes already list the children, and the parent waits on them, neither queued nor triaged again, until a human closes it. On `stuck`, or a `done` that needs a human merge (files that need human review, no CI), swap to `stuck_label` and comment the reason and the last artifact path; that `done` labels its PR as above too. When the last artifact is a `review.md`, the comment also lists its open Critical and Important findings, each with its title and location. The comment carries the AI disclaimer. On `budget`, put `ready_label` back and stop.
 7. On `paused`, keep `in_progress_label` and sleep until the reset time (30 minutes when unknown, then check again), then resume the same unit. If the reset is at or past `--until`, put `ready_label` back and stop cleanly. With more than one unit running, a usage limit pauses them all (see "Parallel units").
 8. Repeat until the queue is empty, `--until` passes (no new unit starts after it), `max_units` is reached, the budget is spent, or a signal asks it to stop.
 
@@ -449,7 +450,7 @@ ns quality import <dir> [--dry-run]
 | First-pass yield | Units whose first review pass raised no Critical or Important finding in changed code, over units where that is known | Rising |
 | Findings per 100 lines | Critical and Important findings in changed code from the first pass, per 100 changed lines, overall and per axis. A finding with two axes counts once in each | Falling |
 | Cycles to clean | Fix cycles a unit needed to end `pass` with no open Critical or Important in changed code (median, max). Units that never got there are `not_clean` | Falling |
-| Leftovers | Critical and Important findings in changed code still `open` after the third fix cycle | 0 |
+| Leftovers | Critical and Important findings in changed code still `open` when the fix loop stops, after the third cycle or the fix-only cycles that follow it | 0 |
 | Escapes | Findings with `Scope: pre-existing` (D29): defects in code the unit didn't change, so an earlier unit's review let them through. Each is blamed (`git blame` at the reviewed commit, the frontmatter's `sha:`, else `head:`, else `base:`) to the commit that introduced the line, and to the PR in its subject (`(#123)`) | Falling |
 
 An escape counts only as an escape: it never makes a unit's first pass dirty, never counts toward findings per 100 lines, and never blocks. A finding dismissed in review counts toward none of these: review judged it wrong. `trend` repeats the numbers for each local day (the newest artifact's `updated:`), `--since` keeps only units whose newest artifact was updated, and run-log events, at or after a UTC instant, and `--until` only those at or before one. A bare date means 00:00:00 UTC for `--since` and 23:59:59 UTC for `--until`, whatever `TZ` is, so `--until 2026-10-09` and `--since 2026-10-10` split units and events with no overlap and no gap. With either bound set, an undated unit or event is dropped. A malformed bound, or `--until` before `--since`, exits 2. The output echoes both as `since` and `until`, null when unset. `per_unit` has each unit's numbers, with `changed_lines`, which keeps the review cost of a large unit visible now that size never blocks one (D37), `reached_clean` (`clean`, `not_clean` or `unknown`) and its review runs, review cost and outcome from the run log. `run_log.units_without_artifacts` names units the log shows reviewed that have neither a record nor a worktree.
@@ -471,7 +472,7 @@ These are heuristics. A finding's severity comes from its `C`, `I` or `S` id pre
 
 ### Where the history lives
 
-Worktrees get removed once their change merges (see "Cleanup"), so the history lives in the repo, on an orphan branch `nightshift/quality` on `origin` (D39). It holds one file, `records.jsonl`, with one JSON line per review attempt. When a unit ends `merged`, `done` or `stuck`, `ns run` writes the unit's records and pushes them. Each record has the unit, issue, PR, outcome, the attempt's status, `updated:`, local day, fix cycles and change size, and each finding's id, severity, axes, scope, cycle, status and relative location. Finding titles are left out. Paths are relative, and a record holding an absolute path is never written. A location with one is dropped.
+Worktrees get removed once their change merges (see "Cleanup"), so the history lives in the repo, on an orphan branch `nightshift/quality` on `origin` (D39). It holds one file, `records.jsonl`, with one JSON line per review attempt. When a unit ends `merged`, `done` or `stuck`, `ns run` writes the unit's records and pushes them. Each record has the unit, issue, PR, outcome, the attempt's status, `updated:`, local day, fix cycles and change size, and each finding's id, severity, axes, scope, cycle, fix attempts, status and relative location. Finding titles are left out. Paths are relative, and a record holding an absolute path is never written. A location with one is dropped.
 
 `ns run` fetches the branch, appends on its tip and pushes. If origin rejects the push because another writer pushed first, it fetches and tries again, up to 3 more times. Any other failure (no `origin`, no access, a hook that declines the push, the network) goes straight to the outbox, as does a fourth lost race. The records wait in `<git-common-dir>/ns/quality-outbox.jsonl`, and the next `ns run` or `ns quality import` pushes them. A unit never fails because its record didn't push. The branch is data: `ns` writes it unattended, outside `human_review` and the PR flow. Commits are built with git plumbing, so writing one never touches a working tree, the index or a local branch. These git calls never prompt: credential prompts are off, ssh runs in batch mode with connect and keepalive timeouts unless you set your own ssh command, and an HTTP transfer under 1000 bytes a second for 60 seconds fails. That matters because a write holds a lock on the outbox while it talks to `origin`.
 
@@ -616,7 +617,11 @@ The summary's `cleaned` lists the units whose worktrees the night removed after 
 jq -r 'select(.event == "cleanup") | [.unit, .removed, .reason // ""] | @tsv' .git/ns/runs.jsonl
 ```
 
-On the tracker, a merged unit's issue is closed. Under `merge.policy = "human"`, a unit that ended `done` has `done_label` (`status:in-review` by default) and an open PR for you to merge. A stuck unit, or a `done` that needs a human merge, has `stuck_label` (`status:ready-for-human` by default) and a comment with the reason and the last artifact.
+On the tracker, a merged unit's issue is closed. Under `merge.policy = "human"`, a unit that ended `done` has `done_label` (`status:in-review` by default) and an open PR for you to merge. A stuck unit, or a `done` that needs a human merge, has `stuck_label` (`status:ready-for-human` by default) and a comment with the reason and the last artifact. Every PR waiting on a human merge carries `human_merge_label`, with a comment saying why, so the merge queue is:
+
+```bash
+gh pr list --label needs-human-merge
+```
 
 ### Resuming a unit
 

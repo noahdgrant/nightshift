@@ -180,6 +180,19 @@ impl Forge for GitLab {
     fn close(&self, n: u64) -> Result<()> {
         glab(&self.root, &["issue", "close", &n.to_string()]).map(|_| ())
     }
+
+    // Merge requests come with the glab forge work (#322-#324); until then they are left alone.
+    fn add_pr_label(&self, _: u64, _: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn remove_pr_label(&self, _: u64, _: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn comment_pr(&self, _: u64, _: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
