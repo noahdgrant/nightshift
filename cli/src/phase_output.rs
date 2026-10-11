@@ -31,6 +31,13 @@ static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:token|secret|password|passwd|passphrase|api[_-]?key|access[_-]?key|private[_-]?key|credentials?|authorization)$").unwrap()
 });
 
+static AUTH_SCHEME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(bearer|basic)\s+([A-Za-z0-9._~+/=-]{8,})").unwrap());
+
+fn credential_like(word: &str) -> bool {
+    word.len() >= 20 || word.contains(|c: char| c.is_ascii_digit() || "+/=_~".contains(c))
+}
+
 /// Secret-like text and what replaces it, applied in order.
 static SECRET_TEXT: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
     [
@@ -39,14 +46,23 @@ static SECRET_TEXT: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
             "[redacted private key]",
         ),
         (r"(://)[^/\s:@]+:[^/\s@]+@", "${1}[redacted]@"),
-        (r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}", "$1 [redacted]"),
         (r"(?i)\b(authorization\s*:\s*token\s+)\S+", "${1}[redacted]"),
         (
             r"(?i)(\s--[a-z-]*(?:password|passwd|passphrase|secret|token|api-?key|access-?key|private-?key|credentials?)\s+)\S+",
             "${1}[redacted]",
         ),
-        (r"(\s-u\s+)[^\s:]+:\S+", "${1}[redacted]"),
-        (r"(\s-p)[^\s-]\S*", "${1}[redacted]"),
+        (
+            r"(\s(?:-u|--user|--proxy-user)[\s=]+)[^\s:]+:\S+",
+            "${1}[redacted]",
+        ),
+        (
+            r"(\b(?:docker\s+login|sshpass)\b[^\n|;&]*?\s-p\s*)\S+",
+            "${1}[redacted]",
+        ),
+        (
+            r"(\b(?:mysql|mysqldump|mysqladmin|mariadb)\b[^\n|;&]*?\s-p)\S+",
+            "${1}[redacted]",
+        ),
         (
             r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|(?:sk|rk)_live_[A-Za-z0-9]{10,}|npm_[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{20,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|ya29\.[A-Za-z0-9_-]{20,}|shp(?:at|ca|pa|ss)_[A-Za-z0-9]{20,}|pypi-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})",
             REDACTED,
@@ -97,6 +113,8 @@ pub fn cli(unit: Option<&str>, follow: bool, as_json: bool) -> Result<ExitCode> 
 
 /// How much of the end of a transcript is read to find its latest entries.
 const WINDOW: u64 = 256 * 1024;
+
+const RUNS_TAIL: u64 = 64 * 1024;
 
 /// Print the last [`LATEST`] entries of the transcript's whole lines. With `follow`, then the
 /// entries of each line appended after them, and when `current` names another transcript, that
@@ -156,6 +174,9 @@ fn drain(path: &Path, at: u64, show: Show, out: &mut impl Write) -> io::Result<u
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(at),
         Err(e) => return Err(e),
     };
+    if file.metadata()?.len() < at {
+        return snapshot(path, show, out);
+    }
     file.seek(SeekFrom::Start(at))?;
     let mut added = Vec::new();
     file.read_to_end(&mut added)?;
@@ -175,7 +196,7 @@ fn current(root: &Path, runs: &Path, unit: Option<&str>) -> io::Result<Option<Pa
     if unit.is_some() {
         return newest(root, unit);
     }
-    let logged = match fs::read(runs) {
+    let logged = match tail(runs, RUNS_TAIL) {
         Ok(b) => last_unit(&b),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => return Err(e),
@@ -184,6 +205,24 @@ fn current(root: &Path, runs: &Path, unit: Option<&str>) -> io::Result<Option<Pa
         Some(p) => Ok(Some(p)),
         None => newest(root, None),
     }
+}
+
+/// The last `n` bytes of `path`'s whole lines.
+fn tail(path: &Path, n: u64) -> io::Result<Vec<u8>> {
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(n);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    if start > 0 {
+        let first = bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |i| i + 1);
+        bytes.drain(..first);
+    }
+    Ok(bytes)
 }
 
 /// The unit of the last run-log line in `log` that names a valid one.
@@ -260,6 +299,17 @@ fn latest<'a>(lines: impl Iterator<Item = &'a [u8]>, n: usize) -> VecDeque<Entry
 fn redact(v: &mut Value) {
     match v {
         Value::String(s) => {
+            if AUTH_SCHEME.is_match(s) {
+                *s = AUTH_SCHEME
+                    .replace_all(s, |c: &regex::Captures| {
+                        if credential_like(&c[2]) {
+                            format!("{} {REDACTED}", &c[1])
+                        } else {
+                            c[0].to_string()
+                        }
+                    })
+                    .into_owned();
+            }
             for (re, with) in SECRET_TEXT.iter() {
                 if re.is_match(s) {
                     *s = re.replace_all(s, *with).into_owned();
@@ -730,5 +780,196 @@ not json
             current(&root, &runs, None).unwrap(),
             Some(root.join("8-b/build-1.jsonl"))
         );
+    }
+
+    #[test]
+    fn only_the_end_of_the_run_log_names_the_unit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("transcripts");
+        let runs = tmp.path().join("runs.jsonl");
+        touch(&root.join("7-a/build-1.jsonl"), 100);
+        touch(&root.join("8-b/build-1.jsonl"), 900);
+        let filler = format!(
+            "{{\"event\":\"lock_wait\",\"pad\":\"{}\"}}\n",
+            "p".repeat(1000)
+        );
+        let log = format!(
+            "{{\"event\":\"start\",\"unit\":\"7-a\"}}\n{}",
+            filler.repeat(RUNS_TAIL as usize / filler.len() + 2)
+        );
+        fs::write(&runs, log).unwrap();
+        assert_eq!(
+            current(&root, &runs, None).unwrap(),
+            Some(root.join("8-b/build-1.jsonl"))
+        );
+    }
+
+    #[test]
+    fn a_run_log_that_cannot_be_read_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join("runs.jsonl");
+        fs::create_dir(&runs).unwrap();
+        assert!(current(&tmp.path().join("transcripts"), &runs, None).is_err());
+    }
+
+    #[test]
+    fn follow_starts_over_when_the_transcript_is_rewritten_shorter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("build-1.jsonl");
+        append(
+            &path,
+            &format!("{}\n{}\n", said("first old"), said("second old")),
+        );
+        let waits = Cell::new(0);
+        let out = view(
+            &path,
+            true,
+            || Ok(Some(path.clone())),
+            || {
+                let n = waits.get();
+                if n == 0 {
+                    fs::write(&path, format!("{}\n", said("new"))).unwrap();
+                }
+                waits.set(n + 1);
+                n < 1
+            },
+        );
+        assert_eq!(
+            out,
+            "assistant: first old\nassistant: second old\nassistant: new\n"
+        );
+    }
+
+    #[test]
+    fn bearer_and_basic_are_redacted_only_when_followed_by_a_credential() {
+        for prose in [
+            "a basic implementation of Bearer authentication",
+            "the basic implementation.",
+            "use basic configuration",
+        ] {
+            let mut v = Value::String(prose.into());
+            redact(&mut v);
+            assert_eq!(v, prose);
+        }
+        for (text, secret) in [
+            (
+                "Authorization: Bearer abcdefghijklmnopqrst",
+                "abcdefghijklmnopqrst",
+            ),
+            ("Authorization: Basic dXNlcjpodW50ZXIy", "dXNlcjpodW50ZXIy"),
+            ("Bearer opaquebearer42", "opaquebearer42"),
+        ] {
+            let mut v = Value::String(text.into());
+            redact(&mut v);
+            assert!(!v.as_str().unwrap().contains(secret), "{text}");
+        }
+    }
+
+    #[test]
+    fn p_is_redacted_only_where_it_takes_a_password() {
+        for cmd in [
+            "find . -print0",
+            "ls -pa dir",
+            "docker run -p8080:80 img",
+            "docker run -p 8080:80 img",
+            "mkdir -p /tmp/x",
+            "mysql -p db",
+        ] {
+            let mut v = Value::String(cmd.into());
+            redact(&mut v);
+            assert_eq!(v, cmd);
+        }
+        for (cmd, secret) in [
+            ("docker login -u me -p hunter2value reg", "hunter2value"),
+            ("sshpass -p hunter2value ssh host", "hunter2value"),
+            ("mysql -u root -phunter2value db", "hunter2value"),
+            ("curl --user admin:hunter2value https://x", "hunter2value"),
+            (
+                "curl --proxy-user admin:hunter2value https://x",
+                "hunter2value",
+            ),
+            ("curl -u admin:hunter2value https://x", "hunter2value"),
+        ] {
+            let mut v = Value::String(cmd.into());
+            redact(&mut v);
+            assert!(!v.as_str().unwrap().contains(secret), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn follow_propagates_an_error_from_resolving_the_current_transcript() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("build-1.jsonl");
+        append(&path, &format!("{}\n", said("one")));
+        let err = print(
+            &path,
+            true,
+            text,
+            &mut Vec::new(),
+            || Err(io::Error::other("boom")),
+            || panic!("waited"),
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "boom");
+    }
+
+    #[test]
+    fn follow_keeps_its_place_while_the_transcript_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("build-1.jsonl");
+        append(&path, &format!("{}\n", said("one")));
+        let waits = Cell::new(0);
+        let out = view(
+            &path,
+            true,
+            || Ok(Some(path.clone())),
+            || {
+                let n = waits.get();
+                if n == 0 {
+                    fs::remove_file(&path).unwrap();
+                }
+                waits.set(n + 1);
+                n < 2
+            },
+        );
+        assert_eq!(out, "assistant: one\n");
+        assert!(drain(&tmp.path().join("gone.jsonl"), 7, text, &mut Vec::new()).unwrap() == 7);
+        assert!(snapshot(&tmp.path().join("gone.jsonl"), text, &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn a_window_without_a_newline_prints_nothing_and_stays_inside_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("build-1.jsonl");
+        let body = said(&"o".repeat(WINDOW as usize + 10));
+        append(&path, &format!("{}\n{body}", said("early")));
+        let len = fs::metadata(&path).unwrap().len();
+        let mut out = Vec::new();
+        let at = snapshot(&path, text, &mut out).unwrap();
+        assert!(out.is_empty());
+        assert_eq!(at, len - WINDOW);
+    }
+
+    #[test]
+    fn follow_after_a_long_transcript_prints_each_appended_entry_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("build-1.jsonl");
+        let old = said(&"o".repeat(WINDOW as usize));
+        append(&path, &format!("{old}\n{}\n", said("recent")));
+        let waits = Cell::new(0);
+        let out = view(
+            &path,
+            true,
+            || Ok(Some(path.clone())),
+            || {
+                let n = waits.get();
+                if n == 0 {
+                    append(&path, &format!("{}\n", said("appended")));
+                }
+                waits.set(n + 1);
+                n < 2
+            },
+        );
+        assert_eq!(out, "assistant: recent\nassistant: appended\n");
     }
 }
