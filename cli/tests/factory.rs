@@ -6782,14 +6782,53 @@ fn a_claim_that_fails_on_a_refill_does_not_spend_a_max_units_claim() {
 }
 
 #[test]
+fn a_claim_whose_verifying_read_fails_on_a_refill_is_put_back_to_ready() {
+    let e = Env::new();
+    e.triage_sets(&["status:ready-for-agent"]);
+    e.queue("triage.5-fix-e", &["pass:script"]);
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in\n\
+         *\"issue edit 5 \"*\"--add-label status:in-progress\"*) touch \"$d/edited\" ;;\n\
+         *\"issue view 5 --json labels\"*)\n\
+           if [ -f \"$d/edited\" ] && [ ! -f \"$d/failed\" ]; then echo 'HTTP 502' >&2; touch \"$d/failed\"; exit 1; fi ;;\n\
+         esac\n",
+    );
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_e, go_e) = hold_phase(&e, "5-fix-e", "build");
+    let w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
+    w.entered(&in_a);
+    let put_back =
+        "issue edit 5 --remove-label status:in-progress --add-label status:ready-for-agent";
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !e.gh_calls().contains(put_back) {
+        assert!(
+            Instant::now() < deadline,
+            "#5 was never put back:\n{}",
+            e.gh_calls()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(e.ghd.join("failed").exists());
+    w.entered(&in_e);
+    release(&go_a);
+    release(&go_e);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 5], "done"), "{v}");
+}
+
+#[test]
 fn a_claim_whose_unit_cannot_start_on_a_refill_does_not_spend_a_max_units_claim() {
     let e = Env::new();
     e.triage_sets(&["status:ready-for-agent"]);
     e.queue("triage.5-fix-e", &["pass:script"]);
     let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_t, go_t) = hold_phase(&e, "5-fix-e", "triage");
     let (in_e, go_e) = hold_phase(&e, "5-fix-e", "build");
     let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2", "--max-units", "2"]);
     w.entered(&in_a);
+    w.entered(&in_t);
     let night = fs::read_dir(e.root.join(".git/ns"))
         .unwrap()
         .map(|d| d.unwrap().path())
@@ -6807,6 +6846,7 @@ fn a_claim_whose_unit_cannot_start_on_a_refill_does_not_spend_a_max_units_claim(
     for b in &blocks {
         fs::create_dir(b).unwrap();
     }
+    release(&go_t);
     w.line("refill failed");
     w.line("refill failed");
     for b in &blocks {

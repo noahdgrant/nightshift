@@ -320,13 +320,11 @@ impl<'a> Scheduler<'a> {
                 break;
             }
             let q = &self.plan.loaded.fac.queue;
-            set_status(
-                &self.plan.repo.root,
-                q,
-                issue.number,
-                Some(&q.in_progress_label),
-            )?;
             let n = issue.number;
+            if let Err(e) = set_status(&self.plan.repo.root, q, n, Some(&q.in_progress_label)) {
+                let _ = set_status(&self.plan.repo.root, q, n, Some(&q.ready_label));
+                return Err(e.into());
+            }
             if let Err(e) = self.start(issue, night, false) {
                 let _ = set_status(&self.plan.repo.root, q, n, Some(&q.ready_label));
                 return Err(e.into());
