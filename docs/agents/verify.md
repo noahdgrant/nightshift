@@ -1,25 +1,11 @@
 # Verify
 
-How to prove a change works beyond the test suite. `ns-verify` reads this file. There's no verify skill for this repo; the product is a CLI and a set of skills, so drive them directly.
+How to prove a change works on the real surface, beyond the test suite. `ns-verify` reads this file.
 
-## CLI changes
+## Set up
 
-Build from the worktree, then exercise the changed command against a throwaway git repo in a temp dir, the way a user would:
-
-```bash
-cargo build --manifest-path cli/Cargo.toml
-T=$(mktemp -d) && git -C "$T" init -q -b main && git -C "$T" commit -q --allow-empty -m init
-(cd "$T" && "$OLDPWD/cli/target/debug/ns" <command> ...)
-```
-
-Evidence is the exact command, its JSON output, and any files it created. For commands that start a harness or call `gh`, use `--dry-run`, or the fake harness and fake `gh` patterns in `cli/tests/`. Never call a real model or the real GitHub from verification.
-
-## Skill changes
-
-- `cli/target/debug/ns lint skills --human` passes.
-- `cli/target/debug/ns eval <skill> --dry-run` plans the skill's cases without errors.
-- Read the changed skill end to end as the agent would: every pointer resolves, steps end on a checkable criterion, and the contract (`skills/ns-contract/SKILL.md`) still holds.
-
-## Docs changes
-
-Links resolve, and nothing contradicts `docs/DESIGN.md` decisions or `skills/ns-contract/SKILL.md`.
+- **Verify skill**: `verify-nightshift` at `.agents/skills/verify-nightshift/SKILL.md`, feature map in `features/`. Load it to drive the product and collect evidence.
+- **Control CLI**: `ns` itself, built from the worktree (`cli/target/debug/ns`), run against a throwaway git repo with the fake `claude`, `gh` and `glab` from `cli/tests/fixtures/factory/`. There is no separate control script. Start with the skill's Doctor, then `cli/target/debug/ns --help`.
+- **Evidence**: `.ns/verify/<run-id>/` by default. Export `OUT=<dir>` before the skill's Launch to override.
+- **Surfaces**: covered: the `ns` CLI, and the skills through `ns lint` and `ns eval --dry-run`. Not covered: real harness runs and real GitHub or GitLab calls, which verification never makes; skill behaviour under a model, which scheduled `ns eval` runs measure (`docs/EVALS.md`).
+- **Last proven end to end**: 2026-10-11, commit 607a754, feature `worktree` (`wt-new`, `wt-idempotent`, `wt-invalid`, `wt-setup`, `wt-remove`).
