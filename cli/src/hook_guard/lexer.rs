@@ -102,6 +102,8 @@ struct Lexer<'a> {
     cur: Option<WordBuf>,
     pending_heredocs: Vec<Heredoc>,
     next_word_is_delimiter: bool,
+    in_arithmetic: bool,
+    arithmetic_next: bool,
 }
 
 /// Split a shell command into words and operators. Quotes join and are removed, so a bypass
@@ -126,6 +128,8 @@ impl<'a> Lexer<'a> {
             cur: None,
             pending_heredocs: Vec::new(),
             next_word_is_delimiter: false,
+            in_arithmetic: false,
+            arithmetic_next: false,
         }
     }
 
@@ -175,6 +179,9 @@ impl<'a> Lexer<'a> {
                 '\n' => self.newline(),
                 '`' if close == Close::Backtick => return,
                 '`' => self.expansion(Close::Backtick),
+                '(' if self.cur.is_none() && self.chars.peek() == Some(&'(') => {
+                    self.arithmetic_command();
+                }
                 '(' => {
                     depth += 1;
                     self.end_word();
@@ -291,6 +298,7 @@ impl<'a> Lexer<'a> {
             Some('"') if !in_double_quotes => {}
             Some('(') => {
                 self.chars.next();
+                self.arithmetic_next = self.chars.peek() == Some(&'(');
                 self.expansion(Close::Paren);
             }
             Some('{') => {
@@ -407,12 +415,23 @@ impl<'a> Lexer<'a> {
         let outer_out = std::mem::take(&mut self.out);
         let outer_word = self.cur.take();
         let outer_delimiter = std::mem::take(&mut self.next_word_is_delimiter);
+        let outer_arithmetic = std::mem::replace(
+            &mut self.in_arithmetic,
+            std::mem::take(&mut self.arithmetic_next),
+        );
         self.run(close);
+        self.in_arithmetic = outer_arithmetic;
         self.end_word();
         let inner = std::mem::replace(&mut self.out, outer_out);
         self.substitutions.push(inner);
         self.cur = outer_word;
         self.next_word_is_delimiter = outer_delimiter;
+    }
+
+    fn arithmetic_command(&mut self) {
+        self.arithmetic_next = true;
+        self.substitution(Close::Paren);
+        self.out.push(Tok::CommandEnd);
     }
 
     fn expansion(&mut self, close: Close) {
@@ -480,7 +499,7 @@ impl<'a> Lexer<'a> {
         } else if self.chars.next_if_eq(&'<').is_some() {
             if self.chars.next_if_eq(&'<').is_some() {
                 self.herestring();
-            } else if self.shift_operand_follows() {
+            } else if self.in_arithmetic || self.shift_operand_follows() {
                 self.buf().text.push_str("<<");
             } else {
                 self.heredoc_operator();

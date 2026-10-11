@@ -32,6 +32,10 @@ fn a_shift_is_not_a_heredoc() {
         "(( x = 1 << 2 ))\ngit commit -n",
         "let x=1<<2\ngit commit -n",
         "x=$((1<<2))\ngit commit -n",
+        "echo $((1<<n))\ngit commit -n",
+        "echo $((a<<b))\ngit commit -n",
+        "echo $((x<<$y))\ngit commit -n",
+        "(( x = a << b ))\ngit commit -n",
     ] {
         assert!(denied(c), "{c}");
     }
