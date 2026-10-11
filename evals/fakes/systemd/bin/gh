@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fake gh for ns eval: records the call; every list is empty and every change is refused.
+fake=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/fake
+[ "$fake" = /fake ] && fake=$HOME/fake
+mkdir -p "$fake"
+echo "gh $*" >> "$fake/calls.log"
+echo "[]"

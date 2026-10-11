@@ -69,3 +69,7 @@ The case's second check snapshots the trial's working tree (tracked and untracke
 - Hidden acceptance suites can live in a temp dir with a plain `CMakeLists.txt` (no self-pinning) and run with `-x=ZEPHYR_EXTRA_MODULES="$PWD"`. See `ns-tdd/evals/cases/zephyr-ringbuf-drop-oldest`.
 - Twister output must go outside the repo (`-O` a temp dir), or it pollutes `diff_scope`.
 - `scripts/twister.sh <files>` maps files to suites, so `fails_on_base` can pass it `{changed_tests}` directly.
+
+## night-log
+
+A near-empty repo, `widgets`, that `ns watch` works overnight. `.nightshift/nightshift.toml` sets only `[supervise] notify`, to a command that appends each ping to `<git-common-dir>/fake/notify.log`. Its `path_prepend` puts the fakes in `evals/fakes/systemd/bin` first on `PATH` (`docs/EVALS.md`). Each `ns-supervise` case brings its night: a run log copied to `.git/ns/runs.jsonl`, and the fake systemd state under `.git/fake/`. It has no seeded defects.
