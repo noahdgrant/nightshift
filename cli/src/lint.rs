@@ -373,12 +373,14 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
             }
         }
         for f in feature_files(dir) {
-            let Ok(body) = fs::read_to_string(&f) else {
-                continue;
-            };
-            if let Some(m) = check_feature(&body) {
-                let rel = f.strip_prefix(dir).unwrap_or(&f).to_string_lossy();
-                push(&mut errors, &f, format!("{rel}: {m}"));
+            let rel = f.strip_prefix(dir).unwrap_or(&f).to_string_lossy();
+            match fs::read_to_string(&f) {
+                Ok(body) => {
+                    if let Some(m) = check_feature(&body) {
+                        push(&mut errors, &f, format!("{rel}: {m}"));
+                    }
+                }
+                Err(e) => push(&mut errors, &f, format!("{rel}: unreadable: {e}")),
             }
         }
         let mut refs = Vec::new();
@@ -784,6 +786,39 @@ mod tests {
                     format!("features/swapped.md: {want}; found: How to get to it (user POV), Sub-features, Driving it with control-x, Gotchas").as_str()
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn unreadable_feature_file_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join(".agents/skills");
+        write_skill_at(&local, "verify-x", "");
+        let dir = local.join("verify-x/features");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("x.md"), [0xff, 0xfe, 0xfd]).unwrap();
+        let (skills, errs) = lint_messages(&local);
+        assert_eq!(skills, 1);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(
+            errs[0].starts_with("features/x.md: unreadable: "),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn feature_files_are_checked_under_a_shipped_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shipped = tmp.path().join("skills");
+        write_skill_at(&shipped, "ns-a", "");
+        let dir = shipped.join("ns-a/features");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("bad.md"), "# F\n\n## Nope\n").unwrap();
+        let (_, errs) = lint_messages(&shipped);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(
+            errs[0].starts_with("features/bad.md: H2 headings must be"),
+            "{errs:?}"
         );
     }
 
