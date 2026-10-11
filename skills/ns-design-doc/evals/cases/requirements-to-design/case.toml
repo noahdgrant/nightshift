@@ -25,7 +25,7 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = '''f=$(ls docs/design/*/v1.md) && g=$(awk 'tolower($0) ~ /^#+ *goals/{o=1;next} /^##? /{o=0} o' "$f") && for id in STOCK-1 STOCK-2 STOCK-3; do printf '%s\n' "$g" | grep -Eq "$id([^0-9]|$)" || exit 1; done'''
+run = '''f=$(ls docs/design/*/v1.md) && g=$(awk '/^#+ /{n=match($0,/^#+/)?RLENGTH:0; if(o&&n<=l)o=0; if(!o&&tolower($0) ~ /^#+ +([0-9]+(\.[0-9]+)*\.? +)?goals/){o=1;l=n;next}} o' "$f") && for id in STOCK-1 STOCK-2 STOCK-3; do printf '%s\n' "$g" | grep -Eq "$id([^0-9]|$)" || exit 1; done'''
 expect_exit = 0
 
 [[check]]
@@ -37,7 +37,7 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = '''f=$(ls docs/design/*/v1.md) && awk 'tolower($0) ~ /^#+ *alternatives/{o=1;next} /^##? /{o=0} o' "$f" | grep -Eiq 'do[ -]nothing|status quo|no change' '''
+run = '''f=$(ls docs/design/*/v1.md) && awk '/^#+ /{n=match($0,/^#+/)?RLENGTH:0; if(o&&n<=l)o=0; if(!o&&tolower($0) ~ /^#+ +([0-9]+(\.[0-9]+)*\.? +)?alternatives/){o=1;l=n;next}} o' "$f" | grep -Eiq 'do[ -]nothing|status quo|no change' '''
 expect_exit = 0
 
 [[check]]
@@ -62,7 +62,7 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = '''f=$(ls docs/design/*/v1.md) && awk 'tolower($0) ~ /^#+ *non-goals/{o=1;next} /^##? /{o=0} o' "$f" | grep -Eq 'STOCK-5([^0-9]|$)' '''
+run = '''f=$(ls docs/design/*/v1.md) && awk '/^#+ /{n=match($0,/^#+/)?RLENGTH:0; if(o&&n<=l)o=0; if(!o&&tolower($0) ~ /^#+ +([0-9]+(\.[0-9]+)*\.? +)?non-goals/){o=1;l=n;next}} o' "$f" | grep -Eq 'STOCK-5([^0-9]|$)' '''
 expect_exit = 0
 
 [[check]]
