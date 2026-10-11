@@ -1,0 +1,57 @@
+# Does the ns-domain-modeling description fire on the right prompts? 7 positive, 7 negative.
+
+[[trigger]]
+prompt = "Add a glossary entry for 'backorder' to GLOSSARY.md."
+expect = true
+
+[[trigger]]
+prompt = "We keep calling the same thing 'hold', 'reservation' and 'allocation'. Settle on one term."
+expect = true
+
+[[trigger]]
+prompt = "Record an ADR for choosing Postgres over SQLite."
+expect = true
+
+[[trigger]]
+prompt = "Write a GLOSSARY.md for this project's domain language."
+expect = true
+
+[[trigger]]
+prompt = "What should we call the thing a customer reserves but hasn't paid for yet? Help me pin down the domain model."
+expect = true
+
+[[trigger]]
+prompt = "Update ADR 0004 now that we've dropped the event bus."
+expect = true
+
+[[trigger]]
+prompt = "The code says 'Order' but the business says 'Booking'. Sharpen the domain model."
+expect = true
+
+[[trigger]]
+prompt = "Rename the variable tmp to buffer in parse.py."
+expect = false
+
+[[trigger]]
+prompt = "Write a requirements doc for multi-warehouse support."
+expect = false
+
+[[trigger]]
+prompt = "Grill me on my plan to split the monolith."
+expect = false
+
+[[trigger]]
+prompt = "Edit AGENTS.md to add a rule about commit messages."
+expect = false
+
+[[trigger]]
+prompt = "Fix the off-by-one in reserve(), test first."
+expect = false
+
+[[trigger]]
+prompt = "Explain what the Reservation dataclass does."
+expect = false
+
+[[trigger]]
+prompt = "Rewrite the README intro in plainer English."
+expect = false
