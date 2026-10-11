@@ -25,6 +25,7 @@ mod quality;
 mod review_md;
 mod rules;
 mod run;
+mod scorer;
 mod shell;
 mod skills_sync;
 mod stack;

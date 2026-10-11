@@ -1,6 +1,6 @@
 # Factory definition and runner
 
-The minimum slice of D15 to D17 (`docs/DESIGN.md`) that runs nightshift unattended: a definition in `.nightshift/`, `ns run` to drive one unit through the phases, and `ns watch` to pull units from the tracker overnight. Automations and scorers come later (#7).
+The minimum slice of D15 to D17 (`docs/DESIGN.md`) that runs nightshift unattended: a definition in `.nightshift/`, `ns run` to drive one unit through the phases, and `ns watch` to pull units from the tracker overnight. Scorer definitions are checked here; running them (`ns score`) and automations come later (#7).
 
 ## Layout
 
@@ -9,6 +9,7 @@ The minimum slice of D15 to D17 (`docs/DESIGN.md`) that runs nightshift unattend
   nightshift.toml          the definition root
   agents/<role>/agent.md   one role per phase (optional: built-in default prompts exist)
   runners/<name>.toml      exclusive locks a phase holds (optional; see "Runners")
+  scorers/<name>.md        a rubric that grades finished units (optional; see "Scorers")
 ```
 
 The root is the directory holding `nightshift.toml`: `.nightshift/` in a product repo, or the repo root of a factory repo. `ns` finds it from `--factory <dir>`, else `<main-worktree-root>/.nightshift/`.
@@ -70,7 +71,7 @@ ci_timeout_minutes = 30
 ci_register_timeout = 3            # minutes to wait for the PR head's first check before "no CI"
 ```
 
-Every table and key is optional; the defaults are the values above, except `limits.max_units` and `limits.memory_mb` (unset: no cap), `limits.parallel` (unset: 1), `limits.budget_usd` and `merge` as noted. A phase table may override `harness`, `model`, `timeout_minutes` and `max_attempts`, may set `runner`, and its `skill` defaults to `ns-<phase>`. Only `[phases.build]` may set `gate`, and not to an empty string. Unknown keys and unknown phases are errors. One removed key is not: `[queue] triage_per_night` still loads, does nothing, and gets a warning, on stderr from `ns run` and `ns watch` and in the `warnings` list of `ns factory validate`, which still passes. A file that set it to 0 to turn the triage pass off now runs the pass, and the warning says so: only `gates = "stop"` turns it off. `ns factory validate` checks the file, every `runners/<name>.toml` and every `agents/<role>/agent.md` (role matches the directory, placeholders are known), and exits 1 on any problem.
+Every table and key is optional; the defaults are the values above, except `limits.max_units` and `limits.memory_mb` (unset: no cap), `limits.parallel` (unset: 1), `limits.budget_usd` and `merge` as noted. A phase table may override `harness`, `model`, `timeout_minutes` and `max_attempts`, may set `runner`, and its `skill` defaults to `ns-<phase>`. Only `[phases.build]` may set `gate`, and not to an empty string. Unknown keys and unknown phases are errors. One removed key is not: `[queue] triage_per_night` still loads, does nothing, and gets a warning, on stderr from `ns run` and `ns watch` and in the `warnings` list of `ns factory validate`, which still passes. A file that set it to 0 to turn the triage pass off now runs the pass, and the warning says so: only `gates = "stop"` turns it off. `ns factory validate` checks the file, every `runners/<name>.toml`, every `agents/<role>/agent.md` (role matches the directory, placeholders are known) and every `scorers/<name>.md` (see "Scorers"), lists the valid scorers under `scorers`, and exits 1 on any problem.
 
 `[worktree] setup` commands run with `sh -c` in a unit's worktree, in order, stopping at the first that fails, with `NS_UNIT`, `NS_WORKTREE` and `NS_MAIN_ROOT` set. `ns worktree new` (and so `ns run`) runs them on a new worktree, and again on an existing one whose setup never finished: a stop, a crash or a failed command leaves no record that it did. When every command passes, it records the unit's id in the worktree's own git dir (`ns-setup-done` under `git rev-parse --absolute-git-dir`), outside the worktree's files and gone when the worktree is removed. `ns worktree new --no-setup` skips them and records nothing, so the next `ns worktree new` without the flag runs them. `ns worktree setup <unit>` reruns them whatever the record says. Until setup passes, every `ns worktree new` for the unit runs it again and exits 1 on a failure. So each command must be safe to rerun, on a worktree it already set up in full or in part: `git submodule update --init` is.
 
@@ -107,6 +108,28 @@ lock_dir = "~/.local/state/nightshift/locks"
 ```
 
 **A held lock makes the run wait**, not refuse. It prints `ns run: <unit> <phase> waits for lock <name> (held by pid <pid>, unit <unit>)` to stderr, logs a `lock_wait` event, and tries again with a backoff of up to 5 s until the holder lets go. The wait is bounded by the waiting phase's own timeout, counted from when the wait began, and by `ns watch --until`, whichever comes first; a hung holder, or a harness left running by a killed `ns`, can hold the lock for longer than its own run's timeout. On giving up, the run releases the locks it already took, prints `ns run: <unit> <phase> gave up waiting for lock <name> (held by pid <pid>, unit <unit>) at the phase timeout` (or `at --until`), and logs a `lock_wait_timeout` event with the lock, the holder and the `bound` (`timeout` or `until`). The phase timeout counts as a failed attempt, retried within `max_attempts`, and the out-of-attempts reason names the lock. `--until` ends the run as `budget` with that reason, and `ns watch` stops the night with `until`. A lock taken at or past `--until`, or taken with the budget spent, is released the same way (as `budget`), so the phase doesn't start after the deadline or on a spent budget. Exit 5 still means only the unit's run lock (below) or, for `ns watch`, its watch lock. The lock is an OS `flock` on the file, so the kernel drops a run's hold when its process dies, and a file naming a dead pid is taken over at once. If `ns` is hard-killed (SIGKILL or a crash), the lock frees at once while its harness child may still be running, since the child does not inherit the lock.
+
+## Scorers
+
+A scorer grades a finished unit against a rubric (D18 in `docs/DESIGN.md`). Each is one file, `scorers/<name>.md`; the name is the file stem.
+
+```markdown
+---
+role: review.scorer        # the `ns ask` role whose model applies the rubric
+passing_score: 1           # a unit passes when its label's score is at least this
+sampling_rate: 0.25        # the share of units to grade, 0 to 1
+labels:                    # the answers the model may give
+  - value: pass
+    description: every acceptance criterion has evidence
+    score: 1
+  - value: fail
+    description: a criterion has no evidence
+    score: 0
+---
+Read the unit's brief.md and evidence.md. Answer `pass` if ...
+```
+
+The body below the frontmatter is the rubric. `ns factory validate` rejects a scorer with missing or malformed frontmatter (including unknown keys), no labels, a label without `value` or `score`, a missing `passing_score` or one above every label's score, a missing `sampling_rate` or one outside 0 to 1, a `role` that the user config does not resolve for `ns ask` (no config file counts as not resolved), or an empty rubric. `description` is optional. Nothing runs scorers yet.
 
 ## ns run
 

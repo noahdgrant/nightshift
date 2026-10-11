@@ -1,5 +1,5 @@
 //! The factory definition: `nightshift.toml`, `runners/<name>.toml` and `agents/<role>/agent.md`
-//! (docs/FACTORY.md).
+//! (docs/FACTORY.md). Scorers are in `scorer.rs`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -626,6 +626,7 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
     let mut problems = Vec::new();
     let mut warnings = Vec::new();
     let mut phases = Vec::new();
+    let mut scorers = Vec::new();
     let mut name = None;
     let exists = file.is_file();
     if !exists {
@@ -645,6 +646,9 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
                 problems.extend(bad);
                 problems.extend(f.problems(cfg.as_ref()));
                 problems.extend(agent_problems(&root));
+                let (found, bad) = crate::scorer::load(&root, cfg.as_ref());
+                scorers = found;
+                problems.extend(bad);
                 warnings = f.warnings();
                 for name in PHASES {
                     let p = f.phase(name);
@@ -674,6 +678,7 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
             "path": file.to_string_lossy(),
             "name": name,
             "phases": phases,
+            "scorers": scorers,
             "errors": problems,
             "warnings": warnings,
         }))?
