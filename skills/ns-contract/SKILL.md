@@ -111,6 +111,7 @@ A repo's git hooks are part of its checks. A phase never skips them:
 - No environment variable that makes a hook skip itself (`SKIP=`, `HUSKY=0` and the like), and none that overrides `core.hooksPath` (`GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS` and the like).
 - No relocating the git dir to dodge the hooks (`GIT_DIR=`, `--git-dir`).
 - No weakening of the scripts the hooks call (`scripts/ci-local.sh` and what it runs) to make a hook pass: no skipped step, no loosened check, no deleted test.
+- A phase commits and pushes only with plain `git commit` and `git push` and the repo's hooks. It never changes a hook's file mode (`chmod -x`) or the environment git and the hook run in (`PATH`, `GIT_*`), and never commits through plumbing (`commit-tree`, `update-ref`) or another clone to dodge a hook.
 
 A hook that rejects a commit or push names a cause: a failing test, a lint, a format diff. Read its output, fix that cause, and commit or push again. When the cause lies outside the unit (a broken toolchain, a test already red on the base), stop with `status: blocked` and name it. It never justifies a bypass.
 
