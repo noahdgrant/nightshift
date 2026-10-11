@@ -55,7 +55,7 @@ split_label = "status:needs-define"   # set when triage split the issue into chi
 triage_label = "status:needs-triage"   # issues ns watch triages before it picks a unit
 priority = ["priority:high", "priority:medium", "priority:low"]  # sorted on first; no match goes last
 order = ["type:fix", "type:feat", "type:refactor", "type:test", "type:docs", "type:chore"]
-fix_main_first = true              # read main's CI at start. See "Main's CI"
+fix_main_first = true              # while main's CI is red, work only its fix issue. See "Main's CI"
 
 [limits]
 max_units = 8                      # optional cap per `ns watch` invocation; unset means no cap
@@ -409,7 +409,7 @@ An issue whose `Blocked by:` issue can't be read counts as blocked. `NS_NOW` (un
 
 ### Main's CI
 
-With `[queue] fix_main_first = true`, the default, `ns watch` reads the CI state of the default branch's head from the forge. Nothing holds the queue on it yet (#377).
+With `[queue] fix_main_first = true`, the default, `ns watch` reads the CI state of the default branch's head from the forge before it starts any unit and before each triage-only run. While the state is red it starts nothing but the fix issue (below).
 
 - **red**: a check failed while others still run, or every check finished and a required one failed. `failing` names the checks.
 - **green**: every check finished and no required one failed.
@@ -417,6 +417,10 @@ With `[queue] fix_main_first = true`, the default, `ns watch` reads the CI state
 - **none**: no check ran on the head.
 
 Pending and none are not red. A night that starts with `none` says once on stderr that `fix_main_first` does nothing, and one that can't read the state warns and runs on. With `fix_main_first = false` nothing is read and the state is `off`, which a night start also says once. `--dry-run` shows the state as `main_ci` (`{state, sha, failing}`, with `sha` and `failing` left out when empty) and `queue_held`, true when the state is red, and fails when the state can't be read.
+
+While main is red, the night runs no triage-only run and starts one unit only: the fix issue. That is the oldest open team-authored issue whose title starts with `fix: main is red at`, whatever sha and check it names, or, with none open, one `ns watch` files. It is the only issue `ns watch` files. Its title is `fix: main is red at <short sha>: <first failing check>`, with `(+<n> more)` when other checks fail too, and its labels are `type:fix`, `priority:critical` and the queue's `ready_label`; on GitHub, `ns watch` creates any of them the repo lacks. Its body lists each failing check with the last 40 lines (at most 3000 bytes) of its log, redacted as `ns log --phase-output` redacts a transcript; the commits from the newest commit a CI run passed on the default branch to the red head, at most 30; and the line saying an AI agent wrote it. A part the forge can't give says why instead. GitHub reads a check run's log through `gh run view --job <id> --log-failed`, so a check from an app other than Actions has none, and the last green commit is the head of the newest successful Actions run on the branch. GitLab reads a job's trace and the newest successful pipeline on the branch.
+
+The fix unit gets the normal attempts. Units already running carry on and end as they would. Once main is not red, green or pending without a failure, the queue resumes at the next fill. A state that can't be read mid-night holds nothing: the night warns and runs on. The run log gets `main_red` (`sha`, `failing`, `issue`) when main is found red at a new head, and `main_green` (`sha`, `state`) when it is found not red again. With `fix_main_first = false` none of this happens.
 
 GitHub reads the head's check runs and commit statuses in one GraphQL query (`gh api graphql`), the first 100 of them. A list cut off at 100, of checks or of rules, is an error, not a green: a failing check past the cut would read as passing. A check is required when a ruleset on the branch names it. A reader can't see classic branch protection, so when no ruleset names a check on the head, every check counts as required. GitLab reads the head's commit statuses (`glab api projects/:id/repository/commits/<sha>/statuses`), which hold each pipeline job's latest state and any external status. A job that may fail (`allow_failure`) is not required. `failed` and `canceled` fail, `success`, `skipped` and `manual` pass, and the rest still run.
 

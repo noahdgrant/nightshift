@@ -20,6 +20,7 @@ use crate::stop;
 use crate::worktree::BRANCH_PREFIX;
 
 pub mod ci;
+mod fix_main;
 pub mod forge;
 mod scheduler;
 mod self_update;
@@ -809,7 +810,7 @@ fn harness_failing(run: &Value) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -927,12 +928,16 @@ Open after at least 2 fix attempts: C1, I2, I4.
     }
 
     /// A forge in memory: issues, the closed ones, and each issue's labels, edited in place.
+    /// Check logs by where they are; issues filed, as `(title, body, labels)`.
     #[derive(Default)]
-    struct Fake {
-        issues: Vec<Issue>,
-        closed: BTreeSet<u64>,
-        labels: std::cell::RefCell<BTreeMap<u64, Vec<String>>>,
-        main: ci::HeadChecks,
+    pub(super) struct Fake {
+        pub issues: Vec<Issue>,
+        pub closed: BTreeSet<u64>,
+        pub labels: std::cell::RefCell<BTreeMap<u64, Vec<String>>>,
+        pub main: ci::HeadChecks,
+        pub logs: BTreeMap<String, String>,
+        pub green: Option<String>,
+        pub filed: std::cell::RefCell<Vec<(String, String, Vec<String>)>>,
     }
 
     impl Forge for Fake {
@@ -981,6 +986,21 @@ Open after at least 2 fix attempts: C1, I2, I4.
         fn main_checks(&self) -> Result<ci::HeadChecks> {
             Ok(self.main.clone())
         }
+        fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64> {
+            let mut filed = self.filed.borrow_mut();
+            let labels = labels.iter().map(|l| l.to_string()).collect();
+            filed.push((title.into(), body.into(), labels));
+            Ok(100 + filed.len() as u64 - 1)
+        }
+        fn check_log(&self, log: &str) -> Result<String> {
+            match self.logs.get(log) {
+                Some(l) => Ok(l.clone()),
+                None => anyhow::bail!("no log at {log}"),
+            }
+        }
+        fn last_green(&self) -> Result<Option<String>> {
+            Ok(self.green.clone())
+        }
     }
 
     /// Main's CI state for checks `(name, outcome, required)` on head `abc123`.
@@ -994,6 +1014,7 @@ Open after at least 2 fix attempts: C1, I2, I4.
                         name: name.into(),
                         outcome,
                         required,
+                        log: None,
                     })
                     .collect(),
             },
@@ -1008,7 +1029,8 @@ Open after at least 2 fix attempts: C1, I2, I4.
         let fac = Factory::default();
         let state = |checks: &[(&str, ci::Outcome, bool)]| {
             let m = main_ci(&fac, checks);
-            (m.state, m.failing.clone(), m.holds_queue())
+            let failing: Vec<String> = m.failing.iter().map(|c| c.name.clone()).collect();
+            (m.state, failing, m.holds_queue())
         };
         // Completed with a failing required check: red, naming it, not the optional one.
         assert_eq!(

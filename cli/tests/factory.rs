@@ -4019,20 +4019,196 @@ const MAIN_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
 /// GitHub's answer for main's CI: head `MAIN_SHA`, `required` named by a ruleset, and check runs
 /// `(name, status, conclusion)`.
 fn main_ci(e: &Env, required: &[&str], runs: &[(&str, &str, &str)]) {
+    e.gh_file("main-ci.json", &main_ci_at(MAIN_SHA, required, runs));
+}
+
+/// GitHub's answer for main's CI at head `sha`; each check run's job id is 40 plus its index.
+fn main_ci_at(sha: &str, required: &[&str], runs: &[(&str, &str, &str)]) -> String {
     let rules = serde_json::json!([{"parameters": {"requiredStatusChecks":
         required.iter().map(|c| serde_json::json!({"context": c})).collect::<Vec<_>>()}}]);
     let nodes: Vec<Value> = runs
         .iter()
-        .map(|(n, s, c)| serde_json::json!({"name": n, "status": s, "conclusion": c}))
+        .enumerate()
+        .map(|(i, (n, s, c))| {
+            serde_json::json!({"name": n, "status": s, "conclusion": c, "databaseId": 40 + i})
+        })
         .collect();
+    serde_json::json!({"data": {"repository": {"defaultBranchRef": {
+        "rules": {"nodes": rules},
+        "target": {"oid": sha, "statusCheckRollup": {"contexts": {"nodes": nodes}}},
+    }}}})
+    .to_string()
+}
+
+/// Main red at `MAIN_SHA`: check `test` failed.
+fn main_red(e: &Env) {
+    main_ci(e, &[], &[("test", "COMPLETED", "FAILURE")]);
+}
+
+const FIX_TITLE: &str = "fix: main is red at abcdef0: test";
+
+#[test]
+fn watch_with_main_green_runs_the_queue_and_files_nothing() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    main_ci(&e, &[], &[("test", "COMPLETED", "SUCCESS")]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(by_issue(&units(&v)), each(&[2], "done"), "{v}");
+    assert!(!e.gh_calls().contains("issue create"));
+    assert!(events_named(&e, "main_red").is_empty());
+}
+
+#[test]
+fn watch_with_main_red_files_one_fix_issue_and_starts_only_it() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
+    main_red(&e);
+    // A cap above one, so a second unit or a second filing fails the test instead of looping.
+    let v = e.run(&["watch", "--max-units", "3"], 0);
+    assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
+    assert_eq!(v["stopped"], "queue empty", "{v}");
+    assert!(v["triaged"].as_array().unwrap().is_empty(), "{v}");
+    assert_eq!(e.triage_only_runs(), 0);
+    let calls = e.gh_calls();
+    assert_eq!(calls.matches("issue create").count(), 1, "{calls}");
+    assert!(
+        calls.contains(&format!("issue create --title {FIX_TITLE} --body ")),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("--label type:fix --label priority:critical --label status:ready-for-agent"),
+        "{calls}"
+    );
+    assert!(!calls.contains("issue edit 2 "), "{calls}");
+    let body = fs::read_to_string(e.ghd.join("created-100.body")).unwrap();
+    assert!(body.contains("### test"), "{body}");
+    assert!(body.contains("FAILED tests/test_x.py::test_y"), "{body}");
+    assert!(
+        body.contains("No green run on the default branch found"),
+        "{body}"
+    );
+    assert!(body.contains("written by an AI agent"), "{body}");
+    assert!(calls.contains("run view --job 40 --log-failed"), "{calls}");
+}
+
+#[test]
+fn watch_with_main_red_runs_no_triage_only_run() {
+    let e = Env::new();
+    e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
+    main_red(&e);
+    let v = e.run(&["watch", "--max-units", "3"], 0);
+    assert_eq!(e.triage_only_runs(), 0);
+    assert!(v["triaged"].as_array().unwrap().is_empty(), "{v}");
+    assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
+}
+
+#[test]
+fn watch_lists_the_commits_since_main_was_last_green_in_the_fix_issue() {
+    let e = Env::new();
+    let green = git(&e.root, &["rev-parse", "HEAD"]);
+    fs::write(e.root.join("README"), "broken\n").unwrap();
+    git(&e.root, &["commit", "-qam", "Break the build"]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+    let red = git(&e.root, &["rev-parse", "HEAD"]);
     e.gh_file(
         "main-ci.json",
-        &serde_json::json!({"data": {"repository": {"defaultBranchRef": {
-            "rules": {"nodes": rules},
-            "target": {"oid": MAIN_SHA, "statusCheckRollup": {"contexts": {"nodes": nodes}}},
-        }}}})
-        .to_string(),
+        &main_ci_at(&red, &[], &[("test", "COMPLETED", "FAILURE")]),
     );
+    e.gh_file("runs-green.json", &format!(r#"[{{"headSha":"{green}"}}]"#));
+    e.run(&["watch", "--once"], 0);
+    let body = fs::read_to_string(e.ghd.join("created-100.body")).unwrap();
+    assert!(body.contains(&format!("Since {}:", &green[..7])), "{body}");
+    assert!(
+        body.contains(&format!("- {} Break the build", &red[..7])),
+        "{body}"
+    );
+    assert!(e
+        .gh_calls()
+        .contains("run list --branch main --status success"));
+}
+
+#[test]
+fn watch_reuses_the_open_fix_issue_instead_of_filing_another() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    // Outside the team: never reused, since anyone may file a title.
+    e.ready_by(
+        8,
+        "fix: main is red at 1234567: lint",
+        &[],
+        "",
+        Some("NONE"),
+    );
+    e.ready(
+        9,
+        "fix: main is red at 1234567: lint",
+        &["priority:critical"],
+        "",
+    );
+    main_red(&e);
+    let v = e.run(&["watch", "--max-units", "3"], 0);
+    assert_eq!(by_issue(&units(&v)), each(&[9], "done"), "{v}");
+    assert!(!e.gh_calls().contains("issue create"));
+    let red = events_named(&e, "main_red");
+    assert_eq!(red.len(), 1, "{red:?}");
+    assert_eq!(red[0]["issue"], 9);
+}
+
+#[test]
+fn watch_resumes_the_queue_once_the_fix_merges_and_main_is_green() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    main_red(&e);
+    let green_sha = "1111111111111111111111111111111111111111";
+    e.gh_file(
+        "main-ci.green",
+        &main_ci_at(green_sha, &[], &[("test", "COMPLETED", "SUCCESS")]),
+    );
+    // Merging the fix's PR turns main green.
+    e.gh_file(
+        "hook.sh",
+        "[ \"$1 $2 $3\" = \"pr merge 12\" ] && cp \"$d/main-ci.green\" \"$d/main-ci.json\"\n",
+    );
+    e.ctl("pr-100-fix-main-is-red-at-abcdef0-test", "12");
+    e.ctl("pr-2-fix-a", "13");
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file("checks-13.json", GREEN);
+    let v = e.run(&["watch", "--max-units", "3"], 0);
+    assert_eq!(
+        units(&v)
+            .iter()
+            .map(|u| (
+                u["issue"].as_u64().unwrap(),
+                u["outcome"].as_str().unwrap().to_string()
+            ))
+            .collect::<Vec<_>>(),
+        [(100, "merged".to_string()), (2, "merged".to_string())],
+        "{v}"
+    );
+    let red = events_named(&e, "main_red");
+    assert_eq!(red.len(), 1, "{red:?}");
+    assert_eq!(red[0]["sha"], MAIN_SHA);
+    assert_eq!(red[0]["failing"], serde_json::json!(["test"]));
+    assert_eq!(red[0]["issue"], 100);
+    let green = events_named(&e, "main_green");
+    assert_eq!(green.len(), 1, "{green:?}");
+    assert_eq!(green[0]["sha"], green_sha);
+    assert_eq!(green[0]["state"], "green");
+}
+
+#[test]
+fn watch_with_fix_main_first_off_runs_the_queue_while_main_is_red() {
+    let e = Env::new();
+    e.factory("[queue]\nfix_main_first = false\n");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    main_red(&e);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(by_issue(&units(&v)), each(&[2], "done"), "{v}");
+    assert!(!e.gh_calls().contains("issue create"));
+    assert!(events_named(&e, "main_red").is_empty());
 }
 
 #[test]
@@ -8484,7 +8660,7 @@ fn empty_night(e: &Env) -> PathBuf {
 }
 
 #[test]
-fn a_resumed_night_does_not_read_main_ci_again() {
+fn a_resumed_night_does_not_say_the_main_ci_notice_again() {
     let e = Env::new();
     let path = empty_night(&e);
     let out = e
@@ -8495,7 +8671,6 @@ fn a_resumed_night_does_not_read_main_ci_again() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{err}");
     assert!(!err.contains("fix_main_first"), "{err}");
-    assert!(!e.gh_calls().contains("graphql"), "{}", e.gh_calls());
 }
 
 #[test]
@@ -9322,6 +9497,39 @@ fn watch_on_gitlab_reads_main_ci_from_the_head_commit_statuses() {
         "{calls}"
     );
     assert!(e.gh_calls().is_empty(), "{}", e.gh_calls());
+}
+
+#[test]
+fn watch_on_gitlab_files_the_fix_issue_through_glab_and_starts_only_it() {
+    let e = gitlab_env();
+    e.gl_issue(2, &["type:fix", READY], "", 1);
+    e.gh_file(
+        "gl-statuses.json",
+        &serde_json::json!([{"id": 51, "name": "test", "status": "failed", "allow_failure": false}])
+            .to_string(),
+    );
+    let v = e.run(&["watch", "--max-units", "3"], 0);
+    assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
+    let calls = e.glab_calls();
+    assert_eq!(
+        calls
+            .matches("api --method POST projects/:id/issues")
+            .count(),
+        1,
+        "{calls}"
+    );
+    assert!(
+        calls.contains("--raw-field labels=type:fix,priority:critical,status:ready-for-agent"),
+        "{calls}"
+    );
+    assert!(calls.contains("projects/:id/jobs/51/trace"), "{calls}");
+    assert!(
+        calls.contains("projects/:id/pipelines?ref=main&status=success&per_page=1"),
+        "{calls}"
+    );
+    let body = fs::read_to_string(e.ghd.join("created-100.body")).unwrap();
+    assert!(body.contains("ERROR: Job failed"), "{body}");
+    assert!(!e.gh_calls().contains("issue create"), "{}", e.gh_calls());
 }
 
 #[test]

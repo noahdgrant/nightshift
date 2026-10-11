@@ -468,6 +468,15 @@ next (1)
         fn main_checks(&self) -> Result<crate::watch::ci::HeadChecks> {
             unreachable!("ns status only reads the queue")
         }
+        fn create_issue(&self, _: &str, _: &str, _: &[&str]) -> Result<u64> {
+            unreachable!("ns status only reads the queue")
+        }
+        fn check_log(&self, _: &str) -> Result<String> {
+            unreachable!("ns status only reads the queue")
+        }
+        fn last_green(&self) -> Result<Option<String>> {
+            unreachable!("ns status only reads the queue")
+        }
     }
 
     #[test]

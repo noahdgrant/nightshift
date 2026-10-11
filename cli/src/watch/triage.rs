@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::{
-    is_status, queue, rank, skip, Forge, Issue, Listing, Night, HARNESS_FAIL_LIMIT,
+    ci, is_status, queue, rank, skip, Forge, Issue, Listing, Night, HARNESS_FAIL_LIMIT,
     PAUSED_PAST_UNTIL,
 };
 use crate::clock;
@@ -157,6 +157,10 @@ pub(super) fn pass(
         let Some(issue) = picked else {
             return Ok(None);
         };
+        // Red main holds triage too: the fix issue is the night's only work.
+        if ci::read(forge, &loaded.fac).is_ok_and(|m| m.holds_queue()) {
+            return Ok(None);
+        }
         night.triage.tried.insert(issue.number);
         eprintln!("ns watch: triage #{} {}", issue.number, issue.title);
         let rargs = RunArgs {

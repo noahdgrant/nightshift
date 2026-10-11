@@ -92,6 +92,14 @@ impl GitLab {
         serde_json::from_str(text.trim()).with_context(|| format!("glab api {path} gave bad JSON"))
     }
 
+    fn default_branch(&self) -> Result<String> {
+        let project = self.get("projects/:id")?;
+        match project["default_branch"].as_str() {
+            Some(b) => Ok(b.to_string()),
+            None => anyhow::bail!("GitLab names no default branch"),
+        }
+    }
+
     fn issue(&self, n: u64) -> Result<Value> {
         self.get(&format!("projects/:id/issues/{n}"))
     }
@@ -119,6 +127,8 @@ fn status_check(s: &Value) -> Check {
         name: s["name"].as_str().unwrap_or("").to_string(),
         outcome,
         required: !s["allow_failure"].as_bool().unwrap_or(false),
+        // A pipeline job's status shares the job's id; an external status has no trace.
+        log: s["id"].as_u64().map(|id| id.to_string()),
     }
 }
 
@@ -222,10 +232,7 @@ impl Forge for GitLab {
 
     /// The latest commit status of each job in the head's pipelines, and of each external status.
     fn main_checks(&self) -> Result<HeadChecks> {
-        let project = self.get("projects/:id")?;
-        let Some(branch) = project["default_branch"].as_str() else {
-            anyhow::bail!("GitLab names no default branch");
-        };
+        let branch = &self.default_branch()?;
         let head = self.get(&format!(
             "projects/:id/repository/branches/{}",
             encode(branch)
@@ -238,6 +245,42 @@ impl Forge for GitLab {
             sha: sha.to_string(),
             checks: self.list(&path)?.iter().map(status_check).collect(),
         })
+    }
+
+    /// GitLab makes a label it doesn't have yet when an issue names it.
+    fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64> {
+        let fields = [
+            format!("title={title}"),
+            format!("description={body}"),
+            format!("labels={}", labels.join(",")),
+        ];
+        let mut args = vec!["api", "--method", "POST", "projects/:id/issues"];
+        for f in &fields {
+            args.extend(["--raw-field", f.as_str()]);
+        }
+        let text = glab(&self.root, &args)?;
+        let v: Value = serde_json::from_str(text.trim()).context("glab gave bad JSON")?;
+        v["iid"]
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("GitLab named no number for the new issue"))
+    }
+
+    fn check_log(&self, log: &str) -> Result<String> {
+        let id: u64 = log.parse().context("a GitLab job id is a number")?;
+        glab(
+            &self.root,
+            &["api", &format!("projects/:id/jobs/{id}/trace")],
+        )
+    }
+
+    fn last_green(&self) -> Result<Option<String>> {
+        let branch = self.default_branch()?;
+        let path = format!(
+            "projects/:id/pipelines?ref={}&status=success&per_page=1",
+            encode(&branch)
+        );
+        let v = self.get(&path)?;
+        Ok(v[0]["sha"].as_str().map(String::from))
     }
 }
 
@@ -284,6 +327,9 @@ mod tests {
             assert_eq!(check(s, Value::Null), (Outcome::Running, true), "{s}");
         }
         assert_eq!(check("failed", t), (Outcome::Fail, false));
+        let log = |s: Value| status_check(&s).log;
+        assert_eq!(log(serde_json::json!({"id": 7})).as_deref(), Some("7"));
+        assert_eq!(log(serde_json::json!({})), None);
     }
 
     #[test]

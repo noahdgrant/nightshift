@@ -42,11 +42,18 @@ pub trait Forge {
     fn comment_pr(&self, pr: u64, body: &str) -> Result<()>;
     /// The default branch's head and the checks on it.
     fn main_checks(&self) -> Result<HeadChecks>;
+    /// File an issue carrying `labels`, creating any the repo lacks; its number.
+    fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64>;
+    /// The log of a failed check, at the [`Check::log`] the forge gave it.
+    fn check_log(&self, log: &str) -> Result<String>;
+    /// The newest commit on the default branch that a CI run passed, if the forge knows one.
+    fn last_green(&self) -> Result<Option<String>>;
 }
 
-/// The colour and description a missing PR label is created with.
-const PR_LABEL_COLOR: &str = "d73a4a";
+/// The colour a missing label is created with, and the description of each kind.
+const LABEL_COLOR: &str = "d73a4a";
 const PR_LABEL_DESCRIPTION: &str = "nightshift left this PR for a human to merge";
+const ISSUE_LABEL_DESCRIPTION: &str = "nightshift files main's fix issue with this label";
 
 const HINT: &str = "set the forge in .nightshift/nightshift.toml:\n  [queue]\n  source = \"github\"\n\nsee docs/FACTORY.md";
 
@@ -164,7 +171,7 @@ const MAIN_CHECKS_QUERY: &str = "query($owner: String!, $repo: String!) {
       target { ... on Commit {
         oid
         statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes {
-          ... on CheckRun { name status conclusion }
+          ... on CheckRun { name status conclusion databaseId }
           ... on StatusContext { context state }
         } } }
       } }
@@ -225,6 +232,7 @@ fn parse_main_checks(v: &Value) -> Result<HeadChecks> {
                 name: name.to_string(),
                 outcome,
                 required: named.contains(&name),
+                log: c["databaseId"].as_u64().map(|id| id.to_string()),
             })
         })
         .collect();
@@ -250,6 +258,38 @@ fn status_outcome(state: &str) -> Outcome {
         "SUCCESS" => Outcome::Pass,
         "FAILURE" | "ERROR" => Outcome::Fail,
         _ => Outcome::Running,
+    }
+}
+
+/// The issue number at the end of the URL `gh issue create` prints.
+fn created_number(out: &str) -> Result<u64> {
+    out.trim()
+        .rsplit('/')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("gh issue create printed no issue URL: {}", out.trim()))
+}
+
+impl GitHub {
+    /// Create `label` unless the repo has it. Without `--force`, an existing label keeps the
+    /// colour and description a human gave it.
+    fn ensure_label(&self, label: &str, description: &str) -> Result<()> {
+        let created = gh(
+            &self.root,
+            &[
+                "label",
+                "create",
+                label,
+                "--color",
+                LABEL_COLOR,
+                "--description",
+                description,
+            ],
+        );
+        match created {
+            Err(e) if !format!("{e:#}").contains("already exists") => Err(e),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -352,24 +392,7 @@ impl Forge for GitHub {
     }
 
     fn add_pr_label(&self, pr: u64, label: &str) -> Result<()> {
-        let created = gh(
-            &self.root,
-            &[
-                "label",
-                "create",
-                label,
-                "--color",
-                PR_LABEL_COLOR,
-                "--description",
-                PR_LABEL_DESCRIPTION,
-            ],
-        );
-        // Without `--force`, an existing label keeps the colour and description a human gave it.
-        if let Err(e) = created {
-            if !format!("{e:#}").contains("already exists") {
-                return Err(e);
-            }
-        }
+        self.ensure_label(label, PR_LABEL_DESCRIPTION)?;
         gh(
             &self.root,
             &["pr", "edit", &pr.to_string(), "--add-label", label],
@@ -414,6 +437,35 @@ impl Forge for GitHub {
                 "repo={repo}",
             ],
         )?)
+    }
+
+    fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64> {
+        let mut args = vec!["issue", "create", "--title", title, "--body", body];
+        for l in labels {
+            self.ensure_label(l, ISSUE_LABEL_DESCRIPTION)?;
+            args.extend(["--label", l]);
+        }
+        created_number(&gh(&self.root, &args)?)
+    }
+
+    /// A check run's id is its Actions job's; a check from another app has no log here.
+    fn check_log(&self, log: &str) -> Result<String> {
+        gh(&self.root, &["run", "view", "--job", log, "--log-failed"])
+    }
+
+    /// The head of the newest Actions run on the default branch that succeeded.
+    fn last_green(&self) -> Result<Option<String>> {
+        let Some((branch, _)) = crate::run::remote_default(&self.root) else {
+            anyhow::bail!("cannot read origin's default branch");
+        };
+        let v = gh_json(
+            &self.root,
+            &[
+                "run", "list", "--branch", &branch, "--status", "success", "--limit", "1",
+                "--json", "headSha",
+            ],
+        )?;
+        Ok(v[0]["headSha"].as_str().map(String::from))
     }
 }
 
@@ -561,6 +613,28 @@ mod tests {
         assert!(parse_main_checks(&none).unwrap().checks.is_empty());
         let empty = serde_json::json!({"data": {"repository": {"defaultBranchRef": null}}});
         assert!(parse_main_checks(&empty).is_err());
+    }
+
+    #[test]
+    fn a_check_run_keeps_its_job_id_as_its_log_and_a_status_has_none() {
+        let nodes = serde_json::json!([
+            {"name": "test", "status": "COMPLETED", "conclusion": "FAILURE", "databaseId": 42},
+            {"context": "ci/ext", "state": "FAILURE"},
+        ]);
+        let h = parse_main_checks(&answer(&serde_json::json!([]), &nodes)).unwrap();
+        let logs: Vec<Option<&str>> = h.checks.iter().map(|c| c.log.as_deref()).collect();
+        assert_eq!(logs, [Some("42"), None]);
+        assert!(MAIN_CHECKS_QUERY.contains("conclusion databaseId"));
+    }
+
+    #[test]
+    fn created_number_reads_the_url_gh_prints() {
+        assert_eq!(
+            created_number("https://github.com/o/r/issues/123\n").unwrap(),
+            123
+        );
+        assert!(created_number("").is_err());
+        assert!(created_number("https://github.com/o/r/issues/new").is_err());
     }
 
     #[test]
