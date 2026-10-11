@@ -382,11 +382,11 @@ pub(super) fn commit(args: &[Word]) -> Option<String> {
     let mut it = args.iter();
     while let Some(w) = it.next() {
         let a = w.text.as_str();
-        if a == "--" {
-            return None;
-        }
         if w.opaque {
             return Some(unreadable("git commit"));
+        }
+        if a == "--" {
+            return None;
         }
         if a.starts_with("--") {
             if no_verify(a) {

@@ -34,6 +34,11 @@ fn commit_without_hooks_is_denied() {
         "bash -x -c 'git commit -n'",
         "cat <<< 'x'\ngit commit -n",
         "cat <<-EOF > x\n\tHUSKY=0 git push\n\tEOF\ngit commit -n",
+        "git commit --$F",
+        "F=no-verify; git commit -m x --$F",
+        "git commit -m x --\"$F\"",
+        "git commit -m x --${F}",
+        "git commit -m x --`echo no-verify`",
     ] {
         assert!(denied(c), "{c}");
     }
