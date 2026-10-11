@@ -3,30 +3,6 @@
   "violations": [
     {
       "tool": "ast-grep",
-      "rule": "duplicate-helper",
-      "file": "cli/src/eval/trial.rs",
-      "line": 99,
-      "message": "`symlink` already exists in cli/src/install.rs; reuse it instead of a second one (one road per job: ns-principle-pave-the-road)",
-      "snippet": "fn symlink(target: &Path, link: &Path) -> Result<()> {"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "duplicate-helper",
-      "file": "cli/src/eval/trial.rs",
-      "line": 105,
-      "message": "`symlink` already exists in cli/src/install.rs; reuse it instead of a second one (one road per job: ns-principle-pave-the-road)",
-      "snippet": "fn symlink(_target: &Path, link: &Path) -> Result<()> {"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "duplicate-helper",
-      "file": "cli/src/watch/self_update.rs",
-      "line": 284,
-      "message": "`tail` already exists in cli/src/gate.rs; reuse it instead of a second one (one road per job: ns-principle-pave-the-road)",
-      "snippet": "fn tail(stderr: &[u8]) -> String {"
-    },
-    {
-      "tool": "ast-grep",
       "rule": "file-too-long",
       "file": "cli/src/eval/mod.rs",
       "line": 1,
@@ -36,10 +12,26 @@
     {
       "tool": "ast-grep",
       "rule": "file-too-long",
+      "file": "cli/src/main.rs",
+      "line": 1,
+      "message": "file is past 1000 lines; split it along a seam (quality bar, Size: skills/ns-contract/references/quality-bar.md)",
+      "snippet": "//! `ns`: the Nightshift CLI."
+    },
+    {
+      "tool": "ast-grep",
+      "rule": "file-too-long",
       "file": "cli/src/run.rs",
       "line": 1,
       "message": "file is past 1000 lines; split it along a seam (quality bar, Size: skills/ns-contract/references/quality-bar.md)",
       "snippet": "//! `ns run`: drive one unit through the phases (docs/FACTORY.md)."
+    },
+    {
+      "tool": "ast-grep",
+      "rule": "file-too-long",
+      "file": "cli/src/upstream.rs",
+      "line": 1,
+      "message": "file is past 1000 lines; split it along a seam (quality bar, Size: skills/ns-contract/references/quality-bar.md)",
+      "snippet": "//! `ns upstream status|diff`: compare adapted skills with the upstream path each records in"
     },
     {
       "tool": "ast-grep",
@@ -93,7 +85,7 @@
       "tool": "ast-grep",
       "rule": "suppression-without-reason",
       "file": "cli/src/run.rs",
-      "line": 335,
+      "line": 336,
       "message": "#[allow] or #[expect] with no reason = \"...\": give the reason on the same line, or fix what it hides (quality bar, Comments: skills/ns-contract/references/quality-bar.md)",
       "snippet": "#[allow(clippy::too_many_arguments)]"
     },
@@ -101,7 +93,7 @@
       "tool": "ast-grep",
       "rule": "suppression-without-reason",
       "file": "cli/src/run.rs",
-      "line": 1310,
+      "line": 924,
       "message": "#[allow] or #[expect] with no reason = \"...\": give the reason on the same line, or fix what it hides (quality bar, Comments: skills/ns-contract/references/quality-bar.md)",
       "snippet": "#[allow(clippy::too_many_arguments)]"
     },
@@ -118,7 +110,7 @@
       "rule": "duplicate",
       "file": "cli/Cargo.toml",
       "line": null,
-      "message": "found 2 duplicate entries for crate 'syn'",
+      "message": "found 2 duplicate entries for crate 'syn' (one road per job: ns-principle-pave-the-road)",
       "snippet": "syn"
     },
     {
@@ -126,7 +118,7 @@
       "rule": "clippy::if_not_else",
       "file": "cli/src/clean.rs",
       "line": 319,
-      "message": "unnecessary boolean `not` operation",
+      "message": "unnecessary boolean `not` operation (quality bar, Readability: control flow reads top to bottom: skills/ns-contract/references/quality-bar.md)",
       "snippet": "let o = if !record_saved {"
     },
     {
@@ -134,23 +126,23 @@
       "rule": "clippy::if_not_else",
       "file": "cli/src/factory.rs",
       "line": 631,
-      "message": "unnecessary boolean `not` operation",
+      "message": "unnecessary boolean `not` operation (quality bar, Readability: control flow reads top to bottom: skills/ns-contract/references/quality-bar.md)",
       "snippet": "if !exists {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::manual_let_else",
       "file": "cli/src/lint.rs",
-      "line": 209,
-      "message": "this could be rewritten as `let...else`",
+      "line": 221,
+      "message": "this could be rewritten as `let...else` (quality bar, Readability: control flow reads top to bottom: skills/ns-contract/references/quality-bar.md)",
       "snippet": "let text = match fs::read_to_string(&skill_md) {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::needless_continue",
-      "file": "cli/src/run.rs",
-      "line": 832,
-      "message": "this `continue` expression is redundant",
+      "file": "cli/src/run/locks.rs",
+      "line": 383,
+      "message": "this `continue` expression is redundant (quality bar, Readability: control flow reads top to bottom: skills/ns-contract/references/quality-bar.md)",
       "snippet": "Some(libc::EINTR) => continue,"
     },
     {
@@ -158,7 +150,7 @@
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/ask.rs",
       "line": 32,
-      "message": "this argument is passed by value, but not consumed in the function body",
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn run(args: AskArgs<'_>) -> Result<()> {"
     },
     {
@@ -166,7 +158,7 @@
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/eval/mod.rs",
       "line": 138,
-      "message": "this argument is passed by value, but not consumed in the function body",
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn run(args: Args) -> Result<ExitCode> {"
     },
     {
@@ -174,7 +166,7 @@
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/eval/mod.rs",
       "line": 1050,
-      "message": "this argument is passed by value, but not consumed in the function body",
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "cp: CasePlan,"
     },
     {
@@ -182,7 +174,7 @@
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/quality/mod.rs",
       "line": 84,
-      "message": "this argument is passed by value, but not consumed in the function body",
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn gaps(units: &[&Unit], unparsed: Vec<Unparsed>) -> Value {"
     },
     {
@@ -190,7 +182,7 @@
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/quality/mod.rs",
       "line": 144,
-      "message": "this argument is passed by value, but not consumed in the function body",
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "log: RunLog,"
     },
     {
@@ -198,47 +190,63 @@
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/rules.rs",
       "line": 299,
-      "message": "this argument is passed by value, but not consumed in the function body",
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn print(v: &Value, human: &[(&str, &[Finding])], summary: String, as_human: bool) -> Result<()> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/run.rs",
-      "line": 223,
-      "message": "this argument is passed by value, but not consumed in the function body",
+      "line": 224,
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn cli(args: RunArgs) -> Result<ExitCode> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::needless_pass_by_value",
-      "file": "cli/src/run.rs",
-      "line": 456,
-      "message": "this argument is passed by value, but not consumed in the function body",
+      "file": "cli/src/run/locks.rs",
+      "line": 64,
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn take(common: &Path, name: &str, holder: Value) -> Result<Result<Lock, Value>> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::needless_pass_by_value",
-      "file": "cli/src/run.rs",
-      "line": 480,
-      "message": "this argument is passed by value, but not consumed in the function body",
+      "file": "cli/src/run/locks.rs",
+      "line": 88,
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "holder: Value,"
+    },
+    {
+      "tool": "clippy",
+      "rule": "clippy::needless_pass_by_value",
+      "file": "cli/src/transcripts.rs",
+      "line": 507,
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
+      "snippet": "pub fn list(args: ListArgs) -> Result<ExitCode> {"
+    },
+    {
+      "tool": "clippy",
+      "rule": "clippy::needless_pass_by_value",
+      "file": "cli/src/upstream.rs",
+      "line": 987,
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
+      "snippet": "fn usage_code(e: anyhow::Error) -> i32 {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/watch.rs",
       "line": 485,
-      "message": "this argument is passed by value, but not consumed in the function body",
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn run(args: WatchArgs) -> Result<ExitCode> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/watch/self_update.rs",
-      "line": 187,
-      "message": "this argument is passed by value, but not consumed in the function body",
+      "line": 189,
+      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn give_up(&mut self, repo: &Repo, to: String, err: anyhow::Error) {"
     },
     {
@@ -246,7 +254,7 @@
       "rule": "clippy::too_many_lines",
       "file": "cli/src/ask.rs",
       "line": 32,
-      "message": "this function has too many lines (156/100)",
+      "message": "this function has too many lines (156/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn run(args: AskArgs<'_>) -> Result<()> {"
     },
     {
@@ -254,7 +262,7 @@
       "rule": "clippy::too_many_lines",
       "file": "cli/src/eval/mod.rs",
       "line": 149,
-      "message": "this function has too many lines (151/100)",
+      "message": "this function has too many lines (151/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn resolve(args: &Args) -> Result<Env> {"
     },
     {
@@ -262,7 +270,7 @@
       "rule": "clippy::too_many_lines",
       "file": "cli/src/eval/mod.rs",
       "line": 850,
-      "message": "this function has too many lines (161/100)",
+      "message": "this function has too many lines (161/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn execute(args: &Args, env: &Env, plans: Vec<SkillPlan>) -> Result<ExitCode> {"
     },
     {
@@ -270,15 +278,15 @@
       "rule": "clippy::too_many_lines",
       "file": "cli/src/factory.rs",
       "line": 330,
-      "message": "this function has too many lines (101/100)",
+      "message": "this function has too many lines (101/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn problems(&self, cfg: Option<&config::Config>) -> Vec<String> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/main.rs",
-      "line": 664,
-      "message": "this function has too many lines (183/100)",
+      "line": 799,
+      "message": "this function has too many lines (209/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn run(cli: Cli) -> Result<ExitCode> {"
     },
     {
@@ -286,31 +294,31 @@
       "rule": "clippy::too_many_lines",
       "file": "cli/src/quality/sync.rs",
       "line": 166,
-      "message": "this function has too many lines (116/100)",
+      "message": "this function has too many lines (116/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn import(dir: &Path, dry_run: bool) -> Result<ExitCode> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/run.rs",
-      "line": 1102,
-      "message": "this function has too many lines (199/100)",
+      "line": 716,
+      "message": "this function has too many lines (199/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<RunResult> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/run.rs",
-      "line": 1412,
-      "message": "this function has too many lines (354/100)",
+      "line": 1026,
+      "message": "this function has too many lines (354/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn drive("
     },
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/run.rs",
-      "line": 2066,
-      "message": "this function has too many lines (209/100)",
+      "line": 1680,
+      "message": "this function has too many lines (209/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep> {"
     },
     {
@@ -318,7 +326,7 @@
       "rule": "clippy::too_many_lines",
       "file": "cli/src/watch.rs",
       "line": 485,
-      "message": "this function has too many lines (206/100)",
+      "message": "this function has too many lines (206/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn run(args: WatchArgs) -> Result<ExitCode> {"
     },
     {
@@ -326,7 +334,7 @@
       "rule": "clippy::too_many_lines",
       "file": "cli/src/watch/scheduler.rs",
       "line": 416,
-      "message": "this function has too many lines (127/100)",
+      "message": "this function has too many lines (127/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn settle("
     },
     {
@@ -334,7 +342,7 @@
       "rule": "clippy::too_many_lines",
       "file": "cli/tests/quality.rs",
       "line": 95,
-      "message": "this function has too many lines (110/100)",
+      "message": "this function has too many lines (110/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn fixture() -> Fixture {"
     },
     {
@@ -342,7 +350,7 @@
       "rule": "clippy::too_many_lines",
       "file": "cli/tests/quality.rs",
       "line": 228,
-      "message": "this function has too many lines (103/100)",
+      "message": "this function has too many lines (103/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn reports_every_metric_from_fixture_artifacts() {"
     },
     {
@@ -350,7 +358,7 @@
       "rule": "clippy::too_many_lines",
       "file": "cli/tests/quality.rs",
       "line": 754,
-      "message": "this function has too many lines (101/100)",
+      "message": "this function has too many lines (101/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn imported_records_keep_the_numbers_after_the_worktrees_are_removed() {"
     },
     {
@@ -358,7 +366,7 @@
       "rule": "clippy::unnecessary_wraps",
       "file": "cli/src/memcap.rs",
       "line": 423,
-      "message": "this function's return value is unnecessarily wrapped by `Option`",
+      "message": "this function's return value is unnecessarily wrapped by `Option` (quality bar, Architecture: no Option or Result that hides an invariant: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn exit(code: i32) -> Option<ExitStatus> {"
     },
     {
@@ -366,7 +374,7 @@
       "rule": "clippy::unnecessary_wraps",
       "file": "cli/src/memcap.rs",
       "line": 428,
-      "message": "this function's return value is unnecessarily wrapped by `Option`",
+      "message": "this function's return value is unnecessarily wrapped by `Option` (quality bar, Architecture: no Option or Result that hides an invariant: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn signalled(sig: i32) -> Option<ExitStatus> {"
     }
   ]
