@@ -1081,6 +1081,30 @@ fn a_review_that_fails_after_moving_head_still_runs_the_gate() {
 }
 
 #[test]
+fn a_verify_that_fails_after_moving_head_still_runs_the_gate() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"true\"\n");
+    e.queue("build", &["pass:commit"]);
+    e.queue("verify", &["fail:commit"]);
+    e.run(&["run", "--issue", "7"], 0);
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[1]["phase"], "verify");
+}
+
+#[test]
+fn a_ship_that_fails_after_moving_head_still_runs_the_gate() {
+    let e = Env::new();
+    e.factory("[phases.build]\ngate = \"true\"\n");
+    e.queue("build", &["pass:commit"]);
+    e.queue("ship", &["fail:commit"]);
+    e.run(&["run", "--issue", "7"], 0);
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[1]["phase"], "ship");
+}
+
+#[test]
 fn a_build_that_did_not_pass_runs_no_gate() {
     let e = Env::new();
     e.factory("[phases.build]\nmax_attempts = 5\ngate = \"true\"\n");
@@ -9026,6 +9050,59 @@ fn an_update_branch_that_breaks_the_gate_goes_back_to_build_before_merging() {
     let red = &gate_events(&e)[1];
     let other = git(&e.ctrl.join("other"), &["rev-parse", "--short", "HEAD"]);
     assert_eq!(red["sha"].as_str(), Some(other.as_str()), "{red}");
+    assert_eq!(red["attempt"], 1, "{red}");
+}
+
+#[test]
+fn a_second_update_branch_gates_the_merge_head_again_at_the_next_attempt() {
+    let e = Env::new();
+    e.factory(&format!(
+        "{AUTO}[phases.build]\nmax_attempts = 3\ngate = \"test ! -f broken\"\n"
+    ));
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit", "pass:script"]);
+    e.queue("ship", &["pass:script", "pass:script", "pass:script"]);
+    e.ctl(
+        "ship.sh",
+        r#"set -e
+c="git -c user.name=f -c user.email=f@f"
+rm -f "$FAKE_GH_DIR/pr-12.head"
+git push -q -f origin HEAD
+n=$(cat "$FAKE_CTRL/ships" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$FAKE_CTRL/ships"
+if [ "$n" -le 2 ]; then
+  b=$(git symbolic-ref --short HEAD)
+  o="$FAKE_CTRL/other$n"
+  git clone -q -b "$b" "$(git remote get-url origin)" "$o"
+  f=broken
+  [ "$n" -eq 2 ] && f=fine
+  (cd "$o" && touch "$f" && git add "$f" && $c commit -qm "merge main $n" && git push -q origin "$b")
+  git -C "$o" rev-parse HEAD > "$FAKE_GH_DIR/updated-12.head"
+  echo BEHIND > "$FAKE_GH_DIR/pr-12.merge"
+else
+  rm -f "$FAKE_GH_DIR/pr-12.head"
+fi"#,
+    );
+    e.ctl("build.sh", &format!("git rm -q broken && {COMMIT} fix"));
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(
+        gate_verdicts(&e),
+        verdicts(&[
+            ("build", true),
+            ("merge", false),
+            ("build", true),
+            ("merge", true)
+        ])
+    );
+    let merges: Vec<_> = gate_events(&e)
+        .into_iter()
+        .filter(|g| g["phase"] == "merge")
+        .map(|g| g["attempt"].clone())
+        .collect();
+    assert_eq!(merges, [1, 2]);
 }
 
 #[test]
