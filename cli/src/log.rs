@@ -19,8 +19,8 @@ use crate::watch::forge as watch_forge;
 
 /// The only fields `ns log` reads from a line. The rest (prompts, transcripts, errors, paths)
 /// stay in the file, so no output carries what a run happened to log. `pr_url` is built, never read.
-const RETAINED: [&str; 11] = [
-    "ts", "event", "unit", "issue", "phase", "attempt", "status", "wall_s", "outcome", "pr",
+const RETAINED: [&str; 12] = [
+    "ts", "event", "sha", "unit", "issue", "phase", "attempt", "status", "wall_s", "outcome", "pr",
     "reason",
 ];
 
@@ -180,7 +180,7 @@ fn json_line(ev: &Map<String, Value>) -> String {
     Value::Object(ev.clone()).to_string()
 }
 
-/// `<ts> <event> #<issue> <phase> attempt <n> status <s> <wall_s>s outcome <o> <pr> reason: <r>`,
+/// `<ts> <event> <short sha> #<issue> <phase> attempt <n> status <s> <wall_s>s outcome <o> <pr> reason: <r>`,
 /// leaving out what the event lacks.
 pub fn text(ev: &Map<String, Value>) -> String {
     let field = |k: &str| {
@@ -195,6 +195,7 @@ pub fn text(ev: &Map<String, Value>) -> String {
     let parts = [
         field("ts"),
         field("event"),
+        field("sha").map(|s| s.chars().take(7).collect()),
         field("issue").map(|n| format!("#{n}")),
         field("phase"),
         field("attempt").map(|n| format!("attempt {n}")),
