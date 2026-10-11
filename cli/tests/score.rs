@@ -556,3 +556,121 @@ fn a_judge_that_replies_at_length_before_reading_still_gets_the_whole_prompt() {
     assert!(p.contains(&big), "the artifact arrived truncated");
     assert!(p.contains("label: <value>"), "the prompt tail is missing");
 }
+
+fn unit_worktree(e: &Env) -> PathBuf {
+    let wt = e.base.join("myrepo.worktrees").join(UNIT);
+    git(
+        &e.root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            wt.to_str().unwrap(),
+            "-b",
+            &format!("ns/{UNIT}"),
+        ],
+    );
+    wt
+}
+
+fn dry_prompt_from(e: &Env, dir: &Path) -> String {
+    let out = e
+        .ns()
+        .current_dir(dir)
+        .args(["score", UNIT, "--dry-run"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    v["prompts"][0]["prompt"].as_str().unwrap().to_string()
+}
+
+const REVERT_MSG: &str = "Revert \"feat: x (#12)\"\n\nThis reverts commit abc1234.";
+
+fn with_origin_main(e: &Env) {
+    let origin = e.base.join("origin.git");
+    git(&e.base, &["init", "-q", "--bare", origin.to_str().unwrap()]);
+    git(
+        &e.root,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git(&e.root, &["push", "-q", "origin", "main"]);
+    git(&e.root, &["fetch", "-q", "origin"]);
+    git(&e.root, &["remote", "set-head", "origin", "main"]);
+}
+
+#[test]
+fn a_revert_on_the_default_branch_counts_whatever_the_main_checkout_has_out() {
+    let e = Env::new("fail");
+    with_origin_main(&e);
+    let wt = unit_worktree(&e);
+    git(
+        &e.root,
+        &["commit", "-q", "--allow-empty", "-m", REVERT_MSG],
+    );
+    git(&e.root, &["checkout", "-q", "-b", "side", "HEAD~1"]);
+    let p = dry_prompt_from(&e, &wt);
+    assert!(p.contains("\"reverted\":true"), "{p}");
+}
+
+#[test]
+fn a_revert_only_on_another_branch_is_not_a_revert_on_the_default_branch() {
+    let e = Env::new("fail");
+    with_origin_main(&e);
+    let wt = unit_worktree(&e);
+    git(&e.root, &["checkout", "-q", "-b", "side"]);
+    git(
+        &e.root,
+        &["commit", "-q", "--allow-empty", "-m", REVERT_MSG],
+    );
+    let p = dry_prompt_from(&e, &wt);
+    assert!(p.contains("\"reverted\":false"), "{p}");
+}
+
+const API_ENV: &[&str] = &["ANTHROPIC_API_KEY", "OPENAI_API_KEY"];
+
+fn judge_env_seen(e: &Env, billing: &str) -> String {
+    script(
+        &e.bin.join("claude"),
+        "cat >/dev/null\nenv > \"$FAKE_DIR/judge-env\"\nprintf 'label: pass\\n'",
+    );
+    fs::write(
+        e.base.join("config.toml"),
+        "[harness.judge]\ncommand = [\"claude\"]\n\n[roles.\"review.scorer\"]\nharness = \"judge\"\n",
+    )
+    .unwrap();
+    fs::write(
+        e.root.join(".nightshift/nightshift.toml"),
+        format!("[defaults]\nbilling = \"{billing}\"\n"),
+    )
+    .unwrap();
+    let mut c = e.ns();
+    for k in API_ENV {
+        c.env(k, "x");
+    }
+    c.args(["score", UNIT]).assert().code(0);
+    fs::read_to_string(e.base.join("judge-env")).unwrap()
+}
+
+fn has_var(env: &str, k: &str) -> bool {
+    env.lines().any(|l| l.starts_with(&format!("{k}=")))
+}
+
+#[test]
+fn the_judge_gets_no_api_keys_under_subscription_billing() {
+    let e = Env::new("pass");
+    let env = judge_env_seen(&e, "subscription");
+    for k in API_ENV {
+        assert_eq!(has_var(&env, k), *k == "OPENAI_API_KEY", "{k}");
+    }
+}
+
+#[test]
+fn the_judge_keeps_api_keys_under_api_billing() {
+    let e = Env::new("pass");
+    let env = judge_env_seen(&e, "api");
+    for k in API_ENV {
+        assert!(has_var(&env, k), "{k}");
+    }
+}
