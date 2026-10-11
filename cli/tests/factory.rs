@@ -5304,8 +5304,7 @@ fn the_token_comes_from_the_table_origin_matches() {
             .lines()
             .filter(|l| l.starts_with("api repos/") && l.ends_with(".full_name"))
             .count();
-        let has_repo = origin != "https://github.com/example-org";
-        assert_eq!(checked, usize::from(has_repo), "{origin}: {}", e.gh_calls());
+        assert_eq!(checked, 0, "{origin}: a dry run checked: {}", e.gh_calls());
     }
     git(
         &e.root,
@@ -5462,6 +5461,11 @@ fn a_repo_the_token_cannot_read_stops_run_and_watch_with_exit_2() {
             };
             assert!(err.contains(&want), "{args:?}: {err}");
             assert!(err.contains("HTTP 404"), "{err}");
+            assert!(err.contains("ns doctor"), "{err}");
+            assert!(
+                err.contains("[forge.github.repos.\"example-org/frontend\"]"),
+                "{err}"
+            );
             assert!(!err.contains(FAKE_TOKEN), "{err}");
         }
     }
@@ -5470,19 +5474,12 @@ fn a_repo_the_token_cannot_read_stops_run_and_watch_with_exit_2() {
 
     e.config("");
     e.gh_file("repo.fail", "");
-    let out = e
-        .ns()
-        .args(["run", "--issue", "7"])
-        .assert()
-        .code(2)
-        .get_output()
-        .clone();
-    let err = String::from_utf8_lossy(&out.stderr);
+    let _ = fs::remove_file(e.ghd.join("calls"));
+    e.ns().args(["run", "--issue", "7"]).assert().code(0);
     assert!(
-        err.contains(
-            "the token from gh's own login cannot read example-org/frontend: gh exited with"
-        ),
-        "{err}"
+        !e.gh_calls().contains(".full_name"),
+        "a forge with no table was checked: {}",
+        e.gh_calls()
     );
 }
 
@@ -5520,12 +5517,12 @@ fn a_gitlab_nested_group_picks_its_table_and_an_unreadable_project_exits_2() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(queued(&v), [2], "{v}");
     assert!(
-        e.glab_calls()
-            .lines()
-            .any(|l| l == "api projects/team%2Fsub%2Fproject"),
-        "{}",
+        !e.glab_calls().contains("team%2Fsub%2Fproject"),
+        "a dry run checked the project: {}",
         e.glab_calls()
     );
+    let tokens = fs::read_to_string(e.ghd.join("glab-tokens")).unwrap();
+    assert!(tokens.lines().all(|t| t == FAKE_TOKEN), "{tokens}");
     e.gh_file(
         "gl-repo.fail",
         &format!("404 Project Not Found: token {FAKE_TOKEN}"),
@@ -5543,8 +5540,29 @@ fn a_gitlab_nested_group_picks_its_table_and_an_unreadable_project_exits_2() {
         "{err}"
     );
     assert!(err.contains("[forge.gitlab.owners.\"team/sub\"]"), "{err}");
+    assert!(err.contains("ns doctor"), "{err}");
+    assert!(
+        err.contains("[forge.gitlab.repos.\"team/sub/project\"]"),
+        "{err}"
+    );
     assert!(!err.contains(FAKE_TOKEN), "{err}");
     assert!(err.contains("[token]"), "{err}");
+
+    let _ = fs::remove_file(e.ghd.join("glab-tokens"));
+    let out = ns()
+        .env("GITLAB_TOKEN", "from-env")
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let warning = "GITLAB_TOKEN from the environment overrides the config's choice";
+    assert_eq!(err.matches(warning).count(), 1, "{err}");
+    assert!(err.contains("[forge.gitlab.owners.\"team/sub\"]"), "{err}");
+    let tokens = fs::read_to_string(e.ghd.join("glab-tokens")).unwrap();
+    assert!(!tokens.is_empty());
+    assert!(tokens.lines().all(|t| t == "from-env"), "{tokens}");
 }
 
 #[test]

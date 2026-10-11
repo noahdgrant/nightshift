@@ -10,9 +10,11 @@
 #   gl-project.json, gl-branch.json  what reading the project or main's branch prints instead
 #   gl-repo.fail     reading the project by its path fails with the file's text
 #   gl-login         the account the token belongs to; unset, `api user` fails
+#   glab-tokens      the GITLAB_TOKEN of each call, one per line
 #   glab.fail        every call fails, echoing GITLAB_TOKEN on stderr as a leaky server might
 d="$FAKE_GH_DIR"
 printf '%s\n' "$*" >> "$d/glab-calls"
+printf '%s\n' "${GITLAB_TOKEN:-}" >> "$d/glab-tokens"
 [ -f "$d/glab.fail" ] && { echo "401 Unauthorized: token ${GITLAB_TOKEN:-}" >&2; exit 1; }
 labels_of() {
   sep=; while read -r l; do printf '%s"%s"' "$sep" "$l"; sep=,; done < "$d/labels-$1"

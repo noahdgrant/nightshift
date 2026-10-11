@@ -162,18 +162,11 @@ fn hooks_entry(problems: &mut Vec<String>) -> Value {
 
 /// Each forge's entry, and the warnings they raise, also printed to stderr.
 fn forges_entry(cfg: Option<&config::Config>, problems: &mut Vec<String>) -> (Value, Vec<String>) {
-    let forges = cfg.map(|c| c.forge.clone()).unwrap_or_default();
-    let origin = git::run(Path::new("."), &["remote", "get-url", "origin"]).ok();
-    let origin_kind = crate::watch::forge::kind(
-        None,
-        origin.as_deref(),
-        crate::watch::forge::gitlab_host(cfg).as_deref(),
-    );
+    let origin = forge::Origin::read(Path::new("."), None, cfg);
     let mut warnings: Vec<String> = Vec::new();
     let mut forge = Map::new();
-    for (kind, f) in forges.each() {
-        let origin = origin.as_deref().filter(|_| kind == origin_kind);
-        let entry = forge_entry(kind, f, origin, problems, &mut warnings);
+    for (kind, f) in origin.forges.each() {
+        let entry = forge_entry(kind, f, origin.url_for(kind), problems, &mut warnings);
         forge.insert(kind.name().to_string(), entry);
     }
     for w in &warnings {
@@ -193,7 +186,7 @@ fn forge_entry(
 ) -> Value {
     let repo = origin.and_then(forge::repo_path);
     let repo = repo.as_deref();
-    if !forge::is_set(forge::CHECKED_VAR) {
+    if !forge::inherited(kind, repo) {
         warnings.extend(forge::env_warning(kind, f, repo));
     }
     let creds = match f.map(|f| forge::resolve(kind, f, repo)).transpose() {
@@ -212,8 +205,10 @@ fn forge_entry(
         .flatten();
     let readable = repo.filter(|_| f.is_none() || creds.is_some()).map(|r| {
         forge::can_read(kind, r, creds.as_ref()).map_err(|e| {
-            let source = forge::source(kind, f, repo);
-            problems.push(forge::unreadable(kind, r, account.as_deref(), &source, &e));
+            if f.is_some() {
+                let source = forge::source(kind, f, repo);
+                problems.push(forge::unreadable(kind, r, account.as_deref(), &source, &e));
+            }
         })
     });
     let ssh = origin.and_then(forge::ssh_target).map(|t| {
@@ -248,7 +243,12 @@ fn ssh_account(t: &forge::SshTarget) -> Option<String> {
     if let Some(p) = &t.port {
         cmd.args(["-p", p]);
     }
-    let out = cmd.arg(&t.dest).stdin(Stdio::null()).output().ok()?;
+    let out = cmd
+        .arg("--")
+        .arg(&t.dest)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
     let text = format!(
         "{}\n{}",
         String::from_utf8_lossy(&out.stdout),

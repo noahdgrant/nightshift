@@ -1,9 +1,13 @@
 //! Forge credentials: resolve `[forge.*]` tokens once and export them, so every child
 //! (`gh`, `git`, the harness) inherits them. A token never appears in an error message.
 
-use std::process::{Command, Stdio};
+use std::io::Read;
+use std::path::Path;
+use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
-use crate::config::{Forge, ForgeKind, Forges, TokenSource};
+use crate::config::{Config, Forge, ForgeKind, Forges, TokenSource};
 use crate::error::SfError;
 
 pub fn is_set(var: &str) -> bool {
@@ -67,36 +71,87 @@ pub fn resolve(kind: ForgeKind, forge: &Forge, repo: Option<&str>) -> Result<Cre
     Ok(Credentials { token, host })
 }
 
-/// Set by `ns run` and `ns watch` once they have exported the tokens and checked the repo, so a
-/// unit `ns watch` starts inherits both and neither warns nor checks again.
+/// Set by `ns run` and `ns watch` once they have exported the tokens and checked the repo, to
+/// [`checked_value`], so a unit `ns watch` starts inherits both for the same forge and repo and
+/// neither warns nor checks again. Any other value, from a stale shell or another repo, is ignored.
 pub const CHECKED_VAR: &str = "NS_FORGE_CHECKED";
 
+/// How long a probe of the forge may take before it counts as failed.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+
+pub fn checked_value(kind: ForgeKind, repo: Option<&str>) -> String {
+    format!("{}:{}", kind.name(), repo.unwrap_or_default())
+}
+
+pub fn inherited(kind: ForgeKind, repo: Option<&str>) -> bool {
+    std::env::var(CHECKED_VAR).is_ok_and(|v| v == checked_value(kind, repo))
+}
+
+/// `origin`'s URL, the forge it is on, its repo path, and the configured forges.
+pub struct Origin {
+    pub url: Option<String>,
+    pub kind: ForgeKind,
+    pub repo: Option<String>,
+    pub forges: Forges,
+}
+
+impl Origin {
+    /// Read `dir`'s `origin`. The forge is `source` when it names one, else inferred from the URL.
+    pub fn read(dir: &Path, source: Option<&str>, cfg: Option<&Config>) -> Origin {
+        let url = crate::git::run(dir, &["remote", "get-url", "origin"]).ok();
+        let kind = crate::watch::forge::kind(
+            source,
+            url.as_deref(),
+            crate::watch::forge::gitlab_host(cfg).as_deref(),
+        );
+        let repo = url.as_deref().and_then(repo_path);
+        Origin {
+            url,
+            kind,
+            repo,
+            forges: cfg.map(|c| c.forge.clone()).unwrap_or_default(),
+        }
+    }
+
+    /// The URL, only for the forge `origin` is on.
+    pub fn url_for(&self, kind: ForgeKind) -> Option<&str> {
+        self.url.as_deref().filter(|_| kind == self.kind)
+    }
+
+    /// The repo path, only for the forge `origin` is on.
+    pub fn repo_for(&self, kind: ForgeKind) -> Option<&str> {
+        self.repo.as_deref().filter(|_| kind == self.kind)
+    }
+}
+
 /// What `ns run` and `ns watch` do at start: warn when the environment's token overrides the
-/// config, export each forge's token, the one for `origin`'s repo on `kind`, and fail when that
-/// token can't read the repo.
-pub fn start(forges: &Forges, kind: ForgeKind, origin: Option<&str>) -> Result<(), SfError> {
-    let inherited = is_set(CHECKED_VAR);
-    let repo = origin.and_then(repo_path);
-    let source = source(kind, forges.get(kind), repo.as_deref());
+/// config, export each forge's token, the one for `origin`'s repo on its forge, and, unless this
+/// is a dry run, fail when a configured forge's token can't read the repo.
+pub fn start(origin: &Origin, dry_run: bool) -> Result<(), SfError> {
+    let (kind, forges) = (origin.kind, &origin.forges);
+    let repo = origin.repo.as_deref();
+    let inherited = inherited(kind, repo);
+    let source = source(kind, forges.get(kind), repo);
     if !inherited {
-        if let Some(w) = env_warning(kind, forges.get(kind), repo.as_deref()) {
+        if let Some(w) = env_warning(kind, forges.get(kind), repo) {
             eprintln!("ns: warning: {w}");
         }
     }
-    export(forges, kind, repo.as_deref())?;
-    if let Some(r) = repo.as_deref().filter(|_| !inherited) {
+    export(origin)?;
+    let configured = forges.get(kind).is_some();
+    if let Some(r) = repo.filter(|_| configured && !dry_run && !inherited) {
         if let Err(e) = can_read(kind, r, None) {
             return Err(SfError::usage(
                 unreadable(kind, r, account(kind, None).as_deref(), &source, &e),
                 format!(
-                    "check the account with:\n  ns doctor\nand set the token for this repo in \
+                    "check the account with:\n  ns doctor\nif it is the wrong one, set the token for this repo in \
                      [forge.{0}.repos.\"{r}\"] or its owner's [forge.{0}.owners.\"<owner>\"] in the ns config",
                     kind.name()
                 ),
             ));
         }
     }
-    std::env::set_var(CHECKED_VAR, "1");
+    std::env::set_var(CHECKED_VAR, checked_value(kind, repo));
     Ok(())
 }
 
@@ -134,16 +189,21 @@ pub fn env_warning(kind: ForgeKind, forge: Option<&Forge>, repo: Option<&str>) -
 /// forge CLI's own login.
 pub fn source(kind: ForgeKind, forge: Option<&Forge>, repo: Option<&str>) -> String {
     match forge {
+        Some(f) if is_set(kind.token_var()) => format!(
+            "{} from the environment, overriding {}",
+            kind.token_var(),
+            f.choose(repo).1.label(kind)
+        ),
         _ if is_set(kind.token_var()) => format!("{} from the environment", kind.token_var()),
         Some(f) => f.choose(repo).1.label(kind),
         None => format!("{}'s own login", kind.cli()),
     }
 }
 
-fn export(forges: &Forges, origin_kind: ForgeKind, repo: Option<&str>) -> Result<(), SfError> {
-    for (kind, forge) in forges.each() {
+fn export(origin: &Origin) -> Result<(), SfError> {
+    for (kind, forge) in origin.forges.each() {
         if let Some(f) = forge {
-            let creds = resolve(kind, f, repo.filter(|_| kind == origin_kind))?;
+            let creds = resolve(kind, f, origin.repo_for(kind))?;
             if let Some(h) = creds.host {
                 std::env::set_var(kind.host_var(), h);
             }
@@ -187,24 +247,36 @@ pub struct SshTarget {
 
 pub fn ssh_target(url: &str) -> Option<SshTarget> {
     repo_path(url)?;
-    match url.split_once("://") {
+    let target = match url.split_once("://") {
         Some(("ssh" | "git+ssh" | "ssh+git", rest)) => {
             let authority = rest.split('/').next()?;
             let (dest, port) = match authority.rsplit_once(':') {
                 Some((d, p)) => (d, Some(p.to_string())),
                 None => (authority, None),
             };
-            Some(SshTarget {
+            SshTarget {
                 dest: dest.to_string(),
                 port,
-            })
+            }
         }
-        Some(_) => None,
-        None => Some(SshTarget {
+        Some(_) => return None,
+        None => SshTarget {
             dest: url.split_once(':')?.0.to_string(),
             port: None,
-        }),
-    }
+        },
+    };
+    safe_destination(&target.dest).then_some(target)
+}
+
+/// Whether `dest` can't be taken for an `ssh` option or hide one: neither it nor its host starts
+/// with `-`, and it has no whitespace or control characters.
+fn safe_destination(dest: &str) -> bool {
+    let host = dest.rsplit_once('@').map_or(dest, |(_, h)| h);
+    !dest.is_empty()
+        && !host.is_empty()
+        && !dest.starts_with('-')
+        && !host.starts_with('-')
+        && !dest.contains(|c: char| c.is_whitespace() || c.is_control())
 }
 
 /// `kind`'s CLI (`gh` or `glab`), scrubbed, with `creds` on its environment.
@@ -218,6 +290,46 @@ fn cli(kind: ForgeKind, creds: Option<&Credentials>) -> Command {
     cmd
 }
 
+/// Run `cmd` to completion, killing it after `limit`. Output a killed command's descendants still
+/// hold open is dropped after a second.
+pub fn output_within(mut cmd: Command, limit: Duration) -> std::io::Result<Output> {
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            let _ = tx.send(buf);
+        });
+        rx
+    };
+    let out = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let err = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        if let Some(s) = child.try_wait()? {
+            break s;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("timed out after {}s", limit.as_secs_f32()),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let grace = Duration::from_secs(1);
+    Ok(Output {
+        status,
+        stdout: out.recv_timeout(grace).unwrap_or_default(),
+        stderr: err.recv_timeout(grace).unwrap_or_default(),
+    })
+}
+
 /// The login of the account the token belongs to, from the forge's API.
 pub fn account(kind: ForgeKind, creds: Option<&Credentials>) -> Option<String> {
     let mut cmd = cli(kind, creds);
@@ -225,7 +337,7 @@ pub fn account(kind: ForgeKind, creds: Option<&Credentials>) -> Option<String> {
         ForgeKind::Github => cmd.args(["api", "user", "--jq", ".login"]),
         ForgeKind::Gitlab => cmd.args(["api", "user"]),
     };
-    let out = cmd.stderr(Stdio::null()).output().ok()?;
+    let out = output_within(cmd, PROBE_TIMEOUT).ok()?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let login = match kind {
         ForgeKind::Github => text,
@@ -246,29 +358,33 @@ pub fn can_read(kind: ForgeKind, repo: &str, creds: Option<&Credentials>) -> Res
         ForgeKind::Github => cmd.args(["api", &format!("repos/{repo}"), "--jq", ".full_name"]),
         ForgeKind::Gitlab => cmd.args(["api", &format!("projects/{}", repo.replace('/', "%2F"))]),
     };
-    let out = cmd
-        .output()
-        .map_err(|e| format!("cannot run {}: {e}", kind.cli()))?;
+    let out = output_within(cmd, PROBE_TIMEOUT).map_err(|e| match e.kind() {
+        std::io::ErrorKind::TimedOut => format!("{} {e}", kind.cli()),
+        _ => format!("cannot run {}: {e}", kind.cli()),
+    })?;
     if out.status.success() {
         return Ok(());
     }
-    let mut err = String::from_utf8_lossy(&out.stderr).trim().to_string();
     let fetched = creds.and_then(|c| match &c.token {
         Token::Fetched(t) => Some(t.clone()),
         Token::AlreadySet => None,
     });
-    for t in fetched
+    let tokens = fetched
         .into_iter()
-        .chain(std::env::var(kind.token_var()).ok())
-        .filter(|t| !t.is_empty())
-    {
-        err = err.replace(&t, "[token]");
-    }
+        .chain(std::env::var(kind.token_var()).ok());
+    let err = hide(String::from_utf8_lossy(&out.stderr).trim(), tokens);
     Err(if err.is_empty() {
         format!("{} exited with {}", kind.cli(), out.status)
     } else {
         err
     })
+}
+
+fn hide(text: &str, tokens: impl IntoIterator<Item = String>) -> String {
+    tokens
+        .into_iter()
+        .filter(|t| !t.is_empty())
+        .fold(text.to_string(), |acc, t| acc.replace(&t, "[token]"))
 }
 
 const HINT: &str =
@@ -406,6 +522,65 @@ mod tests {
         assert_eq!(ssh_target("https://github.com/o/r"), None);
         assert_eq!(ssh_target("/tmp/remote.git"), None);
         assert_eq!(ssh_target("git@github.com:only"), None);
+    }
+
+    #[test]
+    fn ssh_target_refuses_a_destination_ssh_would_read_as_an_option() {
+        for url in [
+            "-oProxyCommand=x:o/r",
+            "git@-oProxyCommand=x:o/r",
+            "ssh://-oProxyCommand=x/o/r",
+            "ssh://git@-oProxyCommand=x/o/r",
+            "ssh://a b/o/r",
+            "a\tb:o/r",
+            "ssh:///o/r",
+        ] {
+            assert_eq!(ssh_target(url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn hide_replaces_every_token_but_ignores_an_empty_one() {
+        let text = "HTTP 404 for tok-1 and tok-2";
+        let got = hide(
+            text,
+            ["tok-1".to_string(), String::new(), "tok-2".to_string()],
+        );
+        assert_eq!(got, "HTTP 404 for [token] and [token]");
+        assert_eq!(hide(text, [String::new()]), text);
+    }
+
+    #[test]
+    fn output_within_kills_a_command_that_outlives_its_limit() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30"]);
+        let started = Instant::now();
+        let e = output_within(cmd, Duration::from_millis(200)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn output_within_returns_the_output_of_a_command_that_finishes() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo out; echo err >&2; exit 3"]);
+        let out = output_within(cmd, Duration::from_secs(30)).unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(out.stdout, b"out\n");
+        assert_eq!(out.stderr, b"err\n");
+    }
+
+    #[test]
+    fn a_checked_value_is_inherited_only_for_its_forge_and_repo() {
+        assert_eq!(checked_value(ForgeKind::Github, Some("o/r")), "github:o/r");
+        assert_ne!(
+            checked_value(ForgeKind::Gitlab, Some("o/r")),
+            checked_value(ForgeKind::Github, Some("o/r"))
+        );
+        assert_ne!(
+            checked_value(ForgeKind::Github, None),
+            checked_value(ForgeKind::Github, Some("o/r"))
+        );
     }
 
     #[test]

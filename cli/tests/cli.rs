@@ -1344,7 +1344,7 @@ fn doctor_reports_the_table_repo_and_ssh_account_for_origin() {
     assert_eq!(v["warnings"], serde_json::json!([]), "{err}");
     assert_eq!(
         ssh_args.trim_end(),
-        "-T -o BatchMode=yes -o ConnectTimeout=10 git@github-work"
+        "-T -o BatchMode=yes -o ConnectTimeout=10 -- git@github-work"
     );
     assert!(
         !v["problems"].to_string().contains("forge"),
@@ -1361,7 +1361,7 @@ fn doctor_warns_when_ssh_greets_another_account_or_none() {
         ..Doctor::default()
     }
     .run();
-    assert!(ssh_args.contains("-p 2222 git@github.com"), "{ssh_args}");
+    assert!(ssh_args.contains("-p 2222 -- git@github.com"), "{ssh_args}");
     let warnings = v["warnings"].to_string();
     assert!(
         warnings.contains("authenticates as personal-account"),
@@ -1388,6 +1388,16 @@ fn doctor_warns_when_ssh_greets_another_account_or_none() {
         warnings.contains("ssh -T git@github-work greeted no account"),
         "{warnings}"
     );
+}
+
+#[test]
+fn doctor_compares_the_ssh_and_token_accounts_without_regard_to_case() {
+    let (v, err, _) = Doctor {
+        ssh_account: "Work-Account",
+        ..Doctor::default()
+    }
+    .run();
+    assert_eq!(v["warnings"], serde_json::json!([]), "{err}");
 }
 
 #[test]
@@ -1424,8 +1434,19 @@ fn doctor_reports_a_repo_the_token_cannot_read_as_a_problem() {
     assert_eq!(v["forge"]["github"]["configured"], false);
     assert_eq!(v["forge"]["github"]["repo_readable"], false);
     let problems = v["problems"].to_string();
+    assert!(!problems.contains("cannot read"), "{problems}");
+
+    let (v, _, _) = Doctor {
+        origin: "https://github.com/example-org/backend",
+        config: "[forge.github]\ntoken_env = \"PERSONAL\"\n",
+        env: &[("GH_TOKEN", "env-tok"), ("PERSONAL", "personal-tok")],
+        unreadable: true,
+        ..Doctor::default()
+    }
+    .run();
+    let problems = v["problems"].to_string();
     assert!(
-        problems.contains("token from GH_TOKEN from the environment"),
+        problems.contains("token from GH_TOKEN from the environment, overriding [forge.github]"),
         "{problems}"
     );
     assert!(!problems.contains("env-tok"), "{problems}");
@@ -1460,8 +1481,27 @@ fn doctor_warns_about_a_set_gh_token_unless_an_ns_parent_set_it() {
         warnings.contains("GH_TOKEN from the environment overrides the config's choice ([forge.github.owners.\\\"example-org\\\"])"),
         "{warnings}"
     );
+    for stale in [
+        "1",
+        "github:example-org/other",
+        "gitlab:example-org/backend",
+    ] {
+        let (v, _, _) = Doctor {
+            env: &[("GH_TOKEN", "env-tok"), ("NS_FORGE_CHECKED", stale)],
+            ..Doctor::default()
+        }
+        .run();
+        assert!(
+            v["warnings"].to_string().contains("GH_TOKEN"),
+            "{stale}: {}",
+            v["warnings"]
+        );
+    }
     let (v, _, _) = Doctor {
-        env: &[("GH_TOKEN", "env-tok"), ("NS_FORGE_CHECKED", "1")],
+        env: &[
+            ("GH_TOKEN", "env-tok"),
+            ("NS_FORGE_CHECKED", "github:example-org/backend"),
+        ],
         ..Doctor::default()
     }
     .run();
