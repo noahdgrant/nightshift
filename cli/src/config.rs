@@ -550,9 +550,19 @@ model = "big"
         let h = c.eval.harness_named("codex").unwrap();
         assert_eq!(h.output, "codex-jsonl");
         assert!(EVAL_OUTPUTS.contains(&"codex-jsonl"));
-        assert_eq!(h.command[..3], ["codex", "exec", "--json"]);
-        assert!(h.command.contains(&"{model}".to_string()));
-        assert!(h.command.contains(&"--skip-git-repo-check".to_string()));
+        assert_eq!(
+            h.command,
+            [
+                "codex",
+                "exec",
+                "--json",
+                "-m",
+                "{model}",
+                "--sandbox",
+                "danger-full-access",
+                "--skip-git-repo-check"
+            ]
+        );
         assert_eq!(h.carry, [".codex/auth.json"]);
 
         let c = parse(

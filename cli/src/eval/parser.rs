@@ -142,7 +142,9 @@ impl OutputParser for CodexJsonl {
                     let text = |k: &str| item.get(k).and_then(Value::as_str);
                     match text("type") {
                         Some("agent_message") => {
-                            t.result = text("text").map(String::from);
+                            if let Some(msg) = text("text") {
+                                t.result = Some(msg.to_string());
+                            }
                         }
                         Some("command_execution") => {
                             command_skills(text("command").unwrap_or(""), &mut t.skills_loaded);
@@ -237,6 +239,17 @@ not json
         assert_eq!(t.output_tokens, Some(122));
         assert_eq!(t.cost_usd, None);
         assert!(t.skills_loaded.is_empty());
+    }
+
+    #[test]
+    fn codex_textless_agent_message_keeps_earlier_result() {
+        let jsonl = concat!(
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"done"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"agent_message"}}"#,
+            "\n",
+        );
+        assert_eq!(CodexJsonl.parse(jsonl).result.as_deref(), Some("done"));
     }
 
     #[test]
