@@ -300,7 +300,7 @@ With the queue on, step 3 goes on after the merge state, still under the merge l
 7. Green goes on to step 4 and merges the PR head, which need not be up to date with the base.
 8. Red merges nothing. The run logs a `merge_gate_failed` event with `pr`, `sha`, `base` and `reused`, and goes back to build, using a build attempt, with the gate's `{feedback}` plus a note that it ran on the merge with `<default>`, not on the branch alone. The build's reason is "the CI gate failed on the merge with <default>", or names the signal or the memory cap that ended it.
 
-The verdict is kept for the pair (PR head, tip of `origin/<default>`) for the rest of the invocation. A later merge step that meets the same pair, such as after CI failed on the PR and a rebuild left HEAD alone, reuses it without running the gate, and a reused red logs `merge_gate_failed` with `reused: true`. A new PR head or a moved tip runs it again.
+The verdict is kept for the pair (PR head, tip of `origin/<default>`) for the rest of the invocation, except a red that a timeout, the memory cap or a signal caused: it says nothing about the code, so it is not kept and the next merge step runs the gate again. A later merge step that meets the same pair, such as after CI failed on the PR and a rebuild left HEAD alone, reuses it without running the gate, and a reused red logs `merge_gate_failed` with `reused: true`. A new PR head or a moved tip runs it again.
 
 The gate runs under the merge lock, so while it runs, which can take minutes, every other unit's merge waits. That is the price of testing what lands. The scratch worktree also starts with no build output, so a gate with a build cache in the worktree, such as `cargo`'s `target/`, builds from cold.
 

@@ -9934,7 +9934,7 @@ fn a_gate_killed_on_the_merge_result_says_so_when_build_runs_out() {
     );
     assert_eq!(
         gate_verdicts(&e),
-        verdicts(&[("build", true), ("merge", false)])
+        verdicts(&[("build", true), ("merge", false), ("merge", false)])
     );
     assert!(!e.gh_calls().contains("pr merge"));
     assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
@@ -10019,4 +10019,49 @@ fn a_dirty_pr_under_the_queue_takes_the_conflict_path_without_a_merge_gate() {
     assert!(merge_gate_failures(&e).is_empty());
     assert!(!e.gh_calls().contains("pr merge"));
     assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
+}
+
+#[test]
+fn a_pr_head_that_cannot_be_checked_out_under_the_queue_needs_a_human_merge() {
+    let lock_the_index = "touch \"$(git rev-parse --git-dir)/index.lock\"\n";
+    let (e, v, _) = main_moves_after_review(
+        &["pass:script"],
+        PRINT_HEAD_SHA_CMD,
+        &format!(
+            "git update-ref refs/heads/main upstream\n\
+             git -c user.name=f -c user.email=f@f rebase -q main\n{lock_the_index}"
+        ),
+        |e| {
+            e.factory(&format!("{AUTO}[phases.build]\ngate = \"true\"\n"));
+        },
+    );
+    assert_eq!(v["needs_human"], true, "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("cannot check out PR #12 head"),
+        "{reason}"
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
+    assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
+}
+
+#[test]
+fn a_killed_merge_gate_runs_again_on_an_unchanged_head_and_base() {
+    let e = Env::new();
+    let log = e.ctrl.join("gates");
+    let marker = e.ctrl.join("killed-once");
+    local_queue(
+        &e,
+        &format!(
+            "max_attempts = 3\ngate = \"case $PWD in *merge-queue*) echo ran >> {}; test -f {m} || {{ touch {m}; kill -9 $$; }};; esac\"\n",
+            log.display(),
+            m = marker.display()
+        ),
+    );
+    e.queue("build", &["pass:commit", "pass"]);
+    main_moves(&e, "from-main", "x\n");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(fs::read_to_string(&log).unwrap(), "ran\nran\n");
+    assert!(merge_gate_failures(&e).iter().all(|f| f["reused"] == false));
 }

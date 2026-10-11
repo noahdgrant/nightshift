@@ -324,7 +324,9 @@ impl Gate {
     }
 
     /// Run the gate in `job.worktree`, which holds the merge of PR head `job.head` into
-    /// `default` at `base`, and keep its verdict for [`Gate::merge_verdict`].
+    /// `default` at `base`, and keep its verdict for [`Gate::merge_verdict`], except a red that a
+    /// timeout, the memory cap or a signal caused: that says nothing about the code, so the next
+    /// merge step runs the gate again.
     pub fn on_merge_result(
         &mut self,
         job: &Job<'_>,
@@ -352,7 +354,8 @@ impl Gate {
                 killed,
             }
         });
-        self.merged = Some(MergeVerdict {
+        let environmental = r.timed_out || r.cut.is_some();
+        self.merged = (!environmental).then(|| MergeVerdict {
             head: job.head.clone(),
             base: base.to_string(),
             red: red.clone(),
