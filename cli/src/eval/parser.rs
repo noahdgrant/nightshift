@@ -34,6 +34,7 @@ pub trait OutputParser {
 pub fn for_output(name: &str) -> Option<Box<dyn OutputParser>> {
     match name {
         "claude-stream-json" => Some(Box::new(ClaudeStreamJson)),
+        "codex-jsonl" => Some(Box::new(CodexJsonl)),
         _ => None,
     }
 }
@@ -101,16 +102,78 @@ fn tool_use_skill(block: &Value, loaded: &mut BTreeSet<String>) {
             }
         }
         Some("Read") => {
-            if let Some(path) = input.get("file_path").and_then(Value::as_str) {
-                let mut parts = path.rsplit('/');
-                if parts.next() == Some("SKILL.md") {
-                    if let Some(dir) = parts.next().filter(|d| !d.is_empty()) {
-                        loaded.insert(dir.to_string());
-                    }
-                }
+            if let Some(dir) = input
+                .get("file_path")
+                .and_then(Value::as_str)
+                .and_then(skill_md_dir)
+            {
+                loaded.insert(dir.to_string());
             }
         }
         _ => {}
+    }
+}
+
+/// The directory name in a `<dir>/SKILL.md` path.
+fn skill_md_dir(path: &str) -> Option<&str> {
+    let mut parts = path.rsplit('/');
+    if parts.next() != Some("SKILL.md") {
+        return None;
+    }
+    parts.next().filter(|d| !d.is_empty())
+}
+
+/// `codex exec --json`: one JSON event per line. Event and item shapes are from
+/// https://developers.openai.com/codex/noninteractive#make-output-machine-readable and
+/// `ThreadEvent` in https://github.com/openai/codex/blob/main/codex-rs/exec/src/exec_events.rs.
+/// The stream reports no cost, duration or turn count.
+pub struct CodexJsonl;
+
+impl OutputParser for CodexJsonl {
+    fn parse(&self, stdout: &str) -> Transcript {
+        let mut t = Transcript::default();
+        for line in stdout.lines() {
+            let Ok(ev) = serde_json::from_str::<Value>(line.trim()) else {
+                continue;
+            };
+            match ev.get("type").and_then(Value::as_str) {
+                Some("item.completed") => {
+                    let item = &ev["item"];
+                    let text = |k: &str| item.get(k).and_then(Value::as_str);
+                    match text("type") {
+                        Some("agent_message") => {
+                            t.result = text("text").map(String::from);
+                        }
+                        Some("command_execution") => {
+                            command_skills(text("command").unwrap_or(""), &mut t.skills_loaded);
+                        }
+                        _ => {}
+                    }
+                }
+                // `input_tokens` already counts `cached_input_tokens`.
+                Some("turn.completed") => {
+                    let n = |k: &str| ev.pointer(&format!("/usage/{k}")).and_then(Value::as_u64);
+                    for (sum, key) in [
+                        (&mut t.input_tokens, "input_tokens"),
+                        (&mut t.output_tokens, "output_tokens"),
+                    ] {
+                        if let Some(v) = n(key) {
+                            *sum.get_or_insert(0) += v;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        t
+    }
+}
+
+/// Every `<skill>/SKILL.md` path in a shell command line.
+fn command_skills(command: &str, loaded: &mut BTreeSet<String>) {
+    let words = command.split(|c: char| c.is_whitespace() || "'\"\\;|&>".contains(c));
+    for dir in words.filter_map(skill_md_dir) {
+        loaded.insert(dir.to_string());
     }
 }
 
@@ -156,5 +219,68 @@ not json
         assert_eq!(ClaudeStreamJson.parse("{]\n"), Transcript::default());
         assert!(for_output("none").is_none());
         assert!(for_output("claude-stream-json").is_some());
+    }
+
+    const CODEX_NORMAL: &str = include_str!("../../tests/fixtures/codex-jsonl/normal.jsonl");
+    const CODEX_ERROR: &str = include_str!("../../tests/fixtures/codex-jsonl/error.jsonl");
+    const CODEX_SKILLS: &str = include_str!("../../tests/fixtures/codex-jsonl/skills.jsonl");
+
+    #[test]
+    fn codex_parses_last_message_and_usage() {
+        assert!(for_output("codex-jsonl").is_some());
+        let t = CodexJsonl.parse(CODEX_NORMAL);
+        assert_eq!(
+            t.result.as_deref(),
+            Some("The repo has a README and a src directory.")
+        );
+        assert_eq!(t.input_tokens, Some(24763));
+        assert_eq!(t.output_tokens, Some(122));
+        assert_eq!(t.cost_usd, None);
+        assert!(t.skills_loaded.is_empty());
+    }
+
+    #[test]
+    fn codex_error_run_has_no_result_or_usage() {
+        assert_eq!(CodexJsonl.parse(CODEX_ERROR), Transcript::default());
+        assert_eq!(CodexJsonl.parse(""), Transcript::default());
+    }
+
+    #[test]
+    fn codex_detects_skill_md_reads_and_sums_turns() {
+        let t = CodexJsonl.parse(CODEX_SKILLS);
+        assert_eq!(
+            t.skills_loaded
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["ns-contract", "ns-tdd"]
+        );
+        assert_eq!(t.input_tokens, Some(1200));
+        assert_eq!(t.output_tokens, Some(57));
+        assert!(!t.loaded("ns-review"), "an agent message is not a read");
+    }
+
+    #[test]
+    fn codex_splits_commands_on_shell_punctuation() {
+        let mut loaded = BTreeSet::new();
+        command_skills(
+            r#"cat /SKILL.md /s/a/SKILL.md /s/b/SKILL.md;wc /s/c/SKILL.md|x /s/d/SKILL.md>o /s/e/SKILL.md&&x "/s/f/SKILL.md""#,
+            &mut loaded,
+        );
+        assert_eq!(
+            loaded.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["a", "b", "c", "d", "e", "f"]
+        );
+    }
+
+    #[test]
+    fn codex_usage_without_a_count_keeps_the_sum() {
+        let s = r#"{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":2}}
+{"type":"turn.completed","usage":{}}
+"#;
+        let t = CodexJsonl.parse(s);
+        assert_eq!((t.input_tokens, t.output_tokens), (Some(5), Some(2)));
+        let empty = r#"{"type":"turn.completed","usage":{}}"#;
+        assert_eq!(CodexJsonl.parse(empty), Transcript::default());
     }
 }
