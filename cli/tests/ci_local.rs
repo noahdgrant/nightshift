@@ -307,6 +307,21 @@ fn the_ns_run_is_the_one_under_cargo_target_dir_when_that_is_set() {
 }
 
 #[test]
+fn a_relative_cargo_target_dir_is_relative_to_the_repo_root() {
+    let repo = Repo::new();
+    let root = repo.dir.path();
+    fs::create_dir_all(root.join("shared/debug")).unwrap();
+    fs::rename(
+        root.join("cli/target/debug/ns"),
+        root.join("shared/debug/ns"),
+    )
+    .unwrap();
+    let out = repo.run(&[], &[("CARGO_TARGET_DIR", "shared")]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(steps(&out), ALL_STEPS);
+}
+
+#[test]
 fn any_argument_prints_usage_and_exits_2() {
     for arg in ["--bogus", "--fast"] {
         let out = Repo::new().run(&[arg], &[]);
