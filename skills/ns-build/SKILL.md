@@ -36,6 +36,8 @@ Read `.ns/<unit-id>/brief.md`. If the worktree is new and the brief sits in the 
 
 Stop with `status: blocked` in `build.md` when the brief is missing, or when its acceptance criteria can't each be turned into a test that goes red today. Name the gap, and point to the `ns-triage` skill (for a missing brief) or `ns-define` (for unclear intent).
 
+Explore the code the map needs as [guard the context window](../ns-principle-guard-the-context-window/SKILL.md) says: the files you will change, their tests and one example of the pattern. Hand a search across many files to a **fresh-context agent** and keep its summary.
+
 Then [surface the assumptions](../ns-principle-surface-assumptions/SKILL.md) the map rests on. When the brief, the code, the docs or a test disagree, [manage the confusion](../ns-principle-manage-confusion/SKILL.md) before the first slice.
 
 Done when every acceptance criterion is mapped to a seam where a test can observe it. Write the map down; it seeds the test list.

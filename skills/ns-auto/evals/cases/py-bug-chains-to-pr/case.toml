@@ -24,6 +24,7 @@ extra_skills = [
   "ns-principle-keep-scope-tight",
   "ns-principle-contract-first",
   "ns-principle-hyrums-law",
+  "ns-principle-guard-the-context-window",
   "ns-principle-never-block-on-the-human",
   "ns-principle-prove-it-works",
   "ns-principle-redesign-from-first-principles",
