@@ -23,10 +23,10 @@ Preconditions:
 - An echo harness config: `printf '[harness.echo]\ncommand = ["sed", "s/^/echo: /"]\n[roles.default]\nharness = "echo"\n' > $V/c-ask.toml`.
 
 - **Dry run.** Run `cap ask-dry "$NS" ask --role review.security --dry-run`. `matched_role` is `default`, `harness` `claude`, `binary` `$V/bin/claude`, `mode` `read-only`.
-- **Real run.** Run `echo 'Review this diff' | NS_CONFIG=$V/c-ask.toml "$NS" ask --role review.security`. Stdout is `echo: Review this diff`, exit `0`.
-- **No role.** Run `NS_CONFIG=/dev/null "$NS" ask --role build --dry-run`. Exit `3`; stderr says `role "build" is not configured`.
-- **No binary.** Write `[harness.gone]\ncommand = ["no-such-harness-bin"]\n[roles.default]\nharness = "gone"` to `$V/c-gone.toml` and run `echo x | NS_CONFIG=$V/c-gone.toml "$NS" ask --role build`. Exit `4`.
-- **No write command.** Run `echo x | NS_CONFIG=$V/c-ask.toml "$NS" ask --role build --write`. Exit `5`; stderr says `--write needs a command_write`.
+- **Real run.** Run `cap ask-run sh -c 'echo "Review this diff" | NS_CONFIG=$V/c-ask.toml "$NS" ask --role review.security'`. Stdout is `echo: Review this diff`, exit `0`.
+- **No role.** Run `cap ask-no-role env NS_CONFIG=/dev/null "$NS" ask --role build --dry-run`. Exit `3`; stderr says `role "build" is not configured`.
+- **No binary.** Write `[harness.gone]\ncommand = ["no-such-harness-bin"]\n[roles.default]\nharness = "gone"` to `$V/c-gone.toml` and run `cap ask-no-binary sh -c 'echo x | NS_CONFIG=$V/c-gone.toml "$NS" ask --role build'`. Exit `4`.
+- **No write command.** Run `cap ask-no-write sh -c 'echo x | NS_CONFIG=$V/c-ask.toml "$NS" ask --role build --write'`. Exit `5`; stderr says `--write needs a command_write`.
 
 ## Gotchas
 

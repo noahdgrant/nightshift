@@ -22,9 +22,9 @@ Preconditions:
 - Issue #7 seeded as in the skill's Drive section.
 
 - **Dry run.** Run `cap run-dry "$NS" run --issue 7 --dry-run`. `unit` is `7-fix-the-thing`, `decision.phase` is `triage` with `why` `no brief.md`, and `prompt` starts with `Load the \`ns-triage\` skill`. `$FAKE_CTRL/calls` does not exist.
-- **Pass.** Run `cap run "$NS" run --issue 7`. Exit `0`, `outcome` `done`. `$FAKE_CTRL/calls` lists triage, build, verify, review, ship, and `ls $V/repo.worktrees/7-fix-the-thing/.ns/7-fix-the-thing` shows `brief.md`, `build.md`, `evidence.md`, `review.md`, `pr.md`.
+- **Pass.** Run `cap run-pass "$NS" run --issue 7`. Exit `0`, `outcome` `done`. `$FAKE_CTRL/calls` lists triage, build, verify, review, ship, and `ls $V/repo.worktrees/7-fix-the-thing/.ns/7-fix-the-thing` shows `brief.md`, `build.md`, `evidence.md`, `review.md`, `pr.md`.
 - **Stuck.** In a fresh sandbox, run `printf 'fail\nfail\n' > $FAKE_CTRL/build`, then `cap run-stuck "$NS" run --issue 7`. Exit `1`, `outcome` `stuck`, reason `build is out of attempts (2)`; `$FAKE_CTRL/calls` ends with two `build` lines.
-- **Log.** Run `cap log "$NS" log` and `cap status "$NS" status`. The log ends with `end #7 ... outcome ...`; status counts the unit under that outcome.
+- **Log.** Run `cap run-log "$NS" log` and `cap run-log-status "$NS" status`. The log ends with `end #7 ... outcome ...`; status counts the unit under that outcome.
 
 ## Gotchas
 

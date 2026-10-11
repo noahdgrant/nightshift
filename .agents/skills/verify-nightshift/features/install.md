@@ -19,9 +19,9 @@ Preconditions:
 - Baseline, in `$NS_SRC`. `HOME` is `$V/home`, so the targets are under the sandbox.
 
 - **Dry run.** Run `cap install-dry "$NS" install --source "$NS_SRC/skills" --dry-run`. `targets` are `$V/home/.agents/skills` and `$V/home/.claude/skills`; every action is `link`; `ls $V/home/.claude/skills` is still empty or missing.
-- **Link.** Run `cap install "$NS" install --source "$NS_SRC/skills" --harness claude`. `conflicts` is `0`. `ls -l $V/home/.claude/skills` shows links into `$NS_SRC/skills`, and `"$NS" doctor | jq .skill_dirs.claude.ns_skills` matches the count.
-- **Re-run.** Run the same command again. Every action is `unchanged`.
-- **Conflict.** Run `rm $V/home/.claude/skills/ns-tdd && mkdir $V/home/.claude/skills/ns-tdd`, then `cap install-conflict "$NS" install --source "$NS_SRC/skills" --harness claude`. Exit `1`, stderr names the conflict, and the directory is still there.
+- **Link.** Run `cap install-link "$NS" install --source "$NS_SRC/skills" --harness claude`. `conflicts` is `0`. `ls -l $V/home/.claude/skills` shows links into `$NS_SRC/skills`, and `cap install-link-doctor "$NS" doctor` has `.skill_dirs.claude.ns_skills` matching the count.
+- **Re-run.** Run the same command again as `cap install-link-again "$NS" install --source "$NS_SRC/skills" --harness claude`. Every action is `unchanged`.
+- **Conflict.** Run `rm $V/home/.claude/skills/ns-tdd && mkdir $V/home/.claude/skills/ns-tdd` (plain setup), then `cap install-conflict "$NS" install --source "$NS_SRC/skills" --harness claude`. Exit `1`, stderr names the conflict, and the directory is still there.
 
 ## Gotchas
 

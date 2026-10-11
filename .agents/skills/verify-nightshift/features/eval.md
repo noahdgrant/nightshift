@@ -18,9 +18,9 @@ Preconditions:
 
 - Baseline, in `$NS_SRC`.
 
-- **All skills.** Run `cap eval-all "$NS" eval --dry-run`. Exit `0`; `dry_run` is `true` and `skills` lists every skill with an `evals/` directory.
-- **One skill.** Run `cap eval-tdd "$NS" eval ns-tdd --dry-run`. `skills` holds only `ns-tdd`, with its cases, and `estimated_runs` is set.
-- **One case.** Run `cap eval-case "$NS" eval ns-tdd --case py-capacity-off-by-one --dry-run`. Only that case is planned.
+- **All skills.** Run `cap eval-plan-all "$NS" eval --dry-run`. Exit `0`; `dry_run` is `true` and `skills` lists every skill with an `evals/` directory.
+- **One skill.** Run `cap eval-plan-one "$NS" eval ns-tdd --dry-run`. `skills` holds only `ns-tdd`, with its cases, and `estimated_runs` is set.
+- **One case.** Run `cap eval-plan-one-case "$NS" eval ns-tdd --case py-capacity-off-by-one --dry-run`. Only that case is planned.
 - **Unknown.** Run `cap eval-unknown "$NS" eval ns-nope --dry-run`. Exit `2`.
 - **No harness.** Check `$FAKE_CTRL/calls` is empty or unchanged. A dry run never calls the harness.
 

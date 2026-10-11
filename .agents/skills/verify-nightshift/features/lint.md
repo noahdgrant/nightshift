@@ -18,8 +18,8 @@ Preconditions:
 
 - Baseline, in `$NS_SRC`.
 
-- **Clean.** Run `cap lint "$NS" lint skills`. Exit `0`; `ok` is `true`, `errors` is `[]`, `skills` counts every `ns-*` directory.
-- **Errors.** Make a broken skill: `mkdir -p $V/sk/ns-x && printf -- '---\nname: ns-y\n---\n[a](./missing.md)\n' > $V/sk/ns-x/SKILL.md`. Run `cap lint-bad "$NS" lint $V/sk --human`. Exit `1` and three lines: `name "ns-y" does not match directory "ns-x"`, `missing description`, `broken link: ./missing.md`.
+- **Clean.** Run `cap lint-clean "$NS" lint skills`. Exit `0`; `ok` is `true`, `errors` is `[]`, `skills` counts every `ns-*` directory.
+- **Errors.** Make a broken skill: `mkdir -p $V/sk/ns-x && printf -- '---\nname: ns-y\n---\n[a](./missing.md)\n' > $V/sk/ns-x/SKILL.md`. Run `cap lint-errors "$NS" lint $V/sk --human`. Exit `1` and three lines: `name "ns-y" does not match directory "ns-x"`, `missing description`, `broken link: ./missing.md`.
 
 ## Gotchas
 

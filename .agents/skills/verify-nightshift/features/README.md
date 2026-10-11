@@ -12,7 +12,7 @@ This directory is the maintained source for verifying what a user of `ns` sees. 
 
 ## Driving conventions
 
-- Start each recipe from the baseline unless its preconditions say otherwise.
+- Start each recipe from the baseline unless its preconditions say otherwise. Recipes in a file run top to bottom and clean up the state they add; a recipe that needs a state another file leaves (a worktree, a `.nightshift/`) says so, and a fresh sandbox is always safe.
 - Prefer JSON field names and exit codes over human-readable text. Pipe JSON through `jq` for assertions.
 - Run commands that act on a target repo from `$V/repo`, and commands that act on nightshift's skills from `$NS_SRC`.
 - A recipe that changes config writes its own file (`$V/c-<feature>.toml`) and passes it with `NS_CONFIG=...` on that one command, so the baseline config stays as it is.
@@ -21,6 +21,7 @@ This directory is the maintained source for verifying what a user of `ns` sees. 
 ## Proof and skip reporting
 
 - CLI proof is the command, stdout, stderr and exit code: `cap <name> <command...>` saves all four in `$OUT`.
+- Every command a recipe asserts on goes through `cap`, named with the sub-feature ID (add a suffix when one ID has several captures). Only setup commands run bare. Env vars: `cap <id> env VAR=x "$NS" ...`. Stdin: `cap <id> sh -c 'echo x | "$NS" ...'`. Read assertions from `$OUT/<id>.out` with `jq`.
 - A command that writes gets a second, read-only view of the state it changed (`ns worktree list`, `git branch`, `ls`, `$V/ghd/labels-<n>`).
 - A command that would start a harness or reach a forge gets the fake's record as proof: `$FAKE_CTRL/calls`, `$V/ghd/calls`, `$V/ghd/glab-calls`.
 - Record the feature ID and entry point with every artifact.

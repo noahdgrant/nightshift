@@ -19,6 +19,7 @@
 Preconditions:
 
 - Baseline, in `$V/repo`, with `.nightshift/nightshift.toml` holding `name = "demo"`.
+- No `7-fix-the-thing` worktree yet (a [run](./run.md) or [worktree](./worktree.md) recipe makes one; use a fresh sandbox).
 - Issue #7 seeded as in the skill's Drive section, labelled `status:ready-for-agent`.
 
 - **Dry run.** Run `cap watch-dry "$NS" watch --dry-run --no-self-update`. `queue` holds `{"number":7,...}` and `skipped` is `[]`. `$V/ghd/labels-7` is unchanged and `$V/ghd/calls` holds only reads (`api`, `pr list`).

@@ -93,7 +93,7 @@ The feature files hold the recipe for each command group.
 
 Evidence goes in `$OUT`: `.ns/verify/<run-id>/` under `$NS_SRC` by default. To use the directory `ns-verify` names (`.ns/<unit-id>/evidence/`), export `OUT` before Launch.
 
-`cap <name> <command...>` saves the command, stdout, stderr and exit code as `$OUT/<name>.{cmd,out,err,exit}`. Proof standards:
+`cap <name> <command...>` saves the command, stdout, stderr and exit code as `$OUT/<name>.{cmd,out,err,exit}`. Every command whose result is asserted goes through `cap`, named with the sub-feature ID from the feature file (suffix it when one ID has several captures); only setup commands run bare. Env: `cap <id> env VAR=x "$NS" ...`. Stdin: `cap <id> sh -c 'echo x | "$NS" ...'`. Proof standards:
 
 - Drive the user path: the `ns` command a user types, against a git repo. Calling a Rust function or a test helper is not proof.
 - Capture the action and the resulting state. After a command that writes, save a second, read-only view: `ns worktree list`, `git -C "$V/repo" branch -a`, `ls` of the artifact folder, `$V/ghd/calls`, `$V/ghd/labels-<n>`.
