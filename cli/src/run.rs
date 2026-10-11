@@ -1944,8 +1944,9 @@ fn workflow_refusal(error: &str) -> bool {
 /// `pr_head` with a lease, as update-branch would have. `Ok(false)` is a merge conflict,
 /// aborted; any other failure is an error. HEAD must be `pr_head`, since the lease would
 /// otherwise replace a PR head the merge was not built on. A failed push resets the branch to
-/// the HEAD it started from, so the worktree still matches the PR. The push skips the
-/// checkout's pre-push hook: the content is the default branch plus a PR head already checked.
+/// the HEAD it started from, so the worktree still matches the PR. The merge and the push run
+/// without the checkout's hooks (`--no-verify`) because the forge's CI checks the merge result;
+/// the merge does carry unit code.
 fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<bool> {
     let net = |args: &[&str]| -> Result<()> {
         let out = git::net(wt, args).output().context("failed to run git")?;
@@ -1970,7 +1971,14 @@ fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<boo
     let merge = git::command()
         .arg("-C")
         .arg(wt)
-        .args(["merge", "-q", "--no-edit", "FETCH_HEAD", "-m"])
+        .args([
+            "merge",
+            "-q",
+            "--no-edit",
+            "--no-verify",
+            "FETCH_HEAD",
+            "-m",
+        ])
         .arg(format!("Merge {theirs} into {branch}"))
         .output()
         .context("failed to run git")?;
@@ -2136,10 +2144,10 @@ mod tests {
         git::run(dir, &["commit", "-q", "-m", msg]).unwrap();
     }
 
-    /// The merge pushes the default branch plus a PR head that already passed its checks, so a
-    /// pre-push hook running full CI there would take minutes to recheck a tree nobody wrote.
+    /// The update-branch merge and its push run without the checkout's hooks because the forge's
+    /// CI checks the merge result, and the merge does carry unit code.
     #[test]
-    fn merging_the_default_branch_pushes_without_the_checkouts_pre_push_hook() {
+    fn merging_the_default_branch_runs_without_the_checkouts_merge_and_push_hooks() {
         use std::os::unix::fs::PermissionsExt;
         let (t, _origin, wt) = cloned();
         let g = |dir: &Path, args: &[&str]| git::run(dir, args).unwrap();
@@ -2159,12 +2167,16 @@ mod tests {
         fs::write(other.join("g.c"), "a\nx = 3\nb\n").unwrap();
         commit_all(&other, "main moves");
         g(&other, &["push", "-q", "origin", "HEAD:main"]);
-        let hook = wt.join(".git/hooks/pre-push");
-        fs::write(&hook, "#!/bin/sh\ntouch ran\nexit 1\n").unwrap();
-        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        for name in ["pre-push", "pre-merge-commit", "commit-msg"] {
+            let hook = wt.join(".git/hooks").join(name);
+            fs::write(&hook, format!("#!/bin/sh\ntouch ran-{name}\nexit 1\n")).unwrap();
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let head = g(&wt, &["rev-parse", "HEAD"]);
         assert!(merge_default_with_git(&wt, "main", &head).unwrap());
-        assert!(!wt.join("ran").exists());
+        for name in ["pre-push", "pre-merge-commit", "commit-msg"] {
+            assert!(!wt.join(format!("ran-{name}")).exists(), "{name} ran");
+        }
     }
 
     #[test]
