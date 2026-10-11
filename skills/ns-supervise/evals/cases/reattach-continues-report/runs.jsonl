@@ -1,0 +1,8 @@
+{"event":"start","unit":"41-feat-widget-export","issue":41,"ts":"2026-10-10T12:06:00Z","pid":1041}
+{"event":"phase","unit":"41-feat-widget-export","issue":41,"phase":"triage","attempt":1,"status":"pass","wall_s":41.0,"ts":"2026-10-10T12:07:00Z","pid":1041}
+{"event":"phase","unit":"41-feat-widget-export","issue":41,"phase":"build","attempt":1,"status":"pass","wall_s":300.0,"ts":"2026-10-10T12:13:00Z","pid":1041}
+{"event":"end","unit":"41-feat-widget-export","issue":41,"outcome":"merged","reason":null,"pr":101,"ts":"2026-10-10T12:15:00Z","pid":1041}
+{"event":"start","unit":"42-fix-widget-sort","issue":42,"ts":"2026-10-10T12:21:00Z","pid":1042}
+{"event":"phase","unit":"42-fix-widget-sort","issue":42,"phase":"triage","attempt":1,"status":"pass","wall_s":41.0,"ts":"2026-10-10T12:22:00Z","pid":1042}
+{"event":"phase","unit":"42-fix-widget-sort","issue":42,"phase":"build","attempt":1,"status":"pass","wall_s":300.0,"ts":"2026-10-10T12:28:00Z","pid":1042}
+{"event":"end","unit":"42-fix-widget-sort","issue":42,"outcome":"merged","reason":null,"pr":102,"ts":"2026-10-10T12:30:00Z","pid":1042}

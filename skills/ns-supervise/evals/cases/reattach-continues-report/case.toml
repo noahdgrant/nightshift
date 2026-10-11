@@ -1,0 +1,65 @@
+description = "A supervisor already ran part of this night and left its report. A new supervisor attaches to the same night and continues that report instead of overwriting it."
+fixture = "night-log"
+skills = ["ns-supervise"]
+extra_skills = ["ns-writing-for-humans"]
+timeout_minutes = 15
+prompt = """
+Supervise tonight's ns watch. The last supervisor session ended early; pick up where it left off. I'm away until morning.
+
+This night is a rehearsal on a recorded run log, so nothing new will arrive: handle every event logged so far, do one slow check, act on what they show, bring the report up to date, then end your turn instead of waiting for more events.
+"""
+
+[setup]
+commands = [
+  "mkdir -p .git/ns/handoffs .git/fake/units .git/fake/active",
+  "cp ../runs.jsonl .git/ns/runs.jsonl",
+  "cp ../handoff.md .git/ns/handoffs/2026-10-10.md",
+  "touch .git/fake/units/ns-watch.service",
+  "echo 'Sat 2026-10-10 12:00:00 UTC' > .git/fake/active/ns-watch.service",
+]
+
+[[check]]
+type = "command"
+run = "grep -q 'MARKER-0f3c: attached (away)' .git/ns/handoffs/2026-10-10.md"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "grep -qi 're-attached' .git/ns/handoffs/2026-10-10.md"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "[ \"$(ls .git/ns/handoffs)\" = 2026-10-10.md ]"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "for n in 41 42; do grep -Eq \"(^|[^0-9:])$n([^0-9:]|$)\" .git/ns/handoffs/2026-10-10.md || exit 1; done"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "for t in TOKEN-n7a2 TOKEN-a91d; do grep -q \"$t\" .git/ns/handoffs/2026-10-10.md || exit 1; done"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "[ \"$(head -n 1 .git/ns/handoffs/2026-10-10.md)\" = '# Night of 2026-10-10' ]"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "[ \"$(wc -l < .git/ns/handoffs/2026-10-10.md)\" -ge 25 ]"
+expect_exit = 0
+
+# Read-only apart from starting and stopping: no merge, relabel, comment, edit or restart.
+[[check]]
+type = "command"
+run = "! grep -Eq '^gh .*(pr merge|pr review|pr comment|pr edit|issue edit|issue close|issue comment)|^systemctl .*(restart|reload)' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Read .git/ns/handoffs/2026-10-10.md. Pass only if every line of the earlier supervisor's report is still there, a re-attach line was added to its Timeline, and the merges of 41 and 42 are in the report."
+required = false

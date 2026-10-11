@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Fake ns for ns eval: records the call, refuses the commands that start model runs,
+# and passes the rest to the next ns on PATH.
+fake=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/fake
+[ "$fake" = /fake ] && fake=$HOME/fake
+mkdir -p "$fake"
+echo "ns $*" >> "$fake/calls.log"
+case $1 in
+  watch|run|ask|eval) echo "fake ns: '$1' starts model runs and is refused in an eval" >&2; exit 2 ;;
+esac
+here=$(cd "$(dirname "$0")" && pwd)
+IFS=: read -ra dirs <<< "$PATH"
+for d in "${dirs[@]}"; do
+  [ "$(cd "$d" 2>/dev/null && pwd)" = "$here" ] && continue
+  [ -x "$d/ns" ] && exec "$d/ns" "$@"
+done
+echo "fake ns: no real ns on PATH" >&2
+exit 127

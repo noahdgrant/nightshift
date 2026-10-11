@@ -682,7 +682,9 @@ Examples:
   ns factory validate
   ns factory validate --factory path/to/factory
 
-Prints {\"ok\",\"path\",\"phases\",\"errors\"}. Exits 1 if any error.")]
+Prints {\"ok\",\"path\",\"name\",\"phases\",\"scorers\",\"supervise\",\"errors\",\"warnings\"};
+supervise is {\"notify\",\"silence_minutes\"}, null when the file is missing or does not parse.
+Exits 1 if any error.")]
     Validate {
         /// Directory holding nightshift.toml (default: <main-worktree>/.nightshift)
         #[arg(long, value_name = "DIR")]
