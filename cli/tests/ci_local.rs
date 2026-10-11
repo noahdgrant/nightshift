@@ -1,4 +1,5 @@
-//! `scripts/ci-local.sh`, run in a temp repo against stub `cargo`, `ns`, `python3` and `python`.
+//! `scripts/ci-local.sh`, run in a temp repo against stub `cargo`, `ns`, `python3`, `python`
+//! and the tools `scripts/ci-tools.toml` pins, checked by the real `scripts/ci-tools.sh`.
 
 mod common;
 
@@ -7,7 +8,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-const ALL_STEPS: [&str; 15] = [
+const ALL_STEPS: [&str; 16] = [
+    "pinned tools (scripts/ci-tools.toml)",
     "cargo fmt --check",
     "cargo clippy",
     "cargo test",
@@ -51,14 +53,13 @@ echo "$line" >&2
 case "$FAIL_ON" in ?*) case "$line" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
 "#;
 
-/// Imports pytest only when `$PYTEST` is set, and hands the eval plan filter (`-I -`) to the
-/// real python3 so the filter itself is what runs. Any other run logs its directory and fails
-/// when that log line contains `$FAIL_ON`.
+/// Hands `-I -` runs (the eval plan filter, and `ci-tools.sh` reading its list) to the real
+/// python3 so the script itself is what runs. Any other run logs its directory and fails when
+/// that log line contains `$FAIL_ON`.
 fn python_stub(real: &Path) -> String {
     format!(
         r#"#!/bin/sh
 case "$*" in
-  "-I -c import pytest") [ -n "$PYTEST" ] ;;
   "-I - "*) exec {real:?} "$@" ;;
   *) line="python ran in ${{PWD##*/}}: $*"
      echo "$line" >&2
@@ -66,6 +67,38 @@ case "$*" in
 esac
 "#
     )
+}
+
+/// A pinned tool whose `--version` prints `version`. Any other run logs its directory and
+/// fails when that log line contains `$FAIL_ON`.
+fn tool_stub(tool: &str, version: &str) -> String {
+    format!(
+        r#"#!/bin/sh
+case "$*" in
+  --version) echo '{tool} {version}' ;;
+  *) line="{tool} ran in ${{PWD##*/}}: $*"
+     echo "$line" >&2
+     case "$FAIL_ON" in ?*) case "$line" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac ;;
+esac
+"#
+    )
+}
+
+/// Each pinned tool's name, command (the first word of its `check`) and version.
+fn pinned_tools() -> Vec<(String, String, String)> {
+    let list = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci-tools.toml");
+    let list: toml::Table = toml::from_str(&fs::read_to_string(list).unwrap()).unwrap();
+    list.iter()
+        .map(|(name, t)| {
+            let check = t["check"].as_str().unwrap();
+            let command = check.split_whitespace().next().unwrap().to_owned();
+            (
+                name.clone(),
+                command,
+                t["version"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
 }
 
 fn real_python3() -> PathBuf {
@@ -89,11 +122,24 @@ impl Repo {
     fn new() -> Repo {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci-local.sh");
-        write_exe(
-            &root.join("scripts/ci-local.sh"),
-            &fs::read_to_string(script).unwrap(),
-        );
+        let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts");
+        for script in ["ci-local.sh", "ci-tools.sh"] {
+            write_exe(
+                &root.join("scripts").join(script),
+                &fs::read_to_string(scripts.join(script)).unwrap(),
+            );
+        }
+        fs::copy(
+            scripts.join("ci-tools.toml"),
+            root.join("scripts/ci-tools.toml"),
+        )
+        .unwrap();
+        for (_, command, version) in pinned_tools() {
+            write_exe(
+                &root.join("bin").join(&command),
+                &tool_stub(&command, &version),
+            );
+        }
         write_exe(&root.join("scripts/check-private.sh"), "#!/bin/sh\n");
         write_exe(&root.join("scripts/check-git-dir-decoy.sh"), DECOY);
         write_exe(&root.join("cli/target/debug/ns"), NS);
@@ -111,14 +157,6 @@ impl Repo {
         Repo { dir }
     }
 
-    /// Puts stub `ruff`, `ast-grep` and `clang-tidy` on the run's PATH.
-    fn with_rule_tools(self) -> Repo {
-        for tool in ["ruff", "ast-grep", "clang-tidy"] {
-            write_exe(&self.dir.path().join("bin").join(tool), "#!/bin/sh\n");
-        }
-        self
-    }
-
     fn run(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         let root = self.dir.path();
         let mut cmd = common::command("bash");
@@ -130,8 +168,7 @@ impl Repo {
             )
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("FAIL_ON")
-            .env_remove("PLAN")
-            .env_remove("PYTEST");
+            .env_remove("PLAN");
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -174,10 +211,12 @@ fn steps(out: &Output) -> Vec<String> {
 
 #[test]
 fn every_step_runs_in_order_and_the_run_passes() {
-    let out = Repo::new().with_rule_tools().run(&[], &[("PYTEST", "1")]);
+    let out = Repo::new().run(&[], &[]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(steps(&out), ALL_STEPS);
-    assert!(stderr(&out).contains("python ran in py-inventory: -m pytest -q"));
+    assert!(!stderr(&out).contains("SKIPPED"));
+    assert!(!stderr(&out).contains("ci-tools:"));
+    assert!(stderr(&out).contains("pytest ran in py-inventory: -q"));
     for case in ["py-hold-expires-early", "py-lost-hold-needs-redesign"] {
         assert!(stderr(&out).contains(&format!(
             "python ran in {case}: -m unittest -q test_check_brief"
@@ -194,6 +233,7 @@ fn a_failing_step_stops_the_run() {
     for (fail_on, step) in [
         ("cargo clippy", "cargo clippy"),
         ("decoy", "cargo test under a decoy GIT_DIR"),
+        ("pytest ran", "py-inventory fixture tests"),
         ("lint .agents/skills", "ns lint .agents/skills"),
         ("ns check-markers", "ns check-markers"),
         ("ns rules", "ns rules check"),
@@ -205,9 +245,7 @@ fn a_failing_step_stops_the_run() {
             "ns-troubleshoot brief checker tests",
         ),
     ] {
-        let out = Repo::new()
-            .with_rule_tools()
-            .run(&[], &[("FAIL_ON", fail_on)]);
+        let out = Repo::new().run(&[], &[("FAIL_ON", fail_on)]);
         assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
         let at = ALL_STEPS.iter().position(|s| *s == step).unwrap();
         assert_eq!(steps(&out), ALL_STEPS[..=at]);
@@ -217,52 +255,57 @@ fn a_failing_step_stops_the_run() {
 }
 
 #[test]
-fn fixture_tests_skip_without_pytest() {
-    let out = Repo::new().run(&[], &[]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert!(stderr(&out).contains("SKIPPED: py-inventory fixture tests"));
-    assert!(!stderr(&out).contains("-m pytest"));
-    assert_eq!(steps(&out), ALL_STEPS);
-}
-
-#[test]
-fn rule_pack_tests_skip_without_ruff_or_ast_grep() {
-    for missing in [&["ruff", "ast-grep"][..], &["ruff"], &["ast-grep"]] {
-        let repo = Repo::new().with_rule_tools();
-        for tool in missing {
-            fs::remove_file(repo.dir.path().join("bin").join(tool)).unwrap();
-        }
+fn a_missing_pinned_tool_fails_the_run_first_naming_its_install_command() {
+    for (name, command, _) in pinned_tools() {
+        let repo = Repo::new();
+        fs::remove_file(repo.dir.path().join("bin").join(&command)).unwrap();
         let out = repo.run_on_bin_only(&[], &[]);
-        assert!(out.status.success(), "{missing:?}: {}", stderr(&out));
-        assert!(stderr(&out).contains("SKIPPED: Python rule pack tests"));
-        assert!(!stderr(&out).contains("rule pack tests ran"));
-        assert_eq!(steps(&out), ALL_STEPS);
+        assert_eq!(out.status.code(), Some(1), "{name}: {}", stderr(&out));
+        assert_eq!(steps(&out), ALL_STEPS[..1]);
+        let err = stderr(&out);
+        assert!(
+            err.contains(&format!(
+                "ci-tools: {name} is not on PATH; install it with: "
+            )),
+            "{err}"
+        );
+        assert!(
+            err.contains("ci-local: FAILED at step: pinned tools"),
+            "{err}"
+        );
     }
 }
 
 #[test]
-fn c_rule_pack_tests_skip_without_ast_grep_or_clang_tidy() {
-    for tool in ["ast-grep", "clang-tidy"] {
-        let repo = Repo::new().with_rule_tools();
-        fs::remove_file(repo.dir.path().join("bin").join(tool)).unwrap();
-        let out = repo.run_on_bin_only(&[], &[]);
-        assert!(out.status.success(), "{tool}: {}", stderr(&out));
-        assert!(stderr(&out).contains(&format!(
-            "SKIPPED: C rule pack tests ({tool} is not on PATH"
-        )));
-        assert!(!stderr(&out).contains("discover -s rules/c/tests"));
-        assert_eq!(steps(&out), ALL_STEPS);
+fn a_wrong_version_pinned_tool_fails_the_run_first() {
+    for (name, command, version) in pinned_tools() {
+        let repo = Repo::new();
+        write_exe(
+            &repo.dir.path().join("bin").join(&command),
+            &tool_stub(&command, "0.0.0"),
+        );
+        let out = repo.run(&[], &[]);
+        assert_eq!(out.status.code(), Some(1), "{name}: {}", stderr(&out));
+        assert_eq!(steps(&out), ALL_STEPS[..1]);
+        let err = stderr(&out);
+        assert!(
+            err.contains(&format!(
+                "ci-tools: {name} is not version {version} (`{command} --version` printed: \
+                 {command} 0.0.0); install it with: "
+            )),
+            "{err}"
+        );
     }
 }
 
 #[test]
-fn without_python3_the_run_fails_before_the_c_rule_pack_tests() {
+fn without_python3_the_run_fails_at_the_first_step() {
     let repo = Repo::new();
     fs::remove_file(repo.dir.path().join("bin/python3")).unwrap();
     let out = repo.run_on_bin_only(&[], &[]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert!(stderr(&out).contains("ci-local: FAILED at step: ns eval --dry-run\n"));
-    assert!(!stderr(&out).contains("C rule pack tests"));
+    assert_eq!(steps(&out), ALL_STEPS[..1]);
+    assert!(stderr(&out).contains("ci-local: FAILED at step: pinned tools"));
 }
 
 fn plan(reasons: &[&str]) -> String {
