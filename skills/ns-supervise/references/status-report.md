@@ -34,7 +34,7 @@ Ranked: a stopped night first, then red `main`, then PRs waiting on a human merg
 
 ## Timeline
 - <local HH:MM> <started | attached | re-attached> (<around | away>)
-- <local HH:MM> ping: <the ping line>
+- <local HH:MM> ping [<key>]: <the ping line>
 - <local HH:MM> stopped: <reason>
 ```
 

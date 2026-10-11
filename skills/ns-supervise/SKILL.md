@@ -69,7 +69,19 @@ Ping when the night needs the operator:
 | no run-log event for `silence_minutes` while units run | slow check |
 | a stop condition from step 4 while the operator is around | step 4 |
 
-Each ping has a **key**: the trigger kind plus the unit or `#issue` (`stuck 41-feat-x`, `merge-pr 104`, `silence`, `early-death`). Ping only on a key the report's Timeline does not already hold, and write the key in the ping's Timeline line. The slow check runs every 20 minutes and sees the same state again, so it must not repeat a ping. A stuck unit's `end` ping and its stuck-label ping are one key (`stuck <unit>`). Silence re-pings only after a new event arrived and silence returned. A re-attach reads the keys from the report and repeats none.
+Each ping has a **key**, one per trigger:
+
+| Trigger | Key |
+|---|---|
+| stuck or `budget` unit, or stuck label | `stuck <unit>` |
+| `done` with a PR needing a human merge | `merge-pr <n>` |
+| night died early | `early-death` |
+| usage-limit pause | `paused <unit>` |
+| harness breaker | `harness-breaker` |
+| silence | `silence <ts of the newest run-log event>` |
+| step 4 stop | `stop <condition>` |
+
+Ping only on a key the report's Timeline does not already hold, and write the key in the ping's Timeline line. The slow check runs every 20 minutes and sees the same state again, so it must not repeat a ping. A new event moves the silence key's `ts`, so silence that returns after it is a new key. A re-attach reads the keys from the report and repeats none.
 
 A merge, a unit that ends `done` needing no human, and other progress wait for the report.
 
