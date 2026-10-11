@@ -3,7 +3,7 @@ prompt = "The diff for unit 8-tighten-stock-3 only touches docs/requirements. Ve
 expect = true
 
 [[trigger]]
-prompt = "This PR only edits the gateway design doc. Check it doesn't contradict the requirements or the other designs."
+prompt = "This PR only edits the checkout design doc. Check it doesn't contradict the requirements or the other designs."
 expect = true
 
 [[trigger]]

@@ -7,7 +7,7 @@ prompt = "The requirements for low-stock alerts are approved. Draft the technica
 expect = true
 
 [[trigger]]
-prompt = "Review docs/design/gateway/v2.md before it goes to the design review on Thursday."
+prompt = "Review docs/design/checkout/v2.md before it goes to the design review on Thursday."
 expect = true
 
 [[trigger]]
@@ -23,7 +23,7 @@ prompt = "METER-4 changed from 60 seconds to 30. Which designs does that break, 
 expect = true
 
 [[trigger]]
-prompt = "Scaffold a technical spec for resumable firmware downloads, with alternatives and a rollback plan."
+prompt = "Scaffold a technical spec for reserving stock at checkout, with alternatives and a rollback plan."
 expect = true
 
 [[trigger]]
@@ -63,5 +63,5 @@ prompt = "Triage .scratch/reservations/issues/03-negative-stock.md"
 expect = false
 
 [[trigger]]
-prompt = "Mark the gateway design doc as approved so we can start building."
+prompt = "Mark the checkout design doc as approved so we can start building."
 expect = true
