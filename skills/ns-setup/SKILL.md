@@ -103,7 +103,7 @@ If the repo has a `Cargo.toml`, install the Rust rule pack, which `ns rules chec
 
 If the user took the Python rule pack in Section A, install it as [rules-python.md](references/rules-python.md) says.
 
-If the user took the C rule pack in Section A, install it as its [README](../../rules/c/README.md)'s Install section says: the pack's files, the seeded include allowlist and the `rules` row in `stack.md`. Run `ns rules check` and show the user its findings. Accepting them into the baseline is the user's act: give them the `ns rules baseline --allow-growth` command to run.
+If the user took the C rule pack in Section A, install it as its [README](../../rules/c/README.md)'s Install section says: the pack's files under `.nightshift/rules/c/`, the seeded include allowlist and the `rules` row in `stack.md`. Run `ns rules check` and show the user its findings. Accepting them into the baseline is the user's act: give them the `ns rules baseline --allow-growth` command to run.
 
 If no pack was installed, give the `rules` row the command `none`.
 

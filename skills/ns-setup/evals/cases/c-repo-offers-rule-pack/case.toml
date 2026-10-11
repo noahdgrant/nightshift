@@ -18,7 +18,7 @@ path = "docs/agents/stack.md"
 [[check]]
 type = "regex"
 path = "docs/agents/stack.md"
-pattern = "\\| rules \\|.*rules-c"
+pattern = "\\| rules \\|.*\\.nightshift/rules/c/rules-c"
 present = true
 
 [[check]]
