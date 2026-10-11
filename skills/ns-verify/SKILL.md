@@ -29,7 +29,15 @@ Done when every criterion has an ID and a sentence naming the observable state t
 
 ## 2. Find the verification lever
 
-Read `docs/agents/verify.md`, and `docs/agents/stack.md` beside it. If either is missing, load the `ns-setup` skill instead of guessing.
+A docs-only diff has no surface to drive. A unit is **docs-only** when its changed paths, from `git diff --name-only --no-renames $(git merge-base <base> HEAD)` (`<base>` is the brief's `base:`, else `origin/main`), meet all of:
+
+- the list has at least one path;
+- every path is under a requirements or design directory, or is a changelog there, as listed by `git show <base>:docs/agents/docs.md` (the base's copy, so the diff can't widen its own definition);
+- no path is `docs/agents/docs.md`, a skill file, `AGENTS.md`, `CLAUDE.md`, or a file whose path does not end in `.md`.
+
+When `docs/agents/docs.md` is missing on the base, the unit is not docs-only. A docs-only unit loads the `ns-verify-docs` skill and follows it in place of the rest of this skill. It writes `evidence.md` in step 6's format.
+
+Otherwise, read `docs/agents/verify.md`, and `docs/agents/stack.md` beside it. If either is missing, load the `ns-setup` skill instead of guessing.
 
 - **Verify skill and control CLI exist**: load the project's `verify-<project>` skill named there, and run its Doctor. Fix or report a failing doctor before driving anything.
 - **No verify skill**: load the `ns-setup-verify` skill, finish it, then return here.

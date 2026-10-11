@@ -58,7 +58,7 @@ The worktree is not a sandbox. Each phase runs claude with permissions bypassed,
 | setup | `ns-setup`, `ns-setup-verify`, `ns-agent-readiness` |
 | outer loop | `ns-triage`, `ns-troubleshoot` |
 | build | `ns-build`, `ns-tdd` |
-| verify | `ns-verify` |
+| verify | `ns-verify`, `ns-verify-docs` |
 | review | `ns-review`, `ns-no-comments` |
 | ship | `ns-ship` |
 | all phases, in one session | `ns-auto` |
