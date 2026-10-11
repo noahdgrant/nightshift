@@ -80,7 +80,8 @@ case "$1 $2" in
     ;;
   "issue create")
     # Files issue next-issue (default 100), team-authored, listed open with its labels; its body
-    # goes to created-<n>.body. create.fail makes it fail.
+    # goes to created-<n>.body. create.fail makes it fail; create.unlisted keeps it off the list,
+    # as GitHub may for a moment.
     [ -f "$d/create.fail" ] && { echo "HTTP 502" >&2; exit 1; }
     n=$(cat "$d/next-issue" 2>/dev/null || echo 100); echo $((n + 1)) > "$d/next-issue"
     a=("$@"); : > "$d/labels-$n"
@@ -92,7 +93,7 @@ case "$1 $2" in
       esac
     done
     printf '{"number":%s,"title":"%s","url":"u","state":"OPEN"}\n' "$n" "$title" > "$d/issue-$n.json"
-    printf '{"number":%s,"title":"%s","labels":[],"body":"","authorAssociation":"OWNER"}\n' "$n" "$title" >> "$d/issues.jsonl"
+    [ -f "$d/create.unlisted" ] || printf '{"number":%s,"title":"%s","labels":[],"body":"","authorAssociation":"OWNER"}\n' "$n" "$title" >> "$d/issues.jsonl"
     echo "https://github.com/o/r/issues/$n"
     ;;
   "issue comment") ;;

@@ -4056,6 +4056,7 @@ fn watch_with_main_green_runs_the_queue_and_files_nothing() {
     assert_eq!(by_issue(&units(&v)), each(&[2], "done"), "{v}");
     assert!(!e.gh_calls().contains("issue create"));
     assert!(events_named(&e, "main_red").is_empty());
+    assert!(events_named(&e, "main_green").is_empty());
 }
 
 #[test]
@@ -4101,6 +4102,47 @@ fn watch_with_main_red_runs_no_triage_only_run() {
     assert_eq!(e.triage_only_runs(), 0);
     assert!(v["triaged"].as_array().unwrap().is_empty(), "{v}");
     assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
+}
+
+#[test]
+fn watch_starts_a_fix_issue_it_just_filed_before_github_lists_it() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file("create.unlisted", "");
+    main_red(&e);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
+}
+
+#[test]
+fn a_fix_issue_that_cannot_be_filed_ends_the_night_with_the_error() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file("create.fail", "");
+    main_red(&e);
+    let out = e.ns().args(["watch", "--once"]).output();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(!out.status.success());
+    assert_eq!(v["stopped"], "error", "{v}");
+    assert!(v["error"].as_str().unwrap().contains("HTTP 502"), "{v}");
+    assert!(units(&v).is_empty(), "{v}");
+
+    let e = gitlab_env();
+    e.gl_issue(2, &["type:fix", READY], "", 1);
+    e.gh_file(
+        "gl-statuses.json",
+        &serde_json::json!([{"name": "test", "status": "failed"}]).to_string(),
+    );
+    e.gh_file("gl-create.raw", "{}");
+    let out = e.ns().args(["watch", "--once"]).output();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("GitLab named no number"),
+        "{v}"
+    );
 }
 
 #[test]

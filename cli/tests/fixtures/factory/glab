@@ -10,7 +10,7 @@
 #   gl-project.json, gl-branch.json  what reading the project or main's branch prints instead
 #   gl-pipelines-green.json  the newest successful pipeline on main, default none
 #   a POST to projects/:id/issues files issue next-issue (default 100) by member 1; its
-#   description goes to created-<n>.body
+#   description goes to created-<n>.body; gl-create.raw is what it prints instead
 #   glab.fail        every call fails, echoing GITLAB_TOKEN on stderr as a leaky server might
 d="$FAKE_GH_DIR"
 printf '%s\n' "$*" >> "$d/glab-calls"
@@ -57,6 +57,7 @@ case "$1 $2" in
     ;;
   "api --method")
     [ "$3 $4" = "POST projects/:id/issues" ] || { echo "fake glab: unsupported: $*" >&2; exit 1; }
+    [ -f "$d/gl-create.raw" ] && { cat "$d/gl-create.raw"; exit 0; }
     n=$(cat "$d/next-issue" 2>/dev/null || echo 100); echo $((n + 1)) > "$d/next-issue"
     a=("$@"); title=; labels=
     for ((i = 4; i < ${#a[@]}; i++)); do

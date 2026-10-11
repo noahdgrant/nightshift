@@ -259,6 +259,51 @@ mod tests {
         assert!(body.ends_with(&format!("{DISCLAIMER}\n")), "{body}");
     }
 
+    fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+        let mut all = vec!["-c", "user.name=t", "-c", "user.email=t@t"];
+        all.extend(args);
+        git::run(dir, &all).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn commits_list_at_most_the_cap_newest_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        git_in(root, &["init", "-q"]);
+        git_in(root, &["commit", "-q", "--allow-empty", "-m", "green"]);
+        let green = git_in(root, &["rev-parse", "HEAD"]);
+        let repo = Repo {
+            root: root.into(),
+            common_dir: root.join(".git"),
+        };
+        let forge = Fake {
+            green: Some(green.clone()),
+            ..Fake::default()
+        };
+        let list = |name: &str, n: usize| {
+            for i in 0..n {
+                git_in(
+                    root,
+                    &["commit", "-q", "--allow-empty", "-m", &format!("{name}{i}")],
+                );
+            }
+            commits(&repo, &forge, &git_in(root, &["rev-parse", "HEAD"]))
+        };
+        let text = list("c", COMMITS);
+        assert!(
+            text.starts_with(&format!("Since {}:", &green[..7])),
+            "{text}"
+        );
+        assert_eq!(text.matches("\n- ").count(), COMMITS, "{text}");
+        assert!(text.contains(" c29") && !text.contains("..."), "{text}");
+        let text = list("new", 1);
+        assert_eq!(text.matches("\n- ").count(), COMMITS + 1, "{text}");
+        assert!(
+            text.ends_with("\n- ...") && text.contains(" new0\n") && !text.contains(" c0\n"),
+            "{text}"
+        );
+    }
+
     #[test]
     fn commits_say_why_when_they_cannot_be_listed() {
         let forge = Fake {

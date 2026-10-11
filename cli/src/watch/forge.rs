@@ -628,6 +628,18 @@ mod tests {
     }
 
     #[test]
+    fn last_green_needs_origin_to_name_the_branch() {
+        let gh = GitHub {
+            root: "/nonexistent".into(),
+        };
+        let e = gh.last_green().unwrap_err();
+        assert!(
+            format!("{e:#}").contains("origin's default branch"),
+            "{e:#}"
+        );
+    }
+
+    #[test]
     fn created_number_reads_the_url_gh_prints() {
         assert_eq!(
             created_number("https://github.com/o/r/issues/123\n").unwrap(),
