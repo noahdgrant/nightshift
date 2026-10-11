@@ -77,7 +77,7 @@
       "tool": "ast-grep",
       "rule": "suppression-without-reason",
       "file": "cli/src/run.rs",
-      "line": 924,
+      "line": 961,
       "message": "#[allow] or #[expect] with no reason = \"...\": give the reason on the same line, or fix what it hides (quality bar, Comments: skills/ns-contract/references/quality-bar.md)",
       "snippet": "#[allow(clippy::too_many_arguments)]"
     },
@@ -109,7 +109,7 @@
       "tool": "clippy",
       "rule": "clippy::if_not_else",
       "file": "cli/src/factory.rs",
-      "line": 631,
+      "line": 647,
       "message": "unnecessary boolean `not` operation (quality bar, Readability: control flow reads top to bottom: skills/ns-contract/references/quality-bar.md)",
       "snippet": "if !exists {"
     },
@@ -117,7 +117,7 @@
       "tool": "clippy",
       "rule": "clippy::manual_let_else",
       "file": "cli/src/lint.rs",
-      "line": 221,
+      "line": 233,
       "message": "this could be rewritten as `let...else` (quality bar, Readability: control flow reads top to bottom: skills/ns-contract/references/quality-bar.md)",
       "snippet": "let text = match fs::read_to_string(&skill_md) {"
     },
@@ -149,7 +149,7 @@
       "tool": "clippy",
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/quality/mod.rs",
-      "line": 84,
+      "line": 86,
       "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn gaps(units: &[&Unit], unparsed: Vec<Unparsed>) -> Value {"
     },
@@ -157,7 +157,7 @@
       "tool": "clippy",
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/quality/mod.rs",
-      "line": 144,
+      "line": 146,
       "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "log: RunLog,"
     },
@@ -181,7 +181,7 @@
       "tool": "clippy",
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/watch.rs",
-      "line": 485,
+      "line": 396,
       "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn run(args: WatchArgs) -> Result<ExitCode> {"
     },
@@ -213,8 +213,8 @@
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/main.rs",
-      "line": 49,
-      "message": "this function has too many lines (209/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "line": 54,
+      "message": "this function has too many lines (227/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn run(cli: Cli) -> Result<ExitCode> {"
     },
     {
@@ -222,47 +222,39 @@
       "rule": "clippy::too_many_lines",
       "file": "cli/src/quality/sync.rs",
       "line": 166,
-      "message": "this function has too many lines (116/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "message": "this function has too many lines (113/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn import(dir: &Path, dry_run: bool) -> Result<ExitCode> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/run.rs",
-      "line": 716,
-      "message": "this function has too many lines (199/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "line": 758,
+      "message": "this function has too many lines (194/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<RunResult> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/run.rs",
-      "line": 1026,
-      "message": "this function has too many lines (354/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "line": 1063,
+      "message": "this function has too many lines (348/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn drive("
     },
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
-      "file": "cli/src/run.rs",
-      "line": 1680,
-      "message": "this function has too many lines (209/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep> {"
-    },
-    {
-      "tool": "clippy",
-      "rule": "clippy::too_many_lines",
       "file": "cli/src/watch.rs",
-      "line": 485,
-      "message": "this function has too many lines (206/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "line": 396,
+      "message": "this function has too many lines (209/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn run(args: WatchArgs) -> Result<ExitCode> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/watch/scheduler.rs",
-      "line": 416,
-      "message": "this function has too many lines (127/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "line": 483,
+      "message": "this function has too many lines (126/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn settle("
     },
     {

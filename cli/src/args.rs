@@ -85,12 +85,13 @@ pub(crate) enum Cmd {
         dry_run: bool,
     },
 
-    /// Validate ns-*/SKILL.md skills (frontmatter, names, upstream, relative links)
+    /// Validate skills (frontmatter, names, upstream, relative links, features/*.md headings); a repo-local root (.agents/skills) needs no ns- prefix
     #[command(after_help = "\
 Examples:
   ns lint
   ns lint path/to/skills
   ns lint skills --human
+  ns lint .agents/skills
 
 Prints {\"ok\",\"skills\",\"errors\":[{\"skill\",\"file\",\"message\"}]}. Exits 1 if any error.")]
     Lint {

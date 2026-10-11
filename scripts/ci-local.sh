@@ -2,7 +2,7 @@
 # Run what .github/workflows/ci.yml runs, in order, stopping at the first failure.
 #
 #   scripts/ci-local.sh          every check
-#   scripts/ci-local.sh --fast   fmt, clippy, ns lint and the private guard (the pre-commit hook)
+#   scripts/ci-local.sh --fast   fmt, clippy, ns lint (both skill roots) and the private guard (the pre-commit hook)
 #
 # Uses this worktree's own cli/target/debug/ns. The private guard reads
 # PRIVATE_DENYLIST from the environment, as in CI.
@@ -99,6 +99,7 @@ if [ "$fast" -eq 0 ]; then
 fi
 step "build ns" cargo build --manifest-path cli/Cargo.toml
 step "ns lint" "$ns" lint skills --human
+step "ns lint .agents/skills" "$ns" lint .agents/skills --human
 step "ns check-markers" "$ns" check-markers --human
 if [ "$fast" -eq 0 ]; then
   step "ns rules check" "$ns" rules check --human
