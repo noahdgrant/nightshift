@@ -130,6 +130,10 @@ Results: for every skill where something ran, `skills/<skill>/evals/results/<YYY
 
 Parses `<dir>/nightshift.toml` (default `<main-worktree>/.nightshift/`) and checks gates, billing, merge policy and globs, phase names, harness names (user config or built in) and each `agents/<role>/agent.md` (frontmatter `role` matches the directory, placeholders are known). Prints `{"ok","path","name","phases","errors","warnings"}` with every phase's resolved skill, harness, model, timeout, attempts and prompt source. `warnings` lists keys that load but do nothing, such as the removed `[queue] triage_per_night`; they leave `ok` true. Exits 1 on any error.
 
+### `ns score <unit-id> [--scorer <name>] [--factory <dir>] [--dry-run]`
+
+Grades a finished unit with each scorer in `scorers/` (or the one `--scorer` names): builds a prompt from the rubric and labels, the `*.md` files in `.ns/<unit>/` and the PR outcome from `gh`, runs the scorer's role read-only through the `ns ask` path, and maps the reply's last `label: <value>` line to a score. Appends `{unit,scorer,label,score,pass}` per scorer to `ns/scores.jsonl` in the common git dir, and nothing when any judge names no known label (exit 1). `--dry-run` prints each prompt and writes nothing, but still calls `gh`. See `docs/FACTORY.md`, "Scoring".
+
 ### `ns run [<unit-id>] [--issue <n>] [--from <phase>] [--gates stop|auto] [--base <ref>] [--dry-run] [--factory <dir>]`
 
 Implements `ns run` in [docs/FACTORY.md](../docs/FACTORY.md): creates or reuses the unit's worktree, reads `.ns/<unit>/*.md`, picks the next phase from the state table, runs the phase's harness headless in the worktree with the rendered prompt on stdin, and repeats until the unit is done, merged, split, stuck, paused or out of budget. With only `--issue`, the unit id is `<n>-<slug of the issue title>` (read with `gh issue view`).

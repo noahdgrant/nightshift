@@ -25,6 +25,7 @@ mod quality;
 mod review_md;
 mod rules;
 mod run;
+mod score;
 mod scorer;
 mod shell;
 mod skills_sync;
@@ -166,6 +167,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Factory { command } => match command {
             FactoryCmd::Validate { factory } => return factory::validate(factory.as_deref()),
         },
+        Cmd::Score {
+            unit_id,
+            scorer,
+            factory,
+            dry_run,
+        } => return score::cli(&unit_id, scorer.as_deref(), factory.as_deref(), dry_run),
         Cmd::Run {
             unit_id,
             issue,
