@@ -284,8 +284,53 @@ fn shell_expansion_cannot_hide_a_bypass() {
         "cat <<EOF\n$HOME and \\$(git commit -n)\nEOF",
         "echo ${HOME}/x",
         "git commit -F - <<EOF\nmsg\nEOF",
+        "git push origin \"$branch\"",
+        "git push origin $branch",
+        "git merge \"$base\"",
+        "git rebase \"$base\"",
+        "git pull origin \"$b\"",
+        "git cherry-pick \"$sha\"",
+        "\"$ROOT/scripts/check-git-dir-decoy.sh\"",
     ] {
         assert!(!denied(c), "{c}");
+    }
+    for c in [
+        "git push $branch",
+        "git push --$X",
+        "git push origin -$X",
+        "git push $(echo --no-verify)",
+        "git merge $F",
+        "git commit origin \"$F\"",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn cd_into_a_git_dir_protects_relative_hooks_and_config() {
+    for c in [
+        "cd .git && rm -r hooks",
+        "cd .git; echo x > config",
+        "cd /repo/.git && sed -i s/a/b/ config",
+        "cd .git/ && rm config",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn dot_and_empty_components_do_not_hide_a_protected_path() {
+    for c in [
+        "rm .git/./config",
+        "rm .git/./hooks/pre-commit",
+        "rm .git//hooks",
+        "rm ./.githooks/./pre-commit",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for (tool, path) in [("Edit", "/r/.git/./config"), ("Write", "/r/.git//hooks/x")] {
+        let call = json!({"tool_name": tool, "tool_input": {"file_path": path}});
+        assert!(check(&call).is_some(), "{path}");
     }
 }
 

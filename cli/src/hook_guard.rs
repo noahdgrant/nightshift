@@ -31,7 +31,10 @@ fn is_guarded_subcommand(name: &str) -> bool {
 /// What a protected path is called in a denial.
 const PROTECTED: &str = ".githooks/, .git/hooks or .git/config";
 
-const GUARDED_TOOLS: [&str; 5] = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"];
+const BASH_TOOL: &str = "Bash";
+
+/// Tools that write a file at `file_path` or `notebook_path`.
+const FILE_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
 /// The `--settings` value for a claude phase: one `PreToolUse` hook that runs `ns guard-hooks`.
 /// Claude Code lets a call through when a hook exits with anything but 2, so a missing or
@@ -41,10 +44,15 @@ pub fn settings(ns: &Path) -> String {
         "{} guard-hooks || exit 2",
         shell_quote(&ns.to_string_lossy())
     );
+    let matcher = [BASH_TOOL]
+        .into_iter()
+        .chain(FILE_TOOLS)
+        .collect::<Vec<_>>()
+        .join("|");
     json!({
         "hooks": {
             "PreToolUse": [{
-                "matcher": GUARDED_TOOLS.join("|"),
+                "matcher": matcher,
                 "hooks": [{"type": "command", "command": command}],
             }],
         },
@@ -77,8 +85,8 @@ pub fn run() -> anyhow::Result<()> {
 pub fn check(call: &Value) -> Option<String> {
     let input = &call["tool_input"];
     match call["tool_name"].as_str()? {
-        "Bash" => check_command(input["command"].as_str()?, &mut Scan::default()),
-        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => ["file_path", "notebook_path"]
+        BASH_TOOL => check_command(input["command"].as_str()?, &mut Scan::default()),
+        tool if FILE_TOOLS.contains(&tool) => ["file_path", "notebook_path"]
             .iter()
             .filter_map(|k| input[k].as_str())
             .find(|p| is_protected(p))
@@ -89,11 +97,18 @@ pub fn check(call: &Value) -> Option<String> {
 
 /// `path` is in `.githooks/`, `.git/hooks` or `.git/config`.
 fn is_protected(path: &str) -> bool {
-    let parts: Vec<&str> = path.split('/').collect();
+    let parts = components(path);
     parts.contains(&".githooks")
         || parts
             .windows(2)
             .any(|p| p[0] == ".git" && matches!(p[1], "hooks" | "config"))
+}
+
+/// The parts of `path` between slashes, without the empty and `.` ones.
+fn components(path: &str) -> Vec<&str> {
+    path.split('/')
+        .filter(|p| !matches!(*p, "" | "."))
+        .collect()
 }
 
 /// The value of `--option=value`, or `arg` itself.
@@ -406,9 +421,11 @@ fn check_words(words: &[Word], scan: &mut Scan) -> Option<String> {
 
 /// A command named by an expansion is unreadable; deny it when git or the hooks are near.
 fn opaque_command(words: &[Word]) -> Option<String> {
-    let near_git = words
-        .iter()
-        .any(|w| w.text.contains("git") || is_guarded_subcommand(&w.text) || is_protected(&w.text));
+    let near_git = words.iter().any(|w| {
+        w.text.split(['{', '}', ',']).any(|p| basename(p) == "git")
+            || is_guarded_subcommand(&w.text)
+            || is_protected(&w.text)
+    });
     near_git.then(|| "a command named by a shell expansion next to git or .githooks".to_string())
 }
 
@@ -418,7 +435,9 @@ fn change_directory(args: &[Word], scan: &mut Scan) {
         .map(|a| a.text.as_str())
         .find(|a| !a.starts_with('-'));
     match dir {
-        Some(d) if is_protected(d) => scan.cwd_is_hooks = true,
+        Some(d) if is_protected(d) || components(d).last() == Some(&".git") => {
+            scan.cwd_is_hooks = true;
+        }
         Some(d) if !d.starts_with("..") && !d.starts_with(['/', '~']) => {}
         _ => scan.cwd_is_hooks = false,
     }
@@ -583,16 +602,23 @@ fn git_command(args: &[Word], scan: &mut Scan) -> Option<String> {
     }
 }
 
+/// An opaque word is let through where a flag can't be told from an argument only if it is
+/// quoted whole (`"$branch"`) or follows a literal argument (`origin $branch`).
 fn skips_hooks(name: &str, rest: &[Word]) -> Option<String> {
-    rest.iter()
-        .find(|a| a.opaque || no_verify(&a.text))
-        .map(|a| {
-            if a.opaque {
-                unreadable(&format!("git {name}"))
-            } else {
-                format!("git {name} {} skips the hooks", a.text)
+    let mut positional = false;
+    for a in rest {
+        if no_verify(&a.text) && !a.opaque {
+            return Some(format!("git {name} {} skips the hooks", a.text));
+        }
+        if a.opaque {
+            if a.text.starts_with('-') || !(positional || a.quoted_var) {
+                return Some(unreadable(&format!("git {name}")));
             }
-        })
+        } else if !a.text.starts_with('-') {
+            positional = true;
+        }
+    }
+    None
 }
 
 /// `git rebase -x CMD`, `--exec CMD` and `--exec=CMD` run CMD in a shell.

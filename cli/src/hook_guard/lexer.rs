@@ -8,6 +8,8 @@ pub(super) struct Word {
     pub(super) text: String,
     /// An expansion the guard can't resolve may stand where a flag or command name goes.
     pub(super) opaque: bool,
+    /// The whole word is one double-quoted variable, `"$name"` or `"${name}"`.
+    pub(super) quoted_var: bool,
 }
 
 impl Word {
@@ -15,6 +17,7 @@ impl Word {
         Word {
             text: text.to_string(),
             opaque: false,
+            quoted_var: false,
         }
     }
 }
@@ -42,6 +45,8 @@ struct WordBuf {
     expansion_at: Option<usize>,
     /// Where an unquoted `{` opened in `text`.
     brace_at: Option<usize>,
+    /// The word is one double-quoted variable and nothing else.
+    quoted_var: bool,
 }
 
 impl WordBuf {
@@ -57,6 +62,7 @@ impl WordBuf {
         Word {
             text: self.text,
             opaque,
+            quoted_var: self.quoted_var,
         }
     }
 }
@@ -202,8 +208,39 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// The chars ahead are `$name"` or `${name}"` and then the word ends.
+    fn lone_variable_ahead(&self) -> bool {
+        let mut ahead = self.chars.clone();
+        if ahead.next() != Some('$') {
+            return false;
+        }
+        if ahead.next_if_eq(&'{').is_some() {
+            let name: String = ahead.by_ref().take_while(|c| *c != '}').collect();
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                return false;
+            }
+        } else {
+            let mut named = false;
+            while ahead
+                .next_if(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .is_some()
+            {
+                named = true;
+            }
+            if !named {
+                return false;
+            }
+        }
+        ahead.next_if_eq(&'"').is_some()
+            && ahead
+                .next()
+                .is_none_or(|c| matches!(c, ' ' | '\t' | '\n' | ';'))
+    }
+
     fn double_quoted(&mut self) {
+        let lone = self.cur.is_none() && self.lone_variable_ahead();
         self.buf().quoted = true;
+        self.buf().quoted_var = lone;
         while let Some(c) = self.chars.next() {
             match c {
                 '"' => return,
