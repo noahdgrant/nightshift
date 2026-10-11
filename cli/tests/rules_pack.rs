@@ -124,10 +124,13 @@ impl Repo {
         (out.status.code(), text)
     }
 
-    /// `ns rules check`: its exit code, its JSON report and its stderr.
+    /// `ns rules check`: its exit code, its JSON report and its stderr. Cargo runs one job at a
+    /// time, as on a loaded machine, so a member that clippy skips after another member fails
+    /// can show up here rather than only in CI.
     fn check(&self) -> (Option<i32>, Value, String) {
         let out = common::ns()
             .args(["rules", "check"])
+            .env("CARGO_BUILD_JOBS", "1")
             .current_dir(&self.root)
             .timeout(CHECK_TIMEOUT)
             .output();
@@ -339,18 +342,24 @@ fn clippy_lints_every_workspace_member() {
     );
 }
 
+/// `user` depends on `good`, so cargo's one job lints `good` before `bad`, and a clippy that
+/// stops at the first failing member never compiles `bad`.
 #[test]
 fn a_syntax_error_in_one_member_is_a_finding_next_to_another_members_lint() {
     let r = Repo::new();
     let root = r.read("Cargo.toml");
     r.write(
         "Cargo.toml",
-        &format!("{root}\n[workspace]\nmembers = [\"good\", \"bad\"]\n"),
+        &format!("{root}\n[workspace]\nmembers = [\"good\", \"bad\", \"user\"]\n"),
     );
-    for name in ["good", "bad"] {
+    for (name, deps) in [
+        ("good", ""),
+        ("bad", ""),
+        ("user", "good = { path = \"../good\" }\n"),
+    ] {
         r.write(
             &format!("{name}/Cargo.toml"),
-            &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\nlicense = \"MIT\"\npublish = false\n"),
+            &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\nlicense = \"MIT\"\npublish = false\n\n[dependencies]\n{deps}"),
         );
     }
     r.write(
@@ -358,9 +367,10 @@ fn a_syntax_error_in_one_member_is_a_finding_next_to_another_members_lint() {
         "pub fn count(v: Vec<u8>) -> usize {\n    v.len()\n}\n",
     );
     r.write("bad/src/lib.rs", "pub fn f( {\n");
+    r.write("user/src/lib.rs", "pub use good::count;\n");
     r.write(
         ".nightshift/rules/rust/allowed-crates.txt",
-        "app\nextra\ngood\nbad\n",
+        "app\nextra\ngood\nbad\nuser\n",
     );
     let new = r.new_findings();
     let rules: Vec<&str> = new.iter().map(|f| f["rule"].as_str().unwrap()).collect();

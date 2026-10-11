@@ -209,7 +209,7 @@ The baseline is `.nightshift/rules-baseline.json`: `{"version": 1, "violations":
 
 `ns rules baseline` writes every current finding to the baseline. It is a ratchet: entries that are gone are dropped, and a finding the baseline lacks, every finding when there is no baseline yet, is growth. Without `--allow-growth`, growth writes nothing and exits 1 with status `refused`. `--allow-growth` is for a human accepting debt, never for an agent. A run that adds and drops nothing writes nothing (`already-done`), and `--dry-run` writes nothing (`planned`). `.nightshift/**` needs a human merge, so every baseline change, a shrink too, does.
 
-A Rust pack ships in `rules/rust/` (D54): clippy, cargo-deny and ast-grep behind `check.sh`, which `ns-setup` installs into a Rust repo's `.nightshift/rules/rust/` with `install.sh`. Its repo-owned lists are `allowed-crates.txt` (every crate the dependency graph may hold) and `roads.txt` (the helpers a second definition of would duplicate).
+A Rust pack ships in `rules/rust/` (D54): clippy, cargo-deny and ast-grep behind `check.sh`, which `ns-setup` installs into a Rust repo's `.nightshift/rules/rust/` with `install.sh`. Its repo-owned lists are `allowed-crates.txt` (every crate the dependency graph may hold) and `roads.txt` (the helpers a second definition of would duplicate). Clippy runs with `--keep-going`, so a member that fails to compile or fails a lint doesn't stop the other members being linted; a member that depends on one that doesn't compile can't be built, so it isn't linted.
 
 ### Memory cap
 
