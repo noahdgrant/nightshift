@@ -338,12 +338,14 @@ Grade the unit's evidence.md against its brief.
     #[test]
     fn load_reports_every_invalid_file_and_tolerates_no_scorers_dir() {
         let d = root(&[("a.md", "no frontmatter\n"), ("b.md", "")]);
+        fs::create_dir(d.path().join("scorers/c.md")).unwrap();
         let cfg = config::parse("[roles.default]\nharness = \"claude\"\n").unwrap();
         let (scorers, problems) = load(d.path(), Some(&cfg));
         assert!(scorers.is_empty());
-        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert_eq!(problems.len(), 3, "{problems:?}");
         assert!(problems[0].starts_with("scorers/a.md"));
         assert!(problems[1].starts_with("scorers/b.md"));
+        assert!(problems[2].starts_with("scorers/c.md"));
         let empty = tempfile::tempdir().unwrap();
         assert_eq!(load(empty.path(), Some(&cfg)), (vec![], vec![]));
     }
