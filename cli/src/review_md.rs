@@ -99,6 +99,9 @@ pub struct Finding {
     pub status: Status,
     /// The fix cycle named in `fixed (cycle <n>, ...)`.
     pub fixed_cycle: Option<u32>,
+    /// Fix cycles that handed it to the build agent (`Attempts:`); `None` in records from
+    /// before fix-only cycles.
+    pub attempts: Option<u32>,
 }
 
 impl Finding {
@@ -154,7 +157,7 @@ fn field_key() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     re(
         &R,
-        r"(?i)\b(status|location|raised by|axis|axes|scope|cycle|finding|evidence|fix):\**\s*",
+        r"(?i)\b(status|location|raised by|axis|axes|scope|cycle|attempts|finding|evidence|fix):\**\s*",
     )
 }
 
@@ -323,6 +326,7 @@ impl<'a> Block<'a> {
             axes_from_raised_by,
             scope: get(&["scope"]).map_or(Scope::Unknown, |s| scope_of(&s)),
             cycle: get(&["cycle"]).and_then(|c| first_number(&c)),
+            attempts: get(&["attempts"]).and_then(|c| first_number(&c)),
             fixed_cycle: status_text
                 .as_deref()
                 .or(self.one_line.then_some(self.title.as_str()))
@@ -475,6 +479,7 @@ mod tests {
 - Axis: correctness, tests
 - Scope: pre-existing
 - Cycle: 2
+- Attempts: 1
 - Raised by: security (provider-a)
 - Finding: text
 - Status: fixed (cycle 3, abc1234)
@@ -492,9 +497,26 @@ mod tests {
                 cycle: Some(2),
                 status: Status::Fixed,
                 fixed_cycle: Some(3),
+                attempts: Some(1),
             }
         );
         assert!(f.blocking());
+    }
+
+    #[test]
+    fn attempts_are_lenient_and_optional() {
+        let at = |s: &str| one(&format!("### I1. t\n{s}\n- Status: open\n")).attempts;
+        assert_eq!(at("- **Attempts:** 2 (cycles 4, 5)"), Some(2));
+        assert_eq!(at("- Attempts: 0"), Some(0));
+        assert_eq!(at("- Attempts: none yet"), None);
+        assert_eq!(
+            at("- Location: `a.rs:1`. Attempts: 3. Status: open"),
+            Some(3)
+        );
+        // A record from before fix-only cycles has no Attempts field.
+        assert_eq!(at("- Cycle: 0"), None);
+        let packed = one("### I1. t\n- Location: `a.rs:1`. Attempts: 3. Status: open\n");
+        assert_eq!(packed.location.as_deref(), Some("a.rs:1"));
     }
 
     #[test]
@@ -768,6 +790,25 @@ mod tests {
         assert_eq!(e[2].axes, ["performance"]);
         assert!(e[3].axes.is_empty());
         assert!(cycle_entries("nothing").is_empty());
+    }
+
+    #[test]
+    fn a_cycle_file_header_is_frontmatter_and_old_ones_have_none() {
+        let new = "---\ncycle: 4\nkind: fix-only\nstarted: 2026-10-11T02:00:00Z\nended: 2026-10-11T02:20:00Z\n---\n\n## Important\n### I3. late\n- Cycle: 3\n- Attempts: 1\n- Status: fixed (cycle 4, abc1234)\n";
+        let field = |k| crate::frontmatter::field(new, k);
+        assert_eq!(field("kind").as_deref(), Some("fix-only"));
+        assert_eq!(field("started").as_deref(), Some("2026-10-11T02:00:00Z"));
+        assert_eq!(field("ended").as_deref(), Some("2026-10-11T02:20:00Z"));
+        let ids: Vec<_> = cycle_entries(new).into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, ["I3"]);
+        let f = one(new);
+        assert_eq!(
+            (f.cycle, f.attempts, f.fixed_cycle),
+            (Some(3), Some(1), Some(4))
+        );
+        let old = "# Fix cycle 1: u\n\ncycle: 1\n\n## Important\n### I1. a\n- Status: open.\n";
+        assert_eq!(crate::frontmatter::field(old, "kind"), None);
+        assert_eq!(one(old).attempts, None);
     }
 
     #[test]
