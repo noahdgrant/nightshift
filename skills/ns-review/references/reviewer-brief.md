@@ -31,6 +31,20 @@ Only when the diff is past the soft limit; otherwise leave this section out.
 
 The diff is {CHANGED_LINES} changed lines, past the unit's soft limit of {SOFT_LIMIT}. Size alone is not a finding. Say whether the part of the diff your axis covers could ship as its own PR, and name the seam: the files, the commits, or a refactor apart from the behaviour it enables. Answer on a `SPLIT:` line in your report.
 
+## Fix-only cycle
+
+Only in a fix-only cycle (cycles 4 and 5); otherwise leave this section out. It replaces the bar, your axis's search for new defects, and the Report below.
+
+These findings were raised earlier and handed to a fix: {FINDINGS}. For each one, read the code at its location in the current tree and check whether the defect is gone. Report nothing else: this pass checks fixes and raises no new findings.
+
+```markdown
+VERDICT: PASS | ISSUES | BLOCKED
+SCOPE: {REVIEWER}, fix-only
+
+### <finding id>: fixed | open
+Evidence: <the code, test or command output that shows it>
+```
+
 ## What makes a finding
 
 - It names specific code: `file:line` in the post-change tree.

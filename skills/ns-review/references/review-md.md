@@ -35,7 +35,7 @@ sha: <git rev-parse --short HEAD>
 updated: <ISO-8601 UTC>
 base: <base branch>@<sha>
 head: <sha>
-cycles: <n>         # fix cycles run, 0 to 3
+cycles: <n>         # fix cycles run, full and fix-only, 0 to 5
 panel: full | reduced
 launch: subagents | ns ask | inline (sequential)
 ---
@@ -57,6 +57,7 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 - Axis: correctness, security
 - Scope: changed | pre-existing
 - Cycle: 0
+- Attempts: 1
 - Raised by: correctness (provider-a), security (provider-b). Cross-provider.
 - Finding: <one or two lines>
 - Evidence: <trace, quote, or command + output>
@@ -81,10 +82,10 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 - <escape the tracker couldn't take: its ID and why. It doesn't block.>
 ```
 
-Status follows the Gate in `SKILL.md`. For any `blocked` status, the first body line, before the title, is the one-sentence reason `ns watch` quotes. After the cycle limit it names the open Criticals and Importants in changed code, Criticals first:
+Status follows the Gate in `SKILL.md`. For any `blocked` status, the first body line, before the title, is the one-sentence reason `ns watch` quotes. When the fix loop stops with findings open, it names the open Criticals and Importants in changed code, Criticals first:
 
 ```markdown
-Open after 3 fix cycles: C1, I2, I4.
+Open after at least 2 fix attempts: C1, I2, I4.
 
 Options: fix by hand on the unit's branch then delete `.ns/<unit>/review.md` so `ns run` reviews again, split the issue, or route it to `ns-define`.
 
@@ -96,8 +97,27 @@ Every finding, in `review.md` and in `review/cycle-<n>.md`, carries the fields i
 - `Axis`: the axes of the reviewers that raised it, from `correctness`, `readability`, `architecture`, `security`, `performance`, `tests`, `spec`, `comments`. Comma-separated when several raised it. The size Suggestions from step 1 take `architecture`.
 - `Scope`: `changed` or `pre-existing`, as step 3 of `SKILL.md` defines them. `pre-existing` is what marks an escape. An escape sits in its severity's section with that section's ID prefix, like any finding (`### I4.` under `## Important`), since `ns quality` reads severity from the prefix. It gets no `## Escapes` section and no `E` prefix of its own.
 - `Cycle`: the review pass that first raised it, `0` for the first review.
+- `Attempts`: the fix cycles that handed it to the build agent, `0` until the first. The cycle it was fixed in is the one in `Status: fixed (cycle <n>, <commit>)`.
 - `Status`: `deferred: #<n>` only for an escape filed as issue `#<n>`.
 
 `Cycles run` is the review passes the reviewer ran in, for example `0, 1`.
 
 Number findings once and keep the numbers stable across cycles, so the build agent and the human can refer to `I3`.
+
+## Cycle files
+
+Each fix cycle's record, `review/cycle-<n>.md`, opens with frontmatter, then lists the cycle's findings in the format above:
+
+```markdown
+---
+cycle: <n>
+kind: full | fix-only
+started: <ISO-8601 UTC, when the build agent was launched>
+ended: <ISO-8601 UTC, when the cycle's findings were judged>
+---
+
+## Important
+### I3. ...
+```
+
+Cycle files from before fix-only cycles have no frontmatter and no `Attempts`; `ns quality` reads them without.
