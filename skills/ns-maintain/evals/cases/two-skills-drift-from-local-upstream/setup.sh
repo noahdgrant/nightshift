@@ -1,6 +1,4 @@
-# Builds a fake upstream repo acme/skills inside .git (so it is never part of the trial's diff)
-# with two commits, points https://github.com/ at it through git's insteadOf in the throwaway
-# HOME, and records the first commit's sha in the overlay skills. No network.
+# Fake upstream acme/skills lives inside .git so it never shows in the trial's diff; no network.
 set -eu
 up="$PWD/.git/fake-upstream/acme/skills"
 mkdir -p "$up"

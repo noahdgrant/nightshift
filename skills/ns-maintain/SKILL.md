@@ -25,15 +25,17 @@ Done when you have the list of drifted skills, each with its entries' recorded s
 
 Each drifted skill is its own **unit**: one worktree, one branch, one PR. Never put two skills in one branch or PR, so each can be reviewed, merged or reverted alone.
 
-Read the PR rules first: `docs/agents/issue-tracker.md` (its pull request section) and the repo's `AGENTS.md`. When they say every PR closes an issue, find or file an issue per skill, titled like the PR, and name the unit `<issue-number>-maintain-<skill>`. Otherwise name it `maintain-<skill>`.
+Read the PR rules first: `docs/agents/issue-tracker.md` (its pull request section) and the repo's `AGENTS.md`. When they say every PR closes an issue, find or file an issue per skill, titled like the PR, and name the unit `<issue-number>-maintain-<skill>`. Search for an existing issue for the skill first (the tracker's duplicate search) and reuse it; never file a second. Otherwise name the unit `maintain-<skill>`.
+
+Before creating a worktree, look for an existing branch or open PR for the unit, as the tracker doc says. When one exists and is unmerged, leave that skill out of this run and list it in step 7 as `PR already open: <url>`: a rerun would see no diff in its worktree, because step 4 already moved the sha there, and would overwrite the recorded verdicts.
 
 ```bash
 ns worktree new <unit-id>
 ```
 
-It is idempotent and prints the worktree `path` and `branch`. Work the skill's steps 3 to 6 in that path. When the branch already has an open PR from an earlier run, update that branch and PR rather than opening a second.
+It is idempotent and prints the worktree `path` and `branch`. Work the skill's steps 3 to 6 in that path.
 
-Done when every drifted skill has its own worktree on its own branch.
+Done when every drifted skill without an open PR has its own worktree on its own branch, and every skill left out is listed with its PR URL.
 
 ## 3. Port the upstream change
 
@@ -53,7 +55,7 @@ Done when every hunk of every entry has a verdict, and each Skipped one has its 
 
 ## 4. Bump the recorded sha
 
-In the skill's `SKILL.md`, replace each entry's sha with the first 12 characters of the `head` that step 1 reported for it. Change only the sha, so the entry keeps its repo and path. Bump every entry `ns upstream status` reported for the skill, including the ones with no change. Bump even when every hunk was Skipped: the verdicts are recorded, and the same drift stops coming back.
+In the skill's `SKILL.md`, replace each entry's sha with the first 12 characters of the `head` that step 3's `=== <upstream> -> <head>` line printed for it. Change only the sha, so the entry keeps its repo and path. Bump every entry `ns upstream status` reported for the skill, including the ones with no change. Bump even when every hunk was Skipped: the verdicts are recorded, and the same drift stops coming back.
 
 Done when `ns upstream status` reports `"changed": false` for every entry of the skill, run from the worktree.
 
@@ -95,4 +97,4 @@ Done when the skill's PR is open, or its `maintain.md` says why not.
 
 ## 7. Report
 
-Give one line per drifted skill: the skill, its PR URL or `maintain.md` status, and its count of Applied, Already covered and Skipped hunks. Then the entries in error from step 1, with their errors.
+Give one line per drifted skill, with `PR already open: <url>` for the ones left out in step 2: the skill, its PR URL or `maintain.md` status, and its count of Applied, Already covered and Skipped hunks. Then the entries in error from step 1, with their errors.

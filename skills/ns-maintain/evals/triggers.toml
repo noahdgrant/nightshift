@@ -1,5 +1,3 @@
-# Does the ns-maintain description fire on the right prompts? 7 positive, 7 negative.
-
 [[trigger]]
 prompt = "Sync our adapted skills with their upstream repos and open the PRs."
 expect = true
