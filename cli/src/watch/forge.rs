@@ -122,6 +122,15 @@ pub fn host(url: &str) -> Option<&str> {
     Some(host.split(':').next().unwrap_or(host))
 }
 
+/// The path of a remote URL, the part after the host: `scheme://[user@]host[:port]/path` or
+/// scp-like `[user@]host:path`; `None` for a local path.
+pub fn path(url: &str) -> Option<&str> {
+    match url.split_once("://") {
+        Some((_, rest)) => Some(rest.split_once('/')?.1),
+        None => Some(url.split_once(':').filter(|(h, _)| !h.contains('/'))?.1),
+    }
+}
+
 /// GitHub through `gh`.
 pub struct GitHub {
     root: PathBuf,
@@ -602,6 +611,15 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("tok"));
+    }
+
+    #[test]
+    fn path_reads_url_and_scp_forms_and_no_path_from_a_local_path() {
+        assert_eq!(path("https://gitlab.com/o/r.git"), Some("o/r.git"));
+        assert_eq!(path("ssh://git@gitlab.example:2222/o/r"), Some("o/r"));
+        assert_eq!(path("git@github.com:o/r.git"), Some("o/r.git"));
+        assert_eq!(path("https://gitlab.com"), None);
+        assert_eq!(path("/srv/git/gitlab:mirror.git"), None);
     }
 
     #[test]

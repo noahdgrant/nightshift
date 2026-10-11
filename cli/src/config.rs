@@ -126,6 +126,16 @@ impl Table {
 }
 
 impl Forge {
+    /// `repo`, unless this forge has a `host` and `origin_url` is on another one: the owner and
+    /// repo tables belong to that host, so a repo elsewhere gets the default table.
+    pub fn scope<'a>(&self, repo: Option<&'a str>, origin_url: Option<&str>) -> Option<&'a str> {
+        let on_other_host = match (&self.host, origin_url.and_then(crate::watch::forge::host)) {
+            (Some(want), Some(got)) => !want.eq_ignore_ascii_case(got),
+            _ => false,
+        };
+        repo.filter(|_| !on_other_host)
+    }
+
     /// The token for `repo` (`owner/name`, or `group/sub/name` on GitLab) and the table it came
     /// from: the repo's table, else its owner's, else the default. Keys match without case.
     pub fn choose(&self, repo: Option<&str>) -> (&TokenSource, Table) {
@@ -813,6 +823,39 @@ token_env = \"TEAM\"
                 .1
                 .label(ForgeKind::Gitlab),
             "[forge.gitlab.owners.\"team/sub\"]"
+        );
+    }
+
+    #[test]
+    fn a_forge_host_scopes_the_override_tables_to_origins_on_that_host() {
+        let gl = parse(
+            "[forge.gitlab]
+token_env = \"DEFAULT\"
+host = \"gitlab.example.com\"
+[forge.gitlab.owners.\"team\"]
+token_env = \"TEAM\"
+",
+        )
+        .unwrap()
+        .forge
+        .gitlab
+        .unwrap();
+        let repo = Some("team/project");
+        let pick = |url| gl.choose(gl.scope(repo, Some(url))).1;
+        assert_eq!(
+            pick("git@gitlab.example.com:team/project.git"),
+            Table::Owner("team".into())
+        );
+        assert_eq!(
+            pick("https://GitLab.Example.com/team/project"),
+            Table::Owner("team".into())
+        );
+        assert_eq!(pick("https://gitlab.com/team/project"), Table::Default);
+        assert_eq!(pick("/srv/git/project"), Table::Owner("team".into()));
+        let unkeyed = github(OVERRIDES);
+        assert_eq!(
+            unkeyed.scope(Some("example-org/backend"), Some("https://github.com/x/y")),
+            Some("example-org/backend")
         );
     }
 

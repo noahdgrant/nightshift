@@ -1,13 +1,16 @@
 //! Forge credentials: resolve `[forge.*]` tokens once and export them, so every child
 //! (`gh`, `git`, the harness) inherits them. A token never appears in an error message.
 
+use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::config::{Config, Forge, ForgeKind, Forges, TokenSource};
 use crate::error::SfError;
+use crate::eval::trial::run_process;
+use crate::watch::forge as watch_forge;
 
 pub fn is_set(var: &str) -> bool {
     std::env::var(var).is_ok_and(|v| !v.is_empty())
@@ -121,6 +124,15 @@ impl Origin {
     pub fn repo_for(&self, kind: ForgeKind) -> Option<&str> {
         self.repo.as_deref().filter(|_| kind == self.kind)
     }
+
+    /// The repo that picks `kind`'s token table: [`Origin::repo_for`], unless the forge's `host`
+    /// is not the host `origin` is on.
+    pub fn table_repo(&self, kind: ForgeKind) -> Option<&str> {
+        match self.forges.get(kind) {
+            Some(f) => f.scope(self.repo_for(kind), self.url.as_deref()),
+            None => self.repo_for(kind),
+        }
+    }
 }
 
 /// What `ns run` and `ns watch` do at start: warn when the environment's token overrides the
@@ -129,10 +141,11 @@ impl Origin {
 pub fn start(origin: &Origin, dry_run: bool) -> Result<(), SfError> {
     let (kind, forges) = (origin.kind, &origin.forges);
     let repo = origin.repo.as_deref();
+    let table_repo = origin.table_repo(kind);
     let inherited = inherited(kind, repo);
-    let source = source(kind, forges.get(kind), repo);
+    let source = source(kind, forges.get(kind), table_repo);
     if !inherited {
-        if let Some(w) = env_warning(kind, forges.get(kind), repo) {
+        if let Some(w) = env_warning(kind, forges.get(kind), table_repo) {
             eprintln!("ns: warning: {w}");
         }
     }
@@ -202,7 +215,7 @@ pub fn source(kind: ForgeKind, forge: Option<&Forge>, repo: Option<&str>) -> Str
 fn export(origin: &Origin) -> Result<(), SfError> {
     for (kind, forge) in origin.forges.each() {
         if let Some(f) = forge {
-            let creds = resolve(kind, f, origin.repo_for(kind))?;
+            let creds = resolve(kind, f, origin.table_repo(kind))?;
             if let Some(h) = creds.host {
                 std::env::set_var(kind.host_var(), h);
             }
@@ -218,12 +231,14 @@ fn export(origin: &Origin) -> Result<(), SfError> {
 /// `https://host/owner/name`, `ssh://git@host:22/owner/name` or scp-like `git@alias:owner/name`.
 /// `None` for a local path or `file://` URL.
 pub fn repo_path(url: &str) -> Option<String> {
-    let path = match url.split_once("://") {
-        Some((scheme, rest)) if remote_scheme(scheme) => rest.split_once('/')?.1,
-        Some(_) => return None,
-        None => url.split_once(':').filter(|(h, _)| !h.contains('/'))?.1,
-    };
-    let path = path.trim_matches('/');
+    if url
+        .split_once("://")
+        .is_some_and(|(scheme, _)| !remote_scheme(scheme))
+    {
+        return None;
+    }
+    watch_forge::host(url).filter(|h| !h.is_empty())?;
+    let path = watch_forge::path(url)?.trim_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
     let segments: Vec<&str> = path.split('/').collect();
     (segments.len() >= 2 && segments.iter().all(|s| !s.is_empty())).then(|| path.to_string())
@@ -305,9 +320,9 @@ fn safe_host(host: &str) -> bool {
     }
 }
 
-/// `kind`'s CLI (`gh` or `glab`), scrubbed, with `creds` on its environment.
-fn cli(kind: ForgeKind, creds: Option<&Credentials>) -> Command {
-    let mut cmd = Command::new(kind.cli());
+/// `program` (`kind`'s CLI), scrubbed, with `creds` on its environment.
+fn cli(program: &OsStr, kind: ForgeKind, creds: Option<&Credentials>) -> Command {
+    let mut cmd = Command::new(program);
     crate::git::scrub(&mut cmd);
     if let Some(c) = creds {
         c.apply_to(kind, &mut cmd);
@@ -316,29 +331,21 @@ fn cli(kind: ForgeKind, creds: Option<&Credentials>) -> Command {
     cmd
 }
 
-/// Run `cmd` to completion, killing it after `limit`. Its output goes to temp files read after it
-/// exits, so no descendant holding a pipe open can delay or drop it.
+/// Run `cmd` to completion, killing its process group after `limit`. Its output goes to temp
+/// files read after it exits, so no descendant holding a pipe open can delay or drop it.
 pub fn output_within(mut cmd: Command, limit: Duration) -> std::io::Result<Output> {
     let mut out = tempfile::tempfile()?;
     let mut err = tempfile::tempfile()?;
-    let mut child = cmd
-        .stdout(out.try_clone()?)
-        .stderr(err.try_clone()?)
-        .spawn()?;
-    let deadline = Instant::now() + limit;
-    let status = loop {
-        if let Some(s) = child.try_wait()? {
-            break s;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+    cmd.stdout(out.try_clone()?).stderr(err.try_clone()?);
+    let (status, timed_out, _) = run_process(cmd, None, limit)?;
+    let status = match status {
+        Some(s) if !timed_out => s,
+        _ => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!("timed out after {}s", limit.as_secs_f32()),
-            ));
+            ))
         }
-        std::thread::sleep(Duration::from_millis(20));
     };
     let read = |f: &mut std::fs::File| -> std::io::Result<Vec<u8>> {
         let mut buf = Vec::new();
@@ -355,7 +362,7 @@ pub fn output_within(mut cmd: Command, limit: Duration) -> std::io::Result<Outpu
 
 /// The login of the account the token belongs to, from the forge's API.
 pub fn account(kind: ForgeKind, creds: Option<&Credentials>) -> Option<String> {
-    let mut cmd = cli(kind, creds);
+    let mut cmd = cli(OsStr::new(kind.cli()), kind, creds);
     match kind {
         ForgeKind::Github => cmd.args(["api", "user", "--jq", ".login"]),
         ForgeKind::Gitlab => cmd.args(["api", "user"]),
@@ -376,12 +383,22 @@ pub fn account(kind: ForgeKind, creds: Option<&Credentials>) -> Option<String> {
 /// Whether the token can read `repo`: `gh api repos/<repo>` or `glab api projects/<repo>`. The
 /// error is the CLI's stderr with the token hidden.
 pub fn can_read(kind: ForgeKind, repo: &str, creds: Option<&Credentials>) -> Result<(), String> {
-    let mut cmd = cli(kind, creds);
+    can_read_within(OsStr::new(kind.cli()), kind, repo, creds, PROBE_TIMEOUT)
+}
+
+fn can_read_within(
+    program: &OsStr,
+    kind: ForgeKind,
+    repo: &str,
+    creds: Option<&Credentials>,
+    limit: Duration,
+) -> Result<(), String> {
+    let mut cmd = cli(program, kind, creds);
     match kind {
         ForgeKind::Github => cmd.args(["api", &format!("repos/{repo}"), "--jq", ".full_name"]),
         ForgeKind::Gitlab => cmd.args(["api", &format!("projects/{}", repo.replace('/', "%2F"))]),
     };
-    let out = output_within(cmd, PROBE_TIMEOUT).map_err(|e| match e.kind() {
+    let out = output_within(cmd, limit).map_err(|e| match e.kind() {
         std::io::ErrorKind::TimedOut => format!("{} {e}", kind.cli()),
         _ => format!("cannot run {}: {e}", kind.cli()),
     })?;
@@ -466,6 +483,85 @@ fn fetch(kind: ForgeKind, source: &TokenSource) -> Result<String, SfError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+
+    fn fake_cli(dir: &Path, body: &str) -> std::path::PathBuf {
+        let fake = dir.join("fake");
+        let made = Command::new("sh")
+            .arg("-c")
+            .arg(r#"printf '%s\n' '#!/bin/sh' "$1" > "$0" && chmod 755 "$0""#)
+            .arg(&fake)
+            .arg(body)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        fake
+    }
+
+    fn can_read_fake(body: &str, limit: Duration) -> Result<(), String> {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = fake_cli(dir.path(), body);
+        can_read_within(fake.as_os_str(), ForgeKind::Github, "o/r", None, limit)
+    }
+
+    #[test]
+    fn can_read_names_the_cli_that_outlives_its_limit() {
+        let started = Instant::now();
+        let e = can_read_fake("exec sleep 30", Duration::from_millis(300)).unwrap_err();
+        assert_eq!(e, "gh timed out after 0.3s");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn can_read_says_when_the_cli_cannot_run() {
+        let e = can_read_within(
+            OsStr::new("/nonexistent/gh"),
+            ForgeKind::Github,
+            "o/r",
+            None,
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert!(e.starts_with("cannot run gh: "), "{e}");
+    }
+
+    #[test]
+    fn can_read_reports_the_exit_status_when_the_cli_prints_no_error() {
+        let e = can_read_fake("exit 3", Duration::from_secs(30)).unwrap_err();
+        assert!(e.starts_with("gh exited with "), "{e}");
+        assert!(e.contains('3'), "{e}");
+    }
+
+    #[test]
+    fn can_read_returns_the_cli_stderr() {
+        let e = can_read_fake("echo 'HTTP 404' >&2; exit 1", Duration::from_secs(30)).unwrap_err();
+        assert_eq!(e, "HTTP 404");
+        assert_eq!(can_read_fake("exit 0", Duration::from_secs(30)), Ok(()));
+    }
+
+    #[test]
+    fn output_within_leaves_no_descendant_running_after_a_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(r#"sleep 30 & echo $! > "$0"; sleep 30"#)
+            .arg(&pidfile);
+        output_within(cmd, Duration::from_millis(500)).unwrap_err();
+        let pid = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .to_string();
+        let running = |pid: &str| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .is_ok_and(|s| !s.rsplit(") ").next().unwrap_or("").starts_with('Z'))
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while running(&pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!running(&pid), "descendant {pid} still running");
+    }
 
     #[test]
     fn an_empty_env_host_is_unset_so_the_configured_host_wins() {

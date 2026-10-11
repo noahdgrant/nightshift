@@ -198,10 +198,11 @@ fn forge_entry(
 ) -> Value {
     let repo = origin.and_then(forge::repo_path);
     let repo = repo.as_deref();
+    let table_repo = f.map_or(repo, |f| f.scope(repo, origin));
     if !forge::inherited(kind, repo) {
-        warnings.extend(forge::env_warning(kind, f, repo));
+        warnings.extend(forge::env_warning(kind, f, table_repo));
     }
-    let creds = match f.map(|f| forge::resolve(kind, f, repo)).transpose() {
+    let creds = match f.map(|f| forge::resolve(kind, f, table_repo)).transpose() {
         Ok(c) => c,
         Err(e) => {
             problems.push(e.message);
@@ -218,7 +219,7 @@ fn forge_entry(
     let readable = repo.filter(|_| f.is_none() || creds.is_some()).map(|r| {
         forge::can_read(kind, r, creds.as_ref()).map_err(|e| {
             if f.is_some() {
-                let source = forge::source(kind, f, repo);
+                let source = forge::source(kind, f, table_repo);
                 problems.push(forge::unreadable(kind, r, account.as_deref(), &source, &e));
             }
         })
@@ -240,7 +241,7 @@ fn forge_entry(
         "configured": f.is_some(),
         "token_resolved": token_resolved,
         "account": account,
-        "table": f.map(|f| f.choose(repo).1.label(kind)),
+        "table": f.map(|f| f.choose(table_repo).1.label(kind)),
         "repo": repo,
         "repo_readable": readable.map(|r| r.is_ok()),
         "ssh": ssh,

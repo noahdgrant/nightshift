@@ -5484,6 +5484,33 @@ fn a_repo_the_token_cannot_read_stops_run_and_watch_with_exit_2() {
 }
 
 #[test]
+fn an_override_naming_an_unset_variable_stops_run_with_exit_2() {
+    for (origin, var) in [
+        ("https://github.com/example-org/frontend.git", "OWNER_TOKEN"),
+        ("https://github.com/example-org/backend.git", "REPO_TOKEN"),
+    ] {
+        let e = Env::new();
+        git(&e.root, &["remote", "set-url", "origin", origin]);
+        e.config(OVERRIDES);
+        let out = e
+            .ns()
+            .env("DEFAULT_TOKEN", FAKE_TOKEN)
+            .args(["run", "--issue", "7"])
+            .assert()
+            .code(2)
+            .get_output()
+            .clone();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains(&format!("token_env {var} is unset or empty")),
+            "{err}"
+        );
+        assert!(!err.contains(FAKE_TOKEN), "{err}");
+        assert!(e.calls().is_empty(), "a phase ran: {:?}", e.calls());
+    }
+}
+
+#[test]
 fn a_gitlab_nested_group_picks_its_table_and_an_unreadable_project_exits_2() {
     let e = Env::new();
     e.gl_members(&[(1, 30)], &[]);
