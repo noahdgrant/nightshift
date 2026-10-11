@@ -16,7 +16,8 @@ pub(super) fn is_protected(path: &str) -> bool {
 /// A working directory whose relative paths are protected: inside `.githooks/` or the `.git`
 /// directory itself.
 pub(super) fn is_protected_directory(dir: &str) -> bool {
-    is_protected(dir) || components(dir).last() == Some(&".git")
+    let parts = components(dir);
+    is_protected(dir) || parts.contains(&".git")
 }
 
 /// How many directories below a protected path the directory `dir` is, or `None` when it is

@@ -282,3 +282,19 @@ fn chmod_and_find_delete_on_hooks_are_denied() {
         assert!(!denied(c), "{c}");
     }
 }
+
+#[test]
+fn relative_cd_inside_a_protected_directory_keeps_the_tracking() {
+    for c in [
+        "cd .githooks && cd lib && rm ../pre-commit",
+        "cd .githooks; cd lib; rm ../pre-commit",
+        "pushd .githooks; pushd lib; rm ../x",
+        "cd .git/refs && rm ../config",
+        "cd .git; cd refs; rm ../hooks/pre-commit",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in ["cd .githooks && rm ../x", "rm .git/index.lock"] {
+        assert!(!denied(c), "{c}");
+    }
+}

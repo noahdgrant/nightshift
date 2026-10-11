@@ -279,7 +279,17 @@ fn change_directory(args: &[Word], scan: &mut Scan) {
         .find(|a| *a == "-" || !a.starts_with('-'));
     match dir {
         Some(d) if is_protected_directory(d) => scan.hooks_depth = protected_depth(d),
-        Some(d) if !d.starts_with(['/', '~']) => {}
+        Some(d) if !d.starts_with(['/', '~']) => {
+            if let Some(depth) = scan.hooks_depth {
+                scan.hooks_depth = Some(components(d).iter().fold(depth, |depth, part| {
+                    if *part == ".." {
+                        depth.saturating_sub(1)
+                    } else {
+                        depth + 1
+                    }
+                }));
+            }
+        }
         _ => scan.hooks_depth = None,
     }
 }

@@ -299,3 +299,26 @@ fn env_and_options_that_redirect_gits_config_or_dir_are_denied() {
         assert!(!denied(c), "{c}");
     }
 }
+
+#[test]
+fn an_expansion_in_a_config_option_value_or_key_is_denied() {
+    for c in [
+        "git -c $KV commit",
+        "git -c \"$KV\" commit -m x",
+        "git -c \"$K=$V\" commit -m x",
+        "git -c \"core.$K=x\" commit",
+        "git -c$KV commit",
+        "git --config-env $KV commit",
+        "git config \"$KEY\" \"$VAL\"",
+        "git config core.$K x",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "git -c user.name=x commit -m y",
+        "git config --get core.hooksPath",
+        "git config user.name \"$NAME\"",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}

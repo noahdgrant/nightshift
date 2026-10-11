@@ -74,6 +74,9 @@ pub(super) fn git_global_options(
             let Some(value) = args.get(i + 1) else {
                 return Ok(None);
             };
+            if value.opaque && matches!(arg, "-c" | "--config-env") {
+                return Err(unreadable("a git config option"));
+            }
             global_option(arg, &value.text, scan, &mut aliases)?;
             2
         } else if arg.starts_with('-') {
@@ -326,6 +329,12 @@ pub(super) fn config_section_write(args: &[Word]) -> Option<String> {
 pub(super) fn config(args: &[Word], scan: &mut Scan) -> Option<String> {
     if let Some(why) = config_section_write(args) {
         return Some(why);
+    }
+    let named = args.iter().find(|a| {
+        !a.text.starts_with('-') && !matches!(a.text.as_str(), "set" | "unset" | "get" | "list")
+    });
+    if named.is_some_and(|a| a.opaque) {
+        return Some(unreadable("a git config key"));
     }
     let (at, key) = args
         .iter()
