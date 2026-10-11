@@ -1562,3 +1562,71 @@ fn status_summarises_the_log_and_reports_an_unreadable_queue() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("runs.jsonl"));
 }
+
+#[test]
+fn status_shows_a_unit_whose_run_lock_is_held_as_running_with_its_phase() {
+    let (_tmp, root) = repo();
+    let dir = root.join(".git/ns");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("runs.jsonl"),
+        concat!(
+            r#"{"event":"end","unit":"143-live","outcome":"paused","ts":"2026-10-10T01:00:00Z"}"#,
+            "\n",
+            r#"{"event":"phase","unit":"143-live","phase":"build","attempt":1,"status":"pass","ts":"2026-10-10T02:00:00Z"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let held = fs::File::create(root.join(".git/ns-run-143-live.lock")).unwrap();
+    held.lock().unwrap();
+    let out = ns()
+        .current_dir(&root)
+        .env("NS_NOW", "1791622800")
+        .arg("status")
+        .output();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("running (1)\n  2026-10-10T02:00:00Z #143 build attempt 1 status pass\n"),
+        "{text}"
+    );
+    assert!(text.contains("paused (0)\n"), "{text}");
+}
+
+#[test]
+fn status_lists_the_ready_issues_the_queue_returns() {
+    let (tmp, root) = repo();
+    git(
+        &root,
+        &["remote", "add", "origin", "git@github.com:o/r.git"],
+    );
+    let bin = tmp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    executable(
+        &bin.join("gh"),
+        r#"case "$1" in
+api) echo '{"number":7,"title":"Fix the thing","labels":[{"name":"status:ready-for-agent"}],"body":"","authorAssociation":"OWNER"}' ;;
+pr) echo '[]' ;;
+esac"#,
+    );
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let status = |args: &[&str]| {
+        ns().current_dir(&root)
+            .env("PATH", &path)
+            .env("NS_NOW", "1791622800")
+            .arg("status")
+            .args(args)
+            .output()
+    };
+    let out = status(&[]);
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.ends_with("next (1)\n  #7 Fix the thing\n"), "{text}");
+
+    let out = status(&["--json"]);
+    assert_eq!(
+        json(&out.stdout)["next"],
+        serde_json::json!([{"number": 7, "title": "Fix the thing"}])
+    );
+}

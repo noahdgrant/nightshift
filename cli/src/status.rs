@@ -2,8 +2,8 @@
 //! phase, the units whose run ended since `--since` grouped by outcome, and the next ready issues
 //! in the `ns watch` queue. Reads only the run-log fields `ns log` prints.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::fs;
 use std::io;
 use std::process::ExitCode;
 
@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use crate::clock::{self, Clock};
 use crate::factory::{self, Factory};
 use crate::git::Repo;
-use crate::log::{self, PrBase};
+use crate::log;
 use crate::quality::{self, issue_of, Window};
 use crate::run;
 use crate::watch::{self, forge::Forge};
@@ -32,82 +32,85 @@ const BUCKETS: [(&str, &str, &[&str]); 5] = [
 ];
 const OTHER: &str = "other";
 
+type Event = Map<String, Value>;
+
+/// The night: what runs now, what ended since `since`, and the queue if it could be read.
+struct Summary {
+    since: i64,
+    running: Vec<Event>,
+    ended: BTreeMap<&'static str, Vec<Event>>,
+    next: Option<Vec<Queued>>,
+}
+
+struct Queued {
+    number: u64,
+    title: String,
+}
+
 pub fn cli(since: Option<String>, as_json: bool) -> Result<ExitCode> {
     let since = match since {
         Some(s) => quality::instant("status", "since", &s, "00:00:00")?,
         None => Clock::from_env().now() - DEFAULT_SINCE_S,
     };
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
-    let path = repo.common_dir.join("ns").join("runs.jsonl");
-    let text = match fs::read(&path) {
-        Ok(b) => String::from_utf8_lossy(&b).into_owned(),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            eprintln!(
-                "no run log at {} yet; ns run and ns watch write one",
-                path.display()
-            );
-            String::new()
-        }
-        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
-    };
+    let path = log::run_log(&repo);
     let running: Vec<String> = run::Lock::run_holders(&repo.common_dir)?
         .iter()
         .filter_map(|h| h["unit"].as_str().map(String::from))
         .collect();
-    let (mut summary, bad) = summarise(&text, since, &running, log::pr_base(&repo).as_ref());
-    if bad > 0 {
-        eprintln!(
-            "skipped {bad} line(s) of {} that are not JSON objects",
-            path.display()
-        );
-    }
+    let base = log::pr_base(&repo);
+    let bad = Cell::new(0);
+    let mut summary = log::open_lines(&path)
+        .and_then(|lines| summarise(log::events(lines, base.as_ref(), &bad), since, &running))
+        .with_context(|| format!("ns status on {}", path.display()))?;
+    log::report_bad(bad.get(), &path);
     let fac = factory::load(&factory::root(None, &repo.root));
-    let next = fac.and_then(|fac| {
+    let queue = fac.and_then(|fac| {
         let forge = watch::forge::open(&fac.queue, &repo.root)?;
         next(forge.as_ref(), &fac)
     });
-    summary["next"] = next.unwrap_or_else(|e| {
-        eprintln!("ns status: queue unavailable: {e:#}");
-        Value::Null
-    });
+    summary.next = match queue {
+        Ok(next) => Some(next),
+        Err(e) => {
+            eprintln!("ns status: queue unavailable: {e:#}");
+            None
+        }
+    };
     if as_json {
-        println!("{summary}");
+        println!("{}", summary.to_json());
     } else {
-        print!("{}", text_of(&summary));
+        print!("{}", summary.text());
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// The ready issues `ns watch` would take next, in its order, as `{number, title}`.
-fn next(forge: &dyn Forge, fac: &Factory) -> Result<Value> {
+/// The ready issues `ns watch` would take next, in its order.
+fn next(forge: &dyn Forge, fac: &Factory) -> Result<Vec<Queued>> {
     let q = watch::queue(forge, fac, &Default::default())?;
     Ok(q.ready
         .iter()
-        .map(|i| json!({"number": i.number, "title": i.title}))
+        .map(|i| Queued {
+            number: i.number,
+            title: i.title.clone(),
+        })
         .collect())
 }
 
-/// The summary of the run log `text`: `running` with each unit's last phase event, and each
-/// other unit whose last `end` at or after `since` falls in a bucket. `next` is left for the
-/// caller. Also returns how many non-blank lines are not JSON objects.
+/// The summary of the run-log `events`: `running` with each unit's last phase event, and each
+/// other unit whose last `end` at or after `since` falls in a bucket. `next` is left unread.
 fn summarise(
-    text: &str,
+    events: impl IntoIterator<Item = io::Result<Event>>,
     since: i64,
     running: &[String],
-    pr_base: Option<&PrBase>,
-) -> (Value, usize) {
+) -> io::Result<Summary> {
     let window = Window {
         since: Some(since),
         until: None,
     };
-    let mut bad = 0;
-    let mut last_phase: BTreeMap<&str, Map<String, Value>> = BTreeMap::new();
-    let mut last_end: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        let Some(mut ev) = log::event(line, pr_base) else {
-            bad += 1;
-            continue;
-        };
+    let mut last_phase: BTreeMap<&str, Event> = BTreeMap::new();
+    let mut last_end: BTreeMap<String, Event> = BTreeMap::new();
+    for ev in events {
+        let mut ev = ev?;
         let Some(unit) = ev.get("unit").and_then(Value::as_str).map(String::from) else {
             continue;
         };
@@ -127,7 +130,7 @@ fn summarise(
             _ => {}
         }
     }
-    let running: Vec<Value> = running
+    let running_events = running
         .iter()
         .map(|u| {
             let mut ev = last_phase.remove(u.as_str()).unwrap_or_default();
@@ -135,78 +138,91 @@ fn summarise(
             if let Some(n) = issue_of(u).filter(|_| !ev.contains_key("issue")) {
                 ev.insert("issue".into(), json!(n));
             }
-            Value::Object(ev)
+            ev
         })
         .collect();
-    let mut ended = Map::new();
-    for (key, _, _) in BUCKETS {
-        ended.insert(key.into(), json!([]));
-    }
-    ended.insert(OTHER.into(), json!([]));
+    let mut ended: BTreeMap<&'static str, Vec<Event>> = BUCKETS
+        .iter()
+        .map(|(key, _, _)| *key)
+        .chain([OTHER])
+        .map(|key| (key, Vec::new()))
+        .collect();
     for (unit, ev) in last_end {
-        if running.iter().any(|r| r["unit"] == unit.as_str()) {
+        if running.contains(&unit) {
             continue;
         }
-        let outcome = ev.get("outcome").and_then(Value::as_str).unwrap_or("");
+        let outcome = ev.get("outcome").and_then(Value::as_str);
         let key = BUCKETS
             .iter()
-            .find(|(_, _, outcomes)| outcomes.contains(&outcome))
+            .find(|(_, _, outcomes)| outcome.is_some_and(|o| outcomes.contains(&o)))
             .map_or(OTHER, |(key, _, _)| key);
-        if let Some(list) = ended[key].as_array_mut() {
-            list.push(Value::Object(ev));
-        }
+        ended.entry(key).or_default().push(ev);
     }
-    let summary = json!({
-        "since": clock::iso(since),
-        "running": running,
-        "ended": ended,
-        "next": null,
-    });
-    (summary, bad)
+    Ok(Summary {
+        since,
+        running: running_events,
+        ended,
+        next: None,
+    })
 }
 
-/// The human form of a summary: a heading with a count per part, then a line per entry as
-/// `ns log` prints it. `other` shows only when it holds a unit; a `null` `next` is "queue
-/// unavailable".
-fn text_of(s: &Value) -> String {
-    let mut out = format!("since {}\n", s["since"].as_str().unwrap_or(""));
-    let event = |e: &Value| e.as_object().map(log::text).unwrap_or_default();
-    let list = |k: &Value| k.as_array().cloned().unwrap_or_default();
-    part(&mut out, "running", &list(&s["running"]), event);
-    for (key, heading, _) in BUCKETS {
-        part(&mut out, heading, &list(&s["ended"][key]), event);
-    }
-    let other = list(&s["ended"][OTHER]);
-    if !other.is_empty() {
-        part(&mut out, OTHER, &other, event);
-    }
-    let issue = |i: &Value| {
-        let title: String = i["title"]
-            .as_str()
-            .unwrap_or("")
-            .chars()
-            .flat_map(log::printable)
+impl Summary {
+    fn to_json(&self) -> Value {
+        let ended: Map<String, Value> = self
+            .ended
+            .iter()
+            .map(|(key, evs)| ((*key).into(), json!(evs)))
             .collect();
-        format!("#{} {title}", i["number"])
-    };
-    match s["next"].as_array() {
-        Some(next) => part(&mut out, "next", next, issue),
-        None => out.push_str("queue unavailable\n"),
+        let next = self.next.as_ref().map(|next| {
+            next.iter()
+                .map(|q| json!({"number": q.number, "title": q.title}))
+                .collect::<Vec<_>>()
+        });
+        json!({
+            "since": clock::iso(self.since),
+            "running": self.running,
+            "ended": ended,
+            "next": next,
+        })
     }
-    out
+
+    /// A heading with a count per part, then a line per entry as `ns log` prints it. `other`
+    /// shows only when it holds a unit; a `next` that could not be read is "queue unavailable".
+    fn text(&self) -> String {
+        let mut out = format!("since {}\n", clock::iso(self.since));
+        part(&mut out, "running", &self.running);
+        for (key, heading, _) in BUCKETS {
+            part(&mut out, heading, &self.ended[key]);
+        }
+        if !self.ended[OTHER].is_empty() {
+            part(&mut out, OTHER, &self.ended[OTHER]);
+        }
+        match &self.next {
+            Some(next) => {
+                out.push_str(&format!("next ({})\n", next.len()));
+                for q in next {
+                    let title: String = q.title.chars().flat_map(log::printable).collect();
+                    out.push_str(&format!("  #{} {title}\n", q.number));
+                }
+            }
+            None => out.push_str("queue unavailable\n"),
+        }
+        out
+    }
 }
 
-/// `<heading> (<count>)`, then each entry indented as `line` prints it.
-fn part(out: &mut String, heading: &str, entries: &[Value], line: impl Fn(&Value) -> String) {
-    out.push_str(&format!("{heading} ({})\n", entries.len()));
-    for e in entries {
-        out.push_str(&format!("  {}\n", line(e)));
+/// `<heading> (<count>)`, then each event indented as `ns log` prints it.
+fn part(out: &mut String, heading: &str, events: &[Event]) {
+    out.push_str(&format!("{heading} ({})\n", events.len()));
+    for e in events {
+        out.push_str(&format!("  {}\n", log::text(e)));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::log::PrBase;
     use crate::watch::forge::{ClosingPrs, PrState};
     use crate::watch::Issue;
 
@@ -235,10 +251,23 @@ not json
         PrBase::new("https://github.com/o/r.git", None, None).unwrap()
     }
 
+    fn summary(
+        text: &str,
+        since: i64,
+        running: &[&str],
+        base: Option<&PrBase>,
+    ) -> (Summary, usize) {
+        let lines = text.lines().map(|l| Ok(l.as_bytes().to_vec()));
+        let bad = Cell::new(0);
+        let running: Vec<String> = running.iter().map(|u| u.to_string()).collect();
+        let s = summarise(log::events(lines, base, &bad), since, &running).unwrap();
+        (s, bad.get())
+    }
+
     fn fixture() -> (Value, usize) {
         let since = clock::parse_iso(SINCE).unwrap();
-        let running = ["108-live".to_string(), "109-new".to_string()];
-        summarise(FIXTURE, since, &running, Some(&base()))
+        let (s, bad) = summary(FIXTURE, since, &["108-live", "109-new"], Some(&base()));
+        (s.to_json(), bad)
     }
 
     fn units(v: &Value) -> Vec<&str> {
@@ -284,8 +313,7 @@ not json
     #[test]
     fn a_running_units_issue_is_the_logged_one_else_its_ids() {
         let line = r#"{"event":"phase","unit":"7-a","issue":8,"phase":"build"}"#;
-        let running = ["7-a".to_string(), "x-b".to_string()];
-        let (s, _) = summarise(line, 0, &running, None);
+        let s = summary(line, 0, &["7-a", "x-b"], None).0.to_json();
         assert_eq!(
             s["running"],
             json!([{"unit":"7-a","issue":8,"phase":"build"},{"unit":"x-b"}])
@@ -297,13 +325,13 @@ not json
         let at = |ts: &str| {
             let line = format!(r#"{{"event":"end","unit":"7-a","outcome":"merged","ts":"{ts}"}}"#);
             let since = clock::parse_iso(SINCE).unwrap();
-            units(&summarise(&line, since, &[], None).0["ended"]["merged"]).len()
+            units(&summary(&line, since, &[], None).0.to_json()["ended"]["merged"]).len()
         };
         assert_eq!(at(SINCE), 1);
         assert_eq!(at("2026-10-08T23:59:59Z"), 0);
         let undated = r#"{"event":"end","unit":"7-a","outcome":"merged"}"#;
         assert_eq!(
-            summarise(undated, 0, &[], None).0["ended"]["merged"],
+            summary(undated, 0, &[], None).0.to_json()["ended"]["merged"],
             json!([])
         );
     }
@@ -311,16 +339,23 @@ not json
     #[test]
     fn events_without_a_unit_are_ignored() {
         let line = r#"{"event":"end","outcome":"merged","ts":"2026-10-09T01:00:00Z"}"#;
-        let (s, bad) = summarise(line, 0, &[], None);
-        assert_eq!((s["ended"]["merged"].clone(), bad), (json!([]), 0));
+        let (s, bad) = summary(line, 0, &[], None);
+        assert_eq!(
+            (s.to_json()["ended"]["merged"].clone(), bad),
+            (json!([]), 0)
+        );
     }
 
     #[test]
     fn the_text_holds_what_the_json_holds() {
-        let (mut s, _) = fixture();
-        s["next"] = json!([{"number": 120, "title": "Add\u{1b}[31m x"}]);
+        let since = clock::parse_iso(SINCE).unwrap();
+        let (mut s, _) = summary(FIXTURE, since, &["108-live", "109-new"], Some(&base()));
+        s.next = Some(vec![Queued {
+            number: 120,
+            title: "Add\u{1b}[31m x".into(),
+        }]);
         assert_eq!(
-            text_of(&s),
+            s.text(),
             "since 2026-10-09T00:00:00Z
 running (2)
   2026-10-09T03:30:00Z #108 verify attempt 1 status fail
@@ -342,21 +377,29 @@ next (1)
   #120 Add\\u{1b}[31m x
 "
         );
-        let json: Value = serde_json::from_str(&s.to_string()).unwrap();
-        assert_eq!(json, s);
-        assert!(!s.to_string().contains("secret"));
-        assert!(!s.to_string().contains("transcript"));
+        let json = s.to_json();
+        assert_eq!(
+            json["next"],
+            json!([{"number": 120, "title": "Add\u{1b}[31m x"}])
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&json.to_string()).unwrap(),
+            json
+        );
+        assert!(!json.to_string().contains("secret"));
+        assert!(!json.to_string().contains("transcript"));
     }
 
     #[test]
     fn an_empty_night_shows_each_part_and_an_unavailable_queue() {
-        let (s, bad) = summarise("", 0, &[], None);
+        let (s, bad) = summary("", 0, &[], None);
         assert_eq!(bad, 0);
         assert_eq!(
-            text_of(&s),
+            s.text(),
             "since 1970-01-01T00:00:00Z\nrunning (0)\nmerged (0)\nPR for a human (0)\nstuck (0)\n\
              paused (0)\nsplit (0)\nqueue unavailable\n"
         );
+        assert_eq!(s.to_json()["next"], Value::Null);
     }
 
     struct Fake(Vec<Issue>);
@@ -404,10 +447,9 @@ next (1)
             issue(6, &[&high], ""),
             issue(7, &[], "Blocked by: #1"),
         ]);
-        assert_eq!(
-            next(&forge, &fac).unwrap(),
-            json!([{"number":6,"title":"Fix 6"},{"number":5,"title":"Fix 5"}])
-        );
+        let ready = next(&forge, &fac).unwrap();
+        let ready: Vec<(u64, &str)> = ready.iter().map(|q| (q.number, q.title.as_str())).collect();
+        assert_eq!(ready, [(6, "Fix 6"), (5, "Fix 5")]);
         fac.queue.ready_label = "broken".into();
         assert!(next(&forge, &fac).is_err());
     }

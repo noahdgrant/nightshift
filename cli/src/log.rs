@@ -1,9 +1,10 @@
 //! `ns log`: the run log `<git-common-dir>/ns/runs.jsonl`, one line or one JSON object per
 //! event, and with `--follow` the events appended after it starts.
 
+use std::cell::Cell;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -41,7 +42,7 @@ pub fn cli(
         .map(|s| quality::instant("log", "since", &s, "00:00:00"))
         .transpose()?;
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
-    let path = repo.common_dir.join("ns").join("runs.jsonl");
+    let path = run_log(&repo);
     let base = pr_base(&repo);
     let filter = Filter {
         unit,
@@ -53,34 +54,45 @@ pub fn cli(
         let tail = Tail::new(path.clone(), || std::thread::sleep(POLL));
         render(tail, &filter, show, base.as_ref(), &mut out)
     } else {
-        match File::open(&path) {
-            Ok(f) => render(
-                byte_lines(BufReader::new(f)),
-                &filter,
-                show,
-                base.as_ref(),
-                &mut out,
-            ),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                eprintln!(
-                    "no run log at {} yet; ns run and ns watch write one",
-                    path.display()
-                );
-                Ok(0)
-            }
-            Err(e) => Err(e),
-        }
+        open_lines(&path).and_then(|lines| render(lines, &filter, show, base.as_ref(), &mut out))
     };
     match printed {
         Ok(0) => {}
-        Ok(bad) => eprintln!(
-            "skipped {bad} line(s) of {} that are not UTF-8 JSON objects",
-            path.display()
-        ),
+        Ok(bad) => report_bad(bad, &path),
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
         Err(e) => return Err(e).with_context(|| format!("ns log on {}", path.display())),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The run log, `<git-common-dir>/ns/runs.jsonl`.
+pub fn run_log(repo: &Repo) -> PathBuf {
+    repo.common_dir.join("ns").join("runs.jsonl")
+}
+
+/// The lines of the run log at `path`. A log that does not exist yet reads as empty, with a
+/// note on stderr.
+pub fn open_lines(path: &Path) -> io::Result<Box<dyn Iterator<Item = io::Result<Vec<u8>>>>> {
+    match File::open(path) {
+        Ok(f) => Ok(Box::new(byte_lines(BufReader::new(f)))),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            eprintln!(
+                "no run log at {} yet; ns run and ns watch write one",
+                path.display()
+            );
+            Ok(Box::new(std::iter::empty()))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+pub fn report_bad(bad: usize, path: &Path) {
+    if bad > 0 {
+        eprintln!(
+            "skipped {bad} line(s) of {} that are not UTF-8 JSON objects",
+            path.display()
+        );
+    }
 }
 
 /// Where the repo's PRs live, from `origin` and the forge `ns watch` would pick.
@@ -106,26 +118,40 @@ pub fn render(
     pr_base: Option<&PrBase>,
     out: &mut impl Write,
 ) -> io::Result<usize> {
-    let mut bad = 0;
-    for line in lines {
-        let line = line?;
-        let Ok(line) = std::str::from_utf8(&line) else {
-            bad += 1;
-            continue;
-        };
-        if line.trim().is_empty() {
-            continue;
+    let bad = Cell::new(0);
+    for ev in events(lines, pr_base, &bad) {
+        let ev = ev?;
+        if keep(&ev, filter) {
+            writeln!(out, "{}", show(&ev))?;
         }
-        let Some(ev) = event(line, pr_base) else {
-            bad += 1;
-            continue;
-        };
-        if !keep(&ev, filter) {
-            continue;
-        }
-        writeln!(out, "{}", show(&ev))?;
     }
-    Ok(bad)
+    Ok(bad.get())
+}
+
+/// The events of `lines`, counting in `bad` each non-blank line that is not a UTF-8 JSON object.
+pub fn events<'a>(
+    lines: impl Iterator<Item = io::Result<Vec<u8>>> + 'a,
+    pr_base: Option<&'a PrBase>,
+    bad: &'a Cell<usize>,
+) -> impl Iterator<Item = io::Result<Map<String, Value>>> + 'a {
+    lines.filter_map(move |line| {
+        let line = match line {
+            Ok(line) => line,
+            Err(e) => return Some(Err(e)),
+        };
+        let Ok(text) = std::str::from_utf8(&line) else {
+            bad.set(bad.get() + 1);
+            return None;
+        };
+        if text.trim().is_empty() {
+            return None;
+        }
+        let ev = event(text, pr_base);
+        if ev.is_none() {
+            bad.set(bad.get() + 1);
+        }
+        ev.map(Ok)
+    })
 }
 
 /// The allowlisted, non-null fields of one run-log line, with `issue` taken from the unit id
