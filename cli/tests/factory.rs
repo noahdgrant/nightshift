@@ -3476,6 +3476,7 @@ fn a_behind_pr_merges_at_the_head_update_branch_returns() {
     assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
     let calls = e.gh_calls();
     assert!(calls.contains("pr update-branch 12"), "{calls}");
+    assert!(gate_events(&e).is_empty());
     let want = format!("--match-head-commit {UPDATED_HEAD}");
     assert!(calls.contains(&want), "{calls}");
     let polls = register_polls(&e);
@@ -9695,6 +9696,52 @@ fn the_local_queue_gates_the_merge_with_main_and_merges_without_update_branch() 
         "{calls}"
     );
     assert!(merge_gate_failures(&e).is_empty());
+    assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
+}
+
+#[test]
+fn a_main_the_pr_head_already_holds_is_gated_as_the_head_without_a_scratch_worktree() {
+    let e = Env::new();
+    let log = e.ctrl.join("gates");
+    local_queue(&e, &where_gate(&log));
+    e.queue("build", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(fs::read_to_string(&log).unwrap(), "branch\n");
+    let gates = gate_events(&e);
+    assert!(
+        gates.iter().all(|g| g.get("merge_result").is_none()),
+        "{gates:?}"
+    );
+    assert!(e.gh_calls().contains("pr merge"));
+    assert!(merge_gate_failures(&e).is_empty());
+    assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
+}
+
+#[test]
+fn a_main_that_cannot_merge_with_the_pr_head_needs_a_human_merge() {
+    let e = Env::new();
+    local_queue(&e, "gate = \"true\"\n");
+    e.queue("build", &["pass:commit"]);
+    let o = e.ctrl.join("orphan");
+    let remote = e.base.join("remote.git");
+    git(
+        &e.base,
+        &["clone", "-q", remote.to_str().unwrap(), o.to_str().unwrap()],
+    );
+    git(&o, &["checkout", "-q", "--orphan", "other"]);
+    fs::write(o.join("unrelated"), "x\n").unwrap();
+    git(&o, &["add", "unrelated"]);
+    git(&o, &["commit", "-qm", "unrelated root"]);
+    git(&o, &["push", "-qf", "origin", "other:main"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["needs_human"], true, "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("cannot merge PR #12 into main for the local merge queue: git merge"),
+        "{reason}"
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
     assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
 }
 
