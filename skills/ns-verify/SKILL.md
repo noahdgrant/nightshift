@@ -29,7 +29,9 @@ Done when every criterion has an ID and a sentence naming the observable state t
 
 ## 2. Find the verification lever
 
-Read `docs/agents/verify.md`, and `docs/agents/stack.md` beside it. If either is missing, load the `ns-setup` skill instead of guessing.
+A docs-only diff has no surface to drive. When every path in `git diff --name-only <base>` (the brief's `base:`, else `origin/main`) is a doc that no build, test or tool reads (requirements, design and interface docs, ADRs, the glossary, prose Markdown), load the `ns-verify-docs` skill and follow it in place of the rest of this skill. It writes `evidence.md` in step 6's format.
+
+Otherwise, read `docs/agents/verify.md`, and `docs/agents/stack.md` beside it. If either is missing, load the `ns-setup` skill instead of guessing.
 
 - **Verify skill and control CLI exist**: load the project's `verify-<project>` skill named there, and run its Doctor. Fix or report a failing doctor before driving anything.
 - **No verify skill**: load the `ns-setup-verify` skill, finish it, then return here.
