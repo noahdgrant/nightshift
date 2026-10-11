@@ -4011,7 +4011,9 @@ fn dry_run(e: &Env) -> (Value, String) {
     (serde_json::from_slice(&out.stdout).unwrap(), err)
 }
 
-/// GitHub's answer for main's CI: head `abc`, `required` named by a ruleset, and check runs
+const MAIN_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
+
+/// GitHub's answer for main's CI: head `MAIN_SHA`, `required` named by a ruleset, and check runs
 /// `(name, status, conclusion)`.
 fn main_ci(e: &Env, required: &[&str], runs: &[(&str, &str, &str)]) {
     let rules = serde_json::json!([{"parameters": {"requiredStatusChecks":
@@ -4024,7 +4026,7 @@ fn main_ci(e: &Env, required: &[&str], runs: &[(&str, &str, &str)]) {
         "main-ci.json",
         &serde_json::json!({"data": {"repository": {"defaultBranchRef": {
             "rules": {"nodes": rules},
-            "target": {"oid": "abc", "statusCheckRollup": {"contexts": {"nodes": nodes}}},
+            "target": {"oid": MAIN_SHA, "statusCheckRollup": {"contexts": {"nodes": nodes}}},
         }}}})
         .to_string(),
     );
@@ -4038,7 +4040,12 @@ fn watch_dry_run_shows_main_ci_and_holds_the_queue_when_it_is_red() {
     assert_eq!(v["main_ci"]["state"], "none", "{v}");
     assert_eq!(v["queue_held"], false);
     assert!(err.contains("main's head has no CI"), "{err}");
-    assert!(e.gh_calls().contains("api graphql"), "{}", e.gh_calls());
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains("api graphql -f query=query($owner: String!, $repo: String!)"),
+        "{calls}"
+    );
+    assert!(calls.contains("-F owner={owner} -F repo={repo}"), "{calls}");
 
     main_ci(
         &e,
@@ -4051,7 +4058,7 @@ fn watch_dry_run_shows_main_ci_and_holds_the_queue_when_it_is_red() {
     let (v, err) = dry_run(&e);
     assert_eq!(
         v["main_ci"],
-        serde_json::json!({"state": "red", "sha": "abc", "failing": ["test"]})
+        serde_json::json!({"state": "red", "sha": MAIN_SHA, "failing": ["test"]})
     );
     assert_eq!(v["queue_held"], true);
     assert_eq!(queued(&v), [2], "the queue is only shown held, not emptied");
@@ -4068,7 +4075,7 @@ fn watch_dry_run_shows_main_ci_and_holds_the_queue_when_it_is_red() {
     let (v, _) = dry_run(&e);
     assert_eq!(
         v["main_ci"],
-        serde_json::json!({"state": "pending", "sha": "abc"})
+        serde_json::json!({"state": "pending", "sha": MAIN_SHA})
     );
     assert_eq!(v["queue_held"], false);
 
@@ -4087,6 +4094,17 @@ fn watch_dry_run_with_fix_main_first_off_reads_no_ci_and_says_so() {
     assert_eq!(v["main_ci"], serde_json::json!({"state": "off"}));
     assert_eq!(v["queue_held"], false);
     assert!(err.contains("fix_main_first is off"), "{err}");
+    assert!(!e.gh_calls().contains("graphql"), "{}", e.gh_calls());
+}
+
+#[test]
+fn a_night_with_fix_main_first_off_says_so_once_and_reads_no_ci() {
+    let e = Env::new();
+    e.factory("[queue]\nfix_main_first = false\n");
+    let out = e.ns().args(["watch", "--once"]).output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert_eq!(err.matches("fix_main_first is off").count(), 1, "{err}");
     assert!(!e.gh_calls().contains("graphql"), "{}", e.gh_calls());
 }
 

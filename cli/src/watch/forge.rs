@@ -158,11 +158,12 @@ const MAIN_CHECKS_QUERY: &str = "query($owner: String!, $repo: String!) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef {
       rules(first: 100) {
+        pageInfo { hasNextPage }
         nodes { parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } }
       }
       target { ... on Commit {
         oid
-        statusCheckRollup { contexts(first: 100) { nodes {
+        statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes {
           ... on CheckRun { name status conclusion }
           ... on StatusContext { context state }
         } } }
@@ -171,14 +172,33 @@ const MAIN_CHECKS_QUERY: &str = "query($owner: String!, $repo: String!) {
   }
 }";
 
+/// `s` when it is a full commit id: 40 (SHA-1) or 64 (SHA-256) hex digits.
+pub(super) fn head_sha(s: &str) -> Result<&str> {
+    let hex = s.bytes().all(|b| b.is_ascii_hexdigit());
+    if hex && matches!(s.len(), 40 | 64) {
+        Ok(s)
+    } else {
+        anyhow::bail!("the forge gave a head that is not a commit id")
+    }
+}
+
 /// The head and checks in `MAIN_CHECKS_QUERY`'s answer. A check is required when a ruleset names
 /// it; when no ruleset names any check on the head (classic branch protection, which a reader
 /// can't see, or none), every check is.
 fn parse_main_checks(v: &Value) -> Result<HeadChecks> {
     let main = &v["data"]["repository"]["defaultBranchRef"];
-    let Some(sha) = main["target"]["oid"].as_str() else {
-        anyhow::bail!("GitHub names no default branch head: {v}");
+    let Some(oid) = main["target"]["oid"].as_str() else {
+        anyhow::bail!("GitHub names no default branch head");
     };
+    let sha = head_sha(oid)?;
+    if main["rules"]["pageInfo"]["hasNextPage"].as_bool() == Some(true) {
+        anyhow::bail!("GitHub's list of the branch's rules is truncated at 100");
+    }
+    if main["target"]["statusCheckRollup"]["contexts"]["pageInfo"]["hasNextPage"].as_bool()
+        == Some(true)
+    {
+        anyhow::bail!("GitHub's list of the head's checks is truncated at 100");
+    }
     let named: Vec<&str> = main["rules"]["nodes"]
         .as_array()
         .into_iter()
@@ -465,11 +485,13 @@ mod tests {
         }
     }
 
-    /// `MAIN_CHECKS_QUERY`'s answer for head `abc`, with `rules` and check `nodes`.
+    const SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
+
+    /// `MAIN_CHECKS_QUERY`'s answer for head `SHA`, with `rules` and check `nodes`.
     fn answer(rules: &Value, nodes: &Value) -> Value {
         serde_json::json!({"data": {"repository": {"defaultBranchRef": {
             "rules": {"nodes": rules},
-            "target": {"oid": "abc", "statusCheckRollup": {"contexts": {"nodes": nodes}}},
+            "target": {"oid": SHA, "statusCheckRollup": {"contexts": {"nodes": nodes}}},
         }}}})
     }
 
@@ -504,7 +526,7 @@ mod tests {
             {"unknown": 1},
         ]);
         let h = parse_main_checks(&answer(&rules, &nodes)).unwrap();
-        assert_eq!(h.sha, "abc");
+        assert_eq!(h.sha, SHA);
         assert_eq!(
             outcomes(&h),
             [
@@ -539,6 +561,36 @@ mod tests {
         assert!(parse_main_checks(&none).unwrap().checks.is_empty());
         let empty = serde_json::json!({"data": {"repository": {"defaultBranchRef": null}}});
         assert!(parse_main_checks(&empty).is_err());
+    }
+
+    #[test]
+    fn main_checks_refuses_a_head_that_is_not_a_commit_id() {
+        for bad in ["abc", "../x?y=1", &"g".repeat(40), &format!("{SHA}/x")] {
+            let mut v = answer(&serde_json::json!([]), &serde_json::json!([]));
+            v["data"]["repository"]["defaultBranchRef"]["target"]["oid"] = bad.into();
+            assert!(parse_main_checks(&v).is_err(), "{bad}");
+        }
+        assert_eq!(head_sha(&"a".repeat(64)).unwrap().len(), 64);
+    }
+
+    #[test]
+    fn main_checks_refuses_a_truncated_list_and_dumps_no_response() {
+        let truncated = |path: &[&str]| {
+            let mut v = answer(&serde_json::json!([]), &serde_json::json!([]));
+            let mut at = &mut v["data"]["repository"]["defaultBranchRef"];
+            for p in path {
+                at = &mut at[*p];
+            }
+            at["pageInfo"] = serde_json::json!({"hasNextPage": true});
+            parse_main_checks(&v).unwrap_err().to_string()
+        };
+        assert!(truncated(&["rules"]).contains("truncated"));
+        assert!(truncated(&["target", "statusCheckRollup", "contexts"]).contains("truncated"));
+        let empty = serde_json::json!({"data": {"secret": "tok"}});
+        assert!(!parse_main_checks(&empty)
+            .unwrap_err()
+            .to_string()
+            .contains("tok"));
     }
 
     #[test]

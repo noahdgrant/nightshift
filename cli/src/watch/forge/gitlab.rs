@@ -122,6 +122,14 @@ fn status_check(s: &Value) -> Check {
     }
 }
 
+fn statuses_path(sha: &str, branch: &str) -> Result<String> {
+    Ok(format!(
+        "projects/:id/repository/commits/{}/statuses?ref={}&per_page=100",
+        super::head_sha(sha)?,
+        encode(branch)
+    ))
+}
+
 impl Forge for GitLab {
     fn open_issues(&self, label: Option<&str>) -> Result<Vec<Issue>> {
         let team = self.team()?;
@@ -216,19 +224,16 @@ impl Forge for GitLab {
     fn main_checks(&self) -> Result<HeadChecks> {
         let project = self.get("projects/:id")?;
         let Some(branch) = project["default_branch"].as_str() else {
-            anyhow::bail!("GitLab names no default branch: {project}");
+            anyhow::bail!("GitLab names no default branch");
         };
         let head = self.get(&format!(
             "projects/:id/repository/branches/{}",
             encode(branch)
         ))?;
         let Some(sha) = head["commit"]["id"].as_str() else {
-            anyhow::bail!("GitLab names no head for {branch}: {head}");
+            anyhow::bail!("GitLab names no head for {branch}");
         };
-        let path = format!(
-            "projects/:id/repository/commits/{sha}/statuses?ref={}&per_page=100",
-            encode(branch)
-        );
+        let path = statuses_path(sha, branch)?;
         Ok(HeadChecks {
             sha: sha.to_string(),
             checks: self.list(&path)?.iter().map(status_check).collect(),
@@ -279,6 +284,18 @@ mod tests {
             assert_eq!(check(s, Value::Null), (Outcome::Running, true), "{s}");
         }
         assert_eq!(check("failed", t), (Outcome::Fail, false));
+    }
+
+    #[test]
+    fn statuses_path_takes_only_a_commit_id() {
+        let sha = "a".repeat(40);
+        assert_eq!(
+            statuses_path(&sha, "dev/x").unwrap(),
+            format!("projects/:id/repository/commits/{sha}/statuses?ref=dev%2Fx&per_page=100")
+        );
+        for bad in ["", "abc", "../../x", "a/../b?x=1", &format!("{sha}\n")] {
+            assert!(statuses_path(bad, "main").is_err(), "{bad}");
+        }
     }
 
     #[test]
