@@ -6696,6 +6696,28 @@ fn an_idle_slot_with_nothing_to_start_does_not_spin() {
 }
 
 #[test]
+fn an_idle_refill_skips_the_worktree_cleanup() {
+    let e = Env::new();
+    e.queue("triage.5-fix-e", &["none"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
+    w.entered(&in_a);
+    w.line("ns watch: triage #5");
+    thread::sleep(Duration::from_millis(300));
+    let calls = gh_calls_during(&e, Duration::from_millis(1000));
+    assert!(
+        calls.contains("issues?state=open"),
+        "no refill ran:\n{calls}"
+    );
+    for view in ["issue view", "pr view"] {
+        assert!(!calls.contains(view), "{view} on a refill:\n{calls}");
+    }
+    release(&go_a);
+    let (code, _, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+}
+
+#[test]
 fn no_refill_while_every_slot_is_busy_or_no_claim_may_start() {
     for args in [
         &["--parallel", "1"][..],

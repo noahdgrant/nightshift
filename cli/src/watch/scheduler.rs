@@ -44,7 +44,7 @@ fn refill_interval() -> Duration {
     std::env::var(REFILL_ENV)
         .ok()
         .and_then(|v| v.parse().ok())
-        .map_or(REFILL, Duration::from_millis)
+        .map_or(REFILL, |ms| Duration::from_millis(ms).max(POLL))
 }
 
 /// What the night is set to do, fixed at start.
@@ -74,7 +74,7 @@ enum Wake {
     Ended(usize, Option<ExitStatus>),
     Reset,
     Stop,
-    /// A slot has been free for [`REFILL`]: fill again.
+    /// The refill interval passed with a slot free: fill again, without the cleanup and update check.
     Refill,
 }
 
@@ -132,13 +132,14 @@ impl<'a> Scheduler<'a> {
 
     /// Run units until the night ends; why it ended.
     pub fn run(&mut self, night: &mut Night, tonight: &mut Tonight) -> Result<String> {
+        let mut refill = false;
         loop {
             if let Some(sig) = stop::requested() {
                 self.pass_on(sig);
             }
             if self.failed.is_none() && stop::requested().is_none() {
                 // A stop that cut the fill short is handled at the loop's top, not as a failure.
-                if let Err(e) = self.fill(night, tonight) {
+                if let Err(e) = self.fill(night, tonight, refill) {
                     if stop::requested().is_none() {
                         self.fail(e);
                     }
@@ -163,6 +164,7 @@ impl<'a> Scheduler<'a> {
                 self.lift_pause();
                 continue;
             }
+            refill = false;
             match self.next(night) {
                 Wake::Ended(n, status) => {
                     if let Err(e) = self.settle(n, status, night, tonight) {
@@ -170,7 +172,8 @@ impl<'a> Scheduler<'a> {
                     }
                 }
                 Wake::Reset => self.lift_pause(),
-                Wake::Stop | Wake::Refill => {}
+                Wake::Refill => refill = true,
+                Wake::Stop => {}
             }
         }
         self.give_back_paused(tonight);
@@ -215,19 +218,22 @@ impl<'a> Scheduler<'a> {
     }
 
     /// Fill the free slots: paused units first, then, after the triage pass, ready issues
-    /// from one read of the queue.
-    fn fill(&mut self, night: &mut Night, tonight: &mut Tonight) -> Result<()> {
+    /// from one read of the queue. A `refill` (the interval passing with a slot free) skips
+    /// the worktree cleanup and the update check, which run at start and when a unit ends.
+    fn fill(&mut self, night: &mut Night, tonight: &mut Tonight, refill: bool) -> Result<()> {
         if self.paused_until.is_some() {
             return Ok(());
         }
-        // At start and between units: units merged since go, after their records are saved.
-        // Units running or paused are left alone, even one whose run hasn't taken its lock yet.
-        let busy: BTreeSet<u64> = (self.running.values().map(|w| w.issue.number))
-            .chain(self.resume.iter().map(|i| i.number))
-            .collect();
-        let removed =
-            crate::clean::between_units(self.plan.repo, &mut tonight.cleanup_tried, &busy);
-        tonight.cleaned.extend(removed);
+        if !refill {
+            // Units merged since go, after their records are saved. Units running or paused
+            // are left alone, even one whose run hasn't taken its lock yet.
+            let busy: BTreeSet<u64> = (self.running.values().map(|w| w.issue.number))
+                .chain(self.resume.iter().map(|i| i.number))
+                .collect();
+            let removed =
+                crate::clean::between_units(self.plan.repo, &mut tonight.cleanup_tried, &busy);
+            tonight.cleaned.extend(removed);
+        }
         while self.free() && self.may_resume() && !self.resume.is_empty() {
             let issue = self.resume.remove(0);
             let n = issue.number;
@@ -246,7 +252,7 @@ impl<'a> Scheduler<'a> {
             self.stopping = Some(why);
             return Ok(());
         }
-        if self.draining.is_none() {
+        if !refill && self.draining.is_none() {
             self.draining = self.pending_update();
         }
         if self.draining.is_some() {
@@ -324,10 +330,12 @@ impl<'a> Scheduler<'a> {
         }
     }
 
-    /// A slot is free and a fill could start something: nothing stopping or draining. A fill
-    /// while paused does nothing at all.
+    /// A slot is free and a fill could start something: nothing stopping, draining or paused.
     fn may_refill(&self) -> bool {
-        self.free() && self.stopping.is_none() && self.draining.is_none()
+        self.free()
+            && self.stopping.is_none()
+            && self.draining.is_none()
+            && self.paused_until.is_none()
     }
 
     fn free(&self) -> bool {
