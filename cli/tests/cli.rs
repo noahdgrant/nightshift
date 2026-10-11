@@ -372,6 +372,92 @@ fn install_dry_run_touches_nothing() {
     assert!(!home.path().join(".claude").exists());
 }
 
+fn install_targets(home: &Path, args: &[&str]) -> Vec<String> {
+    let skills = fixture_skills();
+    let v = json(
+        &ns()
+            .env("HOME", home)
+            .args(["install", "--dry-run", "--source"])
+            .arg(skills.path())
+            .args(args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    v["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn install_harness_picks_each_harness_skill_dir() {
+    let home = tempfile::tempdir().unwrap();
+    let h = home.path().to_string_lossy();
+    let dir = |d: &str| format!("{h}/{d}");
+    assert_eq!(
+        install_targets(home.path(), &["--harness", "cursor"]),
+        [dir(".cursor/skills")]
+    );
+    assert_eq!(
+        install_targets(home.path(), &["--harness", "claude"]),
+        [dir(".claude/skills")]
+    );
+    // Codex reads the shared ~/.agents/skills, so it and `agents` name one target.
+    assert_eq!(
+        install_targets(
+            home.path(),
+            &[
+                "--harness",
+                "codex",
+                "--harness",
+                "agents",
+                "--harness",
+                "cursor"
+            ]
+        ),
+        [dir(".agents/skills"), dir(".cursor/skills")]
+    );
+    // --harness and --target add up.
+    assert_eq!(
+        install_targets(
+            home.path(),
+            &["--harness", "claude", "--target", "/x/skills"]
+        ),
+        [dir(".claude/skills"), "/x/skills".to_string()]
+    );
+    assert_eq!(
+        install_targets(home.path(), &["--target", "/x/skills"]),
+        ["/x/skills"]
+    );
+    assert!(!home.path().join(".cursor").exists());
+}
+
+#[test]
+fn install_harness_links_into_a_temp_home() {
+    let skills = fixture_skills();
+    let home = tempfile::tempdir().unwrap();
+    ns().env("HOME", home.path())
+        .args(["install", "--harness", "cursor", "--source"])
+        .arg(skills.path())
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_link(home.path().join(".cursor/skills/ns-good")).unwrap(),
+        skills.path().canonicalize().unwrap().join("ns-good")
+    );
+    assert!(!home.path().join(".claude").exists());
+
+    ns().env("HOME", home.path())
+        .args(["install", "--harness", "copilot"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("claude, codex, cursor, agents"));
+}
+
 #[test]
 fn install_links_relinks_and_reports_conflicts() {
     let skills = fixture_skills();

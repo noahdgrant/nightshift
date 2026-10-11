@@ -102,14 +102,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::CheckMarkers { path, human } => return markers::cli(&path, human),
         Cmd::Install {
             source,
+            harness,
             target,
             dry_run,
         } => {
-            let targets = if target.is_empty() {
-                install::default_targets()
-            } else {
-                target
-            };
+            let targets = install::targets(&harness, target);
             let source = source.unwrap_or_else(install::default_source);
             let report = install::run(&source, &targets, dry_run)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
