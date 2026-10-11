@@ -45,7 +45,7 @@ skill = "ns-review"
 skill = "ns-ship"
 
 [queue]
-source = "github"                  # github | gitlab. Unset: from origin's host. See below
+source = "github"                  # only github works; gitlab is recognised, not supported yet. Unset: from origin's host. See below
 ready_label = "status:ready-for-agent"
 in_progress_label = "status:in-progress"
 done_label = "status:in-review"    # set when the unit ends with an open PR

@@ -37,22 +37,40 @@ const HINT: &str = "set the forge in .nightshift/nightshift.toml:\n  [queue]\n  
 
 /// The forge `[queue] source` names or, unset, the one `origin`'s host is on.
 pub fn open(q: &QueueConfig, root: &Path) -> Result<Box<dyn Forge>, SfError> {
-    let problem = match q.source.as_deref() {
-        Some(s) => factory::source_problem(s),
-        None => {
-            let url = git::run(root, &["remote", "get-url", "origin"]).ok();
-            url.filter(|u| host(u).is_some_and(|h| h.contains("gitlab")))
-                .map(|u| {
-                    format!("[queue] source is unset and origin {u} is on GitLab, which is not supported yet")
-                })
+    let origin = git::run(root, &["remote", "get-url", "origin"]).ok();
+    check(q.source.as_deref(), origin.as_deref())?;
+    Ok(Box::new(GitHub {
+        root: root.to_path_buf(),
+    }))
+}
+
+/// Whether `ns watch` can use the forge `source` and `origin` resolve to. Names the host, never
+/// the origin URL, which may carry credentials.
+fn check(source: Option<&str>, origin: Option<&str>) -> Result<(), SfError> {
+    let name = source_name(source, origin);
+    match factory::source_problem(&name) {
+        None => Ok(()),
+        Some(p) if source.is_some() => Err(SfError::usage(p, HINT)),
+        Some(p) => {
+            let host = origin.and_then(host).unwrap_or("");
+            Err(SfError::usage(
+                format!("{p} (unset, inferred from origin host {host})"),
+                HINT,
+            ))
         }
-    };
-    match problem {
-        Some(p) => Err(SfError::usage(p, HINT)),
-        None => Ok(Box::new(GitHub {
-            root: root.to_path_buf(),
-        })),
     }
+}
+
+/// The configured source name or, unset, the one inferred from `origin`: `gitlab` for a host
+/// containing it (hosts are case-insensitive), else `github`, also for no origin or a local path.
+fn source_name(source: Option<&str>, origin: Option<&str>) -> String {
+    if let Some(s) = source {
+        return s.to_string();
+    }
+    let gitlab = origin
+        .and_then(host)
+        .is_some_and(|h| h.to_ascii_lowercase().contains("gitlab"));
+    if gitlab { "gitlab" } else { "github" }.to_string()
 }
 
 /// The host of a remote URL, `scheme://[user@]host[:port]/path` or scp-like `[user@]host:path`;
@@ -198,6 +216,49 @@ impl Forge for GitHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_is_inferred_from_the_origin_host() {
+        let cases = [
+            (Some("https://gitlab.com/o/r.git"), "gitlab"),
+            (Some("git@gitlab.example:o/r.git"), "gitlab"),
+            (Some("https://gitlab.corp.example/o/r"), "gitlab"),
+            (Some("https://GitLab.com/o/r"), "gitlab"),
+            (Some("https://github.com/o/r"), "github"),
+            (Some("/srv/git/gitlab-mirror.git"), "github"),
+            (None, "github"),
+        ];
+        for (origin, want) in cases {
+            assert_eq!(source_name(None, origin), want, "{origin:?}");
+        }
+        assert_eq!(
+            source_name(Some("github"), Some("https://gitlab.com/o/r")),
+            "github"
+        );
+    }
+
+    #[test]
+    fn check_refuses_gitlab_and_unknown_with_the_hint() {
+        assert!(check(None, Some("https://github.com/o/r")).is_ok());
+        assert!(check(Some("github"), None).is_ok());
+        for (s, o) in [
+            (Some("gitlab"), None),
+            (Some("bitbucket"), None),
+            (None, Some("https://gitlab.com/o/r")),
+        ] {
+            let e = check(s, o).unwrap_err().to_string();
+            assert!(e.contains("[queue] source"), "{e}");
+        }
+    }
+
+    #[test]
+    fn check_error_never_prints_origin_credentials() {
+        let e = check(None, Some("https://user:s3cret@gitlab.example/o/r.git"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("gitlab.example"), "{e}");
+        assert!(!e.contains("s3cret") && !e.contains("user"), "{e}");
+    }
 
     #[test]
     fn host_reads_url_and_scp_forms_and_no_host_from_a_path() {
