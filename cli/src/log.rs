@@ -42,15 +42,7 @@ pub fn cli(
         .transpose()?;
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
     let path = repo.common_dir.join("ns").join("runs.jsonl");
-    let origin = git::run(&repo.root, &["remote", "get-url", "origin"]).ok();
-    let source = factory::load(&factory::root(None, &repo.root))
-        .ok()
-        .and_then(|f| f.queue.source);
-    let cfg = config::load(&config::path()).ok().flatten();
-    let gitlab_host = watch_forge::gitlab_host(cfg.as_ref());
-    let base = origin
-        .as_deref()
-        .and_then(|o| PrBase::new(o.trim(), source.as_deref(), gitlab_host.as_deref()));
+    let base = pr_base(&repo);
     let filter = Filter {
         unit,
         since: Window { since, until: None },
@@ -91,6 +83,17 @@ pub fn cli(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Where the repo's PRs live, from `origin` and the forge `ns watch` would pick.
+pub fn pr_base(repo: &Repo) -> Option<PrBase> {
+    let origin = git::run(&repo.root, &["remote", "get-url", "origin"]).ok()?;
+    let source = factory::load(&factory::root(None, &repo.root))
+        .ok()
+        .and_then(|f| f.queue.source);
+    let cfg = config::load(&config::path()).ok().flatten();
+    let gitlab_host = watch_forge::gitlab_host(cfg.as_ref());
+    PrBase::new(origin.trim(), source.as_deref(), gitlab_host.as_deref())
+}
+
 /// How one event is printed: [`text`] or [`json_line`].
 type Show = fn(&Map<String, Value>) -> String;
 
@@ -127,7 +130,7 @@ pub fn render(
 
 /// The allowlisted, non-null fields of one run-log line, with `issue` taken from the unit id
 /// when the line has none, and `pr_url` built from `pr_base` whenever the line has a `pr`. `None` when it is not a JSON object.
-fn event(line: &str, pr_base: Option<&PrBase>) -> Option<Map<String, Value>> {
+pub fn event(line: &str, pr_base: Option<&PrBase>) -> Option<Map<String, Value>> {
     let Ok(Value::Object(mut all)) = serde_json::from_str::<Value>(line) else {
         return None;
     };
@@ -158,7 +161,7 @@ fn json_line(ev: &Map<String, Value>) -> String {
 
 /// `<ts> <event> #<issue> <phase> attempt <n> status <s> <wall_s>s outcome <o> <pr> reason: <r>`,
 /// leaving out what the event lacks.
-fn text(ev: &Map<String, Value>) -> String {
+pub fn text(ev: &Map<String, Value>) -> String {
     let field = |k: &str| {
         let v = ev.get(k)?;
         let raw = match v.as_str() {
@@ -183,7 +186,7 @@ fn text(ev: &Map<String, Value>) -> String {
     parts.into_iter().flatten().collect::<Vec<_>>().join(" ")
 }
 
-fn printable(c: char) -> impl Iterator<Item = char> {
+pub fn printable(c: char) -> impl Iterator<Item = char> {
     let hidden = c.is_control()
         || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
     let escaped = hidden.then(|| c.escape_default());
@@ -199,7 +202,7 @@ pub struct PrBase {
 impl PrBase {
     /// From `origin`'s URL, with the forge chosen as `ns watch` chooses it (`[queue] source`,
     /// else the host). `None` when `origin` is not a remote URL, such as a local path.
-    fn new(origin: &str, source: Option<&str>, gitlab_host: Option<&str>) -> Option<PrBase> {
+    pub fn new(origin: &str, source: Option<&str>, gitlab_host: Option<&str>) -> Option<PrBase> {
         Some(PrBase {
             web: web_base(origin)?,
             kind: watch_forge::kind(source, Some(origin), gitlab_host),
