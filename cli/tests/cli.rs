@@ -1565,7 +1565,7 @@ fn status_summarises_the_log_and_reports_an_unreadable_queue() {
 
 #[test]
 fn status_shows_a_unit_whose_run_lock_is_held_as_running_with_its_phase() {
-    let (_tmp, root) = repo();
+    let (tmp, root) = repo();
     let dir = root.join(".git/ns");
     fs::create_dir_all(&dir).unwrap();
     fs::write(
@@ -1580,8 +1580,13 @@ fn status_shows_a_unit_whose_run_lock_is_held_as_running_with_its_phase() {
     .unwrap();
     let held = fs::File::create(root.join(".git/ns-run-143-live.lock")).unwrap();
     held.lock().unwrap();
+    let bin = tmp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    executable(&bin.join("gh"), "echo 'gh: not logged in' >&2; exit 1");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let out = ns()
         .current_dir(&root)
+        .env("PATH", &path)
         .env("NS_NOW", "1791622800")
         .arg("status")
         .output();
@@ -1592,6 +1597,23 @@ fn status_shows_a_unit_whose_run_lock_is_held_as_running_with_its_phase() {
         "{text}"
     );
     assert!(text.contains("paused (0)\n"), "{text}");
+}
+
+#[test]
+fn status_reports_an_unreadable_factory_file_as_an_unavailable_queue() {
+    let (_tmp, root) = repo();
+    fs::create_dir_all(root.join(".nightshift")).unwrap();
+    fs::write(root.join(".nightshift/nightshift.toml"), "queue = [\n").unwrap();
+    let out = ns()
+        .current_dir(&root)
+        .env("NS_NOW", "1791622800")
+        .arg("status")
+        .output();
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).ends_with("queue unavailable\n"));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("queue unavailable: "), "{err}");
+    assert!(err.contains("nightshift.toml"), "{err}");
 }
 
 #[test]

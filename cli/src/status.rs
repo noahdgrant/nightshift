@@ -116,6 +116,9 @@ fn summarise(
         };
         let kind = ev.remove("event");
         match kind.as_ref().and_then(Value::as_str) {
+            Some("start") => {
+                last_phase.remove(unit.as_str());
+            }
             Some("phase") => {
                 if let Some(u) = running.iter().find(|u| **u == unit) {
                     last_phase.insert(u, ev);
@@ -308,6 +311,29 @@ not json
             ])
         );
         assert_eq!(units(&s["ended"]["paused"]), ["105-paused"]);
+    }
+
+    #[test]
+    fn a_start_drops_the_phase_of_an_earlier_run() {
+        let text = concat!(
+            r#"{"event":"phase","unit":"7-a","phase":"verify","ts":"2026-10-09T01:00:00Z"}"#,
+            "\n",
+            r#"{"event":"start","unit":"7-a","ts":"2026-10-10T01:00:00Z"}"#,
+            "\n",
+        );
+        let s = summary(text, 0, &["7-a"], None).0.to_json();
+        assert_eq!(s["running"], json!([{"unit":"7-a","issue":7}]));
+    }
+
+    #[test]
+    fn a_read_error_mid_log_fails_the_summary() {
+        let ok = |l: &str| Ok(serde_json::from_str::<Event>(l).unwrap());
+        let events = vec![
+            ok(r#"{"event":"end","unit":"7-a","outcome":"merged"}"#),
+            Err(io::Error::other("disk gone")),
+            ok(r#"{"event":"end","unit":"8-b","outcome":"merged"}"#),
+        ];
+        assert!(summarise(events, 0, &[]).is_err());
     }
 
     #[test]
