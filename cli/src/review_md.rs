@@ -101,7 +101,7 @@ pub struct Finding {
     pub fixed_cycle: Option<u32>,
     /// Fix cycles that handed it to the build agent (`Attempts:`); `None` in records from
     /// before fix-only cycles.
-    pub attempts: Option<u32>,
+    pub fix_attempts: Option<u32>,
 }
 
 impl Finding {
@@ -326,7 +326,7 @@ impl<'a> Block<'a> {
             axes_from_raised_by,
             scope: get(&["scope"]).map_or(Scope::Unknown, |s| scope_of(&s)),
             cycle: get(&["cycle"]).and_then(|c| first_number(&c)),
-            attempts: get(&["attempts"]).and_then(|c| first_number(&c)),
+            fix_attempts: get(&["attempts"]).and_then(|c| first_number(&c)),
             fixed_cycle: status_text
                 .as_deref()
                 .or(self.one_line.then_some(self.title.as_str()))
@@ -497,7 +497,7 @@ mod tests {
                 cycle: Some(2),
                 status: Status::Fixed,
                 fixed_cycle: Some(3),
-                attempts: Some(1),
+                fix_attempts: Some(1),
             }
         );
         assert!(f.blocking());
@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn attempts_are_lenient_and_optional() {
-        let at = |s: &str| one(&format!("### I1. t\n{s}\n- Status: open\n")).attempts;
+        let at = |s: &str| one(&format!("### I1. t\n{s}\n- Status: open\n")).fix_attempts;
         assert_eq!(at("- **Attempts:** 2 (cycles 4, 5)"), Some(2));
         assert_eq!(at("- Attempts: 0"), Some(0));
         assert_eq!(at("- Attempts: none yet"), None);
@@ -803,12 +803,12 @@ mod tests {
         assert_eq!(ids, ["I3"]);
         let f = one(new);
         assert_eq!(
-            (f.cycle, f.attempts, f.fixed_cycle),
+            (f.cycle, f.fix_attempts, f.fixed_cycle),
             (Some(3), Some(1), Some(4))
         );
         let old = "# Fix cycle 1: u\n\ncycle: 1\n\n## Important\n### I1. a\n- Status: open.\n";
         assert_eq!(crate::frontmatter::field(old, "kind"), None);
-        assert_eq!(one(old).attempts, None);
+        assert_eq!(one(old).fix_attempts, None);
     }
 
     #[test]

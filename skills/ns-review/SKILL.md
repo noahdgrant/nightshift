@@ -101,8 +101,8 @@ Run a full cycle while any Critical or Important finding in changed code is `ope
 
 After cycle 3, run a fix-only cycle while any open Critical or Important in changed code has `Attempts` under 2 and fewer than 5 cycles have run. Findings first raised in cycle 2 or 3 are the ones that reach it. A fix-only cycle is a full cycle with step 2 changed:
 
-- Hand the build agent every open Critical and Important in changed code, as in step 1.
-- Brief each reviewer that raised one of those findings, under `review-<n>`, with the [fix-only section](references/reviewer-brief.md#fix-only-cycle) and the findings on its axes. It reports each one `fixed` or `open`, with evidence, and raises nothing new.
+- Hand the build agent only the open Critical and Important in changed code with `Attempts` under 2, as in step 1. A finding already at 2 or more stays open, is not handed over or briefed, and blocks the unit at the end.
+- Brief each reviewer that raised one of the handed-over findings, under `review-<n>`, with the [fix-only section](references/reviewer-brief.md#fix-only-cycle) and the findings on its axes. It reports each one `fixed` or `open`, with evidence, and raises nothing new.
 - Write the cycle file with `kind: fix-only`. Its findings are exactly the ones you handed over. A defect a reviewer mentions anyway is dismissed with `dismissed: noted: fix-only cycle`; a pre-existing one is still filed as an escape (step 3).
 
 Architecture, readability and comments findings are fixed like correctness ones: no axis is deferred because of its kind. Suggestions and escapes never start a cycle and never go to the build agent.

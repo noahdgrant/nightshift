@@ -29,7 +29,7 @@ pub struct FindingRecord {
     pub fixed_cycle: Option<u32>,
     /// Absent from records written before fix-only cycles (docs/DESIGN.md D60).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempts: Option<u32>,
+    pub fix_attempts: Option<u32>,
     /// Relative `path:line`; dropped when the review wrote an absolute path.
     pub location: Option<String>,
     /// For an escape, the commit and PR that introduced its line, blamed when the record was
@@ -141,7 +141,7 @@ fn finding(f: &Finding, introduced_by: Option<Blame>) -> FindingRecord {
         cycle: f.cycle,
         status: f.status,
         fixed_cycle: f.fixed_cycle,
-        attempts: f.attempts,
+        fix_attempts: f.fix_attempts,
         location: f.location.clone().filter(|l| !absolute(l)),
         introduced_by,
     }
@@ -246,7 +246,7 @@ fn attempt(r: &Record) -> Attempt {
                 cycle: f.cycle,
                 status: f.status,
                 fixed_cycle: f.fixed_cycle,
-                attempts: f.attempts,
+                fix_attempts: f.fix_attempts,
             })
             .collect(),
         stray_statuses: r.stray_statuses,
@@ -421,11 +421,11 @@ mod tests {
             serde_json::json!({
                 "id": "C1", "severity": "critical", "axes": ["correctness"],
                 "axes_from_raised_by": false, "scope": "changed", "cycle": 0,
-                "status": "fixed", "fixed_cycle": 1, "attempts": 1,
+                "status": "fixed", "fixed_cycle": 1, "fix_attempts": 1,
                 "location": "src/a.rs:3"
             })
         );
-        assert!(v["findings"][1].get("attempts").is_none(), "{v}");
+        assert!(v["findings"][1].get("fix_attempts").is_none(), "{v}");
         assert_eq!(v["findings"][1]["scope"], "pre-existing");
         assert_eq!(v["findings"][1]["axes_from_raised_by"], true);
         assert_eq!(rs[0].first_pass_file[0].axes, ["performance"]);
@@ -553,7 +553,7 @@ mod tests {
         assert_eq!(u.last().blame_at.as_deref(), Some("abc1234"));
         assert_eq!(u.first().first_pass_file, want.first().first_pass_file);
         assert_eq!(u.first().changed_lines_source, Some("git"));
-        let attempts: Vec<_> = u.last().findings.iter().map(|f| f.attempts).collect();
+        let attempts: Vec<_> = u.last().findings.iter().map(|f| f.fix_attempts).collect();
         assert_eq!(attempts, [Some(1), None]);
     }
 
@@ -649,8 +649,8 @@ mod tests {
         let old = r#"{"v":1,"unit":"u","issue":null,"pr":null,"outcome":null,"recorded":"t","attempt":1,"attempts":1,"artifact":"r.md","status":"pass","updated":null,"day":null,"cycles":1,"changed_lines":null,"changed_lines_source":null,"stray_statuses":0,"first_pass_file":[],"findings":[{"id":"I1","severity":"important","axes":[],"axes_from_raised_by":true,"scope":"changed","cycle":0,"status":"fixed","fixed_cycle":1,"location":null}]}"#;
         let (rs, bad) = parse(old);
         assert_eq!((rs.len(), bad), (1, 0));
-        assert_eq!(rs[0].findings[0].attempts, None);
-        assert_eq!(units(&rs)[0].last().findings[0].attempts, None);
+        assert_eq!(rs[0].findings[0].fix_attempts, None);
+        assert_eq!(units(&rs)[0].last().findings[0].fix_attempts, None);
     }
 
     #[test]
