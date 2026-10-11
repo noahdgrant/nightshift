@@ -25,7 +25,7 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = "grep -q '02:20 ping: 41-feat-widget-export' .git/ns/handoffs/2026-10-10.md"
+run = "grep -qF '02:20 ping [stuck 41-feat-widget-export]' .git/ns/handoffs/2026-10-10.md"
 expect_exit = 0
 
 [[check]]
