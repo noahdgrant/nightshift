@@ -1,6 +1,6 @@
 # Factory definition and runner
 
-The minimum slice of D15 to D17 (`docs/DESIGN.md`) that runs nightshift unattended: a definition in `.nightshift/`, `ns run` to drive one unit through the phases, and `ns watch` to pull units from the tracker overnight. Scorers grade finished units with `ns score`; acting on their scores and automations come later (#7).
+The minimum slice of D15 to D17 (`docs/decisions/`) that runs nightshift unattended: a definition in `.nightshift/`, `ns run` to drive one unit through the phases, and `ns watch` to pull units from the tracker overnight. Scorers grade finished units with `ns score`; acting on their scores and automations come later (#7).
 
 ## Layout
 
@@ -121,7 +121,7 @@ lock_dir = "~/.local/state/nightshift/locks"
 
 ## Scorers
 
-A scorer grades a finished unit against a rubric (D18 in `docs/DESIGN.md`). Each is one file, `scorers/<name>.md`; the name is the file stem.
+A scorer grades a finished unit against a rubric (D18 in `docs/decisions/`). Each is one file, `scorers/<name>.md`; the name is the file stem.
 
 ```markdown
 ---

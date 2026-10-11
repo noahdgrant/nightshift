@@ -1,6 +1,6 @@
 # Evals
 
-How nightshift measures whether a skill helps. Decision D18 in `DESIGN.md` explains why. This file is the spec that `ns eval` implements and that eval cases follow.
+How nightshift measures whether a skill helps. Decision D18 in `docs/decisions/` explains why. This file is the spec that `ns eval` implements and that eval cases follow.
 
 ## Layout
 

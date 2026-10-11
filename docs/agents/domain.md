@@ -6,7 +6,7 @@ How the `ns-*` skills consume this repo's domain documentation when exploring th
 
 - **`GLOSSARY.md`** at the repo root, or
 - **`GLOSSARY-MAP.md`** at the repo root if it exists: it points at one `GLOSSARY.md` per context. Read each one relevant to the topic.
-- **`docs/adr/`**: read ADRs that touch the area you're about to work in. In multi-context repos, also check `<context>/docs/adr/` for context-scoped decisions.
+- **`docs/decisions/`**: this repo's ADRs, one file per decision, in place of `docs/adr/`. Read the ones that touch the area you're about to work in. A new one is named by its issue, not by the next number: `docs/DESIGN.md` ("Decisions") gives the name, ID and format.
 
 If any of these files don't exist, **proceed silently**. Leave their absence unflagged, and leave creating them to `ns-domain-modeling` (reached through `ns-triage` and `ns-define`), which writes them lazily when terms or decisions actually get resolved.
 

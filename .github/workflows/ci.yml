@@ -40,6 +40,8 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: ast-grep@0.50.0,cargo-deny@0.20.2
+      - name: Install ruff (cli/tests/rules_pack.rs runs the Python pack tests)
+        run: python3 -m pip install ruff==0.14.2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test

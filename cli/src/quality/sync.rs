@@ -1,5 +1,5 @@
 //! Quality records in and out: written when a unit ends, imported from archived worktrees, and
-//! read back for `ns quality` (docs/DESIGN.md D39).
+//! read back for `ns quality` (docs/decisions/ D39).
 
 use std::collections::BTreeSet;
 use std::fs;

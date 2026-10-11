@@ -10,7 +10,7 @@ use crate::review_md::{CycleEntry, Finding, Scope, Severity, Status, AXES};
 use crate::stats::{median, round};
 
 /// Full fix cycles `ns-review` runs before it can stop with a finding open. Up to two fix-only
-/// cycles may follow (skills/ns-review/SKILL.md, docs/DESIGN.md D60).
+/// cycles may follow (skills/ns-review/SKILL.md, docs/decisions/ D60).
 pub const FULL_CYCLES: u32 = 3;
 
 /// One review artifact: `review.md`, or an archived `history/review*.md`.

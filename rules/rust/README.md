@@ -1,6 +1,6 @@
 # Rust rule pack
 
-The rules `ns rules check` runs on a Rust repo (`docs/FACTORY.md`, "Rules"). The pack composes clippy, cargo-deny and ast-grep; D54 in `docs/DESIGN.md` lists the rules, and D58 the handling of compile errors. `check.sh <tool> <crate-dir>` runs one tool and prints each finding as a JSON line `ns` reads, and `install.sh <repo> [<crate-dir>]` copies the pack into a repo's `.nightshift/rules/rust/` and writes its `rules` row.
+The rules `ns rules check` runs on a Rust repo (`docs/FACTORY.md`, "Rules"). The pack composes clippy, cargo-deny and ast-grep; D54 in `docs/decisions/` lists the rules, and D58 the handling of compile errors. `check.sh <tool> <crate-dir>` runs one tool and prints each finding as a JSON line `ns` reads, and `install.sh <repo> [<crate-dir>]` copies the pack into a repo's `.nightshift/rules/rust/` and writes its `rules` row.
 
 ## Compile errors
 
