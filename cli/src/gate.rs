@@ -197,10 +197,18 @@ enum Verdict {
     },
 }
 
-/// What the gate last said about this unit's HEAD.
+/// What the gate last said about this unit's HEAD, and about the merge of a PR head into a base.
 #[derive(Default)]
 pub struct Gate {
     verdict: Option<Verdict>,
+    merged: Option<MergeVerdict>,
+}
+
+/// The gate's verdict on the merge of PR head `head` into base `base`: `None` is green.
+struct MergeVerdict {
+    head: String,
+    base: String,
+    red: Option<Red>,
 }
 
 pub struct Job<'a> {
@@ -227,6 +235,7 @@ pub enum Trigger {
 }
 
 /// Feedback to send back to build, and why.
+#[derive(Clone)]
 pub struct Red {
     pub feedback: String,
     pub reason: String,
@@ -279,28 +288,8 @@ impl Gate {
         if matches!(&self.verdict, Some(Verdict::Green { sha }) if same_sha(sha, &job.head)) {
             return Ok(None);
         }
-        let log_path = job
-            .log_dir
-            .join(format!("gate-{}-{}.log", job.phase, job.attempt));
         eprintln!("ns run: {} gate after {}: {}", job.unit, job.phase, job.cmd);
-        let r = run(job.cmd, job.worktree, job.timeout, &log_path, job.cap)?;
-        log(json!({
-            "event": "gate",
-            "phase": job.phase,
-            "attempt": job.attempt,
-            "command": job.cmd,
-            "sha": job.head,
-            "exit": r.exit,
-            "timed_out": r.timed_out,
-            "signal": match r.cut {
-                Some(Cut::Signal(sig)) => Some(crate::stop::name(sig)),
-                _ => None,
-            },
-            "memory_exceeded": matches!(r.cut, Some(Cut::Exceeded(_))),
-            "wall_s": (r.wall_s * 10.0).round() / 10.0,
-            "green": r.green(),
-            "log": log_path.to_string_lossy(),
-        }));
+        let r = run_logged(job, json!({}), log)?;
         if r.green() {
             self.verdict = Some(Verdict::Green {
                 sha: job.head.clone(),
@@ -324,6 +313,82 @@ impl Gate {
             killed,
         }))
     }
+
+    /// The verdict of the last gate on a merge result, when it was the merge of `head` into
+    /// `base`: `Some(None)` is green. Reused until either side moves.
+    pub fn merge_verdict(&self, head: &str, base: &str) -> Option<Option<Red>> {
+        self.merged
+            .as_ref()
+            .filter(|v| same_sha(&v.head, head) && same_sha(&v.base, base))
+            .map(|v| v.red.clone())
+    }
+
+    /// Run the gate in `job.worktree`, which holds the merge of PR head `job.head` into
+    /// `default` at `base`, and keep its verdict for [`Gate::merge_verdict`].
+    pub fn on_merge_result(
+        &mut self,
+        job: &Job<'_>,
+        default: &str,
+        base: &str,
+        log: &dyn Fn(Value),
+    ) -> Result<Option<Red>> {
+        eprintln!(
+            "ns run: {} gate on the merge of {} into {default} at {base}: {}",
+            job.unit, job.head, job.cmd
+        );
+        let r = run_logged(job, json!({"merge_result": true, "base": base}), log)?;
+        let red = (!r.green()).then(|| {
+            let killed = r.killed().map(|k| format!("the CI gate {k}"));
+            Red {
+                feedback: format!(
+                    "{}\nThe gate ran on the merge of the PR head {} into {default} at {base}, not on the branch alone, so the failure may come from combining it with {default}. Merge or rebase onto {default} and make the gate pass there.\n",
+                    feedback(job.cmd, &r, job.timeout, &job.head),
+                    job.head,
+                ),
+                reason: match &killed {
+                    Some(k) => format!("{k} on the merge with {default}"),
+                    None => format!("the CI gate failed on the merge with {default}"),
+                },
+                killed,
+            }
+        });
+        self.merged = Some(MergeVerdict {
+            head: job.head.clone(),
+            base: base.to_string(),
+            red: red.clone(),
+        });
+        Ok(red)
+    }
+}
+
+/// Run `job`'s gate and log a `gate` event, with the fields of `extra` added.
+fn run_logged(job: &Job<'_>, mut extra: Value, log: &dyn Fn(Value)) -> Result<GateRun> {
+    let log_path = job
+        .log_dir
+        .join(format!("gate-{}-{}.log", job.phase, job.attempt));
+    let r = run(job.cmd, job.worktree, job.timeout, &log_path, job.cap)?;
+    let mut ev = json!({
+        "event": "gate",
+        "phase": job.phase,
+        "attempt": job.attempt,
+        "command": job.cmd,
+        "sha": job.head,
+        "exit": r.exit,
+        "timed_out": r.timed_out,
+        "signal": match r.cut {
+            Some(Cut::Signal(sig)) => Some(crate::stop::name(sig)),
+            _ => None,
+        },
+        "memory_exceeded": matches!(r.cut, Some(Cut::Exceeded(_))),
+        "wall_s": (r.wall_s * 10.0).round() / 10.0,
+        "green": r.green(),
+        "log": log_path.to_string_lossy(),
+    });
+    if let (Some(o), Some(x)) = (ev.as_object_mut(), extra.as_object_mut()) {
+        o.append(x);
+    }
+    log(ev);
+    Ok(r)
 }
 
 #[cfg(test)]

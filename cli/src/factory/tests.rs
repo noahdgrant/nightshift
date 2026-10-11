@@ -99,12 +99,16 @@ fn defaults_and_budget_by_billing() {
     assert_eq!(f.phase("verify").max_attempts, 2);
     assert_eq!(f.budget_usd(), None);
     assert_eq!(f.merge.ci_register_timeout, 3);
+    assert!(f.merge.local_queue);
     assert_eq!(f.queue.triage_label, "status:needs-triage");
     assert_eq!(f.queue.split_label, "status:needs-define");
     let f = parse("[queue]\ntriage_label = \"triage\"\n").unwrap();
     assert_eq!(f.queue.triage_label, "triage");
     let f = parse("[merge]\nci_register_timeout = 7\n").unwrap();
     assert_eq!(f.merge.ci_register_timeout, 7);
+    assert!(f.merge.local_queue);
+    let f = parse("[merge]\nlocal_queue = false\n").unwrap();
+    assert!(!f.merge.local_queue);
     let f = parse("[defaults]\nbilling = \"api\"\n").unwrap();
     assert_eq!(f.budget_usd(), Some(25.0));
 }
