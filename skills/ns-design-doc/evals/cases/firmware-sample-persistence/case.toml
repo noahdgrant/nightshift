@@ -1,5 +1,4 @@
-# Command checks validated by hand: a doc with the three goal IDs, Status Draft, RAM and endurance in the text and a power-cut-mid-write failure row passes each; dropping the failure row, the RAM and endurance lines, or a goal ID (with Status Approved) fails the matching check.
-description = "An approved requirements doc asks the zephyr-logger ring buffer to keep samples across a reset for 10 years. Writing every sample to the 64 KB storage partition would wear it out about 60 times over, which only the firmware checklist's endurance prompt makes the author compute. Under gates: auto the skill should write the design doc, put a power cut in the failure modes at the flash write, state the RAM and flash cost, do the endurance arithmetic against SAMPLELOG-2, and raise the shortfall as an open question rather than paper over it."
+description = "An approved requirements doc asks the zephyr-logger ring buffer to keep samples across a reset for 10 years. Writing every sample to the 64 KB storage partition would wear it out roughly 60 times over (10 samples per second for 10 years, 12 bytes each, against 16 sectors rated for 10,000 erases), a calculation the requirements doc does not ask for and only the firmware checklist's endurance prompt triggers. Under gates: auto the skill should write the design doc, put a power cut in the failure modes at the flash write, state the RAM and flash cost, do the endurance arithmetic against SAMPLELOG-2, and raise the shortfall as an open question rather than paper over it, and note that `timestamp_ms` restarts at zero across a reset."
 fixture = "zephyr-logger"
 skills = ["ns-design-doc"]
 extra_skills = ["ns-contract", "ns-domain-modeling"]
@@ -27,6 +26,16 @@ expect_exit = 0
 [[check]]
 type = "command"
 run = '''f=$(ls docs/design/*/v1.md) && grep -Eiq '(endurance|wear|erase cycles)' "$f" && grep -Ewq 'RAM' "$f"'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/design/*/v1.md) && awk '/^#+ /{n=match($0,/^#+/)?RLENGTH:0; if(o&&n<=l)o=0; if(!o&&tolower($0) ~ /^#+ +([0-9]+(\.[0-9]+)*\.? +)?open questions/){o=1;l=n;next}} o' "$f" | grep -E '^\|' | grep -Ei '(endurance|wear|erase)' | grep -Eiq '(short|exceed|cannot|not last|insufficient|too (many|few)|fewer|[0-9]+ ?(x|times))' '''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/design/*/v1.md) && grep -i 'timestamp' "$f" | grep -Eiq '(reset|reboot|restart|zero|uptime|monoton)' '''
 expect_exit = 0
 
 [[check]]
