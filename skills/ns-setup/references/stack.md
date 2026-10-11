@@ -21,6 +21,7 @@ How to build, test, lint and format this repo. The `ns-*` skills run these comma
 | lint | [e.g. `uv run ruff check .`] | |
 | format | [e.g. `uv run ruff format .`] | |
 | typecheck | [e.g. `uv run mypy src`, or `none`] | |
+| rules | [the rule pack's commands, or `none`] | |
 
 ## Test seams
 

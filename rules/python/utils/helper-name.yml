@@ -1,0 +1,4 @@
+id: helper-name
+language: python
+rule:
+  regex: '^(?:mkdir_p|ensure_dirs?|which|deep_copy|memoized?|flatten|merge_dicts)$'
