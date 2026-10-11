@@ -1,5 +1,6 @@
 //! `ns lint [path]`: structural checks on `ns-*/SKILL.md` skills.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -127,7 +128,18 @@ pub fn check_frontmatter(dir_name: &str, text: &str) -> Vec<String> {
     errs
 }
 
-/// Relative link targets (`./x`, `../x`) outside fenced code blocks, anchors stripped.
+/// Whether a link target starts with a URL scheme (`https:`, `mailto:`).
+fn has_scheme(target: &str) -> bool {
+    target.split_once(':').is_some_and(|(scheme, _)| {
+        !scheme.is_empty()
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
+}
+
+/// Relative link targets (`x`, `./x`, `../x`) outside fenced code blocks, anchors stripped.
+/// URLs with a scheme, absolute paths and bare `#anchor` links are skipped.
 pub fn relative_links(text: &str) -> Vec<String> {
     let mut links = Vec::new();
     let mut fence: Option<&str> = None;
@@ -159,7 +171,7 @@ pub fn relative_links(text: &str) -> Vec<String> {
             // Drop an optional title: [x](./a.md "title")
             let target = target.split_whitespace().next().unwrap_or("");
             let target = target.trim_start_matches('<').trim_end_matches('>');
-            if target.starts_with("./") || target.starts_with("../") {
+            if !target.starts_with('/') && !has_scheme(target) {
                 let path = target.split('#').next().unwrap_or("");
                 if !path.is_empty() {
                     links.push(path.to_string());
@@ -231,15 +243,31 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
         }
         let mut files = Vec::new();
         markdown_files(dir, &mut files);
-        for file in files {
-            let Ok(body) = fs::read_to_string(&file) else {
+        let mut linked = HashSet::new();
+        for file in &files {
+            let Ok(body) = fs::read_to_string(file) else {
                 continue;
             };
             let base = file.parent().unwrap_or(dir);
             for link in relative_links(&body) {
-                if !base.join(&link).exists() {
-                    push(&mut errors, &file, format!("broken link: {link}"));
+                match fs::canonicalize(base.join(&link)) {
+                    // A directory link renders, and so links, its README.
+                    Ok(target) if target.is_dir() => {
+                        linked.insert(target.join("README.md"));
+                    }
+                    Ok(target) => {
+                        linked.insert(target);
+                    }
+                    Err(_) => push(&mut errors, file, format!("broken link: {link}")),
                 }
+            }
+        }
+        let mut refs = Vec::new();
+        markdown_files(&dir.join("references"), &mut refs);
+        for r in refs {
+            if fs::canonicalize(&r).is_ok_and(|c| !linked.contains(&c)) {
+                let rel = r.strip_prefix(dir).unwrap_or(&r).to_string_lossy();
+                push(&mut errors, &r, format!("unlinked reference: {rel}"));
             }
         }
     }
@@ -344,10 +372,80 @@ mod tests {
 
     #[test]
     fn finds_relative_links_only() {
-        let text = "See [a](./a.md), [b](../ns-b/SKILL.md#top), [c](https://x.y/z), [d](#anchor), [e](./e.md \"t\").\n```\n[f](./ignored.md)\n```\n[g](refs/no-dot.md)\n";
+        let text = "See [a](./a.md), [b](../ns-b/SKILL.md#top), [c](https://x.y/z), [d](#anchor), [e](./e.md \"t\").\n```\n[f](./ignored.md)\n```\n[g](refs/no-dot.md#x), [h](mailto:a@b.c), [i](/abs.md), [j](<refs/angle.md>), [k](refs/a:b.md), [l](:c.md)\n";
         assert_eq!(
             relative_links(text),
-            ["./a.md", "../ns-b/SKILL.md", "./e.md"]
+            [
+                "./a.md",
+                "../ns-b/SKILL.md",
+                "./e.md",
+                "refs/no-dot.md",
+                "refs/angle.md",
+                "refs/a:b.md",
+                ":c.md"
+            ]
         );
+    }
+
+    fn skill(body: &str, refs: &[(&str, &str)]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ns-a");
+        fs::create_dir_all(dir.join("references")).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: ns-a\ndescription: A.\n---\n{body}"),
+        )
+        .unwrap();
+        for (name, text) in refs {
+            fs::write(dir.join("references").join(name), text).unwrap();
+        }
+        tmp
+    }
+
+    fn messages(tmp: &tempfile::TempDir) -> Vec<String> {
+        let report = lint_dir(tmp.path()).unwrap();
+        report.errors.into_iter().map(|e| e.message).collect()
+    }
+
+    #[test]
+    fn unprefixed_broken_link_fails() {
+        let tmp = skill("[m](references/missing.md)\n", &[]);
+        assert_eq!(messages(&tmp), ["broken link: references/missing.md"]);
+    }
+
+    #[test]
+    fn unlinked_reference_fails_until_linked() {
+        let tmp = skill("no links\n", &[("orphan.md", "x\n")]);
+        assert_eq!(messages(&tmp), ["unlinked reference: references/orphan.md"]);
+        let tmp = skill("[o](references/orphan.md)\n", &[("orphan.md", "x\n")]);
+        assert!(messages(&tmp).is_empty(), "{:?}", messages(&tmp));
+    }
+
+    #[test]
+    fn directory_link_covers_its_readme() {
+        let tmp = skill("[ex](references/ex/)\n", &[]);
+        let ex = tmp.path().join("ns-a/references/ex");
+        fs::create_dir_all(&ex).unwrap();
+        fs::write(ex.join("README.md"), "[f](f.md)\n").unwrap();
+        fs::write(ex.join("f.md"), "x\n").unwrap();
+        assert!(messages(&tmp).is_empty(), "{:?}", messages(&tmp));
+        fs::write(
+            tmp.path().join("ns-a/SKILL.md"),
+            "---\nname: ns-a\ndescription: A.\n---\n",
+        )
+        .unwrap();
+        assert_eq!(
+            messages(&tmp),
+            ["unlinked reference: references/ex/README.md"]
+        );
+    }
+
+    #[test]
+    fn reference_linked_from_another_reference_passes() {
+        let tmp = skill(
+            "[a](./references/a.md#top)\n",
+            &[("a.md", "[b](b.md)\n"), ("b.md", "x\n")],
+        );
+        assert!(messages(&tmp).is_empty(), "{:?}", messages(&tmp));
     }
 }
