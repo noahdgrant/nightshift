@@ -29,7 +29,13 @@ Done when every criterion has an ID and a sentence naming the observable state t
 
 ## 2. Find the verification lever
 
-A docs-only diff has no surface to drive. A unit is **docs-only** when `git diff --name-only <base>` (the brief's `base:`, else `origin/main`) lists at least one path and every path is under a requirements, design, interface, ADR or glossary location that `docs/agents/docs.md` lists, or is a changelog there. Skill files, `AGENTS.md`, `CLAUDE.md` and any file a build, test or tool parses are not docs. When `docs/agents/docs.md` is missing, the unit is not docs-only. A docs-only unit loads the `ns-verify-docs` skill and follows it in place of the rest of this skill. It writes `evidence.md` in step 6's format.
+A docs-only diff has no surface to drive. A unit is **docs-only** when its changed paths, from `git diff --name-only --no-renames $(git merge-base <base> HEAD)` (`<base>` is the brief's `base:`, else `origin/main`), meet all of:
+
+- the list has at least one path;
+- every path is under a requirements or design directory, or is a changelog there, as listed by `git show <base>:docs/agents/docs.md` (the base's copy, so the diff can't widen its own definition);
+- no path is `docs/agents/docs.md`, a skill file, `AGENTS.md`, `CLAUDE.md`, or a file a build, test or tool parses.
+
+When `docs/agents/docs.md` is missing on the base, the unit is not docs-only. A docs-only unit loads the `ns-verify-docs` skill and follows it in place of the rest of this skill. It writes `evidence.md` in step 6's format.
 
 Otherwise, read `docs/agents/verify.md`, and `docs/agents/stack.md` beside it. If either is missing, load the `ns-setup` skill instead of guessing.
 

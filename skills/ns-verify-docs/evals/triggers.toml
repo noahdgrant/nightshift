@@ -1,5 +1,3 @@
-# Does the ns-verify-docs description fire on the right prompts? 8 positive, 11 negative.
-
 [[trigger]]
 prompt = "The diff for unit 8-tighten-stock-3 only touches docs/requirements. Verify it and write evidence.md."
 expect = true
@@ -64,7 +62,6 @@ expect = false
 prompt = "Open a PR for this branch."
 expect = false
 
-# Docs plus code never routes here: ns-verify drives the real surface.
 [[trigger]]
 prompt = "Verify unit 9-reserve-limit: it edits docs/requirements/stock/v1.md and the reserve() code that implements it. Write evidence.md."
 expect = false
@@ -75,4 +72,8 @@ expect = false
 
 [[trigger]]
 prompt = "Change STOCK-3 to 5% in the requirements doc."
+expect = false
+
+[[trigger]]
+prompt = "Verify unit 10-widen-docs: it edits docs/agents/docs.md to list src/ as a design location, plus a design doc under src/. Write evidence.md."
 expect = false

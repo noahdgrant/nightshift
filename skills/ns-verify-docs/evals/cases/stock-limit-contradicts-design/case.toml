@@ -1,4 +1,4 @@
-description = "A docs-only unit tightens STOCK-3 from 10% to 5% in the stock requirements. A draft design (docs/design/low-stock-alerts/v1.md) still adds 8% to reserve, 'inside the 10% STOCK-3 allows', and ticket 03 still fails its benchmark only above 10%. ns-verify should route the unit to ns-verify-docs, which traces STOCK-3 to both citers, finds the seeded contradiction, and writes evidence.md that does not pass, with the docs report saved beside it, while editing no doc."
+description = "A docs-only unit tightens STOCK-3 from 10% to 5% in the stock requirements. A draft design (docs/design/low-stock-alerts/v1.md) still adds 8% to reserve, 'inside the 10% STOCK-3 allows', and ticket 03 still fails its benchmark only above 10%. ns-verify should route the unit to ns-verify-docs, which traces STOCK-3 to both citers, finds the seeded contradiction, and writes evidence.md that does not pass, with the docs report saved beside it, while editing no doc. A confirmed contradiction never passes: a clear fix fails the unit and a decision blocks it."
 fixture = "py-inventory"
 skills = ["ns-verify-docs"]
 extra_skills = [
@@ -15,8 +15,6 @@ Verify unit 8-tighten-stock-3. You are already in its worktree, on branch ns/8-t
 """
 
 [setup]
-# main holds the requirements (STOCK-3 at 10%), a draft design and a ticket that both cite it.
-# The unit branch carries the build as one commit, and build.md names it.
 commands = [
   "git checkout -q -b ns/8-tighten-stock-3",
   "python3 ../change.py",
@@ -26,33 +24,33 @@ commands = [
 ]
 
 [[check]]
-# A confirmed contradiction never passes: fail when it is a clear fix, blocked when it is a decision.
 type = "command"
 run = '''grep -Eq '^status:[[:space:]]*(fail|blocked)[[:space:]]*$' .ns/8-tighten-stock-3/evidence.md'''
 expect_exit = 0
 
 [[check]]
-# The trace reached both citers of STOCK-3.
 type = "command"
 run = '''f=.ns/8-tighten-stock-3/evidence.md && grep -q 'STOCK-3' "$f" && grep -q 'docs/design/low-stock-alerts/v1.md' "$f" && grep -q '03-benchmark-reserve' "$f"'''
 expect_exit = 0
 
 [[check]]
-# Gaps names the design's 8% against the new 5%.
 type = "command"
-run = '''awk '/^#+ +Gaps/{o=1;next} /^#+ /{o=0} o' .ns/8-tighten-stock-3/evidence.md | grep -q 'low-stock-alerts' '''
+run = '''awk '/^#+ +Gaps/{o=1;next} /^#+ /{o=0} o' .ns/8-tighten-stock-3/evidence.md | grep -q 'docs/design/low-stock-alerts/v1.md' '''
 expect_exit = 0
 
 [[check]]
-# Gaps also names the stale ticket.
 type = "command"
 run = '''awk '/^#+ +Gaps/{o=1;next} /^#+ /{o=0} o' .ns/8-tighten-stock-3/evidence.md | grep -q '03-benchmark-reserve' '''
 expect_exit = 0
 
 [[check]]
-# The report pairs the ticket path with its stale 10%.
 type = "command"
 run = '''grep -E '03-benchmark-reserve' .ns/8-tighten-stock-3/evidence/docs-report.md | grep -q '10%' '''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''grep -q 'Verify skill: none (docs checks)' .ns/8-tighten-stock-3/evidence.md'''
 expect_exit = 0
 
 [[check]]
@@ -60,7 +58,6 @@ type = "file_exists"
 path = ".ns/8-tighten-stock-3/evidence/docs-report.md"
 
 [[check]]
-# Verify observes: no doc, ticket or code changes.
 type = "diff_scope"
 allow = [".ns/**"]
 

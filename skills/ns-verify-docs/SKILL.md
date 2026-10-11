@@ -9,7 +9,7 @@ A docs change has no surface to drive. Its evidence is the checks it passes and 
 
 Read `docs/agents/docs.md` for where requirements and design docs live, the ID keys, and the docs checks. If it is missing, load the `ns-setup` skill instead of guessing. Read `docs/agents/domain.md` for the glossary and the ADRs.
 
-**Current docs** (the locations `docs/agents/docs.md` lists, as `ns-verify` step 2 defines docs-only) are the highest `v<n>.md` in each requirements and design directory, plus the interface docs, the glossary, the ADRs, and the open tickets in the issue tracker. Older versions and changelogs are history, and a disagreement with history is never a contradiction.
+**Current docs** are the highest `v<n>.md` in each requirements and design directory that `docs/agents/docs.md` lists, plus the interface docs, the glossary, the ADRs, and the open tickets in the issue tracker. Older versions and changelogs are history, and a disagreement with history is never a contradiction.
 
 ## 1. Pick the mode
 
@@ -17,7 +17,7 @@ Read `docs/agents/docs.md` for where requirements and design docs live, the ID k
 - **Change**: a branch or PR outside the factory. Steps 2 to 7 run, step 6 may apply clear fixes, and the report goes in the PR description or the reply.
 - **Audit**: every current doc, such as before a milestone. Read [references/audit.md](references/audit.md) and follow it. It fans steps 4 and 5 out and returns here for steps 6 and 7.
 
-The base for a unit or change is the branch `brief.md` records as `base:`, else `git merge-base HEAD origin/main` after `git fetch`.
+The changed paths for a unit or change are `git diff --name-only --no-renames $(git merge-base <base> HEAD)`, with `<base>` as `ns-verify` step 2 defines it (after `git fetch`). Step 2 below and step 3 reuse this list and base.
 
 ## 2. Run the checks
 
@@ -31,7 +31,7 @@ Done when every check has run and its summary line is copied.
 
 The scope is every doc whose meaning the change could contradict. Build it from the change outward:
 
-1. **Changed docs**: `git diff --name-only <base>`.
+1. **Changed docs**: the changed paths above.
 2. **Changed IDs and their citers**: every requirement row the change adds, removes or edits, and every ID the change starts or stops citing. For each one, search every current doc and open ticket for it (`git grep -nw <ID>`, and the tracker's search). Expand ranges by hand: "STOCK-3 to 5" cites STOCK-4, which a plain search misses. An ID that only sits unchanged on a changed line, such as a row's existing sources, is out.
 3. **Named docs**: every doc a changed doc links or names. For a changed interface, the designs on both sides of it.
 4. **Downstream**: every doc below a changed one in the flow requirements, then design, then tickets. That is the designs whose Requirements row names a changed requirements doc, the designs built on a changed design, the interfaces recording a changed design's contracts, and the tickets citing a changed ID.
@@ -63,7 +63,7 @@ A confirmed finding is a **clear fix** when one side owns the fact:
 
 - Between levels, the higher doc wins: requirements over design, design over tickets. An interface wins over a design on its contract.
 - The glossary owns terms.
-- Within a level, each doc owns what it decides: a requirement row its requirement, a design its own decisions and numbers. For an as-built design, the code it cites with `file:line` owns what exists.
+- Within a level, each doc owns what it decides: a requirement row its requirement, a design its own decisions and numbers. A design number that comes from a measurement or a design choice is the design's own, so a mismatch with a requirement is a decision, even though requirements outrank designs. For an as-built design, the code it cites with `file:line` owns what exists.
 - A decision recorded with a name and date, or in an ADR, outranks an older one or text with no attribution.
 
 In change mode, change the side that doesn't own the fact, following the `ns-requirements` or `ns-design-doc` skill for its changelog and `Last updated` rules, then run step 2 again. In unit mode, write the fix into the evidence's Gaps instead: the passage to change, and the owner it must match.
