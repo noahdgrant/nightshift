@@ -21,6 +21,7 @@ extra_skills = [
   "ns-principle-fix-root-causes",
   "ns-principle-laziness-protocol",
   "ns-principle-minimize-reader-load",
+  "ns-principle-keep-scope-tight",
   "ns-principle-never-block-on-the-human",
   "ns-principle-prove-it-works",
   "ns-principle-redesign-from-first-principles",

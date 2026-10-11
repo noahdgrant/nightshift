@@ -1,0 +1,115 @@
+description = "The brief asks for `inventory reservations [SKU]` and is silent on whether expired reservations are listed (`Warehouse.reservations()` keeps them), their order, and what an empty list prints. Surface assumptions: under gates: auto, build.md records the assumption about expired reservations instead of choosing silently."
+fixture = "py-inventory"
+skills = ["ns-principle-surface-assumptions"]
+extra_skills = [
+  "ns-build",
+  "ns-contract",
+  "ns-tdd",
+  "ns-review",
+  "ns-principle-test-behavior-not-implementation",
+  "ns-principle-sequence-verifiable-units",
+  "ns-principle-subtract-before-you-add",
+  "ns-principle-laziness-protocol",
+  "ns-principle-fix-root-causes",
+  "ns-principle-attack-the-premise",
+  "ns-principle-minimize-reader-load",
+  "ns-principle-keep-scope-tight",
+]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Build unit 6-list-reservations. You are already in its worktree, on branch ns/6-list-reservations, and the brief is .ns/6-list-reservations/brief.md. The repo has no remote, so skip the fetch and rebase. gates: auto. Nobody is around to answer questions. Stop after writing build.md: don't verify, review or ship.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/6-list-reservations",
+  "mkdir -p .ns/6-list-reservations && cp ../brief.md .ns/6-list-reservations/",
+]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/6-list-reservations/build.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**", ".ns/**"]
+
+[[check]]
+# Hidden acceptance test for the parts the brief does state, written outside the repo.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_list_acceptance.py" <<'PYEOF'
+from inventory.cli import main
+
+
+def cli(tmp_path):
+    state = tmp_path / "inventory.json"
+
+    def run(*args):
+        try:
+            return main(["--state", str(state), "--now", "2026-03-02T09:00:00", *args])
+        except SystemExit as e:
+            return e.code
+
+    assert run("add-item", "BOLT-M6", "M6 hex bolt") == 0
+    assert run("add-item", "NUT-M6", "M6 nut") == 0
+    assert run("receive", "BOLT-M6", "10") == 0
+    assert run("receive", "NUT-M6", "10") == 0
+    assert run("reserve", "BOLT-M6", "2", "--ttl", "15") == 0
+    assert run("reserve", "NUT-M6", "3", "--ttl", "15") == 0
+    return run
+
+
+def test_lists_one_item(tmp_path, capsys):
+    run = cli(tmp_path)
+    capsys.readouterr()
+    assert run("reservations", "BOLT-M6") == 0
+    out = capsys.readouterr().out
+    assert "R0001: 2 x BOLT-M6 until 2026-03-02T09:15:00" in out
+    assert "NUT-M6" not in out
+
+
+def test_lists_every_item(tmp_path, capsys):
+    run = cli(tmp_path)
+    capsys.readouterr()
+    assert run("reservations") == 0
+    out = capsys.readouterr().out
+    assert "R0001: 2 x BOLT-M6 until 2026-03-02T09:15:00" in out
+    assert "R0002: 3 x NUT-M6 until 2026-03-02T09:15:00" in out
+
+
+def test_unknown_sku_fails(tmp_path, capsys):
+    run = cli(tmp_path)
+    assert run("reservations", "BOLT-M6") == 0
+    capsys.readouterr()
+    assert run("reservations", "SCREW-M3") == 1
+    err = capsys.readouterr().err
+    assert "inventory: error:" in err
+    assert "SCREW-M3" in err
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_list_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+# The assumption the brief leaves open: are expired reservations listed? build.md names it.
+type = "regex"
+path = ".ns/6-list-reservations/build.md"
+pattern = "(?i)assum[^\\n]*expir|expir[^\\n]*assum"
+
+[[check]]
+type = "judge"
+rubric = "Does .ns/6-list-reservations/build.md state, as assumptions, the choices the brief left open (whether expired reservations are listed, their order, what an empty list prints), rather than making them silently? Does the code match what it states?"
+required = false
