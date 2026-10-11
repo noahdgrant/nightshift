@@ -1,21 +1,44 @@
 #!/bin/sh
 # Enable with: git config core.hooksPath .githooks
-# ci-local.sh checks the working tree, so it only counts as checking a push when the tree is
-# clean and every ref pushed (deletions aside) points at HEAD.
-head=$(git rev-parse HEAD) || exit 1
-if [ -n "$(git status --porcelain)" ]; then
-  echo "pre-push: the working tree is not clean, so ci-local.sh would not check what is pushed. Commit or remove the changes." >&2
-  exit 1
-fi
-while read -r _ sha _ _; do
+# Checks each commit pushed, whatever the working tree holds: runs that commit's own
+# scripts/ci-local.sh in a temporary worktree at it, and refuses the push if any run fails.
+# Every run shares one cargo target directory under the common git dir, so a push costs
+# about one incremental build.
+common=$(cd "$(git rev-parse --git-common-dir)" && pwd) || exit 1
+# Git's location variables would aim the temporary worktree's checkout at this checkout's
+# index, and the checks at this checkout. Every git command here names the repo instead.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
+git() { command git --git-dir="$common" "$@"; }
+CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$common/pre-push-target}
+export CARGO_TARGET_DIR
+
+wt=
+cleanup() {
+  [ -n "$wt" ] || return 0
+  git worktree remove --force "$wt" 2>/dev/null || { rm -rf "$wt"; git worktree prune; }
+  wt=
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+checked=
+while read -r ref sha _ _; do
   case $sha in *[!0]*) ;; *) continue ;; esac
   commit=$(git rev-parse -q --verify "$sha^{commit}") || {
     echo "pre-push: $sha is not a commit, so ci-local.sh has nothing to check for it." >&2
     exit 1
   }
-  if [ "$commit" != "$head" ]; then
-    echo "pre-push: pushing $sha, but ci-local.sh checks HEAD ($head). Check out what you push." >&2
+  case " $checked " in *" $commit "*) continue ;; esac
+  checked="$checked $commit"
+  wt=$(mktemp -d "${TMPDIR:-/tmp}/pre-push.XXXXXX") || exit 1
+  git worktree add -q --detach "$wt" "$commit" || exit 1
+  echo "pre-push: checking $ref at $commit" >&2
+  (cd "$wt" && exec scripts/ci-local.sh </dev/null) || {
+    echo "pre-push: ci-local.sh failed for $ref at $commit." >&2
     exit 1
-  fi
+  }
+  cleanup
 done
-exec scripts/ci-local.sh
