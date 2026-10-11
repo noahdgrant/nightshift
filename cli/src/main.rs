@@ -19,6 +19,7 @@ mod gate;
 mod git;
 mod install;
 mod lint;
+mod log;
 mod markers;
 mod memcap;
 mod quality;
@@ -224,6 +225,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
             json: _,
         } => return quality::cli(since, until),
         Cmd::Clean { dry_run } => return clean::cli(dry_run),
+        Cmd::Log {
+            unit,
+            since,
+            follow,
+            json,
+        } => return log::cli(unit, since, follow, json),
         Cmd::Rules { command } => match command {
             RulesCmd::Check { human } => return rules::check(human),
             RulesCmd::Baseline {

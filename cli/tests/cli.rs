@@ -1055,6 +1055,7 @@ fn every_subcommand_help_has_examples() {
         vec!["install", "--help"],
         vec!["doctor", "--help"],
         vec!["quality", "--help"],
+        vec!["log", "--help"],
     ] {
         ns().args(&args)
             .assert()
@@ -1379,4 +1380,64 @@ fn version_names_the_commit_ns_was_built_from() {
         .assert()
         .success()
         .stdout(format!("ns {} ({head})\n", env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn log_prints_the_run_log_from_any_worktree() {
+    let (_tmp, root) = repo();
+    let log = |args: &[&str]| ns().current_dir(&root).arg("log").args(args).output();
+    let out = log(&[]);
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no run log at"));
+
+    git(
+        &root,
+        &["remote", "add", "origin", "git@github.com:o/r.git"],
+    );
+    let dir = root.join(".git/ns");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("runs.jsonl"),
+        concat!(
+            r#"{"event":"phase","unit":"142-uart-timeout","phase":"build","attempt":1,"status":"pass","wall_s":3.5,"prompt":"secret","ts":"2026-10-09T10:00:00Z"}"#,
+            "\n",
+            r#"{"event":"end","unit":"143-other","outcome":"stuck","pr":9,"reason":"ci failed","ts":"2026-10-10T10:00:00Z"}"#,
+            "\nnot json\n",
+        ),
+    )
+    .unwrap();
+    let out = log(&[]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "2026-10-09T10:00:00Z phase #142 build attempt 1 status pass 3.5s\n\
+         2026-10-10T10:00:00Z end #143 outcome stuck https://github.com/o/r/pull/9 reason: ci failed\n"
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("skipped 1 line(s)"));
+
+    let out = log(&["--json", "--since", "2026-10-10"]);
+    assert_eq!(
+        json(&out.stdout),
+        serde_json::json!({"ts":"2026-10-10T10:00:00Z","event":"end","unit":"143-other","issue":143,
+            "outcome":"stuck","pr":9,"pr_url":"https://github.com/o/r/pull/9","reason":"ci failed"})
+    );
+    let out = log(&["--unit", "142-uart-timeout", "--json"]);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("secret"));
+    assert_eq!(json(&out.stdout)["phase"], "build");
+
+    let wt = root.with_file_name("wt");
+    git(
+        &root,
+        &["worktree", "add", "-q", "-b", "x", wt.to_str().unwrap()],
+    );
+    let out = ns()
+        .current_dir(&wt)
+        .args(["log", "--unit", "143-other"])
+        .output();
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("2026-10-10T10:00:00Z end #143"));
+
+    let out = log(&["--since", "yesterday"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ns log --since 2026-10-01T00:00:00Z"));
 }
