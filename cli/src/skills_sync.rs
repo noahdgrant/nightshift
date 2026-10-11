@@ -214,6 +214,8 @@ mod tests {
         assert_eq!(sync_all(&s), Sync::Current);
     }
 
+    /// Exempt from the hooks rule (ns-contract, Git hooks): the fast-forward only brings in
+    /// commits already on origin's default branch, into the operator's own checkout.
     #[test]
     fn the_fast_forward_skips_the_checkouts_hooks() {
         let s = setup();

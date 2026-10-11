@@ -393,6 +393,31 @@ mod tests {
         assert_eq!(publish(&s.repo, &c, &[]).unwrap(), Sent::Nothing);
     }
 
+    /// Exempt from the hooks rule (ns-contract, Git hooks): the records branch holds no code,
+    /// and a pre-push hook checks the working tree, so a red or slow tree must not hold up a
+    /// record.
+    #[test]
+    fn the_records_push_skips_the_checkouts_pre_push_hook() {
+        let s = setup();
+        let hook = s.repo.join(".git/hooks/pre-push");
+        fs::write(
+            &hook,
+            "#!/bin/sh
+touch ran\nexit 1\n",
+        )
+        .unwrap();
+        Command::new("chmod").arg("+x").arg(&hook).status().unwrap();
+        let sent = publish(&s.repo, &common(&s.repo), &lines(&["x"])).unwrap();
+        assert_eq!(
+            sent,
+            Sent::Pushed {
+                records: 1,
+                tries: 1
+            }
+        );
+        assert!(!s.repo.join("ran").exists());
+    }
+
     #[test]
     fn writing_leaves_the_working_tree_index_and_head_alone() {
         let s = setup();
