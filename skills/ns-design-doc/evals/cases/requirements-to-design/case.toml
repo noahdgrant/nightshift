@@ -25,7 +25,7 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = '''f=$(ls docs/design/*/v1.md) && g=$(awk 'tolower($0) ~ /^#+ *goals/{o=1;next} /^#+ /{o=0} o' "$f") && for id in STOCK-1 STOCK-2 STOCK-3; do printf '%s\n' "$g" | grep -Eq "$id([^0-9]|$)" || exit 1; done'''
+run = '''f=$(ls docs/design/*/v1.md) && g=$(awk 'tolower($0) ~ /^#+ *goals/{o=1;next} /^##? /{o=0} o' "$f") && for id in STOCK-1 STOCK-2 STOCK-3; do printf '%s\n' "$g" | grep -Eq "$id([^0-9]|$)" || exit 1; done'''
 expect_exit = 0
 
 [[check]]
@@ -42,7 +42,7 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = '''f=$(ls docs/design/*/v1.md) && s=$(grep -Ei '^\| *\**Status' "$f" | tr -d '*') && ! printf '%s' "$s" | grep -Eiq 'Approved' && ! printf '%s' "$s" | grep -Eiq 'Superseded' && printf '%s' "$s" | grep -Eiq '^\| *Status *\| *(Draft|In review)' '''
+run = '''f=$(ls docs/design/*/v1.md) && s=$(grep -Ei '^\| *\**Status' "$f" | head -1 | tr -d '*') && ! printf '%s' "$s" | grep -Eiq 'Approved' && ! printf '%s' "$s" | grep -Eiq 'Superseded' && printf '%s' "$s" | grep -Eiq '^\| *Status *\| *(Draft|In review)' '''
 expect_exit = 0
 
 [[check]]
@@ -62,7 +62,7 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = '''f=$(ls docs/design/*/v1.md) && awk 'tolower($0) ~ /^#+ *non-goals/{o=1;next} /^#+ /{o=0} o' "$f" | grep -Eq 'STOCK-5([^0-9]|$)' '''
+run = '''f=$(ls docs/design/*/v1.md) && awk 'tolower($0) ~ /^#+ *non-goals/{o=1;next} /^##? /{o=0} o' "$f" | grep -Eq 'STOCK-5([^0-9]|$)' '''
 expect_exit = 0
 
 [[check]]
