@@ -1,0 +1,53 @@
+# Checks validated by hand against an expected review.md (every check passes) and wrong ones (an open Important in changed code, an open Critical, status fail: each fails a check).
+description = "First review pass on a clean diff: Warehouse.in_stock with tests for both answers at the boundary and for an unknown SKU, so every mutation is killed. Told to run the panel once with no fix cycles, review.md must pass with no open Critical and no open Important in changed code. Escapes the fixture's seeded defects raise may be deferred to .scratch/ issues."
+fixture = "py-inventory"
+skills = ["ns-review"]
+extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Review unit 4-in-stock, on branch ns/4-in-stock in this repo. The brief is .ns/4-in-stock/brief.md. Run the review panel once and write review.md: run no fix cycles and change no code. gates: auto. Nobody is around to answer questions. Skip verify, don't push, don't ship.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/4-in-stock",
+  "mkdir -p .ns/4-in-stock && cp ../brief.md .ns/4-in-stock/",
+  "git apply ../in-stock.patch",
+  "git add src tests && git commit -q -m 'feat(warehouse): add in_stock'",
+]
+
+[[check]]
+type = "frontmatter"
+path = ".ns/4-in-stock/review.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/4-in-stock/review.md"
+key = "cycles"
+equals = "0"
+
+[[check]]
+# No Critical is open, in changed or pre-existing code.
+type = "regex"
+path = ".ns/4-in-stock/review.md"
+pattern = '(?m)^###\s+\**C\d+\.[^\n]*(?:\n(?:[^#\n][^\n]*)?)*?\n-\s*\**Status:\**\s*`?open\b'
+present = false
+
+[[check]]
+# No Important in changed code is open.
+type = "regex"
+path = ".ns/4-in-stock/review.md"
+pattern = '(?m)^###\s+\**I\d+\.[^\n]*(?:\n(?:[^#\n][^\n]*)?)*?\n-\s*\**Scope:\**\s*`?changed\b[^\n]*(?:\n(?:[^#\n][^\n]*)?)*?\n-\s*\**Status:\**\s*`?open\b'
+present = false
+
+[[check]]
+type = "diff_scope"
+allow = [".ns/**", ".scratch/**"]
+
+[[check]]
+type = "judge"
+rubric = "Did the review pass the in_stock diff without inventing blocking findings, keeping any Critical or Important it raised either dismissed with a reason or, for the fixture's pre-existing defects, deferred to an issue?"
+required = false

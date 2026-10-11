@@ -1,0 +1,45 @@
+# Checks validated by hand against an expected review.md (every check passes) and wrong ones (the bug filed only as Important, as a pre-existing Critical, or with status pass: each fails a check).
+description = "First review pass on a diff that adds Warehouse.purge_expired with an inverted condition: it drops the reservations still held and keeps the expired ones, and its one test only purges an empty warehouse. Told to run the panel once with no fix cycles, review.md must hold a Critical in changed code naming the bug, and must not pass."
+fixture = "py-inventory"
+skills = ["ns-review"]
+extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Review unit 3-purge-expired, on branch ns/3-purge-expired in this repo. The brief is .ns/3-purge-expired/brief.md. Run the review panel once and write review.md: run no fix cycles and change no code. gates: auto. Nobody is around to answer questions. Skip verify, don't push, don't ship.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/3-purge-expired",
+  "mkdir -p .ns/3-purge-expired && cp ../brief.md .ns/3-purge-expired/",
+  "git apply ../purge-expired.patch",
+  "git add src tests && git commit -q -m 'feat(warehouse): add purge_expired'",
+]
+
+[[check]]
+type = "frontmatter"
+path = ".ns/3-purge-expired/review.md"
+key = "cycles"
+equals = "0"
+
+[[check]]
+# An open Critical in changed code leaves the review short of pass.
+type = "regex"
+path = ".ns/3-purge-expired/review.md"
+pattern = '(?m)^status:\s*(fail|blocked)\b'
+
+[[check]]
+# A Critical whose heading names the inverted purge, scoped to changed code.
+type = "regex"
+path = ".ns/3-purge-expired/review.md"
+pattern = '(?im)^###\s+\**C\d+\.[^\n]*(purge|invert|negat|backwards|opposite|unexpired|not.expired|still.held|\blive\b|\bactive\b)[^\n]*(?:\n(?:[^#\n][^\n]*)?)*?\n-\s*\**Scope:\**\s*`?changed\b'
+
+[[check]]
+type = "diff_scope"
+allow = [".ns/**", ".scratch/**"]
+
+[[check]]
+type = "judge"
+rubric = "Did the review find that purge_expired's condition is inverted (it deletes reservations still held at `now` and keeps the expired ones), rank it Critical in changed code, and leave the code unfixed as told?"
+required = false
