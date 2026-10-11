@@ -7,13 +7,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-const ALL_STEPS: [&str; 14] = [
+const ALL_STEPS: [&str; 15] = [
     "cargo fmt --check",
     "cargo clippy",
     "cargo test",
     "cargo test under a decoy GIT_DIR",
     "build ns",
     "ns lint",
+    "ns lint .agents/skills",
     "ns check-markers",
     "ns rules check",
     "ns eval --dry-run",
@@ -192,6 +193,7 @@ fn a_failing_step_stops_the_run() {
     for (fail_on, step) in [
         ("cargo clippy", "cargo clippy"),
         ("decoy", "cargo test under a decoy GIT_DIR"),
+        ("lint .agents/skills", "ns lint .agents/skills"),
         ("ns check-markers", "ns check-markers"),
         ("ns rules", "ns rules check"),
         ("ns eval", "ns eval --dry-run"),

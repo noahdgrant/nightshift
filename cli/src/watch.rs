@@ -532,6 +532,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 "triage": triage,
                 "triage_next_pass": next_pass,
                 "triage_skipped": tr.skipped,
+                "human_merge_label": q.human_merge_label,
                 "max_units": max_units,
                 "parallel": parallel,
                 "until": deadline.map(clock::local_iso),
@@ -805,7 +806,7 @@ mod tests {
     #[test]
     fn open_findings_keeps_open_criticals_and_importants() {
         let review = "\
-Open after 3 fix cycles: C1, I2, I4.
+Open after at least 2 fix attempts: C1, I2, I4.
 
 ### C1. Drops every `SKU`
 - Location: `a.py:1`
@@ -947,6 +948,15 @@ Open after 3 fix cycles: C1, I2, I4.
             Ok(())
         }
         fn close(&self, _: u64) -> Result<()> {
+            Ok(())
+        }
+        fn add_pr_label(&self, _: u64, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn remove_pr_label(&self, _: u64, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn comment_pr(&self, _: u64, _: &str) -> Result<()> {
             Ok(())
         }
     }

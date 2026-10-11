@@ -9,8 +9,9 @@ use super::blame::Blame;
 use crate::review_md::{CycleEntry, Finding, Scope, Severity, Status, AXES};
 use crate::stats::{median, round};
 
-/// Fix cycles `ns-review` runs before it stops (skills/ns-review/SKILL.md).
-pub const CYCLE_LIMIT: u32 = 3;
+/// Full fix cycles `ns-review` runs before it can stop with a finding open. Up to two fix-only
+/// cycles may follow (skills/ns-review/SKILL.md, docs/DESIGN.md D60).
+pub const FULL_CYCLES: u32 = 3;
 
 /// One review artifact: `review.md`, or an archived `history/review*.md`.
 #[derive(Debug, Clone, Default)]
@@ -197,9 +198,10 @@ pub fn cycles_to_clean(a: &Attempt) -> Cycles {
     }
 }
 
-/// Critical or Important findings still open when the review stopped at the cycle limit.
+/// Critical or Important findings still open when the fix loop stopped: after the full cycles,
+/// or after the fix-only cycles that followed them.
 pub fn leftovers(a: &Attempt) -> Vec<&Finding> {
-    if a.cycles.is_none_or(|c| c < CYCLE_LIMIT) {
+    if a.cycles.is_none_or(|c| c < FULL_CYCLES) {
         return Vec::new();
     }
     a.findings
@@ -558,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn leftovers_are_open_blocking_findings_at_the_cycle_limit() {
+    fn leftovers_are_open_blocking_findings_when_the_fix_loop_stops() {
         let review = "### C1. a\n- Status: open\n### I1. b\n- Status: fixed\n### I2. c\n- Status: open\n### S1. d\n- Status: open\n### I3. e\n- Status: dismissed: x\n### C4. f\n- Scope: pre-existing\n- Status: open\n";
         let ids = |a: &Attempt| {
             leftovers(a)
@@ -568,6 +570,7 @@ mod tests {
         };
         assert_eq!(ids(&attempt(Some(3), "blocked", review)), ["C1", "I2"]);
         assert_eq!(ids(&attempt(Some(4), "blocked", review)), ["C1", "I2"]);
+        assert_eq!(ids(&attempt(Some(5), "blocked", review)), ["C1", "I2"]);
         assert!(ids(&attempt(Some(2), "fail", review)).is_empty());
         assert!(ids(&attempt(None, "fail", review)).is_empty());
     }

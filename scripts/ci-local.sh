@@ -94,6 +94,7 @@ step "cargo test" cargo test --manifest-path cli/Cargo.toml
 step "cargo test under a decoy GIT_DIR" scripts/check-git-dir-decoy.sh
 step "build ns" cargo build --manifest-path cli/Cargo.toml
 step "ns lint" "$ns" lint skills --human
+step "ns lint .agents/skills" "$ns" lint .agents/skills --human
 step "ns check-markers" "$ns" check-markers --human
 step "ns rules check" "$ns" rules check --human
 step "ns eval --dry-run" eval_dry_run

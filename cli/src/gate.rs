@@ -1,4 +1,5 @@
-//! The deterministic CI gate `ns run` runs after build (docs/FACTORY.md, "Gate").
+//! The deterministic CI gate `ns run` runs after build, after any phase that moves HEAD, and on
+//! the PR head before it merges (docs/FACTORY.md, "Gate").
 
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -218,8 +219,11 @@ pub struct Job<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trigger {
     BuildPassed,
-    ReviewMovedHead,
+    /// A phase other than build moved HEAD.
+    PhaseMovedHead,
     BuildWroteNothing,
+    /// The merge step is about to merge the PR head.
+    BeforeMerge,
 }
 
 /// Feedback to send back to build, and why.
@@ -240,7 +244,9 @@ impl Gate {
         log: &dyn Fn(Value),
     ) -> Result<Option<Red>> {
         match trigger {
-            Trigger::BuildPassed | Trigger::ReviewMovedHead => self.run_at_head(job, log),
+            Trigger::BuildPassed | Trigger::PhaseMovedHead | Trigger::BeforeMerge => {
+                self.run_at_head(job, log)
+            }
             Trigger::BuildWroteNothing => self.after_silent_build(job, log),
         }
     }

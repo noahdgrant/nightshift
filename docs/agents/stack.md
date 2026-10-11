@@ -23,7 +23,7 @@ Run from the repo root. Use the binary built from this worktree (`cli/target/deb
 | test (one) | `cargo test --manifest-path cli/Cargo.toml <name>` | 2 s |
 | lint | `cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` | 10 s |
 | format | `cargo fmt --manifest-path cli/Cargo.toml` (check: `--check`) | 1 s |
-| skill lint | `cli/target/debug/ns lint skills --human` | 1 s |
+| skill lint | `cli/target/debug/ns lint skills --human` and `cli/target/debug/ns lint .agents/skills --human` (repo-local skills, no `ns-` prefix required) | 1 s |
 | eval cases valid | `cli/target/debug/ns eval --dry-run` | 1 s |
 | private refs | `scripts/check-private.sh` | 1 s |
 | rules | `rules/rust/check.sh clippy cli`, `rules/rust/check.sh deny cli`, `rules/rust/check.sh ast-grep cli` (the Rust rule pack; needs `jq`, `ast-grep` and `cargo-deny`) | 10 s |

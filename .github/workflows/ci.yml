@@ -1,9 +1,18 @@
 name: CI
 
-# PRs only. Branch protection requires PR branches to be up to date with main,
-# so every merge is exactly what CI tested and main needs no second run.
+# PRs and main. Branch protection no longer requires PR branches to be up to
+# date with main (parallel units kept rebasing), so a merge is not exactly what
+# CI tested: two PRs that each pass alone can still break main together. The
+# push run on main catches that.
 on:
   pull_request:
+  push:
+    branches: [main]
+
+# A newer push cancels a superseded PR run; runs on main always finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -56,6 +65,8 @@ jobs:
         run: cargo build --manifest-path cli/Cargo.toml
       - name: Lint skills
         run: cli/target/debug/ns lint skills --human
+      - name: Lint repo-local skills
+        run: cli/target/debug/ns lint .agents/skills --human
       - name: Check human-review markers
         run: cli/target/debug/ns check-markers --human
       - name: Rules check (new violations only, against .nightshift/rules-baseline.json)

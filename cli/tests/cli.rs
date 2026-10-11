@@ -317,6 +317,117 @@ fn lint_reports_good_and_bad_skills() {
 }
 
 #[test]
+fn lint_passes_this_repos_local_skills() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let v = json(
+        &ns()
+            .arg("lint")
+            .arg(src.join(".agents/skills"))
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(v["skills"].as_u64().unwrap() > 0, "{v}");
+}
+
+#[test]
+fn lint_fails_misordered_feature_h2s_naming_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let local = tmp.path().join(".agents/skills");
+    write_skill(
+        &local,
+        "verify-x",
+        "---\nname: verify-x\ndescription: X.\n---\n",
+    );
+    let features = local.join("verify-x/features");
+    fs::create_dir_all(&features).unwrap();
+    fs::write(
+        features.join("x.md"),
+        "# F\n\n## Gotchas\n\n## Sub-features\n\n## How to get to it (user POV)\n\n## Driving it with t\n",
+    )
+    .unwrap();
+
+    let v = json(
+        &ns()
+            .arg("lint")
+            .arg(&local)
+            .assert()
+            .code(1)
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["ok"], false, "{v}");
+    let errors = v["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1, "{v}");
+    assert!(
+        errors[0]["file"]
+            .as_str()
+            .unwrap()
+            .ends_with("features/x.md"),
+        "{v}"
+    );
+}
+
+#[test]
+fn lint_human_names_the_bad_feature_file_and_the_rule() {
+    let tmp = tempfile::tempdir().unwrap();
+    let local = tmp.path().join(".agents/skills");
+    write_skill(
+        &local,
+        "verify-x",
+        "---\nname: verify-x\ndescription: X.\n---\n",
+    );
+    let features = local.join("verify-x/features");
+    fs::create_dir_all(&features).unwrap();
+    fs::write(features.join("x.md"), "# F\n\n## Nope\n").unwrap();
+
+    ns().arg("lint")
+        .arg(&local)
+        .arg("--human")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("features/x.md"))
+        .stdout(predicate::str::contains("H2 headings must be"));
+}
+
+#[test]
+fn lint_passes_relative_repo_local_skills_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let local = tmp.path().join(".agents/skills");
+    write_skill(
+        &local,
+        "verify-x",
+        "---\nname: verify-x\ndescription: X.\n---\n",
+    );
+
+    let v = json(
+        &ns()
+            .current_dir(tmp.path())
+            .args(["lint", ".agents/skills"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(v["skills"].as_u64().unwrap() > 0, "{v}");
+
+    let v = json(
+        &ns()
+            .current_dir(&local)
+            .args(["lint", "."])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(v["skills"].as_u64().unwrap() > 0, "{v}");
+}
+
+#[test]
 fn lint_passes_clean_dir_and_rejects_missing_dir() {
     let tmp = tempfile::tempdir().unwrap();
     write_skill(
@@ -915,6 +1026,100 @@ fn doctor_reports_which_harness_skill_dirs_hold_the_ns_skills() {
         .as_str()
         .unwrap()
         .ends_with(".agents/skills"));
+}
+
+#[test]
+fn doctor_reports_whether_core_hooks_path_points_at_githooks() {
+    let (_tmp, root) = repo();
+    fs::create_dir(root.join(".githooks")).unwrap();
+    let doctor = || {
+        json(
+            &ns()
+                .current_dir(&root)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .arg("doctor")
+                .assert()
+                .success()
+                .get_output()
+                .stdout,
+        )
+    };
+    let fix = "git config core.hooksPath .githooks";
+
+    let v = doctor();
+    assert_eq!(v["hooks"]["ok"], false);
+    assert_eq!(v["hooks"]["path"], Value::Null);
+    assert_eq!(v["hooks"]["fix"], fix);
+    assert_eq!(v["ok"], false);
+    assert!(v["problems"].to_string().contains(fix), "{}", v["problems"]);
+
+    git(&root, &["config", "core.hooksPath", "elsewhere"]);
+    let v = doctor();
+    assert_eq!(v["hooks"]["ok"], false);
+    assert_eq!(v["hooks"]["path"], "elsewhere");
+    assert!(v["problems"].to_string().contains(fix), "{}", v["problems"]);
+
+    fs::create_dir(root.join("other")).unwrap();
+    git(&root, &["config", "core.hooksPath", "other"]);
+    let v = doctor();
+    assert_eq!(v["hooks"]["ok"], false);
+    assert_eq!(v["hooks"]["path"], "other");
+    assert_eq!(v["hooks"]["fix"], fix);
+    assert!(v["problems"].to_string().contains(fix), "{}", v["problems"]);
+
+    for set in [
+        ".githooks",
+        "./.githooks/",
+        root.join(".githooks").to_str().unwrap(),
+    ] {
+        git(&root, &["config", "core.hooksPath", set]);
+        let v = doctor();
+        assert_eq!(v["hooks"]["ok"], true, "{set}");
+        assert_eq!(v["hooks"]["path"], set);
+        assert_eq!(v["hooks"]["fix"], Value::Null);
+        assert!(!v["problems"].to_string().contains("hooksPath"), "{set}");
+    }
+}
+
+#[test]
+fn doctor_checks_hooks_path_from_a_subdirectory() {
+    let (_tmp, root) = repo();
+    fs::create_dir(root.join(".githooks")).unwrap();
+    fs::create_dir(root.join("sub")).unwrap();
+    let v = json(
+        &ns()
+            .current_dir(root.join("sub"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .arg("doctor")
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["hooks"]["ok"], false);
+    assert_eq!(v["hooks"]["path"], Value::Null);
+}
+
+#[test]
+fn doctor_skips_the_hooks_check_without_a_githooks_dir() {
+    let (_tmp, root) = repo();
+    let outside = tempfile::tempdir().unwrap();
+    for dir in [root.as_path(), outside.path()] {
+        let v = json(
+            &ns()
+                .current_dir(dir)
+                .arg("doctor")
+                .assert()
+                .success()
+                .get_output()
+                .stdout,
+        );
+        assert_eq!(v["hooks"]["ok"], true, "{}", dir.display());
+        assert_eq!(v["hooks"]["fix"], Value::Null);
+        assert!(!v["problems"].to_string().contains("hooksPath"));
+    }
 }
 
 fn executable(path: &Path, body: &str) {
