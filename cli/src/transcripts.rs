@@ -15,7 +15,7 @@ use crate::clock;
 use crate::error::SfError;
 
 const FULL_LIMIT: usize = 2_000;
-const COMPACT_LIMIT: usize = 200;
+pub(crate) const COMPACT_LIMIT: usize = 200;
 const HEADER_LINES: usize = 50;
 const SOURCE: &str = "claude";
 
@@ -296,7 +296,7 @@ fn capped_json(v: &Value, limit: usize) -> String {
     out.finish()
 }
 
-fn line_entries(v: &Value, limit: usize) -> Vec<Entry> {
+pub(crate) fn line_entries(v: &Value, limit: usize) -> Vec<Entry> {
     let content = &v["message"]["content"];
     match v["type"].as_str() {
         Some("user") => user_entries(content, limit),

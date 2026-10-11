@@ -1443,6 +1443,49 @@ fn log_prints_the_run_log_from_any_worktree() {
 }
 
 #[test]
+fn log_phase_output_prints_the_newest_transcript_redacted() {
+    let (_tmp, root) = repo();
+    let log = |args: &[&str]| {
+        ns().current_dir(&root)
+            .args(["log", "--phase-output"])
+            .args(args)
+            .output()
+    };
+    let out = log(&["--unit", "7-a"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no phase transcript for 7-a"));
+
+    let dir = root.join(".git/ns/transcripts/7-a");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("build-1.jsonl"),
+        concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Building."}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"GH_TOKEN=ghp_0123456789abcdefghijABCDEFGHIJ gh pr list"}}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let out = log(&[]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "assistant: Building.\ntool: Bash {\"command\":\"GH_TOKEN=[redacted] gh pr list\"}\n"
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("build-1.jsonl"));
+    let out = log(&["--unit", "7-a", "--json"]);
+    let first = out.stdout.split(|b| *b == b'\n').next().map(json);
+    assert_eq!(
+        first,
+        Some(serde_json::json!({"kind":"assistant","text":"Building."}))
+    );
+
+    assert_eq!(log(&["--since", "2026-10-01"]).status.code(), Some(2));
+    assert_eq!(log(&["--unit", "../x"]).status.code(), Some(2));
+}
+
+#[test]
 fn log_follow_prints_the_log_so_far_and_keeps_running() {
     use std::io::BufRead;
     let (_tmp, root) = repo();

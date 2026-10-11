@@ -318,6 +318,9 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         /// Print one JSON object per event instead of a line
         #[arg(long)]
         json: bool,
+        /// Print the assistant messages and tool calls of the newest phase transcript instead
+        #[arg(long, conflicts_with = "since")]
+        phase_output: bool,
     },
 
     /// Summarise the night: units running now, units ended since --since by outcome, and what is next
@@ -520,6 +523,7 @@ Examples:
   ns log -f
   ns log --unit 142-uart-timeout --since 2026-10-09
   ns log --json | jq -r 'select(.event == \"end\") | .reason'
+  ns log --phase-output --unit 142-uart-timeout -f
 
 Reads <git-common-dir>/ns/runs.jsonl, which ns run and ns watch append to. A line per event:
 time, event, #issue, phase, attempt, status, duration, outcome, PR link and reason, leaving out
@@ -529,9 +533,15 @@ wall_s, outcome, pr, pr_url and reason; nothing else in the log is printed. --si
 inclusive, and drops events with no time. -f prints the log so far, then polls it every
 0.5 s until stopped (Ctrl-C). Lines that are not UTF-8 JSON objects are skipped; without -f
 their count is on stderr.
+--phase-output reads instead the newest transcript under <git-common-dir>/ns/transcripts/<unit>/
+(of any unit without --unit): its last 20 assistant messages and tool calls, one line each, text
+past 200 characters cut short and credential-like values replaced by [redacted]. With --json
+each is {\"kind\":\"assistant\",\"text\"} or {\"kind\":\"tool\",\"name\",\"input\"}. -f follows that
+transcript. It does not take --since.
 Changes nothing.
 
-Exit codes: 0 ok, 1 the log could not be read, 2 usage error (bad --since, not in a git repo).";
+Exit codes: 0 ok, 1 the log or transcript could not be read or there is no transcript yet, 2 usage
+error (bad --since or --unit, not in a git repo).";
 
 const QUALITY_HELP: &str = "\
 Examples:
