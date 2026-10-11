@@ -17,6 +17,11 @@ case ${1:-} in
   *) echo "usage: scripts/ci-tools.sh install|check [<tool>...]" >&2; exit 2 ;;
 esac
 
+python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null || {
+  echo "ci-tools: needs Python 3.11 or newer (for tomllib); python3 on PATH is older" >&2
+  exit 1
+}
+
 # One tab-separated line per tool: name, version, install method, package, check command.
 tools=$(python3 -I - "$list" "$@" <<'PY'
 import sys, tomllib

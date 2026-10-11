@@ -316,3 +316,21 @@ fn a_pip_tool_installs_and_hints_by_its_package_name() {
         "ci-tools: sprocket is not on PATH; install it with: uv tool install sprocket-cli==3.4.5\n"
     );
 }
+
+#[test]
+fn a_python_older_than_3_11_fails_with_a_message_naming_the_floor() {
+    for mode in ["check", "install"] {
+        let repo = all_installed();
+        write_exe(
+            &repo.dir.path().join("bin/python3"),
+            "#!/bin/sh\ncase \"$1\" in\n  -c) exit 1 ;;\n  *) echo 'ModuleNotFoundError: tomllib' >&2; exit 1 ;;\nesac\n",
+        );
+        let out = repo.run(&[mode], &[]);
+        assert!(!out.status.success(), "{mode}");
+        assert_eq!(
+            stderr(&out),
+            "ci-tools: needs Python 3.11 or newer (for tomllib); python3 on PATH is older\n",
+            "{mode}"
+        );
+    }
+}
