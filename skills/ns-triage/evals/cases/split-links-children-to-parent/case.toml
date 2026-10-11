@@ -16,7 +16,7 @@ present = true
 
 [[check]]
 # Every child links the parent as a whole token (`Part of #01`, not `#011`), with only header lines (`Status:`, `Priority:`, ...) ahead of it, and `Blocked by:` the first non-header body line when present.
-# The parent's Triage Notes have a `Children:` list naming every child.
+# The parent's Triage Notes have a `Children:` list (to the next heading) naming every child by file stem or a `#NN` / list-leading number, not a digit in prose.
 type = "command"
 run = '''
 python3 - <<'PYEOF'
@@ -28,7 +28,7 @@ print("children:", children)
 if len(children) < 2:
     sys.exit("fewer than two child issues")
 notes = open(parent_path, encoding="utf-8").read().split("Triage Notes", 1)[-1]
-listing = re.search(r"(?mi)^\W*Children\W*:(.*(?:\n(?!\s*\n).*)*)", notes)
+listing = re.search(r"(?mi)^\W*Children\W*:(.*(?:\n(?!#).*)*)", notes)
 if not listing:
     sys.exit("parent's Triage Notes have no Children: list")
 part_of = re.compile(r"(?i)\W*Part of:?\**:?\s*#0*1(?!\d)")
@@ -41,7 +41,10 @@ for path in children:
     if not num:
         sys.exit(f"{path}: file name has no numeric prefix")
     num = num.group()
-    if not (stem in listing.group(1) or re.search(rf"(?<!\d)(?:{num}|{int(num)})(?!\d)", listing.group(1))):
+    n = rf"0*{int(num)}(?!\d)"
+    named = re.search(rf"(?<![\w-]){re.escape(stem)}(?![\w-])", listing.group(1))
+    numbered = re.search(rf"(?m)(?:#|,\s*|\A\s*|^\s*(?:[-*+]|\d+[.)])?\s*[*_`\[]*)(?:#)?{n}", listing.group(1))
+    if not (named or numbered):
         sys.exit(f"{path}: not in the parent's Children: list")
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     body = lines[1:] if lines and lines[0].startswith("#") else lines
