@@ -35,7 +35,7 @@ static SECRET_TEXT: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
             "${1}[redacted]",
         ),
         (
-            r"(?i)(\s--[a-z-]*(?:password|passwd|passphrase|secret|token|api-?key|access-?key|private-?key|credentials?)\s+)\S+",
+            r"(?i)(\s--[a-z-]*(?:password|passwd|passphrase|secret|token|api-?key|access-?key|private-?key|signing-?key|encryption-?key|credentials?)\s+)\S+",
             "${1}[redacted]",
         ),
         (
@@ -55,7 +55,7 @@ static SECRET_TEXT: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
             REDACTED,
         ),
         (
-            r#"(?i)\b([A-Za-z0-9_.-]*(?:token|secret|password|passwd|passphrase|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[A-Za-z0-9_]*"?[ \t]*[:=][ \t]*)("[^"\n]*"|'[^'\n]*'|[^\n]+)"#,
+            r#"(?i)\b([A-Za-z0-9_.-]*(?:token|secret|password|passwd|passphrase|api[_-]?key|access[_-]?key|private[_-]?key|signing[_-]?key|encryption[_-]?key|credentials?)[A-Za-z0-9_]*"?[ \t]*[:=][ \t]*)("[^"\n]*"|'[^'\n]*'|[^\n]+)"#,
             "${1}[redacted]",
         ),
     ]
@@ -203,6 +203,9 @@ mod tests {
             ("{\n\"token\": \"hunter2value\"\n}", "hunter2value"),
             ("password = correct horse battery staple", "staple"),
             ("PASSWORD=correct horse && run", "horse"),
+            ("export SIGNING_KEY=abc123", "abc123"),
+            ("ENCRYPTION_KEY=abc123", "abc123"),
+            ("run --signing-key abc123 now", "abc123"),
         ];
         for (text, secret) in texts {
             let mut v = Value::String(text.into());
