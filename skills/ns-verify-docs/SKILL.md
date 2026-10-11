@@ -21,7 +21,7 @@ The changed paths for a unit or change are `git diff --name-only --no-renames $(
 
 ## 2. Run the checks
 
-Run each docs check that `docs/agents/docs.md` lists in its Checks section as of the base (`git show <base>:docs/agents/docs.md`, so the change can't loosen its own checks) (IDs, terms, links), and any docs lint in `docs/agents/stack.md`. Copy each check's summary line for the evidence. When the repo has none, record "no docs checks configured", and step 3's searches stand in for the ID check.
+Run each docs check that `docs/agents/docs.md` lists in its Checks section as of the base (`git show <base>:docs/agents/docs.md`, so the change can't loosen its own checks) (IDs, terms, links), and any docs lint in `docs/agents/stack.md`. Copy each check's summary line for the evidence. When the base's `docs/agents/docs.md` has no Checks section, or lists none, record "no docs checks configured (run ns-setup to add them)" in the evidence, and step 3's searches stand in for the ID check.
 
 A red check is a finding like any other: take it through steps 5 and 6. A duplicate ID after a rebase onto the base is the usual one. In change mode, the ID already on the base keeps its number, and the branch's ID moves to the next free one everywhere the branch cites it.
 

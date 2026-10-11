@@ -77,3 +77,7 @@ expect = false
 [[trigger]]
 prompt = "Verify unit 10-widen-docs: it edits docs/agents/docs.md to list src/ as a design location, plus a design doc under src/. Write evidence.md."
 expect = false
+
+[[trigger]]
+prompt = "Verify unit 11-docs-config: it edits docs/requirements/stock/schema.json, which the build parses, and nothing else. Write evidence.md."
+expect = false

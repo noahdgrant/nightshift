@@ -33,7 +33,7 @@ A docs-only diff has no surface to drive. A unit is **docs-only** when its chang
 
 - the list has at least one path;
 - every path is under a requirements or design directory, or is a changelog there, as listed by `git show <base>:docs/agents/docs.md` (the base's copy, so the diff can't widen its own definition);
-- no path is `docs/agents/docs.md`, a skill file, `AGENTS.md`, `CLAUDE.md`, or a file a build, test or tool parses.
+- no path is `docs/agents/docs.md`, a skill file, `AGENTS.md`, `CLAUDE.md`, or a file whose path does not end in `.md`.
 
 When `docs/agents/docs.md` is missing on the base, the unit is not docs-only. A docs-only unit loads the `ns-verify-docs` skill and follows it in place of the rest of this skill. It writes `evidence.md` in step 6's format.
 

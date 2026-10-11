@@ -17,7 +17,7 @@ Scaffold the per-repo configuration the `ns-*` skills read:
 | `docs/agents/issue-tracker.md` | where issues live, the CLI that reaches them, how they are created and linked |
 | `docs/agents/triage-labels.md` | label strings for each triage category, priority and state |
 | `docs/agents/domain.md` | where `GLOSSARY.md` and ADRs live, and the rules for reading them |
-| `docs/agents/docs.md` | where requirements and design docs live, their review surface, ID keys, and template overrides |
+| `docs/agents/docs.md` | where requirements and design docs live, their review surface, ID keys, docs checks, and template overrides |
 
 This is a prompt-driven skill, not a deterministic script. Explore, present what you found, confirm with the user, then write. The repo answers most questions. Ask only what it can't.
 
@@ -81,7 +81,7 @@ The defaults are the canonical roles with each label equal to its name, and each
 
 **Section E: Domain docs.** Default to **single-context** (one `GLOSSARY.md` + `docs/adr/` at the root) and write it without asking. Offer **multi-context** (a root `GLOSSARY-MAP.md` pointing to per-context `GLOSSARY.md` files) only when exploration found multi-context signals.
 
-**Section F: Docs.** Propose the directories exploration found (the layout under them is fixed by `ns-requirements`), else the defaults in [docs.md](references/docs.md), with a pull request on this repo as the review surface. Ask only when existing docs live somewhere else or reviewers work in another tool. List any ID keys already in use.
+**Section F: Docs.** Propose the directories exploration found (the layout under them is fixed by `ns-requirements`), else the defaults in [docs.md](references/docs.md), with a pull request on this repo as the review surface. Ask only when existing docs live somewhere else or reviewers work in another tool. List any ID keys already in use. Ask for the commands that check the docs (IDs, terms, links), or `none`.
 
 ### 3. Confirm
 
