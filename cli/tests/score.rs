@@ -493,3 +493,66 @@ fn a_malformed_user_config_is_reported_not_swallowed() {
     assert!(!err.contains("role not configured"), "{err}");
     assert_eq!(e.ledger(), "");
 }
+
+#[test]
+fn a_revert_of_a_different_commit_does_not_mark_the_merge_reverted() {
+    let e = Env::new("fail");
+    git(
+        &e.root,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "Revert \"feat: y\"\n\nThis reverts commit deadbee.",
+        ],
+    );
+    let (v, _) = e.run(&["score", UNIT, "--dry-run"], 0);
+    let p = v["prompts"][0]["prompt"].as_str().unwrap();
+    assert!(p.contains("\"reverted\":false"), "{p}");
+}
+
+#[test]
+fn a_role_that_is_not_configured_is_an_invalid_scorer_and_appends_nothing() {
+    let e = Env::new("pass");
+    fs::write(
+        e.base.join("config.toml"),
+        "[harness.judge]\ncommand = [\"judge\"]\n",
+    )
+    .unwrap();
+    let (_, err) = e.run(&["score", UNIT], 1);
+    assert!(err.contains("invalid scorers"), "{err}");
+    assert!(err.contains("review.scorer"), "{err}");
+    assert_eq!(e.ledger(), "");
+    assert_eq!(e.prompt(), "", "the judge ran");
+}
+
+#[test]
+fn a_harness_binary_that_is_not_on_path_exits_4_and_appends_nothing() {
+    let e = Env::new("pass");
+    fs::write(
+        e.base.join("config.toml"),
+        "[harness.judge]\ncommand = [\"no-such-judge-binary\"]\n\n[roles.\"review.scorer\"]\nharness = \"judge\"\n",
+    )
+    .unwrap();
+    let (_, err) = e.run(&["score", UNIT], 4);
+    assert!(err.contains("no-such-judge-binary"), "{err}");
+    assert_eq!(e.ledger(), "");
+}
+
+#[test]
+fn a_judge_that_replies_at_length_before_reading_still_gets_the_whole_prompt() {
+    let e = Env::new("pass");
+    script(
+        &e.bin.join("judge"),
+        "head -c 200000 /dev/zero | tr '\\0' 'x'\necho\ncat > \"$FAKE_DIR/prompt\"\nprintf 'label: pass\\n'",
+    );
+    let big = format!("{}\nTAIL-MARKER\n", "y".repeat(200 * 1024));
+    fs::write(e.root.join(".ns").join(UNIT).join("big.md"), &big).unwrap();
+    let (v, _) = e.run(&["score", UNIT], 0);
+    assert_eq!(v["scores"][0]["label"], "pass", "{v}");
+    let p = e.prompt();
+    assert!(p.len() > 200 * 1024, "{}", p.len());
+    assert!(p.contains(&big), "the artifact arrived truncated");
+    assert!(p.contains("label: <value>"), "the prompt tail is missing");
+}
