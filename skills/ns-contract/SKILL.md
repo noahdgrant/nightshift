@@ -112,7 +112,7 @@ A repo's git hooks are part of its checks. A phase never skips them:
 
 A hook that rejects a commit or push names a cause: a failing test, a lint, a format diff. Read its output, fix that cause, and commit or push again. When the cause lies outside the unit (a broken toolchain, a test already red on the base), stop with `status: blocked` and name it. It never justifies a bypass.
 
-The `ns` CLI's own git plumbing, which writes no unit's code, skips hooks by design. Phases don't.
+The `ns` CLI's own git plumbing, which writes no unit's code, skips hooks by design, at three call sites: the quality-records push, the skills fast-forward, and the push that merges the default branch into a PR head. Phases don't.
 
 ## Killing processes
 

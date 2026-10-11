@@ -1944,7 +1944,8 @@ fn workflow_refusal(error: &str) -> bool {
 /// `pr_head` with a lease, as update-branch would have. `Ok(false)` is a merge conflict,
 /// aborted; any other failure is an error. HEAD must be `pr_head`, since the lease would
 /// otherwise replace a PR head the merge was not built on. A failed push resets the branch to
-/// the HEAD it started from, so the worktree still matches the PR.
+/// the HEAD it started from, so the worktree still matches the PR. The push skips the
+/// checkout's pre-push hook: the content is the default branch plus a PR head already checked.
 fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<bool> {
     let net = |args: &[&str]| -> Result<()> {
         let out = git::net(wt, args).output().context("failed to run git")?;
@@ -1988,7 +1989,7 @@ fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<boo
     }
     let lease = format!("--force-with-lease=refs/heads/{branch}:{pr_head}");
     let spec = format!("HEAD:refs/heads/{branch}");
-    if let Err(e) = net(&["push", "-q", &lease, "origin", &spec]) {
+    if let Err(e) = net(&["push", "-q", "--no-verify", &lease, "origin", &spec]) {
         return Err(match git::run(wt, &["reset", "-q", "--keep", &start]) {
             Ok(_) => e,
             Err(reset) => anyhow!("{e:#}; resetting to {start} failed too: {reset:#}"),
@@ -2133,6 +2134,37 @@ mod tests {
     fn commit_all(dir: &Path, msg: &str) {
         git::run(dir, &["add", "-A"]).unwrap();
         git::run(dir, &["commit", "-q", "-m", msg]).unwrap();
+    }
+
+    /// The merge pushes the default branch plus a PR head that already passed its checks, so a
+    /// pre-push hook running full CI there would take minutes to recheck a tree nobody wrote.
+    #[test]
+    fn merging_the_default_branch_pushes_without_the_checkouts_pre_push_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        let (t, _origin, wt) = cloned();
+        let g = |dir: &Path, args: &[&str]| git::run(dir, args).unwrap();
+        g(&wt, &["switch", "-q", "-c", "ns/9-x"]);
+        fs::write(wt.join("f.c"), "a\nx = 2\nb\n").unwrap();
+        commit_all(&wt, "unit");
+        g(&wt, &["push", "-q", "origin", "ns/9-x"]);
+        let other = t.path().join("other");
+        g(t.path(), &["clone", "-q", "origin.git", "other"]);
+        for args in [
+            &["config", "user.email", "t@example.com"][..],
+            &["config", "user.name", "t"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g(&other, args);
+        }
+        fs::write(other.join("g.c"), "a\nx = 3\nb\n").unwrap();
+        commit_all(&other, "main moves");
+        g(&other, &["push", "-q", "origin", "HEAD:main"]);
+        let hook = wt.join(".git/hooks/pre-push");
+        fs::write(&hook, "#!/bin/sh\ntouch ran\nexit 1\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let head = g(&wt, &["rev-parse", "HEAD"]);
+        assert!(merge_default_with_git(&wt, "main", &head).unwrap());
+        assert!(!wt.join("ran").exists());
     }
 
     #[test]
