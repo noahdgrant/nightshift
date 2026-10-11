@@ -36,12 +36,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: cli
-      - name: Install the Rust rule pack's tools (rules/rust/check.sh; jq ships with the runner)
-        uses: taiki-e/install-action@v2
+      - name: Install the pinned tools cli/tests run (rules_pack.rs runs the rule packs; jq ships with the runner)
+        id: tools
+        working-directory: .
+        run: scripts/ci-tools.sh install ruff ast-grep cargo-deny
+      - uses: taiki-e/install-action@v2
         with:
-          tool: ast-grep@0.50.0,cargo-deny@0.20.2
-      - name: Install ruff (cli/tests/rules_pack.rs runs the Python pack tests)
-        run: python3 -m pip install ruff==0.14.2
+          tool: ${{ steps.tools.outputs.install-action }}
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
@@ -60,9 +61,11 @@ jobs:
         with:
           workspaces: cli
       - name: Install the Rust rule pack's tools (rules/rust/check.sh; jq ships with the runner)
-        uses: taiki-e/install-action@v2
+        id: tools
+        run: scripts/ci-tools.sh install ast-grep cargo-deny
+      - uses: taiki-e/install-action@v2
         with:
-          tool: ast-grep@0.50.0,cargo-deny@0.20.2
+          tool: ${{ steps.tools.outputs.install-action }}
       - name: Build ns
         run: cargo build --manifest-path cli/Cargo.toml
       - name: Lint skills
@@ -106,8 +109,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install pytest
-      - run: python -m pytest -q
+      - name: Install pytest (scripts/ci-tools.toml)
+        working-directory: .
+        run: scripts/ci-tools.sh install pytest
+      - run: pytest -q
       - name: ns-troubleshoot brief checker tests
         working-directory: skills/ns-troubleshoot/evals/cases
         run: |
@@ -130,7 +135,7 @@ jobs:
           workspaces: cli
       - name: Build ns
         run: cargo build --manifest-path cli/Cargo.toml
-      - run: python -m pip install ruff==0.14.2 ast-grep-cli==0.50.0
+      - run: scripts/ci-tools.sh install ruff ast-grep
       - run: rules/python/tests/run.sh
 
   rule-pack-c:
@@ -142,12 +147,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install ast-grep and clang-tidy
-        run: |
-          python -m pip install ast-grep-cli==0.50.0
-          sudo apt-get update
-          sudo apt-get install -y clang-tidy-18
-          sudo ln -sf "$(command -v clang-tidy-18)" /usr/local/bin/clang-tidy
+      - run: scripts/ci-tools.sh install ast-grep clang-tidy
       - run: python -m unittest discover -s rules/c/tests
 
   private-refs:
