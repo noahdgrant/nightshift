@@ -41,6 +41,15 @@ From a skill directory, link a principle as `../ns-principle-<name>/SKILL.md`.
 - [Test Behavior, Not Implementation](../ns-principle-test-behavior-not-implementation/SKILL.md): writing, changing, or keeping a test. Assert what users observe against a literal expected value. If it would pass with every import returning `None`, rewrite or delete it.
 - [Explain the Number](../ns-principle-explain-the-number/SKILL.md): before you trust, report, or act on a measured number (speedup, regression, latency, eval result). Find what limits it and rule out that it measured something else.
 
+## Standing behaviours
+
+From addyosmani's `using-agent-skills`. Its "enforce simplicity" is [Laziness Protocol](../ns-principle-laziness-protocol/SKILL.md) and [Subtract Before You Add](../ns-principle-subtract-before-you-add/SKILL.md); its "verify, don't assume" is [Prove It Works](../ns-principle-prove-it-works/SKILL.md).
+
+- [Surface Assumptions](../ns-principle-surface-assumptions/SKILL.md): before a non-trivial change the brief leaves partly unstated. Write down what the change rests on; under `gates: auto`, record it in the artifact instead of asking.
+- [Manage Confusion](../ns-principle-manage-confusion/SKILL.md): the brief, the code, the docs or a test disagree, or a fact the work needs is missing. Stop and resolve it (read, reproduce, ask, or record and route) instead of guessing.
+- [Push Back](../ns-principle-push-back/SKILL.md): the brief, a reviewer or the human asks for something the evidence says is wrong. Say so with the evidence, propose an alternative, accept an informed override.
+- [Keep Scope Tight](../ns-principle-keep-scope-tight/SKILL.md): every diff in a unit. Touch only what the brief requires, and record the rest for filing as issues.
+
 ## Delegation
 
 - [Guard the Context Window](../ns-principle-guard-the-context-window/SKILL.md): context fills up with large outputs, long files, repeated reads, or fan-out planning. Route bulk to fresh-context agents, keep summaries in the main thread.
