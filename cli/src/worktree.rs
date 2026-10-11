@@ -215,7 +215,7 @@ pub fn ensure(repo: &Repo, unit: &str, base: Option<&str>, setup: &[String]) -> 
     // `git worktree add` from a remote base writes the branch's upstream to `.git/config`,
     // which only one git at a time can lock.
     let me = json!({"pid": std::process::id(), "unit": unit});
-    let Ok(creating) = Lock::wait(&repo.common_dir, WORKTREE_LOCK, me, None, |by| {
+    let Ok(creating) = Lock::wait(&repo.common_dir, WORKTREE_LOCK, &me, None, |by| {
         eprintln!(
             "ns worktree: {unit} waits for the worktree lock (held by pid {}, unit {})",
             holder_pid(by),

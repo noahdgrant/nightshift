@@ -61,7 +61,7 @@ impl Lock {
     }
 
     /// Take `<common>/<name>` and record `holder` in it, or return who holds it now.
-    fn take(common: &Path, name: &str, holder: Value) -> Result<Result<Lock, Value>> {
+    fn take(common: &Path, name: &str, holder: &Value) -> Result<Result<Lock, Value>> {
         let path = common.join(name);
         let f = open_lock(&path)?;
         let mut tries = 0;
@@ -75,7 +75,7 @@ impl Lock {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        Ok(Ok(Lock::held(f, &holder)?))
+        Ok(Ok(Lock::held(f, holder)?))
     }
 
     /// Take `<common>/<name>` and record `holder` in it, waiting while another process holds
@@ -85,7 +85,7 @@ impl Lock {
     pub fn wait(
         common: &Path,
         name: &str,
-        holder: Value,
+        holder: &Value,
         deadline: Option<(&Clock, i64)>,
         mut waiting: impl FnMut(&Value),
     ) -> Result<Result<Lock, Value>> {
@@ -104,14 +104,14 @@ impl Lock {
             crate::stop::check()?;
             std::thread::sleep(LOCK_WAIT_POLL);
         }
-        Ok(Ok(Lock::held(f, &holder)?))
+        Ok(Ok(Lock::held(f, holder)?))
     }
 
     /// The run lock for `unit`, refused with exit 5 while another `ns run` holds it.
     pub fn acquire(common: &Path, unit: &str, issue: Option<u64>) -> Result<Lock> {
         let me = json!({"pid": std::process::id(), "unit": unit, "issue": issue});
         let name = run_lock(unit);
-        Self::take(common, &name, me)?.map_err(|held| {
+        Self::take(common, &name, &me)?.map_err(|held| {
             SfError::new(
                 EXIT_LOCKED,
                 format!(
@@ -130,7 +130,7 @@ impl Lock {
     /// `ns watch` holds it.
     pub fn watch(common: &Path) -> Result<Lock> {
         let me = json!({"pid": std::process::id()});
-        Self::take(common, WATCH_LOCK, me)?.map_err(|held| {
+        Self::take(common, WATCH_LOCK, &me)?.map_err(|held| {
             SfError::new(
                 EXIT_LOCKED,
                 format!("another ns watch (pid {}) is running", held["pid"]),
@@ -380,7 +380,7 @@ fn try_flock(f: &File) -> std::io::Result<bool> {
         }
         let e = std::io::Error::last_os_error();
         match e.raw_os_error() {
-            Some(libc::EINTR) => continue,
+            Some(libc::EINTR) => {}
             Some(libc::EWOULDBLOCK) => return Ok(false),
             _ => return Err(e),
         }
@@ -666,7 +666,7 @@ pub(super) mod tests {
         let mut other = Some(hold(dir.path(), "ns-merge"));
         let mut waits = Vec::new();
         let me = json!({"pid": 1, "unit": "u"});
-        let lock = Lock::wait(dir.path(), MERGE_LOCK, me, None, |by| {
+        let lock = Lock::wait(dir.path(), MERGE_LOCK, &me, None, |by| {
             waits.push(by.clone());
             other = None;
         })
@@ -685,7 +685,7 @@ pub(super) mod tests {
     fn a_free_lock_is_taken_without_a_wait() {
         let dir = tempfile::tempdir().unwrap();
         let me = json!({"pid": 1, "unit": "u"});
-        let lock = Lock::wait(dir.path(), WORKTREE_LOCK, me, None, |_| panic!("waited")).unwrap();
+        let lock = Lock::wait(dir.path(), WORKTREE_LOCK, &me, None, |_| panic!("waited")).unwrap();
         assert!(lock.is_ok());
     }
 

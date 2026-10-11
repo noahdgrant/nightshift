@@ -504,7 +504,7 @@ fn check_since(since: &str) -> Result<()> {
     .into())
 }
 
-pub fn list(args: ListArgs) -> Result<ExitCode> {
+pub fn list(args: &ListArgs) -> Result<ExitCode> {
     if let Some(since) = &args.since {
         check_since(since)?;
     }
@@ -517,7 +517,7 @@ pub fn list(args: ListArgs) -> Result<ExitCode> {
     let mut sessions = Vec::new();
     let mut seen = Vec::new();
     for r in readers()? {
-        for (session, seen_as) in scan(r.as_ref(), &args, &index)? {
+        for (session, seen_as) in scan(r.as_ref(), args, &index)? {
             seen.push((session.key.clone(), seen_as));
             sessions.push(session);
         }
