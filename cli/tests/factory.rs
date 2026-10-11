@@ -3086,6 +3086,38 @@ fn a_failed_fetch_in_the_git_fallback_needs_a_human_merge() {
 }
 
 #[test]
+fn a_rebased_pr_head_is_not_overwritten_by_the_git_fallback() {
+    let rebased = r#"git rev-parse HEAD > "$FAKE_GH_DIR/pr-12.head"
+git push -q -f origin HEAD
+$c commit -q --amend -m reworded"#;
+    let (e, v, code) = workflow_refused(LAND_UP, rebased);
+    assert_eq!((code, &v["outcome"]), (0, &"done".into()), "{v}");
+    assert_eq!(v["needs_human"], true, "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.contains("`workflow` scope"), "{reason}");
+    assert!(reason.contains("needs a human merge"), "{reason}");
+    let pushed = fs::read_to_string(e.ghd.join("pr-12.head")).unwrap();
+    let remote = e.base.join("remote.git");
+    assert_eq!(
+        git(&remote, &["rev-parse", &format!("ns/{UNIT}")]),
+        pushed.trim()
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
+#[test]
+fn a_merge_that_fails_without_a_conflict_needs_a_human_merge() {
+    let landed = r#"echo up > UNTRACKED && git add UNTRACKED && $c commit -qm up"#;
+    let (e, v, code) = workflow_refused(landed, "echo mine > UNTRACKED");
+    assert_eq!((code, &v["outcome"]), (0, &"done".into()), "{v}");
+    assert_eq!(v["needs_human"], true, "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.contains("`workflow` scope"), "{reason}");
+    assert!(reason.contains("UNTRACKED"), "{reason}");
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
+#[test]
 fn a_failed_push_in_the_git_fallback_needs_a_human_merge() {
     // Someone else moves the PR branch after ship, so the lease on the PR head fails.
     let moved = r#"(cd "$o" && git fetch -q origin "$(git -C "$OLDPWD" symbolic-ref --short HEAD)" \

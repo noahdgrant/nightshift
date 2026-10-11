@@ -1928,8 +1928,10 @@ fn workflow_refusal(error: &str) -> bool {
 }
 
 /// Merge the fresh tip of `origin/<default>` into the worktree's branch and push it over
-/// `pr_head` with a lease, as update-branch would have. `Ok(false)` is a merge conflict, aborted.
-/// A failed push resets the branch to `pr_head`, so the worktree still matches the PR.
+/// `pr_head` with a lease, as update-branch would have. `Ok(false)` is a merge conflict,
+/// aborted; any other failure is an error. HEAD must be `pr_head`, since the lease would
+/// otherwise replace a PR head the merge was not built on. A failed push resets the branch to
+/// the HEAD it started from, so the worktree still matches the PR.
 fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<bool> {
     let net = |args: &[&str]| -> Result<()> {
         let out = git::net(wt, args).output().context("failed to run git")?;
@@ -1942,28 +1944,42 @@ fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<boo
         }
         Ok(())
     };
+    let start = git::run(wt, &["rev-parse", "HEAD"])?;
+    if !same_sha(&start, pr_head) {
+        return Err(anyhow!(
+            "HEAD {start} is not the PR head {pr_head}, so a merge of {default} would replace it"
+        ));
+    }
     net(&["fetch", "-q", "origin", default])?;
     let branch = git::run(wt, &["symbolic-ref", "--short", "HEAD"])?;
     let theirs = format!("origin/{default}");
-    if !git::ok(
-        wt,
-        &[
-            "merge",
-            "-q",
-            "--no-edit",
-            "FETCH_HEAD",
-            "-m",
-            &format!("Merge {theirs} into {branch}"),
-        ],
-    ) {
-        git::run(wt, &["merge", "--abort"])?;
-        return Ok(false);
+    let merge = git::command()
+        .arg("-C")
+        .arg(wt)
+        .args(["merge", "-q", "--no-edit", "FETCH_HEAD", "-m"])
+        .arg(format!("Merge {theirs} into {branch}"))
+        .output()
+        .context("failed to run git")?;
+    if !merge.status.success() {
+        let merging = git::ok(wt, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+        let unmerged = git::run(wt, &["diff", "--name-only", "--diff-filter=U"])
+            .is_ok_and(|paths| !paths.is_empty());
+        let aborted = !merging || git::run(wt, &["merge", "--abort"]).is_ok();
+        if unmerged && aborted {
+            return Ok(false);
+        }
+        return Err(anyhow!(
+            "git merge failed: {}",
+            String::from_utf8_lossy(&merge.stderr).trim()
+        ));
     }
     let lease = format!("--force-with-lease=refs/heads/{branch}:{pr_head}");
     let spec = format!("HEAD:refs/heads/{branch}");
     if let Err(e) = net(&["push", "-q", &lease, "origin", &spec]) {
-        git::run(wt, &["reset", "-q", "--keep", pr_head])?;
-        return Err(e);
+        return Err(match git::run(wt, &["reset", "-q", "--keep", &start]) {
+            Ok(_) => e,
+            Err(reset) => anyhow!("{e:#}; resetting to {start} failed too: {reset:#}"),
+        });
     }
     Ok(true)
 }
