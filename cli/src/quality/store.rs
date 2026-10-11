@@ -1,5 +1,5 @@
 //! The `nightshift/quality` data branch on `origin`: one `records.jsonl` that `ns` appends to
-//! unattended (docs/DESIGN.md D39). Commits are built with plumbing (`hash-object`, `mktree`,
+//! unattended (docs/decisions/ D39). Commits are built with plumbing (`hash-object`, `mktree`,
 //! `commit-tree`), so writing never touches a working tree, an index or a local branch.
 
 use std::fs::{self, File, OpenOptions};

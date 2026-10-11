@@ -112,7 +112,7 @@ impl Finding {
     }
 
     /// Blocking and not `pre-existing`: what holds the unit back. A pre-existing finding is an
-    /// escape and never blocks (docs/DESIGN.md D29).
+    /// escape and never blocks (docs/decisions/ D29).
     pub fn against_unit(&self) -> bool {
         self.blocking() && self.scope != Scope::PreExisting
     }
