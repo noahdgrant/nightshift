@@ -194,7 +194,9 @@ impl Env {
     }
 
     fn gh_file(&self, name: &str, text: &str) {
-        fs::write(self.ghd.join(name), text).unwrap();
+        let tmp = self.ghd.join(format!("{name}.tmp"));
+        fs::write(&tmp, text).unwrap();
+        fs::rename(&tmp, self.ghd.join(name)).unwrap();
     }
 
     /// `ns` with the fakes on PATH.
@@ -6771,6 +6773,45 @@ fn a_claim_that_fails_on_a_refill_does_not_spend_a_max_units_claim() {
         thread::sleep(Duration::from_millis(20));
     }
     fs::remove_file(e.ghd.join("boom")).unwrap();
+    w.entered(&in_e);
+    release(&go_a);
+    release(&go_e);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 5], "done"), "{v}");
+}
+
+#[test]
+fn a_claim_whose_unit_cannot_start_on_a_refill_does_not_spend_a_max_units_claim() {
+    let e = Env::new();
+    e.triage_sets(&["status:ready-for-agent"]);
+    e.queue("triage.5-fix-e", &["pass:script"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_e, go_e) = hold_phase(&e, "5-fix-e", "build");
+    let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2", "--max-units", "2"]);
+    w.entered(&in_a);
+    let night = fs::read_dir(e.root.join(".git/ns"))
+        .unwrap()
+        .map(|d| d.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("watch-")
+        })
+        .unwrap();
+    // A directory where unit 5's result file goes: spawning its `ns run` fails.
+    let blocks: Vec<_> = (2..60)
+        .map(|n| night.join(format!("result-5-{n}.json")))
+        .collect();
+    for b in &blocks {
+        fs::create_dir(b).unwrap();
+    }
+    w.line("refill failed");
+    w.line("refill failed");
+    for b in &blocks {
+        let _ = fs::remove_dir(b);
+    }
     w.entered(&in_e);
     release(&go_a);
     release(&go_e);
