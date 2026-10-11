@@ -925,6 +925,8 @@ fn doctor_reports_whether_core_hooks_path_points_at_githooks() {
         json(
             &ns()
                 .current_dir(&root)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
                 .arg("doctor")
                 .assert()
                 .success()
@@ -947,6 +949,14 @@ fn doctor_reports_whether_core_hooks_path_points_at_githooks() {
     assert_eq!(v["hooks"]["path"], "elsewhere");
     assert!(v["problems"].to_string().contains(fix), "{}", v["problems"]);
 
+    fs::create_dir(root.join("other")).unwrap();
+    git(&root, &["config", "core.hooksPath", "other"]);
+    let v = doctor();
+    assert_eq!(v["hooks"]["ok"], false);
+    assert_eq!(v["hooks"]["path"], "other");
+    assert_eq!(v["hooks"]["fix"], fix);
+    assert!(v["problems"].to_string().contains(fix), "{}", v["problems"]);
+
     for set in [
         ".githooks",
         "./.githooks/",
@@ -959,6 +969,26 @@ fn doctor_reports_whether_core_hooks_path_points_at_githooks() {
         assert_eq!(v["hooks"]["fix"], Value::Null);
         assert!(!v["problems"].to_string().contains("hooksPath"), "{set}");
     }
+}
+
+#[test]
+fn doctor_checks_hooks_path_from_a_subdirectory() {
+    let (_tmp, root) = repo();
+    fs::create_dir(root.join(".githooks")).unwrap();
+    fs::create_dir(root.join("sub")).unwrap();
+    let v = json(
+        &ns()
+            .current_dir(root.join("sub"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .arg("doctor")
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["hooks"]["ok"], false);
+    assert_eq!(v["hooks"]["path"], Value::Null);
 }
 
 #[test]

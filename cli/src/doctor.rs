@@ -129,12 +129,32 @@ fn hooks_entry(problems: &mut Vec<String>) -> Value {
     else {
         return json!({ "ok": true, "path": null, "detail": "no .githooks/ in this repo", "fix": null });
     };
-    let path = git::run(&root, &["config", "core.hooksPath"]).ok();
+    let read = git::command()
+        .arg("-C")
+        .arg(&root)
+        .args(["config", "core.hooksPath"])
+        .output();
+    let (path, failure) = match read {
+        Ok(o) if o.status.success() => (
+            Some(String::from_utf8_lossy(&o.stdout).trim_end().to_string()),
+            None,
+        ),
+        Ok(o) if o.status.code() == Some(1) => (None, None),
+        Ok(o) => (
+            None,
+            Some(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+        ),
+        Err(e) => (None, Some(e.to_string())),
+    };
     let ok = path.as_deref().is_some_and(|p| {
         root.join(p).canonicalize().ok() == root.join(".githooks").canonicalize().ok()
     });
     let detail = match &path {
         _ if ok => "core.hooksPath points at .githooks".to_string(),
+        None if failure.is_some() => format!(
+            "could not read core.hooksPath: {}",
+            failure.as_deref().unwrap_or_default()
+        ),
         None => "core.hooksPath is unset, so .githooks/ never runs".to_string(),
         Some(p) => format!("core.hooksPath is {p:?}, so .githooks/ never runs"),
     };
