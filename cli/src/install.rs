@@ -54,6 +54,8 @@ pub enum Harness {
 }
 
 impl Harness {
+    pub const ALL: [Harness; 4] = [Self::Claude, Self::Codex, Self::Cursor, Self::Agents];
+
     /// The skill directory under `$HOME`, as each harness documents it.
     pub fn dir(self) -> PathBuf {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());

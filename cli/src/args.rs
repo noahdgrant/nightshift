@@ -345,12 +345,14 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         command: UpstreamCmd,
     },
 
-    /// Report config path and validity, configured roles, harnesses on PATH, and forge accounts
+    /// Report config path and validity, configured roles, harnesses on PATH, harness skill dirs, and forge accounts
     #[command(after_help = "\
 Examples:
   ns doctor
   NS_CONFIG=./ns.toml ns doctor
 
+skill_dirs.<harness>: the skill directory ns install --harness links into, and
+ns_skills, how many ns-*/SKILL.md skills it holds (0 when it is missing).
 forge.<name>: configured, token_resolved, and for github the account gh api user returns.
 The token itself is never printed.")]
     Doctor,

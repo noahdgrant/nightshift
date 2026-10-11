@@ -881,6 +881,42 @@ fn doctor_reports_config() {
     );
 }
 
+#[test]
+fn doctor_reports_which_harness_skill_dirs_hold_the_ns_skills() {
+    let skills = fixture_skills();
+    let home = tempfile::tempdir().unwrap();
+    ns().env("HOME", home.path())
+        .args(["install", "--harness", "cursor", "--source"])
+        .arg(skills.path())
+        .assert()
+        .success();
+    let cursor = home.path().join(".cursor/skills");
+    // Neither a dangling ns-* link nor a non-ns skill counts.
+    std::os::unix::fs::symlink("/gone/ns-old", cursor.join("ns-old")).unwrap();
+    fs::create_dir(cursor.join("other")).unwrap();
+    fs::write(cursor.join("other/SKILL.md"), "x").unwrap();
+
+    let v = json(
+        &ns()
+            .env("HOME", home.path())
+            .arg("doctor")
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    let dirs = &v["skill_dirs"];
+    assert_eq!(dirs["cursor"]["path"], cursor.to_string_lossy().as_ref());
+    assert_eq!(dirs["cursor"]["ns_skills"], 4);
+    for h in ["claude", "codex", "agents"] {
+        assert_eq!(dirs[h]["ns_skills"], 0, "{h}");
+    }
+    assert!(dirs["codex"]["path"]
+        .as_str()
+        .unwrap()
+        .ends_with(".agents/skills"));
+}
+
 fn executable(path: &Path, body: &str) {
     fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
     StdCommand::new("chmod")
