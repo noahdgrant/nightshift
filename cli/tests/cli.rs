@@ -333,6 +333,44 @@ fn lint_passes_this_repos_local_skills() {
 }
 
 #[test]
+fn lint_fails_misordered_feature_h2s_naming_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let local = tmp.path().join(".agents/skills");
+    write_skill(
+        &local,
+        "verify-x",
+        "---\nname: verify-x\ndescription: X.\n---\n",
+    );
+    let features = local.join("verify-x/features");
+    fs::create_dir_all(&features).unwrap();
+    fs::write(
+        features.join("x.md"),
+        "# F\n\n## Gotchas\n\n## Sub-features\n\n## How to get to it (user POV)\n\n## Driving it with t\n",
+    )
+    .unwrap();
+
+    let v = json(
+        &ns()
+            .arg("lint")
+            .arg(&local)
+            .assert()
+            .code(1)
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["ok"], false, "{v}");
+    let errors = v["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1, "{v}");
+    assert!(
+        errors[0]["file"]
+            .as_str()
+            .unwrap()
+            .ends_with("features/x.md"),
+        "{v}"
+    );
+}
+
+#[test]
 fn lint_passes_relative_repo_local_skills_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let local = tmp.path().join(".agents/skills");

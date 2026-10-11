@@ -286,11 +286,13 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
             p.is_dir()
-                && (p.join("SKILL.md").is_file()
-                    || p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with("ns-")))
+                && if require_prefix {
+                    p.join("SKILL.md").is_file() || name.starts_with("ns-")
+                } else {
+                    !name.starts_with('.')
+                }
         })
         .collect();
     dirs.sort();
@@ -613,6 +615,45 @@ mod tests {
             lint_messages(&root),
             (0, vec!["missing SKILL.md".to_string()])
         );
+    }
+
+    #[test]
+    fn repo_local_dir_without_skill_md_fails_and_hidden_dirs_are_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join(".agents/skills");
+        fs::create_dir_all(local.join("verify-y")).unwrap();
+        fs::create_dir_all(local.join("verify-z")).unwrap();
+        fs::write(local.join("verify-z/skill.md"), "x\n").unwrap();
+        fs::create_dir_all(local.join(".cache")).unwrap();
+        write_skill_at(&local, "verify-x", "");
+        assert_eq!(
+            lint_messages(&local),
+            (1, vec!["missing SKILL.md".to_string(); 2])
+        );
+    }
+
+    #[test]
+    fn prefix_exemption_needs_agents_as_the_direct_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join(".agents/other/skills");
+        write_skill_at(&nested, "verify-x", "");
+        assert_eq!(
+            lint_messages(&nested),
+            (
+                1,
+                vec!["name \"verify-x\" must start with \"ns-\"".to_string()]
+            )
+        );
+    }
+
+    #[test]
+    fn near_miss_feature_headings_fail_and_trailing_space_passes() {
+        let bare = FEATURE.replace("## Driving it with control-x", "## Driving it with");
+        assert!(check_feature(&bare).unwrap().contains("Driving it with,"));
+        let no_with = FEATURE.replace("## Driving it with control-x", "## Driving it");
+        assert!(check_feature(&no_with).is_some());
+        let padded = FEATURE.replace("## Gotchas", "## Gotchas  ");
+        assert_eq!(check_feature(&padded), None);
     }
 
     #[test]
