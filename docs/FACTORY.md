@@ -194,7 +194,7 @@ A rule pack is the set of linters and pattern checkers a repo runs to enforce it
 | rules | `ruff check --output-format=concise .`, `./scripts/rules-ast-grep` | 10 s |
 ```
 
-The Python pack in `rules/python/` is one such set; its README lists the rules, and `ns-setup` installs it.
+Nightshift ships packs under `rules/<language>/`, and `ns-setup` installs one into a repo with its row. The Rust pack is `rules/rust/` (D54); the Python pack, `rules/python/`, and the C pack, `rules/c/`, list their rules in their READMEs.
 
 Each command runs with `sh -c` at the top of the git checkout it is started in. Every line it prints, on stdout or stderr, that is a finding is read as one:
 

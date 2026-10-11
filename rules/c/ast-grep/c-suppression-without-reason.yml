@@ -1,0 +1,16 @@
+# Enforces the Comments item of the quality bar: no suppression hides a real bug
+# (skills/ns-contract/references/quality-bar.md, skills/ns-no-comments).
+id: c-suppression-without-reason
+language: c
+severity: warning
+message: 'a suppression needs its reason on the same line, as `// NOLINT(<check>): <reason>` or `#pragma ... ignored "-W<x>" // <reason>`'
+rule:
+  any:
+    - kind: comment
+      regex: '^(//+|/\*+)\s*NOLINT(NEXTLINE|BEGIN)?(\([^)]*\))?\s*(\*/)?\s*$'
+    - kind: comment
+      regex: '^(//+|/\*+)\s*cppcheck-suppress\s+\S+\s*(\*/)?\s*$'
+    - kind: preproc_call
+      regex: '^#\s*pragma\s+(GCC|clang)\s+diagnostic\s+ignored\s+"[^"]*"\s*$'
+    - kind: preproc_call
+      regex: '^#\s*pragma\s+warning\s*\(\s*disable[^)]*\)\s*$'
