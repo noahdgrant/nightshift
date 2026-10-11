@@ -1,5 +1,6 @@
 //! `ns doctor`: config, harness availability, harness skill dirs and forge credential report.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::Result;
@@ -8,6 +9,7 @@ use serde_json::{json, Map, Value};
 
 use crate::config::{self, Forge, ForgeKind};
 use crate::forge;
+use crate::git;
 use crate::install;
 use crate::which::which;
 
@@ -87,6 +89,8 @@ pub fn run() -> Result<()> {
         forge.insert(kind.name().to_string(), forge_entry(kind, f, &mut problems));
     }
 
+    let hooks = hooks_entry(&mut problems);
+
     let out = json!({
         "ok": parses && problems.is_empty(),
         "config": {
@@ -107,10 +111,37 @@ pub fn run() -> Result<()> {
             "env": format!("{}=1", crate::billing::AUTO_MEMORY_ENV),
         },
         "forge": Value::Object(forge),
+        "hooks": hooks,
         "problems": problems,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
+}
+
+/// Whether the current repo's `core.hooksPath` points at its `.githooks/`. A repo without
+/// `.githooks/`, or no repo at all, has nothing to point at and passes.
+fn hooks_entry(problems: &mut Vec<String>) -> Value {
+    const FIX: &str = "git config core.hooksPath .githooks";
+    let Some(root) = git::run(Path::new("."), &["rev-parse", "--show-toplevel"])
+        .ok()
+        .map(PathBuf::from)
+        .filter(|r| r.join(".githooks").is_dir())
+    else {
+        return json!({ "ok": true, "path": null, "detail": "no .githooks/ in this repo", "fix": null });
+    };
+    let path = git::run(&root, &["config", "core.hooksPath"]).ok();
+    let ok = path.as_deref().is_some_and(|p| {
+        root.join(p).canonicalize().ok() == root.join(".githooks").canonicalize().ok()
+    });
+    let detail = match &path {
+        _ if ok => "core.hooksPath points at .githooks".to_string(),
+        None => "core.hooksPath is unset, so .githooks/ never runs".to_string(),
+        Some(p) => format!("core.hooksPath is {p:?}, so .githooks/ never runs"),
+    };
+    if !ok {
+        problems.push(format!("{detail}; fix: {FIX}"));
+    }
+    json!({ "ok": ok, "path": path, "detail": detail, "fix": (!ok).then_some(FIX) })
 }
 
 fn forge_entry(kind: ForgeKind, f: Option<&Forge>, problems: &mut Vec<String>) -> Value {
