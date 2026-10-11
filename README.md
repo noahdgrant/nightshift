@@ -20,6 +20,7 @@ Each unit of work gets its own git worktree. Phases hand off through files in `.
 ```bash
 cargo install --path cli     # the ns CLI
 ns install                   # symlinks skills/ns-* into ~/.agents/skills and ~/.claude/skills
+ns install --harness cursor  # or into one harness's skill dir: claude, codex, cursor, agents
 ```
 
 Then, in each project you want to run the factory on:

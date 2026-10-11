@@ -1,12 +1,14 @@
-//! `ns doctor`: config, harness availability and forge credential report.
+//! `ns doctor`: config, harness availability, harness skill dirs and forge credential report.
 
 use std::process::{Command, Stdio};
 
 use anyhow::Result;
+use clap::ValueEnum;
 use serde_json::{json, Map, Value};
 
 use crate::config::{self, Forge, ForgeKind};
 use crate::forge;
+use crate::install;
 use crate::which::which;
 
 pub const KNOWN_HARNESSES: &[&str] = &["claude", "codex", "cursor-agent", "gemini", "opencode"];
@@ -26,6 +28,19 @@ pub fn run() -> Result<()> {
         harnesses.insert(
             h.to_string(),
             json!({ "on_path": p.is_some(), "path": p.map(|p| p.to_string_lossy().into_owned()) }),
+        );
+    }
+
+    let mut skill_dirs = Map::new();
+    for h in install::Harness::ALL {
+        let dir = h.dir();
+        let ns_skills = install::skill_dirs(&dir).map_or(0, |s| s.len());
+        skill_dirs.insert(
+            h.to_possible_value()
+                .expect("no skipped variants")
+                .get_name()
+                .to_string(),
+            json!({ "path": dir.to_string_lossy(), "ns_skills": ns_skills }),
         );
     }
 
@@ -86,6 +101,7 @@ pub fn run() -> Result<()> {
             .map(|c| c.roles.values().map(|r| r.harness.clone()).collect::<std::collections::BTreeSet<_>>())
             .unwrap_or_default(),
         "harnesses": Value::Object(harnesses),
+        "skill_dirs": Value::Object(skill_dirs),
         "claude_phases": {
             "auto_memory": false,
             "env": format!("{}=1", crate::billing::AUTO_MEMORY_ENV),

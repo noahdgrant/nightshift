@@ -435,7 +435,7 @@ fn fresh_base(root: &Path) -> Option<String> {
 /// the skills merged so far tonight. A checkout that can't move is reported, not changed;
 /// `warned` holds the last warning so a checkout that stays stuck warns once.
 fn sync_skills(repo: &Repo, base: &str, issue: u64, warned: &mut Option<String>) {
-    let targets = install::default_targets();
+    let targets = install::targets(&[], Vec::new());
     let installed = skills_sync::installed_into(&targets, &repo.root);
     let short =
         |sha: &str| git::run(&repo.root, &["rev-parse", "--short", sha]).unwrap_or_default();

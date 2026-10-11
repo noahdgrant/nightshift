@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use crate::eval;
+use crate::install;
 
 const ROOT_HELP: &str = "\
 Examples:
@@ -124,16 +125,27 @@ Exit codes: 0 balanced, 1 an unbalanced or nested marker, 2 not a directory in a
 Examples:
   ns install --dry-run
   ns install --source ~/src/nightshift/skills
-  ns install --target ~/.agents/skills --target ~/.cursor/skills
+  ns install --harness claude --harness cursor
+  ns install --harness codex --target ~/work/skills
 
-Default targets: ~/.agents/skills and ~/.claude/skills (created if missing).
+Harness skill directories, as each harness documents them:
+  claude  ~/.claude/skills
+  codex   ~/.agents/skills
+  cursor  ~/.cursor/skills
+  agents  ~/.agents/skills (shared; Codex and Cursor read it)
+
+Targets are every --harness directory plus every --target directory. With
+neither flag: --harness agents --harness claude. Directories are created if missing.
 Stale ns-* symlinks are replaced. Real directories in the way are reported as
 conflicts and left alone; the command then exits 1. Safe to re-run.")]
     Install {
         /// Directory holding the ns-* skill directories (default: ./skills if present, else the checkout ns was built from)
         #[arg(long, value_name = "DIR")]
         source: Option<PathBuf>,
-        /// Target skill directory; repeat for several (default: ~/.agents/skills, ~/.claude/skills)
+        /// Link into this harness's skill directory; repeat for several (default: agents, claude)
+        #[arg(long, value_name = "HARNESS")]
+        harness: Vec<install::Harness>,
+        /// Also link into this skill directory; repeat for several
         #[arg(long, value_name = "DIR")]
         target: Vec<PathBuf>,
         /// Report the actions without touching the filesystem
@@ -333,12 +345,14 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         command: UpstreamCmd,
     },
 
-    /// Report config path and validity, configured roles, harnesses on PATH, and forge accounts
+    /// Report config path and validity, configured roles, harnesses on PATH, harness skill dirs, and forge accounts
     #[command(after_help = "\
 Examples:
   ns doctor
   NS_CONFIG=./ns.toml ns doctor
 
+skill_dirs.<harness>: the skill directory ns install --harness links into, and
+ns_skills, how many ns-*/SKILL.md skills it holds (0 when it is missing).
 forge.<name>: configured, token_resolved, and for github the account gh api user returns.
 The token itself is never printed.")]
     Doctor,

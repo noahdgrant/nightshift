@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::error::SfError;
@@ -43,9 +44,48 @@ pub struct Report {
     pub actions: Vec<Step>,
 }
 
-pub fn default_targets() -> Vec<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-    vec![home.join(".agents/skills"), home.join(".claude/skills")]
+/// A harness whose documented user-level skill directory `ns install --harness` links into.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum Harness {
+    Claude,
+    Codex,
+    Cursor,
+    Agents,
+}
+
+impl Harness {
+    pub const ALL: [Harness; 4] = [Self::Claude, Self::Codex, Self::Cursor, Self::Agents];
+
+    /// The skill directory under `$HOME`, as each harness documents it.
+    pub fn dir(self) -> PathBuf {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        home.join(match self {
+            // https://code.claude.com/docs/en/skills (personal skills)
+            Self::Claude => ".claude/skills",
+            // https://cursor.com/docs/context/skills (user-level: ~/.cursor/skills)
+            Self::Cursor => ".cursor/skills",
+            // https://developers.openai.com/codex/skills (USER scope: $HOME/.agents/skills).
+            // Cursor reads it too, so it is the shared `agents` directory.
+            Self::Codex | Self::Agents => ".agents/skills",
+        })
+    }
+}
+
+/// The `--harness` dirs, then the `--target` dirs, without repeats.
+/// With neither flag, the `agents` and `claude` dirs.
+pub fn targets(harnesses: &[Harness], extra: Vec<PathBuf>) -> Vec<PathBuf> {
+    let harnesses = if harnesses.is_empty() && extra.is_empty() {
+        &[Harness::Agents, Harness::Claude][..]
+    } else {
+        harnesses
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    for t in harnesses.iter().map(|h| h.dir()).chain(extra) {
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out
 }
 
 pub fn skill_dirs(source: &Path) -> Result<Vec<PathBuf>> {

@@ -78,9 +78,18 @@ Checks each `ns-*/SKILL.md` under `path` (default `./skills`):
 
 Prints `{"ok","skills","errors":[{"skill","file","message"}]}` and exits 1 if there are errors. `--human` prints one line per error.
 
-### `ns install [--source <dir>] [--target <dir>]... [--dry-run]`
+### `ns install [--source <dir>] [--harness <h>]... [--target <dir>]... [--dry-run]`
 
-Symlinks each `<source>/ns-*` directory (default source `./skills`) into each target. The default targets are `~/.agents/skills` and `~/.claude/skills`, and they are created if missing. Each action is one of:
+Symlinks each `<source>/ns-*` directory (default source `./skills`) into each target. `--harness` picks a harness's skill directory, and may repeat:
+
+| Harness | Directory |
+|---|---|
+| `claude` | `~/.claude/skills` |
+| `codex` | `~/.agents/skills` |
+| `agents` | `~/.agents/skills` |
+| `cursor` | `~/.cursor/skills` |
+
+The targets are every `--harness` directory plus every `--target` directory, with duplicates removed. With neither flag, the default is `--harness agents --harness claude`. Target directories are created if missing. Each action is one of:
 
 | Action | Meaning |
 |---|---|
@@ -178,7 +187,7 @@ Compare adapted skills with the upstream each records in `metadata.upstream` (`o
 
 ### `ns doctor`
 
-Prints the config path, whether it exists and parses, and each configured role with its resolved harness, model, read-only and write commands, and whether the binary is on PATH. `distinct_harnesses` lists the providers in use, so a skill can tell whether two roles get a cross-provider check. `harnesses` reports which of `claude`, `codex`, `cursor-agent`, `gemini` and `opencode` are on PATH. `forge` reports, per forge, whether it is `configured` and whether a token resolved (`token_resolved`), and for GitHub the `account` that `gh api user` returns with that token. The token itself is never printed. `claude_phases` reports that `ns run` phases and `ns eval` trials run claude with auto-memory off (`auto_memory: false`) and the variable that does it (`env`). `problems` lists anything that would make `ns ask` fail, and a forge token that doesn't resolve.
+Prints the config path, whether it exists and parses, and each configured role with its resolved harness, model, read-only and write commands, and whether the binary is on PATH. `distinct_harnesses` lists the providers in use, so a skill can tell whether two roles get a cross-provider check. `harnesses` reports which of `claude`, `codex`, `cursor-agent`, `gemini` and `opencode` are on PATH. `forge` reports, per forge, whether it is `configured` and whether a token resolved (`token_resolved`), and for GitHub the `account` that `gh api user` returns with that token. The token itself is never printed. `claude_phases` reports that `ns run` phases and `ns eval` trials run claude with auto-memory off (`auto_memory: false`) and the variable that does it (`env`). `skill_dirs` reports, per harness (`claude`, `codex`, `agents`, `cursor`), the `path` that `ns install --harness` links into and `ns_skills`, how many `ns-*` skills it holds (0 when the directory is missing). `problems` lists anything that would make `ns ask` fail, and a forge token that doesn't resolve.
 
 ## Config
 
