@@ -4003,6 +4003,145 @@ fn watch_dry_run_orders_and_skips() {
     assert!(!e.gh_calls().contains("issue edit"));
 }
 
+/// `ns watch --dry-run`'s output and stderr.
+fn dry_run(e: &Env) -> (Value, String) {
+    let out = e.ns().args(["watch", "--dry-run"]).output();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{err}");
+    (serde_json::from_slice(&out.stdout).unwrap(), err)
+}
+
+const MAIN_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
+
+/// GitHub's answer for main's CI: head `MAIN_SHA`, `required` named by a ruleset, and check runs
+/// `(name, status, conclusion)`.
+fn main_ci(e: &Env, required: &[&str], runs: &[(&str, &str, &str)]) {
+    let rules = serde_json::json!([{"parameters": {"requiredStatusChecks":
+        required.iter().map(|c| serde_json::json!({"context": c})).collect::<Vec<_>>()}}]);
+    let nodes: Vec<Value> = runs
+        .iter()
+        .map(|(n, s, c)| serde_json::json!({"name": n, "status": s, "conclusion": c}))
+        .collect();
+    e.gh_file(
+        "main-ci.json",
+        &serde_json::json!({"data": {"repository": {"defaultBranchRef": {
+            "rules": {"nodes": rules},
+            "target": {"oid": MAIN_SHA, "statusCheckRollup": {"contexts": {"nodes": nodes}}},
+        }}}})
+        .to_string(),
+    );
+}
+
+#[test]
+fn watch_dry_run_shows_main_ci_and_holds_the_queue_when_it_is_red() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    let (v, err) = dry_run(&e);
+    assert_eq!(v["main_ci"]["state"], "none", "{v}");
+    assert_eq!(v["queue_held"], false);
+    assert!(err.contains("main's head has no CI"), "{err}");
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains("api graphql -f query=query($owner: String!, $repo: String!)"),
+        "{calls}"
+    );
+    assert!(calls.contains("-F owner={owner} -F repo={repo}"), "{calls}");
+
+    main_ci(
+        &e,
+        &["test"],
+        &[
+            ("test", "COMPLETED", "FAILURE"),
+            ("bench", "COMPLETED", "FAILURE"),
+        ],
+    );
+    let (v, err) = dry_run(&e);
+    assert_eq!(
+        v["main_ci"],
+        serde_json::json!({"state": "red", "sha": MAIN_SHA, "failing": ["test"]})
+    );
+    assert_eq!(v["queue_held"], true);
+    assert_eq!(queued(&v), [2], "the queue is only shown held, not emptied");
+    assert!(!err.contains("fix_main_first"), "{err}");
+
+    main_ci(
+        &e,
+        &["test"],
+        &[
+            ("test", "IN_PROGRESS", ""),
+            ("lint", "COMPLETED", "SUCCESS"),
+        ],
+    );
+    let (v, _) = dry_run(&e);
+    assert_eq!(
+        v["main_ci"],
+        serde_json::json!({"state": "pending", "sha": MAIN_SHA})
+    );
+    assert_eq!(v["queue_held"], false);
+
+    main_ci(&e, &[], &[("test", "COMPLETED", "SUCCESS")]);
+    let (v, _) = dry_run(&e);
+    assert_eq!(v["main_ci"]["state"], "green");
+    assert_eq!(v["queue_held"], false);
+}
+
+#[test]
+fn watch_dry_run_with_fix_main_first_off_reads_no_ci_and_says_so() {
+    let e = Env::new();
+    e.factory("[queue]\nfix_main_first = false\n");
+    main_ci(&e, &[], &[("test", "COMPLETED", "FAILURE")]);
+    let (v, err) = dry_run(&e);
+    assert_eq!(v["main_ci"], serde_json::json!({"state": "off"}));
+    assert_eq!(v["queue_held"], false);
+    assert!(err.contains("fix_main_first is off"), "{err}");
+    assert!(!e.gh_calls().contains("graphql"), "{}", e.gh_calls());
+}
+
+#[test]
+fn a_night_with_fix_main_first_off_says_so_once_and_reads_no_ci() {
+    let e = Env::new();
+    e.factory("[queue]\nfix_main_first = false\n");
+    let out = e.ns().args(["watch", "--once"]).output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert_eq!(err.matches("fix_main_first is off").count(), 1, "{err}");
+    assert!(!e.gh_calls().contains("graphql"), "{}", e.gh_calls());
+}
+
+#[test]
+fn a_night_says_once_at_start_when_main_has_no_ci_and_runs_on_when_it_cannot_read_it() {
+    let e = Env::new();
+    let night = |e: &Env| {
+        let out = e.ns().args(["watch", "--once"]).output();
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(out.status.success(), "{err}");
+        err
+    };
+    let err = night(&e);
+    assert_eq!(err.matches("main's head has no CI").count(), 1, "{err}");
+
+    main_ci(&e, &[], &[("test", "COMPLETED", "FAILURE")]);
+    let err = night(&e);
+    assert!(!err.contains("fix_main_first"), "{err}");
+
+    e.gh_file("main-ci.fail", "HTTP 502");
+    let err = night(&e);
+    assert!(
+        err.contains("warning: cannot read main's CI") && err.contains("HTTP 502"),
+        "{err}"
+    );
+}
+
+#[test]
+fn watch_dry_run_fails_when_main_ci_cannot_be_read() {
+    let e = Env::new();
+    e.gh_file("main-ci.fail", "HTTP 502");
+    let out = e.ns().args(["watch", "--dry-run"]).output();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("HTTP 502"), "{err}");
+}
+
 fn queue_order(v: &serde_json::Value) -> Vec<(u64, String, String)> {
     v["queue"]
         .as_array()
@@ -8342,6 +8481,21 @@ fn empty_night(e: &Env) -> PathBuf {
 }
 
 #[test]
+fn a_resumed_night_does_not_read_main_ci_again() {
+    let e = Env::new();
+    let path = empty_night(&e);
+    let out = e
+        .ns()
+        .args(["watch", "--once", "--resume-night"])
+        .arg(&path)
+        .output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(!err.contains("fix_main_first"), "{err}");
+    assert!(!e.gh_calls().contains("graphql"), "{}", e.gh_calls());
+}
+
+#[test]
 fn a_stop_that_landed_during_the_hand_off_still_stops_the_new_binary() {
     let e = Env::new();
     two_ready(&e);
@@ -9133,6 +9287,55 @@ fn watch_on_gitlab_closes_a_merged_issue_and_drops_its_status_label() {
         calls.contains("issue update 2 --unlabel status:in-progress"),
         "{calls}"
     );
+}
+
+#[test]
+fn watch_on_gitlab_reads_main_ci_from_the_head_commit_statuses() {
+    let e = gitlab_env();
+    e.gl_issue(2, &[READY], "", 1);
+    let (v, _) = dry_run(&e);
+    assert_eq!(v["main_ci"]["state"], "none", "{v}");
+    let head = git(&e.root, &["rev-parse", "HEAD"]);
+    e.gh_file(
+        "gl-statuses.json",
+        &serde_json::json!([
+            {"name": "test", "status": "failed", "allow_failure": false},
+            {"name": "flaky", "status": "failed", "allow_failure": true},
+            {"name": "lint", "status": "success", "allow_failure": false},
+        ])
+        .to_string(),
+    );
+    let (v, _) = dry_run(&e);
+    assert_eq!(
+        v["main_ci"],
+        serde_json::json!({"state": "red", "sha": head, "failing": ["test"]})
+    );
+    assert_eq!(v["queue_held"], true);
+    let calls = e.glab_calls();
+    assert!(
+        calls.contains(&format!(
+            "projects/:id/repository/commits/{head}/statuses?ref=main"
+        )),
+        "{calls}"
+    );
+    assert!(e.gh_calls().is_empty(), "{}", e.gh_calls());
+}
+
+#[test]
+fn watch_on_gitlab_fails_a_dry_run_when_main_has_no_branch_or_head() {
+    let e = gitlab_env();
+    e.gl_issue(2, &[READY], "", 1);
+    for (file, want) in [
+        ("gl-project.json", "GitLab names no default branch"),
+        ("gl-branch.json", "GitLab names no head for main"),
+    ] {
+        e.gh_file(file, "{}");
+        let out = e.ns().args(["watch", "--dry-run"]).output();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{err}");
+        assert!(err.contains(want), "{err}");
+        fs::remove_file(e.ghd.join(file)).unwrap();
+    }
 }
 
 #[test]

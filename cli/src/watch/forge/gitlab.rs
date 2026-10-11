@@ -11,6 +11,7 @@ use serde_json::Value;
 use super::{ClosingPrs, Forge, PrState};
 use crate::config::ForgeKind;
 use crate::error::SfError;
+use crate::watch::ci::{Check, HeadChecks, Outcome};
 use crate::watch::{closed_by, Issue};
 
 /// Developer, the lowest access level on the team. Reporter (20), Planner (15) and Guest (10) are
@@ -86,10 +87,13 @@ impl GitLab {
         items(&glab(&self.root, &["api", "--paginate", path])?)
     }
 
-    fn issue(&self, n: u64) -> Result<Value> {
-        let path = format!("projects/:id/issues/{n}");
-        let text = glab(&self.root, &["api", &path])?;
+    fn get(&self, path: &str) -> Result<Value> {
+        let text = glab(&self.root, &["api", path])?;
         serde_json::from_str(text.trim()).with_context(|| format!("glab api {path} gave bad JSON"))
+    }
+
+    fn issue(&self, n: u64) -> Result<Value> {
+        self.get(&format!("projects/:id/issues/{n}"))
     }
 
     /// Ids of the active members, inherited ones too, at Developer or above.
@@ -102,6 +106,28 @@ impl GitLab {
             .filter_map(|m| m["id"].as_u64())
             .collect())
     }
+}
+
+/// A commit status, one per pipeline job or external status: required unless it may fail.
+fn status_check(s: &Value) -> Check {
+    let outcome = match s["status"].as_str().unwrap_or("") {
+        "success" | "skipped" | "manual" => Outcome::Pass,
+        "failed" | "canceled" => Outcome::Fail,
+        _ => Outcome::Running,
+    };
+    Check {
+        name: s["name"].as_str().unwrap_or("").to_string(),
+        outcome,
+        required: !s["allow_failure"].as_bool().unwrap_or(false),
+    }
+}
+
+fn statuses_path(sha: &str, branch: &str) -> Result<String> {
+    Ok(format!(
+        "projects/:id/repository/commits/{}/statuses?ref={}&per_page=100",
+        super::head_sha(sha)?,
+        encode(branch)
+    ))
 }
 
 impl Forge for GitLab {
@@ -193,6 +219,26 @@ impl Forge for GitLab {
     fn comment_pr(&self, _: u64, _: &str) -> Result<()> {
         Ok(())
     }
+
+    /// The latest commit status of each job in the head's pipelines, and of each external status.
+    fn main_checks(&self) -> Result<HeadChecks> {
+        let project = self.get("projects/:id")?;
+        let Some(branch) = project["default_branch"].as_str() else {
+            anyhow::bail!("GitLab names no default branch");
+        };
+        let head = self.get(&format!(
+            "projects/:id/repository/branches/{}",
+            encode(branch)
+        ))?;
+        let Some(sha) = head["commit"]["id"].as_str() else {
+            anyhow::bail!("GitLab names no head for {branch}");
+        };
+        let path = statuses_path(sha, branch)?;
+        Ok(HeadChecks {
+            sha: sha.to_string(),
+            checks: self.list(&path)?.iter().map(status_check).collect(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -210,6 +256,55 @@ mod tests {
         assert_eq!(redact("tok and tok", Some("tok")), "[token] and [token]");
         assert_eq!(redact("no token", None), "no token");
         assert_eq!(redact("empty", Some("")), "empty");
+    }
+
+    #[test]
+    fn a_status_is_required_unless_it_may_fail() {
+        let check = |status: &str, allow: Value| {
+            let c = status_check(
+                &serde_json::json!({"name": "j", "status": status, "allow_failure": allow}),
+            );
+            (c.outcome, c.required)
+        };
+        let t = Value::Bool(true);
+        for s in ["success", "skipped", "manual"] {
+            assert_eq!(check(s, Value::Null), (Outcome::Pass, true), "{s}");
+        }
+        for s in ["failed", "canceled"] {
+            assert_eq!(check(s, Value::Bool(false)), (Outcome::Fail, true), "{s}");
+        }
+        for s in [
+            "created",
+            "pending",
+            "running",
+            "waiting_for_resource",
+            "preparing",
+            "scheduled",
+        ] {
+            assert_eq!(check(s, Value::Null), (Outcome::Running, true), "{s}");
+        }
+        assert_eq!(check("failed", t), (Outcome::Fail, false));
+    }
+
+    #[test]
+    fn statuses_path_takes_only_a_commit_id() {
+        let sha = "a".repeat(40);
+        assert_eq!(
+            statuses_path(&sha, "dev/x").unwrap(),
+            format!("projects/:id/repository/commits/{sha}/statuses?ref=dev%2Fx&per_page=100")
+        );
+        let bad = ["", "abc", "../../x", "a/../b?x=1"].map(String::from);
+        let wrong_shape = [
+            format!("{sha}\n"),
+            format!("{}/", "a".repeat(39)),
+            format!("{}..", "a".repeat(38)),
+            "a".repeat(41),
+            "a".repeat(63),
+            "a".repeat(65),
+        ];
+        for bad in bad.iter().chain(&wrong_shape) {
+            assert!(statuses_path(bad, "main").is_err(), "{bad}");
+        }
     }
 
     #[test]
