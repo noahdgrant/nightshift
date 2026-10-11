@@ -4,9 +4,8 @@
 
 ## Sub-features
 
-- `doctor-ok` reports `ok: true` with no problems on a complete config.
+- `doctor-ok` reports `ok: true` with no problems on a complete config, and each harness binary's path or `null`.
 - `doctor-problems` lists a missing `[roles.default]` under `problems`.
-- `doctor-harnesses` shows each harness binary's path, or `null`.
 - `doctor-skill-dirs` counts `ns-*` skills per harness directory.
 
 ## How to get to it (user POV)

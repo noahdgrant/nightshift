@@ -18,7 +18,7 @@ The forge settings decide where `ns run` and `ns watch` get forge tokens and whi
 
 Preconditions:
 
-- Baseline, in `$V/repo`, with `.nightshift/nightshift.toml` holding `name = "demo"`.
+- Baseline, in `$V/repo`. Write the factory file: `mkdir -p .nightshift && printf 'name = "demo"\n' > .nightshift/nightshift.toml`.
 
 - **GitHub.** Run `cap forge-github "$NS" doctor` and read `.forge.github`. `configured` and `token_resolved` are `true`, `account` is `octocat`, and `grep -c fake-token $OUT/forge-github.out` is `0`.
 - **GitLab.** Copy `$NS_CONFIG` to `$V/c-gl.toml`, append `[forge.gitlab]\ntoken_env = "MY_GL"\nhost = "gitlab.example.com"`, and run `cap forge-gitlab env NS_CONFIG=$V/c-gl.toml MY_GL=gl-fake "$NS" doctor`, reading `.forge.gitlab`. `configured` and `token_resolved` are `true`.

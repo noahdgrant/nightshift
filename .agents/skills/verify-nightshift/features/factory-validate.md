@@ -20,7 +20,7 @@ Preconditions:
 
 - **Missing.** Run `rm -rf .nightshift`, then `cap factory-missing "$NS" factory validate`. Exit `1`; `errors` says the file does not exist and `ns run` would use the built-in defaults.
 - **Valid.** Run `mkdir -p .nightshift && printf 'name = "demo"\n' > .nightshift/nightshift.toml`, then `cap factory-ok "$NS" factory validate`. Exit `0`; `name` is `demo` and `phases` lists triage, build, verify, review and ship with skill `ns-<phase>`.
-- **Bad value.** Write `name = "demo"\n[queue]\nsource = "bitbucket"\n` and run `cap factory-bad-value "$NS" factory validate`. Exit `1`; `errors` contains `[queue] source = "bitbucket": unknown`.
+- **Bad value.** Write `name = "demo"\n[queue]\nsource = "bitbucket"\n` and run `cap factory-bad-value "$NS" factory validate`. Exit `1`; `errors` contains `[queue] source = "bitbucket": unknown`. Then restore the file with `printf 'name = "demo"\n' > .nightshift/nightshift.toml`, or the [run](./run.md) and [watch](./watch.md) recipes fail.
 - **This repo.** Run `cap factory-ok-self "$NS" factory validate --factory "$NS_SRC/.nightshift"`. Exit `0`.
 
 ## Gotchas

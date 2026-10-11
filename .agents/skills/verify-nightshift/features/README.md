@@ -21,7 +21,7 @@ This directory is the maintained source for verifying what a user of `ns` sees. 
 ## Proof and skip reporting
 
 - CLI proof is the command, stdout, stderr and exit code: `cap <name> <command...>` saves all four in `$OUT`.
-- Every command a recipe asserts on goes through `cap`, named with the sub-feature ID (add a suffix when one ID has several captures). Only setup commands run bare. Env vars: `cap <id> env VAR=x "$NS" ...`. Stdin: `cap <id> sh -c 'echo x | "$NS" ...'`. Read assertions from `$OUT/<id>.out` with `jq`.
+- Every command a recipe asserts on goes through `cap`, named with the sub-feature ID (add a suffix when one ID has several captures). Only setup commands run bare. Env vars: `cap <id> env VAR=x "$NS" ...`. Stdin: `cap <id> sh -c 'echo x | "$NS" ...'`. Both: `cap <id> env NS_CONFIG=... sh -c 'echo x | "$NS" ...'`, with the env prefix before `sh`, never inside the quotes. Read assertions from `$OUT/<id>.out` with `jq`.
 - A command that writes gets a second, read-only view of the state it changed (`ns worktree list`, `git branch`, `ls`, `$V/ghd/labels-<n>`).
 - A command that would start a harness or reach a forge gets the fake's record as proof: `$FAKE_CTRL/calls`, `$V/ghd/calls`, `$V/ghd/glab-calls`.
 - Record the feature ID and entry point with every artifact.

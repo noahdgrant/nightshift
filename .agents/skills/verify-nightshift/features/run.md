@@ -18,7 +18,7 @@
 
 Preconditions:
 
-- Baseline, in `$V/repo`, with `.nightshift/nightshift.toml` holding `name = "demo"`.
+- Baseline, in `$V/repo`. Write the factory file: `mkdir -p .nightshift && printf 'name = "demo"\n' > .nightshift/nightshift.toml`.
 - Issue #7 seeded as in the skill's Drive section.
 
 - **Dry run.** Run `cap run-dry "$NS" run --issue 7 --dry-run`. `unit` is `7-fix-the-thing`, `decision.phase` is `triage` with `why` `no brief.md`, and `prompt` starts with `Load the \`ns-triage\` skill`. `$FAKE_CTRL/calls` does not exist.

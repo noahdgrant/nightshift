@@ -70,11 +70,11 @@ Drive from `$V/repo` for commands that act on a target repo (worktree, ask, fact
 
 ```bash
 . "$V/env.sh"; cd "$V/repo"
-cap worktree-new "$NS" worktree new 7-fix-the-thing
-cap worktree-list "$NS" worktree list
+cap wt-new "$NS" worktree new 7-fix-the-thing
+cap wt-list "$NS" worktree list
 cd "$NS_SRC"
-cap lint "$NS" lint skills
-cap eval-dry "$NS" eval ns-tdd --dry-run
+cap lint-clean "$NS" lint skills
+cap eval-plan-one "$NS" eval ns-tdd --dry-run
 ```
 
 Seed the fake forge before `ns run` or `ns watch`. The fakes read files under `$FAKE_GH_DIR`; the header of each fake in `cli/tests/fixtures/factory/` lists them. An open, ready GitHub issue #7:
@@ -93,7 +93,7 @@ The feature files hold the recipe for each command group.
 
 Evidence goes in `$OUT`: `.ns/verify/<run-id>/` under `$NS_SRC` by default. To use the directory `ns-verify` names (`.ns/<unit-id>/evidence/`), export `OUT` before Launch.
 
-`cap <name> <command...>` saves the command, stdout, stderr and exit code as `$OUT/<name>.{cmd,out,err,exit}`. Every command whose result is asserted goes through `cap`, named with the sub-feature ID from the feature file (suffix it when one ID has several captures); only setup commands run bare. Env: `cap <id> env VAR=x "$NS" ...`. Stdin: `cap <id> sh -c 'echo x | "$NS" ...'`. Proof standards:
+`cap <name> <command...>` saves the command, stdout, stderr and exit code as `$OUT/<name>.{cmd,out,err,exit}`. Every command whose result is asserted goes through `cap`, named with the sub-feature ID from the feature file (suffix it when one ID has several captures); only setup commands run bare. Env: `cap <id> env VAR=x "$NS" ...`. Stdin: `cap <id> sh -c 'echo x | "$NS" ...'`. Both: `cap <id> env NS_CONFIG=... sh -c 'echo x | "$NS" ...'`, with the env prefix before `sh`, never inside the quotes. Proof standards:
 
 - Drive the user path: the `ns` command a user types, against a git repo. Calling a Rust function or a test helper is not proof.
 - Capture the action and the resulting state. After a command that writes, save a second, read-only view: `ns worktree list`, `git -C "$V/repo" branch -a`, `ls` of the artifact folder, `$V/ghd/calls`, `$V/ghd/labels-<n>`.
