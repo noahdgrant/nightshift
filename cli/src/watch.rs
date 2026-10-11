@@ -19,6 +19,7 @@ use crate::skills_sync::{self, Sync};
 use crate::stop;
 use crate::worktree::BRANCH_PREFIX;
 
+pub mod ci;
 pub mod forge;
 mod scheduler;
 mod self_update;
@@ -471,6 +472,10 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     }
 
     if args.dry_run {
+        let main_ci = ci::read(forge, fac)?;
+        if let Some(n) = main_ci.notice() {
+            eprintln!("ns watch: {n}");
+        }
         let qu = queue(forge, fac, &BTreeSet::new())?;
         let ready: Vec<Value> = qu
             .ready
@@ -533,6 +538,8 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 "triage_next_pass": next_pass,
                 "triage_skipped": tr.skipped,
                 "human_merge_label": q.human_merge_label,
+                "main_ci": main_ci,
+                "queue_held": main_ci.holds_queue(),
                 "max_units": max_units,
                 "parallel": parallel,
                 "until": deadline.map(clock::local_iso),
@@ -561,6 +568,17 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             "ns watch: warning: {} is a symlink; the units won't see it",
             link.display()
         );
+    }
+    // A night resumed after a hand-off said it when it began.
+    if carried.is_none() {
+        match ci::read(forge, fac) {
+            Ok(m) => {
+                if let Some(n) = m.notice() {
+                    eprintln!("ns watch: {n}");
+                }
+            }
+            Err(e) => eprintln!("ns watch: warning: cannot read main's CI: {e:#}"),
+        }
     }
     night.shared.night = Some(snap.night().clone());
     let (mut tonight, started) = match carried {
@@ -914,6 +932,7 @@ Open after at least 2 fix attempts: C1, I2, I4.
         issues: Vec<Issue>,
         closed: BTreeSet<u64>,
         labels: std::cell::RefCell<BTreeMap<u64, Vec<String>>>,
+        main: ci::HeadChecks,
     }
 
     impl Forge for Fake {
@@ -959,6 +978,79 @@ Open after at least 2 fix attempts: C1, I2, I4.
         fn comment_pr(&self, _: u64, _: &str) -> Result<()> {
             Ok(())
         }
+        fn main_checks(&self) -> Result<ci::HeadChecks> {
+            Ok(self.main.clone())
+        }
+    }
+
+    /// Main's CI state for checks `(name, outcome, required)` on head `abc123`.
+    fn main_ci(fac: &Factory, checks: &[(&str, ci::Outcome, bool)]) -> ci::MainCi {
+        let forge = Fake {
+            main: ci::HeadChecks {
+                sha: "abc123".into(),
+                checks: checks
+                    .iter()
+                    .map(|&(name, outcome, required)| ci::Check {
+                        name: name.into(),
+                        outcome,
+                        required,
+                    })
+                    .collect(),
+            },
+            ..Fake::default()
+        };
+        ci::read(&forge, fac).unwrap()
+    }
+
+    #[test]
+    fn main_ci_is_red_green_pending_or_none() {
+        use ci::{Outcome::*, State};
+        let fac = Factory::default();
+        let state = |checks: &[(&str, ci::Outcome, bool)]| {
+            let m = main_ci(&fac, checks);
+            (m.state, m.failing.clone(), m.holds_queue())
+        };
+        // Completed with a failing required check: red, naming it, not the optional one.
+        assert_eq!(
+            state(&[
+                ("test", Fail, true),
+                ("lint", Pass, true),
+                ("bench", Fail, false)
+            ]),
+            (State::Red, vec!["test".to_string()], true)
+        );
+        // Still running with one check already failed, required or not: red.
+        assert_eq!(
+            state(&[("bench", Fail, false), ("test", Running, true)]),
+            (State::Red, vec!["bench".to_string()], true)
+        );
+        // Still running with no failure yet: pending, not red.
+        assert_eq!(
+            state(&[("lint", Pass, true), ("test", Running, true)]),
+            (State::Pending, vec![], false)
+        );
+        // Every required check passed, an optional one failed: green.
+        assert_eq!(
+            state(&[("test", Pass, true), ("bench", Fail, false)]),
+            (State::Green, vec![], false)
+        );
+        // No CI at all: not red, and said once at start.
+        let none = main_ci(&fac, &[]);
+        assert_eq!((none.state, none.holds_queue()), (State::None, false));
+        assert!(none.notice().unwrap().contains("no CI"));
+        assert_eq!(none.sha.as_deref(), Some("abc123"));
+        assert_eq!(main_ci(&fac, &[("test", Pass, true)]).notice(), None);
+    }
+
+    #[test]
+    fn fix_main_first_off_reports_off_whatever_main_ci_is() {
+        let mut fac = Factory::default();
+        fac.queue.fix_main_first = false;
+        let m = main_ci(&fac, &[("test", ci::Outcome::Fail, true)]);
+        assert_eq!(m.state, ci::State::Off);
+        assert!(!m.holds_queue());
+        assert!(m.notice().unwrap().contains("off"));
+        assert_eq!(serde_json::to_value(&m).unwrap(), json!({"state": "off"}));
     }
 
     #[test]

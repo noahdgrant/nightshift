@@ -253,6 +253,8 @@ pub struct Queue {
     pub order: Vec<String>,
     /// The state of an issue nobody has triaged yet; `ns watch` triages these.
     pub triage_label: String,
+    /// Read main's CI at the start of a night (`crate::watch::ci`).
+    pub fix_main_first: bool,
     /// Removed (D42): `--until` and the budget bound the triage pass, not a count. Read only so
     /// an old file still loads, with a warning.
     #[serde(rename = "triage_per_night")]
@@ -270,6 +272,7 @@ impl Default for Queue {
             stuck_label: "status:ready-for-human".into(),
             split_label: "status:needs-define".into(),
             triage_label: "status:needs-triage".into(),
+            fix_main_first: true,
             removed_triage_per_night: None,
             priority: ["priority:high", "priority:medium", "priority:low"]
                 .iter()
