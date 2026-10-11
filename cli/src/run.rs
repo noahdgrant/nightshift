@@ -417,7 +417,7 @@ fn take_merge_lock(
 ) -> Result<Result<Lock, Finish>> {
     let me = json!({"pid": std::process::id(), "unit": unit});
     let deadline = until.map(|u| (clock, u));
-    let taken = Lock::wait(common, MERGE_LOCK, me, deadline, |by| {
+    let taken = Lock::wait(common, MERGE_LOCK, &me, deadline, |by| {
         eprintln!(
             "ns run: {unit} merge waits for the merge lock (held by pid {}, unit {})",
             holder_pid(by),

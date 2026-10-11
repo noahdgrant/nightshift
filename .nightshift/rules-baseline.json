@@ -12,26 +12,10 @@
     {
       "tool": "ast-grep",
       "rule": "file-too-long",
-      "file": "cli/src/main.rs",
-      "line": 1,
-      "message": "file is past 1000 lines; split it along a seam (quality bar, Size: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "//! `ns`: the Nightshift CLI."
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "file-too-long",
       "file": "cli/src/run.rs",
       "line": 1,
       "message": "file is past 1000 lines; split it along a seam (quality bar, Size: skills/ns-contract/references/quality-bar.md)",
       "snippet": "//! `ns run`: drive one unit through the phases (docs/FACTORY.md)."
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "file-too-long",
-      "file": "cli/src/upstream.rs",
-      "line": 1,
-      "message": "file is past 1000 lines; split it along a seam (quality bar, Size: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "//! `ns upstream status|diff`: compare adapted skills with the upstream path each records in"
     },
     {
       "tool": "ast-grep",
@@ -139,14 +123,6 @@
     },
     {
       "tool": "clippy",
-      "rule": "clippy::needless_continue",
-      "file": "cli/src/run/locks.rs",
-      "line": 383,
-      "message": "this `continue` expression is redundant (quality bar, Readability: control flow reads top to bottom: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "Some(libc::EINTR) => continue,"
-    },
-    {
-      "tool": "clippy",
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/ask.rs",
       "line": 32,
@@ -204,38 +180,6 @@
     {
       "tool": "clippy",
       "rule": "clippy::needless_pass_by_value",
-      "file": "cli/src/run/locks.rs",
-      "line": 64,
-      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "fn take(common: &Path, name: &str, holder: Value) -> Result<Result<Lock, Value>> {"
-    },
-    {
-      "tool": "clippy",
-      "rule": "clippy::needless_pass_by_value",
-      "file": "cli/src/run/locks.rs",
-      "line": 88,
-      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "holder: Value,"
-    },
-    {
-      "tool": "clippy",
-      "rule": "clippy::needless_pass_by_value",
-      "file": "cli/src/transcripts.rs",
-      "line": 507,
-      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "pub fn list(args: ListArgs) -> Result<ExitCode> {"
-    },
-    {
-      "tool": "clippy",
-      "rule": "clippy::needless_pass_by_value",
-      "file": "cli/src/upstream.rs",
-      "line": 987,
-      "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "fn usage_code(e: anyhow::Error) -> i32 {"
-    },
-    {
-      "tool": "clippy",
-      "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/watch.rs",
       "line": 485,
       "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
@@ -285,7 +229,7 @@
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/main.rs",
-      "line": 799,
+      "line": 49,
       "message": "this function has too many lines (209/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn run(cli: Cli) -> Result<ExitCode> {"
     },
