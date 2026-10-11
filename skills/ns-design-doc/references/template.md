@@ -65,7 +65,7 @@ The changelog is a separate file, `changelog.md`, shared by every version. Its t
 
 > Each one testable. "Firmware update resumes after a dropped connection without re-sending bytes already written" is a goal. "Improve OTA reliability" is a wish.
 >
-> When a requirements doc exists, each goal starts with the ID of the requirement it answers and says what this design commits to for it: "SYS-4: the gateway forwards a theft event to the backend within 1 s of receiving it." The requirement's own text stays in the requirements doc. List only the requirements this design answers. When none exists, write the goals here.
+> When a requirements doc exists, each goal starts with the ID of the requirement it answers and says what this design commits to for it: "STOCK-4: the order service reserves stock within 1 s of checkout." The requirement's own text stays in the requirements doc. List only the requirements this design answers. When none exists, write the goals here.
 
 ### Values
 
@@ -73,7 +73,7 @@ Values other docs restate, which they cite by ID so a change here reaches them.
 
 | ID | Value | Source |
 |---|---|---|
-| <KEY>-1 | <the value in words, with its number and unit: "Heartbeat: a check-in every 30 minutes"> | <decided (name, date), estimate, measured, datasheet, or config> |
+| <KEY>-1 | <the value in words, with its number and unit: "Cart hold: a reservation lapses after 30 minutes"> | <decided (name, date), estimate, measured, datasheet, or config> |
 
 > Only values another doc states. Number them from 1 in the header's Key, and never renumber or reuse an ID. Where this doc restates a value in its prose, bind it to the ID: "every 30 minutes (GATEWAY-1)".
 
