@@ -1,6 +1,6 @@
 # Lint
 
-`ns lint` checks every skill under a skills directory (each `ns-*` directory and each directory holding a `SKILL.md`): frontmatter parses, `name` matches the directory and starts with `ns-` (not required under `.agents/skills/`), `description` is set, `metadata.upstream` is well formed, relative links resolve, and each `features/*.md` has the four H2 sections in order.
+`ns lint` checks every skill under a skills directory. Under `skills/`, a directory is a skill if it has a `SKILL.md` or an `ns-` name, and others are skipped. Under a repo-local root (parent `.agents`), every non-hidden directory is a skill. For each skill: frontmatter parses, `name` matches the directory and starts with `ns-` (not required under `.agents/skills/`), `description` is set, `metadata.upstream` is well formed, relative links resolve, and each `features/*.md` has the four H2 sections in order.
 
 ## Sub-features
 
@@ -27,5 +27,6 @@ Preconditions:
 ## Gotchas
 
 - The `ns-` prefix exemption comes from the lint root's parent being named `.agents`. The same skill under any other root, `skills/` included, fails the prefix rule.
-- A directory with neither an `ns-` name nor a `SKILL.md` is skipped, not reported.
+- Under `skills/`, a directory with neither an `ns-` name nor a `SKILL.md` is skipped, not reported. Under a repo-local root, every non-hidden directory is a skill, and one without `SKILL.md` reports `missing SKILL.md`.
+- The root is judged by its canonicalized (symlink-resolved) path, so a symlink named `skills` that points under `.agents/` is exempt, and an `.agents/skills` symlink to a directory elsewhere is not.
 - Links inside fenced code blocks are not checked.
