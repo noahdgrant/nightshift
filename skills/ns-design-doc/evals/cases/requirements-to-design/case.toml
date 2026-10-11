@@ -1,0 +1,60 @@
+description = "An approved requirements doc for low-stock alerts in the py-inventory fixture. Under gates: auto, with no one to interview, the skill should write a versioned design doc plus changelog where docs/agents/docs.md says, link the requirements doc and its version, open each goal with a STOCK requirement ID, keep the always-sections (Alternatives with do-nothing, Failure modes, Privacy, Security, Open questions), leave the requirements doc untouched, and set Status short of Approved. ns-grilling and ns-setup are not loaded: nobody can answer, and the overlay supplies docs/agents/docs.md."
+fixture = "py-inventory"
+skills = ["ns-design-doc"]
+extra_skills = ["ns-contract", "ns-domain-modeling"]
+requires = []
+timeout_minutes = 20
+prompt = """
+Write the design doc for the low-stock alerts in docs/requirements/stock/v1.md. No one is around to answer questions. gates: auto
+"""
+
+[[check]]
+type = "command"
+run = '[ "$(ls docs/design/*/v1.md 2>/dev/null | wc -l)" -eq 1 ]'
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = 'f=$(ls docs/design/*/v1.md) && [ -f "$(dirname "$f")/changelog.md" ]'
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/design/*/v1.md) && grep -Eiq '^\| *\**Requirements\**[^|]*\|.*requirements/stock.*(v1|version 1)' "$f"'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/design/*/v1.md) && g=$(awk 'tolower($0) ~ /^#+ *goals/{o=1;next} /^#+ /{o=0} o' "$f") && for id in STOCK-1 STOCK-2 STOCK-3; do printf '%s\n' "$g" | grep -Eq "$id([^0-9]|$)" || exit 1; done'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''
+f=$(ls docs/design/*/v1.md) && for h in "Alternatives" "Failure" "Privacy" "Security" "Open questions"; do grep -Eiq "^#+ *$h" "$f" || exit 1; done
+'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/design/*/v1.md) && awk 'tolower($0) ~ /^#+ *alternatives/{o=1;next} /^##? /{o=0} o' "$f" | grep -Eiq 'do[ -]nothing|status quo|no change' '''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/design/*/v1.md) && s=$(grep -Ei '^\| *\**Status' "$f" | tr -d '*') && ! printf '%s' "$s" | grep -Eiq 'Approved' && printf '%s' "$s" | grep -Eiq '\| *(Draft|In review) *\|' '''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''f=$(ls docs/design/*/v1.md) && ! grep -Eq '^>' "$f" && ! grep -Eqw 'N/A' "$f"'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = ["docs/design/**", "docs/adr/**", "GLOSSARY.md", ".ns/**"]
+
+[[check]]
+type = "judge"
+rubric = "Read the design doc under docs/design/. Pass only if: available stock is computed as on hand minus unexpired reservations, with the real names from src/inventory (Warehouse, reserve, fulfil, the JSON state file) rather than generic nouns; the state file change says what happens to an existing state file and to an older binary reading a new one; STOCK-3's 10% is cited by its ID rather than restated as a bare number; auto-reordering is a non-goal citing STOCK-5; failure modes each say how they are detected; and anything the author would have to decide is an Open questions row with an owner, not an invented answer."
+required = false
