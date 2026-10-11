@@ -7730,6 +7730,34 @@ fn draining_runs_no_triage_to_fill_an_idle_slot() {
 }
 
 #[test]
+fn a_refill_does_not_check_for_an_update_so_a_new_ready_issue_still_starts() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_c, go_c) = hold_phase(&e, "4-fix-c", "build");
+    let w = Watching::start(watch_from(&e, &from).env("NS_REFILL_MS", "100").args([
+        "watch",
+        "--parallel",
+        "2",
+    ]));
+    w.entered(&in_a);
+    land(&e, "cli/x", "new\n");
+    // Several refill intervals pass with a slot free and a new commit on origin.
+    thread::sleep(Duration::from_millis(1000));
+    e.ready(4, "Fix c", &["type:fix"], "");
+    w.entered(&in_c);
+    release(&go_c);
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 4], "done"), "{v}");
+    let started_4 = event_at(&e, |ev| ev["event"] == "worker_start" && ev["issue"] == 4);
+    let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
+    assert!(started_4 < ended_2, "{:?}", run_events(&e));
+}
+
+#[test]
 fn draining_starts_no_unit_and_waits_for_the_running_one() {
     let e = Env::new();
     let from = nightshift_repo(&e);
