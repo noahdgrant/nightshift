@@ -495,14 +495,11 @@ mod tests {
                 .mode();
             assert!(mode & 0o111 != 0, "{f} is not executable");
         }
-        for hook in [".githooks/pre-commit", ".githooks/pre-push"] {
-            let text = std::fs::read_to_string(repo.join(hook)).unwrap();
-            assert_eq!(
-                text.lines().last(),
-                Some("exec scripts/ci-local.sh"),
-                "{hook}"
-            );
-        }
+        let text = std::fs::read_to_string(repo.join(".githooks/pre-commit")).unwrap();
+        assert_eq!(text.lines().last(), Some("exec scripts/ci-local.sh"));
+        // pre-push runs it once per commit pushed; the cli tests pin how.
+        let text = std::fs::read_to_string(repo.join(".githooks/pre-push")).unwrap();
+        assert!(text.contains("exec scripts/ci-local.sh </dev/null"));
     }
 
     fn gate(cmd: &str, timeout: Duration) -> (GateRun, tempfile::TempDir) {

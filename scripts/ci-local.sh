@@ -3,7 +3,8 @@
 #
 # The .githooks pre-commit and pre-push hooks run it.
 #
-# Uses this worktree's own cli/target/debug/ns. The private guard reads
+# Uses the ns this run builds: cli/target/debug/ns, or under $CARGO_TARGET_DIR when that
+# is set, as the pre-push hook sets it. The private guard reads
 # PRIVATE_DENYLIST from the environment, as in CI.
 set -euo pipefail
 
@@ -14,7 +15,7 @@ if [ "$#" -ne 0 ]; then
   exit 2
 fi
 
-ns=cli/target/debug/ns
+ns=${CARGO_TARGET_DIR:-cli/target}/debug/ns
 
 step() {
   local name=$1

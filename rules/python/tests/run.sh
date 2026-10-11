@@ -237,7 +237,11 @@ for args in "" "."; do
   }
 done
 
-ns="$pack/../../cli/target/debug/ns"
+# The ns this run builds: under $CARGO_TARGET_DIR when set (a relative one is relative to
+# the repo root, as in scripts/ci-local.sh), else cli/target.
+target=${CARGO_TARGET_DIR:-cli/target}
+case $target in /*) ;; *) target="$pack/../../$target" ;; esac
+ns="$target/debug/ns"
 if [ -x "$ns" ]; then
   repo="$tmp/ns-repo"
   mkdir -p "$repo/docs/agents"

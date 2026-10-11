@@ -128,6 +128,7 @@ impl Repo {
                 "PATH",
                 format!("{}:/usr/bin:/bin", root.join("bin").display()),
             )
+            .env_remove("CARGO_TARGET_DIR")
             .env_remove("FAIL_ON")
             .env_remove("PLAN")
             .env_remove("PYTEST");
@@ -287,6 +288,37 @@ fn the_eval_filter_allows_only_zephyr_skips() {
     assert!(stderr(&out).contains("skipped: ns-x/c: missing capability: python"));
     assert!(!stderr(&out).contains("skipped: ns-x/c: missing capability: zephyr"));
     assert!(stderr(&out).contains("ci-local: FAILED at step: ns eval --dry-run"));
+}
+
+#[test]
+fn the_ns_run_is_the_one_under_cargo_target_dir_when_that_is_set() {
+    let repo = Repo::new();
+    let root = repo.dir.path();
+    let shared = root.join("shared");
+    fs::create_dir_all(shared.join("debug")).unwrap();
+    fs::rename(root.join("cli/target/debug/ns"), shared.join("debug/ns")).unwrap();
+    let out = repo.run(&[], &[("CARGO_TARGET_DIR", shared.to_str().unwrap())]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(steps(&out), ALL_STEPS);
+
+    let out = repo.run(&[], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("ci-local: FAILED at step: ns lint\n"));
+}
+
+#[test]
+fn a_relative_cargo_target_dir_is_relative_to_the_repo_root() {
+    let repo = Repo::new();
+    let root = repo.dir.path();
+    fs::create_dir_all(root.join("shared/debug")).unwrap();
+    fs::rename(
+        root.join("cli/target/debug/ns"),
+        root.join("shared/debug/ns"),
+    )
+    .unwrap();
+    let out = repo.run(&[], &[("CARGO_TARGET_DIR", "shared")]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(steps(&out), ALL_STEPS);
 }
 
 #[test]

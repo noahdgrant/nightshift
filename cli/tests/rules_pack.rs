@@ -137,6 +137,7 @@ impl Repo {
             .arg("rules")
             .args(args)
             .env("CARGO_BUILD_JOBS", "1")
+            .env_remove("CARGO_TARGET_DIR")
             .current_dir(&self.root)
             .timeout(CHECK_TIMEOUT)
             .output();
@@ -694,4 +695,76 @@ fn install_defaults_the_crate_dir_to_the_repo_root_and_needs_a_repo() {
     let out = run(&[]);
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert!(String::from_utf8_lossy(&out.stderr).contains("usage: "));
+}
+
+#[test]
+fn python_pack_tests_run_the_ns_under_cargo_target_dir() {
+    need_tools();
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    let marker = tmp.path().join("ns-ran");
+    let ns = tmp.path().join("target/debug/ns");
+    fs::create_dir_all(ns.parent().unwrap()).unwrap();
+    fs::write(
+        &ns,
+        format!(
+            "#!/bin/sh\ntouch '{}'\nexec '{}' \"$@\"\n",
+            marker.display(),
+            common::ns_path().display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&ns, fs::Permissions::from_mode(0o755)).unwrap();
+    let run_sh = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rules/python/tests/run.sh");
+    let out = common::command("bash")
+        .arg(run_sh)
+        .timeout(CHECK_TIMEOUT)
+        .env_remove("CI")
+        .env("CARGO_TARGET_DIR", tmp.path().join("target"))
+        .output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(!err.contains("skipped"), "{err}");
+    assert!(
+        marker.exists(),
+        "run.sh did not run the ns under CARGO_TARGET_DIR"
+    );
+}
+
+#[test]
+fn python_pack_tests_run_the_ns_under_a_relative_cargo_target_dir() {
+    need_tools();
+    use std::os::unix::fs::PermissionsExt;
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let tmp = TempDir::new_in(repo_root).unwrap();
+    let marker = tmp.path().join("ns-ran");
+    let ns = tmp.path().join("target/debug/ns");
+    fs::create_dir_all(ns.parent().unwrap()).unwrap();
+    fs::write(
+        &ns,
+        format!(
+            "#!/bin/sh\ntouch '{}'\nexec '{}' \"$@\"\n",
+            marker.display(),
+            common::ns_path().display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&ns, fs::Permissions::from_mode(0o755)).unwrap();
+    let run_sh = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rules/python/tests/run.sh");
+    let out = common::command("bash")
+        .arg(run_sh)
+        .timeout(CHECK_TIMEOUT)
+        .env_remove("CI")
+        .env(
+            "CARGO_TARGET_DIR",
+            Path::new(tmp.path().file_name().unwrap()).join("target"),
+        )
+        .output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(!err.contains("skipped"), "{err}");
+    assert!(
+        marker.exists(),
+        "run.sh did not run the ns under a relative CARGO_TARGET_DIR"
+    );
 }
