@@ -137,6 +137,7 @@ impl Repo {
             .arg("rules")
             .args(args)
             .env("CARGO_BUILD_JOBS", "1")
+            .env_remove("CARGO_TARGET_DIR")
             .current_dir(&self.root)
             .timeout(CHECK_TIMEOUT)
             .output();
