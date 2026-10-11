@@ -2,14 +2,13 @@
 //! follow-ups and escapes filed tonight can join tonight's queue (docs/FACTORY.md, ns watch).
 
 use std::collections::BTreeSet;
-use std::path::Path;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::{
-    is_status, labels, queue, rank, skip, Issue, Listing, Night, HARNESS_FAIL_LIMIT,
+    is_status, queue, rank, skip, Forge, Issue, Listing, Night, HARNESS_FAIL_LIMIT,
     PAUSED_PAST_UNTIL,
 };
 use crate::clock;
@@ -72,9 +71,13 @@ fn needs_triage(q: &QueueConfig, labels: &[String]) -> Option<String> {
 }
 
 /// Open team-authored issues that need triage and that no PR closes, minus those in `done`.
-pub(super) fn candidates(root: &Path, fac: &Factory, done: &BTreeSet<u64>) -> Result<Candidates> {
+pub(super) fn candidates(
+    forge: &dyn Forge,
+    fac: &Factory,
+    done: &BTreeSet<u64>,
+) -> Result<Candidates> {
     let q = &fac.queue;
-    let listing = Listing::read(root, None)?;
+    let listing = Listing::read(forge, None)?;
     let mut picked = Vec::new();
     let mut skipped = Vec::new();
     for i in &listing.issues {
@@ -119,6 +122,7 @@ fn next(
 /// when it did.
 pub(super) fn pass(
     repo: &Repo,
+    forge: &dyn Forge,
     loaded: &Loaded,
     deadline: Option<i64>,
     night: &mut Night,
@@ -137,17 +141,13 @@ pub(super) fn pass(
             return Ok(None);
         }
         let done = night.triage.tried.union(&night.finished).copied().collect();
-        let found = candidates(&repo.root, &loaded.fac, &done)?.issues;
+        let found = candidates(forge, &loaded.fac, &done)?.issues;
         night
             .triage
             .seen
             .get_or_insert_with(BTreeSet::new)
             .extend(found.iter().map(|(i, _)| i.number));
-        let ready = || {
-            Ok(!queue(&repo.root, &loaded.fac, &night.finished)?
-                .ready
-                .is_empty())
-        };
+        let ready = || Ok(!queue(forge, &loaded.fac, &night.finished)?.ready.is_empty());
         let retry = night.triage.retry.take();
         let again = found.iter().find(|(i, _)| Some(i.number) == retry);
         let picked = match again {
@@ -205,12 +205,10 @@ pub(super) fn pass(
             night.triage.retry = Some(issue.number);
             return Ok(Some(Halt::Paused(reset)));
         }
-        rec["state"] = json!(labels(&repo.root, &issue.number.to_string())
-            .ok()
-            .map(|ls| ls
-                .into_iter()
-                .filter(|l| is_status(q, l))
-                .collect::<Vec<_>>()));
+        rec["state"] = json!(forge.labels(issue.number).ok().map(|ls| ls
+            .into_iter()
+            .filter(|l| is_status(q, l))
+            .collect::<Vec<_>>()));
         night.triage.records.push(rec);
         if failing && night.harness_fails >= HARNESS_FAIL_LIMIT {
             return Ok(Some(Halt::Stop("harness failing".into())));

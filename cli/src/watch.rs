@@ -14,16 +14,18 @@ use crate::factory::{Factory, Queue as QueueConfig};
 use crate::git::{self, Repo};
 use crate::install;
 use crate::review_md::{self, Status};
-use crate::run::{self, gh, gh_json, Outcome, RunResult, Shared};
+use crate::run::{self, Outcome, RunResult, Shared};
 use crate::skills_sync::{self, Sync};
 use crate::stop;
 use crate::worktree::BRANCH_PREFIX;
 
+mod forge;
 mod scheduler;
 mod self_update;
 mod snapshot;
 mod triage;
 
+use forge::{ClosingPrs, Forge, PrState};
 pub use snapshot::NightDir;
 
 pub struct WatchArgs {
@@ -51,31 +53,6 @@ pub struct Issue {
     pub labels: Vec<String>,
     pub body: String,
     pub team: bool,
-}
-
-/// Author associations whose issues `ns watch` will run (docs/FACTORY.md, Trust).
-const TEAM: [&str; 3] = ["OWNER", "MEMBER", "COLLABORATOR"];
-
-/// One issue per line, as printed by the `--jq` filter in `queue()`.
-fn parse_issues(text: &str) -> Vec<Issue> {
-    text.lines()
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .map(|i| Issue {
-            number: i["number"].as_u64().unwrap_or(0),
-            title: i["title"].as_str().unwrap_or("").to_string(),
-            labels: i["labels"]
-                .as_array()
-                .map(|l| {
-                    l.iter()
-                        .filter_map(|x| x["name"].as_str().or(x.as_str()).map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            body: i["body"].as_str().unwrap_or("").to_string(),
-            team: TEAM.contains(&i["authorAssociation"].as_str().unwrap_or("")),
-        })
-        .filter(|i| i.number > 0)
-        .collect()
 }
 
 /// Issue numbers named on a first line `Blocked by: #a, #b`.
@@ -116,68 +93,20 @@ struct Queue {
     skipped: Vec<Value>,
 }
 
-/// Issue number -> the PR whose body closes it and that PR's head branch, from
-/// `gh pr list --state <state>`.
-fn closing_prs(root: &Path, state: &str) -> Result<BTreeMap<u64, (u64, String)>> {
-    let prs = gh_json(
-        root,
-        &[
-            "pr",
-            "list",
-            "--state",
-            state,
-            "--limit",
-            "200",
-            "--json",
-            "number,body,headRefName,isCrossRepository",
-        ],
-    )?;
-    let mut by_issue = BTreeMap::new();
-    for p in prs.as_array().cloned().unwrap_or_default() {
-        for n in closed_by(p["body"].as_str().unwrap_or("")) {
-            // A fork's branch name says nothing about this repo's units.
-            let head = match p["isCrossRepository"].as_bool() {
-                Some(false) => p["headRefName"].as_str().unwrap_or("").to_string(),
-                _ => String::new(),
-            };
-            by_issue.insert(n, (p["number"].as_u64().unwrap_or(0), head));
-        }
-    }
-    Ok(by_issue)
-}
-
 /// Open issues, never PRs, and the open and merged PRs that close each.
 struct Listing {
     issues: Vec<Issue>,
-    has_pr: BTreeMap<u64, (u64, String)>,
-    merged_pr: BTreeMap<u64, (u64, String)>,
-}
-
-/// Open issues, never PRs; `labels` narrows the list to issues carrying that label.
-fn open_issues(root: &Path, labels: Option<&str>) -> Result<Vec<Issue>> {
-    let filter = labels.map_or(String::new(), |l| format!("&labels={l}"));
-    let path = format!("repos/{{owner}}/{{repo}}/issues?state=open{filter}&per_page=100");
-    // `gh issue list --json` has no author association, so read the REST list.
-    Ok(parse_issues(&gh(
-        root,
-        &[
-            "api",
-            "--paginate",
-            &path,
-            "--jq",
-            ".[] | select(.pull_request | not) | {number, title, labels, body, authorAssociation: .author_association}",
-        ],
-    )?))
+    has_pr: ClosingPrs,
+    merged_pr: ClosingPrs,
 }
 
 impl Listing {
     /// `labels` narrows the list to issues carrying that label.
-    fn read(root: &Path, labels: Option<&str>) -> Result<Listing> {
-        let issues = open_issues(root, labels)?;
+    fn read(forge: &dyn Forge, labels: Option<&str>) -> Result<Listing> {
         Ok(Listing {
-            issues,
-            has_pr: closing_prs(root, "open")?,
-            merged_pr: closing_prs(root, "merged")?,
+            issues: forge.open_issues(labels)?,
+            has_pr: forge.closing_prs(PrState::Open)?,
+            merged_pr: forge.closing_prs(PrState::Merged)?,
         })
     }
 
@@ -223,9 +152,9 @@ fn order(q: &QueueConfig, i: &Issue) -> (usize, usize, u64) {
 
 /// Ready issues, minus those in `finished`: GitHub can list an issue as open
 /// for a few seconds after its closing PR merges.
-fn queue(root: &Path, fac: &Factory, finished: &BTreeSet<u64>) -> Result<Queue> {
+fn queue(forge: &dyn Forge, fac: &Factory, finished: &BTreeSet<u64>) -> Result<Queue> {
     let q = &fac.queue;
-    let listing = Listing::read(root, Some(&q.ready_label))?;
+    let listing = Listing::read(forge, Some(&q.ready_label))?;
     let mut open_cache: BTreeMap<u64, bool> = BTreeMap::new();
     let mut ready = Vec::new();
     let mut skipped = Vec::new();
@@ -242,11 +171,8 @@ fn queue(root: &Path, fac: &Factory, finished: &BTreeSet<u64>) -> Result<Queue> 
             let open = match open_cache.get(&b) {
                 Some(o) => *o,
                 None => {
-                    let st = gh_json(root, &["issue", "view", &b.to_string(), "--json", "state"])
-                        .ok()
-                        .and_then(|v| v["state"].as_str().map(String::from));
                     // An unreadable blocker counts as open: never start work that may be blocked.
-                    let o = st.as_deref() != Some("CLOSED");
+                    let o = !forge.is_closed(b).unwrap_or(false);
                     open_cache.insert(b, o);
                     o
                 }
@@ -296,18 +222,13 @@ fn is_status(q: &QueueConfig, label: &str) -> bool {
         .any(|o| *o == label)
 }
 
-fn labels(root: &Path, n: &str) -> Result<Vec<String>> {
-    let v = gh_json(root, &["issue", "view", n, "--json", "labels"])?;
-    Ok(v["labels"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|l| l["name"].as_str().map(String::from))
-        .collect())
-}
-
-fn status_drift(root: &Path, q: &QueueConfig, n: &str, end: Option<&str>) -> Result<StatusDrift> {
-    let labels = labels(root, n)?;
+fn status_drift(
+    forge: &dyn Forge,
+    q: &QueueConfig,
+    n: u64,
+    end: Option<&str>,
+) -> Result<StatusDrift> {
+    let labels = forge.labels(n)?;
     let stray = labels
         .iter()
         .filter(|l| Some(l.as_str()) != end && is_status(q, l))
@@ -319,23 +240,15 @@ fn status_drift(root: &Path, q: &QueueConfig, n: &str, end: Option<&str>) -> Res
     })
 }
 
-fn set_status(root: &Path, q: &QueueConfig, n: u64, end: Option<&str>) -> Result<()> {
-    let ns = n.to_string();
+fn set_status(forge: &dyn Forge, q: &QueueConfig, n: u64, end: Option<&str>) -> Result<()> {
     for _ in 0..LABEL_EDIT_ATTEMPTS {
-        let drift = status_drift(root, q, &ns, end)?;
+        let drift = status_drift(forge, q, n, end)?;
         if drift.is_clean() {
             return Ok(());
         }
-        let mut args = vec!["issue", "edit", ns.as_str()];
-        for l in &drift.stray {
-            args.extend(["--remove-label", l.as_str()]);
-        }
-        if let Some(e) = end.filter(|_| drift.missing) {
-            args.extend(["--add-label", e]);
-        }
-        gh(root, &args)?;
+        forge.edit_labels(n, &drift.stray, end.filter(|_| drift.missing))?;
     }
-    let drift = status_drift(root, q, &ns, end)?;
+    let drift = status_drift(forge, q, n, end)?;
     if drift.is_clean() {
         return Ok(());
     }
@@ -357,10 +270,6 @@ fn set_status(root: &Path, q: &QueueConfig, n: u64, end: Option<&str>) -> Result
     .into())
 }
 
-fn comment(root: &Path, n: u64, body: &str) -> Result<()> {
-    gh(root, &["issue", "comment", &n.to_string(), "--body", body]).map(|_| ())
-}
-
 /// Open issues carrying `in_progress_label`: those no live `ns run` holds, left so by a night
 /// that ended mid-unit, and those one does, each with its run lock's holder.
 struct InProgress {
@@ -368,13 +277,13 @@ struct InProgress {
     held: Vec<(Issue, Value)>,
 }
 
-fn in_progress(repo: &Repo, q: &QueueConfig) -> Result<InProgress> {
+fn in_progress(repo: &Repo, forge: &dyn Forge, q: &QueueConfig) -> Result<InProgress> {
     let holders = run::Lock::run_holders(&repo.common_dir)?;
     let mut found = InProgress {
         stale: Vec::new(),
         held: Vec::new(),
     };
-    for i in open_issues(&repo.root, Some(&q.in_progress_label))? {
+    for i in forge.open_issues(Some(&q.in_progress_label))? {
         if !i.labels.contains(&q.in_progress_label) {
             continue;
         }
@@ -399,8 +308,13 @@ fn holds(holder: &Value, n: u64) -> bool {
 
 /// Put each stale in-progress issue back to `ready_label`, keeping its worktree and artifacts so
 /// its unit resumes, and push its number onto `requeued`.
-fn requeue_stale(repo: &Repo, q: &QueueConfig, requeued: &mut Vec<u64>) -> Result<()> {
-    let found = in_progress(repo, q)?;
+fn requeue_stale(
+    repo: &Repo,
+    forge: &dyn Forge,
+    q: &QueueConfig,
+    requeued: &mut Vec<u64>,
+) -> Result<()> {
+    let found = in_progress(repo, forge, q)?;
     for (i, h) in &found.held {
         eprintln!(
             "ns watch: #{} is held by a live ns run (pid {}, unit {}); left in progress",
@@ -410,7 +324,7 @@ fn requeue_stale(repo: &Repo, q: &QueueConfig, requeued: &mut Vec<u64>) -> Resul
         );
     }
     for i in &found.stale {
-        set_status(&repo.root, q, i.number, Some(&q.ready_label))?;
+        set_status(forge, q, i.number, Some(&q.ready_label))?;
         eprintln!(
             "ns watch: #{} was in progress with no live ns run; back to {}",
             i.number, q.ready_label
@@ -499,6 +413,8 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         );
     }
     let q = fac.queue.clone();
+    let forge = forge::open(&q, &repo.root)?;
+    let forge = forge.as_ref();
     let mut night = Night::new();
     let deadline = match &args.until {
         Some(s) => {
@@ -558,7 +474,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     }
 
     if args.dry_run {
-        let qu = queue(&repo.root, fac, &BTreeSet::new())?;
+        let qu = queue(forge, fac, &BTreeSet::new())?;
         let ready: Vec<Value> = qu
             .ready
             .iter()
@@ -573,11 +489,11 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             .collect();
         // With the pass off, nothing would be triaged, so list nothing.
         let tr = if triage::on(fac) {
-            triage::candidates(&repo.root, fac, &BTreeSet::new())?
+            triage::candidates(forge, fac, &BTreeSet::new())?
         } else {
             triage::Candidates::default()
         };
-        let requeue: Vec<u64> = in_progress(&repo, &q)?
+        let requeue: Vec<u64> = in_progress(&repo, forge, &q)?
             .stale
             .iter()
             .map(|i| i.number)
@@ -662,6 +578,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     );
     let plan = scheduler::Plan {
         repo: &repo,
+        forge,
         loaded: &loaded,
         snap: &snap,
         deadline,
@@ -671,7 +588,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         update,
     };
     let mut failed = None;
-    let stopped = match requeue_stale(&repo, &q, &mut tonight.requeued)
+    let stopped = match requeue_stale(&repo, forge, &q, &mut tonight.requeued)
         .and_then(|()| scheduler::Scheduler::new(plan).run(&mut night, &mut tonight))
     {
         Ok(stopped) => stopped,
@@ -991,6 +908,93 @@ Open after 3 fix cycles: C1, I2, I4.
         };
         assert_eq!(unit_branch(&issue("Fix UART")), "ns/13-fix-uart");
         assert_eq!(unit_branch(&issue("")), "ns/13");
+    }
+
+    /// A forge in memory: issues, the closed ones, and each issue's labels, edited in place.
+    #[derive(Default)]
+    struct Fake {
+        issues: Vec<Issue>,
+        closed: BTreeSet<u64>,
+        labels: std::cell::RefCell<BTreeMap<u64, Vec<String>>>,
+    }
+
+    impl Forge for Fake {
+        fn open_issues(&self, label: Option<&str>) -> Result<Vec<Issue>> {
+            Ok(self
+                .issues
+                .iter()
+                .filter(|i| label.is_none_or(|l| i.labels.iter().any(|x| x == l)))
+                .cloned()
+                .collect())
+        }
+        fn closing_prs(&self, _: PrState) -> Result<ClosingPrs> {
+            Ok(ClosingPrs::new())
+        }
+        fn is_closed(&self, n: u64) -> Result<bool> {
+            match n {
+                99 => anyhow::bail!("unreadable"),
+                _ => Ok(self.closed.contains(&n)),
+            }
+        }
+        fn labels(&self, n: u64) -> Result<Vec<String>> {
+            Ok(self.labels.borrow().get(&n).cloned().unwrap_or_default())
+        }
+        fn edit_labels(&self, n: u64, remove: &[String], add: Option<&str>) -> Result<()> {
+            let mut all = self.labels.borrow_mut();
+            let ls = all.entry(n).or_default();
+            ls.retain(|l| !remove.contains(l));
+            ls.extend(add.map(String::from));
+            Ok(())
+        }
+        fn comment(&self, _: u64, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn close(&self, _: u64) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_queue_and_labels_go_through_the_forge() {
+        let fac = Factory::default();
+        let ready = fac.queue.ready_label.clone();
+        let issue = |number, body: &str| Issue {
+            number,
+            title: format!("Fix {number}"),
+            labels: vec![ready.clone()],
+            body: body.into(),
+            team: true,
+        };
+        let forge = Fake {
+            issues: vec![
+                issue(2, "Blocked by: #1"),
+                issue(3, "Blocked by: #4"),
+                issue(5, "Blocked by: #99"),
+            ],
+            closed: BTreeSet::from([1]),
+            ..Fake::default()
+        };
+        let qu = queue(&forge, &fac, &BTreeSet::new()).unwrap();
+        assert_eq!(qu.ready.iter().map(|i| i.number).collect::<Vec<_>>(), [2]);
+        assert_eq!(qu.skipped[0]["reason"], "blocked by open #4");
+        assert_eq!(qu.skipped[1]["reason"], "blocked by open #99");
+
+        let q = &fac.queue;
+        forge
+            .labels
+            .borrow_mut()
+            .insert(2, vec![ready.clone(), "type:fix".into()]);
+        set_status(&forge, q, 2, Some(&q.in_progress_label)).unwrap();
+        assert_eq!(
+            forge.labels(2).unwrap(),
+            ["type:fix", q.in_progress_label.as_str()]
+        );
+        forge.edit_labels(2, &[], Some(&ready)).unwrap();
+        set_status(&forge, q, 2, Some(&q.in_progress_label)).unwrap();
+        assert_eq!(
+            forge.labels(2).unwrap(),
+            ["type:fix", q.in_progress_label.as_str()]
+        );
     }
 
     #[test]
