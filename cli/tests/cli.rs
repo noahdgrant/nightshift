@@ -1989,6 +1989,13 @@ fn pre_push_checks_the_tree_it_pushes_and_nothing_else() {
     assert_eq!(runs(&log), before);
     git(&root, &["checkout", "-q", "README"]);
 
+    fs::write(root.join("new.txt"), "untracked\n").unwrap();
+    let out = push("HEAD:refs/heads/e");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not clean"));
+    assert_eq!(runs(&log), before);
+    fs::remove_file(root.join("new.txt")).unwrap();
+
     let out = push(":refs/heads/a");
     assert!(out.status.success(), "{out:?}");
     assert_eq!(git(&remote, &["for-each-ref"]), "");
@@ -2011,6 +2018,13 @@ fn pre_push_accepts_an_annotated_tag_at_head_and_refuses_one_elsewhere() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("pre-push"));
     assert_eq!(runs(&log), before);
     assert!(!git(&remote, &["for-each-ref"]).contains("v-old"));
+
+    git(&root, &["tag", "-a", "-m", "t", "v-tree", "HEAD^{tree}"]);
+    let before = runs(&log);
+    let out = git_output(&root, &["push", "-q", "origin", "refs/tags/v-tree"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("is not a commit"));
+    assert_eq!(runs(&log), before);
 }
 
 #[test]
