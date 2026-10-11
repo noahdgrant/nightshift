@@ -1471,7 +1471,7 @@ fn log_phase_output_prints_the_newest_transcript_redacted() {
     assert!(out.status.success());
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "assistant: Building.\ntool: Bash {\"command\":\"GH_TOKEN=[redacted] gh pr list\"}\n"
+        "assistant: Building.\ntool: Bash {\"command\":\"GH_TOKEN=[redacted]\"}\n"
     );
     assert!(String::from_utf8_lossy(&out.stderr).contains("build-1.jsonl"));
     let out = log(&["--unit", "7-a", "--json"]);

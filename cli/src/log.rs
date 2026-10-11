@@ -3,7 +3,7 @@
 
 use std::cell::Cell;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -273,7 +273,6 @@ fn byte_lines(mut reader: impl BufRead) -> impl Iterator<Item = io::Result<Vec<u
 /// back until its newline arrives.
 pub struct Tail<W: FnMut()> {
     path: PathBuf,
-    start: u64,
     reader: Option<BufReader<File>>,
     partial: Vec<u8>,
     wait: W,
@@ -281,14 +280,8 @@ pub struct Tail<W: FnMut()> {
 
 impl<W: FnMut()> Tail<W> {
     pub fn new(path: PathBuf, wait: W) -> Self {
-        Self::at(path, 0, wait)
-    }
-
-    /// Like [`Tail::new`], but reading from byte `start` of the file.
-    pub fn at(path: PathBuf, start: u64, wait: W) -> Self {
         Tail {
             path,
-            start,
             reader: None,
             partial: Vec::new(),
             wait,
@@ -303,12 +296,7 @@ impl<W: FnMut()> Iterator for Tail<W> {
         loop {
             let Some(reader) = self.reader.as_mut() else {
                 match File::open(&self.path) {
-                    Ok(mut f) => {
-                        if let Err(e) = f.seek(SeekFrom::Start(self.start)) {
-                            return Some(Err(e));
-                        }
-                        self.reader = Some(BufReader::new(f));
-                    }
+                    Ok(f) => self.reader = Some(BufReader::new(f)),
                     Err(e) if e.kind() == io::ErrorKind::NotFound => (self.wait)(),
                     Err(e) => return Some(Err(e)),
                 }
@@ -668,15 +656,6 @@ not json
         fs::write(&path, "a\nb\n").unwrap();
         let mut tail = Tail::new(path, || panic!("waited with lines left"));
         assert_eq!(tail.next().unwrap().unwrap(), b"a");
-        assert_eq!(tail.next().unwrap().unwrap(), b"b");
-    }
-
-    #[test]
-    fn follow_at_an_offset_skips_what_comes_before_it() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("runs.jsonl");
-        fs::write(&path, "a\nb\n").unwrap();
-        let mut tail = Tail::at(path, 2, || panic!("waited with lines left"));
         assert_eq!(tail.next().unwrap().unwrap(), b"b");
     }
 

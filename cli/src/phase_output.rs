@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::LazyLock;
@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::error::SfError;
 use crate::git::Repo;
-use crate::log::{printable, Tail, POLL};
+use crate::log::{printable, POLL};
 use crate::transcripts::{line_entries, Entry, COMPACT_LIMIT};
 use crate::worktree;
 
@@ -28,7 +28,7 @@ const REDACTED: &str = "[redacted]";
 /// Keys whose value is a credential, wherever they sit in a transcript line: any key ending in
 /// one of these words, so `GH_TOKEN` and `githubtoken` but not `input_tokens`.
 static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:token|secret|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key|credentials?|authorization)$").unwrap()
+    Regex::new(r"(?i)(?:token|secret|password|passwd|passphrase|api[_-]?key|access[_-]?key|private[_-]?key|credentials?|authorization)$").unwrap()
 });
 
 /// Secret-like text and what replaces it, applied in order.
@@ -40,12 +40,19 @@ static SECRET_TEXT: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
         ),
         (r"(://)[^/\s:@]+:[^/\s@]+@", "${1}[redacted]@"),
         (r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}", "$1 [redacted]"),
+        (r"(?i)\b(authorization\s*:\s*token\s+)\S+", "${1}[redacted]"),
         (
-            r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})",
+            r"(?i)(\s--[a-z-]*(?:password|passwd|passphrase|secret|token|api-?key|access-?key|private-?key|credentials?)\s+)\S+",
+            "${1}[redacted]",
+        ),
+        (r"(\s-u\s+)[^\s:]+:\S+", "${1}[redacted]"),
+        (r"(\s-p)[^\s-]\S*", "${1}[redacted]"),
+        (
+            r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|(?:sk|rk)_live_[A-Za-z0-9]{10,}|npm_[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{20,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|ya29\.[A-Za-z0-9_-]{20,}|shp(?:at|ca|pa|ss)_[A-Za-z0-9]{20,}|pypi-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})",
             REDACTED,
         ),
         (
-            r#"(?i)\b([A-Za-z0-9_.-]*(?:token|secret|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[A-Za-z0-9_]*"?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|[^\s"',;]+)"#,
+            r#"(?i)\b([A-Za-z0-9_.-]*(?:token|secret|password|passwd|passphrase|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[A-Za-z0-9_]*"?[ \t]*[:=][ \t]*)("[^"\n]*"|'[^'\n]*'|[^\n]+)"#,
             "${1}[redacted]",
         ),
     ]
@@ -59,8 +66,11 @@ pub fn cli(unit: Option<&str>, follow: bool, as_json: bool) -> Result<ExitCode> 
         worktree::check_unit_id(u, "ns log --phase-output --unit 142-uart-timeout")?;
     }
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
-    let root = repo.common_dir.join("ns").join("transcripts");
-    let path = newest(&root, unit)
+    let ns = repo.common_dir.join("ns");
+    let root = ns.join("transcripts");
+    let runs = ns.join("runs.jsonl");
+    let current = || current(&root, &runs, unit);
+    let path = current()
         .with_context(|| format!("cannot list {}", root.display()))?
         .ok_or_else(|| {
             let whose = unit.map_or(String::new(), |u| format!(" for {u}"));
@@ -73,7 +83,11 @@ pub fn cli(unit: Option<&str>, follow: bool, as_json: bool) -> Result<ExitCode> 
     eprintln!("phase output from {}", path.display());
     let show: Show = if as_json { json_line } else { text };
     let mut out = io::stdout().lock();
-    match print(&path, follow, show, &mut out) {
+    let wait = || {
+        std::thread::sleep(POLL);
+        true
+    };
+    match print(&path, follow, show, &mut out, current, wait) {
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(ExitCode::SUCCESS),
         r => r
             .map(|()| ExitCode::SUCCESS)
@@ -81,21 +95,105 @@ pub fn cli(unit: Option<&str>, follow: bool, as_json: bool) -> Result<ExitCode> 
     }
 }
 
-/// Print the last [`LATEST`] entries of the transcript's whole lines, then with `follow` the
-/// entries of each line appended after them.
-fn print(path: &Path, follow: bool, show: Show, out: &mut impl Write) -> io::Result<()> {
-    let bytes = fs::read(path)?;
-    let whole = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-    for e in latest(bytes[..whole].split(|b| *b == b'\n'), LATEST) {
+/// How much of the end of a transcript is read to find its latest entries.
+const WINDOW: u64 = 256 * 1024;
+
+/// Print the last [`LATEST`] entries of the transcript's whole lines. With `follow`, then the
+/// entries of each line appended after them, and when `current` names another transcript, that
+/// one's last entries and what is appended to it. `wait` is called between polls; `false` stops.
+fn print(
+    path: &Path,
+    follow: bool,
+    show: Show,
+    out: &mut impl Write,
+    mut current: impl FnMut() -> io::Result<Option<PathBuf>>,
+    mut wait: impl FnMut() -> bool,
+) -> io::Result<()> {
+    let mut path = path.to_path_buf();
+    let mut at = snapshot(&path, show, out)?;
+    if !follow {
+        return Ok(());
+    }
+    loop {
+        at = drain(&path, at, show, out)?;
+        if let Some(next) = current()?.filter(|n| *n != path) {
+            at = snapshot(&next, show, out)?;
+            path = next;
+        } else if !wait() {
+            return Ok(());
+        }
+    }
+}
+
+/// Print the last [`LATEST`] entries within the last [`WINDOW`] bytes of `path`'s whole lines.
+/// Returns the offset just past its last whole line.
+fn snapshot(path: &Path, show: Show, out: &mut impl Write) -> io::Result<u64> {
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(WINDOW);
+    file.seek(SeekFrom::Start(start))?;
+    let mut tail = Vec::new();
+    file.take(len - start).read_to_end(&mut tail)?;
+    let whole = tail.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    let mut lines = &tail[..whole];
+    if start > 0 {
+        lines = lines
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(&[][..], |i| &lines[i + 1..]);
+    }
+    for e in latest(lines.split(|b| *b == b'\n'), LATEST) {
         writeln!(out, "{}", show(&e))?;
     }
-    if follow {
-        let tail = Tail::at(path.to_path_buf(), whole as u64, || {
-            std::thread::sleep(POLL)
-        });
-        render(tail, show, out)?;
+    Ok(start + whole as u64)
+}
+
+/// Print the entries of the whole lines of `path` from byte `at` on, and return the offset just
+/// past them. Nothing, and `at` back, while the file does not exist yet.
+fn drain(path: &Path, at: u64, show: Show, out: &mut impl Write) -> io::Result<u64> {
+    let mut file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(at),
+        Err(e) => return Err(e),
+    };
+    file.seek(SeekFrom::Start(at))?;
+    let mut added = Vec::new();
+    file.read_to_end(&mut added)?;
+    let whole = added.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    for line in added[..whole].split(|b| *b == b'\n') {
+        for e in entries(line) {
+            writeln!(out, "{}", show(&e))?;
+        }
     }
-    Ok(())
+    Ok(at + whole as u64)
+}
+
+/// The transcript to show: the newest of `unit`, or of the unit the run log last names when
+/// there is none, or of any unit when the log names none with a transcript. The newest is the
+/// running phase's, which the log only names once the phase ends.
+fn current(root: &Path, runs: &Path, unit: Option<&str>) -> io::Result<Option<PathBuf>> {
+    if unit.is_some() {
+        return newest(root, unit);
+    }
+    let logged = match fs::read(runs) {
+        Ok(b) => last_unit(&b),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    match newest(root, logged.as_deref())? {
+        Some(p) => Ok(Some(p)),
+        None => newest(root, None),
+    }
+}
+
+/// The unit of the last run-log line in `log` that names a valid one.
+fn last_unit(log: &[u8]) -> Option<String> {
+    log.split(|b| *b == b'\n').rev().find_map(|line| {
+        let v = serde_json::from_slice::<Value>(line).ok()?;
+        let u = v["unit"].as_str()?;
+        worktree::check_unit_id(u, "").ok()?;
+        Some(u.to_string())
+    })
 }
 
 /// The newest `*.jsonl` by modification time in `root/<unit>`, or in any unit's directory
@@ -137,6 +235,9 @@ fn entries(line: &[u8]) -> Vec<Entry> {
     let Ok(mut v) = serde_json::from_slice::<Value>(line) else {
         return Vec::new();
     };
+    if v["type"] != "assistant" {
+        return Vec::new();
+    }
     redact(&mut v);
     line_entries(&v, COMPACT_LIMIT)
         .into_iter()
@@ -154,20 +255,6 @@ fn latest<'a>(lines: impl Iterator<Item = &'a [u8]>, n: usize) -> VecDeque<Entry
         }
     }
     kept
-}
-
-/// Print the entries of each line `lines` yields, as `show` formats them, one per line.
-fn render(
-    lines: impl Iterator<Item = io::Result<Vec<u8>>>,
-    show: Show,
-    out: &mut impl Write,
-) -> io::Result<()> {
-    for line in lines {
-        for e in entries(&line?) {
-            writeln!(out, "{}", show(&e))?;
-        }
-    }
-    Ok(())
 }
 
 fn redact(v: &mut Value) {
@@ -360,6 +447,105 @@ not json
         assert_eq!(v, before);
     }
 
+    #[test]
+    fn every_credential_key_and_shape_is_redacted() {
+        let keys = [
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "passphrase",
+            "api_key",
+            "access-key",
+            "private_key",
+            "credential",
+            "credentials",
+            "authorization",
+        ];
+        for k in keys {
+            let mut v = serde_json::json!({ k: "hunter2value" });
+            redact(&mut v);
+            assert_eq!(v[k], REDACTED, "{k}");
+        }
+        let texts = [
+            ("Authorization: Basic dXNlcjpodW50ZXIy", "dXNlcjpodW50ZXIy"),
+            ("Authorization: token hunter2value", "hunter2value"),
+            (
+                "key AIzaSyA1234567890abcdefghijklmnopqrstuv",
+                "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+            ),
+            (
+                "gho_0123456789abcdefghijABCDEFGHIJ",
+                "gho_0123456789abcdefghijABCDEFGHIJ",
+            ),
+            (
+                "ghs_0123456789abcdefghijABCDEFGHIJ",
+                "ghs_0123456789abcdefghijABCDEFGHIJ",
+            ),
+            (
+                "ghu_0123456789abcdefghijABCDEFGHIJ",
+                "ghu_0123456789abcdefghijABCDEFGHIJ",
+            ),
+            (
+                "ghr_0123456789abcdefghijABCDEFGHIJ",
+                "ghr_0123456789abcdefghijABCDEFGHIJ",
+            ),
+            ("mysql --password hunter2value db", "hunter2value"),
+            ("tool --api-key hunter2value", "hunter2value"),
+            ("mysql -phunter2value db", "hunter2value"),
+            ("curl -u admin:hunter2value https://x", "hunter2value"),
+            (
+                "sk_live_0123456789abcdefghij",
+                "sk_live_0123456789abcdefghij",
+            ),
+            (
+                "rk_live_0123456789abcdefghij",
+                "rk_live_0123456789abcdefghij",
+            ),
+            (
+                "npm_0123456789abcdefghijABCDEFGHIJ",
+                "npm_0123456789abcdefghijABCDEFGHIJ",
+            ),
+            ("ASIAABCDEFGHIJKLMNOP", "ASIAABCDEFGHIJKLMNOP"),
+            (
+                "hf_0123456789abcdefghijABCDEFGHIJ",
+                "hf_0123456789abcdefghijABCDEFGHIJ",
+            ),
+            (
+                "SG.abcdefghij0123456789.abcdefghij0123456789",
+                "SG.abcdefghij0123456789.abcdefghij0123456789",
+            ),
+            (
+                "ya29.a0AfH6SMBabcdefghij0123456789",
+                "ya29.a0AfH6SMBabcdefghij0123456789",
+            ),
+            (
+                concat!("shp", "at_0123456789abcdef0123456789abcdef"),
+                concat!("shp", "at_0123456789abcdef0123456789abcdef"),
+            ),
+            (
+                "pypi-AgEIcHlwaS5vcmcabcdefghij0123456789",
+                "pypi-AgEIcHlwaS5vcmcabcdefghij0123456789",
+            ),
+            ("passphrase: hunter2value", "hunter2value"),
+            ("password = correct horse battery staple", "staple"),
+            ("PASSWORD=correct horse && run", "horse"),
+        ];
+        for (text, secret) in texts {
+            let mut v = Value::String(text.into());
+            redact(&mut v);
+            let out = v.as_str().unwrap();
+            assert!(!out.contains(secret), "{text} -> {out}");
+        }
+    }
+
+    #[test]
+    fn a_flag_and_an_empty_assignment_keep_the_rest_of_the_command() {
+        let mut v = Value::String("mkdir -p /tmp/x\nTOKEN=\nnext line".into());
+        redact(&mut v);
+        assert_eq!(v, "mkdir -p /tmp/x\nTOKEN=\nnext line");
+    }
+
     fn append(path: &Path, text: &str) {
         OpenOptions::new()
             .create(true)
@@ -370,46 +556,114 @@ not json
             .unwrap();
     }
 
+    fn said(t: &str) -> String {
+        format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}]}}}}"
+        )
+    }
+
+    fn view(
+        path: &Path,
+        follow: bool,
+        current: impl FnMut() -> io::Result<Option<PathBuf>>,
+        wait: impl FnMut() -> bool,
+    ) -> String {
+        let mut out = Vec::new();
+        print(path, follow, text, &mut out, current, wait).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
     #[test]
-    fn follow_prints_each_appended_entry_from_where_the_snapshot_ended() {
+    fn follow_prints_each_appended_entry_once_even_when_a_line_arrives_in_pieces() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("build-1.jsonl");
-        let said = |t: &str| {
-            format!(
-                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}]}}}}\n"
-            )
-        };
-        append(&path, &said("before"));
-        let start = fs::metadata(&path).unwrap().len();
-        let next = said("after GITHUB_TOKEN=abc123");
-        let (head, rest) = next.split_at(20);
-        let chunks = [head.to_string(), rest.to_string(), said("last")];
-        // Each wait appends the next chunk, as a running phase would while ns log sleeps.
+        let unfinished = said("half");
+        append(&path, &format!("{}\n{unfinished}", said("before")));
         let waits = Cell::new(0);
-        let tail = Tail::at(path.clone(), start, || {
-            let n = waits.get();
-            append(&path, &chunks[n]);
-            waits.set(n + 1);
-        });
-        let mut out = Vec::new();
-        render(tail.take(2), text, &mut out).unwrap();
-        assert_eq!(
-            String::from_utf8(out).unwrap(),
-            "assistant: after GITHUB_TOKEN=[redacted]\nassistant: last\n"
+        let out = view(
+            &path,
+            true,
+            || Ok(Some(path.clone())),
+            || {
+                let n = waits.get();
+                match n {
+                    0 => append(&path, "\n"),
+                    1 => append(&path, &format!("{}\n", said("after GITHUB_TOKEN=abc123"))),
+                    _ => {}
+                }
+                waits.set(n + 1);
+                n < 2
+            },
         );
-        assert_eq!(waits.get(), 3);
+        assert_eq!(
+            out,
+            "assistant: before\nassistant: half\nassistant: after GITHUB_TOKEN=[redacted]\n"
+        );
+    }
+
+    #[test]
+    fn follow_moves_to_the_next_phase_after_finishing_the_old_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build = tmp.path().join("build-1.jsonl");
+        let verify = tmp.path().join("verify-1.jsonl");
+        append(&build, &format!("{}\n", said("one")));
+        let waits = Cell::new(0);
+        let out = view(
+            &build,
+            true,
+            || {
+                Ok(Some(if waits.get() >= 1 {
+                    verify.clone()
+                } else {
+                    build.clone()
+                }))
+            },
+            || {
+                let n = waits.get();
+                if n == 0 {
+                    append(&build, &format!("{}\n", said("last of build")));
+                    append(&verify, &format!("{}\n{}\n", said("two"), said("three")));
+                }
+                waits.set(n + 1);
+                n < 2
+            },
+        );
+        assert_eq!(
+            out,
+            "assistant: one\nassistant: last of build\nassistant: two\nassistant: three\n"
+        );
     }
 
     #[test]
     fn print_shows_only_whole_lines_and_stops_without_follow() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("build-1.jsonl");
-        fs::write(&path, format!("{}{{\"type\":\"assist", fixture())).unwrap();
-        let mut out = Vec::new();
-        print(&path, false, text, &mut out).unwrap();
-        let out = String::from_utf8(out).unwrap();
+        fs::write(&path, format!("{}{}", fixture(), said("unfinished"))).unwrap();
+        let out = view(&path, false, || panic!("resolved"), || panic!("waited"));
         assert_eq!(out.lines().count(), 3, "{out}");
-        assert!(print(&tmp.path().join("gone.jsonl"), false, text, &mut Vec::new()).is_err());
+        assert!(!out.contains("unfinished"), "{out}");
+        assert!(print(
+            &tmp.path().join("gone.jsonl"),
+            false,
+            text,
+            &mut Vec::new(),
+            || Ok(None),
+            || false
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn only_the_end_of_a_long_transcript_is_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("build-1.jsonl");
+        let old = said(&"o".repeat(WINDOW as usize));
+        append(
+            &path,
+            &format!("{old}\n{}\n{}\n", said("recent"), said("newest")),
+        );
+        let out = view(&path, false, || Ok(None), || false);
+        assert_eq!(out, "assistant: recent\nassistant: newest\n");
     }
 
     fn touch(path: &Path, secs: u64) {
@@ -440,5 +694,41 @@ not json
         assert_eq!(newest(&root, Some("8-b")).unwrap(), at("8-b/build-1.jsonl"));
         assert_eq!(newest(&root, None).unwrap(), at("7-a/verify-1.jsonl"));
         assert_eq!(newest(&root, Some("9-c")).unwrap(), None);
+    }
+
+    #[test]
+    fn the_current_transcript_is_the_newest_of_the_unit_the_run_log_last_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("transcripts");
+        let runs = tmp.path().join("runs.jsonl");
+        touch(&root.join("7-a/build-1.jsonl"), 100);
+        touch(&root.join("7-a/verify-1.jsonl"), 200);
+        touch(&root.join("8-b/build-1.jsonl"), 900);
+        assert_eq!(
+            current(&root, &runs, None).unwrap(),
+            Some(root.join("8-b/build-1.jsonl"))
+        );
+        fs::write(
+            &runs,
+            "{\"event\":\"start\",\"unit\":\"8-b\"}\n{\"event\":\"phase\",\"unit\":\"7-a\",\"phase\":\"build\"}\nnot json\n{\"event\":\"lock_wait\"}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            current(&root, &runs, None).unwrap(),
+            Some(root.join("7-a/verify-1.jsonl"))
+        );
+        assert_eq!(
+            current(&root, &runs, Some("8-b")).unwrap(),
+            Some(root.join("8-b/build-1.jsonl"))
+        );
+        fs::write(
+            &runs,
+            "{\"event\":\"start\",\"unit\":\"9-c\"}\n{\"event\":\"start\",\"unit\":\"../x\"}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            current(&root, &runs, None).unwrap(),
+            Some(root.join("8-b/build-1.jsonl"))
+        );
     }
 }

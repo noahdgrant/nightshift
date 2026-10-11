@@ -534,10 +534,10 @@ inclusive, and drops events with no time. -f prints the log so far, then polls i
 0.5 s until stopped (Ctrl-C). Lines that are not UTF-8 JSON objects are skipped; without -f
 their count is on stderr.
 --phase-output reads instead the newest transcript under <git-common-dir>/ns/transcripts/<unit>/
-(of any unit without --unit): its last 20 assistant messages and tool calls, one line each, text
-past 200 characters cut short and credential-like values replaced by [redacted]. With --json
+(of the unit the run log names last without --unit): its last 20 assistant messages and tool calls, one line each, text
+past 200 characters cut short and known credential shapes replaced by [redacted]. With --json
 each is {\"kind\":\"assistant\",\"text\"} or {\"kind\":\"tool\",\"name\",\"input\"}. -f follows that
-transcript. It does not take --since.
+transcript, and moves on to the next phase's. It does not take --since.
 Changes nothing.
 
 Exit codes: 0 ok, 1 the log or transcript could not be read or there is no transcript yet, 2 usage
