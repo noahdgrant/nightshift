@@ -39,7 +39,7 @@ rule:
 
 Use the name the code imports (`yaml`), not the one it installs (`PyYAML`). The standard library is always allowed: its public modules (`utils/stdlib-module.yml`, Python 3.12, kept by hand) and any name starting with `_` (`_thread`). Relative imports are never flagged.
 
-`import-linter` is deliberately not used: its contracts only forbid imports and have no allowlist ([D55](../../docs/DESIGN.md)).
+`import-linter` is deliberately not used: its contracts only forbid imports and have no allowlist ([D55](../../docs/decisions/D55-the-python-rule-pack-lives-in.md)).
 
 ## Duplicate helpers
 

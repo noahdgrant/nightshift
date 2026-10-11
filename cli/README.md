@@ -43,7 +43,7 @@ setup = ["git submodule update --init"]
 
 Each command runs with `sh -c` in the new worktree, with `NS_UNIT`, `NS_WORKTREE` and `NS_MAIN_ROOT` set. Their output goes to stderr. `setup` in the JSON lists `{"run","exit"}` per command that ran. The first failing command stops the rest and makes `new` exit 1. The worktree stays in place, and `ns worktree setup <unit-id>` retries. An idempotent repeat of `new` runs nothing and prints `"setup": []`, and so does `--no-setup`.
 
-`.nightshift/` is the factory definition root (D15 in `docs/DESIGN.md`). The whole file is parsed against the schema in [docs/FACTORY.md](../docs/FACTORY.md), and unknown tables or keys are rejected (exit 2).
+`.nightshift/` is the factory definition root (D15 in `docs/decisions/`). The whole file is parsed against the schema in [docs/FACTORY.md](../docs/FACTORY.md), and unknown tables or keys are rejected (exit 2).
 
 ### `ns worktree setup <unit-id> [--repo <path>]`
 

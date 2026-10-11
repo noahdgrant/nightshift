@@ -1,5 +1,5 @@
 //! Quality records: one JSON line per review attempt, kept on the `nightshift/quality` branch
-//! so a unit's numbers outlive its worktree (docs/DESIGN.md D39).
+//! so a unit's numbers outlive its worktree (docs/decisions/ D39).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -27,7 +27,7 @@ pub struct FindingRecord {
     pub cycle: Option<u32>,
     pub status: Status,
     pub fixed_cycle: Option<u32>,
-    /// Absent from records written before fix-only cycles (docs/DESIGN.md D60).
+    /// Absent from records written before fix-only cycles (docs/decisions/ D60).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix_attempts: Option<u32>,
     /// Relative `path:line`; dropped when the review wrote an absolute path.
