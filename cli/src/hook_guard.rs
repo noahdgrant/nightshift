@@ -103,8 +103,6 @@ fn unreadable(what: &str) -> String {
     format!("{what} takes a word built by a shell expansion that could be a flag that skips the hooks; write the word out literally")
 }
 
-// --------------------------------------------------------------- analysis
-
 #[derive(Default)]
 struct Scan {
     /// An earlier `cd` or `pushd`, or this git's `-C`, went into a protected path.
@@ -112,6 +110,8 @@ struct Scan {
     depth: usize,
     /// `cwd_is_hooks` outside each subshell the scan is in.
     outer_cwds: Vec<bool>,
+    /// The command's stdin is a heredoc or herestring, which a shell would run.
+    stdin_is_text: bool,
 }
 
 impl Scan {
@@ -144,10 +144,16 @@ fn check_command(s: &str, scan: &mut Scan) -> Option<String> {
 fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
     let is_word = |t: &Tok| matches!(t, Tok::Word(_));
     let mut words: Vec<Word> = Vec::new();
+    let mut stdin_is_text = false;
     let mut toks = toks.into_iter().peekable();
     while let Some(tok) = toks.next() {
         match tok {
             Tok::Word(w) => words.push(w),
+            Tok::Herestring => {
+                toks.next_if(is_word);
+                stdin_is_text = true;
+            }
+            Tok::Heredoc => stdin_is_text = true,
             Tok::RedirectOut => {
                 if let Some(Tok::Word(f)) = toks.next_if(is_word) {
                     if scan.touches_hooks(&f.text) {
@@ -159,10 +165,11 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
                 toks.next_if(is_word);
             }
             Tok::CommandEnd | Tok::SubshellOpen | Tok::SubshellClose => {
-                if let Some(why) = check_segment(&words, scan) {
+                if let Some(why) = check_fed_segment(&words, stdin_is_text, scan) {
                     return Some(why);
                 }
                 words.clear();
+                stdin_is_text = false;
                 match tok {
                     Tok::SubshellOpen => scan.outer_cwds.push(scan.cwd_is_hooks),
                     Tok::SubshellClose => {
@@ -175,7 +182,17 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
             }
         }
     }
-    check_segment(&words, scan)
+    check_fed_segment(&words, stdin_is_text, scan)
+}
+
+/// `check_segment` for a command whose stdin may be a heredoc or herestring. A command it
+/// runs inherits that stdin, so the flag holds through `eval`, `sh -c` and wrappers.
+fn check_fed_segment(words: &[Word], stdin_is_text: bool, scan: &mut Scan) -> Option<String> {
+    let outer = scan.stdin_is_text;
+    scan.stdin_is_text |= stdin_is_text;
+    let why = check_segment(words, scan);
+    scan.stdin_is_text = outer;
+    why
 }
 
 /// Why one simple command (no operators) would skip the git hooks.
@@ -218,8 +235,13 @@ fn check_segment(words: &[Word], scan: &mut Scan) -> Option<String> {
                 None
             }
             "eval" => check_words(&w[1..], scan),
-            "sh" | "bash" | "zsh" | "dash" | "ksh" | "ash" => shell_dash_c_script(&w[1..])
-                .and_then(|script| check_words(std::slice::from_ref(script), scan)),
+            "sh" | "bash" | "zsh" | "dash" | "ksh" | "ash" => match shell_dash_c_script(&w[1..]) {
+                Some(script) => check_words(std::slice::from_ref(script), scan),
+                None if scan.stdin_is_text => Some(format!(
+                    "{prog} reading a heredoc or herestring as its script; use {prog} -c"
+                )),
+                None => None,
+            },
             "git" => git(&w[1..], scan),
             prog => file_tool(prog, &w[1..], scan),
         };
@@ -248,10 +270,9 @@ fn change_directory(args: &[Word], scan: &mut Scan) {
     let dir = args
         .iter()
         .map(|a| a.text.as_str())
-        .find(|a| !a.starts_with('-'));
+        .find(|a| *a == "-" || !a.starts_with('-'));
     match dir {
         Some(d) if is_protected_directory(d) => scan.cwd_is_hooks = true,
-        Some(d) if d.starts_with("..") || d == "-" => {}
         Some(d) if !d.starts_with(['/', '~']) => {}
         _ => scan.cwd_is_hooks = false,
     }

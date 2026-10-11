@@ -159,10 +159,21 @@ pub(super) fn env_split_string(options: &[Word]) -> Option<&str> {
     None
 }
 
-/// The script word of `sh -c SCRIPT`: the word after the first option cluster with a `c`.
+/// The script word of `sh -c SCRIPT`: the first operand after the first option cluster with
+/// a `c`, past `--` and options such as `-o pipefail` or `+x` that the shell reads first.
 pub(super) fn shell_dash_c_script(args: &[Word]) -> Option<&Word> {
     let at = args.iter().position(|a| {
         a.text.starts_with('-') && !a.text.starts_with("--") && a.text.contains('c')
     })?;
-    args.get(at + 1)
+    let mut rest = &args[at + 1..];
+    loop {
+        let arg = rest.first()?.text.as_str();
+        let width = match arg {
+            "--" | "-" => return rest.get(1),
+            "-o" | "+o" | "-O" | "+O" => 2,
+            _ if arg.len() > 1 && arg.starts_with(['-', '+']) => 1,
+            _ => return rest.first(),
+        };
+        rest = rest.get(width..)?;
+    }
 }

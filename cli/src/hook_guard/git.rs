@@ -276,8 +276,6 @@ pub(super) fn config_writes(args: &[Word], key_at: usize) -> bool {
         "--unset-all",
         "--add",
         "--replace-all",
-        "--edit",
-        "-e",
     ];
     const READS: &[&str] = &[
         "--get",
@@ -294,7 +292,36 @@ pub(super) fn config_writes(args: &[Word], key_at: usize) -> bool {
     !has(READS) && args[key_at + 1..].iter().any(|a| !a.text.starts_with('-'))
 }
 
+/// `git config --edit`, or a section rename or removal that names `core`: each can drop or
+/// move `core.hooksPath` without naming the key. The subcommand forms (`git config edit`)
+/// count only as the first word that isn't an option.
+pub(super) fn config_section_write(args: &[Word]) -> Option<String> {
+    let text: Vec<&str> = args.iter().map(|a| a.text.as_str()).collect();
+    let subcommand = text.iter().position(|a| !a.starts_with('-'));
+    let names_core = |at: usize, count: usize| {
+        text.iter()
+            .skip(at + 1)
+            .take(count)
+            .any(|s| s.eq_ignore_ascii_case("core"))
+    };
+    text.iter().enumerate().find_map(|(i, arg)| {
+        let operation = arg
+            .strip_prefix("--")
+            .or((Some(i) == subcommand).then_some(*arg));
+        let hit = match operation {
+            Some("edit") => true,
+            Some("remove-section") => names_core(i, 1),
+            Some("rename-section") => names_core(i, 2),
+            _ => *arg == "-e",
+        };
+        hit.then(|| format!("git config {arg} can remove or move core.hooksPath"))
+    })
+}
+
 pub(super) fn config(args: &[Word], scan: &mut Scan) -> Option<String> {
+    if let Some(why) = config_section_write(args) {
+        return Some(why);
+    }
     let (at, key) = args
         .iter()
         .enumerate()

@@ -29,6 +29,10 @@ pub(super) enum Tok {
     RedirectOut,
     /// `<`: the next word is a file read.
     RedirectIn,
+    /// `<<<`: the next word is text on the command's stdin.
+    Herestring,
+    /// `<<` or `<<-`: a heredoc body is the command's stdin.
+    Heredoc,
     /// `;`, `&&`, `|`, a newline or a brace: one command ends.
     CommandEnd,
     /// `(`: one command ends and a subshell begins, so a `cd` inside it is undone at `)`.
@@ -487,14 +491,15 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// `<<<`: the next word is input text, so it reads like any other redirect target.
+    /// `<<<`: the next word is input text.
     fn herestring(&mut self) {
-        self.out.push(Tok::RedirectIn);
+        self.out.push(Tok::Herestring);
     }
 
     /// `<<` or `<<-`: the next word is the heredoc delimiter, not a command word.
     fn heredoc_operator(&mut self) {
         self.chars.next_if_eq(&'-');
+        self.out.push(Tok::Heredoc);
         self.next_word_is_delimiter = true;
     }
 

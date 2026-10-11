@@ -95,8 +95,20 @@ pub(super) fn find(args: &[Word], scan: &mut Scan) -> Option<String> {
             return Some(format!("find {} in {PROTECTED}", dir.text));
         }
     }
-    args.iter()
-        .enumerate()
-        .filter(|(_, a)| matches!(a.text.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir"))
-        .find_map(|(i, _)| check_segment(&args[i + 1..], scan))
+    let mut rest = args;
+    while let Some(at) = rest
+        .iter()
+        .position(|a| matches!(a.text.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir"))
+    {
+        let command = &rest[at + 1..];
+        let end = command
+            .iter()
+            .position(|a| matches!(a.text.as_str(), ";" | "+"))
+            .unwrap_or(command.len());
+        if let Some(why) = check_segment(&command[..end], scan) {
+            return Some(why);
+        }
+        rest = command.get(end + 1..).unwrap_or(&[]);
+    }
+    None
 }
