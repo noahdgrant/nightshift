@@ -89,6 +89,42 @@ Status: draft v2, for discussion. Sources: mattpocock/skills, cursor/plugins/pst
 
 `auto` (poteto-mode equivalent) runs the whole chain unattended and pauses only at gates.
 
+## Layers
+
+Five layers run a night, one of them still planned. `ns-auto` runs one unit beside them.
+
+```text
+ operator       reads the status report; acts in their own sessions
+  │ ▲
+  │ │ pings when needed; status report at shift end
+  ▼ │
+ ns-supervise   planned (#335). Agent session, one per night: starts or
+                attaches to ns watch, watches it (systemd unit, ns status,
+                ns log -f, ns quality, gh), pings the operator; may stop
+                a night going wrong when the operator said they'd be away
+  │ starts or attaches, observes
+  ▼
+ ns watch       CLI loop for the whole night (systemd timer and service):
+                triage pass, picks ready issues by priority, runs up to N
+                units in parallel, requeues unfinished units, updates
+                itself after cli/ merges, cleans up merged worktrees
+  │ one child ns run process per unit
+  ▼
+ ns run         CLI state machine for one unit (D16), in its own worktree:
+                reads .ns/<unit>/ artifacts, starts the next phase's agent,
+                runs the CI gate and the merge step (merged under
+                merge.policy = "auto", else done and waiting for a human)
+  │ a fresh agent session per phase
+  ▼
+ phase skills   ns-triage → ns-build → ns-verify → ns-review → ns-ship
+  ▲
+  │ the same skills, chained in one session
+ ns-auto        agent session, one unit, interactive: picks each phase
+                itself, or hands the loop to ns run; no queue, never merges
+```
+
+The operator makes the calls only a person can. `ns-supervise`, planned in #335, would watch the night and tell the operator when something needs them. `ns watch` owns the queue and the night's limits: `--until`, the budget and `--parallel`. `ns run` owns one unit's state, gates and merge, in code rather than in an agent (D16). The phase skills do the work and hand off only through artifacts. `ns-auto` does the same job as `ns run` from an agent session, with the same state table, and has no queue; [docs/FACTORY.md](FACTORY.md) covers `ns watch` and `ns run` in full.
+
 ## Phases and their artifacts
 
 | Phase | Phase skill | Leaf skills | Input | Output artifact | Gate |
