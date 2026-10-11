@@ -7,7 +7,7 @@ Still running.
 none
 
 ## Needs you
-none
+- TOKEN-n7a2: review the widget design before merging.
 
 ## Stuck units
 none
@@ -16,7 +16,7 @@ none
 none
 
 ## Anomalies
-none
+- TOKEN-a91d: runs.jsonl had a gap at 07:40.
 
 ## Tomorrow's queue
 none

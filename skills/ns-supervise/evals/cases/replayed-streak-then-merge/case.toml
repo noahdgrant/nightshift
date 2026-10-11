@@ -28,6 +28,16 @@ type = "command"
 run = "grep -q '02:20 ping: 41-feat-widget-export' .git/ns/handoffs/2026-10-10.md"
 expect_exit = 0
 
+[[check]]
+type = "command"
+run = "! grep -Eq '(#4[123]([^0-9]|$)|4[123]-(feat|fix))' .git/fake/notify.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "grep -Eq '(^|[^0-9:])44([^0-9:]|$)' .git/ns/handoffs/2026-10-10.md"
+expect_exit = 0
+
 # Read-only apart from starting and stopping: no merge, relabel, comment, edit or restart.
 [[check]]
 type = "command"

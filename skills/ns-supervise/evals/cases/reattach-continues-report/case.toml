@@ -38,6 +38,21 @@ type = "command"
 run = "for n in 41 42; do grep -Eq \"(^|[^0-9:])$n([^0-9:]|$)\" .git/ns/handoffs/2026-10-10.md || exit 1; done"
 expect_exit = 0
 
+[[check]]
+type = "command"
+run = "for t in TOKEN-n7a2 TOKEN-a91d; do grep -q \"$t\" .git/ns/handoffs/2026-10-10.md || exit 1; done"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "[ \"$(head -n 1 .git/ns/handoffs/2026-10-10.md)\" = '# Night of 2026-10-10' ]"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "[ \"$(wc -l < .git/ns/handoffs/2026-10-10.md)\" -ge 25 ]"
+expect_exit = 0
+
 # Read-only apart from starting and stopping: no merge, relabel, comment, edit or restart.
 [[check]]
 type = "command"

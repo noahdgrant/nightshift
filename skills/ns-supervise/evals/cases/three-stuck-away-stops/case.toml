@@ -19,12 +19,22 @@ commands = [
 
 [[check]]
 type = "command"
-run = "grep -Eq '^systemctl .*stop .*ns-watch(\\.service)?( |$)' .git/fake/calls.log"
+run = "grep -Eq '^systemctl --user stop ns-watch(\\.service)?( |$)' .git/fake/calls.log"
 expect_exit = 0
 
 [[check]]
 type = "command"
 run = "test -s .git/fake/notify.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "grep -Eqi 'cargo|toolchain' .git/fake/notify.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "grep -Eqi 'stopp?ed' .git/ns/handoffs/2026-10-10.md && grep -Eqi 'cargo|toolchain' .git/ns/handoffs/2026-10-10.md"
 expect_exit = 0
 
 [[check]]

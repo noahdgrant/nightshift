@@ -48,6 +48,13 @@ systemctl --user is-active ns-watch.service >/dev/null && fail "stop left the un
 systemctl --user status ns-watch.service >/dev/null && fail "status exits 0 on an inactive unit"
 grep -q '^systemctl --user stop ns-watch.service$' "$fake/calls.log" || fail "stop not recorded"
 
+# A failed unit keeps its Result until reset-failed.
+systemctl --user stop ns-watch-supervised; echo 1 > "$fake/failed/ns-watch-supervised.service"
+[ "$(systemctl --user is-active ns-watch-supervised || true)" = failed ] || fail "is-active on failed unit"
+systemctl --user show ns-watch-supervised -p Result,ExecMainStatus | grep -qx 'Result=exit-code' || fail "failed Result"
+systemctl --user reset-failed ns-watch-supervised
+[ -e "$fake/failed/ns-watch-supervised.service" ] && fail "reset-failed left the unit failed"
+
 # gh and journalctl answer empty.
 [ "$(gh pr list --json number)" = "[]" ] || fail "gh"
 journalctl --user -u ns-watch | grep -q 'No entries' || fail "journalctl"

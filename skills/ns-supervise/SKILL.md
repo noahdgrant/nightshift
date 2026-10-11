@@ -24,11 +24,11 @@ Paths below use `<common>` for `git rev-parse --path-format=absolute --git-commo
    Attach to a running night. Starting a second one is refused anyway (exit 5).
 4. **Start a night** when none is running:
    - `systemctl --user cat ns-watch.service` succeeds: the operator installed `contrib/systemd`. Run `systemctl --user start ns-watch.service`. Its `ExecCondition=` skips a daytime start, so check `is-active` after; if it is not active, say so and ask the operator.
-   - Else, when `systemd-run` exists, start a transient unit with the OOM-safe settings of the packaged service. They keep an OOM kill inside the night from ending it, and let a stop requeue unfinished units before anything is killed:
+   - Else, when `systemd-run` exists, start a transient unit with the OOM-safe settings of the packaged service. They keep an OOM kill inside the night from ending it, and let a stop requeue unfinished units before anything is killed. Do not pass `--collect`: it unloads a failed unit, and the slow check then can't read its `Result`. When `systemctl --user is-active ns-watch-supervised` prints `failed`, a past night died: put its `Result` and exit status (`systemctl --user show ns-watch-supervised -p Result,ExecMainStatus`) in the report's Anomalies, then run `systemctl --user reset-failed ns-watch-supervised` before starting.
 
      ```bash
      main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
-     systemd-run --user --collect --unit=ns-watch-supervised --working-directory="$main" \
+     systemd-run --user --unit=ns-watch-supervised --working-directory="$main" \
        --setenv=PATH="$PATH" \
        -p OOMPolicy=continue -p KillMode=mixed -p TimeoutStopSec=2min \
        -p SuccessExitStatus=143 -p MemoryHigh=75% -p MemoryMax=85% \
@@ -48,7 +48,7 @@ Run two loops until the shift ends.
 - **Slow check**, about every 20 minutes, for what the log can't show:
   - the unit: `systemctl --user show <unit> -p ActiveState,Result,ActiveEnterTimestamp`, and `journalctl --user -u <unit> --since -20min` for OOM kills (`oom-kill`, `Out of memory`, `memory.max`).
   - silence: `ns status --json` shows `running` is not empty (units are running), and the newest `ts` in your own `ns log -f` stream is older than `silence_minutes`.
-  - the forge: issues with the stuck label (`status:ready-for-human` unless `[queue] stuck_label` says otherwise), and PRs that need a human merge. Use the needs-human-merge PR label when `gh label list` has one (#336); else the PRs of units that ended `done`.
+  - the forge: issues with the stuck label (`status:ready-for-human` unless `[queue] stuck_label` says otherwise) among the issues of units that ended during this night, and PRs that need a human merge. Use the needs-human-merge PR label when `gh label list` has one (#336); else the PRs of units that ended `done`.
 
 The **shift ends** when `ns watch` exits: the unit leaves `active`, or the lock's pid is gone. Then finish the report (step 5).
 
@@ -63,11 +63,13 @@ Ping when the night needs the operator:
 | a unit ends `stuck` or `budget` | `end` event |
 | a unit ends `done` with a PR that needs a human merge | `end` event, then the forge check |
 | an issue gets the stuck label | slow check |
-| the night dies early: `ns watch` exits before `--until` with a failed result, or an OOM kill ends it | slow check |
+| the night dies early: `ns watch` exits before `--until` with a failed result (`ActiveState=failed`, a `Result` other than `success`; the unit stays loaded because it has no `--collect`), or an OOM kill ends it | slow check |
 | a usage-limit pause | `end` event with outcome `paused` |
 | the harness breaker trips: the night stops with `harness failing` | the summary at the end of `journalctl --user -u <unit>` |
 | no run-log event for `silence_minutes` while units run | slow check |
 | a stop condition from step 4 while the operator is around | step 4 |
+
+Each ping has a **key**: the trigger kind plus the unit or `#issue` (`stuck 41-feat-x`, `merge-pr 104`, `silence`, `early-death`). Ping only on a key the report's Timeline does not already hold, and write the key in the ping's Timeline line. The slow check runs every 20 minutes and sees the same state again, so it must not repeat a ping. A stuck unit's `end` ping and its stuck-label ping are one key (`stuck <unit>`). Silence re-pings only after a new event arrived and silence returned. A re-attach reads the keys from the report and repeats none.
 
 A merge, a unit that ends `done` needing no human, and other progress wait for the report.
 
@@ -83,7 +85,7 @@ Record each ping as a Timeline line in the report.
 
 Stop the night only when the operator is **away** and one of these happens:
 
-- `main`'s CI goes red after a factory merge: after an `end` event with outcome `merged`, take its `pr` field (`ns log --json` keeps no sha), get the merge commit with `gh pr view <pr> --json mergeCommit`, and compare it with `headSha` in `gh run list --branch main --limit 1 --json conclusion,headSha`. A `conclusion` of `failure` for that sha is a red `main`. A run that is pending, or not registered yet for that sha, is not a failure: check again on the next slow check.
+- `main`'s CI goes red after a factory merge: after an `end` event with outcome `merged`, take its `pr` field (`ns log --json` keeps no sha), get the merge commit with `gh pr view <pr> --json mergeCommit`, and read that sha's runs with `gh run list --branch main --commit <sha> --json conclusion,status`. A later push must not hide it, so never use `--limit 1`. A `conclusion` of `failure` is a red `main`. A run that is pending, or not registered yet for that sha, is not a failure: check again on the next slow check. A sha with no run after three slow checks is an Anomalies line in the report, not a stop.
 - three units in a row end `stuck` for the same reason: the newest consecutive `end` events up to now, all with outcome `stuck` and reasons that match once unit names, finding ids, paths and numbers are dropped. A later `end` with any other outcome breaks the streak, so a streak that old history shows and a merge since then ended is not a stop.
 - a `self_update_failed` event, or more than two `self_update` events in the last hour (each is a re-exec of `ns watch` in place).
 - the memory cap or an OOM kill triggers repeatedly: two or more in the shift.

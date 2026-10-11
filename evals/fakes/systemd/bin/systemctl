@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Fake systemctl for ns eval: records every call and keeps unit state under <git-common-dir>/fake/.
+# failed/<name> marks a failed one and holds its exit status; reset-failed clears it.
 # units/<name> marks an installed unit; active/<name> marks an active one and holds its ActiveEnterTimestamp.
 fake=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/fake
 [ "$fake" = /fake ] && fake=$HOME/fake
-mkdir -p "$fake/units" "$fake/active"
+mkdir -p "$fake/units" "$fake/active" "$fake/failed"
 echo "systemctl $*" >> "$fake/calls.log"
 
 verb= unit= props= value=
@@ -24,9 +25,13 @@ active() { [ -f "$fake/active/$unit" ]; }
 show() {
   local since=
   active && since=$(cat "$fake/active/$unit")
-  local all="ActiveState=$(active && echo active || echo inactive)
-SubState=$(active && echo running || echo dead)
-Result=success
+  local state=inactive sub=dead result=success status=0
+  active && state=active sub=running
+  if [ -f "$fake/failed/$unit" ]; then state=failed sub=failed result=exit-code status=$(cat "$fake/failed/$unit"); fi
+  local all="ActiveState=$state
+SubState=$sub
+Result=$result
+ExecMainStatus=$status
 ActiveEnterTimestamp=$since"
   if [ -n "$props" ]; then
     all=$(printf '%s\n' "$all" | grep -E "^($(echo "${props#,}" | tr ',' '|'))=")
@@ -35,10 +40,11 @@ ActiveEnterTimestamp=$since"
 }
 
 case $verb in
-  is-active) if active; then echo active; else echo inactive; exit 3; fi ;;
+  is-active) if active; then echo active; elif [ -f "$fake/failed/$unit" ]; then echo failed; exit 3; else echo inactive; exit 3; fi ;;
   cat) if [ -f "$fake/units/$unit" ]; then echo "# ~/.config/systemd/user/$unit"; echo "[Service]"; echo "ExecStart=ns watch --until 06:30"; else echo "No files found for $unit." >&2; exit 1; fi ;;
   start) if [ -f "$fake/units/$unit" ]; then date -u '+%a %Y-%m-%d %H:%M:%S UTC' > "$fake/active/$unit"; else echo "Failed to start $unit: Unit $unit not found." >&2; exit 5; fi ;;
   stop|kill) rm -f "$fake/active/$unit" ;;
+  reset-failed) rm -f "$fake/failed/$unit" ;;
   show) show ;;
   status) if active; then echo "* $unit"; echo "     Active: active (running) since $(cat "$fake/active/$unit")"; else echo "* $unit"; echo "     Active: inactive (dead)"; exit 3; fi ;;
   list-units|list-unit-files) for f in "$fake/units"/* "$fake/active"/*; do [ -e "$f" ] && basename "$f"; done | sort -u ;;
