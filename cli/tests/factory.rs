@@ -194,7 +194,9 @@ impl Env {
     }
 
     fn gh_file(&self, name: &str, text: &str) {
-        fs::write(self.ghd.join(name), text).unwrap();
+        let tmp = self.ghd.join(format!("{name}.tmp"));
+        fs::write(&tmp, text).unwrap();
+        fs::rename(&tmp, self.ghd.join(name)).unwrap();
     }
 
     /// `ns` with the fakes on PATH.
@@ -6665,6 +6667,315 @@ fn watch_parallel_units_merge_one_at_a_time() {
     assert_ne!(pr(order[0]), pr(order[2]), "{order:?}");
 }
 
+/// Unit 2 is ready and #5 sits in the backlog, untriaged: the night's first fill starts unit 2
+/// and leaves #5, since the queue had a ready issue. A slot left free is filled every
+/// `refill_ms`.
+fn a_long_unit_beside_the_backlog(e: &Env, refill_ms: u64, args: &[&str]) -> Watching {
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
+    Watching::start(
+        e.ns()
+            .env("NS_REFILL_MS", refill_ms.to_string())
+            .arg("watch")
+            .args(args),
+    )
+}
+
+/// The `gh` calls watch made while it sat for `wait` with only a held unit running.
+fn gh_calls_during(e: &Env, wait: Duration) -> String {
+    let before = e.gh_calls().len();
+    thread::sleep(wait);
+    e.gh_calls()[before..].to_string()
+}
+
+#[test]
+fn an_idle_slot_triages_the_backlog_and_starts_it_while_a_unit_runs() {
+    let e = Env::new();
+    e.triage_sets(&["status:ready-for-agent"]);
+    e.queue("triage.5-fix-e", &["pass:script"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_e, go_e) = hold_phase(&e, "5-fix-e", "build");
+    let w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
+    w.entered(&in_a);
+    // Unit 5's build begins while unit 2's is still held.
+    w.entered(&in_e);
+    release(&go_a);
+    release(&go_e);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 5], "done"), "{v}");
+    assert_eq!(e.triage_only_runs(), 1);
+    let started_5 = event_at(&e, |ev| ev["event"] == "worker_start" && ev["issue"] == 5);
+    let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
+    assert!(started_5 < ended_2, "{:?}", run_events(&e));
+}
+
+/// Poll until a refill has listed issues, then return the `gh` calls made from there for `wait`.
+fn refill_calls_during(e: &Env, wait: Duration) -> String {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let before = e.gh_calls().len();
+    while !e.gh_calls()[before..].contains("issues?state=open") {
+        assert!(Instant::now() < deadline, "no refill listed issues");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let start = e.gh_calls().len();
+    thread::sleep(wait);
+    e.gh_calls()[start..].to_string()
+}
+
+#[test]
+fn an_idle_slot_with_nothing_to_start_does_not_spin() {
+    let e = Env::new();
+    // #5's triage leaves it untriaged: nothing comes out ready.
+    e.queue("triage.5-fix-e", &["none"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let mut w = a_long_unit_beside_the_backlog(&e, 500, &["--parallel", "2"]);
+    w.entered(&in_a);
+    w.line("ns watch: triage #5");
+    let wait = Duration::from_millis(1500);
+    let calls = refill_calls_during(&e, wait);
+    let listings = calls.matches("issues?state=open").count();
+    // At most one fill each 500 ms, two listings each, and one fill under way at either end.
+    let most = 2 * (wait.as_millis() as usize / 500 + 2);
+    assert!(
+        listings <= most,
+        "{listings} listings in {wait:?}:\n{calls}"
+    );
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2], "done"), "{v}");
+    assert_eq!(e.triage_only_runs(), 1);
+}
+
+#[test]
+fn an_idle_refill_skips_the_worktree_cleanup() {
+    let e = Env::new();
+    e.queue("triage.5-fix-e", &["none"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
+    w.entered(&in_a);
+    w.line("ns watch: triage #5");
+    let calls = refill_calls_during(&e, Duration::from_millis(1000));
+    for view in ["issue view", "pr view"] {
+        assert!(!calls.contains(view), "{view} on a refill:\n{calls}");
+    }
+    release(&go_a);
+    let (code, _, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+}
+
+#[test]
+fn a_failed_listing_on_a_refill_does_not_fail_the_night() {
+    let e = Env::new();
+    e.queue("triage.5-fix-e", &["none"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
+    w.entered(&in_a);
+    w.line("ns watch: triage #5");
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *issues?state=open*)\n\
+           if [ -f \"$d/boom\" ]; then echo 'HTTP 502' >&2; touch \"$d/failed\"; exit 1; fi ;;\n\
+         esac\n",
+    );
+    e.gh_file("boom", "");
+    w.line("refill failed");
+    assert!(e.ghd.join("failed").exists());
+    fs::remove_file(e.ghd.join("boom")).unwrap();
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2], "done"), "{v}");
+}
+
+#[test]
+fn a_claim_that_fails_on_a_refill_does_not_spend_a_max_units_claim() {
+    let e = Env::new();
+    e.triage_sets(&["status:ready-for-agent"]);
+    e.queue("triage.5-fix-e", &["pass:script"]);
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *\"issue edit 5 \"*\"--add-label status:in-progress\"*)\n\
+           if [ -f \"$d/boom\" ]; then echo 'HTTP 502' >&2; echo x >> \"$d/failed\"; exit 1; fi ;;\n\
+         esac\n",
+    );
+    e.gh_file("boom", "");
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_e, go_e) = hold_phase(&e, "5-fix-e", "build");
+    let w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2", "--max-units", "2"]);
+    w.entered(&in_a);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while fs::read_to_string(e.ghd.join("failed")).map_or(0, |s| s.lines().count()) < 3 {
+        assert!(Instant::now() < deadline, "the claim never failed 3 times");
+        thread::sleep(Duration::from_millis(20));
+    }
+    fs::remove_file(e.ghd.join("boom")).unwrap();
+    w.entered(&in_e);
+    release(&go_a);
+    release(&go_e);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 5], "done"), "{v}");
+}
+
+#[test]
+fn a_claim_whose_verifying_read_fails_on_a_refill_is_put_back_to_ready() {
+    let e = Env::new();
+    e.triage_sets(&["status:ready-for-agent"]);
+    e.queue("triage.5-fix-e", &["pass:script"]);
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in\n\
+         *\"issue edit 5 \"*\"--add-label status:in-progress\"*) touch \"$d/edited\" ;;\n\
+         *\"issue view 5 --json labels\"*)\n\
+           if [ -f \"$d/edited\" ] && [ ! -f \"$d/failed\" ]; then echo 'HTTP 502' >&2; touch \"$d/failed\"; exit 1; fi ;;\n\
+         esac\n",
+    );
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_e, go_e) = hold_phase(&e, "5-fix-e", "build");
+    let w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
+    w.entered(&in_a);
+    let put_back =
+        "issue edit 5 --remove-label status:in-progress --add-label status:ready-for-agent";
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !e.gh_calls().contains(put_back) {
+        assert!(
+            Instant::now() < deadline,
+            "#5 was never put back:\n{}",
+            e.gh_calls()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(e.ghd.join("failed").exists());
+    w.entered(&in_e);
+    release(&go_a);
+    release(&go_e);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 5], "done"), "{v}");
+}
+
+#[test]
+fn a_claim_whose_unit_cannot_start_on_a_refill_does_not_spend_a_max_units_claim() {
+    let e = Env::new();
+    e.triage_sets(&["status:ready-for-agent"]);
+    e.queue("triage.5-fix-e", &["pass:script"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_t, go_t) = hold_phase(&e, "5-fix-e", "triage");
+    let (in_e, go_e) = hold_phase(&e, "5-fix-e", "build");
+    let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2", "--max-units", "2"]);
+    w.entered(&in_a);
+    w.entered(&in_t);
+    let night = fs::read_dir(e.root.join(".git/ns"))
+        .unwrap()
+        .map(|d| d.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("watch-")
+        })
+        .unwrap();
+    // A directory where unit 5's result file goes: spawning its `ns run` fails.
+    let blocks: Vec<_> = (2..60)
+        .map(|n| night.join(format!("result-5-{n}.json")))
+        .collect();
+    for b in &blocks {
+        fs::create_dir(b).unwrap();
+    }
+    release(&go_t);
+    w.line("refill failed");
+    w.line("refill failed");
+    for b in &blocks {
+        let _ = fs::remove_dir(b);
+    }
+    w.entered(&in_e);
+    release(&go_a);
+    release(&go_e);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 5], "done"), "{v}");
+}
+
+#[test]
+fn a_hold_that_cannot_be_written_on_a_refill_fails_the_night() {
+    let e = Env::new();
+    e.ctl("reset", &(NOW + 3600).to_string());
+    e.queue("triage.5-fix-e", &["limit"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_e, go_e) = hold_phase(&e, "5-fix-e", "triage");
+    let w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
+    w.entered(&in_a);
+    w.entered(&in_e);
+    let night = fs::read_dir(e.root.join(".git/ns"))
+        .unwrap()
+        .map(|d| d.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("watch-")
+        })
+        .unwrap();
+    // A directory where the hold's temp file goes: the hold write on the refill fails.
+    fs::create_dir(night.join("hold.tmp")).unwrap();
+    release(&go_e);
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_ne!(code, Some(0), "{v}\n{err}");
+    assert!(err.contains("cannot write"), "{err}");
+    assert!(!err.contains("refill failed"), "{err}");
+    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
+    assert_eq!(by_issue(&units(&v)), each(&[2], "done"), "{v}");
+}
+
+#[test]
+fn no_refill_while_every_slot_is_busy_or_no_claim_may_start() {
+    for (args, done) in [
+        (&["--parallel", "1"][..], &[2, 3][..]),
+        (&["--parallel", "2", "--max-units", "1"], &[2]),
+    ] {
+        let e = Env::new();
+        // A second ready issue: the night's first fill meets `--max-units`, before unit 2 builds.
+        e.ready(3, "Fix b", &["type:fix"], "");
+        let (in_a, go_a) = hold_phase(&e, A, "build");
+        let w = a_long_unit_beside_the_backlog(&e, 100, args);
+        w.entered(&in_a);
+        let calls = gh_calls_during(&e, Duration::from_millis(1000));
+        assert_eq!(calls, "", "{args:?}");
+        release(&go_a);
+        let (code, v, err) = w.finish();
+        assert_eq!(code, Some(0), "{err}");
+        assert_eq!(by_issue(&units(&v)), each(done, "done"), "{v}");
+    }
+}
+
+#[test]
+fn no_refill_while_a_usage_limit_pause_holds_a_free_slot() {
+    let e = Env::new();
+    e.ready(3, "Fix b", &["type:fix"], "");
+    e.ctl("reset", &(NOW + 3600).to_string());
+    e.queue(&format!("build.{A}"), &["limit", "pass:commit"]);
+    e.queue("triage.5-fix-e", &["none"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "3", "--until", "06:30"]);
+    w.entered(&in_b);
+    w.entered(&in_a);
+    release(&go_a);
+    w.line("ns watch: #2 paused on a usage limit until");
+    // Unit 3's build stays held, so the pause lasts; a slot is free and #5 is untriaged.
+    let triaged = e.triage_only_runs();
+    let calls = gh_calls_during(&e, Duration::from_millis(1000));
+    assert_eq!(calls, "");
+    assert_eq!(e.triage_only_runs(), triaged, "{:?}", e.calls());
+    release(&go_b);
+    let (code, _, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+}
+
 #[test]
 fn watch_parallel_never_takes_an_issue_twice() {
     let e = Env::new();
@@ -7530,6 +7841,64 @@ fn a_build_past_its_ceiling_is_killed_and_the_night_goes_on() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert_kept_the_old_binary(&e, &to, &v, &err, "timed out");
+}
+
+#[test]
+fn draining_runs_no_triage_to_fill_an_idle_slot() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    two_ready(&e);
+    e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = Watching::start(watch_from(&e, &from).env("NS_REFILL_MS", "100").args([
+        "watch",
+        "--parallel",
+        "2",
+    ]));
+    w.entered(&in_a);
+    w.entered(&in_b);
+    land(&e, "cli/x", "new\n");
+    release(&go_b);
+    w.line("draining");
+    // Many refill intervals pass with a slot free and #5 untriaged; draining fills nothing.
+    let calls = gh_calls_during(&e, Duration::from_millis(1000));
+    assert_eq!(calls, "");
+    assert_eq!(e.triage_only_runs(), 0, "{:?}", e.calls());
+    release(&go_a);
+    let (code, _, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
+    let updated = event_at(&e, |ev| ev["event"] == "self_update");
+    assert!(ended_2 < updated, "{:?}", run_events(&e));
+}
+
+#[test]
+fn a_refill_does_not_check_for_an_update_so_a_new_ready_issue_still_starts() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_c, go_c) = hold_phase(&e, "4-fix-c", "build");
+    let w = Watching::start(watch_from(&e, &from).env("NS_REFILL_MS", "100").args([
+        "watch",
+        "--parallel",
+        "2",
+    ]));
+    w.entered(&in_a);
+    land(&e, "cli/x", "new\n");
+    // Several refill intervals pass with a slot free and a new commit on origin.
+    thread::sleep(Duration::from_millis(1000));
+    e.ready(4, "Fix c", &["type:fix"], "");
+    w.entered(&in_c);
+    release(&go_c);
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 4], "done"), "{v}");
+    let started_4 = event_at(&e, |ev| ev["event"] == "worker_start" && ev["issue"] == 4);
+    let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
+    assert!(started_4 < ended_2, "{:?}", run_events(&e));
 }
 
 #[test]

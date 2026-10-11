@@ -8,13 +8,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde_json::json;
 
 use super::self_update::{HandOff, SelfUpdate};
-use super::snapshot::Snapshot;
+use super::snapshot::{NightDir, Snapshot};
 use super::{
     comment, ended_cleanly, fresh_base, open_findings, queue, set_status, triage, Issue, Night,
     Tonight, DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
@@ -33,6 +33,19 @@ const SIGTERM: i32 = 15;
 
 /// How often the scheduler looks for a unit that ended, a stop, or a reset that came.
 const POLL: Duration = Duration::from_millis(50);
+
+/// How long a free slot waits beside running units before the scheduler fills again, so an
+/// issue triaged or labelled ready since the last fill starts without waiting for a unit to end.
+const REFILL: Duration = Duration::from_secs(60);
+/// Tests set this (milliseconds) to shorten [`REFILL`].
+const REFILL_ENV: &str = "NS_REFILL_MS";
+
+fn refill_interval() -> Duration {
+    std::env::var(REFILL_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(REFILL, |ms| Duration::from_millis(ms).max(POLL))
+}
 
 /// What the night is set to do, fixed at start.
 pub(super) struct Plan<'a> {
@@ -61,6 +74,32 @@ enum Wake {
     Ended(usize, Option<ExitStatus>),
     Reset,
     Stop,
+    /// The refill interval passed with a slot free: fill again, without the cleanup and update check.
+    Refill,
+}
+
+/// What a fill failed on.
+enum FillError {
+    /// A listing, claim or start that failed; a refill logs it and waits for the next.
+    Transient(anyhow::Error),
+    /// A failure no night goes on after: a pause's hold that cannot be written, so a unit would
+    /// run on unheld through a usage limit.
+    Fatal(anyhow::Error),
+}
+
+impl From<anyhow::Error> for FillError {
+    fn from(e: anyhow::Error) -> Self {
+        FillError::Transient(e)
+    }
+}
+
+/// Which steps a fill runs.
+#[derive(Clone, Copy, PartialEq)]
+enum FillKind {
+    /// At start and when a unit ends: the worktree cleanup and the update check run too.
+    Full,
+    /// The refill interval passing with a slot free: neither runs.
+    Refill,
 }
 
 /// Why no new unit starts.
@@ -117,16 +156,24 @@ impl<'a> Scheduler<'a> {
 
     /// Run units until the night ends; why it ended.
     pub fn run(&mut self, night: &mut Night, tonight: &mut Tonight) -> Result<String> {
+        let mut next_fill = FillKind::Full;
         loop {
+            let kind = std::mem::replace(&mut next_fill, FillKind::Full);
             if let Some(sig) = stop::requested() {
                 self.pass_on(sig);
             }
             if self.failed.is_none() && stop::requested().is_none() {
                 // A stop that cut the fill short is handled at the loop's top, not as a failure.
-                if let Err(e) = self.fill(night, tonight) {
-                    if stop::requested().is_none() {
-                        self.fail(e);
+                match self.fill(night, tonight, kind) {
+                    Err(FillError::Fatal(e)) => self.fail(e),
+                    Err(FillError::Transient(e)) if stop::requested().is_none() => {
+                        if kind == FillKind::Refill {
+                            eprintln!("ns watch: refill failed: {e:#}");
+                        } else {
+                            self.fail(e);
+                        }
                     }
+                    Ok(()) | Err(FillError::Transient(_)) => {}
                 }
             }
             // Units paused on a usage limit resume in the fill above, and finish first.
@@ -155,6 +202,7 @@ impl<'a> Scheduler<'a> {
                     }
                 }
                 Wake::Reset => self.lift_pause(),
+                Wake::Refill => next_fill = FillKind::Refill,
                 Wake::Stop => {}
             }
         }
@@ -200,26 +248,34 @@ impl<'a> Scheduler<'a> {
     }
 
     /// Fill the free slots: paused units first, then, after the triage pass, ready issues
-    /// from one read of the queue.
-    fn fill(&mut self, night: &mut Night, tonight: &mut Tonight) -> Result<()> {
+    /// from one read of the queue. A [`FillKind::Refill`] skips the worktree cleanup and the
+    /// update check.
+    fn fill(
+        &mut self,
+        night: &mut Night,
+        tonight: &mut Tonight,
+        kind: FillKind,
+    ) -> Result<(), FillError> {
         if self.paused_until.is_some() {
             return Ok(());
         }
-        // At start and between units: units merged since go, after their records are saved.
-        // Units running or paused are left alone, even one whose run hasn't taken its lock yet.
-        let busy: BTreeSet<u64> = (self.running.values().map(|w| w.issue.number))
-            .chain(self.resume.iter().map(|i| i.number))
-            .collect();
-        let removed =
-            crate::clean::between_units(self.plan.repo, &mut tonight.cleanup_tried, &busy);
-        tonight.cleaned.extend(removed);
+        if kind == FillKind::Full {
+            // Units merged since go, after their records are saved. Units running or paused
+            // are left alone, even one whose run hasn't taken its lock yet.
+            let busy: BTreeSet<u64> = (self.running.values().map(|w| w.issue.number))
+                .chain(self.resume.iter().map(|i| i.number))
+                .collect();
+            let removed =
+                crate::clean::between_units(self.plan.repo, &mut tonight.cleanup_tried, &busy);
+            tonight.cleaned.extend(removed);
+        }
         while self.free() && self.may_resume() && !self.resume.is_empty() {
             let issue = self.resume.remove(0);
             let n = issue.number;
             if let Err(e) = self.start(issue, night, true) {
                 let q = &self.plan.loaded.fac.queue;
                 let _ = set_status(&self.plan.repo.root, q, n, Some(&q.ready_label));
-                return Err(e);
+                return Err(e.into());
             }
         }
         if !self.free() || self.stopping.is_some() {
@@ -231,7 +287,7 @@ impl<'a> Scheduler<'a> {
             self.stopping = Some(why);
             return Ok(());
         }
-        if self.draining.is_none() {
+        if kind == FillKind::Full && self.draining.is_none() {
             self.draining = self.pending_update();
         }
         if self.draining.is_some() {
@@ -242,7 +298,9 @@ impl<'a> Scheduler<'a> {
                 self.stop_all(&why);
                 return Ok(());
             }
-            Some(triage::Halt::Paused(reset)) => return self.pause(reset),
+            Some(triage::Halt::Paused(reset)) => {
+                return self.pause(reset).map_err(FillError::Fatal);
+            }
             None => {}
         }
         let mut taken: BTreeSet<u64> = night.finished.clone();
@@ -261,19 +319,17 @@ impl<'a> Scheduler<'a> {
                 self.stopping = Some(why);
                 break;
             }
-            self.started += 1;
             let q = &self.plan.loaded.fac.queue;
-            set_status(
-                &self.plan.repo.root,
-                q,
-                issue.number,
-                Some(&q.in_progress_label),
-            )?;
             let n = issue.number;
+            if let Err(e) = set_status(&self.plan.repo.root, q, n, Some(&q.in_progress_label)) {
+                let _ = set_status(&self.plan.repo.root, q, n, Some(&q.ready_label));
+                return Err(e.into());
+            }
             if let Err(e) = self.start(issue, night, false) {
                 let _ = set_status(&self.plan.repo.root, q, n, Some(&q.ready_label));
-                return Err(e);
+                return Err(e.into());
             }
+            self.started += 1;
         }
         Ok(())
     }
@@ -307,6 +363,14 @@ impl<'a> Scheduler<'a> {
         if let HandOff::Failed(e) = update.hand_off(repo, &to, &carried) {
             update.give_up(repo, to, e);
         }
+    }
+
+    /// A slot is free and a fill could start something: nothing stopping, draining or paused.
+    fn may_refill(&self) -> bool {
+        self.free()
+            && self.stopping.is_none()
+            && self.draining.is_none()
+            && self.paused_until.is_none()
     }
 
     fn free(&self) -> bool {
@@ -363,10 +427,11 @@ impl<'a> Scheduler<'a> {
         Ok(())
     }
 
-    /// Wait for a unit to end, the pause's reset to come, or a stop to pass on. On a pinned
-    /// clock (`NS_NOW`) time doesn't pass while units run, so a pause lasts until every unit
-    /// has ended.
+    /// Wait for a unit to end, the pause's reset to come, a stop to pass on, or a free slot's
+    /// time to fill again. On a pinned clock (`NS_NOW`) time doesn't pass while units run, so a
+    /// pause lasts until every unit has ended; the refill counts real time either way.
     fn next(&mut self, night: &Night) -> Wake {
+        let refill_at = Instant::now() + refill_interval();
         loop {
             if stop::requested().is_some() && !self.forwarded {
                 return Wake::Stop;
@@ -389,15 +454,16 @@ impl<'a> Scheduler<'a> {
             {
                 return Wake::Reset;
             }
+            if self.may_refill() && Instant::now() >= refill_at {
+                return Wake::Refill;
+            }
             std::thread::sleep(POLL);
         }
     }
 
     /// Pause every unit until `reset`, or until the latest reset tonight when that's later.
     fn pause(&mut self, reset: i64) -> Result<()> {
-        let until = self.paused_until.map_or(reset, |p| p.max(reset));
-        self.paused_until = Some(until);
-        self.plan.snap.night().hold(until)?;
+        let until = extend_pause(self.plan.snap.night(), &mut self.paused_until, reset)?;
         if self.plan.deadline.is_some_and(|d| until >= d) {
             self.stop_all(PAUSED_PAST_UNTIL);
         }
@@ -698,6 +764,15 @@ fn spawn(
         .with_context(|| format!("cannot start ns run --issue {}", issue.number))
 }
 
+/// Hold every unit until `reset`, or until the latest reset in `paused` when that's later.
+/// The hold is written first, so a hold that can't be written leaves `paused` unchanged.
+fn extend_pause(night: &NightDir, paused: &mut Option<i64>, reset: i64) -> Result<i64> {
+    let until = paused.map_or(reset, |p| p.max(reset));
+    night.hold(until)?;
+    *paused = Some(until);
+    Ok(until)
+}
+
 /// Signal a unit's process group: its `ns run` and what runs in that group, a setup command or
 /// a `gh` call, as a signal to the whole of `ns watch`'s group would. Its phases, each in a
 /// session of its own, are ended by the `ns run`.
@@ -756,6 +831,22 @@ mod tests {
             assert_eq!(resume_at(&own, &night), night.resume_at(&own));
             assert!(resume_at(&own, &night) > now);
         }
+    }
+
+    #[test]
+    fn a_pause_whose_hold_cannot_be_written_is_not_applied() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("night.json"), r#"{"watch_pid": 1}"#).unwrap();
+        let (night, _) = NightDir::open(tmp.path()).unwrap();
+        let mut paused = Some(500);
+        assert_eq!(extend_pause(&night, &mut paused, 900).unwrap(), 900);
+        assert_eq!(paused, Some(900));
+        fs::create_dir(tmp.path().join("hold.tmp")).unwrap();
+        assert!(extend_pause(&night, &mut paused, 1200).is_err());
+        assert_eq!(paused, Some(900));
+        let mut none = None;
+        assert!(extend_pause(&night, &mut none, 1200).is_err());
+        assert_eq!(none, None);
     }
 
     #[cfg(unix)]
