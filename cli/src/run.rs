@@ -507,7 +507,8 @@ pub fn log_event(common: &Path, mut ev: Value) {
     }
 }
 
-/// `origin`'s default branch and its sha, or `None` without an origin remote.
+/// `origin`'s default branch and its sha, or `None` without an origin remote or when the name
+/// isn't [`ref_safe`].
 pub fn remote_default(dir: &Path) -> Option<(String, String)> {
     git::run(dir, &["remote", "get-url", "origin"]).ok()?;
     let text = git::run(dir, &["ls-remote", "--symref", "origin", "HEAD"]).ok()?;
@@ -520,7 +521,16 @@ pub fn remote_default(dir: &Path) -> Option<(String, String)> {
             sha = line.split_whitespace().next().map(String::from);
         }
     }
-    Some((branch?, sha?))
+    Some((branch.filter(|b| ref_safe(b))?, sha?))
+}
+
+/// Whether a branch name from a remote is safe to hand git as an argument: never an option.
+fn ref_safe(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/-".contains(c))
 }
 
 fn remote_sha(dir: &Path, branch: &str) -> Option<String> {
@@ -2120,6 +2130,59 @@ mod tests {
     fn commit_all(dir: &Path, msg: &str) {
         git::run(dir, &["add", "-A"]).unwrap();
         git::run(dir, &["commit", "-q", "-m", msg]).unwrap();
+    }
+
+    #[test]
+    fn ref_safe_takes_ordinary_branch_names_only() {
+        for ok in ["main", "release/1.2", "feature_x-1"] {
+            assert!(ref_safe(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "-x",
+            "--upload-pack=/tmp/evil",
+            "é",
+            "a b",
+            "a;b",
+            "a$b",
+            "a\\b",
+        ] {
+            assert!(!ref_safe(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn remote_default_resolves_an_ordinary_default_branch() {
+        let (_t, _origin, wt) = cloned();
+        let (branch, sha) = remote_default(&wt).unwrap();
+        assert_eq!(branch, "main");
+        assert_eq!(sha, git::run(&wt, &["rev-parse", "HEAD"]).unwrap());
+    }
+
+    #[test]
+    fn a_hostile_default_branch_never_runs_a_command() {
+        // No dot-led path components, which a ref name can't hold.
+        let bin = tempfile::Builder::new().prefix("nsbin").tempdir().unwrap();
+        let (script, proof) = (bin.path().join("evil"), bin.path().join("ran"));
+        fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch {}\nexit 1\n", proof.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let (_t, origin, wt) = cloned();
+        let hostile = format!("refs/heads/--upload-pack={}", script.display());
+        git::run(&origin, &["update-ref", &hostile, "main"]).unwrap();
+        git::run(&origin, &["symbolic-ref", "HEAD", &hostile]).unwrap();
+        if let Some((branch, _)) = remote_default(&wt) {
+            let _ = marked_regions(&wt, &branch);
+        }
+        assert!(
+            !proof.exists(),
+            "the remote's default branch ran {}",
+            script.display()
+        );
+        assert!(remote_default(&wt).is_none());
     }
 
     #[test]
