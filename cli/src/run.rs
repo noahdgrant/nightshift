@@ -727,6 +727,8 @@ pub struct Loaded {
     pub files: Value,
     /// The memory cap phases and gates run under, probed once at start.
     pub cap: Option<Cap>,
+    /// The running `ns` binary, which the phase hook guard and the gate run by path.
+    pub ns: PathBuf,
 }
 
 impl Loaded {
@@ -774,6 +776,7 @@ impl Loaded {
             gate,
             files,
             cap,
+            ns,
         })
     }
 }
@@ -795,6 +798,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         cfg,
         gate,
         cap,
+        ns,
         ..
     } = loaded;
     let problems = fac.problems(cfg.as_ref());
@@ -829,12 +833,11 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         .into());
     }
     let subscription = fac.subscription();
-    let ns = crate::exe::ns_exe()?;
     let mut commands = BTreeMap::new();
     for p in PHASES {
         commands.insert(
             *p,
-            phase_command(cfg.as_ref(), &fac.phase(p), subscription, &ns)?,
+            phase_command(cfg.as_ref(), &fac.phase(p), subscription, ns)?,
         );
     }
     if subscription && !args.dry_run && commands.values().any(|c| billing::is_claude(c)) {
