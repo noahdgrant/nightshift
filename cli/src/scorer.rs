@@ -62,6 +62,10 @@ pub fn parse(name: &str, text: &str) -> Result<Scorer, Vec<String>> {
     let mut labels = Vec::new();
     for (i, l) in raw.labels.into_iter().enumerate() {
         match (l.value, l.score) {
+            (_, Some(score)) if !score.is_finite() => out.push(format!(
+                "{at}: label {} score {score} is not a finite number",
+                i + 1
+            )),
             (Some(value), Some(score)) => labels.push(Label {
                 value,
                 description: l.description,
@@ -80,6 +84,9 @@ pub fn parse(name: &str, text: &str) -> Result<Scorer, Vec<String>> {
     let best = labels.iter().map(|l| l.score).reduce(f64::max);
     match (raw.passing_score, best) {
         (None, _) => out.push(format!("{at}: no passing_score")),
+        (Some(p), _) if !p.is_finite() => {
+            out.push(format!("{at}: passing_score {p} is not a finite number"))
+        }
         (Some(p), Some(b)) if p > b => out.push(format!(
             "{at}: passing_score {p} is above every label's score (highest {b}), so nothing passes"
         )),
@@ -259,6 +266,22 @@ Grade the unit's evidence.md against its brief.
         assert_eq!(
             problems(&VALID.replace("passing_score: 1\n", "")),
             ["scorers/x.md: no passing_score"]
+        );
+    }
+
+    #[test]
+    fn a_non_finite_passing_score_or_label_score() {
+        assert_eq!(
+            problems(&VALID.replace("passing_score: 1", "passing_score: .nan")),
+            ["scorers/x.md: passing_score NaN is not a finite number"]
+        );
+        assert_eq!(
+            problems(&VALID.replace("score: 0\n", "score: .nan\n")),
+            ["scorers/x.md: label 2 score NaN is not a finite number"]
+        );
+        assert_eq!(
+            problems(&VALID.replace("passing_score: 1", "passing_score: .inf")),
+            ["scorers/x.md: passing_score inf is not a finite number"]
         );
     }
 
