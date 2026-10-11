@@ -229,6 +229,10 @@ impl Group {
         self.child.stdout.take().unwrap()
     }
 
+    pub fn is_running(&mut self) -> bool {
+        self.child.try_wait().unwrap().is_none()
+    }
+
     /// Kill the direct child only.
     pub fn kill(&mut self) {
         self.child.kill().unwrap();

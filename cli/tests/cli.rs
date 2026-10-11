@@ -1055,6 +1055,7 @@ fn every_subcommand_help_has_examples() {
         vec!["install", "--help"],
         vec!["doctor", "--help"],
         vec!["quality", "--help"],
+        vec!["log", "--help"],
     ] {
         ns().args(&args)
             .assert()
@@ -1379,4 +1380,123 @@ fn version_names_the_commit_ns_was_built_from() {
         .assert()
         .success()
         .stdout(format!("ns {} ({head})\n", env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn log_prints_the_run_log_from_any_worktree() {
+    let (_tmp, root) = repo();
+    let log = |args: &[&str]| ns().current_dir(&root).arg("log").args(args).output();
+    let out = log(&[]);
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no run log at"));
+
+    git(
+        &root,
+        &["remote", "add", "origin", "git@github.com:o/r.git"],
+    );
+    let dir = root.join(".git/ns");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("runs.jsonl"),
+        concat!(
+            r#"{"event":"phase","unit":"142-uart-timeout","phase":"build","attempt":1,"status":"pass","wall_s":3.5,"prompt":"secret","ts":"2026-10-09T10:00:00Z"}"#,
+            "\n",
+            r#"{"event":"end","unit":"143-other","outcome":"stuck","pr":9,"reason":"ci failed","ts":"2026-10-10T10:00:00Z"}"#,
+            "\nnot json\n",
+        ),
+    )
+    .unwrap();
+    let out = log(&[]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "2026-10-09T10:00:00Z phase #142 build attempt 1 status pass 3.5s\n\
+         2026-10-10T10:00:00Z end #143 outcome stuck https://github.com/o/r/pull/9 reason: ci failed\n"
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("skipped 1 line(s)"));
+
+    let out = log(&["--json", "--since", "2026-10-10"]);
+    assert_eq!(
+        json(&out.stdout),
+        serde_json::json!({"ts":"2026-10-10T10:00:00Z","event":"end","unit":"143-other","issue":143,
+            "outcome":"stuck","pr":9,"pr_url":"https://github.com/o/r/pull/9","reason":"ci failed"})
+    );
+    let out = log(&["--unit", "142-uart-timeout", "--json"]);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("secret"));
+    assert_eq!(json(&out.stdout)["phase"], "build");
+
+    let wt = root.with_file_name("wt");
+    git(
+        &root,
+        &["worktree", "add", "-q", "-b", "x", wt.to_str().unwrap()],
+    );
+    let out = ns()
+        .current_dir(&wt)
+        .args(["log", "--unit", "143-other"])
+        .output();
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("2026-10-10T10:00:00Z end #143"));
+
+    let out = log(&["--since", "yesterday"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ns log --since 2026-10-01T00:00:00Z"));
+}
+
+#[test]
+fn log_follow_prints_the_log_so_far_and_keeps_running() {
+    use std::io::BufRead;
+    let (_tmp, root) = repo();
+    let dir = root.join(".git/ns");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("runs.jsonl"),
+        "{\"event\":\"start\",\"unit\":\"9-a\",\"ts\":\"2026-10-09T10:00:00Z\"}\n",
+    )
+    .unwrap();
+    let mut child = ns().current_dir(&root).args(["log", "-f"]).start_piped();
+    let stdout = child.take_stdout();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            let read = reader.read_line(&mut line).map(|n| (n, line));
+            let done = !matches!(read, Ok((n, _)) if n > 0);
+            if tx.send(read).is_err() || done {
+                break;
+            }
+        }
+    });
+    let first = child.recv(&rx).unwrap().1;
+    assert_eq!(first, "2026-10-09T10:00:00Z start #9\n");
+    let mut log = fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("runs.jsonl"))
+        .unwrap();
+    std::io::Write::write_all(
+        &mut log,
+        b"{\"event\":\"end\",\"unit\":\"9-a\",\"outcome\":\"merged\",\"ts\":\"2026-10-09T11:00:00Z\"}\n",
+    )
+    .unwrap();
+    let second = child.recv(&rx).unwrap().1;
+    assert_eq!(second, "2026-10-09T11:00:00Z end #9 outcome merged\n");
+    assert!(child.is_running());
+    child.kill();
+}
+
+#[test]
+fn log_exits_1_when_the_log_cannot_be_read_and_2_outside_a_repo() {
+    let (_tmp, root) = repo();
+    fs::create_dir_all(root.join(".git/ns/runs.jsonl")).unwrap();
+    let out = ns().current_dir(&root).arg("log").output();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("runs.jsonl"));
+
+    let outside = tempfile::tempdir().unwrap();
+    let out = ns()
+        .current_dir(outside.path())
+        .env("GIT_CEILING_DIRECTORIES", outside.path().parent().unwrap())
+        .arg("log")
+        .output();
+    assert_eq!(out.status.code(), Some(2));
 }

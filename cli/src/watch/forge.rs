@@ -10,7 +10,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use super::{closed_by, Issue};
-use crate::config::ForgeKind;
+use crate::config::{Config, ForgeKind};
 use crate::error::SfError;
 use crate::factory::{self, Queue as QueueConfig};
 use crate::git;
@@ -42,7 +42,7 @@ const HINT: &str = "set the forge in .nightshift/nightshift.toml:\n  [queue]\n  
 /// from `[forge.gitlab] host` by then, names one more GitLab host.
 pub fn open(q: &QueueConfig, root: &Path) -> Result<Box<dyn Forge>, SfError> {
     let origin = git::run(root, &["remote", "get-url", "origin"]).ok();
-    let gitlab_host = std::env::var(ForgeKind::Gitlab.host_var()).ok();
+    let gitlab_host = gitlab_host(None);
     let root = root.to_path_buf();
     Ok(
         match check(
@@ -72,6 +72,19 @@ fn check(
     }
 }
 
+/// The GitLab host `GITLAB_HOST` names, else `[forge.gitlab] host` from `cfg`.
+pub fn gitlab_host(cfg: Option<&Config>) -> Option<String> {
+    crate::forge::effective_host(ForgeKind::Gitlab, cfg.and_then(|c| c.forge.gitlab.as_ref()))
+}
+
+/// The forge `source` names, else the one inferred from `origin` and `gitlab_host`: what a
+/// reader that never fails on a bad `source` shows.
+pub fn kind(source: Option<&str>, origin: Option<&str>, gitlab_host: Option<&str>) -> ForgeKind {
+    source
+        .and_then(ForgeKind::parse)
+        .unwrap_or_else(|| inferred(origin, gitlab_host))
+}
+
 /// The forge inferred from `origin`: gitlab for a host containing it or equal to `gitlab_host`
 /// (hosts are case-insensitive), else github, also for no origin or a local path.
 fn inferred(origin: Option<&str>, gitlab_host: Option<&str>) -> ForgeKind {
@@ -88,7 +101,7 @@ fn inferred(origin: Option<&str>, gitlab_host: Option<&str>) -> ForgeKind {
 
 /// The host of a remote URL, `scheme://[user@]host[:port]/path` or scp-like `[user@]host:path`;
 /// `None` for a local path.
-fn host(url: &str) -> Option<&str> {
+pub fn host(url: &str) -> Option<&str> {
     let rest = match url.split_once("://") {
         Some((_, rest)) => rest.split('/').next()?,
         None => url.split_once(':').filter(|(h, _)| !h.contains('/'))?.0,

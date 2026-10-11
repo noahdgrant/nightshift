@@ -34,8 +34,19 @@ impl Credentials {
     }
 }
 
+/// The host a `kind` command targets: the host variable when set and non-empty, else the
+/// configured one.
+pub fn effective_host(kind: ForgeKind, forge: Option<&Forge>) -> Option<String> {
+    pick_host(std::env::var(kind.host_var()).ok(), forge)
+}
+
+fn pick_host(env: Option<String>, forge: Option<&Forge>) -> Option<String> {
+    env.filter(|h| !h.is_empty())
+        .or_else(|| forge?.host.clone())
+}
+
 pub fn resolve(kind: ForgeKind, forge: &Forge) -> Result<Credentials, SfError> {
-    let host = forge.host.clone().filter(|_| !is_set(kind.host_var()));
+    let host = effective_host(kind, Some(forge)).filter(|_| !is_set(kind.host_var()));
     if host
         .as_deref()
         .is_some_and(|h| h.is_empty() || h.contains(['\0', '=']))
@@ -124,6 +135,22 @@ fn fetch(kind: ForgeKind, source: &TokenSource) -> Result<String, SfError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_env_host_is_unset_so_the_configured_host_wins() {
+        let forge = Forge {
+            token: TokenSource::Command("true".into()),
+            host: Some("cfg.example".into()),
+        };
+        let pick = |env: Option<&str>, f| pick_host(env.map(String::from), f);
+        assert_eq!(
+            pick(Some("env.example"), Some(&forge)).as_deref(),
+            Some("env.example")
+        );
+        assert_eq!(pick(Some(""), Some(&forge)).as_deref(), Some("cfg.example"));
+        assert_eq!(pick(None, Some(&forge)).as_deref(), Some("cfg.example"));
+        assert_eq!(pick(Some(""), None), None);
+    }
 
     #[test]
     fn command_output_is_trimmed() {

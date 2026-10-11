@@ -24,11 +24,13 @@ use crate::review_md::{Finding, Scope, Severity, Status};
 use artifacts::Unparsed;
 use metrics::{RunStats, Unit};
 pub use record::{issue_of, Meta};
-use runlog::{RunLog, Window};
+use runlog::RunLog;
+pub use runlog::Window;
 pub use sync::{import, record_unit, record_units};
 
-/// `--<flag>` as unix seconds: `YYYY-MM-DDTHH:MM:SSZ`, or `YYYY-MM-DD` for `day_time` UTC.
-fn instant(flag: &str, s: &str, day_time: &str) -> Result<i64> {
+/// `ns <cmd> --<flag>` as unix seconds: `YYYY-MM-DDTHH:MM:SSZ`, or `YYYY-MM-DD` for `day_time`
+/// UTC.
+pub fn instant(cmd: &str, flag: &str, s: &str, day_time: &str) -> Result<i64> {
     let form = s.len() == 10 || (s.len() == 20 && s.as_bytes()[10] == b'T');
     let full = if s.len() == 10 {
         format!("{s}T{day_time}Z")
@@ -42,17 +44,17 @@ fn instant(flag: &str, s: &str, day_time: &str) -> Result<i64> {
         format!(
             "--{flag} {s:?} is not a UTC time: use YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD ({day_time} UTC)"
         ),
-        format!("ns quality --{flag} 2026-10-01T{day_time}Z"),
+        format!("ns {cmd} --{flag} 2026-10-01T{day_time}Z"),
     )
     .into())
 }
 
 fn window(since: Option<String>, until: Option<String>) -> Result<Window> {
     let since = since
-        .map(|s| instant("since", &s, "00:00:00"))
+        .map(|s| instant("quality", "since", &s, "00:00:00"))
         .transpose()?;
     let until = until
-        .map(|u| instant("until", &u, "23:59:59"))
+        .map(|u| instant("quality", "until", &u, "23:59:59"))
         .transpose()?;
     if let (Some(s), Some(u)) = (since, until) {
         if u < s {
@@ -246,11 +248,11 @@ mod tests {
     #[test]
     fn a_bound_is_a_utc_instant_or_a_utc_date() {
         let t = clock::parse_iso("2026-10-01T00:00:00Z").unwrap();
-        let since = |s| instant("since", s, "00:00:00");
+        let since = |s| instant("quality", "since", s, "00:00:00");
         assert_eq!(since("2026-10-01").unwrap(), t);
         assert_eq!(since("2026-10-01T00:00:00Z").unwrap(), t);
         assert_eq!(since("2026-10-01T02:43:09Z").unwrap(), t + 9789);
-        let until = |s| instant("until", s, "23:59:59");
+        let until = |s| instant("quality", "until", s, "23:59:59");
         assert_eq!(until("2026-10-01").unwrap(), t + 86_399);
         assert_eq!(until("2026-10-01T02:43:09Z").unwrap(), t + 9789);
         for bad in [
@@ -264,7 +266,7 @@ mod tests {
             "2026-10-01T24:00:00Z",
         ] {
             for (flag, day_time) in [("since", "00:00:00"), ("until", "23:59:59")] {
-                let e = instant(flag, bad, day_time).unwrap_err();
+                let e = instant("quality", flag, bad, day_time).unwrap_err();
                 let e = e.downcast_ref::<SfError>().unwrap();
                 assert_eq!(e.code, 2, "{bad}");
                 assert!(e.to_string().starts_with(&format!("--{flag} ")), "{e}");
