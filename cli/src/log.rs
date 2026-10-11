@@ -161,11 +161,12 @@ fn json_line(ev: &Map<String, Value>) -> String {
 fn text(ev: &Map<String, Value>) -> String {
     let field = |k: &str| {
         let v = ev.get(k)?;
-        match v.as_str() {
-            Some("") => None,
-            Some(s) => Some(s.chars().flat_map(printable).collect::<String>()),
-            None => Some(v.to_string()),
-        }
+        let raw = match v.as_str() {
+            Some("") => return None,
+            Some(s) => s.to_string(),
+            None => v.to_string(),
+        };
+        Some(raw.chars().flat_map(printable).collect::<String>())
     };
     let parts = [
         field("ts"),
@@ -391,6 +392,18 @@ not json
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "end reason: a\\u{202e}b\\u{200b}c\\u{2066}d\n"
+        );
+    }
+
+    #[test]
+    fn bidi_characters_inside_a_non_string_value_are_escaped() {
+        let line = "{\"event\":\"phase\",\"attempt\":{\"x\":\"\u{202e}\"}}";
+        let mut out = Vec::new();
+        let input = [Ok(line.as_bytes().to_vec())];
+        render(input.into_iter(), &all(), text, None, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "phase attempt {\"x\":\"\\u{202e}\"}\n"
         );
     }
 
