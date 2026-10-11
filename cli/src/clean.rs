@@ -205,7 +205,7 @@ fn remove(repo: &Repo, m: &Merged) -> Result<(), String> {
         .map_err(|e| format!("worktree not removed: {e:#}"))?;
     let kept = |e: anyhow::Error| format!("worktree removed, branch {} kept: {e:#}", m.branch());
     let me = json!({"pid": std::process::id(), "unit": m.unit});
-    let _config = Lock::wait(&repo.common_dir, WORKTREE_LOCK, me, None, |by| {
+    let _config = Lock::wait(&repo.common_dir, WORKTREE_LOCK, &me, None, |by| {
         eprintln!(
             "ns: {} cleanup waits for the worktree lock (held by pid {}, unit {})",
             m.unit,
@@ -281,7 +281,7 @@ fn take_run_lock(repo: &Repo, m: &Merged, by: &str) -> Result<Lock, String> {
     match Lock::wait(
         &repo.common_dir,
         &run_lock(&m.unit),
-        me,
+        &me,
         Some((&clock, now)),
         |_| {},
     ) {

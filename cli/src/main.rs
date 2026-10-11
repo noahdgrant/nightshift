@@ -984,7 +984,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 new,
                 mark,
             } => {
-                return transcripts::list(transcripts::ListArgs {
+                return transcripts::list(&transcripts::ListArgs {
                     since,
                     project,
                     new,

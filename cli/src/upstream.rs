@@ -947,7 +947,7 @@ mod tests {
                 .contains("path typo.md not found at recorded sha or HEAD"),
             "{e}"
         );
-        assert_eq!(usage_code(e), 1);
+        assert_eq!(usage_code(&e), 1);
     }
 
     #[test]
@@ -984,7 +984,7 @@ mod tests {
         assert!(r.skills.is_empty(), "{r:?}");
     }
 
-    fn usage_code(e: anyhow::Error) -> i32 {
+    fn usage_code(e: &anyhow::Error) -> i32 {
         e.downcast_ref::<SfError>().unwrap().code
     }
 
@@ -1000,14 +1000,14 @@ mod tests {
         .unwrap();
         let e = diff(&w.skills(), "ns-nope", &mut w.cache()).unwrap_err();
         assert!(e.to_string().contains("no skill ns-nope"), "{e}");
-        assert_eq!(usage_code(e), 2);
+        assert_eq!(usage_code(&e), 2);
         let e = diff(&w.skills(), "plain", &mut w.cache()).unwrap_err();
         assert!(e.to_string().contains("no metadata.upstream"), "{e}");
-        assert_eq!(usage_code(e), 2);
+        assert_eq!(usage_code(&e), 2);
         let e = diff(&w.root.join("none"), "plain", &mut w.cache()).unwrap_err();
         assert!(e.to_string().contains("does not exist"), "{e}");
         let e = status(&w.root.join("none"), &mut w.cache()).unwrap_err();
-        assert_eq!(usage_code(e), 2);
+        assert_eq!(usage_code(&e), 2);
     }
 
     #[test]
@@ -1016,6 +1016,6 @@ mod tests {
         w.skill("ns-a", " acme/gone@1234567:a.md");
         let e = diff(&w.skills(), "ns-a", &mut w.cache()).unwrap_err();
         assert!(e.to_string().contains("git fetch"), "{e}");
-        assert_eq!(usage_code(e), 1);
+        assert_eq!(usage_code(&e), 1);
     }
 }
