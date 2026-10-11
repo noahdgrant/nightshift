@@ -65,6 +65,8 @@ Ping when the night needs the operator:
 | an issue gets the stuck label | slow check |
 | the night dies early: `ns watch` exits before `--until` with a failed result (`ActiveState=failed`, a `Result` other than `success`; the unit stays loaded because it has no `--collect`), or an OOM kill ends it | slow check |
 | a usage-limit pause | `end` event with outcome `paused` |
+| main's CI is red and `ns watch` holds the queue for its fix issue | `main_red` event |
+| `ns watch` stopped the night itself: the fix issue's unit ended without fixing main | `main_red_unfixed` event |
 | the harness breaker trips: the night stops with `harness failing` | the summary at the end of `journalctl --user -u <unit>` |
 | no run-log event for `silence_minutes` while units run | slow check |
 | a stop condition from step 4 while the operator is around | step 4 |
@@ -77,6 +79,8 @@ Each ping has a **key**, one per trigger:
 | `done` with a PR needing a human merge | `merge-pr <n>` |
 | night died early | `early-death` |
 | usage-limit pause | `paused <unit>` |
+| main red | `main-red <sha>` |
+| fix unit ended unfixed | `main-red-unfixed <sha>` |
 | harness breaker | `harness-breaker` |
 | silence | `silence <ts of the newest run-log event>` |
 | step 4 stop | `stop <condition>` |
