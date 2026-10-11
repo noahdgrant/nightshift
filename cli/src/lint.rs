@@ -491,6 +491,8 @@ mod tests {
     fn links_inside_code_spans_are_skipped() {
         let text = "Run `printf '[a](./gone.md)'` or ``x [b](./gone2.md) ` y`` then [c](./c.md), and `[d](./d.md)\n";
         assert_eq!(relative_links(text), ["./c.md", "./d.md"]);
+        let text = "`a `` [x](./x.md) b` [c](./c.md) and [e](./e`.md)\n";
+        assert_eq!(relative_links(text), ["./c.md", "./e`.md"]);
     }
 
     fn skill(body: &str, refs: &[(&str, &str)]) -> tempfile::TempDir {
@@ -569,6 +571,19 @@ mod tests {
         write_skill_at(&local, "verify-x", "");
         assert_eq!(lint_messages(&local), (1, vec![]));
 
+        fs::write(
+            local.join("verify-x/SKILL.md"),
+            "---\nname: verify-y\ndescription: A.\n---\n",
+        )
+        .unwrap();
+        assert_eq!(
+            lint_messages(&local),
+            (
+                1,
+                vec!["name \"verify-y\" does not match directory \"verify-x\"".to_string()]
+            )
+        );
+
         let shipped = tmp.path().join("skills");
         write_skill_at(&shipped, "verify-x", "");
         assert_eq!(
@@ -589,14 +604,32 @@ mod tests {
     const FEATURE: &str = "# F\n\nWhat it does.\n\n## Sub-features\n\n- `f-a` a.\n\n## How to get to it (user POV)\n\n- `x`\n\n## Driving it with control-x\n\nPreconditions:\n\n```\n## not a heading\n```\n\n## Gotchas\n\n- none\n";
 
     #[test]
+    fn ns_dir_without_skill_md_fails_and_other_dirs_are_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        fs::create_dir_all(root.join("ns-empty")).unwrap();
+        fs::create_dir_all(root.join("not-a-skill")).unwrap();
+        assert_eq!(
+            lint_messages(&root),
+            (0, vec!["missing SKILL.md".to_string()])
+        );
+    }
+
+    #[test]
     fn feature_files_need_the_four_h2s_in_order() {
         let tmp = tempfile::tempdir().unwrap();
         let local = tmp.path().join(".agents/skills");
         write_skill_at(&local, "verify-x", "");
         feature(&local, "README.md", "# Index\n\n## Features\n");
         feature(&local, "good.md", FEATURE);
+        feature(&local, "notes.txt", "## Anything\n");
         assert_eq!(lint_messages(&local), (1, vec![]));
 
+        feature(
+            &local,
+            "renamed.md",
+            &FEATURE.replace("## Driving it with control-x", "## Running it"),
+        );
         feature(
             &local,
             "missing.md",
@@ -623,6 +656,10 @@ mod tests {
                 (
                     "missing.md",
                     format!("features/missing.md: {want}; found: Sub-features, How to get to it (user POV), Driving it with control-x").as_str()
+                ),
+                (
+                    "renamed.md",
+                    format!("features/renamed.md: {want}; found: Sub-features, How to get to it (user POV), Running it, Gotchas").as_str()
                 ),
                 (
                     "swapped.md",
