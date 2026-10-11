@@ -31,6 +31,8 @@ From a skill directory, link a principle as `../ns-principle-<name>/SKILL.md`.
 - [Make Operations Idempotent](../ns-principle-make-operations-idempotent/SKILL.md): commands, lifecycle steps, boot or update paths, or loops that run amid crashes, power cuts, and retries. Converge to the same end state.
 - [Migrate Callers Then Delete Legacy APIs](../ns-principle-migrate-callers-then-delete-legacy-apis/SKILL.md): introducing a new internal API while old callers exist. Migrate and delete in one wave.
 - [Pave the Road](../ns-principle-pave-the-road/SKILL.md): adding a pattern, helper, dependency or tool, or finding two ways to do one job. Keep one paved road per job and make it the shortest path.
+- [Hyrum's Law](../ns-principle-hyrums-law/SKILL.md): changing anything a caller can observe (output format, field names, ordering, timing, error text, wire or register layouts, persisted formats). Treat it as contract: add rather than move, and break only deliberately, with a version.
+- [Contract First](../ns-principle-contract-first/SKILL.md): adding or changing an interface (types, schema, wire format, CLI flags, JSON output). Define it and its tests before the implementation, and version it when it must break.
 - [Separate Before Serializing Shared State](../ns-principle-separate-before-serializing-shared-state/SKILL.md): concurrent actors (workers, worktrees, an ISR and the main loop) might write the same file, branch, key, or variable. Eliminate the sharing first.
 
 ## Verification

@@ -43,6 +43,7 @@ Each item is checkable against the diff: met, or not met at a `file:line`, or no
 - Dependencies point the right way, with no cycles and no feature logic in shared modules.
 - It adds no pass-through layer, and no `Optional`, `Any`, cast or silent fallback that hides an unclear invariant.
 - An old path the change replaces is removed in the same change.
+- A change to anything a caller outside the diff can observe (output or field names, ordering, error text, exit codes, flags, a schema, a wire or persisted format) is deliberate: the old behaviour stays beside the new, or the break is versioned and `build.md` says who it breaks ([Hyrum's law](../../ns-principle-hyrums-law/SKILL.md), [contract first](../../ns-principle-contract-first/SKILL.md)).
 
 ## Readability
 

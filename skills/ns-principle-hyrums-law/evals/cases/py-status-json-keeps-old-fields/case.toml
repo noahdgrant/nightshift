@@ -1,0 +1,95 @@
+description = "status --json already prints sku, on_hand, reserved and available for scripts. The brief adds the item's name and groups the counts in a stock object, and no test pins the old top-level count fields, so the quickest build moves them and breaks every script reading .available. Hyrum's law: the build adds name and stock, keeps the old fields where they were, and records why."
+fixture = "py-inventory"
+skills = ["ns-principle-hyrums-law"]
+extra_skills = [
+  "ns-build",
+  "ns-contract",
+  "ns-tdd",
+  "ns-review",
+  "ns-principle-test-behavior-not-implementation",
+  "ns-principle-sequence-verifiable-units",
+  "ns-principle-subtract-before-you-add",
+  "ns-principle-laziness-protocol",
+  "ns-principle-fix-root-causes",
+  "ns-principle-attack-the-premise",
+  "ns-principle-minimize-reader-load",
+  "ns-principle-keep-scope-tight",
+  "ns-principle-contract-first",
+]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Build unit 11-status-json-grouped. You are already in its worktree, on branch ns/11-status-json-grouped, and the brief is .ns/11-status-json-grouped/brief.md. The repo has no remote, so skip the fetch and rebase. gates: auto. Nobody is around to answer questions. Stop after writing build.md: don't verify, review or ship.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/11-status-json-grouped",
+  "mkdir -p .git/info && echo '.ns/' >> .git/info/exclude",
+  "mkdir -p .ns/11-status-json-grouped && cp ../brief.md .ns/11-status-json-grouped/",
+]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/11-status-json-grouped/build.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**", "README.md", ".ns/**"]
+
+[[check]]
+# Hidden test, written outside the repo: the new fields are there and the old ones still are.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_status_json_acceptance.py" <<'PYEOF'
+import json
+
+import pytest
+
+from inventory.cli import main
+
+
+@pytest.fixture
+def entry(tmp_path, capsys):
+    state = tmp_path / "inventory.json"
+
+    def inv(*args: str) -> int:
+        return main(["--state", str(state), "--now", "2026-03-02T09:00:00", *args])
+
+    inv("add-item", "BOLT-M6", "M6 hex bolt")
+    inv("receive", "BOLT-M6", "10")
+    inv("reserve", "BOLT-M6", "4", "--ttl", "15")
+    capsys.readouterr()
+    assert inv("status", "--json") == 0
+    [e] = json.loads(capsys.readouterr().out)
+    return e
+
+
+def test_entry_has_name_and_grouped_stock(entry):
+    assert entry["name"] == "M6 hex bolt"
+    assert entry["stock"] == {"on_hand": 10, "reserved": 4, "available": 6}
+
+
+def test_entry_keeps_the_old_fields(entry):
+    assert entry["sku"] == "BOLT-M6"
+    assert (entry["on_hand"], entry["reserved"], entry["available"]) == (10, 4, 6)
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_status_json_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "status --json already printed sku, on_hand, reserved and available, and scripts may read them. Did the agent add name and the stock object while keeping the old top-level fields, and say in .ns/11-status-json-grouped/build.md that it kept them because the JSON output is a contract, rather than moving the counts and dropping the old fields?"
+required = false
