@@ -30,7 +30,7 @@ The changelog is a separate file, `changelog.md`, shared by every version. Its t
 
 # <Title>
 
-> Name the change: "Resume interrupted firmware downloads instead of restarting them". Name the component only if the doc introduces one, or describes one as-built: "Sync service". A reader should be able to guess the contents from the title.
+> Name the change: "Reserve stock when checkout starts instead of checking it at payment". Name the component only if the doc introduces one, or describes one as-built: "Sync service". A reader should be able to guess the contents from the title.
 
 | | |
 |---|---|
@@ -39,7 +39,7 @@ The changelog is a separate file, `changelog.md`, shared by every version. Its t
 | Reviewers | <names, and what you want from each of them> |
 | Kind | Proposal \| As-built |
 | Version | <1, 2... and one clause on why this version exists> |
-| Key | <the Values table key, such as GATEWAY, per the Values rule in SKILL.md; only with a Values table> |
+| Key | <the Values table key, such as ORDERS, per the Values rule in SKILL.md; only with a Values table> |
 | Status | Draft \| In review \| Approved \| Superseded by v<n> |
 | Last updated | <YYYY-MM-DD> |
 | Review copy | <link to the copy on the review surface in docs/agents/docs.md, if it isn't the repo itself> |
@@ -63,7 +63,7 @@ The changelog is a separate file, `changelog.md`, shared by every version. Its t
 
 ### Goals
 
-> Each one testable. "Firmware update resumes after a dropped connection without re-sending bytes already written" is a goal. "Improve OTA reliability" is a wish.
+> Each one testable. "A shopper who starts checkout on the last unit can pay for it within 15 minutes" is a goal. "Improve checkout reliability" is a wish.
 >
 > When a requirements doc exists, each goal starts with the ID of the requirement it answers and says what this design commits to for it: "STOCK-4: the order service reserves stock within 1 s of checkout." The requirement's own text stays in the requirements doc. List only the requirements this design answers. When none exists, write the goals here.
 
@@ -75,7 +75,7 @@ Values other docs restate, which they cite by ID so a change here reaches them.
 |---|---|---|
 | <KEY>-1 | <the value in words, with its number and unit: "Cart hold: a reservation lapses after 30 minutes"> | <decided (name, date), estimate, measured, datasheet, or config> |
 
-> Only values another doc states. Number them from 1 in the header's Key, and never renumber or reuse an ID. Where this doc restates a value in its prose, bind it to the ID: "every 30 minutes (GATEWAY-1)".
+> Only values another doc states. Number them from 1 in the header's Key, and never renumber or reuse an ID. Where this doc restates a value in its prose, bind it to the ID: "after 30 minutes (ORDERS-1)".
 
 ### Non-goals
 
@@ -125,7 +125,7 @@ Values other docs restate, which they cite by ID so a change here reaches them.
 
 ## Privacy
 
-> If the change carries, stores, or exposes no identity, location, contact, or customer data, write one line naming the data the path does carry. "No change. The path carries device ID and retry count only." Otherwise answer the prompts below.
+> If the change carries, stores, or exposes no identity, location, contact, or customer data, write one line naming the data the path does carry. "No change. The path carries SKU and quantity only." Otherwise answer the prompts below.
 >
 > What personal or confidential data does this path carry, store, or expose, and to whom? A location tied to a person is personal data.
 >
