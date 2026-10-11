@@ -34,7 +34,16 @@ pub trait Forge {
     fn edit_labels(&self, n: u64, remove: &[String], add: Option<&str>) -> Result<()>;
     fn comment(&self, n: u64, body: &str) -> Result<()>;
     fn close(&self, n: u64) -> Result<()>;
+    /// Add `label` to PR `pr`, creating it in the repo first if it is missing.
+    fn add_pr_label(&self, pr: u64, label: &str) -> Result<()>;
+    /// Remove `label` from PR `pr` if the PR carries it.
+    fn remove_pr_label(&self, pr: u64, label: &str) -> Result<()>;
+    fn comment_pr(&self, pr: u64, body: &str) -> Result<()>;
 }
+
+/// The colour and description a missing PR label is created with.
+const PR_LABEL_COLOR: &str = "d73a4a";
+const PR_LABEL_DESCRIPTION: &str = "nightshift left this PR for a human to merge";
 
 const HINT: &str = "set the forge in .nightshift/nightshift.toml:\n  [queue]\n  source = \"github\"\n\nsee docs/FACTORY.md";
 
@@ -234,6 +243,54 @@ impl Forge for GitHub {
         gh(
             &self.root,
             &["issue", "close", &n.to_string(), "--reason", "completed"],
+        )
+        .map(|_| ())
+    }
+
+    fn add_pr_label(&self, pr: u64, label: &str) -> Result<()> {
+        let created = gh(
+            &self.root,
+            &[
+                "label",
+                "create",
+                label,
+                "--color",
+                PR_LABEL_COLOR,
+                "--description",
+                PR_LABEL_DESCRIPTION,
+            ],
+        );
+        // Without `--force`, an existing label keeps the colour and description a human gave it.
+        if let Err(e) = created {
+            if !format!("{e:#}").contains("already exists") {
+                return Err(e);
+            }
+        }
+        gh(
+            &self.root,
+            &["pr", "edit", &pr.to_string(), "--add-label", label],
+        )
+        .map(|_| ())
+    }
+
+    fn remove_pr_label(&self, pr: u64, label: &str) -> Result<()> {
+        let ns = pr.to_string();
+        let v = gh_json(&self.root, &["pr", "view", &ns, "--json", "labels"])?;
+        let carried = v["labels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|l| l["name"].as_str() == Some(label));
+        if !carried {
+            return Ok(());
+        }
+        gh(&self.root, &["pr", "edit", &ns, "--remove-label", label]).map(|_| ())
+    }
+
+    fn comment_pr(&self, pr: u64, body: &str) -> Result<()> {
+        gh(
+            &self.root,
+            &["pr", "comment", &pr.to_string(), "--body", body],
         )
         .map(|_| ())
     }
