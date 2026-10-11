@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn finds_relative_links_only() {
-        let text = "See [a](./a.md), [b](../ns-b/SKILL.md#top), [c](https://x.y/z), [d](#anchor), [e](./e.md \"t\").\n```\n[f](./ignored.md)\n```\n[g](refs/no-dot.md#x), [h](mailto:a@b.c), [i](/abs.md), [j](<refs/angle.md>), [k](refs/a:b.md), [l](:c.md)\n";
+        let text = "See [a](./a.md), [b](../ns-b/SKILL.md#top), [c](https://x.y/z), [d](#anchor), [e](./e.md \"t\").\n```\n[f](./ignored.md)\n```\n[g](refs/no-dot.md#x), [h](mailto:a@b.c), [i](/abs.md), [j](<refs/angle.md>), [k](refs/a:b.md), [l](:c.md), [m](git+ssh://h/r), [n](x-y.z:q)\n";
         assert_eq!(
             relative_links(text),
             [
