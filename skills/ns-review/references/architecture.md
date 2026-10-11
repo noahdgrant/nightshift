@@ -24,6 +24,7 @@ Use these terms exactly.
 - **Type boundaries**: needless `Optional`, `Any`, casts, or silent fallbacks papering over an unclear invariant. Validate once at the boundary, then trust the value inside.
 - **Bolted-on vs integrated**: if the requirement had been known from the start, would the code look like this?
 - **Legacy dual paths**: a new API added while the old one stays alive with no external consumer. Migrate callers and delete the old path in the same change.
+- **Interface changes without a contract review**: the diff changes something a caller outside the diff can observe (output format or field names, ordering, error text, exit codes, flags, a schema, a wire, register or persisted format), and neither the brief nor `build.md` decides it: no old fields kept, no version, no line saying who it breaks. Name what changed and who can observe it ([Hyrum's law](../../ns-principle-hyrums-law/SKILL.md), [contract first](../../ns-principle-contract-first/SKILL.md)).
 - **Non-atomic updates** that can leave state half-applied, and independent work serialised for no reason.
 - **Dependencies**: a new dependency the standard library or existing code already covers, or a new dependency or tool with no stated reason. For an upgrade: changelog read, one dependency per change, lockfile diff reviewed.
 - **File growth**: a file pushed past roughly 1000 lines. Decompose first, then add. A Suggestion, as the bar's Size section says.

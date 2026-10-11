@@ -54,6 +54,8 @@ While building, apply these principles:
 - [Attack the premise](../ns-principle-attack-the-premise/SKILL.md) when two fixes that share one assumption have failed the same test. Write the premise down before a third fix.
 - [Pave the road](../ns-principle-pave-the-road/SKILL.md) when a slice adds a pattern, helper or dependency: reuse the repo's existing way to do that job, or state why it doesn't fit.
 - [Minimize reader load](../ns-principle-minimize-reader-load/SKILL.md) before each commit: collapse one-caller wrappers, shrink mutable state.
+- [Contract first](../ns-principle-contract-first/SKILL.md) when a slice adds or changes an interface (a public API, a schema, a wire format, CLI flags or JSON output): write the contract and its test before the code.
+- [Hyrum's law](../ns-principle-hyrums-law/SKILL.md) when a slice changes anything a caller can observe: keep the old fields and behaviour, and break only deliberately, with a version and a line in `build.md`.
 - [Keep scope tight](../ns-principle-keep-scope-tight/SKILL.md) on every diff: work outside the brief goes in `build.md` as a `file:` line (Open risks, below).
 - [Push back](../ns-principle-push-back/SKILL.md) when the brief asks for something the code or a test shows is wrong.
 
