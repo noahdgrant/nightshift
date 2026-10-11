@@ -480,6 +480,8 @@ impl<'a> Lexer<'a> {
         } else if self.chars.next_if_eq(&'<').is_some() {
             if self.chars.next_if_eq(&'<').is_some() {
                 self.herestring();
+            } else if self.shift_operand_follows() {
+                self.buf().text.push_str("<<");
             } else {
                 self.heredoc_operator();
             }
@@ -488,6 +490,14 @@ impl<'a> Lexer<'a> {
         } else {
             self.out.push(Tok::RedirectIn);
         }
+    }
+
+    /// `<<` before a number is a shift, as in `$((1<<2))`, not a heredoc whose delimiter is a digit.
+    fn shift_operand_follows(&self) -> bool {
+        self.chars
+            .clone()
+            .find(|c| !matches!(c, ' ' | '\t'))
+            .is_some_and(|c| c.is_ascii_digit())
     }
 
     /// `<<<`: the next word is input text.

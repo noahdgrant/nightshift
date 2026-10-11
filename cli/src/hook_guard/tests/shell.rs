@@ -26,6 +26,18 @@ fn heredoc_after_the_body_is_still_checked() {
 }
 
 #[test]
+fn a_shift_is_not_a_heredoc() {
+    for c in [
+        "echo $((1<<2))\ngit commit -n",
+        "(( x = 1 << 2 ))\ngit commit -n",
+        "let x=1<<2\ngit commit -n",
+        "x=$((1<<2))\ngit commit -n",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
 fn shell_reserved_words_do_not_hide_a_command() {
     for c in [
         "if true; then git commit -n; fi",
