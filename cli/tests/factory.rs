@@ -3699,6 +3699,49 @@ fn factory_validate_reports_problems() {
 }
 
 #[test]
+fn factory_validate_checks_scorers() {
+    let e = Env::new();
+    e.factory("");
+    e.config("[roles.review]\nharness = \"claude\"\n");
+    fs::create_dir_all(e.root.join(".nightshift/scorers")).unwrap();
+    let scorer = "---\nrole: review\npassing_score: 1\nsampling_rate: 0.5\nlabels:\n  - value: pass\n    score: 1\n---\nGrade it.\n";
+    fs::write(e.root.join(".nightshift/scorers/quality.md"), scorer).unwrap();
+    let out = e
+        .ns()
+        .args(["factory", "validate"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["scorers"][0]["name"], "quality");
+    assert_eq!(v["scorers"][0]["sampling_rate"], 0.5);
+
+    fs::write(
+        e.root.join(".nightshift/scorers/quality.md"),
+        scorer.replace("role: review", "role: judge"),
+    )
+    .unwrap();
+    let out = e
+        .ns()
+        .args(["factory", "validate"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert!(
+        v["errors"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("scorers/quality.md: role \"judge\" is not configured"),
+        "{v}"
+    );
+}
+
+#[test]
 fn custom_agent_prompt_is_rendered() {
     let e = Env::new();
     fs::create_dir_all(e.root.join(".nightshift/agents/triage")).unwrap();
