@@ -25,10 +25,12 @@ pub enum Sync {
     Stale { reason: String },
 }
 
-/// Installed skills whose symlinks resolve into a checkout, and the dirs they sit in.
+/// Installed skills whose symlinks resolve into a checkout, the target dirs holding them,
+/// and the source dirs they resolve to.
 #[derive(Debug, Default)]
 pub struct Installed {
     pub names: Vec<String>,
+    targets: Vec<PathBuf>,
     sources: BTreeSet<PathBuf>,
 }
 
@@ -40,11 +42,10 @@ pub fn installed_into(targets: &[PathBuf], root: &Path) -> Installed {
     };
     let links = targets
         .iter()
-        .filter_map(|t| fs::read_dir(t).ok())
-        .flatten()
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_symlink()));
-    for e in links {
+        .filter_map(|t| Some((t, fs::read_dir(t).ok()?)))
+        .flat_map(|(t, entries)| entries.flatten().map(move |e| (t, e)))
+        .filter(|(_, e)| e.file_type().is_ok_and(|t| t.is_symlink()));
+    for (target, e) in links {
         let Ok(dest) = e.path().canonicalize() else {
             continue;
         };
@@ -52,6 +53,9 @@ pub fn installed_into(targets: &[PathBuf], root: &Path) -> Installed {
             found
                 .names
                 .push(e.file_name().to_string_lossy().into_owned());
+            if !found.targets.contains(target) {
+                found.targets.push(target.clone());
+            }
             found.sources.extend(dest.parent().map(Path::to_path_buf));
         }
     }
@@ -105,15 +109,16 @@ pub fn sync(root: &Path, base: &str, installed: &Installed) -> Sync {
     }
 }
 
-/// After a fast-forward, rerun `ns install` for each source dir of `ns-*` skills, so skills
-/// added or removed on `origin/<default>` are linked or pruned. Returns what changed.
-pub fn relink(installed: &Installed, targets: &[PathBuf]) -> Result<Vec<String>> {
+/// After a fast-forward, rerun `ns install` for each source dir of `ns-*` skills into the
+/// target dirs that already hold one, so skills added or removed on `origin/<default>` are
+/// linked or pruned there. Returns what changed.
+pub fn relink(installed: &Installed) -> Result<Vec<String>> {
     let mut changed = Vec::new();
     for src in &installed.sources {
         if install::skill_dirs(src).map_or(true, |d| d.is_empty()) {
             continue;
         }
-        for step in install::run(src, targets, false)?.actions {
+        for step in install::run(src, &installed.targets, false)?.actions {
             let verb = match step.action {
                 Action::Link => "linked",
                 Action::Relink => "relinked",
@@ -232,7 +237,7 @@ mod tests {
             sync(&s.root, "origin/main", &installed),
             Sync::Updated { .. }
         ));
-        let changed = relink(&installed, &s.targets).unwrap();
+        let changed = relink(&installed).unwrap();
         assert_eq!(changed.len(), 1, "{changed:?}");
         assert!(changed[0].starts_with("linked ") && changed[0].ends_with("ns-new"));
         assert!(s.targets[0].join("ns-new/SKILL.md").is_file());
@@ -245,7 +250,7 @@ mod tests {
             sync(&s.root, "origin/main", &installed),
             Sync::Updated { .. }
         ));
-        let changed = relink(&installed, &s.targets).unwrap();
+        let changed = relink(&installed).unwrap();
         assert!(
             changed
                 .iter()
@@ -253,6 +258,23 @@ mod tests {
             "{changed:?}"
         );
         assert!(fs::symlink_metadata(s.targets[0].join("ns-new")).is_err());
+    }
+
+    #[test]
+    fn relink_links_only_into_dirs_that_hold_a_skill_from_the_checkout() {
+        let s = setup();
+        let other = s.root.parent().unwrap().join("other");
+        fs::create_dir(&other).unwrap();
+        std::os::unix::fs::symlink(s.root.parent().unwrap(), other.join("elsewhere")).unwrap();
+        let targets = [s.targets[0].clone(), other.clone(), s.targets[0].clone()];
+        let installed = installed_into(&targets, &s.root);
+        assert_eq!(installed.targets, s.targets);
+        assert!(matches!(
+            sync(&s.root, "origin/main", &installed),
+            Sync::Updated { .. }
+        ));
+        relink(&installed).unwrap();
+        assert_eq!(fs::read_dir(&other).unwrap().count(), 1);
     }
 
     fn assert_stale(s: &Setup, want: &str) {
