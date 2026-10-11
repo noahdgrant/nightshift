@@ -73,7 +73,8 @@ flowchart LR
     sf_auto["**ns-auto**"]
     sf_ar["**ns-agent-readiness**"]
     sf_imp[ns-improve]
-    sf_mnt[ns-maintain + ns-maintain-verify]
+    sf_mnt["**ns-maintain**"]
+    sf_mntv[ns-maintain-verify]
   end
 
   mp_wfa --> sf_wfa
@@ -111,8 +112,8 @@ flowchart LR
   mp_ica --> sf_ar
   ps_refl --> sf_imp
   cu_cl --> sf_imp
-  ps_mvs --> sf_mnt
-  ao_eval --> sf_mnt
+  ps_mvs --> sf_mntv
+  ao_eval --> sf_mntv
 ```
 
 ## By skill
@@ -140,7 +141,8 @@ flowchart LR
 | ns-plan | plan | Matt `to-tickets`, `wayfinder`, `codebase-design` | |
 | **ns-troubleshoot** | outer loop | Matt `diagnosing-bugs` | Runs in a worktree and writes no fix: ends with `brief.md` (repro and root cause) routed to `ns-build` or `ns-define`. Firmware loop recipes: native_sim, emulators, serial, HIL, logic analyzer, `git bisect run` on target |
 | ns-improve | meta | Matt `retro`; pstack `reflect`, `automate-me`, `correct`; Cursor `continual-learning`, `workflow-from-chats` | Per-session review plus weekly transcript mining, ending in a PR |
-| ns-maintain, ns-maintain-verify | meta | pstack `maintain-verification-skill`; addy evals | Upstream diffs, evals, verify-skill re-check |
+| **ns-maintain** | meta | none (original, D9 and D53) | Ports each drifted skill's upstream change found by `ns upstream`, or records why not, and opens one PR per skill |
+| ns-maintain-verify | meta | pstack `maintain-verification-skill`; addy evals | Verify-skill re-check |
 
 ## Inspiration
 
