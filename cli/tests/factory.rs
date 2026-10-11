@@ -346,6 +346,19 @@ impl Env {
 const UNIT: &str = "7-fix-the-thing";
 
 #[test]
+fn run_by_issue_without_a_unit_refuses_when_the_issue_is_unreadable() {
+    let e = Env::new();
+    e.ns()
+        .args(["run", "--issue", "8"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "cannot read issue #8 to name the unit",
+        ));
+    assert!(e.calls().is_empty());
+}
+
+#[test]
 fn claude_phases_wait_for_background_tasks() {
     let e = Env::new();
     e.run(&["run", "--issue", "7"], 0);
@@ -8725,6 +8738,10 @@ fn watch_on_gitlab_swaps_labels_and_comments_through_glab() {
     let v = e.run(&["watch", "--once"], 0);
     assert_eq!(v["units"][0]["outcome"], "stuck", "{v}");
     assert_eq!(e.labels(2), ["type:fix", "status:ready-for-human"]);
+    let gh = e.gh_calls();
+    for verb in ["issue list", "issue edit", "issue comment", "issue close"] {
+        assert!(!gh.contains(verb), "{verb}: {gh}");
+    }
     let calls = e.glab_calls();
     assert!(
         calls
@@ -8746,7 +8763,12 @@ fn watch_on_gitlab_closes_a_merged_issue_and_drops_its_status_label() {
     let v = e.run(&["watch", "--once"], 0);
     assert_eq!(v["units"][0]["outcome"], "merged", "{v}");
     assert_eq!(e.labels(2), ["type:fix"]);
+    let gh = e.gh_calls();
+    for verb in ["issue list", "issue edit", "issue comment", "issue close"] {
+        assert!(!gh.contains(verb), "{verb}: {gh}");
+    }
     let calls = e.glab_calls();
+    assert!(!calls.contains("issue note"), "{calls}");
     assert!(calls.contains("issue close 2"), "{calls}");
     assert!(
         calls.contains("issue update 2 --unlabel status:in-progress"),
