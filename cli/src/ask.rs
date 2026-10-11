@@ -1,7 +1,7 @@
 //! `ns ask --role <role>`: run the configured harness headless with the prompt on stdin.
 
 use std::io::{IsTerminal, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
@@ -46,6 +46,62 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
             .into());
         }
     }
+    let plan = plan(role, write)?;
+
+    if dry_run {
+        let Plan {
+            resolved,
+            command,
+            bin,
+            config,
+        } = &plan;
+        let out = json!({
+            "role": resolved.requested,
+            "matched_role": resolved.matched,
+            "harness": resolved.harness,
+            "model": resolved.model,
+            "mode": if write { "write" } else { "read-only" },
+            "command": command,
+            "cwd": match cwd {
+                Some(d) => d.to_string_lossy().into_owned(),
+                None => std::env::current_dir()?.to_string_lossy().into_owned(),
+            },
+            "binary": bin.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            "on_path": bin.is_some(),
+            "prompt": match prompt_file {
+                Some(p) => p.to_string_lossy().into_owned(),
+                None => "stdin".to_string(),
+            },
+            "config": config.to_string_lossy(),
+            "dry_run": true,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    let bin = plan.bin()?;
+    let prompt = read_prompt(prompt_file)?;
+    if prompt.iter().all(u8::is_ascii_whitespace) {
+        return Err(SfError::usage(
+            "the prompt is empty",
+            "ns ask --role review --prompt-file prompt.md",
+        )
+        .into());
+    }
+    plan.exec(&bin, &prompt, cwd, Stdio::inherit())?;
+    Ok(())
+}
+
+/// The command `ns ask` runs for a role, from the user config.
+struct Plan {
+    resolved: config::Resolved,
+    command: Vec<String>,
+    /// `command[0]` on PATH, if it is there.
+    bin: Option<PathBuf>,
+    config: PathBuf,
+}
+
+fn plan(role: &str, write: bool) -> Result<Plan> {
     if role.is_empty() {
         return Err(SfError::usage(
             "--role must not be empty",
@@ -108,92 +164,84 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
         ));
     };
     let bin = which(&command[0]);
+    Ok(Plan {
+        resolved,
+        command,
+        bin,
+        config: path,
+    })
+}
 
-    if dry_run {
-        let out = json!({
-            "role": resolved.requested,
-            "matched_role": resolved.matched,
-            "harness": resolved.harness,
-            "model": resolved.model,
-            "mode": if write { "write" } else { "read-only" },
-            "command": command,
-            "cwd": match cwd {
-                Some(d) => d.to_string_lossy().into_owned(),
-                None => std::env::current_dir()?.to_string_lossy().into_owned(),
-            },
-            "binary": bin.as_ref().map(|p| p.to_string_lossy().into_owned()),
-            "on_path": bin.is_some(),
-            "prompt": match prompt_file {
-                Some(p) => p.to_string_lossy().into_owned(),
-                None => "stdin".to_string(),
-            },
-            "config": path.to_string_lossy(),
-            "dry_run": true,
-        });
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
+impl Plan {
+    fn bin(&self) -> Result<PathBuf> {
+        self.bin.clone().ok_or_else(|| {
+            SfError::new(
+                EXIT_HARNESS_MISSING,
+                format!(
+                    "harness {:?} needs `{}`, which is not on PATH",
+                    self.resolved.harness, self.command[0]
+                ),
+            )
+            .hint("install it, or map the role to another harness; see installed harnesses with:\n  ns doctor")
+            .into()
+        })
     }
 
-    let Some(bin) = bin else {
-        return Err(SfError::new(
-            EXIT_HARNESS_MISSING,
-            format!(
-                "harness {:?} needs `{}`, which is not on PATH",
-                resolved.harness, command[0]
-            ),
-        )
-        .hint("install it, or map the role to another harness; see installed harnesses with:\n  ns doctor")
-        .into());
-    };
-
-    let prompt = read_prompt(prompt_file)?;
-    if prompt.iter().all(u8::is_ascii_whitespace) {
-        return Err(SfError::usage(
-            "the prompt is empty",
-            "ns ask --role review --prompt-file prompt.md",
-        )
-        .into());
-    }
-
-    let mut cmd = Command::new(&bin);
-    git::scrub(&mut cmd);
-    if subscription(cwd)? {
-        billing::scrub(&mut cmd, &command);
-    }
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
-    let mut child = cmd
-        .args(&command[1..])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .with_context(|| format!("cannot start {}", bin.display()))?;
-    {
+    /// Run the harness with `prompt` on stdin. Returns its stdout when `stdout` is piped.
+    fn exec(
+        &self,
+        bin: &Path,
+        prompt: &[u8],
+        cwd: Option<&Path>,
+        stdout: Stdio,
+    ) -> Result<Vec<u8>> {
+        let (resolved, command) = (&self.resolved, &self.command);
+        let mut cmd = Command::new(bin);
+        git::scrub(&mut cmd);
+        if subscription(cwd)? {
+            billing::scrub(&mut cmd, command);
+        }
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+        let mut child = cmd
+            .args(&command[1..])
+            .stdin(Stdio::piped())
+            .stdout(stdout)
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| format!("cannot start {}", bin.display()))?;
         let mut stdin = child.stdin.take().expect("stdin is piped");
-        // A harness may exit before reading everything; its exit status tells the story.
-        let _ = stdin.write_all(&prompt);
+        // Write from a thread, so a harness that answers before reading all of a long prompt
+        // can't deadlock against a full stdout pipe. A harness may exit before reading
+        // everything; its exit status tells the story.
+        let prompt = prompt.to_vec();
+        let writer = std::thread::spawn(move || {
+            let _ = stdin.write_all(&prompt);
+        });
+        let out = child.wait_with_output().context("waiting for harness")?;
+        let _ = writer.join();
+        if !out.status.success() {
+            let code = out
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "a signal".to_string());
+            let role = &resolved.requested;
+            return Err(SfError::general(format!(
+                "harness {:?} (role {:?}, matched {:?}) exited with {code}: {}",
+                resolved.harness,
+                role,
+                resolved.matched,
+                command.join(" ")
+            ))
+            .hint(format!(
+                "preview the command with:\n  ns ask --role {role} --dry-run"
+            ))
+            .into());
+        }
+        Ok(out.stdout)
     }
-    let status = child.wait().context("waiting for harness")?;
-    if !status.success() {
-        let code = status
-            .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "a signal".to_string());
-        return Err(SfError::general(format!(
-            "harness {:?} (role {:?}, matched {:?}) exited with {code}: {}",
-            resolved.harness,
-            role,
-            resolved.matched,
-            command.join(" ")
-        ))
-        .hint(format!(
-            "preview the command with:\n  ns ask --role {role} --dry-run"
-        ))
-        .into());
-    }
-    Ok(())
 }
 
 /// The factory's billing mode for the repo holding `cwd` (default: the current directory).
