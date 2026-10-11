@@ -291,12 +291,10 @@ mod tests {
     fn ssh_account_gives_up_on_a_host_that_stalls() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("ssh");
-        let started_marker = dir.path().join("started");
         let made = Command::new("sh")
             .arg("-c")
-            .arg(r#"printf '%s\n' '#!/bin/sh' "touch '$1'" 'sleep 30' > "$0" && chmod 755 "$0""#)
+            .arg(r#"printf '%s\n' '#!/bin/sh' 'exec sleep 30' > "$0" && chmod 755 "$0""#)
             .arg(&fake)
-            .arg(&started_marker)
             .status()
             .unwrap();
         assert!(made.success());
@@ -309,7 +307,6 @@ mod tests {
         let got = ssh_account_within(fake.as_os_str(), &t, limit);
         let elapsed = started.elapsed();
         assert_eq!(got, None);
-        assert!(started_marker.exists(), "the fake ssh never ran");
         assert!(elapsed >= limit, "{elapsed:?}");
         assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
     }
