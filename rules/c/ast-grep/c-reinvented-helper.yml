@@ -1,0 +1,24 @@
+# Enforces the Architecture item of the quality bar: reuse the existing helper instead of
+# adding a near-duplicate (skills/ns-principle-pave-the-road).
+id: c-reinvented-helper
+language: c
+severity: warning
+message: 'this re-implements a helper the project or platform already has; use the existing one (Zephyr: MIN, MAX, CLAMP, ARRAY_SIZE, CONTAINER_OF in <zephyr/sys/util.h>)'
+utils:
+  helper-name:
+    regex: '^(?i)_*(my_)?(min|max|clamp|array_size|countof|container_of)(_([ui]?(8|16|32|64)|u?int|long|float|double))?$'
+rule:
+  any:
+    - pattern: sizeof($A) / sizeof($A[0])
+    - pattern: sizeof($A) / sizeof(*$A)
+    - pattern: sizeof $A / sizeof $A[0]
+    - pattern: sizeof $A / sizeof *$A
+    - kind: preproc_function_def
+      has: {field: name, matches: helper-name}
+    - kind: function_definition
+      has:
+        field: declarator
+        stopBy: end
+        kind: identifier
+        matches: helper-name
+        inside: {kind: function_declarator, field: declarator}

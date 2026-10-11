@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""The C rule pack for `ns rules check` (rules/c/README.md).
+
+Each subcommand runs one tool and prints one JSON finding per line,
+{tool, rule, file, line, message[, snippet]}. It exits 0 with no findings, 1 with findings,
+and 2 when the check could not run; then it prints no findings, only `rules-c error: ...`.
+"""
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+PACK = Path(__file__).resolve().parent
+ALLOWLIST = ".nightshift/rules-c-includes.txt"
+MAX_LINES = 1000
+TEST_DIRS = {"test", "tests"}
+TIDY_LINE = re.compile(r"^(.+?):(\d+):(\d+): (warning|error): (.*) \[([\w.,-]+)\]$")
+TIDY_CHECKS = re.compile(r"\[([\w.,-]+)\]$")
+
+
+class Broken(Exception):
+    pass
+
+
+def emit(findings):
+    for f in findings:
+        print(json.dumps(f))
+    return 1 if findings else 0
+
+
+def finding(tool, rule, file, line, message, snippet=None):
+    f = {"tool": tool, "rule": rule, "file": file, "line": line, "message": message}
+    if snippet is not None:
+        f["snippet"] = snippet
+    return f
+
+
+def tool_path(name):
+    path = shutil.which(name)
+    if path is None:
+        raise Broken(f"{name} is not on PATH; install it (rules/c/README.md, Install)")
+    return path
+
+
+def option_safe(path):
+    return f"./{path}" if path.startswith("-") else path
+
+
+def sources(paths, suffixes):
+    """The files to check: `paths`, else every tracked file here with a suffix outside this pack."""
+    if paths:
+        return [option_safe(p) for p in paths if relative(p) is not None]
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z"] + [f"*{s}" for s in suffixes],
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise Broken(f"cannot list tracked files with git ls-files ({e})") from e
+    files = []
+    for name in out.decode().split("\0"):
+        if name and Path(name).is_file() and not Path(name).resolve().is_relative_to(PACK):
+            files.append(option_safe(name))
+    return files
+
+
+def relative(file):
+    path = Path(file)
+    if path.is_absolute():
+        try:
+            return str(path.resolve().relative_to(Path.cwd().resolve()))
+        except ValueError:
+            return None
+    return file.removeprefix("./")
+
+
+def allowed(header, entries):
+    return any(header.startswith(e) if e.endswith("/") else header == e for e in entries)
+
+
+def read_allowlist(path):
+    try:
+        text = Path(path).read_text()
+    except OSError as e:
+        raise Broken(
+            f"cannot read the include allowlist {path} ({e.strerror}); "
+            "seed it with: rules/c/rules-c allowlist > " + ALLOWLIST
+        ) from e
+    return [line.split("#", 1)[0].strip() for line in text.splitlines() if line.split("#", 1)[0].strip()]
+
+
+def ast_grep(files):
+    if not files:
+        return []
+    cmd = [tool_path("ast-grep"), "scan", "-c", str(PACK / "sgconfig.yml"), "--json=stream"]
+    run = subprocess.run(cmd + ["--"] + files, capture_output=True, text=True)
+    if run.returncode != 0 or run.stderr.strip():
+        raise Broken(f"ast-grep exited {run.returncode}: {run.stderr.strip()}")
+    return [json.loads(line) for line in run.stdout.splitlines() if line.strip()]
+
+
+def header_of(match):
+    return match["text"].strip()[1:-1]
+
+
+def include_finding(m, file, line, entries, allowlist):
+    header = header_of(m)
+    if allowed(header, entries):
+        return None
+    message = f"<{header}> is not in {allowlist}; reuse an allowed dependency, or add it there with the reason it is needed"
+    return finding("ast-grep", "c-include-not-allowed", file, line, message)
+
+
+def duplicate_findings(definitions):
+    findings = []
+    for name, places in sorted(definitions.items()):
+        places.sort()
+        if name == "main" or len({f for f, _ in places}) < 2:
+            continue
+        for file, line in places:
+            others = ", ".join(f"{f}:{n}" for f, n in places if f != file)
+            message = f"`{name}` is also defined in {others}; keep one helper and reuse it"
+            findings.append(finding("ast-grep", "c-duplicate-function", file, line, message))
+    return findings
+
+
+def cmd_grep(args):
+    entries = read_allowlist(args.allowlist)
+    matches = ast_grep(sources(args.paths, [".c", ".h"]))
+    findings, definitions = [], {}
+    for m in matches:
+        file, line = relative(m["file"]), m["range"]["start"]["line"] + 1
+        rule = m["ruleId"]
+        if rule == "c-function-definition":
+            if not TEST_DIRS & set(Path(file).parts):
+                definitions.setdefault(m["text"], []).append((file, line))
+        elif rule == "c-system-include":
+            findings.append(include_finding(m, file, line, entries, args.allowlist))
+        else:
+            findings.append(finding("ast-grep", rule, file, line, m["message"]))
+    findings = [f for f in findings if f] + duplicate_findings(definitions)
+    return emit(sorted(findings, key=lambda f: (f["file"], f["line"], f["rule"])))
+
+
+def cmd_allowlist(args):
+    entries = set()
+    for m in ast_grep(sources(args.paths, [".c", ".h"])):
+        if m["ruleId"] == "c-system-include":
+            header = header_of(m)
+            entries.add(header.split("/", 1)[0] + "/" if "/" in header else header)
+    for e in sorted(entries):
+        print(e)
+    return 0
+
+
+def compile_db_files(build):
+    db = Path(build) / "compile_commands.json"
+    try:
+        entries = json.loads(db.read_text())
+    except (OSError, ValueError) as e:
+        raise Broken(f"cannot read {db} ({e}); build with CMAKE_EXPORT_COMPILE_COMMANDS=ON") from e
+    try:
+        files = [relative(str(Path(e["directory"], e["file"]))) for e in entries]
+    except (KeyError, TypeError) as e:
+        raise Broken(f"cannot read {db} (unexpected entry: {e!r}); build with CMAKE_EXPORT_COMPILE_COMMANDS=ON") from e
+    return [option_safe(f) for f in dict.fromkeys(files) if f is not None]
+
+
+def tidy_command(args):
+    cmd = [
+        tool_path("clang-tidy"),
+        f"--config-file={PACK / 'clang-tidy.yaml'}",
+        "--extra-arg=-Wall",
+        "--extra-arg=-Wextra",
+        "--extra-arg=-Wno-error",
+        "--quiet",
+    ]
+    if args.build:
+        files = [option_safe(p) for p in args.paths] or compile_db_files(args.build)
+        return files, cmd + ["-p", args.build] + files
+    files = sources(args.paths, [".c"])
+    return files, cmd + files + ["--"]
+
+
+def parse_tidy(output):
+    findings, errors = [], []
+    for line in output.splitlines():
+        checks = TIDY_CHECKS.search(line)
+        m = TIDY_LINE.match(line)
+        if (checks and "clang-diagnostic-error" in checks.group(1).split(",")) or (m and m.group(4) == "error"):
+            errors.append(line.strip())
+            continue
+        if not m:
+            continue
+        file, num, _, _, message, check = m.groups()
+        rel = relative(file)
+        if rel is not None:
+            findings.append(finding("clang-tidy", check, rel, int(num), message))
+    return findings, errors
+
+
+def cmd_tidy(args):
+    files, cmd = tidy_command(args)
+    if not files:
+        return 0
+    run = subprocess.run(cmd, capture_output=True, text=True)
+    findings, errors = parse_tidy(run.stdout + run.stderr)
+    if errors:
+        raise Broken("clang could not compile the sources, so clang-tidy's report is incomplete: " + "; ".join(errors))
+    if run.returncode < 0 or (run.returncode != 0 and not findings):
+        raise Broken(f"clang-tidy exited {run.returncode}: {run.stderr.strip()[-2000:]}")
+    return emit(findings)
+
+
+def cmd_size(args):
+    findings = []
+    for file in sources(args.paths, [".c", ".h"]):
+        try:
+            with open(file, "rb") as fh:
+                lines = sum(1 for _ in fh)
+        except OSError as e:
+            raise Broken(f"cannot read {file} ({e.strerror})") from e
+        if lines > args.max:
+            findings.append(
+                finding(
+                    "rules-c",
+                    "c-file-too-long",
+                    relative(file),
+                    1,
+                    f"{lines} lines, past the {args.max}-line limit; split it along a seam",
+                    snippet=f"file longer than {args.max} lines",
+                )
+            )
+    return emit(findings)
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="rules-c", description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    grep = sub.add_parser("grep", help="the ast-grep rules")
+    grep.add_argument("--allowlist", default=ALLOWLIST, help=f"include allowlist (default {ALLOWLIST})")
+    grep.add_argument("paths", nargs="*")
+    grep.set_defaults(run=cmd_grep)
+    tidy = sub.add_parser("tidy", help="clang-tidy with -Wall -Wextra")
+    tidy.add_argument("-p", dest="build", help="the build directory holding compile_commands.json")
+    tidy.add_argument("paths", nargs="*")
+    tidy.set_defaults(run=cmd_tidy)
+    size = sub.add_parser("size", help="files past the line limit")
+    size.add_argument("--max", type=int, default=MAX_LINES)
+    size.add_argument("paths", nargs="*")
+    size.set_defaults(run=cmd_size)
+    seed = sub.add_parser("allowlist", help="print the includes in use today, to seed the allowlist")
+    seed.add_argument("paths", nargs="*")
+    seed.set_defaults(run=cmd_allowlist)
+    args = parser.parse_args()
+    try:
+        return args.run(args)
+    except Broken as e:
+        print("rules-c error: " + " | ".join(str(e).splitlines()), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
