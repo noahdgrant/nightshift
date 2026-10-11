@@ -7,9 +7,9 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use crate::config;
 use crate::error::{SfError, EXIT_HARNESS_MISSING, EXIT_NOT_CONFIGURED, EXIT_NO_WRITE_COMMAND};
 use crate::which::which;
+use crate::{billing, config, factory, git};
 
 fn not_configured(msg: String, path: &Path) -> anyhow::Error {
     SfError::new(EXIT_NOT_CONFIGURED, msg)
@@ -156,7 +156,10 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
     }
 
     let mut cmd = Command::new(&bin);
-    crate::git::scrub(&mut cmd);
+    git::scrub(&mut cmd);
+    if subscription(cwd)? {
+        billing::scrub(&mut cmd, &command);
+    }
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -191,6 +194,20 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
         .into());
     }
     Ok(())
+}
+
+/// The factory's billing mode for the repo holding `cwd` (default: the current directory).
+/// Outside a git repo, or with no factory file, billing is `subscription`.
+fn subscription(cwd: Option<&Path>) -> Result<bool> {
+    let start = match cwd {
+        Some(d) => d.to_path_buf(),
+        None => std::env::current_dir().context("cannot read current directory")?,
+    };
+    if !git::ok(&start, &["rev-parse", "--git-dir"]) {
+        return Ok(true);
+    }
+    let repo = git::Repo::discover(&start)?;
+    Ok(factory::load(&factory::root(None, &repo.root))?.subscription())
 }
 
 fn read_prompt(prompt_file: Option<&Path>) -> Result<Vec<u8>> {

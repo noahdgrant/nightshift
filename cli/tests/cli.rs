@@ -587,6 +587,145 @@ fn ask_runs_harness_and_maps_exit_codes() {
         .stderr(predicate::str::contains("not on PATH"));
 }
 
+const ASK_API_ENV: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "CODEX_API_KEY",
+];
+
+/// Run `ns ask` in `repo` with every API variable set, through a fake harness named `name`
+/// that prints its environment, and return the variable names that reached it.
+fn ask_api_env_seen(repo: &Path, name: &str) -> Vec<String> {
+    ask_api_env_seen_from(repo, repo, name)
+}
+
+/// As [`ask_api_env_seen`], but `ns` starts in `start` and gets `--cwd <repo>` when they differ.
+fn ask_api_env_seen_from(start: &Path, repo: &Path, name: &str) -> Vec<String> {
+    let bin = repo.parent().unwrap().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join(name);
+    fs::write(&fake, "#!/bin/sh\ncat >/dev/null\nenv\n").unwrap();
+    let mut perms = fs::metadata(&fake).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    fs::set_permissions(&fake, perms).unwrap();
+    let cfg = repo.parent().unwrap().join("config.toml");
+    fs::write(
+        &cfg,
+        format!(
+            "[harness.fake]\ncommand = [{:?}]\n[roles.default]\nharness = \"fake\"\n",
+            fake.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let mut c = ns();
+    c.env("NS_CONFIG", &cfg).current_dir(start);
+    for k in ASK_API_ENV {
+        c.env(k, "x");
+    }
+    c.args(["ask", "--role", "review"]);
+    if start != repo {
+        c.arg("--cwd").arg(repo);
+    }
+    let out = c
+        .write_stdin("p\n")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).unwrap();
+    ASK_API_ENV
+        .iter()
+        .filter(|k| out.lines().any(|l| l.starts_with(&format!("{k}="))))
+        .map(|k| k.to_string())
+        .collect()
+}
+
+fn write_factory(repo: &Path, toml: &str) {
+    fs::create_dir_all(repo.join(".nightshift")).unwrap();
+    fs::write(repo.join(".nightshift/nightshift.toml"), toml).unwrap();
+}
+
+#[test]
+fn ask_strips_api_env_under_subscription_billing() {
+    let (_tmp, root) = repo();
+    write_factory(&root, "[defaults]\nbilling = \"subscription\"\n");
+    assert_eq!(
+        ask_api_env_seen(&root, "claude"),
+        ["OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"]
+    );
+    assert_eq!(ask_api_env_seen(&root, "codex"), &ASK_API_ENV[..6]);
+    // Another harness is left alone: only claude and codex have known API variables.
+    assert_eq!(ask_api_env_seen(&root, "other"), ASK_API_ENV);
+}
+
+#[test]
+fn ask_strips_api_env_without_a_factory_file() {
+    let (_tmp, root) = repo();
+    assert_eq!(
+        ask_api_env_seen(&root, "claude"),
+        ["OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"]
+    );
+    assert_eq!(ask_api_env_seen(&root, "codex"), &ASK_API_ENV[..6]);
+}
+
+#[test]
+fn ask_strips_api_env_outside_a_git_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap().join("plain");
+    fs::create_dir(&dir).unwrap();
+    assert_eq!(ask_api_env_seen(&dir, "codex"), &ASK_API_ENV[..6]);
+}
+
+#[test]
+fn ask_keeps_api_env_under_api_billing() {
+    let (_tmp, root) = repo();
+    write_factory(&root, "[defaults]\nbilling = \"api\"\n");
+    assert_eq!(ask_api_env_seen(&root, "claude"), ASK_API_ENV);
+    assert_eq!(ask_api_env_seen(&root, "codex"), ASK_API_ENV);
+}
+
+#[test]
+fn ask_reads_billing_from_the_main_checkout_of_cwd() {
+    let (_tmp, root) = repo();
+    write_factory(&root, "[defaults]\nbilling = \"api\"\n");
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "factory"]);
+    let wt = root.parent().unwrap().join("wt");
+    git(&root, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+    fs::remove_dir_all(wt.join(".nightshift")).unwrap();
+    assert_eq!(ask_api_env_seen(&wt, "claude"), ASK_API_ENV);
+
+    // --cwd, not the directory ns starts in, picks the repo.
+    let plain = root.parent().unwrap().join("plain");
+    fs::create_dir(&plain).unwrap();
+    assert_eq!(ask_api_env_seen_from(&plain, &wt, "claude"), ASK_API_ENV);
+    assert_eq!(
+        ask_api_env_seen_from(&wt, &plain, "codex"),
+        &ASK_API_ENV[..6]
+    );
+}
+
+#[test]
+fn ask_fails_on_a_malformed_factory_file() {
+    let (_tmp, root) = repo();
+    write_factory(&root, "[defaults\n");
+    let cfg = config(root.parent().unwrap());
+    ns().env("NS_CONFIG", &cfg)
+        .current_dir(&root)
+        .args(["ask", "--role", "review"])
+        .write_stdin("x")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("nightshift.toml"));
+}
+
 #[test]
 fn ask_unconfigured_exits_3_with_example() {
     let tmp = tempfile::tempdir().unwrap();
