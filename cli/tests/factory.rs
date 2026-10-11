@@ -6813,9 +6813,9 @@ fn a_hold_that_cannot_be_written_on_a_refill_fails_the_night() {
 
 #[test]
 fn no_refill_while_every_slot_is_busy_or_no_claim_may_start() {
-    for args in [
-        &["--parallel", "1"][..],
-        &["--parallel", "2", "--max-units", "1"],
+    for (args, done) in [
+        (&["--parallel", "1"][..], &[2, 3][..]),
+        (&["--parallel", "2", "--max-units", "1"], &[2]),
     ] {
         let e = Env::new();
         // A second ready issue: the night's first fill meets `--max-units`, before unit 2 builds.
@@ -6828,8 +6828,32 @@ fn no_refill_while_every_slot_is_busy_or_no_claim_may_start() {
         release(&go_a);
         let (code, v, err) = w.finish();
         assert_eq!(code, Some(0), "{err}");
-        assert_eq!(by_issue(&units(&v))[0], (2, "done".into()), "{v}");
+        assert_eq!(by_issue(&units(&v)), each(done, "done"), "{v}");
     }
+}
+
+#[test]
+fn no_refill_while_a_usage_limit_pause_holds_a_free_slot() {
+    let e = Env::new();
+    e.ready(3, "Fix b", &["type:fix"], "");
+    e.ctl("reset", &(NOW + 3600).to_string());
+    e.queue(&format!("build.{A}"), &["limit", "pass:commit"]);
+    e.queue("triage.5-fix-e", &["none"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "3", "--until", "06:30"]);
+    w.entered(&in_b);
+    w.entered(&in_a);
+    release(&go_a);
+    w.line("ns watch: #2 paused on a usage limit until");
+    // Unit 3's build stays held, so the pause lasts; a slot is free and #5 is untriaged.
+    let triaged = e.triage_only_runs();
+    let calls = gh_calls_during(&e, Duration::from_millis(1000));
+    assert_eq!(calls, "");
+    assert_eq!(e.triage_only_runs(), triaged, "{:?}", e.calls());
+    release(&go_b);
+    let (code, _, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
 }
 
 #[test]
