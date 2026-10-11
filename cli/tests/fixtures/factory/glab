@@ -1,0 +1,58 @@
+#!/bin/bash
+# Fake glab for ns watch tests on a GitLab project. Serves canned JSON from $FAKE_GH_DIR, sharing
+# labels-<n> with the fake gh, and records calls in glab-calls.
+#   gl-issues.jsonl  one open issue per line: {"iid","title","labels","description","author"}
+#   gl-members.json  the project's members/all list
+#   gl-mrs.json, gl-mrs-merged.json  open and merged merge requests
+#   gl-state-<n>     an issue's state, default opened
+#   gl-issue-<n>.raw what reading issue <n> prints instead
+#   glab.fail        every call fails, echoing GITLAB_TOKEN on stderr as a leaky server might
+d="$FAKE_GH_DIR"
+printf '%s\n' "$*" >> "$d/glab-calls"
+[ -f "$d/glab.fail" ] && { echo "401 Unauthorized: token ${GITLAB_TOKEN:-}" >&2; exit 1; }
+labels_of() {
+  sep=; while read -r l; do printf '%s"%s"' "$sep" "$l"; sep=,; done < "$d/labels-$1"
+}
+case "$1 $2" in
+  "api --paginate"|"api projects/"*)
+    [ "$2" = --paginate ] && shift
+    path=$2
+    case "$path" in
+      "projects/:id/issues?"*)
+        want=$(printf '%s' "$path" | sed -n 's/.*[?&]labels=\([^&]*\).*/\1/p')
+        # One array per issue: pages arrive as JSON arrays one after another.
+        while read -r line; do
+          [ -z "$line" ] && continue
+          n=$(printf '%s' "$line" | sed -n 's/.*"iid": *\([0-9]*\).*/\1/p')
+          touch "$d/labels-$n"
+          [ -n "$want" ] && ! grep -qxF -- "$want" "$d/labels-$n" && continue
+          line=$(printf '%s' "$line" | sed "s/\"labels\":\[[^]]*\]/\"labels\":[$(labels_of "$n")]/")
+          printf '[%s]\n' "$line"
+        done < "$d/gl-issues.jsonl"
+        ;;
+      "projects/:id/issues/"*)
+        n=${path##*/}; touch "$d/labels-$n"
+        [ -f "$d/gl-issue-$n.raw" ] && { cat "$d/gl-issue-$n.raw"; exit 0; }
+        printf '{"iid":%s,"state":"%s","labels":[%s]}\n' "$n" \
+          "$(cat "$d/gl-state-$n" 2>/dev/null || echo opened)" "$(labels_of "$n")"
+        ;;
+      "projects/:id/members/all"*) cat "$d/gl-members.json" 2>/dev/null || echo "[]" ;;
+      "projects/:id/merge_requests?state=opened"*) cat "$d/gl-mrs.json" 2>/dev/null || echo "[]" ;;
+      "projects/:id/merge_requests?state=merged"*) cat "$d/gl-mrs-merged.json" 2>/dev/null || echo "[]" ;;
+      *) echo "fake glab: unsupported api path: $path" >&2; exit 1 ;;
+    esac
+    ;;
+  "issue update")
+    f="$d/labels-$3"; touch "$f"; a=("$@")
+    for ((i = 3; i < ${#a[@]}; i++)); do
+      l=${a[$((i + 1))]}
+      case "${a[$i]}" in
+        --unlabel) grep -vxF -- "$l" "$f" > "$f.tmp" || true; mv "$f.tmp" "$f" ;;
+        --label) grep -qxF -- "$l" "$f" || echo "$l" >> "$f" ;;
+      esac
+    done
+    ;;
+  "issue note") ;;
+  "issue close") echo closed > "$d/gl-state-$3" ;;
+  *) echo "fake glab: unsupported: $*" >&2; exit 1 ;;
+esac

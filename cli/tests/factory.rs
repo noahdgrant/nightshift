@@ -64,7 +64,7 @@ impl Env {
         let bin = base.join("bin");
         fs::create_dir(&bin).unwrap();
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/factory");
-        for f in ["claude", "gh"] {
+        for f in ["claude", "gh", "glab"] {
             fs::copy(fixtures.join(f), bin.join(f)).unwrap();
         }
         let home = base.join("home");
@@ -183,6 +183,37 @@ impl Env {
             .lines()
             .map(String::from)
             .collect()
+    }
+
+    /// An open GitLab issue by member `author`, listed by the fake glab, ready unless `labels`
+    /// says otherwise.
+    fn gl_issue(&self, n: u64, labels: &[&str], body: &str, author: u64) {
+        let line = serde_json::json!({
+            "iid": n,
+            "title": format!("Issue {n}"),
+            "labels": labels,
+            "description": body,
+            "author": {"id": author, "username": format!("u{author}")},
+        });
+        let p = self.ghd.join("gl-issues.jsonl");
+        let mut text = fs::read_to_string(&p).unwrap_or_default();
+        text.push_str(&format!("{line}\n"));
+        fs::write(&p, text).unwrap();
+        let lines: String = labels.iter().map(|l| format!("{l}\n")).collect();
+        fs::write(self.ghd.join(format!("labels-{n}")), lines).unwrap();
+    }
+
+    /// GitLab project members as `(id, access level)`.
+    fn gl_members(&self, members: &[(u64, u64)]) {
+        let v: Vec<Value> = members
+            .iter()
+            .map(|(id, level)| serde_json::json!({"id": id, "username": format!("u{id}"), "access_level": level}))
+            .collect();
+        self.gh_file("gl-members.json", &Value::from(v).to_string());
+    }
+
+    fn glab_calls(&self) -> String {
+        fs::read_to_string(self.ghd.join("glab-calls")).unwrap_or_default()
     }
 
     fn queue(&self, phase: &str, actions: &[&str]) {
@@ -8521,22 +8552,204 @@ fn watch_reads_github_when_source_says_so_or_origin_is_not_gitlab() {
 }
 
 #[test]
-fn watch_refuses_an_unknown_source_and_gitlab_until_it_is_supported() {
+fn watch_refuses_an_unknown_source() {
     let e = Env::new();
     e.factory("[queue]\nsource = \"bitbucket\"\n");
     watch_refuses_source(&e, "\"bitbucket\"");
+}
+
+/// A GitLab project: member ids 1-6 at Developer, Maintainer, Owner, Reporter, Planner and Guest.
+fn gitlab_env() -> Env {
+    let e = Env::new();
     e.factory("[queue]\nsource = \"gitlab\"\n");
-    watch_refuses_source(&e, "GitLab");
+    e.gl_members(&[(1, 30), (2, 40), (3, 50), (4, 20), (5, 15), (6, 10)]);
+    e
+}
+
+fn queued(v: &Value) -> Vec<u64> {
+    v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["number"].as_u64().unwrap())
+        .collect()
+}
+
+fn skipped(v: &Value) -> Vec<(u64, String)> {
+    v["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["number"].as_u64().unwrap(),
+                i["reason"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn watch_on_gitlab_queues_developers_and_above_and_skips_the_rest() {
+    let e = gitlab_env();
+    for (n, author) in [(2, 1), (3, 2), (4, 3), (5, 4), (6, 5), (7, 6), (8, 99)] {
+        e.gl_issue(n, &[READY, "type:fix"], "", author);
+    }
+    e.gl_issue(9, &["type:fix"], "", 1);
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(queued(&v), [2, 3, 4], "{v}");
+    let outside = "author outside the team".to_string();
+    assert_eq!(
+        skipped(&v),
+        [5, 6, 7, 8].map(|n| (n, outside.clone())),
+        "{v}"
+    );
+    assert!(e.gh_calls().is_empty(), "{}", e.gh_calls());
+    assert!(
+        e.glab_calls()
+            .contains("api --paginate projects/:id/members/all"),
+        "{}",
+        e.glab_calls()
+    );
+}
+
+#[test]
+fn watch_on_gitlab_passes_over_issues_an_open_or_merged_mr_closes() {
+    let e = gitlab_env();
+    for n in [2, 3, 4, 5, 6, 7] {
+        e.gl_issue(n, &[READY], "", 1);
+    }
+    // 5's open MR is from its own unit branch, so that unit resumes. 6's is a fork's, and 7's
+    // names no project, so it may be one too.
+    let mr = |iid: u64, closes: u64, branch: &str| {
+        serde_json::json!({
+            "iid": iid,
+            "description": format!("Closes #{closes}"),
+            "source_branch": branch,
+        })
+    };
+    let from = |mut v: Value, project: u64| {
+        v["source_project_id"] = project.into();
+        v["target_project_id"] = 1.into();
+        v
+    };
+    let open = [
+        from(mr(12, 3, "x"), 1),
+        from(mr(14, 5, "ns/5-issue-5"), 1),
+        from(mr(15, 6, "ns/6-issue-6"), 2),
+        mr(16, 7, "ns/7-issue-7"),
+    ];
+    e.gh_file("gl-mrs.json", &Value::from(open.to_vec()).to_string());
+    let merged = vec![from(mr(13, 4, "y"), 1)];
+    e.gh_file("gl-mrs-merged.json", &Value::from(merged).to_string());
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(queued(&v), [2, 5], "{v}");
+    assert_eq!(
+        skipped(&v),
+        [
+            (3, "open PR #12 closes it".to_string()),
+            (4, "merged PR #13 closes it".to_string()),
+            (6, "open PR #15 closes it".to_string()),
+            (7, "open PR #16 closes it".to_string()),
+        ],
+        "{v}"
+    );
+}
+
+#[test]
+fn watch_on_gitlab_reads_blockers_state() {
+    let e = gitlab_env();
+    e.gl_issue(2, &[READY], "Blocked by: #20", 1);
+    e.gl_issue(3, &[READY], "Blocked by: #21", 1);
+    // An unreadable blocker counts as open.
+    e.gl_issue(4, &[READY], "Blocked by: #22", 1);
+    e.gh_file("gl-state-20", "closed\n");
+    e.gh_file("gl-issue-22.raw", "not json\n");
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(queued(&v), [2], "{v}");
+    assert_eq!(
+        skipped(&v),
+        [
+            (3, "blocked by open #21".to_string()),
+            (4, "blocked by open #22".to_string()),
+        ],
+        "{v}"
+    );
+}
+
+#[test]
+fn watch_on_gitlab_swaps_labels_and_comments_through_glab() {
+    let e = gitlab_env();
+    e.gl_issue(2, &["type:fix", READY], "", 1);
+    e.queue("triage", &["none"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "stuck", "{v}");
+    assert_eq!(e.labels(2), ["type:fix", "status:ready-for-human"]);
+    let calls = e.glab_calls();
+    assert!(
+        calls
+            .contains("issue update 2 --unlabel status:ready-for-agent --label status:in-progress"),
+        "{calls}"
+    );
+    let note = calls.split("issue note 2 --message").nth(1).expect("note");
+    assert!(note.contains("triage wrote no brief"), "{note}");
+}
+
+#[test]
+fn watch_on_gitlab_keeps_the_token_out_of_its_errors() {
+    let e = gitlab_env();
+    e.config("[forge.gitlab]\ntoken_env = \"MY_GL_TOKEN\"\n");
+    e.gl_issue(2, &[READY], "", 1);
+    e.gh_file("glab.fail", "");
+    let out = e
+        .ns()
+        .env("MY_GL_TOKEN", FAKE_TOKEN)
+        .env_remove("GITLAB_TOKEN")
+        .args(["watch", "--dry-run"])
+        .output();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("glab api"), "{err}");
+    assert!(err.contains("401 Unauthorized"), "{err}");
+    assert!(!err.contains(FAKE_TOKEN), "{err}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(FAKE_TOKEN));
 }
 
 #[test]
 fn watch_detects_a_gitlab_origin_when_source_is_unset() {
     let e = Env::new();
+    e.gl_members(&[(1, 30)]);
+    e.gl_issue(2, &[READY], "", 1);
+    e.ready(3, "Fix b", &["type:fix"], "");
+    for origin in ["https://gitlab.com/o/r.git", "git@code.example.com:o/r.git"] {
+        git(&e.root, &["remote", "set-url", "origin", origin]);
+        e.config("[forge.gitlab]\ntoken_env = \"MY_GL_TOKEN\"\nhost = \"code.example.com\"\n");
+        let out = e
+            .ns()
+            .env("MY_GL_TOKEN", FAKE_TOKEN)
+            .env_remove("GITLAB_TOKEN")
+            .env_remove("GITLAB_HOST")
+            .args(["watch", "--dry-run"])
+            .assert()
+            .code(0)
+            .get_output()
+            .clone();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(queued(&v), [2], "{origin}: {v}");
+    }
+    assert!(e.gh_calls().is_empty(), "{}", e.gh_calls());
+    e.config("");
+    git(
+        &e.root,
+        &["remote", "set-url", "origin", "https://github.com/o/r"],
+    );
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(queued(&v), [3], "{v}");
     git(
         &e.root,
         &["remote", "set-url", "origin", "https://gitlab.com/o/r.git"],
     );
-    watch_refuses_source(&e, "gitlab.com");
     e.factory("[queue]\nsource = \"github\"\n");
-    e.run(&["watch", "--dry-run"], 0);
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(queued(&v), [3], "{v}");
 }
