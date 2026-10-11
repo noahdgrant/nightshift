@@ -1,4 +1,4 @@
-//! `ns lint [path]`: structural checks on `ns-*/SKILL.md` skills.
+//! `ns lint [path]`: structural checks on the skills under a directory.
 
 use std::collections::HashSet;
 use std::fs;
@@ -72,7 +72,7 @@ pub fn upstream_entries(fm: &Value) -> Vec<&Value> {
 }
 
 /// Check frontmatter of one SKILL.md. Returns messages (no skill/file context).
-pub fn check_frontmatter(dir_name: &str, text: &str) -> Vec<String> {
+pub fn check_frontmatter(dir_name: &str, text: &str, root: SkillRoot) -> Vec<String> {
     let mut errs = Vec::new();
     let fm = match frontmatter::parse(text) {
         Ok(Some(Value::Mapping(m))) => Value::Mapping(m),
@@ -88,7 +88,7 @@ pub fn check_frontmatter(dir_name: &str, text: &str) -> Vec<String> {
                     "name {name:?} does not match directory {dir_name:?}"
                 ));
             }
-            if !name.starts_with("ns-") {
+            if root == SkillRoot::Shipped && !name.starts_with("ns-") {
                 errs.push(format!("name {name:?} must start with \"ns-\""));
             }
         }
@@ -138,10 +138,9 @@ fn has_scheme(target: &str) -> bool {
     })
 }
 
-/// Relative link targets (`x`, `./x`, `../x`) outside fenced code blocks, anchors stripped.
-/// URLs with a scheme, absolute paths and bare `#anchor` links are skipped.
-pub fn relative_links(text: &str) -> Vec<String> {
-    let mut links = Vec::new();
+/// The lines of `text` outside fenced code blocks, fence lines dropped.
+fn prose_lines(text: &str) -> Vec<&str> {
+    let mut lines = Vec::new();
     let mut fence: Option<&str> = None;
     for line in text.lines() {
         let t = line.trim_start();
@@ -158,12 +157,83 @@ pub fn relative_links(text: &str) -> Vec<String> {
                 Some(open) if open == m => fence = None,
                 Some(_) => {}
             }
-            continue;
+        } else if fence.is_none() {
+            lines.push(line);
         }
-        if fence.is_some() {
-            continue;
+    }
+    lines
+}
+
+/// The H2 sections a `features/*.md` file holds, in order. `None` matches any
+/// heading starting with `Driving it with `, since the harness name varies.
+const FEATURE_H2S: [Option<&str>; 4] = [
+    Some("Sub-features"),
+    Some("How to get to it (user POV)"),
+    None,
+    Some("Gotchas"),
+];
+
+/// Check a feature file's H2 headings against `FEATURE_H2S`.
+fn check_feature(text: &str) -> Option<String> {
+    let found: Vec<&str> = prose_lines(text)
+        .into_iter()
+        .filter_map(|l| l.strip_prefix("## "))
+        .map(str::trim)
+        .collect();
+    let ok = found.len() == FEATURE_H2S.len()
+        && found.iter().zip(FEATURE_H2S).all(|(h, want)| match want {
+            Some(w) => *h == w,
+            None => h.starts_with("Driving it with "),
+        });
+    (!ok).then(|| {
+        format!(
+            "H2 headings must be, in order: Sub-features, How to get to it (user POV), Driving it with <tool>, Gotchas; found: {}",
+            found.join(", ")
+        )
+    })
+}
+
+/// `line` with its inline code spans removed. A backtick run opens a span that the next
+/// run of the same length closes; a run with no closer is literal text.
+fn strip_code_spans(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(i) = rest.find('`') {
+        out.push_str(&rest[..i]);
+        let tick = &rest[i..];
+        let n = tick.len() - tick.trim_start_matches('`').len();
+        let after = &tick[n..];
+        let mut search = 0;
+        let close = loop {
+            let Some(j) = after[search..].find('`') else {
+                break None;
+            };
+            let start = search + j;
+            let m = after[start..].len() - after[start..].trim_start_matches('`').len();
+            if m == n {
+                break Some(start + m);
+            }
+            search = start + m;
+        };
+        match close {
+            Some(end) => rest = &after[end..],
+            None => {
+                out.push_str(&tick[..n]);
+                rest = after;
+            }
         }
-        let mut rest = line;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Relative link targets (`x`, `./x`, `../x`) outside code blocks and code spans, anchors stripped.
+/// URLs with a scheme, absolute paths and bare `#anchor` links are skipped.
+pub fn relative_links(text: &str) -> Vec<String> {
+    let mut links = Vec::new();
+    for line in prose_lines(text) {
+        let line = strip_code_spans(line);
+        let mut rest = line.as_str();
         while let Some(i) = rest.find("](") {
             rest = &rest[i + 2..];
             let end = rest.find(')').unwrap_or(rest.len());
@@ -198,6 +268,50 @@ fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SkillRoot {
+    Shipped,
+    RepoLocal,
+}
+
+fn skill_root_kind(root: &Path) -> Result<SkillRoot> {
+    let local = fs::canonicalize(root)?
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|n| n == ".agents");
+    Ok(if local {
+        SkillRoot::RepoLocal
+    } else {
+        SkillRoot::Shipped
+    })
+}
+
+fn is_skill_dir(p: &Path, root: SkillRoot) -> bool {
+    if !p.is_dir() {
+        return false;
+    }
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    match root {
+        SkillRoot::Shipped => p.join("SKILL.md").is_file() || name.starts_with("ns-"),
+        SkillRoot::RepoLocal => !name.starts_with('.'),
+    }
+}
+
+fn feature_files(skill_dir: &Path) -> Vec<PathBuf> {
+    let mut features: Vec<PathBuf> = fs::read_dir(skill_dir.join("features"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension().is_some_and(|e| e == "md")
+                && p.file_name().is_some_and(|n| n != "README.md")
+        })
+        .collect();
+    features.sort();
+    features
+}
+
 pub fn lint_dir(root: &Path) -> Result<Report> {
     if !root.is_dir() {
         return Err(SfError::usage(
@@ -206,15 +320,11 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
         )
         .into());
     }
+    let root_kind = skill_root_kind(root)?;
     let mut dirs: Vec<PathBuf> = fs::read_dir(root)?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| {
-            p.is_dir()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("ns-"))
-        })
+        .filter(|p| is_skill_dir(p, root_kind))
         .collect();
     dirs.sort();
 
@@ -238,7 +348,7 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
             }
         };
         skills += 1;
-        for m in check_frontmatter(&name, &text) {
+        for m in check_frontmatter(&name, &text, root_kind) {
             push(&mut errors, &skill_md, m);
         }
         let mut files = Vec::new();
@@ -260,6 +370,17 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
                     }
                     Err(_) => push(&mut errors, file, format!("broken link: {link}")),
                 }
+            }
+        }
+        for f in feature_files(dir) {
+            let rel = f.strip_prefix(dir).unwrap_or(&f).to_string_lossy();
+            match fs::read_to_string(&f) {
+                Ok(body) => {
+                    if let Some(m) = check_feature(&body) {
+                        push(&mut errors, &f, format!("{rel}: {m}"));
+                    }
+                }
+                Err(e) => push(&mut errors, &f, format!("{rel}: unreadable: {e}")),
             }
         }
         let mut refs = Vec::new();
@@ -286,56 +407,76 @@ mod tests {
 
     #[test]
     fn good_frontmatter() {
-        assert!(check_frontmatter("ns-tdd", GOOD).is_empty());
+        assert!(check_frontmatter("ns-tdd", GOOD, SkillRoot::Shipped).is_empty());
     }
 
     #[test]
     fn name_mismatch_and_prefix() {
-        let e = check_frontmatter("tdd", GOOD);
+        let e = check_frontmatter("tdd", GOOD, SkillRoot::Shipped);
         assert_eq!(e.len(), 1, "{e:?}");
-        let e = check_frontmatter("tdd", "---\nname: tdd\ndescription: x\n---\n");
+        let e = check_frontmatter(
+            "tdd",
+            "---\nname: tdd\ndescription: x\n---\n",
+            SkillRoot::Shipped,
+        );
         assert_eq!(e.len(), 1, "{e:?}");
         assert!(e[0].contains("ns-"));
     }
 
     #[test]
     fn description_rules() {
-        let e = check_frontmatter("ns-a", "---\nname: ns-a\ndescription: \"  \"\n---\n");
+        let e = check_frontmatter(
+            "ns-a",
+            "---\nname: ns-a\ndescription: \"  \"\n---\n",
+            SkillRoot::Shipped,
+        );
         assert_eq!(e, ["description is empty"]);
         let long = "x".repeat(1025);
         let e = check_frontmatter(
             "ns-a",
             &format!("---\nname: ns-a\ndescription: {long}\n---\n"),
+            SkillRoot::Shipped,
         );
         assert!(e[0].contains("1025"));
-        let e = check_frontmatter("ns-a", "---\nname: ns-a\n---\n");
+        let e = check_frontmatter("ns-a", "---\nname: ns-a\n---\n", SkillRoot::Shipped);
         assert_eq!(e, ["missing description"]);
     }
 
     #[test]
     fn user_invoked_skills_disable_model_invocation() {
         let without = "---\nname: ns-auto\ndescription: x\n---\n";
-        let e = check_frontmatter("ns-auto", without);
+        let e = check_frontmatter("ns-auto", without, SkillRoot::Shipped);
         assert_eq!(e.len(), 1, "{e:?}");
         assert!(e[0].contains("disable-model-invocation"));
         let with = "---\nname: ns-auto\ndescription: x\ndisable-model-invocation: true\n---\n";
-        assert!(check_frontmatter("ns-auto", with).is_empty());
+        assert!(check_frontmatter("ns-auto", with, SkillRoot::Shipped).is_empty());
         for bad in ["false", "\"true\""] {
             let src = format!(
                 "---\nname: ns-auto\ndescription: x\ndisable-model-invocation: {bad}\n---\n"
             );
             assert!(
-                !check_frontmatter("ns-auto", &src).is_empty(),
+                !check_frontmatter("ns-auto", &src, SkillRoot::Shipped).is_empty(),
                 "{bad} must error"
             );
         }
-        assert!(check_frontmatter("ns-a", "---\nname: ns-a\ndescription: x\n---\n").is_empty());
+        assert!(check_frontmatter(
+            "ns-a",
+            "---\nname: ns-a\ndescription: x\n---\n",
+            SkillRoot::Shipped
+        )
+        .is_empty());
     }
 
     #[test]
     fn bad_yaml_and_missing() {
-        assert!(check_frontmatter("ns-a", "---\nname: [unclosed\n---\n")[0].contains("YAML"));
-        assert!(check_frontmatter("ns-a", "# no fm\n")[0].contains("missing frontmatter"));
+        assert!(
+            check_frontmatter("ns-a", "---\nname: [unclosed\n---\n", SkillRoot::Shipped)[0]
+                .contains("YAML")
+        );
+        assert!(
+            check_frontmatter("ns-a", "# no fm\n", SkillRoot::Shipped)[0]
+                .contains("missing frontmatter")
+        );
     }
 
     #[test]
@@ -365,7 +506,7 @@ mod tests {
             })
         );
         let list = "---\nname: ns-a\ndescription: x\nmetadata:\n  upstream:\n    - a/b@1234567:p\n    - a/b@nothex:p\n---\n";
-        let e = check_frontmatter("ns-a", list);
+        let e = check_frontmatter("ns-a", list, SkillRoot::Shipped);
         assert_eq!(e.len(), 1);
         assert!(e[0].contains("nothex"));
     }
@@ -385,6 +526,14 @@ mod tests {
                 ":c.md"
             ]
         );
+    }
+
+    #[test]
+    fn links_inside_code_spans_are_skipped() {
+        let text = "Run `printf '[a](./gone.md)'` or ``x [b](./gone2.md) ` y`` then [c](./c.md), and `[d](./d.md)\n";
+        assert_eq!(relative_links(text), ["./c.md", "./d.md"]);
+        let text = "`a `` [x](./x.md) b` [c](./c.md) and [e](./e`.md)\n";
+        assert_eq!(relative_links(text), ["./c.md", "./e`.md"]);
     }
 
     fn skill(body: &str, refs: &[(&str, &str)]) -> tempfile::TempDir {
@@ -438,6 +587,285 @@ mod tests {
             messages(&tmp),
             ["unlinked reference: references/ex/README.md"]
         );
+    }
+
+    fn write_skill_at(root: &Path, name: &str, extra: &str) {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: A.\n---\n{extra}"),
+        )
+        .unwrap();
+    }
+
+    fn lint_messages(root: &Path) -> (usize, Vec<String>) {
+        let report = lint_dir(root).unwrap();
+        let msgs = report.errors.into_iter().map(|e| e.message).collect();
+        (report.skills, msgs)
+    }
+
+    #[test]
+    fn repo_local_skill_is_exempt_from_the_prefix_rule() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join(".agents/skills");
+        write_skill_at(&local, "verify-x", "");
+        assert_eq!(lint_messages(&local), (1, vec![]));
+
+        fs::write(
+            local.join("verify-x/SKILL.md"),
+            "---\nname: verify-y\ndescription: A.\n---\n",
+        )
+        .unwrap();
+        assert_eq!(
+            lint_messages(&local),
+            (
+                1,
+                vec!["name \"verify-y\" does not match directory \"verify-x\"".to_string()]
+            )
+        );
+
+        let shipped = tmp.path().join("skills");
+        write_skill_at(&shipped, "verify-x", "");
+        assert_eq!(
+            lint_messages(&shipped),
+            (
+                1,
+                vec!["name \"verify-x\" must start with \"ns-\"".to_string()]
+            )
+        );
+    }
+
+    fn feature(root: &Path, file: &str, body: &str) {
+        let dir = root.join("verify-x/features");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(file), body).unwrap();
+    }
+
+    const FEATURE: &str = "# F\n\nWhat it does.\n\n## Sub-features\n\n- `f-a` a.\n\n## How to get to it (user POV)\n\n- `x`\n\n## Driving it with control-x\n\nPreconditions:\n\n```\n## not a heading\n```\n\n## Gotchas\n\n- none\n";
+
+    #[test]
+    fn ns_dir_without_skill_md_fails_and_other_dirs_are_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        fs::create_dir_all(root.join("ns-empty")).unwrap();
+        fs::create_dir_all(root.join("not-a-skill")).unwrap();
+        assert_eq!(
+            lint_messages(&root),
+            (0, vec!["missing SKILL.md".to_string()])
+        );
+    }
+
+    #[test]
+    fn repo_local_dir_without_skill_md_fails_and_hidden_dirs_are_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join(".agents/skills");
+        fs::create_dir_all(local.join("verify-y")).unwrap();
+        fs::create_dir_all(local.join("verify-z")).unwrap();
+        fs::write(local.join("verify-z/skill.md"), "x\n").unwrap();
+        fs::create_dir_all(local.join(".cache")).unwrap();
+        write_skill_at(&local, "verify-x", "");
+        assert_eq!(
+            lint_messages(&local),
+            (1, vec!["missing SKILL.md".to_string(); 2])
+        );
+    }
+
+    #[test]
+    fn regular_files_in_a_root_are_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join(".agents/skills");
+        write_skill_at(&local, "verify-x", "");
+        fs::write(local.join("README.md"), "x\n").unwrap();
+        assert_eq!(lint_messages(&local), (1, vec![]));
+
+        let shipped = tmp.path().join("skills");
+        write_skill_at(&shipped, "ns-a", "");
+        fs::write(shipped.join("README.md"), "x\n").unwrap();
+        fs::write(shipped.join("ns-notes.md"), "x\n").unwrap();
+        assert_eq!(lint_messages(&shipped), (1, vec![]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exemption_follows_symlinks_to_the_real_parent() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join(".agents/real");
+        write_skill_at(&real, "verify-x", "");
+        let link = tmp.path().join("skills");
+        symlink(&real, &link).unwrap();
+        assert_eq!(lint_messages(&link), (1, vec![]));
+
+        let plain = tmp.path().join("plain");
+        write_skill_at(&plain, "verify-x", "");
+        let agents = tmp.path().join("proj/.agents");
+        fs::create_dir_all(&agents).unwrap();
+        symlink(&plain, agents.join("skills")).unwrap();
+        assert_eq!(
+            lint_messages(&agents.join("skills")),
+            (
+                1,
+                vec!["name \"verify-x\" must start with \"ns-\"".to_string()]
+            )
+        );
+    }
+
+    #[test]
+    fn prefix_exemption_needs_agents_as_the_direct_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join(".agents/other/skills");
+        write_skill_at(&nested, "verify-x", "");
+        assert_eq!(
+            lint_messages(&nested),
+            (
+                1,
+                vec!["name \"verify-x\" must start with \"ns-\"".to_string()]
+            )
+        );
+    }
+
+    #[test]
+    fn near_miss_feature_headings_fail_and_trailing_space_passes() {
+        let bare = FEATURE.replace("## Driving it with control-x", "## Driving it with");
+        assert!(check_feature(&bare).unwrap().contains("Driving it with,"));
+        let no_with = FEATURE.replace("## Driving it with control-x", "## Driving it");
+        assert!(check_feature(&no_with).is_some());
+        let padded = FEATURE.replace("## Gotchas", "## Gotchas  ");
+        assert_eq!(check_feature(&padded), None);
+    }
+
+    #[test]
+    fn feature_files_need_the_four_h2s_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join(".agents/skills");
+        write_skill_at(&local, "verify-x", "");
+        feature(&local, "README.md", "# Index\n\n## Features\n");
+        feature(&local, "good.md", FEATURE);
+        feature(&local, "notes.txt", "## Anything\n");
+        assert_eq!(lint_messages(&local), (1, vec![]));
+
+        feature(
+            &local,
+            "renamed.md",
+            &FEATURE.replace("## Driving it with control-x", "## Running it"),
+        );
+        feature(
+            &local,
+            "missing.md",
+            &FEATURE.replace("## Gotchas", "Gotchas"),
+        );
+        feature(
+            &local,
+            "swapped.md",
+            &FEATURE
+                .replace("## Sub-features", "## TMP")
+                .replace("## How to get to it (user POV)", "## Sub-features")
+                .replace("## TMP", "## How to get to it (user POV)"),
+        );
+        let report = lint_dir(&local).unwrap();
+        let errs: Vec<_> = report
+            .errors
+            .iter()
+            .map(|e| (e.file.rsplit('/').next().unwrap(), e.message.as_str()))
+            .collect();
+        let want = "H2 headings must be, in order: Sub-features, How to get to it (user POV), Driving it with <tool>, Gotchas";
+        assert_eq!(
+            errs,
+            [
+                (
+                    "missing.md",
+                    format!("features/missing.md: {want}; found: Sub-features, How to get to it (user POV), Driving it with control-x").as_str()
+                ),
+                (
+                    "renamed.md",
+                    format!("features/renamed.md: {want}; found: Sub-features, How to get to it (user POV), Running it, Gotchas").as_str()
+                ),
+                (
+                    "swapped.md",
+                    format!("features/swapped.md: {want}; found: How to get to it (user POV), Sub-features, Driving it with control-x, Gotchas").as_str()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn unreadable_feature_file_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join(".agents/skills");
+        write_skill_at(&local, "verify-x", "");
+        let dir = local.join("verify-x/features");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("x.md"), [0xff, 0xfe, 0xfd]).unwrap();
+        let (skills, errs) = lint_messages(&local);
+        assert_eq!(skills, 1);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(
+            errs[0].starts_with("features/x.md: unreadable: "),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn feature_files_are_checked_under_a_shipped_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shipped = tmp.path().join("skills");
+        write_skill_at(&shipped, "ns-a", "");
+        let dir = shipped.join("ns-a/features");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("bad.md"), "# F\n\n## Nope\n").unwrap();
+        let (_, errs) = lint_messages(&shipped);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(
+            errs[0].starts_with("features/bad.md: H2 headings must be"),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn extra_or_missing_h2s_fail() {
+        let extra = format!("{FEATURE}\n## Appendix\n\n- more\n");
+        assert!(check_feature(&extra)
+            .unwrap()
+            .ends_with("Gotchas, Appendix"));
+        assert!(check_feature("# F\n\nNo sections.\n")
+            .unwrap()
+            .ends_with("found: "));
+        assert_eq!(check_feature(FEATURE), None);
+    }
+
+    #[test]
+    fn only_column_zero_h2_lines_count_as_headings() {
+        let body = format!("{FEATURE}\n### Detail\n\n    ## indented\n");
+        assert_eq!(check_feature(&body), None);
+    }
+
+    #[test]
+    fn a_fence_closes_only_on_its_own_marker() {
+        let tilde_inside = "```\n~~~\n## Fake\n[x](./gone.md)\n```\n";
+        let backtick_inside = "~~~\n```\n## Fake\n[x](./gone.md)\n~~~\n";
+        for text in [tilde_inside, backtick_inside] {
+            assert_eq!(prose_lines(text), Vec::<&str>::new(), "{text}");
+            assert!(relative_links(text).is_empty(), "{text}");
+            let body = format!("{FEATURE}\n{text}");
+            assert_eq!(check_feature(&body), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn setup_verify_feature_map_example_passes() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../skills/ns-setup-verify/references/feature-map-example");
+        let mut checked = 0;
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "md") && !path.ends_with("README.md") {
+                let body = fs::read_to_string(&path).unwrap();
+                assert_eq!(check_feature(&body), None, "{}", path.display());
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
     }
 
     #[test]

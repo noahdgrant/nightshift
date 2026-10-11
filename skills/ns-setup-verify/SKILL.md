@@ -70,6 +70,8 @@ Create `<dir>/verify-<project>/features/README.md` plus one file per user-facing
 3. `Driving it with control-<project>`
 4. `Gotchas`
 
+`ns lint` enforces these four H2s on `features/*.md`.
+
 The map is the repo's maintained verification source. A proof that drives one convenient entry point is incomplete when the map lists others.
 
 ## 6. Point docs/agents/verify.md at both
