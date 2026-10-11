@@ -1,0 +1,57 @@
+# Does the ns-maintain description fire on the right prompts? 7 positive, 7 negative.
+
+[[trigger]]
+prompt = "Sync our adapted skills with their upstream repos and open the PRs."
+expect = true
+
+[[trigger]]
+prompt = "Which skills drifted from upstream since we copied them? Bring them up to date."
+expect = true
+
+[[trigger]]
+prompt = "Run the maintain loop on the skills directory."
+expect = true
+
+[[trigger]]
+prompt = "mattpocock/skills changed its tdd skill. Pull the change into ns-tdd and bump metadata.upstream."
+expect = true
+
+[[trigger]]
+prompt = "Check for upstream drift in skills/ and open one PR per changed skill."
+expect = true
+
+[[trigger]]
+prompt = "ns upstream status says three skills changed. Port the upstream changes."
+expect = true
+
+[[trigger]]
+prompt = "Our copies of the upstream skills are stale. Update them, skipping anything that doesn't fit here."
+expect = true
+
+[[trigger]]
+prompt = "Write a new skill for releasing firmware."
+expect = false
+
+[[trigger]]
+prompt = "Fix the off-by-one in reserve(), test first."
+expect = false
+
+[[trigger]]
+prompt = "Rebase this branch onto upstream main."
+expect = false
+
+[[trigger]]
+prompt = "Open a PR for this unit and get CI green."
+expect = false
+
+[[trigger]]
+prompt = "Update the Rust dependencies in cli/Cargo.toml to their latest versions."
+expect = false
+
+[[trigger]]
+prompt = "Review the diff on this branch before I push."
+expect = false
+
+[[trigger]]
+prompt = "Summarise the README."
+expect = false
