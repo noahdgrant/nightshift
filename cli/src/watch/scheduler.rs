@@ -165,7 +165,6 @@ impl<'a> Scheduler<'a> {
             if self.failed.is_none() && stop::requested().is_none() {
                 // A stop that cut the fill short is handled at the loop's top, not as a failure.
                 match self.fill(night, tonight, kind) {
-                    Ok(()) => {}
                     Err(FillError::Fatal(e)) => self.fail(e),
                     Err(FillError::Transient(e)) if stop::requested().is_none() => {
                         if kind == FillKind::Refill {
@@ -174,7 +173,7 @@ impl<'a> Scheduler<'a> {
                             self.fail(e);
                         }
                     }
-                    Err(FillError::Transient(_)) => {}
+                    Ok(()) | Err(FillError::Transient(_)) => {}
                 }
             }
             // Units paused on a usage limit resume in the fill above, and finish first.
