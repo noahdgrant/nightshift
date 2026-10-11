@@ -2032,6 +2032,41 @@ fn pre_push_checks_the_commit_pushed_whatever_the_tree_holds() {
 }
 
 #[test]
+fn pre_push_from_a_linked_worktree_shares_the_main_repos_target_dir() {
+    let (tmp, root, _remote, log) = hooked_repo();
+    let linked = tmp.path().join("linked");
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            linked.to_str().unwrap(),
+        ],
+    );
+    fs::write(linked.join("side.txt"), "side\n").unwrap();
+    git(&linked, &["add", "side.txt"]);
+    git(&linked, &["commit", "-q", "--no-verify", "-m", "side"]);
+    let head = git(&linked, &["rev-parse", "HEAD"]);
+    let out = push(&linked, &["HEAD:refs/heads/side"]);
+    assert!(out.status.success(), "{out:?}");
+    let runs = runs(&log);
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].0, head);
+    let target = root.join(".git/pre-push-target").display().to_string();
+    assert_eq!(runs[0].2, target);
+    let list = git(&root, &["worktree", "list", "--porcelain"]);
+    assert_eq!(list.matches("worktree ").count(), 2, "{list}");
+    assert!(
+        !runs[0].1.exists(),
+        "{} was left behind",
+        runs[0].1.display()
+    );
+}
+
+#[test]
 fn pre_push_checks_every_ref_in_one_push_and_each_commit_once() {
     let (_tmp, root, remote, log) = hooked_repo();
     let good = git(&root, &["rev-parse", "HEAD"]);
