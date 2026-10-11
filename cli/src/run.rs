@@ -290,6 +290,23 @@ pub fn phase_command(
         if !argv.iter().any(|a| a == "--verbose") {
             argv.push("--verbose".into());
         }
+        if argv
+            .iter()
+            .any(|a| a == "--settings" || a.starts_with("--settings="))
+        {
+            return Err(SfError::usage(
+                format!(
+                    "phase {}: the harness command already passes --settings",
+                    p.name
+                ),
+                format!(
+                    "ns run gives each claude phase its own --settings with the git hook guard, and claude takes only one. Remove --settings from [harness.{}] in {} and put those settings in ~/.claude/settings.json or the project's .claude/settings.json",
+                    p.harness,
+                    config::path().display()
+                ),
+            )
+            .into());
+        }
         argv.extend(["--settings".into(), crate::hook_guard::settings(ns)]);
         if subscription {
             argv = billing::strip_bare(argv);
@@ -733,7 +750,7 @@ impl Loaded {
             "config": file_hash(&cfg_path),
             "factory": file_hash(&root.join(factory::FILE)),
         });
-        let ns = std::env::current_exe().context("cannot find the ns binary")?;
+        let ns = crate::hook_guard::ns_exe()?;
         let gate = gate::command(&fac, &repo.root, &ns);
         let cap = match fac.limits.memory_mb.filter(|mb| *mb > 0 && !dry_run) {
             Some(mb) => {
@@ -812,7 +829,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         .into());
     }
     let subscription = fac.subscription();
-    let ns = std::env::current_exe().context("cannot find the ns binary")?;
+    let ns = crate::hook_guard::ns_exe()?;
     let mut commands = BTreeMap::new();
     for p in PHASES {
         commands.insert(
@@ -2791,6 +2808,23 @@ mod tests {
         assert!(c.contains(&"bypassPermissions".to_string()));
         assert!(!c.contains(&"--model".to_string()));
         assert!(c.contains(&"--settings".to_string()));
+    }
+
+    #[test]
+    fn a_claude_command_that_carries_settings_is_a_usage_error() {
+        for flag in [["--settings", "x.json"], ["--settings=x.json", "-p"]] {
+            let mut cmd = vec!["claude".to_string()];
+            cmd.extend(flag.iter().map(|s| s.to_string()));
+            let cfg = config::parse(&format!(
+                "[harness.claude]\ncommand = [\"claude\"]\ncommand_write = {cmd:?}\n"
+            ))
+            .unwrap();
+            let f = factory::parse("").unwrap();
+            let err = phase_command(Some(&cfg), &f.phase("build"), true, Path::new("/bin/ns"))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("--settings"), "{err}");
+        }
     }
 
     #[test]
