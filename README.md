@@ -68,6 +68,12 @@ The worktree is not a sandbox. Each phase runs claude with permissions bypassed,
 | upkeep | `ns-maintain` |
 | shared | `ns-grilling`, `ns-domain-modeling`, `ns-swarm`, `ns-writing-for-agents`, `ns-writing-for-humans`, `ns-principle-*` |
 
+## Releases
+
+The repo has one version, and the `ns` crate in `cli/Cargo.toml` carries it. [release-please](https://github.com/googleapis/release-please) keeps a release PR open on `main` with the next version and the changelog, worked out from the Conventional Commit titles merged since the last release. `feat` bumps the minor version, `fix` the patch, and a breaking change (`!`) bumps the minor version while below 1.0. Merging the release PR tags `vX.Y.Z` and publishes a GitHub release. The config is in `release-please-config.json`.
+
+The workflow uses the default `GITHUB_TOKEN`, so the repo setting "Allow GitHub Actions to create and approve pull requests" must be on. PRs opened with that token don't trigger other workflows, so CI doesn't run on the release PR by itself.
+
 ## Credits
 
 Adapted from [mattpocock/skills](https://github.com/mattpocock/skills), [cursor/plugins pstack](https://github.com/cursor/plugins/tree/main/pstack) and [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills). See [`NOTICE.md`](NOTICE.md) and [`docs/SOURCES.md`](docs/SOURCES.md).
