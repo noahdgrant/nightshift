@@ -1,6 +1,6 @@
 # Docs
 
-Where this repo keeps requirements and design docs, and how they are reviewed. `ns-requirements` and `ns-design-doc` read this file.
+Where this repo keeps requirements and design docs, and how they are reviewed. `ns-requirements`, `ns-design-doc` and `ns-verify-docs` read this file.
 
 ## Requirements
 
@@ -19,6 +19,10 @@ Each requirement ID is `<KEY>-<n>`, where the key names the thing in uppercase (
 | Thing | Key | Doc |
 |---|---|---|
 | [thing] | [KEY] | [path to its directory] |
+
+## Checks
+
+The commands that check the docs, run from the repo root, such as an ID check, a terms check and a link check: [`scripts/check-docs.sh` | none]. `ns-verify-docs` runs each one.
 
 ## Review
 
