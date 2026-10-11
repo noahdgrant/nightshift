@@ -29,7 +29,7 @@ Done when every criterion has an ID and a sentence naming the observable state t
 
 ## 2. Find the verification lever
 
-A docs-only diff has no surface to drive. When every path in `git diff --name-only <base>` (the brief's `base:`, else `origin/main`) is a doc that no build, test or tool reads (requirements, design and interface docs, ADRs, the glossary, prose Markdown), load the `ns-verify-docs` skill and follow it in place of the rest of this skill. It writes `evidence.md` in step 6's format.
+A docs-only diff has no surface to drive. A unit is **docs-only** when `git diff --name-only <base>` (the brief's `base:`, else `origin/main`) lists at least one path and every path is under a requirements, design, interface, ADR or glossary location that `docs/agents/docs.md` lists, or is a changelog there. Skill files, `AGENTS.md`, `CLAUDE.md` and any file a build, test or tool parses are not docs. When `docs/agents/docs.md` is missing, the unit is not docs-only. A docs-only unit loads the `ns-verify-docs` skill and follows it in place of the rest of this skill. It writes `evidence.md` in step 6's format.
 
 Otherwise, read `docs/agents/verify.md`, and `docs/agents/stack.md` beside it. If either is missing, load the `ns-setup` skill instead of guessing.
 

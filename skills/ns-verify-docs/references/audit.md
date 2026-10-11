@@ -1,6 +1,6 @@
 # Audit mode
 
-An audit covers every current doc, which is too much for one context to read in full and compare. Fan steps 4 and 5 out by topic, so each worker reads a cluster of docs that share facts, then bring their findings back for steps 6 and 7.
+An audit covers every current doc, which is too much for one context to read in full and compare. Fan steps 4 and 5 out by topic, so each worker reads a cluster of docs that share facts, then bring the findings back and run steps 6 and 7.
 
 ## 1. Run the checks
 

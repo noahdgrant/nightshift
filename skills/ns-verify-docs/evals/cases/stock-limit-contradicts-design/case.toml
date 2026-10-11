@@ -44,6 +44,18 @@ run = '''awk '/^#+ +Gaps/{o=1;next} /^#+ /{o=0} o' .ns/8-tighten-stock-3/evidenc
 expect_exit = 0
 
 [[check]]
+# Gaps also names the stale ticket.
+type = "command"
+run = '''awk '/^#+ +Gaps/{o=1;next} /^#+ /{o=0} o' .ns/8-tighten-stock-3/evidence.md | grep -q '03-benchmark-reserve' '''
+expect_exit = 0
+
+[[check]]
+# The report pairs the ticket path with its stale 10%.
+type = "command"
+run = '''grep -E '03-benchmark-reserve' .ns/8-tighten-stock-3/evidence/docs-report.md | grep -q '10%' '''
+expect_exit = 0
+
+[[check]]
 type = "file_exists"
 path = ".ns/8-tighten-stock-3/evidence/docs-report.md"
 
