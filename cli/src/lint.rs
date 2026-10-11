@@ -835,6 +835,24 @@ mod tests {
     }
 
     #[test]
+    fn only_column_zero_h2_lines_count_as_headings() {
+        let body = format!("{FEATURE}\n### Detail\n\n    ## indented\n");
+        assert_eq!(check_feature(&body), None);
+    }
+
+    #[test]
+    fn a_fence_closes_only_on_its_own_marker() {
+        let tilde_inside = "```\n~~~\n## Fake\n[x](./gone.md)\n```\n";
+        let backtick_inside = "~~~\n```\n## Fake\n[x](./gone.md)\n~~~\n";
+        for text in [tilde_inside, backtick_inside] {
+            assert_eq!(prose_lines(text), Vec::<&str>::new(), "{text}");
+            assert!(relative_links(text).is_empty(), "{text}");
+            let body = format!("{FEATURE}\n{text}");
+            assert_eq!(check_feature(&body), None, "{text}");
+        }
+    }
+
+    #[test]
     fn setup_verify_feature_map_example_passes() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../skills/ns-setup-verify/references/feature-map-example");

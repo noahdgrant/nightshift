@@ -371,6 +371,28 @@ fn lint_fails_misordered_feature_h2s_naming_the_file() {
 }
 
 #[test]
+fn lint_human_names_the_bad_feature_file_and_the_rule() {
+    let tmp = tempfile::tempdir().unwrap();
+    let local = tmp.path().join(".agents/skills");
+    write_skill(
+        &local,
+        "verify-x",
+        "---\nname: verify-x\ndescription: X.\n---\n",
+    );
+    let features = local.join("verify-x/features");
+    fs::create_dir_all(&features).unwrap();
+    fs::write(features.join("x.md"), "# F\n\n## Nope\n").unwrap();
+
+    ns().arg("lint")
+        .arg(&local)
+        .arg("--human")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("features/x.md"))
+        .stdout(predicate::str::contains("H2 headings must be"));
+}
+
+#[test]
 fn lint_passes_relative_repo_local_skills_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let local = tmp.path().join(".agents/skills");
