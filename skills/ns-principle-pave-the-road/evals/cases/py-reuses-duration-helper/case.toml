@@ -13,6 +13,7 @@ extra_skills = [
   "ns-principle-fix-root-causes",
   "ns-principle-attack-the-premise",
   "ns-principle-minimize-reader-load",
+  "ns-principle-keep-scope-tight",
   "ns-principle-migrate-callers-then-delete-legacy-apis",
   "ns-principle-encode-lessons-in-structure",
 ]
