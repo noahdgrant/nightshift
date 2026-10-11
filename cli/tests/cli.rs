@@ -1732,7 +1732,10 @@ fn hooked_repo() -> (TempDir, PathBuf, PathBuf, PathBuf) {
     let log = root.join(".git/ci-runs");
     executable(
         &root.join("scripts/ci-local.sh"),
-        &format!("echo run >> '{}'", log.display()),
+        &format!(
+            "echo run >> '{}'\nif [ -e \"$(git rev-parse --git-dir)/red\" ]; then echo red >&2; exit 1; fi",
+            log.display()
+        ),
     );
     git(&root, &["add", "."]);
     git(&root, &["commit", "-q", "-m", "hooks"]);
@@ -1784,4 +1787,45 @@ fn pre_push_checks_the_tree_it_pushes_and_nothing_else() {
     let out = push(":refs/heads/a");
     assert!(out.status.success(), "{out:?}");
     assert_eq!(git(&remote, &["for-each-ref"]), "");
+}
+
+/// A hook that exits 0 on a skip variable passes a commit the checks would fail.
+#[test]
+fn neither_hook_has_an_environment_variable_that_skips_it() {
+    let (_tmp, root, _remote, _log) = hooked_repo();
+    fs::write(root.join(".git/red"), "").unwrap();
+    let head = git(&root, &["rev-parse", "HEAD"]);
+    for hook in ["pre-commit", "pre-push"] {
+        let out = StdCommand::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "echo 'refs/heads/main {head} refs/heads/main {head}' | .githooks/{hook}"
+            ))
+            .current_dir(&root)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .envs(
+                [
+                    "SKIP",
+                    "SKIP_CI",
+                    "CI_SKIP",
+                    "SKIP_HOOKS",
+                    "NO_VERIFY",
+                    "HUSKY",
+                    "CI",
+                ]
+                .map(|k| (k, "1")),
+            )
+            .env("HUSKY", "0")
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{hook} passed with skip variables");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("red"),
+            "{hook} did not run ci-local.sh"
+        );
+    }
 }
