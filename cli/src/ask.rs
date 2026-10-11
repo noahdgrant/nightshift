@@ -197,16 +197,16 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
 }
 
 /// The factory's billing mode for the repo holding `cwd` (default: the current directory).
-/// Outside a git repo, or with no factory file, billing is `subscription`.
+/// Without a main checkout to read (no repo, a bare repo), or with no factory file, billing is
+/// `subscription`.
 fn subscription(cwd: Option<&Path>) -> Result<bool> {
     let start = match cwd {
         Some(d) => d.to_path_buf(),
         None => std::env::current_dir().context("cannot read current directory")?,
     };
-    if !git::ok(&start, &["rev-parse", "--git-dir"]) {
+    let Ok(repo) = git::Repo::discover(&start) else {
         return Ok(true);
-    }
-    let repo = git::Repo::discover(&start)?;
+    };
     Ok(factory::load(&factory::root(None, &repo.root))?.subscription())
 }
 

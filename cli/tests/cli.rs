@@ -684,6 +684,27 @@ fn ask_strips_api_env_outside_a_git_repo() {
 }
 
 #[test]
+fn ask_strips_api_env_inside_a_bare_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bare = tmp.path().canonicalize().unwrap().join("bare.git");
+    fs::create_dir(&bare).unwrap();
+    git(&bare, &["init", "-q", "--bare"]);
+    assert_eq!(ask_api_env_seen(&bare, "codex"), &ASK_API_ENV[..6]);
+}
+
+#[test]
+fn ask_dry_run_ignores_a_malformed_factory_file() {
+    let (_tmp, root) = repo();
+    write_factory(&root, "[defaults\n");
+    let cfg = config(root.parent().unwrap());
+    ns().env("NS_CONFIG", &cfg)
+        .current_dir(&root)
+        .args(["ask", "--role", "review", "--dry-run"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn ask_keeps_api_env_under_api_billing() {
     let (_tmp, root) = repo();
     write_factory(&root, "[defaults]\nbilling = \"api\"\n");
