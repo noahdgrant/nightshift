@@ -48,6 +48,7 @@ flowchart LR
     ao_con[constraint-driven-development]
     ao_src[source-driven-development]
     ao_eval[evals: structure, routing, behaviour]
+    ao_using[using-agent-skills: standing behaviours]
   end
 
   subgraph SF["nightshift"]
@@ -66,7 +67,7 @@ flowchart LR
     sf_ship["**ns-ship**"]
     sf_wfh["**ns-writing-for-humans**"]
     sf_swarm["**ns-swarm**"]
-    sf_prin["**ns-principle-* x24**"]
+    sf_prin["**ns-principle-* x28**"]
     sf_def[ns-define]
     sf_plan[ns-plan]
     sf_ts["**ns-troubleshoot**"]
@@ -106,6 +107,7 @@ flowchart LR
   ps_mode --> sf_auto
   ps_night --> sf_auto
   ps_prin --> sf_prin
+  ao_using --> sf_prin
   ps_swarm --> sf_swarm
   ps_unslop --> sf_wfh
   mp_retro --> sf_imp
@@ -135,7 +137,7 @@ flowchart LR
 | **ns-ship** | ship | pstack `opening-a-pr`, `babysit`, `bugbot-triage`; Matt `pr`; addy `shipping-and-launch` | PR body, triage of review comments, GO/NO-GO with a rollback plan. Rollout thinking adapted for OTA/flash. Never merges without a human |
 | **ns-writing-for-humans** | define (leaf) | pstack `unslop`, `technical-writing` | Renamed. Python examples |
 | **ns-swarm** | shared leaf | pstack `swarm` | Harness-neutral fan-out: subagents, or `ns ask` per worker. Used by ns-review and ns-verify |
-| **ns-principle-\*** (24) | shared leaf | pstack `principle-*` | One skill each, user-invoked, referenced by path. Python/firmware examples |
+| **ns-principle-\*** (28) | shared leaf | pstack `principle-*`; addyosmani `using-agent-skills` (surface assumptions, manage confusion, push back, keep scope tight) | One skill each, user-invoked, referenced by path. Python/firmware examples |
 | **ns-auto** | all | pstack `poteto-mode` (`autonomous-run` playbook), overnight contract, selected principles | User-invoked. Chains the phases in one session, or defers to `ns run`. Never merges |
 | ns-define | define | Matt `grill-with-docs`, `to-spec`; addy `interview-me`, `idea-refine`, `spec-driven-development` | Writes `brief.md` or `SPEC.md` |
 | ns-plan | plan | Matt `to-tickets`, `wayfinder`, `codebase-design` | |
