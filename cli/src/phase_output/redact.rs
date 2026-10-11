@@ -7,10 +7,11 @@ use serde_json::Value;
 
 const REDACTED: &str = "[redacted]";
 
-/// Keys whose value is a credential, wherever they sit in a transcript line: any key ending in
-/// one of these words, so `GH_TOKEN` and `githubtoken` but not `input_tokens`.
+/// Keys whose value is a credential, wherever they sit in a transcript line: any key containing
+/// a credential word, or ending in `token` or a `token_value`-style suffix, so `GH_TOKEN` and
+/// `JWT_SECRET_KEY` but not `input_tokens`.
 static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:token|secret|password|passwd|passphrase|api[_-]?key|access[_-]?key|private[_-]?key|credentials?|authorization)$").unwrap()
+    Regex::new(r"(?i)(?:secret|password|passwd|passphrase|(?:private|api|access|signing|encryption)[_-]?key|credentials?|authorization|token(?:[_-]?(?:value|string|hash|data))?$)").unwrap()
 });
 
 static AUTH_SCHEME: LazyLock<Regex> =
@@ -208,6 +209,55 @@ mod tests {
             redact(&mut v);
             let out = v.as_str().unwrap();
             assert!(!out.contains(secret), "{text} -> {out}");
+        }
+    }
+
+    #[test]
+    fn credential_words_anywhere_in_a_nested_key_redact_its_value() {
+        for k in [
+            "SECRET_KEY",
+            "JWT_SECRET_KEY",
+            "signing_key",
+            "signingKey",
+            "encryption-key",
+            "passwordHash",
+            "token_value",
+        ] {
+            let mut v = serde_json::json!({"env": {"inner": {k: "hunter2value"}}});
+            redact(&mut v);
+            assert_eq!(v["env"]["inner"][k], REDACTED, "{k}");
+        }
+        let mut v = serde_json::json!({"usage": {"input_tokens": 1, "max_tokens": 2,
+            "total_tokens": 3, "monkey": "x"}});
+        let before = v.clone();
+        redact(&mut v);
+        assert_eq!(v, before);
+    }
+
+    #[test]
+    fn bare_bearer_and_basic_credentials_are_redacted_by_shape() {
+        for (text, secret) in [
+            ("Bearer abcdefghijklmnopqrst", "abcdefghijklmnopqrst"),
+            ("Basic abc+defghij", "abc+defghij"),
+            ("Basic abc/defghij", "abc/defghij"),
+            ("Basic abcdefghij==", "abcdefghij=="),
+            ("Bearer abc_defghij", "abc_defghij"),
+            ("Bearer abc~defghij", "abc~defghij"),
+            ("Bearer abcdefg1234", "abcdefg1234"),
+        ] {
+            let mut v = Value::String(text.into());
+            redact(&mut v);
+            assert!(!v.as_str().unwrap().contains(secret), "{text}");
+        }
+        for prose in [
+            "Bearer abcdefg",
+            "Bearer abc1234",
+            "Bearer abcdefgh",
+            "Basic abcdefghijklmnopqrs",
+        ] {
+            let mut v = Value::String(prose.into());
+            redact(&mut v);
+            assert_eq!(v, prose);
         }
     }
 

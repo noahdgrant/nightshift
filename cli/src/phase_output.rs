@@ -33,8 +33,7 @@ pub fn cli(unit: Option<&str>, follow: bool, as_json: bool) -> Result<ExitCode> 
     let ns = repo.common_dir.join("ns");
     let root = ns.join("transcripts");
     let runs = ns.join("runs.jsonl");
-    let current = || current(&root, &runs, unit);
-    let path = current()
+    let path = current(&root, &runs, unit)
         .with_context(|| format!("cannot list {}", root.display()))?
         .ok_or_else(|| {
             let whose = unit.map_or(String::new(), |u| format!(" for {u}"));
@@ -44,6 +43,8 @@ pub fn cli(unit: Option<&str>, follow: bool, as_json: bool) -> Result<ExitCode> 
             ))
             .hint("ns run writes one per phase; see which units ran with:  ns log")
         })?;
+    let pinned = pinned_unit(&path, unit);
+    let current = || current(&root, &runs, pinned.as_deref());
     eprintln!("phase output from {}", path.display());
     let show: Show = if as_json { json_line } else { text };
     let mut out = io::stdout().lock();
@@ -154,6 +155,11 @@ fn current(root: &Path, runs: &Path, unit: Option<&str>) -> io::Result<Option<Pa
         Some(p) => Ok(Some(p)),
         None => newest(root, None),
     }
+}
+
+fn pinned_unit(path: &Path, unit: Option<&str>) -> Option<String> {
+    unit.map(str::to_string)
+        .or_else(|| path.parent()?.file_name()?.to_str().map(str::to_string))
 }
 
 /// The unit of the last run-log line in `log` that names a valid one.
@@ -602,6 +608,26 @@ not json
             current(&root, &runs, None).unwrap(),
             Some(root.join("8-b/build-1.jsonl"))
         );
+    }
+
+    #[test]
+    fn follow_without_a_unit_stays_on_the_unit_of_the_first_transcript() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("transcripts");
+        let runs = tmp.path().join("runs.jsonl");
+        touch(&root.join("7-a/build-1.jsonl"), 100);
+        touch(&root.join("8-b/build-1.jsonl"), 900);
+        fs::write(&runs, "{\"event\":\"start\",\"unit\":\"7-a\"}\n").unwrap();
+        let first = current(&root, &runs, None).unwrap().unwrap();
+        assert_eq!(first, root.join("7-a/build-1.jsonl"));
+        let unit = pinned_unit(&first, None);
+        fs::write(&runs, "{\"event\":\"start\",\"unit\":\"8-b\"}\n").unwrap();
+        touch(&root.join("7-a/verify-1.jsonl"), 200);
+        assert_eq!(
+            current(&root, &runs, unit.as_deref()).unwrap(),
+            Some(root.join("7-a/verify-1.jsonl"))
+        );
+        assert_eq!(pinned_unit(&first, Some("9-c")).as_deref(), Some("9-c"));
     }
 
     #[test]
