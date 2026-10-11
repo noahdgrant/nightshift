@@ -23,14 +23,19 @@ const LOG_BYTES: usize = 3000;
 /// The commits since the last green run the body lists, at most.
 const COMMITS: usize = 30;
 
-/// The issue that fixes red `main`: the oldest open team-authored one whose title starts with
-/// [`TITLE_PREFIX`], else one filed now. True when filed now.
+/// The issue that fixes red `main`: `filed`, the one filed earlier tonight, while it is open,
+/// since GitHub may not list it yet; else the oldest open team-authored one whose title starts
+/// with [`TITLE_PREFIX`]; else one filed now. True when filed now.
 pub(super) fn issue(
     repo: &Repo,
     forge: &dyn Forge,
     fac: &Factory,
     main: &MainCi,
+    filed: Option<&Issue>,
 ) -> Result<(Issue, bool)> {
+    if let Some(i) = filed.filter(|i| matches!(forge.is_closed(i.number), Ok(false))) {
+        return Ok((i.clone(), false));
+    }
     let mut open: Vec<Issue> = forge
         .open_issues(None)?
         .into_iter()
@@ -227,7 +232,8 @@ mod tests {
             ],
             ..Fake::default()
         };
-        let (i, filed) = super::issue(&repo(), &forge, &Factory::default(), &red(vec![])).unwrap();
+        let (i, filed) =
+            super::issue(&repo(), &forge, &Factory::default(), &red(vec![]), None).unwrap();
         assert_eq!((i.number, filed), (5, false));
         assert!(forge.filed.borrow().is_empty());
     }
@@ -240,7 +246,7 @@ mod tests {
             ..Fake::default()
         };
         let main = red(vec![failed("test", None)]);
-        let (i, filed) = super::issue(&repo(), &forge, &Factory::default(), &main).unwrap();
+        let (i, filed) = super::issue(&repo(), &forge, &Factory::default(), &main, None).unwrap();
         assert_eq!((i.number, filed), (100, true));
         assert_eq!(i.title, "fix: main is red at abcdef0: test");
         let all = forge.filed.borrow();
@@ -302,6 +308,20 @@ mod tests {
             text.ends_with("\n- ...") && text.contains(" new0\n") && !text.contains(" c0\n"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn the_issue_filed_tonight_is_reused_while_open_even_unlisted() {
+        let mut forge = Fake::default();
+        let tonight = issue(7, "fix: main is red at 1111111: x", true);
+        let main = red(vec![failed("test", None)]);
+        let fac = Factory::default();
+        let (i, filed) = super::issue(&repo(), &forge, &fac, &main, Some(&tonight)).unwrap();
+        assert_eq!((i.number, filed), (7, false));
+        assert!(forge.filed.borrow().is_empty());
+        forge.closed.insert(7);
+        let (i, filed) = super::issue(&repo(), &forge, &fac, &main, Some(&tonight)).unwrap();
+        assert_eq!((i.number, filed), (100, true));
     }
 
     #[test]

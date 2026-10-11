@@ -4110,8 +4110,11 @@ fn watch_starts_a_fix_issue_it_just_filed_before_github_lists_it() {
     e.ready(2, "Fix a", &["type:fix"], "");
     e.gh_file("create.unlisted", "");
     main_red(&e);
-    let v = e.run(&["watch", "--once"], 0);
+    // A cap above one: a fill after the fix ends must reuse it, not file a second.
+    let v = e.run(&["watch", "--max-units", "3"], 0);
     assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
+    let calls = e.gh_calls();
+    assert_eq!(calls.matches("issue create").count(), 1, "{calls}");
 }
 
 #[test]

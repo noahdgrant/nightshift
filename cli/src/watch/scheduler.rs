@@ -139,6 +139,8 @@ pub(super) struct Scheduler<'a> {
     results: u64,
     /// The head main was last found red at, until it is found not red.
     red_at: Option<String>,
+    /// The fix issue this night filed, reused while it stays open.
+    filed: Option<Issue>,
 }
 
 impl<'a> Scheduler<'a> {
@@ -155,6 +157,7 @@ impl<'a> Scheduler<'a> {
             draining: None,
             results: 0,
             red_at: None,
+            filed: None,
         }
     }
 
@@ -367,7 +370,12 @@ impl<'a> Scheduler<'a> {
             }
             return Ok(None);
         }
-        let (issue, filed) = fix_main::issue(plan.repo, plan.forge, &plan.loaded.fac, &main)?;
+        let fac = &plan.loaded.fac;
+        let (issue, filed) =
+            fix_main::issue(plan.repo, plan.forge, fac, &main, self.filed.as_ref())?;
+        if filed {
+            self.filed = Some(issue.clone());
+        }
         if self.red_at != main.sha {
             let failing: Vec<&str> = main.failing.iter().map(|c| c.name.as_str()).collect();
             eprintln!(
