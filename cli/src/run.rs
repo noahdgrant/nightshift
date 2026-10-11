@@ -1625,7 +1625,8 @@ fn merge_state(wt: &Path, pr: &str, timeout_minutes: u64, clock: &Clock) -> Resu
 enum UpdatedHead {
     Moved(String),
     Dirty,
-    Unchanged,
+    /// The head stayed put; carries the last merge state GitHub reported.
+    Unchanged(Value),
 }
 
 /// GitHub may still report the old head right after update-branch. A view with no head keeps the
@@ -1656,7 +1657,7 @@ fn head_after_update(
         }
         let now = clock.now();
         if now >= deadline {
-            return Ok(UpdatedHead::Unchanged);
+            return Ok(UpdatedHead::Unchanged(v["mergeStateStatus"].clone()));
         }
         clock.sleep_until((now + wait).min(deadline))?;
         wait = (wait * 2).min(REGISTER_BACKOFF_MAX);
@@ -1742,19 +1743,40 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
     match merge_state(wt, &ns, register_minutes, &shared.clock)?.as_str() {
         Some("DIRTY") => return Ok(conflict()),
         Some("BEHIND") => {
-            if gh(wt, &["pr", "update-branch", &ns]).is_err() {
-                return Ok(conflict());
+            let mut via = "api";
+            if let Err(e) = gh(wt, &["pr", "update-branch", &ns]) {
+                let error = format!("{e:#}");
+                let scope = workflow_refusal(&error);
+                let mut ev = json!({"event": "update_branch_failed", "pr": n, "error": error});
+                if scope {
+                    ev["workflow_scope"] = json!(true);
+                }
+                ctx.log(ev);
+                if !scope {
+                    return Ok(conflict());
+                }
+                match merge_default_with_git(wt, &default, pr_head) {
+                    Ok(true) => via = "git",
+                    Ok(false) => return Ok(conflict()),
+                    Err(e) => {
+                        return Ok(human(format!(
+                            "PR #{n}: GitHub refused update-branch without the `workflow` scope, and merging {default} with git failed: {e:#}; needs a human merge"
+                        )));
+                    }
+                }
             }
             match head_after_update(wt, &ns, pr_head, register_minutes, &shared.clock)? {
                 UpdatedHead::Moved(h) => merge_head = h,
                 UpdatedHead::Dirty => return Ok(conflict()),
-                UpdatedHead::Unchanged => {
-                    return Ok(human(format!(
-                        "PR #{n} head {pr_head} did not change after update-branch within {register_minutes} min; needs a human merge"
-                    )));
+                UpdatedHead::Unchanged(merge_state) => {
+                    let error = format!(
+                        "PR #{n} head {pr_head} did not change after update-branch within {register_minutes} min"
+                    );
+                    ctx.log(json!({"event": "update_branch_failed", "pr": n, "error": error, "merge_state": merge_state}));
+                    return Ok(human(format!("{error}; needs a human merge")));
                 }
             }
-            ctx.log(json!({"event": "update_branch", "pr": n}));
+            ctx.log(json!({"event": "update_branch", "pr": n, "via": via}));
         }
         _ => {}
     }
@@ -1898,6 +1920,70 @@ fn merge_step(ctx: &Ctx<'_>, state: &State, shared: &Shared) -> Result<MergeStep
     )))
 }
 
+/// Whether a failed `gh pr update-branch` was GitHub refusing to write a workflow file: the
+/// token lacks the `workflow` scope (an OAuth or personal token) or the `workflows` permission
+/// (a GitHub App).
+fn workflow_refusal(error: &str) -> bool {
+    error.contains("refusing to allow") && error.contains("workflow")
+}
+
+/// Merge the fresh tip of `origin/<default>` into the worktree's branch and push it over
+/// `pr_head` with a lease, as update-branch would have. `Ok(false)` is a merge conflict,
+/// aborted; any other failure is an error. HEAD must be `pr_head`, since the lease would
+/// otherwise replace a PR head the merge was not built on. A failed push resets the branch to
+/// the HEAD it started from, so the worktree still matches the PR.
+fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<bool> {
+    let net = |args: &[&str]| -> Result<()> {
+        let out = git::net(wt, args).output().context("failed to run git")?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(())
+    };
+    let start = git::run(wt, &["rev-parse", "HEAD"])?;
+    if !same_sha(&start, pr_head) {
+        return Err(anyhow!(
+            "HEAD {start} is not the PR head {pr_head}, so a merge of {default} would replace it"
+        ));
+    }
+    net(&["fetch", "-q", "origin", default])?;
+    let branch = git::run(wt, &["symbolic-ref", "--short", "HEAD"])?;
+    let theirs = format!("origin/{default}");
+    let merge = git::command()
+        .arg("-C")
+        .arg(wt)
+        .args(["merge", "-q", "--no-edit", "FETCH_HEAD", "-m"])
+        .arg(format!("Merge {theirs} into {branch}"))
+        .output()
+        .context("failed to run git")?;
+    if !merge.status.success() {
+        let merging = git::ok(wt, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+        let unmerged = git::run(wt, &["diff", "--name-only", "--diff-filter=U"])
+            .is_ok_and(|paths| !paths.is_empty());
+        let aborted = !merging || git::run(wt, &["merge", "--abort"]).is_ok();
+        if unmerged && aborted {
+            return Ok(false);
+        }
+        return Err(anyhow!(
+            "git merge failed: {}",
+            String::from_utf8_lossy(&merge.stderr).trim()
+        ));
+    }
+    let lease = format!("--force-with-lease=refs/heads/{branch}:{pr_head}");
+    let spec = format!("HEAD:refs/heads/{branch}");
+    if let Err(e) = net(&["push", "-q", &lease, "origin", &spec]) {
+        return Err(match git::run(wt, &["reset", "-q", "--keep", &start]) {
+            Ok(_) => e,
+            Err(reset) => anyhow!("{e:#}; resetting to {start} failed too: {reset:#}"),
+        });
+    }
+    Ok(true)
+}
+
 /// Human-review regions that HEAD's changes since its merge base with `default` touch, counting
 /// fences at the freshly fetched tip of `default`. A failed fetch is an error, never a stale tip.
 fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
@@ -1911,6 +1997,18 @@ fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
 mod tests {
     use super::locks::tests::{hold, MIN};
     use super::*;
+
+    #[test]
+    fn workflow_refusal_needs_both_the_refusal_and_a_workflow() {
+        assert!(workflow_refusal(
+            "gh pr update-branch 12 failed: GraphQL: refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope"
+        ));
+        assert!(workflow_refusal(
+            "refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission"
+        ));
+        assert!(!workflow_refusal("refusing to allow a merge: conflict"));
+        assert!(!workflow_refusal("workflow run failed: conflict"));
+    }
 
     #[test]
     fn other_merged_pr_names_only_a_merged_pr_of_another_branch() {
