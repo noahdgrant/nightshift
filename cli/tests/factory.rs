@@ -10065,3 +10065,72 @@ fn a_killed_merge_gate_runs_again_on_an_unchanged_head_and_base() {
     assert_eq!(fs::read_to_string(&log).unwrap(), "ran\nran\n");
     assert!(merge_gate_failures(&e).iter().all(|f| f["reused"] == false));
 }
+
+/// A merge-result gate that fails once the way `fail_once` says, then passes, logging each run.
+fn flaky_merge_gate(e: &Env, limits: &str, fail_once: &str) -> PathBuf {
+    let log = e.ctrl.join("gates");
+    let marker = e.ctrl.join("failed-once");
+    e.factory(&format!(
+        "{AUTO}{limits}[phases.build]\nmax_attempts = 3\ngate = \"case $PWD in *merge-queue*) echo ran >> {}; test -f {m} || {{ touch {m}; {fail_once}; }};; esac\"\n",
+        log.display(),
+        m = marker.display()
+    ));
+    e.ctl("pr", "12");
+    e.gh_file("checks-12.json", GREEN);
+    e.queue("build", &["pass:commit", "pass"]);
+    main_moves(e, "from-main", "x\n");
+    log
+}
+
+#[test]
+fn a_timed_out_merge_gate_runs_again_on_an_unchanged_head_and_base() {
+    let e = Env::new();
+    let log = flaky_merge_gate(&e, "", "sleep 30");
+    let out = e
+        .ns()
+        .env("NS_GATE_TIMEOUT_MS", "1500")
+        .args(["run", "--issue", "7"])
+        .output();
+    assert_eq!(out.status.code(), Some(0));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(fs::read_to_string(&log).unwrap(), "ran\nran\n");
+    assert!(merge_gate_failures(&e).iter().all(|f| f["reused"] == false));
+    assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
+}
+
+#[test]
+fn a_merge_gate_past_the_memory_cap_runs_again_on_an_unchanged_head_and_base() {
+    let e = Env::new();
+    let log = flaky_merge_gate(
+        &e,
+        "[limits]\nmemory_mb = 64\n",
+        "python3 -c 'b = bytes(range(256)) * (1 << 20)'",
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(fs::read_to_string(&log).unwrap(), "ran\nran\n");
+    assert!(merge_gate_failures(&e).iter().all(|f| f["reused"] == false));
+    assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
+}
+
+#[test]
+fn a_red_gate_on_an_unmoved_main_logs_merge_gate_failed() {
+    // Ship rebased the branch, so the PR head is the older commit, which the gate fails.
+    let gate = "gate = \"test -f UPSTREAM || test ! -f $FAKE_GH_DIR/pr-12.shipped\"\n";
+    let (e, v, _) = rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |e| {
+        e.factory(&format!("{AUTO}[phases.build]\n{gate}"));
+        e.queue("build", &["pass:commit", "fail"]);
+    });
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    assert!(!e.gh_calls().contains("pr merge"));
+    let failed = merge_gate_failures(&e);
+    assert!(!failed.is_empty(), "{failed:?}");
+    assert!(failed.iter().all(|f| f["reused"] == false), "{failed:?}");
+    assert_eq!(failed[0]["pr"], 12);
+    assert!(failed[0]["sha"].is_string(), "{failed:?}");
+    assert!(failed[0]["base"].is_string(), "{failed:?}");
+    let p = e.prompt(6, "build");
+    assert!(!p.contains("combining it with main"), "{p}");
+    assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
+}

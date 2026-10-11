@@ -2127,7 +2127,11 @@ fn gate_merge_result(
     }
     // Merging a base the PR head already holds leaves the PR head: gate it as the head.
     if git::ok(wt, &["merge-base", "--is-ancestor", &base, pr_head]) {
-        return gate_before_merge(ctx, gate_state, cmd, n, pr_head, run);
+        let step = gate_before_merge(ctx, gate_state, cmd, n, pr_head, run)?;
+        if matches!(step, Some(MergeStep::Rebuild(_))) {
+            log_merge_gate_failed(ctx, n, pr_head, &base, false);
+        }
+        return Ok(step);
     }
     let reused = gate_state.merge_verdict(pr_head, &base);
     let red = match reused.clone() {
@@ -2156,15 +2160,19 @@ fn gate_merge_result(
         }
     };
     if red.is_some() {
-        ctx.log(json!({
-            "event": "merge_gate_failed",
-            "pr": n,
-            "sha": pr_head,
-            "base": base,
-            "reused": reused.is_some(),
-        }));
+        log_merge_gate_failed(ctx, n, pr_head, &base, reused.is_some());
     }
     Ok(red.map(MergeStep::Rebuild))
+}
+
+fn log_merge_gate_failed(ctx: &Ctx<'_>, n: u64, pr_head: &str, base: &str, reused: bool) {
+    ctx.log(json!({
+        "event": "merge_gate_failed",
+        "pr": n,
+        "sha": pr_head,
+        "base": base,
+        "reused": reused,
+    }));
 }
 
 /// The tip of `origin/<branch>`, freshly fetched.
