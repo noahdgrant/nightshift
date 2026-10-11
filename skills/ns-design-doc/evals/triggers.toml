@@ -1,0 +1,67 @@
+[[trigger]]
+prompt = "Write a design doc for how the meter talks to the payment server."
+expect = true
+
+[[trigger]]
+prompt = "The requirements for low-stock alerts are approved. Draft the technical design against them."
+expect = true
+
+[[trigger]]
+prompt = "Review docs/design/gateway/v2.md before it goes to the design review on Thursday."
+expect = true
+
+[[trigger]]
+prompt = "Nobody ever wrote down how the sync service works. Write it up as an as-built architecture doc."
+expect = true
+
+[[trigger]]
+prompt = "I need an RFC for moving the job queue from Redis to Postgres. Help me write it."
+expect = true
+
+[[trigger]]
+prompt = "METER-4 changed from 60 seconds to 30. Which designs does that break, and what do we do about them?"
+expect = true
+
+[[trigger]]
+prompt = "Scaffold a technical spec for resumable firmware downloads, with alternatives and a rollback plan."
+expect = true
+
+[[trigger]]
+prompt = "Critique this architecture proposal and tell me whether you'd approve it."
+expect = true
+
+[[trigger]]
+prompt = "Write a requirements doc for the low-stock alerts feature from notes/low-stock-alerts.md."
+expect = false
+
+[[trigger]]
+prompt = "Sort these features into must-haves, should-haves and could-haves for the first release."
+expect = false
+
+[[trigger]]
+prompt = "Fix the off-by-one in Inventory.reserve, test first."
+expect = false
+
+[[trigger]]
+prompt = "Add a glossary entry for Reservation to GLOSSARY.md."
+expect = false
+
+[[trigger]]
+prompt = "Review the diff on this branch before I open the PR."
+expect = false
+
+[[trigger]]
+prompt = "Make the landing page look less generic: better typography and a stronger colour palette."
+expect = false
+
+[[trigger]]
+prompt = "Summarise the README in three bullet points."
+expect = false
+
+[[trigger]]
+prompt = "Triage .scratch/reservations/issues/03-negative-stock.md"
+expect = false
+
+[[trigger]]
+prompt = "Mark the gateway design doc as approved so we can start building."
+expect = true
