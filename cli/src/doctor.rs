@@ -1,7 +1,9 @@
 //! `ns doctor`: config, harness availability, harness skill dirs and forge credential report.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::ValueEnum;
@@ -160,9 +162,19 @@ fn hooks_entry(problems: &mut Vec<String>) -> Value {
     json!({ "ok": ok, "path": path, "detail": detail, "fix": (!ok).then_some(FIX) })
 }
 
+/// `[queue] source` from the current repo's factory file, when it has one that loads.
+fn queue_source() -> Option<String> {
+    let repo = crate::git::Repo::discover(Path::new(".")).ok()?;
+    crate::factory::load(&crate::factory::root(None, &repo.root))
+        .ok()?
+        .queue
+        .source
+}
+
 /// Each forge's entry, and the warnings they raise, also printed to stderr.
 fn forges_entry(cfg: Option<&config::Config>, problems: &mut Vec<String>) -> (Value, Vec<String>) {
-    let origin = forge::Origin::read(Path::new("."), None, cfg);
+    let source = queue_source();
+    let origin = forge::Origin::read(Path::new("."), source.as_deref(), cfg);
     let mut warnings: Vec<String> = Vec::new();
     let mut forge = Map::new();
     for (kind, f) in origin.forges.each() {
@@ -238,17 +250,17 @@ fn forge_entry(
 /// The account `ssh -T` greets on `t`: GitHub's `Hi <account>!` or GitLab's `Welcome to
 /// GitLab, @<account>!`. Batch mode, so a missing key or unknown host fails instead of asking.
 fn ssh_account(t: &forge::SshTarget) -> Option<String> {
-    let mut cmd = Command::new("ssh");
+    ssh_account_within(OsStr::new("ssh"), t, forge::PROBE_TIMEOUT)
+}
+
+fn ssh_account_within(program: &OsStr, t: &forge::SshTarget, limit: Duration) -> Option<String> {
+    let mut cmd = Command::new(program);
     cmd.args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
     if let Some(p) = &t.port {
         cmd.args(["-p", p]);
     }
-    let out = cmd
-        .arg("--")
-        .arg(&t.dest)
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
+    cmd.arg("--").arg(&t.dest).stdin(Stdio::null());
+    let out = forge::output_within(cmd, limit).ok()?;
     let text = format!(
         "{}\n{}",
         String::from_utf8_lossy(&out.stdout),
@@ -270,7 +282,29 @@ fn greeted(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::greeted;
+    use super::{greeted, ssh_account_within};
+    use crate::forge::SshTarget;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn ssh_account_gives_up_on_a_host_that_stalls() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("ssh");
+        std::fs::write(&fake, "#!/bin/sh\nsleep 30\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let t = SshTarget {
+            dest: "git@example".into(),
+            port: None,
+        };
+        let started = Instant::now();
+        let got = ssh_account_within(fake.as_os_str(), &t, Duration::from_millis(300));
+        assert_eq!(got, None);
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
 
     #[test]
     fn greeted_reads_github_and_gitlab_greetings() {

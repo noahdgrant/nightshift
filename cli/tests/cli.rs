@@ -1268,6 +1268,7 @@ struct Doctor<'a> {
     login: &'a str,
     unreadable: bool,
     ssh_account: &'a str,
+    factory: Option<&'a str>,
 }
 
 impl Default for Doctor<'_> {
@@ -1279,6 +1280,7 @@ impl Default for Doctor<'_> {
             login: "work-account",
             unreadable: false,
             ssh_account: "work-account",
+            factory: None,
         }
     }
 }
@@ -1288,6 +1290,10 @@ impl Doctor<'_> {
     fn run(&self) -> (Value, String, String) {
         let (tmp, root) = repo();
         git(&root, &["remote", "add", "origin", self.origin]);
+        if let Some(f) = self.factory {
+            fs::create_dir_all(root.join(".nightshift")).unwrap();
+            fs::write(root.join(".nightshift/nightshift.toml"), f).unwrap();
+        }
         let bin = tmp.path().join("bin");
         fs::create_dir(&bin).unwrap();
         let (login, unreadable) = (self.login, self.unreadable);
@@ -1388,6 +1394,25 @@ fn doctor_warns_when_ssh_greets_another_account_or_none() {
         warnings.contains("ssh -T git@github-work greeted no account"),
         "{warnings}"
     );
+}
+
+#[test]
+fn doctor_classifies_an_aliased_origin_by_the_factory_queue_source() {
+    let aliased = Doctor {
+        origin: "git@work-alias:example-org/backend.git",
+        ..Doctor::default()
+    };
+    let (v, _, _) = aliased.run();
+    assert_eq!(v["forge"]["github"]["repo"], "example-org/backend");
+    assert_eq!(v["forge"]["gitlab"]["repo"], Value::Null);
+
+    let (v, _, _) = Doctor {
+        factory: Some("[queue]\nsource = \"gitlab\"\n"),
+        ..aliased
+    }
+    .run();
+    assert_eq!(v["forge"]["gitlab"]["repo"], "example-org/backend");
+    assert_eq!(v["forge"]["github"]["repo"], Value::Null);
 }
 
 #[test]

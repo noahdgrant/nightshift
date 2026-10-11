@@ -1,10 +1,9 @@
 //! Forge credentials: resolve `[forge.*]` tokens once and export them, so every child
 //! (`gh`, `git`, the harness) inherits them. A token never appears in an error message.
 
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::config::{Config, Forge, ForgeKind, Forges, TokenSource};
@@ -77,7 +76,7 @@ pub fn resolve(kind: ForgeKind, forge: &Forge, repo: Option<&str>) -> Result<Cre
 pub const CHECKED_VAR: &str = "NS_FORGE_CHECKED";
 
 /// How long a probe of the forge may take before it counts as failed.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn checked_value(kind: ForgeKind, repo: Option<&str>) -> String {
     format!("{}:{}", kind.name(), repo.unwrap_or_default())
@@ -290,23 +289,15 @@ fn cli(kind: ForgeKind, creds: Option<&Credentials>) -> Command {
     cmd
 }
 
-/// Run `cmd` to completion, killing it after `limit`. Output a killed command's descendants still
-/// hold open is dropped after a second.
+/// Run `cmd` to completion, killing it after `limit`. Its output goes to temp files read after it
+/// exits, so no descendant holding a pipe open can delay or drop it.
 pub fn output_within(mut cmd: Command, limit: Duration) -> std::io::Result<Output> {
-    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-    let drain = |pipe: Option<Box<dyn Read + Send>>| {
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(mut p) = pipe {
-                let _ = p.read_to_end(&mut buf);
-            }
-            let _ = tx.send(buf);
-        });
-        rx
-    };
-    let out = drain(child.stdout.take().map(|p| Box::new(p) as _));
-    let err = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let mut out = tempfile::tempfile()?;
+    let mut err = tempfile::tempfile()?;
+    let mut child = cmd
+        .stdout(out.try_clone()?)
+        .stderr(err.try_clone()?)
+        .spawn()?;
     let deadline = Instant::now() + limit;
     let status = loop {
         if let Some(s) = child.try_wait()? {
@@ -322,11 +313,16 @@ pub fn output_within(mut cmd: Command, limit: Duration) -> std::io::Result<Outpu
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    let grace = Duration::from_secs(1);
+    let read = |f: &mut std::fs::File| -> std::io::Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        f.seek(SeekFrom::Start(0))?;
+        f.read_to_end(&mut buf)?;
+        Ok(buf)
+    };
     Ok(Output {
         status,
-        stdout: out.recv_timeout(grace).unwrap_or_default(),
-        stderr: err.recv_timeout(grace).unwrap_or_default(),
+        stdout: read(&mut out)?,
+        stderr: read(&mut err)?,
     })
 }
 
@@ -568,6 +564,17 @@ mod tests {
         assert_eq!(out.status.code(), Some(3));
         assert_eq!(out.stdout, b"out\n");
         assert_eq!(out.stderr, b"err\n");
+    }
+
+    #[test]
+    fn output_within_keeps_the_output_when_a_descendant_holds_the_pipe() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 5 & echo hi; exit 3"]);
+        let started = Instant::now();
+        let out = output_within(cmd, Duration::from_secs(30)).unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(out.stdout, b"hi\n");
+        assert!(started.elapsed() < Duration::from_secs(4));
     }
 
     #[test]
