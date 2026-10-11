@@ -18,8 +18,8 @@ set -e
 ctrl="$FAKE_CTRL"
 prompt=$(cat)
 phase=$(printf '%s\n' "$prompt" | sed -n 's/^Phase: \([a-z]*\).*/\1/p' | head -1)
-echo "$phase" >> "$ctrl/calls"
-n=$(wc -l < "$ctrl/calls" | tr -d ' ')
+# Under a lock, so units running together never both read one call number.
+n=$(flock "$ctrl/calls" sh -c 'echo "$1" >> "$2/calls"; wc -l < "$2/calls"' _ "$phase" "$ctrl" | tr -d ' ')
 printf '%s' "$prompt" > "$ctrl/prompt-$n-$phase.txt"
 echo "$*" > "$ctrl/args"
 printf '%s\n' "${GH_TOKEN:-}" >> "$ctrl/tokens"

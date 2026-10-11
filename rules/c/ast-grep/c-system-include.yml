@@ -1,0 +1,9 @@
+# Feeds c-include-not-allowed in rules-c, which reports a header outside the repo's allowlist
+# (skills/ns-principle-pave-the-road). On its own it is not a finding.
+id: c-system-include
+language: c
+severity: hint
+message: 'system include'
+rule:
+  kind: system_lib_string
+  inside: {kind: preproc_include, field: path}

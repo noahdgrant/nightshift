@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-const ALL_STEPS: [&str; 13] = [
+const ALL_STEPS: [&str; 14] = [
     "cargo fmt --check",
     "cargo clippy",
     "cargo test",
@@ -19,17 +19,19 @@ const ALL_STEPS: [&str; 13] = [
     "ns eval --dry-run",
     "py-inventory fixture tests",
     "Python rule pack tests",
+    "C rule pack tests",
     "ns-troubleshoot brief checker tests",
     "private guard",
 ];
 
-const FAST_ONLY_SKIPS: [&str; 7] = [
+const FAST_ONLY_SKIPS: [&str; 8] = [
     "cargo test",
     "cargo test under a decoy GIT_DIR",
     "ns rules check",
     "ns eval --dry-run",
     "py-inventory fixture tests",
     "Python rule pack tests",
+    "C rule pack tests",
     "ns-troubleshoot brief checker tests",
 ];
 
@@ -119,9 +121,9 @@ impl Repo {
         Repo { dir }
     }
 
-    /// Puts stub `ruff` and `ast-grep` on the run's PATH.
+    /// Puts stub `ruff`, `ast-grep` and `clang-tidy` on the run's PATH.
     fn with_rule_tools(self) -> Repo {
-        for tool in ["ruff", "ast-grep"] {
+        for tool in ["ruff", "ast-grep", "clang-tidy"] {
             write_exe(&self.dir.path().join("bin").join(tool), "#!/bin/sh\n");
         }
         self
@@ -144,7 +146,29 @@ impl Repo {
         }
         cmd.output()
     }
+
+    /// Runs with only the repo's `bin` on PATH, so a stub removed from it stays missing even
+    /// where the real tool is installed under /usr/bin. The few system tools the script needs
+    /// are linked in.
+    fn run_on_bin_only(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+        let bin = self.dir.path().join("bin");
+        for tool in SYSTEM_TOOLS {
+            let real = ["/usr/bin", "/bin"]
+                .iter()
+                .map(|d| Path::new(d).join(tool))
+                .find(|p| p.is_file())
+                .unwrap_or_else(|| panic!("{tool} is required to run ci-local"));
+            std::os::unix::fs::symlink(real, bin.join(tool)).unwrap();
+        }
+        let path = bin.display().to_string();
+        let mut env = env.to_vec();
+        env.push(("PATH", &path));
+        self.run(args, &env)
+    }
 }
+
+/// `bash` and the system tools `scripts/ci-local.sh` runs outside its stubs.
+const SYSTEM_TOOLS: [&str; 4] = ["bash", "dirname", "mktemp", "rm"];
 
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
@@ -170,6 +194,7 @@ fn every_step_runs_in_order_and_the_run_passes() {
     }
     assert!(!stderr(&out).contains("python ran in py-no-checker"));
     assert!(stderr(&out).contains("rule pack tests ran"));
+    assert!(stderr(&out).contains(": -I -m unittest discover -s rules/c/tests\n"));
     assert!(stderr(&out).contains("ci-local: all checks passed"));
 }
 
@@ -182,6 +207,7 @@ fn a_failing_step_stops_the_run() {
         ("ns rules", "ns rules check"),
         ("ns eval", "ns eval --dry-run"),
         ("rule pack tests ran", "Python rule pack tests"),
+        ("discover -s rules/c/tests", "C rule pack tests"),
         (
             "python ran in py-hold-expires-early",
             "ns-troubleshoot brief checker tests",
@@ -221,17 +247,42 @@ fn fixture_tests_skip_without_pytest() {
 
 #[test]
 fn rule_pack_tests_skip_without_ruff_or_ast_grep() {
-    for tool in ["", "ruff", "ast-grep"] {
-        let repo = Repo::new();
-        if !tool.is_empty() {
-            write_exe(&repo.dir.path().join("bin").join(tool), "#!/bin/sh\n");
+    for missing in [&["ruff", "ast-grep"][..], &["ruff"], &["ast-grep"]] {
+        let repo = Repo::new().with_rule_tools();
+        for tool in missing {
+            fs::remove_file(repo.dir.path().join("bin").join(tool)).unwrap();
         }
-        let out = repo.run(&[], &[]);
-        assert!(out.status.success(), "{}", stderr(&out));
+        let out = repo.run_on_bin_only(&[], &[]);
+        assert!(out.status.success(), "{missing:?}: {}", stderr(&out));
         assert!(stderr(&out).contains("SKIPPED: Python rule pack tests"));
         assert!(!stderr(&out).contains("rule pack tests ran"));
         assert_eq!(steps(&out), ALL_STEPS);
     }
+}
+
+#[test]
+fn c_rule_pack_tests_skip_without_ast_grep_or_clang_tidy() {
+    for tool in ["ast-grep", "clang-tidy"] {
+        let repo = Repo::new().with_rule_tools();
+        fs::remove_file(repo.dir.path().join("bin").join(tool)).unwrap();
+        let out = repo.run_on_bin_only(&[], &[]);
+        assert!(out.status.success(), "{tool}: {}", stderr(&out));
+        assert!(stderr(&out).contains(&format!(
+            "SKIPPED: C rule pack tests ({tool} is not on PATH"
+        )));
+        assert!(!stderr(&out).contains("discover -s rules/c/tests"));
+        assert_eq!(steps(&out), ALL_STEPS);
+    }
+}
+
+#[test]
+fn without_python3_the_run_fails_before_the_c_rule_pack_tests() {
+    let repo = Repo::new();
+    fs::remove_file(repo.dir.path().join("bin/python3")).unwrap();
+    let out = repo.run_on_bin_only(&[], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("ci-local: FAILED at step: ns eval --dry-run\n"));
+    assert!(!stderr(&out).contains("C rule pack tests"));
 }
 
 fn plan(reasons: &[&str]) -> String {

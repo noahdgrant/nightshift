@@ -72,6 +72,17 @@ rule_pack_tests() {
   echo "SKIPPED: Python rule pack tests (needs ruff and ast-grep: uv tool install ruff ast-grep-cli)" >&2
 }
 
+c_rule_pack_tests() {
+  local tool
+  for tool in ast-grep clang-tidy; do
+    if ! command -v "$tool" >/dev/null; then
+      echo "SKIPPED: C rule pack tests ($tool is not on PATH; see rules/c/README.md, Install)" >&2
+      return
+    fi
+  done
+  python3 -I -m unittest discover -s rules/c/tests
+}
+
 brief_checker_tests() {
   command -v python3 >/dev/null || { echo "ci-local: python3 is required for the brief checker tests" >&2; return 1; }
   local test
@@ -94,6 +105,7 @@ if [ "$fast" -eq 0 ]; then
   step "ns eval --dry-run" eval_dry_run
   step "py-inventory fixture tests" fixture_tests
   step "Python rule pack tests" rule_pack_tests
+  step "C rule pack tests" c_rule_pack_tests
   step "ns-troubleshoot brief checker tests" brief_checker_tests
 fi
 step "private guard" scripts/check-private.sh
