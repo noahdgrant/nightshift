@@ -73,7 +73,8 @@ Checks each `ns-*/SKILL.md` under `path` (default `./skills`):
 - `name` equals the directory name and starts with `ns-`
 - `description` is non-empty and at most 1024 characters
 - each `metadata.upstream` entry (a string or a list) matches `owner/repo@<7-40 hex>:path`
-- every relative link `](./x)` or `](../x)` in any `.md` file of the skill points to an existing path. Anchors are stripped. Fenced code blocks are skipped.
+- every relative link (`](x)`, `](./x)`, `](../x)`) in any `.md` file of the skill points to an existing path. URLs with a scheme, absolute paths and bare `#anchor` links are skipped, anchors are stripped, and fenced code blocks are skipped.
+- every `.md` file under the skill's `references/` is linked from some `.md` file in the skill. A link to a directory counts as a link to its `README.md`.
 
 Prints `{"ok","skills","errors":[{"skill","file","message"}]}` and exits 1 if there are errors. `--human` prints one line per error.
 
