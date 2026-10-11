@@ -51,5 +51,6 @@ human_review = [
   ".github/**",                 # CI and the PR title check
   "scripts/check-private.sh",   # private-reference guard
   ".nightshift/**",             # this definition, including this list
+  ".githooks/**",               # the hooks that run local CI before commit and push
 ]
 ci_timeout_minutes = 30

@@ -110,7 +110,7 @@ fn fixture() -> Fixture {
                 &a_head[..7],
                 &base[..7]
             ),
-            "Open after 3 fix cycles: I2.
+            "Open after at least 2 fix attempts: I2.
 
 ## Summary
 Change size: 150 insertions, 50 deletions in 3 files.
