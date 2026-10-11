@@ -3,7 +3,7 @@
 Agent skills that take an issue to a merged PR (`skills/ns-*`), plus the `ns` CLI in Rust (`cli/`).
 
 - **Writing or editing a skill**: load `skills/ns-writing-for-agents`, then follow `docs/CONVENTIONS.md`. Run `ns lint` before committing.
-- **Design and decisions**: `docs/DESIGN.md`. Record a new decision in its Decisions table.
+- **Design and decisions**: `docs/DESIGN.md`. Record a new decision as a file in `docs/decisions/`; `docs/DESIGN.md` ("Decisions") gives its name, ID and format.
 - **Adapted skills**: `metadata.upstream` names the source. Upstream copies are in `NOTICE.md`'s projects. Keep a skill's structure close to its upstream where it still fits, so `ns-maintain` diffs stay readable.
 - **CLI**: `cd cli && cargo test`. Every command follows `skills/ns-setup-verify/references/cli-for-agents.md`.
 - **Evals**: `docs/EVALS.md`. A skill change comes with eval cases or a reason it has none.
