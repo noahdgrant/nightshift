@@ -1,0 +1,13 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container: ghcr.io/zephyrproject-rtos/ci:v0.28.0
+    env:
+      ZEPHYR_BASE: /workdir/zephyr
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/bootstrap.sh
+      - run: scripts/build.sh
+      - run: scripts/twister.sh
