@@ -43,6 +43,12 @@ pub enum ForgeKind {
 }
 
 impl ForgeKind {
+    pub const ALL: [ForgeKind; 2] = [ForgeKind::Github, ForgeKind::Gitlab];
+
+    pub fn parse(name: &str) -> Option<ForgeKind> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             ForgeKind::Github => "github",

@@ -20,13 +20,15 @@ case "$1 $2" in
     case "$path" in
       "projects/:id/issues?"*)
         want=$(printf '%s' "$path" | sed -n 's/.*[?&]labels=\([^&]*\).*/\1/p')
+        want=$(printf '%b' "$(printf '%s' "$want" | sed 's/%/\\x/g')")
         # One array per issue: pages arrive as JSON arrays one after another.
         while read -r line; do
           [ -z "$line" ] && continue
           n=$(printf '%s' "$line" | sed -n 's/.*"iid": *\([0-9]*\).*/\1/p')
           touch "$d/labels-$n"
           [ -n "$want" ] && ! grep -qxF -- "$want" "$d/labels-$n" && continue
-          line=$(printf '%s' "$line" | sed "s/\"labels\":\[[^]]*\]/\"labels\":[$(labels_of "$n")]/")
+          ls=$(labels_of "$n"); ls=${ls//&/\\&}
+          line=$(printf '%s' "$line" | sed "s/\"labels\":\[[^]]*\]/\"labels\":[$ls]/")
           printf '[%s]\n' "$line"
         done < "$d/gl-issues.jsonl"
         ;;

@@ -60,6 +60,18 @@ fn items(text: &str) -> Result<Vec<Value>> {
     Ok(all)
 }
 
+/// `s` with everything but RFC 3986 unreserved characters as `%XX`, for a query value.
+fn encode(s: &str) -> String {
+    s.bytes().fold(String::new(), |mut out, b| {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+        out
+    })
+}
+
 fn names(labels: &Value) -> Vec<String> {
     labels
         .as_array()
@@ -95,7 +107,7 @@ impl GitLab {
 impl Forge for GitLab {
     fn open_issues(&self, label: Option<&str>) -> Result<Vec<Issue>> {
         let team = self.team()?;
-        let filter = label.map_or(String::new(), |l| format!("&labels={l}"));
+        let filter = label.map_or(String::new(), |l| format!("&labels={}", encode(l)));
         let path = format!("projects/:id/issues?state=opened{filter}&per_page=100");
         Ok(self
             .list(&path)?

@@ -10,7 +10,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::config;
+use crate::config::{self, ForgeKind};
 use crate::error::SfError;
 use crate::frontmatter;
 
@@ -440,11 +440,18 @@ pub fn root(factory: Option<&Path>, main_root: &Path) -> PathBuf {
 
 /// Why `ns watch` can't read its queue from `source`, a `[queue] source` value.
 pub fn source_problem(source: &str) -> Option<String> {
-    match source {
-        "github" | "gitlab" => None,
-        _ => Some(format!(
-            "[queue] source = {source:?}: unknown; use \"github\" or \"gitlab\""
-        )),
+    match ForgeKind::parse(source) {
+        Some(_) => None,
+        None => {
+            let names: Vec<String> = ForgeKind::ALL
+                .iter()
+                .map(|k| format!("{:?}", k.name()))
+                .collect();
+            Some(format!(
+                "[queue] source = {source:?}: unknown; use {}",
+                names.join(" or ")
+            ))
+        }
     }
 }
 

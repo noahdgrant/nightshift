@@ -8566,9 +8566,15 @@ fn gitlab_env() -> Env {
     e.factory("[queue]\nsource = \"gitlab\"\n");
     let awaiting =
         serde_json::json!({"id": 7, "username": "u7", "access_level": 30, "state": "awaiting"});
+    let extra = [
+        awaiting,
+        serde_json::json!({"id": 8, "username": "u8", "access_level": 30}),
+        serde_json::json!({"id": 9, "username": "u9", "access_level": 30, "state": "blocked"}),
+        serde_json::json!({"id": 11, "username": "u11", "access_level": null}),
+    ];
     e.gl_members(
         &[(1, 30), (2, 40), (3, 50), (4, 20), (5, 15), (6, 10)],
-        &[awaiting],
+        &extra,
     );
     e
 }
@@ -8608,22 +8614,40 @@ fn watch_on_gitlab_queues_developers_and_above_and_skips_the_rest() {
         (7, 6),
         (8, 99),
         (10, 7),
+        (11, 8),
+        (12, 9),
+        (13, 11),
     ] {
         e.gl_issue(n, &[READY, "type:fix"], "", author);
     }
     e.gl_issue(9, &["type:fix"], "", 1);
     let v = e.run(&["watch", "--dry-run"], 0);
-    assert_eq!(queued(&v), [2, 3, 4], "{v}");
+    assert_eq!(queued(&v), [2, 3, 4, 11], "{v}");
     let outside = "author outside the team".to_string();
     assert_eq!(
         skipped(&v),
-        [5, 6, 7, 8, 10].map(|n| (n, outside.clone())),
+        [5, 6, 7, 8, 10, 12, 13].map(|n| (n, outside.clone())),
         "{v}"
     );
     assert!(e.gh_calls().is_empty(), "{}", e.gh_calls());
     assert!(
         e.glab_calls()
             .contains("api --paginate projects/:id/members/all"),
+        "{}",
+        e.glab_calls()
+    );
+}
+
+#[test]
+fn watch_on_gitlab_percent_encodes_the_ready_label_in_the_issue_query() {
+    let e = Env::new();
+    e.factory("[queue]\nsource = \"gitlab\"\nready_label = \"needs work,a&b\"\n");
+    e.gl_members(&[(1, 30)], &[]);
+    e.gl_issue(2, &["needs work,a&b"], "", 1);
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(queued(&v), [2], "{v}");
+    assert!(
+        e.glab_calls().contains("&labels=needs%20work%2Ca%26b&"),
         "{}",
         e.glab_calls()
     );
