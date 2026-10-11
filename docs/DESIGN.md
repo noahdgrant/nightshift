@@ -4,7 +4,7 @@ Status: draft v2, for discussion. Sources: mattpocock/skills, cursor/plugins/pst
 
 ## Decisions
 
-Each decision is one file in [`docs/decisions/`](decisions/). D1 to D67 (there is no D40) were rows of a table here, and keep their IDs as `D<n>-<slug>.md`. A new decision is `docs/decisions/<issue>-<slug>.md` with the ID `ADR-<issue>`, after the issue of the unit that records it; a second decision from one issue is `ADR-<issue>a`, then `b`. Its frontmatter holds `id`, `title` (a one-line summary), `issue`, `date`, and `amends:` or `amended_by:` lists of IDs where they apply, and its body has a Decision and a Reason section. `grep '^title:' docs/decisions/*` lists them.
+Each decision is one file in [`docs/decisions/`](decisions/). D1 to D67 (the number 40 was never used) were rows of a table here, and keep their IDs as `D<n>-<slug>.md`. A new decision is `docs/decisions/<issue>-<slug>.md` with the ID `ADR-<issue>`, after the issue of the unit that records it; a second decision from one issue is `ADR-<issue>a`, then `b`. Its frontmatter holds `id`, `title` (a one-line summary), `issue`, `date`, and `amends:` or `amended_by:` lists of IDs where they apply, and its body has a Decision and a Reason section. `grep '^title:' docs/decisions/*` lists them.
 
 ## Terms
 

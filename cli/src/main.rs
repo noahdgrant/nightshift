@@ -9,6 +9,7 @@ mod build_stamp;
 mod clean;
 mod clock;
 mod config;
+mod decisions;
 mod doctor;
 mod error;
 mod eval;
