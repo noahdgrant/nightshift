@@ -97,7 +97,7 @@ case "$1 $2" in
     echo "https://github.com/o/r/issues/$n"
     ;;
   "issue comment") ;;
-  "issue close") [ -f "$d/close.fail" ] && { echo "issue #$3 is already closed" >&2; exit 1; } ;;
+  "issue close") if [ -f "$d/close.fail" ]; then echo "issue #$3 is already closed" >&2; exit 1; fi ;;
   "pr list")
     f=prs.json; [[ " $* " == *" --state merged "* ]] && f=prs-merged.json
     cat "$d/$f" 2>/dev/null || echo "[]"
