@@ -22,7 +22,7 @@ Trust the forge's merge state, not a list of green checks. Merge-ready means che
 
 ## Work in this order
 
-Each wave goes conflicts, then review threads, then CI. Collect every known fix in the wave, then push once. Each push restarts CI, so one push per wave keeps the loop short.
+Each wave goes conflicts, then review threads, then CI. Collect every known fix in the wave, then push once, with the repo's hooks on ([git hooks](../../ns-contract/SKILL.md#git-hooks)). Each push restarts CI, so one push per wave keeps the loop short.
 
 ### 1. Conflicts
 

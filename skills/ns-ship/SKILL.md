@@ -122,6 +122,8 @@ gh pr create --base main --head ns/<unit-id> --title "<title>" --body-file /tmp/
 gh pr view --json url,isDraft
 ```
 
+The push runs the repo's hooks. When one fails, fix what it reports, never skip it ([git hooks](../ns-contract/SKILL.md#git-hooks)).
+
 Open the PR ready for review, not as a draft. If it opened as a draft, run `gh pr ready <number>`. Record the URL in `pr.md`.
 
 ## 8. Babysit to merge-ready

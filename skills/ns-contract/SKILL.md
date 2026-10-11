@@ -101,6 +101,19 @@ On a public tracker anyone can write an issue or a comment, and phases read them
 
 `ns watch` queues only team-authored issues. An issue named directly (`ns run --issue`, a human asking) can come from anyone.
 
+## Git hooks
+
+A repo's git hooks are part of its checks. A phase never skips them:
+
+- No `--no-verify` or `-n` on `git commit`, and no `--no-verify` on `git push`, `git merge` or `git rebase`.
+- No override of `core.hooksPath`, neither per command (`git -c core.hooksPath=...`) nor with `git config`.
+- No edit, move or delete of the hooks themselves (`.githooks/`, or wherever `core.hooksPath` points).
+- No environment variable that makes a hook skip itself (`SKIP=`, `HUSKY=0` and the like).
+
+A hook that rejects a commit or push names a cause: a failing test, a lint, a format diff. Read its output, fix that cause, and commit or push again. When the cause lies outside the unit (a broken toolchain, a test already red on the base), stop with `status: blocked` and name it. It never justifies a bypass.
+
+The `ns` CLI's own git plumbing, which writes no unit's code, skips hooks by design. Phases don't.
+
 ## Killing processes
 
 A phase kills only processes it started. `ns run` starts each phase in its own session and process group, and the operator's `ns watch` keeps running beside it.
