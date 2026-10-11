@@ -24,6 +24,7 @@ Examples:
   ns watch --until 06:30
   ns clean --dry-run
   ns quality --since 2026-10-01
+  ns log -f --unit 142-uart-timeout
   ns transcripts list --new --mark
   ns upstream status --human
 
@@ -302,6 +303,23 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         dry_run: bool,
     },
 
+    /// Print the run log, one line per event; -f follows new events as runs append them
+    #[command(after_help = LOG_HELP)]
+    Log {
+        /// Only this unit's events
+        #[arg(long, value_name = "UNIT_ID")]
+        unit: Option<String>,
+        /// Only events at or after this UTC time (YYYY-MM-DDTHH:MM:SSZ, or YYYY-MM-DD for 00:00:00 UTC)
+        #[arg(long, value_name = "TIME")]
+        since: Option<String>,
+        /// Keep running and print events as they are appended, like tail -f
+        #[arg(short, long)]
+        follow: bool,
+        /// Print one JSON object per event instead of a line
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Report how well units pass review: first-pass yield, findings per 100 lines, leftovers, escapes
     #[command(after_help = QUALITY_HELP, args_conflicts_with_subcommands = true)]
     Quality {
@@ -466,6 +484,25 @@ ns run cleans its own unit after its merge step; ns watch cleans at start and be
 Prints {ok,command,dry_run,status,planned|removed,kept,records}; status is planned, cleaned or
 nothing-to-clean, so a rerun is safe.
 Exit codes: 0 ok, 1 a removal failed (its kept entry has \"error\": true), 2 usage error.";
+
+const LOG_HELP: &str = "\
+Examples:
+  ns log
+  ns log -f
+  ns log --unit 142-uart-timeout --since 2026-10-09
+  ns log --json | jq -r 'select(.event == \"end\") | .reason'
+
+Reads <git-common-dir>/ns/runs.jsonl, which ns run and ns watch append to. A line per event:
+time, event, #issue, phase, attempt, status, duration, outcome, PR link and reason, leaving out
+what the event lacks. The PR link comes from origin's URL; without one it is pr #<n>.
+--json prints one object per event with only ts, event, unit, issue, phase, attempt, status,
+wall_s, outcome, pr, pr_url and reason; nothing else in the log is printed. --since is UTC and
+inclusive, and drops events with no time. -f prints the log so far, then polls it every
+0.5 s until stopped (Ctrl-C). Lines that are not UTF-8 JSON objects are skipped; without -f
+their count is on stderr.
+Changes nothing.
+
+Exit codes: 0 ok, 1 the log could not be read, 2 usage error (bad --since, not in a git repo).";
 
 const QUALITY_HELP: &str = "\
 Examples:

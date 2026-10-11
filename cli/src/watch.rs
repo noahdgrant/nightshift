@@ -19,7 +19,7 @@ use crate::skills_sync::{self, Sync};
 use crate::stop;
 use crate::worktree::BRANCH_PREFIX;
 
-mod forge;
+pub mod forge;
 mod scheduler;
 mod self_update;
 mod snapshot;
