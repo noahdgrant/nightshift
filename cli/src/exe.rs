@@ -1,5 +1,5 @@
 //! The path of the running `ns` binary, for the commands `ns` gives to child processes (the
-//! phase hook guard and the gate). See D68 for why this is `current_exe` and not
+//! phase hook guard and the gate). See ADR-354 (`docs/decisions/`) for why this is `current_exe` and not
 //! `/proc/self/exe`.
 
 use std::path::PathBuf;
