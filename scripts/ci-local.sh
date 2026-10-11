@@ -81,7 +81,6 @@ step "build ns" cargo build --manifest-path cli/Cargo.toml
 step "ns lint" "$ns" lint skills --human
 step "ns check-markers" "$ns" check-markers --human
 if [ "$fast" -eq 0 ]; then
-  # A no-op until docs/agents/stack.md has a rules row.
   step "ns rules check" "$ns" rules check --human
   step "ns eval --dry-run" eval_dry_run
   step "py-inventory fixture tests" fixture_tests

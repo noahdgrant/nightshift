@@ -27,6 +27,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: cli
+      - name: Install the Rust rule pack's tools (rules/rust/check.sh; jq ships with the runner)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: ast-grep@0.50.0,cargo-deny@0.20.2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
@@ -44,13 +48,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: cli
+      - name: Install the Rust rule pack's tools (rules/rust/check.sh; jq ships with the runner)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: ast-grep@0.50.0,cargo-deny@0.20.2
       - name: Build ns
         run: cargo build --manifest-path cli/Cargo.toml
       - name: Lint skills
         run: cli/target/debug/ns lint skills --human
       - name: Check human-review markers
         run: cli/target/debug/ns check-markers --human
-      - name: Rules check (new violations only; a no-op without a rules row in docs/agents/stack.md)
+      - name: Rules check (new violations only, against .nightshift/rules-baseline.json)
         run: cli/target/debug/ns rules check --human
       - name: Eval dry-run (validates every case and fixture, calls no model)
         run: |
