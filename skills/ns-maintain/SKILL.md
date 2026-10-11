@@ -15,11 +15,11 @@ Run from the main checkout of the repo that holds the skills. Use the `ns` CLI f
 ns upstream status
 ```
 
-It prints `{"ok","changed","skills":[{"skill","upstreams":[{"upstream","head","changed"}]}]}`. A skill drifted when any of its entries has `"changed": true`. An entry with `"error"` could not be checked (a fetch failed, the sha or path is gone): list the skill and its error in the report and leave it out of this run. Exit 1 only means some entry has an error; the other entries are still good.
+It prints `{"ok","changed","skills":[{"skill","upstreams":[{"upstream","head","changed"}]}]}`. A skill drifted when any of its entries has `"changed": true`. An entry with `"error"` could not be checked (a fetch failed, the sha or path is gone). A skill with ANY entry in error is left out whole, drifted or not: list it with its error in the report. `ns upstream diff` aborts on the first erroring entry and step 4 can't bump an entry with no `head`, so every remaining skill has a `head` for every entry. Exit 1 only means some entry has an error; the other skills are still good. Exit 2 means the command was misused (no `skills/` dir, not in a git repo) and prints no JSON: stop and report it.
 
 With no drifted skill, report that and stop.
 
-Done when you have the list of drifted skills, each with its entries' recorded sha and `head`, and the list of entries in error.
+Done when you have the list of drifted skills, each with its entries' recorded sha and `head`, and the list of skills left out with their errors.
 
 ## 2. One unit per skill
 
@@ -27,7 +27,10 @@ Each drifted skill is its own **unit**: one worktree, one branch, one PR. Never 
 
 Read the PR rules first: `docs/agents/issue-tracker.md` (its pull request section) and the repo's `AGENTS.md`. When they say every PR closes an issue, find or file an issue per skill, titled like the PR, and name the unit `<issue-number>-maintain-<skill>`. Search for an existing issue for the skill first (the tracker's duplicate search) and reuse it; never file a second. Otherwise name the unit `maintain-<skill>`.
 
-Before creating a worktree, look for an existing branch or open PR for the unit, as the tracker doc says. When one exists and is unmerged, leave that skill out of this run and list it in step 7 as `PR already open: <url>`: a rerun would see no diff in its worktree, because step 4 already moved the sha there, and would overwrite the recorded verdicts.
+Before creating a worktree, look for an existing branch and an open PR for the unit, as the tracker doc says.
+
+- **Open PR**: leave the skill out of this run and list it in step 7 as `PR already open: <url>`.
+- **Branch, no PR** (step 6 keeps the branch on `fail` or `blocked`): resume, don't restart. Reuse its worktree, read its `.ns/<unit-id>/maintain.md` and commits, and continue at step 5 or 6. Skip steps 3 and 4: step 4 already moved the sha there, so a new diff would be empty and would overwrite the recorded verdicts. Never print a PR URL that doesn't exist.
 
 ```bash
 ns worktree new <unit-id>
@@ -35,7 +38,7 @@ ns worktree new <unit-id>
 
 It is idempotent and prints the worktree `path` and `branch`. Work the skill's steps 3 to 6 in that path.
 
-Done when every drifted skill without an open PR has its own worktree on its own branch, and every skill left out is listed with its PR URL.
+Done when every drifted skill without an open PR has its own worktree on its own branch, and every skill with an open PR is listed with its URL.
 
 ## 3. Port the upstream change
 
@@ -97,4 +100,4 @@ Done when the skill's PR is open, or its `maintain.md` says why not.
 
 ## 7. Report
 
-Give one line per drifted skill, with `PR already open: <url>` for the ones left out in step 2: the skill, its PR URL or `maintain.md` status, and its count of Applied, Already covered and Skipped hunks. Then the entries in error from step 1, with their errors.
+Give one line per drifted skill, with `PR already open: <url>` for the ones left out in step 2: the skill, its PR URL or `maintain.md` status, and its count of Applied, Already covered and Skipped hunks. Then the skills left out in step 1, with their errors.
