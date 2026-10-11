@@ -73,7 +73,7 @@ Each ping has a **key**, one per trigger:
 
 | Trigger | Key |
 |---|---|
-| stuck or `budget` unit, or stuck label | `stuck <unit>` |
+| stuck or `budget` unit, or stuck label | `stuck <unit or #issue>` |
 | `done` with a PR needing a human merge | `merge-pr <n>` |
 | night died early | `early-death` |
 | usage-limit pause | `paused <unit>` |
