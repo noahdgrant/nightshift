@@ -54,7 +54,7 @@ From addyosmani's `using-agent-skills`. Its "enforce simplicity" is [Laziness Pr
 
 ## Delegation
 
-- [Guard the Context Window](../ns-principle-guard-the-context-window/SKILL.md): context fills up with large outputs, long files, repeated reads, or fan-out planning. Route bulk to fresh-context agents, keep summaries in the main thread.
+- [Guard the Context Window](../ns-principle-guard-the-context-window/SKILL.md): loading context, or it fills up with large outputs, long files, diffs, or fan-out planning, or a session must hand off. Load by level, trust text by its source, trim at about 75%, route bulk to fresh-context agents, and leave a restartable handoff.
 - [Never Block on the Human](../ns-principle-never-block-on-the-human/SKILL.md): tempted to ask "should I do X?" on reversible work. Proceed, present the result, let the human course-correct.
 
 ## Meta
