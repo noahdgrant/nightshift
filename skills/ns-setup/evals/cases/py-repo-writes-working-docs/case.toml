@@ -1,0 +1,52 @@
+# Checks validated by hand: the fixture's own docs/agents/ plus a docs.md passes every check; a missing docs.md, and a stack.md whose test row names a path with no tests, each fail one.
+description = "Set up a Python repo whose docs/agents/ is gone: every docs/agents/ file comes back, and the test command stack.md names runs the suite green."
+fixture = "py-inventory"
+skills = ["ns-setup"]
+extra_skills = []
+requires = ["python"]
+timeout_minutes = 20
+prompt = """
+Set this repo up for the nightshift skills. gates: auto. Nobody is around to answer questions, so take the recommended answer for each one and carry on. This scratch copy has no nightshift checkout next to it, so if a rule pack's files cannot be copied, say so in your final message instead of inventing them. Don't commit.
+"""
+
+[setup]
+commands = ["rm -r docs/agents"]
+
+[[check]]
+type = "file_exists"
+path = "docs/agents/stack.md"
+
+[[check]]
+type = "file_exists"
+path = "docs/agents/verify.md"
+
+[[check]]
+type = "file_exists"
+path = "docs/agents/issue-tracker.md"
+
+[[check]]
+type = "file_exists"
+path = "docs/agents/triage-labels.md"
+
+[[check]]
+type = "file_exists"
+path = "docs/agents/domain.md"
+
+[[check]]
+type = "file_exists"
+path = "docs/agents/docs.md"
+
+[[check]]
+# Run the first `test` row of stack.md's Commands table and require a green pytest run.
+type = "command"
+run = '''
+set -eu
+cmd=$(sed -n 's/^| *test[^|]*| *`\([^`]*\)`.*/\1/p' docs/agents/stack.md | head -n 1)
+[ -n "$cmd" ] || { echo "no test command in docs/agents/stack.md"; exit 1; }
+echo "test command: $cmd"
+log=$(mktemp)
+trap 'rm -f "$log"' EXIT
+sh -c "$cmd" > "$log" 2>&1 || { tail -n 20 "$log"; exit 1; }
+grep -E '[0-9]+ passed' "$log"
+'''
+expect_exit = 0
