@@ -331,6 +331,12 @@ mod tests {
             ..Fake::default()
         };
         let text = commits(&repo(), &forge, "abc");
+        let failing = Fake {
+            green_fails: true,
+            ..Fake::default()
+        };
+        let why = commits(&repo(), &failing, "abc");
+        assert_eq!(why, "Cannot find the last green run: HTTP 502");
         assert!(
             text.starts_with("Cannot list the commits since 1234567"),
             "{text}"

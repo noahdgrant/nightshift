@@ -937,6 +937,7 @@ Open after at least 2 fix attempts: C1, I2, I4.
         pub main: ci::HeadChecks,
         pub logs: BTreeMap<String, String>,
         pub green: Option<String>,
+        pub green_fails: bool,
         pub filed: std::cell::RefCell<Vec<(String, String, Vec<String>)>>,
     }
 
@@ -999,6 +1000,9 @@ Open after at least 2 fix attempts: C1, I2, I4.
             }
         }
         fn last_green(&self) -> Result<Option<String>> {
+            if self.green_fails {
+                anyhow::bail!("HTTP 502");
+            }
             Ok(self.green.clone())
         }
     }
