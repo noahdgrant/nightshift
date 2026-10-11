@@ -14,6 +14,7 @@ extra_skills = [
   "ns-principle-attack-the-premise",
   "ns-principle-minimize-reader-load",
   "ns-principle-keep-scope-tight",
+  "ns-principle-contract-first",
 ]
 requires = ["python"]
 timeout_minutes = 30
