@@ -120,7 +120,9 @@ fn skill_md_dir(path: &str) -> Option<&str> {
     if parts.next() != Some("SKILL.md") {
         return None;
     }
-    parts.next().filter(|d| !d.is_empty())
+    parts
+        .next()
+        .filter(|d| !d.is_empty() && !d.contains(['*', '?', '[']))
 }
 
 /// `codex exec --json`: one JSON event per line. Event and item shapes are from
@@ -173,7 +175,7 @@ impl OutputParser for CodexJsonl {
 
 /// Every `<skill>/SKILL.md` path in a shell command line.
 fn command_skills(command: &str, loaded: &mut BTreeSet<String>) {
-    let words = command.split(|c: char| c.is_whitespace() || "'\"\\;|&>".contains(c));
+    let words = command.split(|c: char| c.is_whitespace() || "'\"\\;|&><()`$".contains(c));
     for dir in words.filter_map(skill_md_dir) {
         loaded.insert(dir.to_string());
     }
@@ -283,6 +285,19 @@ not json
         assert_eq!(
             loaded.iter().map(String::as_str).collect::<Vec<_>>(),
             ["a", "b", "c", "d", "e", "f"]
+        );
+    }
+
+    #[test]
+    fn codex_splits_commands_on_substitution_and_redirects() {
+        let mut loaded = BTreeSet::new();
+        command_skills(
+            "echo $(cat /s/ns-tdd/SKILL.md) && cat <ns-a/SKILL.md; echo `cat /s/ns-b/SKILL.md`; cat skills/*/SKILL.md s?/SKILL.md x/[a]/SKILL.md",
+            &mut loaded,
+        );
+        assert_eq!(
+            loaded.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["ns-a", "ns-b", "ns-tdd"]
         );
     }
 
