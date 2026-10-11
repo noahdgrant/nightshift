@@ -161,6 +161,7 @@ case "$1 $2" in
     ;;
   "pr merge") echo MERGED > "$d/pr-$3.state" ;;
   "run view") echo "FAILED tests/test_x.py::test_y - assert 1 == 2" ;;
+  "repo view") cat "$d/repo-view.json" 2>/dev/null || echo '{"defaultBranchRef":{"name":"main"}}' ;;
   "run list") cat "$d/runs-green.json" 2>/dev/null || echo "[]" ;;
   *) echo "fake gh: unsupported: $*" >&2; exit 1 ;;
 esac

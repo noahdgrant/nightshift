@@ -1,6 +1,7 @@
 //! Fix main first: while main's CI is red, `ns watch` files one issue to fix it, or reuses the
 //! open one, and starts no other unit (docs/FACTORY.md, "Main's CI").
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
@@ -69,16 +70,19 @@ impl Fix {
 /// GitHub may not list it yet (one whose state can't be read counts as open: it was open when
 /// last seen); else the oldest open team-authored one whose title starts with [`TITLE_PREFIX`],
 /// whether or not the queue would start it, so a parked fix issue is not filed twice; else one
-/// filed now.
-pub(super) fn issue(
+/// filed now, unless one was already filed for this head (`filed`, the heads tonight's fix issues
+/// were filed for) and is closed since: that one was closed with main still red, and filing again
+/// each fill would pile up issues, so `None` holds the queue instead.
+pub(super) fn find_or_file(
     repo: &Repo,
     forge: &dyn Forge,
     fac: &Factory,
     main: &MainCi,
     fix: Option<&Issue>,
-) -> Result<Fix> {
+    filed: &BTreeSet<String>,
+) -> Result<Option<Fix>> {
     if let Some(i) = fix.filter(|i| !matches!(forge.is_closed(i.number), Ok(true))) {
-        return Ok(Fix::Listed(i.clone()));
+        return Ok(Some(Fix::Listed(i.clone())));
     }
     let mut open: Vec<Issue> = forge
         .open_issues(None)?
@@ -87,7 +91,10 @@ pub(super) fn issue(
         .collect();
     open.sort_by_key(|i| i.number);
     if let Some(i) = open.into_iter().next() {
-        return Ok(Fix::Listed(i));
+        return Ok(Some(Fix::Listed(i)));
+    }
+    if main.sha.as_ref().is_some_and(|s| filed.contains(s)) {
+        return Ok(None);
     }
     let title = title(main);
     let body = body(repo, forge, main);
@@ -101,7 +108,7 @@ pub(super) fn issue(
         body,
         team: true,
     };
-    Ok(Fix::JustFiled(issue))
+    Ok(Some(Fix::JustFiled(issue)))
 }
 
 /// `git fetch origin`, run unattended (`git::net`): it never prompts and a stalled transfer ends.
@@ -295,6 +302,39 @@ mod tests {
         }
     }
 
+    fn file_now(
+        repo: &Repo,
+        forge: &dyn Forge,
+        fac: &Factory,
+        main: &MainCi,
+        fix: Option<&Issue>,
+    ) -> Fix {
+        find_or_file(repo, forge, fac, main, fix, &BTreeSet::new())
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_head_a_fix_issue_was_filed_for_is_not_filed_for_again_but_an_open_one_is_still_found() {
+        let main = red(vec![failed("test", None)]);
+        let sha = main.sha.clone().unwrap();
+        let filed: BTreeSet<String> = [sha].into();
+        let forge = Fake::default();
+        let none = find_or_file(&repo(), &forge, &Factory::default(), &main, None, &filed);
+        assert!(none.unwrap().is_none());
+        assert!(forge.filed.borrow().is_empty());
+        let mut forge = Fake::default();
+        forge
+            .issues
+            .push(issue(9, "fix: main is red at 1234567: lint", true));
+        let found = find_or_file(&repo(), &forge, &Factory::default(), &main, None, &filed);
+        assert_eq!(listed(&found.unwrap().unwrap()), 9);
+        let other = BTreeSet::from(["0".repeat(40)]);
+        let forge = Fake::default();
+        let new = find_or_file(&repo(), &forge, &Factory::default(), &main, None, &other);
+        assert!(matches!(new.unwrap(), Some(Fix::JustFiled(_))));
+    }
+
     fn listed(fix: &Fix) -> u64 {
         match fix {
             Fix::Listed(i) => i.number,
@@ -317,20 +357,6 @@ mod tests {
             failing: Vec::new(),
         };
         assert_eq!(title(&main), "fix: main is red at ?: ?");
-    }
-
-    #[test]
-    fn the_fetch_of_origin_never_prompts_and_stalls_out() {
-        let tmp = tempfile::tempdir().unwrap();
-        let c = fetch_origin(tmp.path());
-        let env = |k: &str| {
-            c.get_envs()
-                .find(|(n, _)| *n == k)
-                .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
-        };
-        assert_eq!(env("GIT_TERMINAL_PROMPT").as_deref(), Some("0"));
-        assert_eq!(env("GCM_INTERACTIVE").as_deref(), Some("never"));
-        assert!(env("GIT_HTTP_LOW_SPEED_TIME").is_some());
     }
 
     #[test]
@@ -470,7 +496,7 @@ mod tests {
             ],
             ..Fake::default()
         };
-        let fix = super::issue(&repo(), &forge, &Factory::default(), &red(vec![]), None).unwrap();
+        let fix = file_now(&repo(), &forge, &Factory::default(), &red(vec![]), None);
         assert_eq!(listed(&fix), 5);
         assert!(forge.filed.borrow().is_empty());
     }
@@ -483,7 +509,7 @@ mod tests {
             ..Fake::default()
         };
         let main = red(vec![failed("test", None)]);
-        let fix = super::issue(&repo(), &forge, &Factory::default(), &main, None).unwrap();
+        let fix = file_now(&repo(), &forge, &Factory::default(), &main, None);
         assert!(matches!(fix, Fix::JustFiled(_)));
         let i = fix.issue();
         assert_eq!(i.number, 100);
@@ -564,11 +590,11 @@ mod tests {
         let tonight = issue(7, "fix: main is red at 1111111: x", true);
         let main = red(vec![failed("test", None)]);
         let fac = Factory::default();
-        let fix = super::issue(&repo(), &forge, &fac, &main, Some(&tonight)).unwrap();
+        let fix = file_now(&repo(), &forge, &fac, &main, Some(&tonight));
         assert_eq!(listed(&fix), 7);
         assert!(forge.filed.borrow().is_empty());
         forge.closed.insert(7);
-        let fix = super::issue(&repo(), &forge, &fac, &main, Some(&tonight)).unwrap();
+        let fix = file_now(&repo(), &forge, &fac, &main, Some(&tonight));
         assert!(matches!(fix, Fix::JustFiled(ref i) if i.number == 100));
     }
 
@@ -577,8 +603,7 @@ mod tests {
         let forge = Fake::default();
         let tonight = issue(99, "fix: main is red at 1111111: x", true);
         let main = red(vec![failed("test", None)]);
-        let fix =
-            super::issue(&repo(), &forge, &Factory::default(), &main, Some(&tonight)).unwrap();
+        let fix = file_now(&repo(), &forge, &Factory::default(), &main, Some(&tonight));
         assert_eq!(listed(&fix), 99);
         assert!(forge.filed.borrow().is_empty());
     }
@@ -708,9 +733,9 @@ mod tests {
         };
         let fac = Factory::default();
         let main = red(vec![failed("test", None)]);
-        let fix = super::issue(&repo(), &forge, &fac, &main, None).unwrap();
+        let fix = file_now(&repo(), &forge, &fac, &main, None);
         assert_eq!(listed(&fix), 5);
-        let fix = super::issue(&repo(), &forge, &fac, &main, None).unwrap();
+        let fix = file_now(&repo(), &forge, &fac, &main, None);
         assert_eq!(listed(&fix), 5);
         assert!(forge.filed.borrow().is_empty());
     }
@@ -812,6 +837,42 @@ mod tests {
             common_dir: root.join(".git"),
         };
         (tmp, repo, green)
+    }
+
+    #[test]
+    fn the_commit_list_fetches_a_red_commit_only_origin_has() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (origin, mine, theirs) = (
+            tmp.path().join("origin.git"),
+            tmp.path().join("mine"),
+            tmp.path().join("theirs"),
+        );
+        let path = |p: &std::path::Path| p.to_str().unwrap().to_string();
+        git_in(
+            tmp.path(),
+            &["init", "-q", "--bare", "-b", "main", &path(&origin)],
+        );
+        git_in(tmp.path(), &["clone", "-q", &path(&origin), &path(&mine)]);
+        git_in(&mine, &["commit", "-q", "--allow-empty", "-m", "green"]);
+        git_in(&mine, &["push", "-q", "origin", "main"]);
+        let green = git_in(&mine, &["rev-parse", "HEAD"]);
+        git_in(tmp.path(), &["clone", "-q", &path(&origin), &path(&theirs)]);
+        git_in(
+            &theirs,
+            &["commit", "-q", "--allow-empty", "-m", "Break the build"],
+        );
+        git_in(&theirs, &["push", "-q", "origin", "main"]);
+        let red = git_in(&theirs, &["rev-parse", "HEAD"]);
+        let repo = Repo {
+            root: mine.clone(),
+            common_dir: mine.join(".git"),
+        };
+        let forge = Fake {
+            green: Some(green),
+            ..Fake::default()
+        };
+        let text = commits(&repo, &forge, &red);
+        assert!(text.contains("Break the build"), "{text}");
     }
 
     #[test]

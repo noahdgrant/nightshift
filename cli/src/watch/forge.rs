@@ -289,6 +289,15 @@ fn created_number(out: &str) -> Result<u64> {
 impl GitHub {
     /// Create `label` unless the repo has it. Without `--force`, an existing label keeps the
     /// colour and description a human gave it.
+    /// The default branch, as the forge names it: the one [`Forge::main_checks`] reads.
+    fn default_branch(&self) -> Result<String> {
+        let v = gh_json(&self.root, &["repo", "view", "--json", "defaultBranchRef"])?;
+        match v["defaultBranchRef"]["name"].as_str() {
+            Some(b) if !b.is_empty() && !b.starts_with('-') => Ok(b.to_string()),
+            _ => anyhow::bail!("GitHub names no default branch"),
+        }
+    }
+
     fn ensure_label(&self, label: &str, description: &str) -> Result<()> {
         let created = gh(
             &self.root,
@@ -470,9 +479,7 @@ impl Forge for GitHub {
     }
 
     fn last_green(&self, red: &str) -> Result<Option<String>> {
-        let Some((branch, _)) = crate::run::remote_default(&self.root) else {
-            anyhow::bail!("cannot read origin's default branch");
-        };
+        let branch = self.default_branch()?;
         let v = gh_json(
             &self.root,
             &[
@@ -640,18 +647,6 @@ mod tests {
         let logs: Vec<Option<&str>> = h.checks.iter().map(|c| c.log.as_deref()).collect();
         assert_eq!(logs, [Some("42"), None]);
         assert!(MAIN_CHECKS_QUERY.contains("conclusion databaseId"));
-    }
-
-    #[test]
-    fn last_green_needs_origin_to_name_the_branch() {
-        let gh = GitHub {
-            root: "/nonexistent".into(),
-        };
-        let e = gh.last_green("abc").unwrap_err();
-        assert!(
-            format!("{e:#}").contains("origin's default branch"),
-            "{e:#}"
-        );
     }
 
     #[test]

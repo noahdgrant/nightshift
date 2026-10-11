@@ -43,7 +43,7 @@ pub struct WatchArgs {
 }
 
 pub const DISCLAIMER: &str =
-    "_This was written by an AI agent (nightshift `ns watch`), not a person._";
+    "_This comment was written by an AI agent (nightshift `ns watch`), not a person._";
 
 /// Seconds to wait after a usage limit with no reset time in the message.
 const PAUSE_RETRY_S: i64 = 30 * 60;
@@ -572,13 +572,8 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     }
     // A night resumed after a hand-off said it when it began.
     if carried.is_none() {
-        match ci::read(forge, fac) {
-            Ok(m) => {
-                if let Some(n) = m.notice() {
-                    eprintln!("ns watch: {n}");
-                }
-            }
-            Err(e) => eprintln!("ns watch: warning: cannot read main's CI: {e:#}"),
+        if let Some(n) = ci::read_or_warn(forge, fac).and_then(|m| m.notice()) {
+            eprintln!("ns watch: {n}");
         }
     }
     night.shared.night = Some(snap.night().clone());

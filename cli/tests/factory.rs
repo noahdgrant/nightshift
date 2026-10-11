@@ -4229,6 +4229,90 @@ fn a_fix_issue_that_cannot_be_filed_ends_the_night_with_the_error() {
 }
 
 #[test]
+fn a_fix_issue_is_filed_when_its_labels_already_exist() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file("label.exists", "");
+    main_red(&e);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
+    let calls = e.gh_calls();
+    assert_eq!(calls.matches("label create").count(), 3, "{calls}");
+    assert!(
+        calls.contains("--label type:fix --label priority:critical --label status:ready-for-agent"),
+        "{calls}"
+    );
+}
+
+#[test]
+fn a_label_that_cannot_be_created_ends_the_night_and_files_nothing() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file("label.fail", "HTTP 403: forbidden\n");
+    main_red(&e);
+    let out = e.ns().args(["watch", "--once"]).output();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(!out.status.success());
+    assert_eq!(v["stopped"], "error", "{v}");
+    assert!(v["error"].as_str().unwrap().contains("HTTP 403"), "{v}");
+    assert!(units(&v).is_empty(), "{v}");
+    assert!(!e.gh_calls().contains("issue create"));
+}
+
+#[test]
+fn a_closed_fix_issue_at_the_same_red_sha_is_not_filed_again() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    main_red(&e);
+    // The fix issue is closed, as by a person, once its unit has begun; main stays red.
+    e.gh_file(
+        "hook.sh",
+        "[ \"$1 $2 $3\" = \"issue edit 100\" ] && { sed -i '/\"number\":100/d' \"$d/issues.jsonl\"; \
+         sed -i 's/OPEN/CLOSED/' \"$d/issue-100.json\"; }\n",
+    );
+    let out = e.ns().args(["watch", "--max-units", "3"]).output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(out.status.success(), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
+    let calls = e.gh_calls();
+    assert_eq!(calls.matches("issue create").count(), 1, "{calls}");
+    assert_eq!(err.matches("already filed for it").count(), 1, "{err}");
+    assert!(!calls.contains("issue edit 2 "), "{calls}");
+}
+
+#[test]
+fn a_unit_paused_before_main_turned_red_resumes_and_ends_as_it_would() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("reset", &(NOW + 3600).to_string());
+    e.queue(&format!("build.{A}"), &["limit", "pass:commit"]);
+    // Main is green for the night's start and the first fill, red from the fourth read: the fill
+    // after the pause. The unit paused before then resumes and finishes beside the fix.
+    main_ci(&e, &[], &[("test", "COMPLETED", "SUCCESS")]);
+    e.gh_file(
+        "main-ci.red",
+        &main_ci_at(MAIN_SHA, &[], &[("test", "COMPLETED", "FAILURE")]),
+    );
+    e.gh_file(
+        "hook.sh",
+        "if [ \"$1 $2\" = \"api graphql\" ]; then echo x >> \"$d/graphql\"; \
+         [ \"$(wc -l < \"$d/graphql\")\" -ge 4 ] && cp \"$d/main-ci.red\" \"$d/main-ci.json\"; fi\n",
+    );
+    let v = e.run(&["watch", "--max-units", "3"], 0);
+    let outcomes: Vec<(u64, String)> = by_issue(&units(&v));
+    assert_eq!(
+        outcomes,
+        [
+            (2, "done".into()),
+            (2, "paused".into()),
+            (100, "done".into())
+        ],
+        "{v}"
+    );
+}
+
+#[test]
 fn watch_lists_the_commits_since_main_was_last_green_in_the_fix_issue() {
     let e = Env::new();
     let green = git(&e.root, &["rev-parse", "HEAD"]);
@@ -4255,6 +4339,30 @@ fn watch_lists_the_commits_since_main_was_last_green_in_the_fix_issue() {
     assert!(e
         .gh_calls()
         .contains("run list --branch main --status success"));
+}
+
+#[test]
+fn the_commit_list_takes_the_default_branch_from_the_forge_not_from_origins_head() {
+    let e = Env::new();
+    let green = git(&e.root, &["rev-parse", "HEAD"]);
+    fs::write(e.root.join("README"), "broken\n").unwrap();
+    git(&e.root, &["commit", "-qam", "Break the build"]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+    let red = git(&e.root, &["rev-parse", "HEAD"]);
+    // The remote's HEAD names a branch it lacks, so `git ls-remote --symref` can't name main.
+    git(
+        &e.base.join("remote.git"),
+        &["symbolic-ref", "HEAD", "refs/heads/trunk"],
+    );
+    e.gh_file(
+        "main-ci.json",
+        &main_ci_at(&red, &[], &[("test", "COMPLETED", "FAILURE")]),
+    );
+    e.gh_file("runs-green.json", &format!(r#"[{{"headSha":"{green}"}}]"#));
+    e.run(&["watch", "--once"], 0);
+    let body = fs::read_to_string(e.ghd.join("created-100.body")).unwrap();
+    assert!(body.contains(&format!("Since {}:", &green[..7])), "{body}");
+    assert!(e.gh_calls().contains("run list --branch main "));
 }
 
 #[test]

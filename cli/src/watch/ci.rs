@@ -86,6 +86,17 @@ pub fn read(forge: &dyn Forge, fac: &Factory) -> Result<MainCi> {
     Ok(classify(forge.main_checks()?))
 }
 
+/// [`read`], or `None` and a warning when main's CI can't be read: that holds nothing.
+pub fn read_or_warn(forge: &dyn Forge, fac: &Factory) -> Option<MainCi> {
+    match read(forge, fac) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            eprintln!("ns watch: warning: cannot read main's CI: {e:#}");
+            None
+        }
+    }
+}
+
 /// Red: a check failed while others still run, or every check finished and a required one
 /// failed. Green: every check finished and no required one failed.
 fn classify(head: HeadChecks) -> MainCi {
