@@ -101,6 +101,22 @@ On a public tracker anyone can write an issue or a comment, and phases read them
 
 `ns watch` queues only team-authored issues. An issue named directly (`ns run --issue`, a human asking) can come from anyone.
 
+## Git hooks
+
+A repo's git hooks are part of its checks. A phase never skips them:
+
+- No `--no-verify` or `-n` on `git commit`, and no `--no-verify` on `git push`, `git merge` or `git rebase`.
+- No override of `core.hooksPath`, neither per command (`git -c core.hooksPath=...`) nor with `git config`.
+- No edit, move or delete of the hooks themselves (`.githooks/`, or wherever `core.hooksPath` points).
+- No environment variable that makes a hook skip itself (`SKIP=`, `HUSKY=0` and the like), and none that overrides `core.hooksPath` (`GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS` and the like).
+- No relocating the git dir to dodge the hooks (`GIT_DIR=`, `--git-dir`).
+- No weakening of the scripts the hooks call (`scripts/ci-local.sh` and what it runs) to make a hook pass: no skipped step, no loosened check, no deleted test.
+- A phase commits and pushes only with plain `git commit` and `git push` and the repo's hooks. It never changes a hook's file mode (`chmod -x`) or the environment git and the hook run in (`PATH`, `GIT_*`), and never commits through plumbing (`commit-tree`, `update-ref`) or another clone to dodge a hook.
+
+A hook that rejects a commit or push names a cause: a failing test, a lint, a format diff. Read its output, fix that cause, and commit or push again. When the cause lies outside the unit (a broken toolchain, a test already red on the base), stop with `status: blocked` and name it. It never justifies a bypass.
+
+The `ns` CLI's own git plumbing skips hooks by design, at three call sites: the quality-records push, the skills fast-forward, and the update-branch merge and push of the default branch into a PR head. The first two write no unit's code. The merge does carry unit code, but the forge's CI checks the merge result, as long as the default branch requires CI before merge. Phases don't.
+
 ## Killing processes
 
 A phase kills only processes it started. `ns run` starts each phase in its own session and process group, and the operator's `ns watch` keeps running beside it.

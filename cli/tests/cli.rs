@@ -1406,26 +1406,37 @@ fn worktree_new_runs_setup_once() {
 }
 
 #[test]
-fn own_factory_definition_turns_on_the_pre_commit_hook() {
-    let (_tmp, root) = repo();
+fn own_factory_definition_turns_on_hooks_that_run_full_ci_on_commit_and_push() {
+    let (tmp, root) = repo();
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     factory_def(
         &root,
         &fs::read_to_string(src.join(".nightshift/nightshift.toml")).unwrap(),
     );
     fs::create_dir_all(root.join(".githooks")).unwrap();
-    fs::copy(
-        src.join(".githooks/pre-commit"),
-        root.join(".githooks/pre-commit"),
-    )
-    .unwrap();
+    for hook in ["pre-commit", "pre-push"] {
+        fs::copy(
+            src.join(".githooks").join(hook),
+            root.join(".githooks").join(hook),
+        )
+        .unwrap();
+    }
     fs::create_dir_all(root.join("scripts")).unwrap();
     executable(
         &root.join("scripts/ci-local.sh"),
-        "echo \"ci-local $*\" >&2\nexit 1",
+        "echo \"ci-local ran with [$*]\" >&2\nexit 1",
     );
     git(&root, &["add", "."]);
     git(&root, &["commit", "-q", "--no-verify", "-m", "hooks"]);
+    let remote = tmp.path().join("remote.git");
+    git(
+        tmp.path(),
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    git(
+        &root,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
 
     ns().current_dir(&root)
         .args(["factory", "validate"])
@@ -1446,7 +1457,14 @@ fn own_factory_definition_turns_on_the_pre_commit_hook() {
     fs::write(path.join("README"), "changed\n").unwrap();
     let out = git_output(&path, &["commit", "-qam", "change"]);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("ci-local --fast"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ci-local ran with []"));
+
+    // The failed commit left the edit behind, and pre-push wants a clean tree.
+    git(&path, &["checkout", "-q", "README"]);
+    let out = git_output(&path, &["push", "-q", "origin", "HEAD:refs/heads/u5"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ci-local ran with []"));
+    assert_eq!(git(&remote, &["for-each-ref"]), "");
 }
 
 #[test]
@@ -1900,4 +1918,211 @@ esac"#,
         json(&out.stdout)["next"],
         serde_json::json!([{"number": 7, "title": "Fix the thing"}])
     );
+}
+
+/// A repo with this repo's hooks on, a `ci-local.sh` that logs each run and passes, and a bare
+/// remote. Returns the repo, the remote and the log of runs.
+fn hooked_repo() -> (TempDir, PathBuf, PathBuf, PathBuf) {
+    let (tmp, root) = repo();
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    fs::create_dir_all(root.join(".githooks")).unwrap();
+    for hook in ["pre-commit", "pre-push"] {
+        fs::copy(
+            src.join(".githooks").join(hook),
+            root.join(".githooks").join(hook),
+        )
+        .unwrap();
+    }
+    fs::create_dir_all(root.join("scripts")).unwrap();
+    let log = root.join(".git/ci-runs");
+    executable(
+        &root.join("scripts/ci-local.sh"),
+        &format!(
+            "echo run >> '{}'\nif [ -e \"$(git rev-parse --git-dir)/red\" ]; then echo red >&2; exit 1; fi",
+            log.display()
+        ),
+    );
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "hooks"]);
+    let remote = tmp.path().join("remote.git");
+    git(
+        tmp.path(),
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    git(
+        &root,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&root, &["config", "core.hooksPath", ".githooks"]);
+    (tmp, root, remote, log)
+}
+
+fn runs(log: &Path) -> usize {
+    fs::read_to_string(log).map_or(0, |t| t.lines().count())
+}
+
+#[test]
+fn pre_push_checks_the_tree_it_pushes_and_nothing_else() {
+    let (_tmp, root, remote, log) = hooked_repo();
+    let push = |spec: &str| git_output(&root, &["push", "-q", "origin", spec]);
+
+    let out = push("HEAD:refs/heads/a");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(runs(&log), 1);
+
+    git(&root, &["branch", "old"]);
+    fs::write(root.join("README"), "next\n").unwrap();
+    git(&root, &["commit", "-qam", "next"]);
+    let before = runs(&log);
+    let out = push("old:refs/heads/b");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("pre-push"));
+    let sha = git(&root, &["rev-parse", "HEAD~1"]);
+    let out = push(&format!("{sha}:refs/heads/c"));
+    assert!(!out.status.success());
+    assert_eq!(runs(&log), before, "the checks ran on a tree not pushed");
+
+    fs::write(root.join("README"), "dirty\n").unwrap();
+    let out = push("HEAD:refs/heads/d");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not clean"));
+    assert_eq!(runs(&log), before);
+    git(&root, &["checkout", "-q", "README"]);
+
+    fs::write(root.join("new.txt"), "untracked\n").unwrap();
+    let out = push("HEAD:refs/heads/e");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not clean"));
+    assert_eq!(runs(&log), before);
+    fs::remove_file(root.join("new.txt")).unwrap();
+
+    let out = push(":refs/heads/a");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(git(&remote, &["for-each-ref"]), "");
+}
+
+#[test]
+fn pre_push_accepts_an_annotated_tag_at_head_and_refuses_one_elsewhere() {
+    let (_tmp, root, remote, log) = hooked_repo();
+    git(&root, &["tag", "-a", "-m", "at head", "v-head"]);
+    let out = git_output(&root, &["push", "-q", "origin", "refs/tags/v-head"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(runs(&log), 1);
+
+    git(&root, &["tag", "-a", "-m", "old", "v-old"]);
+    fs::write(root.join("README"), "next\n").unwrap();
+    git(&root, &["commit", "-qam", "next"]);
+    let before = runs(&log);
+    let out = git_output(&root, &["push", "-q", "origin", "refs/tags/v-old"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("pre-push"));
+    assert_eq!(runs(&log), before);
+    assert!(!git(&remote, &["for-each-ref"]).contains("v-old"));
+
+    git(&root, &["tag", "-a", "-m", "t", "v-tree", "HEAD^{tree}"]);
+    let before = runs(&log);
+    let out = git_output(&root, &["push", "-q", "origin", "refs/tags/v-tree"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("is not a commit"));
+    assert_eq!(runs(&log), before);
+}
+
+#[test]
+fn pre_push_with_follow_tags_pushes_the_branch_beside_its_annotated_tag() {
+    let (_tmp, root, _remote, _log) = hooked_repo();
+    git(&root, &["config", "push.followTags", "true"]);
+    git(&root, &["tag", "-a", "-m", "release", "v1"]);
+    let out = git_output(&root, &["push", "-q", "origin", "HEAD:refs/heads/a"]);
+    assert!(out.status.success(), "{out:?}");
+}
+
+#[test]
+fn pre_push_pins_every_ref_in_one_push() {
+    let (_tmp, root, remote, log) = hooked_repo();
+    git(&root, &["branch", "old"]);
+    fs::write(root.join("README"), "next\n").unwrap();
+    git(&root, &["commit", "-qam", "next"]);
+    let before = runs(&log);
+    let out = git_output(
+        &root,
+        &[
+            "push",
+            "-q",
+            "origin",
+            "HEAD:refs/heads/new",
+            "old:refs/heads/older",
+        ],
+    );
+    assert!(!out.status.success());
+    assert_eq!(runs(&log), before);
+    assert_eq!(git(&remote, &["for-each-ref"]), "");
+
+    git(&root, &["push", "-q", "origin", "HEAD:refs/heads/gone"]);
+    let out = git_output(
+        &root,
+        &[
+            "push",
+            "-q",
+            "origin",
+            ":refs/heads/gone",
+            "old:refs/heads/older",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(git(&remote, &["for-each-ref"]).contains("refs/heads/gone"));
+    assert!(!git(&remote, &["for-each-ref"]).contains("older"));
+    let out = git_output(
+        &root,
+        &[
+            "push",
+            "-q",
+            "origin",
+            "HEAD:refs/heads/new",
+            ":refs/heads/gone",
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let refs = git(&remote, &["for-each-ref"]);
+    assert!(refs.contains("refs/heads/new") && !refs.contains("refs/heads/gone"));
+}
+
+/// A hook that exits 0 on a skip variable passes a commit the checks would fail.
+#[test]
+fn neither_hook_has_an_environment_variable_that_skips_it() {
+    let (_tmp, root, _remote, _log) = hooked_repo();
+    fs::write(root.join(".git/red"), "").unwrap();
+    let head = git(&root, &["rev-parse", "HEAD"]);
+    for hook in ["pre-commit", "pre-push"] {
+        let out = StdCommand::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "echo 'refs/heads/main {head} refs/heads/main {head}' | .githooks/{hook}"
+            ))
+            .current_dir(&root)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .envs(
+                [
+                    "SKIP",
+                    "SKIP_CI",
+                    "CI_SKIP",
+                    "SKIP_HOOKS",
+                    "NO_VERIFY",
+                    "HUSKY",
+                    "CI",
+                ]
+                .map(|k| (k, "1")),
+            )
+            .env("HUSKY", "0")
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{hook} passed with skip variables");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("red"),
+            "{hook} did not run ci-local.sh"
+        );
+    }
 }

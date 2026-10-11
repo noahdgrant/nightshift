@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Run what .github/workflows/ci.yml runs, in order, stopping at the first failure.
 #
-#   scripts/ci-local.sh          every check
-#   scripts/ci-local.sh --fast   fmt, clippy, ns lint (both skill roots) and the private guard (the pre-commit hook)
+# The .githooks pre-commit and pre-push hooks run it.
 #
 # Uses this worktree's own cli/target/debug/ns. The private guard reads
 # PRIVATE_DENYLIST from the environment, as in CI.
@@ -10,12 +9,10 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-fast=0
-case "${1:-}" in
-  "") ;;
-  --fast) fast=1 ;;
-  *) echo "usage: scripts/ci-local.sh [--fast]" >&2; exit 2 ;;
-esac
+if [ "$#" -ne 0 ]; then
+  echo "usage: scripts/ci-local.sh" >&2
+  exit 2
+fi
 
 ns=cli/target/debug/ns
 
@@ -93,22 +90,18 @@ brief_checker_tests() {
 
 step "cargo fmt --check" cargo fmt --manifest-path cli/Cargo.toml --check
 step "cargo clippy" cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings
-if [ "$fast" -eq 0 ]; then
-  step "cargo test" cargo test --manifest-path cli/Cargo.toml
-  step "cargo test under a decoy GIT_DIR" scripts/check-git-dir-decoy.sh
-fi
+step "cargo test" cargo test --manifest-path cli/Cargo.toml
+step "cargo test under a decoy GIT_DIR" scripts/check-git-dir-decoy.sh
 step "build ns" cargo build --manifest-path cli/Cargo.toml
 step "ns lint" "$ns" lint skills --human
 step "ns lint .agents/skills" "$ns" lint .agents/skills --human
 step "ns check-markers" "$ns" check-markers --human
-if [ "$fast" -eq 0 ]; then
-  step "ns rules check" "$ns" rules check --human
-  step "ns eval --dry-run" eval_dry_run
-  step "py-inventory fixture tests" fixture_tests
-  step "Python rule pack tests" rule_pack_tests
-  step "C rule pack tests" c_rule_pack_tests
-  step "ns-troubleshoot brief checker tests" brief_checker_tests
-fi
+step "ns rules check" "$ns" rules check --human
+step "ns eval --dry-run" eval_dry_run
+step "py-inventory fixture tests" fixture_tests
+step "Python rule pack tests" rule_pack_tests
+step "C rule pack tests" c_rule_pack_tests
+step "ns-troubleshoot brief checker tests" brief_checker_tests
 step "private guard" scripts/check-private.sh
 
 echo "ci-local: all checks passed" >&2

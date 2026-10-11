@@ -331,14 +331,11 @@ mod tests {
     use super::*;
     use crate::factory::parse;
 
-    const STACK: &str = "| Task | Command |\n|---|---|\n| build | `cargo build` |\n| ci-local | `scripts/ci-local.sh --fast` | 30 s |\n";
+    const STACK: &str = "| Task | Command |\n|---|---|\n| build | `cargo build` |\n| ci-local | `scripts/ci-local.sh` | 30 s |\n";
 
     #[test]
     fn ci_local_reads_the_table_row() {
-        assert_eq!(
-            ci_local(STACK).as_deref(),
-            Some("scripts/ci-local.sh --fast")
-        );
+        assert_eq!(ci_local(STACK).as_deref(), Some("scripts/ci-local.sh"));
         assert_eq!(
             ci_local("| `ci-local` | `make ci` (all of CI) |").as_deref(),
             Some("make ci")
@@ -371,7 +368,7 @@ mod tests {
         fs::write(tmp.path().join("docs/agents/stack.md"), STACK).unwrap();
         assert_eq!(
             command(&none, tmp.path(), Path::new(NS_EXE)).as_deref(),
-            Some("scripts/ci-local.sh --fast")
+            Some("scripts/ci-local.sh")
         );
         let set = parse("[phases.build]\ngate = \"make ci\"\n").unwrap();
         assert_eq!(
@@ -391,7 +388,7 @@ mod tests {
         let none = parse("").unwrap();
         assert_eq!(
             command(&none, tmp.path(), Path::new(NS_EXE)).as_deref(),
-            Some("(scripts/ci-local.sh --fast) && '/opt/ns bin/ns' rules check")
+            Some("(scripts/ci-local.sh) && '/opt/ns bin/ns' rules check")
         );
         let set = parse("[phases.build]\ngate = \"make ci\"\n").unwrap();
         assert_eq!(
@@ -416,18 +413,28 @@ mod tests {
     }
 
     #[test]
-    fn the_script_and_hook_are_executable_and_the_hook_runs_fast() {
+    fn the_script_and_both_hooks_are_executable_and_the_hooks_run_full_ci() {
         use std::os::unix::fs::PermissionsExt;
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        for f in ["scripts/ci-local.sh", ".githooks/pre-commit"] {
+        for f in [
+            "scripts/ci-local.sh",
+            ".githooks/pre-commit",
+            ".githooks/pre-push",
+        ] {
             let mode = std::fs::metadata(repo.join(f))
                 .unwrap()
                 .permissions()
                 .mode();
             assert!(mode & 0o111 != 0, "{f} is not executable");
         }
-        let hook = std::fs::read_to_string(repo.join(".githooks/pre-commit")).unwrap();
-        assert!(hook.contains("scripts/ci-local.sh --fast"));
+        for hook in [".githooks/pre-commit", ".githooks/pre-push"] {
+            let text = std::fs::read_to_string(repo.join(hook)).unwrap();
+            assert_eq!(
+                text.lines().last(),
+                Some("exec scripts/ci-local.sh"),
+                "{hook}"
+            );
+        }
     }
 
     fn gate(cmd: &str, timeout: Duration) -> (GateRun, tempfile::TempDir) {

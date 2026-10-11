@@ -2101,7 +2101,10 @@ fn workflow_refusal(error: &str) -> bool {
 /// `pr_head` with a lease, as update-branch would have. `Ok(false)` is a merge conflict,
 /// aborted; any other failure is an error. HEAD must be `pr_head`, since the lease would
 /// otherwise replace a PR head the merge was not built on. A failed push resets the branch to
-/// the HEAD it started from, so the worktree still matches the PR.
+/// the HEAD it started from, so the worktree still matches the PR. The merge runs
+/// with `core.hooksPath=/dev/null`, since `--no-verify` leaves `post-merge` running; the push
+/// uses `--no-verify`, as `pre-push` is the only hook it runs. Both skip the checkout's hooks
+/// because the forge's CI checks the merge result; the merge does carry unit code.
 fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<bool> {
     let net = |args: &[&str]| -> Result<()> {
         let out = git::net(wt, args).output().context("failed to run git")?;
@@ -2126,7 +2129,15 @@ fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<boo
     let merge = git::command()
         .arg("-C")
         .arg(wt)
-        .args(["merge", "-q", "--no-edit", "FETCH_HEAD", "-m"])
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "-q",
+            "--no-edit",
+            "FETCH_HEAD",
+            "-m",
+        ])
         .arg(format!("Merge {theirs} into {branch}"))
         .output()
         .context("failed to run git")?;
@@ -2145,7 +2156,7 @@ fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<boo
     }
     let lease = format!("--force-with-lease=refs/heads/{branch}:{pr_head}");
     let spec = format!("HEAD:refs/heads/{branch}");
-    if let Err(e) = net(&["push", "-q", &lease, "origin", &spec]) {
+    if let Err(e) = net(&["push", "-q", "--no-verify", &lease, "origin", &spec]) {
         return Err(match git::run(wt, &["reset", "-q", "--keep", &start]) {
             Ok(_) => e,
             Err(reset) => anyhow!("{e:#}; resetting to {start} failed too: {reset:#}"),
@@ -2290,6 +2301,42 @@ mod tests {
     fn commit_all(dir: &Path, msg: &str) {
         git::run(dir, &["add", "-A"]).unwrap();
         git::run(dir, &["commit", "-q", "-m", msg]).unwrap();
+    }
+
+    /// The update-branch merge runs with no hook (`--no-verify` would leave `post-merge`) and its
+    /// push skips `pre-push`, because the forge's CI checks the merge result, and the merge does
+    /// carry unit code.
+    #[test]
+    fn merging_the_default_branch_runs_none_of_the_checkouts_hooks() {
+        use std::os::unix::fs::PermissionsExt;
+        let (t, _origin, wt) = cloned();
+        let g = |dir: &Path, args: &[&str]| git::run(dir, args).unwrap();
+        g(&wt, &["switch", "-q", "-c", "ns/9-x"]);
+        fs::write(wt.join("f.c"), "a\nx = 2\nb\n").unwrap();
+        commit_all(&wt, "unit");
+        g(&wt, &["push", "-q", "origin", "ns/9-x"]);
+        let other = t.path().join("other");
+        g(t.path(), &["clone", "-q", "origin.git", "other"]);
+        for args in [
+            &["config", "user.email", "t@example.com"][..],
+            &["config", "user.name", "t"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g(&other, args);
+        }
+        fs::write(other.join("g.c"), "a\nx = 3\nb\n").unwrap();
+        commit_all(&other, "main moves");
+        g(&other, &["push", "-q", "origin", "HEAD:main"]);
+        for name in ["pre-push", "pre-merge-commit", "commit-msg", "post-merge"] {
+            let hook = wt.join(".git/hooks").join(name);
+            fs::write(&hook, format!("#!/bin/sh\ntouch ran-{name}\nexit 1\n")).unwrap();
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let head = g(&wt, &["rev-parse", "HEAD"]);
+        assert!(merge_default_with_git(&wt, "main", &head).unwrap());
+        for name in ["pre-push", "pre-merge-commit", "commit-msg", "post-merge"] {
+            assert!(!wt.join(format!("ran-{name}")).exists(), "{name} ran");
+        }
     }
 
     #[test]
