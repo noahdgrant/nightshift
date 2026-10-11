@@ -55,16 +55,23 @@ impl WordBuf {
     }
 
     fn finish(self) -> Word {
-        let opaque = self.expansion_at.is_some_and(|at| {
-            let before = &self.text[..at];
-            at == 0 || before == "-" || (before.starts_with("--") && !before.contains('='))
-        });
+        let opaque = self
+            .expansion_at
+            .is_some_and(|at| could_be_flag_or_command(&self.text[..at]));
         Word {
             text: self.text,
             opaque,
             quoted_var: self.quoted_var,
         }
     }
+}
+
+/// The opacity rule: an expansion hides what the word is when it stands where a command or a
+/// flag could be written, that is at the start of the word, right after a lone `-`, or inside a
+/// long option's name (`--$x`, but not `--name=$x`, whose value is data). `before` is the text
+/// ahead of the expansion.
+fn could_be_flag_or_command(before: &str) -> bool {
+    before.is_empty() || before == "-" || (before.starts_with("--") && !before.contains('='))
 }
 
 struct Heredoc {
@@ -286,6 +293,7 @@ impl<'a> Lexer<'a> {
             Some('{') => {
                 self.chars.next();
                 self.buf().mark_expansion();
+                self.braced_body();
             }
             Some(c) if c.is_ascii_alphanumeric() || c == '_' => {
                 while self
@@ -300,6 +308,48 @@ impl<'a> Lexer<'a> {
                 self.buf().mark_expansion();
             }
             _ => self.push('$'),
+        }
+    }
+
+    /// Consume a `${...}` body up to its matching `}`, so a `;`, `&`, `#` or quote inside it
+    /// neither splits the command nor hides the words after it. Nested braces, quotes and
+    /// substitutions are tracked. A body with no end swallows the rest of the command: the
+    /// shell rejects it, and the word it sits in is already opaque.
+    fn braced_body(&mut self) {
+        let mut depth = 1usize;
+        while let Some(c) = self.chars.next() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return;
+                    }
+                }
+                '\\' => {
+                    self.chars.next();
+                }
+                '\'' => while self.chars.next().is_some_and(|c| c != '\'') {},
+                '"' => self.quoted_in_braces(),
+                '$' if self.chars.next_if_eq(&'(').is_some() => self.expansion(Close::Paren),
+                '`' => self.expansion(Close::Backtick),
+                _ => {}
+            }
+        }
+    }
+
+    /// A double-quoted string inside a `${...}` body, up to its closing quote.
+    fn quoted_in_braces(&mut self) {
+        while let Some(c) = self.chars.next() {
+            match c {
+                '"' => return,
+                '\\' => {
+                    self.chars.next();
+                }
+                '$' if self.chars.next_if_eq(&'(').is_some() => self.expansion(Close::Paren),
+                '`' => self.expansion(Close::Backtick),
+                _ => {}
+            }
         }
     }
 
@@ -424,17 +474,17 @@ impl<'a> Lexer<'a> {
         self.end_word();
         if self.chars.next_if_eq(&'(').is_some() {
             self.process_substitution();
-        } else if self.chars.next_if_eq(&'<').is_none() {
-            if self.chars.next_if_eq(&'&').is_some() {
-                self.duplicated_descriptor();
-            } else {
-                self.out.push(Tok::RedirectIn);
-            }
         } else if self.chars.next_if_eq(&'<').is_some() {
-            self.out.push(Tok::RedirectIn);
+            if self.chars.next_if_eq(&'<').is_some() {
+                self.out.push(Tok::RedirectIn);
+            } else {
+                self.chars.next_if_eq(&'-');
+                self.next_word_is_delimiter = true;
+            }
+        } else if self.chars.next_if_eq(&'&').is_some() {
+            self.duplicated_descriptor();
         } else {
-            self.chars.next_if_eq(&'-');
-            self.next_word_is_delimiter = true;
+            self.out.push(Tok::RedirectIn);
         }
     }
 

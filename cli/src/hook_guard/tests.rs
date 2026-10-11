@@ -407,7 +407,6 @@ fn hooks_dir_edits_by_cd_cluster_flags_and_find_are_denied() {
     }
     for c in [
         "cd .githooks && cat pre-commit",
-        "cd .githooks && cd .. && rm x",
         "cd cli && rm x",
         "cd .githooks; cd /tmp; rm x",
         "find . -name '*.rs'",
@@ -809,4 +808,73 @@ fn global_options_that_take_a_value_are_skipped() {
     assert!(denied("git --attr-source HEAD commit -n"));
     assert!(denied("git --attr-source=HEAD commit -n"));
     assert!(!denied("git --attr-source HEAD commit -m x"));
+}
+
+#[test]
+fn payload_cwd_in_a_protected_directory_protects_relative_paths() {
+    for cwd in ["/r/.githooks", "/r/.githooks/sub", "/r/.git"] {
+        let call =
+            json!({"tool_name": "Bash", "cwd": cwd, "tool_input": {"command": "rm pre-commit"}});
+        assert!(check(&call).is_some(), "{cwd}");
+    }
+    for cwd in ["/r", "/r/cli"] {
+        let call =
+            json!({"tool_name": "Bash", "cwd": cwd, "tool_input": {"command": "rm pre-commit"}});
+        assert!(check(&call).is_none(), "{cwd}");
+    }
+}
+
+#[test]
+fn braced_expansion_bodies_do_not_split_or_hide_the_command() {
+    for c in [
+        "git commit -m ${x:-a;b} -n",
+        "git commit -m ${x:-a&b} -n",
+        "git commit -m ${x//;/} -n",
+        "git commit -m ${x#;} -n",
+        "git commit -m \"${x:-\")\"}\" -n",
+        "git commit -m ${x:-${y:-a;b}} -n",
+        "git commit -m ${x:-$(git commit -n)}",
+        "git commit ${x:-a;b}",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "git commit -m ${x:-a;b}",
+        "echo ${x:-a;b}; git status",
+        "git commit -m \"${x:-a;b}\"",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn claude_settings_are_protected_and_hooks_stay_enabled() {
+    let s: Value = serde_json::from_str(&settings(Path::new("/x/ns"))).unwrap();
+    assert_eq!(s["disableAllHooks"], json!(false));
+    for p in [
+        "/r/.claude/settings.json",
+        ".claude/settings.local.json",
+        "/r/.claude/settings.foo.json",
+    ] {
+        let call = json!({"tool_name": "Edit", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_some(), "{p}");
+    }
+    for c in [
+        "rm .claude/settings.json",
+        "echo '{}' > .claude/settings.local.json",
+        "sed -i s/a/b/ .claude/settings.json",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for p in ["/r/.claude/skills/x.md", "/r/settings.json"] {
+        let call = json!({"tool_name": "Edit", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_none(), "{p}");
+    }
+}
+
+#[test]
+fn cd_up_keeps_a_protected_directory_unless_provably_outside() {
+    assert!(denied("cd .githooks/sub && cd .. && rm x"));
+    assert!(denied("cd .githooks && cd ../.githooks && rm x"));
+    assert!(!denied("cd .githooks && cd /tmp && rm x"));
 }
