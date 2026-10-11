@@ -1,0 +1,26 @@
+name: Release Please
+
+# Each push to main opens or updates the release PR: the next version
+# and changelog, worked out from the Conventional Commits since the last
+# release. Merging that PR tags the release. Config:
+# release-please-config.json and .release-please-manifest.json.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: Release PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: googleapis/release-please-action@v5
