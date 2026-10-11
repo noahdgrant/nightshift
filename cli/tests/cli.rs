@@ -968,6 +968,7 @@ fn doctor_reports_config() {
     let cfg = config(tmp.path());
     let v = json(
         &ns()
+            .current_dir(tmp.path())
             .env("NS_CONFIG", &cfg)
             .arg("doctor")
             .assert()
@@ -1009,6 +1010,7 @@ fn doctor_reports_which_harness_skill_dirs_hold_the_ns_skills() {
 
     let v = json(
         &ns()
+            .current_dir(home.path())
             .env("HOME", home.path())
             .arg("doctor")
             .assert()
@@ -1152,6 +1154,7 @@ fn doctor_reports_forge_account_but_never_the_token() {
         let p = tmp.path().join("config.toml");
         fs::write(&p, cfg).unwrap();
         let out = ns()
+            .current_dir(tmp.path())
             .env("NS_CONFIG", &p)
             .env("PATH", &path)
             .env_remove("GH_TOKEN")
@@ -1175,12 +1178,15 @@ fn doctor_reports_forge_account_but_never_the_token() {
     ));
     assert_eq!(
         v["forge"]["github"],
-        serde_json::json!({"configured": true, "token_resolved": true, "account": "octocat"})
+        serde_json::json!({"configured": true, "token_resolved": true, "account": "octocat",
+            "table": "[forge.github]", "repo": null, "repo_readable": null, "ssh": null})
     );
     assert_eq!(
         v["forge"]["gitlab"],
-        serde_json::json!({"configured": false, "token_resolved": false})
+        serde_json::json!({"configured": false, "token_resolved": false, "account": null,
+            "table": null, "repo": null, "repo_readable": null, "ssh": null})
     );
+    assert_eq!(v["warnings"], serde_json::json!([]));
 
     let v = doctor(&format!(
         "[forge.github]\ntoken_command = {:?}\n",
@@ -1219,6 +1225,7 @@ fn doctor_with_a_set_gh_token_runs_no_token_command() {
     .unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let out = ns()
+        .current_dir(tmp.path())
         .env("NS_CONFIG", &cfg)
         .env("PATH", &path)
         .env("GH_TOKEN", TOKEN)
@@ -1240,7 +1247,228 @@ fn doctor_with_a_set_gh_token_runs_no_token_command() {
     let v = json(&out.stdout);
     assert_eq!(
         v["forge"]["github"],
-        serde_json::json!({"configured": true, "token_resolved": true, "account": "octocat"})
+        serde_json::json!({"configured": true, "token_resolved": true, "account": "octocat",
+            "table": "[forge.github]", "repo": null, "repo_readable": null, "ssh": null})
+    );
+}
+
+const WORK_CONFIG: &str = "[forge.github]
+token_env = \"PERSONAL\"
+[forge.github.owners.\"example-org\"]
+token_env = \"WORK\"
+";
+
+/// One `ns doctor` run in a repo whose origin is `origin`, with a fake `gh` whose token is account
+/// `login` and can read `example-org/backend` unless `unreadable` (its 404 echoes the token, as
+/// a leaky server might), and a fake `ssh` that greets `ssh_account`.
+struct Doctor<'a> {
+    origin: &'a str,
+    config: &'a str,
+    env: &'a [(&'a str, &'a str)],
+    login: &'a str,
+    unreadable: bool,
+    ssh_account: &'a str,
+}
+
+impl Default for Doctor<'_> {
+    fn default() -> Self {
+        Doctor {
+            origin: "git@github-work:example-org/backend.git",
+            config: WORK_CONFIG,
+            env: &[("PERSONAL", "personal-tok"), ("WORK", "work-tok")],
+            login: "work-account",
+            unreadable: false,
+            ssh_account: "work-account",
+        }
+    }
+}
+
+impl Doctor<'_> {
+    /// The JSON, stderr, and the arguments ssh got (empty when it never ran).
+    fn run(&self) -> (Value, String, String) {
+        let (tmp, root) = repo();
+        git(&root, &["remote", "add", "origin", self.origin]);
+        let bin = tmp.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let (login, unreadable) = (self.login, self.unreadable);
+        executable(
+            &bin.join("gh"),
+            &format!(
+                r#"case "$*" in
+  "api user --jq .login") echo {login} ;;
+  "api repos/example-org/backend --jq .full_name") [ {unreadable} = false ] && echo example-org/backend || {{ echo "HTTP 404: Not Found, token $GH_TOKEN" >&2; exit 1; }} ;;
+  *) exit 1 ;;
+esac"#
+            ),
+        );
+        let ssh_args = tmp.path().join("ssh-args");
+        executable(
+            &bin.join("ssh"),
+            &format!(
+                "echo \"$*\" > {}\necho \"Hi {}! You've successfully authenticated, but GitHub does not provide shell access.\" >&2\nexit 1",
+                ssh_args.display(),
+                self.ssh_account
+            ),
+        );
+        let cfg = tmp.path().join("config.toml");
+        fs::write(&cfg, self.config).unwrap();
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+        let mut c = ns();
+        c.current_dir(&root)
+            .env("NS_CONFIG", &cfg)
+            .env("PATH", &path)
+            .env_remove("GH_TOKEN")
+            .env_remove("GITLAB_TOKEN")
+            .env_remove("NS_FORGE_CHECKED")
+            .env_remove("PERSONAL")
+            .env_remove("WORK");
+        for (k, v) in self.env {
+            c.env(k, v);
+        }
+        let out = c.arg("doctor").assert().get_output().clone();
+        let args = fs::read_to_string(&ssh_args).unwrap_or_default();
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        (json(&out.stdout), err, args)
+    }
+}
+
+#[test]
+fn doctor_reports_the_table_repo_and_ssh_account_for_origin() {
+    let (v, err, ssh_args) = Doctor::default().run();
+    assert_eq!(
+        v["forge"]["github"],
+        serde_json::json!({"configured": true, "token_resolved": true, "account": "work-account",
+            "table": "[forge.github.owners.\"example-org\"]", "repo": "example-org/backend",
+            "repo_readable": true, "ssh": {"dest": "git@github-work", "account": "work-account"}})
+    );
+    assert_eq!(v["warnings"], serde_json::json!([]), "{err}");
+    assert_eq!(
+        ssh_args.trim_end(),
+        "-T -o BatchMode=yes -o ConnectTimeout=10 git@github-work"
+    );
+    assert!(
+        !v["problems"].to_string().contains("forge"),
+        "{}",
+        v["problems"]
+    );
+}
+
+#[test]
+fn doctor_warns_when_ssh_greets_another_account_or_none() {
+    let (v, err, ssh_args) = Doctor {
+        origin: "ssh://git@github.com:2222/example-org/backend",
+        ssh_account: "personal-account",
+        ..Doctor::default()
+    }
+    .run();
+    assert!(ssh_args.contains("-p 2222 git@github.com"), "{ssh_args}");
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("authenticates as personal-account"),
+        "{warnings}"
+    );
+    assert!(warnings.contains("account work-account"), "{warnings}");
+    assert!(
+        err.contains("ns: warning: ssh to git@github.com authenticates as personal-account"),
+        "{err}"
+    );
+    assert!(
+        !v["problems"].to_string().contains("ssh"),
+        "a mismatch warns, never fails"
+    );
+
+    let (v, _, _) = Doctor {
+        ssh_account: "",
+        ..Doctor::default()
+    }
+    .run();
+    assert_eq!(v["forge"]["github"]["ssh"]["account"], Value::Null);
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("ssh -T git@github-work greeted no account"),
+        "{warnings}"
+    );
+}
+
+#[test]
+fn doctor_reports_a_repo_the_token_cannot_read_as_a_problem() {
+    let (v, _, ssh_args) = Doctor {
+        origin: "https://github.com/example-org/backend",
+        unreadable: true,
+        ..Doctor::default()
+    }
+    .run();
+    assert_eq!(v["forge"]["github"]["repo_readable"], false);
+    assert_eq!(v["forge"]["github"]["ssh"], Value::Null);
+    assert!(
+        ssh_args.is_empty(),
+        "ssh ran for an https origin: {ssh_args}"
+    );
+    assert_eq!(v["ok"], false);
+    let problems = v["problems"].to_string();
+    assert!(
+        problems.contains("account work-account cannot read example-org/backend"),
+        "{problems}"
+    );
+    assert!(problems.contains("HTTP 404"), "{problems}");
+    assert!(!problems.contains("work-tok"), "{problems}");
+
+    let (v, _, _) = Doctor {
+        origin: "https://github.com/example-org/backend",
+        config: "",
+        env: &[("GH_TOKEN", "env-tok")],
+        unreadable: true,
+        ..Doctor::default()
+    }
+    .run();
+    assert_eq!(v["forge"]["github"]["configured"], false);
+    assert_eq!(v["forge"]["github"]["repo_readable"], false);
+    let problems = v["problems"].to_string();
+    assert!(
+        problems.contains("token from GH_TOKEN from the environment"),
+        "{problems}"
+    );
+    assert!(!problems.contains("env-tok"), "{problems}");
+}
+
+#[test]
+fn doctor_skips_the_repo_check_when_the_token_does_not_resolve() {
+    let (v, _, _) = Doctor {
+        env: &[("PERSONAL", "personal-tok")],
+        ..Doctor::default()
+    }
+    .run();
+    let gh = &v["forge"]["github"];
+    assert_eq!(gh["token_resolved"], false);
+    assert_eq!(gh["repo_readable"], Value::Null);
+    assert!(
+        v["problems"].to_string().contains("WORK"),
+        "{}",
+        v["problems"]
+    );
+}
+
+#[test]
+fn doctor_warns_about_a_set_gh_token_unless_an_ns_parent_set_it() {
+    let (v, _, _) = Doctor {
+        env: &[("GH_TOKEN", "env-tok")],
+        ..Doctor::default()
+    }
+    .run();
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("GH_TOKEN from the environment overrides the config's choice ([forge.github.owners.\\\"example-org\\\"])"),
+        "{warnings}"
+    );
+    let (v, _, _) = Doctor {
+        env: &[("GH_TOKEN", "env-tok"), ("NS_FORGE_CHECKED", "1")],
+        ..Doctor::default()
+    }
+    .run();
+    assert!(
+        !v["warnings"].to_string().contains("GH_TOKEN"),
+        "{}",
+        v["warnings"]
     );
 }
 

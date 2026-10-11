@@ -724,9 +724,14 @@ impl Loaded {
         let cfg_path = config::path();
         let cfg = config::load(&cfg_path)
             .map_err(|e| SfError::usage(format!("{e:#}"), "check it with:\n  ns doctor"))?;
-        if let Some(c) = &cfg {
-            forge::export(&c.forge)?;
-        }
+        let origin = git::run(&repo.root, &["remote", "get-url", "origin"]).ok();
+        let kind = crate::watch::forge::kind(
+            fac.queue.source.as_deref(),
+            origin.as_deref(),
+            crate::watch::forge::gitlab_host(cfg.as_ref()).as_deref(),
+        );
+        let forges = cfg.as_ref().map(|c| c.forge.clone()).unwrap_or_default();
+        forge::start(&forges, kind, origin.as_deref())?;
         let files = json!({
             "config": file_hash(&cfg_path),
             "factory": file_hash(&root.join(factory::FILE)),

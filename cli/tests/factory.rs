@@ -5262,6 +5262,291 @@ fn a_set_gh_token_wins_and_no_command_runs() {
     assert_eq!(e.tokens_seen(), ["from-env"]);
 }
 
+const OVERRIDES: &str = "[forge.github]
+token_env = \"DEFAULT_TOKEN\"
+[forge.github.owners.\"example-org\"]
+token_env = \"OWNER_TOKEN\"
+[forge.github.repos.\"example-org/backend\"]
+token_env = \"REPO_TOKEN\"
+";
+
+const OVERRIDE_WARNING: &str = "GH_TOKEN from the environment overrides the config's choice";
+
+#[test]
+fn the_token_comes_from_the_table_origin_matches() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.config(OVERRIDES);
+    for (origin, want) in [
+        ("git@github-work:example-org/backend.git", "repo-tok"),
+        ("https://github.com/Example-Org/frontend.git", "owner-tok"),
+        ("ssh://git@github.com/someone/else", "default-tok"),
+        ("https://github.com/example-org", "default-tok"),
+    ] {
+        git(&e.root, &["remote", "set-url", "origin", origin]);
+        let _ = fs::remove_file(e.ghd.join("tokens"));
+        let _ = fs::remove_file(e.ghd.join("calls"));
+        let out = e
+            .ns()
+            .env("DEFAULT_TOKEN", "default-tok")
+            .env("OWNER_TOKEN", "owner-tok")
+            .env("REPO_TOKEN", "repo-tok")
+            .args(["watch", "--dry-run"])
+            .assert()
+            .code(0)
+            .get_output()
+            .clone();
+        assert_eq!(e.tokens_seen(), [want], "{origin}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!err.contains(OVERRIDE_WARNING), "{err}");
+        let checked = e
+            .gh_calls()
+            .lines()
+            .filter(|l| l.starts_with("api repos/") && l.ends_with(".full_name"))
+            .count();
+        let has_repo = origin != "https://github.com/example-org";
+        assert_eq!(checked, usize::from(has_repo), "{origin}: {}", e.gh_calls());
+    }
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:example-org/backend.git",
+        ],
+    );
+    let _ = fs::remove_file(e.ghd.join("tokens"));
+    let gitlab_default = e.script(
+        "gl-default.sh",
+        &format!("touch {}/gl-default; echo gl", e.base.display()),
+    );
+    let gitlab_owner = e.script(
+        "gl-owner.sh",
+        &format!("touch {}/gl-owner; echo gl", e.base.display()),
+    );
+    e.config(&format!(
+        "{OVERRIDES}[forge.gitlab]\ntoken_command = {:?}\n[forge.gitlab.owners.\"example-org\"]\ntoken_command = {:?}\n",
+        gitlab_default.to_str().unwrap(),
+        gitlab_owner.to_str().unwrap()
+    ));
+    e.ns()
+        .env_remove("GITLAB_TOKEN")
+        .env("DEFAULT_TOKEN", "default-tok")
+        .env("OWNER_TOKEN", "owner-tok")
+        .env("REPO_TOKEN", "repo-tok")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    assert_eq!(e.tokens_seen(), ["repo-tok"]);
+    assert!(
+        e.base.join("gl-default").exists(),
+        "the other forge's default table ran no command"
+    );
+    assert!(
+        !e.base.join("gl-owner").exists(),
+        "a github origin matched a gitlab owner table"
+    );
+}
+
+#[test]
+fn a_set_gh_token_wins_over_a_matching_table_and_warns_once_a_night() {
+    let e = Env::new();
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:example-org/backend.git",
+        ],
+    );
+    e.config(OVERRIDES);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("build", &["pass:commit"]);
+    let out = e
+        .ns()
+        .env("GH_TOKEN", "from-env")
+        .env("REPO_TOKEN", "repo-tok")
+        .args(["watch", "--once"])
+        .assert()
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.matches(OVERRIDE_WARNING).count(), 1, "{err}");
+    assert!(
+        err.contains("[forge.github.repos.\"example-org/backend\"]"),
+        "{err}"
+    );
+    assert_eq!(e.tokens_seen(), ["from-env"]);
+    assert!(!e.calls().is_empty(), "the unit never ran: {err}");
+    let checks = e
+        .gh_calls()
+        .lines()
+        .filter(|l| *l == "api repos/example-org/backend --jq .full_name")
+        .count();
+    assert_eq!(
+        checks,
+        1,
+        "the unit checked the repo again: {}",
+        e.gh_calls()
+    );
+
+    for args in [&["run", "--issue", "7"][..], &["watch", "--dry-run"][..]] {
+        let out = e
+            .ns()
+            .env("GH_TOKEN", "from-env")
+            .args(args)
+            .assert()
+            .code(0)
+            .get_output()
+            .clone();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(err.matches(OVERRIDE_WARNING).count(), 1, "{args:?}: {err}");
+    }
+    e.config("");
+    let out = e
+        .ns()
+        .env("GH_TOKEN", "from-env")
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains(OVERRIDE_WARNING),
+        "no config, nothing to override: {err}"
+    );
+}
+
+#[test]
+fn a_repo_the_token_cannot_read_stops_run_and_watch_with_exit_2() {
+    let e = Env::new();
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/example-org/frontend.git",
+        ],
+    );
+    e.config(OVERRIDES);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file(
+        "repo.fail",
+        "HTTP 404: Not Found (https://api.github.com/repos/example-org/frontend)",
+    );
+    let table = "[forge.github.owners.\"example-org\"]";
+    for login in [Some("work-account"), None] {
+        match login {
+            Some(l) => e.gh_file("login", &format!("{l}\n")),
+            None => fs::remove_file(e.ghd.join("login")).unwrap(),
+        }
+        for args in [&["run", "--issue", "7"][..], &["watch", "--once"][..]] {
+            let out = e
+                .ns()
+                .env("OWNER_TOKEN", FAKE_TOKEN)
+                .args(args)
+                .assert()
+                .code(2)
+                .get_output()
+                .clone();
+            let err = String::from_utf8_lossy(&out.stderr);
+            let want = match login {
+                Some(l) => {
+                    format!("account {l} cannot read example-org/frontend (token from {table})")
+                }
+                None => format!("the token from {table} cannot read example-org/frontend"),
+            };
+            assert!(err.contains(&want), "{args:?}: {err}");
+            assert!(err.contains("HTTP 404"), "{err}");
+            assert!(!err.contains(FAKE_TOKEN), "{err}");
+        }
+    }
+    assert!(e.calls().is_empty(), "a phase ran: {:?}", e.calls());
+    assert_eq!(e.labels(2), ["status:ready-for-agent", "type:fix"]);
+
+    e.config("");
+    e.gh_file("repo.fail", "");
+    let out = e
+        .ns()
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(
+            "the token from gh's own login cannot read example-org/frontend: gh exited with"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_gitlab_nested_group_picks_its_table_and_an_unreadable_project_exits_2() {
+    let e = Env::new();
+    e.gl_members(&[(1, 30)], &[]);
+    e.gl_issue(2, &[READY], "", 1);
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@gitlab.com:team/sub/project.git",
+        ],
+    );
+    e.config(
+        "[forge.gitlab]\ntoken_env = \"GL_DEFAULT\"\n[forge.gitlab.owners.\"team/sub\"]\ntoken_env = \"GL_SUB\"\n",
+    );
+    let ns = || {
+        let mut c = e.ns();
+        c.env("GL_DEFAULT", "default-tok")
+            .env("GL_SUB", FAKE_TOKEN)
+            .env_remove("GITLAB_TOKEN")
+            .env_remove("GITLAB_HOST");
+        c
+    };
+    let out = ns()
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(queued(&v), [2], "{v}");
+    assert!(
+        e.glab_calls()
+            .lines()
+            .any(|l| l == "api projects/team%2Fsub%2Fproject"),
+        "{}",
+        e.glab_calls()
+    );
+    e.gh_file(
+        "gl-repo.fail",
+        &format!("404 Project Not Found: token {FAKE_TOKEN}"),
+    );
+    e.gh_file("gl-login", "gl-work");
+    let out = ns()
+        .args(["watch", "--once"])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("forge gitlab: account gl-work cannot read team/sub/project"),
+        "{err}"
+    );
+    assert!(err.contains("[forge.gitlab.owners.\"team/sub\"]"), "{err}");
+    assert!(!err.contains(FAKE_TOKEN), "{err}");
+    assert!(err.contains("[token]"), "{err}");
+}
+
 #[test]
 fn a_failing_token_command_stops_before_any_child_and_hides_its_output() {
     let e = Env::new();

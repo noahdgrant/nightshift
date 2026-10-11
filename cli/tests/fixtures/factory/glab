@@ -8,6 +8,8 @@
 #   gl-issue-<n>.raw what reading issue <n> prints instead
 #   gl-statuses.json the commit statuses on main's head, default none
 #   gl-project.json, gl-branch.json  what reading the project or main's branch prints instead
+#   gl-repo.fail     reading the project by its path fails with the file's text
+#   gl-login         the account the token belongs to; unset, `api user` fails
 #   glab.fail        every call fails, echoing GITLAB_TOKEN on stderr as a leaky server might
 d="$FAKE_GH_DIR"
 printf '%s\n' "$*" >> "$d/glab-calls"
@@ -47,8 +49,16 @@ case "$1 $2" in
       "projects/:id/members/all"*) cat "$d/gl-members.json" 2>/dev/null || echo "[]" ;;
       "projects/:id/merge_requests?state=opened"*) cat "$d/gl-mrs.json" 2>/dev/null || echo "[]" ;;
       "projects/:id/merge_requests?state=merged"*) cat "$d/gl-mrs-merged.json" 2>/dev/null || echo "[]" ;;
+      "projects/"*)
+        if [ -f "$d/gl-repo.fail" ]; then cat "$d/gl-repo.fail" >&2; exit 1; fi
+        printf '{"path_with_namespace":"%s"}\n' "$(printf '%b' "$(printf '%s' "${path#projects/}" | sed 's/%/\\x/g')")"
+        ;;
       *) echo "fake glab: unsupported api path: $path" >&2; exit 1 ;;
     esac
+    ;;
+  "api user")
+    [ -f "$d/gl-login" ] || { echo "401 Unauthorized" >&2; exit 1; }
+    printf '{"username":"%s"}\n' "$(cat "$d/gl-login")"
     ;;
   "issue update")
     f="$d/labels-$3"; touch "$f"; a=("$@")
