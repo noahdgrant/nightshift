@@ -263,16 +263,21 @@ fn status_outcome(state: &str) -> Outcome {
     }
 }
 
-/// The issue number at the end of the URL `gh issue create` prints.
-/// The first of the runs in `v` whose `key` is a sha other than `red`.
+/// The first of the runs in `v` whose `key` is a commit id (7 to 64 hex digits, so never an
+/// option for `git log`) other than `red`.
 pub(super) fn first_other(v: &Value, key: &str, red: &str) -> Option<String> {
     v.as_array()?
         .iter()
         .filter_map(|r| r[key].as_str())
-        .find(|sha| *sha != red)
+        .find(|sha| {
+            *sha != red
+                && (7..=64).contains(&sha.len())
+                && sha.bytes().all(|b| b.is_ascii_hexdigit())
+        })
         .map(String::from)
 }
 
+/// The issue number at the end of the URL `gh issue create` prints.
 fn created_number(out: &str) -> Result<u64> {
     out.trim()
         .rsplit('/')
@@ -652,15 +657,28 @@ mod tests {
     #[test]
     fn last_green_skips_runs_on_the_red_head() {
         let runs = serde_json::json!([
-            {"headSha": "red"}, {"headSha": "red"}, {"headSha": "good"}, {"headSha": "older"}
+            {"headSha": "aaaaaaa"}, {"headSha": "aaaaaaa"}, {"headSha": "bbbbbbb"},
+            {"headSha": "ccccccc"}
+        ]);
+        assert_eq!(
+            first_other(&runs, "headSha", "aaaaaaa").as_deref(),
+            Some("bbbbbbb")
+        );
+        let only = serde_json::json!([{"headSha": "aaaaaaa"}]);
+        assert_eq!(first_other(&only, "headSha", "aaaaaaa"), None);
+        assert_eq!(first_other(&serde_json::json!([]), "headSha", "red"), None);
+    }
+
+    #[test]
+    fn last_green_skips_what_is_not_a_commit_id() {
+        let runs = serde_json::json!([
+            {"headSha": "--output=x"}, {"headSha": "abc"}, {"headSha": "zzzzzzzz"},
+            {"headSha": "é".repeat(8)}, {"headSha": "a".repeat(65)}, {"headSha": "AbC1234"}
         ]);
         assert_eq!(
             first_other(&runs, "headSha", "red").as_deref(),
-            Some("good")
+            Some("AbC1234")
         );
-        let only = serde_json::json!([{"headSha": "red"}]);
-        assert_eq!(first_other(&only, "headSha", "red"), None);
-        assert_eq!(first_other(&serde_json::json!([]), "headSha", "red"), None);
     }
 
     #[test]

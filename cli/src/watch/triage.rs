@@ -126,11 +126,9 @@ pub(super) fn pass(
     loaded: &Loaded,
     deadline: Option<i64>,
     night: &mut Night,
-    main_red: bool,
 ) -> Result<Option<Halt>> {
     let q = &loaded.fac.queue;
-    // Red main holds triage too: the fix issue is the night's only work.
-    if main_red || !on(&loaded.fac) {
+    if !on(&loaded.fac) {
         return Ok(None);
     }
     let before = night.triage.seen.clone();

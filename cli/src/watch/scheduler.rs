@@ -16,8 +16,10 @@ use serde_json::json;
 use super::self_update::{HandOff, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
 use super::{
-    ci, ended_cleanly, fix_main, fresh_base, open_findings, queue, set_status, triage, unit_id,
-    Forge, Issue, Night, Tonight, DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
+    ci, ended_cleanly,
+    fix_main::{self, Fix},
+    fresh_base, open_findings, queue, set_status, triage, unit_id, Forge, Issue, Night, Tonight,
+    DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
 };
 use crate::clock;
 use crate::error::SfError;
@@ -301,33 +303,27 @@ impl<'a> Scheduler<'a> {
             return Ok(());
         }
         let main = self.main_ci();
-        let held = main.as_ref().is_some_and(|m| m.holds_queue());
-        match triage::pass(
-            plan.repo,
-            plan.forge,
-            plan.loaded,
-            plan.deadline,
-            night,
-            held,
-        )? {
-            Some(triage::Halt::Stop(why)) => {
-                self.stop_all(&why);
-                return Ok(());
+        if !main.as_ref().is_some_and(|m| m.holds_queue()) {
+            // Red main holds triage too: the fix issue is the night's only work.
+            match triage::pass(plan.repo, plan.forge, plan.loaded, plan.deadline, night)? {
+                Some(triage::Halt::Stop(why)) => {
+                    self.stop_all(&why);
+                    return Ok(());
+                }
+                Some(triage::Halt::Paused(reset)) => {
+                    return self.pause(reset).map_err(FillError::Fatal);
+                }
+                None => {}
             }
-            Some(triage::Halt::Paused(reset)) => {
-                return self.pause(reset).map_err(FillError::Fatal);
-            }
-            None => {}
         }
         let mut taken: BTreeSet<u64> = night.finished.clone();
         taken.extend(self.running.values().map(|w| w.issue.number));
         taken.extend(self.resume.iter().map(|i| i.number));
-        let plan = &self.plan;
-        let mut ready = queue(plan.forge, fac, &taken)?.ready;
+        let mut ready = queue(self.plan.forge, fac, &taken)?.ready;
         match self.main_fix(main, &ready, &taken)? {
             // GitHub may not list an issue filed a moment ago.
-            Some((issue, true)) => ready = vec![issue],
-            Some((issue, false)) => ready.retain(|i| i.number == issue.number),
+            Some(Fix::JustFiled(issue)) => ready = vec![issue],
+            Some(Fix::Listed(issue)) => ready.retain(|i| i.number == issue.number),
             None => {}
         }
         for issue in ready {
@@ -370,63 +366,70 @@ impl<'a> Scheduler<'a> {
         }
     }
 
-    /// While main is red, the issue that fixes it, the only one to start, and whether it was filed
-    /// just now. `ready` is what the queue would start and `taken` what runs or is done tonight:
-    /// an open fix issue outside both is not used, since nothing would start it.
+    /// While main is red, the issue that fixes it, the only one to start. `ready` is what the
+    /// queue would start and `taken` what runs or is done tonight: an open fix issue outside both
+    /// is not used, since nothing would start it.
     fn main_fix(
         &mut self,
         main: Option<ci::MainCi>,
         ready: &[Issue],
         taken: &BTreeSet<u64>,
-    ) -> Result<Option<(Issue, bool)>> {
-        let plan = &self.plan;
+    ) -> Result<Option<Fix>> {
         let Some(main) = main else {
             return Ok(None);
         };
         if !main.holds_queue() {
-            if self.red_at.take().is_some() {
-                eprintln!("ns watch: main is not red any more; the queue resumes");
-                run::log_event(
-                    &plan.repo.common_dir,
-                    json!({"event": "main_green", "sha": main.sha, "state": main.state}),
-                );
-            }
+            self.log_green(&main);
             return Ok(None);
         }
-        let fac = &plan.loaded.fac;
+        let plan = &self.plan;
         let startable =
             |i: &Issue| taken.contains(&i.number) || ready.iter().any(|r| r.number == i.number);
-        let (issue, filed) = fix_main::issue(
+        let fix = fix_main::issue(
             plan.repo,
             plan.forge,
-            fac,
+            &plan.loaded.fac,
             &main,
             self.fix.as_ref(),
             &startable,
         )?;
-        if !startable(&issue) {
-            eprintln!(
-                "ns watch: warning: fix issue #{} is open but the queue will not start it; \
-                 check its labels and blockers",
-                issue.number
-            );
+        if let Some(warning) = fix.warning(&startable) {
+            eprintln!("{warning}");
         }
-        self.fix = Some(issue.clone());
-        if self.red_at != main.sha {
-            let failing: Vec<&str> = main.failing.iter().map(|c| c.name.as_str()).collect();
-            eprintln!(
-                "ns watch: main is red ({}); only #{} {} starts",
-                failing.join(", "),
-                issue.number,
-                issue.title
-            );
-            run::log_event(
-                &plan.repo.common_dir,
-                json!({"event": "main_red", "sha": main.sha, "failing": failing, "issue": issue.number}),
-            );
-            self.red_at = main.sha;
+        self.fix = Some(fix.issue().clone());
+        self.log_red(&main, fix.issue());
+        Ok(Some(fix))
+    }
+
+    /// Say, once per red head, that main is red and which issue fixes it.
+    fn log_red(&mut self, main: &ci::MainCi, fix: &Issue) {
+        if self.red_at == main.sha {
+            return;
         }
-        Ok(Some((issue, filed)))
+        let failing: Vec<&str> = main.failing.iter().map(|c| c.name.as_str()).collect();
+        eprintln!(
+            "ns watch: main is red ({}); only #{} {} starts",
+            failing.join(", "),
+            fix.number,
+            fix.title
+        );
+        run::log_event(
+            &self.plan.repo.common_dir,
+            json!({"event": "main_red", "sha": main.sha, "failing": failing, "issue": fix.number}),
+        );
+        self.red_at = main.sha.clone();
+    }
+
+    /// Say, when main was red, that it is not any more.
+    fn log_green(&mut self, main: &ci::MainCi) {
+        if self.red_at.take().is_none() {
+            return;
+        }
+        eprintln!("ns watch: main is not red any more; the queue resumes");
+        run::log_event(
+            &self.plan.repo.common_dir,
+            json!({"event": "main_green", "sha": main.sha, "state": main.state}),
+        );
     }
 
     /// The commit to update to, when origin's default branch has `cli/` changes this `ns` lacks.

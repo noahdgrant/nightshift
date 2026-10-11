@@ -28,11 +28,44 @@ const NAME_CHARS: usize = 80;
 const LINE_CHARS: usize = 200;
 /// The commits since the last green run the body lists, at most.
 const COMMITS: usize = 30;
+/// The bytes of the names of the checks past [`CHECKS`] the body lists.
+const REST_BYTES: usize = 1000;
+/// The end of a log that redaction reads; what lies before it can't reach the excerpt.
+const LOG_WINDOW: usize = 256 * 1024;
+
+/// The issue that fixes red `main`, and where it came from.
+pub(super) enum Fix {
+    /// Found open: the one used earlier tonight, or one the forge lists.
+    Listed(Issue),
+    /// Filed just now, which the forge may not list yet.
+    JustFiled(Issue),
+}
+
+impl Fix {
+    pub(super) fn issue(&self) -> &Issue {
+        match self {
+            Fix::Listed(i) | Fix::JustFiled(i) => i,
+        }
+    }
+
+    /// What to warn about when the queue will not start this fix issue: only one found open can
+    /// be in that state, since one filed now carries the ready label.
+    pub(super) fn warning(&self, startable: &dyn Fn(&Issue) -> bool) -> Option<String> {
+        match self {
+            Fix::Listed(i) if !startable(i) => Some(format!(
+                "ns watch: warning: fix issue #{} is open but the queue will not start it; \
+                 check its labels and blockers",
+                i.number
+            )),
+            _ => None,
+        }
+    }
+}
 
 /// The issue that fixes red `main`: `fix`, the one used earlier tonight, while it is open, since
 /// GitHub may not list it yet; else the oldest open team-authored one whose title starts with
 /// [`TITLE_PREFIX`] and that `startable` accepts (the queue would start it, or it is already
-/// running or done tonight); else one filed now. True when filed now.
+/// running or done tonight); else one filed now.
 pub(super) fn issue(
     repo: &Repo,
     forge: &dyn Forge,
@@ -40,9 +73,9 @@ pub(super) fn issue(
     main: &MainCi,
     fix: Option<&Issue>,
     startable: &dyn Fn(&Issue) -> bool,
-) -> Result<(Issue, bool)> {
+) -> Result<Fix> {
     if let Some(i) = fix.filter(|i| matches!(forge.is_closed(i.number), Ok(false))) {
-        return Ok((i.clone(), false));
+        return Ok(Fix::Listed(i.clone()));
     }
     let mut open: Vec<Issue> = forge
         .open_issues(None)?
@@ -51,7 +84,7 @@ pub(super) fn issue(
         .collect();
     open.sort_by_key(|i| i.number);
     if let Some(i) = open.into_iter().next() {
-        return Ok((i, false));
+        return Ok(Fix::Listed(i));
     }
     let title = title(main);
     let body = body(repo, forge, main);
@@ -65,11 +98,11 @@ pub(super) fn issue(
         body,
         team: true,
     };
-    Ok((issue, true))
+    Ok(Fix::JustFiled(issue))
 }
 
 fn short(sha: &str) -> &str {
-    &sha[..sha.len().min(7)]
+    clip(sha, 7)
 }
 
 /// `fix: main is red at <short sha>: <first failing check>`, with how many others failed.
@@ -128,17 +161,25 @@ fn body(repo: &Repo, forge: &dyn Forge, main: &MainCi) -> String {
             .iter()
             .map(|c| clean(&c.name))
             .collect();
-        let rest = rest.join(", ");
         out.push_str(&format!(
             "\nand {} more failing checks, not quoted: {}\n",
-            rest.matches(", ").count() + 1,
-            clip(&rest, 1000)
+            rest.len(),
+            clip(&rest.join(", "), REST_BYTES)
         ));
     }
     out.push_str("\n## Commits since the last green run\n\n");
     out.push_str(&commits(repo, forge, sha));
     out.push_str(&format!("\n\n{DISCLAIMER}\n"));
     out
+}
+
+/// The last [`LOG_WINDOW`] bytes of `log`, from a character boundary.
+fn window(log: &str) -> &str {
+    let start = log.len().saturating_sub(LOG_WINDOW);
+    let start = (start..=log.len())
+        .find(|i| log.is_char_boundary(*i))
+        .unwrap_or(log.len());
+    &log[start..]
 }
 
 /// The check's log redacted, then its last [`LOG_LINES`] lines, at most [`LOG_BYTES`], fenced.
@@ -153,10 +194,11 @@ fn excerpt(forge: &dyn Forge, c: &Check) -> String {
             return format!("No log: {}", clip(&why, LINE_CHARS));
         }
     };
-    // Redact the whole log before cutting, so a secret that starts outside the window is gone.
-    let log = crate::phase_output::redact_text(&log);
-    let lines: Vec<&str> = log.lines().collect();
-    let tail = lines[lines.len().saturating_sub(LOG_LINES)..].join("\n");
+    // Redact before the final cut, so a secret that starts outside the excerpt is gone.
+    let log = crate::phase_output::redact_text(window(&log));
+    let mut lines: Vec<&str> = log.lines().rev().take(LOG_LINES).collect();
+    lines.reverse();
+    let tail = lines.join("\n");
     let start = tail.len().saturating_sub(LOG_BYTES);
     let start = (start..=tail.len())
         .find(|i| tail.is_char_boundary(*i))
@@ -177,7 +219,14 @@ fn commits(repo: &Repo, forge: &dyn Forge, sha: &str) -> String {
     let max = format!("--max-count={}", COMMITS + 1);
     match git::run(
         &repo.root,
-        &["log", "--oneline", "--no-decorate", &max, &range],
+        &[
+            "log",
+            "--oneline",
+            "--no-decorate",
+            &max,
+            "--end-of-options",
+            &range,
+        ],
     ) {
         Ok(log) => {
             let lines: Vec<&str> = log.lines().collect();
@@ -224,6 +273,13 @@ mod tests {
             labels: Vec::new(),
             body: String::new(),
             team,
+        }
+    }
+
+    fn listed(fix: &Fix) -> u64 {
+        match fix {
+            Fix::Listed(i) => i.number,
+            Fix::JustFiled(i) => panic!("filed #{} where a listed one was expected", i.number),
         }
     }
 
@@ -285,7 +341,7 @@ mod tests {
             ],
             ..Fake::default()
         };
-        let (i, filed) = super::issue(
+        let fix = super::issue(
             &repo(),
             &forge,
             &Factory::default(),
@@ -294,7 +350,7 @@ mod tests {
             &|_| true,
         )
         .unwrap();
-        assert_eq!((i.number, filed), (5, false));
+        assert_eq!(listed(&fix), 5);
         assert!(forge.filed.borrow().is_empty());
     }
 
@@ -306,9 +362,11 @@ mod tests {
             ..Fake::default()
         };
         let main = red(vec![failed("test", None)]);
-        let (i, filed) =
+        let fix =
             super::issue(&repo(), &forge, &Factory::default(), &main, None, &|_| true).unwrap();
-        assert_eq!((i.number, filed), (100, true));
+        assert!(matches!(fix, Fix::JustFiled(_)));
+        let i = fix.issue();
+        assert_eq!(i.number, 100);
         assert_eq!(i.title, "fix: main is red at abcdef0: test");
         let all = forge.filed.borrow();
         let (title, body, labels) = &all[0];
@@ -327,7 +385,16 @@ mod tests {
     }
 
     fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
-        let mut all = vec!["-c", "user.name=t", "-c", "user.email=t@t"];
+        let mut all = vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ];
         all.extend(args);
         git::run(dir, &all).unwrap().trim().to_string()
     }
@@ -377,14 +444,12 @@ mod tests {
         let tonight = issue(7, "fix: main is red at 1111111: x", true);
         let main = red(vec![failed("test", None)]);
         let fac = Factory::default();
-        let (i, filed) =
-            super::issue(&repo(), &forge, &fac, &main, Some(&tonight), &|_| true).unwrap();
-        assert_eq!((i.number, filed), (7, false));
+        let fix = super::issue(&repo(), &forge, &fac, &main, Some(&tonight), &|_| true).unwrap();
+        assert_eq!(listed(&fix), 7);
         assert!(forge.filed.borrow().is_empty());
         forge.closed.insert(7);
-        let (i, filed) =
-            super::issue(&repo(), &forge, &fac, &main, Some(&tonight), &|_| true).unwrap();
-        assert_eq!((i.number, filed), (100, true));
+        let fix = super::issue(&repo(), &forge, &fac, &main, Some(&tonight), &|_| true).unwrap();
+        assert!(matches!(fix, Fix::JustFiled(ref i) if i.number == 100));
     }
 
     #[test]
@@ -511,9 +576,154 @@ mod tests {
         let fac = Factory::default();
         let main = red(vec![failed("test", None)]);
         let only = |n: u64| move |i: &Issue| i.number == n;
-        let (i, filed) = super::issue(&repo(), &forge, &fac, &main, None, &only(9)).unwrap();
-        assert_eq!((i.number, filed), (9, false));
-        let (i, filed) = super::issue(&repo(), &forge, &fac, &main, None, &|_| false).unwrap();
-        assert_eq!((i.number, filed), (100, true));
+        let fix = super::issue(&repo(), &forge, &fac, &main, None, &only(9)).unwrap();
+        assert_eq!(listed(&fix), 9);
+        let fix = super::issue(&repo(), &forge, &fac, &main, None, &|_| false).unwrap();
+        assert!(matches!(fix, Fix::JustFiled(ref i) if i.number == 100));
+    }
+
+    #[test]
+    fn only_a_listed_fix_the_queue_will_not_start_warns() {
+        let i = issue(5, "fix: main is red at 3333333: z", true);
+        let listed = Fix::Listed(i.clone());
+        let filed = Fix::JustFiled(i);
+        let nothing = |_: &Issue| false;
+        let all = |_: &Issue| true;
+        assert!(filed.warning(&nothing).is_none());
+        assert!(listed.warning(&all).is_none());
+        let w = listed.warning(&nothing).unwrap();
+        assert!(w.contains("#5") && w.contains("will not start it"), "{w}");
+    }
+
+    #[test]
+    fn the_count_of_unquoted_checks_ignores_commas_in_names() {
+        let forge = Fake::default();
+        let checks: Vec<Check> = (0..CHECKS + 3)
+            .map(|i| failed(&format!("test (ubuntu, 3.{i})"), None))
+            .collect();
+        let body = body(&repo(), &forge, &red(checks));
+        assert!(
+            body.contains("and 3 more failing checks, not quoted: test (ubuntu, 3.10), "),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn the_names_of_unquoted_checks_stop_at_the_cap() {
+        let forge = Fake::default();
+        let checks: Vec<Check> = (0..CHECKS + 60)
+            .map(|i| failed(&format!("check {i} {}", "n".repeat(40)), None))
+            .collect();
+        let body = body(&repo(), &forge, &red(checks));
+        let rest = body
+            .split("not quoted: ")
+            .nth(1)
+            .and_then(|r| r.lines().next())
+            .unwrap();
+        assert!(body.contains("and 60 more failing checks"), "{body}");
+        assert_eq!(rest.len(), REST_BYTES, "{rest}");
+    }
+
+    #[test]
+    fn a_short_sha_never_cuts_a_character() {
+        assert_eq!(short("éééééééé"), "ééé");
+        assert_eq!(short("abc"), "abc");
+        assert_eq!(short("abcdef0123"), "abcdef0");
+    }
+
+    #[test]
+    fn a_pem_block_inside_the_window_is_redacted_of_a_huge_log() {
+        let mut log = "noise line\n".repeat(LOG_WINDOW / 4);
+        log.push_str(
+            "-----BEGIN PRIVATE KEY-----\nMIIBVAIBADANBgkqhkiG\n-----END PRIVATE KEY-----\n",
+        );
+        log.push_str("last line\n");
+        assert!(log.len() > 2 * LOG_WINDOW);
+        let mut forge = Fake::default();
+        forge.logs.insert("1".into(), log);
+        let text = excerpt(&forge, &failed("t", Some("1")));
+        assert!(!text.contains("MIIB"), "{text}");
+        assert!(text.contains("last line"), "{text}");
+    }
+
+    #[test]
+    fn the_redaction_window_is_bounded_and_cuts_at_a_character() {
+        let log = "é".repeat(LOG_WINDOW);
+        let w = window(&log);
+        assert!(
+            w.len() <= LOG_WINDOW && w.len() >= LOG_WINDOW - 1,
+            "{}",
+            w.len()
+        );
+        assert!(log.ends_with(w));
+        assert_eq!(window("short"), "short");
+    }
+
+    #[test]
+    fn a_long_error_is_clipped_in_the_excerpt() {
+        let forge = Fake::default();
+        let at = "x".repeat(500);
+        let text = excerpt(&forge, &failed("t", Some(&at)));
+        assert!(text.starts_with("No log: no log at xxx"), "{text}");
+        assert_eq!(text.len(), "No log: ".len() + LINE_CHARS);
+    }
+
+    fn repo_with_green() -> (tempfile::TempDir, Repo, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        git_in(root, &["init", "-q"]);
+        git_in(root, &["commit", "-q", "--allow-empty", "-m", "green"]);
+        let green = git_in(root, &["rev-parse", "HEAD"]);
+        let repo = Repo {
+            root: root.into(),
+            common_dir: root.join(".git"),
+        };
+        (tmp, repo, green)
+    }
+
+    #[test]
+    fn a_long_commit_subject_is_clipped() {
+        let (tmp, repo, green) = repo_with_green();
+        let root = tmp.path();
+        let subject = "s".repeat(500);
+        git_in(root, &["commit", "-q", "--allow-empty", "-m", &subject]);
+        let forge = Fake {
+            green: Some(green),
+            ..Fake::default()
+        };
+        let text = commits(&repo, &forge, &git_in(root, &["rev-parse", "HEAD"]));
+        let line = text.lines().last().unwrap();
+        assert!(line.starts_with("- "), "{text}");
+        assert_eq!(line.len(), "- ".len() + LINE_CHARS, "{text}");
+    }
+
+    #[test]
+    fn a_range_git_rejects_says_what_git_said() {
+        let (tmp, repo, _) = repo_with_green();
+        let sha = git_in(tmp.path(), &["rev-parse", "HEAD"]);
+        let forge = Fake {
+            green: Some("deadbeefdeadbeef".into()),
+            ..Fake::default()
+        };
+        let text = commits(&repo, &forge, &sha);
+        assert!(
+            text.starts_with("Cannot list the commits since deadbee: "),
+            "{text}"
+        );
+        assert!(text.contains("deadbeefdeadbeef"), "{text}");
+    }
+
+    #[test]
+    fn a_green_that_looks_like_an_option_is_not_run_as_one() {
+        let (tmp, repo, _) = repo_with_green();
+        let out = tmp.path().join("pwned");
+        let sha = git_in(tmp.path(), &["rev-parse", "HEAD"]);
+        let forge = Fake {
+            green: Some(format!("--output={}", out.display())),
+            ..Fake::default()
+        };
+        let text = commits(&repo, &forge, &sha);
+        assert!(text.starts_with("Cannot list the commits"), "{text}");
+        assert!(!out.exists());
     }
 }
