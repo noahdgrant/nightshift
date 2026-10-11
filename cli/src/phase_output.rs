@@ -48,6 +48,10 @@ static SECRET_TEXT: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
         (r"(://)[^/\s:@]+:[^/\s@]+@", "${1}[redacted]@"),
         (r"(?i)\b(authorization\s*:\s*token\s+)\S+", "${1}[redacted]"),
         (
+            r#"(?i)\b(authorization\s*:\s*(?:bearer|basic)\s+)[^\s'"]+"#,
+            "${1}[redacted]",
+        ),
+        (
             r"(?i)(\s--[a-z-]*(?:password|passwd|passphrase|secret|token|api-?key|access-?key|private-?key|credentials?)\s+)\S+",
             "${1}[redacted]",
         ),
@@ -135,6 +139,7 @@ fn print(
     loop {
         at = drain(&path, at, show, out)?;
         if let Some(next) = current()?.filter(|n| *n != path) {
+            drain(&path, at, show, out)?;
             at = snapshot(&next, show, out)?;
             path = next;
         } else if !wait() {
@@ -578,6 +583,8 @@ not json
                 "pypi-AgEIcHlwaS5vcmcabcdefghij0123456789",
             ),
             ("passphrase: hunter2value", "hunter2value"),
+            (r#"{"token":"hunter2value"}"#, "hunter2value"),
+            ("{\n\"token\": \"hunter2value\"\n}", "hunter2value"),
             ("password = correct horse battery staple", "staple"),
             ("PASSWORD=correct horse && run", "horse"),
         ];
@@ -682,6 +689,46 @@ not json
             out,
             "assistant: one\nassistant: last of build\nassistant: two\nassistant: three\n"
         );
+    }
+
+    #[test]
+    fn follow_prints_the_last_lines_of_a_finished_phase_before_switching() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build = tmp.path().join("build-1.jsonl");
+        let verify = tmp.path().join("verify-1.jsonl");
+        append(&build, &format!("{}\n", said("one")));
+        append(&verify, &format!("{}\n", said("two")));
+        let polls = Cell::new(0);
+        let out = view(
+            &build,
+            true,
+            || {
+                polls.set(polls.get() + 1);
+                if polls.get() == 1 {
+                    return Ok(Some(build.clone()));
+                }
+                append(&build, &format!("{}\n", said("last of build")));
+                Ok(Some(verify.clone()))
+            },
+            || polls.get() < 3,
+        );
+        assert_eq!(
+            out,
+            "assistant: one\nassistant: last of build\nassistant: two\n"
+        );
+    }
+
+    #[test]
+    fn only_the_latest_entries_of_a_long_transcript_are_printed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("build-1.jsonl");
+        let lines: String = (0..LATEST + 5)
+            .map(|i| format!("{}\n", said(&format!("m{i}"))))
+            .collect();
+        append(&path, &lines);
+        let out = view(&path, false, || Ok(None), || false);
+        assert_eq!(out.lines().count(), LATEST, "{out}");
+        assert_eq!(out.lines().next(), Some("assistant: m5"));
     }
 
     #[test]
@@ -858,6 +905,9 @@ not json
             ),
             ("Authorization: Basic dXNlcjpodW50ZXIy", "dXNlcjpodW50ZXIy"),
             ("Bearer opaquebearer42", "opaquebearer42"),
+            ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+            ("Authorization: Bearer abcdefghij", "abcdefghij"),
+            ("curl -H 'Authorization: Basic abc' x", "abc"),
         ] {
             let mut v = Value::String(text.into());
             redact(&mut v);
