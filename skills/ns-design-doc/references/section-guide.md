@@ -56,7 +56,7 @@ Answers: what cannot move, and who says so?
 Test: every constraint names its source, so a reviewer can challenge the source rather than argue with you. A limit set by a requirement, another design, or an interface cites its ID or links its section, with the ID beside any value you repeat.
 
 - Weak: "Limited memory and power on the device."
-- Strong: "The partition map leaves 4 KB of settings storage, of which 1.2 KB is free today (measured from the current build). The device wakes for around 30 seconds per cycle, bounded by MAX_TRANSMIT_WAIT (RFC 7252), so no step may assume a longer window. The object store's signed URLs cannot be valid for more than 7 days (its documentation), so a resume that spans longer needs a fresh URL."
+- Strong: "The partition map leaves 4 KB of settings storage, of which 1.2 KB is free today (measured from the current build). The device stays awake for 30 seconds per cycle; the awake window is a device setting, 30 s today, so no step may assume a longer window. The object store's signed URLs cannot be valid for more than 7 days (its documentation), so a resume that spans longer needs a fresh URL."
 
 Separate real constraints from decisions you have already made. The gateway's 60 minute URL lifetime is a setting the team chose, so it is a decision. A decision belongs in Design, where it can be argued with.
 
@@ -83,7 +83,7 @@ Write the main path first, in order, then the edges. Name real identifiers: obje
 Interfaces get before-and-after treatment, always:
 
 - Weak: "The device reports its download progress to the gateway."
-- Strong: "Custom Object 32768 gains Resource 3, `download_offset` (integer, read-only). The gateway reads it before writing Package URI. Old firmware does not implement Resource 3; the gateway treats a 4.04 as offset zero and falls back to a full download, so a mix of old and new firmware keeps working."
+- Strong: "Custom Object 32768 (an ID outside the ranges the OMA registry reserves) gains Resource 3, `download_offset` (integer, read-only). The gateway reads it before writing Package URI. Old firmware does not implement Resource 3; the gateway treats a 4.04 as offset zero and falls back to a full download, so a mix of old and new firmware keeps working."
 
 That last clause is the one reviewers care about most and the one most often missing. Say what happens when the two sides disagree about version.
 

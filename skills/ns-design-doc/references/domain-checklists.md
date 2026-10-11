@@ -29,7 +29,7 @@ Applies whenever a device, a gateway, a backend, a CLI, or a web app has to agre
 
 ## Protocol and wire format (LwM2M, CoAP, Protobuf)
 
-- Object and resource IDs, explicitly, including whether a new one is inside the 32768 to 65534 private range.
+- Object and resource IDs, explicitly, including whether a new one falls outside the ranges the OMA registry reserves.
 - Message size against the MTU and the DTLS overhead. Does anything now need block-wise transfer?
 - Behaviour under Queue Mode specifically. Does this assume a device is reachable when it is asleep?
 - Retransmission and timeout constants, and where they come from.
