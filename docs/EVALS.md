@@ -171,7 +171,7 @@ Per case and arm: pass rate, median tokens (input and output), median cost, medi
 
 The 2x2 reading: an accuracy gain and an efficiency gain is a clear win. Accuracy up with efficiency down is a trade. Accuracy flat with efficiency up still helps. No gain on either is a retirement candidate.
 
-Trigger evals parse the harness transcript for the skill being loaded. `claude-stream-json` detects a `Skill` tool call naming the skill, or a read of its `SKILL.md`. Harnesses with no parser report triggers as `unsupported`.
+Trigger evals parse the harness transcript for the skill being loaded. `claude-stream-json` detects a `Skill` tool call naming the skill, or a read of its `SKILL.md`. `codex-jsonl` (the built-in `codex` harness) detects a shell command naming its `SKILL.md`; Codex reports no cost. Harnesses with no parser report triggers as `unsupported`.
 
 ## Results
 
