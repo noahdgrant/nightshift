@@ -476,16 +476,26 @@ impl<'a> Lexer<'a> {
             self.process_substitution();
         } else if self.chars.next_if_eq(&'<').is_some() {
             if self.chars.next_if_eq(&'<').is_some() {
-                self.out.push(Tok::RedirectIn);
+                self.herestring();
             } else {
-                self.chars.next_if_eq(&'-');
-                self.next_word_is_delimiter = true;
+                self.heredoc_operator();
             }
         } else if self.chars.next_if_eq(&'&').is_some() {
             self.duplicated_descriptor();
         } else {
             self.out.push(Tok::RedirectIn);
         }
+    }
+
+    /// `<<<`: the next word is input text, so it reads like any other redirect target.
+    fn herestring(&mut self) {
+        self.out.push(Tok::RedirectIn);
+    }
+
+    /// `<<` or `<<-`: the next word is the heredoc delimiter, not a command word.
+    fn heredoc_operator(&mut self) {
+        self.chars.next_if_eq(&'-');
+        self.next_word_is_delimiter = true;
     }
 
     fn newline(&mut self) {
