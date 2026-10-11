@@ -1789,6 +1789,84 @@ fn pre_push_checks_the_tree_it_pushes_and_nothing_else() {
     assert_eq!(git(&remote, &["for-each-ref"]), "");
 }
 
+#[test]
+fn pre_push_accepts_an_annotated_tag_at_head_and_refuses_one_elsewhere() {
+    let (_tmp, root, remote, log) = hooked_repo();
+    git(&root, &["tag", "-a", "-m", "at head", "v-head"]);
+    let out = git_output(&root, &["push", "-q", "origin", "refs/tags/v-head"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(runs(&log), 1);
+
+    git(&root, &["tag", "-a", "-m", "old", "v-old"]);
+    fs::write(root.join("README"), "next\n").unwrap();
+    git(&root, &["commit", "-qam", "next"]);
+    let before = runs(&log);
+    let out = git_output(&root, &["push", "-q", "origin", "refs/tags/v-old"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("pre-push"));
+    assert_eq!(runs(&log), before);
+    assert!(!git(&remote, &["for-each-ref"]).contains("v-old"));
+}
+
+#[test]
+fn pre_push_with_follow_tags_pushes_the_branch_beside_its_annotated_tag() {
+    let (_tmp, root, _remote, _log) = hooked_repo();
+    git(&root, &["config", "push.followTags", "true"]);
+    git(&root, &["tag", "-a", "-m", "release", "v1"]);
+    let out = git_output(&root, &["push", "-q", "origin", "HEAD:refs/heads/a"]);
+    assert!(out.status.success(), "{out:?}");
+}
+
+#[test]
+fn pre_push_pins_every_ref_in_one_push() {
+    let (_tmp, root, remote, log) = hooked_repo();
+    git(&root, &["branch", "old"]);
+    fs::write(root.join("README"), "next\n").unwrap();
+    git(&root, &["commit", "-qam", "next"]);
+    let before = runs(&log);
+    let out = git_output(
+        &root,
+        &[
+            "push",
+            "-q",
+            "origin",
+            "HEAD:refs/heads/new",
+            "old:refs/heads/older",
+        ],
+    );
+    assert!(!out.status.success());
+    assert_eq!(runs(&log), before);
+    assert_eq!(git(&remote, &["for-each-ref"]), "");
+
+    git(&root, &["push", "-q", "origin", "HEAD:refs/heads/gone"]);
+    let out = git_output(
+        &root,
+        &[
+            "push",
+            "-q",
+            "origin",
+            ":refs/heads/gone",
+            "old:refs/heads/older",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(git(&remote, &["for-each-ref"]).contains("refs/heads/gone"));
+    assert!(!git(&remote, &["for-each-ref"]).contains("older"));
+    let out = git_output(
+        &root,
+        &[
+            "push",
+            "-q",
+            "origin",
+            "HEAD:refs/heads/new",
+            ":refs/heads/gone",
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let refs = git(&remote, &["for-each-ref"]);
+    assert!(refs.contains("refs/heads/new") && !refs.contains("refs/heads/gone"));
+}
+
 /// A hook that exits 0 on a skip variable passes a commit the checks would fail.
 #[test]
 fn neither_hook_has_an_environment_variable_that_skips_it() {

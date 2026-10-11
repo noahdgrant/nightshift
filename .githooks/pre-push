@@ -9,7 +9,11 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 while read -r _ sha _ _; do
   case $sha in *[!0]*) ;; *) continue ;; esac
-  if [ "$sha" != "$head" ]; then
+  commit=$(git rev-parse -q --verify "$sha^{commit}") || {
+    echo "pre-push: $sha is not a commit, so ci-local.sh has nothing to check for it." >&2
+    exit 1
+  }
+  if [ "$commit" != "$head" ]; then
     echo "pre-push: pushing $sha, but ci-local.sh checks HEAD ($head). Check out what you push." >&2
     exit 1
   fi
