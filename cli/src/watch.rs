@@ -43,7 +43,7 @@ pub struct WatchArgs {
 }
 
 pub const DISCLAIMER: &str =
-    "_This comment was written by an AI agent (nightshift `ns watch`), not a person._";
+    "_This was written by an AI agent (nightshift `ns watch`), not a person._";
 
 /// Seconds to wait after a usage limit with no reset time in the message.
 const PAUSE_RETRY_S: i64 = 30 * 60;

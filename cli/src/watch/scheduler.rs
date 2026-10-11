@@ -290,8 +290,8 @@ impl<'a> Scheduler<'a> {
         if !self.free() || self.stopping.is_some() {
             return Ok(());
         }
-        let plan = &self.plan;
-        let fac = &plan.loaded.fac;
+        let (repo, forge, loaded) = (self.plan.repo, self.plan.forge, self.plan.loaded);
+        let fac = &loaded.fac;
         if let Some(why) = self.over_claims(night) {
             self.stopping = Some(why);
             return Ok(());
@@ -302,25 +302,30 @@ impl<'a> Scheduler<'a> {
         if self.draining.is_some() {
             return Ok(());
         }
-        let main = self.main_ci();
-        if !main.as_ref().is_some_and(|m| m.holds_queue()) {
-            // Red main holds triage too: the fix issue is the night's only work.
-            match triage::pass(plan.repo, plan.forge, plan.loaded, plan.deadline, night)? {
-                Some(triage::Halt::Stop(why)) => {
-                    self.stop_all(&why);
-                    return Ok(());
-                }
-                Some(triage::Halt::Paused(reset)) => {
-                    return self.pause(reset).map_err(FillError::Fatal);
-                }
-                None => {}
+        // Red main holds triage too: the fix issue is the night's only work. The pass asks before
+        // each triage-only run, as the first of them can turn main red.
+        let held = || self.main_ci().is_some_and(|m| m.holds_queue());
+        match triage::pass(repo, forge, loaded, self.plan.deadline, night, &held)? {
+            Some(triage::Halt::Stop(why)) => {
+                self.stop_all(&why);
+                return Ok(());
             }
+            Some(triage::Halt::Paused(reset)) => {
+                return self.pause(reset).map_err(FillError::Fatal);
+            }
+            None => {}
         }
         let mut taken: BTreeSet<u64> = night.finished.clone();
         taken.extend(self.running.values().map(|w| w.issue.number));
         taken.extend(self.resume.iter().map(|i| i.number));
-        let mut ready = queue(self.plan.forge, fac, &taken)?.ready;
-        match self.main_fix(main, &ready, &taken)? {
+        let mut ready = queue(forge, fac, &taken)?.ready;
+        // Read after the listing and as late as possible: the units start from this read.
+        let main = self.main_ci();
+        let fix = match &main {
+            Some(m) => self.main_fix(m, &ready, &taken)?,
+            None => None,
+        };
+        match fix {
             // GitHub may not list an issue filed a moment ago.
             Some(Fix::JustFiled(issue)) => ready = vec![issue],
             Some(Fix::Listed(issue)) => ready.retain(|i| i.number == issue.number),
@@ -353,7 +358,8 @@ impl<'a> Scheduler<'a> {
         Ok(())
     }
 
-    /// Main's CI, read once per fill. A state that can't be read holds nothing, as at the
+    /// Main's CI, read before each triage-only run and again before the units start. A state
+    /// that can't be read holds nothing, as at the
     /// night's start.
     fn main_ci(&self) -> Option<ci::MainCi> {
         let plan = &self.plan;
@@ -368,36 +374,26 @@ impl<'a> Scheduler<'a> {
 
     /// While main is red, the issue that fixes it, the only one to start. `ready` is what the
     /// queue would start and `taken` what runs or is done tonight: an open fix issue outside both
-    /// is not used, since nothing would start it.
+    /// is still the one, but nothing starts it, so the night warns.
     fn main_fix(
         &mut self,
-        main: Option<ci::MainCi>,
+        main: &ci::MainCi,
         ready: &[Issue],
         taken: &BTreeSet<u64>,
     ) -> Result<Option<Fix>> {
-        let Some(main) = main else {
-            return Ok(None);
-        };
         if !main.holds_queue() {
-            self.log_green(&main);
+            self.log_green(main);
             return Ok(None);
         }
-        let plan = &self.plan;
+        let (repo, forge, loaded) = (self.plan.repo, self.plan.forge, self.plan.loaded);
         let startable =
             |i: &Issue| taken.contains(&i.number) || ready.iter().any(|r| r.number == i.number);
-        let fix = fix_main::issue(
-            plan.repo,
-            plan.forge,
-            &plan.loaded.fac,
-            &main,
-            self.fix.as_ref(),
-            &startable,
-        )?;
+        let fix = fix_main::issue(repo, forge, &loaded.fac, main, self.fix.as_ref())?;
         if let Some(warning) = fix.warning(&startable) {
             eprintln!("{warning}");
         }
         self.fix = Some(fix.issue().clone());
-        self.log_red(&main, fix.issue());
+        self.log_red(main, fix.issue());
         Ok(Some(fix))
     }
 

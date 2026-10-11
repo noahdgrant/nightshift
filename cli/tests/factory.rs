@@ -4112,6 +4112,79 @@ fn watch_with_main_red_runs_no_triage_only_run() {
 }
 
 #[test]
+fn watch_stops_triaging_when_main_turns_red_after_a_triage_only_run() {
+    let e = Env::new();
+    e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
+    e.untriaged(6, "Fix f", &["status:needs-triage", "type:fix"]);
+    main_ci(&e, &[], &[("test", "COMPLETED", "SUCCESS")]);
+    e.gh_file(
+        "main-ci.red",
+        &main_ci_at(MAIN_SHA, &[], &[("test", "COMPLETED", "FAILURE")]),
+    );
+    // #5's triage-only run edits its issue, and main is red from then on.
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *\"issue edit 5 \"*) cp \"$d/main-ci.red\" \"$d/main-ci.json\" ;; esac\n",
+    );
+    e.triage_sets(&["status:needs-info"]);
+    e.queue("triage.5-fix-e", &["pass:script"]);
+    e.queue("triage.6-fix-f", &["none"]);
+    let v = e.run(&["watch", "--max-units", "3"], 0);
+    assert_eq!(e.triage_only_runs(), 1, "{:?}", e.calls());
+    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
+    assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
+    assert_eq!(e.gh_calls().matches("issue create").count(), 1);
+}
+
+#[test]
+fn a_resumed_night_holds_at_its_first_fill_when_main_is_red() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
+    main_red(&e);
+    let path = empty_night(&e);
+    let out = e
+        .ns()
+        .args(["watch", "--max-units", "3", "--resume-night"])
+        .arg(&path)
+        .output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(out.status.success(), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
+    assert_eq!(e.triage_only_runs(), 0);
+    assert_eq!(e.gh_calls().matches("issue create").count(), 1);
+}
+
+#[test]
+fn a_unit_running_when_main_turns_red_finishes_and_the_backlog_waits() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let mut w =
+        Watching::start(
+            e.ns()
+                .env("NS_REFILL_MS", "100")
+                .args(["watch", "--parallel", "2"]),
+        );
+    w.entered(&in_a);
+    // Main is red before the backlog's next issue appears, so no fill sees one without the other.
+    main_red(&e);
+    e.ready(3, "Fix b", &["type:fix"], "");
+    w.line("ns watch: main is red");
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        by_issue(&units(&v)),
+        [(2, "done".into()), (100, "done".into())],
+        "{v}"
+    );
+    assert_eq!(e.gh_calls().matches("issue create").count(), 1);
+    assert!(!e.gh_calls().contains("issue edit 3 "));
+}
+
+#[test]
 fn watch_starts_a_fix_issue_it_just_filed_before_github_lists_it() {
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");
@@ -4212,7 +4285,7 @@ fn watch_reuses_the_open_fix_issue_instead_of_filing_another() {
 }
 
 #[test]
-fn watch_files_a_new_fix_issue_when_the_open_one_is_not_ready() {
+fn watch_reuses_a_parked_fix_issue_and_files_no_duplicate() {
     let e = Env::new();
     e.open_by(
         9,
@@ -4222,9 +4295,19 @@ fn watch_files_a_new_fix_issue_when_the_open_one_is_not_ready() {
         Some("MEMBER"),
     );
     main_red(&e);
-    let v = e.run(&["watch", "--max-units", "3"], 0);
-    assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
-    assert_eq!(e.gh_calls().matches("issue create").count(), 1);
+    let out = e.ns().args(["watch", "--max-units", "3"]).output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(out.status.success(), "{err}");
+    assert!(units(&v).is_empty(), "{v}");
+    assert!(!e.gh_calls().contains("issue create"));
+    assert!(
+        err.contains("fix issue #9 is open but the queue will not start it"),
+        "{err}"
+    );
+    let red = events_named(&e, "main_red");
+    assert_eq!(red.len(), 1, "{red:?}");
+    assert_eq!(red[0]["issue"], 9);
 }
 
 #[test]

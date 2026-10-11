@@ -118,14 +118,16 @@ fn next(
 }
 
 /// Triage-only runs: every candidate filed since the last pass, then the backlog until the queue
-/// has a ready issue, so a big backlog never holds up the next unit. Returns why the pass halted,
-/// when it did.
+/// has a ready issue, so a big backlog never holds up the next unit. `held` is asked before each
+/// triage-only run: when it says yes the pass ends, as main's CI is red. Returns why the pass
+/// halted, when it did.
 pub(super) fn pass(
     repo: &Repo,
     forge: &dyn Forge,
     loaded: &Loaded,
     deadline: Option<i64>,
     night: &mut Night,
+    held: &dyn Fn() -> bool,
 ) -> Result<Option<Halt>> {
     let q = &loaded.fac.queue;
     if !on(&loaded.fac) {
@@ -137,7 +139,7 @@ pub(super) fn pass(
         if let Some(stop) = night.over(deadline, &loaded.fac) {
             return Ok(Some(Halt::Stop(stop.into())));
         }
-        if night.triage.off {
+        if night.triage.off || held() {
             return Ok(None);
         }
         let done = night.triage.tried.union(&night.finished).copied().collect();
