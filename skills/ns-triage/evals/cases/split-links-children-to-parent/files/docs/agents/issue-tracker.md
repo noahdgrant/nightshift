@@ -18,7 +18,7 @@ Everyone with write access to the repo is the team. There are no external report
 
 ## Linking issues
 
-- **Child of a parent**: this tracker has no sub-issues. Put `Part of #<parent-number>` near the top of the child file, after any `Blocked by:` line.
+- **Child of a parent**: this tracker has no sub-issues.
 - **Blocking**: a `Blocked by: NN, NN` line near the top. Set `Status: closed` on a ticket when its work merges. A ticket is unblocked when every file it lists is `closed` or `wontfix`.
 
 ## When a skill says "publish to the issue tracker"

@@ -1,4 +1,4 @@
-description = "The broad request from broad-feature-split, on a tracker whose issue-tracker.md says it has no sub-issues. Triage should split it and link every child to the parent with the fallback: a `Part of #01` line near the top of each child body, after any `Blocked by:` line, which stays line 1. The parent's Triage Notes carry a `Children:` list naming each child."
+description = "The broad request from broad-feature-split, on a tracker whose issue-tracker.md says it has no sub-issues. Triage should split it and link every child to the parent with the fallback: a `Part of #01` line near the top of each child body, after any `Blocked by:` line, which stays the first line after the header lines. The GitHub sub-issue path needs `gh` and is not covered here. The parent's Triage Notes carry a `Children:` list naming each child."
 fixture = "py-inventory"
 skills = ["ns-triage"]
 extra_skills = ["ns-contract"]
@@ -15,7 +15,7 @@ pattern = '(?m)^\**Status:?\**:?\s*`?needs-define`?\s*$'
 present = true
 
 [[check]]
-# Every child links the parent as a whole token (`Part of #01`, not `#011`), with no other body line ahead of it but `Blocked by:`.
+# Every child links the parent as a whole token (`Part of #01`, not `#011`), with only header lines (`Status:`, `Priority:`, ...) ahead of it, and `Blocked by:` the first non-header body line when present.
 # The parent's Triage Notes have a `Children:` list naming every child.
 type = "command"
 run = '''
@@ -33,6 +33,7 @@ if not listing:
     sys.exit("parent's Triage Notes have no Children: list")
 part_of = re.compile(r"(?i)\W*Part of:?\**:?\s*#0*1(?!\d)")
 header = re.compile(r"[*_]*[A-Z][\w-]*(?: [\w-]+)?[*_]*:")
+blocked_by = re.compile(r"(?i)\W*Blocked by:?\**:?\s*(.*)")
 for path in children:
     text = open(path, encoding="utf-8").read()
     stem = os.path.splitext(os.path.basename(path))[0]
@@ -47,7 +48,8 @@ for path in children:
     link = next((i for i, l in enumerate(body) if part_of.match(l)), None)
     if link is None:
         sys.exit(f"{path}: no Part of #01 line")
-    if re.search(r"(?mi)^\W*Blocked by", text) and not re.match(r"(?i)\W*Blocked by", body[0]):
+    first = next((l for l in body if blocked_by.match(l) or not header.match(l)), "")
+    if not blocked_by.match(first) and re.search(r"(?mi)^\W*Blocked by", text):
         sys.exit(f"{path}: Blocked by is not the first body line")
     stray = [l for l in body[:link] if not header.match(l)]
     if stray:

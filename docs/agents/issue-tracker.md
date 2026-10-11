@@ -48,7 +48,7 @@ The most issues one `ns-agent-readiness` run files. With no such line, it files 
 
 ## Linking issues
 
-- **Sub-issue of a parent**: `gh issue create --parent <parent> ...`, or `gh issue edit <parent> --add-sub-issue <child>` afterwards (`gh` 2.94+). Older `gh`: `gh api --method POST repos/<owner>/<repo>/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>`. Without sub-issues, put `Part of #<parent>` at the top of the child body.
+- **Sub-issue of a parent**: `gh issue create --parent <parent> ...`, or `gh issue edit <parent> --add-sub-issue <child>` afterwards (`gh` 2.94+). Older `gh`: `gh api --method POST repos/<owner>/<repo>/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>`. List a parent's children: `gh api repos/<owner>/<repo>/issues/<parent>/sub_issues`. Without sub-issues, put `Part of #<parent>` at the top of the child body.
 - **Blocking**: put `Blocked by: #<n>, #<n>` on the first line of the child body. `ns watch` reads that line; it ignores GitHub's native dependencies.
 - **Is it unblocked?** Every issue named on the `Blocked by:` line is closed.
 

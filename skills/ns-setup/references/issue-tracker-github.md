@@ -42,7 +42,7 @@ The most issues one `ns-agent-readiness` run files. With no such line, it files 
 
 ## Linking issues
 
-- **Sub-issue of a parent**: `gh issue create --parent <parent> ...`, or `gh issue edit <parent> --add-sub-issue <child>` afterwards (`gh` 2.94+). Older `gh`: `gh api --method POST repos/<owner>/<repo>/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>`. Without sub-issues, put `Part of #<parent>` at the top of the child body.
+- **Sub-issue of a parent**: `gh issue create --parent <parent> ...`, or `gh issue edit <parent> --add-sub-issue <child>` afterwards (`gh` 2.94+). Older `gh`: `gh api --method POST repos/<owner>/<repo>/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>`. List a parent's children: `gh api repos/<owner>/<repo>/issues/<parent>/sub_issues`. Without sub-issues, put `Part of #<parent>` at the top of the child body.
 - **Blocking**: GitHub's native issue dependencies. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). Where dependencies aren't available, put a `Blocked by: #<n>, #<n>` line at the top of the child body.
 - **Is it unblocked?** Count open blockers: `gh api repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by --jq '[.[] | select(.state == "open")] | length'`. Zero means unblocked. `issue_dependencies_summary.blocked_by` keeps counting a blocker after it closes, so it can't gate.
 
