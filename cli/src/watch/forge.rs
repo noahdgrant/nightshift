@@ -72,6 +72,14 @@ fn check(
     }
 }
 
+/// The forge `source` names, else the one inferred from `origin` and `gitlab_host`: what a
+/// reader that never fails on a bad `source` shows.
+pub fn kind(source: Option<&str>, origin: Option<&str>, gitlab_host: Option<&str>) -> ForgeKind {
+    source
+        .and_then(ForgeKind::parse)
+        .unwrap_or_else(|| inferred(origin, gitlab_host))
+}
+
 /// The forge inferred from `origin`: gitlab for a host containing it or equal to `gitlab_host`
 /// (hosts are case-insensitive), else github, also for no origin or a local path.
 fn inferred(origin: Option<&str>, gitlab_host: Option<&str>) -> ForgeKind {
@@ -88,7 +96,7 @@ fn inferred(origin: Option<&str>, gitlab_host: Option<&str>) -> ForgeKind {
 
 /// The host of a remote URL, `scheme://[user@]host[:port]/path` or scp-like `[user@]host:path`;
 /// `None` for a local path.
-fn host(url: &str) -> Option<&str> {
+pub fn host(url: &str) -> Option<&str> {
     let rest = match url.split_once("://") {
         Some((_, rest)) => rest.split('/').next()?,
         None => url.split_once(':').filter(|(h, _)| !h.contains('/'))?.0,

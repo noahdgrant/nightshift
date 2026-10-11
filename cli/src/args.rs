@@ -498,7 +498,8 @@ what the event lacks. The PR link comes from origin's URL; without one it is pr 
 --json prints one object per event with only ts, event, unit, issue, phase, attempt, status,
 wall_s, outcome, pr, pr_url and reason; nothing else in the log is printed. --since is UTC and
 inclusive, and drops events with no time. -f prints the log so far, then polls it every
-0.5 s until stopped (Ctrl-C). Lines that are not JSON are skipped and counted on stderr.
+0.5 s until stopped (Ctrl-C). Lines that are not UTF-8 JSON objects are skipped; without -f
+their count is on stderr.
 Changes nothing.
 
 Exit codes: 0 ok, 1 the log could not be read, 2 usage error (bad --since, not in a git repo).";

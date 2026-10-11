@@ -10,8 +10,11 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
 
+use crate::config::{self, ForgeKind};
+use crate::factory;
 use crate::git::{self, Repo};
 use crate::quality::{self, issue_of, Window};
+use crate::watch::forge as watch_forge;
 
 /// The only fields `ns log` prints. The rest (prompts, transcripts, errors, paths) stay in the
 /// file, so no output carries what a run happened to log.
@@ -39,9 +42,19 @@ pub fn cli(
         .transpose()?;
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
     let path = repo.common_dir.join("ns").join("runs.jsonl");
-    let base = git::run(&repo.root, &["remote", "get-url", "origin"])
+    let origin = git::run(&repo.root, &["remote", "get-url", "origin"]).ok();
+    let source = factory::load(&factory::root(None, &repo.root))
         .ok()
-        .and_then(|u| web_base(u.trim()));
+        .and_then(|f| f.queue.source);
+    let gitlab_host = std::env::var(ForgeKind::Gitlab.host_var())
+        .ok()
+        .or_else(|| {
+            let cfg = config::load(&config::path()).ok().flatten()?;
+            cfg.forge.gitlab?.host
+        });
+    let base = origin
+        .as_deref()
+        .and_then(|o| PrBase::new(o.trim(), source.as_deref(), gitlab_host.as_deref()));
     let filter = Filter {
         unit,
         since: Window { since, until: None },
@@ -50,14 +63,14 @@ pub fn cli(
     let mut out = io::stdout().lock();
     let printed = if follow {
         let tail = Tail::new(path.clone(), || std::thread::sleep(POLL));
-        render(tail, &filter, show, base.as_deref(), &mut out)
+        render(tail, &filter, show, base.as_ref(), &mut out)
     } else {
         match File::open(&path) {
             Ok(f) => render(
-                BufReader::new(f).lines(),
+                byte_lines(BufReader::new(f)),
                 &filter,
                 show,
-                base.as_deref(),
+                base.as_ref(),
                 &mut out,
             ),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -73,7 +86,7 @@ pub fn cli(
     match printed {
         Ok(0) => {}
         Ok(bad) => eprintln!(
-            "skipped {bad} line(s) of {} that are not JSON objects",
+            "skipped {bad} line(s) of {} that are not UTF-8 JSON objects",
             path.display()
         ),
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
@@ -86,21 +99,25 @@ pub fn cli(
 type Show = fn(&Map<String, Value>) -> String;
 
 /// Print each event `lines` yields that passes `filter`, as `show` formats it, one per line.
-/// Returns how many non-blank lines were not JSON objects.
+/// Returns how many non-blank lines were not UTF-8 JSON objects.
 pub fn render(
-    lines: impl Iterator<Item = io::Result<String>>,
+    lines: impl Iterator<Item = io::Result<Vec<u8>>>,
     filter: &Filter,
     show: Show,
-    pr_base: Option<&str>,
+    pr_base: Option<&PrBase>,
     out: &mut impl Write,
 ) -> io::Result<usize> {
     let mut bad = 0;
     for line in lines {
         let line = line?;
+        let Ok(line) = std::str::from_utf8(&line) else {
+            bad += 1;
+            continue;
+        };
         if line.trim().is_empty() {
             continue;
         }
-        let Some(ev) = event(&line, pr_base) else {
+        let Some(ev) = event(line, pr_base) else {
             bad += 1;
             continue;
         };
@@ -113,8 +130,8 @@ pub fn render(
 }
 
 /// The allowlisted, non-null fields of one run-log line, with `issue` taken from the unit id
-/// and `pr_url` from `pr_base` when the line has neither. `None` when it is not a JSON object.
-fn event(line: &str, pr_base: Option<&str>) -> Option<Map<String, Value>> {
+/// when the line has none, and `pr_url` built from `pr_base` whenever the line has a `pr`. `None` when it is not a JSON object.
+fn event(line: &str, pr_base: Option<&PrBase>) -> Option<Map<String, Value>> {
     let Ok(Value::Object(mut all)) = serde_json::from_str::<Value>(line) else {
         return None;
     };
@@ -125,7 +142,7 @@ fn event(line: &str, pr_base: Option<&str>) -> Option<Map<String, Value>> {
         }
     }
     if let (Some(base), Some(n)) = (pr_base, all.get("pr").and_then(Value::as_u64)) {
-        all.insert("pr_url".into(), json!(pr_link(base, n)));
+        all.insert("pr_url".into(), json!(base.link(n)));
     }
     Some(all)
 }
@@ -147,8 +164,12 @@ fn json_line(ev: &Map<String, Value>) -> String {
 /// leaving out what the event lacks.
 fn text(ev: &Map<String, Value>) -> String {
     let field = |k: &str| {
-        ev.get(k)
-            .map(|v| v.as_str().map_or_else(|| v.to_string(), String::from))
+        let v = ev.get(k)?;
+        match v.as_str() {
+            Some("") => None,
+            Some(s) => Some(s.chars().flat_map(printable).collect::<String>()),
+            None => Some(v.to_string()),
+        }
     };
     let parts = [
         field("ts"),
@@ -165,32 +186,66 @@ fn text(ev: &Map<String, Value>) -> String {
     parts.into_iter().flatten().collect::<Vec<_>>().join(" ")
 }
 
+fn printable(c: char) -> impl Iterator<Item = char> {
+    let escaped = c.is_control().then(|| c.escape_default());
+    escaped
+        .into_iter()
+        .flatten()
+        .chain((!c.is_control()).then_some(c))
+}
+
+/// Where an event's PR lives: the repo's web address and the forge that serves it.
+pub struct PrBase {
+    web: String,
+    kind: ForgeKind,
+}
+
+impl PrBase {
+    /// From `origin`'s URL, with the forge chosen as `ns watch` chooses it (`[queue] source`,
+    /// else the host). `None` when `origin` is not a remote URL, such as a local path.
+    fn new(origin: &str, source: Option<&str>, gitlab_host: Option<&str>) -> Option<PrBase> {
+        Some(PrBase {
+            web: web_base(origin)?,
+            kind: watch_forge::kind(source, Some(origin), gitlab_host),
+        })
+    }
+
+    fn link(&self, n: u64) -> String {
+        match self.kind {
+            ForgeKind::Gitlab => format!("{}/-/merge_requests/{n}", self.web),
+            ForgeKind::Github => format!("{}/pull/{n}", self.web),
+        }
+    }
+}
+
 /// The web address of a repo from its `origin` URL (`https://`, `ssh://` or `git@host:`), with
 /// any credentials and `.git` dropped. `None` for anything else, such as a local path.
 fn web_base(url: &str) -> Option<String> {
-    let (host, path) = if let Some(rest) = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .or_else(|| url.strip_prefix("ssh://"))
-    {
-        rest.split_once('/')?
-    } else {
-        let (user_host, path) = url.split_once(':')?;
-        user_host.contains('@').then_some((user_host, path))?
+    let host = watch_forge::host(url).filter(|h| !h.is_empty())?;
+    let rest = match url.split_once("://") {
+        Some(("https" | "http" | "ssh", rest)) => rest.split_once('/')?.1,
+        Some(_) => return None,
+        None => url.split_once(':').filter(|(h, _)| h.contains('@'))?.1,
     };
-    let host = host.rsplit('@').next()?;
-    let host = host.split(':').next()?;
-    let path = path.trim_end_matches('/').trim_end_matches(".git");
-    (!host.is_empty() && !path.is_empty()).then(|| format!("https://{host}/{path}"))
+    let path = rest.trim_end_matches('/').trim_end_matches(".git");
+    (!path.is_empty()).then(|| format!("https://{host}/{path}"))
 }
 
-/// PR `n`'s page: a GitLab merge request when the host names GitLab, else a GitHub pull request.
-fn pr_link(base: &str, n: u64) -> String {
-    if base.contains("gitlab") {
-        format!("{base}/-/merge_requests/{n}")
-    } else {
-        format!("{base}/pull/{n}")
-    }
+/// The lines of `reader` as bytes, without their newline.
+fn byte_lines(mut reader: impl BufRead) -> impl Iterator<Item = io::Result<Vec<u8>>> {
+    std::iter::from_fn(move || {
+        let mut line = Vec::new();
+        match reader.read_until(b'\n', &mut line) {
+            Err(e) => Some(Err(e)),
+            Ok(0) => None,
+            Ok(_) => {
+                if line.last() == Some(&b'\n') {
+                    line.pop();
+                }
+                Some(Ok(line))
+            }
+        }
+    })
 }
 
 /// The lines of a file as they are appended, forever: at the end of the file, and while it
@@ -199,7 +254,7 @@ fn pr_link(base: &str, n: u64) -> String {
 pub struct Tail<W: FnMut()> {
     path: PathBuf,
     reader: Option<BufReader<File>>,
-    partial: String,
+    partial: Vec<u8>,
     wait: W,
 }
 
@@ -208,14 +263,14 @@ impl<W: FnMut()> Tail<W> {
         Tail {
             path,
             reader: None,
-            partial: String::new(),
+            partial: Vec::new(),
             wait,
         }
     }
 }
 
 impl<W: FnMut()> Iterator for Tail<W> {
-    type Item = io::Result<String>;
+    type Item = io::Result<Vec<u8>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -227,10 +282,10 @@ impl<W: FnMut()> Iterator for Tail<W> {
                 }
                 continue;
             };
-            match reader.read_line(&mut self.partial) {
+            match reader.read_until(b'\n', &mut self.partial) {
                 Err(e) => return Some(Err(e)),
                 Ok(0) => (self.wait)(),
-                Ok(_) if self.partial.ends_with('\n') => {
+                Ok(_) if self.partial.ends_with(b"\n") => {
                     let mut line = std::mem::take(&mut self.partial);
                     line.pop();
                     return Some(Ok(line));
@@ -260,8 +315,8 @@ not json
 {"event":"requeued","issue":151,"reason":"in progress with no live ns run"}
 "#;
 
-    fn lines(text: &str) -> impl Iterator<Item = io::Result<String>> + '_ {
-        text.lines().map(|l| Ok(l.to_string()))
+    fn lines(text: &str) -> impl Iterator<Item = io::Result<Vec<u8>>> + '_ {
+        text.lines().map(|l| Ok(l.as_bytes().to_vec()))
     }
 
     fn all() -> Filter {
@@ -271,7 +326,11 @@ not json
         }
     }
 
-    fn run(filter: &Filter, show: Show, base: Option<&str>) -> (Vec<String>, usize) {
+    fn base(web: &str) -> PrBase {
+        PrBase::new(&format!("{web}.git"), None, None).unwrap()
+    }
+
+    fn run(filter: &Filter, show: Show, base: Option<&PrBase>) -> (Vec<String>, usize) {
         let mut out = Vec::new();
         let bad = render(lines(FIXTURE), filter, show, base, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
@@ -280,7 +339,7 @@ not json
 
     #[test]
     fn each_event_is_one_line_without_the_fields_it_lacks() {
-        let (out, bad) = run(&all(), text, Some("https://github.com/o/r"));
+        let (out, bad) = run(&all(), text, Some(&base("https://github.com/o/r")));
         assert_eq!(
             out,
             [
@@ -294,6 +353,31 @@ not json
             ]
         );
         assert_eq!(bad, 2);
+    }
+
+    #[test]
+    fn control_characters_in_a_value_cannot_reshape_the_line() {
+        let line = "{\"event\":\"end\",\"unit\":\"7-a\",\"reason\":\"\\u001b[31mred\\nnext\\r\",\"outcome\":\"\"}";
+        let mut out = Vec::new();
+        let input = [Ok(line.as_bytes().to_vec())];
+        render(input.into_iter(), &all(), text, None, &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!(out, "end #7 reason: \\u{1b}[31mred\\nnext\\r\n");
+    }
+
+    #[test]
+    fn a_line_that_is_not_utf8_is_skipped_and_counted() {
+        let input = [
+            Ok(b"{\"event\":\"a\"}".to_vec()),
+            Ok(b"{\"event\":\"\xff\xfe\"}".to_vec()),
+            Ok(b"{\"event\":\"b\"}".to_vec()),
+        ];
+        let mut out = Vec::new();
+        let bad = render(input.into_iter(), &all(), text, None, &mut out).unwrap();
+        assert_eq!(
+            (String::from_utf8(out).unwrap().as_str(), bad),
+            ("a\nb\n", 1)
+        );
     }
 
     #[test]
@@ -346,7 +430,7 @@ not json
 
     #[test]
     fn json_parses_and_holds_only_allowlisted_fields() {
-        let (out, bad) = run(&all(), json_line, Some("https://gitlab.com/g/r"));
+        let (out, bad) = run(&all(), json_line, Some(&base("https://gitlab.com/g/r")));
         assert_eq!((out.len(), bad), (7, 2));
         for line in &out {
             let v: Value = serde_json::from_str(line).unwrap();
@@ -369,7 +453,7 @@ not json
 
     #[test]
     fn a_read_or_write_error_ends_render() {
-        let failing = [Ok("{}".to_string()), Err(io::Error::other("disk"))];
+        let failing = [Ok(b"{}".to_vec()), Err(io::Error::other("disk"))];
         let e = render(failing.into_iter(), &all(), text, None, &mut Vec::new()).unwrap_err();
         assert_eq!(e.to_string(), "disk");
         struct Closed;
@@ -412,13 +496,38 @@ not json
         ] {
             assert_eq!(web_base(url).as_deref(), base, "{url}");
         }
+    }
+
+    #[test]
+    fn the_pr_link_follows_the_forge_ns_watch_would_pick() {
+        let link = |origin, source, host| PrBase::new(origin, source, host).unwrap().link(3);
         assert_eq!(
-            pr_link("https://github.com/o/r", 3),
+            link("git@github.com:o/r.git", None, None),
             "https://github.com/o/r/pull/3"
         );
         assert_eq!(
-            pr_link("https://gitlab.com/g/r", 3),
-            "https://gitlab.com/g/r/-/merge_requests/3"
+            link("https://GitLab.example.com/g/r", None, None),
+            "https://GitLab.example.com/g/r/-/merge_requests/3"
+        );
+        assert_eq!(
+            link(
+                "https://git.corp.example/g/r",
+                None,
+                Some("git.corp.example")
+            ),
+            "https://git.corp.example/g/r/-/merge_requests/3"
+        );
+        assert_eq!(
+            link("https://git.corp.example/g/r", None, None),
+            "https://git.corp.example/g/r/pull/3"
+        );
+        assert_eq!(
+            link("https://git.corp.example/g/r", Some("gitlab"), None),
+            "https://git.corp.example/g/r/-/merge_requests/3"
+        );
+        assert_eq!(
+            link("https://gitlab.com/g/r", Some("github"), None),
+            "https://gitlab.com/g/r/pull/3"
         );
     }
 
@@ -463,13 +572,37 @@ not json
     }
 
     #[test]
+    fn follow_holds_back_half_a_multibyte_character_until_the_rest_arrives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("runs.jsonl");
+        let whole = "{\"event\":\"caf\u{e9}\"}\n".as_bytes();
+        let cut = whole.iter().position(|b| *b == 0xc3).unwrap() + 1;
+        let chunks = [&whole[..cut], &whole[cut..]];
+        fs::write(&path, b"").unwrap();
+        let waits = Cell::new(0);
+        let tail = Tail::new(path.clone(), || {
+            let n = waits.get();
+            OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap()
+                .write_all(chunks[n])
+                .unwrap();
+            waits.set(n + 1);
+        });
+        let mut out = Vec::new();
+        render(tail.take(1), &all(), text, None, &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "caf\u{e9}\n");
+    }
+
+    #[test]
     fn follow_reads_what_the_file_holds_before_waiting() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("runs.jsonl");
         fs::write(&path, "a\nb\n").unwrap();
         let mut tail = Tail::new(path, || panic!("waited with lines left"));
-        assert_eq!(tail.next().unwrap().unwrap(), "a");
-        assert_eq!(tail.next().unwrap().unwrap(), "b");
+        assert_eq!(tail.next().unwrap().unwrap(), b"a");
+        assert_eq!(tail.next().unwrap().unwrap(), b"b");
     }
 
     #[test]

@@ -1441,3 +1441,44 @@ fn log_prints_the_run_log_from_any_worktree() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("ns log --since 2026-10-01T00:00:00Z"));
 }
+
+#[test]
+fn log_follow_prints_the_log_so_far_and_keeps_running() {
+    use std::io::BufRead;
+    let (_tmp, root) = repo();
+    let dir = root.join(".git/ns");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("runs.jsonl"),
+        "{\"event\":\"start\",\"unit\":\"9-a\",\"ts\":\"2026-10-09T10:00:00Z\"}\n",
+    )
+    .unwrap();
+    let mut child = ns().current_dir(&root).args(["log", "-f"]).start_piped();
+    let stdout = child.take_stdout();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let read = std::io::BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(read.map(|_| line));
+    });
+    let first = child.recv(&rx).unwrap();
+    assert_eq!(first, "2026-10-09T10:00:00Z start #9\n");
+    child.kill();
+}
+
+#[test]
+fn log_exits_1_when_the_log_cannot_be_read_and_2_outside_a_repo() {
+    let (_tmp, root) = repo();
+    fs::create_dir_all(root.join(".git/ns/runs.jsonl")).unwrap();
+    let out = ns().current_dir(&root).arg("log").output();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("runs.jsonl"));
+
+    let outside = tempfile::tempdir().unwrap();
+    let out = ns()
+        .current_dir(outside.path())
+        .env("GIT_CEILING_DIRECTORIES", outside.path().parent().unwrap())
+        .arg("log")
+        .output();
+    assert_eq!(out.status.code(), Some(2));
+}
