@@ -2486,3 +2486,16 @@ fn neither_hook_has_an_environment_variable_that_skips_it() {
         );
     }
 }
+
+#[test]
+fn doctor_reports_no_account_when_gh_api_user_fails_or_prints_nothing() {
+    for login in ["half-a-login; exit 1", "''"] {
+        let (v, _, _) = Doctor {
+            login,
+            ..Doctor::default()
+        }
+        .run();
+        assert_eq!(v["forge"]["github"]["account"], Value::Null, "{login}");
+        assert_eq!(v["forge"]["github"]["token_resolved"], true, "{login}");
+    }
+}
