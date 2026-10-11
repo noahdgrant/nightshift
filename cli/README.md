@@ -63,6 +63,8 @@ Runs the harness configured for the role. The prompt is read from `--prompt-file
 
 The role lookup falls back from the most specific name: `review.security`, then `review`, then `default`.
 
+Under the factory's `billing = "subscription"` (the default, and the mode outside a repo), the harness never sees the API-key variables of claude or codex. See Billing in `docs/FACTORY.md`.
+
 ### `ns lint [path] [--human]`
 
 Checks each `ns-*/SKILL.md` under `path` (default `./skills`):

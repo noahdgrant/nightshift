@@ -263,6 +263,8 @@ A PR that changes `brake_ramp` merges on its own. One that changes `MAX_TORQUE_N
 
 `billing = "api"` turns all three off. The user config's `[eval] billing` does the same for `ns eval`.
 
+`ns ask` removes the same variables from the claude or codex command it runs. It reads `billing` from the factory of the repo holding `--cwd` (else the current directory), and treats no repo or no factory file as `subscription`. Under `api` it passes the environment through.
+
 When the plan's usage limit is hit, `claude -p` ends with an error `result` event whose text mentions a usage limit, a rate limit, or "limit reached". That is not a phase failure: no attempt is used, the unit isn't stuck, and `ns run` ends with `paused` (exit 4), `reset_at` set when the message carries a reset time (`...|<unix seconds>`, or `resets 3am` in local time). Re-running resumes where it stopped.
 
 ## ns watch
