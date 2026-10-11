@@ -917,6 +917,100 @@ fn doctor_reports_which_harness_skill_dirs_hold_the_ns_skills() {
         .ends_with(".agents/skills"));
 }
 
+#[test]
+fn doctor_reports_whether_core_hooks_path_points_at_githooks() {
+    let (_tmp, root) = repo();
+    fs::create_dir(root.join(".githooks")).unwrap();
+    let doctor = || {
+        json(
+            &ns()
+                .current_dir(&root)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .arg("doctor")
+                .assert()
+                .success()
+                .get_output()
+                .stdout,
+        )
+    };
+    let fix = "git config core.hooksPath .githooks";
+
+    let v = doctor();
+    assert_eq!(v["hooks"]["ok"], false);
+    assert_eq!(v["hooks"]["path"], Value::Null);
+    assert_eq!(v["hooks"]["fix"], fix);
+    assert_eq!(v["ok"], false);
+    assert!(v["problems"].to_string().contains(fix), "{}", v["problems"]);
+
+    git(&root, &["config", "core.hooksPath", "elsewhere"]);
+    let v = doctor();
+    assert_eq!(v["hooks"]["ok"], false);
+    assert_eq!(v["hooks"]["path"], "elsewhere");
+    assert!(v["problems"].to_string().contains(fix), "{}", v["problems"]);
+
+    fs::create_dir(root.join("other")).unwrap();
+    git(&root, &["config", "core.hooksPath", "other"]);
+    let v = doctor();
+    assert_eq!(v["hooks"]["ok"], false);
+    assert_eq!(v["hooks"]["path"], "other");
+    assert_eq!(v["hooks"]["fix"], fix);
+    assert!(v["problems"].to_string().contains(fix), "{}", v["problems"]);
+
+    for set in [
+        ".githooks",
+        "./.githooks/",
+        root.join(".githooks").to_str().unwrap(),
+    ] {
+        git(&root, &["config", "core.hooksPath", set]);
+        let v = doctor();
+        assert_eq!(v["hooks"]["ok"], true, "{set}");
+        assert_eq!(v["hooks"]["path"], set);
+        assert_eq!(v["hooks"]["fix"], Value::Null);
+        assert!(!v["problems"].to_string().contains("hooksPath"), "{set}");
+    }
+}
+
+#[test]
+fn doctor_checks_hooks_path_from_a_subdirectory() {
+    let (_tmp, root) = repo();
+    fs::create_dir(root.join(".githooks")).unwrap();
+    fs::create_dir(root.join("sub")).unwrap();
+    let v = json(
+        &ns()
+            .current_dir(root.join("sub"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .arg("doctor")
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["hooks"]["ok"], false);
+    assert_eq!(v["hooks"]["path"], Value::Null);
+}
+
+#[test]
+fn doctor_skips_the_hooks_check_without_a_githooks_dir() {
+    let (_tmp, root) = repo();
+    let outside = tempfile::tempdir().unwrap();
+    for dir in [root.as_path(), outside.path()] {
+        let v = json(
+            &ns()
+                .current_dir(dir)
+                .arg("doctor")
+                .assert()
+                .success()
+                .get_output()
+                .stdout,
+        );
+        assert_eq!(v["hooks"]["ok"], true, "{}", dir.display());
+        assert_eq!(v["hooks"]["fix"], Value::Null);
+        assert!(!v["problems"].to_string().contains("hooksPath"));
+    }
+}
+
 fn executable(path: &Path, body: &str) {
     fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
     StdCommand::new("chmod")
