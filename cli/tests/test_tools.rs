@@ -1,0 +1,376 @@
+//! Every external command `cli/tests` and the rule packs' `tests/run.sh` run is pinned in
+//! `scripts/ci-tools.toml` or is a base tool every CI runner has, so CI installs what the
+//! tests need.
+
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use regex::Regex;
+
+/// Tools every runner and contributor machine has, so the list doesn't pin them.
+const BASE_TOOLS: &[&str] = &[
+    "bash", "basename", "chmod", "cp", "dirname", "flock", "git", "grep", "jq", "mkdir", "mkfifo",
+    "mktemp", "ps", "python3", "rm", "sed", "sh", "tee", "timeout", "tr",
+];
+
+/// Shell builtins and keywords that start a command but run nothing external.
+const BUILTINS: &[&str] = &[
+    "break", "cd", "command", "continue", "echo", "eval", "exec", "exit", "export", "false",
+    "local", "printf", "pwd", "read", "return", "set", "shift", "test", "trap", "true", "unset",
+    "wait",
+];
+
+/// Words that come before a command: the command is the next word.
+const PREFIXES: &[&str] = &[
+    "!", "{", "}", "do", "elif", "else", "if", "then", "time", "until", "while",
+];
+
+/// Words that start something other than a command.
+const NOT_COMMANDS: &[&str] = &[
+    "case", "done", "esac", "fi", "for", "function", "in", "select",
+];
+
+fn root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
+}
+
+fn listed() -> BTreeSet<String> {
+    let list = fs::read_to_string(root().join("scripts/ci-tools.toml")).unwrap();
+    let list: toml::Table = toml::from_str(&list).unwrap();
+    list.keys().cloned().collect()
+}
+
+/// The programs a Rust test starts by name, a string literal passed to `Command::new` or
+/// `common::command`.
+fn rust_commands(src: &str) -> Vec<String> {
+    let re = Regex::new(r#"(?:Command::new|\bcommand)\("([^"\\]+)"\)"#).unwrap();
+    re.captures_iter(src).map(|c| c[1].to_owned()).collect()
+}
+
+/// `src` with the parts that can't start a command blanked: quoted text (but not a `$(...)`
+/// inside double quotes), `${...}`, `$((...))`, comments and here-documents. Every character
+/// that can end a command becomes a `;` or a newline.
+fn flatten(src: &str) -> String {
+    enum State {
+        /// Unquoted code, with the count of `(` it has opened.
+        Code(usize),
+        Double,
+    }
+    let cs: Vec<char> = src.chars().collect();
+    let at = |i: usize, s: &str| cs[i..].starts_with(&s.chars().collect::<Vec<_>>());
+    let mut stack = vec![State::Code(0)];
+    let mut out = String::new();
+    let mut heredoc: Option<String> = None;
+    let mut i = 0;
+    while i < cs.len() {
+        let c = cs[i];
+        let nested = stack.len() > 1;
+        match stack.last_mut().unwrap() {
+            State::Double => match c {
+                '\\' => i += 1,
+                '"' => {
+                    stack.pop();
+                    out.push('"');
+                }
+                '$' if at(i, "$((") => i = skip_balanced(&cs, i + 1, '(', ')'),
+                '$' if at(i, "$(") => {
+                    stack.push(State::Code(0));
+                    out.push(';');
+                    i += 1;
+                }
+                _ => {}
+            },
+            State::Code(depth) => match c {
+                '\\' => {
+                    out.push(' ');
+                    i += 1;
+                }
+                '\'' => {
+                    i += cs[i + 1..]
+                        .iter()
+                        .position(|&q| q == '\'')
+                        .map_or(cs.len(), |p| p + 1);
+                    out.push_str("''");
+                }
+                '"' => {
+                    stack.push(State::Double);
+                    out.push('"');
+                }
+                '#' if i == 0 || cs[i - 1].is_whitespace() || ";|&(".contains(cs[i - 1]) => {
+                    i += cs[i..]
+                        .iter()
+                        .position(|&c| c == '\n')
+                        .unwrap_or(cs.len() - i)
+                        - 1;
+                }
+                '$' if at(i, "$((") => {
+                    i = skip_balanced(&cs, i + 1, '(', ')');
+                    out.push_str("$x");
+                }
+                '$' if at(i, "${") => {
+                    i = skip_balanced(&cs, i + 1, '{', '}');
+                    out.push_str("$x");
+                }
+                '$' if at(i, "$(") => {
+                    *depth += 1;
+                    out.push(';');
+                    i += 1;
+                }
+                '(' | '`' => {
+                    *depth += 1;
+                    out.push(';');
+                }
+                ')' => {
+                    if *depth == 0 && nested {
+                        stack.pop();
+                    } else {
+                        *depth = depth.saturating_sub(1);
+                    }
+                    out.push(';');
+                }
+                '<' if at(i, "<<<") => {
+                    out.push_str("<<<");
+                    i += 2;
+                }
+                '<' if at(i, "<<") => {
+                    let (word, next) = heredoc_word(&cs, i + 2);
+                    heredoc = Some(word);
+                    out.push(' ');
+                    i = next;
+                    continue;
+                }
+                '\n' => {
+                    out.push('\n');
+                    if let Some(end) = heredoc.take() {
+                        i = heredoc_end(&cs, i, &end);
+                    }
+                }
+                ';' | '|' | '&' => out.push(';'),
+                _ => out.push(c),
+            },
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The terminator word of a here-document whose `<<` ends just before `cs[i]`, and the index
+/// after it.
+fn heredoc_word(cs: &[char], mut i: usize) -> (String, usize) {
+    while i < cs.len() && "-'\" ".contains(cs[i]) {
+        i += 1;
+    }
+    let start = i;
+    while i < cs.len() && (cs[i].is_alphanumeric() || cs[i] == '_') {
+        i += 1;
+    }
+    let word = cs[start..i].iter().collect();
+    while i < cs.len() && "'\"".contains(cs[i]) {
+        i += 1;
+    }
+    (word, i)
+}
+
+/// The index of the newline ending the first line after `cs[i]` that is `end` alone.
+fn heredoc_end(cs: &[char], mut i: usize, end: &str) -> usize {
+    while i < cs.len() {
+        let start = i + 1;
+        i = cs[start..]
+            .iter()
+            .position(|&c| c == '\n')
+            .map_or(cs.len(), |p| start + p);
+        if cs[start..i].iter().collect::<String>().trim() == end {
+            break;
+        }
+    }
+    i
+}
+
+/// The index of the `close` that balances the `open` at `cs[i]`.
+fn skip_balanced(cs: &[char], mut i: usize, open: char, close: char) -> usize {
+    let mut depth = 0;
+    while i < cs.len() {
+        match cs[i] {
+            '\\' => i += 1,
+            c if c == open => depth += 1,
+            c if c == close => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    i
+}
+
+/// The external programs a shell script runs by name, leaving out builtins, the script's own
+/// functions and commands it can't name until it runs (`"$x"`, `./x`).
+fn shell_commands(src: &str) -> Vec<String> {
+    let functions: BTreeSet<&str> = Regex::new(r"(?m)^\s*([A-Za-z_][\w-]*)\s*\(\)")
+        .unwrap()
+        .captures_iter(src)
+        .map(|c| c.get(1).unwrap().as_str())
+        .collect();
+    let assignment = Regex::new(r"^[A-Za-z_]\w*=").unwrap();
+    let name = Regex::new(r"^[A-Za-z_][\w.+-]*$").unwrap();
+    let mut out = Vec::new();
+    for segment in flatten(src).split([';', '\n']) {
+        let first = segment
+            .split_whitespace()
+            .find(|w| !PREFIXES.contains(w) && !assignment.is_match(w));
+        if let Some(w) = first {
+            if name.is_match(w)
+                && !NOT_COMMANDS.contains(&w)
+                && !BUILTINS.contains(&w)
+                && !functions.contains(w)
+            {
+                out.push(w.to_owned());
+            }
+        }
+    }
+    out
+}
+
+/// Each command in `files` that is neither listed nor a base tool, as `file: command`.
+fn unlisted(files: &[(String, String)]) -> Vec<String> {
+    let listed = listed();
+    let mut bad = Vec::new();
+    for (path, src) in files {
+        let commands = if path.ends_with(".rs") {
+            rust_commands(src)
+        } else {
+            shell_commands(src)
+        };
+        for c in commands {
+            if !listed.contains(&c) && !BASE_TOOLS.contains(&c.as_str()) {
+                bad.push(format!("{path}: {c}"));
+            }
+        }
+    }
+    bad.sort();
+    bad.dedup();
+    bad
+}
+
+/// `cli/tests/**/*.rs` and `rules/*/tests/run.sh`, with their text.
+fn test_sources() -> Vec<(String, String)> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let root = root();
+    let mut paths = Vec::new();
+    walk(&root.join("cli/tests"), &mut paths);
+    for pack in fs::read_dir(root.join("rules")).unwrap() {
+        let run = pack.unwrap().path().join("tests/run.sh");
+        if run.is_file() {
+            paths.push(run);
+        }
+    }
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|p| {
+            let rel = p.strip_prefix(&root).unwrap().display().to_string();
+            (rel, fs::read_to_string(&p).unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn every_command_the_tests_run_is_listed_or_a_base_tool() {
+    let sources = test_sources();
+    assert!(sources
+        .iter()
+        .any(|(p, _)| p == "rules/python/tests/run.sh"));
+    assert!(sources.iter().any(|(p, _)| p == "cli/tests/common/mod.rs"));
+    let bad = unlisted(&sources);
+    assert!(
+        bad.is_empty(),
+        "these commands are neither in scripts/ci-tools.toml nor in BASE_TOOLS, so CI may not \
+         install them; pin each in scripts/ci-tools.toml:\n{}",
+        bad.join("\n")
+    );
+}
+
+#[test]
+fn an_unlisted_command_fails_and_a_listed_one_passes() {
+    let files = [
+        (
+            "cli/tests/x.rs".to_owned(),
+            "StdCommand::new(\"shellcheck\"); common::command(\"ruff\"); Command::new(\"git\"); \
+             Command::new(tool); mycommand(\"nope\"); Command::new(\"shellcheck\")"
+                .to_owned(),
+        ),
+        (
+            "rules/x/tests/run.sh".to_owned(),
+            "shellcheck a.sh\nruff check .\n".to_owned(),
+        ),
+    ];
+    assert_eq!(
+        unlisted(&files),
+        [
+            "cli/tests/x.rs: shellcheck",
+            "rules/x/tests/run.sh: shellcheck"
+        ]
+    );
+}
+
+#[test]
+fn the_shell_scan_finds_commands_where_shell_runs_them() {
+    let src = r#"#!/usr/bin/env bash
+set -euo pipefail  # a comment naming nocomment
+helper() { one "$@"; }
+x=$(two -c "three; four")
+if three; then four | five && six || seven; fi
+while IFS= read -r line; do eight; done < <(nine)
+echo "text $(ten) more" >&2
+n=$((eleven + 1)); v=${twelve:-x}
+'thirteen' "fourteen" "$fifteen" ./sixteen
+cat <<'END_TEXT'
+seventeen
+END_TEXT
+case $v in pat*) eighteen ;; esac
+FOO=1 nineteen \
+  twenty
+helper
+v=`twentyone`; tr a b <<<"$v"
+twentytwo "\"$(twentythree)\" $(( twentyfour ))" $#; twentyfive
+echo "$( (twentysix); twentyseven )" ${a//\}/;bogus;}
+"#;
+    assert_eq!(
+        shell_commands(src),
+        [
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "cat",
+            "eighteen",
+            "nineteen",
+            "twentyone",
+            "tr",
+            "twentytwo",
+            "twentythree",
+            "twentyfive",
+            "twentysix",
+            "twentyseven"
+        ]
+    );
+}
