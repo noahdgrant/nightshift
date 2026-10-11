@@ -234,3 +234,17 @@ pub fn symlink(src: &Path, link: &Path) -> Result<()> {
     std::os::windows::fs::symlink_dir(src, link)
         .with_context(|| format!("cannot link {} -> {}", link.display(), src.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_harness_dir_appears_once() {
+        let dirs = targets(&Harness::ALL, Vec::new());
+        assert_eq!(dirs.len(), 3, "{dirs:?}");
+        for h in Harness::ALL {
+            assert!(dirs.contains(&h.dir()), "{h:?} missing from {dirs:?}");
+        }
+    }
+}

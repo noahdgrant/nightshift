@@ -8536,3 +8536,64 @@ fn watch_detects_a_gitlab_origin_when_source_is_unset() {
     e.factory("[queue]\nsource = \"github\"\n");
     e.run(&["watch", "--dry-run"], 0);
 }
+
+/// `skills/ns-a` committed in the main checkout and pushed, then `skills/ns-b` pushed to
+/// origin from another clone, with `ns-a` linked into each `$HOME`-relative dir in `dirs`.
+fn skills_behind_origin(e: &Env, dirs: &[&str]) {
+    let skill = |repo: &Path, name: &str| {
+        fs::create_dir_all(repo.join("skills").join(name)).unwrap();
+        fs::write(repo.join("skills").join(name).join("SKILL.md"), "s\n").unwrap();
+        git(repo, &["add", "."]);
+        git(repo, &["commit", "-q", "-m", name]);
+        git(repo, &["push", "-q", "origin", "main"]);
+    };
+    skill(&e.root, "ns-a");
+    let other = e.base.join("other");
+    git(
+        &e.base,
+        &["clone", "-q", "remote.git", other.to_str().unwrap()],
+    );
+    skill(&other, "ns-b");
+    for d in dirs {
+        let dir = e.home.join(d);
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(e.root.join("skills/ns-a"), dir.join("ns-a")).unwrap();
+    }
+}
+
+/// Runs one unit of `ns watch` and checks the main checkout reached origin's `main`.
+fn watch_syncs_skills(e: &Env) {
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("build", &["pass:commit"]);
+    e.run(&["watch", "--once"], 0);
+    let remote = git(&e.base.join("remote.git"), &["rev-parse", "main"]);
+    assert_eq!(git(&e.root, &["rev-parse", "HEAD"]), remote);
+    assert_eq!(events_named(e, "skills_synced").len(), 1);
+}
+
+#[test]
+fn watch_syncs_skills_installed_only_for_cursor() {
+    let e = Env::new();
+    skills_behind_origin(&e, &[".cursor/skills"]);
+    watch_syncs_skills(&e);
+    assert_eq!(
+        fs::read_link(e.home.join(".cursor/skills/ns-b")).unwrap(),
+        e.root.join("skills/ns-b")
+    );
+    assert!(!e.home.join(".claude/skills").exists());
+    assert!(!e.home.join(".agents/skills").exists());
+}
+
+#[test]
+fn watch_syncs_skills_installed_into_the_default_dirs() {
+    let e = Env::new();
+    skills_behind_origin(&e, &[".agents/skills", ".claude/skills"]);
+    watch_syncs_skills(&e);
+    for d in [".agents/skills", ".claude/skills"] {
+        assert_eq!(
+            fs::read_link(e.home.join(d).join("ns-b")).unwrap(),
+            e.root.join("skills/ns-b")
+        );
+    }
+    assert!(!e.home.join(".cursor/skills").exists());
+}
