@@ -33,6 +33,10 @@ run = "python3 -m pytest -q"
 expect_exit = 0
 
 [[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
 type = "frontmatter"
 path = ".ns/9-status-expired/build.md"
 key = "status"

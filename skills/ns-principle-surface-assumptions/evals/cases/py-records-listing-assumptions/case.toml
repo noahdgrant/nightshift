@@ -33,6 +33,10 @@ run = "python3 -m pytest -q"
 expect_exit = 0
 
 [[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
 type = "frontmatter"
 path = ".ns/6-list-reservations/build.md"
 key = "status"
@@ -86,9 +90,14 @@ def test_lists_every_item(tmp_path, capsys):
     assert "R0002: 3 x NUT-M6 until 2026-03-02T09:15:00" in out
 
 
-def test_unknown_sku_fails(tmp_path):
+def test_unknown_sku_fails(tmp_path, capsys):
     run = cli(tmp_path)
-    assert run("reservations", "SCREW-M3") not in (0, None)
+    assert run("reservations", "BOLT-M6") == 0
+    capsys.readouterr()
+    assert run("reservations", "SCREW-M3") == 1
+    err = capsys.readouterr().err
+    assert "inventory: error:" in err
+    assert "SCREW-M3" in err
 PYEOF
 PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_list_acceptance.py"; s=$?; rm -rf "$T"; exit $s
 '''
