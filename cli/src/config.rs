@@ -186,7 +186,8 @@ pub struct EvalHarness {
     /// Paths relative to `$HOME` symlinked into each trial's throwaway home (credentials).
     #[serde(default)]
     pub carry: Vec<String>,
-    /// Transcript format: `claude-stream-json`, or `none` (no metrics, triggers unsupported).
+    /// Transcript format: `claude-stream-json`, `codex-jsonl`, or `none` (no metrics, triggers
+    /// unsupported).
     #[serde(default = "default_output")]
     pub output: String,
 }
@@ -196,7 +197,7 @@ fn default_output() -> String {
 }
 
 /// Output formats `ns eval` can parse, plus `none`.
-pub const EVAL_OUTPUTS: &[&str] = &["claude-stream-json", "none"];
+pub const EVAL_OUTPUTS: &[&str] = &["claude-stream-json", "codex-jsonl", "none"];
 
 /// Built-in eval harnesses, used when `[eval.harnesses.<name>]` is not configured.
 pub fn builtin_eval_harness(name: &str) -> Option<EvalHarness> {
@@ -216,6 +217,20 @@ pub fn builtin_eval_harness(name: &str) -> Option<EvalHarness> {
             ]),
             carry: owned(&[".claude/.credentials.json", ".claude.json"]),
             output: "claude-stream-json".into(),
+        }),
+        "codex" => Some(EvalHarness {
+            command: owned(&[
+                "codex",
+                "exec",
+                "--json",
+                "-m",
+                "{model}",
+                "--sandbox",
+                "danger-full-access",
+                "--skip-git-repo-check",
+            ]),
+            carry: owned(&[".codex/auth.json"]),
+            output: "codex-jsonl".into(),
         }),
         _ => None,
     }
@@ -531,6 +546,14 @@ model = "big"
         assert_eq!(h.output, "claude-stream-json");
         assert!(h.command.contains(&"bypassPermissions".to_string()));
         assert!(c.eval.harness_named("nope").is_none());
+
+        let h = c.eval.harness_named("codex").unwrap();
+        assert_eq!(h.output, "codex-jsonl");
+        assert!(EVAL_OUTPUTS.contains(&"codex-jsonl"));
+        assert_eq!(h.command[..3], ["codex", "exec", "--json"]);
+        assert!(h.command.contains(&"{model}".to_string()));
+        assert!(h.command.contains(&"--skip-git-repo-check".to_string()));
+        assert_eq!(h.carry, [".codex/auth.json"]);
 
         let c = parse(
             r#"

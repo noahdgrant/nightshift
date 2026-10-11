@@ -114,7 +114,7 @@ How a trial runs:
 4. The harness runs with the prompt on stdin, cwd in the scratch repo, the fixture `[env]` and capability `path_prepend` applied, in its own process group. The group is killed at `timeout_minutes` (default 20). `ns eval` refuses to start a harness anywhere but a scratch dir under the system temp dir.
 5. Checks run in the scratch repo with the same environment. The judge calls `ns ask --role eval.judge --cwd <scratch repo>` with the rubric, the case prompt and the diff, and reads `pass` or `fail` from the first line. The scratch dir is then removed.
 
-Trigger evals run each prompt once, in an empty scratch dir with only the skill installed, and are killed after `--trigger-timeout` seconds (default 180). `claude-stream-json` counts a trigger as loaded on a `Skill` tool call naming the skill, or a `Read` of `<skill>/SKILL.md`. A harness with `output = "none"` reports no metrics and triggers as `unsupported`. User-invoked skills (`disable-model-invocation: true`) have no trigger evals.
+Trigger evals run each prompt once, in an empty scratch dir with only the skill installed, and are killed after `--trigger-timeout` seconds (default 180). `claude-stream-json` counts a trigger as loaded on a `Skill` tool call naming the skill, or a `Read` of `<skill>/SKILL.md`. `codex-jsonl` counts a shell command naming `<skill>/SKILL.md`. A harness with `output = "none"` reports no metrics and triggers as `unsupported`. User-invoked skills (`disable-model-invocation: true`) have no trigger evals.
 
 Run control:
 
@@ -229,7 +229,12 @@ billing = "subscription"      # or "api"; subscription strips API-key variables 
 [eval.harnesses.claude]
 command = ["claude", "-p", "--model", "{model}", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"]
 carry = [".claude/.credentials.json", ".claude.json"]
-output = "claude-stream-json"   # or "none"; the default for a new harness is "none"
+output = "claude-stream-json"   # or "codex-jsonl" or "none"; the default for a new harness is "none"
+
+[eval.harnesses.codex]
+command = ["codex", "exec", "--json", "-m", "{model}", "--sandbox", "danger-full-access", "--skip-git-repo-check"]
+carry = [".codex/auth.json"]
+output = "codex-jsonl"
 
 [eval.capability.zephyr]      # configured when the table exists
 base = "~/zephyrproject/zephyr"
