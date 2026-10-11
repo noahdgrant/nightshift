@@ -456,6 +456,15 @@ next (1)
         fn close(&self, _: u64) -> Result<()> {
             unreachable!("ns status only reads the queue")
         }
+        fn add_pr_label(&self, _: u64, _: &str) -> Result<()> {
+            unreachable!("ns status only reads the queue")
+        }
+        fn remove_pr_label(&self, _: u64, _: &str) -> Result<()> {
+            unreachable!("ns status only reads the queue")
+        }
+        fn comment_pr(&self, _: u64, _: &str) -> Result<()> {
+            unreachable!("ns status only reads the queue")
+        }
     }
 
     #[test]

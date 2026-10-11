@@ -571,11 +571,20 @@ impl<'a> Scheduler<'a> {
                 if let Err(e) = forge.close(issue.number) {
                     eprintln!("ns watch: #{} not closed: {e}", issue.number);
                 }
+                if let Some(pr) = r.json["pr"].as_u64() {
+                    if let Err(e) = forge.remove_pr_label(pr, &q.human_merge_label) {
+                        eprintln!(
+                            "ns watch: PR #{pr} still labelled {}? {e:#}",
+                            q.human_merge_label
+                        );
+                    }
+                }
                 status?;
             }
             Outcome::Split => set_status(forge, q, issue.number, Some(&q.split_label))?,
             Outcome::Done if !r.needs_human => {
-                set_status(forge, q, issue.number, Some(&q.done_label))?
+                set_status(forge, q, issue.number, Some(&q.done_label))?;
+                flag_human_merge(forge, &q.human_merge_label, &r);
             }
             Outcome::Stuck if failing => {
                 set_status(forge, q, issue.number, Some(&q.ready_label))?;
@@ -587,6 +596,9 @@ impl<'a> Scheduler<'a> {
             Outcome::Done | Outcome::Stuck => {
                 let status = set_status(forge, q, issue.number, Some(&q.stuck_label));
                 let posted = forge.comment(issue.number, &stuck_comment(&r));
+                if r.outcome == Outcome::Done {
+                    flag_human_merge(forge, &q.human_merge_label, &r);
+                }
                 status?;
                 posted?;
             }
@@ -660,6 +672,27 @@ fn resume_at(r: &RunResult, night: &Night) -> i64 {
     match r.reset_at.filter(|_| r.held) {
         Some(t) => t.max(night.shared.clock.now()),
         None => night.resume_at(r),
+    }
+}
+
+/// Label the PR of a `done` unit, if it has one, `label` and say why it needs a human merge, so
+/// the PRs waiting on a human are one `gh pr list --label` away. A failure is reported, never
+/// fatal: the issue already has its status.
+fn flag_human_merge(forge: &dyn Forge, label: &str, r: &RunResult) {
+    let Some(pr) = r.json["pr"].as_u64() else {
+        return;
+    };
+    if let Err(e) = forge.add_pr_label(pr, label) {
+        eprintln!("ns watch: PR #{pr} not labelled {label}: {e:#}");
+    }
+    let why = if r.needs_human {
+        r.reason.as_str()
+    } else {
+        "merge.policy is \"human\", so ns never merges; needs a human merge"
+    };
+    let body = format!("nightshift unit `{}`: {why}\n\n{DISCLAIMER}", r.unit);
+    if let Err(e) = forge.comment_pr(pr, &body) {
+        eprintln!("ns watch: PR #{pr} not commented: {e:#}");
     }
 }
 

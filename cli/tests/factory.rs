@@ -4052,6 +4052,263 @@ fn watch_stuck_swaps_label_and_comments() {
     assert!(all.contains("Last artifact"));
 }
 
+const HUMAN_MERGE: &str = "needs-human-merge";
+
+/// The `pr edit` and `pr comment` calls on PR 12, and whether a label was created.
+fn pr_12_calls(e: &Env) -> (Vec<String>, bool) {
+    let calls = e.gh_calls();
+    let on_pr = calls
+        .lines()
+        .filter(|l| l.starts_with("pr edit 12") || l.starts_with("pr comment 12"))
+        .map(String::from)
+        .collect();
+    (on_pr, calls.contains("label create"))
+}
+
+#[test]
+fn watch_done_with_a_pr_labels_it_for_a_human_merge_and_says_why() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "done", "{v}");
+    assert_eq!(e.labels(2), ["type:fix", "status:in-review"]);
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains(&format!(
+            "label create {HUMAN_MERGE} --color d73a4a --description "
+        )),
+        "{calls}"
+    );
+    assert_eq!(
+        fs::read_to_string(e.ghd.join("pr-labels-12")).unwrap(),
+        format!("{HUMAN_MERGE}\n")
+    );
+    let comment = calls
+        .split("pr comment 12 --body ")
+        .nth(1)
+        .expect("comment");
+    assert!(comment.contains("needs a human merge"), "{comment}");
+    assert!(comment.contains("merge.policy"), "{comment}");
+    assert!(comment.contains("written by an AI agent"), "{comment}");
+}
+
+#[test]
+fn watch_done_needing_a_human_merge_labels_the_pr_with_the_merge_reason() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file("diff-12.txt", ".nightshift/rules-baseline.json\n");
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "done", "{v}");
+    assert_eq!(e.labels(2), ["type:fix", "status:ready-for-human"]);
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains(&format!("pr edit 12 --add-label {HUMAN_MERGE}")),
+        "{calls}"
+    );
+    let comment = calls
+        .split("pr comment 12 --body ")
+        .nth(1)
+        .expect("comment");
+    assert!(
+        comment.contains(
+            "changes files that need human review; needs a human merge (.nightshift/rules-baseline.json)"
+        ),
+        "{comment}"
+    );
+    assert!(comment.contains("written by an AI agent"), "{comment}");
+}
+
+#[test]
+fn watch_done_without_a_pr_leaves_prs_alone() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("build", &["pass:commit"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "done", "{v}");
+    assert_eq!(v["units"][0]["pr"], Value::Null, "{v}");
+    assert_eq!(pr_12_calls(&e), (vec![], false));
+    assert!(!e.gh_calls().contains("pr edit"));
+}
+
+#[test]
+fn watch_takes_the_human_merge_label_from_the_queue_config() {
+    let e = Env::new();
+    e.factory("[queue]\nhuman_merge_label = \"merge-me\"\n");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.run(&["watch", "--once"], 0);
+    let calls = e.gh_calls();
+    assert!(calls.contains("label create merge-me "), "{calls}");
+    assert!(calls.contains("pr edit 12 --add-label merge-me"), "{calls}");
+}
+
+#[test]
+fn watch_adds_an_existing_human_merge_label_without_recreating_it() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.gh_file("label.exists", "");
+    e.queue("build", &["pass:commit"]);
+    e.run(&["watch", "--once"], 0);
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains(&format!("pr edit 12 --add-label {HUMAN_MERGE}")),
+        "{calls}"
+    );
+    assert!(calls.contains("pr comment 12"), "{calls}");
+}
+
+#[test]
+fn a_pr_that_cannot_be_labelled_still_gets_its_issue_relabelled_and_comment() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.gh_file(
+        "label.fail",
+        "HTTP 403: Resource not accessible by integration",
+    );
+    e.queue("build", &["pass:commit"]);
+    let out = e.ns().args(["watch", "--once"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["units"][0]["outcome"], "done", "{v}");
+    assert_eq!(e.labels(2), ["type:fix", "status:in-review"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!("PR #12 not labelled {HUMAN_MERGE}"))
+            && stderr.contains("HTTP 403"),
+        "{stderr}"
+    );
+    let calls = e.gh_calls();
+    assert!(!calls.contains("pr edit 12"), "{calls}");
+    assert!(calls.contains("pr comment 12"), "{calls}");
+}
+
+#[test]
+fn a_pr_comment_that_fails_is_reported_and_the_night_goes_on() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in \"pr comment\"*) echo 'HTTP 502' >&2; exit 1 ;; esac\n",
+    );
+    e.queue("build", &["pass:commit"]);
+    let out = e.ns().args(["watch", "--once"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("PR #12 not commented") && stderr.contains("HTTP 502"),
+        "{stderr}"
+    );
+    assert!(e
+        .gh_calls()
+        .contains(&format!("pr edit 12 --add-label {HUMAN_MERGE}")));
+}
+
+#[test]
+fn watch_stuck_after_ship_leaves_the_pr_alone() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.queue("ship", &["blocked:CI never started"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "stuck", "{v}");
+    assert_eq!(v["units"][0]["pr"], 12, "{v}");
+    assert_eq!(pr_12_calls(&e), (vec![], false));
+}
+
+#[test]
+fn watch_merged_removes_the_human_merge_label_a_past_night_set() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file("pr-labels-12", &format!("type:fix\n{HUMAN_MERGE}\n"));
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "merged", "{v}");
+    assert_eq!(
+        pr_12_calls(&e),
+        (
+            vec![format!("pr edit 12 --remove-label {HUMAN_MERGE}")],
+            false
+        )
+    );
+    assert_eq!(
+        fs::read_to_string(e.ghd.join("pr-labels-12")).unwrap(),
+        "type:fix\n"
+    );
+}
+
+#[test]
+fn watch_merged_without_the_label_edits_no_pr() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "merged", "{v}");
+    assert_eq!(pr_12_calls(&e), (vec![], false));
+    assert!(e.gh_calls().contains("pr view 12 --json labels"));
+}
+
+#[test]
+fn a_merged_pr_whose_label_cannot_be_read_is_reported_and_the_issue_still_closes() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in \"pr view 12 --json labels\") echo 'HTTP 502' >&2; exit 1 ;; esac\n",
+    );
+    let out = e.ns().args(["watch", "--once"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!("PR #12 still labelled {HUMAN_MERGE}?")),
+        "{stderr}"
+    );
+    assert!(e.gh_calls().contains("issue close 2"));
+}
+
+#[test]
+fn watch_paused_at_ship_leaves_the_pr_alone() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.ctl("reset", &(NOW + 36_000).to_string());
+    e.queue("build", &["pass:commit"]);
+    e.queue("ship", &["session"]);
+    let v = e.run(&["watch", "--once", "--until", "06:30"], 0);
+    assert_eq!(v["units"][0]["outcome"], "paused", "{v}");
+    assert_eq!(pr_12_calls(&e), (vec![], false));
+}
+
+#[test]
+fn watch_dry_run_names_the_human_merge_label() {
+    let e = Env::new();
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(v["human_merge_label"], HUMAN_MERGE, "{v}");
+    e.factory("[queue]\nhuman_merge_label = \"merge-me\"\n");
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(v["human_merge_label"], "merge-me", "{v}");
+}
+
 #[test]
 fn watch_stuck_comment_quotes_the_blocker_and_a_relative_path() {
     let e = Env::new();
@@ -4236,6 +4493,10 @@ fn watch_split_moves_the_parent_to_needs_define_without_a_comment() {
     let calls = e.gh_calls();
     assert!(!calls.contains("issue comment 2"), "{calls}");
     assert!(!calls.contains("status:ready-for-human"), "{calls}");
+    assert!(
+        !calls.contains("pr edit") && !calls.contains("label create"),
+        "{calls}"
+    );
 }
 
 #[test]
