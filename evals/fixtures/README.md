@@ -33,6 +33,10 @@ No existing test covers defects (a), (b) or (d): no test reserves exactly the av
 
 **(e) `renew` reads the wall clock.** `ns-tdd/evals/cases/py-reservation-expiry-seam` applies `renew.patch` in setup, so the build sits in the start commit. It adds `Warehouse.renew(reservation_id, ttl)` and a CLI `renew ID [--ttl MINUTES]`, with three error-path tests (an unknown id through the class and the CLI, a non-positive ttl). `renew` calls `datetime.now()` itself, both to check expiry and to set `expires_at = now + ttl`, so the CLI's `--now` never reaches it. A replay at a past `--now` refuses a live hold as expired and prints a real-time expiry; one at a future `--now` renews a lapsed hold. Root-cause fix: `renew` takes `now` like every other time-dependent call, and the CLI passes it. Dropping the expiry check, or testing with `time.sleep` and `datetime.now()`, leaves the wall clock in place and fails the case's hidden test, which drives the CLI on a 2020 timeline and a 2099 one. Validated by hand: the unfixed build and that naive fix fail, and the root-cause fix with a fixed-time test passes every check.
 
+### Setup from scratch
+
+`ns-setup/evals/cases/py-repo-writes-working-docs` removes `docs/agents/` in setup, so the agent writes all six files again (`stack.md`, `verify.md`, `issue-tracker.md`, `triage-labels.md`, `domain.md`, `docs.md`). Its command check runs the first `test` row of the new `stack.md` Commands table and wants a pytest run with tests passed. Validated by hand: the fixture's own `docs/agents/` plus the skill's `docs.md` template passes every check, and a missing `docs.md`, a test row of `python3 -m pytest -q tests/integration` (no tests ran), a test row of `true`, and no test row each fail one.
+
 ### Notes for case authors
 
 - Avoid exact-capacity reservations, `stock_levels` after expiry, and SKUs other than two parts (letters, then letters or digits, like `BOLT-M6`) in hidden acceptance tests unless the case is about that defect, or the test will fail for an unrelated reason.
