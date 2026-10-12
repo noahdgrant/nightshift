@@ -1350,7 +1350,7 @@ fn build_only(e: &Env, extra: &str) -> (PathBuf, PathBuf) {
     fs::write(
         e.root.join("docs/agents/stack.md"),
         format!(
-            "| Task | Command |\n|---|---|\n| ci-affected | `echo \"[$NS_GATE_FILES]\" >> {}; test ! -f {c}/affected.sh || sh {c}/affected.sh` | 1 s |\n",
+            "| Task | Command |\n|---|---|\n| ci-affected | `echo \"[${{NS_GATE_FILES-UNSET}}]\" >> {}; test ! -f {c}/affected.sh || sh {c}/affected.sh` | 1 s |\n",
             affected.display(),
             c = e.ctrl.display()
         ),
@@ -1472,7 +1472,7 @@ fn build_only_fast_gate_runs_everything_when_git_cannot_find_the_changed_files()
     let v = e.run(&["run", "--issue", "7", "--from", "review"], 0);
     assert_eq!(v["outcome"], "done", "{v}");
     assert_eq!(fs::read_to_string(&runs).unwrap(), "full\nfast\n");
-    assert_eq!(fs::read_to_string(&affected).unwrap(), "[]\n");
+    assert_eq!(fs::read_to_string(&affected).unwrap(), "[UNSET]\n");
 }
 
 #[test]
