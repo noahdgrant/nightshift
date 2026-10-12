@@ -45,7 +45,7 @@ done
 # PMD runs on the java on PATH.
 command -v java >/dev/null 2>&1 ||
   fail "Java is not on PATH, and PMD needs Java 11 or later; install a JDK or JRE (apt install openjdk-21-jre-headless) and rerun"
-version=$(java -version 2>&1 | sed -n '1s/^[^"]*"\([^"]*\)".*/\1/p')
+version=$(java -version 2>&1 | sed -n 's/^.* version "\([^"]*\)".*/\1/p' | head -n 1)
 major=${version%%[!0-9]*}
 [ "${major:-0}" -ge 11 ] ||
   fail "PMD needs Java 11 or later, and the java on PATH is ${version:-of unknown version}; install a newer JDK or JRE (apt install openjdk-21-jre-headless) and rerun"
@@ -131,8 +131,21 @@ else
   cp "$tmp/allowed-package.yml" "$new/utils/allowed-package.yml"
 fi
 
+# Stage in the repo, so each mv is a rename on one filesystem; the old pack is deleted last.
 mkdir -p "$repo/.nightshift/rules"
-rm -rf "$old"
-mv "$new" "$old"
-cat "$tmp/stack.md" >"$stack"
+stage=$(mktemp -d "$repo/.nightshift/rules/.stage.XXXXXX")
+trap 'rm -rf "$tmp" "$stage"' EXIT
+cp -R "$new" "$stage/pack"
+if [ -e "$old" ]; then
+  mv "$old" "$stage/old"
+  mv "$stage/pack" "$old" || {
+    mv "$stage/old" "$old"
+    fail "cannot move the new pack to $old; the old one is kept"
+  }
+else
+  mv "$stage/pack" "$old"
+fi
+staged_stack=$(mktemp "$stack.XXXXXX")
+cp "$tmp/stack.md" "$staged_stack"
+mv "$staged_stack" "$stack"
 echo "installed the Java rule pack in $old"

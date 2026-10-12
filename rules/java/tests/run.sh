@@ -165,6 +165,14 @@ out=$(PATH=$tmp/old-java:$PATH "$src/install.sh" --offline "$tmp/no-java" 2>&1) 
 [ ! -e "$tmp/no-java/.nightshift" ] && cmp -s "$tmp/no-java/docs/agents/stack.md" "$tmp/stack.md" ||
   fail "install: a refused install wrote to the repo"
 
+# A java that prints a "Picked up" line before its version, as with JAVA_TOOL_OPTIONS set, is read
+# by its version line.
+mkdir "$tmp/picked-up"
+printf '#!/bin/sh\necho '\''Picked up JAVA_TOOL_OPTIONS: -Xmx256m'\'' >&2\necho '\''openjdk version "21.0.2" 2024-01-16'\'' >&2\n' >"$tmp/picked-up/java"
+chmod +x "$tmp/picked-up/java"
+out=$(PATH=$tmp/picked-up:$PATH XDG_CACHE_HOME=$tmp/picked-up-cache "$src/install.sh" --offline "$tmp/no-java" 2>&1) && rc=0 || rc=$?
+grep -qF "and --offline won't download it" <<<"$out" || fail "install: a Picked up line before the version gave exit $rc:" "$out"
+
 # --offline with no cached zip says how to fetch it; a cached zip whose checksum differs is
 # removed. Neither writes to the repo.
 cache=$tmp/cache
@@ -266,6 +274,24 @@ pin_pmd "$tmp/served/pmd-dist-9.9-bin.zip"
 out=$(XDG_CACHE_HOME=$tmp/fetch-cache "$fake/rules/java/install.sh" "$tmp/fetched" 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 2 ] && grep -qF "rules/duplicate-helper.yml has no ignores line to keep" <<<"$out" ||
   fail "install: a pack with no ignores line gave exit $rc:" "$out"
+
+# A swap that fails partway keeps the old pack with its lists, the stack.md, and no staging dir.
+printf 'ignores: ["**/Home.java"]\n' >>"$tmp/fetched/.nightshift/rules/java/rules/duplicate-helper.yml"
+echo kept >"$tmp/fetched/.nightshift/rules/java/utils/helper-name.yml"
+cp "$tmp/fetched/docs/agents/stack.md" "$tmp/stack.md"
+mkdir "$tmp/cut-mv"
+printf '#!/bin/sh\ncase $1 in */pack) exit 1 ;; esac\nexec /bin/mv "$@"\n' >"$tmp/cut-mv/mv"
+chmod +x "$tmp/cut-mv/mv"
+out=$(PATH=$tmp/cut-mv:$PATH XDG_CACHE_HOME=$tmp/fetch-cache "$fake/rules/java/install.sh" "$tmp/fetched" 2>&1) && rc=0 || rc=$?
+stray=
+for f in "$tmp/fetched/.nightshift/rules"/* "$tmp/fetched/.nightshift/rules"/.[!.]*; do
+  case ${f##*/} in java | '*' | '.[!.]*') ;; *) stray=$f ;; esac
+done
+[ "$rc" -ne 0 ] && [ "$(cat "$tmp/fetched/.nightshift/rules/java/utils/helper-name.yml")" = kept ] &&
+  grep -qF 'ignores: ["**/Home.java"]' "$tmp/fetched/.nightshift/rules/java/rules/duplicate-helper.yml" &&
+  cmp -s "$tmp/fetched/docs/agents/stack.md" "$tmp/stack.md" &&
+  [ -z "$stray" ] ||
+  fail "install: a failed swap gave exit $rc, or lost the old pack or left a file:" "$out"
 
 # When ast-grep can't run, check.sh fails as broken, and install.sh can't seed the allowlist.
 printf 'id: broken\nlanguage: java\nrule: {kind: no_such_kind}\n' >"$fake/rules/java/rules/broken.yml"
