@@ -67,7 +67,7 @@ updated: 2026-10-08T21:14:00Z
 `ns-ship` requires `evidence.md` and `review.md` to have `sha` equal to HEAD. Review fixes that add commits therefore re-run `ns-verify` before the unit can ship.
 
 - `pass`: the gate condition holds, so the next phase can start.
-- `fail`: the gate condition doesn't hold. The body's first line says what is missing, in one sentence; `ns watch` quotes it. A phase that can fix it itself retries first. Otherwise the phase that owns the fix picks it up, usually the previous one.
+- `fail`: the gate condition doesn't hold. The body's first line says what is missing, in one sentence; `ns watch` quotes it. When the only cause is that the default branch moved (the branch conflicts with it or needs a rebase onto it), that line starts with `base moved:`, and `ns run` sends build to rebase at no attempt's cost. A phase that can fix it itself retries first. Otherwise the phase that owns the fix picks it up, usually the previous one.
 - An `inconclusive` check with no failures gives `blocked` when a missing resource caused it, and `fail` otherwise.
 - `blocked`: progress needs something an agent can't get (hardware, credentials, a human decision). The body's first line names the blocker, in one sentence. After the review's last fix cycle, an open Critical or Important in code the unit changed is a blocker. A finding in pre-existing code never blocks, whatever its severity: it is an escape, filed as a prioritised issue. A Suggestion never blocks (see `ns-review`).
 - `split` (`brief.md` only): triage split the issue into child issues, which replace the unit. The body's first line names the children, in one sentence. Nothing waits on a human, so `ns run` ends the unit as `split`, not stuck.

@@ -226,6 +226,18 @@ fn first_line(body: &str) -> String {
         .collect()
 }
 
+/// A NO-GO whose first line says the base moved: the branch only needs a rebase.
+fn base_moved(body: &str) -> bool {
+    first_line(body).to_lowercase().contains("base moved")
+}
+
+/// `d` sends a passed build back only to rebase, because verify, review or ship said the base
+/// moved.
+pub(super) fn rebases_for_base(s: &State, d: &Decision) -> bool {
+    matches!(d, Decision::Run { phase: "build", feedback, .. } if base_moved(feedback))
+        && s.arts.get("build").is_some_and(|b| b.status == "pass")
+}
+
 /// The phase a failed ship names first: `verify` or `review`.
 fn named_phase(body: &str) -> Option<&'static str> {
     let lower = body.to_lowercase();
@@ -306,6 +318,7 @@ pub fn decide(s: &State) -> Decision {
     };
     match pr.status.as_str() {
         "pass" => run("ship", "", stale_why("pr.md", pr)),
+        "fail" if base_moved(&pr.body) => run("build", &pr.body, "pr.md failed: base moved"),
         "fail" => match named_phase(&pr.body) {
             Some(p) => run(
                 if p == "verify" { "verify" } else { "review" },
@@ -407,6 +420,37 @@ mod tests {
     }
 
     #[test]
+    fn only_a_passed_build_sent_back_for_a_moved_base_rebases() {
+        let moved = |status: &str| {
+            let mut a = art(status, "abc1234");
+            a.body = "Base moved: rebase onto main\n".into();
+            a
+        };
+        let brief = ("triage", art("pass", ""));
+        let rebases = |arts: &[(&'static str, Art)]| {
+            let s = state(arts);
+            rebases_for_base(&s, &decide(&s))
+        };
+        let built = ("build", art("pass", "abc1234"));
+        assert!(rebases(&[
+            brief.clone(),
+            built.clone(),
+            ("verify", moved("fail"))
+        ]));
+        assert!(!rebases(&[
+            brief.clone(),
+            built.clone(),
+            ("verify", art("fail", "abc1234"))
+        ]));
+        // Build's own fail is a failed attempt, whatever it says.
+        assert!(!rebases(&[brief.clone(), ("build", moved("fail"))]));
+        // The line names the base moving only in its first line.
+        let mut later = art("fail", "abc1234");
+        later.body = "Tests fail\nbase moved too\n".into();
+        assert!(!rebases(&[brief, built, ("verify", later)]));
+    }
+
+    #[test]
     fn state_table() {
         assert_eq!(next(&[]), "triage");
         let mut s = state(&[]);
@@ -449,6 +493,9 @@ mod tests {
         sf.body = "evidence is stale; ns-review must rerun".into();
         assert_eq!(with(("ship", sf)), "review");
         assert_eq!(with(("ship", art("fail", "abc1234"))), "stuck");
+        let mut moved = art("fail", "abc1234");
+        moved.body = "NO-GO: base moved, the branch conflicts with main\n".into();
+        assert_eq!(with(("ship", moved)), "build");
         assert_eq!(with(("ship", art("pass", "abc1234"))), "done");
         let old = [
             brief.clone(),
