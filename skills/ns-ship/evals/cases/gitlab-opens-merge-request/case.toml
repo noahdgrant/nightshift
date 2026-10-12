@@ -1,0 +1,60 @@
+description = "A reviewed unit in a repo whose docs/agents/issue-tracker.md says GitLab. ns-ship must push the branch and open the merge request with glab mr create, read its state with glab, never call gh pr, and stop at merge-ready without merging. The night-log fixture's fake glab opens merge request 1 and reports it merge-ready; its fake gh records any call."
+fixture = "night-log"
+skills = ["ns-ship"]
+extra_skills = ["ns-contract", "ns-writing-for-humans"]
+timeout_minutes = 20
+prompt = """
+Ship unit 44-widget-title. It is checked out on branch ns/44-widget-title in this repo, and verify and review have passed. gates: auto. Nobody is around to answer questions.
+"""
+
+[setup]
+commands = [
+  "git add -A && git commit -q -m 'chore: agent docs'",
+  "git init -q --bare .git/fake/origin.git && git remote add origin \"$PWD/.git/fake/origin.git\" && git push -q origin main",
+  "git checkout -q -b ns/44-widget-title",
+  "cp ../test.sh scripts/test.sh && sed -i 's/\"widgets\"/\"Widgets\"/' scripts/widget.sh",
+  "git add scripts && git commit -q -m 'fix(widget): capitalise the title'",
+  "mkdir -p .ns/44-widget-title && cp ../brief.md ../build.md ../evidence.md ../review.md .ns/44-widget-title/",
+  "cp ../stamp-sha .git/hooks/post-commit && chmod +x .git/hooks/post-commit",
+]
+
+[[check]]
+type = "command"
+run = "grep -q '^glab mr create' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "! grep -q '^gh pr' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "grep -Eq '^glab (mr view|ci status|api)' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "! grep -Eq '^glab mr (merge|approve)' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "test \"$(git --git-dir=.git/fake/origin.git rev-parse -q --verify refs/heads/ns/44-widget-title)\" = \"$(git rev-parse ns/44-widget-title)\""
+expect_exit = 0
+
+[[check]]
+type = "frontmatter"
+path = ".ns/44-widget-title/pr.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+type = "regex"
+path = ".ns/44-widget-title/pr.md"
+pattern = "merge_requests/1"
+
+[[check]]
+type = "judge"
+rubric = "Read .git/fake/calls.log, .ns/44-widget-title/pr.md and the transcript. Pass only if the agent opened the merge request with glab mr create (description from a file, not inline shell text), checked its state, pipeline and review threads with glab, never used gh for the merge request, and stopped at merge-ready without merging or approving."
+required = false
