@@ -204,6 +204,33 @@ fn gate_capped(cmd: &str, timeout: Duration, cap: Option<&Cap>) -> (GateRun, tem
 const REPORT: &str = r#"{"ratchets": [{"name": "flash", "command": "s", "better": "lower", "tolerance": "0", "recorded": 1, "measured": 2, "runs": [2], "limit": 1, "status": "worse"}, {"name": "cov", "command": "c", "better": "higher", "tolerance": "0", "recorded": 1, "measured": 2, "runs": [2], "limit": 1, "status": "better"}]}"#;
 
 #[test]
+fn a_full_gate_sees_ns_gate_files_unset_and_a_fast_gate_exactly_the_files_given() {
+    std::env::set_var("NS_GATE_FILES", "stale.txt");
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("gate.log");
+    let ratchets = Ratchets {
+        factory: tmp.path(),
+        night: None,
+    };
+    let t = Duration::from_secs(30);
+    let cmd = "echo \"[$NS_GATE_FILES]\"";
+    let full = run(cmd, tmp.path(), t, &log, None, &ratchets, None).unwrap();
+    assert_eq!(full.tail, "[]");
+    let files = run(
+        cmd,
+        tmp.path(),
+        t,
+        &log,
+        None,
+        &ratchets,
+        Some("a.rs\nb.rs"),
+    )
+    .unwrap();
+    assert_eq!(files.tail, "[a.rs\nb.rs]");
+    std::env::remove_var("NS_GATE_FILES");
+}
+
+#[test]
 fn the_gate_tells_ns_ratchet_check_its_factory_night_and_report() {
     let tmp = tempfile::tempdir().unwrap();
     let log = tmp.path().join("gate-build-1.log");

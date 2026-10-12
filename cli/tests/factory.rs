@@ -1458,6 +1458,24 @@ fn build_only_without_a_full_gate_this_run_tests_the_files_changed_since_the_bas
 }
 
 #[test]
+fn build_only_fast_gate_runs_everything_when_git_cannot_find_the_changed_files() {
+    let e = Env::new();
+    let (runs, affected) = build_only(&e, "");
+    e.ctl(
+        "review.sh",
+        "git update-ref -d refs/heads/main && date >> work.txt && git add work.txt && git -c user.name=f -c user.email=f@f commit -qm fix",
+    );
+    e.queue("build", &["pass:script"]);
+    e.queue("review", &["pass", "pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let v = e.run(&["run", "--issue", "7", "--from", "review"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\nfast\n");
+    assert_eq!(fs::read_to_string(&affected).unwrap(), "[]\n");
+}
+
+#[test]
 fn build_only_sends_a_red_fast_gate_back_to_build_and_the_rebuild_runs_the_full_one() {
     let e = Env::new();
     let (runs, _) = build_only(&e, "");
