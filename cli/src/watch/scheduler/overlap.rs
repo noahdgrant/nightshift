@@ -1,11 +1,13 @@
 //! Prefer a ready issue whose predicted `touches` overlap no running unit's (docs/FACTORY.md,
 //! "Parallel units"). Overlap orders the queue and never holds an issue back.
 
+use std::cell::LazyCell;
+use std::collections::BTreeMap;
 use std::fs;
 
 use crate::git::{self, Repo};
 use crate::touches::{touches, Overlap};
-use crate::watch::{Forge, Issue};
+use crate::watch::{unit_id, Forge, Issue};
 use crate::worktree;
 
 /// The heading that marks the brief in an issue's body or comments.
@@ -39,12 +41,7 @@ pub(in crate::watch) fn predicted(forge: &dyn Forge, issue: &Issue) -> Vec<Strin
 }
 
 /// A running unit's `touches`: from `brief.md` in its worktree, else as predicted on its issue.
-pub(in crate::watch) fn running(
-    repo: &Repo,
-    forge: &dyn Forge,
-    issue: &Issue,
-    unit: &str,
-) -> Vec<String> {
+fn running(repo: &Repo, forge: &dyn Forge, issue: &Issue, unit: &str) -> Vec<String> {
     let brief = worktree::planned_path(repo, unit)
         .join(".ns")
         .join(unit)
@@ -53,6 +50,24 @@ pub(in crate::watch) fn running(
         Ok(text) => touches(&text),
         Err(_) => predicted(forge, issue),
     }
+}
+
+/// The running units that predict any `touches`, each as its unit id and globs. A unit id is the
+/// one its run recorded, else the one `ns watch` names the issue's unit by.
+pub(in crate::watch) fn running_units<'a>(
+    repo: &Repo,
+    forge: &dyn Forge,
+    issues: impl IntoIterator<Item = (&'a Issue, Option<&'a str>)>,
+) -> Vec<(String, Vec<String>)> {
+    issues
+        .into_iter()
+        .map(|(issue, recorded)| {
+            let unit = recorded.map_or_else(|| unit_id(issue), String::from);
+            let touches = running(repo, forge, issue, &unit);
+            (unit, touches)
+        })
+        .filter(|(_, t)| !t.is_empty())
+        .collect()
 }
 
 /// The unit id of each running unit `mine` overlaps.
@@ -68,22 +83,39 @@ pub(in crate::watch) fn overlapped<'a>(
         .collect()
 }
 
-/// Which of `ready`, in queue order, to start next: the first whose predicted `touches` overlap
-/// no `running` unit's, else the first. `rule` is read only when some running unit predicts.
-pub(super) fn pick(
-    ready: &[Issue],
-    running: &[(String, Vec<String>)],
-    rule: impl FnOnce() -> Overlap,
-    forge: &dyn Forge,
-) -> usize {
-    if running.iter().all(|(_, t)| t.is_empty()) {
-        return 0;
+/// Picks, for one fill, which ready issue starts next. Each issue's prediction is read once and
+/// the overlap rule built once, when a running unit first predicts anything.
+pub(super) struct Picker<'a> {
+    forge: &'a dyn Forge,
+    rule: LazyCell<Overlap, Box<dyn FnOnce() -> Overlap + 'a>>,
+    predicted: BTreeMap<u64, Vec<String>>,
+}
+
+impl<'a> Picker<'a> {
+    pub(super) fn new(forge: &'a dyn Forge, rule: impl FnOnce() -> Overlap + 'a) -> Self {
+        Picker {
+            forge,
+            rule: LazyCell::new(Box::new(rule)),
+            predicted: BTreeMap::new(),
+        }
     }
-    let rule = rule();
-    ready
-        .iter()
-        .position(|i| overlapped(&rule, &predicted(forge, i), running).is_empty())
-        .unwrap_or(0)
+
+    /// Which of `ready`, in queue order, to start next: the first whose predicted `touches`
+    /// overlap no `running` unit's, else the first.
+    pub(super) fn pick(&mut self, ready: &[Issue], running: &[(String, Vec<String>)]) -> usize {
+        if ready.len() <= 1 || running.is_empty() {
+            return 0;
+        }
+        let (forge, rule) = (self.forge, &*self.rule);
+        let cache = &mut self.predicted;
+        ready
+            .iter()
+            .position(|i| {
+                let mine = cache.entry(i.number).or_insert_with(|| predicted(forge, i));
+                overlapped(rule, mine, running).is_empty()
+            })
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -116,10 +148,22 @@ mod tests {
     }
 
     fn running(globs: &[&str]) -> Vec<(String, Vec<String>)> {
+        if globs.is_empty() {
+            return Vec::new();
+        }
         vec![(
             "1-fix-1".into(),
             globs.iter().map(|g| g.to_string()).collect(),
         )]
+    }
+
+    fn pick(
+        ready: &[Issue],
+        running: &[(String, Vec<String>)],
+        make: impl FnOnce() -> Overlap,
+        forge: &Fake,
+    ) -> usize {
+        Picker::new(forge, make).pick(ready, running)
     }
 
     /// Issues 2, 3 and 4 in queue order; issue n's brief comment predicts `briefs[n - 2]`.

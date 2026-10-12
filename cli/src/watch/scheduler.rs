@@ -350,6 +350,9 @@ impl<'a> Scheduler<'a> {
         }
         // A listing can name an issue twice.
         ready.retain(|i| taken.insert(i.number));
+        let ignore = &self.plan.loaded.fac.queue.overlap_ignore;
+        let mut picker =
+            overlap::Picker::new(self.plan.forge, || overlap::rule(self.plan.repo, ignore));
         while !ready.is_empty() {
             // A stop during the read claims nothing more.
             if !self.free() || stop::requested().is_some() {
@@ -359,7 +362,7 @@ impl<'a> Scheduler<'a> {
                 self.stopping = Some(why);
                 break;
             }
-            let issue = ready.remove(self.pick(&ready));
+            let issue = ready.remove(picker.pick(&ready, &self.running_touches()));
             let q = &self.plan.loaded.fac.queue;
             let n = issue.number;
             if let Err(e) = set_status(self.plan.forge, q, n, Some(&q.in_progress_label)) {
@@ -375,18 +378,10 @@ impl<'a> Scheduler<'a> {
         Ok(())
     }
 
-    /// Which of `ready` to start next: the first that overlaps no running unit, else the first.
-    fn pick(&self, ready: &[Issue]) -> usize {
-        let (repo, forge) = (self.plan.repo, self.plan.forge);
-        let running: Vec<(String, Vec<String>)> = (self.running.values())
-            .map(|w| {
-                let unit = unit_id(&w.issue);
-                let touches = overlap::running(repo, forge, &w.issue, &unit);
-                (unit, touches)
-            })
-            .collect();
-        let ignore = &self.plan.loaded.fac.queue.overlap_ignore;
-        overlap::pick(ready, &running, || overlap::rule(repo, ignore), forge)
+    /// The running units that predict any `touches`, for the pick.
+    fn running_touches(&self) -> Vec<(String, Vec<String>)> {
+        let units = self.running.values().map(|w| (&w.issue, None));
+        overlap::running_units(self.plan.repo, self.plan.forge, units)
     }
 
     /// Close the split parents whose children are done, and on the clone's first pass sweep the

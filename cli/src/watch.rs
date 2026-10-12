@@ -481,14 +481,8 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         let qu = queue(forge, fac, &BTreeSet::new())?;
         let wip = in_progress(&repo, forge, &q)?;
         // The units live runs hold, by unit id, and their `touches`.
-        let running: Vec<(String, Vec<String>)> = (wip.held.iter())
-            .map(|(i, h)| {
-                let unit = h["unit"].as_str().map_or_else(|| unit_id(i), String::from);
-                let touches = overlap::running(&repo, forge, i, &unit);
-                (unit, touches)
-            })
-            .filter(|(_, t)| !t.is_empty())
-            .collect();
+        let held = wip.held.iter().map(|(i, h)| (i, h["unit"].as_str()));
+        let running = overlap::running_units(&repo, forge, held);
         let rule = (!running.is_empty()).then(|| overlap::rule(&repo, &q.overlap_ignore));
         let ready: Vec<Value> = qu
             .ready

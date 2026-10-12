@@ -1604,6 +1604,50 @@ fn watch_starts_a_ready_issue_clear_of_running_units_before_a_higher_one() {
 }
 
 #[test]
+fn watch_dry_run_leaves_out_overlap_on_files_overlap_ignore_names() {
+    let e = Env::new();
+    e.factory("[queue]\noverlap_ignore = [\"docs/FACTORY.md\"]\n");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    brief_comment(&e, 2, "`docs/FACTORY.md`, `cli/src/run.rs`");
+    e.open_by(
+        6,
+        "Fix e",
+        &["type:fix", "status:in-progress"],
+        "",
+        Some("MEMBER"),
+    );
+    let _held = hold(
+        &e.root.join(".git/ns-run-6-fix-e.lock"),
+        r#"{"pid":43,"issue":6}"#,
+    );
+    brief_comment(&e, 6, "`docs/FACTORY.md`");
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(v["queue"][0]["overlaps"], serde_json::json!([]), "{v}");
+}
+
+#[test]
+fn watch_keeps_the_queue_order_over_overlap_on_files_overlap_ignore_names() {
+    let e = Env::new();
+    e.factory("[queue]\noverlap_ignore = [\"docs/FACTORY.md\"]\n");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    brief_comment(&e, 2, "`docs/FACTORY.md`");
+    e.ready(3, "Fix b", &["type:fix"], "");
+    brief_comment(&e, 3, "`docs/FACTORY.md`");
+    e.ready(4, "Fix c", &["type:fix"], "");
+    brief_comment(&e, 4, "`docs/DESIGN.md`");
+    let (in_a, go_a) = hold_phase(&e, A, "triage");
+    let w = Watching::start(
+        e.ns()
+            .args(["watch", "--parallel", "2", "--max-units", "2"]),
+    );
+    w.entered(&in_a);
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+}
+
+#[test]
 fn a_second_watch_on_the_repo_is_refused() {
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");
