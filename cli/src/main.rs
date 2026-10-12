@@ -40,6 +40,7 @@ mod status;
 mod stop;
 #[cfg(test)]
 mod testutil;
+mod touches;
 mod transcripts;
 mod upstream;
 mod watch;
