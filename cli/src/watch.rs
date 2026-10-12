@@ -1007,6 +1007,9 @@ Open after at least 2 fix attempts: C1, I2, I4.
             Ok(self.labels.borrow().get(&n).cloned().unwrap_or_default())
         }
         fn edit_labels(&self, n: u64, remove: &[String], add: Option<&str>) -> Result<()> {
+            if self.fails.contains("edit_labels") {
+                anyhow::bail!("HTTP 502");
+            }
             let mut all = self.labels.borrow_mut();
             let ls = all.entry(n).or_default();
             ls.retain(|l| !remove.contains(l));

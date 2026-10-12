@@ -487,6 +487,51 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_label_move_posts_no_comment_and_leaves_the_parent_for_the_next_pass() {
+        let mut f = forge(&[2, 3], &[3]);
+        f.fails.insert("edit_labels");
+        let done = run(&f, false);
+        assert!(done.is_empty());
+        assert!(f.posted.borrow().is_empty());
+        assert!(f.closes.borrow().is_empty());
+        assert_eq!(f.labels(1).unwrap(), ["type:feat", SPLIT]);
+        let q = QueueConfig::default();
+        assert_eq!(
+            plan(&f, &q, false).unwrap()[0].action,
+            Action::Dropped(vec![3])
+        );
+    }
+
+    #[test]
+    fn a_failed_relabel_is_not_reported_and_leaves_the_sweep_unfinished() {
+        let q = QueueConfig::default();
+        let mut f = forge(&[2], &[]);
+        f.issues = vec![issue(1, &[OLD_LABEL], "")];
+        f.labels
+            .borrow_mut()
+            .insert(1, vec!["type:feat".into(), OLD_LABEL.into()]);
+        f.fails.insert("edit_labels");
+        let (parents, all_read) = plan_read(&f, &q, true).unwrap();
+        assert_eq!(parents[0].action, Action::Relabel(1));
+        let done = apply(&f, &q, &parents, &mut BTreeSet::new());
+        assert!(done.is_empty());
+        assert!(!sweep_finished(all_read, &parents, &done));
+        assert_eq!(f.labels(1).unwrap(), ["type:feat", OLD_LABEL]);
+    }
+
+    #[test]
+    fn a_failed_label_strip_after_the_close_still_reports_the_parent() {
+        let mut f = forge(&[2, 3], &[]);
+        f.fails.insert("edit_labels");
+        let done = run(&f, false);
+        assert_eq!(*f.closes.borrow(), [1]);
+        assert_eq!(f.posted.borrow().len(), 1);
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0]["action"], "close");
+        assert_eq!(f.labels(1).unwrap(), ["type:feat", SPLIT]);
+    }
+
+    #[test]
     fn a_list_ends_at_a_line_that_only_looks_like_an_item() {
         assert_eq!(listed("Children:\n- #4\n**Notes:**\n- #12"), [4]);
         assert_eq!(listed("Children:\n- #4\n---\n- #12"), [4]);
