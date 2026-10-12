@@ -113,18 +113,28 @@ pr: <url, filled after step 7>
 
 ## 7. Push and open the PR
 
-Read `docs/agents/issue-tracker.md` for the forge CLI and how PRs link issues. Default to `gh`. If the file is missing, load `ns-setup`. Issue and PR comments follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content).
+Read `docs/agents/issue-tracker.md` for the forge and how PRs link issues. When it says GitLab, the PR is a merge request and every forge command goes through `glab`. Otherwise use `gh`. If the file is missing, load `ns-setup`. Issue and PR comments follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content).
 
 ```bash
 git push -u origin ns/<unit-id>
 awk 'f; /^---$/ && ++n==2 {f=1}' .ns/<unit-id>/pr.md > /tmp/<unit-id>-body.md   # body without frontmatter
+```
+
+Then open it on the forge:
+
+```bash
+# GitHub
 gh pr create --base main --head ns/<unit-id> --title "<title>" --body-file /tmp/<unit-id>-body.md
 gh pr view --json url,isDraft
+
+# GitLab
+glab mr create --source-branch ns/<unit-id> --target-branch main --title "<title>" --description-file /tmp/<unit-id>-body.md --yes
+glab mr view -F json   # web_url, iid, draft
 ```
 
 The push runs the repo's hooks. When one fails, fix what it reports, never skip it ([git hooks](../ns-contract/SKILL.md#git-hooks)).
 
-Open the PR ready for review, not as a draft. If it opened as a draft, run `gh pr ready <number>`. Record the URL in `pr.md`.
+Open the PR ready for review, not as a draft. If it opened as a draft, run `gh pr ready <number>` (GitLab: `glab mr update <iid> --ready`). Record the URL in `pr.md`.
 
 ## 8. Babysit to merge-ready
 
