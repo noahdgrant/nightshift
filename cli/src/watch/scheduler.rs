@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::json;
 
+pub(super) mod overlap;
 mod red;
 
 use self::red::Gate;
@@ -347,18 +348,21 @@ impl<'a> Scheduler<'a> {
             Gate::Shut => ready.clear(),
             Gate::Open => {}
         }
-        for issue in ready {
-            // A listing can name an issue twice; a stop during the read claims nothing more.
+        // A listing can name an issue twice.
+        ready.retain(|i| taken.insert(i.number));
+        let ignore = &self.plan.loaded.fac.queue.overlap_ignore;
+        let mut picker =
+            overlap::Picker::new(self.plan.forge, || overlap::rule(self.plan.repo, ignore));
+        while !ready.is_empty() {
+            // A stop during the read claims nothing more.
             if !self.free() || stop::requested().is_some() {
                 break;
-            }
-            if !taken.insert(issue.number) {
-                continue;
             }
             if let Some(why) = self.over_claims(night) {
                 self.stopping = Some(why);
                 break;
             }
+            let issue = picker.take(&mut ready, || self.running_touches());
             let q = &self.plan.loaded.fac.queue;
             let n = issue.number;
             if let Err(e) = set_status(self.plan.forge, q, n, Some(&q.in_progress_label)) {
@@ -372,6 +376,12 @@ impl<'a> Scheduler<'a> {
             self.started += 1;
         }
         Ok(())
+    }
+
+    /// The running units that predict any `touches`, for the pick.
+    fn running_touches(&self) -> Vec<(String, Vec<String>)> {
+        let units = self.running.values().map(|w| (&w.issue, None));
+        overlap::running_units(self.plan.repo, self.plan.forge, units)
     }
 
     /// Close the split parents whose children are done, and on the clone's first pass sweep the

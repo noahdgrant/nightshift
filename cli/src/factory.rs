@@ -259,6 +259,9 @@ pub struct Queue {
     pub triage_label: String,
     /// Read main's CI at the start of a night (`crate::watch::ci`).
     pub fix_main_first: bool,
+    /// Files no two units overlap on, whatever their `touches` predict (docs/FACTORY.md,
+    /// "Parallel units").
+    pub overlap_ignore: Vec<String>,
     /// Removed (D42): `--until` and the budget bound the triage pass, not a count. Read only so
     /// an old file still loads, with a warning.
     #[serde(rename = "triage_per_night")]
@@ -277,6 +280,7 @@ impl Default for Queue {
             split_label: "status:split".into(),
             triage_label: "status:needs-triage".into(),
             fix_main_first: true,
+            overlap_ignore: Vec::new(),
             removed_triage_per_night: None,
             priority: ["priority:high", "priority:medium", "priority:low"]
                 .iter()
@@ -460,11 +464,11 @@ impl Factory {
                 self.merge.policy
             ));
         }
-        for p in &self.merge.human_review {
-            if glob::Pattern::new(p).is_err() {
-                out.push(format!("merge.human_review: {p:?} is not a valid glob"));
-            }
-        }
+        out.extend(bad_globs("merge.human_review", &self.merge.human_review));
+        out.extend(bad_globs(
+            "queue.overlap_ignore",
+            &self.queue.overlap_ignore,
+        ));
         if let Some(b) = self.limits.budget_usd {
             if b < 0.0 {
                 out.push("limits.budget_usd must not be negative".into());
@@ -476,6 +480,14 @@ impl Factory {
         out.extend(self.supervise.problems());
         out
     }
+}
+
+/// A problem for each of `key`'s `globs` that doesn't parse.
+fn bad_globs<'a>(key: &'a str, globs: &'a [String]) -> impl Iterator<Item = String> + 'a {
+    globs
+        .iter()
+        .filter(|p| glob::Pattern::new(p).is_err())
+        .map(move |p| format!("{key}: {p:?} is not a valid glob"))
 }
 
 /// Locate the definition root: `--factory <dir>`, else `<main_root>/.nightshift`.
