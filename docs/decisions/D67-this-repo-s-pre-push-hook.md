@@ -3,6 +3,7 @@ id: D67
 title: "This repo's pre-push hook checks each commit pushed"
 issue: 385
 date: 2026-10-11
+amended_by: [ADR-451]
 ---
 
 # D67: This repo's pre-push hook checks each commit pushed

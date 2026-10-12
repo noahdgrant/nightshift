@@ -1110,6 +1110,48 @@ fn a_phase_under_watch_knows_the_watch_pid() {
     assert_eq!(phase_ids(&e)[0], format!("{run} {pid}"));
 }
 
+/// The `GIT_SSH_COMMAND` the build phase saw, or `unset`, after `ns run` under `setup`.
+fn phase_ssh_command(setup: impl FnOnce(&Env, &mut Ns)) -> String {
+    let e = Env::new();
+    e.ctl(
+        "build.sh",
+        r#"echo "${GIT_SSH_COMMAND-unset}" > "$FAKE_CTRL/ssh""#,
+    );
+    e.queue("build", &["pass:script"]);
+    let mut ns = e.ns();
+    ns.env_remove("GIT_SSH_COMMAND").env_remove("GIT_SSH");
+    setup(&e, &mut ns);
+    ok_pid(ns.args(["run", "--issue", "7"]));
+    fs::read_to_string(e.ctrl.join("ssh"))
+        .unwrap()
+        .trim_end()
+        .to_string()
+}
+
+#[test]
+fn a_phase_pushes_with_ssh_keepalive_unless_the_user_chose_an_ssh_command() {
+    let keepalive = "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40";
+    assert_eq!(phase_ssh_command(|_, _| {}), keepalive);
+    assert_eq!(
+        phase_ssh_command(|_, ns| {
+            ns.env("GIT_SSH_COMMAND", "ssh -i key");
+        }),
+        "ssh -i key"
+    );
+    assert_eq!(
+        phase_ssh_command(|_, ns| {
+            ns.env("GIT_SSH", "/usr/bin/ssh");
+        }),
+        "unset"
+    );
+    assert_eq!(
+        phase_ssh_command(|e, _| {
+            git(&e.root, &["config", "core.sshCommand", "ssh -i key"]);
+        }),
+        "unset"
+    );
+}
+
 #[test]
 fn a_phase_that_kills_its_own_group_is_a_failed_attempt_not_a_dead_watch() {
     let e = Env::new();

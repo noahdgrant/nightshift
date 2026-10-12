@@ -1308,7 +1308,7 @@ fn drive(
             .join("transcripts")
             .join(&ctx.unit)
             .join(format!("{phase}-{attempt}.jsonl"));
-        let env = [
+        let mut env = vec![
             ("NS_UNIT", ctx.unit.clone()),
             ("NS_PHASE", phase.to_string()),
             ("NS_ATTEMPT", attempt.to_string()),
@@ -1325,6 +1325,9 @@ fn drive(
                 shared.watch_pid.map(|p| p.to_string()).unwrap_or_default(),
             ),
         ];
+        if !crate::git::ssh_command_set(&ctx.worktree) {
+            env.push(("GIT_SSH_COMMAND", crate::git::SSH_KEEPALIVE.to_string()));
+        }
         pin::write_settings(&ctx.common, &ctx.unit, &ctx.ns)?;
         let r = run_harness(
             &commands[phase],

@@ -625,6 +625,12 @@ The phases run with permissions bypassed inside worktrees. Run on a machine wher
 
    `ns run` and `ns watch` check at start that the chosen token can read the repo, and exit 2 naming the account and the table when it can't. A `GH_TOKEN` set in the environment still wins over every table, with a warning. `NS_CONFIG`, which points `ns` at another config file, remains an escape hatch, but it has to be set in every shell and in the systemd unit, so prefer the tables. See `cli/README.md` (`[forge]`).
 
+   With an SSH `origin`, give pushes a keepalive. A pre-push hook that runs all of CI leaves the SSH connection idle for minutes, and a dropped connection fails the push with exit 141 after the checks passed. `ns run` gives its phases `GIT_SSH_COMMAND="ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40"` unless `GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand` is already set. For your own pushes, set it in the checkout, or `ServerAliveInterval` in `~/.ssh/config`. `ns doctor` warns when nothing sets one (`ssh_keepalive`).
+
+   ```bash
+   git config core.sshCommand 'ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40'
+   ```
+
 4. Keep the watched checkout on the default branch with no changes to tracked files. `ns watch` reads the gate command from it at start. When your skills are symlinks into it, `ns watch` also fast-forwards it before each unit so codex phases and your own sessions see current skills (claude phases run each unit's pinned snapshot); on another branch or with local changes it only warns, and the night runs on the old skills. Skills linked from a separate nightshift checkout are never updated by `ns watch`, so pull that checkout yourself.
 5. Run `ns watch --dry-run` in the checkout to see the queue it would work.
 
