@@ -2,8 +2,10 @@
 # tool here and nowhere else; scripts/ci-tools.sh is the only reader.
 #
 #   version  the pin
-#   install  how CI installs it: pip (package, default the tool's name), apt (package,
-#            linked onto PATH as the tool's name) or install-action (taiki-e/install-action)
+#   install  how CI installs it: pip (package, default the tool's name), apt (package; its bin,
+#            default /usr/bin/<package>, linked onto PATH as the tool's name), install-action
+#            (taiki-e/install-action) or download (the zip at url, checked against sha256, with
+#            its bin, a path inside the zip, linked onto PATH); {version} in url and bin is the pin
 #   check    a command whose output names the installed version
 
 [ruff]

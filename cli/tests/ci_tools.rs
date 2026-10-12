@@ -272,7 +272,7 @@ fn an_unknown_tool_or_method_is_a_usage_error() {
         assert_eq!(out.status.code(), Some(2), "{mode}");
         assert_eq!(
             stderr(&out),
-            "ci-tools: odd: install must be pip, apt or install-action, not brew\n"
+            "ci-tools: odd: install must be pip, apt, install-action or download, not brew\n"
         );
         assert_eq!(repo.log(), "");
     }
@@ -333,4 +333,161 @@ fn a_python_older_than_3_11_fails_with_a_message_naming_the_floor() {
             "{mode}"
         );
     }
+}
+
+#[test]
+fn an_apt_tool_with_a_bin_links_that_path() {
+    let list = "[brew]\nversion = \"21\"\ninstall = \"apt\"\npackage = \"brew-21-jre\"\nbin = \"/usr/lib/jvm/brew-21/bin/brew\"\ncheck = \"brew -version\"\n";
+    let repo = Repo::new(list);
+    let out = repo.run(&["install"], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        repo.log(),
+        "sudo apt-get update\n\
+         sudo apt-get install -y brew-21-jre\n\
+         sudo ln -sf /usr/lib/jvm/brew-21/bin/brew /usr/local/bin/brew\n"
+    );
+
+    let out = repo.run(&["check"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        "ci-tools: brew is not on PATH; install it with: sudo apt-get install brew-21-jre && sudo ln -sf /usr/lib/jvm/brew-21/bin/brew /usr/local/bin/brew\n"
+    );
+}
+
+/// `printf 'archive\n' | sha256sum`, the archive the stub `curl` downloads.
+const ARCHIVE_SHA: &str = "371e16ce98051a3ea7af3eaef8b87d69033154fb5bb33da349d611f0fae061d6";
+
+/// A `download` tool, and stubs on PATH: `curl` writes `archive\n` to its `-o` file and `unzip`
+/// writes the tool's `bin` into its `-d` directory, each logging its run.
+fn download_repo(sha: &str) -> Repo {
+    let list = format!(
+        "[thing]\nversion = \"7.1\"\ninstall = \"download\"\nurl = \"https://example.com/rel%2F{{version}}/thing-{{version}}-bin.zip\"\nsha256 = \"{sha}\"\nbin = \"thing-{{version}}/bin/thing\"\ncheck = \"thing --version\"\n"
+    );
+    let repo = Repo::new(&list);
+    let bin = repo.dir.path().join("bin");
+    for tool in ["mkdir", "mv", "rm", "ln", "sha256sum"] {
+        std::os::unix::fs::symlink(real(tool), bin.join(tool)).unwrap();
+    }
+    let log = repo.dir.path().join("log");
+    write_exe(
+        &bin.join("curl"),
+        &format!(
+            "#!/bin/sh\necho \"curl $*\" >> {log:?}\nwhile [ \"$1\" != -o ]; do shift; done\nprintf 'archive\\n' > \"$2\"\n"
+        ),
+    );
+    write_exe(
+        &bin.join("unzip"),
+        &format!(
+            "#!/bin/sh\necho \"unzip $*\" >> {log:?}\nd=\"$4/thing-7.1/bin\"\nmkdir -p \"$d\"\nprintf '#!/bin/sh\\necho thing 7.1\\n' > \"$d/thing\"\n{chmod:?} +x \"$d/thing\"\n",
+            chmod = real("chmod"),
+        ),
+    );
+    repo
+}
+
+#[test]
+fn a_download_tool_is_fetched_once_checked_and_linked_onto_path() {
+    let repo = download_repo(ARCHIVE_SHA);
+    let root = repo.dir.path();
+    let home = root.join("home");
+    let gh_path = root.join("github-path");
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("GITHUB_PATH", gh_path.to_str().unwrap()),
+    ];
+    let out = repo.run(&["install"], &env);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let archive = home.join(".cache/nightshift/thing-7.1-bin.zip");
+    let unpacked = home.join(".local/share/nightshift/thing-7.1");
+    assert_eq!(
+        repo.log(),
+        format!(
+            "curl -fsSL --retry 3 -o {}.part https://example.com/rel%2F7.1/thing-7.1-bin.zip\nunzip -q {} -d {}.part\n",
+            archive.display(),
+            archive.display(),
+            unpacked.display()
+        )
+    );
+    let link = home.join(".local/bin/thing");
+    assert_eq!(
+        fs::read_link(&link).unwrap(),
+        unpacked.join("thing-7.1/bin/thing")
+    );
+    assert_eq!(
+        fs::read_to_string(&gh_path).unwrap(),
+        format!("{}\n", home.join(".local/bin").display())
+    );
+
+    // A second install finds the archive and the unpacked tool, so it runs neither curl nor unzip.
+    fs::write(root.join("log"), "").unwrap();
+    let out = repo.run(&["install", "thing"], &env);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(repo.log(), "");
+
+    // XDG_CACHE_HOME and XDG_DATA_HOME move the archive and the unpacked tool.
+    let out = repo.run(
+        &["install"],
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("XDG_CACHE_HOME", root.join("c").to_str().unwrap()),
+            ("XDG_DATA_HOME", root.join("d").to_str().unwrap()),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(root.join("c/nightshift/thing-7.1-bin.zip").is_file());
+    assert_eq!(
+        fs::read_link(&link).unwrap(),
+        root.join("d/nightshift/thing-7.1/thing-7.1/bin/thing")
+    );
+}
+
+#[test]
+fn a_download_whose_checksum_differs_is_removed_and_fails() {
+    let repo = download_repo(&"0".repeat(64));
+    let home = repo.dir.path().join("home");
+    let out = repo.run(&["install"], &[("HOME", home.to_str().unwrap())]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let archive = home.join(".cache/nightshift/thing-7.1-bin.zip");
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "ci-tools: {} does not match the sha256 pinned for thing; removed it, so a rerun downloads it again\n",
+            archive.display()
+        )
+    );
+    assert!(!archive.exists());
+    assert!(!repo.log().contains("unzip"), "{}", repo.log());
+    assert!(!home.join(".local/bin/thing").exists());
+}
+
+#[test]
+fn a_failed_download_leaves_no_archive() {
+    let repo = download_repo(ARCHIVE_SHA);
+    write_exe(
+        &repo.dir.path().join("bin/curl"),
+        "#!/bin/sh\nwhile [ \"$1\" != -o ]; do shift; done\nprintf 'part' > \"$2\"\nexit 22\n",
+    );
+    let home = repo.dir.path().join("home");
+    let out = repo.run(&["install"], &[("HOME", home.to_str().unwrap())]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        "ci-tools: cannot download thing from https://example.com/rel%2F7.1/thing-7.1-bin.zip\n"
+    );
+    assert!(fs::read_dir(home.join(".cache/nightshift"))
+        .unwrap()
+        .next()
+        .is_none());
+}
+
+#[test]
+fn a_missing_download_tool_hints_at_ci_tools_install() {
+    let out = download_repo(ARCHIVE_SHA).run(&["check"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        "ci-tools: thing is not on PATH; install it with: scripts/ci-tools.sh install thing\n"
+    );
 }
