@@ -88,7 +88,9 @@ while IFS=$'\t' read -r name version method package _; do
     pip) pip+=("$package==$version") ;;
     apt)
       apt+=("$package")
-      [ "$package" = "$name" ] || links+=("$package:$name")
+      # Linked even under its own name, so it comes before a runner's preinstalled copy in
+      # /usr/local/bin (the runner ships its own npm).
+      links+=("$package:$name")
       ;;
     install-action)
       [ -n "${GITHUB_OUTPUT:-}" ] || {
