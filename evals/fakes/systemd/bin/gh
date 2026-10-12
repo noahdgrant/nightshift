@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Fake gh for ns eval: records the call; every list is empty and every change is refused.
+# A case can script answers in <git-common-dir>/fake/gh-answers: one "<args><TAB><output>" line per call.
 fake=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/fake
 [ "$fake" = /fake ] && fake=$HOME/fake
 mkdir -p "$fake"
 echo "gh $*" >> "$fake/calls.log"
+if [ -f "$fake/gh-answers" ]; then
+  while IFS=$'\t' read -r args out; do
+    [ "$args" = "$*" ] && { echo "$out"; exit 0; }
+  done < "$fake/gh-answers"
+fi
 echo "[]"

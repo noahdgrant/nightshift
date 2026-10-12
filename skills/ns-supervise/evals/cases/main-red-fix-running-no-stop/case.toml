@@ -15,6 +15,7 @@ commands = [
   "cp ../runs.jsonl .git/ns/runs.jsonl",
   "touch .git/fake/units/ns-watch.service",
   "echo 'Sat 2026-10-10 12:00:00 UTC' > .git/fake/active/ns-watch.service",
+  'printf "pr view 12 --json mergeCommit\t{\"mergeCommit\":{\"oid\":\"%s\"}}\nrun list --branch main --commit %s --json conclusion,status\t[{\"conclusion\":\"failure\",\"status\":\"completed\"}]\n" 2222222222222222222222222222222222222222 2222222222222222222222222222222222222222 > .git/fake/gh-answers',
 ]
 
 [[check]]
@@ -24,7 +25,7 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = "grep -Eq '#100|100-fix-main' .git/fake/notify.log && grep -Eqi 'main' .git/fake/notify.log"
+run = "grep -Eq '#100|100-fix-main' .git/fake/notify.log && grep -Eqi 'main.*red|red.*main' .git/fake/notify.log"
 expect_exit = 0
 
 [[check]]
