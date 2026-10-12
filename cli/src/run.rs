@@ -653,24 +653,10 @@ impl Ctx<'_> {
         log_event(&self.common, ev);
     }
 
-    /// The base to diff the unit against: `origin/<base>` when it is ahead of the local base,
-    /// since a unit rebased onto the newer remote would otherwise show upstream commits as its own.
-    fn diff_base(&self) -> String {
-        let remote = format!("origin/{}", self.base);
-        let wt = &self.worktree;
-        let remote_ref = format!("refs/remotes/{remote}");
-        if git::ok(wt, &["rev-parse", "--verify", "--quiet", &remote_ref])
-            && git::ok(wt, &["merge-base", "--is-ancestor", &self.base, &remote])
-        {
-            return remote;
-        }
-        self.base.clone()
-    }
-
     /// Log an `end` event with the brief's `touches` prediction and the files the unit changed
     /// against its base. Both are left out when git can't list the changed files.
     fn log_end(&self, mut ev: Value) {
-        let range = format!("{}...HEAD", self.diff_base());
+        let range = format!("{}...HEAD", git::freshest(&self.worktree, &self.base));
         if let Ok(out) = git::run(
             &self.worktree,
             &["diff", "--name-only", "--no-renames", "-z", &range],

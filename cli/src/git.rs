@@ -216,7 +216,7 @@ fn unit_start(cwd: &Path, base: &str, sha: &str) -> Option<String> {
 
 /// `origin/<base>` when it is strictly ahead of the local `base`, else `base`. A unit rebased
 /// onto a fetched `origin/<base>` shares no newer merge base with a stale local branch.
-fn freshest<'a>(cwd: &Path, base: &'a str) -> std::borrow::Cow<'a, str> {
+pub fn freshest<'a>(cwd: &Path, base: &'a str) -> std::borrow::Cow<'a, str> {
     let remote = format!("refs/remotes/origin/{base}");
     let ahead = ok(cwd, &["rev-parse", "--verify", "--quiet", &remote])
         && ok(cwd, &["merge-base", "--is-ancestor", base, &remote])

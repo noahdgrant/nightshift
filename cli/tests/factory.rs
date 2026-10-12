@@ -1485,6 +1485,57 @@ git -c user.name=f -c user.email=f@f merge -q --no-edit origin/main
     assert_eq!(end_event(&e)["changed"], serde_json::json!(["work.txt"]));
 }
 
+/// Review commits `file` onto local main (the unit then merges it) and parks `origin/main` per
+/// `origin`: `"old"` leaves it where main was, `"fork"` gives it a commit main doesn't have.
+fn end_changed_with_origin_main(origin: &str) -> Value {
+    let e = Env::new();
+    e.ctl("triage.body", "**Touches:** `work.txt`\n");
+    e.queue("build", &["pass:commit"]);
+    let fork = if origin == "fork" {
+        r#"git update-index --add --cacheinfo "100644,$(echo z | git hash-object -w --stdin),remote.txt"
+f=$(git -c user.name=f -c user.email=f@f commit-tree "$(git write-tree)" -p main -m remote)"#
+    } else {
+        "f=$(git rev-parse main)"
+    };
+    e.ctl(
+        "review.sh",
+        &format!(
+            r#"set -e
+export GIT_INDEX_FILE="$PWD/.ns/main-index"
+git read-tree main
+{fork}
+git read-tree main
+git update-index --add --cacheinfo "100644,$(echo y | git hash-object -w --stdin),other.txt"
+c=$(git -c user.name=f -c user.email=f@f commit-tree "$(git write-tree)" -p main -m other)
+rm -f "$GIT_INDEX_FILE"
+unset GIT_INDEX_FILE
+git update-ref refs/remotes/origin/main "$f"
+git update-ref refs/heads/main "$c"
+git -c user.name=f -c user.email=f@f merge -q --no-edit main
+"#
+        ),
+    );
+    e.queue("review", &["pass:script"]);
+    e.run(&["run", "--issue", "7"], 0);
+    end_event(&e)["changed"].clone()
+}
+
+#[test]
+fn the_end_event_leaves_out_commits_the_unit_took_from_a_local_main_ahead_of_origin() {
+    assert_eq!(
+        end_changed_with_origin_main("old"),
+        serde_json::json!(["work.txt"])
+    );
+}
+
+#[test]
+fn the_end_event_leaves_out_commits_the_unit_took_from_a_main_that_diverged_from_origin() {
+    assert_eq!(
+        end_changed_with_origin_main("fork"),
+        serde_json::json!(["work.txt"])
+    );
+}
+
 #[test]
 fn the_end_event_leaves_out_both_lists_when_git_cannot_diff_the_base() {
     let e = Env::new();
@@ -2028,7 +2079,10 @@ fn assert_interrupted(e: &Env, r: &Interrupted, sig: &str, code: i32) {
     assert!(
         run_events(e).iter().any(|ev| ev["event"] == "end"
             && ev["outcome"] == "interrupted"
-            && ev["changed"].is_array()),
+            && ev["touches"] == serde_json::json!([])
+            && ev["changed"]
+                .as_array()
+                .is_some_and(|c| c.iter().all(Value::is_string))),
         "{err}"
     );
 }
