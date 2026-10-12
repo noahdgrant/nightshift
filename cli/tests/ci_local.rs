@@ -139,7 +139,7 @@ impl Repo {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts");
-        for script in ["ci-local.sh", "ci-tools.sh"] {
+        for script in ["ci-local.sh", "ci-tools.sh", "ci-affected.sh"] {
             write_exe(
                 &root.join("scripts").join(script),
                 fs::read_to_string(scripts.join(script)).unwrap(),
@@ -754,4 +754,63 @@ fn the_cache_keeps_the_entries_used_last() {
     skipped(&repo.run(&[], &max), root);
     git(root, &["checkout", "-q", &second]);
     ran_everything(&repo.run(&[], &max));
+}
+
+/// `scripts/ci-affected.sh` with `NS_GATE_FILES` set to `files`, or unset.
+fn affected(repo: &Repo, files: Option<&str>, env: &[(&str, &str)]) -> Output {
+    let mut cmd = common::command("bash");
+    cmd.arg(repo.dir.path().join("scripts/ci-affected.sh"));
+    repo.stub_env(&mut cmd, env);
+    match files {
+        Some(f) => cmd.env("NS_GATE_FILES", f),
+        None => cmd.env_remove("NS_GATE_FILES"),
+    };
+    cmd.output()
+}
+
+#[test]
+fn ci_affected_runs_cargo_test_and_the_tests_under_each_changed_path() {
+    let repo = Repo::new();
+    let all = [
+        "cargo test",
+        "python rule pack tests",
+        "js rule pack tests",
+        "java rule pack tests",
+        "C rule pack tests",
+        "py-inventory fixture tests",
+    ];
+    for (files, want) in [
+        (None, &all[..]),
+        (Some(""), &[][..]),
+        (Some("skills/ns-build/SKILL.md"), &all[..1]),
+        (
+            Some("rules/js/src/a.ts\nrules/c/tests/test_x.py\ndocs/FACTORY.md"),
+            &["cargo test", "js rule pack tests", "C rule pack tests"][..],
+        ),
+        (
+            Some("evals/fixtures/py-inventory/x.py\nrules/java/a.java"),
+            &[
+                "cargo test",
+                "java rule pack tests",
+                "py-inventory fixture tests",
+            ][..],
+        ),
+    ] {
+        let out = affected(&repo, files, &[]);
+        assert!(out.status.success(), "{files:?}: {}", stderr(&out));
+        assert_eq!(steps(&out), want, "{files:?}");
+    }
+}
+
+#[test]
+fn ci_affected_stops_at_a_failing_step() {
+    let repo = Repo::new();
+    let out = affected(
+        &repo,
+        Some("rules/python/a.py\nrules/js/a.ts"),
+        &[("FAIL_ON", "python rule pack")],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(steps(&out), ["cargo test", "python rule pack tests"]);
+    assert!(stderr(&out).contains("ci-affected: FAILED at step: python rule pack tests"));
 }

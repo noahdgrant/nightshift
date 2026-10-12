@@ -4,6 +4,7 @@ title: "This repo's pre-commit hook runs the fast CI subset; pre-push runs all o
 issue: 452
 date: 2026-10-12
 amends: [D64]
+amended_by: [ADR-466]
 ---
 
 # ADR-452: This repo's pre-commit hook runs the fast CI subset; pre-push runs all of CI

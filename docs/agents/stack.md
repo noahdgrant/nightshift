@@ -30,7 +30,8 @@ Run from the repo root. Use the binary built from this worktree (`cli/target/deb
 | eval cases valid | `cli/target/debug/ns eval --dry-run` | 1 s |
 | private refs | `scripts/check-private.sh` | 1 s |
 | rules | `rules/rust/check.sh clippy cli`, `rules/rust/check.sh deny cli`, `rules/rust/check.sh ast-grep cli` (the Rust rule pack; needs `jq`, `ast-grep` and `cargo-deny`) | 10 s |
-| ci-local | `scripts/ci-local.sh` (all of CI, including `scripts/check-git-dir-decoy.sh`, which runs `cargo test` under a decoy `GIT_DIR`). It fails first on a tool missing from `scripts/ci-tools.toml` or at another version. The `.githooks` pre-push hook runs it at each commit pushed, one push at a time (a concurrent push waits on the lock); pre-commit runs its `--fast` subset | 1 min |
+| ci-local | `scripts/ci-local.sh` (all of CI, including `scripts/check-git-dir-decoy.sh`, which runs `cargo test` under a decoy `GIT_DIR`). It fails first on a tool missing from `scripts/ci-tools.toml` or at another version. Under `[gate] local = "build-only"` only the `ns run` gate after build runs all of it; the other gates, pre-commit and the `.githooks` pre-push hook (at each commit pushed, one push at a time) run its `--fast` subset | 1 min |
+| ci-affected | `scripts/ci-affected.sh` (the tests for the paths in `NS_GATE_FILES`: `cargo test` on any change, and each rule pack's or fixture's tests when a path under it changed). The fast gate runs it after `ci-local.sh --fast` | 1 min |
 
 ## Test seams
 

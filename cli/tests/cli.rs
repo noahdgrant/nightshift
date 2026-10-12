@@ -2014,7 +2014,7 @@ fn worktree_new_runs_setup_once() {
 }
 
 #[test]
-fn own_factory_definition_turns_on_hooks_that_run_fast_ci_on_commit_and_full_ci_on_push() {
+fn own_factory_definition_turns_on_hooks_that_run_fast_ci_on_commit_and_push() {
     let (tmp, root) = repo();
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     factory_def(
@@ -2069,7 +2069,7 @@ fn own_factory_definition_turns_on_hooks_that_run_fast_ci_on_commit_and_full_ci_
     // The failed commit left the edit behind; pre-push checks the commit, not the tree.
     let out = git_output(&path, &["push", "-q", "origin", "HEAD:refs/heads/u5"]);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("ci-local ran with []\n"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ci-local ran with [--fast]\n"));
     assert_eq!(git(&remote, &["for-each-ref"]), "");
 }
 
@@ -2655,6 +2655,56 @@ fn pre_push_checks_the_commit_pushed_whatever_the_tree_holds() {
     assert_eq!(runs(&log)[1].0, git(&root, &["rev-parse", "HEAD"]));
     assert!(!git(&remote, &["for-each-ref"]).contains("refs/heads/b"));
     assert_runs_left_no_worktree(&root, &log);
+}
+
+#[test]
+fn pre_push_runs_fast_ci_when_the_commit_pushed_sets_gate_local_build_only() {
+    let (_tmp, root, _remote, _log) = hooked_repo();
+    let args = root.join(".git/ci-args");
+    executable(
+        &root.join("scripts/ci-local.sh"),
+        &format!("echo \"[$*]\" >> '{}'", args.display()),
+    );
+    let mut pushed = Vec::new();
+    for (n, toml) in [
+        None,
+        Some("[gate]\nlocal = \"build-only\"   # one full run, after build\n"),
+        Some("[merge]\nlocal = \"build-only\"\n[gate]\nlocal = \"every-step\"\n"),
+        Some("[ gate ]\n  local=\"build-only\"\n[merge]\npolicy = \"auto\"\n"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if let Some(t) = toml {
+            factory_def(&root, t);
+        }
+        fs::write(root.join("README"), format!("{n}\n")).unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-q", "--no-verify", "-m", "next"]);
+        let out = push(&root, &[&format!("HEAD:refs/heads/b{n}")]);
+        assert!(out.status.success(), "{out:?}");
+        pushed.push(
+            fs::read_to_string(&args)
+                .unwrap()
+                .lines()
+                .last()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    // Only the commit pushed counts, not the working tree.
+    factory_def(&root, "[gate]\nlocal = \"every-step\"\n");
+    let out = push(&root, &["HEAD:refs/heads/b4"]);
+    assert!(out.status.success(), "{out:?}");
+    pushed.push(
+        fs::read_to_string(&args)
+            .unwrap()
+            .lines()
+            .last()
+            .unwrap()
+            .to_owned(),
+    );
+    assert_eq!(pushed, ["[]", "[--fast]", "[]", "[--fast]", "[--fast]"]);
 }
 
 #[test]

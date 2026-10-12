@@ -5,6 +5,8 @@
 # Every run shares one cargo target directory under the common git dir, so a push costs
 # about one incremental build. A push holds a flock on <target dir>.lock for its whole run,
 # so concurrent pushes from other worktrees wait rather than overwrite its test binaries.
+# Under [gate] local = "build-only" in the commit's .nightshift/nightshift.toml, each run is
+# ci-local.sh --fast: ns run's gate after build ran all of it (docs/FACTORY.md, "Gate").
 common=$(cd "$(git rev-parse --git-common-dir)" && pwd) || exit 1
 # Git's location variables would aim the temporary worktree's checkout at this checkout's
 # index, and the checks at this checkout. Every git command here names the repo instead.
@@ -42,6 +44,16 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
+# The [gate] local setting in the TOML file $1, or nothing.
+gate_local() {
+  [ -f "$1" ] || return 0
+  awk '
+    { sub(/#.*/, "") }
+    /^[ \t]*\[/ { t = $0; gsub(/[ \t]/, "", t); gate = (t == "[gate]"); next }
+    gate && /^[ \t]*local[ \t]*=/ { sub(/^[^=]*=/, ""); gsub(/[ \t"]/, ""); print; exit }
+  ' "$1"
+}
+
 checked=
 while read -r ref sha _ _; do
   case $sha in *[!0]*) ;; *) continue ;; esac
@@ -53,8 +65,10 @@ while read -r ref sha _ _; do
   checked="$checked $commit"
   wt=$(mktemp -d "${TMPDIR:-/tmp}/pre-push.XXXXXX") || exit 1
   git worktree add -q --detach "$wt" "$commit" || exit 1
+  set --
+  [ "$(gate_local "$wt/.nightshift/nightshift.toml")" != build-only ] || set -- --fast
   echo "pre-push: checking $ref at $commit" >&2
-  (cd "$wt" && exec scripts/ci-local.sh </dev/null 9>&-) || {
+  (cd "$wt" && exec scripts/ci-local.sh "$@" </dev/null 9>&-) || {
     echo "pre-push: ci-local.sh failed for $ref at $commit." >&2
     exit 1
   }

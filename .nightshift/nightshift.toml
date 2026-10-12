@@ -3,7 +3,10 @@ name = "nightshift"
 gates = "auto"
 
 [worktree]
-setup = ["git config core.hooksPath .githooks"]   # .githooks runs scripts/ci-local.sh (all of CI) on every commit and push
+setup = ["git config core.hooksPath .githooks"]   # .githooks runs scripts/ci-local.sh --fast on every commit and push
+
+[gate]
+local = "build-only"            # all of local CI once, after build; --fast plus affected tests elsewhere (ADR-466)
 
 [defaults]
 billing = "subscription"        # Max plan login only; API keys are stripped from child processes
@@ -33,7 +36,7 @@ model = "sonnet"                # Opus cost ~90% of the first unit; revisit once
 [phases.ship]
 skill = "ns-ship"
 model = "sonnet"
-timeout_minutes = 60               # the push runs all of local CI, then ship waits on GitHub CI; 30 cut off #367 and #419
+timeout_minutes = 60               # the push runs the fast checks, then ship waits on GitHub CI; 30 cut off #367 and #419
 
 [queue]
 source = "github"

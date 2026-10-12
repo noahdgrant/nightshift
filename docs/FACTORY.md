@@ -76,6 +76,9 @@ ci_register_timeout = 3            # minutes to wait for the PR head's first che
 local_queue = true                 # gate the merge with the default branch before merging (the
                                    # default). See "Local merge queue"
 
+[gate]
+local = "build-only"               # every-step (the default) | build-only. See "Gate"
+
 [supervise]                        # read by the ns-supervise skill only. See "Supervising a night"
 notify = "notify-send nightshift"  # optional command each ping is also sent to. Unset: none
 silence_minutes = 45               # minutes with no run-log event, while units run, before a ping
@@ -255,9 +258,20 @@ With neither, no gate runs. When `stack.md` has a `rules` row (see "Rules"), the
 
 `ns run` runs the command with `sh -c` in the worktree after a build that wrote `status: pass`, after any other phase that moved HEAD (a verify or review fix that committed, a ship that merged the base in), and in the merge step before it merges: on the PR head, or on its merge with the default branch when the local merge queue is on (see "Merge", step 3, and "Local merge queue"). A build that wrote `fail` or `blocked` runs build again, so no gate runs after it; neither does a triage-only run. It doesn't run again at a HEAD where it already went green in this invocation, so a phase that leaves HEAD alone never re-runs it. It is killed at the build phase's `timeout_minutes` (`NS_GATE_TIMEOUT_MS` overrides it, for tests). Only the last 16 KiB of its log are read for the tail. Output goes to `<git-common-dir>/ns/transcripts/<unit>/gate-<phase>-<attempt>.log`.
 
-Exit 0 is green and the run goes on as the state table says. A non-zero exit, a signal, the memory cap or the timeout is red: the next phase is build, with the command, how it failed and the last 40 lines of its output (at most 3000 bytes) as `{feedback}`. How it failed names the signal ("was killed by SIGKILL") or the cap ("exceeded the 16384 MB memory limit") when one ended it, and so does the stuck reason: "build is out of attempts (2): the CI gate exceeded the 16384 MB memory limit". That build uses an attempt against `max_attempts`, so a gate that stays red ends with "build is out of attempts". Each run is a `gate` event in the run log with `phase` (the phase it followed, or `merge` for the run in the merge step), `attempt`, `command`, `sha`, `exit`, `signal`, `timed_out`, `memory_exceeded`, `wall_s`, `green` and `log`. `ns run --dry-run` shows the command as `gate`.
+Exit 0 is green and the run goes on as the state table says. A non-zero exit, a signal, the memory cap or the timeout is red: the next phase is build, with the command, how it failed and the last 40 lines of its output (at most 3000 bytes) as `{feedback}`. How it failed names the signal ("was killed by SIGKILL") or the cap ("exceeded the 16384 MB memory limit") when one ended it, and so does the stuck reason: "build is out of attempts (2): the CI gate exceeded the 16384 MB memory limit". That build uses an attempt against `max_attempts`, so a gate that stays red ends with "build is out of attempts". Each run is a `gate` event in the run log with `phase` (the phase it followed, or `merge` for the run in the merge step), `attempt`, `command`, `sha`, `exit`, `signal`, `timed_out`, `memory_exceeded`, `wall_s`, `green` and `log`. Its `where` is `local_full` for the full command and `local_fast` for the fast one (see "Where the gate runs all of CI"); the merge step's `ci_failed` and `ci_passed` events carry `"where": "github"`. `ns run --dry-run` shows the full command as `gate` and the one every other gate runs as `gate_rest`.
 
 This repo's `scripts/ci-local.sh` keeps a pass cache, so the gate, the merge queue's gate and the pre-push hook don't test a tree that already passed (ADR-444). A full run that passes writes one small file in `<git-common-dir>/ns/ci-passed/`, which every worktree of the repo shares, keyed by the tree it tested and the SHA-256 of `scripts/ci-tools.toml` and `scripts/ci-local.sh`. The tree is the index's (`git write-tree`): a commit's tree in a clean checkout, or the merge result staged in the merge queue's scratch worktree. A later full run on the same key prints `ci-local: tree <hash> already passed (<when>, <where>)` and exits 0. The cache is not used when the working tree differs from the index or holds an untracked file, and a run is not recorded when the tree changed while it ran. Only passes are recorded. `--no-cache` runs anyway, and `--fast` neither reads nor writes the cache. It keeps the 200 entries used last (`CI_LOCAL_CACHE_MAX` overrides it, for tests).
+
+#### Where the gate runs all of CI
+
+`[gate] local` says which gates run the full command above:
+
+- `every-step` (the default): every gate runs it, after build, after any other phase that moved HEAD and in the merge step.
+- `build-only`: only the gate after build runs it. Every other gate runs the fast command: the base command (`[phases.build] gate`, else the `ci-local` row) with ` --fast` appended, then the `ci-affected` row of `stack.md`, as `(<base> --fast) && (<ci-affected>)`, either part alone when the other is missing, and no gate when both are. The `rules` and ratchet checks run only in the full command. A red fast gate goes back to build like any red gate, and the rebuild's gate is the full one. A fast gate is skipped at a HEAD where the full one already went green.
+
+So under `build-only` the base command must accept `--fast`, as this repo's `scripts/ci-local.sh` does. The `ci-affected` command runs with `NS_GATE_FILES` set to the paths, one per line, that differ in the gate's checkout from the HEAD where the full gate last went green in this invocation, else from the merge base with the unit's base. It runs the tests those paths need; this repo's is `scripts/ci-affected.sh`. Any other gate leaves `NS_GATE_FILES` unset.
+
+This repo's `.githooks/pre-push` reads `[gate] local` from `.nightshift/nightshift.toml` in each commit pushed, and runs `scripts/ci-local.sh --fast` there under `build-only`. GitHub CI still runs everything before the merge step merges. This repo sets `build-only` (ADR-466).
 
 ### Rules
 
