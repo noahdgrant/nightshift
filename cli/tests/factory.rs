@@ -1110,6 +1110,85 @@ fn a_phase_under_watch_knows_the_watch_pid() {
     assert_eq!(phase_ids(&e)[0], format!("{run} {pid}"));
 }
 
+/// Each build phase records its `TMPDIR` and what was in it, then leaves a file there.
+fn record_tmpdir(e: &Env) {
+    e.ctl(
+        "build.sh",
+        r#"{ echo "$TMPDIR"; ls -A "$TMPDIR"; } >> "$FAKE_CTRL/tmpdir-$NS_UNIT"
+touch "$TMPDIR/scratch""#,
+    );
+}
+
+/// The lines `record_tmpdir` wrote for `unit`.
+fn phase_tmpdirs(e: &Env, unit: &str) -> Vec<String> {
+    fs::read_to_string(e.ctrl.join(format!("tmpdir-{unit}")))
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
+fn unit_tmp(e: &Env, unit: &str) -> PathBuf {
+    e.root.join(".git/ns/units").join(unit).join("tmp")
+}
+
+#[test]
+fn each_phase_gets_its_own_tmpdir_and_a_passing_phase_leaves_none_behind() {
+    let e = Env::new();
+    e.issue(8, "Fix other", "OPEN");
+    record_tmpdir(&e);
+    let stale = unit_tmp(&e, UNIT).join("build-1");
+    fs::create_dir_all(&stale).unwrap();
+    fs::write(stale.join("stale"), "from an earlier run\n").unwrap();
+    for (n, unit) in [("7", UNIT), ("8", "8-fix-other")] {
+        e.queue(&format!("build.{unit}"), &["pass:script"]);
+        let v = e.run(&["run", "--issue", n], 0);
+        assert_eq!(v["outcome"], "done", "{v}");
+    }
+    let dir = unit_tmp(&e, UNIT).join("build-1");
+    assert_eq!(phase_tmpdirs(&e, UNIT), [dir.to_str().unwrap()]);
+    let other = unit_tmp(&e, "8-fix-other").join("build-1");
+    assert_eq!(phase_tmpdirs(&e, "8-fix-other"), [other.to_str().unwrap()]);
+    for unit in [UNIT, "8-fix-other"] {
+        let left: Vec<_> = fs::read_dir(unit_tmp(&e, unit)).unwrap().collect();
+        assert!(left.is_empty(), "{unit}: {left:?}");
+    }
+}
+
+#[test]
+fn a_failed_phase_keeps_its_tmpdir() {
+    let e = Env::new();
+    record_tmpdir(&e);
+    e.queue("build", &["fail:script", "pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let tmp = unit_tmp(&e, UNIT);
+    let dirs = [tmp.join("build-1"), tmp.join("build-2")];
+    assert_eq!(
+        phase_tmpdirs(&e, UNIT),
+        dirs.iter().map(|d| d.to_str().unwrap()).collect::<Vec<_>>()
+    );
+    assert!(dirs[0].join("scratch").is_file());
+    assert!(!dirs[1].exists());
+}
+
+#[test]
+fn a_tmpdir_that_cannot_be_emptied_stops_the_run_before_the_phase() {
+    let e = Env::new();
+    let dir = unit_tmp(&e, UNIT).join("triage-1");
+    fs::create_dir_all(dir.parent().unwrap()).unwrap();
+    fs::write(&dir, "a file, not a directory\n").unwrap();
+    e.ns()
+        .args(["run", "--issue", "7"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(format!(
+            "cannot empty {}",
+            dir.display()
+        )));
+    assert!(e.calls().is_empty());
+}
+
 /// The `GIT_SSH_COMMAND` the build phase saw, or `unset`, after `ns run` under `setup`.
 fn phase_ssh_command(setup: impl FnOnce(&Env, &mut Ns)) -> String {
     let e = Env::new();
@@ -9724,6 +9803,21 @@ fn clean_removes_a_merged_unit_after_saving_its_record_and_keeps_open_ones() {
 }
 
 #[test]
+fn clean_removes_the_tmpdirs_a_merged_unit_kept() {
+    let e = Env::new();
+    unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    unit_with_pr(&e, 4, "4-open", 40, "OPEN", "MERGED");
+    for unit in ["3-done", "4-open"] {
+        fs::create_dir_all(unit_tmp(&e, unit).join("build-1")).unwrap();
+        fs::write(unit_tmp(&e, unit).join("build-1/scratch"), "x\n").unwrap();
+    }
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert!(!unit_tmp(&e, "3-done").exists());
+    assert!(unit_tmp(&e, "4-open").join("build-1/scratch").is_file());
+}
+
+#[test]
 fn clean_keeps_units_it_cannot_prove_merged_and_says_why() {
     let e = Env::new();
     let dirty = unit_with_pr(&e, 5, "5-dirty", 50, "CLOSED", "MERGED");
@@ -9829,6 +9923,17 @@ fn clean_detaches_and_removes_a_merged_worktree_left_on_main() {
         "{ev}"
     );
     assert_eq!(quality_records(&e)[0]["unit"], "3-done");
+    git(&e.root, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn clean_removes_the_tmpdirs_of_a_merged_worktree_left_on_main() {
+    let e = Env::new();
+    unit_left_on_main(&e, 3, "3-done", 30);
+    fs::create_dir_all(unit_tmp(&e, "3-done").join("build-1")).unwrap();
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert!(!unit_tmp(&e, "3-done").exists());
     git(&e.root, &["checkout", "-q", "main"]);
 }
 
@@ -10172,6 +10277,21 @@ fn clean_reports_a_branch_it_could_not_delete() {
     );
     assert!(!done.exists());
     assert!(branch_exists(&e, "3-done"));
+}
+
+#[test]
+fn clean_reports_a_tmpdir_it_could_not_remove() {
+    let e = Env::new();
+    let done = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    let tmp = unit_tmp(&e, "3-done");
+    fs::create_dir_all(tmp.parent().unwrap()).unwrap();
+    fs::write(&tmp, "a file, not a directory\n").unwrap();
+    let v = e.run(&["clean"], 1);
+    let reason = &reasons(&v)["3-done"];
+    let kept = format!("worktree removed, {} kept: ", tmp.display());
+    assert!(reason.starts_with(&kept), "{v}");
+    assert!(!done.exists());
+    assert!(!branch_exists(&e, "3-done"));
 }
 
 #[test]

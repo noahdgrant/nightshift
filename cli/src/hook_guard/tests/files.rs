@@ -517,6 +517,42 @@ fn the_ns_directory_under_the_git_dir_cannot_be_swapped() {
 }
 
 #[test]
+fn a_phase_may_write_inside_its_unit_tmp_directory() {
+    for p in [
+        "/r/.git/ns/units/u1/tmp/build-1/notes.txt",
+        "/r/.git/ns/units/u1/tmp/build-1",
+        "/r/.git/ns/units/u1/tmp",
+    ] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_none(), "{p}");
+    }
+    for c in [
+        "echo x > /r/.git/ns/units/u1/tmp/build-1/notes.txt",
+        "rm -rf /r/.git/ns/units/u1/tmp/build-1",
+        "mv /r/.git/ns/units/u1/tmp/build-1/a /r/.git/ns/units/u1/tmp/build-1/b",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    for c in [
+        "echo {} > /r/.git/ns/units/u1/tmp/build-1/../../phase-settings.json",
+        "rm -rf /r/.git/ns/units/u1/tmp/..",
+        "rm -rf /r/.git/ns/units/*/tmp",
+        "rm -rf /r/.git/ns/units/u1/tmp/build-1/*",
+        "rm -rf /r/.git/ns/units/u1/t*",
+        "mv /r/.git/ns/units/u1/tmp/build-1/x /r/.git/ns/units/u1/phase-settings.json",
+        "rm -rf /r/.git/ns/units/u1/other/tmp",
+        "rm -rf /r/.git/ns/tmp",
+        "rm -rf /r/.git/ns/x/u1/tmp/a",
+        "rm -rf /r/.git/ns/foo/ns/units/u1/tmp/a",
+        "rm -rf /r/.git/ns/a/.git/x/units/u1/tmp/b",
+        "cd /r/.git/ns/units/u1/tmp/build-1 && rm ../../phase-settings.json",
+        "cd /r/.git/ns/units/u1/tmp/build-1 && touch x",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
 fn reading_the_ns_directory_and_other_ns_commands_stay_allowed() {
     for c in [
         "ls /r/.git/ns",

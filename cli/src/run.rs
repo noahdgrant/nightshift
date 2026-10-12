@@ -430,6 +430,20 @@ fn run_harness(
     })
 }
 
+/// An empty `TMPDIR` for one attempt of `phase`, private to `unit`, so parallel units never
+/// share a scratch file. A same-named directory an earlier run kept is emptied.
+fn phase_tmpdir(common: &Path, unit: &str, phase: &str, attempt: u32) -> Result<PathBuf> {
+    let dir = pin::tmp_path(common, unit).join(format!("{phase}-{attempt}"));
+    match fs::remove_dir_all(&dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("cannot empty {}", dir.display()))
+        }
+        _ => {}
+    }
+    fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    Ok(dir)
+}
+
 /// Take the merge lock for `unit`, waiting while another unit merges, each wait logged by
 /// `log`. A wait that reaches `until` ends the run as `budget`.
 fn take_merge_lock(
@@ -1343,6 +1357,8 @@ fn drive(
         if !crate::git::ssh_command_set(&ctx.worktree) {
             env.push(("GIT_SSH_COMMAND", crate::git::SSH_KEEPALIVE.to_string()));
         }
+        let tmp = phase_tmpdir(&ctx.common, &ctx.unit, phase, attempt)?;
+        env.push(("TMPDIR", tmp.to_string_lossy().into_owned()));
         pin::write_settings(&ctx.common, &ctx.unit, &ctx.ns)?;
         let r = run_harness(
             &commands[phase],
@@ -1423,6 +1439,8 @@ fn drive(
         let written = art.is_some();
         if art.as_ref().is_some_and(|a| a.status == "pass") {
             passed.insert(phase);
+            // A failed phase's scratch files stay for a human to read, until `ns clean`.
+            fs::remove_dir_all(&tmp).ok();
         }
         if !written {
             restore(&moves);

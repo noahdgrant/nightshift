@@ -15,7 +15,8 @@ pub(super) fn is_protected(path: &str) -> bool {
 /// `.agents/skills` that is a symlink into a snapshot. Also the phase settings: the file
 /// `ns/units/<unit>/phase-settings.json` under any common dir, and the `.git` directory (or file,
 /// in a worktree) itself with everything under `.git/ns`, so the `ns` directory and `ns/units`
-/// cannot be moved, removed or copied over to swap that file. Only writes are denied; reading
+/// cannot be moved, removed or copied over to swap that file, except a phase's own scratch space
+/// (`in_unit_tmp`). Only writes are denied; reading
 /// stays free, and `ns` commands a phase runs name none of these paths. A shell standing in a unit's directory
 /// may write its artifacts, so the directory helpers call this and not `is_protected`.
 fn protected_paths(path: &str) -> bool {
@@ -26,9 +27,10 @@ fn protected_paths(path: &str) -> bool {
                 || (p[0] == ".claude" && p[1].starts_with("settings") && p[1].ends_with(".json"))
         })
         || parts.last() == Some(&".git")
-        || parts
+        || (parts
             .windows(2)
             .any(|p| p[0] == ".git" && names_in_common_dir(p[1], pin::COMMON_NS))
+            && !in_unit_tmp(&parts))
         || parts.windows(4).any(|p| {
             p[0] == pin::COMMON_NS && p[1] == pin::COMMON_UNITS && p[3] == pin::SETTINGS_FILE
         })
@@ -38,6 +40,20 @@ fn protected_paths(path: &str) -> bool {
         || parts
             .windows(3)
             .any(|p| p[0] == pin::NS_DIR && names_skills(p[2]))
+}
+
+/// `parts` are an absolute path in `.git/ns/units/<unit>/tmp`, where `ns run` puts each phase's
+/// `TMPDIR`. A `..` or a glob could reach past it, so either keeps the path protected.
+fn in_unit_tmp(parts: &[&str]) -> bool {
+    !parts
+        .iter()
+        .any(|p| *p == ".." || p.contains(['*', '?', '[']))
+        && parts.windows(5).any(|p| {
+            p[0] == ".git"
+                && p[1] == pin::COMMON_NS
+                && p[2] == pin::COMMON_UNITS
+                && p[4] == pin::TMP_DIR
+        })
 }
 
 /// `name` is `target`, or a glob that could match it.
