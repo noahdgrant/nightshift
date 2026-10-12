@@ -9413,7 +9413,18 @@ fn clean_keeps_units_it_cannot_prove_merged_and_says_why() {
 /// A merged unit's worktree left on main, as `gh pr merge --delete-branch` left it: the main
 /// checkout is on another branch and the unit's branch is gone.
 fn unit_left_on_main(e: &Env, n: u64, unit: &str, pr: u64) -> PathBuf {
-    let wt = unit_with_pr(e, n, unit, pr, "CLOSED", "MERGED");
+    unit_left_on_main_as(e, n, unit, pr, "CLOSED", "MERGED")
+}
+
+fn unit_left_on_main_as(
+    e: &Env,
+    n: u64,
+    unit: &str,
+    pr: u64,
+    issue_state: &str,
+    pr_state: &str,
+) -> PathBuf {
+    let wt = unit_with_pr(e, n, unit, pr, issue_state, pr_state);
     e.gh_file(&format!("pr-{pr}.ref"), &format!("ns/{unit}"));
     git(&e.root, &["checkout", "-qb", "elsewhere"]);
     git(&wt, &["checkout", "-q", "main"]);
@@ -9439,6 +9450,36 @@ fn clean_detaches_and_removes_a_merged_worktree_left_on_main() {
     );
     assert_eq!(quality_records(&e)[0]["unit"], "3-done");
     git(&e.root, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn clean_keeps_a_worktree_on_main_whose_unit_is_not_proven_merged() {
+    // Only one worktree can hold main, so each case gets its own repo.
+    let cases = [
+        ("3-open-issue", "OPEN", "MERGED", None, "issue #3 is open"),
+        ("3-open-pr", "CLOSED", "OPEN", None, "PR #30 is OPEN"),
+        (
+            "3-elsewhere",
+            "CLOSED",
+            "MERGED",
+            Some("someone/branch"),
+            "PR #30 is from branch \"someone/branch\", not ns/3-elsewhere",
+        ),
+    ];
+    for (unit, issue_state, pr_state, head_ref, reason) in cases {
+        let e = Env::new();
+        let wt = unit_left_on_main_as(&e, 3, unit, 30, issue_state, pr_state);
+        if let Some(r) = head_ref {
+            e.gh_file("pr-30.ref", r);
+        }
+        let head = git(&e.root, &["rev-parse", "HEAD"]);
+        let v = e.run(&["clean"], 0);
+        assert_eq!(reasons(&v)[unit], reason, "{v}");
+        assert_eq!(units_in(&v["removed"]), Vec::<String>::new(), "{v}");
+        assert!(wt.is_dir(), "{unit}");
+        assert_eq!(git(&wt, &["symbolic-ref", "HEAD"]), "refs/heads/main");
+        assert_eq!(git(&e.root, &["rev-parse", "HEAD"]), head);
+    }
 }
 
 #[test]
