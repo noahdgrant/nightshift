@@ -73,7 +73,7 @@ pub(super) fn mark(forge: &dyn Forge, q: &QueueConfig, n: u64) -> Result<()> {
 /// on that line itself.
 fn listed(text: &str) -> Vec<u64> {
     let num = regex::Regex::new(r"#(\d+)\b").unwrap();
-    let item_start = regex::Regex::new(r"^(?:[-*+]|\d+[.)])\s*(?:\[[ xX]\]\s*)?").unwrap();
+    let item_start = regex::Regex::new(r"^(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s*)?").unwrap();
     let mut found: Vec<u64> = Vec::new();
     let mut in_list = false;
     for line in text.lines() {
@@ -116,9 +116,9 @@ fn part_of(body: &str, parent: u64) -> bool {
     linked
 }
 
-/// `parent`'s children: its sub-issues and those its team notes list, else the team issues whose
-/// body says `Part of #parent`.
-fn children(forge: &dyn Forge, parent: &Issue) -> Result<Vec<u64>> {
+/// `parent`'s children: its sub-issues and those its team notes list, else with `search` the team
+/// issues whose body says `Part of #parent`.
+fn children(forge: &dyn Forge, parent: &Issue, search: bool) -> Result<Vec<u64>> {
     let n = parent.number;
     let mut found: BTreeSet<u64> = forge.sub_issues(n)?.into_iter().collect();
     let mut notes = forge.team_comments(n)?;
@@ -126,7 +126,7 @@ fn children(forge: &dyn Forge, parent: &Issue) -> Result<Vec<u64>> {
         notes.push(parent.body.clone());
     }
     found.extend(notes.iter().flat_map(|t| listed(t)));
-    if found.is_empty() {
+    if found.is_empty() && search {
         found.extend(
             forge
                 .part_of(n)?
@@ -195,7 +195,8 @@ pub(super) fn plan_read(
     let mut parents = Vec::new();
     let mut all_read = true;
     for (issue, swept) in issues {
-        let read = children(forge, &issue).and_then(|c| action(forge, &c, swept).map(|a| (c, a)));
+        let read =
+            children(forge, &issue, !swept).and_then(|c| action(forge, &c, swept).map(|a| (c, a)));
         match read {
             Ok((_, Action::NoChildren)) if swept => {}
             Ok((children, action)) => parents.push(Parent {
@@ -483,6 +484,52 @@ mod tests {
         let (parents, all_read) = plan_read(&f, &q, true).unwrap();
         let done = apply(&f, &q, &parents, &mut BTreeSet::new());
         assert!(sweep_finished(all_read, &parents, &done));
+    }
+
+    #[test]
+    fn a_list_ends_at_a_line_that_only_looks_like_an_item() {
+        assert_eq!(listed("Children:\n- #4\n**Notes:**\n- #12"), [4]);
+        assert_eq!(listed("Children:\n- #4\n---\n- #12"), [4]);
+        assert_eq!(listed("Children:\n- #4\n-foo\n- #12"), [4]);
+        assert_eq!(listed("Children:\n- #4\n*emph* text\n- #12"), [4]);
+    }
+
+    #[test]
+    fn a_swept_parent_is_read_from_sub_issues_and_notes_only() {
+        let q = QueueConfig::default();
+        let linked = BTreeMap::from([(1, vec![issue(2, &[], "Part of #1")])]);
+        let f = Fake {
+            issues: vec![issue(1, &[OLD_LABEL], "")],
+            linked: linked.clone(),
+            closed: BTreeSet::from([2]),
+            ..Fake::default()
+        };
+        assert!(plan(&f, &q, true).unwrap().is_empty());
+        assert_eq!(f.searches.get(), 0);
+
+        let f = Fake {
+            issues: vec![issue(1, &[SPLIT], "")],
+            linked,
+            closed: BTreeSet::from([2]),
+            ..Fake::default()
+        };
+        assert_eq!(plan(&f, &q, true).unwrap()[0].children, [2]);
+        assert_eq!(f.searches.get(), 1);
+    }
+
+    #[test]
+    fn an_unreadable_split_parent_does_not_hold_the_sweep_open() {
+        let q = QueueConfig::default();
+        let mut f = forge(&[2, 3], &[]);
+        f.issues = vec![issue(1, &[SPLIT], ""), issue(4, &[OLD_LABEL], "")];
+        f.subs.insert(1, vec![99]);
+        f.subs.insert(4, vec![2, 3]);
+        let (parents, all_read) = plan_read(&f, &q, true).unwrap();
+        assert!(all_read);
+        assert_eq!(parents.len(), 1);
+        let done = apply(&f, &q, &parents, &mut BTreeSet::new());
+        assert!(sweep_finished(all_read, &parents, &done));
+        assert_eq!(*f.closes.borrow(), [4]);
     }
 
     #[test]

@@ -948,6 +948,7 @@ Open after at least 2 fix attempts: C1, I2, I4.
         pub subs: BTreeMap<u64, Vec<u64>>,
         pub comments: BTreeMap<u64, Vec<String>>,
         pub linked: BTreeMap<u64, Vec<Issue>>,
+        pub searches: std::cell::Cell<usize>,
         pub closes: std::cell::RefCell<Vec<u64>>,
         pub posted: std::cell::RefCell<Vec<(u64, String)>>,
         pub created: std::cell::RefCell<Vec<String>>,
@@ -992,6 +993,7 @@ Open after at least 2 fix attempts: C1, I2, I4.
             Ok(self.comments.get(&n).cloned().unwrap_or_default())
         }
         fn part_of(&self, n: u64) -> Result<Vec<Issue>> {
+            self.searches.set(self.searches.get() + 1);
             Ok(self.linked.get(&n).cloned().unwrap_or_default())
         }
         fn ensure_label(&self, label: &str, _: &str) -> Result<()> {

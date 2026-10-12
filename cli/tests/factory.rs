@@ -5489,6 +5489,25 @@ fn watch_reports_a_split_parent_with_no_children_once_a_night() {
 }
 
 #[test]
+fn watch_closes_a_split_parent_whose_last_child_closed_during_the_run() {
+    let e = Env::new();
+    e.open_by(5, "Parent", &["status:split"], "", Some("MEMBER"));
+    e.gh_file("subs-5", "8\n");
+    e.issue(8, "Child", "OPEN");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("triage", &["split:script"]);
+    e.ctl(
+        "triage.sh",
+        "sed -i 's/\"OPEN\"/\"CLOSED\"/' \"$FAKE_GH_DIR/issue-8.json\"\n",
+    );
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "split", "{v}");
+    assert!(e.gh_calls().contains("issue close 5 --reason completed"));
+    assert_eq!(v["split_parents"][0]["number"], 5, "{v}");
+    assert_eq!(v["split_parents"][0]["action"], "close", "{v}");
+}
+
+#[test]
 fn watch_finds_split_children_by_their_part_of_line() {
     let e = Env::new();
     e.open_by(5, "Parent", &["status:split"], "", Some("MEMBER"));
