@@ -89,8 +89,18 @@ pub fn run() -> Result<()> {
         ));
     }
 
-    let (forge, warnings) = forges_entry(cfg.as_ref(), &mut problems);
+    let keepalive = keepalive_entry();
+    let (forge, mut warnings) = forges_entry(cfg.as_ref(), &mut problems);
     let hooks = hooks_entry(&mut problems);
+    if keepalive["ok"] == false {
+        let w = format!(
+            "{}; a push whose pre-push hook runs for minutes can lose its idle connection. ns run's phases set one; for your own pushes: git config core.sshCommand '{}'",
+            keepalive["detail"].as_str().unwrap_or_default(),
+            git::SSH_KEEPALIVE
+        );
+        eprintln!("ns: warning: {w}");
+        warnings.push(w);
+    }
 
     let out = json!({
         "ok": parses && problems.is_empty(),
@@ -113,6 +123,7 @@ pub fn run() -> Result<()> {
         },
         "forge": forge,
         "hooks": hooks,
+        "ssh_keepalive": keepalive,
         "problems": problems,
         "warnings": warnings,
     });
@@ -164,6 +175,57 @@ fn hooks_entry(problems: &mut Vec<String>) -> Value {
         problems.push(format!("{detail}; fix: {FIX}"));
     }
     json!({ "ok": ok, "path": path, "detail": detail, "fix": (!ok).then_some(FIX) })
+}
+
+/// Whether pushes to an SSH `origin` send keepalives: `ServerAliveInterval` in
+/// `GIT_SSH_COMMAND`, in `core.sshCommand`, or above 0 in what `ssh -G` resolves for the host.
+/// `ok` is true when `origin` is not SSH, or there is no `origin`.
+fn keepalive_entry() -> Value {
+    let url = git::run(Path::new("."), &["remote", "get-url", "--push", "origin"]).ok();
+    let Some(t) = url.as_deref().and_then(forge::ssh_target) else {
+        return json!({ "ok": true, "source": null, "detail": "origin is not an SSH remote" });
+    };
+    let has = |s: &str| s.to_ascii_lowercase().contains("serveraliveinterval");
+    let env = std::env::var("GIT_SSH_COMMAND").ok().filter(|c| has(c));
+    let config = git::run(Path::new("."), &["config", "core.sshCommand"])
+        .ok()
+        .filter(|c| has(c));
+    let source = if env.is_some() {
+        Some("GIT_SSH_COMMAND")
+    } else if config.is_some() {
+        Some("core.sshCommand")
+    } else if ssh_config_keepalive(&t) {
+        Some("ssh config")
+    } else {
+        None
+    };
+    let detail = match source {
+        Some(s) => format!("{s} sets ServerAliveInterval for {}", t.dest),
+        None => format!(
+            "origin is SSH ({}) and nothing sets ServerAliveInterval",
+            t.dest
+        ),
+    };
+    json!({ "ok": source.is_some(), "source": source, "detail": detail })
+}
+
+/// Whether `ssh -G` resolves a `ServerAliveInterval` above 0 for `t`. It reads the config only.
+fn ssh_config_keepalive(t: &forge::SshTarget) -> bool {
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-G");
+    if let Some(p) = &t.port {
+        cmd.args(["-p", p]);
+    }
+    cmd.arg("--").arg(&t.dest).stdin(Stdio::null());
+    let Ok(out) = forge::output_within(cmd, forge::PROBE_TIMEOUT) else {
+        return false;
+    };
+    out.status.success()
+        && String::from_utf8_lossy(&out.stdout).lines().any(|l| {
+            l.strip_prefix("serveraliveinterval ")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .is_some_and(|v| v > 0)
+        })
 }
 
 /// `[queue] source` from the current repo's factory file, when it has one that loads.

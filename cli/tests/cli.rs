@@ -1385,6 +1385,8 @@ struct Doctor<'a> {
     factory: Option<&'a str>,
     glab_user: &'a str,
     ssh_greeting: Option<&'a str>,
+    /// The `serveraliveinterval` the fake `ssh -G` resolves.
+    ssh_alive: u32,
 }
 
 impl Default for Doctor<'_> {
@@ -1399,6 +1401,7 @@ impl Default for Doctor<'_> {
             factory: None,
             glab_user: "",
             ssh_greeting: None,
+            ssh_alive: 30,
         }
     }
 }
@@ -1449,7 +1452,8 @@ esac"#
         executable(
             &bin.join("ssh"),
             &format!(
-                "echo \"$*\" > {}\necho \"{greeting}\" >&2\nexit 1",
+                "[ \"$1\" != -G ] || {{ echo 'serveraliveinterval {}'; exit 0; }}\necho \"$*\" > {}\necho \"{greeting}\" >&2\nexit 1",
+                self.ssh_alive,
                 ssh_args.display(),
             ),
         );
@@ -1467,7 +1471,9 @@ esac"#
             .env_remove("GH_HOST")
             .env_remove("GITLAB_HOST")
             .env_remove("PERSONAL")
-            .env_remove("WORK");
+            .env_remove("WORK")
+            .env_remove("GIT_SSH_COMMAND")
+            .env("GIT_CONFIG_GLOBAL", tmp.path().join("gitconfig"));
         for (k, v) in self.env {
             c.env(k, v);
         }
@@ -1534,6 +1540,65 @@ fn doctor_warns_when_ssh_greets_another_account_or_none() {
         warnings.contains("ssh -T git@github-work greeted no account"),
         "{warnings}"
     );
+}
+
+#[test]
+fn doctor_warns_when_an_ssh_origin_has_no_keepalive() {
+    let (v, err, _) = Doctor {
+        ssh_alive: 0,
+        ..Doctor::default()
+    }
+    .run();
+    assert_eq!(v["ssh_keepalive"]["ok"], false, "{v}");
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("origin is SSH (git@github-work) and nothing sets ServerAliveInterval"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("git config core.sshCommand 'ssh -o ServerAliveInterval=30"),
+        "{warnings}"
+    );
+    assert!(err.contains("ns: warning: origin is SSH"), "{err}");
+    assert!(!v["problems"].to_string().contains("ServerAlive"));
+
+    let (v, _, _) = Doctor::default().run();
+    assert_eq!(v["ssh_keepalive"]["source"], "ssh config", "{v}");
+
+    let (v, _, _) = Doctor {
+        ssh_alive: 0,
+        env: &[
+            ("GIT_SSH_COMMAND", "ssh -o ServerAliveInterval=15"),
+            ("PERSONAL", "personal-tok"),
+            ("WORK", "work-tok"),
+        ],
+        ..Doctor::default()
+    }
+    .run();
+    assert_eq!(v["ssh_keepalive"]["source"], "GIT_SSH_COMMAND", "{v}");
+
+    let (v, _, _) = Doctor {
+        ssh_alive: 0,
+        env: &[
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "core.sshCommand"),
+            ("GIT_CONFIG_VALUE_0", "ssh -o ServerAliveInterval=15"),
+            ("PERSONAL", "personal-tok"),
+            ("WORK", "work-tok"),
+        ],
+        ..Doctor::default()
+    }
+    .run();
+    assert_eq!(v["ssh_keepalive"]["source"], "core.sshCommand", "{v}");
+
+    let (v, _, _) = Doctor {
+        origin: "https://github.com/example-org/backend.git",
+        ssh_alive: 0,
+        ..Doctor::default()
+    }
+    .run();
+    assert_eq!(v["ssh_keepalive"]["ok"], true, "{v}");
+    assert!(!v["warnings"].to_string().contains("ServerAlive"));
 }
 
 const GITLAB_CONFIG: &str = "[forge.gitlab]
@@ -2472,7 +2537,10 @@ esac"#,
 
 /// A repo with this repo's hooks on, a committed `ci-local.sh` that logs each run as
 /// `<HEAD> <dir> <CARGO_TARGET_DIR>` and fails when the checkout holds `red` or the common git
-/// dir holds `red`, and a bare remote. Returns the repo, the remote and the log of runs. Tests
+/// dir holds `red`, and a bare remote. When the common git dir holds `build`, each run also
+/// stands in for cargo: it marks the target dir busy, builds its HEAD into it, touches
+/// `started-<HEAD>`, waits for `release`, then tests what the target dir holds. A run that found
+/// the target dir busy, or tested another commit's build, appends to `clashes`. Returns the repo, the remote and the log of runs. Tests
 /// commit with `--no-verify` so the log holds only pre-push runs.
 fn hooked_repo() -> (TempDir, PathBuf, PathBuf, PathBuf) {
     let (tmp, root) = repo();
@@ -2493,7 +2561,19 @@ fn hooked_repo() -> (TempDir, PathBuf, PathBuf, PathBuf) {
             r#"cat >/dev/null
 common=$(git rev-parse --git-common-dir)
 echo "$(git rev-parse HEAD) $PWD $CARGO_TARGET_DIR" >> '{}'
-[ ! -e "$common/slow" ] || {{ touch "$common/started"; sleep 30; }}
+[ ! -e "$common/slow" ] || {{ touch "$common/started"; exec sleep 30; }}
+if [ -e "$common/build" ]; then
+  head=$(git rev-parse HEAD)
+  mkdir -p "$CARGO_TARGET_DIR"
+  [ ! -e "$CARGO_TARGET_DIR/busy" ] || echo "busy $head" >> "$common/clashes"
+  touch "$CARGO_TARGET_DIR/busy"
+  echo "$head" > "$CARGO_TARGET_DIR/built"
+  touch "$common/started-$head"
+  i=0
+  while [ ! -e "$common/release" ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i + 1)); done
+  [ "$(cat "$CARGO_TARGET_DIR/built")" = "$head" ] || echo "clobbered $head" >> "$common/clashes"
+  rm -f "$CARGO_TARGET_DIR/busy"
+fi
 if [ -e red ] || [ -e "$common/red" ]; then echo red >&2; exit 1; fi"#,
             log.display()
         ),
@@ -2615,6 +2695,72 @@ fn pre_push_from_a_linked_worktree_shares_the_main_repos_target_dir() {
         "{} was left behind",
         runs[0].1.display()
     );
+}
+
+/// Start `git push -q origin <spec>` from `dir` in the background, stderr piped.
+fn start_push(dir: &Path, spec: &str) -> common::Group {
+    common::command("git")
+        .current_dir(dir)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("CARGO_TARGET_DIR")
+        .args(["push", "-q", "origin", spec])
+        .start()
+}
+
+#[test]
+fn concurrent_pre_push_runs_never_share_the_target_dir_and_each_tests_its_own_build() {
+    let (tmp, root, _remote, log) = hooked_repo();
+    let linked = tmp.path().join("linked");
+    let linked_arg = linked.to_str().unwrap();
+    git(&root, &["worktree", "add", "-q", "-b", "side", linked_arg]);
+    fs::write(linked.join("side.txt"), "side\n").unwrap();
+    git(&linked, &["add", "side.txt"]);
+    git(&linked, &["commit", "-q", "--no-verify", "-m", "side"]);
+    let (a, b) = (
+        git(&root, &["rev-parse", "HEAD"]),
+        git(&linked, &["rev-parse", "HEAD"]),
+    );
+    let common = root.join(".git");
+    fs::write(common.join("build"), "").unwrap();
+
+    let mut first = start_push(&root, "HEAD:refs/heads/a");
+    let deadline = std::time::Instant::now() + common::TIMEOUT;
+    while !common.join(format!("started-{a}")).exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the first push never built"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let mut second = start_push(&linked, "HEAD:refs/heads/side");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let err = std::io::BufReader::new(second.take_stderr());
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in err.lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    loop {
+        let line = second.recv(&rx);
+        if line.contains("pre-push: waiting for another push's checks") {
+            break;
+        }
+    }
+    assert!(
+        !common.join(format!("started-{b}")).exists(),
+        "the second push built while the first held the target dir"
+    );
+    fs::write(common.join("release"), "").unwrap();
+    assert!(first.wait().success());
+    assert!(second.wait().success());
+
+    let clashes = fs::read_to_string(common.join("clashes")).unwrap_or_default();
+    assert_eq!(clashes, "", "the runs shared the target dir");
+    let commits: Vec<_> = runs(&log).into_iter().map(|r| r.0).collect();
+    assert_eq!(commits, [a, b]);
 }
 
 #[test]

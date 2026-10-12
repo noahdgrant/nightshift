@@ -3,7 +3,8 @@
 # Checks each commit pushed, whatever the working tree holds: runs that commit's own
 # scripts/ci-local.sh in a temporary worktree at it, and refuses the push if any run fails.
 # Every run shares one cargo target directory under the common git dir, so a push costs
-# about one incremental build.
+# about one incremental build. A push holds a flock on <target dir>.lock for its whole run,
+# so concurrent pushes from other worktrees wait rather than overwrite its test binaries.
 common=$(cd "$(git rev-parse --git-common-dir)" && pwd) || exit 1
 # Git's location variables would aim the temporary worktree's checkout at this checkout's
 # index, and the checks at this checkout. Every git command here names the repo instead.
@@ -12,6 +13,16 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
 git() { command git --git-dir="$common" "$@"; }
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$common/pre-push-target}
 export CARGO_TARGET_DIR
+
+command -v flock >/dev/null 2>&1 || {
+  echo "pre-push: flock is not on PATH; install it (util-linux, or 'brew install flock' on macOS)." >&2
+  exit 1
+}
+mkdir -p "$(dirname "$CARGO_TARGET_DIR")" && exec 9>"$CARGO_TARGET_DIR.lock" || exit 1
+flock -n 9 || {
+  echo "pre-push: waiting for another push's checks, which hold $CARGO_TARGET_DIR.lock" >&2
+  flock 9 || exit 1
+}
 
 wt=
 cleanup() {
@@ -36,7 +47,7 @@ while read -r ref sha _ _; do
   wt=$(mktemp -d "${TMPDIR:-/tmp}/pre-push.XXXXXX") || exit 1
   git worktree add -q --detach "$wt" "$commit" || exit 1
   echo "pre-push: checking $ref at $commit" >&2
-  (cd "$wt" && exec scripts/ci-local.sh </dev/null) || {
+  (cd "$wt" && exec scripts/ci-local.sh </dev/null 9>&-) || {
     echo "pre-push: ci-local.sh failed for $ref at $commit." >&2
     exit 1
   }

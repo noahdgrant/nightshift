@@ -54,6 +54,20 @@ pub fn command() -> Command {
     c
 }
 
+/// The SSH command `ns run`'s phases push with when the user chose none. A pre-push hook that
+/// runs all of CI leaves the connection idle for minutes; without keepalives it can be dropped,
+/// and the push dies with SIGPIPE after the checks passed (#451).
+pub const SSH_KEEPALIVE: &str = "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40";
+
+/// Whether the user chose how git runs ssh in `cwd`: `GIT_SSH_COMMAND` or `GIT_SSH` in the
+/// environment, or `core.sshCommand` in its config.
+pub fn ssh_command_set(cwd: &Path) -> bool {
+    let set = |k| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    set("GIT_SSH_COMMAND")
+        || set("GIT_SSH")
+        || run(cwd, &["config", "core.sshCommand"]).is_ok_and(|v| !v.is_empty())
+}
+
 /// Run git in `cwd` and return trimmed stdout. Fails with git's stderr on non-zero exit.
 pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
     let out = command()
