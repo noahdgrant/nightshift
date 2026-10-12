@@ -70,6 +70,8 @@ pub struct RunArgs {
     pub triage_only: bool,
     /// The night directory of the `ns watch` that started this run (`--night`).
     pub night: Option<PathBuf>,
+    /// The CPU share every phase and gate gets (`--cpus`), or `None` to set nothing.
+    pub cpus: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +170,8 @@ pub struct Shared {
     pub until: Option<i64>,
     /// The night of the `ns watch` this runs under: its hold and the spend of all its units.
     pub night: Option<NightDir>,
+    /// What `--cpus` set for every phase and gate, for the run log.
+    pub cpus: Option<Value>,
 }
 
 impl Shared {
@@ -178,6 +182,7 @@ impl Shared {
             watch_pid: None,
             until: None,
             night: None,
+            cpus: None,
         }
     }
 
@@ -224,6 +229,9 @@ impl Shared {
 
 pub fn cli(args: RunArgs) -> Result<ExitCode> {
     let mut shared = Shared::new();
+    shared.cpus = args
+        .cpus
+        .map(|n| crate::cpus::log_value(&crate::cpus::export(n)));
     let night = match &args.night {
         Some(dir) => {
             crate::stop::install_for_watch().context("cannot handle SIGINT and SIGTERM")?;
@@ -1176,6 +1184,7 @@ fn drive(
             "via": c.via.label(),
             "fallback": c.fallback,
         })),
+        "cpus": shared.cpus,
     }));
     loop {
         crate::stop::check()?;

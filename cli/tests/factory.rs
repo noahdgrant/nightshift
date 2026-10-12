@@ -11138,6 +11138,127 @@ fn watch_parallel_once_and_max_units_cap_the_units_started() {
     assert_eq!(by_issue(&units(&v)), each(&[4], "done"), "{v}");
 }
 
+/// A build that records its CPU variables to `seen` and commits, and a build gate that records
+/// them too. Returns `seen`, one `<who>:<NS_CPUS>:<RUST_TEST_THREADS>:<CARGO_BUILD_JOBS>` line
+/// per build and gate.
+fn cpus_seen(e: &Env) -> PathBuf {
+    let seen = e.ctrl.join("cpus-seen");
+    let dump = |who: &str| {
+        format!(
+            "echo \"{who}:${{NS_CPUS-unset}}:${{RUST_TEST_THREADS-unset}}:${{CARGO_BUILD_JOBS-unset}}\" >> {}\n",
+            seen.display()
+        )
+    };
+    build_only(e, "");
+    e.ctl("ci.sh", &dump("gate"));
+    e.ctl(
+        "build.sh",
+        &format!(
+            "{}date >> built.txt && git add built.txt && git -c user.name=f -c user.email=f@f commit -qm built",
+            dump("build")
+        ),
+    );
+    e.queue("build", &["pass:script"]);
+    seen
+}
+
+#[test]
+fn run_cpus_sets_all_three_variables_for_phases_and_gates_and_logs_them() {
+    let e = Env::new();
+    let seen = cpus_seen(&e);
+    let v = e.run(&["run", "--issue", "7", "--cpus", "3"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        fs::read_to_string(&seen).unwrap(),
+        "build:3:3:3\ngate:3:3:3\n"
+    );
+    let start = &events_named(&e, "start")[0];
+    assert_eq!(
+        start["cpus"],
+        serde_json::json!({
+            "NS_CPUS": {"value": "3", "source": "computed"},
+            "RUST_TEST_THREADS": {"value": "3", "source": "computed"},
+            "CARGO_BUILD_JOBS": {"value": "3", "source": "computed"},
+        }),
+        "{start}"
+    );
+}
+
+#[test]
+fn run_without_cpus_sets_none_of_the_variables() {
+    let e = Env::new();
+    let seen = cpus_seen(&e);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        fs::read_to_string(&seen).unwrap(),
+        "build:unset:unset:unset\ngate:unset:unset:unset\n"
+    );
+    assert!(events_named(&e, "start")[0]["cpus"].is_null());
+}
+
+#[test]
+fn run_cpus_passes_a_variable_already_set_through_unchanged() {
+    let e = Env::new();
+    let seen = cpus_seen(&e);
+    let out = e
+        .ns()
+        .args(["run", "--issue", "7", "--cpus", "2"])
+        .env("RUST_TEST_THREADS", "16")
+        .output();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        fs::read_to_string(&seen).unwrap(),
+        "build:2:16:2\ngate:2:16:2\n"
+    );
+    let cpus = &events_named(&e, "start")[0]["cpus"];
+    assert_eq!(
+        cpus["RUST_TEST_THREADS"],
+        serde_json::json!({"value": "16", "source": "inherited"})
+    );
+    assert_eq!(cpus["NS_CPUS"]["source"], "computed", "{cpus}");
+}
+
+#[test]
+fn run_cpus_must_be_a_number_of_at_least_one() {
+    let e = Env::new();
+    for bad in ["0", "x"] {
+        e.ns()
+            .args(["run", "--issue", "7", "--cpus", bad])
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains("--cpus"));
+    }
+    assert!(e.calls().is_empty(), "{:?}", e.calls());
+}
+
+#[test]
+fn watch_gives_each_unit_its_share_of_the_cores() {
+    let cores = std::thread::available_parallelism().unwrap().get();
+    for parallel in [1, 2] {
+        let e = Env::new();
+        two_ready(&e);
+        let seen = e.ctrl.join("cpus-seen");
+        e.ctl(
+            "build.sh",
+            &format!(
+                "echo \"$NS_CPUS:$CARGO_BUILD_JOBS\" >> {}\n",
+                seen.display()
+            ),
+        );
+        e.queue("build", &["pass:script", "pass:script"]);
+        let p = parallel.to_string();
+        let v = e.run(&["watch", "--parallel", &p], 0);
+        assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+        let share = (cores / parallel).max(1);
+        assert_eq!(
+            fs::read_to_string(&seen).unwrap(),
+            format!("{share}:{share}\n{share}:{share}\n"),
+            "--parallel {parallel} on {cores} cores"
+        );
+    }
+}
+
 #[test]
 fn watch_parallel_settles_the_other_unit_when_one_ends_without_a_result() {
     let e = Env::new();
