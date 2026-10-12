@@ -4700,6 +4700,48 @@ fn a_fix_unit_cut_short_by_until_stops_the_night_as_until() {
 }
 
 #[test]
+fn a_fix_unit_that_ends_stuck_after_until_passed_still_logs_main_red_unfixed() {
+    let a = Env::new();
+    let b = Env::new();
+    let locks = a.base.join("locks");
+    a.bench(&locks);
+    b.bench(&locks);
+    let held = Blocked::start(&a, "true", "true");
+    b.ready(2, "Fix a", &["type:fix"], "");
+    b.queue(&format!("build.{A}"), &["pass:commit"]);
+    b.queue(&format!("verify.{A}"), &["pass:script"]);
+    let fix = "100-fix-main-is-red-at-abcdef0-test";
+    b.queue(&format!("triage.{fix}"), &["none"]);
+    let (in_a, go_a) = hold_phase(&b, A, "build");
+    let (in_t, go_t) = hold_phase(&b, fix, "triage");
+    let mut w = Watching::start(
+        b.ns()
+            .env("NS_REFILL_MS", "100")
+            .env("NS_PHASE_TIMEOUT_MS", "verify=86400000")
+            .args(["watch", "--parallel", "2", "--until", "00:30"]),
+    );
+    w.entered(&in_a);
+    main_red(&b);
+    w.entered(&in_t);
+    // #2 waits for the held lock until --until and ends budget; the fix unit is still running.
+    release(&go_a);
+    w.line("#2 budget");
+    release(&go_t);
+    let (code, v, err) = w.finish();
+    held.release();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        by_issue(&units(&v)),
+        [(2, "budget".into()), (100, "stuck".into())],
+        "{v}"
+    );
+    assert_eq!(v["stopped"], "until", "{v}");
+    let unfixed = events_named(&b, "main_red_unfixed");
+    assert_eq!(unfixed.len(), 1, "{unfixed:?}");
+    assert_eq!(unfixed[0]["outcome"], "stuck");
+}
+
+#[test]
 fn a_fix_unit_that_ends_unfixed_after_main_turned_green_stops_nothing() {
     let (e, v) = fix_ends(|e| {
         e.queue("triage", &["none", "none"]);
@@ -4768,6 +4810,36 @@ fn a_stuck_unit_that_is_not_the_fix_does_not_stop_the_night() {
     );
     assert_eq!(v["stopped"], "queue empty", "{v}");
     assert!(events_named(&e, "main_red_unfixed").is_empty());
+}
+
+#[test]
+fn a_unit_running_when_the_fix_unit_ends_unfixed_finishes_and_nothing_new_starts() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("triage.100-fix-main-is-red-at-abcdef0-test", &["none"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let mut w = Watching::start(e.ns().env("NS_REFILL_MS", "100").args([
+        "watch",
+        "--parallel",
+        "2",
+        "--max-units",
+        "4",
+    ]));
+    w.entered(&in_a);
+    main_red(&e);
+    e.ready(3, "Fix b", &["type:fix"], "");
+    w.line("the night stops");
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        by_issue(&units(&v)),
+        [(2, "done".into()), (100, "stuck".into())],
+        "{v}"
+    );
+    assert_eq!(v["stopped"], "main_red_unfixed", "{v}");
+    assert_eq!(events_named(&e, "main_red_unfixed").len(), 1);
+    assert!(!e.gh_calls().contains("issue edit 3 "));
 }
 
 #[test]
