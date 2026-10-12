@@ -17,8 +17,8 @@ const BASE_TOOLS: &[&str] = &[
 /// Shell builtins and keywords that start a command but run nothing external.
 const BUILTINS: &[&str] = &[
     "break", "cd", "command", "continue", "echo", "eval", "exec", "exit", "export", "false",
-    "local", "printf", "pwd", "read", "return", "set", "shift", "test", "trap", "true", "unset",
-    "wait",
+    "local", "printf", "pwd", "read", "return", "set", "shift", "shopt", "test", "trap", "true",
+    "unset", "wait",
 ];
 
 /// Words that come before a command: the command is the next word.

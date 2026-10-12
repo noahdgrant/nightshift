@@ -1,0 +1,20 @@
+# One road per job: a function or class named like a helper that already exists. The names
+# are in utils/helper-name.yml. A method is not a duplicate; a function anywhere else is.
+id: duplicate-helper
+language: tsx
+severity: error
+message: "`$NAME` duplicates a helper that already exists; call that one instead"
+url: https://github.com/noahdgrant/nightshift/blob/main/skills/ns-principle-pave-the-road/SKILL.md
+ignores: []
+rule:
+  any:
+    - kind: function_declaration
+    - kind: class_declaration
+    - kind: variable_declarator
+      has:
+        field: value
+        any: [{kind: arrow_function}, {kind: function_expression}]
+  has:
+    field: name
+    pattern: $NAME
+    matches: helper-name

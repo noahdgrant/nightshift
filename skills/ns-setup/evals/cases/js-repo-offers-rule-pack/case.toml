@@ -1,0 +1,32 @@
+description = "Set up a JavaScript/TypeScript repo: the stack section offers the JavaScript/TypeScript rule pack, the rules row lands in stack.md, and the baseline command is given to the user rather than run."
+fixture = "night-log"
+skills = ["ns-setup"]
+extra_skills = []
+requires = []
+timeout_minutes = 20
+prompt = """
+Set this repo up for the nightshift skills. gates: auto. Nobody is around to answer questions, so take the recommended answer for each one and carry on. This scratch copy has no nightshift checkout next to it, so if the rule pack's files cannot be copied, say so in your final message instead of inventing them. Don't commit.
+"""
+
+[setup]
+commands = ["mkdir -p .git/info && echo '.ns/' >> .git/info/exclude"]
+
+[[check]]
+type = "file_exists"
+path = "docs/agents/stack.md"
+
+[[check]]
+type = "regex"
+path = "docs/agents/stack.md"
+pattern = "\\| rules \\|.*\\.nightshift/rules/js/check\\.sh"
+present = true
+
+[[check]]
+type = "command"
+run = "test ! -e .nightshift/rules-baseline.json"
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Did the setup offer the JavaScript/TypeScript rule pack because the repo has a package.json, put its rules row in docs/agents/stack.md, and leave accepting existing findings to the user by giving the `ns rules baseline --allow-growth` command instead of running it?"
+required = false

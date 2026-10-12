@@ -60,6 +60,11 @@ rule_pack_tests() {
   scripts/check-git-dir-decoy.sh rules/python/tests/run.sh
 }
 
+js_rule_pack_tests() {
+  rules/js/tests/run.sh || return 1
+  scripts/check-git-dir-decoy.sh rules/js/tests/run.sh
+}
+
 brief_checker_tests() {
   command -v python3 >/dev/null || { echo "ci-local: python3 is required for the brief checker tests" >&2; return 1; }
   local test
@@ -81,6 +86,7 @@ step "ns rules check" "$ns" rules check --human
 step "ns eval --dry-run" eval_dry_run
 step "py-inventory fixture tests" fixture_tests
 step "Python rule pack tests" rule_pack_tests
+step "JavaScript/TypeScript rule pack tests" js_rule_pack_tests
 step "C rule pack tests" python3 -I -m unittest discover -s rules/c/tests
 step "ns-troubleshoot brief checker tests" brief_checker_tests
 step "private guard" scripts/check-private.sh
