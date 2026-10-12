@@ -258,6 +258,22 @@ fn a_command_that_prints_too_much_is_broken() {
 }
 
 #[test]
+fn the_stdout_cap_accepts_exactly_the_limit_and_breaks_one_byte_past_it() {
+    let printing = |digits: u32| {
+        Repo::new(&format!(
+            "[ratchets.big]\ncommand = \"head -c {digits} /dev/zero | tr '\\\\0' 0; echo\"\nbetter = \"lower\"\n"
+        ))
+    };
+    let (code, o) = printing(65535).check_one();
+    assert_eq!((code, o["status"].as_str()), (Some(0), Some("untracked")));
+    assert_eq!(o["measured"], 0.0);
+
+    let (code, o) = printing(65536).check_one();
+    assert_eq!(code, Some(1));
+    assert_eq!(o["error"], "printed more than 65536 bytes, not one number");
+}
+
+#[test]
 fn two_runs_further_apart_than_the_tolerance_make_the_ratchet_flaky() {
     let r = Repo::new(&format!(
         "[ratchets.jitter]\ncommand = \"{COUNTER}\"\nbetter = \"lower\"\n"
@@ -539,6 +555,25 @@ fn update_records_tightens_and_keeps_worse_values() {
     assert_eq!(code, Some(0));
     assert_eq!(v["ratchets"][3]["status"], "loosened");
     assert_eq!(r.recorded().unwrap()["worse"], 79.0);
+}
+
+#[test]
+fn update_with_only_a_stale_entry_to_drop_still_writes() {
+    let r = Repo::new(&Repo::cat("a", "lower", ""));
+    r.measure("a", "3");
+    r.record(&json!({"a": 3, "gone": 1}));
+
+    let (code, v, err) = r.ns(&["update", "--dry-run"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(v["status"], "planned");
+    assert_eq!(v["dropped"], json!(["gone"]));
+    assert_eq!(r.recorded().unwrap(), json!({"a": 3, "gone": 1}));
+
+    let (code, v, err) = r.ns(&["update"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(v["status"], "written");
+    assert_eq!(v["dropped"], json!(["gone"]));
+    assert_eq!(r.recorded().unwrap(), json!({"a": 3.0}));
 }
 
 #[test]
