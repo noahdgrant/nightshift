@@ -10,9 +10,10 @@ use serde_json::{json, Value};
 
 use crate::clock;
 use crate::error::SfError;
-use crate::factory::{Factory, Queue as QueueConfig};
+use crate::factory::{self, Factory, Queue as QueueConfig};
 use crate::git::{self, Repo};
 use crate::install;
+use crate::pin;
 use crate::review_md::{self, Status};
 use crate::run::{self, Outcome, RunResult, Shared};
 use crate::skills_sync::{self, Sync};
@@ -344,12 +345,45 @@ fn fresh_base(root: &Path) -> Option<String> {
     Some(format!("origin/{branch}"))
 }
 
+/// Whether a phase of `fac` loads the installed skills, which a sync changes under it: a codex
+/// phase (docs/FACTORY.md, "Pinned skills and phase settings").
+fn reads_installed_skills(fac: &Factory) -> bool {
+    factory::PHASES
+        .iter()
+        .any(|p| pin::mode(&fac.phase(p).harness) == pin::Mode::Partial)
+}
+
+/// The installed skills whose symlinks resolve into the main checkout.
+fn installed_skills(repo: &Repo) -> skills_sync::Installed {
+    let targets = install::targets(&install::Harness::ALL, Vec::new());
+    skills_sync::installed_into(&targets, &repo.root)
+}
+
+/// The commit at `base` to drain for, when it has skill changes the main checkout lacks and is
+/// not in `tried`, announced on stderr and in the run log.
+fn skills_drain(repo: &Repo, base: &str, tried: &BTreeSet<String>) -> Option<String> {
+    let (from, to) = skills_sync::pending(&repo.root, base, &installed_skills(repo))?;
+    if tried.contains(&to) {
+        return None;
+    }
+    eprintln!(
+        "ns watch: {base} has skill changes the skills checkout lacks ({} -> {}); draining: no new unit until the running ones end",
+        self_update::short(&from),
+        self_update::short(&to)
+    );
+    run::log_event(
+        &repo.common_dir,
+        json!({"event": "skills_drain", "from": from, "to": to}),
+    );
+    Some(to)
+}
+
 /// Fast-forward the main checkout when installed skills resolve into it, so the unit runs
 /// the skills merged so far tonight. A checkout that can't move is reported, not changed;
-/// `warned` holds the last warning so a checkout that stays stuck warns once.
-fn sync_skills(repo: &Repo, base: &str, issue: u64, warned: &mut Option<String>) {
-    let targets = install::targets(&install::Harness::ALL, Vec::new());
-    let installed = skills_sync::installed_into(&targets, &repo.root);
+/// `warned` holds the last warning so a checkout that stays stuck warns once. `issue` is the
+/// unit the sync runs before, `None` after a drain.
+fn sync_skills(repo: &Repo, base: &str, issue: Option<u64>, warned: &mut Option<String>) {
+    let installed = installed_skills(repo);
     let short =
         |sha: &str| git::run(&repo.root, &["rev-parse", "--short", sha]).unwrap_or_default();
     let mut ev = json!({"issue": issue, "checkout": repo.root, "skills": installed.names});
@@ -415,6 +449,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
     let forge = forge::open(&q, &repo.root)?;
     let forge = forge.as_ref();
     let mut night = Night::new();
+    night.skills_drain = reads_installed_skills(fac);
     let deadline = match &args.until {
         Some(s) => {
             let Some((h, m)) = clock::parse_hm(s) else {
@@ -682,6 +717,9 @@ struct Night {
     /// Issues whose unit ended tonight.
     finished: BTreeSet<u64>,
     skills_warned: Option<String>,
+    /// The skills sync waits for a drain instead of running before each unit, as a phase reads
+    /// the installed skills.
+    skills_drain: bool,
     triage: triage::Tally,
 }
 
@@ -736,6 +774,7 @@ impl Night {
             harness_fails: 0,
             finished: BTreeSet::new(),
             skills_warned: None,
+            skills_drain: false,
             triage: triage::Tally::default(),
         }
     }
@@ -750,11 +789,12 @@ impl Night {
             .map(|_| "budget")
     }
 
-    /// `git fetch origin`, then keep installed skills current; the base for the run's worktree.
+    /// `git fetch origin`, then keep installed skills current unless they wait for a drain;
+    /// the base for the run's worktree.
     fn base(&mut self, repo: &Repo, issue: u64) -> Option<String> {
         let base = fresh_base(&repo.root);
-        if let Some(b) = &base {
-            sync_skills(repo, b, issue, &mut self.skills_warned);
+        if let Some(b) = base.as_deref().filter(|_| !self.skills_drain) {
+            sync_skills(repo, b, Some(issue), &mut self.skills_warned);
         }
         base
     }

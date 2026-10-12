@@ -21,8 +21,9 @@ use self::red::Gate;
 use super::self_update::{HandOff, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
 use super::{
-    ended_cleanly, fix_main::Fix, fresh_base, open_findings, queue, set_status, split, triage,
-    Forge, Issue, Night, Post, Tonight, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
+    ended_cleanly, fix_main::Fix, fresh_base, open_findings, queue, set_status, skills_drain,
+    split, sync_skills, triage, Forge, Issue, Night, Post, Tonight, HARNESS_FAIL_LIMIT,
+    PAUSED_PAST_UNTIL,
 };
 use crate::clock;
 use crate::error::SfError;
@@ -103,6 +104,15 @@ enum FillKind {
     Refill,
 }
 
+/// What the night drains for: no new unit starts until the running ones end.
+enum Drain {
+    /// A self-update to this commit.
+    Update(String),
+    /// A skills sync of the main checkout to `to` at `base`, for phases that read the installed
+    /// skills.
+    Skills { base: String, to: String },
+}
+
 /// Why no new unit starts.
 enum Stopping {
     /// No new claims, but a unit paused on a usage limit still resumes: `--max-units`.
@@ -133,8 +143,11 @@ pub(super) struct Scheduler<'a> {
     forwarded: bool,
     /// The first error; the night stops once the running units end.
     failed: Option<anyhow::Error>,
-    /// The commit to update to once the running units end; no new unit starts meanwhile.
-    draining: Option<String>,
+    /// What to do once the running units end; no new unit starts meanwhile.
+    draining: Option<Drain>,
+    /// Commits the skills checkout was drained for tonight; none is drained for again, so a
+    /// checkout that can't move doesn't hold the night.
+    skills_tried: BTreeSet<String>,
     started: u32,
     results: u64,
     /// The head main was last found red at, until it is found not red.
@@ -165,6 +178,7 @@ impl<'a> Scheduler<'a> {
             forwarded: false,
             failed: None,
             draining: None,
+            skills_tried: BTreeSet::new(),
             results: 0,
             red_at: None,
             fix: None,
@@ -309,7 +323,7 @@ impl<'a> Scheduler<'a> {
             return Ok(());
         }
         if kind == FillKind::Full && self.draining.is_none() {
-            self.draining = self.pending_update();
+            self.draining = self.pending_drain(night);
         }
         if self.draining.is_some() {
             return Ok(());
@@ -404,11 +418,23 @@ impl<'a> Scheduler<'a> {
         }
     }
 
-    /// The commit to update to, when origin's default branch has `cli/` changes this `ns` lacks.
-    fn pending_update(&self) -> Option<String> {
-        let update = self.plan.update.as_ref()?;
-        let base = fresh_base(&self.plan.repo.root)?;
-        update.pending(&self.plan.repo.root, &base)
+    /// What to drain for: an update, when origin's default branch has `cli/` changes this `ns`
+    /// lacks, else a skills sync, when it has skill changes the checkout lacks and a phase reads
+    /// the installed skills.
+    fn pending_drain(&self, night: &Night) -> Option<Drain> {
+        if self.plan.update.is_none() && !night.skills_drain {
+            return None;
+        }
+        let repo = self.plan.repo;
+        let base = fresh_base(&repo.root)?;
+        if let Some(to) = (self.plan.update.as_ref()).and_then(|u| u.pending(&repo.root, &base)) {
+            return Some(Drain::Update(to));
+        }
+        if !night.skills_drain {
+            return None;
+        }
+        let to = skills_drain(repo, &base, &self.skills_tried)?;
+        Some(Drain::Skills { base, to })
     }
 
     /// Draining, with nothing left running or paused, and no stop: time to update.
@@ -419,11 +445,18 @@ impl<'a> Scheduler<'a> {
             && self.stopping.is_none()
     }
 
-    /// Hand off to the commit being drained for. Returns when that failed, which is logged and
-    /// kept from being tried again, or when a stop came first and the loop's top winds down.
-    fn hand_off(&mut self, night: &Night, tonight: &Tonight) {
-        let Some(to) = self.draining.take() else {
-            return;
+    /// Sync the skills, or hand off to the commit being drained for. A hand-off returns when it
+    /// failed, which is logged and kept from being tried again, or when a stop came first and the
+    /// loop's top winds down.
+    fn hand_off(&mut self, night: &mut Night, tonight: &Tonight) {
+        let to = match self.draining.take() {
+            None => return,
+            Some(Drain::Update(to)) => to,
+            Some(Drain::Skills { base, to }) => {
+                sync_skills(self.plan.repo, &base, None, &mut night.skills_warned);
+                self.skills_tried.insert(to);
+                return;
+            }
         };
         let carried = night.carry(self.plan.deadline, self.started, tonight);
         let repo = self.plan.repo;
