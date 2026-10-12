@@ -11,6 +11,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`. Add `--reason "not planned"` for `wontfix`.
+- **Disclosure**: every issue body, comment and PR body an agent posts opens with a 🤖 line naming the agent, then a blank line: `🤖 *Posted by nightshift, an AI agent.*` from nightshift (`ns-contract`, Disclosure). Titles stay plain.
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
@@ -20,7 +21,7 @@ Authors whose association is `OWNER`, `MEMBER` or `COLLABORATOR` are the team. E
 
 External comments: wait
 
-`wait` (default): a skill drafts any comment addressed to an external person and stops for a human. `allow`: skills post such comments on this tracker themselves, with the AI disclaimer. Set `allow` only if unattended runs may talk to reporters.
+`wait` (default): a skill drafts any comment addressed to an external person and stops for a human. `allow`: skills post such comments on this tracker themselves. Set `allow` only if unattended runs may talk to reporters.
 
 ## Pull requests as a triage surface
 
@@ -43,7 +44,7 @@ The most issues one `ns-agent-readiness` run files. With no such line, it files 
 ## Linking issues
 
 - **Sub-issue of a parent**: `gh issue create --parent <parent> ...`, or `gh issue edit <parent> --add-sub-issue <child>` afterwards (`gh` 2.94+). Older `gh`: `gh api --method POST repos/<owner>/<repo>/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>`. List a parent's children: `gh api repos/<owner>/<repo>/issues/<parent>/sub_issues`. Without sub-issues, put `Part of #<parent>` at the top of the child body.
-- **Blocking**: GitHub's native issue dependencies. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). Where dependencies aren't available, put a `Blocked by: #<n>, #<n>` line at the top of the child body.
+- **Blocking**: GitHub's native issue dependencies. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). Where dependencies aren't available, put a `Blocked by: #<n>, #<n>` line at the top of the child body, right after the 🤖 line.
 - **Is it unblocked?** Count open blockers: `gh api repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by --jq '[.[] | select(.state == "open")] | length'`. Zero means unblocked. `issue_dependencies_summary.blocked_by` keeps counting a blocker after it closes, so it can't gate.
 
 ## When a skill says "publish to the issue tracker"
