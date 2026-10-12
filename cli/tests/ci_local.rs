@@ -28,6 +28,18 @@ const ALL_STEPS: [&str; 17] = [
     "private guard",
 ];
 
+/// The steps `--fast` runs, the pre-commit hook's subset of `ALL_STEPS`, in its order.
+const FAST_STEPS: [&str; 8] = [
+    "pinned tools (scripts/ci-tools.toml)",
+    "cargo fmt --check",
+    "cargo clippy",
+    "build ns",
+    "ns lint",
+    "ns lint .agents/skills",
+    "ns check-markers",
+    "private guard",
+];
+
 /// Fails when its command line contains `$FAIL_ON`.
 const CARGO: &str = r#"#!/bin/sh
 case "$FAIL_ON" in ?*) case "cargo $*" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
@@ -377,10 +389,59 @@ fn a_relative_cargo_target_dir_is_relative_to_the_repo_root() {
 }
 
 #[test]
-fn any_argument_prints_usage_and_exits_2() {
-    for arg in ["--bogus", "--fast"] {
-        let out = Repo::new().run(&[arg], &[]);
-        assert_eq!(out.status.code(), Some(2), "{arg}");
-        assert_eq!(stderr(&out), "usage: scripts/ci-local.sh\n");
+fn fast_runs_only_the_quick_steps_in_order_and_passes() {
+    let out = Repo::new().run(&["--fast"], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(steps(&out), FAST_STEPS);
+    let err = stderr(&out);
+    assert!(!err.contains("pytest ran"), "{err}");
+    assert!(!err.contains("rule pack tests ran"), "{err}");
+    assert!(!err.contains("python ran in"), "{err}");
+    assert!(err.contains("ci-local: all checks passed"), "{err}");
+}
+
+#[test]
+fn a_failing_step_stops_the_fast_run() {
+    for (fail_on, step) in [
+        ("cargo fmt", "cargo fmt --check"),
+        ("cargo clippy", "cargo clippy"),
+        ("cargo build", "build ns"),
+        ("ns lint skills", "ns lint"),
+        ("lint .agents/skills", "ns lint .agents/skills"),
+        ("ns check-markers", "ns check-markers"),
+    ] {
+        let out = Repo::new().run(&["--fast"], &[("FAIL_ON", fail_on)]);
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        let at = FAST_STEPS.iter().position(|s| *s == step).unwrap();
+        assert_eq!(steps(&out), FAST_STEPS[..=at]);
+        assert!(stderr(&out).contains(&format!("ci-local: FAILED at step: {step}\n")));
+        assert!(!stderr(&out).contains("all checks passed"));
+    }
+}
+
+#[test]
+fn the_fast_run_fails_on_the_private_guard() {
+    let repo = Repo::new();
+    write_exe(
+        &repo.dir.path().join("scripts/check-private.sh"),
+        "#!/bin/sh\nexit 1\n",
+    );
+    let out = repo.run(&["--fast"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(steps(&out), FAST_STEPS);
+    assert!(stderr(&out).contains("ci-local: FAILED at step: private guard\n"));
+}
+
+#[test]
+fn an_unknown_or_extra_argument_prints_usage_and_exits_2() {
+    for args in [
+        &["--bogus"][..],
+        &["--full"],
+        &["--fast", "--fast"],
+        &["--fast", "x"],
+    ] {
+        let out = Repo::new().run(args, &[]);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert_eq!(stderr(&out), "usage: scripts/ci-local.sh [--fast]\n");
     }
 }
