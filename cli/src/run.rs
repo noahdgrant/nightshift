@@ -1881,6 +1881,7 @@ fn merge_step(
     if let Some(step) = human_review(ctx, n, &default)? {
         return Ok(step);
     }
+    // No --delete-branch: gh would check out the default branch in the unit's worktree first.
     let merged = gh(
         wt,
         &[
@@ -1888,7 +1889,6 @@ fn merge_step(
             "merge",
             &ns,
             "--squash",
-            "--delete-branch",
             "--match-head-commit",
             &merge_head,
         ],
@@ -1898,6 +1898,11 @@ fn merge_step(
         .and_then(|v| v["state"].as_str().map(String::from));
     if state_now.as_deref() == Some("MERGED") {
         ctx.log(json!({"event": "merged", "pr": n, "sha": head, "spent_usd": shared.spent()}));
+        let branch = format!("{}{}", crate::worktree::BRANCH_PREFIX, ctx.unit);
+        let path = format!("repos/{{owner}}/{{repo}}/git/refs/heads/{branch}");
+        if let Err(e) = gh(wt, &["api", &path, "-X", "DELETE"]) {
+            ctx.log(json!({"event": "branch_not_deleted", "pr": n, "branch": branch, "error": format!("{e:#}")}));
+        }
         return Ok(MergeStep::Finish(finish(
             Outcome::Merged,
             format!("squash-merged PR #{n}"),

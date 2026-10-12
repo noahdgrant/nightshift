@@ -3880,7 +3880,7 @@ fn auto_merge_squashes_when_green_and_no_human_review_files() {
     assert_eq!(v["outcome"], "merged", "{v}");
     let calls = e.gh_calls();
     assert!(
-        calls.contains("pr merge 12 --squash --delete-branch"),
+        calls.contains("pr merge 12 --squash --match-head-commit"),
         "{calls}"
     );
     assert!(!calls.contains("update-branch"));
@@ -9516,6 +9516,43 @@ fn auto_merge_removes_the_worktree_and_branch_after_saving_the_record() {
 }
 
 #[test]
+fn a_merge_never_checks_out_main_in_the_unit_worktree() {
+    let e = auto_merge_env();
+    // The main checkout is off main, so nothing stops a checkout of main in the unit worktree.
+    git(&e.root, &["checkout", "-qb", "elsewhere"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(v["cleanup"]["removed"], true, "{v}");
+    assert!(!e.worktree(UNIT).exists());
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains(&format!(
+            "api repos/{{owner}}/{{repo}}/git/refs/heads/ns/{UNIT} -X DELETE"
+        )),
+        "{calls}"
+    );
+    git(&e.root, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn a_remote_branch_github_will_not_delete_is_logged_and_the_merge_stands() {
+    let e = auto_merge_env();
+    e.gh_file("branch-delete.fail", "HTTP 422: Reference does not exist");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let ev = &run_events(&e)[event_at(&e, |v| v["event"] == "branch_not_deleted")];
+    assert_eq!(ev["pr"], 12);
+    assert_eq!(ev["branch"], format!("ns/{UNIT}"));
+    assert!(
+        ev["error"]
+            .as_str()
+            .unwrap()
+            .contains("Reference does not exist"),
+        "{ev}"
+    );
+}
+
+#[test]
 fn auto_merge_with_the_record_in_the_outbox_still_cleans() {
     let e = auto_merge_env();
     decline_quality_pushes(&e);
@@ -9751,6 +9788,109 @@ fn clean_keeps_units_it_cannot_prove_merged_and_says_why() {
         fs::read_to_string(dirty.join("5-dirty.txt")).unwrap(),
         "changed\n"
     );
+}
+
+/// A merged unit's worktree left on main, as `gh pr merge --delete-branch` left it: the main
+/// checkout is on another branch and the unit's branch is gone.
+fn unit_left_on_main(e: &Env, n: u64, unit: &str, pr: u64) -> PathBuf {
+    unit_left_on_main_as(e, n, unit, pr, "CLOSED", "MERGED")
+}
+
+fn unit_left_on_main_as(
+    e: &Env,
+    n: u64,
+    unit: &str,
+    pr: u64,
+    issue_state: &str,
+    pr_state: &str,
+) -> PathBuf {
+    let wt = unit_with_pr(e, n, unit, pr, issue_state, pr_state);
+    e.gh_file(&format!("pr-{pr}.ref"), &format!("ns/{unit}"));
+    git(&e.root, &["checkout", "-qb", "elsewhere"]);
+    git(&wt, &["checkout", "-q", "main"]);
+    git(&wt, &["branch", "-q", "-D", &format!("ns/{unit}")]);
+    wt
+}
+
+#[test]
+fn clean_detaches_and_removes_a_merged_worktree_left_on_main() {
+    let e = Env::new();
+    let wt = unit_left_on_main(&e, 3, "3-done", 30);
+    let v = e.run(&["clean", "--dry-run"], 0);
+    assert_eq!(units_in(&v["planned"]), ["3-done"], "{v}");
+    assert_eq!(v["planned"][0]["detached"], "main", "{v}");
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert!(!wt.exists());
+    let ev = &cleanup_events(&e)[0];
+    assert_eq!(
+        (ev["removed"].as_bool(), ev["detached"].as_str()),
+        (Some(true), Some("main")),
+        "{ev}"
+    );
+    assert_eq!(quality_records(&e)[0]["unit"], "3-done");
+    git(&e.root, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn clean_keeps_a_worktree_on_main_whose_unit_is_not_proven_merged() {
+    // Only one worktree can hold main, so each case gets its own repo.
+    let cases = [
+        ("3-open-issue", "OPEN", "MERGED", None, "issue #3 is open"),
+        ("3-open-pr", "CLOSED", "OPEN", None, "PR #30 is OPEN"),
+        (
+            "3-elsewhere",
+            "CLOSED",
+            "MERGED",
+            Some("someone/branch"),
+            "PR #30 is from branch \"someone/branch\", not ns/3-elsewhere",
+        ),
+    ];
+    for (unit, issue_state, pr_state, head_ref, reason) in cases {
+        let e = Env::new();
+        let wt = unit_left_on_main_as(&e, 3, unit, 30, issue_state, pr_state);
+        if let Some(r) = head_ref {
+            e.gh_file("pr-30.ref", r);
+        }
+        let head = git(&e.root, &["rev-parse", "HEAD"]);
+        let v = e.run(&["clean"], 0);
+        assert_eq!(reasons(&v)[unit], reason, "{v}");
+        assert_eq!(units_in(&v["removed"]), Vec::<String>::new(), "{v}");
+        assert!(wt.is_dir(), "{unit}");
+        assert_eq!(git(&wt, &["symbolic-ref", "HEAD"]), "refs/heads/main");
+        assert_eq!(git(&e.root, &["rev-parse", "HEAD"]), head);
+    }
+}
+
+#[test]
+fn clean_keeps_a_worktree_on_main_with_uncommitted_tracked_changes() {
+    let e = Env::new();
+    let wt = unit_left_on_main(&e, 3, "3-done", 30);
+    fs::write(wt.join("README"), "edited\n").unwrap();
+    let v = e.run(&["clean"], 0);
+    assert_eq!(
+        reasons(&v)["3-done"],
+        "uncommitted changes to tracked files (1 paths)",
+        "{v}"
+    );
+    assert_eq!(git(&wt, &["symbolic-ref", "HEAD"]), "refs/heads/main");
+    assert_eq!(fs::read_to_string(wt.join("README")).unwrap(), "edited\n");
+}
+
+#[test]
+fn clean_leaves_a_worktree_on_main_outside_the_unit_worktree_dir_alone() {
+    let e = Env::new();
+    git(&e.root, &["checkout", "-qb", "elsewhere"]);
+    let other = e.base.join("3-done");
+    git(
+        &e.root,
+        &["worktree", "add", "-q", other.to_str().unwrap(), "main"],
+    );
+    e.issue(3, "3-done", "CLOSED");
+    let v = e.run(&["clean"], 0);
+    assert_eq!(v["status"], "nothing-to-clean", "{v}");
+    assert_eq!(v["kept"], serde_json::json!([]), "{v}");
+    assert!(other.is_dir());
 }
 
 #[test]

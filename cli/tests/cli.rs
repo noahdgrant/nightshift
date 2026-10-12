@@ -1196,6 +1196,92 @@ fn doctor_reports_whether_core_hooks_path_points_at_githooks() {
 }
 
 #[test]
+fn doctor_warns_when_the_default_branch_is_not_in_the_main_checkout() {
+    let (tmp, root) = repo();
+    git(&root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(
+        &root,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+    let doctor = || {
+        let out = ns()
+            .current_dir(&root)
+            .arg("doctor")
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        let w: Vec<String> = json(&out.stdout)["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap().to_string())
+            .filter(|w| w.contains("main checkout"))
+            .collect();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(w.iter().all(|w| stderr.contains(w.as_str())), "{stderr}");
+        w
+    };
+
+    let w = doctor();
+    assert!(w.is_empty(), "{w:?}");
+
+    git(&root, &["checkout", "-qb", "other"]);
+    let w = doctor();
+    assert_eq!(
+        w,
+        ["the main checkout is on other, not main; fix: git checkout main"]
+    );
+
+    let wt = tmp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("myrepo.worktrees/3-done");
+    git(
+        &root,
+        &["worktree", "add", "-q", wt.to_str().unwrap(), "main"],
+    );
+    let w = doctor();
+    let held = format!(
+        "main is checked out in worktree {}, so the main checkout cannot switch to it; fix: ns clean, or git -C {} checkout --detach",
+        wt.display(),
+        wt.display()
+    );
+    assert_eq!(
+        w,
+        [
+            "the main checkout is on other, not main; fix: git checkout main".to_string(),
+            held
+        ]
+    );
+
+    git(&wt, &["checkout", "-q", "--detach"]);
+    git(&root, &["checkout", "-q", "--detach"]);
+    let w = doctor();
+    assert_eq!(
+        w,
+        ["the main checkout is detached, not on main; fix: git checkout main"]
+    );
+
+    // A default branch with no local branch has nothing to check out.
+    git(&root, &["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+    git(
+        &root,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/trunk",
+        ],
+    );
+    assert!(doctor().is_empty());
+}
+
+#[test]
 fn doctor_checks_hooks_path_from_a_subdirectory() {
     let (_tmp, root) = repo();
     fs::create_dir(root.join(".githooks")).unwrap();
