@@ -75,7 +75,7 @@ findings_for() {
   jq -c --arg f "$2" 'select(.file == $f)' "$tmp/$1.findings"
 }
 
-for kind in js ts react ts-include pnpm; do
+for kind in js ts react ts-include refs pnpm; do
   install_repo "$kind"
 done
 
@@ -127,7 +127,7 @@ printf 'console.log(1);\n' >"$tmp/js/dist/bundle.js"
 mkdir "$tmp/ts-include/tests"
 printf 'export const outside = 1 == 1;\n' >"$tmp/ts-include/tests/outside.test.ts"
 
-for kind in js ts react ts-include pnpm; do
+for kind in js ts react ts-include refs pnpm; do
   run_row "$kind"
 done
 
@@ -168,6 +168,16 @@ for file in vite.config.ts tests/outside.test.ts; do
     fail "ts-include: $file outside the tsconfig.json include gave a parse error"
 done
 [ -z "$(findings_for ts-include src/inside.ts)" ] || fail "ts-include: src/inside.ts gave findings"
+jq -e 'select(.tool == "eslint" and .rule == "eqeqeq")' <<<"$(findings_for ts-include src/skipped/loose.ts)" >/dev/null ||
+  fail "ts-include: no eqeqeq finding on src/skipped/loose.ts, excluded by the tsconfig.json"
+! jq -e 'select(.rule == "parse-error")' <<<"$(findings_for ts-include src/skipped/loose.ts)" >/dev/null ||
+  fail "ts-include: src/skipped/loose.ts, excluded by the tsconfig.json, gave a parse error"
+for file in 'src/[id]/page.ts' src/floating.ts; do
+  repo=ts-include
+  [ "$file" != src/floating.ts ] || repo=refs
+  jq -e 'select(.tool == "eslint" and (.rule | endswith("no-floating-promises")))' <<<"$(findings_for "$repo" "$file")" >/dev/null ||
+    fail "$repo: no no-floating-promises finding on $file"
+done
 [ -z "$(findings_for pnpm package.json)" ] || fail "pnpm: findings on package.json"
 for want in "eslint no-console" "ast-grep dependency-allowlist"; do
   for file in scan.js .hid/scan.js; do
@@ -226,6 +236,24 @@ cp "$pack/tests/repos/js/docs/agents/stack.md" "$repo/docs/agents/"
 git diff --no-index --quiet "$pack/utils/allowed-package.yml" "$repo/.nightshift/rules/js/utils/allowed-package.yml" ||
   fail "install.sh: a repo with no package.json got a changed allowlist"
 [ ! -e "$repo/package.json" ] && [ ! -e "$repo/package-lock.json" ] || fail "install.sh: wrote a package.json or lockfile in a repo with none"
+
+# A stack.md that ends right after the Commands table still gets the rules row, and the
+# allowlist is seeded from every dependency field of package.json.
+repo=$tmp/table-last
+mkdir -p "$repo/docs/agents" "$repo/src"
+printf '# Stack\n\n## Commands\n\n| Task | Command | Takes |\n|---|---|---|\n| test | `npm test` | 1 s |\n' >"$repo/docs/agents/stack.md"
+printf '{"name": "x", "dependencies": {"dep-a": "1"}, "devDependencies": {"dev-b": "1"}, "peerDependencies": {"peer-c": "1"}, "optionalDependencies": {"opt-d": "1"}}\n' >"$repo/package.json"
+printf 'import a from "dep-a";\nimport b from "dev-b";\nimport c from "peer-c";\nimport d from "opt-d";\nimport e from "other-e";\nexport default [a, b, c, d, e];\n' >"$repo/src/imports.js"
+"$pack/install.sh" "$repo" >/dev/null 2>&1 || fail "install.sh: a stack.md ending at the Commands table was refused"
+[ "$(grep -c '^| rules |' "$repo/docs/agents/stack.md")" -eq 1 ] || fail "install.sh: no rules row after a Commands table at the end of stack.md"
+last=$(jq -Rs 'split("\n") | map(select(. != "")) | last' "$repo/docs/agents/stack.md")
+[[ $last == '"| rules |'* ]] ||
+  fail "install.sh: the rules row is not the last line of a stack.md that ends at the Commands table"
+out=$(cd "$repo" && .nightshift/rules/js/check.sh ast-grep src 2>&1) || true
+for pkg in dep-a dev-b peer-c opt-d; do
+  ! grep -qF "\`$pkg\`" <<<"$out" || fail "install.sh: $pkg, a dependency of package.json, is outside the allowlist: $out"
+done
+grep -qF "\`other-e\`" <<<"$out" || fail "install.sh: other-e, no dependency of package.json, is inside the allowlist: $out"
 
 # A repo with no Commands table, no stack.md or a broken package.json is refused, as is an
 # install whose npm ci fails, and the repo is left as it was.

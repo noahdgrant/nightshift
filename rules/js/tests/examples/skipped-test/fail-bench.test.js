@@ -1,0 +1,1 @@
+bench.skip("sum", () => {});

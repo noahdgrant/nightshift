@@ -11,20 +11,38 @@ import tseslint from "typescript-eslint";
 const all = ["**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"];
 const ts = ["**/*.{ts,tsx,mts,cts}"];
 
+const globSpecials = /[\\[\](){}!]/g;
+
+function escaped(entry) {
+  return entry.replace(/^\.\//, "").replace(/\/+$/, "").replace(globSpecials, "\\$&");
+}
+
+function tsconfigGlob(entry) {
+  const path = escaped(entry);
+  return /\.[^/]*$|[*?]$/.test(path) ? path : `${path}/**`;
+}
+
 // The type-aware rules need the repo's tsconfig.json, and only the files it includes are in the
-// project. The other TypeScript files, and all of them without a tsconfig.json, get the rules
-// that need no type information. A tsconfig.json that names no files itself (project
-// references) puts every TypeScript file in the project.
-function projectFiles() {
-  if (!existsSync("tsconfig.json")) return [];
+// project: its own include, files and exclude patterns say which, so no file is listed one by
+// one. The other TypeScript files, and all of them without a tsconfig.json, get the rules that
+// need no type information. A tsconfig.json that names no files itself (project references)
+// puts every TypeScript file in the project.
+function project() {
+  if (!existsSync("tsconfig.json")) return null;
   const read = typescript.readConfigFile("tsconfig.json", typescript.sys.readFile);
   const parsed = typescript.parseJsonConfigFileContent(read.config ?? {}, typescript.sys, process.cwd());
-  const named = parsed.fileNames
-    .map((f) => relative(process.cwd(), f))
-    .filter((f) => /\.(?:ts|tsx|mts|cts)$/.test(f) && !f.startsWith(".."));
-  return named.length > 0 ? named : ts;
+  const named = parsed.fileNames.filter((f) => /\.(?:ts|tsx|mts|cts)$/.test(f) && !relative(process.cwd(), f).startsWith(".."));
+  if (named.length === 0) return { files: ts, ignores: [] };
+  const raw = parsed.raw ?? {};
+  const files = (raw.files ?? []).map(escaped);
+  const include = raw.include ?? (raw.files ? [] : ["**/*"]);
+  const exclude = raw.exclude ?? ["node_modules", "bower_components", "jspm_packages"];
+  return {
+    files: [...files, ...include.map((i) => [tsconfigGlob(i), ...ts])],
+    ignores: exclude.map(tsconfigGlob),
+  };
 }
-const typed = projectFiles();
+const typed = project();
 const gitignore = resolve(process.cwd(), ".gitignore");
 
 export default defineConfig(
@@ -53,7 +71,6 @@ export default defineConfig(
   },
   {
     files: ts,
-    ignores: typed,
     extends: [tseslint.configs.strict],
   },
   {
@@ -62,9 +79,9 @@ export default defineConfig(
       "@typescript-eslint/consistent-type-imports": "error",
     },
   },
-  typed.length > 0
+  typed
     ? {
-        files: typed,
+        ...typed,
         extends: [tseslint.configs.strictTypeChecked],
         languageOptions: {
           parserOptions: { projectService: true, tsconfigRootDir: process.cwd() },
