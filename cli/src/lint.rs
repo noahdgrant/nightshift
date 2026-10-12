@@ -255,6 +255,30 @@ pub fn relative_links(text: &str) -> Vec<String> {
     links
 }
 
+/// The fixed `/tmp/<name>` paths in `text`, code included, with their 1-based line numbers.
+/// Parallel units would share such a file; `ns run` gives each phase its own `TMPDIR`.
+/// A placeholder such as `/tmp/<name>`, or `/tmp/` inside a longer path, is not one.
+fn fixed_tmp_paths(text: &str) -> Vec<(usize, String)> {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let name = |c: char| word(c) || matches!(c, '.' | '-');
+    let mut found = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        for (at, _) in line.match_indices("/tmp/") {
+            let starts_path = line[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !name(c) && !matches!(c, '}' | '~'));
+            let rest = &line[at + "/tmp/".len()..];
+            if starts_path && rest.starts_with(word) {
+                let end = rest.find(|c| !name(c) && c != '/').unwrap_or(rest.len());
+                let path = rest[..end].trim_end_matches('.');
+                found.push((i + 1, format!("/tmp/{path}")));
+            }
+        }
+    }
+    found
+}
+
 fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -360,6 +384,13 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
             let Ok(body) = fs::read_to_string(file) else {
                 continue;
             };
+            if !file.starts_with(dir.join("evals")) {
+                for (n, path) in fixed_tmp_paths(&body) {
+                    let m =
+                        format!("line {n}: fixed path {path}; use mktemp or a name under $TMPDIR");
+                    push(&mut errors, file, m);
+                }
+            }
             let base = file.parent().unwrap_or(dir);
             for link in relative_links(&body) {
                 match fs::canonicalize(base.join(&link)) {
@@ -561,6 +592,46 @@ mod tests {
     fn messages(tmp: &tempfile::TempDir) -> Vec<String> {
         let report = lint_dir(tmp.path()).unwrap();
         report.errors.into_iter().map(|e| e.message).collect()
+    }
+
+    #[test]
+    fn a_fixed_tmp_path_fails_in_a_skill_and_its_references() {
+        let tmp = skill(
+            "Save it:\n```bash\ncp out /tmp/ns/out.txt\n```\n[r](references/r.md)\n",
+            &[(
+                "r.md",
+                "Run `mktemp -d /tmp/x.XXXXXX` first.\nOpen file:///tmp/report.html.\n/tmp/run.log holds it.\n",
+            )],
+        );
+        assert_eq!(
+            messages(&tmp),
+            [
+                "line 7: fixed path /tmp/ns/out.txt; use mktemp or a name under $TMPDIR",
+                "line 1: fixed path /tmp/x.XXXXXX; use mktemp or a name under $TMPDIR",
+                "line 2: fixed path /tmp/report.html; use mktemp or a name under $TMPDIR",
+                "line 3: fixed path /tmp/run.log; use mktemp or a name under $TMPDIR",
+            ]
+        );
+    }
+
+    #[test]
+    fn tmpdir_paths_and_mentions_of_tmp_pass() {
+        let tmp = skill(
+            "Never write a fixed `/tmp/<name>` path. Use `$TMPDIR/out`, \
+             `${TMPDIR:-/tmp}/out`, `${dir}/tmp/x`, ~/tmp/x, ./tmp/x, `mktemp`, \
+             target/tmp/x, /tmp or /tmp/.\n",
+            &[],
+        );
+        assert!(messages(&tmp).is_empty(), "{:?}", messages(&tmp));
+    }
+
+    #[test]
+    fn eval_files_may_name_fixed_tmp_paths() {
+        let tmp = skill("x\n", &[]);
+        let case = tmp.path().join("ns-a/evals/cases/c");
+        fs::create_dir_all(&case).unwrap();
+        fs::write(case.join("brief.md"), "Log to /tmp/run.log.\n").unwrap();
+        assert!(messages(&tmp).is_empty(), "{:?}", messages(&tmp));
     }
 
     #[test]
