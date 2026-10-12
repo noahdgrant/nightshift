@@ -1349,6 +1349,9 @@ esac"#
             .env_remove("GH_TOKEN")
             .env_remove("GITLAB_TOKEN")
             .env_remove("NS_FORGE_CHECKED")
+            .env_remove("NS_FORGE_EXPORTED")
+            .env_remove("GH_HOST")
+            .env_remove("GITLAB_HOST")
             .env_remove("PERSONAL")
             .env_remove("WORK");
         for (k, v) in self.env {
@@ -1619,7 +1622,7 @@ fn doctor_warns_about_a_set_gh_token_unless_an_ns_parent_set_it() {
         "gitlab:example-org/backend",
     ] {
         let (v, _, _) = Doctor {
-            env: &[("GH_TOKEN", "env-tok"), ("NS_FORGE_CHECKED", stale)],
+            env: &[("GH_TOKEN", "env-tok"), ("NS_FORGE_EXPORTED", stale)],
             ..Doctor::default()
         }
         .run();
@@ -1632,7 +1635,7 @@ fn doctor_warns_about_a_set_gh_token_unless_an_ns_parent_set_it() {
     let (v, _, _) = Doctor {
         env: &[
             ("GH_TOKEN", "env-tok"),
-            ("NS_FORGE_CHECKED", "github:example-org/backend"),
+            ("NS_FORGE_EXPORTED", "github:example-org/backend"),
         ],
         ..Doctor::default()
     }
@@ -1642,6 +1645,40 @@ fn doctor_warns_about_a_set_gh_token_unless_an_ns_parent_set_it() {
         "{}",
         v["warnings"]
     );
+}
+
+#[test]
+fn doctor_still_warns_when_a_parent_only_checked_the_repo() {
+    let (v, _, _) = Doctor {
+        env: &[
+            ("GH_TOKEN", "env-tok"),
+            ("NS_FORGE_CHECKED", "github:example-org/backend"),
+        ],
+        ..Doctor::default()
+    }
+    .run();
+    assert!(
+        v["warnings"].to_string().contains("GH_TOKEN"),
+        "{}",
+        v["warnings"]
+    );
+}
+
+#[test]
+fn doctor_warns_when_an_ssh_alias_origin_drops_the_override_tables_of_a_forge_host() {
+    let (v, err, _) = Doctor {
+        origin: "git@gitlab-work:team/sub/project.git",
+        config: "[forge.gitlab]\ntoken_env = \"PERSONAL\"\nhost = \"gitlab.example.com\"\n[forge.gitlab.owners.\"team/sub\"]\ntoken_env = \"WORK\"\n",
+        ..gitlab_doctor()
+    }
+    .run();
+    let w = v["warnings"].to_string();
+    assert!(
+        w.contains("origin host gitlab-work is not gitlab.example.com: ignoring [forge.gitlab.owners.\\\"team/sub\\\"]"),
+        "{w}"
+    );
+    assert!(err.contains("ignoring"), "{err}");
+    assert_eq!(v["forge"]["gitlab"]["table"], "[forge.gitlab]");
 }
 
 #[test]

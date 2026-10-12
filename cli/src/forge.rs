@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-use crate::config::{Config, Forge, ForgeKind, Forges, TokenSource};
+use crate::config::{Config, Forge, ForgeKind, Forges, Table, TokenSource};
 use crate::error::SfError;
 use crate::eval::trial::run_process;
 use crate::watch::forge as watch_forge;
@@ -62,6 +62,31 @@ pub fn scope<'a>(
     Forge::scope(host.as_deref(), repo, origin_url)
 }
 
+/// The warning that [`scope`] dropped the owner or repo table `repo` would have matched, because
+/// `origin_url` is on another host than the forge's.
+pub fn scope_warning(
+    kind: ForgeKind,
+    forge: &Forge,
+    repo: Option<&str>,
+    origin_url: Option<&str>,
+) -> Option<String> {
+    if scope(kind, forge, repo, origin_url).is_some() {
+        return None;
+    }
+    let table = match forge.choose(repo).1 {
+        Table::Default => return None,
+        t => t.label(kind),
+    };
+    let want = effective_host(kind, Some(forge))?;
+    let got = origin_url.and_then(watch_forge::host)?;
+    Some(format!(
+        "origin host {got} is not {want}: ignoring {table}; if {got} is an ssh alias for {want}, \
+         the default [forge.{0}] token applies: put that token there, or drop `host` and unset {1}",
+        kind.name(),
+        kind.host_var()
+    ))
+}
+
 /// The credentials for `repo`, from the table [`Forge::choose`] picks; with no repo, the
 /// default table.
 pub fn resolve(kind: ForgeKind, forge: &Forge, repo: Option<&str>) -> Result<Credentials, SfError> {
@@ -84,10 +109,14 @@ pub fn resolve(kind: ForgeKind, forge: &Forge, repo: Option<&str>) -> Result<Cre
     Ok(Credentials { token, host })
 }
 
-/// Set by `ns run` and `ns watch` once they have exported the tokens and checked the repo, to
-/// [`checked_value`], so a unit `ns watch` starts inherits both for the same forge and repo and
-/// neither warns nor checks again. Any other value, from a stale shell or another repo, is ignored.
+/// Set by `ns run` and `ns watch` to [`checked_value`] once they have checked the repo, so a unit
+/// `ns watch` starts doesn't check again. Any other value, from a stale shell or another repo, is
+/// ignored.
 pub const CHECKED_VAR: &str = "NS_FORGE_CHECKED";
+
+/// Set to [`checked_value`] whenever `ns run` or `ns watch` settles a configured forge's token,
+/// probed or not, so a child that sees the token doesn't warn that the environment overrides the config.
+pub const EXPORTED_VAR: &str = "NS_FORGE_EXPORTED";
 
 /// How long a probe of the forge may take before it counts as failed.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -96,8 +125,16 @@ pub fn checked_value(kind: ForgeKind, repo: Option<&str>) -> String {
     format!("{}:{}", kind.name(), repo.unwrap_or_default())
 }
 
-pub fn inherited(kind: ForgeKind, repo: Option<&str>) -> bool {
-    std::env::var(CHECKED_VAR).is_ok_and(|v| v == checked_value(kind, repo))
+fn marked(var: &str, kind: ForgeKind, repo: Option<&str>) -> bool {
+    std::env::var(var).is_ok_and(|v| v == checked_value(kind, repo))
+}
+
+pub fn checked_by_parent(kind: ForgeKind, repo: Option<&str>) -> bool {
+    marked(CHECKED_VAR, kind, repo)
+}
+
+pub fn exported_by_parent(kind: ForgeKind, repo: Option<&str>) -> bool {
+    marked(EXPORTED_VAR, kind, repo)
 }
 
 /// `origin`'s URL, the forge it is on, its repo path, and the configured forges.
@@ -144,6 +181,12 @@ impl Origin {
             None => self.repo_for(kind),
         }
     }
+
+    /// The warning that [`Origin::table_repo`] dropped a table that would have matched `origin`.
+    pub fn scope_warning(&self, kind: ForgeKind) -> Option<String> {
+        let f = self.forges.get(kind)?;
+        scope_warning(kind, f, self.repo_for(kind), self.url.as_deref())
+    }
 }
 
 /// What `ns run` and `ns watch` do at start: warn when the environment's token overrides the
@@ -153,15 +196,18 @@ pub fn start(origin: &Origin, dry_run: bool) -> Result<(), SfError> {
     let (kind, forges) = (origin.kind, &origin.forges);
     let repo = origin.repo.as_deref();
     let table_repo = origin.table_repo(kind);
-    let inherited = inherited(kind, repo);
     let source = source(kind, forges.get(kind), table_repo);
-    if !inherited {
-        if let Some(w) = env_warning(kind, forges.get(kind), table_repo) {
+    if !exported_by_parent(kind, repo) {
+        let warnings = env_warning(kind, forges.get(kind), table_repo)
+            .into_iter()
+            .chain(origin.scope_warning(kind));
+        for w in warnings {
             eprintln!("ns: warning: {w}");
         }
     }
     export(origin)?;
-    if let Some(r) = checks_repo(repo, forges.get(kind).is_some(), dry_run, inherited) {
+    let checked = checked_by_parent(kind, repo);
+    if let Some(r) = checks_repo(repo, forges.get(kind).is_some(), dry_run, checked) {
         if let Err(e) = can_read(kind, r, None) {
             return Err(SfError::usage(
                 unreadable(kind, r, account(kind, None).as_deref(), &source, &e),
@@ -178,13 +224,8 @@ pub fn start(origin: &Origin, dry_run: bool) -> Result<(), SfError> {
 }
 
 /// The repo `start` probes: only for a configured forge, on a real run that no parent checked.
-fn checks_repo(
-    repo: Option<&str>,
-    configured: bool,
-    dry_run: bool,
-    inherited: bool,
-) -> Option<&str> {
-    repo.filter(|_| configured && !dry_run && !inherited)
+fn checks_repo(repo: Option<&str>, configured: bool, dry_run: bool, checked: bool) -> Option<&str> {
+    repo.filter(|_| configured && !dry_run && !checked)
 }
 
 /// The error for a token that can't read `repo`, naming the account, else where the token came
@@ -241,6 +282,9 @@ fn export(origin: &Origin) -> Result<(), SfError> {
             }
             if let Token::Fetched(t) = creds.token {
                 std::env::set_var(kind.token_var(), t);
+            }
+            if kind == origin.kind {
+                std::env::set_var(EXPORTED_VAR, checked_value(kind, origin.repo.as_deref()));
             }
         }
     }

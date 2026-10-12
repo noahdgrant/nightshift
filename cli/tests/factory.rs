@@ -5595,6 +5595,139 @@ fn a_forge_host_keeps_another_hosts_origin_on_the_default_token() {
     assert!(tokens.lines().all(|t| t == "default-tok"), "{tokens}");
 }
 
+fn gitlab_host_env_case(origin: &str, host_var: Option<&str>) -> String {
+    let e = Env::new();
+    e.gl_members(&[(1, 30)], &[]);
+    e.gl_issue(2, &[READY], "", 1);
+    git(&e.root, &["remote", "set-url", "origin", origin]);
+    e.config(
+        "[forge.gitlab]\ntoken_env = \"GL_DEFAULT\"\n[forge.gitlab.owners.\"team\"]\ntoken_env = \"GL_TEAM\"\n",
+    );
+    let mut ns = e.ns();
+    ns.env("GL_DEFAULT", "default-tok")
+        .env("GL_TEAM", "team-tok")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITLAB_HOST");
+    if let Some(h) = host_var {
+        ns.env("GITLAB_HOST", h);
+    }
+    ns.args(["watch", "--dry-run"]).assert().code(0);
+    let tokens = fs::read_to_string(e.ghd.join("glab-tokens")).unwrap();
+    assert!(!tokens.is_empty());
+    let first = tokens.lines().next().unwrap().to_string();
+    assert!(tokens.lines().all(|t| t == first), "{tokens}");
+    first
+}
+
+#[test]
+fn a_gitlab_host_variable_scopes_the_override_tables_to_its_host() {
+    let origin = "git@gitlab.com:team/p.git";
+    assert_eq!(
+        gitlab_host_env_case(origin, Some("gitlab.example.com")),
+        "default-tok"
+    );
+    assert_eq!(gitlab_host_env_case(origin, Some("gitlab.com")), "team-tok");
+    assert_eq!(gitlab_host_env_case(origin, None), "team-tok");
+}
+
+#[test]
+fn a_gh_host_variable_scopes_the_override_tables_to_its_host() {
+    for (gh_host, want) in [
+        ("ghe.example.com", "default-tok"),
+        ("github.com", "owner-tok"),
+    ] {
+        let e = Env::new();
+        e.ready(2, "Fix a", &["type:fix"], "");
+        e.config(OVERRIDES);
+        git(
+            &e.root,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/example-org/frontend.git",
+            ],
+        );
+        e.ns()
+            .env("GH_HOST", gh_host)
+            .env("DEFAULT_TOKEN", "default-tok")
+            .env("OWNER_TOKEN", "owner-tok")
+            .env("REPO_TOKEN", "repo-tok")
+            .args(["watch", "--dry-run"])
+            .assert()
+            .code(0);
+        assert_eq!(e.tokens_seen(), [want], "{gh_host}");
+    }
+}
+
+const ALIAS_WARNING: &str =
+    "origin host gitlab-work is not gitlab.example.com: ignoring [forge.gitlab.owners.\"team\"]";
+
+#[test]
+fn an_ssh_alias_origin_under_a_forge_host_warns_that_the_override_tables_are_ignored() {
+    let e = Env::new();
+    e.gl_members(&[(1, 30)], &[]);
+    e.gl_issue(2, &[READY], "", 1);
+    git(
+        &e.root,
+        &["remote", "set-url", "origin", "git@gitlab-work:team/p.git"],
+    );
+    e.config(
+        "[forge.gitlab]\ntoken_env = \"GL_DEFAULT\"\nhost = \"gitlab.example.com\"\n[forge.gitlab.owners.\"team\"]\ntoken_env = \"GL_TEAM\"\n",
+    );
+    let out = e
+        .ns()
+        .env("GL_DEFAULT", "default-tok")
+        .env("GL_TEAM", "team-tok")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITLAB_HOST")
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.matches(ALIAS_WARNING).count(), 1, "{err}");
+    assert!(err.contains("ssh alias for gitlab.example.com"), "{err}");
+    let tokens = fs::read_to_string(e.ghd.join("glab-tokens")).unwrap();
+    assert!(tokens.lines().all(|t| t == "default-tok"), "{tokens}");
+
+    e.config("[forge.gitlab]\ntoken_env = \"GL_DEFAULT\"\nhost = \"gitlab.example.com\"\n");
+    let out = e
+        .ns()
+        .env("GL_DEFAULT", "default-tok")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITLAB_HOST")
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("ignoring"), "no table was dropped: {err}");
+}
+
+#[test]
+fn a_token_ns_exported_is_marked_even_when_the_repo_was_not_probed() {
+    let e = Env::new();
+    e.config(OVERRIDES);
+    e.ns()
+        .env_remove("NS_FORGE_EXPORTED")
+        .env_remove("NS_FORGE_CHECKED")
+        .env("DEFAULT_TOKEN", "default-tok")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    let exported = fs::read_to_string(e.ctrl.join("exported")).unwrap();
+    assert!(!exported.is_empty());
+    assert!(exported.lines().all(|l| l == "github:"), "{exported}");
+    assert!(
+        checked_seen(&e).iter().all(|c| c == "unset"),
+        "{:?}",
+        checked_seen(&e)
+    );
+}
+
 #[test]
 fn an_origin_with_no_repo_path_uses_the_default_token_and_checks_nothing() {
     let e = Env::new();

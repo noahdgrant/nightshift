@@ -199,9 +199,10 @@ fn forge_entry(
     let repo = origin.and_then(forge::repo_path);
     let repo = repo.as_deref();
     let table_repo = f.map_or(repo, |f| forge::scope(kind, f, repo, origin));
-    if !forge::inherited(kind, repo) {
+    if !forge::exported_by_parent(kind, repo) {
         warnings.extend(forge::env_warning(kind, f, table_repo));
     }
+    warnings.extend(f.and_then(|f| forge::scope_warning(kind, f, repo, origin)));
     let creds = match f.map(|f| forge::resolve(kind, f, table_repo)).transpose() {
         Ok(c) => c,
         Err(e) => {
