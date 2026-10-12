@@ -963,6 +963,9 @@ Open after at least 2 fix attempts: C1, I2, I4.
 
     impl Forge for Fake {
         fn open_issues(&self, label: Option<&str>) -> Result<Vec<Issue>> {
+            if self.fails.contains("open_issues") {
+                anyhow::bail!("HTTP 502");
+            }
             Ok(self
                 .issues
                 .iter()

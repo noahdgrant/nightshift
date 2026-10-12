@@ -69,9 +69,10 @@ pub(super) fn mark(forge: &dyn Forge, q: &QueueConfig, n: u64) -> Result<()> {
     set_status(forge, q, n, Some(&q.split_label))
 }
 
-/// The `#n` children a team note lists: each list item under a `Children:` line, and any `#n`
-/// on that line itself.
-fn listed(text: &str) -> Vec<u64> {
+/// The `#n` children a team note lists: each list item under a `Children:` line, by the first
+/// `#n` in the item, and any `#n` on that line itself. An item with no `#n` is an error: the
+/// note names a child this can't read, so the parent must not close without it.
+fn listed(text: &str) -> Result<Vec<u64>> {
     let num = regex::Regex::new(r"#(\d+)\b").unwrap();
     let item_start = regex::Regex::new(r"^(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s*)?").unwrap();
     let mut found: Vec<u64> = Vec::new();
@@ -95,16 +96,21 @@ fn listed(text: &str) -> Vec<u64> {
         }
         let item = line.trim_start();
         match item_start.captures(item) {
-            Some(m) => found.extend(
-                num.captures(&item[m.get(0).unwrap().end()..])
-                    .filter(|c| c.get(0).unwrap().start() == 0)
-                    .and_then(|c| c[1].parse::<u64>().ok()),
-            ),
+            Some(m) => {
+                let text = item[m.get(0).unwrap().end()..].trim();
+                if text.is_empty() {
+                    continue;
+                }
+                match num.captures(text).and_then(|c| c[1].parse::<u64>().ok()) {
+                    Some(n) => found.push(n),
+                    None => anyhow::bail!("a Children: list item names no issue: {text}"),
+                }
+            }
             None if item.is_empty() => {}
             None => in_list = false,
         }
     }
-    found
+    Ok(found)
 }
 
 /// Whether `body` has a `Part of #parent` line.
@@ -125,7 +131,9 @@ fn children(forge: &dyn Forge, parent: &Issue, search: bool) -> Result<Vec<u64>>
     if parent.team {
         notes.push(parent.body.clone());
     }
-    found.extend(notes.iter().flat_map(|t| listed(t)));
+    for note in &notes {
+        found.extend(listed(note)?);
+    }
     if found.is_empty() && search {
         found.extend(
             forge
@@ -264,7 +272,7 @@ pub(super) fn apply(
                     eprintln!("ns watch: #{n} closed without its comment: {e:#}");
                 }
                 if let Err(e) = set_status(forge, q, n, None) {
-                    eprintln!("ns watch: #{n} closed with its status label: {e:#}");
+                    eprintln!("ns watch: #{n} closed but its {} label was not cleared: {e:#}", q.split_label);
                 }
             }),
             // Moved first: a comment posted on a parent still under `split_label` would repeat.
@@ -308,6 +316,10 @@ mod tests {
     use super::*;
 
     const SPLIT: &str = "status:split";
+
+    fn listed(text: &str) -> Vec<u64> {
+        super::listed(text).unwrap()
+    }
 
     fn issue(number: u64, labels: &[&str], body: &str) -> Issue {
         Issue {
@@ -408,7 +420,7 @@ mod tests {
         let notes = "## Triage Notes\n\nSplit.\n\n**Children:**\n- #8 first, after #3\n* #9 second\n\nMore text #10\n";
         assert_eq!(listed(notes), [8, 9]);
         assert_eq!(listed("Children: #4, #5 and #6\nnot #7"), [4, 5, 6]);
-        assert_eq!(listed("Children:\n\n- #4\n- see #5\n"), [4]);
+        assert_eq!(listed("Children:\n\n- #4\n- see #5\n"), [4, 5]);
         assert_eq!(listed("Children:\n- #4\n\n- #5\n"), [4, 5]);
         assert_eq!(listed("No list here: #4\n- #5\n"), Vec::<u64>::new());
         assert_eq!(listed("children:\n- #4\ntext\n- #5\n"), [4]);
@@ -434,8 +446,50 @@ mod tests {
             listed("Children:\n1. [ ] #8\n- #9\n* [x] #10\n"),
             [8, 9, 10]
         );
-        assert_eq!(listed("Children:\n1. #8\n- see #5\n- #9\n"), [8, 9]);
+        assert_eq!(listed("Children:\n1. #8\n- see #5\n- #9\n"), [8, 5, 9]);
         assert_eq!(listed("Children:\n1. #8\ntext\n- #9\n"), [8]);
+    }
+
+    #[test]
+    fn a_failed_issue_list_is_an_error_not_an_empty_plan() {
+        let f = Fake {
+            issues: vec![issue(1, &[SPLIT], "")],
+            fails: BTreeSet::from(["open_issues"]),
+            ..Fake::default()
+        };
+        let q = QueueConfig::default();
+        assert!(plan(&f, &q, false).is_err());
+        assert!(plan_read(&f, &q, true).is_err());
+    }
+
+    #[test]
+    fn an_item_counts_by_its_first_issue_number_wherever_it_sits() {
+        let notes = "Children:\n- #8\n- Add widget (#9)\n- [#10](https://example.com/x#3) title\n1. Title #11 and #12\n- [ ] Do (#13)\n";
+        assert_eq!(listed(notes), [8, 9, 10, 11, 13]);
+    }
+
+    #[test]
+    fn an_item_with_no_issue_number_makes_the_parent_unreadable() {
+        for text in [
+            "Children:\n- #8\n- Add widget\n",
+            "Children:\n- Add widget\n- #8\n",
+            "Children:\n1. Add widget\n",
+            "Children:\n- [ ] Add widget\n",
+        ] {
+            assert!(super::listed(text).is_err(), "{text}");
+        }
+        assert_eq!(listed("Children:\n- #8\n- \n- [ ]\n\n"), [8]);
+
+        // Child #8 is done; the item naming no issue must not let the parent close.
+        let f = Fake {
+            issues: vec![issue(1, &[SPLIT], "")],
+            comments: BTreeMap::from([(1, vec!["Children:\n- #8\n- Add widget\n".to_string()])]),
+            closed: BTreeSet::from([8]),
+            ..Fake::default()
+        };
+        assert!(run(&f, false).is_empty());
+        assert!(f.closes.borrow().is_empty());
+        assert!(plan(&f, &QueueConfig::default(), false).unwrap().is_empty());
     }
 
     #[test]

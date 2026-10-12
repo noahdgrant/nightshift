@@ -5692,6 +5692,85 @@ fn watch_closes_split_parents_whose_children_are_done_and_sweeps_once() {
     assert!(!e.gh_calls().contains("labels=status:needs-define"));
 }
 
+/// Unit 2 ready and set to merge on its own PR 12, as the auto-merge tests do.
+fn a_unit_that_merges(e: &Env) {
+    e.factory(AUTO);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file(
+        "prs.json",
+        r#"[{"number":12,"body":"Closes #2","headRefName":"ns/2-fix-a","isCrossRepository":false}]"#,
+    );
+}
+
+#[test]
+fn a_split_read_that_fails_does_not_hold_up_the_night() {
+    let e = Env::new();
+    a_unit_that_merges(&e);
+    split_parents(&e);
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *labels=status:split*) echo 'HTTP 502' >&2; exit 1 ;; esac\n",
+    );
+    let out = e.ns().args(["watch", "--once"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("split parents not checked") && err.contains("HTTP 502"),
+        "{err}"
+    );
+    let calls = e.gh_calls();
+    assert!(calls.contains("pr merge 12"), "{calls}");
+    assert!(
+        calls.contains("issue close 2 --reason completed"),
+        "{calls}"
+    );
+    assert!(!calls.contains("issue close 5"), "{calls}");
+    assert_eq!(e.labels(5), ["type:feat", "status:split"]);
+}
+
+#[test]
+fn a_dry_run_whose_split_read_fails_says_so_and_exits_ok() {
+    let e = Env::new();
+    split_parents(&e);
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *labels=status:split*) echo 'HTTP 502' >&2; exit 1 ;; esac\n",
+    );
+    let out = e.ns().args(["watch", "--dry-run"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("split parents not checked") && err.contains("HTTP 502"),
+        "{err}"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["split_parents"], serde_json::json!([]), "{v}");
+}
+
+#[test]
+fn a_sweep_marker_that_cannot_be_written_leaves_the_sweep_to_run_again() {
+    let e = Env::new();
+    split_parents(&e);
+    // The marker is a link to a directory that is not there, so the write fails and the
+    // clone still looks unswept.
+    let marker = e.root.join(".git/ns/split-swept");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(e.base.join("missing/marker"), &marker).unwrap();
+    let out = e.ns().args(["watch", "--once"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("the split sweep may run again"), "{err}");
+    assert_eq!(e.labels(6), ["type:feat", "status:split"]);
+    // The next night sweeps again: an old-label parent that turned up since moves.
+    e.open_by(11, "Design", &["status:needs-define"], "", Some("MEMBER"));
+    e.gh_file("subs-11", "10\n");
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(11), ["status:split"]);
+}
+
 #[test]
 fn watch_dry_run_lists_split_parents_and_changes_nothing() {
     let e = Env::new();
