@@ -108,9 +108,13 @@ done
 # git, and adds one rules row after the last row of the Commands table.
 grep -qxF "  regex: '^(?:com\\.example\\.app|org\\.junit\\.jupiter\\.api)(?:\\.|\$)'" "$pack/utils/allowed-package.yml" ||
   fail "install: the seeded allowlist is not the repo's package and import:" "$(cat "$pack/utils/allowed-package.yml")"
-ignored=$(git -C "$repo" status --porcelain --ignored -- .nightshift | sed -n 's/^!! //p')
-grep -qxF .nightshift/rules/java/pmd/bin/pmd <<<"$ignored" && ! grep -qv '^\.nightshift/rules/java/pmd/' <<<"$ignored" ||
-  fail "install: git does not ignore exactly the pack's pmd/:" "$ignored"
+# Ask git about paths directly: the shape of `git status --ignored` output differs between git
+# versions (2.55 collapses an ignored directory to `pmd/`).
+git -C "$repo" check-ignore -q .nightshift/rules/java/pmd/bin/pmd ||
+  fail "install: git does not ignore the pack's pmd/"
+for kept in .nightshift/rules/java/ruleset.xml .nightshift/rules/java/check.sh .nightshift/rules/java/.gitignore; do
+  ! git -C "$repo" check-ignore -q "$kept" || fail "install: git ignores $kept, outside the pack's pmd/"
+done
 row=$(sed -e 's|{pack}|.nightshift/rules/java|g' -e 's|{target}|.|g' "$src/stack-row.md")
 want=$(printf '| test | `mvn test` | 1 s |\n%s\n\n## Gotchas' "$row")
 grep -qzF "$want" "$repo/docs/agents/stack.md" || fail "install: the rules row is not after the test row:" "$(cat "$repo/docs/agents/stack.md")"
