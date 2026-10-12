@@ -76,6 +76,8 @@ jobs:
         run: cli/target/debug/ns check-markers --human
       - name: Rules check (new violations only, against .nightshift/rules-baseline.json)
         run: cli/target/debug/ns rules check --human
+      - name: Ratchet check (measured values, against .nightshift/ratchets.json)
+        run: cli/target/debug/ns ratchet check --human
       - name: Eval dry-run (validates every case and fixture, calls no model)
         run: |
           cfg="$RUNNER_TEMP/ns-config.toml"
