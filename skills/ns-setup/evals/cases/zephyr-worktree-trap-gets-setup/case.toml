@@ -1,5 +1,5 @@
 # Checks validated by hand with a stub `west` (no Zephyr tree here): a per-worktree `git config --worktree zlogger.module "$NS_WORKTREE"` setup command with a stack.md build row of `scripts/build.sh` passes every check; a trivial setup command (`true`) with a plain `west build ... app` row, no setup command, and a setup command that reruns scripts/bootstrap.sh (it repoints the main checkout at the worktree), each fail.
-description = "Set up a Zephyr repo whose build script reads the module path from shared git config, so a fresh worktree builds the main checkout's sources. Setup must find the trap, add [worktree] setup commands, and give stack.md a build command that builds the worktree's own app while the main checkout still builds its own."
+description = "Set up a Zephyr repo whose build script reads the module path from shared git config, so a fresh worktree builds the main checkout's sources. Setup must find the trap, add [worktree] setup commands, and give stack.md a build command that builds the worktree's own app while the main checkout still builds its own. Its twister test command, which runs a worker per core by default, takes its worker count from NS_CPUS."
 fixture = "zephyr-logger"
 skills = ["ns-setup"]
 extra_skills = []
@@ -63,4 +63,11 @@ grep -Fx -- "-- Application: $wt/app" "$tmp/wt.log" || { echo "the worktree buil
 sh -c "$cmd" > "$tmp/main.log" 2>&1 || { tail -n 20 "$tmp/main.log"; exit 1; }
 grep -Fx -- "-- Application: $main/app" "$tmp/main.log" || { echo "the main checkout no longer builds $main/app"; grep -- '-- Application:' "$tmp/main.log"; exit 1; }
 '''
+expect_exit = 0
+
+[[check]]
+# twister runs a worker per core unless -j says otherwise; under ns watch --parallel, the test
+# command stack.md names (or the script it calls) caps that at the unit's share, NS_CPUS.
+type = "command"
+run = '''grep -rqF NS_CPUS docs/agents/stack.md scripts/'''
 expect_exit = 0
