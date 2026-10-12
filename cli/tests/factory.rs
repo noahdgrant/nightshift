@@ -1435,16 +1435,30 @@ fn the_end_event_records_the_predicted_and_changed_files() {
     let e = Env::new();
     e.ctl("triage.body", "**Touches:** `work.txt`, `docs/**`\n");
     e.queue("build", &["pass:commit"]);
+    // Review adds a file and renames one from the base, then main moves on with a file the
+    // unit never touched.
     e.ctl(
         "review.sh",
-        "mkdir -p src && echo x > src/a.rs && git add src && git -c user.name=f -c user.email=f@f commit -qm a",
+        r#"set -e
+mkdir -p src && echo x > src/a.rs && git add src && git mv README README.md
+git -c user.name=f -c user.email=f@f commit -qm a
+export GIT_INDEX_FILE="$PWD/.ns/main-index"
+git read-tree main
+git update-index --add --cacheinfo "100644,$(echo y | git hash-object -w --stdin),other.txt"
+c=$(git -c user.name=f -c user.email=f@f commit-tree "$(git write-tree)" -p main -m other)
+git update-ref refs/heads/main "$c"
+rm -f "$GIT_INDEX_FILE"
+"#,
     );
     e.queue("review", &["pass:script"]);
     let v = e.run(&["run", "--issue", "7"], 0);
     assert_eq!(v["outcome"], "done", "{v}");
     let end = end_event(&e);
     assert_eq!(end["touches"], serde_json::json!(["work.txt", "docs/**"]));
-    assert_eq!(end["changed"], serde_json::json!(["src/a.rs", "work.txt"]));
+    assert_eq!(
+        end["changed"],
+        serde_json::json!(["README", "README.md", "src/a.rs", "work.txt"])
+    );
 }
 
 #[test]
