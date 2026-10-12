@@ -1194,6 +1194,7 @@ fn a_free_rebase_that_gives_up_waiting_for_a_lock_still_rebases_on_the_retry() {
     e.queue("verify", &["fail:base moved", "pass"]);
     let out = e
         .ns()
+        .env_remove("NS_NOW")
         .env("NS_PHASE_TIMEOUT_MS", "build=4000")
         .args(["run", "--issue", "7"])
         .assert()
