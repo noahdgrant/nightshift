@@ -293,25 +293,13 @@ pub fn phase_command(
         if !argv.iter().any(|a| a == "--verbose") {
             argv.push("--verbose".into());
         }
-        if let Some(flag) = pin::owned_flag(&argv) {
-            return Err(SfError::usage(
-                format!(
-                    "phase {}: the harness command already passes {flag}",
-                    p.name
-                ),
-                format!(
-                    "ns run gives each claude phase the factory's phase settings and only the project's own settings sources. Remove {flag} from [harness.{}] in {}; put project settings in the repo's .claude/settings.json",
-                    p.harness,
-                    config::path().display()
-                ),
-            )
-            .into());
-        }
-        argv.extend(pin::settings_args(
+        pin::apply(
+            &mut argv,
             &pin::settings_path(common_dir, unit),
             worktree,
             unit,
-        ));
+            &format!("phase {}", p.name),
+        )?;
         if subscription {
             argv = billing::strip_bare(argv);
         }
@@ -1319,7 +1307,7 @@ fn drive(
             ("NS_ATTEMPT", attempt.to_string()),
             ("NS_WORKTREE", ctx.worktree.to_string_lossy().into_owned()),
             (
-                "NS_PHASE_SETTINGS",
+                pin::SETTINGS_VAR,
                 pin::settings_path(&ctx.common, &ctx.unit)
                     .to_string_lossy()
                     .into_owned(),

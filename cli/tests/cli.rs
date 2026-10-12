@@ -723,6 +723,17 @@ fn ask_inside_a_phase_gives_claude_the_phase_settings() {
     )
     .unwrap();
     assert!(err.contains("NS_PHASE_SETTINGS"), "{err}");
+    // So is a variable that is unset, or names a directory.
+    let missing_variable = |c: &mut Ns| {
+        let out = c.assert().failure().code(2).get_output().stderr.clone();
+        String::from_utf8(out).unwrap()
+    };
+    let err = missing_variable(ask_cmd(Some("u1"), true).env_remove("NS_PHASE_SETTINGS"));
+    assert!(err.contains("NS_PHASE_SETTINGS"), "{err}");
+    let dir = tmp.path().join("a-directory");
+    fs::create_dir(&dir).unwrap();
+    let err = missing_variable(ask_cmd(Some("u1"), true).env("NS_PHASE_SETTINGS", &dir));
+    assert!(err.contains("NS_PHASE_SETTINGS"), "{err}");
     fs::write(&settings, "{}").unwrap();
     assert!(ask(Some("u1")).ends_with(tail), "{:?}", ask(Some("u1")));
     assert!(ask(None).iter().all(|a| a != "--settings"));
@@ -1084,10 +1095,8 @@ fn doctor_reports_config() {
         assert!(v["harnesses"][h]["on_path"].is_boolean());
     }
     assert_eq!(v["harnesses"]["claude"]["pinning"], "snapshot");
-    for h in ["codex", "cursor-agent"] {
-        assert_eq!(v["harnesses"][h]["pinning"], "partial", "{h}");
-    }
-    for h in ["gemini", "opencode"] {
+    assert_eq!(v["harnesses"]["codex"]["pinning"], "partial");
+    for h in ["cursor-agent", "gemini", "opencode"] {
         assert_eq!(v["harnesses"][h]["pinning"], "none", "{h}");
     }
     assert_eq!(v["claude_phases"]["auto_memory"], false);

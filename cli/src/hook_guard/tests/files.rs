@@ -333,6 +333,15 @@ fn the_units_skill_snapshot_and_its_directory_are_protected() {
         "git -C .ns/u1 rm -r skills",
         "git -C .ns/u1 mv skills x",
         "git -C .ns rm -r u1",
+        "rm -rf .ns/u1/skill?",
+        "rm -rf .ns/u1/s[k]ills",
+        "rm -rf .ns/u1/ski??s",
+        "cd .githooks && git -C ../.ns/u1 rm -r skills",
+        "cd .ns/u1 && git -C .. rm u1",
+        "git -C /abs/.ns/u1 rm -r skills",
+        "cd .githooks && git -C sub rm x",
+        "git -C ~/x/.ns/u1 rm -r skills",
+        "pushd .ns/u1; rm -rf skills",
     ] {
         assert!(denied(c), "{c}");
     }
@@ -355,6 +364,12 @@ fn the_units_skill_snapshot_and_its_directory_are_protected() {
         "git -C .ns/u1 rm build.md",
         "cd .ns/u1 && rm build.md",
         "cp .ns/u1/build.md /tmp/x",
+        "rm .ns/u1/bui*",
+        "rm .ns/u1/sk?",
+        "cd .githooks && git -C /tmp rm x",
+        "git -C ~/x rm skills",
+        "cd .ns/u1; popd; rm -rf skills",
+        "cd .ns/u1 && cd ../.. && rm -rf skills",
     ] {
         assert!(!denied(c), "{c}");
     }
@@ -434,4 +449,65 @@ fn cd_into_a_unit_directory_protects_its_relative_skills() {
     }
     let call = json!({"tool_name": "Bash", "cwd": "/r/.ns/u1", "tool_input": {"command": "rm -rf skills"}});
     assert!(check(&call).is_some());
+}
+
+#[test]
+fn the_phase_settings_file_and_its_directories_are_protected() {
+    for p in [
+        "/r/.git/ns/units/u1/phase-settings.json",
+        "/r/.git/ns/units/u1",
+        "/r/.git/ns/units",
+        "/r/.git/ns/units/u1/other",
+        "/r/common/ns/units/u1/phase-settings.json",
+    ] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_some(), "{p}");
+    }
+    for c in [
+        "rm /r/.git/ns/units/u1/phase-settings.json",
+        "echo {} > /r/.git/ns/units/u1/phase-settings.json",
+        "sed -i s/a/b/ /c/ns/units/u1/phase-settings.json",
+        "rm -rf /r/.git/ns/units",
+        "echo {} > $NS_PHASE_SETTINGS",
+        "rm \"${NS_PHASE_SETTINGS}\"",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for p in [
+        "/r/phase-settings.json",
+        "/r/ns/units/u1/other.json",
+        "/r/ns/units",
+        "/r/.ns/u1/phase-settings.json",
+    ] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_none(), "{p}");
+    }
+}
+
+#[test]
+fn glob_matches_reads_star_question_mark_and_sets() {
+    for (pattern, text, want) in [
+        ("skills", "skills", true),
+        ("skills", "skill", false),
+        ("*", "skills", true),
+        ("*", "", true),
+        ("sk*", "skills", true),
+        ("*s", "skills", true),
+        ("*x", "skills", false),
+        ("?", "", false),
+        ("?", "a", true),
+        ("skill?", "skills", true),
+        ("ski??s", "skills", true),
+        ("sk?", "skills", false),
+        ("s[k]ills", "skills", true),
+        ("[", "", true),
+        ("", "", true),
+        ("", "a", false),
+    ] {
+        assert_eq!(
+            files::glob_matches(pattern.as_bytes(), text.as_bytes()),
+            want,
+            "{pattern} vs {text}"
+        );
+    }
 }

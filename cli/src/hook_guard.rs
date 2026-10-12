@@ -4,6 +4,7 @@
 
 use std::io::Read;
 
+use crate::pin;
 use serde_json::{json, Value};
 
 mod files;
@@ -61,7 +62,14 @@ pub fn check(call: &Value) -> Option<String> {
                 cwd: call["cwd"].as_str().map(Cwd::of).unwrap_or_default(),
                 ..Scan::default()
             };
-            check_command(input["command"].as_str()?, &mut scan)
+            let command = input["command"].as_str()?;
+            if command.contains(pin::SETTINGS_VAR) {
+                return Some(format!(
+                    "a command naming ${} in {PROTECTED}",
+                    pin::SETTINGS_VAR
+                ));
+            }
+            check_command(command, &mut scan)
         }
         tool if FILE_TOOLS.contains(&tool) => ["file_path", "notebook_path"]
             .iter()
@@ -263,8 +271,7 @@ fn cd_to(dir: &str, from: Cwd) -> Cwd {
     match dir {
         d if is_protected_directory(d) => Cwd::of(d),
         d if !d.starts_with(['/', '~']) => Cwd::relative(from, d),
-        d if d.starts_with('/') => Cwd::of(d),
-        _ => Cwd::default(),
+        d => Cwd::of(d),
     }
 }
 

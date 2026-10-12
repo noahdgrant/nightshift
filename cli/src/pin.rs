@@ -29,14 +29,21 @@ const CLAUDE_LINK: &str = ".claude/skills";
 /// `.nightshift/` so a change to them needs a human merge. `{ns}` stands for the `ns` binary.
 const PHASE_SETTINGS: &str = include_str!("../../.nightshift/phase-settings.json");
 
+/// The directories under the git common dir that hold a unit's settings, and the file's name.
+pub const COMMON_NS: &str = "ns";
+pub const COMMON_UNITS: &str = "units";
+/// The variable that names the settings file to a phase.
+pub const SETTINGS_VAR: &str = "NS_PHASE_SETTINGS";
+pub const SETTINGS_FILE: &str = "phase-settings.json";
+
 /// The settings file a claude phase of `unit` runs with. It lives under the git common dir,
 /// outside every worktree, so a phase cannot reach it by editing its own worktree.
 pub fn settings_path(common_dir: &Path, unit: &str) -> PathBuf {
     common_dir
-        .join("ns")
-        .join("units")
+        .join(COMMON_NS)
+        .join(COMMON_UNITS)
         .join(unit)
-        .join("phase-settings.json")
+        .join(SETTINGS_FILE)
 }
 
 fn skills_path(worktree: &Path, unit: &str) -> PathBuf {
@@ -71,7 +78,8 @@ pub enum Mode {
     /// The harness sees only the unit's snapshot and the factory's settings: claude.
     Snapshot,
     /// The harness reads the snapshot as the project's skills (`.agents/skills`) and also the
-    /// user's installed skills: codex and cursor.
+    /// user's installed skills: codex. A repo that tracks `.agents/skills` keeps the live
+    /// directory there, which the harness reads instead.
     Partial,
     /// No claim: the harness may not read either link, or its lookup is not confirmed.
     None,
@@ -91,7 +99,7 @@ impl Mode {
 pub fn mode(harness: &str) -> Mode {
     match harness {
         "claude" => Mode::Snapshot,
-        "codex" | "cursor-agent" => Mode::Partial,
+        "codex" => Mode::Partial,
         _ => Mode::None,
     }
 }
@@ -120,6 +128,26 @@ pub fn settings_args(settings: &Path, worktree: &Path, unit: &str) -> [String; 6
     ]
 }
 
+/// Give the claude command `argv` of `who` (a phase, or `ns ask`) the pin: the arguments of
+/// `settings_args`. A command that already carries a flag `ns run` owns is a usage error, and
+/// is left as it was.
+pub fn apply(
+    argv: &mut Vec<String>,
+    settings: &Path,
+    worktree: &Path,
+    unit: &str,
+    who: &str,
+) -> std::result::Result<(), SfError> {
+    if let Some(flag) = owned_flag(argv) {
+        return Err(SfError::usage(
+            format!("{who}: the harness command already passes {flag}"),
+            format!("ns gives each claude phase the factory's phase settings and only the project's own settings sources; remove {flag} from the harness command and put project settings in the repo's .claude/settings.json"),
+        ));
+    }
+    argv.extend(settings_args(settings, worktree, unit));
+    Ok(())
+}
+
 /// Write the settings file for the `ns` binary at `ns`. `ns run` writes it again before every
 /// phase, so a file left stale by an upgrade or a crash is never read.
 pub fn write_settings(common_dir: &Path, unit: &str, ns: &Path) -> Result<()> {
@@ -127,7 +155,9 @@ pub fn write_settings(common_dir: &Path, unit: &str, ns: &Path) -> Result<()> {
     if let Some(dir) = settings.parent() {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
-    fs::write(&settings, settings_json(ns))
+    let tmp = settings.with_extension("json.tmp");
+    fs::write(&tmp, settings_json(ns))
+        .and_then(|()| fs::rename(&tmp, &settings))
         .with_context(|| format!("cannot write {}", settings.display()))
 }
 
@@ -286,9 +316,10 @@ fn checkout_tree(worktree: &Path, treeish: &str, into: &Path) -> Result<()> {
 }
 
 /// Point the symlink `link` at `target`. A symlink into some unit's snapshot is replaced; any
-/// other existing path (a tracked `.claude/skills` or a symlink git tracks) is left alone and
-/// the returned text says why. A tracked `.agents/skills` directory is the base commit's own
-/// copy of the repo's skills, which the snapshot holds too, so it is no warning.
+/// other existing path (a tracked `.claude/skills` or `.agents/skills`, or a symlink git
+/// tracks) is left alone and the returned text says why. A tracked `.agents/skills` is the live,
+/// editable copy of the repo's skills, so a harness that reads only `.agents/skills` runs
+/// unpinned there; the snapshot holds the base commit's copy of it.
 fn link_to(link: &Path, target: &Path) -> Result<Option<String>> {
     match fs::symlink_metadata(link) {
         Ok(m) if m.is_symlink() => {
@@ -297,7 +328,11 @@ fn link_to(link: &Path, target: &Path) -> Result<Option<String>> {
             }
             fs::remove_file(link)?;
         }
-        Ok(_) if link.ends_with(".agents/skills") => return Ok(None),
+        Ok(_) if link.ends_with(".agents/skills") => {
+            return Ok(Some(
+                "is a tracked directory, the live copy in the worktree, not the snapshot".into(),
+            ))
+        }
         Ok(_) => return Ok(Some("is a real directory in the worktree".into())),
         Err(_) => {}
     }
@@ -348,7 +383,7 @@ mod tests {
     fn modes_name_the_harnesses_that_read_the_snapshot() {
         assert_eq!(mode("claude"), Mode::Snapshot);
         assert_eq!(mode("codex"), Mode::Partial);
-        assert_eq!(mode("cursor-agent"), Mode::Partial);
+        assert_eq!(mode("cursor-agent"), Mode::None);
         assert_eq!(mode("gemini"), Mode::None);
         assert_eq!(mode("opencode"), Mode::None);
     }
@@ -366,6 +401,26 @@ mod tests {
                 "/wt/.ns/u/skills"
             ]
         );
+    }
+
+    #[test]
+    fn apply_appends_the_pin_and_refuses_a_command_that_carries_an_owned_flag() {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (settings, wt) = (Path::new("/c/s.json"), Path::new("/wt"));
+        let mut ok = argv(&["claude", "-p"]);
+        apply(&mut ok, settings, wt, "u", "phase build").unwrap();
+        let mut want = argv(&["claude", "-p"]);
+        want.extend(settings_args(settings, wt, "u"));
+        assert_eq!(ok, want);
+        for flag in ["--settings=x", "--setting-sources"] {
+            let mut bad = argv(&["claude", flag]);
+            let err = apply(&mut bad, settings, wt, "u", "phase build")
+                .unwrap_err()
+                .to_string();
+            assert!(err.starts_with("phase build: "), "{err}");
+            assert!(err.contains(flag.split('=').next().unwrap()), "{err}");
+            assert_eq!(bad, argv(&["claude", flag]), "left untouched");
+        }
     }
 
     #[test]
@@ -411,9 +466,11 @@ mod tests {
         let why = link_to(&l, &target).unwrap().expect("a reason");
         assert!(why.contains("real directory"), "{why}");
         assert!(!fs::symlink_metadata(&l).unwrap().is_symlink());
-        // The repo's own tracked .agents/skills is the base copy: no report.
+        // The repo's own tracked .agents/skills stays the live, editable copy: reported, kept.
         let agents = dir.path().join(".agents/skills");
         fs::create_dir_all(&agents).unwrap();
-        assert_eq!(link_to(&agents, &target).unwrap(), None);
+        let why = link_to(&agents, &target).unwrap().expect("a reason");
+        assert!(why.contains("tracked"), "{why}");
+        assert!(!fs::symlink_metadata(&agents).unwrap().is_symlink());
     }
 }

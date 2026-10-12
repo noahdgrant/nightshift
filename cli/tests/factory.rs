@@ -848,9 +848,12 @@ fn the_pin_logs_its_sha_source_and_skill_count_once_and_not_on_a_resume() {
     assert_eq!(pinned[0]["sha"], git(&e.root, &["rev-parse", "main"]));
     assert_eq!(pinned[0]["source"], "base");
     assert_eq!(pinned[0]["skills"], 2);
+    let unpinned = events_named(&e, "skills_unpinned");
+    assert_eq!(unpinned.len(), 1, "{unpinned:?}");
+    assert_eq!(unpinned[0]["path"], ".agents/skills");
+    assert!(unpinned[0]["why"].as_str().unwrap().contains("tracked"));
     e.run(&["run", "--issue", "7"], 0);
     assert_eq!(events_named(&e, "skills_pinned").len(), 1);
-    assert!(events_named(&e, "skills_unpinned").is_empty());
 }
 
 /// `ns run` stops with a usage error (2) before any phase.

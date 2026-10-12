@@ -197,14 +197,7 @@ fn with_phase_settings(mut command: Vec<String>) -> Result<Vec<String>> {
         return Ok(command);
     }
     crate::worktree::check_unit_id(&unit, "ns run 142-uart-timeout --issue 142")?;
-    if let Some(flag) = crate::pin::owned_flag(&command) {
-        return Err(SfError::usage(
-            format!("the harness command already passes {flag}"),
-            format!("inside an ns run phase, ns gives claude the factory's phase settings; remove {flag} from the harness command"),
-        )
-        .into());
-    }
-    let settings = std::env::var_os("NS_PHASE_SETTINGS")
+    let settings = std::env::var_os(crate::pin::SETTINGS_VAR)
         .map(PathBuf::from)
         .filter(|s| s.is_file());
     let Some(settings) = settings else {
@@ -214,7 +207,7 @@ fn with_phase_settings(mut command: Vec<String>) -> Result<Vec<String>> {
         )
         .into());
     };
-    command.extend(crate::pin::settings_args(&settings, Path::new(&wt), &unit));
+    crate::pin::apply(&mut command, &settings, Path::new(&wt), &unit, "ns ask")?;
     Ok(command)
 }
 
