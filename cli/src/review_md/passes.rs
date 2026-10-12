@@ -89,8 +89,9 @@ fn cells(line: &str) -> Vec<&str> {
 }
 
 /// The `## Passes` table: one pass per pass number, lowest first, each with the first panel
-/// its rows name. Columns are found by header name; a row with no pass number or no axis as
-/// its reviewer is skipped. A review from before the table has no passes.
+/// its rows name. Columns are found by the first row's names; a row with no pass number (the
+/// `|---|` line too) or no axis as its reviewer is skipped. A review from before the table has
+/// no passes.
 pub fn passes(text: &str) -> Vec<Pass> {
     let mut by_pass: BTreeMap<u32, Pass> = Default::default();
     let mut in_section = false;
@@ -108,7 +109,6 @@ pub fn passes(text: &str) -> Vec<Pass> {
         if line.starts_with('#') {
             in_section =
                 line.starts_with("## ") && line[3..].trim().to_lowercase().starts_with("passes");
-            header = None;
             continue;
         }
         if !in_section || !t.starts_with('|') {
@@ -119,9 +119,6 @@ pub fn passes(text: &str) -> Vec<Pass> {
             header = Some(row.iter().map(|c| c.to_lowercase()).collect());
             continue;
         };
-        if row.iter().all(|c| c.chars().all(|ch| "-: ".contains(ch))) {
-            continue;
-        }
         let col = |want: &dyn Fn(&str) -> bool| {
             head.iter()
                 .position(|h| want(h))
@@ -224,12 +221,13 @@ mod tests {
             (None, None)
         );
         assert_eq!(ps[0].workers[7].cost_usd, Some(0.01));
+        assert_eq!(ps[0].workers[7].wall_s, Some(10.0));
     }
 
     #[test]
     fn a_pass_takes_the_first_panel_its_rows_name_and_free_text_stays_out() {
         let ps = passes(
-            "## Passes\n| Pass | Panel | Reviewer | Role | Provider |\n|---|---|---|---|---|\n| 2 | ? | correctness | see /srv/x | claude opus |\n| 2 | fix-only | tests | review.tests | codex |\n",
+            "## Passes\n| Pass | Panel | Reviewer | Role | Provider |\n|---|---|---|---|---|\n| 2 | ? | correctness | see /srv/x | claude opus |\n| 2 | fix-only | tests | review.tests | codex |\n| 2 | full | spec | - | |\n### Passes\n| 3 | full | spec | | |\n",
         );
         assert_eq!(ps[0].panel, Some(Panel::FixOnly));
         assert_eq!(
@@ -240,6 +238,14 @@ mod tests {
             (None, None)
         );
         assert_eq!(ps[0].workers[1].provider.as_deref(), Some("codex"));
+        assert_eq!(
+            (
+                ps[0].workers[2].role.as_deref(),
+                ps[0].workers[2].provider.as_deref()
+            ),
+            (None, None)
+        );
+        assert_eq!(ps.len(), 1);
     }
 
     #[test]
@@ -251,6 +257,8 @@ mod tests {
             passes("```\n## Passes\n| Pass | Reviewer |\n|-|-|\n| 0 | tests |\n```\n").is_empty()
         );
         assert!(passes("## Passes\nNone recorded.\n").is_empty());
+        let prose = passes("## Passes\nOne row per worker.\n| Pass | Panel | Reviewer |\n|:-|:-:|-:|\n| 0 | Fix only | tests |\n");
+        assert_eq!((prose.len(), prose[0].panel), (1, Some(Panel::FixOnly)));
         let after =
             passes("## Passes\n| Pass | Reviewer |\n|-|-|\n| 0 | tests |\n## Gaps\n| 1 | spec |\n");
         assert_eq!(after.len(), 1);
