@@ -68,13 +68,8 @@ fixture_tests() {
 }
 
 rule_pack_tests() {
-  rules/python/tests/run.sh || return 1
-  scripts/check-git-dir-decoy.sh rules/python/tests/run.sh
-}
-
-js_rule_pack_tests() {
-  rules/js/tests/run.sh || return 1
-  scripts/check-git-dir-decoy.sh rules/js/tests/run.sh
+  "rules/$1/tests/run.sh" || return 1
+  scripts/check-git-dir-decoy.sh "rules/$1/tests/run.sh"
 }
 
 brief_checker_tests() {
@@ -97,9 +92,10 @@ step "ns check-markers" "$ns" check-markers --human
 full_step "ns rules check" "$ns" rules check --human
 full_step "ns eval --dry-run" eval_dry_run
 full_step "py-inventory fixture tests" fixture_tests
-full_step "Python rule pack tests" rule_pack_tests
-full_step "JavaScript/TypeScript rule pack tests" js_rule_pack_tests
+full_step "Python rule pack tests" rule_pack_tests python
+full_step "JavaScript/TypeScript rule pack tests" rule_pack_tests js
 full_step "C rule pack tests" python3 -I -m unittest discover -s rules/c/tests
+full_step "Java rule pack tests" rule_pack_tests java
 full_step "ns-troubleshoot brief checker tests" brief_checker_tests
 step "private guard" scripts/check-private.sh
 

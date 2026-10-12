@@ -10,8 +10,8 @@ use regex::Regex;
 
 /// Tools every runner and contributor machine has, so the list doesn't pin them.
 const BASE_TOOLS: &[&str] = &[
-    "bash", "basename", "chmod", "cp", "dirname", "flock", "git", "grep", "jq", "mkdir", "mkfifo",
-    "mktemp", "ps", "python3", "rm", "sed", "sh", "tee", "timeout", "tr",
+    "bash", "basename", "cat", "chmod", "cmp", "cp", "dirname", "flock", "git", "grep", "jq", "ln",
+    "mkdir", "mkfifo", "mktemp", "ps", "python3", "rm", "sed", "sh", "tee", "timeout", "tr",
 ];
 
 /// Shell builtins and keywords that start a command but run nothing external.
