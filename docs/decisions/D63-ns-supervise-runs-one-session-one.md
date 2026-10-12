@@ -3,6 +3,7 @@ id: D63
 title: "ns-supervise runs one session one level above ns watch for a night"
 issue: 345
 date: 2026-10-11
+amended_by: [ADR-450]
 ---
 
 # D63: ns-supervise runs one session one level above ns watch for a night

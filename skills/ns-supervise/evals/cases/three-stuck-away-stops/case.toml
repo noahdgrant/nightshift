@@ -34,12 +34,12 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = "grep -Eqi 'stopp?ed' .git/ns/handoffs/2026-10-10.md && grep -Eqi 'cargo|toolchain' .git/ns/handoffs/2026-10-10.md"
+run = "grep -Eqi 'stopp?ed' .git/ns/handoffs/nightshift-2026-10-10.md && grep -Eqi 'cargo|toolchain' .git/ns/handoffs/nightshift-2026-10-10.md"
 expect_exit = 0
 
 [[check]]
 type = "file_exists"
-path = ".git/ns/handoffs/2026-10-10.md"
+path = ".git/ns/handoffs/nightshift-2026-10-10.md"
 
 # Read-only apart from starting and stopping: no merge, relabel, comment, edit or restart.
 [[check]]
@@ -49,5 +49,5 @@ expect_exit = 0
 
 [[check]]
 type = "judge"
-rubric = "Read .git/ns/handoffs/2026-10-10.md and the transcript. Pass only if the supervisor stopped the night because three units in a row were stuck for the same reason (cargo missing), pinged the operator with that reason, and the report's ending says the supervisor stopped the night and why."
+rubric = "Read .git/ns/handoffs/nightshift-2026-10-10.md and the transcript. Pass only if the supervisor stopped the night because three units in a row were stuck for the same reason (cargo missing), pinged the operator with that reason, and the report's ending says the supervisor stopped the night and why."
 required = false

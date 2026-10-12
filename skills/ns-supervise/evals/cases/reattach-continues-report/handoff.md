@@ -1,4 +1,4 @@
-# Night of 2026-10-10
+# nightshift-2026-10-10
 
 ## How it ended
 Still running.

@@ -36,7 +36,7 @@ Paths below use `<common>` for `git rev-parse --path-format=absolute --git-commo
      ```
 
    - Else there is no systemd. Say so, and ask the operator to start the night (`ns watch --until <HH:MM>` in a terminal, or the timer). Find the night again when they reply.
-5. **Open the report** at `<common>/ns/handoffs/<night>.md`, where `<night>` is the local date the night started (`YYYY-MM-DD`, from the unit's `ActiveEnterTimestamp`, else the lock file's mtime, else today). Read [references/status-report.md](references/status-report.md) for the template. When the file exists, a supervisor already ran this night: **continue** it. Keep every line, and add a Timeline line `re-attached (<mode>)`. Otherwise create it from the template. The report is never committed.
+5. **Open the report** at `<common>/ns/handoffs/nightshift-<night>.md`, where `<night>` is the local date the night started (`YYYY-MM-DD`, from the unit's `ActiveEnterTimestamp`, else the lock file's mtime, else today). Read [references/status-report.md](references/status-report.md) for the template. When the file exists, a supervisor already ran this night: **continue** it. Keep every line, and add a Timeline line `re-attached (<mode>)`. Otherwise create it from the template. The report is never committed.
 
 Done when the mode is recorded, a night is running with its unit known (or the operator has been asked to start it), and the report has a Timeline line for this start.
 
