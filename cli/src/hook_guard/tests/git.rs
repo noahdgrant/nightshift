@@ -332,10 +332,20 @@ fn a_push_word_with_a_literal_tail_cannot_be_no_verify() {
         "git push -q \"${V}/remote.git\" main",
         "git push -q \"$(pwd)/remote.git\" main",
         "git push origin \"$B\"",
+        "git push \"$#\"/r",
+        "git push \"$?\"/r",
+        "git push \"$$\"/r",
     ] {
         assert!(!denied(c), "{c}");
     }
     for c in [
+        "git push \"${a[$'@']}/r\"",
+        "git push \"${a[@$'']}/r\"",
+        "git push \"${a[$'\\100']}/r\"",
+        "git push \"${a[$'\\x40']}/r\"",
+        "git push \"${a[0]}/r\"",
+        "git push \"${x:-${@}}\"/r",
+        "git push \"${x:-${!y}}\"/r",
         "git push {--no-verify,\"$V\"}",
         "git push {--no-verify,\"$V\"}x",
         "git push {--no-ver,\"$V\"}ify",

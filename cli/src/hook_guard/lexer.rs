@@ -84,14 +84,20 @@ impl WordBuf {
     }
 }
 
+/// A braced body is one safe word only when it is a plain parameter name. Any operator,
+/// subscript, indirection or quote may list words, so the body is not trusted.
 fn lists_words(body: &str) -> bool {
-    body.starts_with('@')
-        || body.starts_with('!')
-        || body.contains("{!")
-        || body.contains("$@")
-        || body.contains("{@")
-        || body.contains("[@]")
-        || body.contains("[*]")
+    let plain_name = body.strip_suffix('}').is_some_and(|name| {
+        let mut chars = name.chars();
+        match chars.next() {
+            Some(c) if c.is_ascii_digit() => chars.all(|c| c.is_ascii_digit()),
+            Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+                chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            }
+            _ => false,
+        }
+    });
+    !plain_name
 }
 
 /// The opacity rule: an expansion hides what the word is unless the text ahead of it ends an
@@ -360,9 +366,9 @@ impl<'a> Lexer<'a> {
     /// neither splits the command nor hides the words after it. Nested braces, quotes and
     /// substitutions are tracked. A body with no end swallows the rest of the command: the
     /// shell rejects it, and the word it sits in is already opaque. Returns whether the body
-    /// lists words even in double quotes: `$@` or `[@]`/`[*]` anywhere in it, or an indirection
-    /// (`${!x}`, which may name `a[@]`) at any depth. Single-quoted text stays in the body: in a
-    /// double-quoted expansion the quotes are literal and `$@` still expands.
+    /// lists words even in double quotes: true unless the body is a plain parameter name
+    /// (see `lists_words`). The body keeps its quotes and its closing `}`; an unterminated body
+    /// lists words.
     fn braced_body(&mut self) -> bool {
         let mut depth = 1usize;
         let mut body = String::new();
