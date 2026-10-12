@@ -65,6 +65,8 @@ Ping when the night needs the operator:
 | an issue gets the stuck label | slow check |
 | the night dies early: `ns watch` exits before `--until` with a failed result (`ActiveState=failed`, a `Result` other than `success`; the unit stays loaded because it has no `--collect`), or an OOM kill ends it | slow check |
 | a usage-limit pause | `end` event with outcome `paused` |
+| main's CI is red and `ns watch` holds the queue for its fix issue | `main_red` event |
+| `ns watch` stopped the night itself: the fix issue's unit ended without fixing main | `main_red_unfixed` event |
 | the harness breaker trips: the night stops with `harness failing` | the summary at the end of `journalctl --user -u <unit>` |
 | no run-log event for `silence_minutes` while units run | slow check |
 | a stop condition from step 4 while the operator is around | step 4 |
@@ -77,6 +79,8 @@ Each ping has a **key**, one per trigger:
 | `done` with a PR needing a human merge | `merge-pr <n>` |
 | night died early | `early-death` |
 | usage-limit pause | `paused <unit>` |
+| main red | `main-red <sha>` |
+| fix unit ended unfixed | `main-red-unfixed <sha>` |
 | harness breaker | `harness-breaker` |
 | silence | `silence <ts of the newest run-log event>` |
 | step 4 stop | `stop <condition>` |
@@ -97,7 +101,7 @@ Record each ping as a Timeline line in the report.
 
 Stop the night only when the operator is **away** and one of these happens:
 
-- `main`'s CI goes red after a factory merge: after an `end` event with outcome `merged`, take its `pr` field (`ns log --json` keeps no sha), get the merge commit with `gh pr view <pr> --json mergeCommit`, and read that sha's runs with `gh run list --branch main --commit <sha> --json conclusion,status`. A later push must not hide it, so never use `--limit 1`. A `conclusion` of `failure` is a red `main`. A run that is pending, or not registered yet for that sha, is not a failure: check again on the next slow check. A sha with no run after three slow checks is an Anomalies line in the report, not a stop.
+- `main`'s CI goes red after a factory merge: after an `end` event with outcome `merged`, take its `pr` field. The `merged` event's `sha` is the PR head, not the commit on `main`, so get the merge commit with `gh pr view <pr> --json mergeCommit`, and read that sha's runs with `gh run list --branch main --commit <sha> --json conclusion,status`. A later push must not hide it, so never use `--limit 1`. A `conclusion` of `failure` is a red `main`. A run that is pending, or not registered yet for that sha, is not a failure: check again on the next slow check. A sha with no run after three slow checks is an Anomalies line in the report, not a stop.
 - three units in a row end `stuck` for the same reason: the newest consecutive `end` events up to now, all with outcome `stuck` and reasons that match once unit names, finding ids, paths and numbers are dropped. A later `end` with any other outcome breaks the streak, so a streak that old history shows and a merge since then ended is not a stop.
 - a `self_update_failed` event, or more than two `self_update` events in the last hour (each is a re-exec of `ns watch` in place).
 - the memory cap or an OOM kill triggers repeatedly: two or more in the shift.

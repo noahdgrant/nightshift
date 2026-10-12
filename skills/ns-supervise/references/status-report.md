@@ -8,7 +8,7 @@ Write the Timeline as events happen. Fill the other sections when the shift ends
 # Night of <YYYY-MM-DD>
 
 ## How it ended
-<ended at --until | queue empty | budget | stopped by the supervisor: <reason> | died early: <cause>>,
+<ended at --until | queue empty | budget | main_red_unfixed: fix issue #<n> ended <outcome> | stopped by the supervisor: <reason> | died early: <cause>>,
 at <local time>. Operator <around | away> (<switches, if any>). Unit: <unit or "terminal">.
 
 ## Merged

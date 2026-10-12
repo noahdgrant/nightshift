@@ -455,6 +455,79 @@ fn claude_phases_run_with_auto_memory_off_whatever_the_operator_set() {
     assert_eq!(seen.lines().collect::<Vec<_>>(), ["1"; 5], "{seen}");
 }
 
+/// Run the `PreToolUse` hook from a claude phase's `--settings` on one Bash command; the
+/// reason it denied the command, or `None` when it let it through.
+fn hook_denies(settings: &Value, command: &str) -> Option<String> {
+    let input = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": command}});
+    hook_says(settings, &input.to_string())
+}
+
+/// The deny reason the `PreToolUse` hook prints for hook input `input`, if any.
+fn hook_says(settings: &Value, input: &str) -> Option<String> {
+    let hook = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    let out = common::command("sh")
+        .args(["-c", hook])
+        .write_stdin(input)
+        .output();
+    assert!(out.status.success(), "{input}: {out:?}");
+    if out.stdout.is_empty() {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let o = &v["hookSpecificOutput"];
+    assert_eq!(o["hookEventName"], "PreToolUse");
+    assert_eq!(o["permissionDecision"], "deny");
+    Some(o["permissionDecisionReason"].as_str().unwrap().to_string())
+}
+
+#[test]
+fn a_claude_phase_hook_denies_every_git_hook_bypass() {
+    let e = Env::new();
+    let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+    let argv: Vec<&str> = d["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    let i = argv
+        .iter()
+        .position(|a| *a == "--settings")
+        .expect("--settings");
+    let settings: Value = serde_json::from_str(argv[i + 1]).unwrap();
+    assert_eq!(
+        settings["hooks"]["PreToolUse"][0]["matcher"],
+        "Bash|Edit|Write|MultiEdit|NotebookEdit"
+    );
+    for bypass in [
+        "git commit --no-verify -m x",
+        "git commit -n -m x",
+        "git push --no-verify",
+        "git merge --no-verify main",
+        "git rebase --no-verify origin/main",
+        "git -c core.hooksPath=/dev/null commit -m x",
+        "git config core.hooksPath /tmp/none",
+        "rm .githooks/pre-commit",
+        "echo 'exit 0' > .githooks/pre-push",
+        "HUSKY=0 git commit -m x",
+        "SKIP=ci git commit -m x",
+    ] {
+        let why = hook_denies(&settings, bypass).unwrap_or_else(|| panic!("allowed: {bypass}"));
+        assert!(why.contains("skills/ns-contract"), "{bypass}: {why}");
+        assert!(why.contains("Git hooks"), "{bypass}: {why}");
+    }
+    for ok in [
+        "git commit -m x",
+        "git push origin ns/x",
+        "echo 'git commit --no-verify'",
+    ] {
+        assert_eq!(hook_denies(&settings, ok), None, "{ok}");
+    }
+    assert_eq!(hook_says(&settings, "not json"), None);
+}
+
 #[test]
 fn happy_path_triage_to_done() {
     let e = Env::new();
@@ -4624,6 +4697,222 @@ fn watch_resumes_the_queue_when_main_is_pending_with_nothing_failing() {
     let green = events_named(&e, "main_green");
     assert_eq!(green.len(), 1, "{green:?}");
     assert_eq!(green[0]["state"], "pending");
+}
+
+/// A night with main red, #2 ready and the fix issue #100, set up further by `setup`.
+fn fix_ends(setup: impl Fn(&Env)) -> (Env, Value) {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    main_red(&e);
+    setup(&e);
+    // A cap above one: a night that goes on would file or start more.
+    let v = e.run(&["watch", "--max-units", "3"], 0);
+    (e, v)
+}
+
+/// The fix issue's unit, set up by `setup`, ends `outcome` with main still red: the night stops.
+fn stops_unfixed(outcome: &str, setup: impl Fn(&Env)) {
+    let (e, v) = fix_ends(setup);
+    assert_eq!(by_issue(&units(&v)), each(&[100], outcome), "{v}");
+    assert_eq!(v["stopped"], "main_red_unfixed", "{v}");
+    let unfixed = events_named(&e, "main_red_unfixed");
+    assert_eq!(unfixed.len(), 1, "{unfixed:?}");
+    assert_eq!(unfixed[0]["sha"], MAIN_SHA);
+    assert_eq!(unfixed[0]["issue"], 100);
+    assert_eq!(unfixed[0]["outcome"], outcome);
+    let calls = e.gh_calls();
+    assert_eq!(calls.matches("issue create").count(), 1, "{calls}");
+    assert!(!calls.contains("issue edit 2 "), "{calls}");
+}
+
+#[test]
+fn a_fix_unit_that_ends_unfixed_stops_the_night() {
+    stops_unfixed("stuck", |e| e.queue("triage", &["none"]));
+    stops_unfixed("split", |e| e.queue("triage", &["split:into #8 and #9."]));
+    stops_unfixed("budget", |e| {
+        e.factory("[limits]\nbudget_usd = 1.0\n");
+        e.ctl(
+            "triage.sh",
+            &format!("gh issue edit 100 --add-label {READY}\n"),
+        );
+        e.queue("triage", &["pass:script"]);
+        e.queue("build", &["pass:commit"]);
+    });
+}
+
+#[test]
+fn a_fix_unit_cut_short_by_until_stops_the_night_as_until() {
+    let a = Env::new();
+    let b = Env::new();
+    let locks = a.base.join("locks");
+    a.bench(&locks);
+    b.bench(&locks);
+    let held = Blocked::start(&a, "true", "true");
+    b.ready(2, "Fix a", &["type:fix"], "");
+    main_red(&b);
+    b.ctl(
+        "triage.sh",
+        &format!("gh issue edit 100 --add-label {READY}\n"),
+    );
+    b.queue("triage", &["pass:script"]);
+    b.queue("build", &["pass:commit"]);
+    b.queue("verify", &["pass:script"]);
+    let out = b
+        .ns()
+        .env("NS_PHASE_TIMEOUT_MS", "verify=86400000")
+        .args(["watch", "--until", "00:30"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    held.release();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(by_issue(&units(&v)), each(&[100], "budget"), "{v}");
+    assert_eq!(v["stopped"], "until", "{v}");
+    assert!(events_named(&b, "main_red_unfixed").is_empty());
+}
+
+#[test]
+fn a_fix_unit_that_ends_stuck_after_until_passed_still_logs_main_red_unfixed() {
+    let a = Env::new();
+    let b = Env::new();
+    let locks = a.base.join("locks");
+    a.bench(&locks);
+    b.bench(&locks);
+    let held = Blocked::start(&a, "true", "true");
+    b.ready(2, "Fix a", &["type:fix"], "");
+    b.queue(&format!("build.{A}"), &["pass:commit"]);
+    b.queue(&format!("verify.{A}"), &["pass:script"]);
+    let fix = "100-fix-main-is-red-at-abcdef0-test";
+    b.queue(&format!("triage.{fix}"), &["none"]);
+    let (in_a, go_a) = hold_phase(&b, A, "build");
+    let (in_t, go_t) = hold_phase(&b, fix, "triage");
+    let mut w = Watching::start(
+        b.ns()
+            .env("NS_REFILL_MS", "100")
+            .env("NS_PHASE_TIMEOUT_MS", "verify=86400000")
+            .args(["watch", "--parallel", "2", "--until", "00:30"]),
+    );
+    w.entered(&in_a);
+    main_red(&b);
+    w.entered(&in_t);
+    // #2 waits for the held lock until --until and ends budget; the fix unit is still running.
+    release(&go_a);
+    w.line("#2 budget");
+    release(&go_t);
+    let (code, v, err) = w.finish();
+    held.release();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        by_issue(&units(&v)),
+        [(2, "budget".into()), (100, "stuck".into())],
+        "{v}"
+    );
+    assert_eq!(v["stopped"], "until", "{v}");
+    let unfixed = events_named(&b, "main_red_unfixed");
+    assert_eq!(unfixed.len(), 1, "{unfixed:?}");
+    assert_eq!(unfixed[0]["outcome"], "stuck");
+}
+
+#[test]
+fn a_fix_unit_that_ends_unfixed_after_main_turned_green_stops_nothing() {
+    let (e, v) = fix_ends(|e| {
+        e.queue("triage", &["none", "none"]);
+        e.gh_file(
+            "main-ci.green",
+            &main_ci_at(MAIN_SHA, &[], &[("test", "COMPLETED", "SUCCESS")]),
+        );
+        // Main turns green, by another hand, while the fix unit runs.
+        e.gh_file(
+            "hook.sh",
+            "[ \"$1 $2 $3\" = \"issue edit 100\" ] && cp \"$d/main-ci.green\" \"$d/main-ci.json\"\n",
+        );
+    });
+    assert_eq!(by_issue(&units(&v)), each(&[2, 100], "stuck"), "{v}");
+    assert_eq!(v["stopped"], "queue empty", "{v}");
+    assert!(events_named(&e, "main_red_unfixed").is_empty());
+}
+
+#[test]
+fn a_fix_unit_that_ends_unfixed_when_main_ci_cannot_be_read_stops_nothing() {
+    let (e, v) = fix_ends(|e| {
+        e.queue("triage", &["none", "none"]);
+        e.gh_file(
+            "hook.sh",
+            "[ \"$1 $2 $3\" = \"issue edit 100\" ] && echo 'HTTP 502' > \"$d/main-ci.fail\"\n",
+        );
+    });
+    assert_eq!(by_issue(&units(&v)), each(&[2, 100], "stuck"), "{v}");
+    assert_eq!(v["stopped"], "queue empty", "{v}");
+    assert!(events_named(&e, "main_red_unfixed").is_empty());
+}
+
+#[test]
+fn a_fix_unit_the_harness_fails_does_not_stop_the_night() {
+    let (e, v) = fix_ends(|e| e.queue("triage", &["crash", "crash"]));
+    assert_eq!(by_issue(&units(&v)), each(&[100], "harness_failing"), "{v}");
+    assert_eq!(v["stopped"], "queue empty", "{v}");
+    assert!(events_named(&e, "main_red_unfixed").is_empty());
+}
+
+#[test]
+fn a_stuck_unit_that_is_not_the_fix_does_not_stop_the_night() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue(&format!("build.{A}"), &["pass:commit", "pass:commit"]);
+    e.queue(&format!("verify.{A}"), &["fail", "fail"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let mut w = Watching::start(e.ns().env("NS_REFILL_MS", "100").args([
+        "watch",
+        "--parallel",
+        "2",
+        "--max-units",
+        "3",
+    ]));
+    w.entered(&in_a);
+    main_red(&e);
+    // #2 ends stuck after the fix issue is filed and started.
+    w.line("ns watch: main is red");
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        by_issue(&units(&v)),
+        [(2, "stuck".into()), (100, "done".into())],
+        "{v}"
+    );
+    assert_eq!(v["stopped"], "queue empty", "{v}");
+    assert!(events_named(&e, "main_red_unfixed").is_empty());
+}
+
+#[test]
+fn a_unit_running_when_the_fix_unit_ends_unfixed_finishes_and_nothing_new_starts() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("triage.100-fix-main-is-red-at-abcdef0-test", &["none"]);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let mut w = Watching::start(e.ns().env("NS_REFILL_MS", "100").args([
+        "watch",
+        "--parallel",
+        "2",
+        "--max-units",
+        "4",
+    ]));
+    w.entered(&in_a);
+    main_red(&e);
+    e.ready(3, "Fix b", &["type:fix"], "");
+    w.line("the night stops");
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        by_issue(&units(&v)),
+        [(2, "done".into()), (100, "stuck".into())],
+        "{v}"
+    );
+    assert_eq!(v["stopped"], "main_red_unfixed", "{v}");
+    assert_eq!(events_named(&e, "main_red_unfixed").len(), 1);
+    assert!(!e.gh_calls().contains("issue edit 3 "));
 }
 
 #[test]

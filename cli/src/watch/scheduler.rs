@@ -636,6 +636,12 @@ impl<'a> Scheduler<'a> {
             r.outcome.label()
         };
         eprintln!("ns watch: #{} {shown} (worker {n})", issue.number);
+        // A run cut short by `--until` ends `budget`; the night stops as `until`, not unfixed.
+        let cut_short = r.outcome == Outcome::Budget
+            && night.over(self.plan.deadline, &self.plan.loaded.fac) == Some("until");
+        if !failing && !cut_short {
+            self.stop_if_unfixed(issue.number, r.outcome);
+        }
         match r.outcome {
             Outcome::Merged => {
                 let status = set_status(forge, q, issue.number, None);

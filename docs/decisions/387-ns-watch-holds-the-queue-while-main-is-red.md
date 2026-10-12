@@ -3,6 +3,7 @@ id: ADR-387
 title: "ns watch holds the queue while main is red"
 issue: 387
 date: 2026-10-11
+amended_by: [ADR-388]
 ---
 
 # ADR-387: ns watch holds the queue while main is red

@@ -49,6 +49,8 @@ echo "$V"
 
 Ready when `cargo build` finished and `git -C "$V/repo" log --oneline` shows `init`. Note the printed `$V`. Every later shell runs `. <that dir>/env.sh` first: it restores `NS_SRC`, `NS`, `V`, `OUT` and the `cap` helper. A shell without it would reach the real `claude`, `gh` and `HOME`.
 
+Every recipe, and every command you add, follows [ns-verify's sandbox recipes](../../../skills/ns-verify/SKILL.md#sandbox-recipes): the throwaway repo gets `origin` from `git remote add`, files are named by absolute path under `$V` or `$NS_SRC`, and the only token is `fake-token`. A `cd` sets only the repo an `ns` command acts on. A command a harness denies ends verify `blocked` ([denied commands](../../../skills/ns-verify/SKILL.md#denied-commands)).
+
 `ns worktree` puts unit worktrees beside the repo, in `$V/repo.worktrees/`, so they stay inside the sandbox. Each run gets its own `$V`, so two runs can go side by side.
 
 ## Doctor
@@ -73,7 +75,7 @@ Drive from `$V/repo` for commands that act on a target repo (worktree, ask, fact
 cap wt-new "$NS" worktree new 7-fix-the-thing
 cap wt-list "$NS" worktree list
 cd "$NS_SRC"
-cap lint-clean "$NS" lint skills
+cap lint-clean "$NS" lint "$NS_SRC/skills"
 cap eval-plan-one "$NS" eval ns-tdd --dry-run
 ```
 

@@ -1,4 +1,5 @@
-//! `ns lint [path]`: structural checks on the skills under a directory.
+//! `ns lint [path]`: structural checks on the skills under a directory, and the
+//! decision checks when its parent has `docs/decisions/`.
 
 use std::collections::HashSet;
 use std::fs;
@@ -8,6 +9,7 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_yaml::Value;
 
+use crate::decisions;
 use crate::error::SfError;
 use crate::frontmatter;
 
@@ -392,6 +394,11 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
             }
         }
     }
+    if let Some(repo) = fs::canonicalize(root)?.parent() {
+        if repo.join("docs/decisions").is_dir() {
+            errors.extend(decisions::check(repo));
+        }
+    }
     Ok(Report {
         ok: errors.is_empty(),
         skills,
@@ -603,6 +610,32 @@ mod tests {
         let report = lint_dir(root).unwrap();
         let msgs = report.errors.into_iter().map(|e| e.message).collect();
         (report.skills, msgs)
+    }
+
+    #[test]
+    fn decisions_are_checked_when_the_parent_has_docs_decisions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        write_skill_at(&skills, "ns-a", "Cites D1.\n");
+        assert_eq!(lint_messages(&skills), (1, vec![]));
+
+        fs::create_dir_all(tmp.path().join("docs/decisions")).unwrap();
+        let report = lint_dir(&skills).unwrap();
+        assert!(!report.ok);
+        assert_eq!(report.skills, 1);
+        assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+        assert_eq!(report.errors[0].skill, "decisions");
+        assert_eq!(
+            report.errors[0].message,
+            "line 5: cites D1, which has no file in docs/decisions/"
+        );
+
+        fs::write(
+            tmp.path().join("docs/decisions/D1-one.md"),
+            "---\nid: D1\n---\n",
+        )
+        .unwrap();
+        assert_eq!(lint_messages(&skills), (1, vec![]));
     }
 
     #[test]
