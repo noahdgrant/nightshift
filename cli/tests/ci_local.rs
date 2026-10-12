@@ -674,7 +674,7 @@ fn pre_push_the_gate_and_the_merge_queue_share_the_cache() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.githooks/pre-push");
     write_exe(
         &root.join(".githooks/pre-push"),
-        &fs::read_to_string(src).unwrap(),
+        fs::read_to_string(src).unwrap(),
     );
     repo.commit_all();
     write_exe(&root.join(".git/pre-push-target/debug/ns"), NS);
