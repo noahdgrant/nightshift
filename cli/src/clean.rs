@@ -13,7 +13,7 @@ use crate::clock::Clock;
 use crate::git::{self, Repo};
 use crate::quality::{self, Meta};
 use crate::run::{self, currency::known_pr, gh_json, holder_pid, run_lock, Lock, WORKTREE_LOCK};
-use crate::worktree::BRANCH_PREFIX;
+use crate::worktree::{self, BRANCH_PREFIX};
 
 /// A unit worktree whose issue is closed and whose PR merged.
 #[derive(Debug, Clone)]
@@ -24,6 +24,8 @@ pub struct Merged {
     pub pr: u64,
     /// The merged PR's head commit, which must hold everything on the local branch.
     pub pr_head: String,
+    /// The default branch, when the worktree was found on it rather than on its own branch.
+    pub on_default: Option<String>,
 }
 
 impl Merged {
@@ -32,13 +34,17 @@ impl Merged {
     }
 
     fn json(&self) -> Value {
-        json!({
+        let mut v = json!({
             "unit": self.unit,
             "path": self.path.to_string_lossy(),
             "branch": self.branch(),
             "issue": self.issue,
             "pr": self.pr,
-        })
+        });
+        if let Some(d) = &self.on_default {
+            v["detached"] = json!(d);
+        }
+        v
     }
 }
 
@@ -53,21 +59,29 @@ pub struct Plan {
     pub kept: Vec<Value>,
 }
 
-/// Every `ns/<unit>` worktree, sorted into merged (issue closed, and the PR from `pr.md`
-/// merged, closes it and comes from the unit's branch) and kept. A unit whose run lock a live
-/// `ns run` holds is kept too. Nothing changes.
+/// Every `ns/<unit>` worktree, and every unit worktree left on the default branch, sorted into
+/// merged (issue closed, and the PR from `pr.md` merged, closes it and comes from the unit's
+/// branch) and kept. A unit whose run lock a live `ns run` holds is kept too. Nothing changes.
 pub fn plan(repo: &Repo) -> Result<Plan> {
     let mut plan = Plan::default();
+    let default = repo.default_base().ok();
     for e in git::worktrees(&repo.root)? {
-        let Some(unit) = e
+        let Some(branch) = e
             .branch
             .as_deref()
             .and_then(|b| b.strip_prefix("refs/heads/"))
-            .and_then(|b| b.strip_prefix(BRANCH_PREFIX))
         else {
             continue;
         };
-        match merged(repo, unit, &e.path) {
+        let (unit, on_default) = match branch.strip_prefix(BRANCH_PREFIX) {
+            Some(unit) => (unit, None),
+            None if default.as_deref() == Some(branch) => match unit_at(repo, &e.path) {
+                Some(unit) => (unit, Some(branch.to_string())),
+                None => continue,
+            },
+            None => continue,
+        };
+        match merged(repo, unit, &e.path, on_default) {
             Ok(m) => match held(repo, unit).or_else(|| local_reason(repo, &m)) {
                 None => plan.merged.push(m),
                 Some(r) => plan.kept.push(kept(unit, &e.path, r)),
@@ -78,8 +92,19 @@ pub fn plan(repo: &Repo) -> Result<Plan> {
     Ok(plan)
 }
 
+/// The unit whose worktree `path` is, from where `ns worktree new` puts it.
+fn unit_at<'a>(repo: &Repo, path: &'a Path) -> Option<&'a str> {
+    let unit = path.file_name()?.to_str()?;
+    (worktree::planned_path(repo, unit) == path).then_some(unit)
+}
+
 /// The unit as [`Merged`], or why it is not.
-fn merged(repo: &Repo, unit: &str, path: &Path) -> Result<Merged, String> {
+fn merged(
+    repo: &Repo,
+    unit: &str,
+    path: &Path,
+    on_default: Option<String>,
+) -> Result<Merged, String> {
     let Some(issue) = quality::issue_of(unit) else {
         return Err("the unit id names no issue".into());
     };
@@ -117,6 +142,7 @@ fn merged(repo: &Repo, unit: &str, path: &Path) -> Result<Merged, String> {
         issue: Some(issue),
         pr,
         pr_head: v["headRefOid"].as_str().unwrap_or("").to_string(),
+        on_default,
     })
 }
 
@@ -144,6 +170,11 @@ fn local_reason(repo: &Repo, m: &Merged) -> Option<String> {
             ))
         }
         Ok(_) => {}
+    }
+    if let Some(d) = &m.on_default {
+        // Its commits are on the default branch, which stays.
+        let on = git::run(&m.path, &["symbolic-ref", "--quiet", "HEAD"]).ok();
+        return (on != Some(format!("refs/heads/{d}"))).then(|| format!("its HEAD is not on {d}"));
     }
     // Commits made on a detached HEAD or another branch would be lost with the worktree.
     let branch_ref = format!("refs/heads/{}", m.branch());
@@ -199,10 +230,18 @@ fn holds(dir: &Path, base: &str, tip: &str, pr_head: &str, pr: u64) -> bool {
 /// `.git/config`, as a `git worktree add` does. Errors name what is left.
 fn remove(repo: &Repo, m: &Merged) -> Result<(), String> {
     let path = m.path.to_string_lossy().into_owned();
+    if m.on_default.is_some() {
+        // Detach first, so the default branch is free even if the removal fails.
+        git::run(&m.path, &["checkout", "--quiet", "--detach"])
+            .map_err(|e| format!("worktree not detached: {e:#}"))?;
+    }
     // --force: untracked and ignored files (build output, .ns/) go with it; tracked changes were
     // checked just before.
     git::run(&repo.root, &["worktree", "remove", "--force", &path])
         .map_err(|e| format!("worktree not removed: {e:#}"))?;
+    if m.on_default.is_some() {
+        return Ok(());
+    }
     let kept = |e: anyhow::Error| format!("worktree removed, branch {} kept: {e:#}", m.branch());
     let me = json!({"pid": std::process::id(), "unit": m.unit});
     let _config = Lock::wait(&repo.common_dir, WORKTREE_LOCK, &me, None, |by| {
@@ -315,6 +354,7 @@ pub fn after_merge(
         issue,
         pr,
         pr_head: String::new(),
+        on_default: None,
     };
     let o = if !record_saved {
         Outcome::Kept("its quality record is not saved".into())
@@ -334,12 +374,19 @@ pub fn after_merge(
 
 fn report(repo: &Repo, by: &str, m: &Merged, o: &Outcome) {
     match o {
-        Outcome::Removed => eprintln!(
-            "ns {by}: removed {} and branch {} (PR #{} merged)",
-            m.path.display(),
-            m.branch(),
-            m.pr
-        ),
+        Outcome::Removed => match &m.on_default {
+            Some(d) => eprintln!(
+                "ns {by}: detached {} from {d} and removed it (PR #{} merged)",
+                m.path.display(),
+                m.pr
+            ),
+            None => eprintln!(
+                "ns {by}: removed {} and branch {} (PR #{} merged)",
+                m.path.display(),
+                m.branch(),
+                m.pr
+            ),
+        },
         Outcome::Kept(r) | Outcome::Failed(r) => {
             eprintln!("ns {by}: kept {}: {r}", m.path.display())
         }
@@ -485,6 +532,53 @@ pub fn cli(dry_run: bool) -> Result<ExitCode> {
 mod tests {
     use super::*;
     use crate::testutil::{commit_file, g, rebased_unit};
+
+    /// A repo whose main checkout is on `other`, and unit `3-done`'s worktree left on `main`.
+    fn left_on_main() -> (tempfile::TempDir, Repo, Merged) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap().join("r");
+        std::fs::create_dir(&root).unwrap();
+        g(&root, &["init", "-q", "-b", "main"]);
+        commit_file(&root, "README", "hi\n");
+        g(&root, &["checkout", "-qb", "other"]);
+        let repo = Repo::discover(&root).unwrap();
+        let path = worktree::planned_path(&repo, "3-done");
+        g(
+            &root,
+            &["worktree", "add", "-q", path.to_str().unwrap(), "main"],
+        );
+        let m = Merged {
+            unit: "3-done".into(),
+            path,
+            issue: Some(3),
+            pr: 30,
+            pr_head: String::new(),
+            on_default: Some("main".into()),
+        };
+        (tmp, repo, m)
+    }
+
+    #[test]
+    fn a_worktree_found_on_the_default_branch_stays_once_it_moves_off_it() {
+        let (_tmp, repo, m) = left_on_main();
+        assert_eq!(local_reason(&repo, &m), None);
+        g(&m.path, &["checkout", "-q", "--detach"]);
+        assert_eq!(
+            local_reason(&repo, &m).as_deref(),
+            Some("its HEAD is not on main")
+        );
+    }
+
+    #[test]
+    fn a_worktree_on_the_default_branch_that_cannot_be_detached_stays() {
+        let (_tmp, repo, m) = left_on_main();
+        let git_dir = g(&m.path, &["rev-parse", "--absolute-git-dir"]);
+        std::fs::write(Path::new(&git_dir).join("index.lock"), "").unwrap();
+        let e = remove(&repo, &m).unwrap_err();
+        assert!(e.starts_with("worktree not detached: "), "{e}");
+        assert!(m.path.is_dir());
+        assert_eq!(g(&m.path, &["symbolic-ref", "HEAD"]), "refs/heads/main");
+    }
 
     #[test]
     fn a_merged_head_holds_the_same_commit_a_descendant_or_a_rebase_of_it() {

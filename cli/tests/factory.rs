@@ -9410,6 +9410,68 @@ fn clean_keeps_units_it_cannot_prove_merged_and_says_why() {
     );
 }
 
+/// A merged unit's worktree left on main, as `gh pr merge --delete-branch` left it: the main
+/// checkout is on another branch and the unit's branch is gone.
+fn unit_left_on_main(e: &Env, n: u64, unit: &str, pr: u64) -> PathBuf {
+    let wt = unit_with_pr(e, n, unit, pr, "CLOSED", "MERGED");
+    e.gh_file(&format!("pr-{pr}.ref"), &format!("ns/{unit}"));
+    git(&e.root, &["checkout", "-qb", "elsewhere"]);
+    git(&wt, &["checkout", "-q", "main"]);
+    git(&wt, &["branch", "-q", "-D", &format!("ns/{unit}")]);
+    wt
+}
+
+#[test]
+fn clean_detaches_and_removes_a_merged_worktree_left_on_main() {
+    let e = Env::new();
+    let wt = unit_left_on_main(&e, 3, "3-done", 30);
+    let v = e.run(&["clean", "--dry-run"], 0);
+    assert_eq!(units_in(&v["planned"]), ["3-done"], "{v}");
+    assert_eq!(v["planned"][0]["detached"], "main", "{v}");
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert!(!wt.exists());
+    let ev = &cleanup_events(&e)[0];
+    assert_eq!(
+        (ev["removed"].as_bool(), ev["detached"].as_str()),
+        (Some(true), Some("main")),
+        "{ev}"
+    );
+    assert_eq!(quality_records(&e)[0]["unit"], "3-done");
+    git(&e.root, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn clean_keeps_a_worktree_on_main_with_uncommitted_tracked_changes() {
+    let e = Env::new();
+    let wt = unit_left_on_main(&e, 3, "3-done", 30);
+    fs::write(wt.join("README"), "edited\n").unwrap();
+    let v = e.run(&["clean"], 0);
+    assert_eq!(
+        reasons(&v)["3-done"],
+        "uncommitted changes to tracked files (1 paths)",
+        "{v}"
+    );
+    assert_eq!(git(&wt, &["symbolic-ref", "HEAD"]), "refs/heads/main");
+    assert_eq!(fs::read_to_string(wt.join("README")).unwrap(), "edited\n");
+}
+
+#[test]
+fn clean_leaves_a_worktree_on_main_outside_the_unit_worktree_dir_alone() {
+    let e = Env::new();
+    git(&e.root, &["checkout", "-qb", "elsewhere"]);
+    let other = e.base.join("3-done");
+    git(
+        &e.root,
+        &["worktree", "add", "-q", other.to_str().unwrap(), "main"],
+    );
+    e.issue(3, "3-done", "CLOSED");
+    let v = e.run(&["clean"], 0);
+    assert_eq!(v["status"], "nothing-to-clean", "{v}");
+    assert_eq!(v["kept"], serde_json::json!([]), "{v}");
+    assert!(other.is_dir());
+}
+
 #[test]
 fn clean_dry_run_lists_the_plan_and_changes_nothing() {
     let e = Env::new();
