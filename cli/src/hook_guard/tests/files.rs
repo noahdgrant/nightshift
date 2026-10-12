@@ -485,6 +485,61 @@ fn the_phase_settings_file_and_its_directories_are_protected() {
 }
 
 #[test]
+fn the_ns_directory_under_the_git_dir_cannot_be_swapped() {
+    for c in [
+        "mv /r/.git/ns /tmp/x",
+        "rm -rf /r/.git/ns",
+        "mv /tmp/y /r/.git/ns",
+        "cp -r /tmp/y/. /r/.git/ns/",
+        "cp -r /tmp/y/. /r/.git/ns/units/",
+        "ln -sfn /tmp/y /r/.git/ns",
+        "rm -rf /r/.git/ns/units",
+        "mv /r/.git/ns/units /tmp/x",
+        "mv /tmp/y /r/.git/ns/units/u1",
+        "rm -rf /r/.git/n*",
+        "rm -rf /r/.git/*",
+        "rm -rf /r/.git/[n]s",
+        "cd /r && mv .git/ns /tmp/x",
+        "cd /r/.git && mv ns /tmp/x",
+        "cd /r/.git && cp -r /tmp/y/. ns/",
+        "cd /r/.git/ns && rm -rf units",
+        "git -C /r/.git mv ns /tmp/x",
+        "mv /r/.git /tmp/x",
+        "mv /tmp/y /r/.git",
+        "rm -rf /r/.git",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for p in ["/r/.git/ns", "/r/.git/ns/x", "/r/.git/ns/units", "/r/.git"] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_some(), "{p}");
+    }
+}
+
+#[test]
+fn reading_the_ns_directory_and_other_ns_commands_stay_allowed() {
+    for c in [
+        "ls /r/.git/ns",
+        "cat /r/.git/ns/units/u1/phase-settings.json",
+        "cp /r/.git/ns/units/u1/phase-settings.json /tmp/copy",
+        "cp -r /r/.git/ns /tmp/copy",
+        "ns ask --harness claude hello",
+        "ns verify",
+        "mv /tmp/y /tmp/x",
+        "rm -rf /r/ns",
+        "rm -rf /r/.git/ns-other",
+        "rm -rf /r/.github",
+        "rm -rf /r/foo.git",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    for p in ["/r/ns", "/r/foo.git/ns", "/r/.github/ns"] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_none(), "{p}");
+    }
+}
+
+#[test]
 fn glob_matches_reads_star_question_mark_and_sets() {
     for (pattern, text, want) in [
         ("skills", "skills", true),

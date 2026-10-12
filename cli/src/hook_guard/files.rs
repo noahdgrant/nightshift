@@ -13,8 +13,10 @@ pub(super) fn is_protected(path: &str) -> bool {
 /// (`.claude/settings*.json`), which can turn the hook off, or is a way in to a unit's skill
 /// snapshot, which a later phase reads: `.ns/<unit>/skills`, and a `.claude/skills` or
 /// `.agents/skills` that is a symlink into a snapshot. Also the phase settings: the file
-/// `ns/units/<unit>/phase-settings.json` under the common dir and anything under
-/// `.git/ns/units`,. A shell standing in a unit's directory
+/// `ns/units/<unit>/phase-settings.json` under any common dir, and the `.git` directory (or file,
+/// in a worktree) itself with everything under `.git/ns`, so the `ns` directory and `ns/units`
+/// cannot be moved, removed or copied over to swap that file. Only writes are denied; reading
+/// stays free, and `ns` commands a phase runs name none of these paths. A shell standing in a unit's directory
 /// may write its artifacts, so the directory helpers call this and not `is_protected`.
 fn protected_paths(path: &str) -> bool {
     let parts = components(path);
@@ -23,7 +25,10 @@ fn protected_paths(path: &str) -> bool {
             (p[0] == ".git" && matches!(p[1], "hooks" | "config"))
                 || (p[0] == ".claude" && p[1].starts_with("settings") && p[1].ends_with(".json"))
         })
-        || parts.windows(3).any(|p| p == [".git", "ns", "units"])
+        || parts.last() == Some(&".git")
+        || parts
+            .windows(2)
+            .any(|p| p[0] == ".git" && names_in_common_dir(p[1], pin::COMMON_NS))
         || parts.windows(4).any(|p| {
             p[0] == pin::COMMON_NS && p[1] == pin::COMMON_UNITS && p[3] == pin::SETTINGS_FILE
         })
@@ -33,6 +38,14 @@ fn protected_paths(path: &str) -> bool {
         || parts
             .windows(3)
             .any(|p| p[0] == pin::NS_DIR && names_skills(p[2]))
+}
+
+/// `name` is `target`, or a glob that could match it.
+fn names_in_common_dir(name: &str, target: &str) -> bool {
+    if !name.contains(['*', '?', '[']) {
+        return name == target;
+    }
+    glob_matches(name.as_bytes(), target.as_bytes())
 }
 
 /// `parts` end at `.ns` or at a direct child of it, the unit's directory.
