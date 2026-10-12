@@ -3,6 +3,7 @@ id: ADR-354
 title: "ns run denies hook bypasses in claude phases"
 issue: 354
 date: 2026-10-11
+amended_by: [ADR-358]
 ---
 
 # ADR-354: ns run denies hook bypasses in claude phases
