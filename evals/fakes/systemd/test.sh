@@ -13,6 +13,8 @@ chmod +x "$tmp/realbin/ns"
 export PATH="$bin:$tmp/realbin:$PATH"
 cd "$tmp" && git init -q repo && cd repo
 fake=$(git rev-parse --path-format=absolute --git-common-dir)/fake
+# A piped grep reads to EOF (no -q): -q exits on the first match, and a later write by the
+# command before it then dies of SIGPIPE, which pipefail turns into a failure.
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # No unit: inactive, not installed, start refused.
@@ -27,12 +29,12 @@ out=$(systemd-run --user --unit=ns-watch-supervised -p OOMPolicy=continue ns wat
 [ "$(systemctl --user is-active ns-watch-supervised)" = active ] || fail "transient unit not active"
 grep -q '^systemd-run --user --unit=ns-watch-supervised -p OOMPolicy=continue ns watch --until 06:30$' "$fake/calls.log" || fail "systemd-run not recorded"
 [ "$(systemctl --user show ns-watch-supervised -p ActiveState --value)" = active ] || fail "show --value"
-systemctl --user show ns-watch-supervised -p ActiveState,Result | grep -qx 'Result=success' || fail "show two props"
+systemctl --user show ns-watch-supervised -p ActiveState,Result | grep -x 'Result=success' >/dev/null || fail "show two props"
 [ "$(systemctl --user show ns-watch-supervised -p ActiveState | wc -l)" = 1 ] || fail "show filters props"
 [ "$(systemctl --user show ns-watch-supervised --property=Result)" = Result=success ] || fail "show --property="
 [ "$(systemctl --user show ns-watch-supervised -pResult)" = Result=success ] || fail "show -pX"
-systemctl --user show ns-watch-supervised -p ActiveEnterTimestamp --value | grep -Eq '^[A-Z][a-z]{2} [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} UTC$' || fail "start time"
-systemctl --user list-units | grep -qx ns-watch-supervised.service || fail "list-units"
+systemctl --user show ns-watch-supervised -p ActiveEnterTimestamp --value | grep -E '^[A-Z][a-z]{2} [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} UTC$' >/dev/null || fail "start time"
+systemctl --user list-units | grep -x ns-watch-supervised.service >/dev/null || fail "list-units"
 
 [ "$(systemd-run --user -u night2 ns watch)" = "Running as unit: night2.service" ] || fail "systemd-run -u"
 [ "$(systemd-run --user ns watch)" = "Running as unit: run-u1.service" ] || fail "systemd-run default unit"
@@ -51,25 +53,25 @@ grep -q '^systemctl --user stop ns-watch.service$' "$fake/calls.log" || fail "st
 # A failed unit keeps its Result until reset-failed.
 systemctl --user stop ns-watch-supervised; echo 1 > "$fake/failed/ns-watch-supervised.service"
 [ "$(systemctl --user is-active ns-watch-supervised || true)" = failed ] || fail "is-active on failed unit"
-systemctl --user show ns-watch-supervised -p Result,ExecMainStatus | grep -qx 'Result=exit-code' || fail "failed Result"
+systemctl --user show ns-watch-supervised -p Result,ExecMainStatus | grep -x 'Result=exit-code' >/dev/null || fail "failed Result"
 systemctl --user reset-failed ns-watch-supervised
 [ -e "$fake/failed/ns-watch-supervised.service" ] && fail "reset-failed left the unit failed"
 
 # gh and journalctl answer empty.
 [ "$(gh pr list --json number)" = "[]" ] || fail "gh"
-journalctl --user -u ns-watch | grep -q 'No entries' || fail "journalctl"
+journalctl --user -u ns-watch | grep 'No entries' >/dev/null || fail "journalctl"
 
 # glab has no merge request until mr create opens one, which then reads merge-ready.
 glab mr view -F json >/dev/null 2>&1 && fail "glab mr view before create"
 url=$(glab mr create --source-branch ns/1-x --target-branch main --title t --description-file /dev/null --yes)
 [ "$url" = https://gitlab.example.com/acme/widgets/-/merge_requests/1 ] || fail "glab mr create said $url"
 grep -q '^glab mr create --source-branch ns/1-x ' "$fake/calls.log" || fail "glab mr create not recorded"
-glab mr view -F json | grep -q '"detailed_merge_status": "mergeable"' || fail "glab mr view not mergeable"
-glab mr view -F json | grep -q '"head_pipeline": {"id": 1, "status": "success"' || fail "glab mr view head_pipeline status"
+glab mr view -F json | grep '"detailed_merge_status": "mergeable"' >/dev/null || fail "glab mr view not mergeable"
+glab mr view -F json | grep '"head_pipeline": {"id": 1, "status": "success"' >/dev/null || fail "glab mr view head_pipeline status"
 git -c user.name=t -c user.email=t@localhost commit -q --allow-empty -m one
-glab mr view -F json | grep -q "\"sha\": \"$(git rev-parse HEAD)\", \"has_conflicts\"" || fail "glab mr view sha"
-glab mr view 1 | grep -qx 'state:	opened' || fail "glab mr view text"
-glab ci status | grep -q success || fail "glab ci status"
+glab mr view -F json | grep "\"sha\": \"$(git rev-parse HEAD)\", \"has_conflicts\"" >/dev/null || fail "glab mr view sha"
+glab mr view 1 | grep -x 'state:	opened' >/dev/null || fail "glab mr view text"
+glab ci status | grep success >/dev/null || fail "glab ci status"
 [ "$(glab api projects/:id/merge_requests/1/discussions)" = "[]" ] || fail "glab api"
 glab mr update 1 --ready || fail "glab mr update"
 glab mr merge 1 2>/dev/null && fail "glab mr merge not refused"
