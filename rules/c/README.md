@@ -30,7 +30,7 @@ The pack reports `-Wall -Wextra` warnings through clang-tidy. The build should a
 
 ## Install
 
-Needs `python3` (3.9 or later), `ast-grep` (`pip install ast-grep-cli`, `cargo install ast-grep` or `npm i -g @ast-grep/cli`) and `clang-tidy` 18 (`apt install clang-tidy-18`, then put it on `PATH` as `clang-tidy`), each on `PATH`. The tests assert exact check names and aliases from clang-tidy 18, and CI pins that version. The `ns-setup` skill does these steps:
+Needs `python3` (3.9 or later), `ast-grep` (`pip install ast-grep-cli`, `cargo install ast-grep` or `npm i -g @ast-grep/cli`) and `clang-tidy` 18 (`apt install clang-tidy-18`, then put it on `PATH` as `clang-tidy`), each on `PATH`. The tests assert exact check names and aliases from clang-tidy 18, and CI pins that version in `scripts/ci-tools.toml`. The `ns-setup` skill does these steps:
 
 1. Copy `rules/c/` from the nightshift checkout into the target repo at `.nightshift/rules/c/`, without `tests/`. An installed skill is a symlink into that checkout, so from the target repo: `src="$(realpath <ns-setup skill dir>)/../../rules/c" && mkdir -p .nightshift/rules/c && cp -r "$src/." .nightshift/rules/c && rm -rf .nightshift/rules/c/tests`.
 2. Seed the include allowlist with the headers in use today, and review it: `.nightshift/rules/c/rules-c allowlist > .nightshift/rules-c-includes.txt`. Each line is a header (`errno.h`) or a directory prefix ending in `/` (`zephyr/`); `#` starts a comment.

@@ -13,11 +13,14 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::json;
 
+mod red;
+
+use self::red::Gate;
 use super::self_update::{HandOff, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
 use super::{
-    ended_cleanly, fresh_base, open_findings, queue, set_status, triage, unit_id, Forge, Issue,
-    Night, Tonight, DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
+    ended_cleanly, fix_main::Fix, fresh_base, open_findings, queue, set_status, triage, unit_id,
+    Forge, Issue, Night, Tonight, DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
 };
 use crate::clock;
 use crate::error::SfError;
@@ -137,6 +140,15 @@ pub(super) struct Scheduler<'a> {
     draining: Option<String>,
     started: u32,
     results: u64,
+    /// The head main was last found red at, until it is found not red.
+    red_at: Option<String>,
+    /// The fix issue this night used, kept while it stays open: GitHub may not list a new one yet.
+    fix: Option<Issue>,
+    /// The heads this night filed a fix issue for, so a fix issue closed with main still red there
+    /// is not filed again.
+    filed: BTreeSet<String>,
+    /// The head the night last warned it holds for, a closed fix issue and main still red.
+    shut_at: Option<String>,
 }
 
 impl<'a> Scheduler<'a> {
@@ -152,6 +164,10 @@ impl<'a> Scheduler<'a> {
             failed: None,
             draining: None,
             results: 0,
+            red_at: None,
+            fix: None,
+            filed: BTreeSet::new(),
+            shut_at: None,
         }
     }
 
@@ -282,8 +298,8 @@ impl<'a> Scheduler<'a> {
         if !self.free() || self.stopping.is_some() {
             return Ok(());
         }
-        let plan = &self.plan;
-        let fac = &plan.loaded.fac;
+        let (repo, forge, loaded) = (self.plan.repo, self.plan.forge, self.plan.loaded);
+        let fac = &loaded.fac;
         if let Some(why) = self.over_claims(night) {
             self.stopping = Some(why);
             return Ok(());
@@ -294,7 +310,10 @@ impl<'a> Scheduler<'a> {
         if self.draining.is_some() {
             return Ok(());
         }
-        match triage::pass(plan.repo, plan.forge, plan.loaded, plan.deadline, night)? {
+        // Red main holds triage too: the fix issue is the night's only work. The pass asks before
+        // each triage-only run, as the first of them can turn main red.
+        let held = || self.main_ci().is_some_and(|m| m.holds_queue());
+        match triage::pass(repo, forge, loaded, self.plan.deadline, night, &held)? {
             Some(triage::Halt::Stop(why)) => {
                 self.stop_all(&why);
                 return Ok(());
@@ -307,7 +326,20 @@ impl<'a> Scheduler<'a> {
         let mut taken: BTreeSet<u64> = night.finished.clone();
         taken.extend(self.running.values().map(|w| w.issue.number));
         taken.extend(self.resume.iter().map(|i| i.number));
-        let ready = queue(plan.forge, fac, &taken)?.ready;
+        let mut ready = queue(forge, fac, &taken)?.ready;
+        // Read after the listing and as late as possible: the units start from this read.
+        let main = self.main_ci();
+        let gate = match &main {
+            Some(m) => self.main_fix(m, &ready, &taken)?,
+            None => Gate::Open,
+        };
+        match gate {
+            // GitHub may not list an issue filed a moment ago.
+            Gate::Only(Fix::JustFiled(issue)) => ready = vec![issue],
+            Gate::Only(Fix::Listed(issue)) => ready.retain(|i| i.number == issue.number),
+            Gate::Shut => ready.clear(),
+            Gate::Open => {}
+        }
         for issue in ready {
             // A listing can name an issue twice; a stop during the read claims nothing more.
             if !self.free() || stop::requested().is_some() {

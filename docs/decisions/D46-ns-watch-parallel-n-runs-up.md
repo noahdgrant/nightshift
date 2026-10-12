@@ -1,0 +1,17 @@
+---
+id: D46
+title: "ns watch --parallel N runs up to N units at once"
+issue: 229
+date: 2026-10-10
+amended_by: [D57]
+---
+
+# D46: ns watch --parallel N runs up to N units at once
+
+## Decision
+
+Builds on D36, D43 and D45. `ns watch --parallel N` (or `[limits] parallel`, default 1; the flag wins) runs up to N units at once, each its own child `ns run`, for one and for many. A unit's state is frozen when it starts: its code and `docs/agents/` by its worktree, its binary by its process, and its config and factory definition by a snapshot `ns watch` takes at start (`<git-common-dir>/ns/watch-<pid>/`: copies of both files and `night.json` with the watch pid, `--until` and the gate command). Installed skills are not frozen; the skills sync still runs before each unit starts. The scheduler fills free slots (paused units first, then the triage pass, then one queue read), claims each issue, the swap to `in_progress_label`, before its unit starts, and never takes an issue running, paused or finished tonight; when a unit ends it records the outcome, then fills again, so the triage pass runs between finished units. A usage limit in any unit or triage run writes the reset to `hold.json`, which every unit reads before each phase and after its lock waits; held units end `paused` and all resume together at the latest reset. Every phase's cost goes to `spend.jsonl`, and every unit checks the summed spend before each phase. `--until`, the budget and the harness breaker start nothing new and let running units finish; `--max-units` still resumes paused units. A signal is passed on once to each unit's process group, and every running or paused unit goes back to the queue. Output and the run log name the worker of each unit.
+
+## Reason
+
+Throughput where the queue allows it, not full use of the machine: an idle slot is fine (#229, replacing #58). A child process per unit, even at N = 1, so one code path runs every night and the existing watch tests cover it; the only behaviour a test saw change is `NS_RUN_PID`, now the unit's own `ns run` and not the watch. A snapshot rather than flags: a unit started hours into the night must run on the files the night started with, and the gate command too, since the skills sync moves the main checkout. Claiming before the start, plus a set of issues taken tonight, closes the window where GitHub still lists a claimed issue as ready. The hold is read by the units, not pushed to them, so a pause never interrupts a phase; a unit already past its boundary meets its own limit or finishes. On a pinned clock (`NS_NOW`, tests) a pause waits for every running unit, since time can't pass while they run; each unit reports `ended_at` so the watch's clock catches up with time a unit's waits moved on. Each unit gets its own process group, so a terminal's Ctrl-C reaches only `ns watch`, which passes it on exactly once, to the group, so a setup command or `gh` call ends as a group signal ended it before. A unit's `ns run` records every SIGINT and SIGTERM instead of dying on the second, since a service manager may signal it as well as `ns watch` does, and on Linux it gets SIGTERM when `ns watch` dies (`PR_SET_PDEATHSIG`), so no unit runs on alone. A signal that stops a unit, from anyone else, stops the night too. The memory cap (D44) is per phase in each unit, so N units can use N times `memory_mb`; `docs/FACTORY.md` recommends setting it when N > 1. The self-hosting binary update between units (DRAINING) is #156. Spec: `docs/FACTORY.md` ("Parallel units").
