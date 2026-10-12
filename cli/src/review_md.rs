@@ -279,6 +279,27 @@ fn parenthesised(line: &str) -> String {
         .join(", ")
 }
 
+/// The axes a comma-separated list leads with: each item's first word, with
+/// any parenthesised reason dropped. Items not starting with an axis are skipped.
+fn leading_axes(text: &str) -> Vec<String> {
+    static R: OnceLock<Regex> = OnceLock::new();
+    let bare = re(&R, r"\([^()]*\)").replace_all(text, "");
+    let mut axes: Vec<String> = Vec::new();
+    for item in bare.split(',') {
+        let word = item
+            .trim_start_matches(|c: char| !c.is_alphanumeric())
+            .split(|c: char| !c.is_alphanumeric())
+            .next()
+            .unwrap_or("");
+        if let Some(a) = axes_in(word).into_iter().next() {
+            if !axes.contains(&a) {
+                axes.push(a);
+            }
+        }
+    }
+    axes
+}
+
 struct Block<'a> {
     ids: Vec<String>,
     severity: Option<Severity>,
@@ -331,13 +352,18 @@ impl<'a> Block<'a> {
                 .unwrap_or(Severity::Unknown),
             title: self.title.replace(['`', '*'], "").trim().to_string(),
             location: get(&["location"]).filter(|l| !l.is_empty()),
-            axes,
+            axes: axes.clone(),
             axes_from_raised_by,
             scope: get(&["scope"]).map_or(Scope::Unknown, |s| scope_of(&s)),
             cycle: get(&["cycle"]).and_then(|c| first_number(&c)),
             fix_attempts: get(&["attempts"]).and_then(|c| first_number(&c)),
-            dismissed_raises: get(&["dismissed raises"]).map_or_else(Vec::new, |v| axes_in(&v)),
-            missed_by: get(&["missed by"]).and_then(|v| axes_in(&v).into_iter().next()),
+            dismissed_raises: get(&["dismissed raises"]).map_or_else(Vec::new, |v| {
+                leading_axes(&v)
+                    .into_iter()
+                    .filter(|a| axes.contains(a))
+                    .collect()
+            }),
+            missed_by: get(&["missed by"]).and_then(|v| leading_axes(&v).into_iter().next()),
             fixed_cycle: status_text
                 .as_deref()
                 .or(self.one_line.then_some(self.title.as_str()))
@@ -547,6 +573,29 @@ mod tests {
         let old = one("### I4. t\n- Scope: pre-existing\n- Status: deferred: #50\n");
         assert_eq!(old.missed_by, None);
         assert_eq!(one("### I4. t\n- Missed by: unknown\n").missed_by, None);
+    }
+
+    #[test]
+    fn a_reason_beside_a_raiser_is_not_read_as_another_raiser() {
+        let dismissed = |v: &str| {
+            one(&format!(
+                "### I2. t\n- Axis: correctness, readability\n- Dismissed raises: {v}\n"
+            ))
+            .dismissed_raises
+        };
+        assert_eq!(
+            dismissed("readability (correctness already covers it)"),
+            ["readability"]
+        );
+        assert_eq!(dismissed("readability, readability, spec"), ["readability"]);
+        let missed = |v: &str| one(&format!("### I4. t\n- Missed by: {v}\n")).missed_by;
+        assert_eq!(missed("the spec never required it; tests"), None);
+        assert_eq!(missed("nobody, no test exists"), None);
+        assert_eq!(
+            missed("tests (the spec was silent)").as_deref(),
+            Some("tests")
+        );
+        assert_eq!(missed("unknown, tests").as_deref(), Some("tests"));
     }
 
     #[test]
