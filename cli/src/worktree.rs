@@ -492,6 +492,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_exclude_list_gains_only_the_entries_it_lacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let exclude = dir.path().join("info/exclude");
+        fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        fs::write(&exclude, "# keep\n.ns/\n/.claude/skills").unwrap();
+        ensure_excluded(dir.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(&exclude).unwrap(),
+            "# keep\n.ns/\n/.claude/skills\n/.agents/skills\n"
+        );
+        ensure_excluded(dir.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(&exclude).unwrap(),
+            "# keep\n.ns/\n/.claude/skills\n/.agents/skills\n"
+        );
+        fs::remove_file(&exclude).unwrap();
+        ensure_excluded(dir.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(&exclude).unwrap(),
+            ".ns/\n/.claude/skills\n/.agents/skills\n"
+        );
+    }
+
+    #[test]
     fn unit_id_validation() {
         for ok in ["142-uart-timeout", "uart", "1", "a-b-c", "0x10"] {
             assert!(valid_unit_id(ok), "{ok}");

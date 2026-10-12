@@ -615,7 +615,11 @@ fn phases_run_the_base_commits_skills_whatever_the_worktree_or_main_hold_later()
     assert_eq!(seen("verify-x/SKILL.md"), "verify\n");
     let snap = wt.join(".ns").join(UNIT).join("skills/ns-x/SKILL.md");
     assert!(!fs::symlink_metadata(&snap).unwrap().is_symlink());
-    // A resume after main moved on keeps the snapshot it wrote first.
+    // A resume keeps the snapshot it wrote first, even once the unit has merged main's v2.
+    git(
+        &wt,
+        &["merge", "-q", "--no-edit", "origin/main", "-X", "ours"],
+    );
     e.run(&["run", "--issue", "7"], 0);
     assert_eq!(seen("ns-x/SKILL.md"), "v1\n");
     // The repo tracks .agents/skills, so the worktree keeps its own copy there.
@@ -628,8 +632,12 @@ fn phases_run_the_base_commits_skills_whatever_the_worktree_or_main_hold_later()
 #[test]
 fn the_snapshot_links_are_excluded_from_git() {
     let e = Env::new();
-    e.run(&["run", "--issue", "7"], 0);
+    e.run(&["worktree", "new", UNIT], 0);
     let wt = e.worktree(UNIT);
+    let leftover = wt.join(".ns").join(UNIT).join("skills.tmp/ns-junk");
+    fs::create_dir_all(&leftover).unwrap();
+    e.run(&["run", "--issue", "7"], 0);
+    assert!(!wt.join(".ns").join(UNIT).join("skills/ns-junk").exists());
     for link in [".claude/skills", ".agents/skills"] {
         let target = fs::read_link(wt.join(link)).unwrap();
         assert_eq!(
