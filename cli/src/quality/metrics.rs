@@ -44,6 +44,9 @@ pub struct RunStats {
     pub review_cost_usd: f64,
     pub outcome: Option<String>,
     pub pr: Option<u64>,
+    /// The latest `end` event's predicted globs and changed files, when it records both.
+    #[serde(skip)]
+    pub touches: Option<(Vec<String>, Vec<String>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -369,6 +372,58 @@ pub fn summarize(units: &[&Unit]) -> Summary {
         leftovers: units.iter().map(|u| leftovers(u.last()).len()).sum(),
         escapes: units.iter().map(|u| escapes(u.last()).len()).sum(),
     }
+}
+
+#[derive(Debug, Default, Serialize, PartialEq)]
+pub struct TouchesSummary {
+    /// Units whose latest `end` event predicts at least one glob.
+    pub units: usize,
+    pub changed_files: usize,
+    /// Changed files that match a predicted glob.
+    pub changed_predicted: usize,
+    /// changed_predicted / changed_files.
+    pub recall: Option<f64>,
+    pub globs: usize,
+    /// Predicted globs that match at least one changed file.
+    pub globs_changed: usize,
+    /// globs_changed / globs.
+    pub precision: Option<f64>,
+}
+
+/// How well briefs predict the files a unit changes, pooled over the units that predict any.
+/// `*` stays within a directory and `**` spans any; a glob that doesn't parse matches nothing.
+pub fn touches<'a>(runs: impl IntoIterator<Item = &'a RunStats>) -> TouchesSummary {
+    let opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
+    };
+    let mut t = TouchesSummary::default();
+    for (globs, changed) in runs.into_iter().filter_map(|r| r.touches.as_ref()) {
+        if globs.is_empty() {
+            continue;
+        }
+        let pats: Vec<glob::Pattern> = globs
+            .iter()
+            .filter_map(|g| glob::Pattern::new(g).ok())
+            .collect();
+        let hit = |p: &glob::Pattern, f: &String| p.matches_with(f, opts);
+        t.units += 1;
+        t.changed_files += changed.len();
+        t.changed_predicted += changed
+            .iter()
+            .filter(|f| pats.iter().any(|p| hit(p, f)))
+            .count();
+        t.globs += globs.len();
+        t.globs_changed += pats
+            .iter()
+            .filter(|p| changed.iter().any(|f| hit(p, f)))
+            .count();
+    }
+    let ratio = |n: usize, d: usize| (d > 0).then(|| round(n as f64 / d as f64, 3));
+    t.recall = ratio(t.changed_predicted, t.changed_files);
+    t.precision = ratio(t.globs_changed, t.globs);
+    t
 }
 
 /// One summary per local day, oldest first; undated units last, under `null`.

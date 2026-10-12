@@ -79,6 +79,7 @@ pub fn read(path: &Path, window: Window) -> (RunLog, BTreeMap<String, RunStats>)
             (Some("end"), _) => {
                 s.outcome = ev["outcome"].as_str().map(String::from);
                 s.pr = ev["pr"].as_u64().or(s.pr);
+                s.touches = strings(&ev["touches"]).zip(strings(&ev["changed"]));
             }
             (Some("merged"), _) => s.pr = ev["pr"].as_u64().or(s.pr),
             _ => {}
@@ -89,6 +90,13 @@ pub fn read(path: &Path, window: Window) -> (RunLog, BTreeMap<String, RunStats>)
         s.review_cost_usd = round(s.review_cost_usd, 2);
     }
     (log, per_unit)
+}
+
+fn strings(v: &Value) -> Option<Vec<String>> {
+    v.as_array()?
+        .iter()
+        .map(|s| s.as_str().map(String::from))
+        .collect()
 }
 
 #[cfg(test)]
@@ -133,6 +141,26 @@ not json
         assert_eq!(runs["b"].pr, Some(7));
         assert_eq!(runs["b"].outcome.as_deref(), Some("stuck"));
         assert_eq!(runs["c"].review_cost_usd, 0.3);
+    }
+
+    #[test]
+    fn only_the_latest_end_with_both_lists_of_strings_records_touches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("runs.jsonl");
+        fs::write(
+            &p,
+            r#"{"event":"end","unit":"a","touches":["x"],"changed":["y"]}
+{"event":"end","unit":"b","touches":["x"],"changed":["y"]}
+{"event":"end","unit":"b","touches":["x",1],"changed":["y"]}
+{"event":"end","unit":"c","touches":["x"]}
+"#,
+        )
+        .unwrap();
+        let (_, runs) = read(&p, Window::default());
+        let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(runs["a"].touches, Some((strs(&["x"]), strs(&["y"]))));
+        assert_eq!(runs["b"].touches, None);
+        assert_eq!(runs["c"].touches, None);
     }
 
     #[test]

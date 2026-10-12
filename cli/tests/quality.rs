@@ -587,6 +587,73 @@ fn a_repo_with_no_units_reports_zeroes() {
     assert_eq!(v["units"], 0);
     assert_eq!(v["run_log"]["present"], false);
     assert_eq!(v["cycles_to_clean"]["median"], Value::Null);
+    assert_eq!(
+        v["touches"],
+        json!({"units": 0, "changed_files": 0, "changed_predicted": 0, "recall": null,
+               "globs": 0, "globs_changed": 0, "precision": null})
+    );
+}
+
+fn run_log(f: &Fixture, events: &[Value]) {
+    write(
+        f.root.join(".git/ns/runs.jsonl"),
+        &events.iter().map(|v| format!("{v}\n")).collect::<String>(),
+    );
+}
+
+#[test]
+fn touches_recall_and_precision_pool_the_latest_end_of_each_predicting_unit() {
+    let f = fixture();
+    run_log(
+        &f,
+        &[
+            json!({"event":"end","unit":"1-alpha","ts":"2026-10-08T01:00:00Z",
+                   "touches":["x"],"changed":["x"]}),
+            json!({"event":"end","unit":"1-alpha","ts":"2026-10-09T01:00:00Z",
+                   "touches":["cli/src/*.rs","docs/**","README.md"],
+                   "changed":["cli/src/run.rs","cli/src/a/b.rs","docs/x/y.md","Cargo.toml"]}),
+            json!({"event":"end","unit":"2-beta","ts":"2026-10-09T01:00:00Z",
+                   "touches":[],"changed":["a.rs"]}),
+            json!({"event":"end","unit":"8-gone","ts":"2026-10-09T01:00:00Z",
+                   "touches":["a.rs","[bad"],"changed":[]}),
+            json!({"event":"end","unit":"7-unlisted","ts":"2026-10-09T01:00:00Z",
+                   "touches":["a.rs"],"changed":["a.rs"]}),
+            json!({"event":"end","unit":"7-unlisted","ts":"2026-10-09T02:00:00Z",
+                   "outcome":"stuck"}),
+        ],
+    );
+    let v = quality(&f, &[]);
+    assert_eq!(
+        v["touches"],
+        json!({"units": 2, "changed_files": 4, "changed_predicted": 2, "recall": 0.5,
+               "globs": 5, "globs_changed": 2, "precision": 0.4})
+    );
+    let since = quality(&f, &["--since", "2026-10-09T01:30:00Z"]);
+    assert_eq!(since["touches"]["units"], 0);
+    let until = quality(&f, &["--until", "2026-10-08T12:00:00Z"]);
+    assert_eq!(
+        until["touches"],
+        json!({"units": 1, "changed_files": 1, "changed_predicted": 1, "recall": 1.0,
+               "globs": 1, "globs_changed": 1, "precision": 1.0})
+    );
+}
+
+#[test]
+fn touches_with_no_changed_files_report_no_recall() {
+    let f = fixture();
+    run_log(
+        &f,
+        &[
+            json!({"event":"end","unit":"8-gone","ts":"2026-10-09T01:00:00Z",
+                 "touches":["a.rs"],"changed":[]}),
+        ],
+    );
+    let v = quality(&f, &[]);
+    assert_eq!(
+        v["touches"],
+        json!({"units": 1, "changed_files": 0, "changed_predicted": 0, "recall": null,
+               "globs": 1, "globs_changed": 0, "precision": 0.0})
+    );
 }
 
 #[test]

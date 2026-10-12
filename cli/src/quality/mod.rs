@@ -215,6 +215,7 @@ pub fn cli(since: Option<String>, until: Option<String>) -> Result<ExitCode> {
     );
     units.sort_by(|a, b| a.id.cmp(&b.id));
     let (mut log, mut runs) = runlog::read(&repo.run_log(), window);
+    let touches = metrics::touches(runs.values());
     let known: BTreeSet<&str> = units.iter().map(|u| u.id.as_str()).collect();
     log.units_without_artifacts = runs
         .iter()
@@ -235,6 +236,7 @@ pub fn cli(since: Option<String>, until: Option<String>) -> Result<ExitCode> {
         .collect();
     let mut r = report(&kept, window, &repo.root, log, unparsed);
     r["records"] = records;
+    r["touches"] = json!(touches);
     println!("{}", serde_json::to_string_pretty(&r)?);
     Ok(ExitCode::SUCCESS)
 }
