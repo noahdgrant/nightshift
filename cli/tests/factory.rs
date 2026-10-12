@@ -10,7 +10,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{exits, Group, Ns};
+use common::{copy_exe, exits, write_exe, Group, Ns};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -68,7 +68,7 @@ impl Env {
         fs::create_dir(&bin).unwrap();
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/factory");
         for f in ["claude", "gh", "glab"] {
-            fs::copy(fixtures.join(f), bin.join(f)).unwrap();
+            copy_exe(&fixtures.join(f), &bin.join(f));
         }
         let home = base.join("home");
         fs::create_dir_all(home.join(".claude")).unwrap();
@@ -303,8 +303,7 @@ impl Env {
     /// An executable script in the temp dir, for `token_command`.
     fn script(&self, name: &str, body: &str) -> PathBuf {
         let p = self.base.join(name);
-        fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-        StdCommand::new("chmod").arg("+x").arg(&p).status().unwrap();
+        write_exe(&p, format!("#!/bin/sh\n{body}\n"));
         p
     }
 
@@ -373,7 +372,7 @@ fn claude_phases_wait_for_background_tasks() {
 fn a_non_claude_harness_gets_no_bg_wait_ceiling() {
     let e = Env::new();
     let agent = e.bin.join("agent");
-    fs::copy(e.bin.join("claude"), &agent).unwrap();
+    copy_exe(&e.bin.join("claude"), &agent);
     e.config(&format!(
         "[harness.other]\ncommand = [{a:?}]\ncommand_write = [{a:?}]\n",
         a = agent.to_str().unwrap()
@@ -390,7 +389,7 @@ fn a_non_claude_harness_gets_no_bg_wait_ceiling() {
 fn codex_phases_saw(factory: &str) -> String {
     let e = Env::new();
     let codex = e.bin.join("codex");
-    fs::copy(e.bin.join("claude"), &codex).unwrap();
+    copy_exe(&e.bin.join("claude"), &codex);
     e.config(&format!(
         "[harness.codex]\ncommand = [{c:?}]\ncommand_write = [{c:?}]\n",
         c = codex.to_str().unwrap()
@@ -414,7 +413,7 @@ fn codex_phases_saw(factory: &str) -> String {
 fn a_codex_phase_sees_the_snapshot_through_agents_skills_but_gets_no_claude_settings() {
     let e = Env::new();
     let codex = e.bin.join("codex");
-    fs::copy(e.bin.join("claude"), &codex).unwrap();
+    copy_exe(&e.bin.join("claude"), &codex);
     e.config(&format!(
         "[harness.codex]\ncommand = [{c:?}]\ncommand_write = [{c:?}]\n",
         c = codex.to_str().unwrap()
@@ -8720,8 +8719,7 @@ fn memory_cap(e: &Env) -> Value {
 /// Shadow `name` on the fakes' PATH with a command that fails, as if it were missing.
 fn break_tool(e: &Env, name: &str) {
     let p = e.bin.join(name);
-    fs::write(&p, "#!/bin/sh\necho \"$0: not here\" >&2\nexit 1\n").unwrap();
-    StdCommand::new("chmod").arg("+x").arg(&p).status().unwrap();
+    write_exe(&p, "#!/bin/sh\necho \"$0: not here\" >&2\nexit 1\n");
 }
 
 /// The build script records how its process is capped: `ulimit -v` and its cgroup.
@@ -9001,8 +8999,7 @@ fn a_systemd_run_that_does_not_enforce_memory_max_falls_back_to_prlimit() {
     e.factory("[limits]\nmemory_mb = 64\n");
     // Starts and exits 0 but sets no limit, as a systemd with no memory controller would.
     let p = e.bin.join("systemd-run");
-    fs::write(&p, "#!/bin/sh\necho max\n").unwrap();
-    StdCommand::new("chmod").arg("+x").arg(&p).status().unwrap();
+    write_exe(&p, "#!/bin/sh\necho max\n");
     e.run(&["run", "--issue", "7"], 0);
     let cap = memory_cap(&e);
     assert_eq!(cap["via"], "prlimit", "{cap}");
@@ -9021,12 +9018,10 @@ fn a_systemd_run_that_rejects_a_scope_property_falls_back_to_prlimit() {
     e.factory("[limits]\nmemory_mb = 64\n");
     // Sets memory.max but rejects OOMPolicy, as a systemd older than 253 does on a scope.
     let p = e.bin.join("systemd-run");
-    fs::write(
+    write_exe(
         &p,
         "#!/bin/sh\nfor a; do [ \"$a\" = OOMPolicy=stop ] && { echo 'Unknown assignment' >&2; exit 1; }; done\necho 67108864\n",
-    )
-    .unwrap();
-    StdCommand::new("chmod").arg("+x").arg(&p).status().unwrap();
+    );
     let v = e.run(&["run", "--issue", "7"], 0);
     assert_eq!(v["outcome"], "done", "{v}");
     assert_eq!(memory_cap(&e)["via"], "prlimit");
@@ -9091,16 +9086,10 @@ fn cleanup_events(e: &Env) -> Vec<Value> {
 /// A pre-receive hook on `origin` that declines every push to the quality branch.
 fn decline_quality_pushes(e: &Env) {
     let hook = e.base.join("remote.git/hooks/pre-receive");
-    fs::write(
+    write_exe(
         &hook,
         "#!/bin/sh\nwhile read old new ref; do\n  [ \"$ref\" = refs/heads/nightshift/quality ] && { echo declined >&2; exit 1; }\ndone\nexit 0\n",
-    )
-    .unwrap();
-    StdCommand::new("chmod")
-        .arg("+x")
-        .arg(&hook)
-        .status()
-        .unwrap();
+    );
 }
 
 /// Make the outbox unwritable too: its temp file's path is a directory.
@@ -10873,11 +10862,10 @@ fn cleanup_at_a_resume_leaves_the_worktree_of_the_paused_unit() {
 /// fake cargo on PATH, and return the commit pushed, which the `ns` under test counts as its
 /// build commit.
 fn nightshift_repo(e: &Env) -> String {
-    fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/factory/cargo"),
-        e.bin.join("cargo"),
-    )
-    .unwrap();
+    copy_exe(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/factory/cargo"),
+        &e.bin.join("cargo"),
+    );
     fs::create_dir_all(e.root.join("cli")).unwrap();
     fs::write(
         e.root.join("cli/Cargo.toml"),
@@ -11378,15 +11366,13 @@ fn counting_git(e: &Env) {
     )
     .unwrap();
     let p = e.bin.join("git");
-    fs::write(
+    write_exe(
         &p,
         format!(
             "#!/bin/sh\ncase \" $* \" in *\" fetch \"*) echo >> \"$FAKE_CTRL/git-fetches\" ;; esac\nexec {} \"$@\"\n",
             real.trim()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    );
 }
 
 fn fetches(e: &Env) -> usize {

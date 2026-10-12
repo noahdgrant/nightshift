@@ -2570,7 +2570,6 @@ mod tests {
     /// removes it from disk and from `git worktree list`.
     #[test]
     fn the_merge_queue_scratch_worktree_runs_no_hook_and_is_removed_on_drop() {
-        use std::os::unix::fs::PermissionsExt;
         let (t, _origin, wt) = cloned();
         let g = |dir: &Path, args: &[&str]| git::run(dir, args).unwrap();
         g(&wt, &["switch", "-q", "-c", "ns/9-x"]);
@@ -2590,12 +2589,10 @@ mod tests {
         for name in hooks {
             let hook = wt.join(".git/hooks").join(name);
             let ran = t.path().join(format!("ran-{name}"));
-            fs::write(
+            crate::testutil::write_exe(
                 &hook,
                 format!("#!/bin/sh\ntouch '{}'\nexit 1\n", ran.display()),
-            )
-            .unwrap();
-            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+            );
         }
         let common = t.path().join("common");
         std::mem::forget(Scratch::add(&wt, &common, "9-x", &head).unwrap());
@@ -2645,7 +2642,6 @@ mod tests {
     /// carry unit code.
     #[test]
     fn merging_the_default_branch_runs_none_of_the_checkouts_hooks() {
-        use std::os::unix::fs::PermissionsExt;
         let (t, _origin, wt) = cloned();
         let g = |dir: &Path, args: &[&str]| git::run(dir, args).unwrap();
         g(&wt, &["switch", "-q", "-c", "ns/9-x"]);
@@ -2666,8 +2662,7 @@ mod tests {
         g(&other, &["push", "-q", "origin", "HEAD:main"]);
         for name in ["pre-push", "pre-merge-commit", "commit-msg", "post-merge"] {
             let hook = wt.join(".git/hooks").join(name);
-            fs::write(&hook, format!("#!/bin/sh\ntouch ran-{name}\nexit 1\n")).unwrap();
-            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+            crate::testutil::write_exe(&hook, format!("#!/bin/sh\ntouch ran-{name}\nexit 1\n"));
         }
         let head = g(&wt, &["rev-parse", "HEAD"]);
         assert!(merge_default_with_git(&wt, "main", &head).unwrap());
@@ -2708,12 +2703,10 @@ mod tests {
         // No dot-led path components, which a ref name can't hold.
         let bin = tempfile::Builder::new().prefix("nsbin").tempdir().unwrap();
         let (script, proof) = (bin.path().join("evil"), bin.path().join("ran"));
-        fs::write(
+        crate::testutil::write_exe(
             &script,
             format!("#!/bin/sh\ntouch {}\nexit 1\n", proof.display()),
-        )
-        .unwrap();
-        fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        );
         let (_t, origin, wt) = cloned();
         let hostile = format!("refs/heads/--upload-pack={}", script.display());
         git::run(&origin, &["update-ref", &hostile, "main"]).unwrap();

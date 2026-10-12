@@ -135,10 +135,21 @@ const BANNED: [&str; 4] = [
 ];
 
 fn unbounded_starts(text: &str) -> Vec<(usize, &'static str)> {
+    lines_with(text, &BANNED)
+}
+
+/// What makes a file executable by hand, which only `write_exe` may do in a test.
+const EXE_WRITES: [&str; 3] = [
+    concat!("0o", "755"),
+    concat!("Command::new(\"", "chmod\")"),
+    concat!(".arg(\"+", "x\")"),
+];
+
+fn lines_with(text: &str, patterns: &[&'static str]) -> Vec<(usize, &'static str)> {
     text.lines()
         .enumerate()
         .filter_map(|(n, line)| {
-            BANNED
+            patterns
                 .iter()
                 .find(|b| line.contains(**b))
                 .map(|b| (n + 1, *b))
@@ -182,6 +193,28 @@ fn every_test_starts_ns_through_the_bounded_helper() {
         if let Some((n, b)) = unbounded_starts(&text).first() {
             panic!(
                 "{}:{n}: `{b}` starts a process without a timeout; use common::ns() or common::Group::spawn()",
+                path.display()
+            );
+        }
+    }
+}
+
+/// A test that writes an executable itself and then execs it fails with ETXTBSY when another
+/// test thread forks in between, so every one goes through `write_exe` (`tests/common`, or
+/// `testutil` for the unit tests in `src`).
+#[test]
+fn every_test_writes_executables_through_write_exe() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    rust_files_outside_common(&manifest.join("tests"), &mut files);
+    rust_files_outside_common(&manifest.join("src"), &mut files);
+    files.retain(|p| !p.ends_with("src/testutil.rs"));
+    assert!(files.len() >= 20, "scanned {files:?}");
+    for path in files {
+        let text = fs::read_to_string(&path).unwrap();
+        if let Some((n, b)) = lines_with(&text, &EXE_WRITES).first() {
+            panic!(
+                "{}:{n}: `{b}` makes a file executable by hand; use common::write_exe or testutil::write_exe",
                 path.display()
             );
         }

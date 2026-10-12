@@ -9,19 +9,29 @@
 # is set, as the pre-push hook sets it. The private guard reads
 # PRIVATE_DENYLIST from the environment, as in CI. It fails first on a missing or
 # wrong-version tool from scripts/ci-tools.toml, which CI installs.
+#
+# A full run that passes is recorded in <git-common-dir>/ns/ci-passed/, keyed by the tree it
+# tested and the hashes of scripts/ci-tools.toml and this script (ADR-444). A later full run
+# with the same key prints that it already passed and exits 0. The tree is the index's, and
+# only when the working tree matches the index and holds no untracked file, so it is what the
+# run tests: a commit's tree in a clean checkout, or a merge result staged but not committed.
+# Otherwise the cache is not used. --no-cache runs anyway; --fast never uses the cache.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 fast=0
-case "$#:${1-}" in
-  0:) ;;
-  1:--fast) fast=1 ;;
-  *)
-    echo "usage: scripts/ci-local.sh [--fast]" >&2
-    exit 2
-    ;;
-esac
+use_cache=1
+for arg in "$@"; do
+  case "$arg:$fast:$use_cache" in
+    --fast:0:*) fast=1 ;;
+    --no-cache:*:1) use_cache=0 ;;
+    *)
+      echo "usage: scripts/ci-local.sh [--fast] [--no-cache]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 ns=${CARGO_TARGET_DIR:-cli/target}/debug/ns
 
@@ -33,6 +43,66 @@ step() {
     echo "ci-local: FAILED at step: $name" >&2
     exit 1
   fi
+}
+
+# Git on the checkout this script is in, never on a location a hook or a decoy exported.
+cache_git() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
+    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE -u GIT_PREFIX git "$@"
+}
+
+cache_max=${CI_LOCAL_CACHE_MAX:-200}
+cache_dir=
+cache_key=
+cache_tree=
+
+# Sets cache_dir, cache_key and cache_tree for what this run tests. Leaves cache_key empty
+# outside a git checkout, or when the run would test more than the index's tree. With
+# `after`, untracked files are allowed: the run itself may have left some.
+compute_cache_key() {
+  local top common tools script
+  cache_key=
+  top=$(cache_git rev-parse --show-toplevel 2>/dev/null) || return 0
+  [ "$top" -ef . ] || return 0
+  if ! cache_git diff --quiet 2>/dev/null; then
+    echo "ci-local: the working tree differs from the index; not using the pass cache" >&2
+    return 0
+  fi
+  if [ "${1-}" != after ] && [ -n "$(cache_git ls-files --others --exclude-standard 2>/dev/null)" ]; then
+    echo "ci-local: the working tree has untracked files; not using the pass cache" >&2
+    return 0
+  fi
+  cache_tree=$(cache_git write-tree 2>/dev/null) || return 0
+  common=$(cache_git rev-parse --git-common-dir 2>/dev/null) || return 0
+  common=$(cd "$common" && pwd) || return 0
+  tools=$(sha256sum < scripts/ci-tools.toml) || return 0
+  script=$(sha256sum < scripts/ci-local.sh) || return 0
+  cache_key=$(printf '%s %s %s\n' "$cache_tree" "${tools%% *}" "${script%% *}" | sha256sum) || return 0
+  cache_key=${cache_key%% *}
+  cache_dir=$common/ns/ci-passed
+}
+
+# Records a pass of the key computed before the run, if the checkout still holds that key, and
+# keeps the cache_max entries used last.
+record_pass() {
+  local key=$cache_key entry tmp head old
+  compute_cache_key after 2>/dev/null
+  if [ "$cache_key" != "$key" ]; then
+    echo "ci-local: the tree changed during the run; not recording the pass" >&2
+    return 0
+  fi
+  mkdir -p "$cache_dir" || return 1
+  entry=$cache_dir/$key
+  head=$(cache_git rev-parse -q --verify --short HEAD 2>/dev/null) || head="no commit"
+  tmp=$(mktemp "$cache_dir/.tmp.XXXXXX") || return 1
+  if ! printf 'tree %s\nwhen %s\nwhere %s at %s\n' "$cache_tree" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PWD" "$head" > "$tmp" || ! mv -f "$tmp" "$entry"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  ls -1t "$cache_dir" | tail -n +$((cache_max + 1)) | while read -r old; do
+    rm -f "$cache_dir/$old"
+  done
 }
 
 # A step the --fast run leaves out.
@@ -80,6 +150,18 @@ brief_checker_tests() {
   done
 }
 
+if [ "$fast" -eq 0 ]; then
+  compute_cache_key
+  if [ -n "$cache_key" ] && [ "$use_cache" -eq 1 ] && [ -f "$cache_dir/$cache_key" ]; then
+    entry=$cache_dir/$cache_key
+    when=$(sed -n 's/^when //p' "$entry")
+    where=$(sed -n 's/^where //p' "$entry")
+    touch "$entry" 2>/dev/null || true
+    echo "ci-local: tree $cache_tree already passed ($when, $where)" >&2
+    exit 0
+  fi
+fi
+
 step "pinned tools (scripts/ci-tools.toml)" scripts/ci-tools.sh check
 step "cargo fmt --check" cargo fmt --manifest-path cli/Cargo.toml --check
 step "cargo clippy" cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings
@@ -101,3 +183,6 @@ full_step "ns-troubleshoot brief checker tests" brief_checker_tests
 step "private guard" scripts/check-private.sh
 
 echo "ci-local: all checks passed" >&2
+if [ -n "$cache_key" ]; then
+  record_pass || echo "ci-local: could not record the pass in $cache_dir" >&2
+fi
