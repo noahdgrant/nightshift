@@ -23,3 +23,11 @@ Find changes that make the system measurably slower, larger or hungrier. Quantif
 - **Power**: busy-wait loops where a sleep or interrupt works, peripherals left clocked or powered, higher polling rates, radio kept on longer, wake-ups added to the idle path.
 - **Blocking calls in hot paths**: polling a peripheral flag without a timeout, blocking UART or I2C transfers in the main loop or a high-priority task, delays inside control loops.
 - **Timing**: deadline-bound code (control loops, protocol timing) given new work without a measurement. A timing claim with no measurement is `inconclusive`.
+
+## TypeScript and React
+
+Apply this section only when the diff touches `.ts`, `.tsx`, `.js` or `.jsx` files. Each item names its upstream source.
+
+- **Memoisation without a profile**: `React.memo`, `useMemo` or `useCallback` added with no measurement showing the render was expensive. It costs memory and a dependency list to keep right. Ask for the profile, or drop it. Source: addyosmani `performance-optimization`.
+- **New references in render**: an object, array or function literal built in render and passed as a prop is a new reference each render, so every child receiving it re-renders. Hoist constants out of the component. Memoise only where the profile shows the cost. Source: addyosmani `performance-optimization`.
+- **N+1 fetches in components**: the General N+1 pattern, spread across a list: each rendered row fetches its own data in an effect or hook, so a page of 100 rows makes 100 requests. Fetch the list's data once in the parent, or batch it. Source: addyosmani `performance-optimization`, `code-reviewer`.
