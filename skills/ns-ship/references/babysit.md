@@ -1,6 +1,6 @@
 # Babysit
 
-The loop that takes an open PR to merge-ready. You own this one PR until the gate holds or a human has to act. Commands use `gh`. Swap in the forge CLI named in `docs/agents/issue-tracker.md`.
+The loop that takes an open PR to merge-ready. You own this one PR until the gate holds or a human has to act. Use the forge `docs/agents/issue-tracker.md` names: `gh` for GitHub, `glab` for GitLab. On GitLab a PR is a merge request (`<iid>`) and a review thread is a discussion. `:id` in a `glab api` path is the current project, which `glab` fills in.
 
 ## Modes
 
@@ -18,7 +18,15 @@ gh pr checks <pr>
 gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:20){nodes{databaseId author{login} body path line}}}}}}}' -F o=<owner> -F r=<repo> -F n=<pr>
 ```
 
-Trust the forge's merge state, not a list of green checks. Merge-ready means checks pass, the forge reports the PR mergeable with no conflict, and every review thread is resolved.
+On GitLab:
+
+```bash
+glab mr view <iid> -F json   # detailed_merge_status, has_conflicts, draft, sha, head_pipeline
+glab ci status --branch ns/<unit-id> -F json
+glab api --paginate projects/:id/merge_requests/<iid>/discussions   # threads: id, notes[].resolvable, notes[].resolved
+```
+
+Trust the forge's merge state, not a list of green checks. Merge-ready means checks pass, the forge reports the PR mergeable with no conflict, and every review thread is resolved. On GitLab that is `detailed_merge_status: mergeable`, a `head_pipeline` with `status: success` at the `sha` you pushed, and no discussion with a resolvable note left unresolved. `not_approved` is a required approval: a wait, not a blocker.
 
 ## Work in this order
 
@@ -40,6 +48,10 @@ Push the wave before you reply, so each reply cites the fixing commit. Post repl
 # payload.json: {"body": "Fixed in abc1234. Added test_timeout_resets_parser, which failed before the fix."}
 gh api --method POST repos/<owner>/<repo>/pulls/<pr>/comments/<comment-id>/replies --input payload.json
 gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<thread-id>
+
+# GitLab: reply to the discussion, then resolve it
+glab api --method POST projects/:id/merge_requests/<iid>/discussions/<discussion-id>/notes -H 'Content-Type: application/json' --input payload.json
+glab api --method PUT projects/:id/merge_requests/<iid>/discussions/<discussion-id> -f resolved=true
 ```
 
 Resolve a thread after replying, with one exception. When you dismiss or escalate a human's comment, leave the thread open for that human to resolve. Until they do, the PR is waiting on them, which makes the unit `blocked`, not failed.
@@ -52,14 +64,14 @@ Classify each failure before you touch it.
 
 - **Failure in code the diff touches**: a real failure. Reproduce it locally, fix it with a failing-first proof (load `ns-tdd`), and add it to the wave.
 - **Failure in code the diff never touches**: suspect a stale base first. If `git merge-base --is-ancestor origin/<base> HEAD` fails, bring in the base as in step 1.
-- **Flake or infrastructure**: re-run the whole workflow once (`gh run rerun <run-id>`). An identical second failure is not a flake. Reclassify it and read the logs.
+- **Flake or infrastructure**: re-run the whole workflow once (`gh run rerun <run-id>`; GitLab: `glab api --method POST projects/:id/pipelines/<pipeline-id>/retry`). An identical second failure is not a flake. Reclassify it and read the logs.
 - **Hardware-in-the-loop job with no bench available**: report it as `blocked`, naming the job and the bench it needs.
 
 Never weaken, skip, or delete a test to turn CI green. Fix the code, or escalate.
 
 ## Wait between waves
 
-After each push, wait on the forge instead of polling in a sleep loop: `gh pr checks <pr> --watch`. Re-read the state and threads when it returns. Review bots often post after CI starts, so re-read threads before you declare merge-ready.
+After each push, wait on the forge instead of polling in a sleep loop: `gh pr checks <pr> --watch` (GitLab: `glab ci status --branch ns/<unit-id> --wait`). Re-read the state and threads when it returns. Review bots often post after CI starts, so re-read threads before you declare merge-ready.
 
 ## Stop
 
