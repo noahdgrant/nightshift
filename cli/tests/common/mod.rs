@@ -30,6 +30,8 @@ const TREE_VAR: &str = "NS_TEST_TREE";
 
 static NEXT_TREE: AtomicU32 = AtomicU32::new(0);
 
+static NEXT_EXE: AtomicU32 = AtomicU32::new(0);
+
 /// `ns` built from this crate, bounded by [`TIMEOUT`]. It runs outside any `ns run` phase the
 /// tests themselves may run in, so the phase's `NS_UNIT` and `NS_WORKTREE` do not leak in.
 pub fn ns() -> Ns {
@@ -405,6 +407,50 @@ pub fn exits(pid: &str) -> bool {
         }
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Write `contents` to `path` as an executable (mode 755), creating its parent, so that it can
+/// be exec'd while other test threads start processes.
+///
+/// A file this process writes itself can't be: a thread that forks while the write handle is
+/// open gives its child a copy, held until that child execs, and an exec of the file meanwhile
+/// fails with ETXTBSY ("Text file busy"). So `sh`, a process no test thread forks from, writes
+/// it under a temp name, which is renamed into place: a copy already running is replaced, not
+/// rewritten.
+pub fn write_exe(path: &Path, contents: impl AsRef<[u8]>) {
+    let dir = path.parent().unwrap();
+    std::fs::create_dir_all(dir).unwrap();
+    let tmp = dir.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().unwrap().to_string_lossy(),
+        NEXT_EXE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut sh = Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(&tmp)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("sh to write {}: {e}", path.display()));
+    sh.stdin
+        .take()
+        .unwrap()
+        .write_all(contents.as_ref())
+        .unwrap();
+    let status = sh.wait().unwrap();
+    assert!(
+        status.success(),
+        "sh could not write {}: {status}",
+        tmp.display()
+    );
+    std::fs::rename(&tmp, path).unwrap();
+}
+
+/// [`write_exe`] with the contents of `from`, for a fixture script copied into a test's tree.
+pub fn copy_exe(from: &Path, to: &Path) {
+    write_exe(
+        to,
+        std::fs::read(from).unwrap_or_else(|e| panic!("{}: {e}", from.display())),
+    );
 }
 
 fn drain(mut r: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {

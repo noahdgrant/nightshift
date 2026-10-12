@@ -699,20 +699,16 @@ fn install_defaults_the_crate_dir_to_the_repo_root_and_needs_a_repo() {
 
 /// A fake `ns` at `<dir>/target/debug/ns` that touches `<dir>/ns-ran` and runs the real one.
 fn fake_ns(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let marker = dir.join("ns-ran");
     let ns = dir.join("target/debug/ns");
-    fs::create_dir_all(ns.parent().unwrap()).unwrap();
-    fs::write(
+    common::write_exe(
         &ns,
         format!(
             "#!/bin/sh\ntouch '{}'\nexec '{}' \"$@\"\n",
             marker.display(),
             common::ns_path().display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&ns, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     marker
 }
 

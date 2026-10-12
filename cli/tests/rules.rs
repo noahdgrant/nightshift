@@ -3,7 +3,6 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
@@ -46,8 +45,7 @@ impl Repo {
         fs::write(root.join("src.py"), SRC).unwrap();
         for tool in ["lint-a", "lint-b"] {
             let p = root.join(tool);
-            fs::write(&p, FAKE_TOOL).unwrap();
-            fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+            common::write_exe(&p, FAKE_TOOL);
         }
         Repo { _tmp: tmp, root }
     }

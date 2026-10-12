@@ -97,12 +97,10 @@ fn the_hook_command_fails_closed_when_ns_cannot_run() {
 
 #[test]
 fn the_hook_command_fails_closed_when_ns_crashes() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     for (name, body) in [("fails", "exit 1"), ("panics", "echo boom >&2; exit 101")] {
         let stub = dir.path().join(name);
-        std::fs::write(&stub, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::testutil::write_exe(&stub, format!("#!/bin/sh\n{body}\n"));
         assert_eq!(hook_exit_code(&stub), Some(2), "{name}");
     }
 }

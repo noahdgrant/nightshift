@@ -220,9 +220,7 @@ mod tests {
     fn the_fast_forward_skips_the_checkouts_hooks() {
         let s = setup();
         let hook = s.root.join(".git/hooks/post-merge");
-        fs::write(&hook, "#!/bin/sh\ntouch ran\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::testutil::write_exe(&hook, "#!/bin/sh\ntouch ran\n");
         assert!(matches!(sync_all(&s), Sync::Updated { .. }));
         assert!(!s.root.join("ran").exists());
     }

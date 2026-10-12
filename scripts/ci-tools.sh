@@ -21,8 +21,13 @@ case ${1:-} in
   *) echo "usage: scripts/ci-tools.sh install|check [<tool>...]" >&2; exit 2 ;;
 esac
 
-python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null || {
-  echo "ci-tools: needs Python 3.11 or newer (for tomllib); python3 on PATH is older" >&2
+# A python3 that runs prints its version, so one that can't run isn't reported as too old.
+python=$(python3 -I -c 'import sys; print("%d.%d" % sys.version_info[:2]); sys.exit(sys.version_info < (3, 11))' 2>&1) || {
+  if [[ $python =~ ^[0-9]+\.[0-9]+$ ]]; then
+    echo "ci-tools: needs Python 3.11 or newer (for tomllib); python3 on PATH is $python" >&2
+  else
+    echo "ci-tools: cannot run python3: $python" >&2
+  fi
   exit 1
 }
 
