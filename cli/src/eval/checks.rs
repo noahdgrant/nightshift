@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::shell::shell_quote;
+use crate::touches::glob_matches as glob_match;
 
 use super::spec::Check;
 use super::trial::{self, Scratch};
@@ -90,17 +91,6 @@ pub fn is_test_path(path: &str) -> bool {
 fn expand(run: &str, changes: &Changes) -> String {
     let tests: Vec<String> = changes.tests.iter().map(|t| shell_quote(t)).collect();
     run.replace("{changed_tests}", &tests.join(" "))
-}
-
-fn glob_match(pattern: &glob::Pattern, path: &str) -> bool {
-    pattern.matches_with(
-        path,
-        glob::MatchOptions {
-            case_sensitive: true,
-            require_literal_separator: true,
-            require_literal_leading_dot: false,
-        },
-    )
 }
 
 pub struct Ctx<'a> {

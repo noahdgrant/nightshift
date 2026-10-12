@@ -1462,6 +1462,30 @@ rm -f "$GIT_INDEX_FILE"
 }
 
 #[test]
+fn the_end_event_leaves_out_commits_the_unit_took_from_a_newer_origin_main() {
+    let e = Env::new();
+    e.ctl("triage.body", "**Touches:** `work.txt`\n");
+    e.queue("build", &["pass:commit"]);
+    // origin/main moves ahead of local main and the unit merges it in.
+    e.ctl(
+        "review.sh",
+        r#"set -e
+export GIT_INDEX_FILE="$PWD/.ns/main-index"
+git read-tree main
+git update-index --add --cacheinfo "100644,$(echo y | git hash-object -w --stdin),other.txt"
+c=$(git -c user.name=f -c user.email=f@f commit-tree "$(git write-tree)" -p main -m other)
+rm -f "$GIT_INDEX_FILE"
+unset GIT_INDEX_FILE
+git update-ref refs/remotes/origin/main "$c"
+git -c user.name=f -c user.email=f@f merge -q --no-edit origin/main
+"#,
+    );
+    e.queue("review", &["pass:script"]);
+    e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(end_event(&e)["changed"], serde_json::json!(["work.txt"]));
+}
+
+#[test]
 fn the_end_event_leaves_out_both_lists_when_git_cannot_diff_the_base() {
     let e = Env::new();
     git(&e.root, &["branch", "gone"]);

@@ -4,6 +4,27 @@
 
 use crate::frontmatter;
 
+/// Whether `path` matches `pattern`: `*` stays within a directory, `**` spans any, matching is
+/// case-sensitive and a leading dot needs no literal dot. The one match rule for path globs.
+pub fn glob_matches(pattern: &glob::Pattern, path: &str) -> bool {
+    pattern.matches_with(
+        path,
+        glob::MatchOptions {
+            case_sensitive: true,
+            require_literal_separator: true,
+            require_literal_leading_dot: false,
+        },
+    )
+}
+
+/// The patterns among `globs` that parse; one that doesn't matches nothing.
+pub fn compile<S: AsRef<str>>(globs: &[S]) -> Vec<glob::Pattern> {
+    globs
+        .iter()
+        .filter_map(|g| glob::Pattern::new(g.as_ref()).ok())
+        .collect()
+}
+
 const LINE_KEY: &str = "Touches:";
 
 /// The brief's `touches` globs, from `brief.md` frontmatter or the brief comment

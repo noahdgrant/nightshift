@@ -615,7 +615,7 @@ fn touches_recall_and_precision_pool_the_latest_end_of_each_predicting_unit() {
             json!({"event":"end","unit":"2-beta","ts":"2026-10-09T01:00:00Z",
                    "touches":[],"changed":["a.rs"]}),
             json!({"event":"end","unit":"8-gone","ts":"2026-10-09T01:00:00Z",
-                   "touches":["a.rs","[bad"],"changed":[]}),
+                   "touches":["a.rs","[bad"],"changed":["z.rs"]}),
             json!({"event":"end","unit":"7-unlisted","ts":"2026-10-09T01:00:00Z",
                    "touches":["a.rs"],"changed":["a.rs"]}),
             json!({"event":"end","unit":"7-unlisted","ts":"2026-10-09T02:00:00Z",
@@ -625,7 +625,7 @@ fn touches_recall_and_precision_pool_the_latest_end_of_each_predicting_unit() {
     let v = quality(&f, &[]);
     assert_eq!(
         v["touches"],
-        json!({"units": 2, "changed_files": 4, "changed_predicted": 2, "recall": 0.5,
+        json!({"units": 2, "changed_files": 5, "changed_predicted": 2, "recall": 0.4,
                "globs": 5, "globs_changed": 2, "precision": 0.4})
     );
     let since = quality(&f, &["--since", "2026-10-09T01:30:00Z"]);

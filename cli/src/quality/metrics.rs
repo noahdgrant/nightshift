@@ -393,21 +393,13 @@ pub struct TouchesSummary {
 /// How well briefs predict the files a unit changes, pooled over the units that predict any.
 /// `*` stays within a directory and `**` spans any; a glob that doesn't parse matches nothing.
 pub fn touches<'a>(runs: impl IntoIterator<Item = &'a RunStats>) -> TouchesSummary {
-    let opts = glob::MatchOptions {
-        case_sensitive: true,
-        require_literal_separator: true,
-        require_literal_leading_dot: false,
-    };
     let mut t = TouchesSummary::default();
     for (globs, changed) in runs.into_iter().filter_map(|r| r.touches.as_ref()) {
         if globs.is_empty() {
             continue;
         }
-        let pats: Vec<glob::Pattern> = globs
-            .iter()
-            .filter_map(|g| glob::Pattern::new(g).ok())
-            .collect();
-        let hit = |p: &glob::Pattern, f: &String| p.matches_with(f, opts);
+        let pats = crate::touches::compile(globs);
+        let hit = |p: &glob::Pattern, f: &String| crate::touches::glob_matches(p, f);
         t.units += 1;
         t.changed_files += changed.len();
         t.changed_predicted += changed
@@ -477,6 +469,15 @@ mod tests {
         let none = touches(&[run(&["a.rs"], &[])]);
         assert_eq!((none.recall, none.precision), (None, Some(0.0)));
         assert_eq!(touches(&[]), TouchesSummary::default());
+    }
+
+    #[test]
+    fn touches_match_dotfiles_and_respect_case() {
+        let t = touches(&[run(
+            &[".github/**", "README.md"],
+            &[".github/workflows/ci.yml", "readme.md"],
+        )]);
+        assert_eq!((t.changed_predicted, t.globs_changed), (1, 1));
     }
 
     fn attempt(cycles: Option<u32>, status: &str, review: &str) -> Attempt {

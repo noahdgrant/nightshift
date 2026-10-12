@@ -131,19 +131,10 @@ impl Merge {
 
     /// Changed paths matching a human_review glob.
     pub fn human_review_hits(&self, files: &[String]) -> Vec<String> {
-        let opts = glob::MatchOptions {
-            case_sensitive: true,
-            require_literal_separator: true,
-            require_literal_leading_dot: false,
-        };
-        let pats: Vec<glob::Pattern> = self
-            .human_review
-            .iter()
-            .filter_map(|p| glob::Pattern::new(p).ok())
-            .collect();
+        let pats = crate::touches::compile(&self.human_review);
         files
             .iter()
-            .filter(|f| pats.iter().any(|p| p.matches_with(f, opts)))
+            .filter(|f| pats.iter().any(|p| crate::touches::glob_matches(p, f)))
             .cloned()
             .collect()
     }
