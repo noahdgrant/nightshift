@@ -1292,6 +1292,7 @@ fn a_review_that_commits_runs_the_gate_again() {
     let g = gate_events(&e);
     assert_eq!(g.len(), 2, "{g:?}");
     assert_eq!(g[1]["phase"], "review");
+    assert!(g.iter().all(|g| g["where"] == "local_full"), "{g:?}");
     assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 2);
 }
 
@@ -1324,6 +1325,196 @@ fn a_red_gate_after_a_review_commit_goes_back_to_build() {
             ("build".into(), true.into()),
             ("review".into(), false.into()),
             ("build".into(), true.into())
+        ]
+    );
+}
+
+/// `[gate] local = "build-only"` with `extra` before it, a build gate that appends `full` or
+/// `fast` to `ci-runs`, a `ci-affected` row that appends the files it got to `affected` and runs
+/// `affected.sh` when it exists, and a build script that commits `built.txt`. Returns the two logs.
+fn build_only(e: &Env, extra: &str) -> (PathBuf, PathBuf) {
+    let runs = e.ctrl.join("ci-runs");
+    let affected = e.ctrl.join("affected");
+    e.ctl(
+        "ci.sh",
+        &format!(
+            "if [ \"$1\" = --fast ]; then echo fast; else echo full; fi >> {}\n",
+            runs.display()
+        ),
+    );
+    e.factory(&format!(
+        "{extra}[gate]\nlocal = \"build-only\"\n[phases.build]\ngate = \"sh {}\"\n",
+        e.ctrl.join("ci.sh").display()
+    ));
+    fs::create_dir_all(e.root.join("docs/agents")).unwrap();
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        format!(
+            "| Task | Command |\n|---|---|\n| ci-affected | `echo \"[${{NS_GATE_FILES-UNSET}}]\" >> {}; test ! -f {c}/affected.sh || sh {c}/affected.sh` | 1 s |\n",
+            affected.display(),
+            c = e.ctrl.display()
+        ),
+    )
+    .unwrap();
+    git(&e.root, &["add", "."]);
+    git(&e.root, &["commit", "-q", "-m", "stack"]);
+    e.ctl(
+        "build.sh",
+        "date >> built.txt && git add built.txt && git -c user.name=f -c user.email=f@f commit -qm built",
+    );
+    (runs, affected)
+}
+
+fn gate_where(e: &Env) -> Vec<(Value, Value)> {
+    gate_events(e)
+        .iter()
+        .map(|g| (g["phase"].clone(), g["where"].clone()))
+        .collect()
+}
+
+#[test]
+fn build_only_runs_one_full_gate_after_build_and_fast_ones_with_the_files_changed_since() {
+    let e = Env::new();
+    let (runs, affected) = build_only(&e, AUTO);
+    e.ctl("pr", "12");
+    e.gh_file("checks-12.json", GREEN);
+    e.queue("build", &["pass:script"]);
+    e.queue("review", &["pass:commit"]);
+    main_moves(&e, "from-main", "x\n");
+    e.gh_file("pr-12.merge", "BEHIND");
+    let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+    assert_eq!(d["gate"], format!("sh {}", e.ctrl.join("ci.sh").display()));
+    assert!(d["gate_rest"]
+        .as_str()
+        .unwrap()
+        .contains("ci.sh --fast) && ("));
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\nfast\nfast\n");
+    assert_eq!(
+        gate_where(&e),
+        [
+            ("build".into(), "local_full".into()),
+            ("review".into(), "local_fast".into()),
+            ("merge".into(), "local_fast".into())
+        ]
+    );
+    assert_eq!(
+        fs::read_to_string(&affected).unwrap(),
+        "[work.txt]\n[from-main\nwork.txt]\n"
+    );
+}
+
+#[test]
+fn build_only_skips_a_fast_gate_where_a_gate_already_went_green_but_never_a_full_one() {
+    let e = Env::new();
+    let (runs, _) = build_only(&e, AUTO);
+    e.ctl("pr", "12");
+    e.gh_file("checks-12.json", GREEN);
+    e.queue("build", &["pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\n");
+
+    let e = Env::new();
+    let (runs, _) = build_only(&e, AUTO);
+    e.ctl("pr", "12");
+    e.gh_file("checks-12.json", GREEN);
+    e.queue("build", &["pass:script"]);
+    e.queue("review", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\nfast\n");
+
+    let e = Env::new();
+    let (runs, _) = build_only(&e, "");
+    e.queue("build", &["pass:script", "pass"]);
+    e.queue("review", &["pass:commit", "pass"]);
+    e.queue("verify", &["pass", "fail", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "verify", "build", "verify", "review", "ship"]
+    );
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\nfast\nfull\n");
+}
+
+#[test]
+fn build_only_without_a_full_gate_this_run_tests_the_files_changed_since_the_base() {
+    let e = Env::new();
+    let (runs, affected) = build_only(&e, "");
+    e.queue("build", &["pass:script"]);
+    e.queue("review", &["pass", "pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let v = e.run(&["run", "--issue", "7", "--from", "review"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\nfast\n");
+    assert_eq!(
+        fs::read_to_string(&affected).unwrap(),
+        "[built.txt\nwork.txt]\n"
+    );
+}
+
+#[test]
+fn build_only_fast_gate_runs_everything_when_git_cannot_find_the_changed_files() {
+    let e = Env::new();
+    let (runs, affected) = build_only(&e, "");
+    e.ctl(
+        "review.sh",
+        "git update-ref -d refs/heads/main && date >> work.txt && git add work.txt && git -c user.name=f -c user.email=f@f commit -qm fix",
+    );
+    e.queue("build", &["pass:script"]);
+    e.queue("review", &["pass", "pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let v = e.run(&["run", "--issue", "7", "--from", "review"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\nfast\n");
+    assert_eq!(fs::read_to_string(&affected).unwrap(), "[UNSET]\n");
+}
+
+#[test]
+fn build_only_sends_a_red_fast_gate_back_to_build_and_the_rebuild_runs_the_full_one() {
+    let e = Env::new();
+    let (runs, _) = build_only(&e, "");
+    let failing = e.ctrl.join("affected.sh");
+    let commit = "git add work.txt && git -c user.name=f -c user.email=f@f commit -qm fix";
+    e.ctl(
+        "review.sh",
+        &format!(
+            "echo 'echo affected tests failed; exit 1' > {}; date >> work.txt && {commit}",
+            failing.display()
+        ),
+    );
+    e.ctl(
+        "build.sh",
+        &format!(
+            "rm -f {}; date >> built.txt && git add built.txt && git -c user.name=f -c user.email=f@f commit -qm built",
+            failing.display()
+        ),
+    );
+    e.queue("build", &["pass:script", "pass:script"]);
+    e.queue("review", &["pass:script", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "build", "verify", "review", "ship"]
+    );
+    assert!(e.prompt(5, "build").contains("affected tests failed"));
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\nfast\nfull\n");
+    let g: Vec<_> = gate_events(&e)
+        .iter()
+        .map(|g| (g["phase"].clone(), g["green"].clone(), g["where"].clone()))
+        .collect();
+    assert_eq!(
+        g,
+        [
+            ("build".into(), true.into(), "local_full".into()),
+            ("review".into(), false.into(), "local_fast".into()),
+            ("build".into(), true.into(), "local_full".into())
         ]
     );
 }
@@ -3719,6 +3910,28 @@ fn auto_merge_updates_a_branch_behind_main_first() {
 }
 
 #[test]
+fn build_only_with_no_fast_gate_updates_a_branch_behind_main_and_gates_only_after_build() {
+    let e = Env::new();
+    e.factory(&format!("{AUTO}[gate]\nlocal = \"build-only\"\n"));
+    fs::create_dir_all(e.root.join("docs/agents")).unwrap();
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        "| Task | Command |\n|---|---|\n| rules | `true` | 1 s |\n",
+    )
+    .unwrap();
+    git(&e.root, &["add", "."]);
+    git(&e.root, &["commit", "-q", "-m", "stack"]);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("pr-12.merge", "BEHIND");
+    e.gh_file("checks-12.json", GREEN);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert!(e.gh_calls().contains("pr update-branch 12"));
+    assert_eq!(gate_where(&e), [("build".into(), "local_full".into())]);
+}
+
+#[test]
 fn auto_merge_conflict_goes_back_to_build() {
     let e = Env::new();
     e.factory(AUTO);
@@ -4060,6 +4273,18 @@ fn ci_failure_rebuilds_then_merges_on_the_same_pr() {
     let p = e.prompt(6, "build");
     assert!(p.contains("CI failed on PR #12: ci (fail)"), "{p}");
     assert!(p.contains("assert 1 == 2"), "{p}");
+    let ci: Vec<_> = run_events(&e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "ci_failed" || ev["event"] == "ci_passed")
+        .map(|ev| (ev["event"].clone(), ev["where"].clone()))
+        .collect();
+    assert_eq!(
+        ci,
+        [
+            ("ci_failed".into(), "github".into()),
+            ("ci_passed".into(), "github".into())
+        ]
+    );
 }
 
 fn register_polls(e: &Env) -> Vec<String> {

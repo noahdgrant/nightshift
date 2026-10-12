@@ -338,3 +338,22 @@ fn queue_overlap_ignore_is_empty_by_default_and_takes_globs() {
         .problems(None);
     assert_eq!(p, ["queue.overlap_ignore: \"a[\" is not a valid glob"]);
 }
+
+#[test]
+fn gate_local_defaults_to_every_step_and_takes_build_only() {
+    assert_eq!(parse("").unwrap().gate.local, LocalGate::EveryStep);
+    let f = parse("[gate]\nlocal = \"every-step\"\n").unwrap();
+    assert_eq!(f.gate.local, LocalGate::EveryStep);
+    let f = parse("[gate]\nlocal = \"build-only\"\n").unwrap();
+    assert_eq!(f.gate.local, LocalGate::BuildOnly);
+    assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+}
+
+#[test]
+fn gate_local_rejects_other_values_and_keys() {
+    let e = parse("[gate]\nlocal = \"never\"\n")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("build-only") && e.contains("every-step"), "{e}");
+    assert!(parse("[gate]\nremote = \"github\"\n").is_err());
+}

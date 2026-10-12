@@ -626,8 +626,8 @@ struct Ctx<'a> {
     gates: String,
     base: String,
     lock_dir: PathBuf,
-    /// The CI gate command; `None` runs no gate.
-    gate: Option<String>,
+    /// The CI gate commands; `None` runs no gate.
+    gate: gate::Commands,
     cap: Option<&'a Cap>,
     /// The night directory of the `ns watch` this runs under.
     night: Option<PathBuf>,
@@ -676,21 +676,35 @@ impl Ctx<'_> {
         phase: &str,
         attempt: u32,
     ) -> Result<Option<gate::Red>> {
-        let job = self.gate_job(cmd, &self.worktree, self.head(), phase, attempt);
+        let job = self.gate_job(gate_state, cmd, &self.worktree, self.head(), phase, attempt);
         gate_state.after(trigger, &job, &|ev| self.log(ev))
     }
 
-    /// The gate `cmd` run in `worktree`, which holds `head`.
+    /// The gate `cmd` run in `worktree`, which holds `head`. A fast gate gets the paths that
+    /// differ in `worktree` from where the full gate last went green, else from the base.
     fn gate_job<'j>(
         &'j self,
+        gate_state: &gate::Gate,
         cmd: &'j str,
         worktree: &'j Path,
         head: String,
         phase: &'j str,
         attempt: u32,
     ) -> gate::Job<'j> {
+        let full = self.gate.full(cmd);
+        let files = (!full)
+            .then(|| {
+                let since = gate_state
+                    .full_green()
+                    .map(String::from)
+                    .or_else(|| git::run(worktree, &["merge-base", &self.base, "HEAD"]).ok())?;
+                git::run(worktree, &["diff", "--name-only", &since]).ok()
+            })
+            .flatten();
         gate::Job {
             cmd,
+            full,
+            files,
             worktree,
             log_dir: self.common.join("ns").join("transcripts").join(&self.unit),
             unit: &self.unit,
@@ -735,7 +749,7 @@ pub struct Loaded {
     pub cfg: Option<Config>,
     /// The build gate command, read at start like the files: `ns watch` moves the main checkout
     /// between units, and its `docs/agents/stack.md` must not change the night's gate.
-    pub gate: Option<String>,
+    pub gate: gate::Commands,
     /// The path and sha256 of each file read, so a morning reader can tell what ran.
     pub files: Value,
     /// The memory cap phases and gates run under, probed once at start.
@@ -765,7 +779,7 @@ impl Loaded {
             "factory": file_hash(&root.join(factory::FILE)),
         });
         let ns = crate::exe::ns_exe()?;
-        let gate = gate::command(&fac, &repo.root, &ns);
+        let gate = gate::Commands::read(&fac, &repo.root, &ns);
         let cap = match fac.limits.memory_mb.filter(|mb| *mb > 0 && !dry_run) {
             Some(mb) => {
                 let cap = memcap::detect(mb)?;
@@ -1025,7 +1039,7 @@ fn dry_run(
     repo: &Repo,
     fac: &Factory,
     root: &Path,
-    gate: &Option<String>,
+    gate: &gate::Commands,
     unit: &str,
     args: &RunArgs,
     issue_url: &str,
@@ -1105,7 +1119,8 @@ fn dry_run(
         "decision": decision_json,
         "prompt": prompt,
         "command": command,
-        "gate": ctx.gate,
+        "gate": ctx.gate.build,
+        "gate_rest": ctx.gate.rest,
         "budget_usd": fac.budget_usd(),
         "billing": fac.defaults.billing,
         "merge_policy": fac.merge.policy,
@@ -1476,7 +1491,7 @@ fn drive(
         } else {
             gate_trigger(phase, art.as_ref(), head_moved)
         };
-        if let (Some(cmd), Some(trigger)) = (&ctx.gate, trigger) {
+        if let Some((cmd, trigger)) = trigger.and_then(|t| Some((ctx.gate.for_trigger(t)?, t))) {
             let red = ctx.gate(&mut gate_state, trigger, cmd, phase, attempt);
             if let Some(sig) = red.as_ref().err().and(crate::stop::requested()) {
                 let mut ev = json!({"event": "gate", "phase": phase, "attempt": attempt});
@@ -1830,7 +1845,7 @@ fn merge_step(
 
     // Strict required checks: a PR behind its base gets the base merged in, then fresh checks,
     // unless the local merge queue gates the merge result instead.
-    let queued = ctx.fac.merge.local_queue && ctx.gate.is_some();
+    let queued = ctx.fac.merge.local_queue && ctx.gate.rest.is_some();
     let default = remote_default(wt)
         .map(|d| d.0)
         .unwrap_or_else(|| "main".into());
@@ -1848,7 +1863,7 @@ fn merge_step(
         _ => {}
     }
 
-    if let Some(cmd) = &ctx.gate {
+    if let Some(cmd) = &ctx.gate.rest {
         let step = if queued {
             gate_merge_result(ctx, gate_state, cmd, n, pr_head, &default, run)?
         } else {
@@ -2011,9 +2026,10 @@ fn wait_for_ci(
             })
             .collect();
         let fb = ci_feedback(wt, n, &names, &failed);
-        ctx.log(json!({"event": "ci_failed", "pr": n, "checks": names}));
+        ctx.log(json!({"event": "ci_failed", "pr": n, "checks": names, "where": "github"}));
         return Ok(Some(ci_failed(fb)));
     }
+    ctx.log(json!({"event": "ci_passed", "pr": n, "sha": merge_head, "where": "github"}));
     Ok(None)
 }
 
@@ -2217,7 +2233,14 @@ fn gate_merge_result(
                     ))))
                 }
             }
-            let job = ctx.gate_job(cmd, &scratch.path, pr_head.to_string(), "merge", run);
+            let job = ctx.gate_job(
+                gate_state,
+                cmd,
+                &scratch.path,
+                pr_head.to_string(),
+                "merge",
+                run,
+            );
             let red = gate_state.on_merge_result(&job, default, &base, &|ev| ctx.log(ev));
             merge_gate_stopped(ctx, red, run)?
         }

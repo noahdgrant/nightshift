@@ -20,8 +20,8 @@ pub struct Facts {
     pub watch_pid: u32,
     /// `--until`, which bounds a unit's lock waits.
     pub until: Option<i64>,
-    /// The build gate command `ns watch` read at start.
-    pub gate: Option<String>,
+    /// The gate commands `ns watch` read at start.
+    pub gate: crate::gate::Commands,
 }
 
 /// The directory a unit reads the night from, as `ns run --night <dir>`.
@@ -47,7 +47,14 @@ impl NightDir {
         let facts = Facts {
             watch_pid,
             until: v["until"].as_i64(),
-            gate: v["gate"].as_str().map(String::from),
+            gate: crate::gate::Commands {
+                build: v["gate"].as_str().map(String::from),
+                // A night an older ns started has no `gate_rest`: it ran every gate in full.
+                rest: match v.get("gate_rest") {
+                    Some(r) => r.as_str().map(String::from),
+                    None => v["gate"].as_str().map(String::from),
+                },
+            },
         };
         Ok((NightDir(dir.to_path_buf()), facts))
     }
@@ -145,7 +152,12 @@ impl Snapshot {
                 .with_context(|| format!("cannot copy {}", config.display()))?;
         }
         let night = snap.night.path().join(NIGHT);
-        let v = json!({"watch_pid": facts.watch_pid, "until": facts.until, "gate": facts.gate});
+        let v = json!({
+            "watch_pid": facts.watch_pid,
+            "until": facts.until,
+            "gate": facts.gate.build,
+            "gate_rest": facts.gate.rest,
+        });
         fs::write(&night, v.to_string())
             .with_context(|| format!("cannot write {}", night.display()))?;
         Ok(snap)
@@ -252,7 +264,10 @@ mod tests {
         Facts {
             watch_pid: std::process::id(),
             until: Some(1000),
-            gate: Some("make check".into()),
+            gate: crate::gate::Commands {
+                build: Some("make check".into()),
+                rest: Some("make check --fast".into()),
+            },
         }
     }
 
@@ -285,6 +300,18 @@ mod tests {
         let dir = snap.night().path().to_path_buf();
         drop(snap);
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn a_night_an_older_ns_started_runs_every_gate_in_full() {
+        let tmp = tempfile::tempdir().unwrap();
+        let write = |v: Value| fs::write(tmp.path().join(NIGHT), v.to_string()).unwrap();
+        write(json!({"watch_pid": 1, "gate": "make check"}));
+        let (_, read) = NightDir::open(tmp.path()).unwrap();
+        assert_eq!(read.gate.rest.as_deref(), Some("make check"));
+        write(json!({"watch_pid": 1, "gate": "make check", "gate_rest": null}));
+        let (_, read) = NightDir::open(tmp.path()).unwrap();
+        assert_eq!(read.gate.rest, None);
     }
 
     #[test]
