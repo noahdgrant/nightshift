@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-const ALL_STEPS: [&str; 18] = [
+const ALL_STEPS: [&str; 19] = [
     "pinned tools (scripts/ci-tools.toml)",
     "cargo fmt --check",
     "cargo clippy",
@@ -25,7 +25,20 @@ const ALL_STEPS: [&str; 18] = [
     "Python rule pack tests",
     "JavaScript/TypeScript rule pack tests",
     "C rule pack tests",
+    "Java rule pack tests",
     "ns-troubleshoot brief checker tests",
+    "private guard",
+];
+
+/// The steps `--fast` runs, the pre-commit hook's subset of `ALL_STEPS`, in its order.
+const FAST_STEPS: [&str; 8] = [
+    "pinned tools (scripts/ci-tools.toml)",
+    "cargo fmt --check",
+    "cargo clippy",
+    "build ns",
+    "ns lint",
+    "ns lint .agents/skills",
+    "ns check-markers",
     "private guard",
 ];
 
@@ -48,18 +61,17 @@ case "$FAIL_ON" in ?*) case "ns $*" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
 exit 0
 "#;
 
-/// Logs that it ran, and fails when that log line contains `$FAIL_ON`.
-const RULE_PACK_TESTS: &str = r#"#!/bin/sh
-line="rule pack tests ran"
+/// A pack's `tests/run.sh`: logs that `pack`'s tests ran, and fails when that log line contains
+/// `$FAIL_ON`.
+fn rule_pack_tests(pack: &str) -> String {
+    format!(
+        r#"#!/bin/sh
+line="{pack} rule pack tests ran"
 echo "$line" >&2
 case "$FAIL_ON" in ?*) case "$line" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
-"#;
-
-const JS_RULE_PACK_TESTS: &str = r#"#!/bin/sh
-line="js rule pack tests ran"
-echo "$line" >&2
-case "$FAIL_ON" in ?*) case "$line" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
-"#;
+"#
+    )
+}
 
 /// Hands `-I -` runs (the eval plan filter, and `ci-tools.sh` reading its list) to the real
 /// python3 so the script itself is what runs. Any other run logs its directory and fails when
@@ -77,13 +89,13 @@ esac
     )
 }
 
-/// A pinned tool whose `--version` prints `version`. Any other run logs its directory and
+/// A pinned tool whose `--version` or `-version` prints `version`. Any other run logs its directory and
 /// fails when that log line contains `$FAIL_ON`.
 fn tool_stub(tool: &str, version: &str) -> String {
     format!(
         r#"#!/bin/sh
 case "$*" in
-  --version) echo '{tool} {version}' ;;
+  --version | -version) echo '{tool} {version}' ;;
   *) line="{tool} ran in ${{PWD##*/}}: $*"
      echo "$line" >&2
      case "$FAIL_ON" in ?*) case "$line" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac ;;
@@ -92,8 +104,8 @@ esac
     )
 }
 
-/// Each pinned tool's name, command (the first word of its `check`) and version.
-fn pinned_tools() -> Vec<(String, String, String)> {
+/// Each pinned tool's name, command (the first word of its `check`), version and `check`.
+fn pinned_tools() -> Vec<(String, String, String, String)> {
     let list = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci-tools.toml");
     let list: toml::Table = toml::from_str(&fs::read_to_string(list).unwrap()).unwrap();
     list.iter()
@@ -104,6 +116,7 @@ fn pinned_tools() -> Vec<(String, String, String)> {
                 name.clone(),
                 command,
                 t["version"].as_str().unwrap().to_owned(),
+                check.to_owned(),
             )
         })
         .collect()
@@ -142,7 +155,7 @@ impl Repo {
             root.join("scripts/ci-tools.toml"),
         )
         .unwrap();
-        for (_, command, version) in pinned_tools() {
+        for (_, command, version, _) in pinned_tools() {
             write_exe(
                 &root.join("bin").join(&command),
                 &tool_stub(&command, &version),
@@ -156,8 +169,12 @@ impl Repo {
         write_exe(&root.join("bin/python3"), &python);
         write_exe(&root.join("bin/python"), &python);
         fs::create_dir_all(root.join("evals/fixtures/py-inventory")).unwrap();
-        write_exe(&root.join("rules/python/tests/run.sh"), RULE_PACK_TESTS);
-        write_exe(&root.join("rules/js/tests/run.sh"), JS_RULE_PACK_TESTS);
+        for pack in ["python", "js", "java"] {
+            write_exe(
+                &root.join("rules").join(pack).join("tests/run.sh"),
+                &rule_pack_tests(pack),
+            );
+        }
         let cases = root.join("skills/ns-troubleshoot/evals/cases");
         for case in ["py-hold-expires-early", "py-lost-hold-needs-redesign"] {
             write_exe(&cases.join(case).join("test_check_brief.py"), "");
@@ -232,7 +249,8 @@ fn every_step_runs_in_order_and_the_run_passes() {
         )));
     }
     assert!(!stderr(&out).contains("python ran in py-no-checker"));
-    assert!(stderr(&out).contains("rule pack tests ran"));
+    assert!(stderr(&out).contains("python rule pack tests ran"));
+    assert!(stderr(&out).contains("java rule pack tests ran"));
     assert!(stderr(&out).contains(": -I -m unittest discover -s rules/c/tests\n"));
     assert!(stderr(&out).contains("ci-local: all checks passed"));
 }
@@ -248,12 +266,13 @@ fn a_failing_step_stops_the_run() {
         ("ns rules", "ns rules check"),
         ("ns ratchet", "ns ratchet check"),
         ("ns eval", "ns eval --dry-run"),
-        ("rule pack tests ran", "Python rule pack tests"),
+        ("python rule pack tests ran", "Python rule pack tests"),
         (
             "js rule pack tests ran",
             "JavaScript/TypeScript rule pack tests",
         ),
         ("discover -s rules/c/tests", "C rule pack tests"),
+        ("java rule pack tests ran", "Java rule pack tests"),
         (
             "python ran in py-hold-expires-early",
             "ns-troubleshoot brief checker tests",
@@ -270,7 +289,7 @@ fn a_failing_step_stops_the_run() {
 
 #[test]
 fn a_missing_pinned_tool_fails_the_run_first_naming_its_install_command() {
-    for (name, command, _) in pinned_tools() {
+    for (name, command, _, _) in pinned_tools() {
         let repo = Repo::new();
         fs::remove_file(repo.dir.path().join("bin").join(&command)).unwrap();
         let out = repo.run_on_bin_only(&[], &[]);
@@ -292,7 +311,7 @@ fn a_missing_pinned_tool_fails_the_run_first_naming_its_install_command() {
 
 #[test]
 fn a_wrong_version_pinned_tool_fails_the_run_first() {
-    for (name, command, version) in pinned_tools() {
+    for (name, command, version, check) in pinned_tools() {
         let repo = Repo::new();
         write_exe(
             &repo.dir.path().join("bin").join(&command),
@@ -304,8 +323,8 @@ fn a_wrong_version_pinned_tool_fails_the_run_first() {
         let err = stderr(&out);
         assert!(
             err.contains(&format!(
-                "ci-tools: {name} is not version {version} (`{command} --version` printed: \
-                 {command} 0.0.0); install it with: "
+                "ci-tools: {name} is not version {version} (`{check}` printed: {command} 0.0.0); \
+                 install it with: "
             )),
             "{err}"
         );
@@ -379,10 +398,59 @@ fn a_relative_cargo_target_dir_is_relative_to_the_repo_root() {
 }
 
 #[test]
-fn any_argument_prints_usage_and_exits_2() {
-    for arg in ["--bogus", "--fast"] {
-        let out = Repo::new().run(&[arg], &[]);
-        assert_eq!(out.status.code(), Some(2), "{arg}");
-        assert_eq!(stderr(&out), "usage: scripts/ci-local.sh\n");
+fn fast_runs_only_the_quick_steps_in_order_and_passes() {
+    let out = Repo::new().run(&["--fast"], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(steps(&out), FAST_STEPS);
+    let err = stderr(&out);
+    assert!(!err.contains("pytest ran"), "{err}");
+    assert!(!err.contains("rule pack tests ran"), "{err}");
+    assert!(!err.contains("python ran in"), "{err}");
+    assert!(err.contains("ci-local: all checks passed"), "{err}");
+}
+
+#[test]
+fn a_failing_step_stops_the_fast_run() {
+    for (fail_on, step) in [
+        ("cargo fmt", "cargo fmt --check"),
+        ("cargo clippy", "cargo clippy"),
+        ("cargo build", "build ns"),
+        ("ns lint skills", "ns lint"),
+        ("lint .agents/skills", "ns lint .agents/skills"),
+        ("ns check-markers", "ns check-markers"),
+    ] {
+        let out = Repo::new().run(&["--fast"], &[("FAIL_ON", fail_on)]);
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        let at = FAST_STEPS.iter().position(|s| *s == step).unwrap();
+        assert_eq!(steps(&out), FAST_STEPS[..=at]);
+        assert!(stderr(&out).contains(&format!("ci-local: FAILED at step: {step}\n")));
+        assert!(!stderr(&out).contains("all checks passed"));
+    }
+}
+
+#[test]
+fn the_fast_run_fails_on_the_private_guard() {
+    let repo = Repo::new();
+    write_exe(
+        &repo.dir.path().join("scripts/check-private.sh"),
+        "#!/bin/sh\nexit 1\n",
+    );
+    let out = repo.run(&["--fast"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(steps(&out), FAST_STEPS);
+    assert!(stderr(&out).contains("ci-local: FAILED at step: private guard\n"));
+}
+
+#[test]
+fn an_unknown_or_extra_argument_prints_usage_and_exits_2() {
+    for args in [
+        &["--bogus"][..],
+        &["--full"],
+        &["--fast", "--fast"],
+        &["--fast", "x"],
+    ] {
+        let out = Repo::new().run(args, &[]);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert_eq!(stderr(&out), "usage: scripts/ci-local.sh [--fast]\n");
     }
 }

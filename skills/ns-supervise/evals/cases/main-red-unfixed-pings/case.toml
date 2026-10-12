@@ -29,7 +29,7 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = "grep -Eqi 'main_red_unfixed|unfixed|main.*(still )?red' .git/ns/handoffs/2026-10-10.md"
+run = "grep -Eqi 'main_red_unfixed|unfixed|main.*(still )?red' .git/ns/handoffs/nightshift-2026-10-10.md"
 expect_exit = 0
 
 # Read-only apart from starting and stopping: no merge, relabel, comment, edit or restart.
@@ -40,5 +40,5 @@ expect_exit = 0
 
 [[check]]
 type = "judge"
-rubric = "Read .git/fake/notify.log, .git/ns/handoffs/2026-10-10.md and the transcript. Pass only if the supervisor pinged that main went red with #100 as its fix, pinged that ns watch stopped the night because fix unit #100 ended stuck with main still red, did not stop or restart the night itself, and the report's How it ended names main_red_unfixed (or says the fix issue ended unfixed) and ranks red main near the top of Needs you."
+rubric = "Read .git/fake/notify.log, .git/ns/handoffs/nightshift-2026-10-10.md and the transcript. Pass only if the supervisor pinged that main went red with #100 as its fix, pinged that ns watch stopped the night because fix unit #100 ended stuck with main still red, did not stop or restart the night itself, and the report's How it ended names main_red_unfixed (or says the fix issue ended unfixed) and ranks red main near the top of Needs you."
 required = false

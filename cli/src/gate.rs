@@ -549,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn the_script_and_both_hooks_are_executable_and_the_hooks_run_full_ci() {
+    fn the_script_and_both_hooks_are_executable_and_pre_commit_runs_fast_ci_and_pre_push_full_ci() {
         use std::os::unix::fs::PermissionsExt;
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         for f in [
@@ -564,7 +564,7 @@ mod tests {
             assert!(mode & 0o111 != 0, "{f} is not executable");
         }
         let text = std::fs::read_to_string(repo.join(".githooks/pre-commit")).unwrap();
-        assert_eq!(text.lines().last(), Some("exec scripts/ci-local.sh"));
+        assert_eq!(text.lines().last(), Some("exec scripts/ci-local.sh --fast"));
         // pre-push runs it once per commit pushed; the cli tests pin how.
         let text = std::fs::read_to_string(repo.join(".githooks/pre-push")).unwrap();
         assert!(text.contains("exec scripts/ci-local.sh </dev/null"));

@@ -264,7 +264,7 @@ A rule pack is the set of linters and pattern checkers a repo runs to enforce it
 | rules | `ruff check --output-format=concise .`, `./scripts/rules-ast-grep` | 10 s |
 ```
 
-Nightshift ships packs under `rules/<language>/`, and `ns-setup` installs one into a repo's `.nightshift/rules/<language>/` with its row. The Rust pack is `rules/rust/` (D54); the Python pack, `rules/python/`, the JavaScript/TypeScript pack, `rules/js/` (ADR-420), and the C pack, `rules/c/`, list their rules in their READMEs.
+Nightshift ships packs under `rules/<language>/`, and `ns-setup` installs one into a repo's `.nightshift/rules/<language>/` with its row. The Rust pack is `rules/rust/` (D54); the Python pack, `rules/python/`, the JavaScript/TypeScript pack, `rules/js/` (ADR-420), the C pack, `rules/c/`, and the Java pack, `rules/java/` (ADR-367), list their rules in their READMEs.
 
 Each command runs with `sh -c` at the top of the git checkout it is started in. Every line it prints, on stdout or stderr, that is a finding is read as one:
 
@@ -704,7 +704,7 @@ The new binary lives under the git dir, so the next night starts with the instal
 
 ### Supervising a night
 
-The `ns-supervise` skill runs a session one level above `ns watch`: it attaches to the night or starts it, pings you when you are needed, and writes a status report to `<git-common-dir>/ns/handoffs/<night>.md`. It reads `[supervise]` through `ns factory validate`. Each ping goes to the harness's notification when it has one and to a message in the supervisor's thread. When `notify` is set, the supervisor also runs it with `sh -c`, the one-line ping on stdin. `silence_minutes` is how long the run log may stay quiet while units run before it pings.
+The `ns-supervise` skill runs a session one level above `ns watch`: it attaches to the night or starts it, pings you when you are needed, and writes a status report to `<git-common-dir>/ns/handoffs/nightshift-<night>.md`. It reads `[supervise]` through `ns factory validate`. Each ping goes to the harness's notification when it has one and to a message in the supervisor's thread. When `notify` is set, the supervisor also runs it with `sh -c`, the one-line ping on stdin. `silence_minutes` is how long the run log may stay quiet while units run before it pings.
 
 ### In the morning
 

@@ -44,7 +44,7 @@ expect_exit = 0
 
 [[check]]
 type = "file_exists"
-path = ".git/ns/handoffs/2026-10-10.md"
+path = ".git/ns/handoffs/nightshift-2026-10-10.md"
 
 [[check]]
 type = "judge"

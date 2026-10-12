@@ -19,7 +19,7 @@ commands = [
 
 [[check]]
 type = "file_exists"
-path = ".git/ns/handoffs/2026-10-10.md"
+path = ".git/ns/handoffs/nightshift-2026-10-10.md"
 
 # A split is not stuck: nothing about it is worth a ping.
 [[check]]
@@ -29,12 +29,12 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = "sed -n '/^## Split parents/,/^## /p' .git/ns/handoffs/2026-10-10.md | grep -q '#51'"
+run = "sed -n '/^## Split parents/,/^## /p' .git/ns/handoffs/nightshift-2026-10-10.md | grep -q '#51'"
 expect_exit = 0
 
 [[check]]
 type = "command"
-run = "! sed -n '/^## Stuck units/,/^## /p' .git/ns/handoffs/2026-10-10.md | grep -q '#51'"
+run = "! sed -n '/^## Stuck units/,/^## /p' .git/ns/handoffs/nightshift-2026-10-10.md | grep -q '#51'"
 expect_exit = 0
 
 [[check]]
@@ -44,5 +44,5 @@ expect_exit = 0
 
 [[check]]
 type = "judge"
-rubric = "Read .git/ns/handoffs/2026-10-10.md. Pass only if its Split parents section lists #51 as split into #52 and #53 and waiting on them, and #30 as closed with its children #31 and #32 done; #51 and #30 appear in neither Stuck units nor Needs you; and #54 is listed as merged."
+rubric = "Read .git/ns/handoffs/nightshift-2026-10-10.md. Pass only if its Split parents section lists #51 as split into #52 and #53 and waiting on them, and #30 as closed with its children #31 and #32 done; #51 and #30 appear in neither Stuck units nor Needs you; and #54 is listed as merged."
 required = false

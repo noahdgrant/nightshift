@@ -1,0 +1,15 @@
+# One road per job: an import comes from the JDK (utils/jdk-package.yml), the repo's own
+# packages, or a dependency the repo allows (utils/allowed-package.yml).
+id: dependency-allowlist
+language: java
+severity: warning
+message: "`$NAME` is outside the dependency allowlist; use what the repo already has, or have a human add it to the allowlist"
+url: https://github.com/noahdgrant/nightshift/blob/main/skills/ns-principle-pave-the-road/SKILL.md
+rule:
+  kind: scoped_identifier
+  pattern: $NAME
+  inside: {kind: import_declaration}
+  not:
+    any:
+      - matches: jdk-package
+      - matches: allowed-package

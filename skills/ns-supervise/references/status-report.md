@@ -1,11 +1,11 @@
 # Status report
 
-The template for `<common>/ns/handoffs/<night>.md`. The operator reads it in a separate session to work the night's leftovers, so every item carries its link and the reason it is there.
+The template for `<common>/ns/handoffs/nightshift-<night>.md`. The operator reads it in a separate session to work the night's leftovers, so every item carries its link and the reason it is there.
 
 Write the Timeline as events happen. Fill the other sections when the shift ends. A re-attached supervisor keeps every line already written and adds to it.
 
 ```markdown
-# Night of <YYYY-MM-DD>
+# nightshift-<YYYY-MM-DD>
 
 ## How it ended
 <ended at --until | queue empty | budget | main_red_unfixed: fix issue #<n> ended <outcome> | stopped by the supervisor: <reason> | died early: <cause>>,

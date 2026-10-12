@@ -1,0 +1,18 @@
+# A suppression says why, in a comment after it on the same line:
+#   @SuppressWarnings("unchecked") // the type token checks the cast
+#   int legacy; // NOPMD - read by reflection
+# ast-grep can't see a comment beside a node, so this matches every @SuppressWarnings, and
+# check.sh drops the ones a comment follows on the same line.
+id: suppression-reason
+language: java
+severity: warning
+message: a suppression needs its reason, as a comment after it on the same line
+url: https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md
+rule:
+  any:
+    - kind: annotation
+      has:
+        field: name
+        regex: '^(?:java\.lang\.)?SuppressWarnings$'
+    - any: [{kind: line_comment}, {kind: block_comment}]
+      regex: '^(?://+|/\*+)[\s:-]*(?:NOPMD|CHECKSTYLE:OFF)[\s:-]*(?:\*+/)?\s*$'
