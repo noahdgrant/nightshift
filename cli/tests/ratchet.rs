@@ -189,18 +189,12 @@ fn a_command_that_fails_or_prints_a_non_number_is_broken() {
          [ratchets.b]\ncommand = \"echo twelve\"\nbetter = \"lower\"\n\
          [ratchets.c]\ncommand = \"printf '1\\\\n2\\\\n'\"\nbetter = \"lower\"\n\
          [ratchets.d]\ncommand = \"echo inf\"\nbetter = \"lower\"\n\
-         [ratchets.e]\ncommand = \"sleep 5\"\nbetter = \"lower\"\n\
          [ratchets.f]\ncommand = \"kill -9 $$\"\nbetter = \"lower\"\n\
          [ratchets.g]\ncommand = \"echo 7\"\nbetter = \"lower\"\n",
     );
     r.record(&json!({"g": 7}));
-    let out = r
-        .cmd()
-        .env("NS_RATCHET_TIMEOUT_MS", "300")
-        .args(["check"])
-        .output();
-    assert_eq!(out.status.code(), Some(1));
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let (code, v, _) = r.ns(&["check"]);
+    assert_eq!(code, Some(1));
     let by: Vec<(String, String, String)> = v["ratchets"]
         .as_array()
         .unwrap()
@@ -218,10 +212,39 @@ fn a_command_that_fails_or_prints_a_non_number_is_broken() {
     assert_eq!(by[1].2, "printed \"twelve\", not one number");
     assert_eq!(by[2].2, "printed \"1\\n2\", not one number");
     assert_eq!(by[3].2, "printed \"inf\", not one number");
-    assert_eq!(by[4].2, "timed out after 0.3 s");
-    assert_eq!(by[5].2, "was killed by a signal");
-    assert_eq!((by[6].1.as_str(), by[6].2.as_str()), ("ok", ""));
+    assert_eq!(by[4].2, "was killed by a signal");
+    assert_eq!((by[5].1.as_str(), by[5].2.as_str()), ("ok", ""));
     assert!(v["ratchets"][0]["measured"].is_null());
+}
+
+#[test]
+fn a_command_that_outlives_the_timeout_is_broken() {
+    let r = Repo::new("[ratchets.e]\ncommand = \"sleep 30\"\nbetter = \"lower\"\n");
+    let out = r
+        .cmd()
+        .env("NS_RATCHET_TIMEOUT_MS", "300")
+        .args(["check"])
+        .output();
+    assert_eq!(out.status.code(), Some(1));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ratchets"][0]["status"], "broken");
+    assert_eq!(v["ratchets"][0]["error"], "timed out after 0.3 s");
+}
+
+#[test]
+fn a_timeout_that_is_not_a_positive_number_falls_back_to_the_default() {
+    let r = Repo::new(&Repo::cat("a", "lower", ""));
+    r.measure("a", "1");
+    for bad in ["soon", "0", "-5", ""] {
+        let out = r
+            .cmd()
+            .env("NS_RATCHET_TIMEOUT_MS", bad)
+            .args(["check"])
+            .output();
+        assert_eq!(out.status.code(), Some(0), "{bad:?}");
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["ratchets"][0]["status"], "untracked", "{bad:?}");
+    }
 }
 
 #[test]
@@ -525,4 +548,131 @@ fn update_human_output_ends_with_the_status() {
         String::from_utf8_lossy(&out.stdout),
         "ratchet a is recorded: measured 3, nothing recorded\nplanned: 1 ratchets: 1 recorded\n"
     );
+}
+
+#[test]
+fn json_and_human_conflict() {
+    let r = Repo::new(&Repo::cat("a", "lower", ""));
+    r.measure("a", "1");
+    for sub in ["check", "update"] {
+        let out = r.cmd().args([sub, "--json", "--human"]).output();
+        assert_eq!(out.status.code(), Some(2), "{sub}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be used with"));
+    }
+    assert_eq!(r.recorded(), None);
+}
+
+#[test]
+fn update_json_prints_the_json() {
+    let r = Repo::new(&Repo::cat("a", "lower", ""));
+    r.measure("a", "3");
+    let (code, v, err) = r.ns(&["update", "--json"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(v["command"], "ratchet update");
+    assert_eq!(v["status"], "written");
+    assert_eq!(v["ratchets"][0]["status"], "recorded");
+}
+
+#[test]
+fn update_ignores_the_factory_variable_the_gate_sets() {
+    let r = Repo::new(&Repo::cat("a", "lower", ""));
+    r.measure("a", "3");
+    let other = r.root.join("elsewhere");
+    fs::create_dir(&other).unwrap();
+    fs::write(other.join("nightshift.toml"), Repo::cat("a", "lower", "")).unwrap();
+    fs::write(
+        other.join("ratchets.json"),
+        json!({"version": 1, "values": {"a": 1}}).to_string(),
+    )
+    .unwrap();
+    let before = fs::read_to_string(other.join("ratchets.json")).unwrap();
+    let out = r
+        .cmd()
+        .env("NS_RATCHET_FACTORY", &other)
+        .args(["update", "--allow-loosen"])
+        .output();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        fs::read_to_string(other.join("ratchets.json")).unwrap(),
+        before
+    );
+    assert_eq!(r.recorded(), Some(json!({"a": 3.0})));
+}
+
+#[test]
+fn a_corrupt_steady_file_counts_as_no_steady_ratchets() {
+    let r = Repo::new(&format!(
+        "[ratchets.jitter]\ncommand = \"{COUNTER}\"\nbetter = \"lower\"\ntolerance = 5\n"
+    ));
+    let steady = r.root.join("steady.json");
+    fs::write(&steady, "not json").unwrap();
+    let out = r
+        .cmd()
+        .env("NS_RATCHET_STEADY", &steady)
+        .args(["check"])
+        .output();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(r.count(), "2\n");
+    let names: Value = serde_json::from_str(&fs::read_to_string(&steady).unwrap()).unwrap();
+    assert_eq!(names, json!(["jitter"]));
+}
+
+#[test]
+fn a_check_that_finds_nothing_new_leaves_the_steady_file_alone() {
+    let r = Repo::new(&format!(
+        "[ratchets.jitter]\ncommand = \"{COUNTER}\"\nbetter = \"lower\"\ntolerance = 5\n"
+    ));
+    let steady = r.root.join("steady.json");
+    fs::write(&steady, r#"["jitter"]"#).unwrap();
+    let out = r
+        .cmd()
+        .env("NS_RATCHET_STEADY", &steady)
+        .args(["check"])
+        .output();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(r.count(), "1\n");
+    assert_eq!(fs::read_to_string(&steady).unwrap(), r#"["jitter"]"#);
+}
+
+#[test]
+fn a_ratchet_that_breaks_on_its_second_run_is_not_marked_steady() {
+    let r = Repo::new(
+        "[ratchets.once]\ncommand = \"[ -f seen ] && exit 1; touch seen; echo 1\"\nbetter = \"lower\"\n",
+    );
+    let steady = r.root.join("steady.json");
+    let out = r
+        .cmd()
+        .env("NS_RATCHET_STEADY", &steady)
+        .args(["check"])
+        .output();
+    assert_eq!(out.status.code(), Some(1));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ratchets"][0]["status"], "broken");
+    assert!(!steady.exists());
+}
+
+#[test]
+fn a_report_path_that_cannot_be_created_is_an_error() {
+    let r = Repo::new(&Repo::cat("a", "lower", ""));
+    r.measure("a", "1");
+    fs::write(r.root.join("file"), "").unwrap();
+    let out = r
+        .cmd()
+        .env("NS_RATCHET_REPORT", r.root.join("file/sub/report.json"))
+        .args(["check"])
+        .output();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot create"));
+}
+
+#[test]
+fn an_unknown_key_or_a_missing_command_is_a_usage_error_naming_it() {
+    let r = Repo::new("[ratchets.a]\ncommand = \"true\"\nbetter = \"lower\"\ntolerence = 1\n");
+    let (code, _, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("tolerence"), "{err}");
+    let r = Repo::new("[ratchets.a]\nbetter = \"lower\"\n");
+    let (code, _, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("command"), "{err}");
 }

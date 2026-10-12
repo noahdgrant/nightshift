@@ -2,6 +2,7 @@
 //! (docs/FACTORY.md). Scorers are in `scorer.rs`.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -68,7 +69,7 @@ pub struct Factory {
     pub supervise: Supervise,
     /// `[ratchets.<name>]`: measured values `ns ratchet check` holds to `ratchets.json`.
     #[serde(default)]
-    pub ratchets: BTreeMap<String, crate::ratchet::Ratchet>,
+    pub ratchets: BTreeMap<String, Ratchet>,
     /// `runners/<name>.toml`, read by `load`, not part of `nightshift.toml`.
     #[serde(skip)]
     pub runners: BTreeMap<String, Runner>,
@@ -756,6 +757,94 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
     } else {
         ExitCode::from(1)
     })
+}
+
+/// A `[ratchets.<name>]` table in `nightshift.toml`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ratchet {
+    /// Run with `sh -c` at the top of the checkout; prints one number on stdout.
+    pub command: String,
+    pub better: Better,
+    #[serde(default)]
+    pub tolerance: Tolerance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Better {
+    Lower,
+    Higher,
+}
+
+/// How far past the recorded value a measurement may go: `"0.5%"` of the recorded value, or
+/// an absolute number.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(try_from = "RawTolerance")]
+pub enum Tolerance {
+    Absolute(f64),
+    Percent(f64),
+}
+
+impl Default for Tolerance {
+    fn default() -> Self {
+        Tolerance::Absolute(0.0)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawTolerance {
+    Number(f64),
+    Text(String),
+}
+
+impl TryFrom<RawTolerance> for Tolerance {
+    type Error = String;
+
+    fn try_from(raw: RawTolerance) -> Result<Self, String> {
+        let shown = match &raw {
+            RawTolerance::Number(n) => n.to_string(),
+            RawTolerance::Text(t) => t.clone(),
+        };
+        let bad = || {
+            format!("tolerance {shown:?}: use a percentage like \"0.5%\" or a number like 1024, not negative")
+        };
+        let t = match &raw {
+            RawTolerance::Number(n) => Tolerance::Absolute(*n),
+            RawTolerance::Text(t) => match t.trim().strip_suffix('%') {
+                Some(p) => Tolerance::Percent(p.trim().parse().map_err(|_| bad())?),
+                None => Tolerance::Absolute(t.trim().parse().map_err(|_| bad())?),
+            },
+        };
+        let n = match t {
+            Tolerance::Absolute(n) | Tolerance::Percent(n) => n,
+        };
+        if n.is_finite() && n >= 0.0 {
+            Ok(t)
+        } else {
+            Err(bad())
+        }
+    }
+}
+
+impl Tolerance {
+    /// The tolerance in the ratchet's own unit, around `value`.
+    pub fn around(self, value: f64) -> f64 {
+        match self {
+            Tolerance::Absolute(n) => n,
+            Tolerance::Percent(p) => value.abs() * p / 100.0,
+        }
+    }
+}
+
+impl fmt::Display for Tolerance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Tolerance::Absolute(n) => write!(f, "{n}"),
+            Tolerance::Percent(p) => write!(f, "{p}%"),
+        }
+    }
 }
 
 #[cfg(test)]

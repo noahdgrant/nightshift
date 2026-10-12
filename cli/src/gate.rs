@@ -2,14 +2,13 @@
 //! the PR head before it merges (docs/FACTORY.md, "Gate").
 
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::eval::trial::run_process;
+use crate::eval::trial::{run_process, tail};
 use crate::factory::Factory;
 use crate::git::same_sha;
 use crate::memcap::{self, Cap, Cut};
@@ -138,23 +137,6 @@ pub struct Ratchets<'a> {
 /// The end of the file, from a line start unless the whole file fits.
 pub fn read_window(path: &Path) -> Vec<u8> {
     tail(path, WINDOW_BYTES).unwrap_or_default()
-}
-
-/// The last `n` bytes of `path`, from a line start unless the whole file fits or they hold no
-/// line break.
-pub fn tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
-    let mut f = File::open(path)?;
-    let len = f.metadata()?.len();
-    let start = len.saturating_sub(n);
-    f.seek(SeekFrom::Start(start))?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    if start > 0 {
-        if let Some(i) = buf.iter().position(|b| *b == b'\n') {
-            buf.drain(..=i);
-        }
-    }
-    Ok(buf)
 }
 
 /// "timed out after 90 min", or in seconds when `timeout` is not whole minutes.

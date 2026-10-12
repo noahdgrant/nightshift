@@ -58,6 +58,14 @@ use args::{
 };
 use error::SfError;
 
+fn format(human: bool) -> ratchet::Format {
+    if human {
+        ratchet::Format::Human
+    } else {
+        ratchet::Format::Json
+    }
+}
+
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Cmd::Worktree { command } => match command {
@@ -251,7 +259,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Status { since, json } => return status::cli(since, json),
         Cmd::Ratchet { command } => match command {
             RatchetCmd::Check { factory, human, .. } => {
-                return ratchet::check(factory.as_deref(), !human)
+                return ratchet::check(factory.as_deref(), format(human))
             }
             RatchetCmd::Update {
                 factory,
@@ -259,7 +267,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 dry_run,
                 human,
                 ..
-            } => return ratchet::update(factory.as_deref(), allow_loosen, dry_run, !human),
+            } => return ratchet::update(factory.as_deref(), allow_loosen, dry_run, format(human)),
         },
         Cmd::Rules { command } => match command {
             RulesCmd::Check { human } => return rules::check(human),

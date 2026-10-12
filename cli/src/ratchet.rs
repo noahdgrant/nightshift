@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::SfError;
-use crate::eval::trial::run_process;
+use crate::eval::trial::{run_process, tail};
+use crate::factory::{Better, Ratchet};
 
 /// The recorded values, next to `nightshift.toml` in the factory directory.
 pub const FILE: &str = "ratchets.json";
@@ -29,94 +30,10 @@ const VARS: [&str; 3] = [FACTORY_VAR, STEADY_VAR, REPORT_VAR];
 const TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_STDOUT_BYTES: u64 = 64 * 1024;
 const STDERR_TAIL_BYTES: u64 = 2000;
-
-/// A `[ratchets.<name>]` table in `nightshift.toml`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Ratchet {
-    /// Run with `sh -c` at the top of the checkout; prints one number on stdout.
-    pub command: String,
-    pub better: Better,
-    #[serde(default)]
-    pub tolerance: Tolerance,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Better {
-    Lower,
-    Higher,
-}
-
-/// How far past the recorded value a measurement may go: `"0.5%"` of the recorded value, or
-/// an absolute number.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
-#[serde(try_from = "RawTolerance")]
-pub enum Tolerance {
-    Absolute(f64),
-    Percent(f64),
-}
-
-impl Default for Tolerance {
-    fn default() -> Self {
-        Tolerance::Absolute(0.0)
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum RawTolerance {
-    Number(f64),
-    Text(String),
-}
-
-impl TryFrom<RawTolerance> for Tolerance {
-    type Error = String;
-
-    fn try_from(raw: RawTolerance) -> Result<Self, String> {
-        let shown = match &raw {
-            RawTolerance::Number(n) => n.to_string(),
-            RawTolerance::Text(t) => t.clone(),
-        };
-        let bad = || {
-            format!("tolerance {shown:?}: use a percentage like \"0.5%\" or a number like 1024, not negative")
-        };
-        let t = match &raw {
-            RawTolerance::Number(n) => Tolerance::Absolute(*n),
-            RawTolerance::Text(t) => match t.trim().strip_suffix('%') {
-                Some(p) => Tolerance::Percent(p.trim().parse().map_err(|_| bad())?),
-                None => Tolerance::Absolute(t.trim().parse().map_err(|_| bad())?),
-            },
-        };
-        let n = match t {
-            Tolerance::Absolute(n) | Tolerance::Percent(n) => n,
-        };
-        if n.is_finite() && n >= 0.0 {
-            Ok(t)
-        } else {
-            Err(bad())
-        }
-    }
-}
-
-impl Tolerance {
-    /// The tolerance in the ratchet's own unit, around `value`.
-    fn around(self, value: f64) -> f64 {
-        match self {
-            Tolerance::Absolute(n) => n,
-            Tolerance::Percent(p) => value.abs() * p / 100.0,
-        }
-    }
-}
-
-impl fmt::Display for Tolerance {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Tolerance::Absolute(n) => write!(f, "{n}"),
-            Tolerance::Percent(p) => write!(f, "{p}%"),
-        }
-    }
-}
+/// Runs of a ratchet's command on a ratchet's first check: two values show whether it is steady.
+const FIRST_CHECK_RUNS: usize = 2;
+/// Runs of a ratchet's command once tonight's earlier check found it steady.
+const STEADY_RUNS: usize = 1;
 
 #[derive(Serialize, Deserialize, Default)]
 struct Recorded {
@@ -160,7 +77,7 @@ fn measure(cmd: &str, root: &Path, timeout: Duration) -> Result<f64, String> {
         .stderr(pipe(err.as_file())?);
     let (status, timed_out, _) =
         run_process(c, None, timeout).map_err(|e| format!("cannot run: {e}"))?;
-    let stderr = crate::gate::tail(err.path(), STDERR_TAIL_BYTES).unwrap_or_default();
+    let stderr = tail(err.path(), STDERR_TAIL_BYTES).unwrap_or_default();
     let stderr = String::from_utf8_lossy(&stderr);
     let with_stderr = |how: String| match stderr.trim() {
         "" => how,
@@ -276,12 +193,12 @@ impl Outcome {
     }
 }
 
-/// Measure `r`, twice unless `steady`, and compare it with `recorded`.
+/// Measure `r` `runs` times and compare the first value with `recorded`.
 fn assess(
     name: &str,
     r: &Ratchet,
     recorded: Option<f64>,
-    steady: bool,
+    runs: usize,
     root: &Path,
     timeout: Duration,
 ) -> Outcome {
@@ -298,8 +215,7 @@ fn assess(
         status: Status::Broken,
         error: None,
     };
-    let times = if steady { 1 } else { 2 };
-    for _ in 0..times {
+    for _ in 0..runs {
         match measure(&r.command, root, timeout) {
             Ok(v) => o.runs.push(v),
             Err(e) => {
@@ -332,7 +248,7 @@ struct Ctx {
     recorded: Recorded,
 }
 
-fn ctx(factory: Option<&Path>, usage: &str) -> Result<Ctx> {
+fn ctx(factory: Option<PathBuf>, usage: &str) -> Result<Ctx> {
     let cwd = std::env::current_dir().context("cannot read current directory")?;
     let root = crate::git::run(&cwd, &["rev-parse", "--show-toplevel"]).map_err(|_| {
         SfError::usage(
@@ -340,8 +256,7 @@ fn ctx(factory: Option<&Path>, usage: &str) -> Result<Ctx> {
             format!("run it from the repo:\n  cd ~/src/myrepo && {usage}"),
         )
     })?;
-    let env = std::env::var_os(FACTORY_VAR).map(PathBuf::from);
-    let dir = match factory.map(Path::to_path_buf).or(env) {
+    let dir = match factory {
         Some(d) => d,
         None => crate::factory::root(None, &crate::git::Repo::discover(&cwd)?.root),
     };
@@ -367,10 +282,13 @@ fn ctx(factory: Option<&Path>, usage: &str) -> Result<Ctx> {
     })
 }
 
+/// `NS_RATCHET_TIMEOUT_MS` when it is a positive number of milliseconds; anything else falls
+/// back to the default, as `NS_RULES_TIMEOUT_MS` does.
 fn timeout() -> Duration {
     std::env::var("NS_RATCHET_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse().ok())
+        .filter(|ms| *ms > 0)
         .map_or(TIMEOUT, Duration::from_millis)
 }
 
@@ -397,14 +315,22 @@ fn write_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     fs::rename(&tmp, path).with_context(|| format!("cannot write {}", path.display()))
 }
 
-fn print(v: &Value, outcomes: &[Outcome], summary: &str, json: bool) -> Result<()> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(v)?);
-    } else {
-        for o in outcomes {
-            println!("{}", o.line());
+/// How `check` and `update` print their result.
+#[derive(Clone, Copy)]
+pub enum Format {
+    Json,
+    Human,
+}
+
+fn emit(format: Format, v: &Value, outcomes: &[Outcome], summary: &str) -> Result<()> {
+    match format {
+        Format::Json => println!("{}", serde_json::to_string_pretty(v)?),
+        Format::Human => {
+            for o in outcomes {
+                println!("{}", o.line());
+            }
+            println!("{summary}");
         }
-        println!("{summary}");
     }
     Ok(())
 }
@@ -421,8 +347,12 @@ fn count(outcomes: &[Outcome]) -> String {
     }
 }
 
-pub fn check(factory: Option<&Path>, json: bool) -> Result<ExitCode> {
-    let c = ctx(factory, "ns ratchet check")?;
+pub fn check(factory: Option<&Path>, format: Format) -> Result<ExitCode> {
+    let from_env = std::env::var_os(FACTORY_VAR).map(PathBuf::from);
+    let c = ctx(
+        factory.map(Path::to_path_buf).or(from_env),
+        "ns ratchet check",
+    )?;
     let (steady_file, mut steady) = steady();
     let timeout = timeout();
     let outcomes: Vec<Outcome> = c
@@ -430,7 +360,11 @@ pub fn check(factory: Option<&Path>, json: bool) -> Result<ExitCode> {
         .iter()
         .map(|(name, r)| {
             let rec = c.recorded.values.get(name).copied();
-            assess(name, r, rec, steady.contains(name), &c.root, timeout)
+            let runs = match steady.contains(name) {
+                true => STEADY_RUNS,
+                false => FIRST_CHECK_RUNS,
+            };
+            assess(name, r, rec, runs, &c.root, timeout)
         })
         .collect();
     let ok = !outcomes.iter().any(Outcome::failed);
@@ -454,7 +388,7 @@ pub fn check(factory: Option<&Path>, json: bool) -> Result<ExitCode> {
             write_atomic(&path, &steady)?;
         }
     }
-    print(&v, &outcomes, &count(&outcomes), json)?;
+    emit(format, &v, &outcomes, &count(&outcomes))?;
     if outcomes.iter().any(|o| o.status == Status::Untracked) {
         eprintln!("ns ratchet: untracked ratchets have no recorded value; a human records them with:\n  ns ratchet update");
     }
@@ -471,9 +405,9 @@ pub fn update(
     factory: Option<&Path>,
     allow_loosen: bool,
     dry_run: bool,
-    json: bool,
+    format: Format,
 ) -> Result<ExitCode> {
-    let c = ctx(factory, "ns ratchet update")?;
+    let c = ctx(factory.map(Path::to_path_buf), "ns ratchet update")?;
     if c.ratchets.is_empty() {
         return Err(SfError::usage(
             "no [ratchets.*] table in nightshift.toml",
@@ -486,7 +420,7 @@ pub fn update(
     let mut values = BTreeMap::new();
     for (name, r) in &c.ratchets {
         let rec = c.recorded.values.get(name).copied();
-        let mut o = assess(name, r, rec, false, &c.root, timeout);
+        let mut o = assess(name, r, rec, FIRST_CHECK_RUNS, &c.root, timeout);
         let (status, value) = match (o.status, o.measured, rec) {
             (Status::Broken | Status::Flaky, ..) | (_, None, _) => (o.status, None),
             (_, Some(m), None) => (Status::Recorded, Some(m)),
@@ -535,11 +469,11 @@ pub fn update(
         "ratchets": outcomes,
         "dropped": dropped,
     });
-    print(
+    emit(
+        format,
         &v,
         &outcomes,
         &format!("{status}: {}", count(&outcomes)),
-        json,
     )?;
     if outcomes.iter().any(|o| o.status == Status::Kept) {
         eprintln!("ns ratchet: worse ratchets keep their recorded value; a human loosens them with:\n  ns ratchet update --allow-loosen");
@@ -570,6 +504,7 @@ pub fn failures(report: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::factory::Tolerance;
 
     fn tol(toml: &str) -> Result<Tolerance, String> {
         #[derive(Deserialize)]
