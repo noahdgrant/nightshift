@@ -19,7 +19,8 @@ pack=$(cd "$(dirname "$0")" && pwd)
 dest=.nightshift/rules/js
 stack=$repo/docs/agents/stack.md
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+stage=
+trap 'rm -rf "$tmp" ${stage:+"$stage"}' EXIT
 
 for t in npm jq; do
   command -v "$t" >/dev/null 2>&1 || {
@@ -47,17 +48,22 @@ grep -qxF "$row" "$tmp/stack.md" || {
   exit 2
 }
 
-# The new pack, with the repo's data from an earlier install, or else an allowlist of every
-# package the repo's package.json names.
-mkdir "$tmp/pack"
-cp -R "$pack/check.sh" "$pack/eslint.config.mjs" "$pack/sgconfig.yml" "$pack/package.json" \
-  "$pack/package-lock.json" "$pack/.gitignore" "$pack/rules" "$pack/utils" "$tmp/pack/"
+# The new pack is built beside its destination, so the swap is a rename on one filesystem. It
+# holds the repo's data from an earlier install, or else an allowlist of every package the
+# repo's package.json names.
 old=$repo/$dest
+mkdir -p "$(dirname "$old")"
+stage=$(mktemp -d "$(dirname "$old")/.js-install.XXXXXX")
+backup=$stage/previous
+new=$stage/pack
+mkdir "$new"
+cp -R "$pack/check.sh" "$pack/eslint.config.mjs" "$pack/sgconfig.yml" "$pack/package.json" \
+  "$pack/package-lock.json" "$pack/.gitignore" "$pack/rules" "$pack/utils" "$new/"
 if [ -f "$old/utils/allowed-package.yml" ]; then
-  cp "$old/utils/allowed-package.yml" "$old/utils/helper-name.yml" "$tmp/pack/utils/"
+  cp "$old/utils/allowed-package.yml" "$old/utils/helper-name.yml" "$new/utils/"
   ignores=$(grep '^ignores:' "$old/rules/duplicate-helper.yml")
   IGNORES=$ignores awk '/^ignores:/ { print ENVIRON["IGNORES"]; next } { print }' \
-    "$pack/rules/duplicate-helper.yml" >"$tmp/pack/rules/duplicate-helper.yml"
+    "$pack/rules/duplicate-helper.yml" >"$new/rules/duplicate-helper.yml"
 elif [ -f "$repo/package.json" ]; then
   names=$(jq -r '[.name // empty] + ([.dependencies, .devDependencies, .peerDependencies,
       .optionalDependencies] | map(keys? // []) | add) | unique | join("\n")' \
@@ -68,17 +74,29 @@ elif [ -f "$repo/package.json" ]; then
   # A package name may hold `.`, the one regex metacharacter npm allows in it.
   alts=$(printf '%s\n' "$names" | sed 's/\./\\./g' | paste -sd'|' -)
   ALTS=$alts awk '/^  regex:/ { printf "  regex: '\''^(?:%s)(?:/|$)'\''\n", ENVIRON["ALTS"]; next } { print }' \
-    "$pack/utils/allowed-package.yml" >"$tmp/pack/utils/allowed-package.yml"
+    "$pack/utils/allowed-package.yml" >"$new/utils/allowed-package.yml"
 fi
 
-(cd "$tmp/pack" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error) >"$tmp/npm.log" 2>&1 || {
+(cd "$new" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error) >"$tmp/npm.log" 2>&1 || {
   cat "$tmp/npm.log" >&2
   echo "install.sh: npm ci failed for the pack's tools" >&2
   exit 2
 }
 
-rm -rf "$old"
-mkdir -p "$(dirname "$old")"
-mv "$tmp/pack" "$old"
-cat "$tmp/stack.md" >"$stack"
+restore() {
+  [ ! -e "$backup" ] || { rm -rf "$old"; mv "$backup" "$old"; }
+}
+if [ -e "$old" ]; then
+  mv "$old" "$backup"
+fi
+mv "$new" "$old" || {
+  restore
+  echo "install.sh: could not move the new pack to $old; the previous pack is back in place" >&2
+  exit 2
+}
+cat "$tmp/stack.md" >"$stack" || {
+  restore
+  echo "install.sh: could not write $stack; the previous pack is back in place" >&2
+  exit 2
+}
 echo "installed the JavaScript/TypeScript rule pack in $old"

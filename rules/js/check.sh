@@ -79,8 +79,8 @@ case $tool in
       status=$?
     # A config error, in tsconfig.json or with no file, means tsc may have checked nothing, so
     # it fails the run rather than become a finding a baseline could hide.
-    if grep -E '^error TS|^[^ ]*\.json\([0-9]+,[0-9]+\): error TS' "$report" >"$log"; then
-      sed 's/^/check.sh: /' "$log" >&2
+    if grep -E '^error TS|^[^ ]*\.json\([0-9]+,[0-9]+\): error TS' "$report" >"$tmp/config-errors"; then
+      sed 's/^/check.sh: /' "$tmp/config-errors" >&2
       echo "check.sh: $dir/tsconfig.json has errors, so tsc checked nothing; fix them and rerun" >&2
       exit 2
     fi

@@ -2,18 +2,34 @@
 // from the directory it checks, so the globs and the tsconfig.json test are relative to that
 // directory, and no config of the repo's own is read. README.md says what each rule enforces.
 import { existsSync } from "node:fs";
+import { relative, resolve } from "node:path";
+import { includeIgnoreFile } from "@eslint/compat";
 import { defineConfig } from "eslint/config";
+import typescript from "typescript";
 import tseslint from "typescript-eslint";
 
 const all = ["**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"];
 const ts = ["**/*.{ts,tsx,mts,cts}"];
 
-// The type-aware rules need the repo's tsconfig.json. Without one, TypeScript files get the
-// rules that need no type information.
-const typed = existsSync("tsconfig.json");
+// The type-aware rules need the repo's tsconfig.json, and only the files it includes are in the
+// project. The other TypeScript files, and all of them without a tsconfig.json, get the rules
+// that need no type information. A tsconfig.json that names no files itself (project
+// references) puts every TypeScript file in the project.
+function projectFiles() {
+  if (!existsSync("tsconfig.json")) return [];
+  const read = typescript.readConfigFile("tsconfig.json", typescript.sys.readFile);
+  const parsed = typescript.parseJsonConfigFileContent(read.config ?? {}, typescript.sys, process.cwd());
+  const named = parsed.fileNames
+    .map((f) => relative(process.cwd(), f))
+    .filter((f) => /\.(?:ts|tsx|mts|cts)$/.test(f) && !f.startsWith(".."));
+  return named.length > 0 ? named : ts;
+}
+const typed = projectFiles();
+const gitignore = resolve(process.cwd(), ".gitignore");
 
 export default defineConfig(
   { ignores: [".nightshift/rules/"] },
+  ...(existsSync(gitignore) ? [includeIgnoreFile(gitignore)] : []),
   {
     files: all,
     languageOptions: {
@@ -37,14 +53,19 @@ export default defineConfig(
   },
   {
     files: ts,
-    extends: [typed ? tseslint.configs.strictTypeChecked : tseslint.configs.strict],
+    ignores: typed,
+    extends: [tseslint.configs.strict],
+  },
+  {
+    files: ts,
     rules: {
       "@typescript-eslint/consistent-type-imports": "error",
     },
   },
-  typed
+  typed.length > 0
     ? {
-        files: ts,
+        files: typed,
+        extends: [tseslint.configs.strictTypeChecked],
         languageOptions: {
           parserOptions: { projectService: true, tsconfigRootDir: process.cwd() },
         },

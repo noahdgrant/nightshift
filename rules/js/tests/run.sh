@@ -36,16 +36,23 @@ fail() {
 git_as() { git -c user.name=t -c user.email=t@example.com "$@"; }
 
 # A copy of fixture repo $1 at $tmp/$1, a git repo with the pack installed. Its package.json and
-# lockfile must come through the install unchanged.
+# lockfile must come through the install unchanged, and no other lockfile or node_modules may
+# appear at its root.
 install_repo() {
-  local repo=$tmp/$1 out
+  local repo=$tmp/$1 out f
   cp -R "$pack/tests/repos/$1" "$repo"
   git -C "$repo" init -q
   mkdir "$tmp/$1.before"
-  cp "$repo/package.json" "$repo/package-lock.json" "$tmp/$1.before/"
+  for f in package.json package-lock.json pnpm-lock.yaml; do
+    [ ! -e "$repo/$f" ] || cp "$repo/$f" "$tmp/$1.before/"
+  done
   out=$("$pack/install.sh" "$repo" 2>&1) || fail "install.sh $1: $out"
-  for f in package.json package-lock.json; do
-    git diff --no-index --quiet "$tmp/$1.before/$f" "$repo/$f" || fail "install.sh $1: changed the repo's $f"
+  for f in package.json package-lock.json pnpm-lock.yaml; do
+    if [ -e "$tmp/$1.before/$f" ]; then
+      git diff --no-index --quiet "$tmp/$1.before/$f" "$repo/$f" || fail "install.sh $1: changed the repo's $f"
+    else
+      [ ! -e "$repo/$f" ] || fail "install.sh $1: wrote $f at the repo root"
+    fi
   done
   [ ! -e "$repo/node_modules" ] || fail "install.sh $1: wrote node_modules at the repo root"
 }
@@ -68,7 +75,7 @@ findings_for() {
   jq -c --arg f "$2" 'select(.file == $f)' "$tmp/$1.findings"
 }
 
-for kind in js ts react; do
+for kind in js ts react ts-include pnpm; do
   install_repo "$kind"
 done
 
@@ -110,7 +117,17 @@ for d in .hid node_modules/dep .git/hooks .nightshift/rules/js/extra; do
   cp "$tmp/js/scan.js" "$tmp/js/$d/scan.js"
 done
 
-for kind in js ts react; do
+# Files the repo's .gitignore names are not linted, as ast-grep skips them.
+printf 'dist/\n' >"$tmp/js/.gitignore"
+mkdir "$tmp/js/dist"
+printf 'console.log(1);\n' >"$tmp/js/dist/bundle.js"
+
+# A tsconfig.json whose include leaves a .ts file out of the project: that file still gets the
+# rules that need no types, and no parse error.
+mkdir "$tmp/ts-include/tests"
+printf 'export const outside = 1 == 1;\n' >"$tmp/ts-include/tests/outside.test.ts"
+
+for kind in js ts react ts-include pnpm; do
   run_row "$kind"
 done
 
@@ -142,6 +159,16 @@ done
 
 [ -z "$(findings_for js untyped/floating.ts)" ] ||
   fail "a .ts file in a repo with no tsconfig.json got findings: $(findings_for js untyped/floating.ts)"
+[ -z "$(findings_for js dist/bundle.js)" ] ||
+  fail "a gitignored file was linted: $(findings_for js dist/bundle.js)"
+for file in vite.config.ts tests/outside.test.ts; do
+  jq -e 'select(.tool == "eslint" and .rule == "eqeqeq")' <<<"$(findings_for ts-include "$file")" >/dev/null ||
+    fail "ts-include: no eqeqeq finding on $file outside the tsconfig.json include"
+  ! jq -e 'select(.rule == "parse-error")' <<<"$(findings_for ts-include "$file")" >/dev/null ||
+    fail "ts-include: $file outside the tsconfig.json include gave a parse error"
+done
+[ -z "$(findings_for ts-include src/inside.ts)" ] || fail "ts-include: src/inside.ts gave findings"
+[ -z "$(findings_for pnpm package.json)" ] || fail "pnpm: findings on package.json"
 for want in "eslint no-console" "ast-grep dependency-allowlist"; do
   for file in scan.js .hid/scan.js; do
     jq -e --arg t "${want% *}" --arg r "${want#* }" 'select(.tool == $t and .rule == $r)' \
@@ -174,6 +201,31 @@ jq -e 'select(.file == "src/other.js" and .rule == "duplicate-helper")' <<<"$out
 if grep -qF "kept.js" <<<"$out"; then
   fail "duplicate-helper: the kept ignores did not skip src/kept.js: $out"
 fi
+
+# An install that fails while swapping the new pack in puts the previous pack back, with the
+# repo's data, and leaves no staging directory behind.
+mkdir "$tmp/failing-mv"
+printf '#!/bin/sh\ncase $1 in */pack) exit 1 ;; esac\nexec /bin/mv "$@"\n' >"$tmp/failing-mv/mv"
+chmod +x "$tmp/failing-mv/mv"
+repo=$tmp/js
+data=$repo/.nightshift/rules/js
+cp "$repo/docs/agents/stack.md" "$tmp/stack.before"
+PATH=$tmp/failing-mv:$PATH "$pack/install.sh" "$repo" >/dev/null 2>&1 && fail "install.sh: a failing swap was not refused"
+grep -qF "kept-pkg" "$data/utils/allowed-package.yml" || fail "install.sh: a failing swap lost the allowlist"
+grep -qF "keptHelper" "$data/utils/helper-name.yml" || fail "install.sh: a failing swap lost the helper names"
+[ -x "$data/node_modules/.bin/eslint" ] || fail "install.sh: a failing swap lost the previous pack"
+git diff --no-index --quiet "$tmp/stack.before" "$repo/docs/agents/stack.md" || fail "install.sh: a failing swap changed stack.md"
+left=("$repo"/.nightshift/rules/*)
+[ "${#left[@]}" -eq 1 ] || fail "install.sh: a failing swap left a staging directory: ${left[*]}"
+
+# A repo with no package.json gets the pack with the allowlist as shipped, and none is created.
+repo=$tmp/no-package-json
+mkdir -p "$repo/docs/agents"
+cp "$pack/tests/repos/js/docs/agents/stack.md" "$repo/docs/agents/"
+"$pack/install.sh" "$repo" >/dev/null 2>&1 || fail "install.sh: a repo with no package.json was refused"
+git diff --no-index --quiet "$pack/utils/allowed-package.yml" "$repo/.nightshift/rules/js/utils/allowed-package.yml" ||
+  fail "install.sh: a repo with no package.json got a changed allowlist"
+[ ! -e "$repo/package.json" ] && [ ! -e "$repo/package-lock.json" ] || fail "install.sh: wrote a package.json or lockfile in a repo with none"
 
 # A repo with no Commands table, no stack.md or a broken package.json is refused, as is an
 # install whose npm ci fails, and the repo is left as it was.
@@ -213,6 +265,13 @@ chmod +x "$tmp/failing-ast-grep/ast-grep"
 out=$(cd "$tmp/ts" && PATH=$tmp/failing-ast-grep:$PATH "$check" ast-grep . 2>"$tmp/stderr") && rc=0 || rc=$?
 [ "$rc" -eq 3 ] && [ -z "$out" ] && grep -qF "ast-grep broke" "$tmp/stderr" ||
   fail "check.sh ast-grep: exit $rc on a failing tool, stdout: $out, stderr: $(<"$tmp/stderr")"
+mkdir -p "$tmp/crashing-tsc/node_modules/.bin"
+cp "$check" "$tmp/crashing-tsc/check.sh"
+printf '#!/bin/sh\necho "tsc crashed" >&2\nexit 4\n' >"$tmp/crashing-tsc/node_modules/.bin/tsc"
+chmod +x "$tmp/crashing-tsc/node_modules/.bin/tsc"
+out=$("$tmp/crashing-tsc/check.sh" tsc "$tmp/ts" 2>"$tmp/stderr") && rc=0 || rc=$?
+[ "$rc" -eq 4 ] && [ -z "$out" ] && grep -qF "tsc crashed" "$tmp/stderr" ||
+  fail "check.sh tsc: exit $rc on a crashing tsc, stdout: $out, stderr: $(<"$tmp/stderr")"
 mkdir "$tmp/no-node-modules"
 cp "$check" "$tmp/no-node-modules/check.sh"
 out=$(cd "$tmp/ts" && "$tmp/no-node-modules/check.sh" eslint . 2>&1) && rc=0 || rc=$?
