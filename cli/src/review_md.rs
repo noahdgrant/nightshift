@@ -102,6 +102,12 @@ pub struct Finding {
     /// Fix cycles that handed it to the build agent (`Attempts:`); `None` in records from
     /// before fix-only cycles.
     pub fix_attempts: Option<u32>,
+    /// Raisers the lead overruled on a finding that stands on the others (`Dismissed raises:`).
+    /// A dismissed finding's raisers are all in `axes` instead.
+    pub dismissed_raises: Vec<String>,
+    /// For an escape, the axis whose earlier review should have caught it (`Missed by:`);
+    /// `None` is unattributed, as every escape from before the field is.
+    pub missed_by: Option<String>,
 }
 
 impl Finding {
@@ -157,7 +163,7 @@ fn field_key() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     re(
         &R,
-        r"(?i)\b(status|location|raised by|axis|axes|scope|cycle|attempts|finding|evidence|fix):\**\s*",
+        r"(?i)\b(status|location|raised by|dismissed raises|missed by|axis|axes|scope|cycle|attempts|finding|evidence|fix):\**\s*",
     )
 }
 
@@ -327,6 +333,8 @@ impl<'a> Block<'a> {
             scope: get(&["scope"]).map_or(Scope::Unknown, |s| scope_of(&s)),
             cycle: get(&["cycle"]).and_then(|c| first_number(&c)),
             fix_attempts: get(&["attempts"]).and_then(|c| first_number(&c)),
+            dismissed_raises: get(&["dismissed raises"]).map_or_else(Vec::new, |v| axes_in(&v)),
+            missed_by: get(&["missed by"]).and_then(|v| axes_in(&v).into_iter().next()),
             fixed_cycle: status_text
                 .as_deref()
                 .or(self.one_line.then_some(self.title.as_str()))
@@ -498,9 +506,44 @@ mod tests {
                 status: Status::Fixed,
                 fixed_cycle: Some(3),
                 fix_attempts: Some(1),
+                dismissed_raises: Vec::new(),
+                missed_by: None,
             }
         );
         assert!(f.blocking());
+    }
+
+    #[test]
+    fn a_dismissed_raise_names_the_reviewers_the_lead_overruled() {
+        let f = one("\
+### I2. Leaks the handle
+- Axis: correctness, readability, performance
+- Dismissed raises: readability (style only), `perf`
+- Status: open
+");
+        assert_eq!(f.axes, ["correctness", "readability", "performance"]);
+        assert_eq!(f.dismissed_raises, ["readability", "performance"]);
+        let packed = one("### I2. t\n- Axis: tests. Dismissed raises: tests. Status: fixed\n");
+        assert_eq!(packed.dismissed_raises, ["tests"]);
+        assert_eq!(packed.status, Status::Fixed);
+        assert!(one("### I2. t\n- Dismissed raises: none\n")
+            .dismissed_raises
+            .is_empty());
+    }
+
+    #[test]
+    fn an_escape_names_the_axis_that_missed_it() {
+        let f = one("\
+### I4. Off by one in reserve
+- Axis: correctness
+- Scope: pre-existing
+- Missed by: **tests**, correctness
+- Status: deferred: #50
+");
+        assert_eq!(f.missed_by.as_deref(), Some("tests"));
+        let old = one("### I4. t\n- Scope: pre-existing\n- Status: deferred: #50\n");
+        assert_eq!(old.missed_by, None);
+        assert_eq!(one("### I4. t\n- Missed by: unknown\n").missed_by, None);
     }
 
     #[test]

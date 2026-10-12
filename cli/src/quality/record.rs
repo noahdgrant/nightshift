@@ -36,6 +36,11 @@ pub struct FindingRecord {
     /// written: the reviewed commit may be gone by the time the record is read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced_by: Option<Blame>,
+    /// Absent from records written before reviewer metrics (#424), as are the fields below.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dismissed_raises: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missed_by: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -144,6 +149,8 @@ fn finding(f: &Finding, introduced_by: Option<Blame>) -> FindingRecord {
         fix_attempts: f.fix_attempts,
         location: f.location.clone().filter(|l| !absolute(l)),
         introduced_by,
+        dismissed_raises: f.dismissed_raises.clone(),
+        missed_by: f.missed_by.clone(),
     }
 }
 
@@ -247,6 +254,8 @@ fn attempt(r: &Record) -> Attempt {
                 status: f.status,
                 fixed_cycle: f.fixed_cycle,
                 fix_attempts: f.fix_attempts,
+                dismissed_raises: f.dismissed_raises.clone(),
+                missed_by: f.missed_by.clone(),
             })
             .collect(),
         stray_statuses: r.stray_statuses,
@@ -597,6 +606,43 @@ mod tests {
         assert!(v["findings"][1].get("introduced_by").is_none(), "{v}");
     }
 
+    #[test]
+    fn a_dismissed_raise_and_an_escape_attribution_are_carried_and_read_back() {
+        let a = Attempt {
+            path: "r.md".into(),
+            findings: review_md::parse(
+                "### I1. stands\n- Axis: correctness, readability\n- Dismissed raises: readability\n- Scope: changed\n### I2. escape\n- Axis: security\n- Scope: pre-existing\n- Missed by: tests\n- Status: deferred: #9\n",
+            ),
+            ..Attempt::default()
+        };
+        let rs = build(
+            &meta(),
+            std::slice::from_ref(&a),
+            0,
+            Path::new("/nonexistent"),
+        )
+        .unwrap();
+        let v = serde_json::to_value(&rs[0]).unwrap();
+        assert_eq!(
+            v["findings"][0]["dismissed_raises"],
+            serde_json::json!(["readability"])
+        );
+        assert!(v["findings"][0].get("missed_by").is_none(), "{v}");
+        assert_eq!(v["findings"][1]["missed_by"], "tests");
+        assert!(v["findings"][1].get("dismissed_raises").is_none(), "{v}");
+        let (back, _) = parse(&serde_json::to_string(&rs[0]).unwrap());
+        assert_eq!(
+            attempt(&back[0]).findings,
+            a.findings
+                .iter()
+                .map(|f| Finding {
+                    title: String::new(),
+                    ..f.clone()
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+
     fn rec(unit: &str, recorded: &str, attempt: usize, status: &str) -> Record {
         let mut r = build(
             &Meta {
@@ -650,6 +696,8 @@ mod tests {
         let (rs, bad) = parse(old);
         assert_eq!((rs.len(), bad), (1, 0));
         assert_eq!(rs[0].findings[0].fix_attempts, None);
+        assert!(rs[0].findings[0].dismissed_raises.is_empty());
+        assert_eq!(rs[0].findings[0].missed_by, None);
         assert_eq!(units(&rs)[0].last().findings[0].fix_attempts, None);
     }
 
