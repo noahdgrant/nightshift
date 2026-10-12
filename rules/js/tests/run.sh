@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+# Check the JavaScript/TypeScript pack. install.sh installs it into a copy of each fixture repo in
+# tests/repos/ (plain JS, TypeScript, React), and the examples in tests/examples/<rule>/ go into
+# the repo their extension belongs to (.js, .jsx, .mjs, .cjs: js; .ts, .mts, .cts: ts; .tsx:
+# react). Each fail* example must give a finding for <rule> (the finding's rule, or its last
+# /-separated part), and each pass* example no finding at all. A rule directory with a make.sh
+# also has it write examples into a temp directory, for examples too long to commit.
+#
+#   rules/js/tests/run.sh
+set -euo pipefail
+shopt -s globstar nullglob dotglob
+
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
+
+pack=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+for tool in node npm jq ast-grep; do
+  command -v "$tool" >/dev/null || {
+    case $tool in
+      ast-grep) how="uv tool install ast-grep-cli" ;;
+      *) how="sudo apt-get install nodejs npm jq" ;;
+    esac
+    echo "run.sh: $tool is not on PATH; install it with: $how" >&2
+    exit 1
+  }
+done
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+failed=0
+fail() {
+  printf 'FAIL %s\n' "$*" >&2
+  failed=1
+}
+git_as() { git -c user.name=t -c user.email=t@example.com "$@"; }
+
+# A copy of fixture repo $1 at $tmp/$1, a git repo with the pack installed. Its package.json and
+# lockfile must come through the install unchanged.
+install_repo() {
+  local repo=$tmp/$1 out
+  cp -R "$pack/tests/repos/$1" "$repo"
+  git -C "$repo" init -q
+  mkdir "$tmp/$1.before"
+  cp "$repo/package.json" "$repo/package-lock.json" "$tmp/$1.before/"
+  out=$("$pack/install.sh" "$repo" 2>&1) || fail "install.sh $1: $out"
+  for f in package.json package-lock.json; do
+    git diff --no-index --quiet "$tmp/$1.before/$f" "$repo/$f" || fail "install.sh $1: changed the repo's $f"
+  done
+  [ ! -e "$repo/node_modules" ] || fail "install.sh $1: wrote node_modules at the repo root"
+}
+
+# The commands of repo $1's rules row, run from its root; their findings, one JSON line each
+# with the leading ./ dropped from the file, go to $tmp/$1.findings. A command that fails with
+# no finding is a failure, as in `ns rules check`.
+run_row() {
+  local repo=$tmp/$1 cmd out rc
+  : >"$tmp/$1.findings"
+  while IFS= read -r cmd; do
+    out=$(cd "$repo" && bash -c "$cmd" 2>"$tmp/stderr") && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] || [ -n "$out" ] || fail "$1: \`$cmd\` exited $rc with no finding: $(<"$tmp/stderr")"
+    [ -z "$out" ] || jq -c '.file |= ltrimstr("./")' <<<"$out" >>"$tmp/$1.findings"
+  done < <(grep '^| rules |' "$repo/docs/agents/stack.md" | grep -o '`[^`]*`' | tr -d '`')
+}
+
+# The findings of repo $1 for file $2, relative to the repo root.
+findings_for() {
+  jq -c --arg f "$2" 'select(.file == $f)' "$tmp/$1.findings"
+}
+
+for kind in js ts react; do
+  install_repo "$kind"
+done
+
+# Copy each example into its repo, under <rule>/.
+mkdir "$tmp/made"
+for dir in "$pack"/tests/examples/*/; do
+  rule=$(basename "$dir")
+  srcs=("$dir")
+  if [ -e "$dir/make.sh" ]; then
+    mkdir "$tmp/made/$rule"
+    "$dir/make.sh" "$tmp/made/$rule"
+    srcs+=("$tmp/made/$rule")
+  fi
+  for src in "${srcs[@]}"; do
+    for path in "${src%/}"/**/*.*; do
+      case $path in
+        *.js | *.jsx | *.mjs | *.cjs) kind=js ;;
+        *.ts | *.mts | *.cts) kind=ts ;;
+        *.tsx) kind=react ;;
+        *) continue ;;
+      esac
+      rel=${path#"${src%/}"/}
+      mkdir -p "$(dirname "$tmp/$kind/$rule/$rel")"
+      cp "$path" "$tmp/$kind/$rule/$rel"
+    done
+  done
+done
+
+# Type-aware rules need a tsconfig.json: the plain JS repo has none, so a floating promise in a
+# .ts file there is no finding.
+mkdir "$tmp/js/untyped"
+printf 'async function save(): Promise<void> {\n  await Promise.resolve();\n}\n\nexport function run(): void {\n  save();\n}\n' \
+  >"$tmp/js/untyped/floating.ts"
+
+# A dot directory is scanned; node_modules, .git and the installed pack are not.
+printf 'import chalk from "chalk";\nconsole.log(chalk);\n' >"$tmp/js/scan.js"
+for d in .hid node_modules/dep .git/hooks .nightshift/rules/js/extra; do
+  mkdir -p "$tmp/js/$d"
+  cp "$tmp/js/scan.js" "$tmp/js/$d/scan.js"
+done
+
+for kind in js ts react; do
+  run_row "$kind"
+done
+
+checked=0
+for dir in "$pack"/tests/examples/*/; do
+  rule=$(basename "$dir")
+  nfail=0 npass=0
+  for kind in js ts react; do
+    for path in "$tmp/$kind/$rule"/**/*.*; do
+      file=${path#"$tmp/$kind/"}
+      out=$(findings_for "$kind" "$file")
+      case $(basename "$file") in
+        fail*)
+          nfail=$((nfail + 1))
+          jq -e --arg r "$rule" 'select(.rule == $r or (.rule | endswith("/" + $r)))' <<<"$out" >/dev/null ||
+            fail "$rule: $kind/$file gave no $rule finding: $out"
+          ;;
+        pass*)
+          npass=$((npass + 1))
+          [ -z "$out" ] || fail "$rule: $kind/$file gave findings: $out"
+          ;;
+      esac
+    done
+  done
+  [ "$nfail" -gt 0 ] || fail "$rule: no fail* example"
+  [ "$npass" -gt 0 ] || fail "$rule: no pass* example"
+  checked=$((checked + 1))
+done
+
+[ -z "$(findings_for js untyped/floating.ts)" ] ||
+  fail "a .ts file in a repo with no tsconfig.json got findings: $(findings_for js untyped/floating.ts)"
+for want in "eslint no-console" "ast-grep dependency-allowlist"; do
+  for file in scan.js .hid/scan.js; do
+    jq -e --arg t "${want% *}" --arg r "${want#* }" 'select(.tool == $t and .rule == $r)' \
+      <<<"$(findings_for js "$file")" >/dev/null || fail "scan: no ${want#* } finding from ${want% *} on $file"
+  done
+done
+for file in node_modules/dep/scan.js .git/hooks/scan.js .nightshift/rules/js/extra/scan.js; do
+  [ -z "$(findings_for js "$file")" ] || fail "scan: $file was scanned: $(findings_for js "$file")"
+done
+
+# A rerun keeps the repo's data: the allowlist, the helper names and the duplicate-helper
+# ignores. It replaces the rules row rather than adding a second one.
+repo=$tmp/js
+data=$repo/.nightshift/rules/js
+sed -i "s/left-pad/kept-pkg/" "$data/utils/allowed-package.yml"
+sed -i "s/mkdirp/keptHelper/" "$data/utils/helper-name.yml"
+sed -i 's|^ignores: \[\]|ignores: ["src/kept.js"]|' "$data/rules/duplicate-helper.yml"
+"$pack/install.sh" "$repo" >/dev/null 2>&1 || fail "install.sh: a rerun failed"
+grep -qF "kept-pkg" "$data/utils/allowed-package.yml" || fail "install.sh: a rerun dropped the allowlist"
+grep -qF "keptHelper" "$data/utils/helper-name.yml" || fail "install.sh: a rerun dropped the helper names"
+grep -qxF 'ignores: ["src/kept.js"]' "$data/rules/duplicate-helper.yml" ||
+  fail "install.sh: a rerun dropped the duplicate-helper ignores"
+[ "$(grep -c '^| rules |' "$repo/docs/agents/stack.md")" -eq 1 ] || fail "install.sh: a rerun added a second rules row"
+[ -x "$data/node_modules/.bin/eslint" ] || fail "install.sh: a rerun left no eslint"
+mkdir "$repo/src"
+printf 'export function keptHelper() {\n  return 1;\n}\n' | tee "$repo/src/kept.js" >"$repo/src/other.js"
+out=$(cd "$repo" && .nightshift/rules/js/check.sh ast-grep src 2>&1) || true
+jq -e 'select(.file == "src/other.js" and .rule == "duplicate-helper")' <<<"$out" >/dev/null ||
+  fail "duplicate-helper: the kept helper name gave no finding on src/other.js: $out"
+if grep -qF "kept.js" <<<"$out"; then
+  fail "duplicate-helper: the kept ignores did not skip src/kept.js: $out"
+fi
+
+# A repo with no Commands table, no stack.md or a broken package.json is refused, as is an
+# install whose npm ci fails, and the repo is left as it was.
+mkdir -p "$tmp/failing-npm"
+printf '#!/bin/sh\nexit 1\n' >"$tmp/failing-npm/npm"
+chmod +x "$tmp/failing-npm/npm"
+for case in no-table no-stack bad-package-json npm-fails; do
+  repo=$tmp/$case
+  mkdir -p "$repo/docs/agents"
+  printf '{"name": "x"}\n' >"$repo/package.json"
+  [ "$case" = no-stack ] || printf '# Stack\n\n## Commands\n\n| Task | Command | Takes |\n|---|---|---|\n' >"$repo/docs/agents/stack.md"
+  [ "$case" != no-table ] || printf '# Stack\n\nnone\n' >"$repo/docs/agents/stack.md"
+  [ "$case" != bad-package-json ] || printf '{"name": \n' >"$repo/package.json"
+  path=$PATH
+  [ "$case" != npm-fails ] || path=$tmp/failing-npm:$PATH
+  cp -R "$repo" "$tmp/$case.before"
+  PATH=$path "$pack/install.sh" "$repo" >/dev/null 2>&1 && fail "install.sh: $case was not refused"
+  git diff --no-index --quiet "$tmp/$case.before" "$repo" || fail "install.sh: $case was changed"
+done
+
+# check.sh refuses a bad tool or directory, and a tool that fails with no finding shows its
+# output on stderr: tsc on a tsconfig.json it can't read.
+check=$tmp/ts/.nightshift/rules/js/check.sh
+for args in "lint ." "eslint missing-dir" "eslint"; do
+  # shellcheck disable=SC2086 # the words are the arguments
+  (cd "$tmp/ts" && "$check" $args >/dev/null 2>&1) && rc=0 || rc=$?
+  [ "$rc" -eq 2 ] || fail "check.sh $args: exit $rc, not 2"
+done
+mkdir "$tmp/broken-tsconfig"
+printf '{"compilerOptions": {"target": "nope"}}\n' >"$tmp/broken-tsconfig/tsconfig.json"
+out=$("$check" tsc "$tmp/broken-tsconfig" 2>"$tmp/stderr") && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && [ -z "$out" ] && grep -qF "TS6046" "$tmp/stderr" && grep -qF "TS18003" "$tmp/stderr" ||
+  fail "check.sh tsc: exit $rc on a broken tsconfig.json, stdout: $out, stderr: $(<"$tmp/stderr")"
+mkdir "$tmp/failing-ast-grep"
+printf '#!/bin/sh\necho "ast-grep broke" >&2\nexit 3\n' >"$tmp/failing-ast-grep/ast-grep"
+chmod +x "$tmp/failing-ast-grep/ast-grep"
+out=$(cd "$tmp/ts" && PATH=$tmp/failing-ast-grep:$PATH "$check" ast-grep . 2>"$tmp/stderr") && rc=0 || rc=$?
+[ "$rc" -eq 3 ] && [ -z "$out" ] && grep -qF "ast-grep broke" "$tmp/stderr" ||
+  fail "check.sh ast-grep: exit $rc on a failing tool, stdout: $out, stderr: $(<"$tmp/stderr")"
+mkdir "$tmp/no-node-modules"
+cp "$check" "$tmp/no-node-modules/check.sh"
+out=$(cd "$tmp/ts" && "$tmp/no-node-modules/check.sh" eslint . 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 127 ] && grep -qF "npm ci" <<<"$out" || fail "check.sh eslint: exit $rc with no node_modules: $out"
+
+# The ns this run builds: under $CARGO_TARGET_DIR when set (a relative one is relative to
+# the repo root, as in scripts/ci-local.sh), else cli/target.
+target=${CARGO_TARGET_DIR:-cli/target}
+case $target in /*) ;; *) target="$pack/../../$target" ;; esac
+ns="$target/debug/ns"
+if [ -x "$ns" ]; then
+  # The baseline ratchet on the TypeScript repo: its findings are accepted, a new one fails the
+  # check, and once fixed, the baseline shrinks without --allow-growth.
+  repo=$tmp/ts
+  rules() { (cd "$repo" && timeout 120 "$ns" rules "$@" 2>/dev/null); }
+  out=$(rules check) && rc=0 || rc=$?
+  [ "$rc" -eq 1 ] && jq -e '.new | map(.tool) | index("eslint") and index("tsc") and index("ast-grep")' <<<"$out" >/dev/null ||
+    fail "ns rules check: exit $rc on the examples, without eslint, tsc and ast-grep findings: $out"
+  out=$(rules baseline --allow-growth) || fail "ns rules baseline --allow-growth: $out"
+  out=$(rules check) || fail "ns rules check: the baselined examples failed: $out"
+  printf 'export const n = JSON.parse("1") as number;\n' >"$repo/new.ts"
+  out=$(rules check) && rc=0 || rc=$?
+  [ "$rc" -eq 1 ] && jq -e '.new | length == 1 and .[0].file == "new.ts" and .[0].rule == "@typescript-eslint/consistent-type-assertions"' <<<"$out" >/dev/null ||
+    fail "ns rules check: exit $rc on a new violation: $out"
+  rm "$repo/new.ts" "$repo/no-floating-promises/fail.ts"
+  out=$(rules check) && jq -e '.fixed | length == 1' <<<"$out" >/dev/null ||
+    fail "ns rules check: a fixed violation was not reported fixed: $out"
+  out=$(rules baseline) && jq -e '.status == "written" and (.dropped | length == 1)' <<<"$out" >/dev/null ||
+    fail "ns rules baseline: did not shrink the baseline: $out"
+elif [ -n "${CI:-}" ]; then
+  fail "ns rules check: $ns is missing; build it with: cargo build --manifest-path cli/Cargo.toml"
+else
+  echo "run.sh: skipped the ns rules check test; build $ns with: cargo build --manifest-path cli/Cargo.toml" >&2
+fi
+
+[ "$failed" -eq 0 ] || exit 1
+echo "rules/js: $checked rules, the install and the scan, all examples pass"

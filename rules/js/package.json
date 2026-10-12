@@ -1,0 +1,10 @@
+{
+  "name": "nightshift-rules-js",
+  "private": true,
+  "description": "The tools of the nightshift JavaScript/TypeScript rule pack, installed with npm ci apart from the repo's own dependencies",
+  "devDependencies": {
+    "eslint": "9.39.5",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.71.1"
+  }
+}

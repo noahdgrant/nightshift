@@ -1,0 +1,11 @@
+# Nothing is left behind: a stub that throws "not implemented" is unfinished work.
+id: not-implemented
+language: tsx
+severity: error
+message: a stub that throws "not implemented" is unfinished work; implement it or delete it
+url: https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md
+rule:
+  pattern: throw new Error($MSG)
+constraints:
+  MSG:
+    regex: '(?i)not\s*implemented'

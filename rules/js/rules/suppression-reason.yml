@@ -1,0 +1,16 @@
+# A lint or type suppression says why. An ESLint directive takes its reason after ` -- `:
+#   // eslint-disable-next-line no-console -- the CLI's only output
+# A TypeScript directive takes it as text after the directive:
+#   // @ts-expect-error: the vendor's types miss the second overload
+id: suppression-reason
+language: tsx
+severity: error
+message: a suppression needs its reason in the same comment (`-- why` after an ESLint directive, text after a @ts- one)
+url: https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md
+rule:
+  kind: comment
+  regex: '^(?://|/\*+)\s*(?:eslint-disable|@ts-(?:ignore|expect-error|nocheck)\b)'
+  not:
+    any:
+      - regex: '^(?://|/\*+)\s*eslint-disable.*--\s*[^\s*]'
+      - regex: '^(?://|/\*+)\s*@ts-(?:ignore|expect-error|nocheck)[\s:]*[^\s:*]'

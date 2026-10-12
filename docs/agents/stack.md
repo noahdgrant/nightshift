@@ -7,6 +7,7 @@ How to build, test, lint and format this repo. The `ns-*` skills run these comma
 - Rust (stable, 2021 edition) for the `ns` CLI in `cli/`
 - Markdown skills in `skills/ns-*/`, with TOML eval cases in `skills/*/evals/`
 - Python 3.11+ and C (Zephyr) only inside the eval fixtures under `evals/fixtures/`
+- JavaScript and TypeScript only in the rule pack `rules/js/`, whose tests need Node 18 and npm (`scripts/ci-tools.toml`)
 - `scripts/ci-tools.sh` needs Python 3.11+ on PATH (it reads `tomllib`) and fails with a message naming it otherwise
 
 ## Setup

@@ -1,0 +1,15 @@
+# Nothing is left behind: a `.skip` hides a test, and a `.only` hides every other one.
+id: skipped-test
+language: tsx
+severity: error
+message: a `.skip` or `.only` left in a test turns other tests off; remove it
+url: https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md
+rule:
+  kind: member_expression
+  has:
+    field: object
+    regex: '^(?:describe|context|suite|it|test|bench)$'
+  all:
+    - has:
+        field: property
+        regex: '^(?:skip|only)$'
