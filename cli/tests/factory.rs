@@ -2135,6 +2135,140 @@ fn watch_dry_run_lists_a_stale_in_progress_issue_and_changes_nothing() {
     assert!(!e.gh_calls().contains("issue edit"));
 }
 
+/// Issue `n`'s team comment: an Agent Brief whose `touches` are `globs`.
+fn brief_comment(e: &Env, n: u64, globs: &str) {
+    let c = serde_json::json!({
+        "number": 1,
+        "body": format!("## Agent Brief\n**Touches:** {globs}\n"),
+        "authorAssociation": "MEMBER",
+    });
+    e.gh_file(&format!("comments-{n}.jsonl"), &format!("{c}\n"));
+}
+
+#[test]
+fn watch_dry_run_names_the_running_units_each_ready_issue_overlaps() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    brief_comment(&e, 2, "`cli/src/run.rs`");
+    e.ready(4, "Fix c", &["type:fix"], "");
+    brief_comment(&e, 4, "`docs/**`");
+    e.ready(5, "Fix d", &["type:fix"], "");
+    let overlaps = |v: &Value| -> Vec<(u64, Value)> {
+        v["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| (i["number"].as_u64().unwrap(), i["overlaps"].clone()))
+            .collect()
+    };
+    let none = serde_json::json!([]);
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let nothing_runs = [(2, none.clone()), (4, none.clone()), (5, none.clone())];
+    assert_eq!(overlaps(&v), nothing_runs, "{v}");
+
+    let wip = ["type:fix", "status:in-progress"];
+    // A run lock record with no unit: the unit is named from its issue, its touches read from
+    // the issue's brief, as no worktree has a brief.md.
+    e.open_by(6, "Fix e", &wip, "", Some("MEMBER"));
+    let _held_e = hold(
+        &e.root.join(".git/ns-run-6-fix-e.lock"),
+        r#"{"pid":43,"issue":6}"#,
+    );
+    brief_comment(&e, 6, "`docs/FACTORY.md`");
+    e.open_by(3, "Fix b", &wip, "", Some("MEMBER"));
+    // A unit named apart from its issue's title, as `ns run 3-uart --issue 3` names it.
+    let _held = hold(
+        &e.root.join(".git/ns-run-3-uart.lock"),
+        r#"{"pid":42,"unit":"3-uart","issue":3}"#,
+    );
+    // The running unit's own brief.md wins over its issue's comment.
+    brief_comment(&e, 3, "`docs/**`");
+    let name = e.root.file_name().unwrap().to_str().unwrap();
+    let artifacts = e.base.join(format!("{name}.worktrees/3-uart/.ns/3-uart"));
+    fs::create_dir_all(&artifacts).unwrap();
+    fs::write(
+        artifacts.join("brief.md"),
+        "---\ntouches: [\"cli/**\"]\n---\n",
+    )
+    .unwrap();
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(
+        overlaps(&v),
+        [
+            (2, serde_json::json!(["3-uart"])),
+            (4, serde_json::json!(["6-fix-e"])),
+            (5, none)
+        ],
+        "{v}"
+    );
+}
+
+#[test]
+fn watch_starts_a_ready_issue_clear_of_running_units_before_a_higher_one() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    brief_comment(&e, 2, "`cli/**`");
+    e.ready(3, "Fix b", &["type:fix"], "");
+    brief_comment(&e, 3, "`cli/src/run.rs`");
+    e.ready(4, "Fix c", &["type:fix"], "");
+    brief_comment(&e, 4, "`docs/**`");
+    // #2 holds at its triage, so the next pick reads its prediction from its issue.
+    let (in_a, go_a) = hold_phase(&e, A, "triage");
+    let w = Watching::start(
+        e.ns()
+            .args(["watch", "--parallel", "2", "--max-units", "2"]),
+    );
+    w.entered(&in_a);
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 4], "done"), "{v}");
+}
+
+#[test]
+fn watch_dry_run_leaves_out_overlap_on_files_overlap_ignore_names() {
+    let e = Env::new();
+    e.factory("[queue]\noverlap_ignore = [\"docs/FACTORY.md\"]\n");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    brief_comment(&e, 2, "`docs/FACTORY.md`, `cli/src/run.rs`");
+    e.open_by(
+        6,
+        "Fix e",
+        &["type:fix", "status:in-progress"],
+        "",
+        Some("MEMBER"),
+    );
+    let _held = hold(
+        &e.root.join(".git/ns-run-6-fix-e.lock"),
+        r#"{"pid":43,"issue":6}"#,
+    );
+    brief_comment(&e, 6, "`docs/FACTORY.md`");
+    let v = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(v["queue"][0]["overlaps"], serde_json::json!([]), "{v}");
+}
+
+#[test]
+fn watch_keeps_the_queue_order_over_overlap_on_files_overlap_ignore_names() {
+    let e = Env::new();
+    e.factory("[queue]\noverlap_ignore = [\"docs/FACTORY.md\"]\n");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    brief_comment(&e, 2, "`docs/FACTORY.md`");
+    e.ready(3, "Fix b", &["type:fix"], "");
+    brief_comment(&e, 3, "`docs/FACTORY.md`");
+    e.ready(4, "Fix c", &["type:fix"], "");
+    brief_comment(&e, 4, "`docs/DESIGN.md`");
+    let (in_a, go_a) = hold_phase(&e, A, "triage");
+    let w = Watching::start(
+        e.ns()
+            .args(["watch", "--parallel", "2", "--max-units", "2"]),
+    );
+    w.entered(&in_a);
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+}
+
 #[test]
 fn a_second_watch_on_the_repo_is_refused() {
     let e = Env::new();
@@ -4699,6 +4833,27 @@ fn watch_dry_run_orders_and_skips() {
     assert!(skipped.contains("open PR #40 closes it"), "{skipped}");
     assert!(e.calls().is_empty());
     assert!(!e.gh_calls().contains("issue edit"));
+}
+
+/// `gh issue view` reports a pull request's state too: a merged PR as `MERGED`.
+#[test]
+fn watch_dry_run_clears_a_merged_pr_blocker() {
+    let e = Env::new();
+    e.ready(1, "After merged PR", &["type:fix"], "Blocked by: #40");
+    e.ready(2, "After open PR", &["type:fix"], "Blocked by: #41");
+    e.issue(40, "merged PR", "MERGED");
+    e.issue(41, "open PR", "OPEN");
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let order: Vec<u64> = v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(order, [1]);
+    let skipped = v["skipped"].to_string();
+    assert!(skipped.contains("blocked by open #41"), "{skipped}");
+    assert!(!skipped.contains("#40"), "{skipped}");
 }
 
 /// `ns watch --dry-run`'s output and stderr.

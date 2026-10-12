@@ -400,12 +400,13 @@ impl Forge for GitHub {
         Ok(by_issue)
     }
 
+    /// `n` may be a pull request, which `gh issue view` reports as `MERGED` once merged.
     fn is_closed(&self, n: u64) -> Result<bool> {
         let v = gh_json(
             &self.root,
             &["issue", "view", &n.to_string(), "--json", "state"],
         )?;
-        Ok(v["state"].as_str() == Some("CLOSED"))
+        Ok(matches!(v["state"].as_str(), Some("CLOSED" | "MERGED")))
     }
 
     fn state(&self, n: u64) -> Result<IssueState> {
