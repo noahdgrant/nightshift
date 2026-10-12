@@ -1554,14 +1554,15 @@ fn watch_dry_run_names_the_running_units_each_ready_issue_overlaps() {
     );
     brief_comment(&e, 6, "`docs/FACTORY.md`");
     e.open_by(3, "Fix b", &wip, "", Some("MEMBER"));
+    // A unit named apart from its issue's title, as `ns run 3-uart --issue 3` names it.
     let _held = hold(
-        &e.root.join(".git/ns-run-3-fix-b.lock"),
-        r#"{"pid":42,"unit":"3-fix-b","issue":3}"#,
+        &e.root.join(".git/ns-run-3-uart.lock"),
+        r#"{"pid":42,"unit":"3-uart","issue":3}"#,
     );
     // The running unit's own brief.md wins over its issue's comment.
     brief_comment(&e, 3, "`docs/**`");
     let name = e.root.file_name().unwrap().to_str().unwrap();
-    let artifacts = e.base.join(format!("{name}.worktrees/3-fix-b/.ns/3-fix-b"));
+    let artifacts = e.base.join(format!("{name}.worktrees/3-uart/.ns/3-uart"));
     fs::create_dir_all(&artifacts).unwrap();
     fs::write(
         artifacts.join("brief.md"),
@@ -1572,7 +1573,7 @@ fn watch_dry_run_names_the_running_units_each_ready_issue_overlaps() {
     assert_eq!(
         overlaps(&v),
         [
-            (2, serde_json::json!(["3-fix-b"])),
+            (2, serde_json::json!(["3-uart"])),
             (4, serde_json::json!(["6-fix-e"])),
             (5, none)
         ],
