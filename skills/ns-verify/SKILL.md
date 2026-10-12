@@ -73,13 +73,31 @@ Verdicts:
 
 Run the verify skill's Cleanup when done, then confirm the artifacts still exist. Anything you started outside it, stop per [killing processes](../ns-contract/SKILL.md#killing-processes).
 
-Done when every criterion has a verdict, and every PASS and FAIL has a command, an excerpt and an artifact path.
+Done when every criterion has a verdict, and every PASS and FAIL has a command, an excerpt and an artifact path, or a harness denied a command ([denied commands](#denied-commands)).
+
+### Sandbox recipes
+
+Write each command in the plainest form a harness deny rule leaves alone:
+
+- A sandbox repo gets its fake origin when it is made: `git init`, then `git remote add origin <path>`.
+- Name files by absolute, resolved path (`cat "$V/repo/file"`). A `cd` sets only the directory a tool acts on; file arguments stay absolute.
+- Sandbox credentials are visibly fake: `fake-…` values.
+
+### Denied commands
+
+A harness permission that denies a command ends the drive. The command runs as written or not at all: report the denial, and leave the command and the rule as they are, with no reworded retry, other tool or settings edit to get past it.
+
+1. Stop driving and run the verify skill's Cleanup.
+2. Write `evidence.md` with `status: blocked`. Its first body line, above the title, is `denied by <rule>: <command>`, such as ``denied by `Bash(git push:*)`: `git push -q origin main` ``. Use the rule as the harness reported it, or `unknown rule` when it named none.
+3. Criteria with a verdict keep it. The rest are INCONCLUSIVE, and Gaps names the rule a human must allow or the recipe that must change.
+
+`ns run` reports that first line as the unit's stuck reason, and `ns-supervise` pings on it.
 
 ## 4. Fan out a large surface
 
 When the criteria span several feature-map entries, or one entry is large, load the `ns-swarm` skill with one worker per feature-map entry. Each worker brief carries the unit ID, the exact commit SHA, its criterion IDs, the feature file path, and its own `--out .ns/<unit-id>/evidence/<feature>/`. Workers run with role `verify` in write mode (`ns ask --role verify --write --cwd <worktree>`), because they execute commands.
 
-Map worker reports to verdicts: PASS to PASS, ISSUES to FAIL, BLOCKED to INCONCLUSIVE. A missing or SHA-less result is INCONCLUSIVE. Workers that share one bench or one instance run one at a time.
+Map worker reports to verdicts: PASS to PASS, ISSUES to FAIL, BLOCKED to INCONCLUSIVE. A missing or SHA-less result is INCONCLUSIVE. A worker that reports a denied command ends verify as [denied commands](#denied-commands) says, with that worker's rule and command. Workers that share one bench or one instance run one at a time.
 
 ## 5. Vet every measured number
 
@@ -125,8 +143,9 @@ Verify skill: <path> · Doctor: pass
 <per FAIL or INCONCLUSIVE: what was seen, and what would fix it or make it checkable; or "none">
 ````
 
-Set `status` from the verdicts:
+Set `status` from the first rule that holds:
 
+- `blocked`: a harness denied a command ([denied commands](#denied-commands)), whatever the verdicts.
 - `pass`: every criterion is PASS.
 - `fail`: any criterion is FAIL. `ns-build` picks the unit up from the Gaps section.
 - `blocked`: no FAIL, but at least one INCONCLUSIVE. Gaps names the blocker (a bench, credentials, a criterion the human must sharpen).
