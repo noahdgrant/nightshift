@@ -1270,9 +1270,12 @@ fn drive(
             *reruns.entry(phase).or_default() += 1;
         }
         // A build that only rebases because the base moved fails nothing either.
-        let rebase = rebase
-            .zip(remote_default(&ctx.worktree))
-            .filter(|(_, (_, sha))| rebased_onto.as_ref() != Some(sha));
+        let rebase = rebase.and_then(|r| {
+            remote_default(&ctx.worktree)
+                .filter(|(_, sha)| rebased_onto.as_ref() != Some(sha))
+                .map(|d| (r, d))
+        });
+        let before_credit = rebased_onto.clone();
         if let Some((_, (_, sha))) = &rebase {
             *reruns.entry(phase).or_default() += 1;
             rebased_onto = Some(sha.clone());
@@ -1337,6 +1340,11 @@ fn drive(
                     feedback,
                     why,
                 });
+                if let Some((kind, _)) = rebase {
+                    *reruns.entry(phase).or_default() -= 1;
+                    rebased_onto = before_credit;
+                    forced_rebase = Some(kind);
+                }
                 continue;
             }
         };
@@ -1478,6 +1486,9 @@ fn drive(
             last_failure.remove(phase);
         }
         let art = read_art(&art_path);
+        if rebase.is_some() && art.as_ref().is_none_or(|a| a.status != "pass") {
+            *reruns.entry(phase).or_default() -= 1;
+        }
         let written = art.is_some();
         if art.as_ref().is_some_and(|a| a.status == "pass") {
             passed.insert(phase);

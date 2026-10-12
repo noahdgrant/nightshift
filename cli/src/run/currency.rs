@@ -226,9 +226,11 @@ fn first_line(body: &str) -> String {
         .collect()
 }
 
-/// A NO-GO whose first line says the base moved: the branch only needs a rebase.
+/// A NO-GO whose first line starts with `base moved`, after an optional `NO-GO:`: the branch only needs a rebase.
 fn base_moved(body: &str) -> bool {
-    first_line(body).to_lowercase().contains("base moved")
+    let line = first_line(body).to_lowercase();
+    let rest = line.strip_prefix("no-go:").unwrap_or(&line);
+    rest.trim_start().starts_with("base moved")
 }
 
 /// `d` sends a passed build back only to rebase, because verify, review or ship said the base
@@ -437,6 +439,13 @@ mod tests {
             built.clone(),
             ("verify", moved("fail"))
         ]));
+        let reviewed = ("verify", art("pass", "abc1234"));
+        assert!(rebases(&[
+            brief.clone(),
+            built.clone(),
+            reviewed,
+            ("review", moved("fail"))
+        ]));
         assert!(!rebases(&[
             brief.clone(),
             built.clone(),
@@ -447,7 +456,10 @@ mod tests {
         // The line names the base moving only in its first line.
         let mut later = art("fail", "abc1234");
         later.body = "Tests fail\nbase moved too\n".into();
-        assert!(!rebases(&[brief, built, ("verify", later)]));
+        assert!(!rebases(&[brief.clone(), built.clone(), ("verify", later)]));
+        let mut mid = art("fail", "abc1234");
+        mid.body = "Tests fail; not because the base moved\n".into();
+        assert!(!rebases(&[brief, built, ("verify", mid)]));
     }
 
     #[test]
