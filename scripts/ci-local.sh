@@ -162,6 +162,10 @@ if [ "$fast" -eq 0 ]; then
   fi
 fi
 
+# The rule packs, `<pack><TAB><name>` a line, each a full step below. Listed in --fast runs too,
+# so the pre-commit hook catches a pack with a bad NAME.
+packs=$(scripts/rule-packs.sh) || exit 1
+
 step "pinned tools (scripts/ci-tools.d)" scripts/ci-tools.sh check
 step "cargo fmt --check" cargo fmt --manifest-path cli/Cargo.toml --check
 step "cargo clippy" cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings
@@ -175,10 +179,10 @@ full_step "ns rules check" "$ns" rules check --human
 full_step "ns ratchet check" "$ns" ratchet check --human
 full_step "ns eval --dry-run" eval_dry_run
 full_step "py-inventory fixture tests" fixture_tests
-full_step "Python rule pack tests" rule_pack_tests python
-full_step "JavaScript/TypeScript rule pack tests" rule_pack_tests js
-full_step "C rule pack tests" python3 -I -m unittest discover -s rules/c/tests
-full_step "Java rule pack tests" rule_pack_tests java
+# On fd 3, so a pack's tests can't read the list from stdin.
+while IFS=$'\t' read -r -u 3 pack name; do
+  [ -z "$pack" ] || full_step "$name rule pack tests" rule_pack_tests "$pack"
+done 3<<<"$packs"
 full_step "ns-troubleshoot brief checker tests" brief_checker_tests
 step "private guard" scripts/check-private.sh
 
