@@ -3,7 +3,7 @@ id: D64
 title: "This repo's hooks run all of CI and agents never skip them"
 issue: 353
 date: 2026-10-11
-amended_by: [D66]
+amended_by: [D66, ADR-452]
 ---
 
 # D64: This repo's hooks run all of CI and agents never skip them
