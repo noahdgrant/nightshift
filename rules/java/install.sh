@@ -36,6 +36,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 [ -f "$stack" ] || fail "$stack is missing; run ns-setup first"
+git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "$repo is not a git work tree"
 
 for t in jq ast-grep unzip sha256sum; do
   command -v "$t" >/dev/null 2>&1 || fail "$t is not on PATH; the pack needs it"
@@ -45,8 +46,7 @@ done
 command -v java >/dev/null 2>&1 ||
   fail "Java is not on PATH, and PMD needs Java 11 or later; install a JDK or JRE (apt install openjdk-21-jre-headless) and rerun"
 version=$(java -version 2>&1 | sed -n '1s/^[^"]*"\([^"]*\)".*/\1/p')
-case $version in 1.*) major=${version#1.} ;; *) major=$version ;; esac
-major=${major%%[!0-9]*}
+major=${version%%[!0-9]*}
 [ "${major:-0}" -ge 11 ] ||
   fail "PMD needs Java 11 or later, and the java on PATH is ${version:-of unknown version}; install a newer JDK or JRE (apt install openjdk-21-jre-headless) and rerun"
 

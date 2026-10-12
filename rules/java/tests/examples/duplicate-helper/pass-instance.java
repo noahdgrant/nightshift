@@ -5,7 +5,7 @@ final class Bag {
         this.size = size;
     }
 
-    boolean isEmpty() {
+    public boolean isEmpty() {
         return size == 0;
     }
 }

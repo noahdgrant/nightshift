@@ -27,7 +27,6 @@ broken() {
 [ $# -eq 2 ] || usage
 check=$1
 dir=${2%/}
-[ -n "$dir" ] || dir=/
 pack=$(cd "$(dirname "$0")" && pwd)
 
 need() {
@@ -87,7 +86,7 @@ case $check in
   ast-grep)
     tr '\n' '\0' <"$files" | xargs -0 ast-grep scan -c "$pack/sgconfig.yml" --json=stream -- \
       >"$report" 2>"$log" || status=$?
-    [ "$status" -eq 0 ] && [ ! -s "$log" ] || broken "ast-grep exited $status:" "$(cat "$log")"
+    [ "$status" -eq 0 ] || broken "ast-grep exited $status:" "$(cat "$log")"
     # A @SuppressWarnings with a comment after it on its line has its reason.
     jq -c '. as $m | select((.text | startswith("@SuppressWarnings") or startswith("@java.lang.SuppressWarnings"))
           and (.lines | split("\n") | last | .[$m.range.end.column:] | test("^\\s*(//|/\\*)"))

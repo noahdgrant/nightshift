@@ -31,12 +31,20 @@ fail() {
   failed=1
 }
 git_as() { git -c user.name=t -c user.email=t@example.com "$@"; }
+# Whether directory $1 holds nothing.
+empty() {
+  local f
+  for f in "$1"/* "$1"/.*; do
+    case ${f##*/} in . | .. | '*' | '.*') ;; *) return 1 ;; esac
+  done
+}
 
-# A git repo with a stack.md whose Commands table ends before a Gotchas section, and one source
-# file whose package and import seed the allowlist.
+# A git repo with a stack.md whose Commands table ends before a Gotchas section, and source files
+# whose packages and import seed the allowlist: com.example.app.util is under com.example.app.
 new_repo() {
   local repo=$1
-  mkdir -p "$repo/docs/agents" "$repo/src/com/example/app"
+  mkdir -p "$repo/docs/agents" "$repo/src/com/example/app/util"
+  printf 'package com.example.app.util;\n\nfinal class Paths {\n}\n' >"$repo/src/com/example/app/util/Paths.java"
   git -C "$repo" init -q
   printf '# Stack\n\n## Commands\n\n| Task | Command | Takes |\n|---|---|---|\n| test | `mvn test` | 1 s |\n\n## Gotchas\n\nnone\n' \
     >"$repo/docs/agents/stack.md"
@@ -126,17 +134,22 @@ out=$("$pack/check.sh" ast-grep "$tmp/ignores" 2>&1) || true
 grep -qF "\"rule\":\"duplicate-helper\",\"file\":\"$tmp/ignores/Other.java\"" <<<"$out" && ! grep -qF "Home.java" <<<"$out" ||
   fail "duplicate-helper: ignores did not skip exactly Home.java:" "$out"
 
+# A directory holding every program on PATH except $1, to run with as the whole PATH.
+path_without() {
+  local bin=$tmp/no-$1-bin d
+  mkdir "$bin"
+  IFS=: read -ra path_dirs <<<"$PATH"
+  for d in "${path_dirs[@]}"; do
+    [ -d "$d" ] && ln -s "$d"/* "$bin/" 2>/dev/null || true
+  done
+  rm -f "$bin/$1"
+  echo "$bin"
+}
+
 # install.sh needs Java 11 or later on PATH, and writes nothing without it.
-bin=$tmp/no-java-bin
-mkdir "$bin"
-IFS=: read -ra path_dirs <<<"$PATH"
-for d in "${path_dirs[@]}"; do
-  [ -d "$d" ] && ln -s "$d"/* "$bin/" 2>/dev/null || true
-done
-rm -f "$bin/java"
 new_repo "$tmp/no-java"
 cp "$tmp/no-java/docs/agents/stack.md" "$tmp/stack.md"
-out=$(PATH=$bin "$src/install.sh" --offline "$tmp/no-java" 2>&1) && rc=0 || rc=$?
+out=$(PATH=$(path_without java) "$src/install.sh" --offline "$tmp/no-java" 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 2 ] && [ "$out" = "install.sh: Java is not on PATH, and PMD needs Java 11 or later; install a JDK or JRE (apt install openjdk-21-jre-headless) and rerun" ] ||
   fail "install: no java gave exit $rc:" "$out"
 mkdir "$tmp/old-java"
@@ -145,6 +158,10 @@ chmod +x "$tmp/old-java/java"
 out=$(PATH=$tmp/old-java:$PATH "$src/install.sh" --offline "$tmp/no-java" 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 2 ] && [ "$out" = "install.sh: PMD needs Java 11 or later, and the java on PATH is 1.8.0_392; install a newer JDK or JRE (apt install openjdk-21-jre-headless) and rerun" ] ||
   fail "install: Java 8 gave exit $rc:" "$out"
+printf '#!/bin/sh\necho '\''openjdk version "10.0.2" 2018-07-17'\'' >&2\n' >"$tmp/old-java/java"
+out=$(PATH=$tmp/old-java:$PATH "$src/install.sh" --offline "$tmp/no-java" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && grep -qF "PMD needs Java 11 or later, and the java on PATH is 10.0.2;" <<<"$out" ||
+  fail "install: Java 10 gave exit $rc:" "$out"
 [ ! -e "$tmp/no-java/.nightshift" ] && cmp -s "$tmp/no-java/docs/agents/stack.md" "$tmp/stack.md" ||
   fail "install: a refused install wrote to the repo"
 
@@ -174,10 +191,92 @@ out=$("$src/install.sh" --offline "$tmp/no-java" 2>&1) && rc=0 || rc=$?
 out=$("$src/install.sh" 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 2 ] && grep -qF "usage: " <<<"$out" || fail "install: no repo gave exit $rc:" "$out"
 
+# A tool the pack needs, missing from PATH, is named; so is a repo outside git.
+cp "$tmp/stack.md" "$tmp/no-java/docs/agents/stack.md"
+out=$(PATH=$(path_without ast-grep) "$src/install.sh" --offline "$tmp/no-java" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && [ "$out" = "install.sh: ast-grep is not on PATH; the pack needs it" ] || fail "install: no ast-grep gave exit $rc:" "$out"
+mkdir -p "$tmp/not-git/docs/agents"
+cp "$tmp/stack.md" "$tmp/not-git/docs/agents/stack.md"
+out=$(GIT_CEILING_DIRECTORIES=$tmp "$src/install.sh" --offline "$tmp/not-git" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && [ "$out" = "install.sh: $tmp/not-git is not a git work tree" ] || fail "install: a repo outside git gave exit $rc:" "$out"
+
+# A checkout whose scripts/ci-tools.toml pins a stand-in PMD, a zip served from a file:// url,
+# tests the download and the zip's contents without the network. pin_pmd writes the pin for the
+# zip at $1, and zip_pmd writes a zip whose $2 is a script printing "stand-in PMD".
+fake=$tmp/fake
+mkdir -p "$fake/rules" "$fake/scripts"
+cp -R "$src" "$fake/rules/java"
+zip_pmd() {
+  python3 -I -c '
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    info = zipfile.ZipInfo(sys.argv[2])
+    info.external_attr = 0o755 << 16
+    z.writestr(info, "#!/bin/sh\necho stand-in PMD\n")
+' "$1" "$2"
+}
+pin_pmd() {
+  local sha
+  sha=$(python3 -I -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1")
+  printf '[pmd]\nversion = "9.9"\nurl = "file://%s"\nsha256 = "%s"\nbin = "pmd-bin-{version}/bin/pmd"\n' "$1" "$sha" >"$fake/scripts/ci-tools.toml"
+}
+mkdir "$tmp/served"
+zip_pmd "$tmp/served/pmd-dist-9.9-bin.zip" pmd-bin-9.9/bin/pmd
+pin_pmd "$tmp/served/pmd-dist-9.9-bin.zip"
+# Its java is 11, the oldest PMD runs on.
+new_repo "$tmp/fetched"
+mkdir "$tmp/java11"
+printf '#!/bin/sh\necho '\''openjdk version "11.0.2" 2019-01-15'\'' >&2\n' >"$tmp/java11/java"
+chmod +x "$tmp/java11/java"
+out=$(PATH=$tmp/java11:$PATH XDG_CACHE_HOME=$tmp/fetch-cache "$fake/rules/java/install.sh" "$tmp/fetched" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 0 ] && [ "$("$tmp/fetched/.nightshift/rules/java/pmd/bin/pmd")" = "stand-in PMD" ] &&
+  cmp -s "$tmp/served/pmd-dist-9.9-bin.zip" "$tmp/fetch-cache/nightshift/pmd-dist-9.9-bin.zip" ||
+  fail "install: downloading a pinned zip gave exit $rc:" "$out"
+rm "$tmp/served/pmd-dist-9.9-bin.zip"
+new_repo "$tmp/unfetched"
+out=$(XDG_CACHE_HOME=$tmp/unfetched-cache "$fake/rules/java/install.sh" "$tmp/unfetched" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && [ "${out##*$'\n'}" = "install.sh: cannot download PMD from file://$tmp/served/pmd-dist-9.9-bin.zip" ] &&
+  empty "$tmp/unfetched-cache/nightshift" && [ ! -e "$tmp/unfetched/.nightshift" ] ||
+  fail "install: a failed download gave exit $rc, or left a file:" "$out"
+# A download cut off partway leaves no partial zip in the cache.
+mkdir "$tmp/cut-curl"
+printf '#!/bin/sh\nwhile [ "$1" != -o ]; do shift; done\nprintf partial >"$2"\nexit 18\n' >"$tmp/cut-curl/curl"
+chmod +x "$tmp/cut-curl/curl"
+out=$(PATH=$tmp/cut-curl:$PATH XDG_CACHE_HOME=$tmp/unfetched-cache "$fake/rules/java/install.sh" "$tmp/unfetched" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && empty "$tmp/unfetched-cache/nightshift" || fail "install: a cut-off download gave exit $rc, or left a file:" "$out"
+zip_pmd "$tmp/served/pmd-dist-9.9-bin.zip" pmd-bin-9.9/bin/not-pmd
+pin_pmd "$tmp/served/pmd-dist-9.9-bin.zip"
+out=$(XDG_CACHE_HOME=$tmp/unfetched-cache "$fake/rules/java/install.sh" "$tmp/unfetched" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && [ "$out" = "install.sh: $tmp/unfetched-cache/nightshift/pmd-dist-9.9-bin.zip has no pmd-bin-9.9/bin/pmd" ] && [ ! -e "$tmp/unfetched/.nightshift" ] ||
+  fail "install: a zip without PMD gave exit $rc:" "$out"
+sed -i '/^sha256/d' "$fake/scripts/ci-tools.toml"
+out=$("$fake/rules/java/install.sh" "$tmp/unfetched" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && [ "$out" = "install.sh: $fake/rules/java/../../scripts/ci-tools.toml has no [pmd] version, url, sha256 and bin" ] ||
+  fail "install: a pin with no sha256 gave exit $rc:" "$out"
+rm "$fake/scripts/ci-tools.toml"
+out=$("$fake/rules/java/install.sh" "$tmp/unfetched" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && [ "$out" = "install.sh: $fake/rules/java/../../scripts/ci-tools.toml is missing; run install.sh from a nightshift checkout" ] ||
+  fail "install: no ci-tools.toml gave exit $rc:" "$out"
+
+# A rerun over a pack whose duplicate-helper rule lost its ignores line refuses, rather than
+# drop the repo's list.
+sed -i '/^ignores:/d' "$tmp/fetched/.nightshift/rules/java/rules/duplicate-helper.yml"
+zip_pmd "$tmp/served/pmd-dist-9.9-bin.zip" pmd-bin-9.9/bin/pmd
+pin_pmd "$tmp/served/pmd-dist-9.9-bin.zip"
+out=$(XDG_CACHE_HOME=$tmp/fetch-cache "$fake/rules/java/install.sh" "$tmp/fetched" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && grep -qF "rules/duplicate-helper.yml has no ignores line to keep" <<<"$out" ||
+  fail "install: a pack with no ignores line gave exit $rc:" "$out"
+
+# When ast-grep can't run, check.sh fails as broken, and install.sh can't seed the allowlist.
+printf 'id: broken\nlanguage: java\nrule: {kind: no_such_kind}\n' >"$fake/rules/java/rules/broken.yml"
+out=$(XDG_CACHE_HOME=$tmp/fetch-cache "$fake/rules/java/install.sh" "$tmp/unfetched" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && grep -qF "install.sh: could not list the repo's imports to seed the allowlist: check.sh: ast-grep exited" <<<"$out" && [ ! -e "$tmp/unfetched/.nightshift" ] ||
+  fail "install: a broken ast-grep rule gave exit $rc:" "$out"
+
 # check.sh scans, in a git repo, the tracked and untracked files git doesn't ignore, and
 # elsewhere every file outside a dot directory. Its paths start with the target as given. Every
 # check lists the files one way, so the cheap ast-grep check tries each target, and PMD, which
-# reads the list from a file, one.
+# prints each path as listed, the directory and `.`.
 bad='class Bad {\n    private int count;\n    @SuppressWarnings("x")\n    int y;\n}\n'
 scanned() {
   local out=$1 rule=$2 label=$3 f
@@ -211,8 +310,8 @@ for mode in plain git; do
     scanned "$out" suppression-reason "$mode target $target"
     ! grep -qF "$dir//" <<<"$out" || fail "check.sh: $mode target $target doubled a slash:" "$out"
   done
-  out=$(cd "$dir" && "$pack/check.sh" ast-grep . 2>&1) || true
-  grep -qF '"rule":"suppression-reason","file":"A.java"' <<<"$out" || fail "check.sh: $mode target . gave:" "$out"
+  out=$(cd "$dir" && "$pack/check.sh" pmd . 2>&1) || true
+  grep -qF '"rule":"UnusedPrivateField","file":"A.java"' <<<"$out" || fail "check.sh: $mode target . gave:" "$out"
 done
 
 # An inherited GIT_DIR doesn't redirect check.sh's git, and isn't written to.
@@ -244,6 +343,11 @@ broken "PMD is not installed in $tmp/no-pmd/pmd; rerun the pack's install.sh" "$
 broken "$tmp/nowhere is not a directory" "$pack/check.sh" size "$tmp/nowhere"
 out=$("$pack/check.sh" lint . 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 2 ] && grep -qF "usage: " <<<"$out" || fail "check.sh: an unknown check gave exit $rc:" "$out"
+
+cp -R "$pack" "$tmp/broken-rule"
+cp "$fake/rules/java/rules/broken.yml" "$tmp/broken-rule/rules/"
+broken "ast-grep exited" "$tmp/broken-rule/check.sh" ast-grep "$tmp/scan-plain"
+broken "jq is not on PATH; install it with your package manager (apt install jq)" env PATH="$(path_without jq)" "$pack/check.sh" size "$tmp/scan-plain"
 
 # A directory with no Java files has no findings and exits 0.
 mkdir "$tmp/empty"
