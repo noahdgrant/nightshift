@@ -126,11 +126,17 @@ impl Table {
 }
 
 impl Forge {
-    /// `repo`, unless this forge has a `host` and `origin_url` is on another one: the owner and
+    /// `repo`, unless `host` (the forge's effective host) is set and `origin_url` is on another one: the owner and
     /// repo tables belong to that host, so a repo elsewhere gets the default table.
-    pub fn scope<'a>(&self, repo: Option<&'a str>, origin_url: Option<&str>) -> Option<&'a str> {
-        let on_other_host = match (&self.host, origin_url.and_then(crate::watch::forge::host)) {
-            (Some(want), Some(got)) => !want.eq_ignore_ascii_case(got),
+    pub fn scope<'a>(
+        host: Option<&str>,
+        repo: Option<&'a str>,
+        origin_url: Option<&str>,
+    ) -> Option<&'a str> {
+        let on_other_host = match (host, origin_url.and_then(crate::watch::forge::host)) {
+            (Some(want), Some(got)) => !crate::watch::forge::host(want)
+                .unwrap_or(want)
+                .eq_ignore_ascii_case(got),
             _ => false,
         };
         repo.filter(|_| !on_other_host)
@@ -841,7 +847,8 @@ token_env = \"TEAM\"
         .gitlab
         .unwrap();
         let repo = Some("team/project");
-        let pick = |url| gl.choose(gl.scope(repo, Some(url))).1;
+        let host = gl.host.as_deref();
+        let pick = |url| gl.choose(Forge::scope(host, repo, Some(url))).1;
         assert_eq!(
             pick("git@gitlab.example.com:team/project.git"),
             Table::Owner("team".into())
@@ -852,11 +859,33 @@ token_env = \"TEAM\"
         );
         assert_eq!(pick("https://gitlab.com/team/project"), Table::Default);
         assert_eq!(pick("/srv/git/project"), Table::Owner("team".into()));
-        let unkeyed = github(OVERRIDES);
         assert_eq!(
-            unkeyed.scope(Some("example-org/backend"), Some("https://github.com/x/y")),
+            Forge::scope(
+                None,
+                Some("example-org/backend"),
+                Some("https://github.com/x/y")
+            ),
             Some("example-org/backend")
         );
+    }
+
+    #[test]
+    fn a_url_or_ported_forge_host_scopes_like_the_bare_hostname() {
+        let repo = Some("team/project");
+        for host in [
+            "https://gitlab.example.com",
+            "https://gitlab.example.com/",
+            "gitlab.example.com:8443",
+            "GitLab.Example.com",
+        ] {
+            let url = "git@gitlab.example.com:team/project.git";
+            assert_eq!(Forge::scope(Some(host), repo, Some(url)), repo, "{host}");
+            assert_eq!(
+                Forge::scope(Some(host), repo, Some("https://gitlab.com/team/project")),
+                None,
+                "{host}"
+            );
+        }
     }
 
     #[test]

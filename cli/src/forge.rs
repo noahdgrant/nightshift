@@ -51,6 +51,17 @@ fn pick_host(env: Option<String>, forge: Option<&Forge>) -> Option<String> {
         .or_else(|| forge?.host.clone())
 }
 
+/// [`Forge::scope`] on the host `resolve` would use, the environment's or the configured one.
+pub fn scope<'a>(
+    kind: ForgeKind,
+    forge: &Forge,
+    repo: Option<&'a str>,
+    origin_url: Option<&str>,
+) -> Option<&'a str> {
+    let host = effective_host(kind, Some(forge));
+    Forge::scope(host.as_deref(), repo, origin_url)
+}
+
 /// The credentials for `repo`, from the table [`Forge::choose`] picks; with no repo, the
 /// default table.
 pub fn resolve(kind: ForgeKind, forge: &Forge, repo: Option<&str>) -> Result<Credentials, SfError> {
@@ -129,7 +140,7 @@ impl Origin {
     /// is not the host `origin` is on.
     pub fn table_repo(&self, kind: ForgeKind) -> Option<&str> {
         match self.forges.get(kind) {
-            Some(f) => f.scope(self.repo_for(kind), self.url.as_deref()),
+            Some(f) => scope(kind, f, self.repo_for(kind), self.url.as_deref()),
             None => self.repo_for(kind),
         }
     }
@@ -150,8 +161,7 @@ pub fn start(origin: &Origin, dry_run: bool) -> Result<(), SfError> {
         }
     }
     export(origin)?;
-    let configured = forges.get(kind).is_some();
-    if let Some(r) = repo.filter(|_| configured && !dry_run && !inherited) {
+    if let Some(r) = checks_repo(repo, forges.get(kind).is_some(), dry_run, inherited) {
         if let Err(e) = can_read(kind, r, None) {
             return Err(SfError::usage(
                 unreadable(kind, r, account(kind, None).as_deref(), &source, &e),
@@ -162,9 +172,19 @@ pub fn start(origin: &Origin, dry_run: bool) -> Result<(), SfError> {
                 ),
             ));
         }
+        std::env::set_var(CHECKED_VAR, checked_value(kind, Some(r)));
     }
-    std::env::set_var(CHECKED_VAR, checked_value(kind, repo));
     Ok(())
+}
+
+/// The repo `start` probes: only for a configured forge, on a real run that no parent checked.
+fn checks_repo(
+    repo: Option<&str>,
+    configured: bool,
+    dry_run: bool,
+    inherited: bool,
+) -> Option<&str> {
+    repo.filter(|_| configured && !dry_run && !inherited)
 }
 
 /// The error for a token that can't read `repo`, naming the account, else where the token came
@@ -607,6 +627,12 @@ mod tests {
                 Some("team/sub/project"),
             ),
             ("git@gitlab.com:team/sub/project", Some("team/sub/project")),
+            ("git://github.com/o/r.git", Some("o/r")),
+            ("git+ssh://git@github.com/o/r", Some("o/r")),
+            ("ssh+git://git@github.com/o/r", Some("o/r")),
+            ("SSH://git@github.com/o/r", None),
+            ("HTTPS://github.com/o/r", None),
+            ("ftp://github.com/o/r", None),
             ("https://github.com/only-owner", None),
             ("https://github.com//r", None),
             ("https://github.com", None),
@@ -638,6 +664,14 @@ mod tests {
             ssh_target("ssh://git@github.com/o/r"),
             t("git@github.com", None)
         );
+        for url in [
+            "git+ssh://git@github.com/o/r",
+            "ssh+git://git@github.com/o/r",
+        ] {
+            assert_eq!(ssh_target(url), t("git@github.com", None), "{url}");
+        }
+        assert_eq!(ssh_target("SSH://git@github.com/o/r"), None);
+        assert_eq!(ssh_target("git://github.com/o/r"), None);
         assert_eq!(ssh_target("https://github.com/o/r"), None);
         assert_eq!(ssh_target("/tmp/remote.git"), None);
         assert_eq!(ssh_target("git@github.com:only"), None);
@@ -743,6 +777,16 @@ mod tests {
         assert_eq!(out.status.code(), Some(3));
         assert_eq!(out.stdout, b"hi\n");
         assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    #[test]
+    fn the_repo_is_checked_only_for_a_configured_forge_on_a_real_run_not_yet_checked() {
+        let r = Some("o/r");
+        assert_eq!(checks_repo(r, true, false, false), r);
+        assert_eq!(checks_repo(r, false, false, false), None);
+        assert_eq!(checks_repo(r, true, true, false), None);
+        assert_eq!(checks_repo(r, true, false, true), None);
+        assert_eq!(checks_repo(None, true, false, false), None);
     }
 
     #[test]

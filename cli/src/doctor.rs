@@ -198,7 +198,7 @@ fn forge_entry(
 ) -> Value {
     let repo = origin.and_then(forge::repo_path);
     let repo = repo.as_deref();
-    let table_repo = f.map_or(repo, |f| f.scope(repo, origin));
+    let table_repo = f.map_or(repo, |f| forge::scope(kind, f, repo, origin));
     if !forge::inherited(kind, repo) {
         warnings.extend(forge::env_warning(kind, f, table_repo));
     }

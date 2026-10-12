@@ -1463,6 +1463,17 @@ fn doctor_reports_a_gitlab_nested_group_repo_and_its_ssh_account() {
 }
 
 #[test]
+fn doctor_reports_the_default_table_when_the_forge_host_is_not_the_origins() {
+    let (v, err, _) = Doctor {
+        config: "[forge.gitlab]\ntoken_env = \"PERSONAL\"\nhost = \"gitlab.example.com\"\n[forge.gitlab.owners.\"team/sub\"]\ntoken_env = \"WORK\"\n",
+        ..gitlab_doctor()
+    }
+    .run();
+    assert_eq!(v["forge"]["gitlab"]["table"], "[forge.gitlab]", "{err}");
+    assert_eq!(v["forge"]["gitlab"]["repo"], "team/sub/project");
+}
+
+#[test]
 fn doctor_warns_when_ssh_greets_another_gitlab_account() {
     let (v, err, _) = Doctor {
         ssh_greeting: Some("Welcome to GitLab, @gl-personal!"),

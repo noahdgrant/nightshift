@@ -5483,6 +5483,148 @@ fn a_repo_the_token_cannot_read_stops_run_and_watch_with_exit_2() {
     );
 }
 
+fn checked_seen(e: &Env) -> Vec<String> {
+    fs::read_to_string(e.ctrl.join("checked"))
+        .unwrap_or_default()
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn a_forge_with_no_config_marks_nothing_checked_for_its_children() {
+    let e = Env::new();
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/example-org/backend.git",
+        ],
+    );
+    e.config("");
+    e.ns()
+        .env_remove("NS_FORGE_CHECKED")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    assert!(!e.calls().is_empty());
+    assert!(
+        checked_seen(&e).iter().all(|c| c == "unset"),
+        "{:?}",
+        checked_seen(&e)
+    );
+}
+
+#[test]
+fn a_configured_forge_that_was_checked_marks_its_children() {
+    let e = Env::new();
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/example-org/backend.git",
+        ],
+    );
+    e.config(OVERRIDES);
+    e.ns()
+        .env_remove("NS_FORGE_CHECKED")
+        .env("DEFAULT_TOKEN", "d")
+        .env("OWNER_TOKEN", "o")
+        .env("REPO_TOKEN", "r")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    let seen = checked_seen(&e);
+    assert!(!seen.is_empty());
+    assert!(
+        seen.iter().all(|c| c == "github:example-org/backend"),
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn a_dry_run_probes_nothing_even_when_the_repo_is_unreadable() {
+    let e = Env::new();
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/example-org/backend.git",
+        ],
+    );
+    e.config(OVERRIDES);
+    e.gh_file("repo.fail", "HTTP 404: Not Found");
+    e.ns()
+        .env("DEFAULT_TOKEN", "d")
+        .env("OWNER_TOKEN", "o")
+        .env("REPO_TOKEN", "r")
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0);
+    assert!(!e.gh_calls().contains(".full_name"), "{}", e.gh_calls());
+}
+
+#[test]
+fn a_forge_host_keeps_another_hosts_origin_on_the_default_token() {
+    let e = Env::new();
+    e.gl_members(&[(1, 30)], &[]);
+    e.gl_issue(2, &[READY], "", 1);
+    git(
+        &e.root,
+        &["remote", "set-url", "origin", "git@gitlab.com:team/p.git"],
+    );
+    e.config(
+        "[forge.gitlab]\ntoken_env = \"GL_DEFAULT\"\nhost = \"gitlab.example.com\"\n[forge.gitlab.owners.\"team\"]\ntoken_env = \"GL_TEAM\"\n",
+    );
+    e.ns()
+        .env("GL_DEFAULT", "default-tok")
+        .env("GL_TEAM", "team-tok")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITLAB_HOST")
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0);
+    let tokens = fs::read_to_string(e.ghd.join("glab-tokens")).unwrap();
+    assert!(!tokens.is_empty());
+    assert!(tokens.lines().all(|t| t == "default-tok"), "{tokens}");
+}
+
+#[test]
+fn an_origin_with_no_repo_path_uses_the_default_token_and_checks_nothing() {
+    let e = Env::new();
+    e.config(OVERRIDES);
+    e.gh_file("repo.fail", "HTTP 404: Not Found");
+    let local = git(&e.root, &["remote", "get-url", "origin"]);
+    assert!(local.trim().starts_with('/'), "{local}");
+    for remove in [false, true] {
+        if remove {
+            git(&e.root, &["remote", "remove", "origin"]);
+        }
+        let _ = fs::remove_file(e.ghd.join("tokens"));
+        let _ = fs::remove_file(e.ghd.join("calls"));
+        let _ = fs::remove_file(e.ctrl.join("tokens"));
+        e.ns()
+            .env("DEFAULT_TOKEN", "default-tok")
+            .env("OWNER_TOKEN", "owner-tok")
+            .env("REPO_TOKEN", "repo-tok")
+            .args(["run", "--issue", "7"])
+            .assert()
+            .code(0);
+        assert_eq!(e.tokens_seen(), ["default-tok"], "origin removed: {remove}");
+        assert!(
+            !e.gh_calls().contains("api repos/"),
+            "origin removed: {remove}: {}",
+            e.gh_calls()
+        );
+    }
+}
+
 #[test]
 fn an_override_naming_an_unset_variable_stops_run_with_exit_2() {
     for (origin, var) in [
