@@ -3,7 +3,8 @@
 # `<pack><TAB><name>`, in order of <pack>. The name is the one line of rules/<pack>/NAME, and
 # the pack's CI step is "<name> rule pack tests". scripts/ci-local.sh, scripts/ci-affected.sh
 # and the rule-packs job in .github/workflows/ci.yml all read this list, so a new pack needs no
-# change outside its own directory.
+# change outside its own directory. That job installs the tools rules/<pack>/TOOLS names, each
+# pinned in scripts/ci-tools.d/.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

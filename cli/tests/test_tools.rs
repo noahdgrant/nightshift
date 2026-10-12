@@ -444,9 +444,89 @@ fn the_job_that_runs_cargo_test_installs_every_listed_tool_the_tests_name() {
     );
 }
 
+/// Each rule pack (a `rules/<pack>/` with a `tests/run.sh`) and the tools in its `TOOLS`, the
+/// pins the `rule-packs` job installs for it. A pack with no `TOOLS` has an empty list.
+fn pack_tools() -> Vec<(String, Vec<String>)> {
+    let mut packs: Vec<_> = fs::read_dir(root().join("rules"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.join("tests/run.sh").is_file())
+        .map(|p| {
+            let tools = fs::read_to_string(p.join("TOOLS")).unwrap_or_default();
+            let tools = tools.split_whitespace().map(str::to_owned).collect();
+            (p.file_name().unwrap().to_string_lossy().into_owned(), tools)
+        })
+        .collect();
+    packs.sort();
+    packs
+}
+
+#[test]
+fn every_rule_pack_names_its_tools_and_each_is_pinned() {
+    let listed = listed();
+    let packs = pack_tools();
+    assert!(packs.iter().any(|(p, _)| p == "python"), "{packs:?}");
+    for (pack, tools) in packs {
+        assert!(
+            !tools.is_empty(),
+            "rules/{pack}/TOOLS must name the pinned tools its tests need"
+        );
+        let unpinned: Vec<_> = tools.iter().filter(|t| !listed.contains(*t)).collect();
+        assert!(
+            unpinned.is_empty(),
+            "rules/{pack}/TOOLS names tools with no pin in scripts/ci-tools.d/: {unpinned:?}"
+        );
+    }
+}
+
+/// The text of the job `name` in the CI workflow.
+fn ci_job(name: &str) -> String {
+    let yml = ci_workflow();
+    let start = format!("\n  {name}:\n");
+    let at = yml
+        .find(&start)
+        .unwrap_or_else(|| panic!("ci.yml has no job {name}"))
+        + 1;
+    let jobs = Regex::new(r"(?m)^  [a-z][\w-]*:\s*$").unwrap();
+    let end = jobs
+        .find_at(&yml, at + start.len() - 1)
+        .map_or(yml.len(), |m| m.start());
+    yml[at..end].to_owned()
+}
+
+#[test]
+fn one_matrix_job_tests_every_rule_pack_scripts_rule_packs_sh_lists() {
+    let yml = ci_workflow();
+    let listing = ci_job("rule-pack-list");
+    assert!(listing.contains("scripts/rule-packs.sh"), "{listing}");
+    let job = ci_job("rule-packs");
+    for want in [
+        "needs: rule-pack-list",
+        "fromJSON(needs.rule-pack-list.outputs.packs)",
+        "name: Rule pack tests (${{ matrix.name }})",
+        "PACK: ${{ matrix.pack }}",
+        r#"scripts/ci-tools.sh install $(cat "rules/$PACK/TOOLS")"#,
+        r#"scripts/check-git-dir-decoy.sh "rules/$PACK/tests/run.sh""#,
+    ] {
+        assert!(
+            job.contains(want),
+            "the rule-packs job has no {want:?}:\n{job}"
+        );
+    }
+    let run = r#""rules/$PACK/tests/run.sh""#;
+    assert!(
+        job.lines().any(|l| l.trim() == run),
+        "the rule-packs job doesn't run {run}:\n{job}"
+    );
+    let named = Regex::new(r"rules/[a-z]+/tests").unwrap();
+    let hits: Vec<_> = named.find_iter(&yml).map(|m| m.as_str()).collect();
+    assert!(hits.is_empty(), "ci.yml names a pack: {hits:?}");
+}
+
 #[test]
 fn ci_installs_every_listed_tool_somewhere() {
-    let installed = installed_by(&ci_workflow());
+    let mut installed = installed_by(&ci_workflow());
+    installed.extend(pack_tools().into_iter().flat_map(|(_, tools)| tools));
     let unused: Vec<_> = listed().difference(&installed).cloned().collect();
     assert!(unused.is_empty(), "no job installs these tools: {unused:?}");
 }
