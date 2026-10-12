@@ -6,7 +6,7 @@
 # /-separated part), and each pass* example no finding at all. A rule directory with a make.sh
 # also has it write examples into a temp directory, for examples too long to commit.
 #
-#   rules/js/tests/run.sh
+#   rules/js/tests/run.sh [--find-ns]
 set -euo pipefail
 shopt -s globstar nullglob dotglob
 
@@ -14,6 +14,17 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
   GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
 
 pack=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+# The ns this run builds: under $CARGO_TARGET_DIR when set (a relative one is relative to
+# the repo root, as in scripts/ci-local.sh), else cli/target. --find-ns only runs it and exits,
+# for cli/tests/rules_pack.rs to check this lookup without the whole suite.
+target=${CARGO_TARGET_DIR:-cli/target}
+case $target in /*) ;; *) target="$pack/../../$target" ;; esac
+ns="$target/debug/ns"
+if [ "${1:-}" = --find-ns ]; then
+  [ -x "$ns" ] || { echo "run.sh: no ns at $ns; build it with: cargo build --manifest-path cli/Cargo.toml" >&2; exit 1; }
+  exec "$ns" --version
+fi
 
 for tool in node npm jq ast-grep; do
   command -v "$tool" >/dev/null || {
@@ -326,11 +337,6 @@ cp "$check" "$tmp/no-node-modules/check.sh"
 out=$(cd "$tmp/ts" && "$tmp/no-node-modules/check.sh" eslint . 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 127 ] && grep -qF "npm ci" <<<"$out" || fail "check.sh eslint: exit $rc with no node_modules: $out"
 
-# The ns this run builds: under $CARGO_TARGET_DIR when set (a relative one is relative to
-# the repo root, as in scripts/ci-local.sh), else cli/target.
-target=${CARGO_TARGET_DIR:-cli/target}
-case $target in /*) ;; *) target="$pack/../../$target" ;; esac
-ns="$target/debug/ns"
 if [ -x "$ns" ]; then
   # The baseline ratchet on the TypeScript repo: its findings are accepted, a new one fails the
   # check, and once fixed, the baseline shrinks without --allow-growth.
