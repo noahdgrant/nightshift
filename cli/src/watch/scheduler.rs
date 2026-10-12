@@ -20,7 +20,7 @@ use super::self_update::{HandOff, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
 use super::{
     ended_cleanly, fix_main::Fix, fresh_base, open_findings, queue, set_status, split, triage,
-    unit_id, Forge, Issue, Night, Tonight, DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
+    unit_id, Forge, Issue, Night, Post, Tonight, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
 };
 use crate::clock;
 use crate::error::SfError;
@@ -768,14 +768,14 @@ fn flag_human_merge(forge: &dyn Forge, label: &str, r: &RunResult) {
     } else {
         "merge.policy is \"human\", so ns never merges; needs a human merge"
     };
-    let body = format!("nightshift unit `{}`: {why}\n\n{DISCLAIMER}", r.unit);
+    let body = Post::new(&format!("nightshift unit `{}`: {why}", r.unit));
     if let Err(e) = forge.comment_pr(pr, &body) {
         eprintln!("ns watch: PR #{pr} not commented: {e:#}");
     }
 }
 
 /// The comment on an issue whose unit got stuck or needs a human.
-fn stuck_comment(r: &RunResult) -> String {
+fn stuck_comment(r: &RunResult) -> Post {
     let what = if r.outcome == Outcome::Stuck {
         "got stuck"
     } else {
@@ -805,10 +805,10 @@ fn stuck_comment(r: &RunResult) -> String {
                 f.join("\n")
             )
         });
-    format!(
-        "nightshift {what} on unit `{}`: {}{findings}\n\nLast artifact: {artifact}\n\n{DISCLAIMER}",
+    Post::new(&format!(
+        "nightshift {what} on unit `{}`: {}{findings}\n\nLast artifact: {artifact}",
         r.unit, r.reason
-    )
+    ))
 }
 
 /// Start `ns run <unit> --issue <n>` on the night's snapshot, its result written to `result`. It gets

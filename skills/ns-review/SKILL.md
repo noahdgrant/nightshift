@@ -81,7 +81,7 @@ Done when every reviewer on the panel has a result or a gap entry. A gap is reru
    - **Changed code**: the diff caused it. Its location is a line the diff adds, or the defect comes from a line the diff removes or a behaviour it changes (a dropped guard, a broken caller), or it is something the diff leaves out (a missing test, an unmet acceptance criterion).
    - **Pre-existing code**: the defect was there before the diff, unchanged by it. The unit didn't cause it and doesn't own that code, so it never blocks the unit and never goes to the fix loop. It is an **escape**: an earlier review missed it.
 7. **File each escape** you didn't dismiss, whatever its severity, in the tracker per `docs/agents/issue-tracker.md`. Run its duplicate search first; when an open issue already covers the defect, use that issue instead of filing a new one. A new issue gets:
-   - a body with the finding, its location, severity and evidence, a link to the unit's issue (or the unit ID when it has none), and the sentence "This escaped an earlier review."
+   - a body opening with the [disclosure line](../ns-contract/SKILL.md#disclosure), then the finding, its location, severity and evidence, a link to the unit's issue (or the unit ID when it has none), and the sentence "This escaped an earlier review."
    - the `needs-triage` state, a category label (`bug` for a defect), and an area label when `docs/agents/triage-labels.md` lists areas, using the label strings that file names
    - a priority role from severity: Critical, or any finding with security among its axes, gets `critical` (`high` when `triage-labels.md` has no `critical` row); Important gets `high`; Suggestion gets `low`
 

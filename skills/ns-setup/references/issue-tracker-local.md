@@ -11,6 +11,7 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - Triage state, category and priority are recorded as `Status:`, `Category:` and `Priority:` lines near the top of each issue file (see `triage-labels.md` for the role strings)
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
 - **Search for duplicates**: `grep -ril "<terms>" .scratch/`
+- **Disclosure**: an issue file or comment an agent writes opens with a 🤖 line naming the agent, then a blank line: `🤖 *Posted by nightshift, an AI agent.*` from nightshift (`ns-contract`, Disclosure).
 
 ## Team
 

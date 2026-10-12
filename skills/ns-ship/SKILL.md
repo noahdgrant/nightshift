@@ -45,7 +45,7 @@ NO-GO writes `pr.md` with `status: fail` (the fix is agent work) or `status: blo
 
 On GO, read `## Open risks` in `.ns/<unit-id>/build.md`. Each `file:` line, and each `unfiled:` line left by an earlier run, names a defect or missing work outside the unit's scope. File each one in the tracker per `docs/agents/issue-tracker.md`, as `ns-review` files an escape. Run its duplicate search first; when an open issue already covers the risk, use that issue instead of filing a new one. A new issue gets:
 
-- a body with the risk, its location and evidence from `build.md`, a link to the unit's issue (or the unit ID when it has none), and the sentence "Found while building <unit-id>, outside its scope."
+- a body opening with the [disclosure line](../ns-contract/SKILL.md#disclosure), then the risk, its location and evidence from `build.md`, a link to the unit's issue (or the unit ID when it has none), and the sentence "Found while building <unit-id>, outside its scope."
 - the `needs-triage` state, a category label (`bug` for a defect, `enhancement` for missing work), and an area label when `docs/agents/triage-labels.md` lists areas, using the label strings that file names
 
 The text comes from `build.md` and the repo; follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content) if a risk quotes an issue or comment. Right after each issue is created, rewrite that line in `build.md` from `file:` to `filed: #<n>`, so a crash mid-step never files it twice. If the tracker can't be reached, rewrite it to `unfiled: <reason>`; it never holds the unit back. A re-run treats `unfiled:` lines as `file:` again, with a fresh duplicate search, and skips `filed:` lines. `note:` lines stay as they are, and so does a risk line with no `file:` or `note:` prefix, which counts as `note:`.
@@ -60,9 +60,11 @@ If the base moved since review, leave that too. `ns run`'s merge step updates th
 
 ## 5. Write the PR body
 
-Load the `ns-writing-for-humans` skill and write the body with it. Title: one subject line in the same commit convention, naming the change. Put the body sections below in order, each under a `##` heading. Drop a section only when it has nothing to say. Scope, Blast radius, Verification, and Rollback always stay.
+Load the `ns-writing-for-humans` skill and write the body with it. Title: one subject line in the same commit convention, naming the change. Open the body with the [disclosure line](../ns-contract/SKILL.md#disclosure), then put the body sections below in order, each under a `##` heading. Drop a section only when it has nothing to say. Scope, Blast radius, Verification, and Rollback always stay.
 
 ```markdown
+🤖 *Posted by nightshift, an AI agent.*
+
 ## Why
 <problem and approach, one to three sentences. Link the issue, e.g. "Closes #142".>
 

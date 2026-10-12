@@ -3,6 +3,7 @@ id: D61
 title: "ns watch labels a done unit's PR needs-human-merge"
 issue: 336
 date: 2026-10-11
+amended_by: [ADR-379]
 ---
 
 # D61: ns watch labels a done unit's PR needs-human-merge

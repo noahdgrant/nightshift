@@ -13,9 +13,9 @@ chmod +x "$tmp/realbin/ns"
 export PATH="$bin:$tmp/realbin:$PATH"
 cd "$tmp" && git init -q repo && cd repo
 fake=$(git rev-parse --path-format=absolute --git-common-dir)/fake
+# A piped grep reads to EOF (no -q): -q exits on the first match, and a later write by the
+# command before it then dies of SIGPIPE, which pipefail turns into a failure.
 fail() { echo "FAIL: $*" >&2; exit 1; }
-# Pipes end in grep without -q: grep -q exits at the first match, and under pipefail the
-# writer's SIGPIPE on its next line fails the check.
 
 # No unit: inactive, not installed, start refused.
 [ "$(systemctl --user is-active ns-watch.service || true)" = inactive ] || fail "is-active on no unit"
@@ -33,7 +33,7 @@ systemctl --user show ns-watch-supervised -p ActiveState,Result | grep -x 'Resul
 [ "$(systemctl --user show ns-watch-supervised -p ActiveState | wc -l)" = 1 ] || fail "show filters props"
 [ "$(systemctl --user show ns-watch-supervised --property=Result)" = Result=success ] || fail "show --property="
 [ "$(systemctl --user show ns-watch-supervised -pResult)" = Result=success ] || fail "show -pX"
-systemctl --user show ns-watch-supervised -p ActiveEnterTimestamp --value | grep -Eq '^[A-Z][a-z]{2} [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} UTC$' || fail "start time"
+systemctl --user show ns-watch-supervised -p ActiveEnterTimestamp --value | grep -E '^[A-Z][a-z]{2} [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} UTC$' >/dev/null || fail "start time"
 systemctl --user list-units | grep -x ns-watch-supervised.service >/dev/null || fail "list-units"
 
 [ "$(systemd-run --user -u night2 ns watch)" = "Running as unit: night2.service" ] || fail "systemd-run -u"

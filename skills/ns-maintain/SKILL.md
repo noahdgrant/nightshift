@@ -25,7 +25,7 @@ Done when you have the list of drifted skills, each with its entries' recorded s
 
 Each drifted skill is its own **unit**: one worktree, one branch, one PR. Never put two skills in one branch or PR, so each can be reviewed, merged or reverted alone.
 
-Read the PR rules first: `docs/agents/issue-tracker.md` (its pull request section) and the repo's `AGENTS.md`. When they say every PR closes an issue, find or file an issue per skill, titled like the PR, and name the unit `<issue-number>-maintain-<skill>`. Reuse an existing OPEN issue for the skill (the tracker's duplicate search); otherwise file a new one. Without issues, name the unit `maintain-<skill>`. End the unit id with the skill's `head12` (the first 12 characters of its upstream `head`), so each drift gets a fresh branch.
+Read the PR rules first: `docs/agents/issue-tracker.md` (its pull request section) and the repo's `AGENTS.md`. When they say every PR closes an issue, find or file an issue per skill, titled like the PR, and name the unit `<issue-number>-maintain-<skill>`. Reuse an existing OPEN issue for the skill (the tracker's duplicate search); otherwise file a new one, its body opening with the [disclosure line](../ns-contract/SKILL.md#disclosure). Without issues, name the unit `maintain-<skill>`. End the unit id with the skill's `head12` (the first 12 characters of its upstream `head`), so each drift gets a fresh branch.
 
 Decide by state, not by whether a branch exists. Look up the unit's PR: `gh pr list --head <branch> --state all --json url,state` (or the tracker's equivalent).
 
@@ -92,7 +92,7 @@ pr: <url, once it is open>
 ---
 ```
 
-Push the branch and open the PR as `docs/agents/issue-tracker.md` says: title from the commit, the body from `maintain.md`, labels and the `Closes` line by the repo's rules, ready for review. Never merge it. A human merges, or `ns run`'s merge step does.
+Push the branch and open the PR as `docs/agents/issue-tracker.md` says: title from the commit, the body from `maintain.md` opened with the [disclosure line](../ns-contract/SKILL.md#disclosure), labels and the `Closes` line by the repo's rules, ready for review. Never merge it. A human merges, or `ns run`'s merge step does.
 
 Set `status: pass` when the PR is open and step 5 passed, `fail` when a check stays red, and `blocked` when the branch can't be pushed or the PR opened (no remote, no forge access). The first body line of a `fail` or `blocked` artifact names the cause in one sentence. Keep the branch either way.
 

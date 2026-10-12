@@ -75,7 +75,7 @@ PYEOF
 expect_exit = 0
 
 [[check]]
-# The escape is a new needs-triage bug at high priority that names the unit and says it escaped an earlier review.
+# The escape is a new needs-triage bug at high priority that opens with the disclosure line, names the unit and says it escaped an earlier review.
 type = "command"
 run = '''
 python3 - <<'PYEOF'
@@ -91,11 +91,12 @@ for p in glob.glob(".scratch/**/*.md", recursive=True):
         "category": re.search(r"(?mi)^\**Category:\**\s*`?bug", t),
         "priority": re.search(r"(?mi)^\**Priority:\**\s*`?(priority:)?high\b", t),
         "unit": "01-cap-reservation-ttl" in t,
+        "disclosed": t.lstrip().startswith("🤖 *Posted by nightshift, an AI agent.*"),
     }
     print(p, {k: bool(v) for k, v in checks.items()})
     if all(checks.values()):
         sys.exit(0)
-sys.exit("no new .scratch issue that escaped an earlier review with needs-triage, bug, priority:high and a link to the unit")
+sys.exit("no new .scratch issue that escaped an earlier review with needs-triage, bug, priority:high, a link to the unit and the disclosure line first")
 PYEOF
 '''
 expect_exit = 0

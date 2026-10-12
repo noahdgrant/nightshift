@@ -103,7 +103,7 @@ Matt's `triage` is a state machine for issues on a tracker. Each issue gets one 
 
 Changes from Matt's version:
 - Two new states: `needs-repro` and `needs-define`.
-- Under `auto`, triage applies its own recommendation instead of waiting for a maintainer. Comments keep the AI disclaimer.
+- Under `auto`, triage applies its own recommendation instead of waiting for a maintainer. Comments open with the disclosure line (`skills/ns-contract`, Disclosure).
 - Label names live in the target repo's `docs/agents/triage-labels.md`.
 
 ## Verification
