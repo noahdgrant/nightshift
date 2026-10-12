@@ -389,6 +389,10 @@ ns_skills, how many ns-*/SKILL.md skills it holds (0 when it is missing).
 forge.<name>: configured, token_resolved, and for github the account gh api user returns.
 The token itself is never printed.")]
     Doctor,
+
+    /// The PreToolUse hook ns run gives claude phases: deny a git hook bypass (internal)
+    #[command(hide = true)]
+    GuardHooks,
 }
 
 const SCORE_HELP: &str = "\

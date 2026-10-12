@@ -455,6 +455,79 @@ fn claude_phases_run_with_auto_memory_off_whatever_the_operator_set() {
     assert_eq!(seen.lines().collect::<Vec<_>>(), ["1"; 5], "{seen}");
 }
 
+/// Run the `PreToolUse` hook from a claude phase's `--settings` on one Bash command; the
+/// reason it denied the command, or `None` when it let it through.
+fn hook_denies(settings: &Value, command: &str) -> Option<String> {
+    let input = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": command}});
+    hook_says(settings, &input.to_string())
+}
+
+/// The deny reason the `PreToolUse` hook prints for hook input `input`, if any.
+fn hook_says(settings: &Value, input: &str) -> Option<String> {
+    let hook = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    let out = common::command("sh")
+        .args(["-c", hook])
+        .write_stdin(input)
+        .output();
+    assert!(out.status.success(), "{input}: {out:?}");
+    if out.stdout.is_empty() {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let o = &v["hookSpecificOutput"];
+    assert_eq!(o["hookEventName"], "PreToolUse");
+    assert_eq!(o["permissionDecision"], "deny");
+    Some(o["permissionDecisionReason"].as_str().unwrap().to_string())
+}
+
+#[test]
+fn a_claude_phase_hook_denies_every_git_hook_bypass() {
+    let e = Env::new();
+    let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+    let argv: Vec<&str> = d["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    let i = argv
+        .iter()
+        .position(|a| *a == "--settings")
+        .expect("--settings");
+    let settings: Value = serde_json::from_str(argv[i + 1]).unwrap();
+    assert_eq!(
+        settings["hooks"]["PreToolUse"][0]["matcher"],
+        "Bash|Edit|Write|MultiEdit|NotebookEdit"
+    );
+    for bypass in [
+        "git commit --no-verify -m x",
+        "git commit -n -m x",
+        "git push --no-verify",
+        "git merge --no-verify main",
+        "git rebase --no-verify origin/main",
+        "git -c core.hooksPath=/dev/null commit -m x",
+        "git config core.hooksPath /tmp/none",
+        "rm .githooks/pre-commit",
+        "echo 'exit 0' > .githooks/pre-push",
+        "HUSKY=0 git commit -m x",
+        "SKIP=ci git commit -m x",
+    ] {
+        let why = hook_denies(&settings, bypass).unwrap_or_else(|| panic!("allowed: {bypass}"));
+        assert!(why.contains("skills/ns-contract"), "{bypass}: {why}");
+        assert!(why.contains("Git hooks"), "{bypass}: {why}");
+    }
+    for ok in [
+        "git commit -m x",
+        "git push origin ns/x",
+        "echo 'git commit --no-verify'",
+    ] {
+        assert_eq!(hook_denies(&settings, ok), None, "{ok}");
+    }
+    assert_eq!(hook_says(&settings, "not json"), None);
+}
+
 #[test]
 fn happy_path_triage_to_done() {
     let e = Env::new();
