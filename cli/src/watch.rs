@@ -25,6 +25,7 @@ pub mod forge;
 mod scheduler;
 mod self_update;
 mod snapshot;
+mod split;
 mod triage;
 
 use forge::{ClosingPrs, Forge, PrState};
@@ -521,6 +522,11 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 })
             })
             .collect();
+        let parents =
+            split::plan(forge, &q, split::sweep_due(&repo.common_dir)).unwrap_or_else(|e| {
+                eprintln!("ns watch: split parents not checked: {e:#}");
+                Vec::new()
+            });
         // As in the night itself, a cleanup that can't plan doesn't stop the rest.
         let clean = crate::clean::plan(&repo).unwrap_or_else(|e| {
             eprintln!("ns watch: cleanup skipped: {e:#}");
@@ -532,6 +538,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
                 "dry_run": true,
                 "requeue": requeue,
                 "clean": clean.merged.iter().map(|m| &m.unit).collect::<Vec<_>>(),
+                "split_parents": parents.iter().map(split::Parent::to_json).collect::<Vec<_>>(),
                 "queue": ready,
                 "skipped": qu.skipped,
                 "triage_pass": triage::on(fac),
@@ -619,6 +626,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             "triaged": night.triage.records,
             "requeued": tonight.requeued,
             "cleaned": tonight.cleaned,
+            "split_parents": tonight.split_parents,
             "stopped": stopped,
             "until": deadline.map(clock::local_iso),
             "cost_usd": night.shared.spent(),
@@ -650,6 +658,10 @@ struct Tonight {
     cleaned: Vec<String>,
     /// Merged units cleanup tried tonight, removed or not: each is tried once a night.
     cleanup_tried: BTreeSet<String>,
+    /// Split parents closed, sent to a human, or moved to `split_label` by this `ns`. Left out of
+    /// the state a self-update carries, whose layout is pinned; the run log has every one.
+    #[serde(skip)]
+    split_parents: Vec<Value>,
 }
 
 /// Whether the outcome is surely the unit's own end: a merge, a split or a clean `done`. Under a
@@ -807,6 +819,7 @@ fn harness_failing(run: &Value) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use forge::IssueState;
 
     #[test]
     fn parses_blockers_and_closers() {
@@ -923,11 +936,23 @@ Open after at least 2 fix attempts: C1, I2, I4.
     }
 
     /// A forge in memory: issues, the closed ones, and each issue's labels, edited in place.
-    /// Check logs by where they are; issues filed, as `(title, body, labels)`.
+    /// Check logs by where they are; issues filed, as `(title, body, labels)`. Of the closed,
+    /// those in `not_planned` were closed as not planned. Sub-issues, team comments and the
+    /// issues a `Part of` search finds by parent; the issues it closed, the comments it posted
+    /// and the labels it created, in order. A call named in `fails` fails.
     #[derive(Default)]
     pub(super) struct Fake {
         pub issues: Vec<Issue>,
         pub closed: BTreeSet<u64>,
+        pub not_planned: BTreeSet<u64>,
+        pub subs: BTreeMap<u64, Vec<u64>>,
+        pub comments: BTreeMap<u64, Vec<String>>,
+        pub linked: BTreeMap<u64, Vec<Issue>>,
+        pub searches: std::cell::Cell<usize>,
+        pub closes: std::cell::RefCell<Vec<u64>>,
+        pub posted: std::cell::RefCell<Vec<(u64, String)>>,
+        pub created: std::cell::RefCell<Vec<String>>,
+        pub fails: BTreeSet<&'static str>,
         pub labels: std::cell::RefCell<BTreeMap<u64, Vec<String>>>,
         pub main: ci::HeadChecks,
         pub logs: BTreeMap<String, String>,
@@ -938,6 +963,9 @@ Open after at least 2 fix attempts: C1, I2, I4.
 
     impl Forge for Fake {
         fn open_issues(&self, label: Option<&str>) -> Result<Vec<Issue>> {
+            if self.fails.contains("open_issues") {
+                anyhow::bail!("HTTP 502");
+            }
             Ok(self
                 .issues
                 .iter()
@@ -954,20 +982,55 @@ Open after at least 2 fix attempts: C1, I2, I4.
                 _ => Ok(self.closed.contains(&n)),
             }
         }
+        fn state(&self, n: u64) -> Result<IssueState> {
+            Ok(match self.is_closed(n)? {
+                false => IssueState::Open,
+                true if self.not_planned.contains(&n) => IssueState::NotPlanned,
+                true => IssueState::Completed,
+            })
+        }
+        fn sub_issues(&self, n: u64) -> Result<Vec<u64>> {
+            Ok(self.subs.get(&n).cloned().unwrap_or_default())
+        }
+        fn team_comments(&self, n: u64) -> Result<Vec<String>> {
+            Ok(self.comments.get(&n).cloned().unwrap_or_default())
+        }
+        fn part_of(&self, n: u64) -> Result<Vec<Issue>> {
+            self.searches.set(self.searches.get() + 1);
+            Ok(self.linked.get(&n).cloned().unwrap_or_default())
+        }
+        fn ensure_label(&self, label: &str, _: &str) -> Result<()> {
+            if self.fails.contains("ensure_label") {
+                anyhow::bail!("HTTP 502");
+            }
+            self.created.borrow_mut().push(label.into());
+            Ok(())
+        }
         fn labels(&self, n: u64) -> Result<Vec<String>> {
             Ok(self.labels.borrow().get(&n).cloned().unwrap_or_default())
         }
         fn edit_labels(&self, n: u64, remove: &[String], add: Option<&str>) -> Result<()> {
+            if self.fails.contains("edit_labels") {
+                anyhow::bail!("HTTP 502");
+            }
             let mut all = self.labels.borrow_mut();
             let ls = all.entry(n).or_default();
             ls.retain(|l| !remove.contains(l));
             ls.extend(add.map(String::from));
             Ok(())
         }
-        fn comment(&self, _: u64, _: &str) -> Result<()> {
+        fn comment(&self, n: u64, body: &str) -> Result<()> {
+            if self.fails.contains("comment") {
+                anyhow::bail!("HTTP 502");
+            }
+            self.posted.borrow_mut().push((n, body.into()));
             Ok(())
         }
-        fn close(&self, _: u64) -> Result<()> {
+        fn close(&self, n: u64) -> Result<()> {
+            if self.fails.contains("close") {
+                anyhow::bail!("HTTP 502");
+            }
+            self.closes.borrow_mut().push(n);
             Ok(())
         }
         fn add_pr_label(&self, _: u64, _: &str) -> Result<()> {

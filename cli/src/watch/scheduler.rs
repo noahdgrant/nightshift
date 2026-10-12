@@ -19,8 +19,8 @@ use self::red::Gate;
 use super::self_update::{HandOff, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
 use super::{
-    ended_cleanly, fix_main::Fix, fresh_base, open_findings, queue, set_status, triage, unit_id,
-    Forge, Issue, Night, Tonight, DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
+    ended_cleanly, fix_main::Fix, fresh_base, open_findings, queue, set_status, split, triage,
+    unit_id, Forge, Issue, Night, Tonight, DISCLAIMER, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
 };
 use crate::clock;
 use crate::error::SfError;
@@ -149,12 +149,17 @@ pub(super) struct Scheduler<'a> {
     filed: BTreeSet<String>,
     /// The head the night last warned it holds for, a closed fix issue and main still red.
     shut_at: Option<String>,
+    /// The split parents' pass still has the clone's one sweep of the old split label to run.
+    sweep: bool,
+    /// Split parents with no children found, reported once a night.
+    childless: BTreeSet<u64>,
 }
 
 impl<'a> Scheduler<'a> {
     pub fn new(plan: Plan<'a>) -> Scheduler<'a> {
         Scheduler {
             started: plan.started,
+            sweep: split::sweep_due(&plan.repo.common_dir),
             plan,
             running: BTreeMap::new(),
             resume: Vec::new(),
@@ -168,6 +173,7 @@ impl<'a> Scheduler<'a> {
             fix: None,
             filed: BTreeSet::new(),
             shut_at: None,
+            childless: BTreeSet::new(),
         }
     }
 
@@ -285,6 +291,7 @@ impl<'a> Scheduler<'a> {
             let removed =
                 crate::clean::between_units(self.plan.repo, &mut tonight.cleanup_tried, &busy);
             tonight.cleaned.extend(removed);
+            self.split_parents(tonight);
         }
         while self.free() && self.may_resume() && !self.resume.is_empty() {
             let issue = self.resume.remove(0);
@@ -365,6 +372,39 @@ impl<'a> Scheduler<'a> {
             self.started += 1;
         }
         Ok(())
+    }
+
+    /// Close the split parents whose children are done, and on the clone's first pass sweep the
+    /// old split label. A forge that fails here holds nothing up.
+    fn split_parents(&mut self, tonight: &mut Tonight) {
+        let (forge, common) = (self.plan.forge, &self.plan.repo.common_dir);
+        let q = &self.plan.loaded.fac.queue;
+        let (parents, all_read) = match split::plan_read(forge, q, self.sweep) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("ns watch: split parents not checked: {e:#}");
+                return;
+            }
+        };
+        let done = split::apply(forge, q, &parents, &mut self.childless);
+        for d in &done {
+            eprintln!(
+                "ns watch: split parent #{}: {}",
+                d["number"],
+                d["action"].as_str().unwrap_or("")
+            );
+            let mut ev = d.clone();
+            ev["event"] = json!("split_parent");
+            run::log_event(common, ev);
+        }
+        let finished = split::sweep_finished(all_read, &parents, &done);
+        tonight.split_parents.extend(done);
+        if self.sweep && finished {
+            self.sweep = false;
+            if let Err(e) = split::swept(common) {
+                eprintln!("ns watch: the split sweep may run again: {e:#}");
+            }
+        }
     }
 
     /// The commit to update to, when origin's default branch has `cli/` changes this `ns` lacks.
@@ -619,7 +659,7 @@ impl<'a> Scheduler<'a> {
                 }
                 status?;
             }
-            Outcome::Split => set_status(forge, q, issue.number, Some(&q.split_label))?,
+            Outcome::Split => split::mark(forge, q, issue.number)?,
             Outcome::Done if !r.needs_human => {
                 set_status(forge, q, issue.number, Some(&q.done_label))?;
                 flag_human_merge(forge, &q.human_merge_label, &r);

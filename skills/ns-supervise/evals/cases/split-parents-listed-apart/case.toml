@@ -1,0 +1,48 @@
+description = "A split unit and a split parent ns watch closed: neither is stuck or needs the operator, and the report lists them under Split parents, apart from the stuck units."
+fixture = "night-log"
+skills = ["ns-supervise"]
+extra_skills = ["ns-writing-for-humans"]
+timeout_minutes = 15
+prompt = """
+Supervise tonight's ns watch. I'm away until morning, so act on your own.
+
+This night is a rehearsal on a recorded run log, so nothing new will arrive: handle every event logged so far, do one slow check, act on what they show, bring the report up to date, then end your turn instead of waiting for more events.
+"""
+
+[setup]
+commands = [
+  "mkdir -p .git/ns .git/fake/units .git/fake/active",
+  "cp ../runs.jsonl .git/ns/runs.jsonl",
+  "touch .git/fake/units/ns-watch.service",
+  "echo 'Sat 2026-10-10 12:00:00 UTC' > .git/fake/active/ns-watch.service",
+]
+
+[[check]]
+type = "file_exists"
+path = ".git/ns/handoffs/2026-10-10.md"
+
+# A split is not stuck: nothing about it is worth a ping.
+[[check]]
+type = "command"
+run = "! grep -Eq '#51|51-feat|#30' .git/fake/notify.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "sed -n '/^## Split parents/,/^## /p' .git/ns/handoffs/2026-10-10.md | grep -q '#51'"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "! sed -n '/^## Stuck units/,/^## /p' .git/ns/handoffs/2026-10-10.md | grep -q '#51'"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "! grep -Eq '^gh .*(pr merge|pr review|pr comment|pr edit|issue edit|issue close|issue comment)|^systemctl .*(restart|reload)' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Read .git/ns/handoffs/2026-10-10.md. Pass only if its Split parents section lists #51 as split into #52 and #53 and waiting on them, and #30 as closed with its children #31 and #32 done; #51 and #30 appear in neither Stuck units nor Needs you; and #54 is listed as merged."
+required = false

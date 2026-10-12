@@ -5615,20 +5615,310 @@ fn dry_run_reports_a_split_brief() {
 }
 
 #[test]
-fn watch_split_moves_the_parent_to_needs_define_without_a_comment() {
+fn watch_split_moves_the_parent_to_split_label_without_a_comment() {
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");
     e.queue("triage", &["split:into #8 and #9."]);
     let v = e.run(&["watch", "--once"], 0);
     assert_eq!(v["units"][0]["outcome"], "split", "{v}");
-    assert_eq!(e.labels(2), ["type:fix", "status:needs-define"]);
+    assert_eq!(e.labels(2), ["type:fix", "status:split"]);
     let calls = e.gh_calls();
     assert!(!calls.contains("issue comment 2"), "{calls}");
     assert!(!calls.contains("status:ready-for-human"), "{calls}");
+    assert!(!calls.contains("pr edit"), "{calls}");
     assert!(
-        !calls.contains("pr edit") && !calls.contains("label create"),
+        calls.contains("label create status:split --color d73a4a --description Split into child issues; closes when they're done"),
         "{calls}"
     );
+}
+
+/// Split parent 5 under `status:split` whose sub-issues are 8 and 9, both closed as completed,
+/// and parent 6 under the old split label whose triage notes list open child 10.
+fn split_parents(e: &Env) {
+    e.open_by(
+        5,
+        "Parent",
+        &["type:feat", "status:split"],
+        "",
+        Some("MEMBER"),
+    );
+    e.gh_file("subs-5", "8\n9\n");
+    e.issue(8, "Child a", "CLOSED");
+    e.issue(9, "Child b", "CLOSED");
+    e.open_by(
+        6,
+        "Old",
+        &["type:feat", "status:needs-define"],
+        "",
+        Some("MEMBER"),
+    );
+    let notes = serde_json::json!({"number": 1, "body": "Children:\n- #10 c\n", "authorAssociation": "MEMBER"});
+    let outside =
+        serde_json::json!({"number": 1, "body": "Children:\n- #8\n", "authorAssociation": "NONE"});
+    e.gh_file("comments-6.jsonl", &format!("{notes}\n{outside}\n"));
+    e.issue(10, "Child c", "OPEN");
+}
+
+#[test]
+fn watch_closes_split_parents_whose_children_are_done_and_sweeps_once() {
+    let e = Env::new();
+    split_parents(&e);
+    let v = e.run(&["watch", "--once"], 0);
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains("issue close 5 --reason completed"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("issue comment 5 --body 🤖 Every child"),
+        "{calls}"
+    );
+    assert_eq!(e.labels(5), ["type:feat"]);
+    assert_eq!(e.labels(6), ["type:feat", "status:split"]);
+    let actions: Vec<_> = v["split_parents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p["number"].as_u64().unwrap(), p["action"].as_str().unwrap()))
+        .collect();
+    assert_eq!(actions, [(5, "close"), (6, "relabel")], "{v}");
+
+    // The sweep ran: the next night leaves the old label alone.
+    e.open_by(11, "Design", &["status:needs-define"], "", Some("MEMBER"));
+    e.gh_file("subs-11", "10\n");
+    fs::write(e.ghd.join("calls"), "").unwrap();
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(11), ["status:needs-define"]);
+    assert!(!e.gh_calls().contains("labels=status:needs-define"));
+}
+
+/// Unit 2 ready and set to merge on its own PR 12, as the auto-merge tests do.
+fn a_unit_that_merges(e: &Env) {
+    e.factory(AUTO);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file(
+        "prs.json",
+        r#"[{"number":12,"body":"Closes #2","headRefName":"ns/2-fix-a","isCrossRepository":false}]"#,
+    );
+}
+
+#[test]
+fn a_split_read_that_fails_does_not_hold_up_the_night() {
+    let e = Env::new();
+    a_unit_that_merges(&e);
+    split_parents(&e);
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *labels=status:split*) echo 'HTTP 502' >&2; exit 1 ;; esac\n",
+    );
+    let out = e.ns().args(["watch", "--once"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("split parents not checked") && err.contains("HTTP 502"),
+        "{err}"
+    );
+    let calls = e.gh_calls();
+    assert!(calls.contains("pr merge 12"), "{calls}");
+    assert!(
+        calls.contains("issue close 2 --reason completed"),
+        "{calls}"
+    );
+    assert!(!calls.contains("issue close 5"), "{calls}");
+    assert_eq!(e.labels(5), ["type:feat", "status:split"]);
+    assert!(!e.root.join(".git/ns/split-swept").exists());
+}
+
+#[test]
+fn a_dry_run_whose_split_read_fails_says_so_and_exits_ok() {
+    let e = Env::new();
+    split_parents(&e);
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *labels=status:split*) echo 'HTTP 502' >&2; exit 1 ;; esac\n",
+    );
+    let out = e.ns().args(["watch", "--dry-run"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("split parents not checked") && err.contains("HTTP 502"),
+        "{err}"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["split_parents"], serde_json::json!([]), "{v}");
+}
+
+#[test]
+fn a_sweep_marker_that_cannot_be_written_leaves_the_sweep_to_run_again() {
+    let e = Env::new();
+    split_parents(&e);
+    // The marker is a link to a directory that is not there, so the write fails and the
+    // clone still looks unswept.
+    let marker = e.root.join(".git/ns/split-swept");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(e.base.join("missing/marker"), &marker).unwrap();
+    let out = e.ns().args(["watch", "--once"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("the split sweep may run again"), "{err}");
+    assert_eq!(e.labels(6), ["type:feat", "status:split"]);
+    // The next night sweeps again: an old-label parent that turned up since moves.
+    e.open_by(11, "Design", &["status:needs-define"], "", Some("MEMBER"));
+    e.gh_file("subs-11", "10\n");
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(11), ["status:split"]);
+}
+
+#[test]
+fn watch_dry_run_lists_split_parents_and_changes_nothing() {
+    let e = Env::new();
+    split_parents(&e);
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let parents = &v["split_parents"];
+    assert_eq!(parents[0]["number"], 5, "{v}");
+    assert_eq!(parents[0]["action"], "close");
+    assert_eq!(parents[0]["children"], serde_json::json!([8, 9]));
+    assert_eq!(parents[1]["number"], 6);
+    assert_eq!(parents[1]["action"], "relabel");
+    assert_eq!(parents[1]["children"], serde_json::json!([10]));
+    assert_eq!(parents[1]["open"], 1);
+    let calls = e.gh_calls();
+    assert!(
+        !calls.contains("issue close") && !calls.contains("issue edit"),
+        "{calls}"
+    );
+    // A dry run leaves the sweep to the first real night.
+    let again = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(again["split_parents"][1]["action"], "relabel");
+}
+
+#[test]
+fn watch_dry_run_reports_waiting_and_childless_split_parents() {
+    let e = Env::new();
+    e.open_by(5, "Waiting", &["status:split"], "", Some("MEMBER"));
+    e.gh_file("subs-5", "8\n");
+    e.issue(8, "c", "OPEN");
+    e.open_by(6, "Bare", &["status:split"], "", Some("MEMBER"));
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let parents = &v["split_parents"];
+    assert_eq!(parents[0]["number"], 5, "{v}");
+    assert_eq!(parents[0]["action"], "wait");
+    assert_eq!(parents[0]["open"], 1);
+    assert_eq!(parents[1]["number"], 6);
+    assert_eq!(parents[1]["action"], "no_children");
+    assert_eq!(parents[1]["children"], serde_json::json!([]));
+}
+
+#[test]
+fn watch_leaves_the_sweep_pending_when_a_swept_parent_cannot_be_read() {
+    let e = Env::new();
+    e.open_by(
+        6,
+        "Old",
+        &["type:feat", "status:needs-define"],
+        "",
+        Some("MEMBER"),
+    );
+    e.gh_file("subs-6", "99\n");
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(6), ["type:feat", "status:needs-define"]);
+
+    e.gh_file("subs-6", "10\n");
+    e.issue(10, "c", "OPEN");
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(6), ["type:feat", "status:split"]);
+}
+
+#[test]
+fn watch_reports_a_split_parent_with_no_children_once_a_night() {
+    let e = Env::new();
+    e.open_by(5, "Parent", &["status:split"], "", Some("MEMBER"));
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("triage", &["split:into #8 and #9."]);
+    let out = e
+        .ns()
+        .args(["watch", "--once"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let said = |n: u64| {
+        err.matches(&format!(
+            "#{n} is labelled status:split but has no children"
+        ))
+        .count()
+    };
+    // Filled at start and again once unit 2 ended: two passes, one report each.
+    assert_eq!((said(5), said(2)), (1, 1), "{err}");
+    assert_eq!(e.labels(5), ["status:split"]);
+}
+
+#[test]
+fn watch_closes_a_split_parent_whose_last_child_closed_during_the_run() {
+    let e = Env::new();
+    e.open_by(5, "Parent", &["status:split"], "", Some("MEMBER"));
+    e.gh_file("subs-5", "8\n");
+    e.issue(8, "Child", "OPEN");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("triage", &["split:script"]);
+    e.ctl(
+        "triage.sh",
+        "sed -i 's/\"OPEN\"/\"CLOSED\"/' \"$FAKE_GH_DIR/issue-8.json\"\n",
+    );
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "split", "{v}");
+    assert!(e.gh_calls().contains("issue close 5 --reason completed"));
+    assert_eq!(v["split_parents"][0]["number"], 5, "{v}");
+    assert_eq!(v["split_parents"][0]["action"], "close", "{v}");
+}
+
+#[test]
+fn watch_finds_split_children_by_their_part_of_line() {
+    let e = Env::new();
+    e.open_by(5, "Parent", &["status:split"], "", Some("MEMBER"));
+    let child = |n: u64, body: &str, assoc: &str| serde_json::json!({"number": n, "title": "c", "labels": [], "body": body, "authorAssociation": assoc});
+    let found = [
+        child(8, "Part of #5\n\nbody", "MEMBER"),
+        child(9, "Part of #5", "NONE"),
+        child(10, "see #5", "MEMBER"),
+    ];
+    let lines: String = found.iter().map(|c| format!("{c}\n")).collect();
+    e.gh_file("search.jsonl", &lines);
+    e.issue(8, "c", "CLOSED");
+    for n in [9, 10] {
+        e.issue(n, "c", "OPEN");
+    }
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(
+        v["split_parents"][0]["children"],
+        serde_json::json!([8]),
+        "{v}"
+    );
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains("api search/issues --method GET -F q=repo:{owner}/{repo} is:issue in:body \"Part of #5\""),
+        "{calls}"
+    );
+    assert!(calls.contains("issue close 5"), "{calls}");
+}
+
+#[test]
+fn watch_sends_a_split_parent_with_a_dropped_child_to_a_human() {
+    let e = Env::new();
+    e.open_by(5, "Parent", &["status:split"], "", Some("MEMBER"));
+    e.gh_file("subs-5", "8\n");
+    e.gh_file(
+        "issue-8.json",
+        r#"{"number":8,"title":"c","url":"u","state":"CLOSED","stateReason":"NOT_PLANNED"}"#,
+    );
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(5), ["status:ready-for-human"]);
+    assert_eq!(v["split_parents"][0]["action"], "ready_for_human", "{v}");
+    assert!(!e.gh_calls().contains("issue close 5"));
 }
 
 #[test]
@@ -10795,6 +11085,79 @@ fn watch_on_gitlab_queues_developers_and_above_and_skips_the_rest() {
         "{}",
         e.glab_calls()
     );
+}
+
+#[test]
+fn watch_on_gitlab_closes_a_split_parent_from_its_team_notes() {
+    let e = gitlab_env();
+    e.gl_issue(5, &["status:split"], "", 1);
+    let notes = serde_json::json!([
+        {"body": "Children:\n- #8\n", "author": {"id": 1}, "system": false},
+        {"body": "Children:\n- #9\n", "author": {"id": 4}, "system": false},
+        {"body": "Children:\n- #9\n", "author": {"id": 1}, "system": true},
+    ]);
+    e.gh_file("gl-notes-5.json", &notes.to_string());
+    e.gh_file("gl-state-8", "closed");
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(
+        v["split_parents"][0]["children"],
+        serde_json::json!([8]),
+        "{v}"
+    );
+    let calls = e.glab_calls();
+    assert!(calls.contains("issue close 5"), "{calls}");
+    assert!(
+        calls.contains("issue note 5 --message 🤖 Every child"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("api --paginate projects/:id/issues/5/notes?sort=asc&per_page=100"),
+        "{calls}"
+    );
+    assert!(e.labels(5).is_empty());
+}
+
+/// GitLab split parent 5 with no notes, and issues 8 (a developer, closed), 9 (a reporter) and 10
+/// (a developer, open or closed per `ten`) saying `Part of #5`, as a search lists them.
+fn gl_part_of(e: &Env, ten: &str) {
+    e.gl_issue(5, &["status:split"], "", 1);
+    let child = |n: u64, author: u64| serde_json::json!({"iid": n, "title": "c", "labels": [], "description": "Part of #5", "author": {"id": author, "username": "u"}});
+    let found = serde_json::json!([child(8, 1), child(9, 4), child(10, 2)]);
+    e.gh_file("gl-search.json", &found.to_string());
+    e.gh_file("gl-state-8", "closed");
+    e.gh_file("gl-state-9", "opened");
+    e.gh_file("gl-state-10", ten);
+}
+
+#[test]
+fn watch_on_gitlab_finds_split_children_by_their_part_of_line() {
+    let e = gitlab_env();
+    gl_part_of(&e, "closed");
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(
+        v["split_parents"][0]["children"],
+        serde_json::json!([8, 10]),
+        "{v}"
+    );
+    assert_eq!(v["split_parents"][0]["action"], "close", "{v}");
+    let calls = e.glab_calls();
+    assert!(
+        calls.contains("in=description&search=Part%20of%20%235"),
+        "{calls}"
+    );
+    assert!(calls.contains("issue close 5"), "{calls}");
+}
+
+#[test]
+fn watch_on_gitlab_waits_for_an_open_part_of_child() {
+    let e = gitlab_env();
+    gl_part_of(&e, "opened");
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["split_parents"], serde_json::json!([]), "{v}");
+    assert!(!e.glab_calls().contains("issue close"));
+    let d = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(d["split_parents"][0]["action"], "wait", "{d}");
+    assert_eq!(d["split_parents"][0]["open"], 1, "{d}");
 }
 
 #[test]

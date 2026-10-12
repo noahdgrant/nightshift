@@ -27,6 +27,20 @@ case "$1 $2" in
       printf '%s\n' "$line"
     done < "$d/issues.jsonl"
     ;;
+  "api repos/"*/sub_issues*)
+    # subs-<n>: issue n's sub-issue numbers, one a line.
+    n=${2%/sub_issues*}; n=${n##*/}
+    cat "$d/subs-$n" 2>/dev/null || true
+    ;;
+  "api repos/"*/comments*)
+    # comments-<n>.jsonl: issue n's comments, {"number":1,"body":...,"authorAssociation":...}.
+    n=${2%/comments*}; n=${n##*/}
+    cat "$d/comments-$n.jsonl" 2>/dev/null || true
+    ;;
+  "api search/issues")
+    # search.jsonl: the issues a search finds, in the issues.jsonl line form.
+    cat "$d/search.jsonl" 2>/dev/null || true
+    ;;
   "api repos/"*/check-runs)
     if [ -f "$d/check-runs.fail" ]; then cat "$d/check-runs.fail" >&2; exit 1; fi
     if [ -f "$d/check-runs.output" ]; then cat "$d/check-runs.output"; exit 0; fi
@@ -106,7 +120,7 @@ case "$1 $2" in
     echo "https://github.com/o/r/issues/$n"
     ;;
   "issue comment") ;;
-  "issue close") [ -f "$d/close.fail" ] && { echo "issue #$3 is already closed" >&2; exit 1; } ;;
+  "issue close") if [ -f "$d/close.fail" ]; then echo "issue #$3 is already closed" >&2; exit 1; fi ;;
   "pr list")
     f=prs.json; [[ " $* " == *" --state merged "* ]] && f=prs-merged.json
     cat "$d/$f" 2>/dev/null || echo "[]"
