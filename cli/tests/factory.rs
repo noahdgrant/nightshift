@@ -4668,6 +4668,38 @@ fn a_fix_unit_that_ends_unfixed_stops_the_night() {
 }
 
 #[test]
+fn a_fix_unit_cut_short_by_until_stops_the_night_as_until() {
+    let a = Env::new();
+    let b = Env::new();
+    let locks = a.base.join("locks");
+    a.bench(&locks);
+    b.bench(&locks);
+    let held = Blocked::start(&a, "true", "true");
+    b.ready(2, "Fix a", &["type:fix"], "");
+    main_red(&b);
+    b.ctl(
+        "triage.sh",
+        &format!("gh issue edit 100 --add-label {READY}\n"),
+    );
+    b.queue("triage", &["pass:script"]);
+    b.queue("build", &["pass:commit"]);
+    b.queue("verify", &["pass:script"]);
+    let out = b
+        .ns()
+        .env("NS_PHASE_TIMEOUT_MS", "verify=86400000")
+        .args(["watch", "--until", "00:30"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    held.release();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(by_issue(&units(&v)), each(&[100], "budget"), "{v}");
+    assert_eq!(v["stopped"], "until", "{v}");
+    assert!(events_named(&b, "main_red_unfixed").is_empty());
+}
+
+#[test]
 fn a_fix_unit_that_ends_unfixed_after_main_turned_green_stops_nothing() {
     let (e, v) = fix_ends(|e| {
         e.queue("triage", &["none", "none"]);

@@ -449,6 +449,29 @@ not json
     }
 
     #[test]
+    fn a_main_event_keeps_its_sha_and_shows_it_short() {
+        let line = r#"{"event":"main_red_unfixed","sha":"abcdef0123456789","issue":100,"outcome":"stuck","ts":"2026-10-09T03:00:00Z"}"#;
+        let bare = r#"{"event":"main_red_unfixed","issue":100,"outcome":"stuck","ts":"2026-10-09T03:00:00Z"}"#;
+        let one = |line: &str, show: Show| {
+            let mut out = Vec::new();
+            render(lines(line), &all(), show, None, &mut out).unwrap();
+            String::from_utf8(out).unwrap().trim_end().to_string()
+        };
+        let kept: Value = serde_json::from_str(&one(line, json_line)).unwrap();
+        assert_eq!(kept["sha"], "abcdef0123456789");
+        assert_eq!(
+            one(line, text),
+            "2026-10-09T03:00:00Z main_red_unfixed abcdef0 #100 outcome stuck"
+        );
+        assert_eq!(
+            one(bare, text),
+            "2026-10-09T03:00:00Z main_red_unfixed #100 outcome stuck"
+        );
+        let kept: Value = serde_json::from_str(&one(bare, json_line)).unwrap();
+        assert!(kept.get("sha").is_none());
+    }
+
+    #[test]
     fn unit_keeps_only_that_units_events() {
         let filter = Filter {
             unit: Some("150-docs".into()),

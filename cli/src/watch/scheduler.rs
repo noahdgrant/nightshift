@@ -596,7 +596,9 @@ impl<'a> Scheduler<'a> {
             r.outcome.label()
         };
         eprintln!("ns watch: #{} {shown} (worker {n})", issue.number);
-        if !failing {
+        // A run cut short by `--until` ends `budget` too; the night stops as `until`, not unfixed.
+        let until = night.over(self.plan.deadline, &self.plan.loaded.fac) == Some("until");
+        if !failing && !until {
             self.stop_if_unfixed(issue.number, r.outcome);
         }
         match r.outcome {
