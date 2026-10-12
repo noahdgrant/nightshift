@@ -250,6 +250,20 @@ mod tests {
     }
 
     #[test]
+    fn matching_is_case_sensitive_and_star_matches_a_leading_dot() {
+        let ov = overlap(&["CLI/run.rs", ".github/ci.yml"], &[]);
+        assert!(!ov.overlaps(&globs(&["CLI/run.rs"]), &globs(&["cli/**"])));
+        assert!(ov.overlaps(&globs(&["*/ci.yml"]), &globs(&[".github/ci.yml"])));
+    }
+
+    #[test]
+    fn a_glob_that_does_not_parse_matches_nothing() {
+        let ov = overlap(&["cli/src/run.rs"], &["a["]);
+        assert!(!ov.overlaps(&globs(&["cli/[src"]), &globs(&["cli/**"])));
+        assert!(ov.overlaps(&globs(&["cli/[src", "cli/*/run.rs"]), &globs(&["cli/**"])));
+    }
+
+    #[test]
     fn no_touches_never_overlap() {
         let ov = overlap(&["cli/src/run.rs"], &[]);
         assert!(!ov.overlaps(&[], &globs(&["**"])));

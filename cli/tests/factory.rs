@@ -1531,7 +1531,28 @@ fn watch_dry_run_names_the_running_units_each_ready_issue_overlaps() {
     e.ready(4, "Fix c", &["type:fix"], "");
     brief_comment(&e, 4, "`docs/**`");
     e.ready(5, "Fix d", &["type:fix"], "");
+    let overlaps = |v: &Value| -> Vec<(u64, Value)> {
+        v["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| (i["number"].as_u64().unwrap(), i["overlaps"].clone()))
+            .collect()
+    };
+    let none = serde_json::json!([]);
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let nothing_runs = [(2, none.clone()), (4, none.clone()), (5, none.clone())];
+    assert_eq!(overlaps(&v), nothing_runs, "{v}");
+
     let wip = ["type:fix", "status:in-progress"];
+    // A run lock record with no unit: the unit is named from its issue, its touches read from
+    // the issue's brief, as no worktree has a brief.md.
+    e.open_by(6, "Fix e", &wip, "", Some("MEMBER"));
+    let _held_e = hold(
+        &e.root.join(".git/ns-run-6-fix-e.lock"),
+        r#"{"pid":43,"issue":6}"#,
+    );
+    brief_comment(&e, 6, "`docs/FACTORY.md`");
     e.open_by(3, "Fix b", &wip, "", Some("MEMBER"));
     let _held = hold(
         &e.root.join(".git/ns-run-3-fix-b.lock"),
@@ -1548,18 +1569,11 @@ fn watch_dry_run_names_the_running_units_each_ready_issue_overlaps() {
     )
     .unwrap();
     let v = e.run(&["watch", "--dry-run"], 0);
-    let overlaps: Vec<(u64, Value)> = v["queue"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|i| (i["number"].as_u64().unwrap(), i["overlaps"].clone()))
-        .collect();
-    let none = serde_json::json!([]);
     assert_eq!(
-        overlaps,
+        overlaps(&v),
         [
             (2, serde_json::json!(["3-fix-b"])),
-            (4, none.clone()),
+            (4, serde_json::json!(["6-fix-e"])),
             (5, none)
         ],
         "{v}"

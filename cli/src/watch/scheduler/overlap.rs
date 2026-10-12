@@ -169,6 +169,10 @@ mod tests {
         let (forge, ready) = queued(["`cli/**`", "`cli/**`", "`docs/**`"]);
         let at = pick(&ready, &running(&[]), || panic!("rule read"), &forge);
         assert_eq!(at, 0);
+        // Beside it, one that predicts still counts.
+        let mut run = running(&[]);
+        run.extend(running(&["cli/**"]));
+        assert_eq!(ready[pick(&ready, &run, || rule(&[]), &forge)].number, 4);
         // A ready issue that predicts nothing runs beside anything.
         let (forge, ready) = queued(["`cli/**`", "", "`cli/**`"]);
         let at = pick(&ready, &running(&["**"]), || rule(&[]), &forge);
@@ -190,6 +194,32 @@ mod tests {
         forge.fails.insert("team_comments");
         assert_eq!(predicted(&forge, &body), ["a.rs"]);
         assert!(predicted(&forge, &issue(4, "")).is_empty());
+    }
+
+    #[test]
+    fn the_rule_reads_the_tracked_files_and_without_git_only_named_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        fs::create_dir_all(root.join("cli")).unwrap();
+        fs::write(root.join("cli/run.rs"), "").unwrap();
+        fs::write(root.join("cli/untracked.rs"), "").unwrap();
+        let globs = |g: &[&str]| g.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let repo = Repo {
+            root: root.clone(),
+            common_dir: root.join(".git"),
+        };
+        let bare = super::rule(&repo, &[]);
+        assert!(!bare.overlaps(&globs(&["cli/*"]), &globs(&["cli/**"])));
+        assert!(bare.overlaps(&globs(&["cli/run.rs"]), &globs(&["cli/**"])));
+        assert!(!bare.overlaps(&globs(&["*"]), &globs(&["**"])));
+        for args in [&["init", "-q"][..], &["add", "cli/run.rs"]] {
+            git::run(&root, args).unwrap();
+        }
+        let tracked = super::rule(&repo, &[]);
+        assert!(tracked.overlaps(&globs(&["cli/*"]), &globs(&["cli/**"])));
+        assert!(!tracked.overlaps(&globs(&["cli/u*"]), &globs(&["cli/**"])));
+        assert!(!super::rule(&repo, &globs(&["cli/run.rs"]))
+            .overlaps(&globs(&["cli/*"]), &globs(&["cli/**"])));
     }
 
     #[test]
