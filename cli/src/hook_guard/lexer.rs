@@ -10,9 +10,19 @@ pub(super) struct Word {
     pub(super) opaque: bool,
     /// The whole word is one double-quoted variable, `"$name"` or `"${name}"`.
     pub(super) quoted_var: bool,
-    /// Where the literal text after the last expansion starts, when every expansion sits in
-    /// double quotes, so none splits the word or adds text after that point.
-    pub(super) tail_at: Option<usize>,
+    /// Each expansion the guard can't resolve, in order. `text` holds nothing in its place.
+    pub(super) expansions: Vec<Expansion>,
+    /// An expansion outside double quotes, one that lists words, or a brace can split the word
+    /// or add words.
+    pub(super) splits: bool,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub(super) struct Expansion {
+    /// Where in the word's `text` it sat.
+    pub(super) at: usize,
+    /// A plain parameter, `$name` or `${name}`, in a word with no brace: one string.
+    pub(super) plain: bool,
 }
 
 impl Word {
@@ -21,8 +31,22 @@ impl Word {
             text: text.to_string(),
             opaque: false,
             quoted_var: false,
-            tail_at: None,
+            expansions: Vec::new(),
+            splits: false,
         }
+    }
+
+    /// The text with each expansion as `fill(i)` for the `i`th one.
+    pub(super) fn filled(&self, fill: impl Fn(usize) -> char) -> String {
+        let mut out = String::new();
+        let mut from = 0;
+        for (i, e) in self.expansions.iter().enumerate() {
+            out.push_str(&self.text[from..e.at]);
+            out.push(fill(i));
+            from = e.at;
+        }
+        out.push_str(&self.text[from..]);
+        out
     }
 }
 
@@ -56,16 +80,16 @@ struct WordBuf {
     /// The word is one double-quoted variable and nothing else.
     quoted_var: bool,
     in_double_quotes: bool,
-    /// Where `text` stood after the last expansion.
-    tail_at: Option<usize>,
+    expansions: Vec<Expansion>,
     /// An expansion outside double quotes can split the word or add words.
     splits: bool,
 }
 
 impl WordBuf {
-    fn mark_expansion(&mut self) {
-        self.expansion_at.get_or_insert(self.text.len());
-        self.tail_at = Some(self.text.len());
+    fn mark_expansion(&mut self, plain: bool) {
+        let at = self.text.len();
+        self.expansion_at.get_or_insert(at);
+        self.expansions.push(Expansion { at, plain });
         self.splits |= !self.in_double_quotes;
     }
 
@@ -73,13 +97,21 @@ impl WordBuf {
         let opaque = self
             .expansion_at
             .is_some_and(|at| hides_flag_or_command(&self.text[..at]));
+        let braced = self.brace_at.is_some();
+        let expansions = self
+            .expansions
+            .into_iter()
+            .map(|e| Expansion {
+                plain: e.plain && !braced,
+                ..e
+            })
+            .collect();
         Word {
             text: self.text,
             opaque,
             quoted_var: self.quoted_var,
-            tail_at: self
-                .tail_at
-                .filter(|_| !self.splits && self.brace_at.is_none()),
+            expansions,
+            splits: self.splits || braced,
         }
     }
 }
@@ -339,10 +371,10 @@ impl<'a> Lexer<'a> {
             }
             Some('{') => {
                 self.chars.next();
-                self.buf().mark_expansion();
-                if self.braced_body() {
-                    self.buf().splits = true;
-                }
+                let lists = self.braced_body();
+                let buf = self.buf();
+                buf.mark_expansion(!lists);
+                buf.splits |= lists;
             }
             Some(c) if c.is_ascii_alphanumeric() || c == '_' => {
                 while self
@@ -350,12 +382,12 @@ impl<'a> Lexer<'a> {
                     .next_if(|c| c.is_ascii_alphanumeric() || *c == '_')
                     .is_some()
                 {}
-                self.buf().mark_expansion();
+                self.buf().mark_expansion(!c.is_ascii_digit());
             }
             Some(c) if "@*#?!$-".contains(c) => {
                 self.chars.next();
                 let buf = self.buf();
-                buf.mark_expansion();
+                buf.mark_expansion(false);
                 buf.splits |= c == '@';
             }
             _ => self.push('$'),
@@ -490,7 +522,7 @@ impl<'a> Lexer<'a> {
 
     fn expansion(&mut self, close: Close) {
         self.substitution(close);
-        self.buf().mark_expansion();
+        self.buf().mark_expansion(false);
     }
 
     fn process_substitution(&mut self) {

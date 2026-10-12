@@ -188,6 +188,35 @@ pub(super) fn stays_inside(depth: usize, path: &str) -> bool {
     walk(depth, &components(path)).is_some()
 }
 
+/// What a path holds where an expansion's depth can't be known.
+pub(super) const UNREAD: char = '\0';
+
+/// `w` read as a path. An expansion that is a whole part of it (`$X`, `${X}`, `"$X"`) is one
+/// unknown directory, `*`: a glob for one part, so a check for `skills` or a unit's directory
+/// still matches it. Any other expansion is `UNREAD`: two in one part, one beside other text,
+/// a glob or a `..` part, one in a word with a brace, or one that isn't a plain parameter.
+pub(super) fn path(w: &Word) -> String {
+    w.filled(|i| {
+        let e = &w.expansions[i];
+        let (before, after) = w.text.split_at(e.at);
+        let alone = w.expansions.iter().filter(|o| o.at == e.at).count() == 1;
+        let whole_part = (before.is_empty() || before.ends_with('/'))
+            && (after.is_empty() || after.starts_with('/'));
+        let beside_dot_dot =
+            components(before).last() == Some(&"..") || components(after).first() == Some(&"..");
+        if e.plain && alone && whole_part && !beside_dot_dot {
+            '*'
+        } else {
+            UNREAD
+        }
+    })
+}
+
+/// `w` read as a directory to change to: an expansion of unknown depth is dropped, as if empty.
+pub(super) fn dir_path(w: &Word) -> String {
+    path(w).replace(UNREAD, "")
+}
+
 /// The parts of `path` between slashes, without the empty and `.` ones.
 pub(super) fn components(path: &str) -> Vec<&str> {
     path.split('/')
@@ -205,14 +234,14 @@ pub(super) fn option_value(arg: &str) -> &str {
 
 /// A file command that edits, moves or deletes something in `.githooks/`.
 pub(super) fn file_tool(prog: &str, args: &[Word], scan: &mut Scan) -> Option<String> {
-    let hit = |a: &&Word| scan.touches_hooks(&a.text);
+    let hit = |a: &&Word| scan.touches_hooks(&path(a));
     let found = match prog {
         "rm" | "rmdir" | "unlink" | "shred" | "mv" | "chmod" | "chown" | "truncate" | "tee"
         | "ln" | "touch" => args.iter().find(hit),
         "cp" | "install" if has_target_directory_flag(args) => args.iter().find(hit),
         "cp" | "install" | "rsync" => args.last().filter(hit),
         "dd" => args.iter().find(|a| {
-            a.text
+            path(a)
                 .strip_prefix("of=")
                 .is_some_and(|f| scan.touches_hooks(f))
         }),
@@ -264,7 +293,7 @@ pub(super) fn find(args: &[Word], scan: &mut Scan) -> Option<String> {
         )
     };
     if args.iter().any(acts) {
-        if let Some(dir) = args.iter().find(|a| scan.touches_hooks(&a.text)) {
+        if let Some(dir) = args.iter().find(|a| scan.touches_hooks(&path(a))) {
             return Some(format!("find {} in {PROTECTED}", dir.text));
         }
         if let Some(pattern) = args.windows(2).find_map(|p| {

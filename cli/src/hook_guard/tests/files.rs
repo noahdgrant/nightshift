@@ -566,3 +566,91 @@ fn glob_matches_reads_star_question_mark_and_sets() {
         );
     }
 }
+
+#[test]
+fn a_path_part_that_is_one_expansion_is_one_unknown_directory() {
+    for c in [
+        "cat > .ns/$U/evidence.md <<'EOF'\nx\nEOF",
+        "echo x > \".ns/$U/review.md\"",
+        "echo x > .ns/${U}/review.md",
+        "echo x > .ns/\"$U\"/review.md",
+        "echo x > \".ns/${NS_UNIT}/pr.md\"",
+        "cp x .ns/$U/build.md",
+        "rm .ns/$U/history/review-1.md",
+        "rm .ns/$U/*.md",
+        "echo x > $WT/.ns/$U/pr.md",
+        "cd .ns/$U && rm build.md",
+        "git -C .ns/$U rm build.md",
+        "dd if=x of=.ns/$U/build.md",
+        "echo x > \"$F\"",
+        "rm \"$(mktemp)\"",
+        "echo x > \"$(git rev-parse --show-toplevel)/.ns/u1/build.md\"",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    for c in [
+        "rm -r .ns/$U",
+        "rm -rf .ns/$U/",
+        "rm -rf \".ns/$U\"",
+        "rm -rf .ns/${U}",
+        "mv .ns/$U /tmp/x",
+        "echo x > .ns/$U",
+        "rm -rf .ns/$U/skills",
+        "sed -i s/a/b/ .ns/$U/skills/ns-x/SKILL.md",
+        "rm -rf .ns/$U/$F",
+        "rm -rf .ns/$U/*",
+        "ln -sfn .ns/$U/skills .claude/skills",
+        "cd .ns/$U && rm -rf skills",
+        "cd .ns/$U; rm -rf $F",
+        "git -C .ns/$U rm -r skills",
+        "rm -rf .git/$X",
+        "rm .githooks/$F",
+        "cd .githooks && rm $F",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_path_part_of_unknown_depth_under_ns_is_denied() {
+    for c in [
+        "echo x > .ns/$A$B/evidence.md",
+        "echo x > .ns/\"$A$B\"/evidence.md",
+        "echo x > .ns/$U-x/evidence.md",
+        "echo x > .ns/$U*/evidence.md",
+        "echo x > .ns/{$U,x}/evidence.md",
+        "rm -rf .ns/$U/{a,skills}",
+        "rm -rf .ns/$U/../u1",
+        "rm -rf .ns/$U/..",
+        "rm -rf .ns/../$U",
+        "rm -rf .ns/$U..",
+        "echo x > .ns/$(cat u)/evidence.md",
+        "echo x > .ns/`cat u`/evidence.md",
+        "echo x > .ns/${U:-u1}/evidence.md",
+        "echo x > .ns/$@/evidence.md",
+        "echo x > .ns/$1/evidence.md",
+        "echo x > .ns/x$U/evidence.md",
+        "cd .ns/u1 && echo x > x/$(f)",
+        "rm .githooks/$(f)",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "echo x > /tmp/$A$B",
+        "echo x > out/$U-x.md",
+        "echo x > $(f)/.ns/u1/build.md",
+        "cd .ns/u1 && echo x > /tmp/$(f)",
+        "cd .ns/u1 && echo x > \"$(f)/x\"",
+        "cd .ns/u1 && rm -f$(x) build.md",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_skills_link_is_still_read_past_an_expansion_after_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = skills_link(dir.path(), ".claude/skills", "../.ns/u1/skills");
+    assert!(denied(&format!("rm -rf {path}/$S")));
+    assert!(denied(&format!("sed -i s/a/b/ {path}/$S/SKILL.md")));
+}

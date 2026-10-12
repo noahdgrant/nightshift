@@ -100,6 +100,10 @@ impl Scan {
     /// `path` is protected, or is relative to a working directory that is.
     fn touches_hooks(&self, path: &str) -> bool {
         let path = option_value(path);
+        if path.contains(UNREAD) {
+            let erased = path.replace(UNREAD, "");
+            return self.touches_hooks(&erased) || self.unread_under_ns(path);
+        }
         is_protected(path)
             || (!path.starts_with(['-', '/'])
                 && (self
@@ -110,6 +114,16 @@ impl Scan {
                         .cwd
                         .ns
                         .is_some_and(|depth| reaches_unit_file(depth, path))))
+    }
+
+    /// An expansion of unknown depth sits below a `.ns` part of `path`, or in a relative path
+    /// from a working directory below `.ns`, so it may reach a unit's directory or `skills`.
+    fn unread_under_ns(&self, path: &str) -> bool {
+        components(path)
+            .iter()
+            .take_while(|p| !p.contains(UNREAD))
+            .any(|p| *p == pin::NS_DIR)
+            || (!path.starts_with(['-', '/', UNREAD]) && self.cwd.ns.is_some())
     }
 }
 
@@ -146,7 +160,7 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
             Tok::Heredoc => stdin_is_text = true,
             Tok::RedirectOut => {
                 if let Some(Tok::Word(f)) = toks.next_if(is_word) {
-                    if scan.touches_hooks(&f.text) {
+                    if scan.touches_hooks(&path(&f)) {
                         return Some(format!("write to {} in {PROTECTED}", f.text));
                     }
                 }
@@ -261,9 +275,8 @@ fn opaque_command(words: &[Word]) -> Option<String> {
 fn change_directory(args: &[Word], scan: &mut Scan) {
     let dir = args
         .iter()
-        .map(|a| a.text.as_str())
-        .find(|a| *a == "-" || !a.starts_with('-'));
-    scan.cwd = dir.map_or_else(Cwd::default, |d| cd_to(d, scan.cwd));
+        .find(|a| a.text == "-" || !a.text.starts_with('-'));
+    scan.cwd = dir.map_or_else(Cwd::default, |d| cd_to(&dir_path(d), scan.cwd));
 }
 
 /// The working directory after `cd dir` (or `git -C dir`) from `from`.
