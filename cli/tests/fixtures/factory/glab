@@ -6,6 +6,7 @@
 #   gl-mrs.json, gl-mrs-merged.json  open and merged merge requests
 #   gl-state-<n>     an issue's state, default opened
 #   gl-issue-<n>.raw what reading issue <n> prints instead
+#   gl-search.json   what searching issue descriptions lists, default none
 #   gl-notes-<n>.json issue <n>'s notes, default none
 #   gl-statuses.json the commit statuses on main's head, default none
 #   gl-project.json, gl-branch.json  what reading the project or main's branch prints instead
@@ -24,6 +25,7 @@ case "$1 $2" in
     [ "$2" = --paginate ] && shift
     path=$2
     case "$path" in
+      "projects/:id/issues?"*"&search="*) cat "$d/gl-search.json" 2>/dev/null || echo "[]" ;;
       "projects/:id/issues?"*)
         want=$(printf '%s' "$path" | sed -n 's/.*[?&]labels=\([^&]*\).*/\1/p')
         want=$(printf '%b' "$(printf '%s' "$want" | sed 's/%/\\x/g')")

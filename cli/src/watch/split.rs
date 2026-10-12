@@ -36,6 +36,7 @@ pub(super) struct Parent {
     pub issue: Issue,
     pub children: Vec<u64>,
     pub action: Action,
+    pub swept: bool,
 }
 
 impl Parent {
@@ -72,6 +73,7 @@ pub(super) fn mark(forge: &dyn Forge, q: &QueueConfig, n: u64) -> Result<()> {
 /// on that line itself.
 fn listed(text: &str) -> Vec<u64> {
     let num = regex::Regex::new(r"#(\d+)\b").unwrap();
+    let item_start = regex::Regex::new(r"^(?:[-*+]|\d+[.)])\s*(?:\[[ xX]\]\s*)?").unwrap();
     let mut found: Vec<u64> = Vec::new();
     let mut in_list = false;
     for line in text.lines() {
@@ -92,9 +94,9 @@ fn listed(text: &str) -> Vec<u64> {
             continue;
         }
         let item = line.trim_start();
-        match item.strip_prefix(['-', '*', '+']) {
-            Some(rest) => found.extend(
-                num.captures(rest.trim_start())
+        match item_start.captures(item) {
+            Some(m) => found.extend(
+                num.captures(&item[m.get(0).unwrap().end()..])
                     .filter(|c| c.get(0).unwrap().start() == 0)
                     .and_then(|c| c[1].parse::<u64>().ok()),
             ),
@@ -166,6 +168,15 @@ fn action(forge: &dyn Forge, children: &[u64], swept: bool) -> Result<Action> {
 /// the old split label (D35) whose children can be found. A parent whose children can't be read
 /// is reported and left out.
 pub(super) fn plan(forge: &dyn Forge, q: &QueueConfig, sweep: bool) -> Result<Vec<Parent>> {
+    plan_read(forge, q, sweep).map(|(parents, _)| parents)
+}
+
+/// `plan`, and whether every parent under the old split label was read.
+pub(super) fn plan_read(
+    forge: &dyn Forge,
+    q: &QueueConfig,
+    sweep: bool,
+) -> Result<(Vec<Parent>, bool)> {
     let mut issues: Vec<(Issue, bool)> = forge
         .open_issues(Some(&q.split_label))?
         .into_iter()
@@ -182,6 +193,7 @@ pub(super) fn plan(forge: &dyn Forge, q: &QueueConfig, sweep: bool) -> Result<Ve
         );
     }
     let mut parents = Vec::new();
+    let mut all_read = true;
     for (issue, swept) in issues {
         let read = children(forge, &issue).and_then(|c| action(forge, &c, swept).map(|a| (c, a)));
         match read {
@@ -190,11 +202,25 @@ pub(super) fn plan(forge: &dyn Forge, q: &QueueConfig, sweep: bool) -> Result<Ve
                 issue,
                 children,
                 action,
+                swept,
             }),
-            Err(e) => eprintln!("ns watch: split parent #{} left alone: {e:#}", issue.number),
+            Err(e) => {
+                all_read &= !swept;
+                eprintln!("ns watch: split parent #{} left alone: {e:#}", issue.number);
+            }
         }
     }
-    Ok(parents)
+    Ok((parents, all_read))
+}
+
+/// Whether the sweep is finished: every old-label parent was read (`all_read`) and `done` has
+/// each one `parents` planned a change for.
+pub(super) fn sweep_finished(all_read: bool, parents: &[Parent], done: &[Value]) -> bool {
+    all_read
+        && parents
+            .iter()
+            .filter(|p| p.swept && !matches!(p.action, Action::Wait(_) | Action::NoChildren))
+            .all(|p| done.iter().any(|d| d["number"] == p.issue.number))
 }
 
 fn list(ns: &[u64]) -> String {
@@ -394,6 +420,69 @@ mod tests {
         };
         run(&f, false);
         assert_eq!(*f.closes.borrow(), [1]);
+    }
+
+    #[test]
+    fn ordered_and_checkbox_items_list_children_too() {
+        assert_eq!(listed("Children:\n1. #8\n2) #9\n"), [8, 9]);
+        assert_eq!(
+            listed("Children:\n- [ ] #8\n- [x] #9\n- [X] #10\n"),
+            [8, 9, 10]
+        );
+        assert_eq!(
+            listed("Children:\n1. [ ] #8\n- #9\n* [x] #10\n"),
+            [8, 9, 10]
+        );
+        assert_eq!(listed("Children:\n1. #8\n- see #5\n- #9\n"), [8, 9]);
+        assert_eq!(listed("Children:\n1. #8\ntext\n- #9\n"), [8]);
+    }
+
+    #[test]
+    fn an_open_child_beside_a_not_planned_one_still_goes_to_a_human() {
+        for sweep in [false, true] {
+            let mut f = forge(&[3], &[3]);
+            if sweep {
+                f.issues = vec![issue(1, &[OLD_LABEL], "")];
+            }
+            let p = plan(&f, &QueueConfig::default(), sweep).unwrap();
+            assert_eq!(p[0].action, Action::Dropped(vec![3]), "sweep {sweep}");
+            let done = run(&f, sweep);
+            assert_eq!(done[0]["action"], "ready_for_human");
+            assert!(f.closes.borrow().is_empty());
+            assert_eq!(
+                f.labels(1).unwrap(),
+                ["type:feat", "status:ready-for-human"]
+            );
+        }
+    }
+
+    #[test]
+    fn a_swept_parent_that_cannot_be_read_or_moved_leaves_the_sweep_unfinished() {
+        let q = QueueConfig::default();
+        let sweep_forge = |subs: Vec<u64>| {
+            let mut f = forge(&[2, 3], &[]);
+            f.issues = vec![issue(1, &[OLD_LABEL], "")];
+            f.subs.insert(1, subs);
+            f
+        };
+
+        let f = sweep_forge(vec![2, 99]);
+        let (parents, all_read) = plan_read(&f, &q, true).unwrap();
+        assert!(!all_read);
+        let done = apply(&f, &q, &parents, &mut BTreeSet::new());
+        assert!(!sweep_finished(all_read, &parents, &done));
+
+        let mut f = sweep_forge(vec![2, 3]);
+        f.fails.insert("close");
+        let (parents, all_read) = plan_read(&f, &q, true).unwrap();
+        let done = apply(&f, &q, &parents, &mut BTreeSet::new());
+        assert!(all_read && done.is_empty());
+        assert!(!sweep_finished(all_read, &parents, &done));
+
+        let f = sweep_forge(vec![2, 3]);
+        let (parents, all_read) = plan_read(&f, &q, true).unwrap();
+        let done = apply(&f, &q, &parents, &mut BTreeSet::new());
+        assert!(sweep_finished(all_read, &parents, &done));
     }
 
     #[test]

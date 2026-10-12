@@ -379,7 +379,7 @@ impl<'a> Scheduler<'a> {
     fn split_parents(&mut self, tonight: &mut Tonight) {
         let (forge, common) = (self.plan.forge, &self.plan.repo.common_dir);
         let q = &self.plan.loaded.fac.queue;
-        let parents = match split::plan(forge, q, self.sweep) {
+        let (parents, all_read) = match split::plan_read(forge, q, self.sweep) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("ns watch: split parents not checked: {e:#}");
@@ -397,8 +397,10 @@ impl<'a> Scheduler<'a> {
             ev["event"] = json!("split_parent");
             run::log_event(common, ev);
         }
+        let finished = split::sweep_finished(all_read, &parents, &done);
         tonight.split_parents.extend(done);
-        if std::mem::take(&mut self.sweep) {
+        if self.sweep && finished {
+            self.sweep = false;
             if let Err(e) = split::swept(common) {
                 eprintln!("ns watch: the split sweep may run again: {e:#}");
             }

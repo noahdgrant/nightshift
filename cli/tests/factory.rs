@@ -5427,6 +5427,43 @@ fn watch_dry_run_lists_split_parents_and_changes_nothing() {
 }
 
 #[test]
+fn watch_dry_run_reports_waiting_and_childless_split_parents() {
+    let e = Env::new();
+    e.open_by(5, "Waiting", &["status:split"], "", Some("MEMBER"));
+    e.gh_file("subs-5", "8\n");
+    e.issue(8, "c", "OPEN");
+    e.open_by(6, "Bare", &["status:split"], "", Some("MEMBER"));
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let parents = &v["split_parents"];
+    assert_eq!(parents[0]["number"], 5, "{v}");
+    assert_eq!(parents[0]["action"], "wait");
+    assert_eq!(parents[0]["open"], 1);
+    assert_eq!(parents[1]["number"], 6);
+    assert_eq!(parents[1]["action"], "no_children");
+    assert_eq!(parents[1]["children"], serde_json::json!([]));
+}
+
+#[test]
+fn watch_leaves_the_sweep_pending_when_a_swept_parent_cannot_be_read() {
+    let e = Env::new();
+    e.open_by(
+        6,
+        "Old",
+        &["type:feat", "status:needs-define"],
+        "",
+        Some("MEMBER"),
+    );
+    e.gh_file("subs-6", "99\n");
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(6), ["type:feat", "status:needs-define"]);
+
+    e.gh_file("subs-6", "10\n");
+    e.issue(10, "c", "OPEN");
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(6), ["type:feat", "status:split"]);
+}
+
+#[test]
 fn watch_reports_a_split_parent_with_no_children_once_a_night() {
     let e = Env::new();
     e.open_by(5, "Parent", &["status:split"], "", Some("MEMBER"));
@@ -9951,6 +9988,49 @@ fn watch_on_gitlab_closes_a_split_parent_from_its_team_notes() {
         "{calls}"
     );
     assert!(e.labels(5).is_empty());
+}
+
+/// GitLab split parent 5 with no notes, and issues 8 (a developer, closed), 9 (a reporter) and 10
+/// (a developer, open or closed per `ten`) saying `Part of #5`, as a search lists them.
+fn gl_part_of(e: &Env, ten: &str) {
+    e.gl_issue(5, &["status:split"], "", 1);
+    let child = |n: u64, author: u64| serde_json::json!({"iid": n, "title": "c", "labels": [], "description": "Part of #5", "author": {"id": author, "username": "u"}});
+    let found = serde_json::json!([child(8, 1), child(9, 4), child(10, 2)]);
+    e.gh_file("gl-search.json", &found.to_string());
+    e.gh_file("gl-state-8", "closed");
+    e.gh_file("gl-state-9", "opened");
+    e.gh_file("gl-state-10", ten);
+}
+
+#[test]
+fn watch_on_gitlab_finds_split_children_by_their_part_of_line() {
+    let e = gitlab_env();
+    gl_part_of(&e, "closed");
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(
+        v["split_parents"][0]["children"],
+        serde_json::json!([8, 10]),
+        "{v}"
+    );
+    assert_eq!(v["split_parents"][0]["action"], "close", "{v}");
+    let calls = e.glab_calls();
+    assert!(
+        calls.contains("in=description&search=Part%20of%20%235"),
+        "{calls}"
+    );
+    assert!(calls.contains("issue close 5"), "{calls}");
+}
+
+#[test]
+fn watch_on_gitlab_waits_for_an_open_part_of_child() {
+    let e = gitlab_env();
+    gl_part_of(&e, "opened");
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["split_parents"], serde_json::json!([]), "{v}");
+    assert!(!e.glab_calls().contains("issue close"));
+    let d = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(d["split_parents"][0]["action"], "wait", "{d}");
+    assert_eq!(d["split_parents"][0]["open"], 1, "{d}");
 }
 
 #[test]
