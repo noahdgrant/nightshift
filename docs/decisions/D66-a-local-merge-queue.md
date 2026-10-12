@@ -4,6 +4,7 @@ title: "A local merge queue"
 issue: 374
 date: 2026-10-11
 amends: [D64]
+amended_by: [ADR-466]
 ---
 
 # D66: A local merge queue

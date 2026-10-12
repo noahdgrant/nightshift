@@ -74,7 +74,8 @@ human_review = [".github/**", "scripts/check-private.sh", ".nightshift/**", ".gi
 ci_timeout_minutes = 30
 ci_register_timeout = 3            # minutes to wait for the PR head's first check before "no CI"
 local_queue = true                 # gate the merge with the default branch before merging (the
-                                   # default). See "Local merge queue"
+                                   # default; off under [gate] local = "build-only").
+                                   # See "Local merge queue"
 
 [gate]
 local = "build-only"               # every-step (the default) | build-only. See "Gate"
@@ -139,7 +140,7 @@ See [ns run](factory/run.md): [Pinned skills and phase settings](factory/run.md#
 
 ## Merge
 
-See [Merge](factory/merge.md): [Local merge queue](factory/merge.md#local-merge-queue), [Marked regions](factory/merge.md#marked-regions).
+See [Merge](factory/merge.md): [Local merge queue](factory/merge.md#local-merge-queue), [GitHub merge queue](factory/merge.md#github-merge-queue), [Marked regions](factory/merge.md#marked-regions).
 
 ## Billing
 
