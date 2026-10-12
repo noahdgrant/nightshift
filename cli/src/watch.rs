@@ -963,6 +963,7 @@ Open after at least 2 fix attempts: C1, I2, I4.
         pub comments: BTreeMap<u64, Vec<String>>,
         pub linked: BTreeMap<u64, Vec<Issue>>,
         pub searches: std::cell::Cell<usize>,
+        pub comment_reads: std::cell::RefCell<Vec<u64>>,
         pub closes: std::cell::RefCell<Vec<u64>>,
         pub posted: std::cell::RefCell<Vec<(u64, String)>>,
         pub created: std::cell::RefCell<Vec<String>>,
@@ -1007,6 +1008,7 @@ Open after at least 2 fix attempts: C1, I2, I4.
             Ok(self.subs.get(&n).cloned().unwrap_or_default())
         }
         fn team_comments(&self, n: u64) -> Result<Vec<String>> {
+            self.comment_reads.borrow_mut().push(n);
             if self.fails.contains("team_comments") {
                 anyhow::bail!("HTTP 502");
             }

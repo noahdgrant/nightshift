@@ -362,7 +362,7 @@ impl<'a> Scheduler<'a> {
                 self.stopping = Some(why);
                 break;
             }
-            let issue = ready.remove(picker.pick(&ready, &self.running_touches()));
+            let issue = picker.take(&mut ready, || self.running_touches());
             let q = &self.plan.loaded.fac.queue;
             let n = issue.number;
             if let Err(e) = set_status(self.plan.forge, q, n, Some(&q.in_progress_label)) {

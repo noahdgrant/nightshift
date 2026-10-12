@@ -89,6 +89,7 @@ pub(super) struct Picker<'a> {
     forge: &'a dyn Forge,
     rule: LazyCell<Overlap, Box<dyn FnOnce() -> Overlap + 'a>>,
     predicted: BTreeMap<u64, Vec<String>>,
+    running: Option<Vec<(String, Vec<String>)>>,
 }
 
 impl<'a> Picker<'a> {
@@ -97,12 +98,14 @@ impl<'a> Picker<'a> {
             forge,
             rule: LazyCell::new(Box::new(rule)),
             predicted: BTreeMap::new(),
+            running: None,
         }
     }
 
     /// Which of `ready`, in queue order, to start next: the first whose predicted `touches`
     /// overlap no `running` unit's, else the first.
-    pub(super) fn pick(&mut self, ready: &[Issue], running: &[(String, Vec<String>)]) -> usize {
+    #[cfg(test)]
+    fn pick(&mut self, ready: &[Issue], running: &[(String, Vec<String>)]) -> usize {
         if ready.len() <= 1 || running.is_empty() {
             return 0;
         }
@@ -115,6 +118,41 @@ impl<'a> Picker<'a> {
                 overlapped(rule, mine, running).is_empty()
             })
             .unwrap_or(0)
+    }
+
+    /// Remove from `ready` and return the issue to start next, as [`Picker::pick`] chooses. The
+    /// running units are read through `running` once, when two or more issues are ready; the
+    /// issues taken after join them from their cached predictions, so nothing is read twice.
+    pub(super) fn take(
+        &mut self,
+        ready: &mut Vec<Issue>,
+        running: impl FnOnce() -> Vec<(String, Vec<String>)>,
+    ) -> Issue {
+        if ready.len() <= 1 {
+            return ready.remove(0);
+        }
+        let (forge, rule) = (self.forge, &*self.rule);
+        let cache = &mut self.predicted;
+        let running = self.running.get_or_insert_with(running);
+        let at = if running.is_empty() {
+            0
+        } else {
+            ready
+                .iter()
+                .position(|i| {
+                    let mine = cache.entry(i.number).or_insert_with(|| predicted(forge, i));
+                    overlapped(rule, mine, running).is_empty()
+                })
+                .unwrap_or(0)
+        };
+        let issue = ready.remove(at);
+        let mine = cache
+            .entry(issue.number)
+            .or_insert_with(|| predicted(forge, &issue));
+        if !mine.is_empty() {
+            running.push((unit_id(&issue), mine.clone()));
+        }
+        issue
     }
 }
 
@@ -264,6 +302,57 @@ mod tests {
         assert!(!tracked.overlaps(&globs(&["cli/u*"]), &globs(&["cli/**"])));
         assert!(!super::rule(&repo, &globs(&["cli/run.rs"]))
             .overlaps(&globs(&["cli/*"]), &globs(&["cli/**"])));
+    }
+
+    fn take_all(
+        forge: &Fake,
+        ready: &mut Vec<Issue>,
+        running: &[(String, Vec<String>)],
+    ) -> Vec<u64> {
+        let mut picker = Picker::new(forge, || rule(&[]));
+        let mut order = Vec::new();
+        while !ready.is_empty() {
+            order.push(picker.take(ready, || running.to_vec()).number);
+        }
+        order
+    }
+
+    #[test]
+    fn one_ready_issue_reads_no_running_unit_and_no_comments() {
+        let forge = Fake::default();
+        let mut ready = vec![issue(2, "")];
+        let mut picker = Picker::new(&forge, || panic!("rule read"));
+        let at = picker.take(&mut ready, || panic!("running units read"));
+        assert_eq!(at.number, 2);
+        assert!(forge.comment_reads.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_fill_reads_each_ready_issue_once_and_the_running_units_once() {
+        let (forge, mut ready) = queued(["`cli/**`", "`cli/**`", "`docs/**`"]);
+        let reads = std::cell::Cell::new(0);
+        let mut picker = Picker::new(&forge, || rule(&[]));
+        let mut order = Vec::new();
+        while !ready.is_empty() {
+            let running = || {
+                reads.set(reads.get() + 1);
+                running(&["cli/**"])
+            };
+            order.push(picker.take(&mut ready, running).number);
+        }
+        assert_eq!(order, [4, 2, 3]);
+        assert_eq!(reads.get(), 1);
+        let mut seen = forge.comment_reads.borrow().clone();
+        seen.sort();
+        assert_eq!(seen, [2, 3, 4]);
+    }
+
+    #[test]
+    fn an_issue_a_fill_started_counts_as_running_for_the_next_pick() {
+        let (forge, mut ready) = queued(["`docs/**`", "`docs/DESIGN.md`", "`cli/src/run.rs`"]);
+        let order = take_all(&forge, &mut ready, &running(&["cli/src/watch.rs"]));
+        assert_eq!(order, [2, 4, 3]);
+        assert_eq!(forge.comment_reads.borrow().len(), 3);
     }
 
     #[test]
