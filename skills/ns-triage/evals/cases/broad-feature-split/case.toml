@@ -70,6 +70,7 @@ for path in children:
         sys.exit(f"{path}: missing {missing}")
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     body = lines[1:] if lines and lines[0].startswith("#") else lines
+    body = body[1:] if body and body[0].startswith("🤖") else body
     first = next((l for l in body if blocked_by.match(l) or not header.match(l)), "")
     m = blocked_by.match(first)
     blockers[path] = [int(n) for n in re.findall(r"#?(\d+)", m.group(1))] if m else []

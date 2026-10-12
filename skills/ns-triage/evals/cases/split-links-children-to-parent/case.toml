@@ -48,6 +48,7 @@ for path in children:
         sys.exit(f"{path}: not in the parent's Children: list")
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     body = lines[1:] if lines and lines[0].startswith("#") else lines
+    body = body[1:] if body and body[0].startswith("🤖") else body
     link = next((i for i, l in enumerate(body) if part_of.match(l)), None)
     if link is None:
         sys.exit(f"{path}: no Part of #01 line")
