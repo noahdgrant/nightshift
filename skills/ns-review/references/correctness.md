@@ -42,3 +42,10 @@ Record each result as one of:
 ```
 
 Firmware: run mutations against the host-side unit tests or the simulator, never by flashing a board. If a branch is only reachable on target, the mutation is `inconclusive`.
+
+## TypeScript and React
+
+Apply this section only when the diff touches `.ts`, `.tsx`, `.js` or `.jsx` files. Each item names its upstream source.
+
+- **Swallowing `catch`**: a `catch` that drops the error and returns a default (`[]`, `null`, `{}`, `false`) turns a failure into plausible data, and the caller can't tell the two apart. Show the caller that acts on the default. Let the error propagate, or return a result the caller must branch on. Source: pstack `interrogate` (rubric, code-quality-review).
+- **No schema at a trust boundary**: data from the network, storage, `postMessage`, env or user input typed with `as T` or a bare annotation on `JSON.parse`. Nothing checks the shape, so a bad payload fails far from where it entered. Parse it with a schema where it crosses in. Source: pstack `typescript-best-practices` (Boundary validation), `principle-boundary-discipline`.

@@ -10,6 +10,12 @@ metadata:
     - addyosmani/agent-skills@1401c8b8030e:skills/doubt-driven-development
     - mattpocock/skills@b0618bc436ad:skills/engineering/code-review
     - cursor/plugins@ccb5507cec15:pstack/skills/interrogate
+    - cursor/plugins@ccb5507cec15:pstack/skills/typescript-best-practices
+    - cursor/plugins@ccb5507cec15:pstack/skills/principle-type-system-discipline
+    - cursor/plugins@ccb5507cec15:pstack/skills/principle-boundary-discipline
+    - addyosmani/agent-skills@1401c8b8030e:skills/frontend-ui-engineering
+    - addyosmani/agent-skills@1401c8b8030e:skills/performance-optimization
+    - addyosmani/agent-skills@1401c8b8030e:skills/code-simplification
 ---
 
 # Review

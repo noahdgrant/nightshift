@@ -45,3 +45,14 @@ Judgement calls, overridden by any documented repo standard:
 Do not penalise simple code for lacking abstraction. Three lines of duplication beat a premature abstraction.
 
 Firmware: check the layering between hardware access (registers, HAL), drivers and application logic. Application code poking registers directly, or a driver holding business rules, is a boundary finding. Code that must run on host and target should sit behind a seam the host tests can use.
+
+## TypeScript and React
+
+Apply this section only when the diff touches `.ts`, `.tsx`, `.js` or `.jsx` files. Each item names its upstream source.
+
+- **Bag of optional fields**: a type whose variants are spread over optional fields (`{ loading: boolean; data?: T; error?: string }`) compiles contradictory combinations. Model the variants as a discriminated union on one literal field (`kind`, `type` or `tag`, whichever the repo uses). Source: pstack `typescript-best-practices` (Discriminated unions).
+- **Illegal states representable**: when a bug would make you ask "can this combination happen?", the type is too loose. Build the shape so the bad value can't be constructed: `[T, ...T[]]` for non-empty, `start` plus `duration` for a range, a boolean derived from the one field that decides it. Source: pstack `principle-type-system-discipline`, `typescript-best-practices` (Constructive modeling).
+- **Hand-rolled guards at the boundary**: external data (`JSON.parse`, fetch, IPC, env, database rows) is `unknown` until a schema parses it. Parse once where it enters with the schema library the repo already uses, and infer the type from the schema (`z.infer`). A property-by-property guard beside a duplicate interface is the finding. Source: pstack `typescript-best-practices` (Schemas before guards, Boundary validation).
+- **Copied shapes**: a new interface restating fields another type, a generated type or a schema already defines. Derive it with `Pick`, `Omit`, `Parameters`, `ReturnType`, `Awaited` or `typeof`. Source: pstack `typescript-best-practices` (Schema-derived types).
+- **Mixable IDs**: two IDs of the same primitive type passed side by side where swapping them would compile and do harm. Brand them (`string & { readonly __brand: "OrderId" }`), validated once at creation. Brand only where the mix-up is a real risk. Source: pstack `typescript-best-practices` (Branded types).
+- **Positional parameters and boolean flags**: several same-typed positional arguments, or `doThing(true, false)`, hide meaning at the call site. Pass one object argument, or split the function. Hot paths (per-frame render, parsers) may keep positional arguments. Source: pstack `typescript-best-practices` (Object args), addyosmani `code-simplification`.
