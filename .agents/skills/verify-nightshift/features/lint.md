@@ -19,10 +19,10 @@ Preconditions:
 
 - Baseline, in `$NS_SRC`.
 
-- **Clean.** Run `cap lint-clean "$NS" lint skills`. Exit `0`; `ok` is `true`, `errors` is `[]`, `skills` counts every `ns-*` directory.
-- **Errors.** Make a broken skill: `mkdir -p $V/sk/ns-x && printf -- '---\nname: ns-y\n---\n[a](./missing.md)\n' > $V/sk/ns-x/SKILL.md`. Run `cap lint-errors "$NS" lint $V/sk`. Exit `1`; `ok` is `false` and `errors` holds three entries for the bad name, the missing description and the broken link.
-- **Local.** Run `cap lint-local "$NS" lint .agents/skills`. Exit `0`; `ok` is `true` and `skills` is at least `1`.
-- **Human.** Run `cap lint-human "$NS" lint $V/sk --human`. Exit `1` and three lines: `name "ns-y" does not match directory "ns-x"`, `missing description`, `broken link: ./missing.md`.
+- **Clean.** Run `cap lint-clean "$NS" lint "$NS_SRC/skills"`. Exit `0`; `ok` is `true`, `errors` is `[]`, `skills` counts every `ns-*` directory.
+- **Errors.** Make a broken skill: `mkdir -p "$V/sk/ns-x" && printf -- '---\nname: ns-y\n---\n[a](./missing.md)\n' > "$V/sk/ns-x/SKILL.md"`. Run `cap lint-errors "$NS" lint "$V/sk"`. Exit `1`; `ok` is `false` and `errors` holds three entries for the bad name, the missing description and the broken link.
+- **Local.** Run `cap lint-local "$NS" lint "$NS_SRC/.agents/skills"`. Exit `0`; `ok` is `true` and `skills` is at least `1`.
+- **Human.** Run `cap lint-human "$NS" lint "$V/sk" --human`. Exit `1` and three lines: `name "ns-y" does not match directory "ns-x"`, `missing description`, `broken link: ./missing.md`.
 
 ## Gotchas
 
