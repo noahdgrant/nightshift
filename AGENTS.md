@@ -16,14 +16,14 @@ Agent skills that take an issue to a merged PR (`skills/ns-*`), plus the `ns` CL
 
 Issues live on GitHub at `noahdgrant/nightshift`, managed with `gh`.
 
-- **AI agents mark what they post.** Every issue body, comment and PR body an AI agent posts starts with a 🤖 line naming the agent, such as `🤖 *Posted by an AI agent (Claude Code).*` (nightshift's own posts: #379). Titles and commit messages stay plain Conventional Commits.
+- **AI agents mark what they post.** Every issue body, comment and PR body an AI agent posts starts with a 🤖 line naming the agent, then a blank line: `🤖 *Posted by nightshift, an AI agent.*` from nightshift (`skills/ns-contract`, Disclosure), and `🤖 *Posted by an AI agent (Claude Code).*` from an assistant session. Titles and commit messages stay plain Conventional Commits.
 - **Every PR closes an issue.** The PR body says `Closes #N`. Work with no issue gets one first.
 - **Titles** of issues, PRs and commits are Conventional Commits: `type(scope): subject`, scoped to the skill or `cli`. Append `!` to the type for a breaking change.
 - **Labels**, on every issue and PR:
   - exactly one `type:<type>`, matching the Conventional Commit type (`type:feat`, `type:fix`, `type:docs`, `type:refactor`, `type:test`, `type:ci`, ...)
   - at least one `area:*` (`area:cli`, `area:skills`, `area:evals`, `area:factory`, `area:repo` for repo-wide docs and config)
   - `breaking change` when the title has `!`
-- **Blockers**: put `Blocked by: #N` on the first line of the issue body.
+- **Blockers**: put `Blocked by: #N` on the first line of the issue body, right after the 🤖 line.
 - **Design needs a human**: an issue that asks the implementer to choose a design (a mechanism, format, interface or tool) stays `status:needs-define` until the human agrees it. File the build work once the design is settled.
 - **Debt before features**: tech debt (review follow-ups, escapes, fixes, refactors, missing tests, CI) is `priority:high`, ahead of new features. See `docs/agents/triage-labels.md`.
 - **Merging**: squash-merge. The PR title becomes the commit on `main`, so it must be a Conventional Commit.
