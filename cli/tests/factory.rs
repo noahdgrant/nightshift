@@ -5483,6 +5483,78 @@ fn a_repo_the_token_cannot_read_stops_run_and_watch_with_exit_2() {
     );
 }
 
+fn unreadable_github_repo(e: &Env) {
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/example-org/frontend.git",
+        ],
+    );
+    e.config(OVERRIDES);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file(
+        "repo.fail",
+        &format!("HTTP 404: Not Found: token {FAKE_TOKEN}"),
+    );
+}
+
+#[test]
+fn a_stale_or_foreign_checked_mark_never_skips_the_probe() {
+    let e = Env::new();
+    unreadable_github_repo(&e);
+    for mark in [
+        "1",
+        "github:example-org/other",
+        "gitlab:example-org/frontend",
+    ] {
+        for args in [&["run", "--issue", "7"][..], &["watch", "--once"][..]] {
+            let out = e
+                .ns()
+                .env("OWNER_TOKEN", FAKE_TOKEN)
+                .env("NS_FORGE_CHECKED", mark)
+                .args(args)
+                .assert()
+                .code(2)
+                .get_output()
+                .clone();
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                err.contains("cannot read example-org/frontend"),
+                "{mark} {args:?}: {err}"
+            );
+        }
+    }
+    assert!(e.calls().is_empty(), "a phase ran: {:?}", e.calls());
+}
+
+#[test]
+fn an_unreadable_repo_names_the_environment_token_that_overrides_the_table() {
+    let e = Env::new();
+    unreadable_github_repo(&e);
+    for args in [&["run", "--issue", "7"][..], &["watch", "--once"][..]] {
+        let out = e
+            .ns()
+            .env("GH_TOKEN", FAKE_TOKEN)
+            .args(args)
+            .assert()
+            .code(2)
+            .get_output()
+            .clone();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains(
+                "the token from GH_TOKEN from the environment, overriding [forge.github.owners.\"example-org\"]"
+            ),
+            "{args:?}: {err}"
+        );
+        assert!(err.contains("[token]"), "{err}");
+        assert!(!err.contains(FAKE_TOKEN), "{err}");
+    }
+}
+
 fn checked_seen(e: &Env) -> Vec<String> {
     fs::read_to_string(e.ctrl.join("checked"))
         .unwrap_or_default()
@@ -5783,6 +5855,54 @@ fn an_override_naming_an_unset_variable_stops_run_with_exit_2() {
         assert!(!err.contains(FAKE_TOKEN), "{err}");
         assert!(e.calls().is_empty(), "a phase ran: {:?}", e.calls());
     }
+}
+
+#[test]
+fn a_gitlab_repo_table_beats_the_nested_group_owner_table() {
+    let e = Env::new();
+    e.gl_members(&[(1, 30)], &[]);
+    e.gl_issue(2, &[READY], "", 1);
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@gitlab.com:team/sub/project.git",
+        ],
+    );
+    e.config(
+        "[forge.gitlab]\ntoken_env = \"GL_DEFAULT\"\n[forge.gitlab.owners.\"team/sub\"]\ntoken_env = \"GL_SUB\"\n[forge.gitlab.repos.\"team/sub/project\"]\ntoken_env = \"GL_REPO\"\n",
+    );
+    let ns = || {
+        let mut c = e.ns();
+        c.env("GL_SUB", "owner-tok")
+            .env("GL_REPO", FAKE_TOKEN)
+            .env_remove("GITLAB_TOKEN")
+            .env_remove("GITLAB_HOST");
+        c
+    };
+    ns().args(["watch", "--dry-run"]).assert().code(0);
+    let tokens = fs::read_to_string(e.ghd.join("glab-tokens")).unwrap();
+    assert!(!tokens.is_empty());
+    assert!(tokens.lines().all(|t| t == FAKE_TOKEN), "{tokens}");
+
+    e.gh_file("gl-repo.fail", "404 Project Not Found");
+    e.gh_file("gl-login", "gl-work");
+    let out = ns()
+        .args(["watch", "--once"])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(
+            "account gl-work cannot read team/sub/project (token from [forge.gitlab.repos.\"team/sub/project\"])"
+        ),
+        "{err}"
+    );
+    assert!(!err.contains("token from [forge.gitlab.owners"), "{err}");
 }
 
 #[test]
