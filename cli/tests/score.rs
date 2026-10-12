@@ -52,12 +52,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn script(path: &Path, body: &str) {
-    fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    StdCommand::new("chmod")
-        .arg("+x")
-        .arg(path)
-        .status()
-        .unwrap();
+    common::write_exe(path, format!("#!/bin/sh\n{body}\n"));
 }
 
 struct Env {

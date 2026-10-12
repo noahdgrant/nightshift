@@ -4,9 +4,10 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
+
+use common::write_exe;
 
 const ALL_STEPS: [&str; 19] = [
     "pinned tools (scripts/ci-tools.toml)",
@@ -129,12 +130,6 @@ fn real_python3() -> PathBuf {
         .expect("python3 is required to run the eval plan filter")
 }
 
-fn write_exe(path: &Path, body: &str) {
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, body).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-}
-
 struct Repo {
     dir: tempfile::TempDir,
 }
@@ -147,7 +142,7 @@ impl Repo {
         for script in ["ci-local.sh", "ci-tools.sh"] {
             write_exe(
                 &root.join("scripts").join(script),
-                &fs::read_to_string(scripts.join(script)).unwrap(),
+                fs::read_to_string(scripts.join(script)).unwrap(),
             );
         }
         fs::copy(
@@ -158,7 +153,7 @@ impl Repo {
         for (_, command, version, _) in pinned_tools() {
             write_exe(
                 &root.join("bin").join(&command),
-                &tool_stub(&command, &version),
+                tool_stub(&command, &version),
             );
         }
         write_exe(&root.join("scripts/check-private.sh"), "#!/bin/sh\n");
@@ -172,7 +167,7 @@ impl Repo {
         for pack in ["python", "js", "java"] {
             write_exe(
                 &root.join("rules").join(pack).join("tests/run.sh"),
-                &rule_pack_tests(pack),
+                rule_pack_tests(pack),
             );
         }
         let cases = root.join("skills/ns-troubleshoot/evals/cases");
@@ -315,7 +310,7 @@ fn a_wrong_version_pinned_tool_fails_the_run_first() {
         let repo = Repo::new();
         write_exe(
             &repo.dir.path().join("bin").join(&command),
-            &tool_stub(&command, "0.0.0"),
+            tool_stub(&command, "0.0.0"),
         );
         let out = repo.run(&[], &[]);
         assert_eq!(out.status.code(), Some(1), "{name}: {}", stderr(&out));

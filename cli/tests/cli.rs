@@ -916,10 +916,7 @@ fn ask_api_env_seen_from(start: &Path, repo: &Path, name: &str) -> Vec<String> {
     let bin = repo.parent().unwrap().join("bin");
     fs::create_dir_all(&bin).unwrap();
     let fake = bin.join(name);
-    fs::write(&fake, "#!/bin/sh\ncat >/dev/null\nenv\n").unwrap();
-    let mut perms = fs::metadata(&fake).unwrap().permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    fs::set_permissions(&fake, perms).unwrap();
+    common::write_exe(&fake, "#!/bin/sh\ncat >/dev/null\nenv\n");
     let cfg = repo.parent().unwrap().join("config.toml");
     fs::write(
         &cfg,
@@ -1239,12 +1236,7 @@ fn doctor_skips_the_hooks_check_without_a_githooks_dir() {
 }
 
 fn executable(path: &Path, body: &str) {
-    fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    StdCommand::new("chmod")
-        .arg("+x")
-        .arg(path)
-        .status()
-        .unwrap();
+    common::write_exe(path, format!("#!/bin/sh\n{body}\n"));
 }
 
 #[test]
@@ -1966,11 +1958,10 @@ fn own_factory_definition_turns_on_hooks_that_run_fast_ci_on_commit_and_full_ci_
     );
     fs::create_dir_all(root.join(".githooks")).unwrap();
     for hook in ["pre-commit", "pre-push"] {
-        fs::copy(
-            src.join(".githooks").join(hook),
-            root.join(".githooks").join(hook),
-        )
-        .unwrap();
+        common::copy_exe(
+            &src.join(".githooks").join(hook),
+            &root.join(".githooks").join(hook),
+        );
     }
     fs::create_dir_all(root.join("scripts")).unwrap();
     executable(
@@ -2479,11 +2470,10 @@ fn hooked_repo() -> (TempDir, PathBuf, PathBuf, PathBuf) {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     fs::create_dir_all(root.join(".githooks")).unwrap();
     for hook in ["pre-commit", "pre-push"] {
-        fs::copy(
-            src.join(".githooks").join(hook),
-            root.join(".githooks").join(hook),
-        )
-        .unwrap();
+        common::copy_exe(
+            &src.join(".githooks").join(hook),
+            &root.join(".githooks").join(hook),
+        );
     }
     fs::create_dir_all(root.join("scripts")).unwrap();
     let log = root.join(".git/ci-runs");

@@ -3,9 +3,10 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
+
+use common::write_exe;
 
 const LIST: &str = r#"
 [widget]
@@ -24,12 +25,6 @@ version = "0.20.2"
 install = "install-action"
 check = "gizmo --version"
 "#;
-
-fn write_exe(path: &Path, body: &str) {
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, body).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-}
 
 fn real(tool: &str) -> PathBuf {
     std::env::split_paths(&std::env::var_os("PATH").unwrap())
@@ -51,7 +46,7 @@ impl Repo {
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci-tools.sh");
         write_exe(
             &root.join("scripts/ci-tools.sh"),
-            &fs::read_to_string(script).unwrap(),
+            fs::read_to_string(script).unwrap(),
         );
         fs::write(root.join("scripts/ci-tools.toml"), list).unwrap();
         fs::create_dir_all(root.join("bin")).unwrap();
@@ -323,16 +318,29 @@ fn a_python_older_than_3_11_fails_with_a_message_naming_the_floor() {
         let repo = all_installed();
         write_exe(
             &repo.dir.path().join("bin/python3"),
-            "#!/bin/sh\ncase \"$1\" in\n  -c) exit 1 ;;\n  *) echo 'ModuleNotFoundError: tomllib' >&2; exit 1 ;;\nesac\n",
+            "#!/bin/sh\ncase \"$2\" in\n  -c) echo 3.10; exit 1 ;;\n  *) echo 'ModuleNotFoundError: tomllib' >&2; exit 1 ;;\nesac\n",
         );
         let out = repo.run(&[mode], &[]);
         assert!(!out.status.success(), "{mode}");
         assert_eq!(
             stderr(&out),
-            "ci-tools: needs Python 3.11 or newer (for tomllib); python3 on PATH is older\n",
+            "ci-tools: needs Python 3.11 or newer (for tomllib); python3 on PATH is 3.10\n",
             "{mode}"
         );
     }
+}
+
+#[test]
+fn a_python3_that_cannot_run_is_named_as_such_not_as_too_old() {
+    let repo = all_installed();
+    let python = repo.dir.path().join("bin/python3");
+    fs::remove_file(&python).unwrap();
+    fs::write(&python, "#!/bin/sh\necho never runs\n").unwrap();
+    let out = repo.run(&["check"], &[]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(err.starts_with("ci-tools: cannot run python3: "), "{err}");
+    assert!(err.contains("Permission denied"), "{err}");
 }
 
 #[test]
@@ -373,13 +381,13 @@ fn download_repo(sha: &str) -> Repo {
     let log = repo.dir.path().join("log");
     write_exe(
         &bin.join("curl"),
-        &format!(
+        format!(
             "#!/bin/sh\necho \"curl $*\" >> {log:?}\nwhile [ \"$1\" != -o ]; do shift; done\nprintf 'archive\\n' > \"$2\"\n"
         ),
     );
     write_exe(
         &bin.join("unzip"),
-        &format!(
+        format!(
             "#!/bin/sh\necho \"unzip $*\" >> {log:?}\nd=\"$4/thing-7.1/bin\"\nmkdir -p \"$d\"\nprintf '#!/bin/sh\\necho thing 7.1\\n' > \"$d/thing\"\n{chmod:?} +x \"$d/thing\"\n",
             chmod = real("chmod"),
         ),

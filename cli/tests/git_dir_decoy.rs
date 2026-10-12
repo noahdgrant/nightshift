@@ -137,18 +137,13 @@ fn with_no_arguments_it_runs_cargo_test_on_the_cli_manifest_from_the_repo_root()
     let bin = tempfile::tempdir().unwrap();
     let record = bin.path().join("record");
     let stub = bin.path().join("cargo");
-    fs::write(
+    common::write_exe(
         &stub,
         format!(
             "#!/bin/sh\n{{ echo \"args=$*\"; echo \"pwd=$PWD\"; echo \"git_dir=$GIT_DIR\"; echo \"work_tree=$GIT_WORK_TREE\"; echo \"top=$(git -C \"$GIT_WORK_TREE\" rev-parse --show-toplevel)\"; echo \"branch=$(git -C \"$GIT_WORK_TREE\" rev-parse --verify -q refs/heads/decoy-branch >/dev/null && echo yes)\"; [ -d \"$GIT_WORK_TREE\" ] && echo is_dir=yes; }} > '{}'\n",
             record.display()
         ),
-    )
-    .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    );
     let path = format!(
         "{}:{}",
         bin.path().display(),

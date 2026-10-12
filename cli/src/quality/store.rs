@@ -310,7 +310,7 @@ pub fn publish_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{commit_file, g};
+    use crate::testutil::{commit_file, g, write_exe};
 
     struct Setup {
         _tmp: tempfile::TempDir,
@@ -400,13 +400,7 @@ mod tests {
     fn the_records_push_skips_the_checkouts_pre_push_hook() {
         let s = setup();
         let hook = s.repo.join(".git/hooks/pre-push");
-        fs::write(
-            &hook,
-            "#!/bin/sh
-touch ran\nexit 1\n",
-        )
-        .unwrap();
-        Command::new("chmod").arg("+x").arg(&hook).status().unwrap();
+        write_exe(&hook, "#!/bin/sh\ntouch ran\nexit 1\n");
         let sent = publish(&s.repo, &common(&s.repo), &lines(&["x"])).unwrap();
         assert_eq!(
             sent,
@@ -554,8 +548,7 @@ touch ran\nexit 1\n",
     fn a_push_a_hook_declines_goes_to_the_outbox_without_retrying() {
         let s = setup();
         let hook = s.remote.join("hooks/pre-receive");
-        fs::write(&hook, "#!/bin/sh\necho no >&2\nexit 1\n").unwrap();
-        Command::new("chmod").arg("+x").arg(&hook).status().unwrap();
+        write_exe(&hook, "#!/bin/sh\necho no >&2\nexit 1\n");
         let mut pushes = 0;
         let sent = publish_with(&s.repo, &common(&s.repo), &lines(&["x"]), &mut |_| {
             pushes += 1

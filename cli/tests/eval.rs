@@ -98,12 +98,7 @@ fn setup_with(output: &str) -> Env {
     let codex = base.join("bin/codex");
     fs::create_dir_all(claude.parent().unwrap()).unwrap();
     for bin in [&claude, &codex] {
-        fs::write(bin, FAKE_HARNESS).unwrap();
-        StdCommand::new("chmod")
-            .arg("+x")
-            .arg(bin)
-            .status()
-            .unwrap();
+        common::write_exe(bin, FAKE_HARNESS);
     }
     let home = base.join("realhome");
     fs::create_dir_all(&home).unwrap();
