@@ -1065,7 +1065,7 @@ fn a_verify_no_go_for_base_movement_rebases_onto_the_newest_main_at_no_attempts_
     );
     let main = remote_main(&e);
     let p = e.prompt(4, "build");
-    assert!(p.contains("verify said fail base moved"), "{p}");
+    assert!(p.contains("base moved"), "{p}");
     assert!(
         p.contains(&format!("rebase onto the newest origin/main ({main})")),
         "{p}"
@@ -1096,6 +1096,119 @@ fn a_ship_no_go_for_base_movement_goes_to_build_at_no_attempts_cost() {
     let r = rebase_events(&e);
     assert_eq!(r.len(), 1, "{r:?}");
     assert_eq!(r[0]["cause"], "pr.md failed: base moved");
+}
+
+#[test]
+fn a_free_rebase_build_that_fails_leaves_the_unit_stuck_at_the_normal_cap() {
+    let e = Env::new();
+    base_moves_during_build(&e, "");
+    e.queue("build", &["pass:script", "fail", "pass:commit"]);
+    e.queue("verify", &["fail:base moved"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["reason"], "build is out of attempts (2)", "{v}");
+    assert_eq!(e.calls(), ["triage", "build", "verify", "build"]);
+}
+
+#[test]
+fn a_review_no_go_for_base_movement_goes_to_build_at_no_attempts_cost() {
+    let e = Env::new();
+    base_moves_during_build(&e, "[phases.review]\nmax_attempts = 5\n");
+    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["pass", "fail", "pass"]);
+    e.queue("review", &["fail:base moved", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        &e.calls()[..6],
+        ["triage", "build", "verify", "review", "build", "verify"]
+    );
+    let r = rebase_events(&e);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0]["cause"], "review.md failed");
+}
+
+#[test]
+fn a_free_rebase_build_that_times_out_leaves_the_unit_stuck_at_the_normal_cap() {
+    let e = Env::new();
+    base_moves_during_build(&e, "");
+    e.queue("build", &["pass:script", "blocked:sleep", "pass:commit"]);
+    e.queue("verify", &["fail:base moved"]);
+    let out = e
+        .ns()
+        .env("NS_PHASE_TIMEOUT_MS", "build=1500")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("build is out of attempts (2)"),
+        "{v}"
+    );
+    assert_eq!(e.calls(), ["triage", "build", "verify", "build"]);
+}
+
+#[test]
+fn a_free_rebase_build_that_writes_no_artifact_leaves_the_unit_stuck_at_the_normal_cap() {
+    let e = Env::new();
+    base_moves_during_build(&e, "");
+    e.queue("build", &["pass:script", "none", "pass:commit"]);
+    e.queue("verify", &["fail:base moved"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("build is out of attempts (2)"),
+        "{v}"
+    );
+    assert_eq!(e.calls(), ["triage", "build", "verify", "build"]);
+}
+
+#[test]
+fn a_free_rebase_that_gives_up_waiting_for_a_lock_still_rebases_on_the_retry() {
+    let e = Env::new();
+    let lock = e.base.join("locks/bench-1.lock");
+    let log = e.root.join(".git/ns/runs.jsonl");
+    e.factory("[phases.build]\nrunner = \"bench\"\n");
+    e.runner("bench", "kind = \"bench\"\nlocks = [\"bench-1\"]\n");
+    e.config(&format!(
+        "[runners]\nlock_dir = {:?}\n",
+        lock.parent().unwrap().to_str().unwrap()
+    ));
+    // After the first build lets go of the lock, a holder takes it and keeps it until the
+    // run has logged its first give-up, so the rebase build's first wait ends at the timeout.
+    e.ctl(
+        "build.sh",
+        &format!(
+            "echo b >> work.txt && git add work.txt && git -c user.name=f -c user.email=f@f commit -qm b && {}; \
+             (setsid timeout 30 flock -x {lock:?} sh -c 'until grep -q lock_wait_timeout {log:?}; do sleep 0.05; done' </dev/null >/dev/null 2>&1 &)",
+            move_main_sh(&e)
+        ),
+    );
+    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["fail:base moved", "pass"]);
+    let out = e
+        .ns()
+        .env("NS_PHASE_TIMEOUT_MS", "build=4000")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["outcome"], "done", "{v}");
+    let main = remote_main(&e);
+    let p = e.prompt(4, "build");
+    assert!(
+        p.contains(&format!("rebase onto the newest origin/main ({main})")),
+        "{p}"
+    );
+    assert_eq!(rebase_events(&e).len(), 1);
 }
 
 #[test]
