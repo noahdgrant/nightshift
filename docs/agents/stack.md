@@ -7,8 +7,9 @@ How to build, test, lint and format this repo. The `ns-*` skills run these comma
 - Rust (stable, 2021 edition) for the `ns` CLI in `cli/`
 - Markdown skills in `skills/ns-*/`, with TOML eval cases in `skills/*/evals/`
 - Python 3.11+ and C (Zephyr) only inside the eval fixtures under `evals/fixtures/`
-- JavaScript and TypeScript only in the rule pack `rules/js/`, whose tests need Node 18 and npm (`scripts/ci-tools.toml`)
-- Java 11+ and PMD only for the Java rule pack's tests (`rules/java/tests/run.sh`, `cli/tests/rules_pack_java.rs`); `scripts/ci-tools.sh install pmd` fetches the pinned PMD
+- The rule packs under `rules/`, listed in `rules/README.md`. Two need a toolchain of their own for their tests:
+  - JavaScript and TypeScript only in `rules/js/`, whose tests need Node 18 and npm (`scripts/ci-tools.toml`)
+  - Java 11+ and PMD only for `rules/java/`'s tests (`rules/java/tests/run.sh`, `cli/tests/rules_pack_java.rs`); `scripts/ci-tools.sh install pmd` fetches the pinned PMD
 - `scripts/ci-tools.sh` needs Python 3.11+ on PATH (it reads `tomllib`) and fails with a message naming it otherwise
 
 ## Setup
