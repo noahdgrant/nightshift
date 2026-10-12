@@ -372,6 +372,8 @@ Under `[gate] local = "build-only"` the merge result is tested on GitHub, not on
 3. No local gate runs in the merge step. The gate after build ran the full command, and the gates after later phases ran the fast one (see "Where the gate runs all of CI").
 4. Steps 4 to 7 run unchanged on the updated head: the step waits for the PR's checks, bounded by `ci_register_timeout` and `ci_timeout_minutes`, and merges only when every check passed or was skipped. A red check goes back to build with the failing checks named in `{feedback}`. The `ci_passed` and `ci_failed` events carry `where: "github"`.
 
+Under `build-only` GitHub's checks are the only gate in the merge step, and `ns` waits for the checks that have registered on the head, so the repo's branch protection should require its CI check. Otherwise a late-registering check can be missed.
+
 `every-step` keeps the local merge queue, configured by `local_queue` as above.
 
 ### Marked regions
