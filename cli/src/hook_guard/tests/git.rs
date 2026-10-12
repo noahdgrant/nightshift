@@ -336,6 +336,15 @@ fn a_push_word_with_a_literal_tail_cannot_be_no_verify() {
         assert!(!denied(c), "{c}");
     }
     for c in [
+        "git push {--no-verify,\"$V\"}",
+        "git push {--no-verify,\"$V\"}x",
+        "git push {--no-ver,\"$V\"}ify",
+        "git push {a,\"$V\"}",
+        "git push {\"$V\",x}",
+        "git push \"$@\"/x",
+        "git push \"${a[@]}\"/x",
+        "git push \"${a[*]}\"/x",
+        "git push \"$@\"",
         "git push \"$V\"erify",
         "git push \"$V\"-verify",
         "git push \"$V\"=x",
@@ -393,6 +402,8 @@ fn every_word_after_a_literal_double_dash_is_positional() {
         "git merge \"$O\" -- \"$V/x\"",
         "git merge $O -- \"$V/x\"",
         "git push --no-verify -- origin",
+        "git push --$X \"$R\"",
+        "git merge --$X -- \"$V/x\"",
     ] {
         assert!(denied(c), "{c}");
     }

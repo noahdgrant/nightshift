@@ -77,9 +77,15 @@ impl WordBuf {
             text: self.text,
             opaque,
             quoted_var: self.quoted_var,
-            tail_at: self.tail_at.filter(|_| !self.splits),
+            tail_at: self
+                .tail_at
+                .filter(|_| !self.splits && self.brace_at.is_none()),
         }
     }
+}
+
+fn lists_words(body: &str) -> bool {
+    body.starts_with('@') || body.contains("[@]") || body.contains("[*]")
 }
 
 /// The opacity rule: an expansion hides what the word is unless the text ahead of it ends an
@@ -322,7 +328,9 @@ impl<'a> Lexer<'a> {
             Some('{') => {
                 self.chars.next();
                 self.buf().mark_expansion();
-                self.braced_body();
+                if self.braced_body() {
+                    self.buf().splits = true;
+                }
             }
             Some(c) if c.is_ascii_alphanumeric() || c == '_' => {
                 while self
@@ -334,7 +342,9 @@ impl<'a> Lexer<'a> {
             }
             Some(c) if "@*#?!$-".contains(c) => {
                 self.chars.next();
-                self.buf().mark_expansion();
+                let buf = self.buf();
+                buf.mark_expansion();
+                buf.splits |= c == '@';
             }
             _ => self.push('$'),
         }
@@ -343,16 +353,20 @@ impl<'a> Lexer<'a> {
     /// Consume a `${...}` body up to its matching `}`, so a `;`, `&`, `#` or quote inside it
     /// neither splits the command nor hides the words after it. Nested braces, quotes and
     /// substitutions are tracked. A body with no end swallows the rest of the command: the
-    /// shell rejects it, and the word it sits in is already opaque.
-    fn braced_body(&mut self) {
+    /// shell rejects it, and the word it sits in is already opaque. Returns whether the body
+    /// is an array or positional list (`${@}`, `${a[@]}`, `${a[*]}`), which expands to
+    /// several words even in double quotes.
+    fn braced_body(&mut self) -> bool {
         let mut depth = 1usize;
+        let mut body = String::new();
         while let Some(c) = self.chars.next() {
+            body.push(c);
             match c {
                 '{' => depth += 1,
                 '}' => {
                     depth -= 1;
                     if depth == 0 {
-                        return;
+                        return lists_words(&body);
                     }
                 }
                 '\\' => {
@@ -365,6 +379,7 @@ impl<'a> Lexer<'a> {
                 _ => {}
             }
         }
+        lists_words(&body)
     }
 
     /// A double-quoted string inside a `${...}` body, up to its closing quote.
