@@ -2537,7 +2537,8 @@ esac"#,
 
 /// A repo with this repo's hooks on, a committed `ci-local.sh` that logs each run as
 /// `<HEAD> <dir> <CARGO_TARGET_DIR>` and fails when the checkout holds `red` or the common git
-/// dir holds `red`, and a bare remote. When the common git dir holds `build`, each run also
+/// dir holds `red`, and a bare remote. When the common git dir holds `nested`, a run first runs
+/// the pre-push hook itself, once, on its HEAD, as CI's own tests do. When the common git dir holds `build`, each run also
 /// stands in for cargo: it marks the target dir busy, builds its HEAD into it, touches
 /// `started-<HEAD>`, waits for `release`, then tests what the target dir holds. A run that found
 /// the target dir busy, or tested another commit's build, appends to `clashes`. Returns the repo, the remote and the log of runs. Tests
@@ -2562,6 +2563,10 @@ fn hooked_repo() -> (TempDir, PathBuf, PathBuf, PathBuf) {
 common=$(git rev-parse --git-common-dir)
 echo "$(git rev-parse HEAD) $PWD $CARGO_TARGET_DIR" >> '{}'
 [ ! -e "$common/slow" ] || {{ touch "$common/started"; exec sleep 30; }}
+if [ -e "$common/nested" ] && [ -z "${{NESTED-}}" ]; then
+  echo "HEAD $(git rev-parse HEAD) refs/heads/nested 0000000000000000000000000000000000000000" |
+    NESTED=1 .githooks/pre-push origin nested || exit 1
+fi
 if [ -e "$common/build" ]; then
   head=$(git rev-parse HEAD)
   mkdir -p "$CARGO_TARGET_DIR"
@@ -2761,6 +2766,20 @@ fn concurrent_pre_push_runs_never_share_the_target_dir_and_each_tests_its_own_bu
     assert_eq!(clashes, "", "the runs shared the target dir");
     let commits: Vec<_> = runs(&log).into_iter().map(|r| r.0).collect();
     assert_eq!(commits, [a, b]);
+}
+
+/// CI's own tests run this hook inside a push's checks, sharing its target dir.
+#[test]
+fn pre_push_run_inside_a_pre_push_run_does_not_wait_on_its_parents_lock() {
+    let (_tmp, root, _remote, log) = hooked_repo();
+    let head = git(&root, &["rev-parse", "HEAD"]);
+    fs::write(root.join(".git/nested"), "").unwrap();
+    let mut push = start_push(&root, "HEAD:refs/heads/a");
+    assert!(push.wait().success());
+    let runs = runs(&log);
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert!(runs.iter().all(|r| r.0 == head), "{runs:?}");
+    assert_runs_left_no_worktree(&root, &log);
 }
 
 #[test]
