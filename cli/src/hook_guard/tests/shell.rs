@@ -1,6 +1,7 @@
 //! Shell syntax, wrappers, expansions and environment variables.
 
 use super::*;
+use crate::shell::shell_quote;
 
 #[test]
 fn env_vars_that_skip_hooks_are_denied() {

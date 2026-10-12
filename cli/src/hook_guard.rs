@@ -3,11 +3,8 @@
 //! hooks, naming the rule (`skills/ns-contract`, Git hooks). Every other call passes untouched.
 
 use std::io::Read;
-use std::path::Path;
 
 use serde_json::{json, Value};
-
-use crate::shell::shell_quote;
 
 mod files;
 mod git;
@@ -27,36 +24,12 @@ const RULE: &str = "The factory contract's Git hooks rule (skills/ns-contract/SK
 const MAX_NESTING: usize = 8;
 
 /// What a protected path is called in a denial.
-const PROTECTED: &str = ".githooks/, .git/hooks, .git/config, .claude/settings*.json, .claude/skills, .ns/<unit>/phase-settings.json or .ns/<unit>/skills";
+const PROTECTED: &str = ".githooks/, .git/hooks, .git/config, .claude/settings*.json, .ns/<unit> or .ns/<unit>/skills, or a skills link into it";
 
 const BASH_TOOL: &str = "Bash";
 
 /// Tools that write a file at `file_path` or `notebook_path`.
 const FILE_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
-
-/// The factory's phase settings (docs/FACTORY.md, "Phase settings"), versioned in
-/// `.nightshift/` so a change to them needs a human merge. `{ns}` stands for the `ns` binary.
-const PHASE_SETTINGS: &str = include_str!("../../.nightshift/phase-settings.json");
-
-/// The settings file every claude phase runs with: the factory's denies and one `PreToolUse`
-/// hook that runs `ns guard-hooks`. Claude Code lets a call through when a hook exits with
-/// anything but 2, so a missing or crashing `ns` must exit 2 to block it.
-pub fn settings(ns: &Path) -> String {
-    let ns = shell_quote(&ns.to_string_lossy());
-    let mut v: Value = serde_json::from_str(PHASE_SETTINGS).expect("phase-settings.json is JSON");
-    for entry in v["hooks"]["PreToolUse"]
-        .as_array_mut()
-        .into_iter()
-        .flatten()
-    {
-        for hook in entry["hooks"].as_array_mut().into_iter().flatten() {
-            if let Some(c) = hook["command"].as_str() {
-                hook["command"] = json!(c.replace("{ns}", &ns));
-            }
-        }
-    }
-    serde_json::to_string_pretty(&v).expect("a Value serializes")
-}
 
 /// Read the hook input from stdin and print a deny decision for a bypass. Input that isn't a
 /// tool call passes: the guard never blocks a call it can't read.
@@ -282,12 +255,17 @@ fn change_directory(args: &[Word], scan: &mut Scan) {
         .iter()
         .map(|a| a.text.as_str())
         .find(|a| *a == "-" || !a.starts_with('-'));
-    scan.cwd = match dir {
-        Some(d) if is_protected_directory(d) => Cwd::of(d),
-        Some(d) if !d.starts_with(['/', '~']) => Cwd::relative(scan.cwd, d),
-        Some(d) if d.starts_with('/') => Cwd::of(d),
+    scan.cwd = dir.map_or_else(Cwd::default, |d| cd_to(d, scan.cwd));
+}
+
+/// The working directory after `cd dir` (or `git -C dir`) from `from`.
+fn cd_to(dir: &str, from: Cwd) -> Cwd {
+    match dir {
+        d if is_protected_directory(d) => Cwd::of(d),
+        d if !d.starts_with(['/', '~']) => Cwd::relative(from, d),
+        d if d.starts_with('/') => Cwd::of(d),
         _ => Cwd::default(),
-    };
+    }
 }
 
 fn env_assignment(word: &str) -> Option<(&str, &str)> {

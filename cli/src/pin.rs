@@ -8,20 +8,92 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+use crate::error::SfError;
 use crate::eval::trial::copy_dir;
 use crate::git;
 use crate::install;
+use crate::shell::shell_quote;
+
+/// The directory under the worktree that holds each unit's artifacts and its skill snapshot.
+pub const NS_DIR: &str = ".ns";
+/// The snapshot's directory name inside a unit's `.ns/<unit>/`.
+pub const SKILLS_DIR: &str = "skills";
 
 /// Where the harness looks for project skills, relative to the worktree.
-pub const LINKS: &[&str] = &[".claude/skills", ".agents/skills"];
+pub const LINKS: &[&str] = &[CLAUDE_LINK, ".agents/skills"];
 
-/// The settings file a claude phase of `unit` runs with.
-pub fn settings_path(worktree: &Path, unit: &str) -> PathBuf {
-    worktree.join(".ns").join(unit).join("phase-settings.json")
+/// The path claude reads project skills from.
+const CLAUDE_LINK: &str = ".claude/skills";
+
+/// The factory's phase settings (docs/FACTORY.md, "Phase settings"), versioned in
+/// `.nightshift/` so a change to them needs a human merge. `{ns}` stands for the `ns` binary.
+const PHASE_SETTINGS: &str = include_str!("../../.nightshift/phase-settings.json");
+
+/// The settings file a claude phase of `unit` runs with. It lives under the git common dir,
+/// outside every worktree, so a phase cannot reach it by editing its own worktree.
+pub fn settings_path(common_dir: &Path, unit: &str) -> PathBuf {
+    common_dir
+        .join("ns")
+        .join("units")
+        .join(unit)
+        .join("phase-settings.json")
 }
 
 fn skills_path(worktree: &Path, unit: &str) -> PathBuf {
-    worktree.join(".ns").join(unit).join("skills")
+    worktree.join(NS_DIR).join(unit).join(SKILLS_DIR)
+}
+
+/// The settings a claude phase runs with: the factory's denies and one `PreToolUse` hook that
+/// runs `ns guard-hooks`. Claude Code lets a call through when a hook exits with anything but
+/// 2, so a missing or crashing `ns` must exit 2 to block it.
+pub fn settings_json(ns: &Path) -> String {
+    let ns = shell_quote(&ns.to_string_lossy());
+    let mut v: Value = serde_json::from_str(PHASE_SETTINGS).expect("phase-settings.json is JSON");
+    for entry in v["hooks"]["PreToolUse"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+    {
+        for hook in entry["hooks"].as_array_mut().into_iter().flatten() {
+            if let Some(c) = hook["command"].as_str() {
+                hook["command"] = json!(c.replace("{ns}", &ns));
+            }
+        }
+    }
+    serde_json::to_string_pretty(&v).expect("a Value serializes")
+}
+
+/// How much of a harness's skills `ns run` pins (docs/FACTORY.md, "Pinned skills and phase
+/// settings"). Every harness's worktree gets the `.claude/skills` and `.agents/skills` links;
+/// the mode is what the harness is known to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// The harness sees only the unit's snapshot and the factory's settings: claude.
+    Snapshot,
+    /// The harness reads the snapshot as the project's skills (`.agents/skills`) and also the
+    /// user's installed skills: codex and cursor.
+    Partial,
+    /// No claim: the harness may not read either link, or its lookup is not confirmed.
+    None,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Snapshot => "snapshot",
+            Mode::Partial => "partial",
+            Mode::None => "none",
+        }
+    }
+}
+
+/// The pinning mode of the harness named `harness` (as `ns doctor` lists them).
+pub fn mode(harness: &str) -> Mode {
+    match harness {
+        "claude" => Mode::Snapshot,
+        "codex" | "cursor-agent" => Mode::Partial,
+        _ => Mode::None,
+    }
 }
 
 /// The flags a claude phase's command must not carry itself: `ns run` owns them.
@@ -37,33 +109,40 @@ pub fn owned_flag(argv: &[String]) -> Option<&'static str> {
 
 /// The arguments that give a claude phase of `unit` only the project's settings sources, the
 /// factory's phase settings file, and the unit's skill snapshot as an added directory.
-pub fn settings_args(worktree: &Path, unit: &str) -> [String; 6] {
+pub fn settings_args(settings: &Path, worktree: &Path, unit: &str) -> [String; 6] {
     [
         "--setting-sources".into(),
         "project,local".into(),
         "--settings".into(),
-        settings_path(worktree, unit).to_string_lossy().into_owned(),
+        settings.to_string_lossy().into_owned(),
         "--add-dir".into(),
         skills_path(worktree, unit).to_string_lossy().into_owned(),
     ]
 }
 
-/// Write the settings file for the `ns` binary at `ns`. A phase can edit or delete it, so
-/// `ns run` writes it again before every phase.
-pub fn write_settings(worktree: &Path, unit: &str, ns: &Path) -> Result<()> {
-    let settings = settings_path(worktree, unit);
+/// Write the settings file for the `ns` binary at `ns`. `ns run` writes it again before every
+/// phase, so a file left stale by an upgrade or a crash is never read.
+pub fn write_settings(common_dir: &Path, unit: &str, ns: &Path) -> Result<()> {
+    let settings = settings_path(common_dir, unit);
     if let Some(dir) = settings.parent() {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
-    fs::write(&settings, crate::hook_guard::settings(ns))
+    fs::write(&settings, settings_json(ns))
         .with_context(|| format!("cannot write {}", settings.display()))
 }
 
 /// Pin `unit`'s skills and settings in `worktree`: write the snapshot of `base`'s skills unless
-/// a good one exists, write the settings for the `ns` binary at `ns`, and link the snapshot.
-/// Returns the run-log events: `skills_pinned` when it wrote a snapshot, and `skills_unpinned`
-/// for each link path it left alone.
-pub fn pin(worktree: &Path, unit: &str, base: &str, ns: &Path) -> Result<Vec<Value>> {
+/// a good one exists, write the settings (under `common_dir`) for the `ns` binary at `ns`, and
+/// link the snapshot. A `.claude/skills` that is not ours is an error, since claude reads it and
+/// would run unpinned. Returns the run-log events: `skills_pinned` when it wrote a snapshot,
+/// and `skills_unpinned` for each other link path it left alone.
+pub fn pin(
+    worktree: &Path,
+    common_dir: &Path,
+    unit: &str,
+    base: &str,
+    ns: &Path,
+) -> Result<Vec<Value>> {
     let skills = skills_path(worktree, unit);
     let mut events = Vec::new();
     if !has_ns_skills(&skills) {
@@ -73,13 +152,23 @@ pub fn pin(worktree: &Path, unit: &str, base: &str, ns: &Path) -> Result<Vec<Val
         }
         events.push(snapshot(worktree, base, &skills)?);
     }
-    write_settings(worktree, unit, ns)?;
-    let target = Path::new("..").join(".ns").join(unit).join("skills");
+    write_settings(common_dir, unit, ns)?;
+    let target = Path::new("..").join(NS_DIR).join(unit).join(SKILLS_DIR);
     for link in LINKS {
-        if let Some(why) = link_to(&worktree.join(link), &target)? {
-            eprintln!("ns run: warning: {link} {why}; phases may not see the pinned skills");
-            events.push(json!({"event": "skills_unpinned", "path": link, "why": why}));
+        let Some(why) = link_to(&worktree.join(link), &target)? else {
+            continue;
+        };
+        if *link == CLAUDE_LINK {
+            return Err(SfError::usage(
+                format!("{link} {why}, so claude phases would not run the pinned skills"),
+                format!(
+                    "remove or untrack {link} in this repo, or move its skills to .agents/skills"
+                ),
+            )
+            .into());
         }
+        eprintln!("ns run: warning: {link} {why}; phases may not see the pinned skills");
+        events.push(json!({"event": "skills_unpinned", "path": link, "why": why}));
     }
     Ok(events)
 }
@@ -94,27 +183,13 @@ fn count_skills(dir: &Path) -> usize {
 /// With no `skills/` tree there (a repo other than nightshift), the installed `ns-*` skills are
 /// copied instead.
 fn snapshot(worktree: &Path, base: &str, into: &Path) -> Result<Value> {
-    let sha = git::run(worktree, &["merge-base", base, "HEAD"])?;
+    let sha = git::run(worktree, &["merge-base", "--", base, "HEAD"])?;
     let tmp = into.with_extension("tmp");
-    if tmp.exists() {
-        fs::remove_dir_all(&tmp).with_context(|| format!("cannot remove {}", tmp.display()))?;
-    }
-    fs::create_dir_all(&tmp).with_context(|| format!("cannot create {}", tmp.display()))?;
-    checkout_tree(worktree, &format!("{sha}:skills"), &tmp)?;
-    let mut source = "base";
-    if !has_ns_skills(&tmp) {
-        source = "installed";
-        copy_installed_skills(&tmp)?;
-    }
-    checkout_tree(worktree, &format!("{sha}:.agents/skills"), &tmp)?;
-    if !has_ns_skills(&tmp) {
+    let built = build_snapshot(worktree, base, &sha, &tmp);
+    if built.is_err() {
         let _ = fs::remove_dir_all(&tmp);
-        anyhow::bail!(
-            "no ns-* skills to pin for {base}: its skills/ tree has none and none are installed in {}; run `ns install`",
-            install::Harness::Claude.dir().display()
-        );
     }
-    let count = count_skills(&tmp);
+    let (source, count) = built?;
     fs::rename(&tmp, into).with_context(|| format!("cannot write {}", into.display()))?;
     Ok(json!({
         "event": "skills_pinned",
@@ -122,6 +197,34 @@ fn snapshot(worktree: &Path, base: &str, into: &Path) -> Result<Value> {
         "source": source,
         "skills": count,
     }))
+}
+
+/// Fill `tmp` with the skills of `sha`. A skill in both `skills/` and `.agents/skills/` (the
+/// repo's own tracked copy) takes the `.agents/skills` file, which is checked out last.
+fn build_snapshot(
+    worktree: &Path,
+    base: &str,
+    sha: &str,
+    tmp: &Path,
+) -> Result<(&'static str, usize)> {
+    if tmp.exists() {
+        fs::remove_dir_all(tmp).with_context(|| format!("cannot remove {}", tmp.display()))?;
+    }
+    fs::create_dir_all(tmp).with_context(|| format!("cannot create {}", tmp.display()))?;
+    checkout_tree(worktree, &format!("{sha}:skills"), tmp)?;
+    let mut source = "base";
+    if !has_ns_skills(tmp) {
+        source = "installed";
+        copy_installed_skills(tmp)?;
+    }
+    checkout_tree(worktree, &format!("{sha}:.agents/skills"), tmp)?;
+    if !has_ns_skills(tmp) {
+        anyhow::bail!(
+            "no ns-* skills to pin for {base}: its skills/ tree has none and none are installed in {}; run `ns install`",
+            install::Harness::Claude.dir().display()
+        );
+    }
+    Ok((source, count_skills(tmp)))
 }
 
 /// Copy the installed `ns-*` skills into `into`; none installed copies nothing.
@@ -162,7 +265,7 @@ fn checkout_tree(worktree: &Path, treeish: &str, into: &Path) -> Result<()> {
     let prefix = format!("--prefix={}/", into.display());
     for args in [
         vec!["read-tree", treeish],
-        vec!["checkout-index", "--all", &prefix],
+        vec!["checkout-index", "--all", "-f", &prefix],
     ] {
         let out = git::command()
             .arg("-C")
@@ -225,14 +328,40 @@ mod tests {
     }
 
     #[test]
+    fn the_snapshot_is_the_third_component_from_the_end_under_ns() {
+        for (target, want) in [
+            ("../.ns/u1/skills", true),
+            ("/abs/.ns/u/skills", true),
+            (".ns/u1/skills", true),
+            ("../.ns/u1/other", false),
+            ("../x/u1/skills", false),
+            ("../.ns/skills", false),
+            ("/.ns/skills", false),
+            ("skills", false),
+            ("../tracked", false),
+        ] {
+            assert_eq!(points_into_a_snapshot(Path::new(target)), want, "{target}");
+        }
+    }
+
+    #[test]
+    fn modes_name_the_harnesses_that_read_the_snapshot() {
+        assert_eq!(mode("claude"), Mode::Snapshot);
+        assert_eq!(mode("codex"), Mode::Partial);
+        assert_eq!(mode("cursor-agent"), Mode::Partial);
+        assert_eq!(mode("gemini"), Mode::None);
+        assert_eq!(mode("opencode"), Mode::None);
+    }
+
+    #[test]
     fn settings_args_name_the_file_and_the_project_sources() {
         assert_eq!(
-            settings_args(Path::new("/wt"), "u"),
+            settings_args(&settings_path(Path::new("/c"), "u"), Path::new("/wt"), "u"),
             [
                 "--setting-sources",
                 "project,local",
                 "--settings",
-                "/wt/.ns/u/phase-settings.json",
+                "/c/ns/units/u/phase-settings.json",
                 "--add-dir",
                 "/wt/.ns/u/skills"
             ]

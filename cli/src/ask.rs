@@ -183,7 +183,9 @@ fn plan(role: &str, write: bool) -> Result<Plan> {
 
 /// Inside an `ns run` phase (`NS_WORKTREE` and `NS_UNIT` set), a claude command gets the
 /// phase's settings and settings sources, like the phase. A command that carries either flag
-/// itself, or a phase whose settings file is gone, is an error.
+/// itself, or a phase whose settings file (`NS_PHASE_SETTINGS`) is gone, is an error. The
+/// variables are the phase's own, so this is cooperative: a phase that clears them asks claude
+/// with the user's settings.
 fn with_phase_settings(mut command: Vec<String>) -> Result<Vec<String>> {
     let (Some(wt), Some(unit)) = (
         std::env::var_os("NS_WORKTREE"),
@@ -194,6 +196,7 @@ fn with_phase_settings(mut command: Vec<String>) -> Result<Vec<String>> {
     if !billing::is_claude(&command) {
         return Ok(command);
     }
+    crate::worktree::check_unit_id(&unit, "ns run 142-uart-timeout --issue 142")?;
     if let Some(flag) = crate::pin::owned_flag(&command) {
         return Err(SfError::usage(
             format!("the harness command already passes {flag}"),
@@ -201,15 +204,17 @@ fn with_phase_settings(mut command: Vec<String>) -> Result<Vec<String>> {
         )
         .into());
     }
-    let settings = crate::pin::settings_path(Path::new(&wt), &unit);
-    if !settings.is_file() {
+    let settings = std::env::var_os("NS_PHASE_SETTINGS")
+        .map(PathBuf::from)
+        .filter(|s| s.is_file());
+    let Some(settings) = settings else {
         return Err(SfError::usage(
-            format!("the phase settings file {} is missing", settings.display()),
+            "the phase settings file (NS_PHASE_SETTINGS) is missing",
             "ns run writes it before each phase; ask from a phase that ns run started",
         )
         .into());
-    }
-    command.extend(crate::pin::settings_args(Path::new(&wt), &unit));
+    };
+    command.extend(crate::pin::settings_args(&settings, Path::new(&wt), &unit));
     Ok(command)
 }
 

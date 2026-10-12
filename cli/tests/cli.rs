@@ -684,23 +684,23 @@ fn ask_inside_a_phase_gives_claude_the_phase_settings() {
     let cfg = tmp.path().join("config.toml");
     fs::write(&cfg, "[roles.default]\nharness = \"claude\"\n").unwrap();
     let wt = tmp.path().join("wt");
-    let settings = wt.join(".ns/u1/phase-settings.json");
+    let settings = tmp.path().join("common/ns/units/u1/phase-settings.json");
     fs::create_dir_all(settings.parent().unwrap()).unwrap();
-    let ask_cmd = |unit: Option<&str>| {
+    let ask_cmd = |unit: Option<&str>, worktree: bool| {
         let mut c = ns();
-        c.env("NS_CONFIG", &cfg).env("NS_WORKTREE", &wt).args([
-            "ask",
-            "--role",
-            "build",
-            "--dry-run",
-        ]);
+        c.env("NS_CONFIG", &cfg)
+            .env("NS_PHASE_SETTINGS", &settings)
+            .args(["ask", "--role", "build", "--dry-run"]);
+        if worktree {
+            c.env("NS_WORKTREE", &wt);
+        }
         if let Some(u) = unit {
             c.env("NS_UNIT", u);
         }
         c
     };
     let ask = |unit: Option<&str>| {
-        let v = json(&ask_cmd(unit).assert().success().get_output().stdout);
+        let v = json(&ask_cmd(unit, true).assert().success().get_output().stdout);
         v["command"].as_array().unwrap().clone()
     };
     let tail = serde_json::json!([
@@ -714,7 +714,7 @@ fn ask_inside_a_phase_gives_claude_the_phase_settings() {
     let tail = tail.as_array().unwrap();
     // A phase whose settings file is gone is an error, not a claude with the user's settings.
     let err = String::from_utf8(
-        ask_cmd(Some("u1"))
+        ask_cmd(Some("u1"), true)
             .assert()
             .failure()
             .get_output()
@@ -722,10 +722,25 @@ fn ask_inside_a_phase_gives_claude_the_phase_settings() {
             .clone(),
     )
     .unwrap();
-    assert!(err.contains("phase-settings.json"), "{err}");
+    assert!(err.contains("NS_PHASE_SETTINGS"), "{err}");
     fs::write(&settings, "{}").unwrap();
     assert!(ask(Some("u1")).ends_with(tail), "{:?}", ask(Some("u1")));
     assert!(ask(None).iter().all(|a| a != "--settings"));
+    // A unit with no worktree variable is not in a phase: the command stays the user's own.
+    let v = json(
+        &ask_cmd(Some("u1"), false)
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert!(v["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a != "--settings"));
+    // A unit id that is not one is refused.
+    ask_cmd(Some("../x"), true).assert().failure();
     fs::write(&cfg, "[roles.default]\nharness = \"codex\"\n").unwrap();
     assert!(ask(Some("u1")).iter().all(|a| a != "--settings"));
 }
@@ -740,11 +755,11 @@ fn ask_inside_a_phase_refuses_a_claude_command_that_carries_a_settings_flag() {
     )
     .unwrap();
     let wt = tmp.path().join("wt");
-    let settings = wt.join(".ns/u1/phase-settings.json");
-    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let settings = tmp.path().join("phase-settings.json");
     fs::write(&settings, "{}").unwrap();
     let err = ns()
         .env("NS_CONFIG", &cfg)
+        .env("NS_PHASE_SETTINGS", &settings)
         .env("NS_WORKTREE", &wt)
         .env("NS_UNIT", "u1")
         .args(["ask", "--role", "build", "--dry-run"])
@@ -1069,8 +1084,10 @@ fn doctor_reports_config() {
         assert!(v["harnesses"][h]["on_path"].is_boolean());
     }
     assert_eq!(v["harnesses"]["claude"]["pinning"], "snapshot");
-    assert_eq!(v["harnesses"]["codex"]["pinning"], "partial");
-    for h in ["cursor-agent", "gemini", "opencode"] {
+    for h in ["codex", "cursor-agent"] {
+        assert_eq!(v["harnesses"][h]["pinning"], "partial", "{h}");
+    }
+    for h in ["gemini", "opencode"] {
         assert_eq!(v["harnesses"][h]["pinning"], "none", "{h}");
     }
     assert_eq!(v["claude_phases"]["auto_memory"], false);
@@ -2345,4 +2362,45 @@ fn neither_hook_has_an_environment_variable_that_skips_it() {
             "{hook} did not run ci-local.sh"
         );
     }
+}
+
+#[test]
+fn guard_hooks_denies_a_write_through_a_skills_link_by_relative_and_absolute_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    for link in [".claude/skills", ".agents/skills"] {
+        let path = dir.join(link);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink("../.ns/u1/skills", &path).unwrap();
+    }
+    let guard = |call: serde_json::Value| {
+        let out = ns()
+            .current_dir(&dir)
+            .arg("guard-hooks")
+            .write_stdin(call.to_string())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap().contains("\"deny\"")
+    };
+    let bash = |c: String| serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}});
+    for link in [".claude/skills", ".agents/skills"] {
+        assert!(
+            guard(bash(format!("rm -rf {link}/ns-x"))),
+            "relative {link}"
+        );
+        assert!(
+            guard(bash(format!("rm -rf {}/ns-x", dir.join(link).display()))),
+            "absolute {link}"
+        );
+        assert!(
+            guard(
+                serde_json::json!({"tool_name": "Edit", "tool_input": {"file_path": format!("{link}/ns-x/SKILL.md")}})
+            ),
+            "edit {link}"
+        );
+    }
+    assert!(!guard(bash("rm -rf build".into())));
 }

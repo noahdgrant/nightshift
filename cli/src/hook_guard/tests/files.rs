@@ -300,21 +300,39 @@ fn relative_cd_inside_a_protected_directory_keeps_the_tracking() {
 }
 
 #[test]
-fn the_units_phase_settings_and_skill_snapshot_are_protected() {
+fn the_units_skill_snapshot_and_its_directory_are_protected() {
     for p in [
-        "/r/.ns/u1/phase-settings.json",
-        ".ns/u1/phase-settings.json",
         "/r/.ns/u1/skills/ns-x/SKILL.md",
         ".ns/u1/skills",
+        "/r/.ns/u1",
+        ".ns/u1/",
+        ".ns",
+        "/r/.ns/u1/sk*",
     ] {
         let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
         assert!(check(&call).is_some(), "{p}");
     }
     for c in [
-        "rm .ns/u1/phase-settings.json",
-        "echo '{}' > .ns/u1/phase-settings.json",
         "rm -rf .ns/u1/skills",
         "sed -i s/a/b/ .ns/u1/skills/ns-x/SKILL.md",
+        "rm -rf .ns/u1",
+        "rm -rf .ns/u1/",
+        "rm -rf .ns",
+        "rm -rf .ns/*",
+        "rm -rf .ns/*/skills",
+        "rm -rf .ns/u1/sk*",
+        "rm -rf /r/.ns/u1",
+        "mv .ns/u1 /tmp/x",
+        "cp x .ns/u1/",
+        "cp -r y .ns/u1",
+        "ln -s .ns/u1 elsewhere",
+        "echo x > .ns/u1",
+        "cd .ns/u1 && rm -rf .",
+        "cd .ns/u1 && rm -rf ../u1",
+        "cd .ns && mv u1 x",
+        "git -C .ns/u1 rm -r skills",
+        "git -C .ns/u1 mv skills x",
+        "git -C .ns rm -r u1",
     ] {
         assert!(denied(c), "{c}");
     }
@@ -323,50 +341,81 @@ fn the_units_phase_settings_and_skill_snapshot_are_protected() {
         ".ns/u1/history/review-1.md",
         "/r/skills/ns-x/SKILL.md",
         "/r/phase-settings.json",
+        "/r/.ns/u1/phase-settings.json",
     ] {
         let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
         assert!(check(&call).is_none(), "{p}");
     }
-}
-
-#[test]
-fn the_claude_skills_link_is_protected_because_it_writes_through_to_the_snapshot() {
-    for p in ["/r/.claude/skills/ns-build/SKILL.md", ".claude/skills"] {
-        let call = json!({"tool_name": "Edit", "tool_input": {"file_path": p}});
-        assert!(check(&call).is_some(), "{p}");
-    }
     for c in [
-        "rm -rf .claude/skills",
-        "sed -i s/a/b/ .claude/skills/ns-x/SKILL.md",
+        "cp x .ns/u1/build.md",
+        "rm .ns/u1/build.md",
+        "rm -rf .ns/u1/history",
+        "rm .ns/u1/*.md",
+        "git -C .ns/u1 status",
+        "git -C .ns/u1 rm build.md",
+        "cd .ns/u1 && rm build.md",
+        "cp .ns/u1/build.md /tmp/x",
     ] {
-        assert!(denied(c), "{c}");
+        assert!(!denied(c), "{c}");
+    }
+}
+
+/// A symlink in a temp dir named like a skill link, to `target`.
+fn skills_link(dir: &Path, link: &str, target: &str) -> String {
+    let path = dir.join(link);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(target, &path).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn edits(path: &str) -> bool {
+    let call =
+        json!({"tool_name": "Edit", "tool_input": {"file_path": format!("{path}/x/SKILL.md")}});
+    check(&call).is_some()
+}
+
+#[test]
+fn a_skills_link_is_protected_only_when_it_points_into_a_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    for link in [".claude/skills", ".agents/skills"] {
+        let dir = dir.path().join(link.replace('/', "_"));
+        let into = skills_link(&dir, link, "../.ns/u1/skills");
+        assert!(edits(&into), "{link} into a snapshot");
+        let elsewhere = skills_link(&dir.join("e"), link, "../tracked");
+        assert!(!edits(&elsewhere), "{link} to a tracked dir is editable");
+        let real = dir.join("r").join(link);
+        std::fs::create_dir_all(&real).unwrap();
+        assert!(
+            !edits(real.to_str().unwrap()),
+            "{link} real dir is editable"
+        );
+        let missing = dir.join("m").join(link);
+        assert!(!edits(missing.to_str().unwrap()), "{link} missing");
     }
 }
 
 #[test]
-fn agents_skills_is_protected_only_as_a_link_into_a_snapshot() {
+fn a_skills_link_is_denied_for_bash_by_absolute_path() {
     let dir = tempfile::tempdir().unwrap();
-    let agents = dir.path().join(".agents");
-    std::fs::create_dir_all(&agents).unwrap();
-    let skills = agents.join("skills");
-    let edit = || {
-        let p = skills.join("x/SKILL.md");
-        let call = json!({"tool_name": "Edit", "tool_input": {"file_path": p}});
-        check(&call).is_some()
-    };
-    std::fs::create_dir(&skills).unwrap();
-    assert!(!edit(), "a real .agents/skills stays editable");
-    std::fs::remove_dir(&skills).unwrap();
-    std::os::unix::fs::symlink("../.ns/u1/skills", &skills).unwrap();
-    assert!(edit(), "a link into the snapshot is protected");
+    for link in [".claude/skills", ".agents/skills"] {
+        let path = skills_link(
+            &dir.path().join(link.replace('/', "_")),
+            link,
+            "../.ns/u1/skills",
+        );
+        assert!(denied(&format!("rm -rf {path}")), "{link}");
+        assert!(
+            denied(&format!("sed -i s/a/b/ {path}/ns-x/SKILL.md")),
+            "{link}"
+        );
+    }
 }
 
 #[test]
-fn cd_into_a_unit_directory_protects_its_relative_skills_and_settings() {
+fn cd_into_a_unit_directory_protects_its_relative_skills() {
     for c in [
         "cd .ns/u1 && rm -rf skills",
         "cd .ns/u1; sed -i s/a/b/ skills/ns-x/SKILL.md",
-        "cd .ns/u1 && echo '{}' > phase-settings.json",
         "cd .ns && rm -rf u1/skills",
         "cd .ns; cd u1; rm -rf skills",
         "cd .ns/u1/skills && rm -rf x",
@@ -378,10 +427,8 @@ fn cd_into_a_unit_directory_protects_its_relative_skills_and_settings() {
     }
     for c in [
         "cd .ns/u1 && rm build.md",
-        "cd .ns/u1 && cd .. && rm -rf skills",
         "cd .ns/u1; cd /tmp; rm -rf skills",
         "(cd .ns/u1); rm -rf skills",
-        "cd .ns && rm -rf skills",
     ] {
         assert!(!denied(c), "{c}");
     }

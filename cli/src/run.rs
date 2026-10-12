@@ -258,6 +258,7 @@ pub fn phase_command(
     cfg: Option<&Config>,
     p: &PhaseSettings,
     subscription: bool,
+    common_dir: &Path,
     worktree: &Path,
     unit: &str,
 ) -> Result<Vec<String>> {
@@ -306,7 +307,11 @@ pub fn phase_command(
             )
             .into());
         }
-        argv.extend(pin::settings_args(worktree, unit));
+        argv.extend(pin::settings_args(
+            &pin::settings_path(common_dir, unit),
+            worktree,
+            unit,
+        ));
         if subscription {
             argv = billing::strip_bare(argv);
         }
@@ -885,7 +890,14 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
     for p in PHASES {
         commands.insert(
             *p,
-            phase_command(cfg.as_ref(), &fac.phase(p), subscription, &wt_path, &unit)?,
+            phase_command(
+                cfg.as_ref(),
+                &fac.phase(p),
+                subscription,
+                &repo.common_dir,
+                &wt_path,
+                &unit,
+            )?,
         );
     }
     if subscription && !args.dry_run && commands.values().any(|c| billing::is_claude(c)) {
@@ -902,7 +914,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
     let base = resolve_base(&repo, args)?;
     let wt = worktree::ensure(&repo, &unit, Some(&base), &fac.worktree.setup)?;
     same_worktree(&wt_path, Path::new(&wt.path))?;
-    let pinned = pin::pin(Path::new(&wt.path), &unit, &base, ns)?;
+    let pinned = pin::pin(Path::new(&wt.path), &repo.common_dir, &unit, &base, ns)?;
     let ctx = Ctx {
         unit: unit.clone(),
         worktree: PathBuf::from(&wt.path),
@@ -1306,13 +1318,19 @@ fn drive(
             ("NS_PHASE", phase.to_string()),
             ("NS_ATTEMPT", attempt.to_string()),
             ("NS_WORKTREE", ctx.worktree.to_string_lossy().into_owned()),
+            (
+                "NS_PHASE_SETTINGS",
+                pin::settings_path(&ctx.common, &ctx.unit)
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
             ("NS_RUN_PID", std::process::id().to_string()),
             (
                 "NS_WATCH_PID",
                 shared.watch_pid.map(|p| p.to_string()).unwrap_or_default(),
             ),
         ];
-        pin::write_settings(&ctx.worktree, &ctx.unit, &ctx.ns)?;
+        pin::write_settings(&ctx.common, &ctx.unit, &ctx.ns)?;
         let r = run_harness(
             &commands[phase],
             &prompt,
@@ -2816,8 +2834,8 @@ mod tests {
         )
         .unwrap();
         let f = factory::parse("").unwrap();
-        let wt = Path::new("/wt");
-        let c = phase_command(Some(&cfg), &f.phase("build"), true, wt, "u").unwrap();
+        let (wt, common) = (Path::new("/wt"), Path::new("/c"));
+        let c = phase_command(Some(&cfg), &f.phase("build"), true, common, wt, "u").unwrap();
         let mut want: Vec<String> = [
             "claude",
             "-p",
@@ -2827,9 +2845,13 @@ mod tests {
         ]
         .map(String::from)
         .into();
-        want.extend(pin::settings_args(wt, "u"));
+        want.extend(pin::settings_args(
+            &pin::settings_path(common, "u"),
+            wt,
+            "u",
+        ));
         assert_eq!(c, want);
-        let c = phase_command(None, &f.phase("build"), true, wt, "u").unwrap();
+        let c = phase_command(None, &f.phase("build"), true, common, wt, "u").unwrap();
         assert!(c.contains(&"bypassPermissions".to_string()));
         assert!(!c.contains(&"--model".to_string()));
         assert!(c.contains(&"--settings".to_string()));
@@ -2857,9 +2879,16 @@ mod tests {
             ))
             .unwrap();
             let f = factory::parse("").unwrap();
-            let err = phase_command(Some(&cfg), &f.phase("build"), true, Path::new("/wt"), "u")
-                .unwrap_err()
-                .to_string();
+            let err = phase_command(
+                Some(&cfg),
+                &f.phase("build"),
+                true,
+                Path::new("/c"),
+                Path::new("/wt"),
+                "u",
+            )
+            .unwrap_err()
+            .to_string();
             assert!(err.contains(flag[0].split('=').next().unwrap()), "{err}");
         }
     }
@@ -2867,7 +2896,15 @@ mod tests {
     #[test]
     fn a_codex_phase_gets_no_hook_guard_settings() {
         let f = factory::parse("[defaults]\nharness = \"codex\"\n").unwrap();
-        let c = phase_command(None, &f.phase("build"), true, Path::new("/wt"), "u").unwrap();
+        let c = phase_command(
+            None,
+            &f.phase("build"),
+            true,
+            Path::new("/c"),
+            Path::new("/wt"),
+            "u",
+        )
+        .unwrap();
         assert!(!c.contains(&"--settings".to_string()), "{c:?}");
     }
 

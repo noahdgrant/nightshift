@@ -570,8 +570,8 @@ fn claude_phases_read_only_project_settings_and_the_factory_settings_file() {
     .unwrap();
     let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
     let file = e
-        .worktree(UNIT)
-        .join(".ns")
+        .root
+        .join(".git/ns/units")
         .join(UNIT)
         .join("phase-settings.json");
     let skills = e.worktree(UNIT).join(".ns").join(UNIT).join("skills");
@@ -607,7 +607,13 @@ fn claude_phases_read_only_project_settings_and_the_factory_settings_file() {
     ] {
         assert!(deny.contains(&rule), "{rule}: {deny:?}");
     }
-    assert!(!deny.iter().any(|d| d.contains("set-url")), "{deny:?}");
+    let sources: Vec<&String> = argv
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.starts_with("--setting-sources"))
+        .map(|(i, _)| &argv[i + 1])
+        .collect();
+    assert_eq!(sources, ["project,local"], "{argv:?}");
 }
 
 /// Commit `files` (path, text) in the main checkout and push them to `origin/main`.
@@ -659,6 +665,26 @@ fn phases_run_the_base_commits_skills_whatever_the_worktree_or_main_hold_later()
         .unwrap()
         .is_symlink());
     assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn a_skill_in_both_skills_and_agents_skills_pins_the_agents_copy() {
+    let e = Env::new();
+    commit_files(
+        &e,
+        &[
+            ("skills/ns-x/SKILL.md", "from skills\n"),
+            (".agents/skills/ns-x/SKILL.md", "from agents\n"),
+        ],
+        "clashing skill",
+    );
+    e.run(&["run", "--issue", "7"], 0);
+    let snap = e.worktree(UNIT).join(".ns").join(UNIT).join("skills");
+    assert_eq!(
+        fs::read_to_string(snap.join("ns-x/SKILL.md")).unwrap(),
+        "from agents\n"
+    );
+    assert!(!snap.with_extension("tmp").exists());
 }
 
 #[test]
@@ -827,23 +853,25 @@ fn the_pin_logs_its_sha_source_and_skill_count_once_and_not_on_a_resume() {
     assert!(events_named(&e, "skills_unpinned").is_empty());
 }
 
+/// `ns run` stops with a usage error (2) before any phase.
+fn run_unpinnable(e: &Env) -> String {
+    let out = e.ns().args(["run", "--issue", "7"]).output();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
 #[test]
-fn a_tracked_claude_skills_dir_or_symlink_is_kept_and_reported() {
+fn a_tracked_claude_skills_dir_or_symlink_stops_the_run() {
     let e = Env::new();
     commit_files(
         &e,
         &[(".claude/skills/own/SKILL.md", "own\n")],
         "tracked dir",
     );
-    e.run(&["run", "--issue", "7"], 0);
-    let wt = e.worktree(UNIT);
-    assert!(!fs::symlink_metadata(wt.join(".claude/skills"))
-        .unwrap()
-        .is_symlink());
-    let ev = events_named(&e, "skills_unpinned");
-    assert_eq!(ev.len(), 1, "{ev:?}");
-    assert_eq!(ev[0]["path"], ".claude/skills");
-    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+    let err = run_unpinnable(&e);
+    assert!(err.contains(".claude/skills"), "{err}");
+    assert!(err.contains("real directory"), "{err}");
+    assert!(e.calls().is_empty());
 
     let e = Env::new();
     fs::create_dir_all(e.root.join(".claude")).unwrap();
@@ -851,13 +879,34 @@ fn a_tracked_claude_skills_dir_or_symlink_is_kept_and_reported() {
     git(&e.root, &["add", "-f", ".claude/skills"]);
     git(&e.root, &["commit", "-q", "-m", "tracked symlink"]);
     git(&e.root, &["push", "-q", "origin", "main"]);
-    e.run(&["run", "--issue", "7"], 0);
-    let wt = e.worktree(UNIT);
+    let err = run_unpinnable(&e);
+    assert!(err.contains("not the unit's snapshot"), "{err}");
     assert_eq!(
-        fs::read_link(wt.join(".claude/skills")).unwrap(),
+        fs::read_link(e.worktree(UNIT).join(".claude/skills")).unwrap(),
         Path::new("../elsewhere")
     );
-    assert_eq!(events_named(&e, "skills_unpinned").len(), 1);
+}
+
+#[test]
+fn a_tracked_agents_skills_symlink_is_kept_and_reported() {
+    let e = Env::new();
+    fs::create_dir_all(e.root.join(".agents")).unwrap();
+    std::os::unix::fs::symlink("../elsewhere", e.root.join(".agents/skills")).unwrap();
+    git(&e.root, &["add", "-f", ".agents/skills"]);
+    git(&e.root, &["commit", "-q", "-m", "tracked symlink"]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+    let out = e.ns().args(["run", "--issue", "7"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr)
+        .contains("warning: .agents/skills is a symlink that is not the unit's snapshot"));
+    let wt = e.worktree(UNIT);
+    assert_eq!(
+        fs::read_link(wt.join(".agents/skills")).unwrap(),
+        Path::new("../elsewhere")
+    );
+    let ev = events_named(&e, "skills_unpinned");
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert_eq!(ev[0]["path"], ".agents/skills");
     assert_eq!(git(&wt, &["status", "--porcelain"]), "");
 }
 
@@ -881,10 +930,16 @@ fn the_phase_settings_file_is_written_again_on_a_later_run_and_before_each_phase
     let e = Env::new();
     e.run(&["run", "--issue", "7"], 0);
     let file = e
+        .root
+        .join(".git/ns/units")
+        .join(UNIT)
+        .join("phase-settings.json");
+    assert!(!e
         .worktree(UNIT)
         .join(".ns")
         .join(UNIT)
-        .join("phase-settings.json");
+        .join("phase-settings.json")
+        .exists());
     let good = fs::read_to_string(&file).unwrap();
     fs::write(&file, "{}").unwrap();
     e.run(&["run", "--issue", "7"], 0);
@@ -893,10 +948,9 @@ fn the_phase_settings_file_is_written_again_on_a_later_run_and_before_each_phase
     // Build deletes the file; verify and review must still find it whole.
     let e = Env::new();
     let seen = e.ctrl.join("seen");
-    let check = format!(
-        "cat \".ns/$NS_UNIT/phase-settings.json\" >> {seen:?} 2>/dev/null || echo MISSING >> {seen:?}\n"
-    );
-    e.ctl("build.sh", "rm -f \".ns/$NS_UNIT/phase-settings.json\"\n");
+    let check =
+        format!("cat \"$NS_PHASE_SETTINGS\" >> {seen:?} 2>/dev/null || echo MISSING >> {seen:?}\n");
+    e.ctl("build.sh", "rm -f \"$NS_PHASE_SETTINGS\"\n");
     e.ctl("verify.sh", &check);
     e.ctl("review.sh", &check);
     e.queue("build", &["pass:script"]);

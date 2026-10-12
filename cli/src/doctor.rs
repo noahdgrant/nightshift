@@ -32,7 +32,7 @@ pub fn run() -> Result<()> {
             json!({
                 "on_path": p.is_some(),
                 "path": p.map(|p| p.to_string_lossy().into_owned()),
-                "pinning": pinning(h),
+                "pinning": crate::pin::mode(h).as_str(),
             }),
         );
     }
@@ -120,17 +120,6 @@ pub fn run() -> Result<()> {
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
-}
-
-/// How `ns run` pins a harness's skills for a unit's phases (docs/FACTORY.md, "Pinned skills"):
-/// claude phases see only the unit's snapshot, codex sees it through `.agents/skills` next to
-/// the user's installed skills, and other harnesses are not pointed at it.
-fn pinning(harness: &str) -> &'static str {
-    match harness {
-        "claude" => "snapshot",
-        "codex" => "partial",
-        _ => "none",
-    }
 }
 
 /// Whether the current repo's `core.hooksPath` points at its `.githooks/`. A repo without

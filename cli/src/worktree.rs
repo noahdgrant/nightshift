@@ -163,10 +163,19 @@ fn ensure_excluded(common_dir: &Path) -> Result<()> {
     let exclude = info.join("exclude");
     let current = fs::read_to_string(&exclude).unwrap_or_default();
     let mut text = current.clone();
-    for path in std::iter::once(".ns").chain(crate::pin::LINKS.iter().copied()) {
+    // (the forms of the line git treats as this path, the line to write). `.ns` is a
+    // directory, so `.ns/` counts; the skill links are symlinks, which a trailing `/` misses.
+    let mut wanted: Vec<(Vec<String>, String)> =
+        vec![(vec![".ns".into(), ".ns/".into()], ".ns/\n".into())];
+    wanted.extend(
+        crate::pin::LINKS
+            .iter()
+            .map(|link| (vec![link.to_string()], format!("/{link}\n"))),
+    );
+    for (forms, line) in wanted {
         let present = current.lines().map(str::trim).any(|l| {
             let l = l.strip_prefix('/').unwrap_or(l);
-            l == path || (path == ".ns" && l.strip_suffix('/') == Some(path))
+            forms.iter().any(|f| f == l)
         });
         if present {
             continue;
@@ -174,12 +183,7 @@ fn ensure_excluded(common_dir: &Path) -> Result<()> {
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
         }
-        // `.ns` is a directory; the skill links are symlinks, which a trailing `/` misses.
-        text.push_str(&if path == ".ns" {
-            ".ns/\n".to_string()
-        } else {
-            format!("/{path}\n")
-        });
+        text.push_str(&line);
     }
     if text == current {
         return Ok(());

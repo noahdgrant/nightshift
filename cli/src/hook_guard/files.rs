@@ -1,36 +1,74 @@
 //! The paths the guard protects and the file commands that write to them.
 
 use super::*;
+use crate::pin;
 
 /// `path` is in `.githooks/`, `.git/hooks` or `.git/config`, or is a Claude Code settings file
-/// (`.claude/settings*.json`), which can turn the hook off, or is a unit's phase settings file
-/// or skill snapshot (`.ns/<unit>/phase-settings.json`, `.ns/<unit>/skills`), which a later
-/// phase reads, or is a way in to the snapshot: `.claude/skills` and a `.agents/skills` that is
-/// a symlink into it.
+/// (`.claude/settings*.json`), which can turn the hook off, or is a way in to a unit's skill
+/// snapshot, which a later phase reads: `.ns/<unit>/skills`, `.ns` or `.ns/<unit>` themselves
+/// (move or delete either, then recreate it), and a `.claude/skills` or `.agents/skills` that
+/// is a symlink into a snapshot.
 pub(super) fn is_protected(path: &str) -> bool {
+    protected(path, true)
+}
+
+/// `is_protected`, with or without `.ns` and the unit's directory themselves. A shell standing
+/// in a unit's directory may write its artifacts, so they do not make a protected directory.
+fn protected(path: &str, with_ns_dirs: bool) -> bool {
     let parts = components(path);
     parts.contains(&".githooks")
         || parts.windows(2).any(|p| {
             (p[0] == ".git" && matches!(p[1], "hooks" | "config"))
-                || (p[0] == ".claude"
-                    && (p[1] == "skills"
-                        || (p[1].starts_with("settings") && p[1].ends_with(".json"))))
+                || (p[0] == ".claude" && p[1].starts_with("settings") && p[1].ends_with(".json"))
         })
-        || is_under_snapshot_link(path, &parts)
+        || pin::LINKS
+            .iter()
+            .any(|link| is_under_snapshot_link(path, &parts, link))
+        || (with_ns_dirs && is_ns_or_unit_dir(&parts))
         || parts
             .windows(3)
-            .any(|p| p[0] == ".ns" && matches!(p[2], "phase-settings.json" | "skills"))
+            .any(|p| p[0] == pin::NS_DIR && names_skills(p[2]))
 }
 
-/// `path` goes through an `.agents/skills` that is a symlink into a unit's snapshot. A real
-/// `.agents/skills` is nightshift's own tracked directory and stays editable.
-fn is_under_snapshot_link(path: &str, parts: &[&str]) -> bool {
-    let Some(i) = parts.windows(2).position(|p| p == [".agents", "skills"]) else {
+/// `parts` end at `.ns` or at a direct child of it, the unit's directory.
+fn is_ns_or_unit_dir(parts: &[&str]) -> bool {
+    match parts {
+        [.., last] if *last == pin::NS_DIR => true,
+        [.., ns, _] => *ns == pin::NS_DIR,
+        _ => false,
+    }
+}
+
+/// `name` is `skills`, or a glob that could match it.
+fn names_skills(name: &str) -> bool {
+    if !name.contains(['*', '?', '[']) {
+        return name == pin::SKILLS_DIR;
+    }
+    glob_matches(name.as_bytes(), pin::SKILLS_DIR.as_bytes())
+}
+
+/// `pattern` (`*` and `?`; a `[` set counts as a match) matches `text`.
+fn glob_matches(pattern: &[u8], text: &[u8]) -> bool {
+    match pattern.split_first() {
+        None => text.is_empty(),
+        Some((b'*', rest)) => (0..=text.len()).any(|i| glob_matches(rest, &text[i..])),
+        Some((b'[', _)) => true,
+        Some((c, rest)) => text
+            .split_first()
+            .is_some_and(|(t, tail)| (*c == b'?' || c == t) && glob_matches(rest, tail)),
+    }
+}
+
+/// `path` goes through `link` (`.claude/skills` or `.agents/skills`) and the link is a symlink
+/// into a unit's snapshot. A real directory there is the repo's own and stays editable.
+fn is_under_snapshot_link(path: &str, parts: &[&str], link: &str) -> bool {
+    let link_parts: Vec<&str> = link.split('/').collect();
+    let Some(i) = parts.windows(2).position(|p| p == link_parts.as_slice()) else {
         return false;
     };
     let root = if path.starts_with('/') { "/" } else { "" };
     let link = format!("{root}{}", parts[..i + 2].join("/"));
-    std::fs::read_link(link).is_ok_and(|target| crate::pin::points_into_a_snapshot(&target))
+    std::fs::read_link(link).is_ok_and(|target| pin::points_into_a_snapshot(&target))
 }
 
 /// Where a shell is, as far as the guard follows it.
@@ -38,8 +76,8 @@ fn is_under_snapshot_link(path: &str, parts: &[&str]) -> bool {
 pub(super) struct Cwd {
     /// How many directories below a protected path, or `None` when not in one.
     pub hooks: Option<usize>,
-    /// How many directories below `.ns/`: `.ns/<unit>` is 1. A relative `skills` or
-    /// `phase-settings.json` there is the unit's snapshot or settings.
+    /// How many directories below `.ns/`: `.ns/<unit>` is 1. A relative `skills` there is the
+    /// unit's snapshot, and the unit's directory is protected itself.
     pub ns: Option<usize>,
 }
 
@@ -51,7 +89,7 @@ impl Cwd {
             hooks: protected_depth(dir),
             ns: parts
                 .iter()
-                .rposition(|p| *p == ".ns")
+                .rposition(|p| *p == pin::NS_DIR)
                 .and_then(|i| descend(0, &parts[i + 1..])),
         }
     }
@@ -87,8 +125,8 @@ fn descend(depth: usize, parts: &[&str]) -> Option<usize> {
     })
 }
 
-/// The relative `path` from `depth` directories below `.ns/` reaches the `skills` or
-/// `phase-settings.json` of a unit directory.
+/// The relative `path` from `depth` directories below `.ns/` reaches a unit's `skills`, or ends
+/// at the unit's directory or `.ns` itself.
 pub(super) fn reaches_unit_file(mut depth: usize, path: &str) -> bool {
     for part in components(path) {
         if part == ".." {
@@ -97,20 +135,20 @@ pub(super) fn reaches_unit_file(mut depth: usize, path: &str) -> bool {
                 None => return false,
             }
         } else {
-            if depth == 1 && matches!(part, "skills" | "phase-settings.json") {
+            if depth == 1 && names_skills(part) {
                 return true;
             }
             depth += 1;
         }
     }
-    false
+    depth <= 1
 }
 
 /// A working directory whose relative paths are protected: inside `.githooks/` or the `.git`
 /// directory itself.
 pub(super) fn is_protected_directory(dir: &str) -> bool {
     let parts = components(dir);
-    is_protected(dir) || parts.contains(&".git")
+    protected(dir, false) || parts.contains(&".git")
 }
 
 /// How many directories below a protected path the directory `dir` is, or `None` when it is
@@ -120,8 +158,8 @@ pub(super) fn protected_depth(dir: &str) -> Option<usize> {
         return None;
     }
     let parts = components(dir);
-    let root =
-        (0..parts.len()).find(|&i| parts[i] == ".git" || is_protected(&parts[..=i].join("/")))?;
+    let root = (0..parts.len())
+        .find(|&i| parts[i] == ".git" || protected(&parts[..=i].join("/"), false))?;
     Some(parts.len() - root - 1)
 }
 
