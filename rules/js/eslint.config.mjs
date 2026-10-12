@@ -25,15 +25,18 @@ function tsconfigGlob(entry) {
 // The type-aware rules need the repo's tsconfig.json, and only the files it includes are in the
 // project: its own include, files and exclude patterns say which, so no file is listed one by
 // one. The other TypeScript files, and all of them without a tsconfig.json, get the rules that
-// need no type information. A tsconfig.json that names no files itself (project references)
-// puts every TypeScript file in the project.
+// need no type information. A tsconfig.json that only has project references puts every
+// TypeScript file in the project.
 function project() {
   if (!existsSync("tsconfig.json")) return null;
   const read = typescript.readConfigFile("tsconfig.json", typescript.sys.readFile);
   const parsed = typescript.parseJsonConfigFileContent(read.config ?? {}, typescript.sys, process.cwd());
   const named = parsed.fileNames.filter((f) => /\.(?:ts|tsx|mts|cts)$/.test(f) && !relative(process.cwd(), f).startsWith(".."));
-  if (named.length === 0) return { files: ts, ignores: [] };
   const raw = parsed.raw ?? {};
+  if (named.length === 0) {
+    const referencesOnly = (parsed.projectReferences ?? []).length > 0 && (raw.files ?? []).length === 0 && !raw.include;
+    return referencesOnly ? { files: ts, ignores: [] } : null;
+  }
   const files = (raw.files ?? []).map(escaped);
   const include = raw.include ?? (raw.files ? [] : ["**/*"]);
   const exclude = raw.exclude ?? ["node_modules", "bower_components", "jspm_packages"];

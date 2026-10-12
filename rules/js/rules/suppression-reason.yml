@@ -12,5 +12,5 @@ rule:
   regex: '^(?://|/\*+)\s*(?:eslint-disable|@ts-(?:ignore|expect-error|nocheck)\b)'
   not:
     any:
-      - regex: '^(?://|/\*+)\s*eslint-disable.*--\s*[^\s*]'
+      - regex: '^(?://|/\*+)\s*eslint-disable[\s\S]*--\s*[^\s*]'
       - regex: '^(?://|/\*+)\s*@ts-(?:ignore|expect-error|nocheck)[\s:]*[^\s:*]'

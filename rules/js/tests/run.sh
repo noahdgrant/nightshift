@@ -75,7 +75,7 @@ findings_for() {
   jq -c --arg f "$2" 'select(.file == $f)' "$tmp/$1.findings"
 }
 
-for kind in js ts react ts-include refs pnpm; do
+for kind in js ts react ts-include refs pnpm js-tsconfig ts-files; do
   install_repo "$kind"
 done
 
@@ -127,7 +127,7 @@ printf 'console.log(1);\n' >"$tmp/js/dist/bundle.js"
 mkdir "$tmp/ts-include/tests"
 printf 'export const outside = 1 == 1;\n' >"$tmp/ts-include/tests/outside.test.ts"
 
-for kind in js ts react ts-include refs pnpm; do
+for kind in js ts react ts-include refs pnpm js-tsconfig ts-files; do
   run_row "$kind"
 done
 
@@ -178,6 +178,18 @@ for file in 'src/[id]/page.ts' src/floating.ts; do
   jq -e 'select(.tool == "eslint" and (.rule | endswith("no-floating-promises")))' <<<"$(findings_for "$repo" "$file")" >/dev/null ||
     fail "$repo: no no-floating-promises finding on $file"
 done
+for file in vite.config.ts; do
+  jq -e 'select(.tool == "eslint" and .rule == "eqeqeq")' <<<"$(findings_for js-tsconfig "$file")" >/dev/null ||
+    fail "js-tsconfig: no eqeqeq finding on $file, outside a tsconfig.json project of JavaScript files"
+  ! jq -e 'select(.rule == "parse-error")' <<<"$(findings_for js-tsconfig "$file")" >/dev/null ||
+    fail "js-tsconfig: $file, outside a tsconfig.json project of JavaScript files, gave a parse error"
+done
+jq -e 'select(.tool == "eslint" and (.rule | endswith("no-floating-promises")))' <<<"$(findings_for ts-files src/main.ts)" >/dev/null ||
+  fail "ts-files: no no-floating-promises finding on src/main.ts, listed in the tsconfig.json files"
+jq -e 'select(.tool == "eslint" and .rule == "eqeqeq")' <<<"$(findings_for ts-files src/other.ts)" >/dev/null ||
+  fail "ts-files: no eqeqeq finding on src/other.ts, not listed in the tsconfig.json files"
+! jq -e 'select(.rule == "parse-error")' <<<"$(findings_for ts-files src/other.ts)" >/dev/null ||
+  fail "ts-files: src/other.ts, not listed in the tsconfig.json files, gave a parse error"
 jq -e 'select(.tool == "tsc" and .rule == "TS2322")' <<<"$(findings_for refs src/bad.ts)" >/dev/null ||
   fail "refs: no tsc finding on src/bad.ts, checked through a project-references tsconfig.json"
 [ -z "$(findings_for pnpm package.json)" ] || fail "pnpm: findings on package.json"
