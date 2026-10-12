@@ -6,7 +6,7 @@ fake=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/fake
 mkdir -p "$fake"
 echo "gh $*" >> "$fake/calls.log"
 if [ -f "$fake/gh-answers" ]; then
-  while IFS=$'\t' read -r args out; do
+  while IFS=$'\t' read -r args out || [ -n "$args" ]; do
     [ "$args" = "$*" ] && { echo "$out"; exit 0; }
   done < "$fake/gh-answers"
 fi

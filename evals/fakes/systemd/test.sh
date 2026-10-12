@@ -61,6 +61,17 @@ systemctl --user reset-failed ns-watch-supervised
 [ "$(gh pr list --json number)" = "[]" ] || fail "gh"
 journalctl --user -u ns-watch | grep 'No entries' >/dev/null || fail "journalctl"
 
+# A case's gh-answers file scripts gh: one "<args><TAB><output>" line per call, else empty.
+[ "$(gh run list)" = "[]" ] || fail "gh with no gh-answers"
+printf 'run list --json status\t[{"status":"in_progress"}]\n' > "$fake/gh-answers"
+[ "$(gh run list --json status)" = '[{"status":"in_progress"}]' ] || fail "gh-answers exact args"
+[ "$(gh run list --json status --limit 1)" = "[]" ] || fail "gh-answers matched args with an extra flag"
+printf 'pr list\t[1]\nrun list --json status\t[2]\n' > "$fake/gh-answers"
+[ "$(gh run list --json status)" = "[2]" ] || fail "gh-answers second entry"
+printf 'pr list\t[1]\nrun list --json status\t[3]' > "$fake/gh-answers"
+[ "$(gh run list --json status)" = "[3]" ] || fail "gh-answers last line with no newline"
+rm "$fake/gh-answers"
+
 # glab has no merge request until mr create opens one, which then reads merge-ready.
 glab mr view -F json >/dev/null 2>&1 && fail "glab mr view before create"
 url=$(glab mr create --source-branch ns/1-x --target-branch main --title t --description-file /dev/null --yes)
