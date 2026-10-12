@@ -184,4 +184,12 @@ mod tests {
         assert_eq!(touches("  **Touches:** `a.rs`\n"), globs(&["a.rs"]));
         assert_eq!(touches("\t**Touches:** `a.rs`\n"), globs(&["a.rs"]));
     }
+
+    #[test]
+    fn wildcards_match_hidden_segments() {
+        let m = |p: &str, f: &str| glob_matches(&glob::Pattern::new(p).unwrap(), f);
+        assert!(m("docs/*", "docs/.hidden"));
+        assert!(m("**", "a/.b/c.rs"));
+        assert!(m("a/**/c.rs", "a/.b/c.rs"));
+    }
 }
