@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Run what .github/workflows/ci.yml runs, in order, stopping at the first failure.
 #
-# The .githooks pre-commit and pre-push hooks run it.
+# --fast runs only the quick steps: the pinned tools, fmt, clippy, the ns build, ns lint,
+# ns check-markers and the private guard. The .githooks pre-commit hook runs --fast on the
+# working tree; the pre-push hook runs the full suite at each commit pushed.
 #
 # Uses the ns this run builds: cli/target/debug/ns, or under $CARGO_TARGET_DIR when that
 # is set, as the pre-push hook sets it. The private guard reads
@@ -11,10 +13,15 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-if [ "$#" -ne 0 ]; then
-  echo "usage: scripts/ci-local.sh" >&2
-  exit 2
-fi
+fast=0
+case "$#:${1-}" in
+  0:) ;;
+  1:--fast) fast=1 ;;
+  *)
+    echo "usage: scripts/ci-local.sh [--fast]" >&2
+    exit 2
+    ;;
+esac
 
 ns=${CARGO_TARGET_DIR:-cli/target}/debug/ns
 
@@ -26,6 +33,11 @@ step() {
     echo "ci-local: FAILED at step: $name" >&2
     exit 1
   fi
+}
+
+# A step the --fast run leaves out.
+full_step() {
+  [ "$fast" -eq 1 ] || step "$@"
 }
 
 eval_dry_run() {
@@ -71,20 +83,20 @@ brief_checker_tests() {
 step "pinned tools (scripts/ci-tools.toml)" scripts/ci-tools.sh check
 step "cargo fmt --check" cargo fmt --manifest-path cli/Cargo.toml --check
 step "cargo clippy" cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings
-step "cargo test" cargo test --manifest-path cli/Cargo.toml
-step "cargo test under a decoy GIT_DIR" scripts/check-git-dir-decoy.sh
+full_step "cargo test" cargo test --manifest-path cli/Cargo.toml
+full_step "cargo test under a decoy GIT_DIR" scripts/check-git-dir-decoy.sh
 step "build ns" cargo build --manifest-path cli/Cargo.toml
 step "ns lint" "$ns" lint skills --human
 step "ns lint .agents/skills" "$ns" lint .agents/skills --human
 step "ns check-markers" "$ns" check-markers --human
-step "ns rules check" "$ns" rules check --human
-step "ns eval --dry-run" eval_dry_run
-step "py-inventory fixture tests" fixture_tests
-step "Python rule pack tests" rule_pack_tests python
-step "JavaScript/TypeScript rule pack tests" rule_pack_tests js
-step "C rule pack tests" python3 -I -m unittest discover -s rules/c/tests
-step "Java rule pack tests" rule_pack_tests java
-step "ns-troubleshoot brief checker tests" brief_checker_tests
+full_step "ns rules check" "$ns" rules check --human
+full_step "ns eval --dry-run" eval_dry_run
+full_step "py-inventory fixture tests" fixture_tests
+full_step "Python rule pack tests" rule_pack_tests python
+full_step "JavaScript/TypeScript rule pack tests" rule_pack_tests js
+full_step "C rule pack tests" python3 -I -m unittest discover -s rules/c/tests
+full_step "Java rule pack tests" rule_pack_tests java
+full_step "ns-troubleshoot brief checker tests" brief_checker_tests
 step "private guard" scripts/check-private.sh
 
 echo "ci-local: all checks passed" >&2
