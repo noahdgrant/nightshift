@@ -114,7 +114,8 @@ pub struct Merge {
     /// Minutes to wait for the first check to register on the PR head before concluding no CI.
     pub ci_register_timeout: u64,
     /// Gate the merge of the PR head into the fresh default branch under the merge lock, in
-    /// place of update-branch and the gate on the PR head (docs/FACTORY.md, "Merge").
+    /// place of update-branch and the gate on the PR head (docs/FACTORY.md, "Merge"). Ignored
+    /// under `[gate] local = "build-only"`, where GitHub's checks gate the merge.
     pub local_queue: bool,
 }
 
