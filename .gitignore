@@ -1,2 +1,4 @@
 /cli/target/
 /target/
+__pycache__/
+.pytest_cache/
