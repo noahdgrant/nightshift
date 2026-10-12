@@ -3555,7 +3555,7 @@ fn auto_merge_squashes_when_green_and_no_human_review_files() {
     assert_eq!(v["outcome"], "merged", "{v}");
     let calls = e.gh_calls();
     assert!(
-        calls.contains("pr merge 12 --squash --delete-branch"),
+        calls.contains("pr merge 12 --squash --match-head-commit"),
         "{calls}"
     );
     assert!(!calls.contains("update-branch"));
@@ -9132,6 +9132,43 @@ fn auto_merge_removes_the_worktree_and_branch_after_saving_the_record() {
             ev["pr"].as_u64()
         ),
         (Some("run"), Some(true), Some(12))
+    );
+}
+
+#[test]
+fn a_merge_never_checks_out_main_in_the_unit_worktree() {
+    let e = auto_merge_env();
+    // The main checkout is off main, so nothing stops a checkout of main in the unit worktree.
+    git(&e.root, &["checkout", "-qb", "elsewhere"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(v["cleanup"]["removed"], true, "{v}");
+    assert!(!e.worktree(UNIT).exists());
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains(&format!(
+            "api repos/{{owner}}/{{repo}}/git/refs/heads/ns/{UNIT} -X DELETE"
+        )),
+        "{calls}"
+    );
+    git(&e.root, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn a_remote_branch_github_will_not_delete_is_logged_and_the_merge_stands() {
+    let e = auto_merge_env();
+    e.gh_file("branch-delete.fail", "HTTP 422: Reference does not exist");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let ev = &run_events(&e)[event_at(&e, |v| v["event"] == "branch_not_deleted")];
+    assert_eq!(ev["pr"], 12);
+    assert_eq!(ev["branch"], format!("ns/{UNIT}"));
+    assert!(
+        ev["error"]
+            .as_str()
+            .unwrap()
+            .contains("Reference does not exist"),
+        "{ev}"
     );
 }
 

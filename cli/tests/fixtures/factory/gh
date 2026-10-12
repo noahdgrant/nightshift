@@ -27,6 +27,10 @@ case "$1 $2" in
       printf '%s\n' "$line"
     done < "$d/issues.jsonl"
     ;;
+  "api repos/"*/git/refs/heads/*)
+    # branch-delete.fail: GitHub refuses to delete the branch, with the file's text as its error.
+    if [ -f "$d/branch-delete.fail" ]; then cat "$d/branch-delete.fail" >&2; exit 1; fi
+    ;;
   "api repos/"*/sub_issues*)
     # subs-<n>: issue n's sub-issue numbers, one a line.
     n=${2%/sub_issues*}; n=${n##*/}
@@ -182,7 +186,16 @@ case "$1 $2" in
       || echo 00000000000000000000000000000000000000aa > "$d/pending-$3.head"
     cat "$d/updated-$3.lag" 2>/dev/null > "$d/lag-$3" || echo 0 > "$d/lag-$3"
     ;;
-  "pr merge") echo MERGED > "$d/pr-$3.state" ;;
+  "pr merge")
+    echo MERGED > "$d/pr-$3.state"
+    # --delete-branch does what real gh does locally: check out the base where gh runs, failing
+    # when another worktree has it, then delete the PR's branch.
+    if [[ " $* " == *" --delete-branch "* ]]; then
+      cur=$(git rev-parse --abbrev-ref HEAD)
+      git checkout -q main || exit 1
+      git branch -q -D "$cur"
+    fi
+    ;;
   "run view") echo "FAILED tests/test_x.py::test_y - assert 1 == 2" ;;
   "repo view") cat "$d/repo-view.json" 2>/dev/null || echo '{"defaultBranchRef":{"name":"main"}}' ;;
   "run list") cat "$d/runs-green.json" 2>/dev/null || echo "[]" ;;
