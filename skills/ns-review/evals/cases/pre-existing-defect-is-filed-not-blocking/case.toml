@@ -23,7 +23,7 @@ key = "status"
 equals = "pass"
 
 [[check]]
-# A finding on the reserve boundary is scoped pre-existing and deferred to an issue.
+# A finding on the reserve boundary is scoped pre-existing, deferred to an issue, and attributed to the axis that missed it.
 type = "command"
 run = '''
 python3 - <<'PYEOF'
@@ -35,10 +35,11 @@ for b in blocks:
     if ("warehouse.py" in field("Location")
             and re.search(r"(?i)>=|exact|off.by.one|boundary|all (of )?the available", b)
             and re.match(r"(?i)`?pre-existing", field("Scope"))
-            and re.match(r"(?i)deferred:", field("Status"))):
+            and re.match(r"(?i)deferred:", field("Status"))
+            and re.match(r"(?i)`?(correctness|tests)\b", field("Missed by"))):
         print("found:", b.splitlines()[0])
         sys.exit(0)
-sys.exit("no finding on the reserve boundary with Scope: pre-existing and Status: deferred")
+sys.exit("no finding on the reserve boundary with Scope: pre-existing, Status: deferred and Missed by: correctness or tests")
 PYEOF
 '''
 expect_exit = 0
@@ -75,7 +76,7 @@ PYEOF
 expect_exit = 0
 
 [[check]]
-# The escape is a new needs-triage bug at high priority that names the unit and says it escaped an earlier review.
+# The escape is a new needs-triage bug at high priority that opens with the disclosure line, names the unit and says it escaped an earlier review.
 type = "command"
 run = '''
 python3 - <<'PYEOF'
@@ -91,11 +92,12 @@ for p in glob.glob(".scratch/**/*.md", recursive=True):
         "category": re.search(r"(?mi)^\**Category:\**\s*`?bug", t),
         "priority": re.search(r"(?mi)^\**Priority:\**\s*`?(priority:)?high\b", t),
         "unit": "01-cap-reservation-ttl" in t,
+        "disclosed": t.lstrip().startswith("🤖 *Posted by nightshift, an AI agent.*"),
     }
     print(p, {k: bool(v) for k, v in checks.items()})
     if all(checks.values()):
         sys.exit(0)
-sys.exit("no new .scratch issue that escaped an earlier review with needs-triage, bug, priority:high and a link to the unit")
+sys.exit("no new .scratch issue that escaped an earlier review with needs-triage, bug, priority:high, a link to the unit and the disclosure line first")
 PYEOF
 '''
 expect_exit = 0

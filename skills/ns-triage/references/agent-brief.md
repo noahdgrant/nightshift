@@ -12,7 +12,7 @@ The issue may sit in `ready-for-agent` for days or weeks. The codebase will chan
 
 - **Do** describe interfaces, types, and behavioral contracts
 - **Do** name specific classes, function signatures, or config shapes that the agent should look for or modify
-- **Do** name symbols, never file paths or line numbers: paths and lines go stale
+- **Do** name symbols, never file paths or line numbers: paths and lines go stale. The [Touches](#touches-the-one-place-for-paths) line is the one exception
 - **Do** expect the current implementation structure to change
 
 Firmware note: name the Kconfig symbol, devicetree node, register or HAL call (`CONFIG_UART_RX_TIMEOUT_MS`, the `uart0` node), not the source file that happens to touch it.
@@ -40,6 +40,12 @@ State what is out of scope. This keeps the agent from gold-plating or making ass
 ### Route when the next phase isn't obvious
 
 `**Route:**` is optional. A brief that moves to `ready-for-agent` goes to `ns-build`, so triage usually leaves it out. `ns-troubleshoot` always writes it, because its brief can go to `ns-build`, to `ns-define` for a redesign, or nowhere. `ns run` reads only the frontmatter `status`, so the Route never overrides it.
+
+### Touches: the one place for paths
+
+Every `ready-for-agent` brief carries a `**Touches:**` line: the path globs, relative to the repo root, for the files and directories the unit will probably change. It is a scheduling prediction, not part of the spec, so it is the one place a brief names paths. Name a file the unit edits (`cli/src/run.rs`), or a directory glob where it adds or edits several files (`skills/ns-review/**`). Include the tests and docs it will change. Paths only, never line numbers.
+
+Write the line as backticked globs separated by commas, all on one line: `` **Touches:** `cli/src/run.rs`, `skills/ns-review/**` ``. `brief.md` repeats the list in its frontmatter as `touches:`, one glob per item, quoted when it starts with `*` (`- "**/Cargo.toml"`). A line in any other shape reads as no prediction.
 
 ### Sized to one unit
 
@@ -70,6 +76,8 @@ Be specific about edge cases and error conditions.
 - Config shape: any new configuration options needed
 
 **Size:** files and modules touched, new tests, rough changed lines
+
+**Touches:** `path/to/file.rs`, `dir/**`
 
 **Acceptance criteria:**
 - [ ] Specific, testable criterion 1
@@ -107,6 +115,8 @@ and append "..." to indicate truncation.
   SKILL.md frontmatter and extracts the description
 
 **Size:** one module (frontmatter parsing), four pytest cases, about 40 lines
+
+**Touches:** `src/skills/frontmatter.py`, `tests/test_frontmatter.py`
 
 **Acceptance criteria:**
 - [ ] Descriptions under 1024 chars are unchanged
@@ -150,6 +160,8 @@ checked for matches.
 
 **Size:** the triage workflow and a new `.out-of-scope/` format, no code tests, about 120 lines
 
+**Touches:** `skills/triage/**`, `.out-of-scope/**`
+
 **Acceptance criteria:**
 - [ ] Closing a feature as wontfix creates/updates a file in `.out-of-scope/`
 - [ ] The file includes the decision, reasoning, and link to the closed issue
@@ -192,6 +204,8 @@ is untouched when the flag is absent.
 
 **Size:** the command's error path, two pytest cases, about 50 lines on top of the PR
 
+**Touches:** `src/triage/cli.py`, `tests/test_cli.py`
+
 **Acceptance criteria:**
 - [ ] `triage list --json` emits valid JSON for both success and error cases
 - [ ] Exit codes match the non-JSON command
@@ -222,7 +236,7 @@ The function around line 150 has the issue.
 This is bad because:
 - No category
 - Vague description ("the triage thing is broken")
-- References file paths and line numbers that will go stale
+- References file paths and line numbers in the spec, where they go stale, instead of path globs on a `**Touches:**` line
 - No acceptance criteria
 - No scope boundaries
 - No description of current vs desired behavior

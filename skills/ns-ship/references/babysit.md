@@ -42,10 +42,10 @@ After resolving, check for drift. The base may have grown new callers of code th
 
 Triage every unresolved thread, from bots and humans alike, with [comment-triage.md](comment-triage.md). Fix real findings in this wave, dismiss noise with a disproof, and escalate the rest.
 
-Push the wave before you reply, so each reply cites the fixing commit. Post replies from a file, so comment text never passes through the shell:
+Push the wave before you reply, so each reply cites the fixing commit. Post replies from a file, so comment text never passes through the shell. Each reply opens with the [disclosure line](../../ns-contract/SKILL.md#disclosure):
 
 ```bash
-# payload.json: {"body": "Fixed in abc1234. Added test_timeout_resets_parser, which failed before the fix."}
+# payload.json: {"body": "🤖 *Posted by nightshift, an AI agent.*\n\nFixed in abc1234. Added test_timeout_resets_parser, which failed before the fix."}
 gh api --method POST repos/<owner>/<repo>/pulls/<pr>/comments/<comment-id>/replies --input payload.json
 gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<thread-id>
 

@@ -11,6 +11,7 @@ Issues and specs for this repo live as GitLab issues. Use the [`glab`](https://g
 - **Comment on an issue**: `glab issue note <number> --message "..."`. GitLab calls comments "notes".
 - **Apply / remove labels**: `glab issue update <number> --label "..."` / `--unlabel "..."`. Multiple labels can be comma-separated or by repeating the flag.
 - **Close**: `glab issue close <number>`. It takes no closing comment, so post the explanation first with `glab issue note <number> --message "..."`, then close.
+- **Disclosure**: every issue body, comment and merge request description an agent posts opens with a 🤖 line naming the agent, then a blank line: `🤖 *Posted by nightshift, an AI agent.*` from nightshift (`ns-contract`, Disclosure). Titles stay plain.
 - **Merge requests**: GitLab calls PRs "merge requests". Use `glab mr create`, `glab mr view`, `glab mr note`, etc., the same shape as `gh pr ...` with `mr` in place of `pr` and `note`/`--message` in place of `comment`/`--body`.
 
 Infer the repo from `git remote -v`; `glab` does this automatically when run inside a clone.
@@ -21,7 +22,7 @@ Project members (Developer role and above) are the team. Everyone else is extern
 
 External comments: wait
 
-`wait` (default): a skill drafts any comment addressed to an external person and stops for a human. `allow`: skills post such comments on this tracker themselves, with the AI disclaimer. Set `allow` only if unattended runs may talk to reporters.
+`wait` (default): a skill drafts any comment addressed to an external person and stops for a human. `allow`: skills post such comments on this tracker themselves. Set `allow` only if unattended runs may talk to reporters.
 
 ## Merge requests as a triage surface
 
@@ -44,7 +45,7 @@ The most issues one `ns-agent-readiness` run files. With no such line, it files 
 ## Linking issues
 
 - **Child of a parent**: put `Part of #<parent>` at the top of the child's description. (On tiers with epics, an epic may hold the parent instead.)
-- **Blocking**: GitLab's native blocking link, added with the `/blocked_by #<n>` quick action posted as a note: `glab issue note <child> --message "/blocked_by #<blocker>"`. It is a Premium/Ultimate feature. On the free tier, put a `Blocked by: #<n>, #<n>` line at the top of the description.
+- **Blocking**: GitLab's native blocking link, added with the `/blocked_by #<n>` quick action posted as a note: `glab issue note <child> --message "/blocked_by #<blocker>"`. It is a Premium/Ultimate feature. On the free tier, put a `Blocked by: #<n>, #<n>` line at the top of the description, right after the 🤖 line.
 - **Is it unblocked?** Read the links with `glab api projects/:id/issues/<child-iid>/links` and the `Blocked by` line. It is unblocked when every blocker is closed.
 
 ## When a skill says "publish to the issue tracker"

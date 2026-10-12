@@ -1,0 +1,14 @@
+# Node's built-in modules: a `node:` specifier, or a top-level name in Node 18's
+# require("module").builtinModules without a leading _, kept by hand. tests/run.sh imports every
+# such name of the running Node (tests/examples/dependency-allowlist/make.sh), so it fails on a
+# missing one, or on one a later Node adds.
+id: node-builtin
+language: tsx
+rule:
+  regex: >-
+    (?x)^(?:node:|(?:
+      assert|async_hooks|buffer|child_process|cluster|console|constants|crypto|dgram|
+      diagnostics_channel|dns|domain|events|fs|http|http2|https|inspector|module|net|os|path|
+      perf_hooks|process|punycode|querystring|readline|repl|stream|string_decoder|sys|timers|
+      tls|trace_events|tty|url|util|v8|vm|wasi|worker_threads|zlib
+    )(?:/|$))

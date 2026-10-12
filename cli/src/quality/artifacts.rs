@@ -128,6 +128,7 @@ fn read_attempt(
         stray_statuses: review_md::stray_statuses(body),
         first_pass_file: first_pass_file(cycle_dir),
         introduced_by: Default::default(),
+        passes: review_md::passes(body),
     })
 }
 
@@ -391,6 +392,20 @@ mod tests {
             (Some(12), Some("summary"))
         );
         assert_eq!((a.findings.len(), a.stray_statuses), (1, 1));
+        assert!(a.passes.is_empty());
+        fs::write(
+            &p,
+            "---\nstatus: pass\n---\n## Passes\n| Pass | Panel | Reviewer |\n|-|-|-|\n| 0 | reduced | spec |\n",
+        )
+        .unwrap();
+        let a = read_attempt(tmp.path(), &p, None, tmp.path(), &mut gaps).unwrap();
+        assert_eq!(
+            a.passes,
+            review_md::passes(
+                "## Passes\n| Pass | Panel | Reviewer |\n|-|-|-|\n| 0 | reduced | spec |\n"
+            )
+        );
+        assert_eq!(a.passes[0].workers[0].reviewer, "spec");
         fs::write(&p, "---\nbase: main@HEAD\nhead: abcdef0\n---\n").unwrap();
         let a = read_attempt(tmp.path(), &p, None, tmp.path(), &mut gaps).unwrap();
         assert_eq!(

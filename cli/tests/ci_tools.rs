@@ -231,7 +231,7 @@ fn install_runs_only_the_installers_the_named_tools_need() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(
         repo.log(),
-        "sudo apt-get update\nsudo apt-get install -y wotsit\n"
+        "sudo apt-get update\nsudo apt-get install -y wotsit\nsudo ln -sf /usr/bin/wotsit /usr/local/bin/wotsit\n"
     );
     assert_eq!(
         fs::read_to_string(&output).unwrap(),

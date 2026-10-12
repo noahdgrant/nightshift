@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use super::blame::Blame;
 
-use crate::review_md::{CycleEntry, Finding, Scope, Severity, Status, AXES};
+use crate::review_md::{CycleEntry, Finding, Pass, Scope, Severity, Status, AXES};
 use crate::stats::{median, round};
 
 /// Full fix cycles `ns-review` runs before it can stop with a finding open. Up to two fix-only
@@ -34,6 +34,8 @@ pub struct Attempt {
     /// Escapes already blamed, by index in `findings`: a quality record's, taken when it was
     /// written. Empty for an attempt read from a worktree, which is blamed when reported.
     pub introduced_by: BTreeMap<usize, Blame>,
+    /// The `## Passes` table: each pass's panel and reviewer workers. Empty before the table.
+    pub passes: Vec<Pass>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]

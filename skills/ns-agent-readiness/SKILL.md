@@ -87,7 +87,7 @@ Read the cap from the `audit issues per run: <n>` line in `docs/agents/issue-tra
 - **`gates: auto`**: take the Strong and Worth exploring findings in rank order. For each, search the tracker for a duplicate as `issue-tracker.md` says. Skip a duplicate and note it under Filed; it does not count toward the cap. File the rest until the cap is reached.
 - **`gates: stop`** (the default): show the ranked list with each finding's strength and the cap, ask which to file, and file only the ones the human picks.
 
-File each issue as `issue-tracker.md` says, in the `needs-triage` state with a category from `triage-labels.md` (`bug` when the finding hides a defect, else `enhancement`) and every area label that file defines for the files involved. Title it with the problem in plain words. The body holds the finding's fields, the report's date, and the line `Found by ns-agent-readiness.` Triage sets priority and writes the brief.
+File each issue as `issue-tracker.md` says, in the `needs-triage` state with a category from `triage-labels.md` (`bug` when the finding hides a defect, else `enhancement`) and every area label that file defines for the files involved. Title it with the problem in plain words. The body opens with the [disclosure line](../ns-contract/SKILL.md#disclosure), then holds the finding's fields, the report's date, and the line `Found by ns-agent-readiness.` Triage sets priority and writes the brief.
 
 Done when the issues are filed, at most the cap of them, and the report's Filed section lists each one.
 

@@ -50,3 +50,16 @@ url = "https://github.com/pmd/pmd/releases/download/pmd_releases%2F{version}/pmd
 sha256 = "f974ba571f7bc01c73fffe11bade25fbc1f438698f9e9c00e416e8d65e9fbac2"
 bin = "pmd-bin-{version}/bin/pmd"
 check = "pmd --version"
+
+# The JavaScript/TypeScript rule pack (rules/js/): its tools come from its own lockfile, run
+# under this Node and installed with this npm.
+[node]
+version = "18"
+install = "apt"
+package = "nodejs"
+check = "node --version"
+
+[npm]
+version = "9.2.0"
+install = "apt"
+check = "npm --version"

@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-const ALL_STEPS: [&str; 17] = [
+const ALL_STEPS: [&str; 18] = [
     "pinned tools (scripts/ci-tools.toml)",
     "cargo fmt --check",
     "cargo clippy",
@@ -22,6 +22,7 @@ const ALL_STEPS: [&str; 17] = [
     "ns eval --dry-run",
     "py-inventory fixture tests",
     "Python rule pack tests",
+    "JavaScript/TypeScript rule pack tests",
     "C rule pack tests",
     "Java rule pack tests",
     "ns-troubleshoot brief checker tests",
@@ -155,7 +156,7 @@ impl Repo {
         write_exe(&root.join("bin/python3"), &python);
         write_exe(&root.join("bin/python"), &python);
         fs::create_dir_all(root.join("evals/fixtures/py-inventory")).unwrap();
-        for pack in ["python", "java"] {
+        for pack in ["python", "js", "java"] {
             write_exe(
                 &root.join("rules").join(pack).join("tests/run.sh"),
                 &rule_pack_tests(pack),
@@ -252,6 +253,10 @@ fn a_failing_step_stops_the_run() {
         ("ns rules", "ns rules check"),
         ("ns eval", "ns eval --dry-run"),
         ("python rule pack tests ran", "Python rule pack tests"),
+        (
+            "js rule pack tests ran",
+            "JavaScript/TypeScript rule pack tests",
+        ),
         ("discover -s rules/c/tests", "C rule pack tests"),
         ("java rule pack tests ran", "Java rule pack tests"),
         (

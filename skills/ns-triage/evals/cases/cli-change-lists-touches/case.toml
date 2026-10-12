@@ -1,0 +1,69 @@
+description = "A ready-for-agent brief for a CLI change (a NAME column in `inventory status`) predicts the module it changes: brief.md lists `touches:` globs in its frontmatter and the brief comment carries the same `**Touches:**` line, each with a glob matching `src/inventory/cli.py`."
+fixture = "py-inventory"
+skills = ["ns-triage"]
+# ns-build is not installed, so the auto hand-off stops at triage.
+extra_skills = ["ns-contract"]
+requires = []
+timeout_minutes = 15
+prompt = """
+Triage .scratch/stock-status/issues/01-show-item-name-in-status.md. gates: auto
+"""
+
+[[check]]
+type = "regex"
+path = ".scratch/stock-status/issues/01-show-item-name-in-status.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?ready-for-agent`?\s*$'
+present = true
+
+[[check]]
+# The brief comment carries a Touches line naming the CLI module, not a catch-all glob.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import fnmatch, re, sys
+text = open(".scratch/stock-status/issues/01-show-item-name-in-status.md", encoding="utf-8").read()
+m = re.search(r"(?m)^[*_ \t]*Touches:[*_]*(.*)$", text)
+if not m:
+    sys.exit("no Touches line in the brief comment")
+globs = re.findall(r"`([^`]+)`", m.group(1))
+print("comment touches:", globs)
+if not any(fnmatch.fnmatch("src/inventory/cli.py", g) and not fnmatch.fnmatch("README.md", g) for g in globs):
+    sys.exit("no glob names src/inventory/cli.py")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# brief.md frontmatter lists touches globs naming the CLI module, not a catch-all glob.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import fnmatch, glob, os, re, subprocess, sys
+roots = {os.getcwd()}
+out = subprocess.run(["git", "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+roots.update(l.split(" ", 1)[1] for l in out.splitlines() if l.startswith("worktree "))
+roots.update(glob.glob(os.path.join("..", os.path.basename(os.getcwd()) + ".worktrees", "*")))
+briefs = sorted({os.path.realpath(p) for r in roots for p in glob.glob(os.path.join(r, ".ns", "*", "brief.md"))})
+print("briefs:", briefs)
+if len(briefs) != 1:
+    sys.exit("expected exactly one brief.md")
+text = open(briefs[0], encoding="utf-8").read()
+m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+if not m:
+    sys.exit("brief.md has no frontmatter")
+fm = m.group(1)
+block = re.search(r"(?m)^touches:[ \t]*(\[.*\])?[ \t]*(?:#.*)?\n((?:[ \t]+-.*\n?)*)", fm + "\n")
+if not block:
+    sys.exit("brief.md frontmatter has no touches key")
+items = block.group(1)[1:-1].split(",") if block.group(1) else re.findall(r"(?m)^[ \t]+-[ \t]*(.*?)[ \t]*$", block.group(2))
+globs = [i.strip().strip("'\"") for i in items if i.strip()]
+print("frontmatter touches:", globs)
+if not any(fnmatch.fnmatch("src/inventory/cli.py", g) and not fnmatch.fnmatch("README.md", g) for g in globs):
+    sys.exit("no glob names src/inventory/cli.py")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]

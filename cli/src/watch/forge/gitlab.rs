@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::{ClosingPrs, Forge, IssueState, PrState};
+use super::{ClosingPrs, Forge, IssueState, Post, PrState};
 use crate::config::ForgeKind;
 use crate::error::SfError;
 use crate::watch::ci::{Check, HeadChecks, Outcome};
@@ -258,10 +258,10 @@ impl Forge for GitLab {
         glab(&self.root, &args).map(|_| ())
     }
 
-    fn comment(&self, n: u64, body: &str) -> Result<()> {
+    fn comment(&self, n: u64, body: &Post) -> Result<()> {
         glab(
             &self.root,
-            &["issue", "note", &n.to_string(), "--message", body],
+            &["issue", "note", &n.to_string(), "--message", body.as_str()],
         )
         .map(|_| ())
     }
@@ -279,7 +279,7 @@ impl Forge for GitLab {
         Ok(())
     }
 
-    fn comment_pr(&self, _: u64, _: &str) -> Result<()> {
+    fn comment_pr(&self, _: u64, _: &Post) -> Result<()> {
         Ok(())
     }
 
@@ -301,10 +301,10 @@ impl Forge for GitLab {
     }
 
     /// GitLab makes a label it doesn't have yet when an issue names it.
-    fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64> {
+    fn create_issue(&self, title: &str, body: &Post, labels: &[&str]) -> Result<u64> {
         let fields = [
             format!("title={title}"),
-            format!("description={body}"),
+            format!("description={}", body.as_str()),
             format!("labels={}", labels.join(",")),
         ];
         let mut args = vec!["api", "--method", "POST", "projects/:id/issues"];

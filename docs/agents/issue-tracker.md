@@ -11,6 +11,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`. Add `--reason "not planned"` for `wontfix`.
+- **Disclosure**: every issue body, comment and PR body an agent posts opens with a 🤖 line naming the agent, then a blank line: `🤖 *Posted by nightshift, an AI agent.*` from nightshift (`skills/ns-contract`, Disclosure). Titles stay plain.
 
 The repo is `noahdgrant/nightshift`. `gh` infers it inside a clone. `gh` acts as whatever account `GH_TOKEN` names in the environment; `ns watch` inherits it from whoever starts the night.
 
@@ -26,7 +27,7 @@ Authors whose association is `OWNER`, `MEMBER` or `COLLABORATOR` are the team. E
 
 External comments: wait
 
-`wait` (default): a skill drafts any comment addressed to an external person and stops for a human. `allow`: skills post such comments on this tracker themselves, with the AI disclaimer. Set `allow` only if unattended runs may talk to reporters.
+`wait` (default): a skill drafts any comment addressed to an external person and stops for a human. `allow`: skills post such comments on this tracker themselves. Set `allow` only if unattended runs may talk to reporters.
 
 ## Pull requests as a triage surface
 
@@ -49,7 +50,7 @@ The most issues one `ns-agent-readiness` run files. With no such line, it files 
 ## Linking issues
 
 - **Sub-issue of a parent**: `gh issue create --parent <parent> ...`, or `gh issue edit <parent> --add-sub-issue <child>` afterwards (`gh` 2.94+). Older `gh`: `gh api --method POST repos/<owner>/<repo>/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>`. List a parent's children: `gh api repos/<owner>/<repo>/issues/<parent>/sub_issues`. Without sub-issues, put `Part of #<parent>` at the top of the child body.
-- **Blocking**: put `Blocked by: #<n>, #<n>` on the first line of the child body. `ns watch` reads that line; it ignores GitHub's native dependencies.
+- **Blocking**: put `Blocked by: #<n>, #<n>` on the first line of the child body, right after the 🤖 line. `ns watch` reads that line; it ignores GitHub's native dependencies.
 - **Is it unblocked?** Every issue named on the `Blocked by:` line is closed.
 
 ## When a skill says "publish to the issue tracker"

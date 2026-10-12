@@ -81,6 +81,7 @@ step "ns rules check" "$ns" rules check --human
 step "ns eval --dry-run" eval_dry_run
 step "py-inventory fixture tests" fixture_tests
 step "Python rule pack tests" rule_pack_tests python
+step "JavaScript/TypeScript rule pack tests" rule_pack_tests js
 step "C rule pack tests" python3 -I -m unittest discover -s rules/c/tests
 step "Java rule pack tests" rule_pack_tests java
 step "ns-troubleshoot brief checker tests" brief_checker_tests

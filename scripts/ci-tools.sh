@@ -126,7 +126,9 @@ while IFS=$'\t' read -r name version method package _ bin sha; do
     pip) pip+=("$package==$version") ;;
     apt)
       apt+=("$package")
-      [ "$bin" = "/usr/bin/$name" ] || links+=("$bin:$name")
+      # Linked even when bin is /usr/bin/<name>, so it comes before a runner's preinstalled copy
+      # in /usr/local/bin (the runner ships its own npm).
+      links+=("$bin:$name")
       ;;
     download) downloads+=("$name"$'\t'"$version"$'\t'"$package"$'\t'"$bin"$'\t'"$sha") ;;
     install-action)

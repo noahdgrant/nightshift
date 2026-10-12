@@ -31,3 +31,17 @@ On top of the repo's standards, apply this smell baseline. Each smell is a judge
 Name the move, not just the problem: rename, inline, delete the wrapper, collapse duplicate branches, replace a conditional chain with a lookup table or typed model, extract a helper.
 
 Comments are the comments reviewer's axis. Leave them to it.
+
+## TypeScript and React
+
+Apply this section only when the diff touches `.ts`, `.tsx`, `.js` or `.jsx` files. Each item names its upstream source.
+
+- **Narrowing order**: narrow with the strongest tool that works, in this order: discriminant check, `in`, `typeof` or `instanceof`, a user-defined type guard, and `as` last. An `as` where a discriminant or `in` would narrow is a finding. Source: pstack `typescript-best-practices` (Narrowing hierarchy).
+- **Casts where `satisfies` fits**: `const x = {...} as Config` skips the check and widens literals. `satisfies Config` checks the value and keeps its literal types. Source: pstack `typescript-best-practices` (`satisfies` over `as`).
+- **Needless optionality or `unknown`**: an optional field, `?` parameter, `unknown` or `any` with no caller that needs it makes every reader handle a case that can't occur. Ask what invariant it papers over, and make the type say it. Source: pstack `interrogate` (code-quality-review).
+- **Lying type guards**: a guard `isX(v): v is X` must check everything its name claims. A guard that checks one field and asserts the whole type is worse than `as`, because the name says it is safe. Source: pstack `typescript-best-practices` (Type guards).
+
+### React UI
+
+- **States**: a component that loads data handles loading, empty, error and permission states where each can occur. A blank screen on an empty list or a failed fetch is a finding. Source: addyosmani `frontend-ui-engineering`.
+- **Prop drilling**: props passed through more than 3 levels of components that don't use them. Flag it as a Suggestion naming context or composition as the fix, and leave the refactor to the author. Source: addyosmani `frontend-ui-engineering`, `code-simplification`.

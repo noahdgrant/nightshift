@@ -1,23 +1,174 @@
 //! The paths the guard protects and the file commands that write to them.
 
 use super::*;
+use crate::pin;
+
+/// `path` is a protected path (`protected_paths`), or `.ns` or a unit's directory in it: move or
+/// delete either, then recreate it, to swap the snapshot.
+pub(super) fn is_protected(path: &str) -> bool {
+    protected_paths(path) || is_ns_or_unit_dir(&components(path))
+}
 
 /// `path` is in `.githooks/`, `.git/hooks` or `.git/config`, or is a Claude Code settings file
-/// (`.claude/settings*.json`), which can turn the hook off.
-pub(super) fn is_protected(path: &str) -> bool {
+/// (`.claude/settings*.json`), which can turn the hook off, or is a way in to a unit's skill
+/// snapshot, which a later phase reads: `.ns/<unit>/skills`, and a `.claude/skills` or
+/// `.agents/skills` that is a symlink into a snapshot. Also the phase settings: the file
+/// `ns/units/<unit>/phase-settings.json` under any common dir, and the `.git` directory (or file,
+/// in a worktree) itself with everything under `.git/ns`, so the `ns` directory and `ns/units`
+/// cannot be moved, removed or copied over to swap that file. Only writes are denied; reading
+/// stays free, and `ns` commands a phase runs name none of these paths. A shell standing in a unit's directory
+/// may write its artifacts, so the directory helpers call this and not `is_protected`.
+fn protected_paths(path: &str) -> bool {
     let parts = components(path);
     parts.contains(&".githooks")
         || parts.windows(2).any(|p| {
             (p[0] == ".git" && matches!(p[1], "hooks" | "config"))
                 || (p[0] == ".claude" && p[1].starts_with("settings") && p[1].ends_with(".json"))
         })
+        || parts.last() == Some(&".git")
+        || parts
+            .windows(2)
+            .any(|p| p[0] == ".git" && names_in_common_dir(p[1], pin::COMMON_NS))
+        || parts.windows(4).any(|p| {
+            p[0] == pin::COMMON_NS && p[1] == pin::COMMON_UNITS && p[3] == pin::SETTINGS_FILE
+        })
+        || pin::LINKS
+            .iter()
+            .any(|link| is_under_snapshot_link(path, &parts, link))
+        || parts
+            .windows(3)
+            .any(|p| p[0] == pin::NS_DIR && names_skills(p[2]))
+}
+
+/// `name` is `target`, or a glob that could match it.
+fn names_in_common_dir(name: &str, target: &str) -> bool {
+    if !name.contains(['*', '?', '[']) {
+        return name == target;
+    }
+    glob_matches(name.as_bytes(), target.as_bytes())
+}
+
+/// `parts` end at `.ns` or at a direct child of it, the unit's directory.
+fn is_ns_or_unit_dir(parts: &[&str]) -> bool {
+    match parts {
+        [.., last] if *last == pin::NS_DIR => true,
+        [.., ns, _] => *ns == pin::NS_DIR,
+        _ => false,
+    }
+}
+
+/// `name` is `skills`, or a glob that could match it.
+fn names_skills(name: &str) -> bool {
+    if !name.contains(['*', '?', '[']) {
+        return name == pin::SKILLS_DIR;
+    }
+    glob_matches(name.as_bytes(), pin::SKILLS_DIR.as_bytes())
+}
+
+/// `pattern` (`*` and `?`; a `[` set counts as a match) matches `text`.
+pub(super) fn glob_matches(pattern: &[u8], text: &[u8]) -> bool {
+    match pattern.split_first() {
+        None => text.is_empty(),
+        Some((b'*', rest)) => (0..=text.len()).any(|i| glob_matches(rest, &text[i..])),
+        Some((b'[', _)) => true,
+        Some((c, rest)) => text
+            .split_first()
+            .is_some_and(|(t, tail)| (*c == b'?' || c == t) && glob_matches(rest, tail)),
+    }
+}
+
+/// `path` goes through `link` (`.claude/skills` or `.agents/skills`) and the link is a symlink
+/// into a unit's snapshot. A real directory there is the repo's own and stays editable.
+fn is_under_snapshot_link(path: &str, parts: &[&str], link: &str) -> bool {
+    let link_parts: Vec<&str> = link.split('/').collect();
+    let Some(i) = parts.windows(2).position(|p| p == link_parts.as_slice()) else {
+        return false;
+    };
+    let root = if path.starts_with('/') { "/" } else { "" };
+    let link = format!("{root}{}", parts[..i + 2].join("/"));
+    std::fs::read_link(link).is_ok_and(|target| pin::points_into_a_snapshot(&target))
+}
+
+/// Where a shell is, as far as the guard follows it.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Cwd {
+    /// How many directories below a protected path, or `None` when not in one.
+    pub hooks: Option<usize>,
+    /// How many directories below `.ns/`: `.ns/<unit>` is 1. A relative `skills` there is the
+    /// unit's snapshot, and the unit's directory is protected itself.
+    pub ns: Option<usize>,
+}
+
+impl Cwd {
+    /// The working directory `dir` names.
+    pub fn of(dir: &str) -> Cwd {
+        let parts = components(dir);
+        Cwd {
+            hooks: protected_depth(dir),
+            ns: parts
+                .iter()
+                .rposition(|p| *p == pin::NS_DIR)
+                .and_then(|i| walk(0, &parts[i + 1..])),
+        }
+    }
+
+    /// The working directory after `cd` to the relative `dir` from `from`.
+    pub fn relative(from: Cwd, dir: &str) -> Cwd {
+        let parts = components(dir);
+        let named = Cwd::of(dir);
+        Cwd {
+            hooks: named.hooks.or_else(|| {
+                from.hooks.map(|depth| {
+                    parts
+                        .iter()
+                        .fold(depth, |depth, part| step(depth, part).unwrap_or(0))
+                })
+            }),
+            ns: named
+                .ns
+                .or_else(|| from.ns.and_then(|depth| walk(depth, &parts))),
+        }
+    }
+}
+
+/// The depth after one path `part` from `depth` directories below a root: `None` when `..`
+/// leaves the root. Every depth walk here is this step. A walk through `walk` ends at `None`
+/// once it leaves; the hooks directory (`Cwd::relative`) floors at the root instead, since
+/// staying protected is the safe side; `reaches_unit_file` also looks at each part on the way.
+fn step(depth: usize, part: &str) -> Option<usize> {
+    match part {
+        ".." => depth.checked_sub(1),
+        _ => Some(depth + 1),
+    }
+}
+
+/// The depth after walking `parts` from `depth`; `None` once it leaves the root.
+fn walk(depth: usize, parts: &[&str]) -> Option<usize> {
+    parts
+        .iter()
+        .try_fold(depth, |depth, part| step(depth, part))
+}
+
+/// The relative `path` from `depth` directories below `.ns/` reaches a unit's `skills`, or ends
+/// at the unit's directory or `.ns` itself.
+pub(super) fn reaches_unit_file(mut depth: usize, path: &str) -> bool {
+    for part in components(path) {
+        if depth == 1 && part != ".." && names_skills(part) {
+            return true;
+        }
+        match step(depth, part) {
+            Some(next) => depth = next,
+            None => return false,
+        }
+    }
+    depth <= 1
 }
 
 /// A working directory whose relative paths are protected: inside `.githooks/` or the `.git`
 /// directory itself.
 pub(super) fn is_protected_directory(dir: &str) -> bool {
     let parts = components(dir);
-    is_protected(dir) || parts.contains(&".git")
+    protected_paths(dir) || parts.contains(&".git")
 }
 
 /// How many directories below a protected path the directory `dir` is, or `None` when it is
@@ -27,22 +178,14 @@ pub(super) fn protected_depth(dir: &str) -> Option<usize> {
         return None;
     }
     let parts = components(dir);
-    let root =
-        (0..parts.len()).find(|&i| parts[i] == ".git" || is_protected(&parts[..=i].join("/")))?;
+    let root = (0..parts.len())
+        .find(|&i| parts[i] == ".git" || protected_paths(&parts[..=i].join("/")))?;
     Some(parts.len() - root - 1)
 }
 
 /// The relative `path` from `depth` directories below a protected path stays in it.
-pub(super) fn stays_inside(mut depth: usize, path: &str) -> bool {
-    for part in components(path) {
-        if part == ".." {
-            match depth.checked_sub(1) {
-                Some(up) => depth = up,
-                None => return false,
-            }
-        }
-    }
-    true
+pub(super) fn stays_inside(depth: usize, path: &str) -> bool {
+    walk(depth, &components(path)).is_some()
 }
 
 /// The parts of `path` between slashes, without the empty and `.` ones.

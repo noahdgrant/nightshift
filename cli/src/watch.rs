@@ -28,7 +28,7 @@ mod snapshot;
 mod split;
 mod triage;
 
-use forge::{ClosingPrs, Forge, PrState};
+use forge::{ClosingPrs, Forge, Post, PrState};
 pub use snapshot::NightDir;
 
 pub struct WatchArgs {
@@ -43,9 +43,6 @@ pub struct WatchArgs {
     pub resume_night: Option<PathBuf>,
 }
 
-pub const DISCLAIMER: &str =
-    "_This comment was written by an AI agent (nightshift `ns watch`), not a person._";
-
 /// Seconds to wait after a usage limit with no reset time in the message.
 const PAUSE_RETRY_S: i64 = 30 * 60;
 
@@ -58,12 +55,14 @@ pub struct Issue {
     pub team: bool,
 }
 
-/// Issue numbers named on a first line `Blocked by: #a, #b`.
+/// Issue numbers named on a first line `Blocked by: #a, #b`. An agent's `🤖` disclosure line
+/// before it doesn't count (skills/ns-contract, Disclosure).
 pub fn blockers(body: &str) -> Vec<u64> {
-    let first = body
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines
+        .next()
+        .filter(|l| !l.starts_with('🤖'))
+        .or_else(|| lines.next())
         .unwrap_or("");
     let lower = first.to_lowercase();
     let Some(rest) = lower.strip_prefix("blocked by:") else {
@@ -826,6 +825,15 @@ pub(crate) mod tests {
         assert_eq!(blockers("Blocked by: #3, #12\nmore"), [3, 12]);
         assert_eq!(blockers("\nblocked by: #4"), [4]);
         assert!(blockers("text\nBlocked by: #3").is_empty());
+        let disclosed = Post::new("Blocked by: #7\n\nbody");
+        assert_eq!(blockers(disclosed.as_str()), [7]);
+        assert_eq!(
+            blockers("🤖 *Posted by an AI agent (Claude Code).*\nBlocked by: #8"),
+            [8]
+        );
+        assert!(
+            blockers("🤖 *Posted by nightshift, an AI agent.*\n\ntext\nBlocked by: #3").is_empty()
+        );
         assert_eq!(closed_by("Closes #5. Also fixes #6"), [5, 6]);
         assert!(closed_by("see #5").is_empty());
     }
@@ -1019,11 +1027,11 @@ Open after at least 2 fix attempts: C1, I2, I4.
             ls.extend(add.map(String::from));
             Ok(())
         }
-        fn comment(&self, n: u64, body: &str) -> Result<()> {
+        fn comment(&self, n: u64, body: &Post) -> Result<()> {
             if self.fails.contains("comment") {
                 anyhow::bail!("HTTP 502");
             }
-            self.posted.borrow_mut().push((n, body.into()));
+            self.posted.borrow_mut().push((n, body.as_str().into()));
             Ok(())
         }
         fn close(&self, n: u64) -> Result<()> {
@@ -1039,16 +1047,16 @@ Open after at least 2 fix attempts: C1, I2, I4.
         fn remove_pr_label(&self, _: u64, _: &str) -> Result<()> {
             Ok(())
         }
-        fn comment_pr(&self, _: u64, _: &str) -> Result<()> {
+        fn comment_pr(&self, _: u64, _: &Post) -> Result<()> {
             Ok(())
         }
         fn main_checks(&self) -> Result<ci::HeadChecks> {
             Ok(self.main.clone())
         }
-        fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64> {
+        fn create_issue(&self, title: &str, body: &Post, labels: &[&str]) -> Result<u64> {
             let mut filed = self.filed.borrow_mut();
             let labels = labels.iter().map(|l| l.to_string()).collect();
-            filed.push((title.into(), body.into(), labels));
+            filed.push((title.into(), body.as_str().into(), labels));
             Ok(100 + filed.len() as u64 - 1)
         }
         fn check_log(&self, log: &str) -> Result<String> {

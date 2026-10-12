@@ -26,6 +26,7 @@ mod log;
 mod markers;
 mod memcap;
 mod phase_output;
+mod pin;
 mod quality;
 mod review_md;
 mod rules;
@@ -40,6 +41,7 @@ mod status;
 mod stop;
 #[cfg(test)]
 mod testutil;
+mod touches;
 mod transcripts;
 mod upstream;
 mod watch;

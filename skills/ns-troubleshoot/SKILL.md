@@ -179,7 +179,7 @@ The seam the regression test belongs at, or why no correct seam exists.
 The hypothesis that survived, the probe that confirmed it, and the ones falsified.
 ```
 
-Re-read the brief for secrets before posting it (see Redact). Then post it to the tracker as `ns-triage` does (its steps cover posting a brief and moving state), and move the issue to the Gate table's tracker state. While the issue is `status:in-progress`, `ns run` is working it: post the comment and leave the labels alone.
+Re-read the brief for secrets before posting it (see Redact). Then post it to the tracker, opening with the [disclosure line](../ns-contract/SKILL.md#disclosure), as `ns-triage` does (its steps cover posting a brief and moving state), and move the issue to the Gate table's tracker state. While the issue is `status:in-progress`, `ns run` is working it: post the comment and leave the labels alone.
 
 ## Gate
 
