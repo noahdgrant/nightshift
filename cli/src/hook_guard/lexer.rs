@@ -85,7 +85,12 @@ impl WordBuf {
 }
 
 fn lists_words(body: &str) -> bool {
-    body.starts_with('@') || body.contains("[@]") || body.contains("[*]")
+    body.starts_with('@')
+        || body.starts_with('!')
+        || body.contains("$@")
+        || body.contains("{@")
+        || body.contains("[@]")
+        || body.contains("[*]")
 }
 
 /// The opacity rule: an expansion hides what the word is unless the text ahead of it ends an
@@ -354,8 +359,8 @@ impl<'a> Lexer<'a> {
     /// neither splits the command nor hides the words after it. Nested braces, quotes and
     /// substitutions are tracked. A body with no end swallows the rest of the command: the
     /// shell rejects it, and the word it sits in is already opaque. Returns whether the body
-    /// is an array or positional list (`${@}`, `${a[@]}`, `${a[*]}`), which expands to
-    /// several words even in double quotes.
+    /// lists words even in double quotes: `$@` or `[@]`/`[*]` anywhere in it, or an indirection
+    /// (`${!x}`, which may name `a[@]`).
     fn braced_body(&mut self) -> bool {
         let mut depth = 1usize;
         let mut body = String::new();
@@ -373,7 +378,7 @@ impl<'a> Lexer<'a> {
                     self.chars.next();
                 }
                 '\'' => while self.chars.next().is_some_and(|c| c != '\'') {},
-                '"' => self.quoted_in_braces(),
+                '"' => self.quoted_in_braces(&mut body),
                 '$' if self.chars.next_if_eq(&'(').is_some() => self.expansion(Close::Paren),
                 '`' => self.expansion(Close::Backtick),
                 _ => {}
@@ -383,8 +388,9 @@ impl<'a> Lexer<'a> {
     }
 
     /// A double-quoted string inside a `${...}` body, up to its closing quote.
-    fn quoted_in_braces(&mut self) {
+    fn quoted_in_braces(&mut self, body: &mut String) {
         while let Some(c) = self.chars.next() {
+            body.push(c);
             match c {
                 '"' => return,
                 '\\' => {
