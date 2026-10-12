@@ -73,7 +73,7 @@ download() {
   local cache=${XDG_CACHE_HOME:-$HOME/.cache}/nightshift
   local archive=$cache/${url##*/}
   local dir=${XDG_DATA_HOME:-$HOME/.local/share}/nightshift/$name-$version
-  mkdir -p "$cache" "$HOME/.local/bin"
+  mkdir -p "$cache" "${dir%/*}" "$HOME/.local/bin"
   if [ ! -f "$archive" ]; then
     if ! curl -fsSL --retry 3 -o "$archive.part" "$url"; then
       rm -f "$archive.part"
