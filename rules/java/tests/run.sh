@@ -293,6 +293,23 @@ done
   [ -z "$stray" ] ||
   fail "install: a failed swap gave exit $rc, or lost the old pack or left a file:" "$out"
 
+# stack.md keeps its mode, and a symlinked one stays a link, through an install and a rerun.
+mode() { python3 -I -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$1"; }
+chmod 0644 "$tmp/fetched/docs/agents/stack.md"
+for run in install rerun; do
+  out=$(XDG_CACHE_HOME=$tmp/fetch-cache "$fake/rules/java/install.sh" "$tmp/fetched" 2>&1) && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] && [ "$(mode "$tmp/fetched/docs/agents/stack.md")" = 0o644 ] ||
+    fail "install: stack.md was not 0644 after an $run, exit $rc:" "$out"
+done
+cp -p "$tmp/fetched/docs/agents/stack.md" "$tmp/fetched/stack-real.md"
+rm "$tmp/fetched/docs/agents/stack.md"
+ln -s ../../stack-real.md "$tmp/fetched/docs/agents/stack.md"
+out=$(XDG_CACHE_HOME=$tmp/fetch-cache "$fake/rules/java/install.sh" "$tmp/fetched" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 0 ] && [ -L "$tmp/fetched/docs/agents/stack.md" ] && [ "$(mode "$tmp/fetched/stack-real.md")" = 0o644 ] ||
+  fail "install: a symlinked stack.md gave exit $rc, or was replaced:" "$out"
+rm "$tmp/fetched/docs/agents/stack.md"
+cp -p "$tmp/fetched/stack-real.md" "$tmp/fetched/docs/agents/stack.md"
+
 # When ast-grep can't run, check.sh fails as broken, and install.sh can't seed the allowlist.
 printf 'id: broken\nlanguage: java\nrule: {kind: no_such_kind}\n' >"$fake/rules/java/rules/broken.yml"
 out=$(XDG_CACHE_HOME=$tmp/fetch-cache "$fake/rules/java/install.sh" "$tmp/unfetched" 2>&1) && rc=0 || rc=$?

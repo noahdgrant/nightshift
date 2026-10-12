@@ -145,7 +145,9 @@ if [ -e "$old" ]; then
 else
   mv "$stage/pack" "$old"
 fi
-staged_stack=$(mktemp "$stack.XXXXXX")
-cp "$tmp/stack.md" "$staged_stack"
-mv "$staged_stack" "$stack"
+stack_file=$(readlink -f "$stack")
+staged_stack=$(mktemp "$stack_file.XXXXXX")
+cp -p "$stack_file" "$staged_stack"
+cat "$tmp/stack.md" >"$staged_stack"
+mv "$staged_stack" "$stack_file"
 echo "installed the Java rule pack in $old"
