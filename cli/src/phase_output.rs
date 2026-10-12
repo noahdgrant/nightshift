@@ -13,7 +13,6 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use crate::error::SfError;
-use crate::gate;
 use crate::git::Repo;
 use crate::log::{printable, POLL};
 use crate::transcripts::{line_entries, Entry, COMPACT_LIMIT};
@@ -153,7 +152,7 @@ fn current(root: &Path, runs: &Path, unit: Option<&str>) -> io::Result<Option<Pa
     if unit.is_some() {
         return newest(root, unit);
     }
-    let logged = match gate::tail(runs, RUNS_TAIL) {
+    let logged = match crate::eval::trial::tail(runs, RUNS_TAIL) {
         Ok(b) => last_unit(&b),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => return Err(e),

@@ -1345,6 +1345,150 @@ fn a_gate_that_times_out_goes_back_to_build_and_uses_an_attempt() {
     assert_eq!(g[0]["green"], false);
 }
 
+/// A factory with one ratchet, `flash`, recorded at 100, whose command prints `ctrl/flash`.
+fn ratchet_env(measured: &str) -> Env {
+    let e = Env::new();
+    e.factory(&format!(
+        "[ratchets.flash]\ncommand = \"cat {}\"\nbetter = \"lower\"\ntolerance = \"5%\"\n",
+        e.ctrl.join("flash").display()
+    ));
+    fs::write(
+        e.root.join(".nightshift/ratchets.json"),
+        r#"{"version": 1, "values": {"flash": 100}}"#,
+    )
+    .unwrap();
+    e.ctl("flash", measured);
+    e
+}
+
+#[test]
+fn a_ratchet_makes_the_gate_run_ns_ratchet_check() {
+    let e = ratchet_env("104\n");
+    let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+    assert!(
+        d["gate"]
+            .as_str()
+            .unwrap()
+            .ends_with(" ratchet check --human"),
+        "{d}"
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 1, "{g:?}");
+    assert_eq!(g[0]["green"], true);
+}
+
+#[test]
+fn a_unit_that_stays_over_a_ratchet_ends_stuck_naming_its_values() {
+    let e = ratchet_env("120\n");
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    let line = "ratchet flash is worse: measured 120, recorded 100, tolerance 5%, limit 105, lower is better";
+    assert_eq!(v["outcome"], "stuck");
+    assert_eq!(
+        v["reason"],
+        format!("build is out of attempts (2): the CI gate failed on {line}")
+    );
+    assert_eq!(e.calls(), ["triage", "build", "build"]);
+    let p = e.prompt(3, "build");
+    assert!(p.contains(&format!("It failed on {line}.")), "{p}");
+    assert!(p.contains("never edit ratchets.json"), "{p}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[0]["green"], false);
+    let report = g[0]["log"]
+        .as_str()
+        .unwrap()
+        .replace(".log", ".ratchets.json");
+    let r: Value = serde_json::from_str(&fs::read_to_string(report).unwrap()).unwrap();
+    assert_eq!(r["ratchets"][0]["status"], "worse");
+}
+
+#[test]
+fn a_build_that_gets_back_under_the_line_goes_on() {
+    let e = ratchet_env("120\n");
+    e.ctl(
+        "build.sh",
+        &format!("echo 99 > {}\n", e.ctrl.join("flash").display()),
+    );
+    e.queue("build", &["pass:commit", "pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(
+        (g[0]["green"].as_bool(), g[1]["green"].as_bool()),
+        (Some(false), Some(true))
+    );
+}
+
+#[test]
+fn a_build_that_writes_nothing_after_a_red_ratchet_is_stuck_naming_its_values() {
+    let e = ratchet_env("120\n");
+    e.queue("build", &["pass:commit", "none"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(
+        v["reason"],
+        "build is out of attempts (2): the CI gate failed on ratchet flash is worse: measured 120, recorded 100, tolerance 5%, limit 105, lower is better"
+    );
+    assert_eq!(gate_events(&e).len(), 1);
+}
+
+/// A factory whose ratchet `steady` prints 5, recorded at 5, and logs each run to `ctrl/count`.
+fn counted_ratchet() -> String {
+    "[ratchets.steady]\ncommand = \"echo x >> $FAKE_CTRL/count; echo 5\"\nbetter = \"lower\"\n"
+        .into()
+}
+
+fn ratchet_runs(e: &Env) -> usize {
+    fs::read_to_string(e.ctrl.join("count"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+#[test]
+fn without_a_night_every_gate_runs_a_ratchet_twice_whatever_the_environment_says() {
+    let e = Env::new();
+    e.factory(&counted_ratchet());
+    fs::write(
+        e.root.join(".nightshift/ratchets.json"),
+        r#"{"version": 1, "values": {"steady": 5}}"#,
+    )
+    .unwrap();
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["pass:commit"]);
+    let steady = e.base.join("leaked-steady.json");
+    let out = e
+        .ns()
+        .env("NS_RATCHET_STEADY", &steady)
+        .args(["run", "--issue", "7"])
+        .output();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(gate_events(&e).len(), 2);
+    assert_eq!(ratchet_runs(&e), 4);
+    assert!(!steady.exists());
+}
+
+#[test]
+fn under_ns_watch_only_a_ratchets_first_check_of_the_night_runs_it_twice() {
+    let e = Env::new();
+    e.factory(&counted_ratchet());
+    fs::write(
+        e.root.join(".nightshift/ratchets.json"),
+        r#"{"version": 1, "values": {"steady": 5}}"#,
+    )
+    .unwrap();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["pass:commit"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "done", "{v}");
+    assert_eq!(gate_events(&e).len(), 2);
+    assert_eq!(ratchet_runs(&e), 3);
+}
+
 fn phase_events(e: &Env) -> Vec<Value> {
     fs::read_to_string(e.root.join(".git/ns/runs.jsonl"))
         .unwrap()
@@ -12579,6 +12723,29 @@ fn a_scratch_worktree_that_cannot_be_added_needs_a_human_merge() {
     );
     assert!(!e.gh_calls().contains("pr merge"));
     assert_eq!(gate_verdicts(&e), verdicts(&[("build", true)]));
+}
+
+#[test]
+fn a_ratchet_over_the_line_on_the_merge_result_is_the_stuck_reason() {
+    let e = Env::new();
+    local_queue(
+        &e,
+        "\n[ratchets.flash]\ncommand = \"case $PWD in *merge-queue*) echo 200;; *) echo 100;; esac\"\nbetter = \"lower\"\n",
+    );
+    fs::write(
+        e.root.join(".nightshift/ratchets.json"),
+        r#"{"version": 1, "values": {"flash": 100}}"#,
+    )
+    .unwrap();
+    e.queue("build", &["pass:commit", "fail"]);
+    main_moves(&e, "from-main", "x\n");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(
+        v["reason"],
+        "build is out of attempts (2): the CI gate failed on ratchet flash is worse: measured 200, recorded 100, tolerance 0, limit 100, lower is better",
+        "{v}"
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
 }
 
 #[test]

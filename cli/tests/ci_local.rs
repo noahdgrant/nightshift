@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-const ALL_STEPS: [&str; 18] = [
+const ALL_STEPS: [&str; 19] = [
     "pinned tools (scripts/ci-tools.toml)",
     "cargo fmt --check",
     "cargo clippy",
@@ -19,6 +19,7 @@ const ALL_STEPS: [&str; 18] = [
     "ns lint .agents/skills",
     "ns check-markers",
     "ns rules check",
+    "ns ratchet check",
     "ns eval --dry-run",
     "py-inventory fixture tests",
     "Python rule pack tests",
@@ -263,6 +264,7 @@ fn a_failing_step_stops_the_run() {
         ("lint .agents/skills", "ns lint .agents/skills"),
         ("ns check-markers", "ns check-markers"),
         ("ns rules", "ns rules check"),
+        ("ns ratchet", "ns ratchet check"),
         ("ns eval", "ns eval --dry-run"),
         ("python rule pack tests ran", "Python rule pack tests"),
         (

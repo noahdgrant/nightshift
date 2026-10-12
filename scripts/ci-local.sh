@@ -90,6 +90,7 @@ step "ns lint" "$ns" lint skills --human
 step "ns lint .agents/skills" "$ns" lint .agents/skills --human
 step "ns check-markers" "$ns" check-markers --human
 full_step "ns rules check" "$ns" rules check --human
+full_step "ns ratchet check" "$ns" ratchet check --human
 full_step "ns eval --dry-run" eval_dry_run
 full_step "py-inventory fixture tests" fixture_tests
 full_step "Python rule pack tests" rule_pack_tests python

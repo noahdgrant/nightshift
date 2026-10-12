@@ -28,6 +28,7 @@ mod memcap;
 mod phase_output;
 mod pin;
 mod quality;
+mod ratchet;
 mod review_md;
 mod rules;
 mod run;
@@ -53,8 +54,19 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Parser;
 
-use args::{Cli, Cmd, FactoryCmd, QualityCmd, RulesCmd, TranscriptsCmd, UpstreamCmd, WorktreeCmd};
+use args::{
+    Cli, Cmd, FactoryCmd, QualityCmd, RatchetCmd, RulesCmd, TranscriptsCmd, UpstreamCmd,
+    WorktreeCmd,
+};
 use error::SfError;
+
+fn format(human: bool) -> ratchet::Format {
+    if human {
+        ratchet::Format::Human
+    } else {
+        ratchet::Format::Json
+    }
+}
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
@@ -247,6 +259,18 @@ fn run(cli: Cli) -> Result<ExitCode> {
             phase_output: false,
         } => return log::cli(unit, since, follow, json),
         Cmd::Status { since, json } => return status::cli(since, json),
+        Cmd::Ratchet { command } => match command {
+            RatchetCmd::Check { factory, human, .. } => {
+                return ratchet::check(factory.as_deref(), format(human))
+            }
+            RatchetCmd::Update {
+                factory,
+                allow_loosen,
+                dry_run,
+                human,
+                ..
+            } => return ratchet::update(factory.as_deref(), allow_loosen, dry_run, format(human)),
+        },
         Cmd::Rules { command } => match command {
             RulesCmd::Check { human } => return rules::check(human),
             RulesCmd::Baseline {

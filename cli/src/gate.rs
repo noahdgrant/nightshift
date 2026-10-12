@@ -2,17 +2,17 @@
 //! the PR head before it merges (docs/FACTORY.md, "Gate").
 
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::eval::trial::run_process;
+use crate::eval::trial::{run_process, tail};
 use crate::factory::Factory;
 use crate::git::same_sha;
 use crate::memcap::{self, Cap, Cut};
+use crate::ratchet;
 use crate::shell::shell_quote;
 use crate::stack::rows;
 
@@ -24,15 +24,20 @@ const TAIL_BYTES: usize = 3000;
 const WINDOW_BYTES: u64 = 16 * 1024;
 
 /// `[phases.build] gate`, else the `ci-local` row of `<repo>/docs/agents/stack.md`, then
-/// `<ns> rules check` when that file has a `rules` row; none when there is neither.
+/// `<ns> rules check` when that file has a `rules` row, then `<ns> ratchet check --human` when
+/// the factory defines a ratchet; none when there is none of them.
 pub fn command(fac: &Factory, repo_root: &Path, ns: &Path) -> Option<String> {
     let stack = fs::read_to_string(repo_root.join("docs/agents/stack.md")).unwrap_or_default();
     let base = fac.phase("build").gate.or_else(|| ci_local(&stack));
-    let rules = (!crate::rules::commands(&stack).is_empty())
-        .then(|| format!("{} rules check", shell_quote(&ns.to_string_lossy())));
-    match (base, rules) {
-        (Some(b), Some(r)) => Some(format!("({b}) && {r}")),
-        (b, r) => b.or(r),
+    let ns = shell_quote(&ns.to_string_lossy());
+    let rules = (!crate::rules::commands(&stack).is_empty()).then(|| format!("{ns} rules check"));
+    let ratchet = (!fac.ratchets.is_empty()).then(|| format!("{ns} ratchet check --human"));
+    let checks: Vec<String> = [rules, ratchet].into_iter().flatten().collect();
+    match base {
+        Some(b) if checks.is_empty() => Some(b),
+        Some(b) => Some(format!("({b}) && {}", checks.join(" && "))),
+        None if checks.is_empty() => None,
+        None => Some(checks.join(" && ")),
     }
 }
 
@@ -58,6 +63,8 @@ pub struct GateRun {
     pub wall_s: f64,
     /// The last lines of stdout and stderr together.
     pub tail: String,
+    /// The ratchets its `ns ratchet check` failed, one clause each.
+    pub ratchets: Option<String>,
 }
 
 impl GateRun {
@@ -72,19 +79,35 @@ impl GateRun {
 }
 
 /// Run `cmd` with `sh -c` in `cwd` under the memory `cap`, output to `log`, killed at `timeout`.
+/// A `ns ratchet check` in `cmd` reads the ratchets of `ratchets.factory`, runs each twice only on
+/// its first check of the night, and writes its report next to `log`.
 pub fn run(
     cmd: &str,
     cwd: &Path,
     timeout: Duration,
     log: &Path,
     cap: Option<&Cap>,
+    ratchets: &Ratchets<'_>,
 ) -> Result<GateRun> {
     if let Some(d) = log.parent() {
         fs::create_dir_all(d).with_context(|| format!("cannot create {}", d.display()))?;
     }
     let out = File::create(log).with_context(|| format!("cannot create {}", log.display()))?;
+    let report = log.with_extension("ratchets.json");
+    match fs::remove_file(&report) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("cannot remove {}", report.display()))
+        }
+        _ => {}
+    }
     let (mut c, watch) = memcap::command(cap, "sh");
     crate::git::scrub(&mut c);
+    c.env(ratchet::FACTORY_VAR, std::path::absolute(ratchets.factory)?)
+        .env(ratchet::REPORT_VAR, &report);
+    match ratchets.night {
+        Some(n) => c.env(ratchet::STEADY_VAR, n.join("ratchets-steady.json")),
+        None => c.env_remove(ratchet::STEADY_VAR),
+    };
     c.arg("-c")
         .arg(cmd)
         .current_dir(cwd)
@@ -100,29 +123,20 @@ pub fn run(
         cut,
         wall_s,
         tail: output,
+        ratchets: ratchet::failures(&report),
     })
+}
+
+/// Where the gate's `ns ratchet check` finds its ratchets and tonight's steady ones.
+pub struct Ratchets<'a> {
+    pub factory: &'a Path,
+    /// The night directory under `ns watch`; without one every check runs each ratchet twice.
+    pub night: Option<&'a Path>,
 }
 
 /// The end of the file, from a line start unless the whole file fits.
 pub fn read_window(path: &Path) -> Vec<u8> {
     tail(path, WINDOW_BYTES).unwrap_or_default()
-}
-
-/// The last `n` bytes of `path`, from a line start unless the whole file fits or they hold no
-/// line break.
-pub fn tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
-    let mut f = File::open(path)?;
-    let len = f.metadata()?.len();
-    let start = len.saturating_sub(n);
-    f.seek(SeekFrom::Start(start))?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    if start > 0 {
-        if let Some(i) = buf.iter().position(|b| *b == b'\n') {
-            buf.drain(..=i);
-        }
-    }
-    Ok(buf)
 }
 
 /// "timed out after 90 min", or in seconds when `timeout` is not whole minutes.
@@ -143,8 +157,11 @@ pub fn feedback(cmd: &str, r: &GateRun, timeout: Duration, head: &str) -> String
         (false, None, Some(c)) => format!("exited {c}"),
         (false, None, None) => "was killed by a signal".into(),
     };
+    let ratchets = r.ratchets.as_ref().map_or(String::new(), |f| {
+        format!(" It failed on {f}. Get each value back within its limit; never edit ratchets.json or a [ratchets.*] table, since loosening a ratchet is a human decision.")
+    });
     format!(
-        "The CI gate `{cmd}` {how} at {head}. Make it pass. The last lines of its output:\n\n{}\n",
+        "The CI gate `{cmd}` {how} at {head}.{ratchets} Make it pass. The last lines of its output:\n\n{}\n",
         r.tail
     )
 }
@@ -194,6 +211,7 @@ enum Verdict {
         sha: String,
         feedback: String,
         killed: Option<String>,
+        ratchets: Option<String>,
     },
 }
 
@@ -221,6 +239,7 @@ pub struct Job<'a> {
     pub phase: &'a str,
     pub attempt: u32,
     pub cap: Option<&'a Cap>,
+    pub ratchets: Ratchets<'a>,
 }
 
 /// Why the gate may need to run.
@@ -242,6 +261,19 @@ pub struct Red {
     /// "the CI gate exceeded the 64 MB memory limit" or "the CI gate was killed by SIGKILL",
     /// when it failed that way.
     pub killed: Option<String>,
+    /// The ratchets the gate failed, naming each one's values.
+    pub ratchets: Option<String>,
+}
+
+impl Red {
+    /// Why the unit is stuck if build runs out of attempts with this gate still red.
+    pub fn stuck_reason(&self) -> Option<String> {
+        self.killed.clone().or_else(|| {
+            self.ratchets
+                .as_ref()
+                .map(|r| format!("the CI gate failed on {r}"))
+        })
+    }
 }
 
 impl Gate {
@@ -274,10 +306,12 @@ impl Gate {
                 sha,
                 feedback,
                 killed,
+                ratchets,
             }) if same_sha(sha, &job.head) => Ok(Some(Red {
                 feedback: feedback.clone(),
                 reason: "the CI gate is still red".into(),
                 killed: killed.clone(),
+                ratchets: ratchets.clone(),
             })),
             Some(Verdict::Red { .. }) => self.run_at_head(job, log),
             _ => Ok(None),
@@ -302,15 +336,18 @@ impl Gate {
             sha: job.head.clone(),
             feedback: feedback.clone(),
             killed: killed.clone(),
+            ratchets: r.ratchets.clone(),
         });
-        let reason = match &killed {
-            Some(k) => format!("{k} after {}", job.phase),
-            None => format!("the CI gate failed after {}", job.phase),
+        let reason = match (&killed, &r.ratchets) {
+            (Some(k), _) => format!("{k} after {}", job.phase),
+            (None, Some(f)) => format!("the CI gate failed on {f} after {}", job.phase),
+            (None, None) => format!("the CI gate failed after {}", job.phase),
         };
         Ok(Some(Red {
             feedback,
             reason,
             killed,
+            ratchets: r.ratchets,
         }))
     }
 
@@ -352,6 +389,7 @@ impl Gate {
                     None => format!("the CI gate failed on the merge with {default}"),
                 },
                 killed,
+                ratchets: r.ratchets.clone(),
             }
         });
         let environmental = r.timed_out || r.cut.is_some();
@@ -369,7 +407,14 @@ fn run_logged(job: &Job<'_>, mut extra: Value, log: &dyn Fn(Value)) -> Result<Ga
     let log_path = job
         .log_dir
         .join(format!("gate-{}-{}.log", job.phase, job.attempt));
-    let r = run(job.cmd, job.worktree, job.timeout, &log_path, job.cap)?;
+    let r = run(
+        job.cmd,
+        job.worktree,
+        job.timeout,
+        &log_path,
+        job.cap,
+        &job.ratchets,
+    )?;
     let mut ev = json!({
         "event": "gate",
         "phase": job.phase,
@@ -473,6 +518,29 @@ mod tests {
     }
 
     #[test]
+    fn a_ratchet_adds_ns_ratchet_check_last_or_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("docs/agents")).unwrap();
+        let stack = tmp.path().join("docs/agents/stack.md");
+        let fac = parse("[ratchets.flash]\ncommand = \"echo 1\"\nbetter = \"lower\"\n").unwrap();
+        fs::write(&stack, format!("{STACK}| rules | `ruff check .` |\n")).unwrap();
+        assert_eq!(
+            command(&fac, tmp.path(), Path::new(NS_EXE)).as_deref(),
+            Some("(scripts/ci-local.sh) && '/opt/ns bin/ns' rules check && '/opt/ns bin/ns' ratchet check --human")
+        );
+        fs::write(&stack, STACK).unwrap();
+        assert_eq!(
+            command(&fac, tmp.path(), Path::new(NS_EXE)).as_deref(),
+            Some("(scripts/ci-local.sh) && '/opt/ns bin/ns' ratchet check --human")
+        );
+        fs::write(&stack, "").unwrap();
+        assert_eq!(
+            command(&fac, tmp.path(), Path::new(NS_EXE)).as_deref(),
+            Some("'/opt/ns bin/ns' ratchet check --human")
+        );
+    }
+
+    #[test]
     fn this_repos_gate_is_ci_local_sh_then_the_rule_pack() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let cmd = command(&parse("").unwrap(), repo, Path::new(NS_EXE)).unwrap();
@@ -513,8 +581,105 @@ mod tests {
     ) -> (GateRun, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let log = tmp.path().join("logs/gate.log");
-        let r = run(cmd, tmp.path(), timeout, &log, cap).unwrap();
+        let ratchets = Ratchets {
+            factory: tmp.path(),
+            night: None,
+        };
+        let r = run(cmd, tmp.path(), timeout, &log, cap, &ratchets).unwrap();
         (r, tmp)
+    }
+
+    const REPORT: &str = r#"{"ratchets": [{"name": "flash", "command": "s", "better": "lower", "tolerance": "0", "recorded": 1, "measured": 2, "runs": [2], "limit": 1, "status": "worse"}, {"name": "cov", "command": "c", "better": "higher", "tolerance": "0", "recorded": 1, "measured": 2, "runs": [2], "limit": 1, "status": "better"}]}"#;
+
+    #[test]
+    fn the_gate_tells_ns_ratchet_check_its_factory_night_and_report() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("gate-build-1.log");
+        let night = tmp.path().join("night");
+        let cmd = format!(
+            "echo \"$NS_RATCHET_FACTORY|$NS_RATCHET_STEADY|$NS_RATCHET_REPORT\"; printf '%s' '{REPORT}' > \"$NS_RATCHET_REPORT\"; exit 1"
+        );
+        let with_night = Ratchets {
+            factory: Path::new("fac"),
+            night: Some(&night),
+        };
+        let t = Duration::from_secs(30);
+        let r = run(&cmd, tmp.path(), t, &log, None, &with_night).unwrap();
+        let report = tmp.path().join("gate-build-1.ratchets.json");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            r.tail,
+            format!(
+                "{}|{}|{}",
+                cwd.join("fac").display(),
+                night.join("ratchets-steady.json").display(),
+                report.display()
+            )
+        );
+        assert_eq!(
+            r.ratchets.as_deref(),
+            Some("ratchet flash is worse: measured 2, recorded 1, tolerance 0, limit 1, lower is better")
+        );
+        // A report left by an earlier gate is gone before the next one runs.
+        let no_night = Ratchets {
+            factory: tmp.path(),
+            night: None,
+        };
+        let r = run(
+            "echo \"[$NS_RATCHET_STEADY]\"",
+            tmp.path(),
+            t,
+            &log,
+            None,
+            &no_night,
+        )
+        .unwrap();
+        assert_eq!((r.tail.as_str(), r.ratchets), ("[]", None));
+        assert!(!report.exists());
+        fs::create_dir(&report).unwrap();
+        fs::write(report.join("x"), "").unwrap();
+        let e = run("true", tmp.path(), t, &log, None, &no_night)
+            .err()
+            .unwrap();
+        assert!(format!("{e:#}").contains("cannot remove"), "{e:#}");
+    }
+
+    #[test]
+    fn a_ratchet_failure_is_in_the_feedback_reason_and_stuck_reason() {
+        let mut g = red(false, Some(1));
+        g.ratchets = Some("ratchet flash is worse: measured 2, recorded 1".into());
+        let f = feedback("make ci", &g, Duration::from_secs(60), "abc");
+        assert!(
+            f.contains("at abc. It failed on ratchet flash is worse: measured 2, recorded 1. Get each value back"),
+            "{f}"
+        );
+        assert!(f.contains("never edit ratchets.json"), "{f}");
+        let plain = feedback(
+            "make ci",
+            &red(false, Some(1)),
+            Duration::from_secs(60),
+            "abc",
+        );
+        assert!(plain.contains("at abc. Make it pass."), "{plain}");
+
+        let mut red = Red {
+            feedback: String::new(),
+            reason: String::new(),
+            killed: None,
+            ratchets: Some("ratchet flash is worse".into()),
+        };
+        assert_eq!(
+            red.stuck_reason().as_deref(),
+            Some("the CI gate failed on ratchet flash is worse")
+        );
+        red.killed = Some("the CI gate was killed by SIGKILL".into());
+        assert_eq!(
+            red.stuck_reason().as_deref(),
+            Some("the CI gate was killed by SIGKILL")
+        );
+        red.ratchets = None;
+        red.killed = None;
+        assert_eq!(red.stuck_reason(), None);
     }
 
     const HOG: &str = "python3 -c \"b = b'x' * (256 << 20)\"";
@@ -697,6 +862,7 @@ mod tests {
             timed_out,
             wall_s: 0.0,
             tail: "last line".into(),
+            ratchets: None,
         }
     }
 
