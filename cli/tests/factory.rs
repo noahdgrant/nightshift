@@ -59,6 +59,9 @@ impl Env {
         fs::create_dir(&root).unwrap();
         git(&root, &["init", "-q", "-b", "main"]);
         fs::write(root.join("README"), "hi\n").unwrap();
+        // A repo that pins no skills is refused, so every unit has one to pin.
+        fs::create_dir_all(root.join("skills/ns-demo")).unwrap();
+        fs::write(root.join("skills/ns-demo/SKILL.md"), "demo\n").unwrap();
         git(&root, &["add", "."]);
         git(&root, &["commit", "-q", "-m", "init"]);
         let bin = base.join("bin");
@@ -658,14 +661,35 @@ fn the_snapshot_links_are_excluded_from_git() {
     assert_eq!(git(&wt, &["status", "--porcelain"]), "");
 }
 
-#[test]
-fn without_skills_in_the_repo_the_snapshot_copies_the_installed_ns_skills() {
-    let e = Env::new();
+/// Install an `ns-y` skill under the fake home's `~/.claude/skills`, as a symlink into a
+/// checkout, and return the checkout's skill dir.
+fn install_skill_y(e: &Env) -> PathBuf {
     let src = e.base.join("checkout/skills/ns-y");
     fs::create_dir_all(&src).unwrap();
     fs::write(src.join("SKILL.md"), "installed\n").unwrap();
     fs::create_dir_all(e.home.join(".claude/skills")).unwrap();
     std::os::unix::fs::symlink(&src, e.home.join(".claude/skills/ns-y")).unwrap();
+    src
+}
+
+/// Remove the repo's `skills/` from `main` and `origin/main`.
+fn drop_repo_skills(e: &Env) {
+    git(&e.root, &["rm", "-rq", "skills"]);
+    git(&e.root, &["commit", "-q", "-m", "drop skills"]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+}
+
+fn run_failing(e: &Env, args: &[&str]) -> String {
+    let out = e.ns().args(args).output();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+fn without_skills_in_the_repo_the_snapshot_copies_the_installed_ns_skills() {
+    let e = Env::new();
+    drop_repo_skills(&e);
+    let src = install_skill_y(&e);
     e.run(&["run", "--issue", "7"], 0);
     fs::write(src.join("SKILL.md"), "changed later\n").unwrap();
     let snap = e.worktree(UNIT).join(".ns").join(UNIT).join("skills/ns-y");
@@ -674,6 +698,185 @@ fn without_skills_in_the_repo_the_snapshot_copies_the_installed_ns_skills() {
         fs::read_to_string(snap.join("SKILL.md")).unwrap(),
         "installed\n"
     );
+    let pinned = events_named(&e, "skills_pinned");
+    assert_eq!(pinned.len(), 1);
+    assert_eq!(pinned[0]["source"], "installed");
+}
+
+#[test]
+fn a_skills_tree_without_ns_skills_falls_back_to_the_installed_ones() {
+    let e = Env::new();
+    drop_repo_skills(&e);
+    commit_files(
+        &e,
+        &[("skills/other/SKILL.md", "not ours\n")],
+        "other skills",
+    );
+    install_skill_y(&e);
+    e.run(&["run", "--issue", "7"], 0);
+    let skills = e.worktree(UNIT).join(".ns").join(UNIT).join("skills");
+    assert_eq!(
+        fs::read_to_string(skills.join("ns-y/SKILL.md")).unwrap(),
+        "installed\n"
+    );
+    assert_eq!(events_named(&e, "skills_pinned")[0]["source"], "installed");
+}
+
+#[test]
+fn a_repo_with_no_ns_skills_to_pin_is_refused_and_leaves_no_snapshot() {
+    let e = Env::new();
+    drop_repo_skills(&e);
+    let err = run_failing(&e, &["run", "--issue", "7"]);
+    assert!(err.contains("no ns-* skills to pin"), "{err}");
+    let unit = e.worktree(UNIT).join(".ns").join(UNIT);
+    assert!(!unit.join("skills").exists());
+    assert!(!unit.join("skills.tmp").exists());
+    assert!(e.calls().is_empty(), "{:?}", e.calls());
+}
+
+#[test]
+fn an_empty_snapshot_from_an_older_run_is_rebuilt() {
+    let e = Env::new();
+    e.run(&["worktree", "new", UNIT], 0);
+    let skills = e.worktree(UNIT).join(".ns").join(UNIT).join("skills");
+    fs::create_dir_all(&skills).unwrap();
+    e.run(&["run", "--issue", "7"], 0);
+    assert!(skills.join("ns-demo/SKILL.md").is_file());
+}
+
+#[test]
+fn an_unresolvable_base_errors_and_leaves_no_snapshot() {
+    let e = Env::new();
+    e.run(&["worktree", "new", UNIT], 0);
+    let err = run_failing(&e, &["run", "--issue", "7", "--base", "no-such-base"]);
+    assert!(err.contains("no-such-base"), "{err}");
+    assert!(!e
+        .worktree(UNIT)
+        .join(".ns")
+        .join(UNIT)
+        .join("skills")
+        .exists());
+    assert!(!e
+        .worktree(UNIT)
+        .join(".ns")
+        .join(UNIT)
+        .join("skills.tmp")
+        .exists());
+}
+
+#[test]
+fn a_repo_with_skills_but_no_agents_skills_pins_both_links() {
+    let e = Env::new();
+    e.run(&["run", "--issue", "7"], 0);
+    let wt = e.worktree(UNIT);
+    assert!(!wt.join("../myrepo/.agents/skills").exists());
+    for link in [".claude/skills", ".agents/skills"] {
+        assert!(
+            wt.join(link).join("ns-demo/SKILL.md").is_file(),
+            "{link} shows the snapshot"
+        );
+    }
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn the_pin_logs_its_sha_source_and_skill_count_once_and_not_on_a_resume() {
+    let e = Env::new();
+    commit_files(
+        &e,
+        &[(".agents/skills/verify-x/SKILL.md", "v\n")],
+        "local skill",
+    );
+    e.run(&["run", "--issue", "7"], 0);
+    let pinned = events_named(&e, "skills_pinned");
+    assert_eq!(pinned.len(), 1, "{pinned:?}");
+    assert_eq!(pinned[0]["sha"], git(&e.root, &["rev-parse", "main"]));
+    assert_eq!(pinned[0]["source"], "base");
+    assert_eq!(pinned[0]["skills"], 2);
+    e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(events_named(&e, "skills_pinned").len(), 1);
+    assert!(events_named(&e, "skills_unpinned").is_empty());
+}
+
+#[test]
+fn a_tracked_claude_skills_dir_or_symlink_is_kept_and_reported() {
+    let e = Env::new();
+    commit_files(
+        &e,
+        &[(".claude/skills/own/SKILL.md", "own\n")],
+        "tracked dir",
+    );
+    e.run(&["run", "--issue", "7"], 0);
+    let wt = e.worktree(UNIT);
+    assert!(!fs::symlink_metadata(wt.join(".claude/skills"))
+        .unwrap()
+        .is_symlink());
+    let ev = events_named(&e, "skills_unpinned");
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert_eq!(ev[0]["path"], ".claude/skills");
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+
+    let e = Env::new();
+    fs::create_dir_all(e.root.join(".claude")).unwrap();
+    std::os::unix::fs::symlink("../elsewhere", e.root.join(".claude/skills")).unwrap();
+    git(&e.root, &["add", "-f", ".claude/skills"]);
+    git(&e.root, &["commit", "-q", "-m", "tracked symlink"]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+    e.run(&["run", "--issue", "7"], 0);
+    let wt = e.worktree(UNIT);
+    assert_eq!(
+        fs::read_link(wt.join(".claude/skills")).unwrap(),
+        Path::new("../elsewhere")
+    );
+    assert_eq!(events_named(&e, "skills_unpinned").len(), 1);
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn a_stale_snapshot_link_is_pointed_at_the_unit_again() {
+    let e = Env::new();
+    e.run(&["run", "--issue", "7"], 0);
+    let wt = e.worktree(UNIT);
+    fs::remove_file(wt.join(".claude/skills")).unwrap();
+    std::os::unix::fs::symlink("../.ns/other/skills", wt.join(".claude/skills")).unwrap();
+    e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(
+        fs::read_link(wt.join(".claude/skills")).unwrap(),
+        Path::new("../.ns").join(UNIT).join("skills")
+    );
+    assert!(events_named(&e, "skills_unpinned").is_empty());
+}
+
+#[test]
+fn the_phase_settings_file_is_written_again_on_a_later_run_and_before_each_phase() {
+    let e = Env::new();
+    e.run(&["run", "--issue", "7"], 0);
+    let file = e
+        .worktree(UNIT)
+        .join(".ns")
+        .join(UNIT)
+        .join("phase-settings.json");
+    let good = fs::read_to_string(&file).unwrap();
+    fs::write(&file, "{}").unwrap();
+    e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(fs::read_to_string(&file).unwrap(), good);
+
+    // Build deletes the file; verify and review must still find it whole.
+    let e = Env::new();
+    let seen = e.ctrl.join("seen");
+    let check = format!(
+        "cat \".ns/$NS_UNIT/phase-settings.json\" >> {seen:?} 2>/dev/null || echo MISSING >> {seen:?}\n"
+    );
+    e.ctl("build.sh", "rm -f \".ns/$NS_UNIT/phase-settings.json\"\n");
+    e.ctl("verify.sh", &check);
+    e.ctl("review.sh", &check);
+    e.queue("build", &["pass:script"]);
+    e.queue("verify", &["pass:script"]);
+    e.queue("review", &["pass:script"]);
+    e.run(&["run", "--issue", "7"], 0);
+    let seen = fs::read_to_string(seen).unwrap();
+    assert!(!seen.contains("MISSING"), "{seen}");
+    assert_eq!(seen.matches("PreToolUse").count(), 2, "{seen}");
 }
 
 #[test]

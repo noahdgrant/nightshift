@@ -298,3 +298,33 @@ fn relative_cd_inside_a_protected_directory_keeps_the_tracking() {
         assert!(!denied(c), "{c}");
     }
 }
+
+#[test]
+fn the_units_phase_settings_and_skill_snapshot_are_protected() {
+    for p in [
+        "/r/.ns/u1/phase-settings.json",
+        ".ns/u1/phase-settings.json",
+        "/r/.ns/u1/skills/ns-x/SKILL.md",
+        ".ns/u1/skills",
+    ] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_some(), "{p}");
+    }
+    for c in [
+        "rm .ns/u1/phase-settings.json",
+        "echo '{}' > .ns/u1/phase-settings.json",
+        "rm -rf .ns/u1/skills",
+        "sed -i s/a/b/ .ns/u1/skills/ns-x/SKILL.md",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for p in [
+        "/r/.ns/u1/build.md",
+        ".ns/u1/history/review-1.md",
+        "/r/skills/ns-x/SKILL.md",
+        "/r/phase-settings.json",
+    ] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_none(), "{p}");
+    }
+}

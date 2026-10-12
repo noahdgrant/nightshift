@@ -291,11 +291,7 @@ pub fn phase_command(
         if !argv.iter().any(|a| a == "--verbose") {
             argv.push("--verbose".into());
         }
-        let owned_flag = ["--settings", "--setting-sources"].into_iter().find(|f| {
-            argv.iter()
-                .any(|a| a == f || a.starts_with(&format!("{f}=")))
-        });
-        if let Some(flag) = owned_flag {
+        if let Some(flag) = pin::owned_flag(&argv) {
             return Err(SfError::usage(
                 format!(
                     "phase {}: the harness command already passes {flag}",
@@ -309,12 +305,7 @@ pub fn phase_command(
             )
             .into());
         }
-        argv.extend([
-            "--setting-sources".into(),
-            "project,local".into(),
-            "--settings".into(),
-            settings.to_string_lossy().into_owned(),
-        ]);
+        argv.extend(pin::settings_args(settings));
         if subscription {
             argv = billing::strip_bare(argv);
         }
@@ -631,6 +622,8 @@ struct Ctx<'a> {
     /// The CI gate command; `None` runs no gate.
     gate: Option<String>,
     cap: Option<&'a Cap>,
+    /// The `ns` binary the phase settings' hook runs.
+    ns: PathBuf,
 }
 
 impl Ctx<'_> {
@@ -910,8 +903,9 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         lock_dir: lock_dir(cfg.as_ref(), &repo.common_dir),
         gate: gate.clone(),
         cap: cap.as_ref(),
+        ns: ns.clone(),
     };
-    if let Some(ev) = pinned {
+    for ev in pinned {
         ctx.log(ev);
     }
     let mut phases: Vec<Value> = Vec::new();
@@ -1063,6 +1057,7 @@ fn dry_run(
         lock_dir: PathBuf::new(),
         gate: gate.clone(),
         cap: None,
+        ns: PathBuf::new(),
     };
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
@@ -1303,6 +1298,7 @@ fn drive(
                 shared.watch_pid.map(|p| p.to_string()).unwrap_or_default(),
             ),
         ];
+        pin::write_settings(&ctx.worktree, &ctx.unit, &ctx.ns)?;
         let r = run_harness(
             &commands[phase],
             &prompt,
@@ -2808,20 +2804,17 @@ mod tests {
         let f = factory::parse("").unwrap();
         let settings = Path::new("/wt/.ns/u/phase-settings.json");
         let c = phase_command(Some(&cfg), &f.phase("build"), true, settings).unwrap();
-        assert_eq!(
-            c,
-            [
-                "claude",
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--setting-sources",
-                "project,local",
-                "--settings",
-                "/wt/.ns/u/phase-settings.json",
-            ]
-        );
+        let mut want: Vec<String> = [
+            "claude",
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ]
+        .map(String::from)
+        .into();
+        want.extend(pin::settings_args(settings));
+        assert_eq!(c, want);
         let c = phase_command(None, &f.phase("build"), true, settings).unwrap();
         assert!(c.contains(&"bypassPermissions".to_string()));
         assert!(!c.contains(&"--model".to_string()));

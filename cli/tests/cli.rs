@@ -686,16 +686,21 @@ fn ask_inside_a_phase_gives_claude_the_phase_settings() {
     let wt = tmp.path().join("wt");
     let settings = wt.join(".ns/u1/phase-settings.json");
     fs::create_dir_all(settings.parent().unwrap()).unwrap();
-    let ask = |unit: Option<&str>| {
+    let ask_cmd = |unit: Option<&str>| {
         let mut c = ns();
-        c.env("NS_CONFIG", &cfg)
-            .env("NS_WORKTREE", &wt)
-            .env_remove("NS_UNIT")
-            .args(["ask", "--role", "build", "--dry-run"]);
+        c.env("NS_CONFIG", &cfg).env("NS_WORKTREE", &wt).args([
+            "ask",
+            "--role",
+            "build",
+            "--dry-run",
+        ]);
         if let Some(u) = unit {
             c.env("NS_UNIT", u);
         }
-        let v = json(&c.assert().success().get_output().stdout);
+        c
+    };
+    let ask = |unit: Option<&str>| {
+        let v = json(&ask_cmd(unit).assert().success().get_output().stdout);
         v["command"].as_array().unwrap().clone()
     };
     let tail = serde_json::json!([
@@ -705,13 +710,53 @@ fn ask_inside_a_phase_gives_claude_the_phase_settings() {
         settings.to_str().unwrap()
     ]);
     let tail = tail.as_array().unwrap();
-    assert!(ask(Some("u1")).iter().all(|a| a != "--settings"));
+    // A phase whose settings file is gone is an error, not a claude with the user's settings.
+    let err = String::from_utf8(
+        ask_cmd(Some("u1"))
+            .assert()
+            .failure()
+            .get_output()
+            .stderr
+            .clone(),
+    )
+    .unwrap();
+    assert!(err.contains("phase-settings.json"), "{err}");
     fs::write(&settings, "{}").unwrap();
     assert!(ask(Some("u1")).ends_with(tail), "{:?}", ask(Some("u1")));
     assert!(ask(None).iter().all(|a| a != "--settings"));
-    assert!(ask(Some("u2")).iter().all(|a| a != "--settings"));
     fs::write(&cfg, "[roles.default]\nharness = \"codex\"\n").unwrap();
     assert!(ask(Some("u1")).iter().all(|a| a != "--settings"));
+}
+
+#[test]
+fn ask_inside_a_phase_refuses_a_claude_command_that_carries_a_settings_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    fs::write(
+        &cfg,
+        "[harness.claude]\ncommand = [\"claude\", \"-p\", \"--settings=x.json\"]\n[roles.default]\nharness = \"claude\"\n",
+    )
+    .unwrap();
+    let wt = tmp.path().join("wt");
+    let settings = wt.join(".ns/u1/phase-settings.json");
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(&settings, "{}").unwrap();
+    let err = ns()
+        .env("NS_CONFIG", &cfg)
+        .env("NS_WORKTREE", &wt)
+        .env("NS_UNIT", "u1")
+        .args(["ask", "--role", "build", "--dry-run"])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    assert!(String::from_utf8(err).unwrap().contains("--settings"));
+    // Outside a phase the command is the user's own.
+    ns().env("NS_CONFIG", &cfg)
+        .args(["ask", "--role", "build", "--dry-run"])
+        .assert()
+        .success();
 }
 
 #[test]

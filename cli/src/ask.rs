@@ -172,7 +172,7 @@ fn plan(role: &str, write: bool) -> Result<Plan> {
         ));
     };
     let bin = which(&command[0]);
-    let command = with_phase_settings(command);
+    let command = with_phase_settings(command)?;
     Ok(Plan {
         resolved,
         command,
@@ -181,25 +181,36 @@ fn plan(role: &str, write: bool) -> Result<Plan> {
     })
 }
 
-/// Inside an `ns run` phase (`NS_WORKTREE` and `NS_UNIT` set, and the phase's settings file
-/// there), a claude command gets the phase's settings and settings sources, like the phase.
-fn with_phase_settings(mut command: Vec<String>) -> Vec<String> {
+/// Inside an `ns run` phase (`NS_WORKTREE` and `NS_UNIT` set), a claude command gets the
+/// phase's settings and settings sources, like the phase. A command that carries either flag
+/// itself, or a phase whose settings file is gone, is an error.
+fn with_phase_settings(mut command: Vec<String>) -> Result<Vec<String>> {
     let (Some(wt), Some(unit)) = (
         std::env::var_os("NS_WORKTREE"),
         std::env::var("NS_UNIT").ok(),
     ) else {
-        return command;
+        return Ok(command);
     };
-    let settings = crate::pin::settings_path(Path::new(&wt), &unit);
-    if billing::is_claude(&command) && settings.is_file() {
-        command.extend([
-            "--setting-sources".into(),
-            "project,local".into(),
-            "--settings".into(),
-            settings.to_string_lossy().into_owned(),
-        ]);
+    if !billing::is_claude(&command) {
+        return Ok(command);
     }
-    command
+    if let Some(flag) = crate::pin::owned_flag(&command) {
+        return Err(SfError::usage(
+            format!("the harness command already passes {flag}"),
+            format!("inside an ns run phase, ns gives claude the factory's phase settings; remove {flag} from the harness command"),
+        )
+        .into());
+    }
+    let settings = crate::pin::settings_path(Path::new(&wt), &unit);
+    if !settings.is_file() {
+        return Err(SfError::usage(
+            format!("the phase settings file {} is missing", settings.display()),
+            "ns run writes it before each phase; ask from a phase that ns run started",
+        )
+        .into());
+    }
+    command.extend(crate::pin::settings_args(&settings));
+    Ok(command)
 }
 
 impl Plan {

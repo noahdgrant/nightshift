@@ -27,7 +27,7 @@ const RULE: &str = "The factory contract's Git hooks rule (skills/ns-contract/SK
 const MAX_NESTING: usize = 8;
 
 /// What a protected path is called in a denial.
-const PROTECTED: &str = ".githooks/, .git/hooks, .git/config or .claude/settings*.json";
+const PROTECTED: &str = ".githooks/, .git/hooks, .git/config, .claude/settings*.json, .ns/<unit>/phase-settings.json or .ns/<unit>/skills";
 
 const BASH_TOOL: &str = "Bash";
 

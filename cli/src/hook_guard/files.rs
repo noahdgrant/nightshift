@@ -3,7 +3,9 @@
 use super::*;
 
 /// `path` is in `.githooks/`, `.git/hooks` or `.git/config`, or is a Claude Code settings file
-/// (`.claude/settings*.json`), which can turn the hook off.
+/// (`.claude/settings*.json`), which can turn the hook off, or is a unit's phase settings file
+/// or skill snapshot (`.ns/<unit>/phase-settings.json`, `.ns/<unit>/skills`), which a later
+/// phase reads.
 pub(super) fn is_protected(path: &str) -> bool {
     let parts = components(path);
     parts.contains(&".githooks")
@@ -11,6 +13,9 @@ pub(super) fn is_protected(path: &str) -> bool {
             (p[0] == ".git" && matches!(p[1], "hooks" | "config"))
                 || (p[0] == ".claude" && p[1].starts_with("settings") && p[1].ends_with(".json"))
         })
+        || parts
+            .windows(3)
+            .any(|p| p[0] == ".ns" && matches!(p[2], "phase-settings.json" | "skills"))
 }
 
 /// A working directory whose relative paths are protected: inside `.githooks/` or the `.git`

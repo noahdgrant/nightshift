@@ -166,7 +166,7 @@ fn ensure_excluded(common_dir: &Path) -> Result<()> {
     for path in std::iter::once(".ns").chain(crate::pin::LINKS.iter().copied()) {
         let present = current.lines().map(str::trim).any(|l| {
             let l = l.strip_prefix('/').unwrap_or(l);
-            l == path || l.strip_suffix('/') == Some(path)
+            l == path || (path == ".ns" && l.strip_suffix('/') == Some(path))
         });
         if present {
             continue;
@@ -513,6 +513,32 @@ mod tests {
             fs::read_to_string(&exclude).unwrap(),
             ".ns/\n/.claude/skills\n/.agents/skills\n"
         );
+    }
+
+    #[test]
+    fn a_trailing_slash_line_excludes_the_dir_but_not_the_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let exclude = dir.path().join("info/exclude");
+        fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        fs::write(&exclude, ".claude/skills/\n.ns/\n").unwrap();
+        ensure_excluded(dir.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(&exclude).unwrap(),
+            ".claude/skills/\n.ns/\n/.claude/skills\n/.agents/skills\n"
+        );
+        for ns in ["/.ns", ".ns", "/.ns/"] {
+            fs::write(
+                &exclude,
+                format!("{ns}\n/.claude/skills\n/.agents/skills\n"),
+            )
+            .unwrap();
+            ensure_excluded(dir.path()).unwrap();
+            assert_eq!(
+                fs::read_to_string(&exclude).unwrap(),
+                format!("{ns}\n/.claude/skills\n/.agents/skills\n"),
+                "{ns}"
+            );
+        }
     }
 
     #[test]
