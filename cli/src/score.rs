@@ -99,7 +99,7 @@ fn scorers(root: &Path, only: Option<&str>) -> Result<Vec<Scorer>> {
     if picked.is_empty() {
         return Err(
             SfError::general(format!("no scorers in {}", root.join("scorers").display()))
-                .hint("add one; the format is in docs/FACTORY.md (Scorers)")
+                .hint("add one; the format is in docs/factory/scorers.md (Scorers)")
                 .into(),
         );
     }

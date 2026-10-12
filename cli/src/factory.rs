@@ -387,10 +387,10 @@ impl Factory {
         let mut out = Vec::new();
         match &self.queue.removed_triage_per_night {
             Some(v) if v.as_integer() == Some(0) => out.push(
-                "[queue] triage_per_night is no longer used, so 0 no longer turns the triage pass off: it runs tonight. Only gates = \"stop\" turns it off (docs/FACTORY.md, Triage pass); remove the key".into(),
+                "[queue] triage_per_night is no longer used, so 0 no longer turns the triage pass off: it runs tonight. Only gates = \"stop\" turns it off (docs/factory/watch.md, Triage pass); remove the key".into(),
             ),
             Some(_) => out.push(
-                "[queue] triage_per_night is no longer used: --until and the budget bound the triage pass (docs/FACTORY.md, Triage pass); remove it".into(),
+                "[queue] triage_per_night is no longer used: --until and the budget bound the triage pass (docs/factory/watch.md, Triage pass); remove it".into(),
             ),
             None => {}
         }
