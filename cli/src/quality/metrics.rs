@@ -444,6 +444,41 @@ mod tests {
     use super::*;
     use crate::review_md::parse;
 
+    fn run(globs: &[&str], changed: &[&str]) -> RunStats {
+        let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect();
+        RunStats {
+            touches: Some((strs(globs), strs(changed))),
+            ..RunStats::default()
+        }
+    }
+
+    #[test]
+    fn touches_pool_matches_and_leave_empty_denominators_unset() {
+        let t = touches(&[
+            run(
+                &["src/*.rs", "docs/**"],
+                &["src/a.rs", "src/x/b.rs", "docs/a/b.md"],
+            ),
+            run(&[], &["c.rs"]),
+            RunStats::default(),
+        ]);
+        assert_eq!(
+            t,
+            TouchesSummary {
+                units: 1,
+                changed_files: 3,
+                changed_predicted: 2,
+                recall: Some(0.667),
+                globs: 2,
+                globs_changed: 2,
+                precision: Some(1.0),
+            }
+        );
+        let none = touches(&[run(&["a.rs"], &[])]);
+        assert_eq!((none.recall, none.precision), (None, Some(0.0)));
+        assert_eq!(touches(&[]), TouchesSummary::default());
+    }
+
     fn attempt(cycles: Option<u32>, status: &str, review: &str) -> Attempt {
         Attempt {
             path: ".ns/u/review.md".into(),

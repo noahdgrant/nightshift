@@ -693,6 +693,7 @@ fn triage_without_brief_is_stuck() {
     let v = e.run(&["run", "--issue", "7"], 1);
     assert!(v["reason"].as_str().unwrap().contains("no brief"), "{v}");
     assert_eq!(e.calls(), ["triage"]);
+    assert_eq!(end_event(&e)["touches"], serde_json::json!([]));
 }
 
 #[test]
