@@ -7,12 +7,15 @@ use anyhow::Result;
 use serde_json::json;
 
 use super::Scheduler;
-use crate::run;
+use crate::run::{self, Outcome};
 use crate::watch::{
     ci,
     fix_main::{self, Fix},
     Issue,
 };
+
+/// Why the night stopped when the fix issue's unit ended without fixing main.
+const MAIN_RED_UNFIXED: &str = "main_red_unfixed";
 
 /// What red main allows a fill to start.
 pub(super) enum Gate {
@@ -77,6 +80,28 @@ impl Scheduler<'_> {
         self.fix = Some(fix.issue().clone());
         self.log_red(main, fix.issue());
         Ok(Gate::Only(fix))
+    }
+
+    /// Stop the night when the fix issue's unit ended `outcome` without fixing main and main is
+    /// still red: another attempt would fail the same way, and nothing else may start.
+    pub(super) fn stop_if_unfixed(&mut self, issue: u64, outcome: Outcome) {
+        if !matches!(outcome, Outcome::Stuck | Outcome::Budget | Outcome::Split)
+            || self.fix.as_ref().is_none_or(|f| f.number != issue)
+        {
+            return;
+        }
+        let Some(main) = self.main_ci().filter(|m| m.holds_queue()) else {
+            return;
+        };
+        eprintln!(
+            "ns watch: fix issue #{issue} ended {} and main is still red; the night stops",
+            outcome.label()
+        );
+        run::log_event(
+            &self.plan.repo.common_dir,
+            json!({"event": "main_red_unfixed", "sha": main.sha, "issue": issue, "outcome": outcome.label()}),
+        );
+        self.stop_all(MAIN_RED_UNFIXED);
     }
 
     /// Say, once per red head, that main is red and which issue fixes it.

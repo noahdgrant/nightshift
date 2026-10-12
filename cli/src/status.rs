@@ -32,6 +32,9 @@ const BUCKETS: [(&str, &str, &[&str]); 5] = [
 ];
 const OTHER: &str = "other";
 
+/// The run-log events that say what main's CI did to the night (docs/FACTORY.md, "Main's CI").
+const MAIN_EVENTS: [&str; 3] = ["main_red", "main_green", "main_red_unfixed"];
+
 type Event = Map<String, Value>;
 
 /// The night: what runs now, what ended since `since`, and the queue if it could be read.
@@ -39,6 +42,8 @@ struct Summary {
     since: i64,
     running: Vec<Event>,
     ended: BTreeMap<&'static str, Vec<Event>>,
+    /// Main's red and green events, oldest first.
+    main: Vec<Event>,
     next: Option<Vec<Queued>>,
 }
 
@@ -109,8 +114,17 @@ fn summarise(
     };
     let mut last_phase: BTreeMap<&str, Event> = BTreeMap::new();
     let mut last_end: BTreeMap<String, Event> = BTreeMap::new();
+    let mut main = Vec::new();
     for ev in events {
         let mut ev = ev?;
+        let kind = ev.get("event").and_then(Value::as_str);
+        if kind.is_some_and(|k| MAIN_EVENTS.contains(&k)) {
+            let ts = ev.get("ts").and_then(Value::as_str);
+            if window.contains(ts.and_then(clock::parse_iso)) {
+                main.push(ev);
+            }
+            continue;
+        }
         let Some(unit) = ev.get("unit").and_then(Value::as_str).map(String::from) else {
             continue;
         };
@@ -165,6 +179,7 @@ fn summarise(
         since,
         running: running_events,
         ended,
+        main,
         next: None,
     })
 }
@@ -185,6 +200,7 @@ impl Summary {
             "since": clock::iso(self.since),
             "running": self.running,
             "ended": ended,
+            "main": self.main,
             "next": next,
         })
     }
@@ -199,6 +215,9 @@ impl Summary {
         }
         if !self.ended[OTHER].is_empty() {
             part(&mut out, OTHER, &self.ended[OTHER]);
+        }
+        if !self.main.is_empty() {
+            part(&mut out, "main", &self.main);
         }
         match &self.next {
             Some(next) => {
@@ -427,6 +446,46 @@ next (1)
              paused (0)\nsplit (0)\nqueue unavailable\n"
         );
         assert_eq!(s.to_json()["next"], Value::Null);
+    }
+
+    #[test]
+    fn main_events_since_since_show_in_their_own_part() {
+        let text = concat!(
+            r#"{"event":"main_red","sha":"0123456789abcdef","failing":["test"],"issue":100,"ts":"2026-10-08T23:00:00Z"}"#,
+            "\n",
+            r#"{"event":"main_red","sha":"abcdef0123456789","failing":["test"],"issue":100,"ts":"2026-10-09T01:00:00Z"}"#,
+            "\n",
+            r#"{"event":"main_green","sha":"1111111111111111","state":"green","ts":"2026-10-09T02:00:00Z"}"#,
+            "\n",
+            r#"{"event":"main_red_unfixed","sha":"abcdef0123456789","issue":100,"outcome":"stuck","ts":"2026-10-09T03:00:00Z"}"#,
+            "\n",
+            r#"{"event":"worker_start","worker":1,"issue":100,"ts":"2026-10-09T03:00:00Z"}"#,
+            "\n",
+        );
+        let since = clock::parse_iso(SINCE).unwrap();
+        let (s, _) = summary(text, since, &[], None);
+        assert_eq!(
+            s.to_json()["main"],
+            json!([
+                {"event":"main_red","sha":"abcdef0123456789","issue":100,"ts":"2026-10-09T01:00:00Z"},
+                {"event":"main_green","sha":"1111111111111111","ts":"2026-10-09T02:00:00Z"},
+                {"event":"main_red_unfixed","sha":"abcdef0123456789","issue":100,"outcome":"stuck",
+                 "ts":"2026-10-09T03:00:00Z"},
+            ])
+        );
+        assert!(
+            s.text().ends_with(
+                "main (3)
+  2026-10-09T01:00:00Z main_red abcdef0 #100
+  2026-10-09T02:00:00Z main_green 1111111
+  2026-10-09T03:00:00Z main_red_unfixed abcdef0 #100 outcome stuck
+queue unavailable
+"
+            ),
+            "{}",
+            s.text()
+        );
+        assert_eq!(summary("", 0, &[], None).0.to_json()["main"], json!([]));
     }
 
     struct Fake(Vec<Issue>);
