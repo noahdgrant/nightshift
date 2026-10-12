@@ -1,0 +1,4 @@
+version = "0.50.0"
+install = "pip"
+package = "ast-grep-cli"
+check = "ast-grep --version"

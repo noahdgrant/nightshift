@@ -1,0 +1,5 @@
+version = "21"
+install = "apt"
+package = "openjdk-21-jre-headless"
+bin = "/usr/lib/jvm/java-21-openjdk-amd64/bin/java"
+check = "java -version"

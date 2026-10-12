@@ -1,5 +1,5 @@
 //! `scripts/ci-local.sh`, run in a temp repo against stub `cargo`, `ns`, `python3`, `python`
-//! and the tools `scripts/ci-tools.toml` pins, checked by the real `scripts/ci-tools.sh`.
+//! and the tools `scripts/ci-tools.d/` pins, checked by the real `scripts/ci-tools.sh`.
 
 mod common;
 
@@ -10,7 +10,7 @@ use std::process::Output;
 use common::write_exe;
 
 const ALL_STEPS: [&str; 19] = [
-    "pinned tools (scripts/ci-tools.toml)",
+    "pinned tools (scripts/ci-tools.d)",
     "cargo fmt --check",
     "cargo clippy",
     "cargo test",
@@ -33,7 +33,7 @@ const ALL_STEPS: [&str; 19] = [
 
 /// The steps `--fast` runs, the pre-commit hook's subset of `ALL_STEPS`, in its order.
 const FAST_STEPS: [&str; 8] = [
-    "pinned tools (scripts/ci-tools.toml)",
+    "pinned tools (scripts/ci-tools.d)",
     "cargo fmt --check",
     "cargo clippy",
     "build ns",
@@ -105,16 +105,23 @@ esac
     )
 }
 
+/// `scripts/ci-tools.d/`, where each pinned tool has a `<tool>.toml`.
+fn pins() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci-tools.d")
+}
+
 /// Each pinned tool's name, command (the first word of its `check`), version and `check`.
 fn pinned_tools() -> Vec<(String, String, String, String)> {
-    let list = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci-tools.toml");
-    let list: toml::Table = toml::from_str(&fs::read_to_string(list).unwrap()).unwrap();
-    list.iter()
-        .map(|(name, t)| {
+    fs::read_dir(pins())
+        .unwrap()
+        .map(|e| {
+            let path = e.unwrap().path();
+            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            let t: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
             let check = t["check"].as_str().unwrap();
             let command = check.split_whitespace().next().unwrap().to_owned();
             (
-                name.clone(),
+                name,
                 command,
                 t["version"].as_str().unwrap().to_owned(),
                 check.to_owned(),
@@ -145,11 +152,15 @@ impl Repo {
                 fs::read_to_string(scripts.join(script)).unwrap(),
             );
         }
-        fs::copy(
-            scripts.join("ci-tools.toml"),
-            root.join("scripts/ci-tools.toml"),
-        )
-        .unwrap();
+        fs::create_dir_all(root.join("scripts/ci-tools.d")).unwrap();
+        for pin in fs::read_dir(pins()).unwrap() {
+            let pin = pin.unwrap();
+            fs::copy(
+                pin.path(),
+                root.join("scripts/ci-tools.d").join(pin.file_name()),
+            )
+            .unwrap();
+        }
         for (_, command, version, _) in pinned_tools() {
             write_exe(
                 &root.join("bin").join(&command),
@@ -566,14 +577,14 @@ fn a_second_full_run_on_the_same_tree_skips_naming_when_and_where_it_passed() {
 }
 
 #[test]
-fn a_changed_file_ci_tools_toml_or_ci_local_sh_runs_again() {
+fn a_changed_file_tool_pin_or_ci_local_sh_runs_again() {
     let repo = Repo::new();
     repo.commit_all();
     let root = repo.dir.path();
     ran_everything(&repo.run(&[], &[]));
     for (file, text) in [
         ("README", "changed\n"),
-        ("scripts/ci-tools.toml", "\n# changed\n"),
+        ("scripts/ci-tools.d/ruff.toml", "\n# changed\n"),
         ("scripts/ci-local.sh", "\n# changed\n"),
     ] {
         commit(root, file, text);

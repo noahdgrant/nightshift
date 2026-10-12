@@ -1,5 +1,5 @@
 //! Every external command `cli/tests` and the rule packs' `tests/run.sh` run is pinned in
-//! `scripts/ci-tools.toml` or is a base tool every CI runner has, so CI installs what the
+//! `scripts/ci-tools.d/` or is a base tool every CI runner has, so CI installs what the
 //! tests need.
 
 use std::collections::BTreeSet;
@@ -35,10 +35,16 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
+/// The tools pinned in `scripts/ci-tools.d/`, one `<tool>.toml` each.
 fn listed() -> BTreeSet<String> {
-    let list = fs::read_to_string(root().join("scripts/ci-tools.toml")).unwrap();
-    let list: toml::Table = toml::from_str(&list).unwrap();
-    list.keys().cloned().collect()
+    fs::read_dir(root().join("scripts/ci-tools.d"))
+        .unwrap()
+        .filter_map(|e| {
+            let path = e.unwrap().path();
+            let tool = path.file_stem()?.to_str()?.to_owned();
+            (path.extension()? == "toml").then_some(tool)
+        })
+        .collect()
 }
 
 /// The programs a Rust test starts by name, a string literal passed to `Command::new` or
@@ -297,8 +303,8 @@ fn every_command_the_tests_run_is_listed_or_a_base_tool() {
     let bad = unlisted(&sources);
     assert!(
         bad.is_empty(),
-        "these commands are neither in scripts/ci-tools.toml nor in BASE_TOOLS, so CI may not \
-         install them; pin each in scripts/ci-tools.toml:\n{}",
+        "these commands are neither in scripts/ci-tools.d/ nor in BASE_TOOLS, so CI may not \
+         install them; pin each in scripts/ci-tools.d/:\n{}",
         bad.join("\n")
     );
 }
@@ -402,7 +408,7 @@ fn ci_pins_no_tool_version_outside_the_list() {
         .collect();
     assert!(
         bad.is_empty(),
-        "pin these in scripts/ci-tools.toml instead:\n{}",
+        "pin these in scripts/ci-tools.d/ instead:\n{}",
         bad.join("\n")
     );
 }

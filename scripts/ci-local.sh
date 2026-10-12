@@ -8,11 +8,11 @@
 # Uses the ns this run builds: cli/target/debug/ns, or under $CARGO_TARGET_DIR when that
 # is set, as the pre-push hook sets it. The private guard reads
 # PRIVATE_DENYLIST from the environment, as in CI. It fails first on a missing or
-# wrong-version tool from scripts/ci-tools.toml, which CI installs.
+# wrong-version tool pinned in scripts/ci-tools.d/, which CI installs.
 #
 # A full run that passes is recorded in <git-common-dir>/ns/ci-passed/, keyed by the tree it
-# tested and the hashes of scripts/ci-tools.toml and this script (ADR-444). A later full run
-# with the same key prints that it already passed and exits 0. The tree is the index's, and
+# tested and the hashes of the pins in scripts/ci-tools.d/ and this script (ADR-444). A later
+# full run with the same key prints that it already passed and exits 0. The tree is the index's, and
 # only when the working tree matches the index and holds no untracked file, so it is what the
 # run tests: a commit's tree in a clean checkout, or a merge result staged but not committed.
 # Otherwise the cache is not used. --no-cache runs anyway; --fast never uses the cache.
@@ -75,7 +75,7 @@ compute_cache_key() {
   cache_tree=$(cache_git write-tree 2>/dev/null) || return 0
   common=$(cache_git rev-parse --git-common-dir 2>/dev/null) || return 0
   common=$(cd "$common" && pwd) || return 0
-  tools=$(sha256sum < scripts/ci-tools.toml) || return 0
+  tools=$(sha256sum scripts/ci-tools.d/*.toml | sha256sum) || return 0
   script=$(sha256sum < scripts/ci-local.sh) || return 0
   cache_key=$(printf '%s %s %s\n' "$cache_tree" "${tools%% *}" "${script%% *}" | sha256sum) || return 0
   cache_key=${cache_key%% *}
@@ -162,7 +162,7 @@ if [ "$fast" -eq 0 ]; then
   fi
 fi
 
-step "pinned tools (scripts/ci-tools.toml)" scripts/ci-tools.sh check
+step "pinned tools (scripts/ci-tools.d)" scripts/ci-tools.sh check
 step "cargo fmt --check" cargo fmt --manifest-path cli/Cargo.toml --check
 step "cargo clippy" cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings
 full_step "cargo test" cargo test --manifest-path cli/Cargo.toml
