@@ -1,0 +1,4 @@
+id: helper-name
+language: java
+rule:
+  regex: '^(?:isBlank|isEmpty|isNullOrEmpty|nullToEmpty|requireNonNull|checkNotNull|nullSafeEquals|repeat|join|readFile|readString|readAllBytes|writeString|copyStream|toHex|toHexString|clamp|listOf|setOf|mapOf)$'

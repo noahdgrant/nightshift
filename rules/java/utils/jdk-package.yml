@@ -1,0 +1,17 @@
+# The packages the java.* modules of JDK 21 export, kept by hand. tests/run.sh imports every
+# package the running JDK's java.* modules export (tests/examples/dependency-allowlist/make.sh),
+# so it fails on a missing one, or on one a later JDK adds. A javax package outside the JDK
+# (javax.inject, javax.xml.bind) is not one of them.
+# Matches an import's dotted name inside one of them.
+id: jdk-package
+language: java
+rule:
+  regex: >-
+    (?x)^(?:
+      java|
+      javax\.(?:accessibility|annotation\.processing|crypto|imageio|lang\.model|management|naming|
+        net|print|rmi\.ssl|script|security\.(?:auth|cert|sasl)|smartcardio|sound|sql|swing|tools|
+        transaction\.xa)|
+      javax\.xml\.(?:catalog|crypto|datatype|namespace|parsers|stream|transform|validation|xpath)|
+      org\.ietf\.jgss|org\.w3c\.dom|org\.xml\.sax
+    )(?:\.|$)|^javax\.xml(?:\.[A-Z]|$)
