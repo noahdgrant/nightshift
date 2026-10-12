@@ -624,6 +624,8 @@ struct Ctx<'a> {
     /// The CI gate command; `None` runs no gate.
     gate: Option<String>,
     cap: Option<&'a Cap>,
+    /// The night directory of the `ns watch` this runs under.
+    night: Option<PathBuf>,
 }
 
 impl Ctx<'_> {
@@ -690,6 +692,10 @@ impl Ctx<'_> {
             phase,
             attempt,
             cap: self.cap,
+            ratchets: gate::Ratchets {
+                factory: &self.root,
+                night: self.night.as_deref(),
+            },
         }
     }
 }
@@ -899,6 +905,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         lock_dir: lock_dir(cfg.as_ref(), &repo.common_dir),
         gate: gate.clone(),
         cap: cap.as_ref(),
+        night: shared.night.as_ref().map(|n| n.path().to_path_buf()),
     };
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
@@ -1049,6 +1056,7 @@ fn dry_run(
         lock_dir: PathBuf::new(),
         gate: gate.clone(),
         cap: None,
+        night: None,
     };
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
@@ -1174,7 +1182,7 @@ fn drive(
                 match merge_step(ctx, &state, shared, &mut gate_state, merges)? {
                     MergeStep::Finish(f) => return Ok(f),
                     MergeStep::Rebuild(red) => {
-                        if let Some(k) = red.killed {
+                        if let Some(k) = red.stuck_reason() {
                             last_failure.insert("build", k);
                         }
                         forced = Some(run("build", &red.feedback, red.reason));
@@ -1449,7 +1457,7 @@ fn drive(
                 return Err(crate::stop::error(sig));
             }
             if let Some(red) = red? {
-                if let Some(k) = red.killed {
+                if let Some(k) = red.stuck_reason() {
                     last_failure.insert("build", k);
                 }
                 forced = Some(run("build", &red.feedback, red.reason));
@@ -1741,6 +1749,7 @@ fn ci_failed(feedback: String) -> MergeStep {
         feedback,
         reason: "CI failed on the PR".into(),
         killed: None,
+        ratchets: None,
     })
 }
 

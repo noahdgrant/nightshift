@@ -908,6 +908,84 @@ fn a_gate_that_times_out_goes_back_to_build_and_uses_an_attempt() {
     assert_eq!(g[0]["green"], false);
 }
 
+/// A factory with one ratchet, `flash`, recorded at 100, whose command prints `ctrl/flash`.
+fn ratchet_env(measured: &str) -> Env {
+    let e = Env::new();
+    e.factory(&format!(
+        "[ratchets.flash]\ncommand = \"cat {}\"\nbetter = \"lower\"\ntolerance = \"5%\"\n",
+        e.ctrl.join("flash").display()
+    ));
+    fs::write(
+        e.root.join(".nightshift/ratchets.json"),
+        r#"{"version": 1, "values": {"flash": 100}}"#,
+    )
+    .unwrap();
+    e.ctl("flash", measured);
+    e
+}
+
+#[test]
+fn a_ratchet_makes_the_gate_run_ns_ratchet_check() {
+    let e = ratchet_env("104\n");
+    let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+    assert!(
+        d["gate"]
+            .as_str()
+            .unwrap()
+            .ends_with(" ratchet check --human"),
+        "{d}"
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 1, "{g:?}");
+    assert_eq!(g[0]["green"], true);
+}
+
+#[test]
+fn a_unit_that_stays_over_a_ratchet_ends_stuck_naming_its_values() {
+    let e = ratchet_env("120\n");
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    let line = "ratchet flash is worse: measured 120, recorded 100, tolerance 5%, limit 105, lower is better";
+    assert_eq!(v["outcome"], "stuck");
+    assert_eq!(
+        v["reason"],
+        format!("build is out of attempts (2): the CI gate failed on {line}")
+    );
+    assert_eq!(e.calls(), ["triage", "build", "build"]);
+    let p = e.prompt(3, "build");
+    assert!(p.contains(&format!("It failed on {line}.")), "{p}");
+    assert!(p.contains("never edit ratchets.json"), "{p}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[0]["green"], false);
+    let report = g[0]["log"]
+        .as_str()
+        .unwrap()
+        .replace(".log", ".ratchets.json");
+    let r: Value = serde_json::from_str(&fs::read_to_string(report).unwrap()).unwrap();
+    assert_eq!(r["ratchets"][0]["status"], "worse");
+}
+
+#[test]
+fn a_build_that_gets_back_under_the_line_goes_on() {
+    let e = ratchet_env("120\n");
+    e.ctl(
+        "build.sh",
+        &format!("echo 99 > {}\n", e.ctrl.join("flash").display()),
+    );
+    e.queue("build", &["pass:commit", "pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(
+        (g[0]["green"].as_bool(), g[1]["green"].as_bool()),
+        (Some(false), Some(true))
+    );
+}
+
 fn phase_events(e: &Env) -> Vec<Value> {
     fs::read_to_string(e.root.join(".git/ns/runs.jsonl"))
         .unwrap()

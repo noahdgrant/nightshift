@@ -550,6 +550,20 @@ pub fn update(
     Ok(ExitCode::SUCCESS)
 }
 
+/// What a `ns ratchet check` report says failed, one line per failed ratchet; none when the
+/// report is missing (the check didn't run) or names no failure.
+pub fn failures(report: &Path) -> Option<String> {
+    let v: Value = serde_json::from_str(&fs::read_to_string(report).ok()?).ok()?;
+    let lines: Vec<String> = v["ratchets"]
+        .as_array()?
+        .iter()
+        .filter_map(|o| serde_json::from_value::<Outcome>(o.clone()).ok())
+        .filter(Outcome::failed)
+        .map(|o| o.line())
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("; "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,6 +620,33 @@ mod tests {
         );
         assert!(worse(Better::Lower, 2.0, 1.0) && !worse(Better::Lower, 1.0, 1.0));
         assert!(worse(Better::Higher, 1.0, 2.0) && !worse(Better::Higher, 2.0, 2.0));
+    }
+
+    #[test]
+    fn failures_read_only_failed_ratchets_from_a_well_formed_report() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("r.json");
+        assert_eq!(failures(&p), None);
+        for bad in [
+            "not json",
+            "{}",
+            r#"{"ratchets": {}}"#,
+            r#"{"ratchets": [{"name": 1}]}"#,
+        ] {
+            fs::write(&p, bad).unwrap();
+            assert_eq!(failures(&p), None, "{bad}");
+        }
+        let o = |name: &str, status: &str| {
+            json!({"name": name, "command": "c", "better": "lower", "tolerance": "0",
+                   "recorded": null, "measured": null, "runs": [1, 2], "limit": null,
+                   "status": status, "error": "exited 2"})
+        };
+        let v = json!({"ratchets": [o("a", "ok"), o("b", "broken"), o("c", "flaky"), o("d", "untracked")]});
+        fs::write(&p, v.to_string()).unwrap();
+        assert_eq!(
+            failures(&p).as_deref(),
+            Some("ratchet b is broken: `c` exited 2; ratchet c is flaky: two runs of `c` measured 1 and 2, more apart than its tolerance 0")
+        );
     }
 
     #[test]
