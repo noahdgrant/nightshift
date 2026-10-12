@@ -63,6 +63,14 @@ impl ForgeKind {
         }
     }
 
+    /// The CLI that talks to this forge.
+    pub fn cli(self) -> &'static str {
+        match self {
+            ForgeKind::Github => "gh",
+            ForgeKind::Gitlab => "glab",
+        }
+    }
+
     pub fn host_var(self) -> &'static str {
         match self {
             ForgeKind::Github => "GH_HOST",
@@ -72,6 +80,13 @@ impl ForgeKind {
 }
 
 impl Forges {
+    pub fn get(&self, kind: ForgeKind) -> Option<&Forge> {
+        match kind {
+            ForgeKind::Github => self.github.as_ref(),
+            ForgeKind::Gitlab => self.gitlab.as_ref(),
+        }
+    }
+
     pub fn each(&self) -> [(ForgeKind, Option<&Forge>); 2] {
         [
             (ForgeKind::Github, self.github.as_ref()),
@@ -85,9 +100,74 @@ impl Forges {
 pub struct Forge {
     pub token: TokenSource,
     pub host: Option<String>,
+    /// `owners."<owner>"`: the token for every repo under an owner, or a GitLab group's full path.
+    pub owners: BTreeMap<String, TokenSource>,
+    /// `repos."<owner>/<repo>"`: the token for one repo.
+    pub repos: BTreeMap<String, TokenSource>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// The table a forge token came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Table {
+    Default,
+    Owner(String),
+    Repo(String),
+}
+
+impl Table {
+    pub fn label(&self, kind: ForgeKind) -> String {
+        let name = kind.name();
+        match self {
+            Table::Default => format!("[forge.{name}]"),
+            Table::Owner(k) => format!("[forge.{name}.owners.{k:?}]"),
+            Table::Repo(k) => format!("[forge.{name}.repos.{k:?}]"),
+        }
+    }
+}
+
+impl Forge {
+    /// `repo`, unless `host` (the forge's effective host) is set and `origin_url` is on another one: the owner and
+    /// repo tables belong to that host, so a repo elsewhere gets the default table.
+    pub fn scope<'a>(
+        host: Option<&str>,
+        repo: Option<&'a str>,
+        origin_url: Option<&str>,
+    ) -> Option<&'a str> {
+        let on_other_host = match (host, origin_url.and_then(crate::watch::forge::host)) {
+            (Some(want), Some(got)) => !crate::watch::forge::host(want)
+                .unwrap_or(want)
+                .eq_ignore_ascii_case(got),
+            _ => false,
+        };
+        repo.filter(|_| !on_other_host)
+    }
+
+    /// The token for `repo` (`owner/name`, or `group/sub/name` on GitLab) and the table it came
+    /// from: the repo's table, else its owner's, else the default. Keys match without case.
+    pub fn choose(&self, repo: Option<&str>) -> (&TokenSource, Table) {
+        let owner = repo.and_then(|r| r.rsplit_once('/')).map(|(o, _)| o);
+        if let Some((t, k)) = repo.and_then(|r| find(&self.repos, r)) {
+            (t, Table::Repo(k))
+        } else if let Some((t, k)) = owner.and_then(|o| find(&self.owners, o)) {
+            (t, Table::Owner(k))
+        } else {
+            (&self.token, Table::Default)
+        }
+    }
+}
+
+fn find<'a>(
+    tables: &'a BTreeMap<String, TokenSource>,
+    key: &str,
+) -> Option<(&'a TokenSource, String)> {
+    tables
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(k, t)| (t, k.clone()))
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(try_from = "RawToken", into = "RawToken")]
 pub enum TokenSource {
     /// A shell command whose trimmed stdout is the token.
     Command(String),
@@ -97,38 +177,80 @@ pub enum TokenSource {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct RawToken {
+    token_command: Option<String>,
+    token_env: Option<String>,
+}
+
+impl TryFrom<RawToken> for TokenSource {
+    type Error = String;
+
+    fn try_from(r: RawToken) -> Result<Self, String> {
+        match (r.token_command, r.token_env) {
+            (Some(c), None) => Ok(TokenSource::Command(c)),
+            (None, Some(e)) => Ok(TokenSource::Env(e)),
+            _ => Err("set exactly one of token_command and token_env".into()),
+        }
+    }
+}
+
+impl From<TokenSource> for RawToken {
+    fn from(t: TokenSource) -> Self {
+        match t {
+            TokenSource::Command(c) => RawToken {
+                token_command: Some(c),
+                token_env: None,
+            },
+            TokenSource::Env(e) => RawToken {
+                token_command: None,
+                token_env: Some(e),
+            },
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct RawForge {
     token_command: Option<String>,
     token_env: Option<String>,
     host: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    owners: BTreeMap<String, TokenSource>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    repos: BTreeMap<String, TokenSource>,
 }
 
 impl TryFrom<RawForge> for Forge {
     type Error = String;
 
     fn try_from(r: RawForge) -> Result<Self, String> {
-        let token = match (r.token_command, r.token_env) {
-            (Some(c), None) => TokenSource::Command(c),
-            (None, Some(e)) => TokenSource::Env(e),
-            _ => return Err("set exactly one of token_command and token_env".into()),
-        };
+        let token = RawToken {
+            token_command: r.token_command,
+            token_env: r.token_env,
+        }
+        .try_into()?;
         Ok(Forge {
             token,
             host: r.host,
+            owners: r.owners,
+            repos: r.repos,
         })
     }
 }
 
 impl From<Forge> for RawForge {
     fn from(f: Forge) -> Self {
-        let (token_command, token_env) = match f.token {
-            TokenSource::Command(c) => (Some(c), None),
-            TokenSource::Env(e) => (None, Some(e)),
-        };
+        let RawToken {
+            token_command,
+            token_env,
+        } = f.token.into();
         RawForge {
             token_command,
             token_env,
             host: f.host,
+            owners: f.owners,
+            repos: f.repos,
         }
     }
 }
@@ -631,6 +753,159 @@ ouput = \"none\"
         assert!(parse("[forge.github]\n").is_err());
         assert!(parse("[forge.github]\ntoken_cmd = \"x\"\n").is_err());
         assert!(parse("[forge.bitbucket]\ntoken_env = \"X\"\n").is_err());
+    }
+
+    const OVERRIDES: &str = "[forge.github]
+token_command = \"gh auth token --user personal\"
+[forge.github.owners.\"example-org\"]
+token_command = \"gh auth token --user work\"
+[forge.github.repos.\"example-org/backend\"]
+token_env = \"OTHER_TOKEN\"
+";
+
+    fn github(text: &str) -> Forge {
+        parse(text).unwrap().forge.github.unwrap()
+    }
+
+    #[test]
+    fn a_forge_with_no_overrides_always_picks_the_default_table() {
+        let f = github("[forge.github]\ntoken_env = \"T\"\n");
+        for repo in [None, Some("example-org/backend")] {
+            let (token, table) = f.choose(repo);
+            assert_eq!(token, &TokenSource::Env("T".into()));
+            assert_eq!(table, Table::Default);
+            assert_eq!(table.label(ForgeKind::Github), "[forge.github]");
+        }
+    }
+
+    #[test]
+    fn the_most_specific_table_wins() {
+        let f = github(OVERRIDES);
+        let (token, table) = f.choose(Some("example-org/frontend"));
+        assert_eq!(
+            token,
+            &TokenSource::Command("gh auth token --user work".into())
+        );
+        assert_eq!(
+            table.label(ForgeKind::Github),
+            "[forge.github.owners.\"example-org\"]"
+        );
+        let (token, table) = f.choose(Some("Example-Org/Backend"));
+        assert_eq!(token, &TokenSource::Env("OTHER_TOKEN".into()));
+        assert_eq!(
+            table.label(ForgeKind::Github),
+            "[forge.github.repos.\"example-org/backend\"]"
+        );
+        let (_, table) = f.choose(Some("someone/backend"));
+        assert_eq!(table, Table::Default);
+        assert_eq!(f.choose(None).1, Table::Default);
+    }
+
+    #[test]
+    fn a_gitlab_owner_is_the_full_nested_group_path() {
+        let gl = parse(
+            "[forge.gitlab]
+token_env = \"DEFAULT\"
+host = \"gitlab.example.com\"
+[forge.gitlab.owners.\"team/sub\"]
+token_env = \"SUB\"
+[forge.gitlab.owners.\"team\"]
+token_env = \"TEAM\"
+",
+        )
+        .unwrap()
+        .forge
+        .gitlab
+        .unwrap();
+        let env = |repo| match gl.choose(Some(repo)).0 {
+            TokenSource::Env(v) => v.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(env("team/sub/project"), "SUB");
+        assert_eq!(env("team/project"), "TEAM");
+        assert_eq!(env("team/other/project"), "DEFAULT");
+        assert_eq!(
+            gl.choose(Some("team/sub/project"))
+                .1
+                .label(ForgeKind::Gitlab),
+            "[forge.gitlab.owners.\"team/sub\"]"
+        );
+    }
+
+    #[test]
+    fn a_forge_host_scopes_the_override_tables_to_origins_on_that_host() {
+        let gl = parse(
+            "[forge.gitlab]
+token_env = \"DEFAULT\"
+host = \"gitlab.example.com\"
+[forge.gitlab.owners.\"team\"]
+token_env = \"TEAM\"
+",
+        )
+        .unwrap()
+        .forge
+        .gitlab
+        .unwrap();
+        let repo = Some("team/project");
+        let host = gl.host.as_deref();
+        let pick = |url| gl.choose(Forge::scope(host, repo, Some(url))).1;
+        assert_eq!(
+            pick("git@gitlab.example.com:team/project.git"),
+            Table::Owner("team".into())
+        );
+        assert_eq!(
+            pick("https://GitLab.Example.com/team/project"),
+            Table::Owner("team".into())
+        );
+        assert_eq!(pick("https://gitlab.com/team/project"), Table::Default);
+        assert_eq!(pick("/srv/git/project"), Table::Owner("team".into()));
+        assert_eq!(
+            Forge::scope(
+                None,
+                Some("example-org/backend"),
+                Some("https://github.com/x/y")
+            ),
+            Some("example-org/backend")
+        );
+    }
+
+    #[test]
+    fn a_url_or_ported_forge_host_scopes_like_the_bare_hostname() {
+        let repo = Some("team/project");
+        for host in [
+            "https://gitlab.example.com",
+            "https://gitlab.example.com/",
+            "gitlab.example.com:8443",
+            "GitLab.Example.com",
+        ] {
+            let url = "git@gitlab.example.com:team/project.git";
+            assert_eq!(Forge::scope(Some(host), repo, Some(url)), repo, "{host}");
+            assert_eq!(
+                Forge::scope(Some(host), repo, Some("https://gitlab.com/team/project")),
+                None,
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_override_table_takes_one_token_source_and_no_other_key() {
+        for bad in [
+            "[forge.github.owners.o]\ntoken_env = \"A\"\ntoken_command = \"b\"\n",
+            "[forge.github.owners.o]\n",
+            "[forge.github.repos.\"o/r\"]\ntoken_env = \"A\"\nhost = \"h\"\n",
+            "[forge.github.repos.\"o/r\"]\ntoken_env = \"A\"\nbogus = 1\n",
+        ] {
+            let text = format!("[forge.github]\ntoken_env = \"T\"\n{bad}");
+            assert!(parse(&text).is_err(), "{bad}");
+        }
+        let e = parse("[forge.github]\ntoken_env = \"T\"\n[forge.github.owners.o]\ntoken_env = \"A\"\nbogus = 1\n")
+            .unwrap_err();
+        assert!(e.to_string().contains("unknown field"), "{e}");
+        assert_eq!(
+            parse(OVERRIDES).unwrap(),
+            parse(&toml::to_string(&parse(OVERRIDES).unwrap()).unwrap()).unwrap()
+        );
     }
 
     #[test]

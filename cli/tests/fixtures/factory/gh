@@ -51,6 +51,15 @@ case "$1 $2" in
     echo $c > "$d/status.count"
     [ -f "$d/status.after" ] && [ "$c" -gt "$(cat "$d/status.after")" ] && echo 1 || echo 0
     ;;
+  "api repos/"*)
+    # repo.fail: the token can't read the repo, with the file's text as gh's error.
+    if [ -f "$d/repo.fail" ]; then cat "$d/repo.fail" >&2; exit 1; fi
+    echo "${2#repos/}"
+    ;;
+  "api user")
+    # login: the account the token belongs to; unset, the call fails.
+    cat "$d/login" 2>/dev/null || { echo "HTTP 401" >&2; exit 1; }
+    ;;
   "issue view")
     if [[ " $* " == *" --json labels "* ]]; then
       [ -f "$d/labels-$3.fail" ] && { echo "HTTP 502" >&2; exit 1; }
