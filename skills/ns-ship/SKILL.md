@@ -117,19 +117,23 @@ Read `docs/agents/issue-tracker.md` for the forge and how PRs link issues. When 
 
 ```bash
 git push -u origin ns/<unit-id>
-awk 'f; /^---$/ && ++n==2 {f=1}' .ns/<unit-id>/pr.md > /tmp/<unit-id>-body.md   # body without frontmatter
 ```
 
-Then open it on the forge:
+Then open it on the forge. Run this block in one shell, so `$body` stays set, with only your forge's commands:
 
 ```bash
+body=$(mktemp)   # private, unguessable path
+awk 'f; /^---$/ && ++n==2 {f=1}' .ns/<unit-id>/pr.md > "$body"   # body without frontmatter
+
 # GitHub
-gh pr create --base main --head ns/<unit-id> --title "<title>" --body-file /tmp/<unit-id>-body.md
+gh pr create --base main --head ns/<unit-id> --title "<title>" --body-file "$body"
 gh pr view --json url,isDraft
 
 # GitLab
-glab mr create --source-branch ns/<unit-id> --target-branch main --title "<title>" --description-file /tmp/<unit-id>-body.md --yes
+glab mr create --source-branch ns/<unit-id> --target-branch main --title "<title>" --description-file "$body" --yes
 glab mr view -F json   # web_url, iid, draft
+
+rm -f "$body"
 ```
 
 The push runs the repo's hooks. When one fails, fix what it reports, never skip it ([git hooks](../ns-contract/SKILL.md#git-hooks)).
