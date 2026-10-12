@@ -679,7 +679,7 @@ The new binary lives under the git dir, so the next night starts with the instal
 
 ### Supervising a night
 
-The `ns-supervise` skill runs a session one level above `ns watch`: it attaches to the night or starts it, pings you when you are needed, and writes a status report to `<git-common-dir>/ns/handoffs/<night>.md`. It reads `[supervise]` through `ns factory validate`. Each ping goes to the harness's notification when it has one and to a message in the supervisor's thread. When `notify` is set, the supervisor also runs it with `sh -c`, the one-line ping on stdin. `silence_minutes` is how long the run log may stay quiet while units run before it pings.
+The `ns-supervise` skill runs a session one level above `ns watch`: it attaches to the night or starts it, pings you when you are needed, and writes a status report to `<git-common-dir>/ns/handoffs/nightshift-<night>.md`. It reads `[supervise]` through `ns factory validate`. Each ping goes to the harness's notification when it has one and to a message in the supervisor's thread. When `notify` is set, the supervisor also runs it with `sh -c`, the one-line ping on stdin. `silence_minutes` is how long the run log may stay quiet while units run before it pings.
 
 ### In the morning
 
