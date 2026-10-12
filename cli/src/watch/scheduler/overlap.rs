@@ -106,18 +106,10 @@ impl<'a> Picker<'a> {
     /// overlap no `running` unit's, else the first.
     #[cfg(test)]
     fn pick(&mut self, ready: &[Issue], running: &[(String, Vec<String>)]) -> usize {
-        if ready.len() <= 1 || running.is_empty() {
+        if ready.len() <= 1 {
             return 0;
         }
-        let (forge, rule) = (self.forge, &*self.rule);
-        let cache = &mut self.predicted;
-        ready
-            .iter()
-            .position(|i| {
-                let mine = cache.entry(i.number).or_insert_with(|| predicted(forge, i));
-                overlapped(rule, mine, running).is_empty()
-            })
-            .unwrap_or(0)
+        choose(self.forge, &self.rule, &mut self.predicted, ready, running)
     }
 
     /// Remove from `ready` and return the issue to start next, as [`Picker::pick`] chooses. The
@@ -131,20 +123,10 @@ impl<'a> Picker<'a> {
         if ready.len() <= 1 {
             return ready.remove(0);
         }
-        let (forge, rule) = (self.forge, &*self.rule);
+        let forge = self.forge;
         let cache = &mut self.predicted;
         let running = self.running.get_or_insert_with(running);
-        let at = if running.is_empty() {
-            0
-        } else {
-            ready
-                .iter()
-                .position(|i| {
-                    let mine = cache.entry(i.number).or_insert_with(|| predicted(forge, i));
-                    overlapped(rule, mine, running).is_empty()
-                })
-                .unwrap_or(0)
-        };
+        let at = choose(forge, &self.rule, cache, ready, running);
         let issue = ready.remove(at);
         let mine = cache
             .entry(issue.number)
@@ -154,6 +136,28 @@ impl<'a> Picker<'a> {
         }
         issue
     }
+}
+
+/// The index in `ready` of the first issue clear of every `running` unit, else 0. The rule is
+/// only built when a running unit predicts touches.
+fn choose(
+    forge: &dyn Forge,
+    rule: &LazyCell<Overlap, Box<dyn FnOnce() -> Overlap + '_>>,
+    cache: &mut BTreeMap<u64, Vec<String>>,
+    ready: &[Issue],
+    running: &[(String, Vec<String>)],
+) -> usize {
+    if running.is_empty() {
+        return 0;
+    }
+    let rule = &**rule;
+    ready
+        .iter()
+        .position(|i| {
+            let mine = cache.entry(i.number).or_insert_with(|| predicted(forge, i));
+            overlapped(rule, mine, running).is_empty()
+        })
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -315,6 +319,14 @@ mod tests {
             order.push(picker.take(ready, || running.to_vec()).number);
         }
         order
+    }
+
+    #[test]
+    fn no_running_unit_reads_no_rule_however_many_are_ready() {
+        let (forge, mut ready) = queued(["`cli/**`", "`cli/**`", "`docs/**`"]);
+        let mut picker = Picker::new(&forge, || panic!("rule read"));
+        let first = picker.take(&mut ready, Vec::new);
+        assert_eq!(first.number, 2);
     }
 
     #[test]
