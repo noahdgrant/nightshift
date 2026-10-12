@@ -46,11 +46,12 @@ Every issue also carries at least one area label.
 | `ready-for-human` | `status:ready-for-human` | Needs a human (a judgement call, credentials, a stuck run) | a person |
 | `wontfix` | `status:wontfix` | Will not be actioned; close as not planned | none |
 
-`ns watch` also uses two run states, which skills never set, and moves a parent that triage split during a run to `status:needs-define` (`[queue] split_label`):
+`ns watch` also uses three states that skills never set:
 
 | Label | Meaning |
 |---|---|
 | `status:in-progress` | `ns run` is working on the issue |
 | `status:in-review` | nightshift opened a PR, waiting for human review |
+| `status:split` | Triage split the issue into child issues during a run (`[queue] split_label`). `ns watch` closes it once every child is closed as completed, and moves it to `status:ready-for-human` if one was closed as not planned |
 
 When a skill mentions a role (e.g. "apply the `ready-for-agent` label"), use the corresponding string from these tables.

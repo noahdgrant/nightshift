@@ -1,7 +1,9 @@
 //! `ns doctor`: config, harness availability, harness skill dirs and forge credential report.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::ValueEnum;
@@ -87,12 +89,7 @@ pub fn run() -> Result<()> {
         ));
     }
 
-    let forges = cfg.as_ref().map(|c| c.forge.clone()).unwrap_or_default();
-    let mut forge = Map::new();
-    for (kind, f) in forges.each() {
-        forge.insert(kind.name().to_string(), forge_entry(kind, f, &mut problems));
-    }
-
+    let (forge, warnings) = forges_entry(cfg.as_ref(), &mut problems);
     let hooks = hooks_entry(&mut problems);
 
     let out = json!({
@@ -114,9 +111,10 @@ pub fn run() -> Result<()> {
             "auto_memory": false,
             "env": format!("{}=1", crate::billing::AUTO_MEMORY_ENV),
         },
-        "forge": Value::Object(forge),
+        "forge": forge,
         "hooks": hooks,
         "problems": problems,
+        "warnings": warnings,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
@@ -168,8 +166,48 @@ fn hooks_entry(problems: &mut Vec<String>) -> Value {
     json!({ "ok": ok, "path": path, "detail": detail, "fix": (!ok).then_some(FIX) })
 }
 
-fn forge_entry(kind: ForgeKind, f: Option<&Forge>, problems: &mut Vec<String>) -> Value {
-    let creds = match f.map(|f| forge::resolve(kind, f)).transpose() {
+/// `[queue] source` from the current repo's factory file, when it has one that loads.
+fn queue_source() -> Option<String> {
+    let repo = crate::git::Repo::discover(Path::new(".")).ok()?;
+    crate::factory::load(&crate::factory::root(None, &repo.root))
+        .ok()?
+        .queue
+        .source
+}
+
+/// Each forge's entry, and the warnings they raise, also printed to stderr.
+fn forges_entry(cfg: Option<&config::Config>, problems: &mut Vec<String>) -> (Value, Vec<String>) {
+    let source = queue_source();
+    let origin = forge::Origin::read(Path::new("."), source.as_deref(), cfg);
+    let mut warnings: Vec<String> = Vec::new();
+    let mut forge = Map::new();
+    for (kind, f) in origin.forges.each() {
+        let entry = forge_entry(kind, f, origin.url_for(kind), problems, &mut warnings);
+        forge.insert(kind.name().to_string(), entry);
+    }
+    for w in &warnings {
+        eprintln!("ns: warning: {w}");
+    }
+    (Value::Object(forge), warnings)
+}
+
+/// One forge's entry. `origin` is set for the forge `origin` is on: then the entry also names the
+/// repo, whether the token can read it, and the account `ssh -T` greets.
+fn forge_entry(
+    kind: ForgeKind,
+    f: Option<&Forge>,
+    origin: Option<&str>,
+    problems: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) -> Value {
+    let repo = origin.and_then(forge::repo_path);
+    let repo = repo.as_deref();
+    let table_repo = f.map_or(repo, |f| forge::scope(kind, f, repo, origin));
+    if !forge::exported_by_parent(kind, repo) {
+        warnings.extend(forge::env_warning(kind, f, table_repo));
+    }
+    warnings.extend(f.and_then(|f| forge::scope_warning(kind, f, repo, origin)));
+    let creds = match f.map(|f| forge::resolve(kind, f, table_repo)).transpose() {
         Ok(c) => c,
         Err(e) => {
             problems.push(e.message);
@@ -180,28 +218,120 @@ fn forge_entry(kind: ForgeKind, f: Option<&Forge>, problems: &mut Vec<String>) -
         Some(_) => creds.is_some(),
         None => forge::is_set(kind.token_var()),
     };
-    let mut entry = json!({ "configured": f.is_some(), "token_resolved": token_resolved });
-    if kind == ForgeKind::Github {
-        let account = token_resolved
-            .then(|| github_account(creds.as_ref()))
-            .flatten();
-        entry["account"] = json!(account);
-    }
-    entry
+    let account = token_resolved
+        .then(|| forge::account(kind, creds.as_ref()))
+        .flatten();
+    let readable = repo.filter(|_| f.is_none() || creds.is_some()).map(|r| {
+        forge::can_read(kind, r, creds.as_ref()).map_err(|e| {
+            if f.is_some() {
+                let source = forge::source(kind, f, table_repo);
+                problems.push(forge::unreadable(kind, r, account.as_deref(), &source, &e));
+            }
+        })
+    });
+    let ssh = origin.and_then(forge::ssh_target).map(|t| {
+        let greeted = ssh_account(&t);
+        match (&greeted, &account) {
+            (None, _) => warnings.push(format!("ssh -T {} greeted no account", t.dest)),
+            (Some(s), Some(a)) if !s.eq_ignore_ascii_case(a) => warnings.push(format!(
+                "ssh to {} authenticates as {s}, but the {} token is account {a}: git and the forge API act as different accounts",
+                t.dest,
+                kind.name()
+            )),
+            _ => {}
+        }
+        json!({ "dest": t.dest, "account": greeted })
+    });
+    json!({
+        "configured": f.is_some(),
+        "token_resolved": token_resolved,
+        "account": account,
+        "table": f.map(|f| f.choose(table_repo).1.label(kind)),
+        "repo": repo,
+        "repo_readable": readable.map(|r| r.is_ok()),
+        "ssh": ssh,
+    })
 }
 
-fn github_account(creds: Option<&forge::Credentials>) -> Option<String> {
-    let mut cmd = Command::new("gh");
-    crate::git::scrub(&mut cmd);
-    if let Some(c) = creds {
-        c.apply_to(ForgeKind::Github, &mut cmd);
+/// The account `ssh -T` greets on `t`: GitHub's `Hi <account>!` or GitLab's `Welcome to
+/// GitLab, @<account>!`. Batch mode, so a missing key or unknown host fails instead of asking.
+fn ssh_account(t: &forge::SshTarget) -> Option<String> {
+    ssh_account_within(OsStr::new("ssh"), t, forge::PROBE_TIMEOUT)
+}
+
+fn ssh_account_within(program: &OsStr, t: &forge::SshTarget, limit: Duration) -> Option<String> {
+    let mut cmd = Command::new(program);
+    cmd.args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
+    if let Some(p) = &t.port {
+        cmd.args(["-p", p]);
     }
-    let out = cmd
-        .args(["api", "user", "--jq", ".login"])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    let login = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && !login.is_empty()).then_some(login)
+    cmd.arg("--").arg(&t.dest).stdin(Stdio::null());
+    let out = forge::output_within(cmd, limit).ok()?;
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    greeted(&text)
+}
+
+fn greeted(text: &str) -> Option<String> {
+    text.lines().find_map(|l| {
+        let l = l.trim();
+        let rest = l
+            .strip_prefix("Hi ")
+            .or_else(|| l.split_once(", @").map(|(_, r)| r))?;
+        let name = rest.split_once('!')?.0;
+        (!name.is_empty()).then(|| name.to_string())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{greeted, ssh_account_within};
+    use crate::forge::SshTarget;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn ssh_account_gives_up_on_a_host_that_stalls() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("ssh");
+        let made = Command::new("sh")
+            .arg("-c")
+            .arg(r#"printf '%s\n' '#!/bin/sh' 'exec sleep 30' > "$0" && chmod 755 "$0""#)
+            .arg(&fake)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let t = SshTarget {
+            dest: "git@example".into(),
+            port: None,
+        };
+        let limit = Duration::from_millis(300);
+        let started = Instant::now();
+        let got = ssh_account_within(fake.as_os_str(), &t, limit);
+        let elapsed = started.elapsed();
+        assert_eq!(got, None);
+        assert!(elapsed >= limit, "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
+    }
+
+    #[test]
+    fn greeted_reads_github_and_gitlab_greetings() {
+        assert_eq!(
+            greeted("Hi work-account! You've successfully authenticated, but GitHub does not provide shell access.\n").as_deref(),
+            Some("work-account")
+        );
+        assert_eq!(
+            greeted("Welcome to GitLab, @someone!\n").as_deref(),
+            Some("someone")
+        );
+        assert_eq!(
+            greeted("git@github.com: Permission denied (publickey).\n"),
+            None
+        );
+        assert_eq!(greeted("Hi !\n"), None);
+        assert_eq!(greeted(""), None);
+    }
 }

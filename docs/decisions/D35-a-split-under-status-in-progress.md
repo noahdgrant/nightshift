@@ -4,6 +4,7 @@ title: "A split under status:in-progress writes brief.md with status: split"
 issue: 206
 date: 2026-10-10
 amends: [D26]
+amended_by: [ADR-391]
 ---
 
 # D35: A split under status:in-progress writes brief.md with status: split

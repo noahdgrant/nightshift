@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::{ClosingPrs, Forge, PrState};
+use super::{ClosingPrs, Forge, IssueState, PrState};
 use crate::config::ForgeKind;
 use crate::error::SfError;
 use crate::watch::ci::{Check, HeadChecks, Outcome};
@@ -82,6 +82,19 @@ fn names(labels: &Value) -> Vec<String> {
         .collect()
 }
 
+/// A GitLab issue as `ns watch` reads it, team-authored when `team` holds its author.
+fn to_issue(i: &Value, team: &BTreeSet<u64>) -> Issue {
+    Issue {
+        number: i["iid"].as_u64().unwrap_or(0),
+        title: i["title"].as_str().unwrap_or("").to_string(),
+        labels: names(&i["labels"]),
+        body: i["description"].as_str().unwrap_or("").to_string(),
+        team: i["author"]["id"]
+            .as_u64()
+            .is_some_and(|id| team.contains(&id)),
+    }
+}
+
 impl GitLab {
     fn list(&self, path: &str) -> Result<Vec<Value>> {
         items(&glab(&self.root, &["api", "--paginate", path])?)
@@ -148,15 +161,7 @@ impl Forge for GitLab {
         Ok(self
             .list(&path)?
             .iter()
-            .map(|i| Issue {
-                number: i["iid"].as_u64().unwrap_or(0),
-                title: i["title"].as_str().unwrap_or("").to_string(),
-                labels: names(&i["labels"]),
-                body: i["description"].as_str().unwrap_or("").to_string(),
-                team: i["author"]["id"]
-                    .as_u64()
-                    .is_some_and(|id| team.contains(&id)),
-            })
+            .map(|i| to_issue(i, &team))
             .collect())
     }
 
@@ -187,6 +192,54 @@ impl Forge for GitLab {
 
     fn is_closed(&self, n: u64) -> Result<bool> {
         Ok(self.issue(n)?["state"].as_str() == Some("closed"))
+    }
+
+    /// GitLab records no close reason, so a closed issue counts as completed.
+    fn state(&self, n: u64) -> Result<IssueState> {
+        Ok(match self.issue(n)?["state"].as_str() {
+            Some("closed") => IssueState::Completed,
+            _ => IssueState::Open,
+        })
+    }
+
+    /// GitLab's child items are work-item links the REST API doesn't list, so none are read: a
+    /// split parent's children come from its notes and `Part of` lines instead.
+    fn sub_issues(&self, _: u64) -> Result<Vec<u64>> {
+        Ok(Vec::new())
+    }
+
+    fn team_comments(&self, n: u64) -> Result<Vec<String>> {
+        let team = self.team()?;
+        let path = format!("projects/:id/issues/{n}/notes?sort=asc&per_page=100");
+        Ok(self
+            .list(&path)?
+            .iter()
+            .filter(|c| c["system"].as_bool() != Some(true))
+            .filter(|c| {
+                c["author"]["id"]
+                    .as_u64()
+                    .is_some_and(|id| team.contains(&id))
+            })
+            .filter_map(|c| c["body"].as_str().map(String::from))
+            .collect())
+    }
+
+    fn part_of(&self, n: u64) -> Result<Vec<Issue>> {
+        let team = self.team()?;
+        let path = format!(
+            "projects/:id/issues?state=all&in=description&search={}&per_page=100",
+            encode(&format!("Part of #{n}"))
+        );
+        Ok(self
+            .list(&path)?
+            .iter()
+            .map(|i| to_issue(i, &team))
+            .collect())
+    }
+
+    /// GitLab creates a label an issue edit names.
+    fn ensure_label(&self, _: &str, _: &str) -> Result<()> {
+        Ok(())
     }
 
     fn labels(&self, n: u64) -> Result<Vec<String>> {

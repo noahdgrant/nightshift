@@ -391,8 +391,11 @@ Examples:
 
 skill_dirs.<harness>: the skill directory ns install --harness links into, and
 ns_skills, how many ns-*/SKILL.md skills it holds (0 when it is missing).
-forge.<name>: configured, token_resolved, and for github the account gh api user returns.
-The token itself is never printed.")]
+forge.<name>: configured, token_resolved, the account the forge API returns for the token, and
+the table it came from; for the forge origin is on, also repo, repo_readable and, for an SSH
+origin, ssh: {dest, account} from ssh -T. warnings: an SSH account that differs from the
+token's, and a set GH_TOKEN / GITLAB_TOKEN that overrides the config. The token itself is
+never printed.")]
     Doctor,
 
     /// The PreToolUse hook ns run gives claude phases: deny a git hook bypass (internal)
@@ -453,13 +456,17 @@ local ns/<unit> branch, unless it has uncommitted tracked changes or commits the
 ns clean --help); `cleanup` in the output says which.
 
 Forge tokens: [forge.github] / [forge.gitlab] in the ns config (see ns ask --help for the path)
-are resolved once and exported as GH_TOKEN / GITLAB_TOKEN to every child; a set variable wins.
+are resolved once and exported as GH_TOKEN / GITLAB_TOKEN to every child; a set variable wins,
+with a warning. Owner and repo tables, matched on origin's URL, override the default; the most
+specific wins. At start the token must read the repo, else exit 2 naming the account and table.
   [forge.github]
   token_command = \"gh auth token --user <account>\"   # or: token_env = \"MY_GH_TOKEN\"
+  [forge.github.owners.\"example-org\"]
+  token_command = \"gh auth token --user work-account\"
 
 Exit codes: 0 done, merged or split (triage split the issue into child issues), 1 stuck,
 2 usage or config error (incl. missing subscription login, harness not on PATH, forge token
-that does not resolve), 3 budget, 4 paused on a usage limit, 5 another ns run holds this unit's
+that does not resolve or cannot read the repo), 3 budget, 4 paused on a usage limit, 5 another ns run holds this unit's
 run lock (runs of other units go ahead). A phase whose runner names a lock another
 run holds waits for it instead ([runners] lock_dir in the ns config shares locks across repos),
 and so does the merge step for the repo's merge lock.";

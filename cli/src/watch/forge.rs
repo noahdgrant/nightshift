@@ -23,6 +23,15 @@ pub enum PrState {
     Merged,
 }
 
+/// Where an issue stands. A closed issue's reason is the forge's; one that names none is completed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IssueState {
+    Open,
+    Completed,
+    /// Closed for any other reason: not planned, a duplicate.
+    NotPlanned,
+}
+
 /// Issue number -> the PR that closes it and that PR's head branch, empty for a fork's.
 pub type ClosingPrs = BTreeMap<u64, (u64, String)>;
 
@@ -31,6 +40,16 @@ pub trait Forge {
     fn open_issues(&self, label: Option<&str>) -> Result<Vec<Issue>>;
     fn closing_prs(&self, state: PrState) -> Result<ClosingPrs>;
     fn is_closed(&self, n: u64) -> Result<bool>;
+    fn state(&self, n: u64) -> Result<IssueState>;
+    /// The forge's sub-issues of `n`, in any state.
+    fn sub_issues(&self, n: u64) -> Result<Vec<u64>>;
+    /// The bodies of `n`'s team-authored comments, oldest first.
+    fn team_comments(&self, n: u64) -> Result<Vec<String>>;
+    /// Issues in any state that a search finds saying `Part of #n`: candidates, whose body the
+    /// caller checks.
+    fn part_of(&self, n: u64) -> Result<Vec<Issue>>;
+    /// Create issue label `label` unless the repo has it.
+    fn ensure_label(&self, label: &str, description: &str) -> Result<()>;
     fn labels(&self, n: u64) -> Result<Vec<String>>;
     fn edit_labels(&self, n: u64, remove: &[String], add: Option<&str>) -> Result<()>;
     fn comment(&self, n: u64, body: &str) -> Result<()>;
@@ -129,6 +148,15 @@ pub fn host(url: &str) -> Option<&str> {
     };
     let host = rest.rsplit('@').next()?;
     Some(host.split(':').next().unwrap_or(host))
+}
+
+/// The path of a remote URL, the part after the host: `scheme://[user@]host[:port]/path` or
+/// scp-like `[user@]host:path`; `None` for a local path.
+pub fn path(url: &str) -> Option<&str> {
+    match url.split_once("://") {
+        Some((_, rest)) => Some(rest.split_once('/')?.1),
+        None => Some(url.split_once(':').filter(|(h, _)| !h.contains('/'))?.1),
+    }
 }
 
 /// GitHub through `gh`.
@@ -277,6 +305,15 @@ pub(super) fn first_other(v: &Value, key: &str, red: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// The state `gh issue view --json state,stateReason` gives.
+fn issue_state(v: &Value) -> IssueState {
+    match (v["state"].as_str(), v["stateReason"].as_str()) {
+        (Some("CLOSED"), None | Some("" | "COMPLETED")) => IssueState::Completed,
+        (Some("CLOSED"), _) => IssueState::NotPlanned,
+        _ => IssueState::Open,
+    }
+}
+
 /// The issue number at the end of the URL `gh issue create` prints.
 fn created_number(out: &str) -> Result<u64> {
     out.trim()
@@ -287,33 +324,12 @@ fn created_number(out: &str) -> Result<u64> {
 }
 
 impl GitHub {
-    /// Create `label` unless the repo has it. Without `--force`, an existing label keeps the
-    /// colour and description a human gave it.
     /// The default branch, as the forge names it: the one [`Forge::main_checks`] reads.
     fn default_branch(&self) -> Result<String> {
         let v = gh_json(&self.root, &["repo", "view", "--json", "defaultBranchRef"])?;
         match v["defaultBranchRef"]["name"].as_str() {
             Some(b) if !b.is_empty() && !b.starts_with('-') => Ok(b.to_string()),
             _ => anyhow::bail!("GitHub names no default branch"),
-        }
-    }
-
-    fn ensure_label(&self, label: &str, description: &str) -> Result<()> {
-        let created = gh(
-            &self.root,
-            &[
-                "label",
-                "create",
-                label,
-                "--color",
-                LABEL_COLOR,
-                "--description",
-                description,
-            ],
-        );
-        match created {
-            Err(e) if !format!("{e:#}").contains("already exists") => Err(e),
-            _ => Ok(()),
         }
     }
 }
@@ -373,6 +389,87 @@ impl Forge for GitHub {
             &["issue", "view", &n.to_string(), "--json", "state"],
         )?;
         Ok(v["state"].as_str() == Some("CLOSED"))
+    }
+
+    fn state(&self, n: u64) -> Result<IssueState> {
+        let v = gh_json(
+            &self.root,
+            &[
+                "issue",
+                "view",
+                &n.to_string(),
+                "--json",
+                "state,stateReason",
+            ],
+        )?;
+        Ok(issue_state(&v))
+    }
+
+    fn sub_issues(&self, n: u64) -> Result<Vec<u64>> {
+        let path = format!("repos/{{owner}}/{{repo}}/issues/{n}/sub_issues?per_page=100");
+        let out = gh(
+            &self.root,
+            &["api", &path, "--paginate", "--jq", ".[].number"],
+        )?;
+        Ok(out.lines().filter_map(|l| l.trim().parse().ok()).collect())
+    }
+
+    fn team_comments(&self, n: u64) -> Result<Vec<String>> {
+        let path = format!("repos/{{owner}}/{{repo}}/issues/{n}/comments?per_page=100");
+        let out = gh(
+            &self.root,
+            &[
+                "api",
+                &path,
+                "--paginate",
+                "--jq",
+                ".[] | {number: 1, body, authorAssociation: .author_association}",
+            ],
+        )?;
+        Ok(parse_issues(&out)
+            .into_iter()
+            .filter(|c| c.team)
+            .map(|c| c.body)
+            .collect())
+    }
+
+    fn part_of(&self, n: u64) -> Result<Vec<Issue>> {
+        let q = format!("q=repo:{{owner}}/{{repo}} is:issue in:body \"Part of #{n}\"");
+        Ok(parse_issues(&gh(
+            &self.root,
+            &[
+                "api",
+                "search/issues",
+                "--method",
+                "GET",
+                "-F",
+                &q,
+                "-F",
+                "per_page=100",
+                "--jq",
+                ".items[] | {number, title, labels, body, authorAssociation: .author_association}",
+            ],
+        )?))
+    }
+
+    /// Without `--force`, an existing label keeps the colour and description a human gave it.
+    fn ensure_label(&self, label: &str, description: &str) -> Result<()> {
+        let created = gh(
+            &self.root,
+            &[
+                "label",
+                "create",
+                label,
+                "--color",
+                LABEL_COLOR,
+                "--description",
+                description,
+            ],
+        );
+        match created {
+            Err(e) if !format!("{e:#}").contains("already exists") => Err(e),
+            _ => Ok(()),
+        }
     }
 
     fn labels(&self, n: u64) -> Result<Vec<String>> {
@@ -494,6 +591,26 @@ impl Forge for GitHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_closed_issue_is_not_planned_only_when_its_reason_says_other_than_completed() {
+        let state = |v: Value| issue_state(&v);
+        use IssueState::*;
+        assert_eq!(state(serde_json::json!({"state": "OPEN"})), Open);
+        assert_eq!(
+            state(serde_json::json!({"state": "OPEN", "stateReason": "REOPENED"})),
+            Open
+        );
+        for reason in [Value::Null, "".into(), "COMPLETED".into()] {
+            let v = serde_json::json!({"state": "CLOSED", "stateReason": reason});
+            assert_eq!(state(v), Completed);
+        }
+        assert_eq!(state(serde_json::json!({"state": "CLOSED"})), Completed);
+        for reason in ["NOT_PLANNED", "DUPLICATE"] {
+            let v = serde_json::json!({"state": "CLOSED", "stateReason": reason});
+            assert_eq!(state(v), NotPlanned, "{reason}");
+        }
+    }
 
     #[test]
     fn source_is_inferred_from_the_origin_host() {
@@ -725,6 +842,15 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("tok"));
+    }
+
+    #[test]
+    fn path_reads_url_and_scp_forms_and_no_path_from_a_local_path() {
+        assert_eq!(path("https://gitlab.com/o/r.git"), Some("o/r.git"));
+        assert_eq!(path("ssh://git@gitlab.example:2222/o/r"), Some("o/r"));
+        assert_eq!(path("git@github.com:o/r.git"), Some("o/r.git"));
+        assert_eq!(path("https://gitlab.com"), None);
+        assert_eq!(path("/srv/git/gitlab:mirror.git"), None);
     }
 
     #[test]

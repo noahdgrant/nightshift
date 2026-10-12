@@ -752,9 +752,8 @@ impl Loaded {
         let cfg_path = config::path();
         let cfg = config::load(&cfg_path)
             .map_err(|e| SfError::usage(format!("{e:#}"), "check it with:\n  ns doctor"))?;
-        if let Some(c) = &cfg {
-            forge::export(&c.forge)?;
-        }
+        let origin = forge::Origin::read(&repo.root, fac.queue.source.as_deref(), cfg.as_ref());
+        forge::start(&origin, dry_run)?;
         let files = json!({
             "config": file_hash(&cfg_path),
             "factory": file_hash(&root.join(factory::FILE)),

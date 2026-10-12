@@ -6052,20 +6052,310 @@ fn dry_run_reports_a_split_brief() {
 }
 
 #[test]
-fn watch_split_moves_the_parent_to_needs_define_without_a_comment() {
+fn watch_split_moves_the_parent_to_split_label_without_a_comment() {
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");
     e.queue("triage", &["split:into #8 and #9."]);
     let v = e.run(&["watch", "--once"], 0);
     assert_eq!(v["units"][0]["outcome"], "split", "{v}");
-    assert_eq!(e.labels(2), ["type:fix", "status:needs-define"]);
+    assert_eq!(e.labels(2), ["type:fix", "status:split"]);
     let calls = e.gh_calls();
     assert!(!calls.contains("issue comment 2"), "{calls}");
     assert!(!calls.contains("status:ready-for-human"), "{calls}");
+    assert!(!calls.contains("pr edit"), "{calls}");
     assert!(
-        !calls.contains("pr edit") && !calls.contains("label create"),
+        calls.contains("label create status:split --color d73a4a --description Split into child issues; closes when they're done"),
         "{calls}"
     );
+}
+
+/// Split parent 5 under `status:split` whose sub-issues are 8 and 9, both closed as completed,
+/// and parent 6 under the old split label whose triage notes list open child 10.
+fn split_parents(e: &Env) {
+    e.open_by(
+        5,
+        "Parent",
+        &["type:feat", "status:split"],
+        "",
+        Some("MEMBER"),
+    );
+    e.gh_file("subs-5", "8\n9\n");
+    e.issue(8, "Child a", "CLOSED");
+    e.issue(9, "Child b", "CLOSED");
+    e.open_by(
+        6,
+        "Old",
+        &["type:feat", "status:needs-define"],
+        "",
+        Some("MEMBER"),
+    );
+    let notes = serde_json::json!({"number": 1, "body": "Children:\n- #10 c\n", "authorAssociation": "MEMBER"});
+    let outside =
+        serde_json::json!({"number": 1, "body": "Children:\n- #8\n", "authorAssociation": "NONE"});
+    e.gh_file("comments-6.jsonl", &format!("{notes}\n{outside}\n"));
+    e.issue(10, "Child c", "OPEN");
+}
+
+#[test]
+fn watch_closes_split_parents_whose_children_are_done_and_sweeps_once() {
+    let e = Env::new();
+    split_parents(&e);
+    let v = e.run(&["watch", "--once"], 0);
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains("issue close 5 --reason completed"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("issue comment 5 --body 🤖 Every child"),
+        "{calls}"
+    );
+    assert_eq!(e.labels(5), ["type:feat"]);
+    assert_eq!(e.labels(6), ["type:feat", "status:split"]);
+    let actions: Vec<_> = v["split_parents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p["number"].as_u64().unwrap(), p["action"].as_str().unwrap()))
+        .collect();
+    assert_eq!(actions, [(5, "close"), (6, "relabel")], "{v}");
+
+    // The sweep ran: the next night leaves the old label alone.
+    e.open_by(11, "Design", &["status:needs-define"], "", Some("MEMBER"));
+    e.gh_file("subs-11", "10\n");
+    fs::write(e.ghd.join("calls"), "").unwrap();
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(11), ["status:needs-define"]);
+    assert!(!e.gh_calls().contains("labels=status:needs-define"));
+}
+
+/// Unit 2 ready and set to merge on its own PR 12, as the auto-merge tests do.
+fn a_unit_that_merges(e: &Env) {
+    e.factory(AUTO);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file(
+        "prs.json",
+        r#"[{"number":12,"body":"Closes #2","headRefName":"ns/2-fix-a","isCrossRepository":false}]"#,
+    );
+}
+
+#[test]
+fn a_split_read_that_fails_does_not_hold_up_the_night() {
+    let e = Env::new();
+    a_unit_that_merges(&e);
+    split_parents(&e);
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *labels=status:split*) echo 'HTTP 502' >&2; exit 1 ;; esac\n",
+    );
+    let out = e.ns().args(["watch", "--once"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("split parents not checked") && err.contains("HTTP 502"),
+        "{err}"
+    );
+    let calls = e.gh_calls();
+    assert!(calls.contains("pr merge 12"), "{calls}");
+    assert!(
+        calls.contains("issue close 2 --reason completed"),
+        "{calls}"
+    );
+    assert!(!calls.contains("issue close 5"), "{calls}");
+    assert_eq!(e.labels(5), ["type:feat", "status:split"]);
+    assert!(!e.root.join(".git/ns/split-swept").exists());
+}
+
+#[test]
+fn a_dry_run_whose_split_read_fails_says_so_and_exits_ok() {
+    let e = Env::new();
+    split_parents(&e);
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *labels=status:split*) echo 'HTTP 502' >&2; exit 1 ;; esac\n",
+    );
+    let out = e.ns().args(["watch", "--dry-run"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("split parents not checked") && err.contains("HTTP 502"),
+        "{err}"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["split_parents"], serde_json::json!([]), "{v}");
+}
+
+#[test]
+fn a_sweep_marker_that_cannot_be_written_leaves_the_sweep_to_run_again() {
+    let e = Env::new();
+    split_parents(&e);
+    // The marker is a link to a directory that is not there, so the write fails and the
+    // clone still looks unswept.
+    let marker = e.root.join(".git/ns/split-swept");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(e.base.join("missing/marker"), &marker).unwrap();
+    let out = e.ns().args(["watch", "--once"]).output();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("the split sweep may run again"), "{err}");
+    assert_eq!(e.labels(6), ["type:feat", "status:split"]);
+    // The next night sweeps again: an old-label parent that turned up since moves.
+    e.open_by(11, "Design", &["status:needs-define"], "", Some("MEMBER"));
+    e.gh_file("subs-11", "10\n");
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(11), ["status:split"]);
+}
+
+#[test]
+fn watch_dry_run_lists_split_parents_and_changes_nothing() {
+    let e = Env::new();
+    split_parents(&e);
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let parents = &v["split_parents"];
+    assert_eq!(parents[0]["number"], 5, "{v}");
+    assert_eq!(parents[0]["action"], "close");
+    assert_eq!(parents[0]["children"], serde_json::json!([8, 9]));
+    assert_eq!(parents[1]["number"], 6);
+    assert_eq!(parents[1]["action"], "relabel");
+    assert_eq!(parents[1]["children"], serde_json::json!([10]));
+    assert_eq!(parents[1]["open"], 1);
+    let calls = e.gh_calls();
+    assert!(
+        !calls.contains("issue close") && !calls.contains("issue edit"),
+        "{calls}"
+    );
+    // A dry run leaves the sweep to the first real night.
+    let again = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(again["split_parents"][1]["action"], "relabel");
+}
+
+#[test]
+fn watch_dry_run_reports_waiting_and_childless_split_parents() {
+    let e = Env::new();
+    e.open_by(5, "Waiting", &["status:split"], "", Some("MEMBER"));
+    e.gh_file("subs-5", "8\n");
+    e.issue(8, "c", "OPEN");
+    e.open_by(6, "Bare", &["status:split"], "", Some("MEMBER"));
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let parents = &v["split_parents"];
+    assert_eq!(parents[0]["number"], 5, "{v}");
+    assert_eq!(parents[0]["action"], "wait");
+    assert_eq!(parents[0]["open"], 1);
+    assert_eq!(parents[1]["number"], 6);
+    assert_eq!(parents[1]["action"], "no_children");
+    assert_eq!(parents[1]["children"], serde_json::json!([]));
+}
+
+#[test]
+fn watch_leaves_the_sweep_pending_when_a_swept_parent_cannot_be_read() {
+    let e = Env::new();
+    e.open_by(
+        6,
+        "Old",
+        &["type:feat", "status:needs-define"],
+        "",
+        Some("MEMBER"),
+    );
+    e.gh_file("subs-6", "99\n");
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(6), ["type:feat", "status:needs-define"]);
+
+    e.gh_file("subs-6", "10\n");
+    e.issue(10, "c", "OPEN");
+    e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(6), ["type:feat", "status:split"]);
+}
+
+#[test]
+fn watch_reports_a_split_parent_with_no_children_once_a_night() {
+    let e = Env::new();
+    e.open_by(5, "Parent", &["status:split"], "", Some("MEMBER"));
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("triage", &["split:into #8 and #9."]);
+    let out = e
+        .ns()
+        .args(["watch", "--once"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let said = |n: u64| {
+        err.matches(&format!(
+            "#{n} is labelled status:split but has no children"
+        ))
+        .count()
+    };
+    // Filled at start and again once unit 2 ended: two passes, one report each.
+    assert_eq!((said(5), said(2)), (1, 1), "{err}");
+    assert_eq!(e.labels(5), ["status:split"]);
+}
+
+#[test]
+fn watch_closes_a_split_parent_whose_last_child_closed_during_the_run() {
+    let e = Env::new();
+    e.open_by(5, "Parent", &["status:split"], "", Some("MEMBER"));
+    e.gh_file("subs-5", "8\n");
+    e.issue(8, "Child", "OPEN");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("triage", &["split:script"]);
+    e.ctl(
+        "triage.sh",
+        "sed -i 's/\"OPEN\"/\"CLOSED\"/' \"$FAKE_GH_DIR/issue-8.json\"\n",
+    );
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["units"][0]["outcome"], "split", "{v}");
+    assert!(e.gh_calls().contains("issue close 5 --reason completed"));
+    assert_eq!(v["split_parents"][0]["number"], 5, "{v}");
+    assert_eq!(v["split_parents"][0]["action"], "close", "{v}");
+}
+
+#[test]
+fn watch_finds_split_children_by_their_part_of_line() {
+    let e = Env::new();
+    e.open_by(5, "Parent", &["status:split"], "", Some("MEMBER"));
+    let child = |n: u64, body: &str, assoc: &str| serde_json::json!({"number": n, "title": "c", "labels": [], "body": body, "authorAssociation": assoc});
+    let found = [
+        child(8, "Part of #5\n\nbody", "MEMBER"),
+        child(9, "Part of #5", "NONE"),
+        child(10, "see #5", "MEMBER"),
+    ];
+    let lines: String = found.iter().map(|c| format!("{c}\n")).collect();
+    e.gh_file("search.jsonl", &lines);
+    e.issue(8, "c", "CLOSED");
+    for n in [9, 10] {
+        e.issue(n, "c", "OPEN");
+    }
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(
+        v["split_parents"][0]["children"],
+        serde_json::json!([8]),
+        "{v}"
+    );
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains("api search/issues --method GET -F q=repo:{owner}/{repo} is:issue in:body \"Part of #5\""),
+        "{calls}"
+    );
+    assert!(calls.contains("issue close 5"), "{calls}");
+}
+
+#[test]
+fn watch_sends_a_split_parent_with_a_dropped_child_to_a_human() {
+    let e = Env::new();
+    e.open_by(5, "Parent", &["status:split"], "", Some("MEMBER"));
+    e.gh_file("subs-5", "8\n");
+    e.gh_file(
+        "issue-8.json",
+        r#"{"number":8,"title":"c","url":"u","state":"CLOSED","stateReason":"NOT_PLANNED"}"#,
+    );
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(e.labels(5), ["status:ready-for-human"]);
+    assert_eq!(v["split_parents"][0]["action"], "ready_for_human", "{v}");
+    assert!(!e.gh_calls().contains("issue close 5"));
 }
 
 #[test]
@@ -6589,6 +6879,745 @@ fn a_set_gh_token_wins_and_no_command_runs() {
         "token_command ran though GH_TOKEN was set"
     );
     assert_eq!(e.tokens_seen(), ["from-env"]);
+}
+
+const OVERRIDES: &str = "[forge.github]
+token_env = \"DEFAULT_TOKEN\"
+[forge.github.owners.\"example-org\"]
+token_env = \"OWNER_TOKEN\"
+[forge.github.repos.\"example-org/backend\"]
+token_env = \"REPO_TOKEN\"
+";
+
+const OVERRIDE_WARNING: &str = "GH_TOKEN from the environment overrides the config's choice";
+
+#[test]
+fn the_token_comes_from_the_table_origin_matches() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.config(OVERRIDES);
+    for (origin, want) in [
+        ("git@github-work:example-org/backend.git", "repo-tok"),
+        ("https://github.com/Example-Org/frontend.git", "owner-tok"),
+        ("ssh://git@github.com/someone/else", "default-tok"),
+        ("https://github.com/example-org", "default-tok"),
+    ] {
+        git(&e.root, &["remote", "set-url", "origin", origin]);
+        let _ = fs::remove_file(e.ghd.join("tokens"));
+        let _ = fs::remove_file(e.ghd.join("calls"));
+        let out = e
+            .ns()
+            .env("DEFAULT_TOKEN", "default-tok")
+            .env("OWNER_TOKEN", "owner-tok")
+            .env("REPO_TOKEN", "repo-tok")
+            .args(["watch", "--dry-run"])
+            .assert()
+            .code(0)
+            .get_output()
+            .clone();
+        assert_eq!(e.tokens_seen(), [want], "{origin}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!err.contains(OVERRIDE_WARNING), "{err}");
+        let checked = e
+            .gh_calls()
+            .lines()
+            .filter(|l| l.starts_with("api repos/") && l.ends_with(".full_name"))
+            .count();
+        assert_eq!(checked, 0, "{origin}: a dry run checked: {}", e.gh_calls());
+    }
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:example-org/backend.git",
+        ],
+    );
+    let _ = fs::remove_file(e.ghd.join("tokens"));
+    let gitlab_default = e.script(
+        "gl-default.sh",
+        &format!("touch {}/gl-default; echo gl", e.base.display()),
+    );
+    let gitlab_owner = e.script(
+        "gl-owner.sh",
+        &format!("touch {}/gl-owner; echo gl", e.base.display()),
+    );
+    e.config(&format!(
+        "{OVERRIDES}[forge.gitlab]\ntoken_command = {:?}\n[forge.gitlab.owners.\"example-org\"]\ntoken_command = {:?}\n",
+        gitlab_default.to_str().unwrap(),
+        gitlab_owner.to_str().unwrap()
+    ));
+    e.ns()
+        .env_remove("GITLAB_TOKEN")
+        .env("DEFAULT_TOKEN", "default-tok")
+        .env("OWNER_TOKEN", "owner-tok")
+        .env("REPO_TOKEN", "repo-tok")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    assert_eq!(e.tokens_seen(), ["repo-tok"]);
+    assert!(
+        e.base.join("gl-default").exists(),
+        "the other forge's default table ran no command"
+    );
+    assert!(
+        !e.base.join("gl-owner").exists(),
+        "a github origin matched a gitlab owner table"
+    );
+}
+
+#[test]
+fn a_set_gh_token_wins_over_a_matching_table_and_warns_once_a_night() {
+    let e = Env::new();
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:example-org/backend.git",
+        ],
+    );
+    e.config(OVERRIDES);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.queue("build", &["pass:commit"]);
+    let out = e
+        .ns()
+        .env("GH_TOKEN", "from-env")
+        .env("REPO_TOKEN", "repo-tok")
+        .args(["watch", "--once"])
+        .assert()
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.matches(OVERRIDE_WARNING).count(), 1, "{err}");
+    assert!(
+        err.contains("[forge.github.repos.\"example-org/backend\"]"),
+        "{err}"
+    );
+    assert_eq!(e.tokens_seen(), ["from-env"]);
+    assert!(!e.calls().is_empty(), "the unit never ran: {err}");
+    let checks = e
+        .gh_calls()
+        .lines()
+        .filter(|l| *l == "api repos/example-org/backend --jq .full_name")
+        .count();
+    assert_eq!(
+        checks,
+        1,
+        "the unit checked the repo again: {}",
+        e.gh_calls()
+    );
+
+    for args in [&["run", "--issue", "7"][..], &["watch", "--dry-run"][..]] {
+        let out = e
+            .ns()
+            .env("GH_TOKEN", "from-env")
+            .args(args)
+            .assert()
+            .code(0)
+            .get_output()
+            .clone();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(err.matches(OVERRIDE_WARNING).count(), 1, "{args:?}: {err}");
+    }
+    e.config("");
+    let out = e
+        .ns()
+        .env("GH_TOKEN", "from-env")
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains(OVERRIDE_WARNING),
+        "no config, nothing to override: {err}"
+    );
+}
+
+#[test]
+fn a_repo_the_token_cannot_read_stops_run_and_watch_with_exit_2() {
+    let e = Env::new();
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/example-org/frontend.git",
+        ],
+    );
+    e.config(OVERRIDES);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file(
+        "repo.fail",
+        "HTTP 404: Not Found (https://api.github.com/repos/example-org/frontend)",
+    );
+    let table = "[forge.github.owners.\"example-org\"]";
+    for login in [Some("work-account"), None] {
+        match login {
+            Some(l) => e.gh_file("login", &format!("{l}\n")),
+            None => fs::remove_file(e.ghd.join("login")).unwrap(),
+        }
+        for args in [&["run", "--issue", "7"][..], &["watch", "--once"][..]] {
+            let out = e
+                .ns()
+                .env("OWNER_TOKEN", FAKE_TOKEN)
+                .args(args)
+                .assert()
+                .code(2)
+                .get_output()
+                .clone();
+            let err = String::from_utf8_lossy(&out.stderr);
+            let want = match login {
+                Some(l) => {
+                    format!("account {l} cannot read example-org/frontend (token from {table})")
+                }
+                None => format!("the token from {table} cannot read example-org/frontend"),
+            };
+            assert!(err.contains(&want), "{args:?}: {err}");
+            assert!(err.contains("HTTP 404"), "{err}");
+            assert!(err.contains("ns doctor"), "{err}");
+            assert!(
+                err.contains("[forge.github.repos.\"example-org/frontend\"]"),
+                "{err}"
+            );
+            assert!(!err.contains(FAKE_TOKEN), "{err}");
+        }
+    }
+    assert!(e.calls().is_empty(), "a phase ran: {:?}", e.calls());
+    assert_eq!(e.labels(2), ["status:ready-for-agent", "type:fix"]);
+
+    e.config("");
+    e.gh_file("repo.fail", "");
+    let _ = fs::remove_file(e.ghd.join("calls"));
+    e.ns().args(["run", "--issue", "7"]).assert().code(0);
+    assert!(
+        !e.gh_calls().contains(".full_name"),
+        "a forge with no table was checked: {}",
+        e.gh_calls()
+    );
+}
+
+fn unreadable_github_repo(e: &Env) {
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/example-org/frontend.git",
+        ],
+    );
+    e.config(OVERRIDES);
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.gh_file(
+        "repo.fail",
+        &format!("HTTP 404: Not Found: token {FAKE_TOKEN}"),
+    );
+}
+
+#[test]
+fn a_stale_or_foreign_checked_mark_never_skips_the_probe() {
+    let e = Env::new();
+    unreadable_github_repo(&e);
+    for mark in [
+        "1",
+        "github:example-org/other",
+        "gitlab:example-org/frontend",
+    ] {
+        for args in [&["run", "--issue", "7"][..], &["watch", "--once"][..]] {
+            let out = e
+                .ns()
+                .env("OWNER_TOKEN", FAKE_TOKEN)
+                .env("NS_FORGE_CHECKED", mark)
+                .args(args)
+                .assert()
+                .code(2)
+                .get_output()
+                .clone();
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                err.contains("cannot read example-org/frontend"),
+                "{mark} {args:?}: {err}"
+            );
+        }
+    }
+    assert!(e.calls().is_empty(), "a phase ran: {:?}", e.calls());
+}
+
+#[test]
+fn an_unreadable_repo_names_the_environment_token_that_overrides_the_table() {
+    let e = Env::new();
+    unreadable_github_repo(&e);
+    for args in [&["run", "--issue", "7"][..], &["watch", "--once"][..]] {
+        let out = e
+            .ns()
+            .env("GH_TOKEN", FAKE_TOKEN)
+            .args(args)
+            .assert()
+            .code(2)
+            .get_output()
+            .clone();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains(
+                "the token from GH_TOKEN from the environment, overriding [forge.github.owners.\"example-org\"]"
+            ),
+            "{args:?}: {err}"
+        );
+        assert!(err.contains("[token]"), "{err}");
+        assert!(!err.contains(FAKE_TOKEN), "{err}");
+    }
+}
+
+fn checked_seen(e: &Env) -> Vec<String> {
+    fs::read_to_string(e.ctrl.join("checked"))
+        .unwrap_or_default()
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn a_forge_with_no_config_marks_nothing_checked_for_its_children() {
+    let e = Env::new();
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/example-org/backend.git",
+        ],
+    );
+    e.config("");
+    e.ns()
+        .env_remove("NS_FORGE_CHECKED")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    assert!(!e.calls().is_empty());
+    assert!(
+        checked_seen(&e).iter().all(|c| c == "unset"),
+        "{:?}",
+        checked_seen(&e)
+    );
+}
+
+#[test]
+fn a_configured_forge_that_was_checked_marks_its_children() {
+    let e = Env::new();
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/example-org/backend.git",
+        ],
+    );
+    e.config(OVERRIDES);
+    e.ns()
+        .env_remove("NS_FORGE_CHECKED")
+        .env("DEFAULT_TOKEN", "d")
+        .env("OWNER_TOKEN", "o")
+        .env("REPO_TOKEN", "r")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    let seen = checked_seen(&e);
+    assert!(!seen.is_empty());
+    assert!(
+        seen.iter().all(|c| c == "github:example-org/backend"),
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn a_dry_run_probes_nothing_even_when_the_repo_is_unreadable() {
+    let e = Env::new();
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/example-org/backend.git",
+        ],
+    );
+    e.config(OVERRIDES);
+    e.gh_file("repo.fail", "HTTP 404: Not Found");
+    e.ns()
+        .env("DEFAULT_TOKEN", "d")
+        .env("OWNER_TOKEN", "o")
+        .env("REPO_TOKEN", "r")
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0);
+    assert!(!e.gh_calls().contains(".full_name"), "{}", e.gh_calls());
+}
+
+#[test]
+fn a_forge_host_keeps_another_hosts_origin_on_the_default_token() {
+    let e = Env::new();
+    e.gl_members(&[(1, 30)], &[]);
+    e.gl_issue(2, &[READY], "", 1);
+    git(
+        &e.root,
+        &["remote", "set-url", "origin", "git@gitlab.com:team/p.git"],
+    );
+    e.config(
+        "[forge.gitlab]\ntoken_env = \"GL_DEFAULT\"\nhost = \"gitlab.example.com\"\n[forge.gitlab.owners.\"team\"]\ntoken_env = \"GL_TEAM\"\n",
+    );
+    e.ns()
+        .env("GL_DEFAULT", "default-tok")
+        .env("GL_TEAM", "team-tok")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITLAB_HOST")
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0);
+    let tokens = fs::read_to_string(e.ghd.join("glab-tokens")).unwrap();
+    assert!(!tokens.is_empty());
+    assert!(tokens.lines().all(|t| t == "default-tok"), "{tokens}");
+}
+
+fn gitlab_host_env_case(origin: &str, host_var: Option<&str>) -> String {
+    let e = Env::new();
+    e.gl_members(&[(1, 30)], &[]);
+    e.gl_issue(2, &[READY], "", 1);
+    git(&e.root, &["remote", "set-url", "origin", origin]);
+    e.config(
+        "[forge.gitlab]\ntoken_env = \"GL_DEFAULT\"\n[forge.gitlab.owners.\"team\"]\ntoken_env = \"GL_TEAM\"\n",
+    );
+    let mut ns = e.ns();
+    ns.env("GL_DEFAULT", "default-tok")
+        .env("GL_TEAM", "team-tok")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITLAB_HOST");
+    if let Some(h) = host_var {
+        ns.env("GITLAB_HOST", h);
+    }
+    ns.args(["watch", "--dry-run"]).assert().code(0);
+    let tokens = fs::read_to_string(e.ghd.join("glab-tokens")).unwrap();
+    assert!(!tokens.is_empty());
+    let first = tokens.lines().next().unwrap().to_string();
+    assert!(tokens.lines().all(|t| t == first), "{tokens}");
+    first
+}
+
+#[test]
+fn a_gitlab_host_variable_scopes_the_override_tables_to_its_host() {
+    let origin = "git@gitlab.com:team/p.git";
+    assert_eq!(
+        gitlab_host_env_case(origin, Some("gitlab.example.com")),
+        "default-tok"
+    );
+    assert_eq!(gitlab_host_env_case(origin, Some("gitlab.com")), "team-tok");
+    assert_eq!(gitlab_host_env_case(origin, None), "team-tok");
+}
+
+#[test]
+fn a_gh_host_variable_scopes_the_override_tables_to_its_host() {
+    for (gh_host, want) in [
+        ("ghe.example.com", "default-tok"),
+        ("github.com", "owner-tok"),
+    ] {
+        let e = Env::new();
+        e.ready(2, "Fix a", &["type:fix"], "");
+        e.config(OVERRIDES);
+        git(
+            &e.root,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/example-org/frontend.git",
+            ],
+        );
+        e.ns()
+            .env("GH_HOST", gh_host)
+            .env("DEFAULT_TOKEN", "default-tok")
+            .env("OWNER_TOKEN", "owner-tok")
+            .env("REPO_TOKEN", "repo-tok")
+            .args(["watch", "--dry-run"])
+            .assert()
+            .code(0);
+        assert_eq!(e.tokens_seen(), [want], "{gh_host}");
+    }
+}
+
+const ALIAS_WARNING: &str =
+    "origin host gitlab-work is not gitlab.example.com: ignoring [forge.gitlab.owners.\"team\"]";
+
+#[test]
+fn an_ssh_alias_origin_under_a_forge_host_warns_that_the_override_tables_are_ignored() {
+    let e = Env::new();
+    e.gl_members(&[(1, 30)], &[]);
+    e.gl_issue(2, &[READY], "", 1);
+    git(
+        &e.root,
+        &["remote", "set-url", "origin", "git@gitlab-work:team/p.git"],
+    );
+    e.config(
+        "[forge.gitlab]\ntoken_env = \"GL_DEFAULT\"\nhost = \"gitlab.example.com\"\n[forge.gitlab.owners.\"team\"]\ntoken_env = \"GL_TEAM\"\n",
+    );
+    let out = e
+        .ns()
+        .env("GL_DEFAULT", "default-tok")
+        .env("GL_TEAM", "team-tok")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITLAB_HOST")
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.matches(ALIAS_WARNING).count(), 1, "{err}");
+    assert!(err.contains("ssh alias for gitlab.example.com"), "{err}");
+    let tokens = fs::read_to_string(e.ghd.join("glab-tokens")).unwrap();
+    assert!(tokens.lines().all(|t| t == "default-tok"), "{tokens}");
+
+    e.config("[forge.gitlab]\ntoken_env = \"GL_DEFAULT\"\nhost = \"gitlab.example.com\"\n");
+    let out = e
+        .ns()
+        .env("GL_DEFAULT", "default-tok")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITLAB_HOST")
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("ignoring"), "no table was dropped: {err}");
+}
+
+#[test]
+fn a_token_ns_exported_is_marked_even_when_the_repo_was_not_probed() {
+    let e = Env::new();
+    e.config(OVERRIDES);
+    e.ns()
+        .env_remove("NS_FORGE_EXPORTED")
+        .env_remove("NS_FORGE_CHECKED")
+        .env("DEFAULT_TOKEN", "default-tok")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0);
+    let exported = fs::read_to_string(e.ctrl.join("exported")).unwrap();
+    assert!(!exported.is_empty());
+    assert!(exported.lines().all(|l| l == "github:"), "{exported}");
+    assert!(
+        checked_seen(&e).iter().all(|c| c == "unset"),
+        "{:?}",
+        checked_seen(&e)
+    );
+}
+
+#[test]
+fn an_origin_with_no_repo_path_uses_the_default_token_and_checks_nothing() {
+    let e = Env::new();
+    e.config(OVERRIDES);
+    e.gh_file("repo.fail", "HTTP 404: Not Found");
+    let local = git(&e.root, &["remote", "get-url", "origin"]);
+    assert!(local.trim().starts_with('/'), "{local}");
+    for remove in [false, true] {
+        if remove {
+            git(&e.root, &["remote", "remove", "origin"]);
+        }
+        let _ = fs::remove_file(e.ghd.join("tokens"));
+        let _ = fs::remove_file(e.ghd.join("calls"));
+        let _ = fs::remove_file(e.ctrl.join("tokens"));
+        e.ns()
+            .env("DEFAULT_TOKEN", "default-tok")
+            .env("OWNER_TOKEN", "owner-tok")
+            .env("REPO_TOKEN", "repo-tok")
+            .args(["run", "--issue", "7"])
+            .assert()
+            .code(0);
+        assert_eq!(e.tokens_seen(), ["default-tok"], "origin removed: {remove}");
+        assert!(
+            !e.gh_calls().contains("api repos/"),
+            "origin removed: {remove}: {}",
+            e.gh_calls()
+        );
+    }
+}
+
+#[test]
+fn an_override_naming_an_unset_variable_stops_run_with_exit_2() {
+    for (origin, var) in [
+        ("https://github.com/example-org/frontend.git", "OWNER_TOKEN"),
+        ("https://github.com/example-org/backend.git", "REPO_TOKEN"),
+    ] {
+        let e = Env::new();
+        git(&e.root, &["remote", "set-url", "origin", origin]);
+        e.config(OVERRIDES);
+        let out = e
+            .ns()
+            .env("DEFAULT_TOKEN", FAKE_TOKEN)
+            .args(["run", "--issue", "7"])
+            .assert()
+            .code(2)
+            .get_output()
+            .clone();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains(&format!("token_env {var} is unset or empty")),
+            "{err}"
+        );
+        assert!(!err.contains(FAKE_TOKEN), "{err}");
+        assert!(e.calls().is_empty(), "a phase ran: {:?}", e.calls());
+    }
+}
+
+#[test]
+fn a_gitlab_repo_table_beats_the_nested_group_owner_table() {
+    let e = Env::new();
+    e.gl_members(&[(1, 30)], &[]);
+    e.gl_issue(2, &[READY], "", 1);
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@gitlab.com:team/sub/project.git",
+        ],
+    );
+    e.config(
+        "[forge.gitlab]\ntoken_env = \"GL_DEFAULT\"\n[forge.gitlab.owners.\"team/sub\"]\ntoken_env = \"GL_SUB\"\n[forge.gitlab.repos.\"team/sub/project\"]\ntoken_env = \"GL_REPO\"\n",
+    );
+    let ns = || {
+        let mut c = e.ns();
+        c.env("GL_SUB", "owner-tok")
+            .env("GL_REPO", FAKE_TOKEN)
+            .env_remove("GITLAB_TOKEN")
+            .env_remove("GITLAB_HOST");
+        c
+    };
+    ns().args(["watch", "--dry-run"]).assert().code(0);
+    let tokens = fs::read_to_string(e.ghd.join("glab-tokens")).unwrap();
+    assert!(!tokens.is_empty());
+    assert!(tokens.lines().all(|t| t == FAKE_TOKEN), "{tokens}");
+
+    e.gh_file("gl-repo.fail", "404 Project Not Found");
+    e.gh_file("gl-login", "gl-work");
+    let out = ns()
+        .args(["watch", "--once"])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(
+            "account gl-work cannot read team/sub/project (token from [forge.gitlab.repos.\"team/sub/project\"])"
+        ),
+        "{err}"
+    );
+    assert!(!err.contains("token from [forge.gitlab.owners"), "{err}");
+}
+
+#[test]
+fn a_gitlab_nested_group_picks_its_table_and_an_unreadable_project_exits_2() {
+    let e = Env::new();
+    e.gl_members(&[(1, 30)], &[]);
+    e.gl_issue(2, &[READY], "", 1);
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@gitlab.com:team/sub/project.git",
+        ],
+    );
+    e.config(
+        "[forge.gitlab]\ntoken_env = \"GL_DEFAULT\"\n[forge.gitlab.owners.\"team/sub\"]\ntoken_env = \"GL_SUB\"\n",
+    );
+    let ns = || {
+        let mut c = e.ns();
+        c.env("GL_DEFAULT", "default-tok")
+            .env("GL_SUB", FAKE_TOKEN)
+            .env_remove("GITLAB_TOKEN")
+            .env_remove("GITLAB_HOST");
+        c
+    };
+    let out = ns()
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(queued(&v), [2], "{v}");
+    assert!(
+        !e.glab_calls().contains("team%2Fsub%2Fproject"),
+        "a dry run checked the project: {}",
+        e.glab_calls()
+    );
+    let tokens = fs::read_to_string(e.ghd.join("glab-tokens")).unwrap();
+    assert!(tokens.lines().all(|t| t == FAKE_TOKEN), "{tokens}");
+    e.gh_file(
+        "gl-repo.fail",
+        &format!("404 Project Not Found: token {FAKE_TOKEN}"),
+    );
+    e.gh_file("gl-login", "gl-work");
+    let out = ns()
+        .args(["watch", "--once"])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("forge gitlab: account gl-work cannot read team/sub/project"),
+        "{err}"
+    );
+    assert!(err.contains("[forge.gitlab.owners.\"team/sub\"]"), "{err}");
+    assert!(err.contains("ns doctor"), "{err}");
+    assert!(
+        err.contains("[forge.gitlab.repos.\"team/sub/project\"]"),
+        "{err}"
+    );
+    assert!(!err.contains(FAKE_TOKEN), "{err}");
+    assert!(err.contains("[token]"), "{err}");
+    assert!(
+        e.glab_calls().contains("api projects/team%2Fsub%2Fproject"),
+        "the project was not read by its encoded path: {}",
+        e.glab_calls()
+    );
+
+    fs::remove_file(e.ghd.join("gl-repo.fail")).unwrap();
+    let _ = fs::remove_file(e.ghd.join("glab-calls"));
+    ns().args(["watch", "--once"]).assert().code(0);
+    assert!(
+        e.glab_calls().contains("api projects/team%2Fsub%2Fproject"),
+        "a readable project was not checked: {}",
+        e.glab_calls()
+    );
+
+    let _ = fs::remove_file(e.ghd.join("glab-tokens"));
+    let out = ns()
+        .env("GITLAB_TOKEN", "from-env")
+        .args(["watch", "--dry-run"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let warning = "GITLAB_TOKEN from the environment overrides the config's choice";
+    assert_eq!(err.matches(warning).count(), 1, "{err}");
+    assert!(err.contains("[forge.gitlab.owners.\"team/sub\"]"), "{err}");
+    let tokens = fs::read_to_string(e.ghd.join("glab-tokens")).unwrap();
+    assert!(!tokens.is_empty());
+    assert!(tokens.lines().all(|t| t == "from-env"), "{tokens}");
 }
 
 #[test]
@@ -10493,6 +11522,79 @@ fn watch_on_gitlab_queues_developers_and_above_and_skips_the_rest() {
         "{}",
         e.glab_calls()
     );
+}
+
+#[test]
+fn watch_on_gitlab_closes_a_split_parent_from_its_team_notes() {
+    let e = gitlab_env();
+    e.gl_issue(5, &["status:split"], "", 1);
+    let notes = serde_json::json!([
+        {"body": "Children:\n- #8\n", "author": {"id": 1}, "system": false},
+        {"body": "Children:\n- #9\n", "author": {"id": 4}, "system": false},
+        {"body": "Children:\n- #9\n", "author": {"id": 1}, "system": true},
+    ]);
+    e.gh_file("gl-notes-5.json", &notes.to_string());
+    e.gh_file("gl-state-8", "closed");
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(
+        v["split_parents"][0]["children"],
+        serde_json::json!([8]),
+        "{v}"
+    );
+    let calls = e.glab_calls();
+    assert!(calls.contains("issue close 5"), "{calls}");
+    assert!(
+        calls.contains("issue note 5 --message 🤖 Every child"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("api --paginate projects/:id/issues/5/notes?sort=asc&per_page=100"),
+        "{calls}"
+    );
+    assert!(e.labels(5).is_empty());
+}
+
+/// GitLab split parent 5 with no notes, and issues 8 (a developer, closed), 9 (a reporter) and 10
+/// (a developer, open or closed per `ten`) saying `Part of #5`, as a search lists them.
+fn gl_part_of(e: &Env, ten: &str) {
+    e.gl_issue(5, &["status:split"], "", 1);
+    let child = |n: u64, author: u64| serde_json::json!({"iid": n, "title": "c", "labels": [], "description": "Part of #5", "author": {"id": author, "username": "u"}});
+    let found = serde_json::json!([child(8, 1), child(9, 4), child(10, 2)]);
+    e.gh_file("gl-search.json", &found.to_string());
+    e.gh_file("gl-state-8", "closed");
+    e.gh_file("gl-state-9", "opened");
+    e.gh_file("gl-state-10", ten);
+}
+
+#[test]
+fn watch_on_gitlab_finds_split_children_by_their_part_of_line() {
+    let e = gitlab_env();
+    gl_part_of(&e, "closed");
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(
+        v["split_parents"][0]["children"],
+        serde_json::json!([8, 10]),
+        "{v}"
+    );
+    assert_eq!(v["split_parents"][0]["action"], "close", "{v}");
+    let calls = e.glab_calls();
+    assert!(
+        calls.contains("in=description&search=Part%20of%20%235"),
+        "{calls}"
+    );
+    assert!(calls.contains("issue close 5"), "{calls}");
+}
+
+#[test]
+fn watch_on_gitlab_waits_for_an_open_part_of_child() {
+    let e = gitlab_env();
+    gl_part_of(&e, "opened");
+    let v = e.run(&["watch", "--once"], 0);
+    assert_eq!(v["split_parents"], serde_json::json!([]), "{v}");
+    assert!(!e.glab_calls().contains("issue close"));
+    let d = e.run(&["watch", "--dry-run"], 0);
+    assert_eq!(d["split_parents"][0]["action"], "wait", "{d}");
+    assert_eq!(d["split_parents"][0]["open"], 1, "{d}");
 }
 
 #[test]
