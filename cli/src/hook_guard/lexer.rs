@@ -87,6 +87,7 @@ impl WordBuf {
 fn lists_words(body: &str) -> bool {
     body.starts_with('@')
         || body.starts_with('!')
+        || body.contains("{!")
         || body.contains("$@")
         || body.contains("{@")
         || body.contains("[@]")
@@ -360,7 +361,8 @@ impl<'a> Lexer<'a> {
     /// substitutions are tracked. A body with no end swallows the rest of the command: the
     /// shell rejects it, and the word it sits in is already opaque. Returns whether the body
     /// lists words even in double quotes: `$@` or `[@]`/`[*]` anywhere in it, or an indirection
-    /// (`${!x}`, which may name `a[@]`).
+    /// (`${!x}`, which may name `a[@]`) at any depth. Single-quoted text stays in the body: in a
+    /// double-quoted expansion the quotes are literal and `$@` still expands.
     fn braced_body(&mut self) -> bool {
         let mut depth = 1usize;
         let mut body = String::new();
@@ -377,7 +379,14 @@ impl<'a> Lexer<'a> {
                 '\\' => {
                     self.chars.next();
                 }
-                '\'' => while self.chars.next().is_some_and(|c| c != '\'') {},
+                '\'' => {
+                    for c in self.chars.by_ref() {
+                        body.push(c);
+                        if c == '\'' {
+                            break;
+                        }
+                    }
+                }
                 '"' => self.quoted_in_braces(&mut body),
                 '$' if self.chars.next_if_eq(&'(').is_some() => self.expansion(Close::Paren),
                 '`' => self.expansion(Close::Backtick),
