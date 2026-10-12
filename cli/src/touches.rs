@@ -48,18 +48,28 @@ fn from_line(text: &str) -> Vec<String> {
     }) else {
         return Vec::new();
     };
-    let globs: Option<Vec<String>> = rest
-        .trim_start_matches(['*', '_'])
-        .split(',')
-        .map(|item| {
-            item.trim()
-                .strip_prefix('`')?
-                .strip_suffix('`')
-                .filter(|g| !g.trim().is_empty() && !g.contains('`'))
-                .map(str::to_string)
-        })
-        .collect();
-    globs.unwrap_or_default()
+    let mut rest = rest.trim_start_matches(['*', '_']).trim();
+    let mut globs = Vec::new();
+    loop {
+        let Some(open) = rest.strip_prefix('`') else {
+            return Vec::new();
+        };
+        let Some((glob, after)) = open.split_once('`') else {
+            return Vec::new();
+        };
+        if glob.trim().is_empty() {
+            return Vec::new();
+        }
+        globs.push(glob.to_string());
+        rest = after.trim();
+        if rest.is_empty() {
+            return globs;
+        }
+        let Some(next) = rest.strip_prefix(',') else {
+            return Vec::new();
+        };
+        rest = next.trim();
+    }
 }
 
 #[cfg(test)]
@@ -131,6 +141,7 @@ mod tests {
         assert!(touches("---\ntouches: {a: b}\n---\n").is_empty());
         assert!(touches("---\ntouches: [a.rs, 3]\n---\n").is_empty());
         assert!(touches("---\ntouches: [a.rs, '']\n---\n").is_empty());
+        assert!(touches("---\ntouches: [a.rs, ' ']\n---\n").is_empty());
         assert!(touches("---\ntouches: [a.rs\n---\n**Touches:** `b.rs`\n").is_empty());
     }
 
@@ -140,5 +151,23 @@ mod tests {
         assert!(touches("**Touches:** `a.rs`, b.rs\n").is_empty());
         assert!(touches("**Touches:** `a.rs`, ``\n").is_empty());
         assert!(touches("**Touches:** `a.rs` and `b.rs`\n").is_empty());
+        assert!(touches("**Touches:** `a.rs`, ` `\n").is_empty());
+        assert!(touches("**Touches:** ` `\n").is_empty());
+        assert!(touches("**Touches:** `a.rs` junk\n").is_empty());
+        assert!(touches("**Touches:** `a.rs`,\n").is_empty());
+    }
+
+    #[test]
+    fn comment_line_keeps_commas_inside_a_glob() {
+        assert_eq!(
+            touches("**Touches:** `cli/src/{run,watch}.rs`, `docs/**`\n"),
+            globs(&["cli/src/{run,watch}.rs", "docs/**"])
+        );
+    }
+
+    #[test]
+    fn comment_line_may_be_indented() {
+        assert_eq!(touches("  **Touches:** `a.rs`\n"), globs(&["a.rs"]));
+        assert_eq!(touches("\t**Touches:** `a.rs`\n"), globs(&["a.rs"]));
     }
 }
