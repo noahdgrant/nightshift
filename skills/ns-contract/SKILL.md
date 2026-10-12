@@ -142,7 +142,7 @@ A phase kills only processes it started. `ns run` starts each phase in its own s
 - A process tree: start it as its own group (`setsid cmd & pgid=$!`) and kill the group with `kill -- -"$pgid"`.
 - A command that must not outlive a deadline: `timeout <secs> cmd`.
 
-Never kill by name or pattern (`pkill`, `killall`, `pgrep ... | xargs kill`): the pattern also matches your own shell, other units' phases and the operator's `ns watch`. Never signal `$NS_RUN_PID` or `$NS_WATCH_PID`, the `ns` processes running this phase.
+Never kill by name or pattern (`pkill`, `killall`, `pgrep ... | xargs kill`): the pattern also matches your own shell, other units' phases and the operator's `ns watch`. Units share the machine, so `pkill -f scripts/ci-local.sh`, meant to stop your own gate, also kills the gate of every other unit running that script. Never signal `$NS_RUN_PID` or `$NS_WATCH_PID`, the `ns` processes running this phase.
 
 ## Evidence
 

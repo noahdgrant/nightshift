@@ -146,6 +146,7 @@ Required before writing the brief:
 
 - [ ] All `[DEBUG-...]` instrumentation removed (`grep` the prefix)
 - [ ] Any proving change from Phase 4 reverted, so the loop is red again on the unit's branch
+- [ ] Every server, loop and harness you started stopped per [killing processes](../ns-contract/SKILL.md#killing-processes), never by name or pattern
 - [ ] Throwaway harnesses deleted, or kept under `.ns/<unit-id>/troubleshoot/` when the brief's repro command needs them
 - [ ] `git status` shows a clean tree
 
