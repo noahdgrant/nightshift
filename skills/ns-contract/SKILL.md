@@ -62,6 +62,8 @@ updated: 2026-10-08T21:14:00Z
 
 `brief.md` also records `base:`, the branch the unit's worktree came from. Later phases diff against it. A phase may add its own keys (`ns-ship` adds `pr:`).
 
+`brief.md` may record `touches:`, a list of path globs relative to the repo root for the files and directories the unit will probably change (`cli/src/run.rs`, `skills/ns-review/**`). It is a scheduling prediction: two units overlap when their globs match the same file, and overlapping units are better not run side by side. The brief comment carries the same list as one line, `` **Touches:** `cli/src/run.rs`, `skills/ns-review/**` ``. A brief with no `touches:`, or an empty or malformed one, makes no prediction. `ns-triage` writes it ([agent-brief.md](../ns-triage/references/agent-brief.md)).
+
 `ns-ship` requires `evidence.md` and `review.md` to have `sha` equal to HEAD. Review fixes that add commits therefore re-run `ns-verify` before the unit can ship.
 
 - `pass`: the gate condition holds, so the next phase can start.
