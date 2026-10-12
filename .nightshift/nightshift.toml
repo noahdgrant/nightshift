@@ -33,7 +33,7 @@ model = "sonnet"                # Opus cost ~90% of the first unit; revisit once
 [phases.ship]
 skill = "ns-ship"
 model = "sonnet"
-timeout_minutes = 30
+timeout_minutes = 60               # the push runs all of local CI, then ship waits on GitHub CI; 30 cut off #367 and #419
 
 [queue]
 source = "github"
