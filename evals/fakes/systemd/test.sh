@@ -59,6 +59,21 @@ systemctl --user reset-failed ns-watch-supervised
 [ "$(gh pr list --json number)" = "[]" ] || fail "gh"
 journalctl --user -u ns-watch | grep -q 'No entries' || fail "journalctl"
 
+# glab has no merge request until mr create opens one, which then reads merge-ready.
+glab mr view -F json >/dev/null 2>&1 && fail "glab mr view before create"
+url=$(glab mr create --source-branch ns/1-x --target-branch main --title t --description-file /dev/null --yes)
+[ "$url" = https://gitlab.example.com/acme/widgets/-/merge_requests/1 ] || fail "glab mr create said $url"
+grep -q '^glab mr create --source-branch ns/1-x ' "$fake/calls.log" || fail "glab mr create not recorded"
+glab mr view -F json | grep -q '"detailed_merge_status": "mergeable"' || fail "glab mr view not mergeable"
+git -c user.name=t -c user.email=t@localhost commit -q --allow-empty -m one
+glab mr view -F json | grep -q "\"sha\": \"$(git rev-parse HEAD)\", \"has_conflicts\"" || fail "glab mr view sha"
+glab mr view 1 | grep -qx 'state:	opened' || fail "glab mr view text"
+glab ci status | grep -q success || fail "glab ci status"
+[ "$(glab api projects/:id/merge_requests/1/discussions)" = "[]" ] || fail "glab api"
+glab mr update 1 --ready || fail "glab mr update"
+glab mr merge 1 2>/dev/null && fail "glab mr merge not refused"
+glab mr approve 1 2>/dev/null && fail "glab mr approve not refused"
+
 # ns refuses model runs and passes the rest on.
 ns watch --until 06:30 2>/dev/null && fail "ns watch not refused"
 [ "$(ns log --json)" = "real ns log --json" ] || fail "ns passthrough"
