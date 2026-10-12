@@ -11258,6 +11258,7 @@ fn watch_on_gitlab_swaps_labels_and_comments_through_glab() {
     );
     let note = calls.split("issue note 2 --message").nth(1).expect("note");
     assert!(note.contains("triage wrote no brief"), "{note}");
+    assert!(note.trim_start().starts_with(DISCLOSED), "{note}");
 }
 
 #[test]
@@ -11345,6 +11346,7 @@ fn watch_on_gitlab_files_the_fix_issue_through_glab_and_starts_only_it() {
         "{calls}"
     );
     let body = fs::read_to_string(e.ghd.join("created-100.body")).unwrap();
+    assert!(body.starts_with(DISCLOSED), "{body}");
     assert!(body.contains("ERROR: Job failed"), "{body}");
     assert!(!e.gh_calls().contains("issue create"), "{}", e.gh_calls());
 }

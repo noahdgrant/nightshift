@@ -395,6 +395,8 @@ mod tests {
             ["type:feat", "status:ready-for-human"]
         );
         let posted = f.posted.borrow();
+        let lead = format!("{DISCLOSURE}\n\nA child of this split");
+        assert!(posted[0].1.starts_with(&lead), "{}", posted[0].1);
         assert!(posted[0].1.contains("not planned: #3"), "{}", posted[0].1);
         assert_eq!(done[0]["action"], "ready_for_human");
         assert_eq!(done[0]["dropped"], json!([3]));
