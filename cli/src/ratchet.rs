@@ -415,7 +415,10 @@ fn count(outcomes: &[Outcome]) -> String {
         *by.entry(o.status).or_default() += 1;
     }
     let parts: Vec<String> = by.iter().map(|(s, n)| format!("{n} {s}")).collect();
-    format!("{} ratchets: {}", outcomes.len(), parts.join(", "))
+    match parts.is_empty() {
+        true => "0 ratchets".to_string(),
+        false => format!("{} ratchets: {}", outcomes.len(), parts.join(", ")),
+    }
 }
 
 pub fn check(factory: Option<&Path>, json: bool) -> Result<ExitCode> {

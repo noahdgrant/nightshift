@@ -362,7 +362,7 @@ fn no_ratchets_checks_nothing_and_passes() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["ratchets"], json!([]));
     let out = r.cmd().args(["check", "--human"]).output();
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "0 ratchets: \n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0 ratchets\n");
 }
 
 #[test]
