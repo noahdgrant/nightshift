@@ -1,0 +1,7 @@
+{
+  "name": "widgets",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": { "test": "node --test" },
+  "devDependencies": { "typescript": "^5.6.0" }
+}

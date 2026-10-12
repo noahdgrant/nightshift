@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-const ALL_STEPS: [&str; 17] = [
+const ALL_STEPS: [&str; 18] = [
     "pinned tools (scripts/ci-tools.toml)",
     "cargo fmt --check",
     "cargo clippy",
@@ -23,6 +23,7 @@ const ALL_STEPS: [&str; 17] = [
     "ns eval --dry-run",
     "py-inventory fixture tests",
     "Python rule pack tests",
+    "JavaScript/TypeScript rule pack tests",
     "C rule pack tests",
     "ns-troubleshoot brief checker tests",
     "private guard",
@@ -50,6 +51,12 @@ exit 0
 /// Logs that it ran, and fails when that log line contains `$FAIL_ON`.
 const RULE_PACK_TESTS: &str = r#"#!/bin/sh
 line="rule pack tests ran"
+echo "$line" >&2
+case "$FAIL_ON" in ?*) case "$line" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
+"#;
+
+const JS_RULE_PACK_TESTS: &str = r#"#!/bin/sh
+line="js rule pack tests ran"
 echo "$line" >&2
 case "$FAIL_ON" in ?*) case "$line" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
 "#;
@@ -150,6 +157,7 @@ impl Repo {
         write_exe(&root.join("bin/python"), &python);
         fs::create_dir_all(root.join("evals/fixtures/py-inventory")).unwrap();
         write_exe(&root.join("rules/python/tests/run.sh"), RULE_PACK_TESTS);
+        write_exe(&root.join("rules/js/tests/run.sh"), JS_RULE_PACK_TESTS);
         let cases = root.join("skills/ns-troubleshoot/evals/cases");
         for case in ["py-hold-expires-early", "py-lost-hold-needs-redesign"] {
             write_exe(&cases.join(case).join("test_check_brief.py"), "");
@@ -241,6 +249,10 @@ fn a_failing_step_stops_the_run() {
         ("ns ratchet", "ns ratchet check"),
         ("ns eval", "ns eval --dry-run"),
         ("rule pack tests ran", "Python rule pack tests"),
+        (
+            "js rule pack tests ran",
+            "JavaScript/TypeScript rule pack tests",
+        ),
         ("discover -s rules/c/tests", "C rule pack tests"),
         (
             "python ran in py-hold-expires-early",

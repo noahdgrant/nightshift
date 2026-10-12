@@ -3,7 +3,8 @@
 #
 #   version  the pin
 #   install  how CI installs it: pip (package, default the tool's name), apt (package,
-#            linked onto PATH as the tool's name) or install-action (taiki-e/install-action)
+#            linked into /usr/local/bin as the tool's name) or install-action
+#            (taiki-e/install-action)
 #   check    a command whose output names the installed version
 
 [ruff]
@@ -32,3 +33,16 @@ check = "clang-tidy --version"
 version = "9.1.1"
 install = "pip"
 check = "pytest --version"
+
+# The JavaScript/TypeScript rule pack (rules/js/): its tools come from its own lockfile, run
+# under this Node and installed with this npm.
+[node]
+version = "18"
+install = "apt"
+package = "nodejs"
+check = "node --version"
+
+[npm]
+version = "9.2.0"
+install = "apt"
+check = "npm --version"

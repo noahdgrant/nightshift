@@ -1,0 +1,10 @@
+import fs from "node:fs";
+import path from "path";
+import { readFile } from "fs/promises";
+import pad from "left-pad";
+import merge from "lodash.merge";
+import { thing } from "@scope/pkg/sub";
+import { local } from "./pass-local.js";
+import self from "plain-js/lib";
+const sibling = require("../dependency-allowlist/pass-local.js");
+export const all = [fs, path, readFile, pad, merge, thing, local, self, sibling];

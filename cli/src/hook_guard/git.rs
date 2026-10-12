@@ -2,6 +2,7 @@
 //! the commands git runs for you.
 
 use super::*;
+use crate::shell::shell_quote;
 
 /// Git subcommands that take `--no-verify` and need no other reading.
 pub(super) const NO_VERIFY_SUBCOMMANDS: &[&str] =
@@ -102,9 +103,7 @@ pub(super) fn global_option(
     let denial = match option {
         "-c" => config_pair(value, scan, aliases),
         "-C" => {
-            if is_protected(value) {
-                scan.hooks_depth = protected_depth(value);
-            }
+            scan.cwd = cd_to(value, scan.cwd);
             None
         }
         "--config-env" => config_env(value),
@@ -117,9 +116,9 @@ pub(super) fn global_option(
 }
 
 pub(super) fn git(args: &[Word], scan: &mut Scan) -> Option<String> {
-    let outer_cwd = scan.hooks_depth;
+    let outer_cwd = scan.cwd;
     let why = git_command(args, scan);
-    scan.hooks_depth = outer_cwd;
+    scan.cwd = outer_cwd;
     why
 }
 

@@ -140,6 +140,26 @@ jobs:
       - run: scripts/ci-tools.sh install ruff ast-grep
       - run: rules/python/tests/run.sh
 
+  rule-pack-js:
+    name: Rule pack tests (JavaScript/TypeScript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+      - name: Build ns
+        run: cargo build --manifest-path cli/Cargo.toml
+      - run: scripts/ci-tools.sh install ast-grep node npm
+      - run: rules/js/tests/run.sh
+      - name: rules/js/tests/run.sh under a decoy GIT_DIR
+        run: scripts/check-git-dir-decoy.sh rules/js/tests/run.sh
+
   rule-pack-c:
     name: Rule pack tests (C)
     runs-on: ubuntu-latest

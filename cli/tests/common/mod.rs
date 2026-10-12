@@ -30,9 +30,12 @@ const TREE_VAR: &str = "NS_TEST_TREE";
 
 static NEXT_TREE: AtomicU32 = AtomicU32::new(0);
 
-/// `ns` built from this crate, bounded by [`TIMEOUT`].
+/// `ns` built from this crate, bounded by [`TIMEOUT`]. It runs outside any `ns run` phase the
+/// tests themselves may run in, so the phase's `NS_UNIT` and `NS_WORKTREE` do not leak in.
 pub fn ns() -> Ns {
-    command(ns_path())
+    let mut c = command(ns_path());
+    c.env_remove("NS_UNIT").env_remove("NS_WORKTREE");
+    c
 }
 
 /// Where `ns` built from this crate is, for a script that a bounded `ns` runs to exec it.

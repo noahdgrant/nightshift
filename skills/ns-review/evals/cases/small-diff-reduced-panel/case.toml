@@ -42,6 +42,29 @@ for r in readability architecture security performance comments; do test ! -e "$
 expect_exit = 0
 
 [[check]]
+# The Passes table records pass 0 as the reduced panel, one row per worker: correctness, spec and tests.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, sys
+text = open(".ns/1-in-stock/review.md", encoding="utf-8").read()
+m = re.search(r"(?ms)^## Passes\s*$(.*?)(?=^#|\Z)", text)
+if not m:
+    sys.exit("no ## Passes section")
+rows = [[c.strip().strip("`").lower() for c in l.strip().strip("|").split("|")]
+        for l in m[1].splitlines() if l.strip().startswith("|")]
+head, body = rows[0], [r for r in rows[1:] if not set("".join(r)) <= set("-: ")]
+col = lambda r, name: r[head.index(name)] if name in head and head.index(name) < len(r) else ""
+first = [r for r in body if col(r, "pass") == "0"]
+panels = {col(r, "panel") for r in first}
+reviewers = sorted(col(r, "reviewer") for r in first)
+print(panels, reviewers)
+sys.exit(0 if panels == {"reduced"} and reviewers == ["correctness", "spec", "tests"] else 1)
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
 # Under the soft limit (400 by default), no brief carries the Split section.
 type = "command"
 run = "! grep -l '^## Split' .ns/1-in-stock/swarm/review-0/*.brief.md"

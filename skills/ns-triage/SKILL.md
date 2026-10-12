@@ -104,7 +104,7 @@ Show counts and a one-line summary per item. Let the maintainer pick.
 
 4. **Grill (if needed).** If a few rounds of questions would settle the request, load the `ns-grilling` and `ns-domain-modeling` skills and grill it into shape, sharpening domain terms and updating `GLOSSARY.md`/ADRs inline as decisions land. If it needs a spec or a redesign, or a [design decision](#design-decisions) stays open, route it to `needs-define` instead.
 
-5. **Size it.** For work headed to `ready-for-agent`, estimate the change from the codebase: files and modules touched, new tests, rough changed lines. Read the soft limit from `docs/agents/stack.md` ([unit size](../ns-contract/SKILL.md#target-repo-configuration)). Past the soft limit, or holding more than one independently shippable behaviour, the outcome is a split (step 6): splitting before work starts is cheaper than a large review. The estimate plans the work and never caps it; a unit that grows past it during build keeps going, and review suggests where it could split.
+5. **Size it.** For work headed to `ready-for-agent`, estimate the change from the codebase: files and modules touched, new tests, rough changed lines. Read the soft limit from `docs/agents/stack.md` ([unit size](../ns-contract/SKILL.md#target-repo-configuration)). Past the soft limit, or holding more than one independently shippable behaviour, the outcome is a split (step 6): splitting before work starts is cheaper than a large review. The estimate plans the work and never caps it; a unit that grows past it during build keeps going, and review suggests where it could split. From the same exploration, list the paths the unit will probably change as `touches` globs: a file it edits (`cli/src/run.rs`), or a directory glob when it adds or edits several files there (`skills/ns-review/**`). Paths only, never line numbers. Every `ready-for-agent` brief carries them ([agent-brief.md](references/agent-brief.md)).
 
 6. **Apply the outcome.** Set the category, priority and state labels. An issue that already carries a priority keeps it unless the maintainer says otherwise. Then:
 
@@ -146,6 +146,9 @@ unit: 142-uart-timeout
 phase: triage
 status: pass
 base: main          # the branch the worktree came from
+touches:            # the brief's Touches globs, one per line
+  - cli/src/run.rs
+  - skills/ns-review/**
 updated: 2026-10-08T21:14:00Z
 ---
 Issue: <issue URL>
