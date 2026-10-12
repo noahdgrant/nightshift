@@ -25,7 +25,12 @@ expect_exit = 0
 
 [[check]]
 type = "command"
-run = "! grep -q '^gh pr' .git/fake/calls.log"
+run = "grep -q '^glab mr create .*--description-file' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "! grep -q '^gh ' .git/fake/calls.log"
 expect_exit = 0
 
 [[check]]

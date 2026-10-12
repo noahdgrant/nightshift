@@ -65,6 +65,7 @@ url=$(glab mr create --source-branch ns/1-x --target-branch main --title t --des
 [ "$url" = https://gitlab.example.com/acme/widgets/-/merge_requests/1 ] || fail "glab mr create said $url"
 grep -q '^glab mr create --source-branch ns/1-x ' "$fake/calls.log" || fail "glab mr create not recorded"
 glab mr view -F json | grep -q '"detailed_merge_status": "mergeable"' || fail "glab mr view not mergeable"
+glab mr view -F json | grep -q '"head_pipeline": {"id": 1, "status": "success"' || fail "glab mr view head_pipeline status"
 git -c user.name=t -c user.email=t@localhost commit -q --allow-empty -m one
 glab mr view -F json | grep -q "\"sha\": \"$(git rev-parse HEAD)\", \"has_conflicts\"" || fail "glab mr view sha"
 glab mr view 1 | grep -qx 'state:	opened' || fail "glab mr view text"
