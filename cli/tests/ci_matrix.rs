@@ -1,9 +1,9 @@
 //! The rule pack matrix `.github/workflows/ci.yml` builds from `scripts/rule-packs.sh`.
 
+mod common;
+
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 fn real_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
@@ -18,19 +18,14 @@ fn ci_matrix() -> Vec<serde_json::Value> {
         .find_map(|l| l.split_once("jq -Rcn '")?.1.strip_suffix("' <<<\"$list\")"))
         .expect("the rule-pack-list job runs jq -Rcn '<filter>' <<<\"$list\"")
         .to_owned();
-    let list = Command::new("bash")
+    let list = common::command("bash")
         .arg(real_root().join("scripts/rule-packs.sh"))
-        .output()
-        .unwrap();
+        .output();
     assert!(list.status.success());
-    let mut jq = Command::new("jq")
+    let out = common::command("jq")
         .args(["-Rcn", &filter])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    jq.stdin.take().unwrap().write_all(&list.stdout).unwrap();
-    let out = jq.wait_with_output().unwrap();
+        .write_stdin(list.stdout)
+        .output();
     assert!(out.status.success());
     serde_json::from_slice(&out.stdout).unwrap()
 }
