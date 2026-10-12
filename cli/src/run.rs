@@ -258,7 +258,8 @@ pub fn phase_command(
     cfg: Option<&Config>,
     p: &PhaseSettings,
     subscription: bool,
-    settings: &Path,
+    worktree: &Path,
+    unit: &str,
 ) -> Result<Vec<String>> {
     let owned = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let configured = cfg.and_then(|c| c.harness.get(&p.harness));
@@ -305,12 +306,25 @@ pub fn phase_command(
             )
             .into());
         }
-        argv.extend(pin::settings_args(settings));
+        argv.extend(pin::settings_args(worktree, unit));
         if subscription {
             argv = billing::strip_bare(argv);
         }
     }
     Ok(argv)
+}
+
+/// The worktree `ensure` made is the one the phase commands were rendered for: their
+/// `--settings` and `--add-dir` paths sit under it.
+fn same_worktree(predicted: &Path, actual: &Path) -> Result<()> {
+    if predicted != actual {
+        anyhow::bail!(
+            "the unit's worktree is {} but its phase commands were built for {}; run again",
+            actual.display(),
+            predicted.display()
+        );
+    }
+    Ok(())
 }
 
 /// A phase's timeout. `NS_PHASE_TIMEOUT_MS` overrides it: `<ms>` for every phase, or
@@ -866,13 +880,12 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
     worktree::check_unit_id(&unit, "ns run 142-uart-timeout --issue 142")?;
     let wt_path =
         worktree::existing(&repo, &unit)?.unwrap_or_else(|| worktree::planned_path(&repo, &unit));
-    let settings = pin::settings_path(&wt_path, &unit);
     let subscription = fac.subscription();
     let mut commands = BTreeMap::new();
     for p in PHASES {
         commands.insert(
             *p,
-            phase_command(cfg.as_ref(), &fac.phase(p), subscription, &settings)?,
+            phase_command(cfg.as_ref(), &fac.phase(p), subscription, &wt_path, &unit)?,
         );
     }
     if subscription && !args.dry_run && commands.values().any(|c| billing::is_claude(c)) {
@@ -888,6 +901,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
     let _lock = Lock::acquire(&repo.common_dir, &unit, args.issue)?;
     let base = resolve_base(&repo, args)?;
     let wt = worktree::ensure(&repo, &unit, Some(&base), &fac.worktree.setup)?;
+    same_worktree(&wt_path, Path::new(&wt.path))?;
     let pinned = pin::pin(Path::new(&wt.path), &unit, &base, ns)?;
     let ctx = Ctx {
         unit: unit.clone(),
@@ -2802,8 +2816,8 @@ mod tests {
         )
         .unwrap();
         let f = factory::parse("").unwrap();
-        let settings = Path::new("/wt/.ns/u/phase-settings.json");
-        let c = phase_command(Some(&cfg), &f.phase("build"), true, settings).unwrap();
+        let wt = Path::new("/wt");
+        let c = phase_command(Some(&cfg), &f.phase("build"), true, wt, "u").unwrap();
         let mut want: Vec<String> = [
             "claude",
             "-p",
@@ -2813,12 +2827,19 @@ mod tests {
         ]
         .map(String::from)
         .into();
-        want.extend(pin::settings_args(settings));
+        want.extend(pin::settings_args(wt, "u"));
         assert_eq!(c, want);
-        let c = phase_command(None, &f.phase("build"), true, settings).unwrap();
+        let c = phase_command(None, &f.phase("build"), true, wt, "u").unwrap();
         assert!(c.contains(&"bypassPermissions".to_string()));
         assert!(!c.contains(&"--model".to_string()));
         assert!(c.contains(&"--settings".to_string()));
+    }
+
+    #[test]
+    fn a_worktree_other_than_the_predicted_one_is_an_error() {
+        assert!(same_worktree(Path::new("/a"), Path::new("/a")).is_ok());
+        let err = same_worktree(Path::new("/a"), Path::new("/b")).unwrap_err();
+        assert!(err.to_string().contains("/b"), "{err}");
     }
 
     #[test]
@@ -2836,14 +2857,9 @@ mod tests {
             ))
             .unwrap();
             let f = factory::parse("").unwrap();
-            let err = phase_command(
-                Some(&cfg),
-                &f.phase("build"),
-                true,
-                Path::new("/wt/settings.json"),
-            )
-            .unwrap_err()
-            .to_string();
+            let err = phase_command(Some(&cfg), &f.phase("build"), true, Path::new("/wt"), "u")
+                .unwrap_err()
+                .to_string();
             assert!(err.contains(flag[0].split('=').next().unwrap()), "{err}");
         }
     }
@@ -2851,13 +2867,7 @@ mod tests {
     #[test]
     fn a_codex_phase_gets_no_hook_guard_settings() {
         let f = factory::parse("[defaults]\nharness = \"codex\"\n").unwrap();
-        let c = phase_command(
-            None,
-            &f.phase("build"),
-            true,
-            Path::new("/wt/settings.json"),
-        )
-        .unwrap();
+        let c = phase_command(None, &f.phase("build"), true, Path::new("/wt"), "u").unwrap();
         assert!(!c.contains(&"--settings".to_string()), "{c:?}");
     }
 

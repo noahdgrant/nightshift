@@ -193,7 +193,7 @@ fn claude_settings_are_protected_and_hooks_stay_enabled() {
     ] {
         assert!(denied(c), "{c}");
     }
-    for p in ["/r/.claude/skills/x.md", "/r/settings.json"] {
+    for p in ["/r/.claude/commands/x.md", "/r/settings.json"] {
         let call = json!({"tool_name": "Edit", "tool_input": {"file_path": p}});
         assert!(check(&call).is_none(), "{p}");
     }
@@ -327,4 +327,64 @@ fn the_units_phase_settings_and_skill_snapshot_are_protected() {
         let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
         assert!(check(&call).is_none(), "{p}");
     }
+}
+
+#[test]
+fn the_claude_skills_link_is_protected_because_it_writes_through_to_the_snapshot() {
+    for p in ["/r/.claude/skills/ns-build/SKILL.md", ".claude/skills"] {
+        let call = json!({"tool_name": "Edit", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_some(), "{p}");
+    }
+    for c in [
+        "rm -rf .claude/skills",
+        "sed -i s/a/b/ .claude/skills/ns-x/SKILL.md",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn agents_skills_is_protected_only_as_a_link_into_a_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let agents = dir.path().join(".agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    let skills = agents.join("skills");
+    let edit = || {
+        let p = skills.join("x/SKILL.md");
+        let call = json!({"tool_name": "Edit", "tool_input": {"file_path": p}});
+        check(&call).is_some()
+    };
+    std::fs::create_dir(&skills).unwrap();
+    assert!(!edit(), "a real .agents/skills stays editable");
+    std::fs::remove_dir(&skills).unwrap();
+    std::os::unix::fs::symlink("../.ns/u1/skills", &skills).unwrap();
+    assert!(edit(), "a link into the snapshot is protected");
+}
+
+#[test]
+fn cd_into_a_unit_directory_protects_its_relative_skills_and_settings() {
+    for c in [
+        "cd .ns/u1 && rm -rf skills",
+        "cd .ns/u1; sed -i s/a/b/ skills/ns-x/SKILL.md",
+        "cd .ns/u1 && echo '{}' > phase-settings.json",
+        "cd .ns && rm -rf u1/skills",
+        "cd .ns; cd u1; rm -rf skills",
+        "cd .ns/u1/skills && rm -rf x",
+        "cd .ns/u1/other && rm ../skills/x",
+        "cd /r/.ns/u1 && rm -rf skills",
+        "(cd .ns/u1 && rm -rf skills)",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "cd .ns/u1 && rm build.md",
+        "cd .ns/u1 && cd .. && rm -rf skills",
+        "cd .ns/u1; cd /tmp; rm -rf skills",
+        "(cd .ns/u1); rm -rf skills",
+        "cd .ns && rm -rf skills",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    let call = json!({"tool_name": "Bash", "cwd": "/r/.ns/u1", "tool_input": {"command": "rm -rf skills"}});
+    assert!(check(&call).is_some());
 }

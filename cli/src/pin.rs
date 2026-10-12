@@ -15,9 +15,6 @@ use crate::install;
 /// Where the harness looks for project skills, relative to the worktree.
 pub const LINKS: &[&str] = &[".claude/skills", ".agents/skills"];
 
-/// The skill trees a snapshot takes from the base commit, in order.
-const TREES: &[&str] = &["skills", ".agents/skills"];
-
 /// The settings file a claude phase of `unit` runs with.
 pub fn settings_path(worktree: &Path, unit: &str) -> PathBuf {
     worktree.join(".ns").join(unit).join("phase-settings.json")
@@ -38,14 +35,16 @@ pub fn owned_flag(argv: &[String]) -> Option<&'static str> {
     })
 }
 
-/// The arguments that give a claude phase only the project's settings sources and the factory's
-/// phase settings file `settings`.
-pub fn settings_args(settings: &Path) -> [String; 4] {
+/// The arguments that give a claude phase of `unit` only the project's settings sources, the
+/// factory's phase settings file, and the unit's skill snapshot as an added directory.
+pub fn settings_args(worktree: &Path, unit: &str) -> [String; 6] {
     [
         "--setting-sources".into(),
         "project,local".into(),
         "--settings".into(),
-        settings.to_string_lossy().into_owned(),
+        settings_path(worktree, unit).to_string_lossy().into_owned(),
+        "--add-dir".into(),
+        skills_path(worktree, unit).to_string_lossy().into_owned(),
     ]
 }
 
@@ -67,11 +66,11 @@ pub fn write_settings(worktree: &Path, unit: &str, ns: &Path) -> Result<()> {
 pub fn pin(worktree: &Path, unit: &str, base: &str, ns: &Path) -> Result<Vec<Value>> {
     let skills = skills_path(worktree, unit);
     let mut events = Vec::new();
-    if skills.is_dir() && count_skills(&skills) == 0 {
-        fs::remove_dir_all(&skills)
-            .with_context(|| format!("cannot remove {}", skills.display()))?;
-    }
-    if !skills.is_dir() {
+    if !has_ns_skills(&skills) {
+        if skills.is_dir() {
+            fs::remove_dir_all(&skills)
+                .with_context(|| format!("cannot remove {}", skills.display()))?;
+        }
         events.push(snapshot(worktree, base, &skills)?);
     }
     write_settings(worktree, unit, ns)?;
@@ -101,29 +100,13 @@ fn snapshot(worktree: &Path, base: &str, into: &Path) -> Result<Value> {
         fs::remove_dir_all(&tmp).with_context(|| format!("cannot remove {}", tmp.display()))?;
     }
     fs::create_dir_all(&tmp).with_context(|| format!("cannot create {}", tmp.display()))?;
+    checkout_tree(worktree, &format!("{sha}:skills"), &tmp)?;
     let mut source = "base";
-    for tree in TREES {
-        checkout_tree(worktree, &format!("{sha}:{tree}"), &tmp)?;
-        if *tree == "skills" && !has_ns_skills(&tmp) {
-            source = "installed";
-            let installed = install::Harness::Claude.dir();
-            let dirs = if installed.is_dir() {
-                install::skill_dirs(&installed).with_context(|| {
-                    format!(
-                        "cannot read the installed skills in {}",
-                        installed.display()
-                    )
-                })?
-            } else {
-                Vec::new()
-            };
-            for dir in dirs {
-                let name = dir.file_name().context("skill dir has no name")?;
-                copy_dir(&dir, &tmp.join(name), &|_| false)?;
-            }
-        }
+    if !has_ns_skills(&tmp) {
+        source = "installed";
+        copy_installed_skills(&tmp)?;
     }
-    let count = count_skills(&tmp);
+    checkout_tree(worktree, &format!("{sha}:.agents/skills"), &tmp)?;
     if !has_ns_skills(&tmp) {
         let _ = fs::remove_dir_all(&tmp);
         anyhow::bail!(
@@ -131,6 +114,7 @@ fn snapshot(worktree: &Path, base: &str, into: &Path) -> Result<Value> {
             install::Harness::Claude.dir().display()
         );
     }
+    let count = count_skills(&tmp);
     fs::rename(&tmp, into).with_context(|| format!("cannot write {}", into.display()))?;
     Ok(json!({
         "event": "skills_pinned",
@@ -140,20 +124,39 @@ fn snapshot(worktree: &Path, base: &str, into: &Path) -> Result<Value> {
     }))
 }
 
-/// Whether `dir` holds an `ns-*` skill directory.
+/// Copy the installed `ns-*` skills into `into`; none installed copies nothing.
+fn copy_installed_skills(into: &Path) -> Result<()> {
+    let installed = install::Harness::Claude.dir();
+    if !installed.is_dir() {
+        return Ok(());
+    }
+    let dirs = install::skill_dirs(&installed).with_context(|| {
+        format!(
+            "cannot read the installed skills in {}",
+            installed.display()
+        )
+    })?;
+    for dir in dirs {
+        let name = dir.file_name().context("skill dir has no name")?;
+        copy_dir(&dir, &into.join(name), &|_| false)?;
+    }
+    Ok(())
+}
+
+/// Whether `dir` holds an `ns-*` skill directory: the one test of a good snapshot.
 fn has_ns_skills(dir: &Path) -> bool {
     install::skill_dirs(dir).is_ok_and(|d| !d.is_empty())
 }
 
 /// Check out the tree `treeish` into `into` through a scratch index, so neither the worktree
-/// nor its index changes. False when there is no such tree.
-fn checkout_tree(worktree: &Path, treeish: &str, into: &Path) -> Result<bool> {
+/// nor its index changes. A `treeish` that names no tree is skipped, not an error.
+fn checkout_tree(worktree: &Path, treeish: &str, into: &Path) -> Result<()> {
     if git::run(worktree, &["cat-file", "-t", treeish])
         .ok()
         .as_deref()
         != Some("tree")
     {
-        return Ok(false);
+        return Ok(());
     }
     let scratch = tempfile::tempdir().context("cannot create a scratch dir")?;
     let prefix = format!("--prefix={}/", into.display());
@@ -176,7 +179,7 @@ fn checkout_tree(worktree: &Path, treeish: &str, into: &Path) -> Result<bool> {
             );
         }
     }
-    Ok(true)
+    Ok(())
 }
 
 /// Point the symlink `link` at `target`. A symlink into some unit's snapshot is replaced; any
@@ -204,7 +207,7 @@ fn link_to(link: &Path, target: &Path) -> Result<Option<String>> {
 }
 
 /// `target` ends in `.ns/<unit>/skills`.
-fn points_into_a_snapshot(target: &Path) -> bool {
+pub(crate) fn points_into_a_snapshot(target: &Path) -> bool {
     let parts: Vec<_> = target.components().rev().take(3).collect();
     matches!(parts.as_slice(), [skills, _, ns]
         if skills.as_os_str() == "skills" && ns.as_os_str() == ".ns")
@@ -224,12 +227,14 @@ mod tests {
     #[test]
     fn settings_args_name_the_file_and_the_project_sources() {
         assert_eq!(
-            settings_args(Path::new("/wt/s.json")),
+            settings_args(Path::new("/wt"), "u"),
             [
                 "--setting-sources",
                 "project,local",
                 "--settings",
-                "/wt/s.json"
+                "/wt/.ns/u/phase-settings.json",
+                "--add-dir",
+                "/wt/.ns/u/skills"
             ]
         );
     }

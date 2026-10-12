@@ -27,7 +27,7 @@ const RULE: &str = "The factory contract's Git hooks rule (skills/ns-contract/SK
 const MAX_NESTING: usize = 8;
 
 /// What a protected path is called in a denial.
-const PROTECTED: &str = ".githooks/, .git/hooks, .git/config, .claude/settings*.json, .ns/<unit>/phase-settings.json or .ns/<unit>/skills";
+const PROTECTED: &str = ".githooks/, .git/hooks, .git/config, .claude/settings*.json, .claude/skills, .ns/<unit>/phase-settings.json or .ns/<unit>/skills";
 
 const BASH_TOOL: &str = "Bash";
 
@@ -85,7 +85,7 @@ pub fn check(call: &Value) -> Option<String> {
     match call["tool_name"].as_str()? {
         BASH_TOOL => {
             let mut scan = Scan {
-                hooks_depth: call["cwd"].as_str().and_then(protected_depth),
+                cwd: call["cwd"].as_str().map(Cwd::of).unwrap_or_default(),
                 ..Scan::default()
             };
             check_command(input["command"].as_str()?, &mut scan)
@@ -107,10 +107,10 @@ fn unreadable(what: &str) -> String {
 struct Scan {
     /// An earlier `cd` or `pushd`, or this git's `-C`, went into a protected path: how many
     /// directories below it the working directory is.
-    hooks_depth: Option<usize>,
+    cwd: Cwd,
     depth: usize,
-    /// `hooks_depth` outside each subshell the scan is in.
-    outer_cwds: Vec<Option<usize>>,
+    /// `cwd` outside each subshell the scan is in.
+    outer_cwds: Vec<Cwd>,
     /// The command's stdin is a heredoc or herestring, which a shell would run.
     stdin_is_text: bool,
 }
@@ -121,9 +121,14 @@ impl Scan {
         let path = option_value(path);
         is_protected(path)
             || (!path.starts_with(['-', '/'])
-                && self
-                    .hooks_depth
-                    .is_some_and(|depth| stays_inside(depth, path)))
+                && (self
+                    .cwd
+                    .hooks
+                    .is_some_and(|depth| stays_inside(depth, path))
+                    || self
+                        .cwd
+                        .ns
+                        .is_some_and(|depth| reaches_unit_file(depth, path))))
     }
 }
 
@@ -175,10 +180,10 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
                 words.clear();
                 stdin_is_text = false;
                 match tok {
-                    Tok::SubshellOpen => scan.outer_cwds.push(scan.hooks_depth),
+                    Tok::SubshellOpen => scan.outer_cwds.push(scan.cwd),
                     Tok::SubshellClose => {
                         if let Some(outer) = scan.outer_cwds.pop() {
-                            scan.hooks_depth = outer;
+                            scan.cwd = outer;
                         }
                     }
                     _ => {}
@@ -235,7 +240,7 @@ fn check_segment(words: &[Word], scan: &mut Scan) -> Option<String> {
                 None
             }
             "popd" => {
-                scan.hooks_depth = None;
+                scan.cwd = Cwd::default();
                 None
             }
             "eval" => check_words(&w[1..], scan),
@@ -277,21 +282,12 @@ fn change_directory(args: &[Word], scan: &mut Scan) {
         .iter()
         .map(|a| a.text.as_str())
         .find(|a| *a == "-" || !a.starts_with('-'));
-    match dir {
-        Some(d) if is_protected_directory(d) => scan.hooks_depth = protected_depth(d),
-        Some(d) if !d.starts_with(['/', '~']) => {
-            if let Some(depth) = scan.hooks_depth {
-                scan.hooks_depth = Some(components(d).iter().fold(depth, |depth, part| {
-                    if *part == ".." {
-                        depth.saturating_sub(1)
-                    } else {
-                        depth + 1
-                    }
-                }));
-            }
-        }
-        _ => scan.hooks_depth = None,
-    }
+    scan.cwd = match dir {
+        Some(d) if is_protected_directory(d) => Cwd::of(d),
+        Some(d) if !d.starts_with(['/', '~']) => Cwd::relative(scan.cwd, d),
+        Some(d) if d.starts_with('/') => Cwd::of(d),
+        _ => Cwd::default(),
+    };
 }
 
 fn env_assignment(word: &str) -> Option<(&str, &str)> {

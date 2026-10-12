@@ -123,12 +123,13 @@ pub fn run() -> Result<()> {
 }
 
 /// How `ns run` pins a harness's skills for a unit's phases (docs/FACTORY.md, "Pinned skills"):
-/// claude phases see only the unit's snapshot, other harnesses load whatever is installed.
+/// claude phases see only the unit's snapshot, codex sees it through `.agents/skills` next to
+/// the user's installed skills, and other harnesses are not pointed at it.
 fn pinning(harness: &str) -> &'static str {
-    if harness == "claude" {
-        "snapshot"
-    } else {
-        "none"
+    match harness {
+        "claude" => "snapshot",
+        "codex" => "partial",
+        _ => "none",
     }
 }
 

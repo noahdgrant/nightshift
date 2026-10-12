@@ -209,7 +209,7 @@ fn with_phase_settings(mut command: Vec<String>) -> Result<Vec<String>> {
         )
         .into());
     }
-    command.extend(crate::pin::settings_args(&settings));
+    command.extend(crate::pin::settings_args(Path::new(&wt), &unit));
     Ok(command)
 }
 

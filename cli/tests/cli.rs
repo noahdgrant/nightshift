@@ -707,7 +707,9 @@ fn ask_inside_a_phase_gives_claude_the_phase_settings() {
         "--setting-sources",
         "project,local",
         "--settings",
-        settings.to_str().unwrap()
+        settings.to_str().unwrap(),
+        "--add-dir",
+        wt.join(".ns/u1/skills").to_str().unwrap()
     ]);
     let tail = tail.as_array().unwrap();
     // A phase whose settings file is gone is an error, not a claude with the user's settings.
@@ -1067,7 +1069,8 @@ fn doctor_reports_config() {
         assert!(v["harnesses"][h]["on_path"].is_boolean());
     }
     assert_eq!(v["harnesses"]["claude"]["pinning"], "snapshot");
-    for h in ["codex", "cursor-agent", "gemini", "opencode"] {
+    assert_eq!(v["harnesses"]["codex"]["pinning"], "partial");
+    for h in ["cursor-agent", "gemini", "opencode"] {
         assert_eq!(v["harnesses"][h]["pinning"], "none", "{h}");
     }
     assert_eq!(v["claude_phases"]["auto_memory"], false);

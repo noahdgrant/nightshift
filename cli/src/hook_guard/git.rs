@@ -103,7 +103,7 @@ pub(super) fn global_option(
         "-c" => config_pair(value, scan, aliases),
         "-C" => {
             if is_protected(value) {
-                scan.hooks_depth = protected_depth(value);
+                scan.cwd.hooks = protected_depth(value);
             }
             None
         }
@@ -117,9 +117,9 @@ pub(super) fn global_option(
 }
 
 pub(super) fn git(args: &[Word], scan: &mut Scan) -> Option<String> {
-    let outer_cwd = scan.hooks_depth;
+    let outer_cwd = scan.cwd;
     let why = git_command(args, scan);
-    scan.hooks_depth = outer_cwd;
+    scan.cwd = outer_cwd;
     why
 }
 

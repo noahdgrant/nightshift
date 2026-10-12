@@ -411,6 +411,32 @@ fn codex_phases_saw(factory: &str) -> String {
 }
 
 #[test]
+fn a_codex_phase_sees_the_snapshot_through_agents_skills_but_gets_no_claude_settings() {
+    let e = Env::new();
+    let codex = e.bin.join("codex");
+    fs::copy(e.bin.join("claude"), &codex).unwrap();
+    e.config(&format!(
+        "[harness.codex]\ncommand = [{c:?}]\ncommand_write = [{c:?}]\n",
+        c = codex.to_str().unwrap()
+    ));
+    e.factory("[defaults]\nharness = \"codex\"\n");
+    e.run(&["run", "--issue", "7"], 0);
+    let args = fs::read_to_string(e.ctrl.join("args")).unwrap();
+    for flag in ["--settings", "--setting-sources", "--add-dir"] {
+        assert!(!args.split_whitespace().any(|a| a == flag), "{args}");
+    }
+    let wt = e.worktree(UNIT);
+    for link in [".claude/skills", ".agents/skills"] {
+        let target = fs::read_link(wt.join(link)).unwrap();
+        assert!(
+            target.ends_with(format!(".ns/{UNIT}/skills")),
+            "{link}: {target:?}"
+        );
+        assert!(wt.join(link).join("ns-demo").is_dir(), "{link}");
+    }
+}
+
+#[test]
 fn codex_phases_on_a_subscription_run_without_openai_api_keys() {
     assert_eq!(codex_phases_saw(""), "");
 }
@@ -548,6 +574,7 @@ fn claude_phases_read_only_project_settings_and_the_factory_settings_file() {
         .join(".ns")
         .join(UNIT)
         .join("phase-settings.json");
+    let skills = e.worktree(UNIT).join(".ns").join(UNIT).join("skills");
     let dry: Vec<&str> = d["command"]
         .as_array()
         .unwrap()
@@ -559,11 +586,13 @@ fn claude_phases_read_only_project_settings_and_the_factory_settings_file() {
         "project,local",
         "--settings",
         file.to_str().unwrap(),
+        "--add-dir",
+        skills.to_str().unwrap(),
     ];
-    assert!(dry.windows(4).any(|w| w == tail), "{dry:?}");
+    assert!(dry.windows(6).any(|w| w == tail), "{dry:?}");
 
     let (argv, settings) = phase_settings(&e);
-    assert!(argv.windows(4).any(|w| w == tail), "{argv:?}");
+    assert!(argv.windows(6).any(|w| w == tail), "{argv:?}");
     let deny: Vec<&str> = settings["permissions"]["deny"]
         .as_array()
         .unwrap()

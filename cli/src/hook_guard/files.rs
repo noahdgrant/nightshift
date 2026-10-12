@@ -5,17 +5,105 @@ use super::*;
 /// `path` is in `.githooks/`, `.git/hooks` or `.git/config`, or is a Claude Code settings file
 /// (`.claude/settings*.json`), which can turn the hook off, or is a unit's phase settings file
 /// or skill snapshot (`.ns/<unit>/phase-settings.json`, `.ns/<unit>/skills`), which a later
-/// phase reads.
+/// phase reads, or is a way in to the snapshot: `.claude/skills` and a `.agents/skills` that is
+/// a symlink into it.
 pub(super) fn is_protected(path: &str) -> bool {
     let parts = components(path);
     parts.contains(&".githooks")
         || parts.windows(2).any(|p| {
             (p[0] == ".git" && matches!(p[1], "hooks" | "config"))
-                || (p[0] == ".claude" && p[1].starts_with("settings") && p[1].ends_with(".json"))
+                || (p[0] == ".claude"
+                    && (p[1] == "skills"
+                        || (p[1].starts_with("settings") && p[1].ends_with(".json"))))
         })
+        || is_under_snapshot_link(path, &parts)
         || parts
             .windows(3)
             .any(|p| p[0] == ".ns" && matches!(p[2], "phase-settings.json" | "skills"))
+}
+
+/// `path` goes through an `.agents/skills` that is a symlink into a unit's snapshot. A real
+/// `.agents/skills` is nightshift's own tracked directory and stays editable.
+fn is_under_snapshot_link(path: &str, parts: &[&str]) -> bool {
+    let Some(i) = parts.windows(2).position(|p| p == [".agents", "skills"]) else {
+        return false;
+    };
+    let root = if path.starts_with('/') { "/" } else { "" };
+    let link = format!("{root}{}", parts[..i + 2].join("/"));
+    std::fs::read_link(link).is_ok_and(|target| crate::pin::points_into_a_snapshot(&target))
+}
+
+/// Where a shell is, as far as the guard follows it.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Cwd {
+    /// How many directories below a protected path, or `None` when not in one.
+    pub hooks: Option<usize>,
+    /// How many directories below `.ns/`: `.ns/<unit>` is 1. A relative `skills` or
+    /// `phase-settings.json` there is the unit's snapshot or settings.
+    pub ns: Option<usize>,
+}
+
+impl Cwd {
+    /// The working directory `dir` names.
+    pub fn of(dir: &str) -> Cwd {
+        let parts = components(dir);
+        Cwd {
+            hooks: protected_depth(dir),
+            ns: parts
+                .iter()
+                .rposition(|p| *p == ".ns")
+                .and_then(|i| descend(0, &parts[i + 1..])),
+        }
+    }
+
+    /// The working directory after `cd` to the relative `dir` from `from`.
+    pub fn relative(from: Cwd, dir: &str) -> Cwd {
+        let parts = components(dir);
+        let named = Cwd::of(dir);
+        Cwd {
+            hooks: named.hooks.or_else(|| {
+                from.hooks.map(|depth| {
+                    parts.iter().fold(depth, |depth, part| {
+                        if *part == ".." {
+                            depth.saturating_sub(1)
+                        } else {
+                            depth + 1
+                        }
+                    })
+                })
+            }),
+            ns: named
+                .ns
+                .or_else(|| from.ns.and_then(|depth| descend(depth, &parts))),
+        }
+    }
+}
+
+/// The depth below `.ns/` after walking `parts` from `depth`; `None` once it leaves `.ns/`.
+fn descend(depth: usize, parts: &[&str]) -> Option<usize> {
+    parts.iter().try_fold(depth, |depth, part| match *part {
+        ".." => depth.checked_sub(1),
+        _ => Some(depth + 1),
+    })
+}
+
+/// The relative `path` from `depth` directories below `.ns/` reaches the `skills` or
+/// `phase-settings.json` of a unit directory.
+pub(super) fn reaches_unit_file(mut depth: usize, path: &str) -> bool {
+    for part in components(path) {
+        if part == ".." {
+            match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return false,
+            }
+        } else {
+            if depth == 1 && matches!(part, "skills" | "phase-settings.json") {
+                return true;
+            }
+            depth += 1;
+        }
+    }
+    false
 }
 
 /// A working directory whose relative paths are protected: inside `.githooks/` or the `.git`
