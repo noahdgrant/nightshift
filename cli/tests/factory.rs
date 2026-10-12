@@ -1422,6 +1422,55 @@ fn run_events(e: &Env) -> Vec<Value> {
         .collect()
 }
 
+fn end_event(e: &Env) -> Value {
+    run_events(e)
+        .into_iter()
+        .rfind(|ev| ev["event"] == "end")
+        .unwrap()
+}
+
+#[test]
+fn the_end_event_records_the_predicted_and_changed_files() {
+    let e = Env::new();
+    e.ctl("triage.body", "**Touches:** `work.txt`, `docs/**`\n");
+    e.queue("build", &["pass:commit"]);
+    e.ctl(
+        "review.sh",
+        "mkdir -p src && echo x > src/a.rs && git add src && git -c user.name=f -c user.email=f@f commit -qm a",
+    );
+    e.queue("review", &["pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let end = end_event(&e);
+    assert_eq!(end["touches"], serde_json::json!(["work.txt", "docs/**"]));
+    assert_eq!(end["changed"], serde_json::json!(["src/a.rs", "work.txt"]));
+}
+
+#[test]
+fn the_end_event_leaves_out_both_lists_when_git_cannot_diff_the_base() {
+    let e = Env::new();
+    git(&e.root, &["branch", "gone"]);
+    e.ctl("triage.body", "**Touches:** `work.txt`\n");
+    e.ctl("build.sh", "git branch -D -q gone");
+    e.queue("build", &["blocked:script"]);
+    let v = e.run(&["run", "--issue", "7", "--base", "gone"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    let end = end_event(&e);
+    assert_eq!(end["outcome"], "stuck", "{end}");
+    assert!(end.get("touches").is_none(), "{end}");
+    assert!(end.get("changed").is_none(), "{end}");
+}
+
+#[test]
+fn the_end_event_records_no_prediction_as_an_empty_list() {
+    let e = Env::new();
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let end = end_event(&e);
+    assert_eq!(end["touches"], serde_json::json!([]));
+    assert_eq!(end["changed"], serde_json::json!([]));
+}
+
 #[test]
 fn watch_returns_a_stale_in_progress_issue_to_the_queue_and_resumes_its_unit() {
     let e = Env::new();
@@ -1938,9 +1987,9 @@ fn assert_interrupted(e: &Env, r: &Interrupted, sig: &str, code: i32) {
     }
     assert_eq!(e.labels(2), ["type:fix", "status:ready-for-agent"]);
     assert!(
-        run_events(e)
-            .iter()
-            .any(|ev| ev["event"] == "end" && ev["outcome"] == "interrupted"),
+        run_events(e).iter().any(|ev| ev["event"] == "end"
+            && ev["outcome"] == "interrupted"
+            && ev["changed"].is_array()),
         "{err}"
     );
 }

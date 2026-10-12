@@ -8,13 +8,6 @@ const LINE_KEY: &str = "Touches:";
 
 /// The brief's `touches` globs, from `brief.md` frontmatter or the brief comment
 /// text. Empty when the brief makes no prediction or the value is malformed.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the ns watch overlap scheduler (#418) is its first caller"
-    )
-)]
 pub fn touches(text: &str) -> Vec<String> {
     if let Some((yaml, body)) = frontmatter::split(text) {
         match serde_yaml::from_str::<serde_yaml::Value>(yaml) {

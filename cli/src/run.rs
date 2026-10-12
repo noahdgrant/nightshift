@@ -653,6 +653,24 @@ impl Ctx<'_> {
         log_event(&self.common, ev);
     }
 
+    /// Log an `end` event with the brief's `touches` prediction and the files the unit changed
+    /// against its base. Both are left out when git can't list the changed files.
+    fn log_end(&self, mut ev: Value) {
+        let range = format!("{}...HEAD", self.base);
+        if let Ok(out) = git::run(
+            &self.worktree,
+            &["diff", "--name-only", "--no-renames", "-z", &range],
+        ) {
+            let brief = fs::read_to_string(self.artifacts.join("brief.md")).unwrap_or_default();
+            ev["touches"] = json!(crate::touches::touches(&brief));
+            ev["changed"] = json!(out
+                .split('\0')
+                .filter(|p| !p.is_empty())
+                .collect::<Vec<_>>());
+        }
+        self.log(ev);
+    }
+
     fn head(&self) -> String {
         git::run(&self.worktree, &["rev-parse", "--short", "HEAD"]).unwrap_or_default()
     }
@@ -923,7 +941,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
             )
         };
         if let Some(sig) = driven.as_ref().err().and(crate::stop::requested()) {
-            ctx.log(json!({
+            ctx.log_end(json!({
                 "event": "end",
                 "outcome": "interrupted",
                 "reason": format!("stopped by {}", crate::stop::name(sig)),
@@ -933,7 +951,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         driven?
     };
     let pr = known_pr(&ctx.artifacts);
-    ctx.log(json!({
+    ctx.log_end(json!({
         "event": "end",
         "outcome": result.outcome.label(),
         "reason": result.reason,
