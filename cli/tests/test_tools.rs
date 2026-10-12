@@ -505,7 +505,8 @@ fn one_matrix_job_tests_every_rule_pack_scripts_rule_packs_sh_lists() {
         "fromJSON(needs.rule-pack-list.outputs.packs)",
         "name: Rule pack tests (${{ matrix.name }})",
         "PACK: ${{ matrix.pack }}",
-        r#"scripts/ci-tools.sh install $(cat "rules/$PACK/TOOLS")"#,
+        r#"read -ra tools < "rules/$PACK/TOOLS""#,
+        r#"scripts/ci-tools.sh install "${tools[@]}""#,
         r#"scripts/check-git-dir-decoy.sh "rules/$PACK/tests/run.sh""#,
     ] {
         assert!(

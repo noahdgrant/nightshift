@@ -296,6 +296,7 @@ fn add_pack(root: &Path, pack: &str, name: &str) {
     let dir = root.join("rules").join(pack);
     write_exe(&dir.join("tests/run.sh"), rule_pack_tests(pack));
     fs::write(dir.join("NAME"), format!("{name}\n")).unwrap();
+    fs::write(dir.join("TOOLS"), "ruff\n").unwrap();
 }
 
 /// `bash` and the system tools `scripts/ci-local.sh` runs outside its stubs.
@@ -899,7 +900,10 @@ fn a_new_pack_needs_only_files_under_its_own_directory() {
     add_pack(root, "zz", "Zed");
     git(root, &["add", "-A"]);
     let changed = git(root, &["diff", "--cached", "--name-only"]);
-    assert_eq!(changed, "rules/zz/NAME\nrules/zz/tests/run.sh");
+    assert_eq!(
+        changed,
+        "rules/zz/NAME\nrules/zz/TOOLS\nrules/zz/tests/run.sh"
+    );
 
     let out = listed_packs(root);
     assert!(out.status.success(), "{}", stderr(&out));
@@ -922,7 +926,7 @@ fn a_new_pack_needs_only_files_under_its_own_directory() {
 
 #[test]
 fn a_pack_without_a_one_line_name_fails_the_run_naming_its_name_file() {
-    for name in [None, Some(""), Some("One\nTwo\n")] {
+    for name in [None, Some(""), Some("One\nTwo\n"), Some("One\tTwo\n")] {
         let repo = Repo::new();
         let root = repo.dir.path();
         add_pack(root, "zz", "Zed");
@@ -945,6 +949,23 @@ fn a_pack_without_a_one_line_name_fails_the_run_naming_its_name_file() {
         let out = affected(&repo, Some("rules/zz/x"), &[]);
         assert_eq!(out.status.code(), Some(1), "{name:?}: {}", stderr(&out));
         assert!(stderr(&out).contains(want), "{name:?}: {}", stderr(&out));
+    }
+}
+
+#[test]
+fn a_pack_without_tool_names_fails_the_run_naming_its_tools_file() {
+    for tools in [None, Some(""), Some("\n"), Some(" \t\n")] {
+        let repo = Repo::new();
+        let root = repo.dir.path();
+        add_pack(root, "zz", "Zed");
+        match tools {
+            Some(t) => fs::write(root.join("rules/zz/TOOLS"), t).unwrap(),
+            None => fs::remove_file(root.join("rules/zz/TOOLS")).unwrap(),
+        }
+        let want = "rule-packs: rules/zz/TOOLS must name the pack's pinned tools\n";
+        let out = listed_packs(root);
+        assert_eq!(out.status.code(), Some(1), "{tools:?}");
+        assert_eq!(stderr(&out), want, "{tools:?}");
     }
 }
 

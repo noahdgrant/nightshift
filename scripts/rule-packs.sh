@@ -16,8 +16,14 @@ for run in rules/*/tests/run.sh; do
   pack=${pack%%/*}
   name=
   [ ! -f "rules/$pack/NAME" ] || name=$(<"rules/$pack/NAME")
-  if [ -z "$name" ] || [[ $name == *$'\n'* ]]; then
+  if [ -z "$name" ] || [[ $name == *$'\n'* || $name == *$'\t'* ]]; then
     echo "rule-packs: rules/$pack/NAME must hold the pack's name on one line" >&2
+    exit 1
+  fi
+  tools=()
+  [ ! -f "rules/$pack/TOOLS" ] || read -ra tools <"rules/$pack/TOOLS" || true
+  if [ ${#tools[@]} -eq 0 ]; then
+    echo "rule-packs: rules/$pack/TOOLS must name the pack's pinned tools" >&2
     exit 1
   fi
   printf '%s\t%s\n' "$pack" "$name"

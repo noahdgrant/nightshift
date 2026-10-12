@@ -162,7 +162,9 @@ jobs:
         run: cargo build --manifest-path cli/Cargo.toml
       - name: Install the pinned tools in rules/<pack>/TOOLS (PMD's zip is cached for install.sh --offline)
         id: tools
-        run: scripts/ci-tools.sh install $(cat "rules/$PACK/TOOLS")
+        run: |
+          read -ra tools < "rules/$PACK/TOOLS" || [ "${#tools[@]}" -gt 0 ]
+          scripts/ci-tools.sh install "${tools[@]}"
       - if: steps.tools.outputs.install-action != ''
         uses: taiki-e/install-action@v2
         with:
