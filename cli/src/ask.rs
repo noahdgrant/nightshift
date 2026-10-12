@@ -172,12 +172,34 @@ fn plan(role: &str, write: bool) -> Result<Plan> {
         ));
     };
     let bin = which(&command[0]);
+    let command = with_phase_settings(command);
     Ok(Plan {
         resolved,
         command,
         bin,
         config: path,
     })
+}
+
+/// Inside an `ns run` phase (`NS_WORKTREE` and `NS_UNIT` set, and the phase's settings file
+/// there), a claude command gets the phase's settings and settings sources, like the phase.
+fn with_phase_settings(mut command: Vec<String>) -> Vec<String> {
+    let (Some(wt), Some(unit)) = (
+        std::env::var_os("NS_WORKTREE"),
+        std::env::var("NS_UNIT").ok(),
+    ) else {
+        return command;
+    };
+    let settings = crate::pin::settings_path(Path::new(&wt), &unit);
+    if billing::is_claude(&command) && settings.is_file() {
+        command.extend([
+            "--setting-sources".into(),
+            "project,local".into(),
+            "--settings".into(),
+            settings.to_string_lossy().into_owned(),
+        ]);
+    }
+    command
 }
 
 impl Plan {

@@ -679,6 +679,42 @@ fn ask_dry_run_resolves_role_chain() {
 }
 
 #[test]
+fn ask_inside_a_phase_gives_claude_the_phase_settings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    fs::write(&cfg, "[roles.default]\nharness = \"claude\"\n").unwrap();
+    let wt = tmp.path().join("wt");
+    let settings = wt.join(".ns/u1/phase-settings.json");
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let ask = |unit: Option<&str>| {
+        let mut c = ns();
+        c.env("NS_CONFIG", &cfg)
+            .env("NS_WORKTREE", &wt)
+            .env_remove("NS_UNIT")
+            .args(["ask", "--role", "build", "--dry-run"]);
+        if let Some(u) = unit {
+            c.env("NS_UNIT", u);
+        }
+        let v = json(&c.assert().success().get_output().stdout);
+        v["command"].as_array().unwrap().clone()
+    };
+    let tail = serde_json::json!([
+        "--setting-sources",
+        "project,local",
+        "--settings",
+        settings.to_str().unwrap()
+    ]);
+    let tail = tail.as_array().unwrap();
+    assert!(ask(Some("u1")).iter().all(|a| a != "--settings"));
+    fs::write(&settings, "{}").unwrap();
+    assert!(ask(Some("u1")).ends_with(tail), "{:?}", ask(Some("u1")));
+    assert!(ask(None).iter().all(|a| a != "--settings"));
+    assert!(ask(Some("u2")).iter().all(|a| a != "--settings"));
+    fs::write(&cfg, "[roles.default]\nharness = \"codex\"\n").unwrap();
+    assert!(ask(Some("u1")).iter().all(|a| a != "--settings"));
+}
+
+#[test]
 fn ask_write_mode_and_cwd() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = config(tmp.path());
@@ -984,6 +1020,10 @@ fn doctor_reports_config() {
     assert_eq!(default["model"], "gpt-test");
     for h in ["claude", "codex", "cursor-agent", "gemini", "opencode"] {
         assert!(v["harnesses"][h]["on_path"].is_boolean());
+    }
+    assert_eq!(v["harnesses"]["claude"]["pinning"], "snapshot");
+    for h in ["codex", "cursor-agent", "gemini", "opencode"] {
+        assert_eq!(v["harnesses"][h]["pinning"], "none", "{h}");
     }
     assert_eq!(v["claude_phases"]["auto_memory"], false);
     assert_eq!(
