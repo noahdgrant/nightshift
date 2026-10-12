@@ -92,6 +92,7 @@ pub fn run() -> Result<()> {
     let (keepalive, no_keepalive) = keepalive_entry();
     let (forge, mut warnings) = forges_entry(cfg.as_ref(), &mut problems);
     warnings.extend(no_keepalive);
+    warnings.extend(default_branch_warnings());
     let hooks = hooks_entry(&mut problems);
 
     let out = json!({
@@ -167,6 +168,56 @@ fn hooks_entry(problems: &mut Vec<String>) -> Value {
         problems.push(format!("{detail}; fix: {FIX}"));
     }
     json!({ "ok": ok, "path": path, "detail": detail, "fix": (!ok).then_some(FIX) })
+}
+
+/// Warnings, also printed to stderr, when the current repo's default branch is not in its main
+/// checkout: the main checkout is on another branch or detached, or a linked worktree holds the
+/// default branch, so the main checkout cannot switch to it. None outside a repo, or when the
+/// default branch has no local branch.
+fn default_branch_warnings() -> Vec<String> {
+    let Ok(repo) = git::Repo::discover(Path::new(".")) else {
+        return Vec::new();
+    };
+    let Ok(default) = repo.default_base() else {
+        return Vec::new();
+    };
+    let want = format!("refs/heads/{default}");
+    if !git::ok(&repo.root, &["rev-parse", "--verify", "--quiet", &want]) {
+        return Vec::new();
+    }
+    let Ok(list) = git::worktrees(&repo.root) else {
+        return Vec::new();
+    };
+    let Some((main, linked)) = list.split_first() else {
+        return Vec::new();
+    };
+    let mut warnings = Vec::new();
+    let at = match main.branch.as_deref() {
+        Some(b) if b == want => None,
+        Some(b) => Some(format!(
+            "on {}, not",
+            b.strip_prefix("refs/heads/").unwrap_or(b)
+        )),
+        None => Some("detached, not on".to_string()),
+    };
+    if let Some(at) = at {
+        warnings.push(format!(
+            "the main checkout is {at} {default}; fix: git checkout {default}"
+        ));
+    }
+    for e in linked
+        .iter()
+        .filter(|e| e.branch.as_deref() == Some(want.as_str()))
+    {
+        let p = e.path.display();
+        warnings.push(format!(
+            "{default} is checked out in worktree {p}, so the main checkout cannot switch to it; fix: ns clean, or git -C {p} checkout --detach"
+        ));
+    }
+    for w in &warnings {
+        eprintln!("ns: warning: {w}");
+    }
+    warnings
 }
 
 /// Whether pushes to an SSH `origin` send keepalives: `ServerAliveInterval` in
