@@ -55,8 +55,9 @@ use anyhow::Result;
 use clap::Parser;
 
 use args::{
-    Cli, Cmd, FactoryCmd, QualityCmd, RatchetCmd, RulesCmd, TranscriptsCmd, UpstreamCmd,
-    WorktreeCmd,
+    Ask, CheckMarkers, Clean, Cli, Cmd, Eval, Factory, FactoryCmd, Install, Lint, Log, Quality,
+    QualityCmd, Ratchet, RatchetCmd, Rules, RulesCmd, Run, Score, Status, Transcripts,
+    TranscriptsCmd, Upstream, UpstreamCmd, Watch, Worktree, WorktreeCmd,
 };
 use error::SfError;
 
@@ -70,7 +71,7 @@ fn format(human: bool) -> ratchet::Format {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
-        Cmd::Worktree { command } => match command {
+        Cmd::Worktree(Worktree { command }) => match command {
             WorktreeCmd::New {
                 unit_id,
                 base,
@@ -88,20 +89,20 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 repo,
             } => worktree::remove(&unit_id, dry_run, force, repo.as_deref())?,
         },
-        Cmd::Ask {
+        Cmd::Ask(Ask {
             role,
             prompt_file,
             write,
             cwd,
             dry_run,
-        } => ask::run(ask::AskArgs {
+        }) => ask::run(ask::AskArgs {
             role: &role,
             prompt_file: prompt_file.as_deref(),
             write,
             cwd: cwd.as_deref(),
             dry_run,
         })?,
-        Cmd::Lint { path, human } => {
+        Cmd::Lint(Lint { path, human }) => {
             let report = lint::lint_dir(&path)?;
             if human {
                 for e in &report.errors {
@@ -119,13 +120,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 return Ok(ExitCode::from(1));
             }
         }
-        Cmd::CheckMarkers { path, human } => return markers::cli(&path, human),
-        Cmd::Install {
+        Cmd::CheckMarkers(CheckMarkers { path, human }) => return markers::cli(&path, human),
+        Cmd::Install(Install {
             source,
             harness,
             target,
             dry_run,
-        } => {
+        }) => {
             let targets = install::targets(&harness, target);
             let source = source.unwrap_or_else(install::default_source);
             let report = install::run(&source, &targets, dry_run)?;
@@ -138,7 +139,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 return Ok(ExitCode::from(1));
             }
         }
-        Cmd::Eval {
+        Cmd::Eval(Eval {
             skills,
             cases,
             arms,
@@ -158,7 +159,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             harness,
             model,
             trigger_timeout,
-        } => {
+        }) => {
             return eval::run(eval::Args {
                 skills,
                 cases,
@@ -181,16 +182,16 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 trigger_timeout_secs: trigger_timeout,
             })
         }
-        Cmd::Factory { command } => match command {
+        Cmd::Factory(Factory { command }) => match command {
             FactoryCmd::Validate { factory } => return factory::validate(factory.as_deref()),
         },
-        Cmd::Score {
+        Cmd::Score(Score {
             unit_id,
             scorer,
             factory,
             dry_run,
-        } => return score::cli(&unit_id, scorer.as_deref(), factory.as_deref(), dry_run),
-        Cmd::Run {
+        }) => return score::cli(&unit_id, scorer.as_deref(), factory.as_deref(), dry_run),
+        Cmd::Run(Run {
             unit_id,
             issue,
             from,
@@ -199,7 +200,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
             factory,
             night,
-        } => {
+        }) => {
             return run::cli(run::RunArgs {
                 unit: unit_id,
                 issue,
@@ -212,7 +213,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 night,
             })
         }
-        Cmd::Watch {
+        Cmd::Watch(Watch {
             once,
             until,
             max_units,
@@ -221,7 +222,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             factory,
             no_self_update,
             resume_night,
-        } => {
+        }) => {
             return watch::run(watch::WatchArgs {
                 once,
                 until,
@@ -233,33 +234,33 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 resume_night,
             })
         }
-        Cmd::Quality {
+        Cmd::Quality(Quality {
             command: Some(QualityCmd::Import { dir, dry_run }),
             ..
-        } => return quality::import(&dir, dry_run),
-        Cmd::Quality {
+        }) => return quality::import(&dir, dry_run),
+        Cmd::Quality(Quality {
             command: None,
             since,
             until,
             json: _,
-        } => return quality::cli(since, until),
-        Cmd::Clean { dry_run } => return clean::cli(dry_run),
-        Cmd::Log {
+        }) => return quality::cli(since, until),
+        Cmd::Clean(Clean { dry_run }) => return clean::cli(dry_run),
+        Cmd::Log(Log {
             unit,
             since: _,
             follow,
             json,
             phase_output: true,
-        } => return phase_output::cli(unit.as_deref(), follow, json),
-        Cmd::Log {
+        }) => return phase_output::cli(unit.as_deref(), follow, json),
+        Cmd::Log(Log {
             unit,
             since,
             follow,
             json,
             phase_output: false,
-        } => return log::cli(unit, since, follow, json),
-        Cmd::Status { since, json } => return status::cli(since, json),
-        Cmd::Ratchet { command } => match command {
+        }) => return log::cli(unit, since, follow, json),
+        Cmd::Status(Status { since, json }) => return status::cli(since, json),
+        Cmd::Ratchet(Ratchet { command }) => match command {
             RatchetCmd::Check { factory, human, .. } => {
                 return ratchet::check(factory.as_deref(), format(human))
             }
@@ -271,7 +272,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 ..
             } => return ratchet::update(factory.as_deref(), allow_loosen, dry_run, format(human)),
         },
-        Cmd::Rules { command } => match command {
+        Cmd::Rules(Rules { command }) => match command {
             RulesCmd::Check { human } => return rules::check(human),
             RulesCmd::Baseline {
                 allow_growth,
@@ -279,7 +280,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 human,
             } => return rules::baseline(allow_growth, dry_run, human),
         },
-        Cmd::Transcripts { command } => match command {
+        Cmd::Transcripts(Transcripts { command }) => match command {
             TranscriptsCmd::List {
                 since,
                 project,
@@ -295,7 +296,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             TranscriptsCmd::Read { id, compact } => return transcripts::read(&id, compact),
         },
-        Cmd::Upstream { command } => match command {
+        Cmd::Upstream(Upstream { command }) => match command {
             UpstreamCmd::Status { skills_dir, human } => {
                 return upstream::status_cli(&skills_dir, human)
             }
@@ -305,8 +306,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 human,
             } => return upstream::diff_cli(&skills_dir, &skill, human),
         },
-        Cmd::Doctor => doctor::run()?,
-        Cmd::GuardHooks => hook_guard::run()?,
+        Cmd::Doctor(_) => doctor::run()?,
+        Cmd::GuardHooks(_) => hook_guard::run()?,
     }
     Ok(ExitCode::SUCCESS)
 }
