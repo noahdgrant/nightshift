@@ -61,9 +61,12 @@ cp -R "$pack/check.sh" "$pack/eslint.config.mjs" "$pack/sgconfig.yml" "$pack/pac
   "$pack/package-lock.json" "$pack/.gitignore" "$pack/rules" "$pack/utils" "$new/"
 if [ -f "$old/utils/allowed-package.yml" ]; then
   cp "$old/utils/allowed-package.yml" "$old/utils/helper-name.yml" "$new/utils/"
-  ignores=$(grep '^ignores:' "$old/rules/duplicate-helper.yml")
-  IGNORES=$ignores awk '/^ignores:/ { print ENVIRON["IGNORES"]; next } { print }' \
-    "$pack/rules/duplicate-helper.yml" >"$new/rules/duplicate-helper.yml"
+  awk '/^ignores:/ { keep = 1; print; next } keep && /^[ \t]/ { print; next } { keep = 0 }' \
+    "$old/rules/duplicate-helper.yml" >"$tmp/ignores"
+  if [ -s "$tmp/ignores" ]; then
+    awk 'FNR == NR { block = block $0 "\n"; next } /^ignores:/ { printf "%s", block; next } { print }' \
+      "$tmp/ignores" "$pack/rules/duplicate-helper.yml" >"$new/rules/duplicate-helper.yml"
+  fi
 elif [ -f "$repo/package.json" ]; then
   names=$(jq -r '[.name // empty] + ([.dependencies, .devDependencies, .peerDependencies,
       .optionalDependencies] | map(keys? // []) | add) | unique | join("\n")' \

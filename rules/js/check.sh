@@ -75,8 +75,19 @@ case $tool in
     ;;
   tsc)
     [ -f "$dir/tsconfig.json" ] || exit 0
-    (cd "$dir" && "$bin/tsc" --noEmit --pretty false -p tsconfig.json) >"$report" 2>"$log" ||
-      status=$?
+    # A tsconfig.json that only lists references checks no file itself, so each referenced
+    # project is checked instead.
+    projects=$(cd "$dir" && "$bin/tsc" --showConfig -p tsconfig.json 2>/dev/null |
+      jq -r 'select(.references != null and ((.files // []) | length) == 0 and .include == null)
+        | .references[].path | if endswith(".json") then . else . + "/tsconfig.json" end' \
+      2>/dev/null || true)
+    [ -n "$projects" ] || projects=tsconfig.json
+    : >"$report"
+    : >"$log"
+    for project in $projects; do
+      (cd "$dir" && "$bin/tsc" --noEmit --pretty false -p "$project") >>"$report" 2>>"$log" ||
+        status=$?
+    done
     # A config error, in tsconfig.json or with no file, means tsc may have checked nothing, so
     # it fails the run rather than become a finding a baseline could hide.
     if grep -E '^error TS|^[^ ]*\.json\([0-9]+,[0-9]+\): error TS' "$report" >"$tmp/config-errors"; then

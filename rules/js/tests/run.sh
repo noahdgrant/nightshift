@@ -178,6 +178,8 @@ for file in 'src/[id]/page.ts' src/floating.ts; do
   jq -e 'select(.tool == "eslint" and (.rule | endswith("no-floating-promises")))' <<<"$(findings_for "$repo" "$file")" >/dev/null ||
     fail "$repo: no no-floating-promises finding on $file"
 done
+jq -e 'select(.tool == "tsc" and .rule == "TS2322")' <<<"$(findings_for refs src/bad.ts)" >/dev/null ||
+  fail "refs: no tsc finding on src/bad.ts, checked through a project-references tsconfig.json"
 [ -z "$(findings_for pnpm package.json)" ] || fail "pnpm: findings on package.json"
 for want in "eslint no-console" "ast-grep dependency-allowlist"; do
   for file in scan.js .hid/scan.js; do
@@ -201,6 +203,11 @@ grep -qF "kept-pkg" "$data/utils/allowed-package.yml" || fail "install.sh: a rer
 grep -qF "keptHelper" "$data/utils/helper-name.yml" || fail "install.sh: a rerun dropped the helper names"
 grep -qxF 'ignores: ["src/kept.js"]' "$data/rules/duplicate-helper.yml" ||
   fail "install.sh: a rerun dropped the duplicate-helper ignores"
+printf 'ignores:\n  - src/kept.js\n  - src/b.js\n' >"$tmp/ignores"
+sed -i -e "/^ignores:/r $tmp/ignores" -e '/^ignores:/d' "$data/rules/duplicate-helper.yml"
+"$pack/install.sh" "$repo" >/dev/null 2>&1 || fail "install.sh: a rerun with block ignores failed"
+grep -qxF '  - src/b.js' "$data/rules/duplicate-helper.yml" ||
+  fail "install.sh: a rerun dropped the block-style duplicate-helper ignores"
 [ "$(grep -c '^| rules |' "$repo/docs/agents/stack.md")" -eq 1 ] || fail "install.sh: a rerun added a second rules row"
 [ -x "$data/node_modules/.bin/eslint" ] || fail "install.sh: a rerun left no eslint"
 mkdir "$repo/src"
@@ -211,6 +218,8 @@ jq -e 'select(.file == "src/other.js" and .rule == "duplicate-helper")' <<<"$out
 if grep -qF "kept.js" <<<"$out"; then
   fail "duplicate-helper: the kept ignores did not skip src/kept.js: $out"
 fi
+sed -i '/^ignores:/d' "$data/rules/duplicate-helper.yml"
+"$pack/install.sh" "$repo" >/dev/null 2>&1 || fail "install.sh: a rerun with no ignores line failed"
 
 # An install that fails while swapping the new pack in puts the previous pack back, with the
 # repo's data, and leaves no staging directory behind.
