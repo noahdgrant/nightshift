@@ -51,6 +51,12 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 | Reviewer | Role | Provider | Cycles run | Verdict | Findings |
 |---|---|---|---|---|---|
 
+## Passes
+| Pass | Panel | Reviewer | Role | Provider | Tokens | Seconds | Cost (USD) |
+|---|---|---|---|---|---|---|---|
+| 0 | reduced | correctness | review.correctness | claude | 48210 | 192 | 0.41 |
+| 0 | reduced | spec | review.spec | codex | 30110 | 95 | |
+
 ## Critical
 ### C1. <title>
 - Location: `path/to/file.py:42`
@@ -59,6 +65,8 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 - Cycle: 0
 - Attempts: 1
 - Raised by: correctness (provider-a), security (provider-b). Cross-provider.
+- Dismissed raises: <raisers whose version you rejected; leave out when none>
+- Missed by: <axis, escapes only>
 - Finding: <one or two lines>
 - Evidence: <trace, quote, or command + output>
 - Status: open | fixed (cycle 2, <commit>) | dismissed: <reason> | deferred: #<issue>
@@ -99,8 +107,17 @@ Every finding, in `review.md` and in `review/cycle-<n>.md`, carries the fields i
 - `Cycle`: the review pass that first raised it, `0` for the first review.
 - `Attempts`: the fix cycles that handed it to the build agent, `0` until the first. The cycle it was fixed in is the one in `Status: fixed (cycle <n>, <commit>)`.
 - `Status`: `deferred: #<n>` only for an escape filed as issue `#<n>`.
+- `Dismissed raises`: the raisers in `Axis` whose version of a finding you rejected while the finding stands on the others' evidence. Leave the line out when there are none. A dismissed finding needs none: all its raisers count as dismissed.
+- `Missed by`: escapes only. The one axis whose reviewer should have caught it in the earlier review. `ns quality` counts an escape without it as unattributed.
 
 `Cycles run` is the review passes the reviewer ran in, for example `0, 1`.
+
+The Passes table is the denominator for every per-reviewer number `ns quality` reports, so it lists every worker of every pass, gaps rerun inline included:
+
+- `Pass`: the review pass, `0` for the first.
+- `Panel`: `full` or `reduced` for pass 0, as step 2 of `SKILL.md` chose; `cycle` for a full fix cycle's pass; `fix-only` for a fix-only cycle's.
+- `Reviewer`: the worker's axis. `Role` is the `ns ask` role it ran under, or the fallback it used; `Provider` is the provider serving it, one word each.
+- `Tokens`, `Seconds`, `Cost (USD)`: plain numbers, as the harness reported them for that worker. Leave a cell blank when the harness reported nothing; `0` reads as a free run.
 
 Number findings once and keep the numbers stable across cycles, so the build agent and the human can refer to `I3`.
 

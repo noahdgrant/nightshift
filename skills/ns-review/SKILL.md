@@ -68,6 +68,8 @@ Review passes are numbered from 0: pass 0 is the first review and pass n follows
 
 **Mutation check.** `ns ask` workers are read-only, so the correctness reviewer proposes mutations and you run them, up to five, exactly as the Mutation check in [correctness.md](references/correctness.md) says: only the tests covering the mutated file, each under a timeout. Record each command and result as evidence.
 
+**Cost.** As each worker returns, note its tokens, wall time in seconds, and `cost_usd`, as the harness reports them (a subagent's usage summary, or the harness's own result line). A value the harness doesn't report stays blank, never `0`. They go in the Passes table of `review.md`, with the pass's panel and the worker's role and provider.
+
 Done when every reviewer on the panel has a result or a gap entry. A gap is rerun once inline. A slice still missing after that makes the review `blocked`, never `pass`.
 
 ## 3. Synthesize
@@ -75,7 +77,7 @@ Done when every reviewer on the panel has a result or a gap entry. A gap is reru
 1. **Parse** every finding into: severity, `file:line`, one-line issue, evidence, raising reviewers (its axes) and their providers. Past the soft limit, also gather every reviewer's `SPLIT:` line into step 1's size Suggestion.
 2. **Dedupe.** Merge findings that describe the same defect in different words. Keep every raiser.
 3. **Rank by agreement.** Raised by workers on two or more providers ranks highest. Raised by two or more reviewers on one provider ranks next. A lone finding ranks last, except that lone security and correctness findings still get your full scrutiny.
-4. **Judge** each finding against the diff text, as in [review-md.md](references/review-md.md). Trace the call path before accepting a hypothetical ("what if this is None?"). Dismiss "I would have done it differently" unless it names a concrete problem. Dismiss a finding that asks for what the brief or a passing test rules out, citing them ([push back](../ns-principle-push-back/SKILL.md)).
+4. **Judge** each finding against the diff text, as in [review-md.md](references/review-md.md). Trace the call path before accepting a hypothetical ("what if this is None?"). Dismiss "I would have done it differently" unless it names a concrete problem. Dismiss a finding that asks for what the brief or a passing test rules out, citing them ([push back](../ns-principle-push-back/SKILL.md)). When a merged finding stands on one raiser's evidence but you reject another raiser's version of it, keep both in `Axis` and name the rejected one under `Dismissed raises`.
 5. **Normalise severity** to Critical / Important / Suggestion with the mapping in [review-md.md](references/review-md.md).
 6. **Scope** each finding, from the diff and the code at its location:
    - **Changed code**: the diff caused it. Its location is a line the diff adds, or the defect comes from a line the diff removes or a behaviour it changes (a dropped guard, a broken caller), or it is something the diff leaves out (a missing test, an unmet acceptance criterion).
@@ -85,13 +87,13 @@ Done when every reviewer on the panel has a result or a gap entry. A gap is reru
    - the `needs-triage` state, a category label (`bug` for a defect), and an area label when `docs/agents/triage-labels.md` lists areas, using the label strings that file names
    - a priority role from severity: Critical, or any finding with security among its axes, gets `critical` (`high` when `triage-labels.md` has no `critical` row); Important gets `high`; Suggestion gets `low`
 
-   Then set the finding's status to `deferred: #<n>`. An escape a later pass raises again keeps its ID and its `deferred` status. If the tracker can't be reached, leave the finding `open` and name it under Gaps in `review.md`; it still doesn't block.
+   Then set the finding's status to `deferred: #<n>`, and set its `Missed by` to the axis whose reviewer should have caught it in the earlier review, the one its defect belongs to (an untested boundary is `tests`, a wrong result `correctness`). Name that axis in the issue body too. An escape a later pass raises again keeps its ID and its `deferred` status. If the tracker can't be reached, leave the finding `open` and name it under Gaps in `review.md`; it still doesn't block.
 
 Done when every raw finding is merged, ranked and carries a severity, scope, bucket and status, and every escape you kept is `deferred` to an issue or named under Gaps.
 
 ## 4. Write review.md
 
-Write `.ns/<unit-id>/review.md` in the format in [review-md.md](references/review-md.md). Every finding has a severity, a `file:line`, its axes, its scope, the pass that raised it, evidence, its raisers, and a status: `open`, `fixed`, `dismissed: <reason>`, or `deferred: #<n>` for a filed escape.
+Write `.ns/<unit-id>/review.md` in the format in [review-md.md](references/review-md.md). Its Passes table has one row per reviewer worker in every pass, the fix cycles' passes included. Every finding has a severity, a `file:line`, its axes, its scope, the pass that raised it, evidence, its raisers, and a status: `open`, `fixed`, `dismissed: <reason>`, or `deferred: #<n>` for a filed escape.
 
 ## 5. Fix loop
 
