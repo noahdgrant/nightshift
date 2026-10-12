@@ -28,7 +28,7 @@ mod snapshot;
 mod split;
 mod triage;
 
-use forge::{ClosingPrs, Forge, PrState};
+use forge::{ClosingPrs, Forge, Post, PrState};
 pub use snapshot::NightDir;
 
 pub struct WatchArgs {
@@ -42,9 +42,6 @@ pub struct WatchArgs {
     /// The night so far, from the `ns` that handed off to this one.
     pub resume_night: Option<PathBuf>,
 }
-
-pub const DISCLAIMER: &str =
-    "_This comment was written by an AI agent (nightshift `ns watch`), not a person._";
 
 /// Seconds to wait after a usage limit with no reset time in the message.
 const PAUSE_RETRY_S: i64 = 30 * 60;
@@ -1019,11 +1016,11 @@ Open after at least 2 fix attempts: C1, I2, I4.
             ls.extend(add.map(String::from));
             Ok(())
         }
-        fn comment(&self, n: u64, body: &str) -> Result<()> {
+        fn comment(&self, n: u64, body: &Post) -> Result<()> {
             if self.fails.contains("comment") {
                 anyhow::bail!("HTTP 502");
             }
-            self.posted.borrow_mut().push((n, body.into()));
+            self.posted.borrow_mut().push((n, body.as_str().into()));
             Ok(())
         }
         fn close(&self, n: u64) -> Result<()> {
@@ -1039,16 +1036,16 @@ Open after at least 2 fix attempts: C1, I2, I4.
         fn remove_pr_label(&self, _: u64, _: &str) -> Result<()> {
             Ok(())
         }
-        fn comment_pr(&self, _: u64, _: &str) -> Result<()> {
+        fn comment_pr(&self, _: u64, _: &Post) -> Result<()> {
             Ok(())
         }
         fn main_checks(&self) -> Result<ci::HeadChecks> {
             Ok(self.main.clone())
         }
-        fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64> {
+        fn create_issue(&self, title: &str, body: &Post, labels: &[&str]) -> Result<u64> {
             let mut filed = self.filed.borrow_mut();
             let labels = labels.iter().map(|l| l.to_string()).collect();
-            filed.push((title.into(), body.into(), labels));
+            filed.push((title.into(), body.as_str().into(), labels));
             Ok(100 + filed.len() as u64 - 1)
         }
         fn check_log(&self, log: &str) -> Result<String> {

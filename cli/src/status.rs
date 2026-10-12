@@ -524,7 +524,7 @@ queue unavailable
         fn edit_labels(&self, _: u64, _: &[String], _: Option<&str>) -> Result<()> {
             unreachable!("ns status only reads the queue")
         }
-        fn comment(&self, _: u64, _: &str) -> Result<()> {
+        fn comment(&self, _: u64, _: &crate::watch::forge::Post) -> Result<()> {
             unreachable!("ns status only reads the queue")
         }
         fn close(&self, _: u64) -> Result<()> {
@@ -536,13 +536,13 @@ queue unavailable
         fn remove_pr_label(&self, _: u64, _: &str) -> Result<()> {
             unreachable!("ns status only reads the queue")
         }
-        fn comment_pr(&self, _: u64, _: &str) -> Result<()> {
+        fn comment_pr(&self, _: u64, _: &crate::watch::forge::Post) -> Result<()> {
             unreachable!("ns status only reads the queue")
         }
         fn main_checks(&self) -> Result<crate::watch::ci::HeadChecks> {
             unreachable!("ns status only reads the queue")
         }
-        fn create_issue(&self, _: &str, _: &str, _: &[&str]) -> Result<u64> {
+        fn create_issue(&self, _: &str, _: &crate::watch::forge::Post, _: &[&str]) -> Result<u64> {
             unreachable!("ns status only reads the queue")
         }
         fn check_log(&self, _: &str) -> Result<String> {

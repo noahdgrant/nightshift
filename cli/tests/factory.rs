@@ -4169,7 +4169,7 @@ fn watch_with_main_red_files_one_fix_issue_and_starts_only_it() {
         body.contains("No green run on the default branch found"),
         "{body}"
     );
-    assert!(body.contains("written by an AI agent"), "{body}");
+    assert!(body.starts_with(DISCLOSED), "{body}");
     assert!(calls.contains("run view --job 40 --log-failed"), "{calls}");
 }
 
@@ -5168,17 +5168,16 @@ fn watch_stuck_swaps_label_and_comments() {
         calls.contains("--add-label status:ready-for-human"),
         "{calls}"
     );
-    let comment = calls
-        .lines()
-        .find(|l| l.starts_with("issue comment 2"))
-        .expect("comment");
-    assert!(comment.contains("triage wrote no brief"), "{comment}");
-    let all = calls.split("issue comment 2").nth(1).unwrap();
-    assert!(all.contains("written by an AI agent"));
+    let all = calls.split("issue comment 2").nth(1).expect("comment");
+    assert!(all.starts_with(&format!(" --body {DISCLOSED}")), "{all}");
+    assert!(all.contains("triage wrote no brief"), "{all}");
     assert!(all.contains("Last artifact"));
 }
 
 const HUMAN_MERGE: &str = "needs-human-merge";
+
+/// How every body nightshift posts to the forge opens (skills/ns-contract, Disclosure).
+const DISCLOSED: &str = "🤖 *Posted by nightshift, an AI agent.*\n\n";
 
 /// The `pr edit` and `pr comment` calls on PR 12, and whether a label was created.
 fn pr_12_calls(e: &Env) -> (Vec<String>, bool) {
@@ -5217,7 +5216,7 @@ fn watch_done_with_a_pr_labels_it_for_a_human_merge_and_says_why() {
         .expect("comment");
     assert!(comment.contains("needs a human merge"), "{comment}");
     assert!(comment.contains("merge.policy"), "{comment}");
-    assert!(comment.contains("written by an AI agent"), "{comment}");
+    assert!(comment.starts_with(DISCLOSED), "{comment}");
 }
 
 #[test]
@@ -5247,7 +5246,7 @@ fn watch_done_needing_a_human_merge_labels_the_pr_with_the_merge_reason() {
         ),
         "{comment}"
     );
-    assert!(comment.contains("written by an AI agent"), "{comment}");
+    assert!(comment.starts_with(DISCLOSED), "{comment}");
 }
 
 #[test]
@@ -5670,7 +5669,7 @@ fn watch_closes_split_parents_whose_children_are_done_and_sweeps_once() {
         "{calls}"
     );
     assert!(
-        calls.contains("issue comment 5 --body 🤖 Every child"),
+        calls.contains(&format!("issue comment 5 --body {DISCLOSED}Every child")),
         "{calls}"
     );
     assert_eq!(e.labels(5), ["type:feat"]);
@@ -11107,7 +11106,7 @@ fn watch_on_gitlab_closes_a_split_parent_from_its_team_notes() {
     let calls = e.glab_calls();
     assert!(calls.contains("issue close 5"), "{calls}");
     assert!(
-        calls.contains("issue note 5 --message 🤖 Every child"),
+        calls.contains(&format!("issue note 5 --message {DISCLOSED}Every child")),
         "{calls}"
     );
     assert!(

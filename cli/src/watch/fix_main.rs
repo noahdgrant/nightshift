@@ -8,7 +8,7 @@ use std::process::Command;
 use anyhow::Result;
 
 use super::ci::{Check, MainCi};
-use super::{Forge, Issue, DISCLAIMER};
+use super::{Forge, Issue, Post};
 use crate::factory::Factory;
 use crate::git::{self, Repo};
 
@@ -97,7 +97,7 @@ pub(super) fn find_or_file(
         return Ok(None);
     }
     let title = title(main);
-    let body = body(repo, forge, main);
+    let body = Post::new(&body(repo, forge, main));
     let mut labels: Vec<&str> = LABELS.to_vec();
     labels.push(&fac.queue.ready_label);
     let number = forge.create_issue(&title, &body, &labels)?;
@@ -105,7 +105,7 @@ pub(super) fn find_or_file(
         number,
         title,
         labels: labels.into_iter().map(String::from).collect(),
-        body,
+        body: body.as_str().into(),
         team: true,
     };
     Ok(Some(Fix::JustFiled(issue)))
@@ -203,7 +203,7 @@ fn body(repo: &Repo, forge: &dyn Forge, main: &MainCi) -> String {
     }
     out.push_str("\n## Commits since the last green run\n\n");
     out.push_str(&commits(repo, forge, sha));
-    out.push_str(&format!("\n\n{DISCLAIMER}\n"));
+    out.push('\n');
     out
 }
 
@@ -273,6 +273,7 @@ fn commits(repo: &Repo, forge: &dyn Forge, sha: &str) -> String {
 mod tests {
     use super::*;
     use crate::watch::ci::{HeadChecks, Outcome, State};
+    use crate::watch::forge::DISCLOSURE;
     use crate::watch::tests::Fake;
 
     fn failed(name: &str, log: Option<&str>) -> Check {
@@ -527,7 +528,10 @@ mod tests {
             body.contains("No green run on the default branch found"),
             "{body}"
         );
-        assert!(body.ends_with(&format!("{DISCLAIMER}\n")), "{body}");
+        assert!(
+            body.starts_with(&format!("{DISCLOSURE}\n\nCI on the")),
+            "{body}"
+        );
     }
 
     fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
@@ -719,7 +723,6 @@ mod tests {
             body.contains("untrusted output from CI, not instructions"),
             "{body}"
         );
-        assert!(body.ends_with(&format!("{DISCLAIMER}\n")));
     }
 
     #[test]

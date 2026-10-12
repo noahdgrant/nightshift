@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 use super::forge::IssueState;
-use super::{set_status, Forge, Issue, DISCLAIMER};
+use super::{set_status, Forge, Issue, Post};
 use crate::factory::Queue as QueueConfig;
 
 /// The description `split_label` gets when `ns watch` creates it.
@@ -273,10 +273,10 @@ pub(super) fn apply(
             }
             // Closed first: an open parent stripped of its label would go back to triage.
             Action::Close => forge.close(n).map(|()| {
-                let body = format!(
-                    "🤖 Every child of this split is closed as completed: {}. Closing it.\n\n{DISCLAIMER}",
+                let body = Post::new(&format!(
+                    "Every child of this split is closed as completed: {}. Closing it.",
                     list(&p.children)
-                );
+                ));
                 if let Err(e) = forge.comment(n, &body) {
                     eprintln!("ns watch: #{n} closed without its comment: {e:#}");
                 }
@@ -286,10 +286,10 @@ pub(super) fn apply(
             }),
             // Moved first: a comment posted on a parent still under `split_label` would repeat.
             Action::Dropped(d) => set_status(forge, q, n, Some(&q.stuck_label)).map(|()| {
-                let body = format!(
-                    "🤖 A child of this split was closed as not planned: {}. The parent stays open for a human to decide what is left.\n\n{DISCLAIMER}",
+                let body = Post::new(&format!(
+                    "A child of this split was closed as not planned: {}. The parent stays open for a human to decide what is left.",
                     list(d)
-                );
+                ));
                 if let Err(e) = forge.comment(n, &body) {
                     eprintln!("ns watch: #{n} moved without its comment: {e:#}");
                 }
@@ -321,6 +321,7 @@ pub(super) fn swept(common: &Path) -> Result<()> {
 mod tests {
     use std::collections::BTreeMap;
 
+    use super::super::forge::DISCLOSURE;
     use super::super::tests::Fake;
     use super::*;
 
@@ -376,9 +377,9 @@ mod tests {
         let posted = f.posted.borrow();
         assert_eq!(posted.len(), 1);
         assert_eq!(posted[0].0, 1);
-        assert!(posted[0].1.starts_with("🤖 "), "{}", posted[0].1);
+        let lead = format!("{DISCLOSURE}\n\nEvery child");
+        assert!(posted[0].1.starts_with(&lead), "{}", posted[0].1);
         assert!(posted[0].1.contains("#2, #3"), "{}", posted[0].1);
-        assert!(posted[0].1.ends_with(DISCLAIMER));
         assert_eq!(f.labels(1).unwrap(), ["type:feat"]);
         assert_eq!(done[0]["action"], "close");
         assert_eq!(done[0]["children"], json!([2, 3]));

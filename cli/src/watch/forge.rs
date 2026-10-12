@@ -35,6 +35,23 @@ pub enum IssueState {
 /// Issue number -> the PR that closes it and that PR's head branch, empty for a fork's.
 pub type ClosingPrs = BTreeMap<u64, (u64, String)>;
 
+/// The line every body nightshift posts to a forge opens with (skills/ns-contract, Disclosure).
+pub const DISCLOSURE: &str = "🤖 *Posted by nightshift, an AI agent.*";
+
+/// A body for the forge: [`DISCLOSURE`], a blank line, then the text. The forge's post methods
+/// take only this, so nothing reaches the forge without the line.
+pub struct Post(String);
+
+impl Post {
+    pub fn new(text: &str) -> Self {
+        Post(format!("{DISCLOSURE}\n\n{text}"))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 pub trait Forge {
     /// Open issues, never PRs; `label` narrows the list to issues carrying it.
     fn open_issues(&self, label: Option<&str>) -> Result<Vec<Issue>>;
@@ -52,17 +69,17 @@ pub trait Forge {
     fn ensure_label(&self, label: &str, description: &str) -> Result<()>;
     fn labels(&self, n: u64) -> Result<Vec<String>>;
     fn edit_labels(&self, n: u64, remove: &[String], add: Option<&str>) -> Result<()>;
-    fn comment(&self, n: u64, body: &str) -> Result<()>;
+    fn comment(&self, n: u64, body: &Post) -> Result<()>;
     fn close(&self, n: u64) -> Result<()>;
     /// Add `label` to PR `pr`, creating it in the repo first if it is missing.
     fn add_pr_label(&self, pr: u64, label: &str) -> Result<()>;
     /// Remove `label` from PR `pr` if the PR carries it.
     fn remove_pr_label(&self, pr: u64, label: &str) -> Result<()>;
-    fn comment_pr(&self, pr: u64, body: &str) -> Result<()>;
+    fn comment_pr(&self, pr: u64, body: &Post) -> Result<()>;
     /// The default branch's head and the checks on it.
     fn main_checks(&self) -> Result<HeadChecks>;
     /// File an issue carrying `labels`, creating any the repo lacks; its number.
-    fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64>;
+    fn create_issue(&self, title: &str, body: &Post, labels: &[&str]) -> Result<u64>;
     /// The log of a failed check, at the [`Check::log`] the forge gave it.
     fn check_log(&self, log: &str) -> Result<String>;
     /// The newest commit on the default branch, other than `red`, that a CI run passed, if the
@@ -497,10 +514,10 @@ impl Forge for GitHub {
         gh(&self.root, &args).map(|_| ())
     }
 
-    fn comment(&self, n: u64, body: &str) -> Result<()> {
+    fn comment(&self, n: u64, body: &Post) -> Result<()> {
         gh(
             &self.root,
-            &["issue", "comment", &n.to_string(), "--body", body],
+            &["issue", "comment", &n.to_string(), "--body", body.as_str()],
         )
         .map(|_| ())
     }
@@ -536,10 +553,10 @@ impl Forge for GitHub {
         gh(&self.root, &["pr", "edit", &ns, "--remove-label", label]).map(|_| ())
     }
 
-    fn comment_pr(&self, pr: u64, body: &str) -> Result<()> {
+    fn comment_pr(&self, pr: u64, body: &Post) -> Result<()> {
         gh(
             &self.root,
-            &["pr", "comment", &pr.to_string(), "--body", body],
+            &["pr", "comment", &pr.to_string(), "--body", body.as_str()],
         )
         .map(|_| ())
     }
@@ -561,8 +578,8 @@ impl Forge for GitHub {
         )?)
     }
 
-    fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64> {
-        let mut args = vec!["issue", "create", "--title", title, "--body", body];
+    fn create_issue(&self, title: &str, body: &Post, labels: &[&str]) -> Result<u64> {
+        let mut args = vec!["issue", "create", "--title", title, "--body", body.as_str()];
         for l in labels {
             self.ensure_label(l, ISSUE_LABEL_DESCRIPTION)?;
             args.extend(["--label", l]);
@@ -591,6 +608,19 @@ impl Forge for GitHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_post_opens_with_the_disclosure_then_a_blank_line_then_the_text() {
+        let post = Post::new("Fixed in #3.\n");
+        let mut lines = post.as_str().lines();
+        assert_eq!(
+            lines.next(),
+            Some("🤖 *Posted by nightshift, an AI agent.*")
+        );
+        assert_eq!(lines.next(), Some(""));
+        assert_eq!(lines.next(), Some("Fixed in #3."));
+        assert_eq!(lines.next(), None);
+    }
 
     #[test]
     fn a_closed_issue_is_not_planned_only_when_its_reason_says_other_than_completed() {
