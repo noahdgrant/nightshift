@@ -157,23 +157,64 @@ pub(super) fn git_command(args: &[Word], scan: &mut Scan) -> Option<String> {
     }
 }
 
-/// An opaque word is let through where a flag can't be told from an argument only if it is
-/// quoted whole (`"$branch"`) or follows a literal argument (`origin $branch`).
+/// An opaque word is let through where a flag can't be told from an argument only if it
+/// follows a literal argument (`origin $branch`) or a literal `--` that ends the options.
+/// Outside `push` it may also be quoted whole (`"$branch"`). On `push` it may instead end in
+/// literal text no `--no-verify` ends in (`"$V/remote.git"`), as a whole `"$R"` there could
+/// hold `--no-verify`.
 pub(super) fn skips_hooks(name: &str, rest: &[Word]) -> Option<String> {
     let mut positional = false;
+    let mut before: Option<&Word> = None;
     for a in rest {
+        if a.text == "--" && !a.opaque && before.is_none_or(leaves_double_dash_alone) {
+            return None;
+        }
         if no_verify(&a.text) && !a.opaque {
             return Some(format!("git {name} {} skips the hooks", a.text));
         }
         if a.opaque {
-            if a.text.starts_with('-') || !(positional || a.quoted_var) {
+            let let_through = positional
+                || if name == "push" {
+                    tail_is_not_no_verify(a)
+                } else {
+                    a.quoted_var
+                };
+            if a.text.starts_with('-') || !let_through {
                 return Some(unreadable(&format!("git {name}")));
             }
         } else if !a.text.starts_with('-') {
             positional = true;
         }
+        before = Some(a);
     }
     None
+}
+
+/// The word before a `--` can't take it as its value: an argument, a long option with its
+/// value attached, or flags known to take none. Any other option might, so the `--` ends
+/// nothing.
+fn leaves_double_dash_alone(w: &Word) -> bool {
+    const LONG_FLAGS: &[&str] = &["--quiet", "--verbose", "--force", "--dry-run"];
+    if w.opaque {
+        return false;
+    }
+    match w.text.strip_prefix('-') {
+        None => true,
+        Some(long) if long.starts_with('-') => {
+            LONG_FLAGS.contains(&w.text.as_str()) || w.text.contains('=')
+        }
+        Some(short) => !short.is_empty() && short.chars().all(|c| "qvfnu".contains(c)),
+    }
+}
+
+/// The literal text after an opaque word's last expansion rules out `--no-verify`: it can't
+/// be the end of any spelling git accepts, and holds no glob or brace that could rewrite it.
+fn tail_is_not_no_verify(w: &Word) -> bool {
+    let Some(tail) = w.tail_at.map(|at| &w.text[at..]) else {
+        return false;
+    };
+    let mut spellings = ("--no-v".len()..="--no-verify".len()).map(|n| &"--no-verify"[..n]);
+    !tail.contains(['=', '*', '?', '[', '{']) && !spellings.any(|s| s.ends_with(tail))
 }
 
 /// `git rebase -x CMD`, `--exec CMD` and `--exec=CMD` run CMD in a shell.

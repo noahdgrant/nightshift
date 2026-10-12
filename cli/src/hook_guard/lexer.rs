@@ -10,6 +10,9 @@ pub(super) struct Word {
     pub(super) opaque: bool,
     /// The whole word is one double-quoted variable, `"$name"` or `"${name}"`.
     pub(super) quoted_var: bool,
+    /// Where the literal text after the last expansion starts, when every expansion sits in
+    /// double quotes, so none splits the word or adds text after that point.
+    pub(super) tail_at: Option<usize>,
 }
 
 impl Word {
@@ -18,6 +21,7 @@ impl Word {
             text: text.to_string(),
             opaque: false,
             quoted_var: false,
+            tail_at: None,
         }
     }
 }
@@ -51,11 +55,18 @@ struct WordBuf {
     brace_at: Option<usize>,
     /// The word is one double-quoted variable and nothing else.
     quoted_var: bool,
+    in_double_quotes: bool,
+    /// Where `text` stood after the last expansion.
+    tail_at: Option<usize>,
+    /// An expansion outside double quotes can split the word or add words.
+    splits: bool,
 }
 
 impl WordBuf {
     fn mark_expansion(&mut self) {
         self.expansion_at.get_or_insert(self.text.len());
+        self.tail_at = Some(self.text.len());
+        self.splits |= !self.in_double_quotes;
     }
 
     fn finish(self) -> Word {
@@ -66,6 +77,7 @@ impl WordBuf {
             text: self.text,
             opaque,
             quoted_var: self.quoted_var,
+            tail_at: self.tail_at.filter(|_| !self.splits),
         }
     }
 }
@@ -258,6 +270,12 @@ impl<'a> Lexer<'a> {
         let lone = self.cur.is_none() && self.lone_variable_ahead();
         self.buf().quoted = true;
         self.buf().quoted_var = lone;
+        self.buf().in_double_quotes = true;
+        self.double_quoted_body();
+        self.buf().in_double_quotes = false;
+    }
+
+    fn double_quoted_body(&mut self) {
         while let Some(c) = self.chars.next() {
             match c {
                 '"' => return,

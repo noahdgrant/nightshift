@@ -322,3 +322,78 @@ fn an_expansion_in_a_config_option_value_or_key_is_denied() {
         assert!(!denied(c), "{c}");
     }
 }
+
+#[test]
+fn a_push_word_with_a_literal_tail_cannot_be_no_verify() {
+    for c in [
+        "git push -q \"$V/remote.git\" main",
+        "git push \"$V/remote.git\" main",
+        "git push \"$X\"suffix",
+        "git push -q \"${V}/remote.git\" main",
+        "git push -q \"$(pwd)/remote.git\" main",
+        "git push origin \"$B\"",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    for c in [
+        "git push \"$V\"erify",
+        "git push \"$V\"-verify",
+        "git push \"$V\"=x",
+        "git push \"$V\"*",
+        "git push \"$V\"{erify,x}",
+        "git push \"$V\"?",
+        "git push \"$V\"[x]",
+        "git push \"$V\"v",
+        "git push \"$V\"$W/remote.git",
+        "git push $W\"$V/remote.git\"",
+        "git push \"$V/$W\"",
+        "git push $V/remote.git",
+        "git push \"$V\"/r$W",
+        "git push --no-verify",
+        "git push \"$X\"",
+        "git push -q \"$R\" main",
+        "git push \"$R\" origin",
+        "git commit \"$V/x\"",
+        "git commit -q \"$F\"",
+        "git merge \"$V/x\"",
+        "git rebase \"$V/x\"",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn every_word_after_a_literal_double_dash_is_positional() {
+    for c in [
+        "git push -q -- \"$V/remote.git\" main",
+        "git push -q -- \"$R\" main",
+        "git commit -q -- \"$F\"",
+        "git merge -- \"$V/x\"",
+        "git merge -q -- \"$V/x\"",
+        "git merge -- -- \"$V/x\"",
+        "git merge -qv -- \"$V/x\"",
+        "git merge -fnu -- \"$V/x\"",
+        "git merge --quiet -- \"$V/x\"",
+        "git merge --verbose -- \"$V/x\"",
+        "git merge --force -- \"$V/x\"",
+        "git merge --dry-run -- \"$V/x\"",
+        "git merge --strategy=ours -- \"$V/x\"",
+        "git merge main -- \"$V/x\"",
+        "git merge main -- -$X",
+        "git rebase -q -- $X",
+        "git push -- --no-verify",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    for c in [
+        "git merge -X -- \"$V/x\"",
+        "git merge -qX -- \"$V/x\"",
+        "git merge --strategy -- \"$V/x\"",
+        "git merge - -- \"$V/x\"",
+        "git merge \"$O\" -- \"$V/x\"",
+        "git merge $O -- \"$V/x\"",
+        "git push --no-verify -- origin",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
