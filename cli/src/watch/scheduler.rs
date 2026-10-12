@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::json;
 
+pub(super) mod overlap;
 mod red;
 
 use self::red::Gate;
@@ -347,18 +348,18 @@ impl<'a> Scheduler<'a> {
             Gate::Shut => ready.clear(),
             Gate::Open => {}
         }
-        for issue in ready {
-            // A listing can name an issue twice; a stop during the read claims nothing more.
+        // A listing can name an issue twice.
+        ready.retain(|i| taken.insert(i.number));
+        while !ready.is_empty() {
+            // A stop during the read claims nothing more.
             if !self.free() || stop::requested().is_some() {
                 break;
-            }
-            if !taken.insert(issue.number) {
-                continue;
             }
             if let Some(why) = self.over_claims(night) {
                 self.stopping = Some(why);
                 break;
             }
+            let issue = ready.remove(self.pick(&ready));
             let q = &self.plan.loaded.fac.queue;
             let n = issue.number;
             if let Err(e) = set_status(self.plan.forge, q, n, Some(&q.in_progress_label)) {
@@ -372,6 +373,20 @@ impl<'a> Scheduler<'a> {
             self.started += 1;
         }
         Ok(())
+    }
+
+    /// Which of `ready` to start next: the first that overlaps no running unit, else the first.
+    fn pick(&self, ready: &[Issue]) -> usize {
+        let (repo, forge) = (self.plan.repo, self.plan.forge);
+        let running: Vec<(String, Vec<String>)> = (self.running.values())
+            .map(|w| {
+                let unit = unit_id(&w.issue);
+                let touches = overlap::running(repo, forge, &w.issue, &unit);
+                (unit, touches)
+            })
+            .collect();
+        let ignore = &self.plan.loaded.fac.queue.overlap_ignore;
+        overlap::pick(ready, &running, || overlap::rule(repo, ignore), forge)
     }
 
     /// Close the split parents whose children are done, and on the clone's first pass sweep the

@@ -23,6 +23,7 @@ pub mod ci;
 mod fix_main;
 pub mod forge;
 mod scheduler;
+use scheduler::overlap;
 mod self_update;
 mod snapshot;
 mod split;
@@ -478,15 +479,30 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
             eprintln!("ns watch: {n}");
         }
         let qu = queue(forge, fac, &BTreeSet::new())?;
+        let wip = in_progress(&repo, forge, &q)?;
+        // The units live runs hold, by unit id, and their `touches`.
+        let running: Vec<(String, Vec<String>)> = (wip.held.iter())
+            .map(|(i, h)| {
+                let unit = h["unit"].as_str().map_or_else(|| unit_id(i), String::from);
+                let touches = overlap::running(&repo, forge, i, &unit);
+                (unit, touches)
+            })
+            .filter(|(_, t)| !t.is_empty())
+            .collect();
+        let rule = (!running.is_empty()).then(|| overlap::rule(&repo, &q.overlap_ignore));
         let ready: Vec<Value> = qu
             .ready
             .iter()
             .map(|i| {
+                let overlaps = rule.as_ref().map_or_else(Vec::new, |r| {
+                    overlap::overlapped(r, &overlap::predicted(forge, i), &running)
+                });
                 json!({
                     "number": i.number,
                     "title": i.title,
                     "priority_label": q.priority.get(rank(&q.priority, &i.labels)),
                     "order_label": q.order.get(rank(&q.order, &i.labels)),
+                    "overlaps": overlaps,
                 })
             })
             .collect();
@@ -496,11 +512,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         } else {
             triage::Candidates::default()
         };
-        let requeue: Vec<u64> = in_progress(&repo, forge, &q)?
-            .stale
-            .iter()
-            .map(|i| i.number)
-            .collect();
+        let requeue: Vec<u64> = wip.stale.iter().map(|i| i.number).collect();
         // The night's first pass treats every candidate as backlog: it takes them in order
         // while no issue is ready, and none while one is. The night requeues stale issues
         // before that pass, so they count as ready.
@@ -1001,6 +1013,9 @@ Open after at least 2 fix attempts: C1, I2, I4.
             Ok(self.subs.get(&n).cloned().unwrap_or_default())
         }
         fn team_comments(&self, n: u64) -> Result<Vec<String>> {
+            if self.fails.contains("team_comments") {
+                anyhow::bail!("HTTP 502");
+            }
             Ok(self.comments.get(&n).cloned().unwrap_or_default())
         }
         fn part_of(&self, n: u64) -> Result<Vec<Issue>> {
