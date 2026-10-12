@@ -190,6 +190,7 @@ impl Forge for GitLab {
         Ok(by_issue)
     }
 
+    /// `n` is always an issue iid: a merge request is `!n`, numbered apart, so it never blocks.
     fn is_closed(&self, n: u64) -> Result<bool> {
         Ok(self.issue(n)?["state"].as_str() == Some("closed"))
     }

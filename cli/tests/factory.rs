@@ -4701,6 +4701,27 @@ fn watch_dry_run_orders_and_skips() {
     assert!(!e.gh_calls().contains("issue edit"));
 }
 
+/// `gh issue view` reports a pull request's state too: a merged PR as `MERGED`.
+#[test]
+fn watch_dry_run_clears_a_merged_pr_blocker() {
+    let e = Env::new();
+    e.ready(1, "After merged PR", &["type:fix"], "Blocked by: #40");
+    e.ready(2, "After open PR", &["type:fix"], "Blocked by: #41");
+    e.issue(40, "merged PR", "MERGED");
+    e.issue(41, "open PR", "OPEN");
+    let v = e.run(&["watch", "--dry-run"], 0);
+    let order: Vec<u64> = v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(order, [1]);
+    let skipped = v["skipped"].to_string();
+    assert!(skipped.contains("blocked by open #41"), "{skipped}");
+    assert!(!skipped.contains("#40"), "{skipped}");
+}
+
 /// `ns watch --dry-run`'s output and stderr.
 fn dry_run(e: &Env) -> (Value, String) {
     let out = e.ns().args(["watch", "--dry-run"]).output();
