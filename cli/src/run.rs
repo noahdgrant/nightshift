@@ -24,6 +24,7 @@ use crate::git::same_sha;
 use crate::git::{self, Repo};
 use crate::markers;
 use crate::memcap::{self, Cap};
+use crate::pin;
 use crate::watch::NightDir;
 use crate::worktree;
 
@@ -257,7 +258,7 @@ pub fn phase_command(
     cfg: Option<&Config>,
     p: &PhaseSettings,
     subscription: bool,
-    ns: &Path,
+    settings: &Path,
 ) -> Result<Vec<String>> {
     let owned = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let configured = cfg.and_then(|c| c.harness.get(&p.harness));
@@ -290,24 +291,30 @@ pub fn phase_command(
         if !argv.iter().any(|a| a == "--verbose") {
             argv.push("--verbose".into());
         }
-        if argv
-            .iter()
-            .any(|a| a == "--settings" || a.starts_with("--settings="))
-        {
+        let owned_flag = ["--settings", "--setting-sources"].into_iter().find(|f| {
+            argv.iter()
+                .any(|a| a == f || a.starts_with(&format!("{f}=")))
+        });
+        if let Some(flag) = owned_flag {
             return Err(SfError::usage(
                 format!(
-                    "phase {}: the harness command already passes --settings",
+                    "phase {}: the harness command already passes {flag}",
                     p.name
                 ),
                 format!(
-                    "ns run gives each claude phase its own --settings with the git hook guard, and claude takes only one. Remove --settings from [harness.{}] in {} and put those settings in ~/.claude/settings.json or the project's .claude/settings.json",
+                    "ns run gives each claude phase the factory's phase settings and only the project's own settings sources. Remove {flag} from [harness.{}] in {}; put project settings in the repo's .claude/settings.json",
                     p.harness,
                     config::path().display()
                 ),
             )
             .into());
         }
-        argv.extend(["--settings".into(), crate::hook_guard::settings(ns)]);
+        argv.extend([
+            "--setting-sources".into(),
+            "project,local".into(),
+            "--settings".into(),
+            settings.to_string_lossy().into_owned(),
+        ]);
         if subscription {
             argv = billing::strip_bare(argv);
         }
@@ -832,18 +839,6 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         )
         .into());
     }
-    let subscription = fac.subscription();
-    let mut commands = BTreeMap::new();
-    for p in PHASES {
-        commands.insert(
-            *p,
-            phase_command(cfg.as_ref(), &fac.phase(p), subscription, ns)?,
-        );
-    }
-    if subscription && !args.dry_run && commands.values().any(|c| billing::is_claude(c)) {
-        billing::check_login()?;
-    }
-
     // Unit and issue.
     let mut issue_url = String::from("none");
     let mut unit = args.unit.clone();
@@ -876,6 +871,20 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         .into());
     };
     worktree::check_unit_id(&unit, "ns run 142-uart-timeout --issue 142")?;
+    let wt_path =
+        worktree::existing(&repo, &unit)?.unwrap_or_else(|| worktree::planned_path(&repo, &unit));
+    let settings = pin::settings_path(&wt_path, &unit);
+    let subscription = fac.subscription();
+    let mut commands = BTreeMap::new();
+    for p in PHASES {
+        commands.insert(
+            *p,
+            phase_command(cfg.as_ref(), &fac.phase(p), subscription, &settings)?,
+        );
+    }
+    if subscription && !args.dry_run && commands.values().any(|c| billing::is_claude(c)) {
+        billing::check_login()?;
+    }
 
     if args.dry_run {
         return dry_run(
@@ -886,6 +895,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
     let _lock = Lock::acquire(&repo.common_dir, &unit, args.issue)?;
     let base = resolve_base(&repo, args)?;
     let wt = worktree::ensure(&repo, &unit, Some(&base), &fac.worktree.setup)?;
+    let pinned = pin::pin(Path::new(&wt.path), &unit, &base, ns)?;
     let ctx = Ctx {
         unit: unit.clone(),
         worktree: PathBuf::from(&wt.path),
@@ -901,6 +911,9 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         gate: gate.clone(),
         cap: cap.as_ref(),
     };
+    if let Some(ev) = pinned {
+        ctx.log(ev);
+    }
     let mut phases: Vec<Value> = Vec::new();
     let mut last_artifact: Option<String> = None;
     let result = {
@@ -2793,8 +2806,8 @@ mod tests {
         )
         .unwrap();
         let f = factory::parse("").unwrap();
-        let ns = Path::new("/bin/ns");
-        let c = phase_command(Some(&cfg), &f.phase("build"), true, ns).unwrap();
+        let settings = Path::new("/wt/.ns/u/phase-settings.json");
+        let c = phase_command(Some(&cfg), &f.phase("build"), true, settings).unwrap();
         assert_eq!(
             c,
             [
@@ -2803,11 +2816,13 @@ mod tests {
                 "--output-format",
                 "stream-json",
                 "--verbose",
+                "--setting-sources",
+                "project,local",
                 "--settings",
-                &crate::hook_guard::settings(ns),
+                "/wt/.ns/u/phase-settings.json",
             ]
         );
-        let c = phase_command(None, &f.phase("build"), true, ns).unwrap();
+        let c = phase_command(None, &f.phase("build"), true, settings).unwrap();
         assert!(c.contains(&"bypassPermissions".to_string()));
         assert!(!c.contains(&"--model".to_string()));
         assert!(c.contains(&"--settings".to_string()));
@@ -2815,7 +2830,12 @@ mod tests {
 
     #[test]
     fn a_claude_command_that_carries_settings_is_a_usage_error() {
-        for flag in [["--settings", "x.json"], ["--settings=x.json", "-p"]] {
+        for flag in [
+            ["--settings", "x.json"],
+            ["--settings=x.json", "-p"],
+            ["--setting-sources", "user"],
+            ["--setting-sources=user", "-p"],
+        ] {
             let mut cmd = vec!["claude".to_string()];
             cmd.extend(flag.iter().map(|s| s.to_string()));
             let cfg = config::parse(&format!(
@@ -2823,17 +2843,28 @@ mod tests {
             ))
             .unwrap();
             let f = factory::parse("").unwrap();
-            let err = phase_command(Some(&cfg), &f.phase("build"), true, Path::new("/bin/ns"))
-                .unwrap_err()
-                .to_string();
-            assert!(err.contains("--settings"), "{err}");
+            let err = phase_command(
+                Some(&cfg),
+                &f.phase("build"),
+                true,
+                Path::new("/wt/settings.json"),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains(flag[0].split('=').next().unwrap()), "{err}");
         }
     }
 
     #[test]
     fn a_codex_phase_gets_no_hook_guard_settings() {
         let f = factory::parse("[defaults]\nharness = \"codex\"\n").unwrap();
-        let c = phase_command(None, &f.phase("build"), true, Path::new("/bin/ns")).unwrap();
+        let c = phase_command(
+            None,
+            &f.phase("build"),
+            true,
+            Path::new("/wt/settings.json"),
+        )
+        .unwrap();
         assert!(!c.contains(&"--settings".to_string()), "{c:?}");
     }
 

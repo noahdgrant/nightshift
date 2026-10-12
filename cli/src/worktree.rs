@@ -162,18 +162,28 @@ fn ensure_excluded(common_dir: &Path) -> Result<()> {
     fs::create_dir_all(&info).with_context(|| format!("cannot create {}", info.display()))?;
     let exclude = info.join("exclude");
     let current = fs::read_to_string(&exclude).unwrap_or_default();
-    let present = current
-        .lines()
-        .map(str::trim)
-        .any(|l| l == ".ns/" || l == ".ns" || l == "/.ns/" || l == "/.ns");
-    if present {
+    let mut text = current.clone();
+    for path in std::iter::once(".ns").chain(crate::pin::LINKS.iter().copied()) {
+        let present = current.lines().map(str::trim).any(|l| {
+            let l = l.strip_prefix('/').unwrap_or(l);
+            l == path || l.strip_suffix('/') == Some(path)
+        });
+        if present {
+            continue;
+        }
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        // `.ns` is a directory; the skill links are symlinks, which a trailing `/` misses.
+        text.push_str(&if path == ".ns" {
+            ".ns/\n".to_string()
+        } else {
+            format!("/{path}\n")
+        });
+    }
+    if text == current {
         return Ok(());
     }
-    let mut text = current;
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str(".ns/\n");
     fs::write(&exclude, text).with_context(|| format!("cannot write {}", exclude.display()))
 }
 

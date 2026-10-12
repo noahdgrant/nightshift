@@ -34,28 +34,28 @@ const BASH_TOOL: &str = "Bash";
 /// Tools that write a file at `file_path` or `notebook_path`.
 const FILE_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
-/// The `--settings` value for a claude phase: one `PreToolUse` hook that runs `ns guard-hooks`.
-/// Claude Code lets a call through when a hook exits with anything but 2, so a missing or
-/// crashing `ns` must exit 2 to block it.
+/// The factory's phase settings (docs/FACTORY.md, "Phase settings"), versioned in
+/// `.nightshift/` so a change to them needs a human merge. `{ns}` stands for the `ns` binary.
+const PHASE_SETTINGS: &str = include_str!("../../.nightshift/phase-settings.json");
+
+/// The settings file every claude phase runs with: the factory's denies and one `PreToolUse`
+/// hook that runs `ns guard-hooks`. Claude Code lets a call through when a hook exits with
+/// anything but 2, so a missing or crashing `ns` must exit 2 to block it.
 pub fn settings(ns: &Path) -> String {
-    let command = format!(
-        "{} guard-hooks || exit 2",
-        shell_quote(&ns.to_string_lossy())
-    );
-    let matcher = std::iter::once(BASH_TOOL)
-        .chain(FILE_TOOLS.iter().copied())
-        .collect::<Vec<_>>()
-        .join("|");
-    json!({
-        "disableAllHooks": false,
-        "hooks": {
-            "PreToolUse": [{
-                "matcher": matcher,
-                "hooks": [{"type": "command", "command": command}],
-            }],
-        },
-    })
-    .to_string()
+    let ns = shell_quote(&ns.to_string_lossy());
+    let mut v: Value = serde_json::from_str(PHASE_SETTINGS).expect("phase-settings.json is JSON");
+    for entry in v["hooks"]["PreToolUse"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+    {
+        for hook in entry["hooks"].as_array_mut().into_iter().flatten() {
+            if let Some(c) = hook["command"].as_str() {
+                hook["command"] = json!(c.replace("{ns}", &ns));
+            }
+        }
+    }
+    serde_json::to_string_pretty(&v).expect("a Value serializes")
 }
 
 /// Read the hook input from stdin and print a deny decision for a bypass. Input that isn't a

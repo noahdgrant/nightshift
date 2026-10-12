@@ -482,21 +482,24 @@ fn hook_says(settings: &Value, input: &str) -> Option<String> {
     Some(o["permissionDecisionReason"].as_str().unwrap().to_string())
 }
 
+/// Run unit 7 through every phase and return the last phase's argv and the settings file its
+/// `--settings` names.
+fn phase_settings(e: &Env) -> (Vec<String>, Value) {
+    e.run(&["run", "--issue", "7"], 0);
+    let args = fs::read_to_string(e.ctrl.join("args")).unwrap();
+    let argv: Vec<String> = args.split_whitespace().map(String::from).collect();
+    let i = argv
+        .iter()
+        .position(|a| a == "--settings")
+        .expect("--settings");
+    let text = fs::read_to_string(&argv[i + 1]).unwrap();
+    (argv, serde_json::from_str(&text).unwrap())
+}
+
 #[test]
 fn a_claude_phase_hook_denies_every_git_hook_bypass() {
     let e = Env::new();
-    let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
-    let argv: Vec<&str> = d["command"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|a| a.as_str().unwrap())
-        .collect();
-    let i = argv
-        .iter()
-        .position(|a| *a == "--settings")
-        .expect("--settings");
-    let settings: Value = serde_json::from_str(argv[i + 1]).unwrap();
+    let (_, settings) = phase_settings(&e);
     assert_eq!(
         settings["hooks"]["PreToolUse"][0]["matcher"],
         "Bash|Edit|Write|MultiEdit|NotebookEdit"
@@ -526,6 +529,143 @@ fn a_claude_phase_hook_denies_every_git_hook_bypass() {
         assert_eq!(hook_denies(&settings, ok), None, "{ok}");
     }
     assert_eq!(hook_says(&settings, "not json"), None);
+}
+
+#[test]
+fn claude_phases_read_only_project_settings_and_the_factory_settings_file() {
+    let e = Env::new();
+    fs::write(
+        e.home.join(".claude/settings.json"),
+        r#"{"permissions":{"deny":["Bash(git remote set-url:*)"]}}"#,
+    )
+    .unwrap();
+    let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+    let file = e
+        .worktree(UNIT)
+        .join(".ns")
+        .join(UNIT)
+        .join("phase-settings.json");
+    let dry: Vec<&str> = d["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    let tail = [
+        "--setting-sources",
+        "project,local",
+        "--settings",
+        file.to_str().unwrap(),
+    ];
+    assert!(dry.windows(4).any(|w| w == tail), "{dry:?}");
+
+    let (argv, settings) = phase_settings(&e);
+    assert!(argv.windows(4).any(|w| w == tail), "{argv:?}");
+    let deny: Vec<&str> = settings["permissions"]["deny"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d.as_str().unwrap())
+        .collect();
+    for rule in [
+        "Bash(sudo:*)",
+        "Bash(terraform apply:*)",
+        "Read(//**/.env)",
+        "Read(//**/secrets/**)",
+    ] {
+        assert!(deny.contains(&rule), "{rule}: {deny:?}");
+    }
+    assert!(!deny.iter().any(|d| d.contains("set-url")), "{deny:?}");
+}
+
+/// Commit `files` (path, text) in the main checkout and push them to `origin/main`.
+fn commit_files(e: &Env, files: &[(&str, &str)], msg: &str) {
+    for (path, text) in files {
+        let p = e.root.join(path);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, text).unwrap();
+    }
+    git(&e.root, &["add", "-A"]);
+    git(&e.root, &["commit", "-q", "-m", msg]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+}
+
+#[test]
+fn phases_run_the_base_commits_skills_whatever_the_worktree_or_main_hold_later() {
+    let e = Env::new();
+    commit_files(
+        &e,
+        &[
+            ("skills/ns-x/SKILL.md", "v1\n"),
+            ("skills/ns-x/references/r.md", "ref\n"),
+            (".agents/skills/verify-x/SKILL.md", "verify\n"),
+        ],
+        "skills v1",
+    );
+    e.run(&["worktree", "new", UNIT], 0);
+    let wt = e.worktree(UNIT);
+    fs::write(wt.join("skills/ns-x/SKILL.md"), "worktree edit\n").unwrap();
+    git(&wt, &["commit", "-qam", "edit a skill in the unit"]);
+    commit_files(&e, &[("skills/ns-x/SKILL.md", "v2\n")], "skills v2");
+    e.run(&["run", "--issue", "7"], 0);
+
+    let seen = |p: &str| fs::read_to_string(wt.join(".claude/skills").join(p)).unwrap();
+    assert_eq!(seen("ns-x/SKILL.md"), "v1\n");
+    assert_eq!(seen("ns-x/references/r.md"), "ref\n");
+    assert_eq!(seen("verify-x/SKILL.md"), "verify\n");
+    let snap = wt.join(".ns").join(UNIT).join("skills/ns-x/SKILL.md");
+    assert!(!fs::symlink_metadata(&snap).unwrap().is_symlink());
+    // A resume after main moved on keeps the snapshot it wrote first.
+    e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(seen("ns-x/SKILL.md"), "v1\n");
+    // The repo tracks .agents/skills, so the worktree keeps its own copy there.
+    assert!(!fs::symlink_metadata(wt.join(".agents/skills"))
+        .unwrap()
+        .is_symlink());
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn the_snapshot_links_are_excluded_from_git() {
+    let e = Env::new();
+    e.run(&["run", "--issue", "7"], 0);
+    let wt = e.worktree(UNIT);
+    for link in [".claude/skills", ".agents/skills"] {
+        let target = fs::read_link(wt.join(link)).unwrap();
+        assert_eq!(
+            wt.join(link)
+                .parent()
+                .unwrap()
+                .join(&target)
+                .canonicalize()
+                .unwrap(),
+            wt.join(".ns")
+                .join(UNIT)
+                .join("skills")
+                .canonicalize()
+                .unwrap(),
+            "{link}"
+        );
+    }
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn without_skills_in_the_repo_the_snapshot_copies_the_installed_ns_skills() {
+    let e = Env::new();
+    let src = e.base.join("checkout/skills/ns-y");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("SKILL.md"), "installed\n").unwrap();
+    fs::create_dir_all(e.home.join(".claude/skills")).unwrap();
+    std::os::unix::fs::symlink(&src, e.home.join(".claude/skills/ns-y")).unwrap();
+    e.run(&["run", "--issue", "7"], 0);
+    fs::write(src.join("SKILL.md"), "changed later\n").unwrap();
+    let snap = e.worktree(UNIT).join(".ns").join(UNIT).join("skills/ns-y");
+    assert!(!fs::symlink_metadata(&snap).unwrap().is_symlink());
+    assert_eq!(
+        fs::read_to_string(snap.join("SKILL.md")).unwrap(),
+        "installed\n"
+    );
 }
 
 #[test]

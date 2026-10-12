@@ -109,6 +109,10 @@ fn settings_run_this_binary_on_every_tool_that_can_bypass() {
     let s: Value = serde_json::from_str(&settings(Path::new("/opt/my ns/ns"))).unwrap();
     let hook = &s["hooks"]["PreToolUse"][0];
     assert_eq!(hook["matcher"], "Bash|Edit|Write|MultiEdit|NotebookEdit");
+    let tools: Vec<&str> = std::iter::once(BASH_TOOL)
+        .chain(FILE_TOOLS.iter().copied())
+        .collect();
+    assert_eq!(hook["matcher"], tools.join("|"));
     assert_eq!(
         hook["hooks"][0]["command"],
         "'/opt/my ns/ns' guard-hooks || exit 2"
