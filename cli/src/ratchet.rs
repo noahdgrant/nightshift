@@ -509,7 +509,7 @@ pub fn update(
         .collect();
     let status = if refused {
         "refused"
-    } else if values == c.recorded.values && c.file.exists() {
+    } else if values == c.recorded.values {
         "already-done"
     } else if dry_run {
         "planned"
@@ -642,6 +642,8 @@ mod tests {
                    "status": status, "error": "exited 2"})
         };
         let v = json!({"ratchets": [o("a", "ok"), o("b", "broken"), o("c", "flaky"), o("d", "untracked")]});
+        fs::write(&p, json!({"ratchets": [o("a", "ok")]}).to_string()).unwrap();
+        assert_eq!(failures(&p), None);
         fs::write(&p, v.to_string()).unwrap();
         assert_eq!(
             failures(&p).as_deref(),
