@@ -77,6 +77,7 @@ fn listed(text: &str) -> Result<Vec<u64>> {
     let item_start = regex::Regex::new(r"^(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s*)?").unwrap();
     let mut found: Vec<u64> = Vec::new();
     let mut in_list = false;
+    let mut indent: Option<usize> = None;
     for line in text.lines() {
         let plain = line.trim().replace(['*', '_'], "");
         if let Some(rest) = plain
@@ -85,6 +86,7 @@ fn listed(text: &str) -> Result<Vec<u64>> {
             .map(|_| &plain[9..])
         {
             in_list = true;
+            indent = None;
             found.extend(
                 num.captures_iter(rest)
                     .filter_map(|c| c[1].parse::<u64>().ok()),
@@ -95,18 +97,25 @@ fn listed(text: &str) -> Result<Vec<u64>> {
             continue;
         }
         let item = line.trim_start();
+        let depth = line.len() - item.len();
+        if item.is_empty() {
+            continue;
+        }
+        if indent.is_some_and(|i| depth > i) {
+            continue;
+        }
         match item_start.captures(item) {
             Some(m) => {
-                let text = item[m.get(0).unwrap().end()..].trim();
-                if text.is_empty() {
+                indent = Some(depth);
+                let title = item[m.get(0).unwrap().end()..].trim();
+                if title.is_empty() {
                     continue;
                 }
-                match num.captures(text).and_then(|c| c[1].parse::<u64>().ok()) {
+                match num.captures(title).and_then(|c| c[1].parse::<u64>().ok()) {
                     Some(n) => found.push(n),
-                    None => anyhow::bail!("a Children: list item names no issue: {text}"),
+                    None => anyhow::bail!("a Children: list item names no issue: {title}"),
                 }
             }
-            None if item.is_empty() => {}
             None => in_list = false,
         }
     }
@@ -448,6 +457,32 @@ mod tests {
         );
         assert_eq!(listed("Children:\n1. #8\n- see #5\n- #9\n"), [8, 5, 9]);
         assert_eq!(listed("Children:\n1. #8\ntext\n- #9\n"), [8]);
+    }
+
+    #[test]
+    fn a_wrapped_item_keeps_the_list_going() {
+        assert_eq!(
+            listed("Children:\n- #8 Add the long\n  widget thing\n- #9 second\n"),
+            [8, 9]
+        );
+    }
+
+    #[test]
+    fn nested_lines_under_an_item_are_not_children() {
+        assert_eq!(
+            listed("Children:\n- #8 Add widget\n  - acceptance: foo\n- #9 two\n"),
+            [8, 9]
+        );
+        assert_eq!(
+            listed("Children:\n- #8 Add widget\n  - blocked by #5\n"),
+            [8]
+        );
+        assert_eq!(
+            listed("Children:\n  - #8\n    - blocked by #5\n  - #9\n"),
+            [8, 9]
+        );
+        assert_eq!(listed("Children:\n- #8\n  more\ntext\n- #9\n"), [8]);
+        assert!(super::listed("Children:\n- #8\n- no number\n").is_err());
     }
 
     #[test]

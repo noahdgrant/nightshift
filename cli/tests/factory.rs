@@ -5729,6 +5729,7 @@ fn a_split_read_that_fails_does_not_hold_up_the_night() {
     );
     assert!(!calls.contains("issue close 5"), "{calls}");
     assert_eq!(e.labels(5), ["type:feat", "status:split"]);
+    assert!(!e.root.join(".git/ns/split-swept").exists());
 }
 
 #[test]
