@@ -697,13 +697,11 @@ fn install_defaults_the_crate_dir_to_the_repo_root_and_needs_a_repo() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("usage: "));
 }
 
-#[test]
-fn python_pack_tests_run_the_ns_under_cargo_target_dir() {
-    need_tools();
+/// A fake `ns` at `<dir>/target/debug/ns` that touches `<dir>/ns-ran` and runs the real one.
+fn fake_ns(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let tmp = TempDir::new().unwrap();
-    let marker = tmp.path().join("ns-ran");
-    let ns = tmp.path().join("target/debug/ns");
+    let marker = dir.join("ns-ran");
+    let ns = dir.join("target/debug/ns");
     fs::create_dir_all(ns.parent().unwrap()).unwrap();
     fs::write(
         &ns,
@@ -715,128 +713,94 @@ fn python_pack_tests_run_the_ns_under_cargo_target_dir() {
     )
     .unwrap();
     fs::set_permissions(&ns, fs::Permissions::from_mode(0o755)).unwrap();
-    let run_sh = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rules/python/tests/run.sh");
-    let out = common::command("bash")
+    marker
+}
+
+/// `rules/<pack>/tests/run.sh --find-ns`, which only resolves the ns under `CARGO_TARGET_DIR`
+/// and runs it, never the pack's suite. No tool beyond bash, so no `need_tools`.
+fn find_ns(pack: &str, cargo_target_dir: &Path) -> std::process::Output {
+    let run_sh =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../rules/{pack}/tests/run.sh"));
+    common::command("bash")
         .arg(run_sh)
-        .timeout(CHECK_TIMEOUT)
+        .arg("--find-ns")
         .env_remove("CI")
-        .env("CARGO_TARGET_DIR", tmp.path().join("target"))
-        .output();
+        .env("CARGO_TARGET_DIR", cargo_target_dir)
+        .output()
+}
+
+fn assert_found(pack: &str, cargo_target_dir: &Path, marker: &Path) {
+    let out = find_ns(pack, cargo_target_dir);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{err}");
-    assert!(!err.contains("skipped"), "{err}");
+    let version = Command::new(common::ns_path())
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&version.stdout),
+        "run.sh --find-ns printed more than the ns version, so it ran the suite"
+    );
     assert!(
         marker.exists(),
-        "run.sh did not run the ns under CARGO_TARGET_DIR"
+        "rules/{pack}/tests/run.sh did not run the ns under CARGO_TARGET_DIR {}",
+        cargo_target_dir.display()
     );
+}
+
+fn assert_found_absolute(pack: &str) {
+    let tmp = TempDir::new().unwrap();
+    let marker = fake_ns(tmp.path());
+    assert_found(pack, &tmp.path().join("target"), &marker);
+}
+
+fn assert_found_relative(pack: &str) {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let tmp = TempDir::new_in(repo_root).unwrap();
+    let marker = fake_ns(tmp.path());
+    let relative = Path::new(tmp.path().file_name().unwrap()).join("target");
+    assert_found(pack, &relative, &marker);
+}
+
+/// With no ns under `CARGO_TARGET_DIR`, `--find-ns` fails and names the path, even outside CI.
+fn assert_missing_fails(pack: &str) {
+    let tmp = TempDir::new().unwrap();
+    let out = find_ns(pack, &tmp.path().join("target"));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        err.contains(&format!("{}/target/debug/ns", tmp.path().display())),
+        "{err}"
+    );
+}
+
+#[test]
+fn python_pack_tests_run_the_ns_under_cargo_target_dir() {
+    assert_found_absolute("python");
 }
 
 #[test]
 fn python_pack_tests_run_the_ns_under_a_relative_cargo_target_dir() {
-    need_tools();
-    use std::os::unix::fs::PermissionsExt;
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let tmp = TempDir::new_in(repo_root).unwrap();
-    let marker = tmp.path().join("ns-ran");
-    let ns = tmp.path().join("target/debug/ns");
-    fs::create_dir_all(ns.parent().unwrap()).unwrap();
-    fs::write(
-        &ns,
-        format!(
-            "#!/bin/sh\ntouch '{}'\nexec '{}' \"$@\"\n",
-            marker.display(),
-            common::ns_path().display()
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&ns, fs::Permissions::from_mode(0o755)).unwrap();
-    let run_sh = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rules/python/tests/run.sh");
-    let out = common::command("bash")
-        .arg(run_sh)
-        .timeout(CHECK_TIMEOUT)
-        .env_remove("CI")
-        .env(
-            "CARGO_TARGET_DIR",
-            Path::new(tmp.path().file_name().unwrap()).join("target"),
-        )
-        .output();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{err}");
-    assert!(!err.contains("skipped"), "{err}");
-    assert!(
-        marker.exists(),
-        "run.sh did not run the ns under a relative CARGO_TARGET_DIR"
-    );
+    assert_found_relative("python");
+}
+
+#[test]
+fn python_pack_tests_fail_without_the_ns_under_cargo_target_dir() {
+    assert_missing_fails("python");
 }
 
 #[test]
 fn js_pack_tests_run_the_ns_under_cargo_target_dir() {
-    need_tools();
-    use std::os::unix::fs::PermissionsExt;
-    let tmp = TempDir::new().unwrap();
-    let marker = tmp.path().join("ns-ran");
-    let ns = tmp.path().join("target/debug/ns");
-    fs::create_dir_all(ns.parent().unwrap()).unwrap();
-    fs::write(
-        &ns,
-        format!(
-            "#!/bin/sh\ntouch '{}'\nexec '{}' \"$@\"\n",
-            marker.display(),
-            common::ns_path().display()
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&ns, fs::Permissions::from_mode(0o755)).unwrap();
-    let run_sh = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rules/js/tests/run.sh");
-    let out = common::command("bash")
-        .arg(run_sh)
-        .timeout(CHECK_TIMEOUT)
-        .env_remove("CI")
-        .env("CARGO_TARGET_DIR", tmp.path().join("target"))
-        .output();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{err}");
-    assert!(!err.contains("skipped"), "{err}");
-    assert!(
-        marker.exists(),
-        "run.sh did not run the ns under CARGO_TARGET_DIR"
-    );
+    assert_found_absolute("js");
 }
 
 #[test]
 fn js_pack_tests_run_the_ns_under_a_relative_cargo_target_dir() {
-    need_tools();
-    use std::os::unix::fs::PermissionsExt;
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let tmp = TempDir::new_in(repo_root).unwrap();
-    let marker = tmp.path().join("ns-ran");
-    let ns = tmp.path().join("target/debug/ns");
-    fs::create_dir_all(ns.parent().unwrap()).unwrap();
-    fs::write(
-        &ns,
-        format!(
-            "#!/bin/sh\ntouch '{}'\nexec '{}' \"$@\"\n",
-            marker.display(),
-            common::ns_path().display()
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&ns, fs::Permissions::from_mode(0o755)).unwrap();
-    let run_sh = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rules/js/tests/run.sh");
-    let out = common::command("bash")
-        .arg(run_sh)
-        .timeout(CHECK_TIMEOUT)
-        .env_remove("CI")
-        .env(
-            "CARGO_TARGET_DIR",
-            Path::new(tmp.path().file_name().unwrap()).join("target"),
-        )
-        .output();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{err}");
-    assert!(!err.contains("skipped"), "{err}");
-    assert!(
-        marker.exists(),
-        "run.sh did not run the ns under a relative CARGO_TARGET_DIR"
-    );
+    assert_found_relative("js");
+}
+
+#[test]
+fn js_pack_tests_fail_without_the_ns_under_cargo_target_dir() {
+    assert_missing_fails("js");
 }

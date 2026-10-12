@@ -4,13 +4,24 @@
 # A rule directory with a make.sh also has it write examples into a temp directory,
 # for examples too long to commit.
 #
-#   rules/python/tests/run.sh
+#   rules/python/tests/run.sh [--find-ns]
 set -euo pipefail
 
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
   GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
 
 pack=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+# The ns this run builds: under $CARGO_TARGET_DIR when set (a relative one is relative to
+# the repo root, as in scripts/ci-local.sh), else cli/target. --find-ns only runs it and exits,
+# for cli/tests/rules_pack.rs to check this lookup without the whole suite.
+target=${CARGO_TARGET_DIR:-cli/target}
+case $target in /*) ;; *) target="$pack/../../$target" ;; esac
+ns="$target/debug/ns"
+if [ "${1:-}" = --find-ns ]; then
+  [ -x "$ns" ] || { echo "run.sh: no ns at $ns; build it with: cargo build --manifest-path cli/Cargo.toml" >&2; exit 1; }
+  exec "$ns" --version
+fi
 
 for tool in ruff ast-grep; do
   command -v "$tool" >/dev/null || {
@@ -237,11 +248,6 @@ for args in "" "."; do
   }
 done
 
-# The ns this run builds: under $CARGO_TARGET_DIR when set (a relative one is relative to
-# the repo root, as in scripts/ci-local.sh), else cli/target.
-target=${CARGO_TARGET_DIR:-cli/target}
-case $target in /*) ;; *) target="$pack/../../$target" ;; esac
-ns="$target/debug/ns"
 if [ -x "$ns" ]; then
   repo="$tmp/ns-repo"
   mkdir -p "$repo/docs/agents"
