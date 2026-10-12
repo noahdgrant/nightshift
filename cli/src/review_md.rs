@@ -9,6 +9,9 @@ use std::sync::OnceLock;
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 
+mod passes;
+pub use passes::{passes, Pass};
+
 pub const AXES: [&str; 8] = [
     "correctness",
     "readability",

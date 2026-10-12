@@ -12,7 +12,7 @@ use super::artifacts::sha;
 use super::blame::{self, Blame};
 use super::metrics::{self, Attempt, RunStats, Unit};
 use crate::clock;
-use crate::review_md::{CycleEntry, Finding, Scope, Severity, Status};
+use crate::review_md::{CycleEntry, Finding, Pass, Scope, Severity, Status};
 
 /// The record format; bump it when a field changes meaning.
 pub const VERSION: u32 = 1;
@@ -80,6 +80,9 @@ pub struct Record {
     pub stray_statuses: usize,
     pub findings: Vec<FindingRecord>,
     pub first_pass_file: Vec<CycleRecord>,
+    /// Absent from records written before reviewer metrics (#424).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passes: Vec<Pass>,
 }
 
 /// What `ns run` knows about a unit beyond its review artifacts.
@@ -215,6 +218,7 @@ pub fn build(
                         axes: e.axes.clone(),
                     })
                     .collect(),
+                passes: a.passes.clone(),
             };
             check_private(&serde_json::to_value(&r)?)?;
             Ok(r)
@@ -273,6 +277,7 @@ fn attempt(r: &Record) -> Attempt {
                 axes: e.axes.clone(),
             })
             .collect(),
+        passes: r.passes.clone(),
     }
 }
 
@@ -643,6 +648,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn each_passs_panel_and_worker_costs_are_carried_and_read_back() {
+        let a = Attempt {
+            path: "r.md".into(),
+            passes: review_md::passes(
+                "## Passes\n| Pass | Panel | Reviewer | Role | Provider | Tokens | Seconds | Cost |\n|-|-|-|-|-|-|-|-|\n| 0 | full | security | review.security | codex | 900 | 12.5 | - |\n| 1 | cycle | correctness | review | claude | 50 | 3 | 0.02 |\n",
+            ),
+            ..Attempt::default()
+        };
+        let rs = build(
+            &meta(),
+            std::slice::from_ref(&a),
+            0,
+            Path::new("/nonexistent"),
+        )
+        .unwrap();
+        let v = serde_json::to_value(&rs[0]).unwrap();
+        assert_eq!(
+            v["passes"][0],
+            serde_json::json!({
+                "pass": 0, "panel": "full",
+                "workers": [{"reviewer": "security", "role": "review.security",
+                    "provider": "codex", "tokens": 900, "wall_s": 12.5}]
+            })
+        );
+        assert_eq!(v["passes"][1]["panel"], "cycle");
+        let (back, _) = parse(&serde_json::to_string(&rs[0]).unwrap());
+        assert_eq!(attempt(&back[0]).passes, a.passes);
+        let none = build(&meta(), &[Attempt::default()], 0, Path::new("/nonexistent")).unwrap();
+        assert!(serde_json::to_value(&none[0])
+            .unwrap()
+            .get("passes")
+            .is_none());
+    }
+
     fn rec(unit: &str, recorded: &str, attempt: usize, status: &str) -> Record {
         let mut r = build(
             &Meta {
@@ -698,6 +738,8 @@ mod tests {
         assert_eq!(rs[0].findings[0].fix_attempts, None);
         assert!(rs[0].findings[0].dismissed_raises.is_empty());
         assert_eq!(rs[0].findings[0].missed_by, None);
+        assert!(rs[0].passes.is_empty());
+        assert!(units(&rs)[0].last().passes.is_empty());
         assert_eq!(units(&rs)[0].last().findings[0].fix_attempts, None);
     }
 
