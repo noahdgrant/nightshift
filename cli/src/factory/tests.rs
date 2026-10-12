@@ -325,3 +325,16 @@ fn render_is_single_pass() {
     let s = render("{skill} {unit} {attempt} {nope} {feedback}", &v);
     assert_eq!(s, "ns-build 7-x 2 {nope} keep {unit} literal");
 }
+
+#[test]
+fn queue_overlap_ignore_is_empty_by_default_and_takes_globs() {
+    assert!(parse("").unwrap().queue.overlap_ignore.is_empty());
+    let f = parse("[queue]\noverlap_ignore = [\"docs/DESIGN.md\", \"docs/**\"]\n").unwrap();
+    assert_eq!(f.queue.overlap_ignore, ["docs/DESIGN.md", "docs/**"]);
+    assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+    assert!(parse("[queue]\noverlap_ignores = []\n").is_err());
+    let p = parse("[queue]\noverlap_ignore = [\"a[\"]\n")
+        .unwrap()
+        .problems(None);
+    assert_eq!(p, ["queue.overlap_ignore: \"a[\" is not a valid glob"]);
+}
