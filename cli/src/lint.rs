@@ -330,13 +330,14 @@ fn check_rules_index(rules: &Path) -> Vec<LintError> {
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| !n.starts_with('.'))
         .collect();
-    if packs.is_empty() {
-        return Vec::new();
-    }
     let Ok(text) = fs::read_to_string(&index) else {
-        return vec![error(
-            "missing rules/README.md, the index of the rule packs".into(),
-        )];
+        return if packs.is_empty() {
+            Vec::new()
+        } else {
+            vec![error(
+                "missing rules/README.md, the index of the rule packs".into(),
+            )]
+        };
     };
     let named: BTreeSet<String> = relative_links(&text)
         .iter()
@@ -720,6 +721,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(lint_messages(&skills), (1, vec![]));
+    }
+
+    #[test]
+    fn rules_index_flags_links_to_packs_that_are_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        write_skill_at(&skills, "ns-a", "");
+        let rules = tmp.path().join("rules");
+        fs::create_dir_all(&rules).unwrap();
+        fs::write(rules.join("README.md"), "- [`go/`](go/README.md): Go.\n").unwrap();
+        assert_eq!(
+            lint_messages(&skills).1,
+            ["rules/README.md names rules/go/, which does not exist"]
+        );
+    }
+
+    #[test]
+    fn rules_index_ignores_packs_named_only_in_prose_or_fences() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        write_skill_at(&skills, "ns-a", "");
+        let rules = tmp.path().join("rules");
+        fs::create_dir_all(rules.join("rust")).unwrap();
+        fs::write(
+            rules.join("README.md"),
+            "The `rust/` pack.\n\n```\n[rust](rust/README.md)\n```\n",
+        )
+        .unwrap();
+        assert_eq!(
+            lint_messages(&skills).1,
+            ["rules/README.md does not name the pack rules/rust/"]
+        );
     }
 
     #[test]
