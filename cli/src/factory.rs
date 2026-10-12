@@ -64,6 +64,8 @@ pub struct Factory {
     /// Absent table: `policy = "human"`.
     #[serde(default)]
     pub merge: Merge,
+    #[serde(default)]
+    pub gate: GateDef,
     /// Read by the `ns-supervise` skill through `ns factory validate`, not by `ns run` or `ns watch`.
     #[serde(default)]
     pub supervise: Supervise,
@@ -151,6 +153,23 @@ impl Merge {
             .cloned()
             .collect()
     }
+}
+
+/// `[gate]`: where the CI gate runs all of local CI (docs/FACTORY.md, "Gate").
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct GateDef {
+    pub local: LocalGate,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LocalGate {
+    /// Every gate runs the full command.
+    #[default]
+    EveryStep,
+    /// Only the gate after build runs the full command; every other gate runs the fast one.
+    BuildOnly,
 }
 
 #[derive(Debug, Clone, Deserialize)]

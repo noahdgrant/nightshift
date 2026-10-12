@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 use crate::eval::trial::{run_process, tail};
-use crate::factory::Factory;
+use crate::factory::{Factory, LocalGate};
 use crate::git::same_sha;
 use crate::memcap::{self, Cap, Cut};
 use crate::ratchet;
@@ -41,10 +41,67 @@ pub fn command(fac: &Factory, repo_root: &Path, ns: &Path) -> Option<String> {
     }
 }
 
+/// The variable that holds, one per line, the paths a fast gate's `ci-affected` command tests.
+pub const FILES_VAR: &str = "NS_GATE_FILES";
+
+/// The gate commands `ns run` runs: `build` after build, `rest` after any other phase and in
+/// the merge step.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Commands {
+    pub build: Option<String>,
+    pub rest: Option<String>,
+}
+
+impl Commands {
+    /// Under `[gate] local = "every-step"` both are [`command`]. Under `"build-only"`, `rest` is
+    /// the base command with `--fast`, then the `ci-affected` row of `docs/agents/stack.md`.
+    pub fn read(fac: &Factory, repo_root: &Path, ns: &Path) -> Commands {
+        let build = command(fac, repo_root, ns);
+        let rest = match fac.gate.local {
+            LocalGate::EveryStep => build.clone(),
+            LocalGate::BuildOnly => {
+                let stack =
+                    fs::read_to_string(repo_root.join("docs/agents/stack.md")).unwrap_or_default();
+                let fast = fac
+                    .phase("build")
+                    .gate
+                    .or_else(|| ci_local(&stack))
+                    .map(|b| format!("{b} --fast"));
+                let affected = row_command(&stack, "ci-affected");
+                let parts: Vec<String> = [fast, affected]
+                    .into_iter()
+                    .flatten()
+                    .map(|c| format!("({c})"))
+                    .collect();
+                (!parts.is_empty()).then(|| parts.join(" && "))
+            }
+        };
+        Commands { build, rest }
+    }
+
+    /// The command `trigger` runs.
+    pub fn for_trigger(&self, trigger: Trigger) -> Option<&str> {
+        match trigger {
+            Trigger::BuildPassed | Trigger::BuildWroteNothing => self.build.as_deref(),
+            Trigger::PhaseMovedHead | Trigger::BeforeMerge => self.rest.as_deref(),
+        }
+    }
+
+    /// Whether `cmd` is the full gate: the one run after build.
+    pub fn full(&self, cmd: &str) -> bool {
+        self.build.as_deref() == Some(cmd)
+    }
+}
+
 /// The command in a table row `| ci-local | `<command>` | ... |`: the first cell is `ci-local`
 /// (backticks optional), the command is the backticked span that opens the second cell (it may contain `|`).
 pub fn ci_local(stack_md: &str) -> Option<String> {
-    rows(stack_md, "ci-local").find_map(|rest| {
+    row_command(stack_md, "ci-local")
+}
+
+/// The command in the table row whose first cell is `task`, as [`ci_local`] reads it.
+fn row_command(stack_md: &str, task: &str) -> Option<String> {
+    rows(stack_md, task).find_map(|rest| {
         let cmd = rest
             .trim_start()
             .strip_prefix('`')?
@@ -80,7 +137,8 @@ impl GateRun {
 
 /// Run `cmd` with `sh -c` in `cwd` under the memory `cap`, output to `log`, killed at `timeout`.
 /// A `ns ratchet check` in `cmd` reads the ratchets of `ratchets.factory`, runs each twice only on
-/// its first check of the night, and writes its report next to `log`.
+/// its first check of the night, and writes its report next to `log`. `files`, when known, is
+/// [`FILES_VAR`].
 pub fn run(
     cmd: &str,
     cwd: &Path,
@@ -88,6 +146,7 @@ pub fn run(
     log: &Path,
     cap: Option<&Cap>,
     ratchets: &Ratchets<'_>,
+    files: Option<&str>,
 ) -> Result<GateRun> {
     if let Some(d) = log.parent() {
         fs::create_dir_all(d).with_context(|| format!("cannot create {}", d.display()))?;
@@ -107,6 +166,10 @@ pub fn run(
     match ratchets.night {
         Some(n) => c.env(ratchet::STEADY_VAR, n.join("ratchets-steady.json")),
         None => c.env_remove(ratchet::STEADY_VAR),
+    };
+    match files {
+        Some(f) => c.env(FILES_VAR, f),
+        None => c.env_remove(FILES_VAR),
     };
     c.arg("-c")
         .arg(cmd)
@@ -206,6 +269,8 @@ pub fn timeout(build_minutes: u64) -> Duration {
 enum Verdict {
     Green {
         sha: String,
+        /// Whether the full gate went green, which covers the fast one too.
+        full: bool,
     },
     Red {
         sha: String,
@@ -220,6 +285,8 @@ enum Verdict {
 pub struct Gate {
     verdict: Option<Verdict>,
     merged: Option<MergeVerdict>,
+    /// The last HEAD the full gate went green at.
+    full_green: Option<String>,
 }
 
 /// The gate's verdict on the merge of PR head `head` into base `base`: `None` is green.
@@ -231,6 +298,10 @@ struct MergeVerdict {
 
 pub struct Job<'a> {
     pub cmd: &'a str,
+    /// Whether `cmd` is the full gate, logged as `local_full`, else `local_fast`.
+    pub full: bool,
+    /// The paths changed since the full gate last went green, for a fast gate.
+    pub files: Option<String>,
     pub worktree: &'a Path,
     pub log_dir: PathBuf,
     pub unit: &'a str,
@@ -292,6 +363,11 @@ impl Gate {
         }
     }
 
+    /// The last HEAD the full gate went green at in this invocation.
+    pub fn full_green(&self) -> Option<&str> {
+        self.full_green.as_deref()
+    }
+
     /// The feedback of a red verdict not yet followed by a green one.
     pub fn red_feedback(&self) -> Option<&str> {
         match &self.verdict {
@@ -319,7 +395,8 @@ impl Gate {
     }
 
     fn run_at_head(&mut self, job: &Job<'_>, log: &dyn Fn(Value)) -> Result<Option<Red>> {
-        if matches!(&self.verdict, Some(Verdict::Green { sha }) if same_sha(sha, &job.head)) {
+        if matches!(&self.verdict, Some(Verdict::Green { sha, full }) if same_sha(sha, &job.head) && (*full || !job.full))
+        {
             return Ok(None);
         }
         eprintln!("ns run: {} gate after {}: {}", job.unit, job.phase, job.cmd);
@@ -327,7 +404,11 @@ impl Gate {
         if r.green() {
             self.verdict = Some(Verdict::Green {
                 sha: job.head.clone(),
+                full: job.full,
             });
+            if job.full {
+                self.full_green = Some(job.head.clone());
+            }
             return Ok(None);
         }
         let feedback = feedback(job.cmd, &r, job.timeout, &job.head);
@@ -414,12 +495,14 @@ fn run_logged(job: &Job<'_>, mut extra: Value, log: &dyn Fn(Value)) -> Result<Ga
         &log_path,
         job.cap,
         &job.ratchets,
+        job.files.as_deref(),
     )?;
     let mut ev = json!({
         "event": "gate",
         "phase": job.phase,
         "attempt": job.attempt,
         "command": job.cmd,
+        "where": if job.full { "local_full" } else { "local_fast" },
         "sha": job.head,
         "exit": r.exit,
         "timed_out": r.timed_out,

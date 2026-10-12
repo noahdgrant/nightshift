@@ -98,6 +98,65 @@ fn a_ratchet_adds_ns_ratchet_check_last_or_alone() {
 }
 
 #[test]
+fn every_step_runs_the_full_command_everywhere() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(tmp.path().join("docs/agents")).unwrap();
+    fs::write(
+        tmp.path().join("docs/agents/stack.md"),
+        format!("{STACK}| ci-affected | `scripts/affected.sh` |\n"),
+    )
+    .unwrap();
+    let c = Commands::read(&parse("").unwrap(), tmp.path(), Path::new(NS_EXE));
+    assert_eq!(c.build.as_deref(), Some("scripts/ci-local.sh"));
+    assert_eq!(c.rest, c.build);
+    assert!(c.full("scripts/ci-local.sh"));
+    assert_eq!(
+        c.for_trigger(Trigger::BeforeMerge),
+        Some("scripts/ci-local.sh")
+    );
+}
+
+#[test]
+fn build_only_runs_the_fast_command_and_affected_tests_after_any_step_but_build() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(tmp.path().join("docs/agents")).unwrap();
+    let stack = tmp.path().join("docs/agents/stack.md");
+    let fac = parse("[gate]\nlocal = \"build-only\"\n").unwrap();
+    let read = |text: &str| {
+        fs::write(&stack, text).unwrap();
+        Commands::read(&fac, tmp.path(), Path::new(NS_EXE))
+    };
+    let c = read(&format!(
+        "{STACK}| ci-affected | `scripts/affected.sh` |\n| rules | `ruff check .` |\n"
+    ));
+    let full = "(scripts/ci-local.sh) && '/opt/ns bin/ns' rules check";
+    let fast = "(scripts/ci-local.sh --fast) && (scripts/affected.sh)";
+    assert_eq!(c.build.as_deref(), Some(full));
+    assert_eq!(c.rest.as_deref(), Some(fast));
+    assert_eq!(c.for_trigger(Trigger::BuildPassed), Some(full));
+    assert_eq!(c.for_trigger(Trigger::BuildWroteNothing), Some(full));
+    assert_eq!(c.for_trigger(Trigger::PhaseMovedHead), Some(fast));
+    assert_eq!(c.for_trigger(Trigger::BeforeMerge), Some(fast));
+    assert!(c.full(full) && !c.full(fast));
+    assert_eq!(
+        read(STACK).rest.as_deref(),
+        Some("(scripts/ci-local.sh --fast)")
+    );
+    assert_eq!(
+        read("| ci-affected | `scripts/affected.sh` |\n")
+            .rest
+            .as_deref(),
+        Some("(scripts/affected.sh)")
+    );
+    assert_eq!(read("").rest, None);
+    let fac =
+        parse("[gate]\nlocal = \"build-only\"\n[phases.build]\ngate = \"make ci\"\n").unwrap();
+    fs::write(&stack, STACK).unwrap();
+    let c = Commands::read(&fac, tmp.path(), Path::new(NS_EXE));
+    assert_eq!(c.rest.as_deref(), Some("(make ci --fast)"));
+}
+
+#[test]
 fn this_repos_gate_is_ci_local_sh_then_the_rule_pack() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let cmd = command(&parse("").unwrap(), repo, Path::new(NS_EXE)).unwrap();
@@ -138,7 +197,7 @@ fn gate_capped(cmd: &str, timeout: Duration, cap: Option<&Cap>) -> (GateRun, tem
         factory: tmp.path(),
         night: None,
     };
-    let r = run(cmd, tmp.path(), timeout, &log, cap, &ratchets).unwrap();
+    let r = run(cmd, tmp.path(), timeout, &log, cap, &ratchets, None).unwrap();
     (r, tmp)
 }
 
@@ -157,7 +216,7 @@ fn the_gate_tells_ns_ratchet_check_its_factory_night_and_report() {
         night: Some(&night),
     };
     let t = Duration::from_secs(30);
-    let r = run(&cmd, tmp.path(), t, &log, None, &with_night).unwrap();
+    let r = run(&cmd, tmp.path(), t, &log, None, &with_night, None).unwrap();
     let report = tmp.path().join("gate-build-1.ratchets.json");
     let cwd = std::env::current_dir().unwrap();
     assert_eq!(
@@ -187,13 +246,14 @@ fn the_gate_tells_ns_ratchet_check_its_factory_night_and_report() {
         &log,
         None,
         &no_night,
+        None,
     )
     .unwrap();
     assert_eq!((r.tail.as_str(), r.ratchets), ("[]", None));
     assert!(!report.exists());
     fs::create_dir(&report).unwrap();
     fs::write(report.join("x"), "").unwrap();
-    let e = run("true", tmp.path(), t, &log, None, &no_night)
+    let e = run("true", tmp.path(), t, &log, None, &no_night, None)
         .err()
         .unwrap();
     assert!(format!("{e:#}").contains("cannot remove"), "{e:#}");
