@@ -55,12 +55,14 @@ pub struct Issue {
     pub team: bool,
 }
 
-/// Issue numbers named on a first line `Blocked by: #a, #b`.
+/// Issue numbers named on a first line `Blocked by: #a, #b`. An agent's `🤖` disclosure line
+/// before it doesn't count (skills/ns-contract, Disclosure).
 pub fn blockers(body: &str) -> Vec<u64> {
-    let first = body
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines
+        .next()
+        .filter(|l| !l.starts_with('🤖'))
+        .or_else(|| lines.next())
         .unwrap_or("");
     let lower = first.to_lowercase();
     let Some(rest) = lower.strip_prefix("blocked by:") else {
@@ -823,6 +825,15 @@ pub(crate) mod tests {
         assert_eq!(blockers("Blocked by: #3, #12\nmore"), [3, 12]);
         assert_eq!(blockers("\nblocked by: #4"), [4]);
         assert!(blockers("text\nBlocked by: #3").is_empty());
+        let disclosed = Post::new("Blocked by: #7\n\nbody");
+        assert_eq!(blockers(disclosed.as_str()), [7]);
+        assert_eq!(
+            blockers("🤖 *Posted by an AI agent (Claude Code).*\nBlocked by: #8"),
+            [8]
+        );
+        assert!(
+            blockers("🤖 *Posted by nightshift, an AI agent.*\n\ntext\nBlocked by: #3").is_empty()
+        );
         assert_eq!(closed_by("Closes #5. Also fixes #6"), [5, 6]);
         assert!(closed_by("see #5").is_empty());
     }
