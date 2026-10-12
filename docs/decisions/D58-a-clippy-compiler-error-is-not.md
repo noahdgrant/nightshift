@@ -14,4 +14,4 @@ Amends D54 (#289). A compiler error from clippy, an error-level message with no 
 
 ## Reason
 
-D54 made a compile error a `compile-error` finding, which a baseline could record. Cargo can't check a crate whose dependency didn't compile, so a baselined error hid every finding in the crates behind it, and they came back as new once it was fixed. D56 makes the C pack fail for the same reason, and the packs should handle it one way. Printing the other members' findings as text keeps `--keep-going`'s work visible without letting a broken run pass or be baselined. Spec: docs/FACTORY.md ("Rules").
+D54 made a compile error a `compile-error` finding, which a baseline could record. Cargo can't check a crate whose dependency didn't compile, so a baselined error hid every finding in the crates behind it, and they came back as new once it was fixed. D56 makes the C pack fail for the same reason, and the packs should handle it one way. Printing the other members' findings as text keeps `--keep-going`'s work visible without letting a broken run pass or be baselined. Spec: docs/factory/run.md ("Rules").

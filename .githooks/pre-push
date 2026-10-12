@@ -6,7 +6,7 @@
 # about one incremental build. A push holds a flock on <target dir>.lock for its whole run,
 # so concurrent pushes from other worktrees wait rather than overwrite its test binaries.
 # Under [gate] local = "build-only" in the commit's .nightshift/nightshift.toml, each run is
-# ci-local.sh --fast: ns run's gate after build ran all of it (docs/FACTORY.md, "Gate").
+# ci-local.sh --fast: ns run's gate after build ran all of it (docs/factory/run.md, "Gate").
 common=$(cd "$(git rev-parse --git-common-dir)" && pwd) || exit 1
 # Git's location variables would aim the temporary worktree's checkout at this checkout's
 # index, and the checks at this checkout. Every git command here names the repo instead.

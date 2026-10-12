@@ -1,6 +1,6 @@
-//! The skills and settings `ns run` pins for a unit's phases (docs/FACTORY.md, "Pinned skills").
-//! The skills are a snapshot of the unit's base commit, written once into `.ns/<unit>/skills/`
-//! and linked as the worktree's `.claude/skills` and `.agents/skills`.
+//! The skills and settings `ns run` pins for a unit's phases (docs/factory/run.md, "Pinned
+//! skills"). The skills are a snapshot of the unit's base commit, written once into
+//! `.ns/<unit>/skills/` and linked as the worktree's `.claude/skills` and `.agents/skills`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,7 +25,7 @@ pub const LINKS: &[&str] = &[CLAUDE_LINK, ".agents/skills"];
 /// The path claude reads project skills from.
 const CLAUDE_LINK: &str = ".claude/skills";
 
-/// The factory's phase settings (docs/FACTORY.md, "Phase settings"), versioned in
+/// The factory's phase settings (docs/factory/run.md, "Phase settings"), versioned in
 /// `.nightshift/` so a change to them needs a human merge. `{ns}` stands for the `ns` binary.
 const PHASE_SETTINGS: &str = include_str!("../../.nightshift/phase-settings.json");
 
@@ -70,9 +70,9 @@ pub fn settings_json(ns: &Path) -> String {
     serde_json::to_string_pretty(&v).expect("a Value serializes")
 }
 
-/// How much of a harness's skills `ns run` pins (docs/FACTORY.md, "Pinned skills and phase
-/// settings"). Every harness's worktree gets the `.claude/skills` and `.agents/skills` links;
-/// the mode is what the harness is known to read.
+/// How much of a harness's skills `ns run` pins (docs/factory/run.md, "Pinned skills and
+/// phase settings"). Every harness's worktree gets the `.claude/skills` and `.agents/skills`
+/// links; the mode is what the harness is known to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// The harness sees only the unit's snapshot and the factory's settings: claude.

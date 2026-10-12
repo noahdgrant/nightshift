@@ -1,6 +1,6 @@
 //! `ns quality`: how well units pass review, read from the quality records on the
 //! `nightshift/quality` branch, the review artifacts in every unit worktree that has no record,
-//! and the run log (docs/FACTORY.md, Quality).
+//! and the run log (docs/factory/quality.md).
 
 mod artifacts;
 mod blame;

@@ -13,4 +13,4 @@ date: 2026-10-11
 
 ## Reason
 
-Agreed in #377. Failing fast while checks still run catches a broken `main` before a slow job ends. A reader can't see classic branch protection, and a ruleset may require checks that run only on PRs (a title check), so required is what the head's checks and the rulesets agree on, else all. GitLab's commit statuses cover every job of the head's pipelines and external statuses in one list, so the trait needs no pipeline type. Spec: docs/FACTORY.md ("Main's CI").
+Agreed in #377. Failing fast while checks still run catches a broken `main` before a slow job ends. A reader can't see classic branch protection, and a ruleset may require checks that run only on PRs (a title check), so required is what the head's checks and the rulesets agree on, else all. GitLab's commit statuses cover every job of the head's pipelines and external statuses in one list, so the trait needs no pipeline type. Spec: docs/factory/watch.md ("Main's CI").

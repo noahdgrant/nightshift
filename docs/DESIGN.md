@@ -64,7 +64,7 @@ Five layers run a night. `ns-auto` runs one unit beside them.
                 itself, or hands the loop to ns run; no queue, never merges
 ```
 
-The operator makes the calls only a person can. `ns-supervise` watches the night and tells the operator when something needs them (D63). `ns watch` owns the queue and the night's limits: `--until`, the budget and `--parallel`. `ns run` owns one unit's state, gates and merge, in code rather than in an agent (D16). The phase skills do the work and hand off only through artifacts. `ns-auto` does the same job as `ns run` from an agent session, with the same state table, and has no queue; [docs/FACTORY.md](FACTORY.md) covers `ns watch` and `ns run` in full.
+The operator makes the calls only a person can. `ns-supervise` watches the night and tells the operator when something needs them (D63). `ns watch` owns the queue and the night's limits: `--until`, the budget and `--parallel`. `ns run` owns one unit's state, gates and merge, in code rather than in an agent (D16). The phase skills do the work and hand off only through artifacts. `ns-auto` does the same job as `ns run` from an agent session, with the same state table, and has no queue; [docs/factory/watch.md](factory/watch.md) and [docs/factory/run.md](factory/run.md) cover `ns watch` and `ns run` in full.
 
 ## Phases and their artifacts
 

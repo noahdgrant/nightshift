@@ -1,4 +1,4 @@
-//! A stop that `ns watch` asks for on SIGINT or SIGTERM (docs/FACTORY.md, ns watch). The
+//! A stop that `ns watch` asks for on SIGINT or SIGTERM (docs/factory/watch.md). The
 //! handler only records the signal; the code polls `requested()` between steps, while a phase
 //! runs and while it sleeps, and winds down from there.
 

@@ -1,8 +1,8 @@
-//! `ns watch` on the nightshift source updates its own binary (docs/FACTORY.md, "When the
-//! watched repo is nightshift"). When origin's default branch gains commits touching `cli/`
-//! after the commit this `ns` was built from, the night drains: no new unit starts, running
-//! ones finish. Then it builds that commit to a staging path, checks the new binary, and execs
-//! it with the night's state, so one summary covers the whole night.
+//! `ns watch` on the nightshift source updates its own binary (docs/factory/starting-a-night.md,
+//! "When the watched repo is nightshift"). When origin's default branch gains commits touching
+//! `cli/` after the commit this `ns` was built from, the night drains: no new unit starts, running
+//! ones finish. Then it builds that commit to a staging path, checks the new binary, and execs it
+//! with the night's state, so one summary covers the whole night.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;

@@ -1,5 +1,5 @@
 //! The deterministic CI gate `ns run` runs after build, after any phase that moves HEAD, and on
-//! the PR head before it merges (docs/FACTORY.md, "Gate").
+//! the PR head before it merges (docs/factory/run.md, "Gate").
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};

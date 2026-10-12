@@ -12,4 +12,4 @@ A file can fence part of itself for human review with `ns:human-review` start an
 
 ## Reason
 
-Path globs guard whole files, so a big file with one safety-critical table needed a human merge for every change. Substring detection works in any comment syntax. `ns check-markers` rejects unbalanced or nested markers. Spec: `docs/FACTORY.md`.
+Path globs guard whole files, so a big file with one safety-critical table needed a human merge for every change. Substring detection works in any comment syntax. `ns check-markers` rejects unbalanced or nested markers. Spec: `docs/factory/merge.md`.

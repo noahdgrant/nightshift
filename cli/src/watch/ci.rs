@@ -1,5 +1,5 @@
 //! The CI state of the default branch's head, which `[queue] fix_main_first` reads
-//! (docs/FACTORY.md, Main's CI).
+//! (docs/factory/watch.md, Main's CI).
 
 use anyhow::Result;
 use serde::Serialize;

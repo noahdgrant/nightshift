@@ -1,6 +1,6 @@
 # C rule pack
 
-The rules `ns rules check` runs on a C repo (`docs/FACTORY.md`, "Rules"). The pack composes clang-tidy and ast-grep; it writes no linter of its own. `rules-c` runs one tool per subcommand and prints each finding as a JSON line `ns` reads. It exits 0 with no findings, 1 with findings, and 2 with a `rules-c error:` line, and no findings, when the check could not run.
+The rules `ns rules check` runs on a C repo (`docs/factory/run.md`, "Rules"). The pack composes clang-tidy and ast-grep; it writes no linter of its own. `rules-c` runs one tool per subcommand and prints each finding as a JSON line `ns` reads. It exits 0 with no findings, 1 with findings, and 2 with a `rules-c error:` line, and no findings, when the check could not run.
 
 ## Rules
 

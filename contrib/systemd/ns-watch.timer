@@ -1,4 +1,4 @@
-# Starts ns-watch.service every night. See docs/FACTORY.md, "Starting a night".
+# Starts ns-watch.service every night. See docs/factory/starting-a-night.md.
 # No Persistent=: --until 06:30 means the next 06:30, so a 22:00 start missed
 # while powered off and caught up at 08:00 would run all day.
 

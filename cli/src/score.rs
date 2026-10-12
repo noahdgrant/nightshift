@@ -1,5 +1,5 @@
 //! `ns score <unit>`: grade a finished unit with the factory's scorers and append each result
-//! to the run ledger, `<common git dir>/ns/scores.jsonl` (docs/FACTORY.md, Scorers).
+//! to the run ledger, `<common git dir>/ns/scores.jsonl` (docs/factory/scorers.md).
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;

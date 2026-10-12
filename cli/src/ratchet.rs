@@ -1,6 +1,6 @@
 //! `ns ratchet check` and `ns ratchet update`: measured values (binary size, coverage, warning
 //! counts) that may never get worse than the values recorded in `ratchets.json`
-//! (docs/FACTORY.md, "Ratchets").
+//! (docs/factory/run.md, "Ratchets").
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

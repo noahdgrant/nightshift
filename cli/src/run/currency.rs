@@ -239,7 +239,7 @@ fn named_phase(body: &str) -> Option<&'static str> {
     }
 }
 
-/// The state table in docs/FACTORY.md.
+/// The state table in docs/factory/run.md.
 pub fn decide(s: &State) -> Decision {
     if let Some(brief) = s.arts.get("triage").filter(|a| a.status == "split") {
         return Decision::Split(format!("brief.md is split: {}", first_line(&brief.body)));

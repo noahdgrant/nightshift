@@ -1,5 +1,5 @@
 # Runs `ns watch` for one night as a systemd user service. Setup, and why each
-# setting is here: docs/FACTORY.md, "Starting a night".
+# setting is here: docs/factory/starting-a-night.md.
 # Point WorkingDirectory at your checkout with `systemctl --user edit ns-watch`.
 
 [Unit]
