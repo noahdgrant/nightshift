@@ -89,18 +89,10 @@ pub fn run() -> Result<()> {
         ));
     }
 
-    let keepalive = keepalive_entry();
+    let (keepalive, no_keepalive) = keepalive_entry();
     let (forge, mut warnings) = forges_entry(cfg.as_ref(), &mut problems);
+    warnings.extend(no_keepalive);
     let hooks = hooks_entry(&mut problems);
-    if keepalive["ok"] == false {
-        let w = format!(
-            "{}; a push whose pre-push hook runs for minutes can lose its idle connection. ns run's phases set one; for your own pushes: git config core.sshCommand '{}'",
-            keepalive["detail"].as_str().unwrap_or_default(),
-            git::SSH_KEEPALIVE
-        );
-        eprintln!("ns: warning: {w}");
-        warnings.push(w);
-    }
 
     let out = json!({
         "ok": parses && problems.is_empty(),
@@ -179,11 +171,13 @@ fn hooks_entry(problems: &mut Vec<String>) -> Value {
 
 /// Whether pushes to an SSH `origin` send keepalives: `ServerAliveInterval` in
 /// `GIT_SSH_COMMAND`, in `core.sshCommand`, or above 0 in what `ssh -G` resolves for the host.
-/// `ok` is true when `origin` is not SSH, or there is no `origin`.
-fn keepalive_entry() -> Value {
+/// `ok` is true when `origin` is not SSH, or there is no `origin`. When it is false, also the
+/// warning, printed to stderr.
+fn keepalive_entry() -> (Value, Option<String>) {
     let url = git::run(Path::new("."), &["remote", "get-url", "--push", "origin"]).ok();
     let Some(t) = url.as_deref().and_then(forge::ssh_target) else {
-        return json!({ "ok": true, "source": null, "detail": "origin is not an SSH remote" });
+        let entry = json!({ "ok": true, "source": null, "detail": "origin is not an SSH remote" });
+        return (entry, None);
     };
     let has = |s: &str| s.to_ascii_lowercase().contains("serveraliveinterval");
     let env = std::env::var("GIT_SSH_COMMAND").ok().filter(|c| has(c));
@@ -206,7 +200,16 @@ fn keepalive_entry() -> Value {
             t.dest
         ),
     };
-    json!({ "ok": source.is_some(), "source": source, "detail": detail })
+    let warning = source.is_none().then(|| {
+        let w = format!(
+            "{detail}; a push whose pre-push hook runs for minutes can lose its idle connection. ns run's phases set one; for your own pushes: git config core.sshCommand '{}'",
+            git::SSH_KEEPALIVE
+        );
+        eprintln!("ns: warning: {w}");
+        w
+    });
+    let entry = json!({ "ok": source.is_some(), "source": source, "detail": detail });
+    (entry, warning)
 }
 
 /// Whether `ssh -G` resolves a `ServerAliveInterval` above 0 for `t`. It reads the config only.
