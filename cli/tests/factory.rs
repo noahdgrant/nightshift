@@ -12145,9 +12145,15 @@ fn a_codex_night_drains_before_it_syncs_a_skill_change() {
     let from = git(&e.root, &["rev-parse", "HEAD"]);
     two_ready(&e);
     e.ready(4, "Fix c", &["type:fix"], "");
+    e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
     let (in_a, go_a) = hold_phase(&e, A, "build");
     let (in_b, go_b) = hold_phase(&e, B, "build");
-    let mut w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
+    let mut w =
+        Watching::start(
+            e.ns()
+                .env("NS_REFILL_MS", "100")
+                .args(["watch", "--parallel", "2"]),
+        );
     w.entered(&in_a);
     w.entered(&in_b);
     let to = push_from_elsewhere(&e, "skills/ns-a/SKILL.md");
@@ -12157,6 +12163,8 @@ fn a_codex_night_drains_before_it_syncs_a_skill_change() {
     // Unit 2 is still in its build: the checkout stays put and unit 4 waits for the sync.
     assert_eq!(git(&e.root, &["rev-parse", "HEAD"]), from);
     assert!(events_named(&e, "skills_synced").is_empty());
+    // The drain claims nothing and runs no triage pass for the untriaged #5.
+    assert_eq!(e.triage_only_runs(), 0, "{:?}", e.calls());
     release(&go_a);
     let (code, v, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
@@ -12183,6 +12191,58 @@ fn a_codex_night_drains_before_it_syncs_a_skill_change() {
         "{:?}",
         run_events(&e)
     );
+}
+
+#[test]
+fn a_night_with_one_codex_phase_drains_before_it_syncs_a_skill_change() {
+    let e = Env::new();
+    let codex = e.bin.join("codex");
+    copy_exe(&e.bin.join("claude"), &codex);
+    e.config(&format!(
+        "[harness.codex]\ncommand = [{c:?}]\ncommand_write = [{c:?}]\n",
+        c = codex.to_str().unwrap()
+    ));
+    e.factory("[phases.verify]\nharness = \"codex\"\n");
+    skills_installed(&e);
+    two_ready(&e);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
+    w.entered(&in_a);
+    w.entered(&in_b);
+    push_from_elsewhere(&e, "skills/ns-a/SKILL.md");
+    release(&go_b);
+    w.line("draining");
+    assert!(events_named(&e, "skills_synced").is_empty());
+    release(&go_a);
+    let (code, _, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(events_named(&e, "skills_drain").len(), 1, "{err}");
+    assert_eq!(events_named(&e, "skills_synced").len(), 1, "{err}");
+}
+
+#[test]
+fn a_codex_night_hands_off_to_a_new_build_before_it_syncs_skills() {
+    let e = Env::new();
+    codex_night(&e);
+    let from = nightshift_repo(&e);
+    skills_installed(&e);
+    two_ready(&e);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = Watching::start(watch_from(&e, &from).args(["watch", "--parallel", "2"]));
+    w.entered(&in_a);
+    w.entered(&in_b);
+    land(&e, "cli/x", "new\n");
+    push_from_elsewhere(&e, "skills/ns-a/SKILL.md");
+    release(&go_b);
+    w.line("draining");
+    release(&go_a);
+    let (code, _, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    let updated = event_at(&e, |ev| ev["event"] == "self_update");
+    let synced = event_at(&e, |ev| ev["event"] == "skills_synced");
+    assert!(updated < synced, "{:?}", run_events(&e));
 }
 
 #[test]

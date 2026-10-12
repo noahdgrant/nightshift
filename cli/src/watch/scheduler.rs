@@ -453,6 +453,9 @@ impl<'a> Scheduler<'a> {
             None => return,
             Some(Drain::Update(to)) => to,
             Some(Drain::Skills { base, to }) => {
+                if stop::requested().is_some() {
+                    return;
+                }
                 sync_skills(self.plan.repo, &base, None, &mut night.skills_warned);
                 self.skills_tried.insert(to);
                 return;
