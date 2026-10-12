@@ -193,7 +193,7 @@ impl Outcome {
     }
 }
 
-/// Measure `r` `runs` times and compare the first value with `recorded`.
+/// Measure `r` `runs` times and compare the worst value with `recorded`.
 fn assess(
     name: &str,
     r: &Ratchet,
@@ -224,8 +224,12 @@ fn assess(
             }
         }
     }
-    let first = o.runs[0];
-    o.measured = Some(first);
+    let worst = o
+        .runs
+        .iter()
+        .copied()
+        .fold(o.runs[0], |w, v| if worse(r.better, v, w) { v } else { w });
+    o.measured = Some(worst);
     if let [a, b] = o.runs[..] {
         if (a - b).abs() > r.tolerance.around(recorded.unwrap_or(a)) {
             o.status = Status::Flaky;
@@ -233,8 +237,8 @@ fn assess(
         }
     }
     o.status = match (recorded, o.limit) {
-        (Some(_), Some(l)) if worse(r.better, first, l) => Status::Worse,
-        (Some(rec), _) if worse(r.better, rec, first) => Status::Better,
+        (Some(_), Some(l)) if worse(r.better, worst, l) => Status::Worse,
+        (Some(rec), _) if worse(r.better, rec, worst) => Status::Better,
         (Some(_), _) => Status::Ok,
         (None, _) => Status::Untracked,
     };

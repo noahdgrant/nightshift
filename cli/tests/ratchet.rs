@@ -292,7 +292,7 @@ fn two_runs_further_apart_than_the_tolerance_make_the_ratchet_flaky() {
     r.record(&json!({"jitter": 100}));
     let (code, o) = r.check_one();
     assert_eq!((code, o["status"].as_str()), (Some(0), Some("better")));
-    assert_eq!(o["measured"].as_f64(), Some(0.0));
+    assert_eq!(o["measured"].as_f64(), Some(1.0));
 
     // A percentage is of the recorded value, else of the first run.
     let r = Repo::new(&format!(
@@ -303,6 +303,73 @@ fn two_runs_further_apart_than_the_tolerance_make_the_ratchet_flaky() {
     fs::remove_file(r.root.join(".nightshift/ratchets.json")).unwrap();
     fs::write(r.root.join("count"), "50").unwrap();
     assert_eq!(r.check_one().1["status"], "flaky");
+}
+
+/// A ratchet that prints the first, then the second of `runs`.
+fn straddle(better: &str, tolerance: &str, runs: [&str; 2], recorded: f64) -> Repo {
+    let cmd = "n=$(cat count 2>/dev/null || echo 0); echo $((n+1)) > count; sed -n \\\"$((n+1))p\\\" runs.txt";
+    let r = Repo::new(&format!(
+        "[ratchets.m]\ncommand = \"{cmd}\"\nbetter = \"{better}\"\n{tolerance}\n"
+    ));
+    fs::write(
+        r.root.join("runs.txt"),
+        format!("{}\n{}\n", runs[0], runs[1]),
+    )
+    .unwrap();
+    r.record(&json!({"m": recorded}));
+    r
+}
+
+#[test]
+fn the_worst_of_two_runs_is_judged_whichever_order_they_come_in() {
+    for (better, tol, a, b) in [
+        ("lower", "tolerance = 5", "104", "109"),
+        ("higher", "tolerance = 5", "96", "91"),
+        ("lower", "tolerance = \"5%\"", "104", "109"),
+    ] {
+        for (first, second) in [(a, b), (b, a)] {
+            let r = straddle(better, tol, [first, second], 100.0);
+            let (code, o) = r.check_one();
+            assert_eq!(
+                (code, o["status"].as_str()),
+                (Some(1), Some("worse")),
+                "{better} {first} {second}: {o}"
+            );
+            assert_eq!(o["measured"].as_f64(), b.parse().ok(), "{o}");
+            assert_eq!(o["runs"].as_array().unwrap().len(), 2);
+        }
+    }
+}
+
+#[test]
+fn two_runs_inside_the_limit_are_ok_in_either_order() {
+    for (first, second) in [("101", "104"), ("104", "101")] {
+        let r = straddle("lower", "tolerance = 5", [first, second], 100.0);
+        let (code, o) = r.check_one();
+        assert_eq!((code, o["status"].as_str()), (Some(0), Some("ok")));
+        assert_eq!(o["measured"].as_f64(), Some(104.0));
+    }
+}
+
+#[test]
+fn update_records_the_worst_of_two_runs_when_it_tightens() {
+    let r = straddle("lower", "tolerance = 5", ["90", "93"], 100.0);
+    let (code, v, _) = r.ns(&["update"]);
+    assert_eq!(code, Some(0), "{v}");
+    assert_eq!(v["ratchets"][0]["status"], "tightened");
+    assert_eq!(r.recorded(), Some(json!({"m": 93.0})));
+
+    let r = straddle("higher", "tolerance = 5", ["93", "90"], 80.0);
+    r.ns(&["update"]);
+    assert_eq!(r.recorded(), Some(json!({"m": 90.0})));
+}
+
+#[test]
+fn update_keeps_the_recorded_value_when_the_worst_run_is_worse_even_if_the_first_is_not() {
+    let r = straddle("lower", "tolerance = 5", ["99", "103"], 100.0);
+    let (_, v, _) = r.ns(&["update"]);
+    assert_eq!(v["ratchets"][0]["status"], "kept");
+    assert_eq!(r.recorded(), Some(json!({"m": 100.0})));
 }
 
 #[test]
