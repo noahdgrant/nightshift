@@ -88,7 +88,7 @@ Done when every bar item is marked, every listed branch has a test, and every mu
 
 `git fetch origin` and rebase onto the base branch (`origin/main` unless the brief names another), with the repo's hooks on ([git hooks](../ns-contract/SKILL.md#git-hooks)). Tidy the history now: small commits that each build and pass, ordered to tell the story, with bodies written using `ns-writing-for-humans`. This is the history that verify, review and ship will see; nothing rewrites it later.
 
-When the feedback says the base moved (a NO-GO that starts `base moved`, a merge conflict, or `ns run`'s "The base moved" line), the rebase is the job. Run `git fetch origin` now and rebase onto the newest `origin/<default>`, never a commit an earlier artifact or the feedback noted. Resolve conflicts, then go on through this step as usual.
+When the feedback says the base moved (a NO-GO whose first line starts `base moved`, a merge conflict, or `ns run`'s "The base moved" line), the rebase is the job. Run `git fetch origin` now and rebase onto the newest `origin/<default>`, never a commit an earlier artifact or the feedback noted. Resolve conflicts, then go on through this step as usual.
 
 Then run the full test, lint and build commands from `docs/agents/stack.md`, once, on the final commit. Capture each command and the lines of output that prove its result.
 
