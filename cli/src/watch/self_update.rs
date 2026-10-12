@@ -95,7 +95,7 @@ impl Drop for StateFile {
     }
 }
 
-fn short(sha: &str) -> &str {
+pub(super) fn short(sha: &str) -> &str {
     sha.get(..12).unwrap_or(sha)
 }
 

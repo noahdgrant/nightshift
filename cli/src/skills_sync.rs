@@ -109,6 +109,31 @@ pub fn sync(root: &Path, base: &str, installed: &Installed) -> Sync {
     }
 }
 
+/// The commits `(HEAD, base)` a sync would move `root` between, when `base` (already fetched)
+/// has commits touching the installed skills' source dirs that `root` lacks. `None` when no
+/// skill is installed from `root`, nothing there changed, or git can't tell.
+pub fn pending(root: &Path, base: &str, installed: &Installed) -> Option<(String, String)> {
+    let canon = root.canonicalize().ok()?;
+    let dirs: Vec<&Path> = (installed.sources.iter())
+        .filter_map(|s| s.strip_prefix(&canon).ok())
+        .collect();
+    if dirs.is_empty() {
+        return None;
+    }
+    let from = git::run(root, &["rev-parse", "HEAD"]).ok()?;
+    let to = git::run(root, &["rev-parse", &format!("{base}^{{commit}}")]).ok()?;
+    let mut args = vec![
+        "rev-list".to_string(),
+        "--count".into(),
+        format!("{from}..{to}"),
+        "--".into(),
+    ];
+    args.extend(dirs.iter().map(|d| d.to_string_lossy().into_owned()));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let n = git::run(root, &args).ok()?;
+    (n != "0").then_some((from, to))
+}
+
 /// After a fast-forward, rerun `ns install` for each source dir of `ns-*` skills into the
 /// target dirs that already hold one, so skills added or removed on `origin/<default>` are
 /// linked or pruned there. Returns what changed.
@@ -275,6 +300,29 @@ mod tests {
         ));
         relink(&installed).unwrap();
         assert_eq!(fs::read_dir(&other).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn pending_names_a_change_to_the_installed_skills_only() {
+        let s = setup();
+        let installed = installed_into(&s.targets, &s.root);
+        let from = head(&s.root);
+        let to = g(&s.root, &["rev-parse", "origin/main"]);
+        assert_eq!(
+            pending(&s.root, "origin/main", &installed),
+            Some((from, to))
+        );
+        assert_eq!(
+            pending(&s.root, "origin/main", &installed_into(&[], &s.root)),
+            None
+        );
+        sync(&s.root, "origin/main", &installed);
+        assert_eq!(pending(&s.root, "origin/main", &installed), None);
+        let origin = s._tmp.path().canonicalize().unwrap().join("origin");
+        commit_file(&origin, "x.txt", "x\n");
+        g(&s.root, &["fetch", "-q", "origin"]);
+        assert_eq!(pending(&s.root, "origin/main", &installed), None);
+        assert_eq!(pending(&s.root, "origin/nothing", &installed), None);
     }
 
     fn assert_stale(s: &Setup, want: &str) {
