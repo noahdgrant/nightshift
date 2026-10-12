@@ -348,6 +348,41 @@ fn the_report_variable_gets_a_copy_of_the_json() {
 }
 
 #[test]
+fn a_ratchets_command_runs_without_the_ratchet_variables() {
+    let r = Repo::new(
+        "[ratchets.a]\ncommand = \"echo ${NS_RATCHET_FACTORY:-}${NS_RATCHET_STEADY:-}${NS_RATCHET_REPORT:-}1\"\nbetter = \"lower\"\n",
+    );
+    r.record(&json!({"a": 1}));
+    let out = r
+        .cmd()
+        .env("NS_RATCHET_FACTORY", r.root.join(".nightshift"))
+        .env("NS_RATCHET_STEADY", r.root.join("steady"))
+        .env("NS_RATCHET_REPORT", r.root.join("report.json"))
+        .arg("check")
+        .output();
+    assert_eq!(out.status.code(), Some(0));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ratchets"][0]["measured"], 1.0);
+    assert_eq!(v["ratchets"][0]["runs"], json!([1.0, 1.0]));
+}
+
+#[test]
+fn check_and_update_run_from_a_subdirectory_at_the_top_of_the_checkout() {
+    let r = Repo::new(&Repo::cat("flash", "lower", ""));
+    r.measure("flash", "7");
+    let sub = r.root.join("sub");
+    fs::create_dir(&sub).unwrap();
+    let out = r.cmd().current_dir(&sub).arg("check").output();
+    assert_eq!(out.status.code(), Some(0));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ratchets"][0]["measured"], 7.0);
+    let out = r.cmd().current_dir(&sub).arg("update").output();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(r.recorded(), Some(json!({"flash": 7.0})));
+    assert!(!sub.join(".nightshift").exists());
+}
+
+#[test]
 fn human_lines_name_the_ratchet_and_both_values() {
     let r = Repo::new(&format!(
         "{}{}[ratchets.c]\ncommand = \"exit 4\"\nbetter = \"lower\"\n[ratchets.d]\ncommand = \"{COUNTER}\"\nbetter = \"higher\"\n",
