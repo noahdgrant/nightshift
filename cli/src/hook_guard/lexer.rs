@@ -10,6 +10,9 @@ pub(super) struct Word {
     pub(super) opaque: bool,
     /// The whole word is one double-quoted variable, `"$name"` or `"${name}"`.
     pub(super) quoted_var: bool,
+    /// Where the literal text after the last expansion starts, when every expansion sits in
+    /// double quotes, so none splits the word or adds text after that point.
+    pub(super) tail_at: Option<usize>,
 }
 
 impl Word {
@@ -18,6 +21,7 @@ impl Word {
             text: text.to_string(),
             opaque: false,
             quoted_var: false,
+            tail_at: None,
         }
     }
 }
@@ -51,11 +55,18 @@ struct WordBuf {
     brace_at: Option<usize>,
     /// The word is one double-quoted variable and nothing else.
     quoted_var: bool,
+    in_double_quotes: bool,
+    /// Where `text` stood after the last expansion.
+    tail_at: Option<usize>,
+    /// An expansion outside double quotes can split the word or add words.
+    splits: bool,
 }
 
 impl WordBuf {
     fn mark_expansion(&mut self) {
         self.expansion_at.get_or_insert(self.text.len());
+        self.tail_at = Some(self.text.len());
+        self.splits |= !self.in_double_quotes;
     }
 
     fn finish(self) -> Word {
@@ -66,8 +77,27 @@ impl WordBuf {
             text: self.text,
             opaque,
             quoted_var: self.quoted_var,
+            tail_at: self
+                .tail_at
+                .filter(|_| !self.splits && self.brace_at.is_none()),
         }
     }
+}
+
+/// A braced body is one safe word only when it is a plain parameter name. Any operator,
+/// subscript, indirection or quote may list words, so the body is not trusted.
+fn lists_words(body: &str) -> bool {
+    let plain_name = body.strip_suffix('}').is_some_and(|name| {
+        let mut chars = name.chars();
+        match chars.next() {
+            Some(c) if c.is_ascii_digit() => chars.all(|c| c.is_ascii_digit()),
+            Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+                chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            }
+            _ => false,
+        }
+    });
+    !plain_name
 }
 
 /// The opacity rule: an expansion hides what the word is unless the text ahead of it ends an
@@ -258,6 +288,12 @@ impl<'a> Lexer<'a> {
         let lone = self.cur.is_none() && self.lone_variable_ahead();
         self.buf().quoted = true;
         self.buf().quoted_var = lone;
+        self.buf().in_double_quotes = true;
+        self.double_quoted_body();
+        self.buf().in_double_quotes = false;
+    }
+
+    fn double_quoted_body(&mut self) {
         while let Some(c) = self.chars.next() {
             match c {
                 '"' => return,
@@ -304,7 +340,9 @@ impl<'a> Lexer<'a> {
             Some('{') => {
                 self.chars.next();
                 self.buf().mark_expansion();
-                self.braced_body();
+                if self.braced_body() {
+                    self.buf().splits = true;
+                }
             }
             Some(c) if c.is_ascii_alphanumeric() || c == '_' => {
                 while self
@@ -316,7 +354,9 @@ impl<'a> Lexer<'a> {
             }
             Some(c) if "@*#?!$-".contains(c) => {
                 self.chars.next();
-                self.buf().mark_expansion();
+                let buf = self.buf();
+                buf.mark_expansion();
+                buf.splits |= c == '@';
             }
             _ => self.push('$'),
         }
@@ -325,33 +365,47 @@ impl<'a> Lexer<'a> {
     /// Consume a `${...}` body up to its matching `}`, so a `;`, `&`, `#` or quote inside it
     /// neither splits the command nor hides the words after it. Nested braces, quotes and
     /// substitutions are tracked. A body with no end swallows the rest of the command: the
-    /// shell rejects it, and the word it sits in is already opaque.
-    fn braced_body(&mut self) {
+    /// shell rejects it, and the word it sits in is already opaque. Returns whether the body
+    /// lists words even in double quotes: true unless the body is a plain parameter name
+    /// (see `lists_words`). The body keeps its quotes and its closing `}`; an unterminated body
+    /// lists words.
+    fn braced_body(&mut self) -> bool {
         let mut depth = 1usize;
+        let mut body = String::new();
         while let Some(c) = self.chars.next() {
+            body.push(c);
             match c {
                 '{' => depth += 1,
                 '}' => {
                     depth -= 1;
                     if depth == 0 {
-                        return;
+                        return lists_words(&body);
                     }
                 }
                 '\\' => {
                     self.chars.next();
                 }
-                '\'' => while self.chars.next().is_some_and(|c| c != '\'') {},
-                '"' => self.quoted_in_braces(),
+                '\'' => {
+                    for c in self.chars.by_ref() {
+                        body.push(c);
+                        if c == '\'' {
+                            break;
+                        }
+                    }
+                }
+                '"' => self.quoted_in_braces(&mut body),
                 '$' if self.chars.next_if_eq(&'(').is_some() => self.expansion(Close::Paren),
                 '`' => self.expansion(Close::Backtick),
                 _ => {}
             }
         }
+        lists_words(&body)
     }
 
     /// A double-quoted string inside a `${...}` body, up to its closing quote.
-    fn quoted_in_braces(&mut self) {
+    fn quoted_in_braces(&mut self, body: &mut String) {
         while let Some(c) = self.chars.next() {
+            body.push(c);
             match c {
                 '"' => return,
                 '\\' => {

@@ -70,7 +70,7 @@ While building, apply these principles:
 
 **Size.** Build every acceptance criterion whatever the diff's size, past the soft limit too ([unit size](../ns-contract/SKILL.md#target-repo-configuration)). A large unit is review's prompt to suggest a split, never a reason to stop.
 
-**Commit each green slice** with a Conventional Commit, `type(scope): subject` (`feat(uart): time out reads after 50 ms`). One logical change per commit, each one building and passing on its own. The repo's hooks run on every commit and never get skipped ([git hooks](../ns-contract/SKILL.md#git-hooks)): when one fails, fix what it reports. Run single test files during the loop and the typecheck when the stack has one.
+**Commit each green slice** with a Conventional Commit, `type(scope): subject` (`feat(uart): time out reads after 50 ms`). One logical change per commit, each one building and passing on its own. The repo's hooks run on every commit and never get skipped ([git hooks](../ns-contract/SKILL.md#git-hooks)): when one fails, fix what it reports. Run single test files during the loop and the typecheck when the stack has one. Stop a test, gate or server you started per [killing processes](../ns-contract/SKILL.md#killing-processes), never by name or pattern.
 
 Done when every acceptance criterion has a passing test and a commit, and the working tree is clean.
 
