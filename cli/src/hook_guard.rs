@@ -3,11 +3,9 @@
 //! hooks, naming the rule (`skills/ns-contract`, Git hooks). Every other call passes untouched.
 
 use std::io::Read;
-use std::path::Path;
 
+use crate::pin;
 use serde_json::{json, Value};
-
-use crate::shell::shell_quote;
 
 mod files;
 mod git;
@@ -27,36 +25,12 @@ const RULE: &str = "The factory contract's Git hooks rule (skills/ns-contract/SK
 const MAX_NESTING: usize = 8;
 
 /// What a protected path is called in a denial.
-const PROTECTED: &str = ".githooks/, .git/hooks, .git/config or .claude/settings*.json";
+const PROTECTED: &str = ".githooks/, .git/hooks, .git/config, .claude/settings*.json, .ns/<unit> or .ns/<unit>/skills, or a skills link into it";
 
 const BASH_TOOL: &str = "Bash";
 
 /// Tools that write a file at `file_path` or `notebook_path`.
 const FILE_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
-
-/// The `--settings` value for a claude phase: one `PreToolUse` hook that runs `ns guard-hooks`.
-/// Claude Code lets a call through when a hook exits with anything but 2, so a missing or
-/// crashing `ns` must exit 2 to block it.
-pub fn settings(ns: &Path) -> String {
-    let command = format!(
-        "{} guard-hooks || exit 2",
-        shell_quote(&ns.to_string_lossy())
-    );
-    let matcher = std::iter::once(BASH_TOOL)
-        .chain(FILE_TOOLS.iter().copied())
-        .collect::<Vec<_>>()
-        .join("|");
-    json!({
-        "disableAllHooks": false,
-        "hooks": {
-            "PreToolUse": [{
-                "matcher": matcher,
-                "hooks": [{"type": "command", "command": command}],
-            }],
-        },
-    })
-    .to_string()
-}
 
 /// Read the hook input from stdin and print a deny decision for a bypass. Input that isn't a
 /// tool call passes: the guard never blocks a call it can't read.
@@ -85,10 +59,17 @@ pub fn check(call: &Value) -> Option<String> {
     match call["tool_name"].as_str()? {
         BASH_TOOL => {
             let mut scan = Scan {
-                hooks_depth: call["cwd"].as_str().and_then(protected_depth),
+                cwd: call["cwd"].as_str().map(Cwd::of).unwrap_or_default(),
                 ..Scan::default()
             };
-            check_command(input["command"].as_str()?, &mut scan)
+            let command = input["command"].as_str()?;
+            if command.contains(pin::SETTINGS_VAR) {
+                return Some(format!(
+                    "a command naming ${} in {PROTECTED}",
+                    pin::SETTINGS_VAR
+                ));
+            }
+            check_command(command, &mut scan)
         }
         tool if FILE_TOOLS.contains(&tool) => ["file_path", "notebook_path"]
             .iter()
@@ -107,10 +88,10 @@ fn unreadable(what: &str) -> String {
 struct Scan {
     /// An earlier `cd` or `pushd`, or this git's `-C`, went into a protected path: how many
     /// directories below it the working directory is.
-    hooks_depth: Option<usize>,
+    cwd: Cwd,
     depth: usize,
-    /// `hooks_depth` outside each subshell the scan is in.
-    outer_cwds: Vec<Option<usize>>,
+    /// `cwd` outside each subshell the scan is in.
+    outer_cwds: Vec<Cwd>,
     /// The command's stdin is a heredoc or herestring, which a shell would run.
     stdin_is_text: bool,
 }
@@ -121,9 +102,14 @@ impl Scan {
         let path = option_value(path);
         is_protected(path)
             || (!path.starts_with(['-', '/'])
-                && self
-                    .hooks_depth
-                    .is_some_and(|depth| stays_inside(depth, path)))
+                && (self
+                    .cwd
+                    .hooks
+                    .is_some_and(|depth| stays_inside(depth, path))
+                    || self
+                        .cwd
+                        .ns
+                        .is_some_and(|depth| reaches_unit_file(depth, path))))
     }
 }
 
@@ -175,10 +161,10 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
                 words.clear();
                 stdin_is_text = false;
                 match tok {
-                    Tok::SubshellOpen => scan.outer_cwds.push(scan.hooks_depth),
+                    Tok::SubshellOpen => scan.outer_cwds.push(scan.cwd),
                     Tok::SubshellClose => {
                         if let Some(outer) = scan.outer_cwds.pop() {
-                            scan.hooks_depth = outer;
+                            scan.cwd = outer;
                         }
                     }
                     _ => {}
@@ -235,7 +221,7 @@ fn check_segment(words: &[Word], scan: &mut Scan) -> Option<String> {
                 None
             }
             "popd" => {
-                scan.hooks_depth = None;
+                scan.cwd = Cwd::default();
                 None
             }
             "eval" => check_words(&w[1..], scan),
@@ -277,20 +263,15 @@ fn change_directory(args: &[Word], scan: &mut Scan) {
         .iter()
         .map(|a| a.text.as_str())
         .find(|a| *a == "-" || !a.starts_with('-'));
+    scan.cwd = dir.map_or_else(Cwd::default, |d| cd_to(d, scan.cwd));
+}
+
+/// The working directory after `cd dir` (or `git -C dir`) from `from`.
+fn cd_to(dir: &str, from: Cwd) -> Cwd {
     match dir {
-        Some(d) if is_protected_directory(d) => scan.hooks_depth = protected_depth(d),
-        Some(d) if !d.starts_with(['/', '~']) => {
-            if let Some(depth) = scan.hooks_depth {
-                scan.hooks_depth = Some(components(d).iter().fold(depth, |depth, part| {
-                    if *part == ".." {
-                        depth.saturating_sub(1)
-                    } else {
-                        depth + 1
-                    }
-                }));
-            }
-        }
-        _ => scan.hooks_depth = None,
+        d if is_protected_directory(d) => Cwd::of(d),
+        d if !d.starts_with(['/', '~']) => Cwd::relative(from, d),
+        d => Cwd::of(d),
     }
 }
 

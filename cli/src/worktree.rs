@@ -162,18 +162,32 @@ fn ensure_excluded(common_dir: &Path) -> Result<()> {
     fs::create_dir_all(&info).with_context(|| format!("cannot create {}", info.display()))?;
     let exclude = info.join("exclude");
     let current = fs::read_to_string(&exclude).unwrap_or_default();
-    let present = current
-        .lines()
-        .map(str::trim)
-        .any(|l| l == ".ns/" || l == ".ns" || l == "/.ns/" || l == "/.ns");
-    if present {
+    let mut text = current.clone();
+    // (the forms of the line git treats as this path, the line to write). `.ns` is a
+    // directory, so `.ns/` counts; the skill links are symlinks, which a trailing `/` misses.
+    let mut wanted: Vec<(Vec<String>, String)> =
+        vec![(vec![".ns".into(), ".ns/".into()], ".ns/\n".into())];
+    wanted.extend(
+        crate::pin::LINKS
+            .iter()
+            .map(|link| (vec![link.to_string()], format!("/{link}\n"))),
+    );
+    for (forms, line) in wanted {
+        let present = current.lines().map(str::trim).any(|l| {
+            let l = l.strip_prefix('/').unwrap_or(l);
+            forms.iter().any(|f| f == l)
+        });
+        if present {
+            continue;
+        }
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&line);
+    }
+    if text == current {
         return Ok(());
     }
-    let mut text = current;
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str(".ns/\n");
     fs::write(&exclude, text).with_context(|| format!("cannot write {}", exclude.display()))
 }
 
@@ -480,6 +494,56 @@ pub fn remove(unit: &str, dry_run: bool, force: bool, repo: Option<&Path>) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_exclude_list_gains_only_the_entries_it_lacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let exclude = dir.path().join("info/exclude");
+        fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        fs::write(&exclude, "# keep\n.ns/\n/.claude/skills").unwrap();
+        ensure_excluded(dir.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(&exclude).unwrap(),
+            "# keep\n.ns/\n/.claude/skills\n/.agents/skills\n"
+        );
+        ensure_excluded(dir.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(&exclude).unwrap(),
+            "# keep\n.ns/\n/.claude/skills\n/.agents/skills\n"
+        );
+        fs::remove_file(&exclude).unwrap();
+        ensure_excluded(dir.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(&exclude).unwrap(),
+            ".ns/\n/.claude/skills\n/.agents/skills\n"
+        );
+    }
+
+    #[test]
+    fn a_trailing_slash_line_excludes_the_dir_but_not_the_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let exclude = dir.path().join("info/exclude");
+        fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        fs::write(&exclude, ".claude/skills/\n.ns/\n").unwrap();
+        ensure_excluded(dir.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(&exclude).unwrap(),
+            ".claude/skills/\n.ns/\n/.claude/skills\n/.agents/skills\n"
+        );
+        for ns in ["/.ns", ".ns", "/.ns/"] {
+            fs::write(
+                &exclude,
+                format!("{ns}\n/.claude/skills\n/.agents/skills\n"),
+            )
+            .unwrap();
+            ensure_excluded(dir.path()).unwrap();
+            assert_eq!(
+                fs::read_to_string(&exclude).unwrap(),
+                format!("{ns}\n/.claude/skills\n/.agents/skills\n"),
+                "{ns}"
+            );
+        }
+    }
 
     #[test]
     fn unit_id_validation() {

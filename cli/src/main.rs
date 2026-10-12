@@ -26,6 +26,7 @@ mod log;
 mod markers;
 mod memcap;
 mod phase_output;
+mod pin;
 mod quality;
 mod review_md;
 mod rules;

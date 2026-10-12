@@ -31,7 +31,11 @@ pub fn run() -> Result<()> {
         let p = which(h);
         harnesses.insert(
             h.to_string(),
-            json!({ "on_path": p.is_some(), "path": p.map(|p| p.to_string_lossy().into_owned()) }),
+            json!({
+                "on_path": p.is_some(),
+                "path": p.map(|p| p.to_string_lossy().into_owned()),
+                "pinning": crate::pin::mode(h).as_str(),
+            }),
         );
     }
 

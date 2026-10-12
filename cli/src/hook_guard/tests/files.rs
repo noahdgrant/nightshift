@@ -193,7 +193,7 @@ fn claude_settings_are_protected_and_hooks_stay_enabled() {
     ] {
         assert!(denied(c), "{c}");
     }
-    for p in ["/r/.claude/skills/x.md", "/r/settings.json"] {
+    for p in ["/r/.claude/commands/x.md", "/r/settings.json"] {
         let call = json!({"tool_name": "Edit", "tool_input": {"file_path": p}});
         assert!(check(&call).is_none(), "{p}");
     }
@@ -296,5 +296,273 @@ fn relative_cd_inside_a_protected_directory_keeps_the_tracking() {
     }
     for c in ["cd .githooks && rm ../x", "rm .git/index.lock"] {
         assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn the_units_skill_snapshot_and_its_directory_are_protected() {
+    for p in [
+        "/r/.ns/u1/skills/ns-x/SKILL.md",
+        ".ns/u1/skills",
+        "/r/.ns/u1",
+        ".ns/u1/",
+        ".ns",
+        "/r/.ns/u1/sk*",
+    ] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_some(), "{p}");
+    }
+    for c in [
+        "rm -rf .ns/u1/skills",
+        "sed -i s/a/b/ .ns/u1/skills/ns-x/SKILL.md",
+        "rm -rf .ns/u1",
+        "rm -rf .ns/u1/",
+        "rm -rf .ns",
+        "rm -rf .ns/*",
+        "rm -rf .ns/*/skills",
+        "rm -rf .ns/u1/sk*",
+        "rm -rf /r/.ns/u1",
+        "mv .ns/u1 /tmp/x",
+        "cp x .ns/u1/",
+        "cp -r y .ns/u1",
+        "ln -s .ns/u1 elsewhere",
+        "echo x > .ns/u1",
+        "cd .ns/u1 && rm -rf .",
+        "cd .ns/u1 && rm -rf ../u1",
+        "cd .ns && mv u1 x",
+        "git -C .ns/u1 rm -r skills",
+        "git -C .ns/u1 mv skills x",
+        "git -C .ns rm -r u1",
+        "rm -rf .ns/u1/skill?",
+        "rm -rf .ns/u1/s[k]ills",
+        "rm -rf .ns/u1/ski??s",
+        "cd .githooks && git -C ../.ns/u1 rm -r skills",
+        "cd .ns/u1 && git -C .. rm u1",
+        "git -C /abs/.ns/u1 rm -r skills",
+        "cd .githooks && git -C sub rm x",
+        "git -C ~/x/.ns/u1 rm -r skills",
+        "pushd .ns/u1; rm -rf skills",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for p in [
+        "/r/.ns/u1/build.md",
+        ".ns/u1/history/review-1.md",
+        "/r/skills/ns-x/SKILL.md",
+        "/r/phase-settings.json",
+        "/r/.ns/u1/phase-settings.json",
+    ] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_none(), "{p}");
+    }
+    for c in [
+        "cp x .ns/u1/build.md",
+        "rm .ns/u1/build.md",
+        "rm -rf .ns/u1/history",
+        "rm .ns/u1/*.md",
+        "git -C .ns/u1 status",
+        "git -C .ns/u1 rm build.md",
+        "cd .ns/u1 && rm build.md",
+        "cp .ns/u1/build.md /tmp/x",
+        "rm .ns/u1/bui*",
+        "rm .ns/u1/sk?",
+        "cd .githooks && git -C /tmp rm x",
+        "git -C ~/x rm skills",
+        "cd .ns/u1; popd; rm -rf skills",
+        "cd .ns/u1 && cd ../.. && rm -rf skills",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+/// A symlink in a temp dir named like a skill link, to `target`.
+fn skills_link(dir: &Path, link: &str, target: &str) -> String {
+    let path = dir.join(link);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(target, &path).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn edits(path: &str) -> bool {
+    let call =
+        json!({"tool_name": "Edit", "tool_input": {"file_path": format!("{path}/x/SKILL.md")}});
+    check(&call).is_some()
+}
+
+#[test]
+fn a_skills_link_is_protected_only_when_it_points_into_a_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    for link in [".claude/skills", ".agents/skills"] {
+        let dir = dir.path().join(link.replace('/', "_"));
+        let into = skills_link(&dir, link, "../.ns/u1/skills");
+        assert!(edits(&into), "{link} into a snapshot");
+        let elsewhere = skills_link(&dir.join("e"), link, "../tracked");
+        assert!(!edits(&elsewhere), "{link} to a tracked dir is editable");
+        let real = dir.join("r").join(link);
+        std::fs::create_dir_all(&real).unwrap();
+        assert!(
+            !edits(real.to_str().unwrap()),
+            "{link} real dir is editable"
+        );
+        let missing = dir.join("m").join(link);
+        assert!(!edits(missing.to_str().unwrap()), "{link} missing");
+    }
+}
+
+#[test]
+fn a_skills_link_is_denied_for_bash_by_absolute_path() {
+    let dir = tempfile::tempdir().unwrap();
+    for link in [".claude/skills", ".agents/skills"] {
+        let path = skills_link(
+            &dir.path().join(link.replace('/', "_")),
+            link,
+            "../.ns/u1/skills",
+        );
+        assert!(denied(&format!("rm -rf {path}")), "{link}");
+        assert!(
+            denied(&format!("sed -i s/a/b/ {path}/ns-x/SKILL.md")),
+            "{link}"
+        );
+    }
+}
+
+#[test]
+fn cd_into_a_unit_directory_protects_its_relative_skills() {
+    for c in [
+        "cd .ns/u1 && rm -rf skills",
+        "cd .ns/u1; sed -i s/a/b/ skills/ns-x/SKILL.md",
+        "cd .ns && rm -rf u1/skills",
+        "cd .ns; cd u1; rm -rf skills",
+        "cd .ns/u1/skills && rm -rf x",
+        "cd .ns/u1/other && rm ../skills/x",
+        "cd /r/.ns/u1 && rm -rf skills",
+        "(cd .ns/u1 && rm -rf skills)",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "cd .ns/u1 && rm build.md",
+        "cd .ns/u1; cd /tmp; rm -rf skills",
+        "(cd .ns/u1); rm -rf skills",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    let call = json!({"tool_name": "Bash", "cwd": "/r/.ns/u1", "tool_input": {"command": "rm -rf skills"}});
+    assert!(check(&call).is_some());
+}
+
+#[test]
+fn the_phase_settings_file_and_its_directories_are_protected() {
+    for p in [
+        "/r/.git/ns/units/u1/phase-settings.json",
+        "/r/.git/ns/units/u1",
+        "/r/.git/ns/units",
+        "/r/.git/ns/units/u1/other",
+        "/r/common/ns/units/u1/phase-settings.json",
+    ] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_some(), "{p}");
+    }
+    for c in [
+        "rm /r/.git/ns/units/u1/phase-settings.json",
+        "echo {} > /r/.git/ns/units/u1/phase-settings.json",
+        "sed -i s/a/b/ /c/ns/units/u1/phase-settings.json",
+        "rm -rf /r/.git/ns/units",
+        "echo {} > $NS_PHASE_SETTINGS",
+        "rm \"${NS_PHASE_SETTINGS}\"",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for p in [
+        "/r/phase-settings.json",
+        "/r/ns/units/u1/other.json",
+        "/r/ns/units",
+        "/r/.ns/u1/phase-settings.json",
+    ] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_none(), "{p}");
+    }
+}
+
+#[test]
+fn the_ns_directory_under_the_git_dir_cannot_be_swapped() {
+    for c in [
+        "mv /r/.git/ns /tmp/x",
+        "rm -rf /r/.git/ns",
+        "mv /tmp/y /r/.git/ns",
+        "cp -r /tmp/y/. /r/.git/ns/",
+        "cp -r /tmp/y/. /r/.git/ns/units/",
+        "ln -sfn /tmp/y /r/.git/ns",
+        "rm -rf /r/.git/ns/units",
+        "mv /r/.git/ns/units /tmp/x",
+        "mv /tmp/y /r/.git/ns/units/u1",
+        "rm -rf /r/.git/n*",
+        "rm -rf /r/.git/*",
+        "rm -rf /r/.git/[n]s",
+        "cd /r && mv .git/ns /tmp/x",
+        "cd /r/.git && mv ns /tmp/x",
+        "cd /r/.git && cp -r /tmp/y/. ns/",
+        "cd /r/.git/ns && rm -rf units",
+        "git -C /r/.git mv ns /tmp/x",
+        "mv /r/.git /tmp/x",
+        "mv /tmp/y /r/.git",
+        "rm -rf /r/.git",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for p in ["/r/.git/ns", "/r/.git/ns/x", "/r/.git/ns/units", "/r/.git"] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_some(), "{p}");
+    }
+}
+
+#[test]
+fn reading_the_ns_directory_and_other_ns_commands_stay_allowed() {
+    for c in [
+        "ls /r/.git/ns",
+        "cat /r/.git/ns/units/u1/phase-settings.json",
+        "cp /r/.git/ns/units/u1/phase-settings.json /tmp/copy",
+        "cp -r /r/.git/ns /tmp/copy",
+        "ns ask --harness claude hello",
+        "ns verify",
+        "mv /tmp/y /tmp/x",
+        "rm -rf /r/ns",
+        "rm -rf /r/.git/ns-other",
+        "rm -rf /r/.github",
+        "rm -rf /r/foo.git",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    for p in ["/r/ns", "/r/foo.git/ns", "/r/.github/ns"] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_none(), "{p}");
+    }
+}
+
+#[test]
+fn glob_matches_reads_star_question_mark_and_sets() {
+    for (pattern, text, want) in [
+        ("skills", "skills", true),
+        ("skills", "skill", false),
+        ("*", "skills", true),
+        ("*", "", true),
+        ("sk*", "skills", true),
+        ("*s", "skills", true),
+        ("*x", "skills", false),
+        ("?", "", false),
+        ("?", "a", true),
+        ("skill?", "skills", true),
+        ("ski??s", "skills", true),
+        ("sk?", "skills", false),
+        ("s[k]ills", "skills", true),
+        ("[", "", true),
+        ("", "", true),
+        ("", "a", false),
+    ] {
+        assert_eq!(
+            files::glob_matches(pattern.as_bytes(), text.as_bytes()),
+            want,
+            "{pattern} vs {text}"
+        );
     }
 }

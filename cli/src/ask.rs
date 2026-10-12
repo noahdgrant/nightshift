@@ -172,12 +172,43 @@ fn plan(role: &str, write: bool) -> Result<Plan> {
         ));
     };
     let bin = which(&command[0]);
+    let command = with_phase_settings(command)?;
     Ok(Plan {
         resolved,
         command,
         bin,
         config: path,
     })
+}
+
+/// Inside an `ns run` phase (`NS_WORKTREE` and `NS_UNIT` set), a claude command gets the
+/// phase's settings and settings sources, like the phase. A command that carries either flag
+/// itself, or a phase whose settings file (`NS_PHASE_SETTINGS`) is gone, is an error. The
+/// variables are the phase's own, so this is cooperative: a phase that clears them asks claude
+/// with the user's settings.
+fn with_phase_settings(mut command: Vec<String>) -> Result<Vec<String>> {
+    let (Some(wt), Some(unit)) = (
+        std::env::var_os("NS_WORKTREE"),
+        std::env::var("NS_UNIT").ok(),
+    ) else {
+        return Ok(command);
+    };
+    if !billing::is_claude(&command) {
+        return Ok(command);
+    }
+    crate::worktree::check_unit_id(&unit, "ns run 142-uart-timeout --issue 142")?;
+    let settings = std::env::var_os(crate::pin::SETTINGS_VAR)
+        .map(PathBuf::from)
+        .filter(|s| s.is_file());
+    let Some(settings) = settings else {
+        return Err(SfError::usage(
+            "the phase settings file (NS_PHASE_SETTINGS) is missing",
+            "ns run writes it before each phase; ask from a phase that ns run started",
+        )
+        .into());
+    };
+    crate::pin::apply(&mut command, &settings, Path::new(&wt), &unit, "ns ask")?;
+    Ok(command)
 }
 
 impl Plan {
