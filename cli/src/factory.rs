@@ -66,6 +66,9 @@ pub struct Factory {
     /// Read by the `ns-supervise` skill through `ns factory validate`, not by `ns run` or `ns watch`.
     #[serde(default)]
     pub supervise: Supervise,
+    /// `[ratchets.<name>]`: measured values `ns ratchet check` holds to `ratchets.json`.
+    #[serde(default)]
+    pub ratchets: BTreeMap<String, crate::ratchet::Ratchet>,
     /// `runners/<name>.toml`, read by `load`, not part of `nightshift.toml`.
     #[serde(skip)]
     pub runners: BTreeMap<String, Runner>,
