@@ -49,7 +49,7 @@ echo "$V"
 
 Ready when `cargo build` finished and `git -C "$V/repo" log --oneline` shows `init`. Note the printed `$V`. Every later shell runs `. <that dir>/env.sh` first: it restores `NS_SRC`, `NS`, `V`, `OUT` and the `cap` helper. A shell without it would reach the real `claude`, `gh` and `HOME`.
 
-Every recipe, and every command you add, follows [ns-verify's sandbox recipes](../../../skills/ns-verify/SKILL.md#sandbox-recipes): the throwaway repo gets `origin` from `git remote add`, files are named by absolute path under `$V` or `$NS_SRC`, and the only token is `fake-token`. A `cd` sets only the repo an `ns` command acts on. A command a harness denies ends verify `blocked` ([denied commands](../../../skills/ns-verify/SKILL.md#denied-commands)).
+Every recipe, and every command you add, follows [ns-verify's sandbox recipes](../../../skills/ns-verify/SKILL.md#sandbox-recipes): the throwaway repo gets `origin` from `git remote add`, files are named by absolute path under `$V` or `$NS_SRC`, and the only token is `fake-token`. A `cd` sets only the repo an `ns` command acts on. A command a harness denies ends verify `blocked` ([denied commands](../../../skills/ns-verify/SKILL.md#denied-commands)). Write a git remote as `origin`, or put `--` before a variable remote (`git push -q -- "$R" main`): a hook guard may read a bare `"$R"` as a hidden flag and deny the command.
 
 `ns worktree` puts unit worktrees beside the repo, in `$V/repo.worktrees/`, so they stay inside the sandbox. Each run gets its own `$V`, so two runs can go side by side.
 
