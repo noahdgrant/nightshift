@@ -116,7 +116,7 @@ fn a_working_recipe_passes_and_leaves_nothing_behind() {
 #[test]
 fn the_recipes_run_in_one_shell_in_order() {
     let launch = format!("{LAUNCH}\nexport FROM_LAUNCH=1");
-    let doctor = format!("\"$V/sandbox\" [ \"$FROM_LAUNCH\" = 1 ]\n{DOCTOR_OK}");
+    let doctor = format!("\"$V/sandbox\" test \"$FROM_LAUNCH\" = 1\n{DOCTOR_OK}");
     let out = run(&skill(&launch, &doctor));
     assert!(out.status.success(), "{}", stderr(&out));
 }
@@ -216,7 +216,7 @@ fn a_missing_heading_fails_naming_it() {
 #[test]
 fn a_heading_without_a_bash_block_fails_naming_it() {
     let md =
-        skill(LAUNCH, DOCTOR_OK).replace("```bash\n\"$V/sandbox\" sh", "```sh\n\"$V/sandbox\" sh");
+        skill(LAUNCH, DOCTOR_OK).replace(&format!("```bash\n{DOCTOR_OK}\n```"), "Nothing to run.");
     assert_fails_with(&run(&md), "no bash block under ## Doctor");
 }
 
@@ -338,6 +338,9 @@ fn a_recipe_naming_a_ns_path_other_than_one_units_folder_fails() {
     for recipe in [
         r#""$V/sandbox" ls "$V/repo.worktrees/7-x/.ns/""#,
         r#""$V/sandbox" ls "$V/repo/.ns/$UNIT/""#,
+        r#""$V/sandbox" ls "$V/repo/.ns/verify""#,
+        r#""$V/sandbox" ls "$V/repo/.ns/foo""#,
+        r#""$V/sandbox" ls "$V/repo/.ns/x/../..""#,
     ] {
         let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(recipe))]);
         assert_fails_with(
@@ -345,9 +348,81 @@ fn a_recipe_naming_a_ns_path_other_than_one_units_folder_fails() {
             "run.md ## Driving it with ns block 1 names a .ns/ path",
         );
     }
-    let exact = format!("{RUN_OK}\n  \"$V/sandbox\" true \"$V/repo.worktrees/7-x/.ns/7-x\"");
-    let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(&exact))]);
+    for recipe in [
+        r#""$V/sandbox" ls "$V/repo/.ns/7-x/../..""#,
+        r#""$V/sandbox" ls "$V/repo/.ns/7-x"/{a,b}"#,
+        r#""$V/sandbox" ls "$V/repo/.ns/7-x"/[a]"#,
+    ] {
+        let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(recipe))]);
+        assert_fails_with(
+            &out,
+            "run.md ## Driving it with ns block 1 uses a bracket, brace or ..",
+        );
+    }
+    for unit in ["7-x", "$NS_UNIT", "<unit-id>"] {
+        let exact = format!(
+            "{RUN_OK}\n  \"$V/sandbox\" true \"$V/repo.worktrees/7-x/.ns/{unit}/evidence.md\""
+        );
+        let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(&exact))]);
+        assert!(out.status.success(), "{unit}: {}", stderr(&out));
+    }
+}
+
+#[test]
+fn a_chained_command_in_a_recipe_fails_naming_the_file_and_block() {
+    for recipe in [
+        r#""$V/sandbox" true; gh api user"#,
+        r#""$V/sandbox" true && cd "$NS_SRC""#,
+        r#""$V/sandbox" false || gh api user"#,
+        r#""$V/sandbox" true | sh"#,
+        r#""$V/sandbox" true & gh api user"#,
+        r#""$V/sandbox" true > /tmp/x"#,
+        r#""$V/sandbox" cat < /etc/passwd"#,
+        r#""$V/sandbox" echo $(ssh h)"#,
+        r#""$V/sandbox" echo "$(ssh h)""#,
+        r#""$V/sandbox" echo `ssh h`"#,
+        r#""$V/sandbox" echo "it's"; gh api user; echo ''"#,
+    ] {
+        let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(recipe))]);
+        assert_fails_with(
+            &out,
+            "run.md ## Driving it with ns block 1 runs something outside the sandbox",
+        );
+    }
+}
+
+#[test]
+fn operators_inside_single_quotes_are_not_chains() {
+    let recipe =
+        r#""$V/sandbox" sh -c 'true; true && true | cat > /dev/null; echo `true` $(true)' _ 'a;b'"#;
+    let out = run_with_features(
+        &skill(LAUNCH, DOCTOR_OK),
+        &[("run.md", feature(&format!("{RUN_OK}\n  {recipe}")))],
+    );
     assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn a_fence_that_is_not_bash_under_a_recipe_heading_fails_naming_the_block() {
+    for fence in [
+        "```sh",
+        "```shell",
+        "```",
+        "~~~bash",
+        "~~~",
+        "```bash title",
+    ] {
+        let md = skill(LAUNCH, DOCTOR_OK)
+            .replace("## Drive\n\n```bash", &format!("## Drive\n\n{fence}"));
+        let out = run(&md);
+        assert_fails_with(&out, "SKILL.md ## Drive block 1 is not a bash block");
+    }
+    let run_md = feature(RUN_OK).replace("  ```bash", "  ```sh");
+    let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", run_md)]);
+    assert_fails_with(
+        &out,
+        "run.md ## Driving it with ns block 1 is not a bash block",
+    );
 }
 
 #[test]

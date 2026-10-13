@@ -8,8 +8,10 @@
 # features/ beside it. A recipe is a fenced bash block under SKILL.md's `## Doctor` or `## Drive`,
 # or under a feature file's `## Driving it with ns`. Prose and blocks under other headings are not
 # recipes. First, without running anything, every line of every recipe must start with
-# `"$V/sandbox" `, use no glob (`*` or `?`), and name a `.ns/` path only as one unit's folder
-# (`.ns/<unit-id>`). Fails naming the file, heading and block of each line that does not.
+# `"$V/sandbox" `, chain, redirect or substitute nothing outside single quotes (`;` `&` `|` `<` `>`,
+# a backtick, `$(`), use no glob, bracket, brace or `..`, and name a `.ns/` path only as one unit's
+# folder (`.ns/$NS_UNIT`, `.ns/<unit-id>` or a concrete id). Every fence under those headings must
+# be exactly ```bash. Fails naming the file, heading and block of each line that does not.
 #
 # Then runs, in order in one bash shell (errexit, nounset, pipefail) from the repo root, with stdin
 # from /dev/null, git location variables unset and OUT in a temporary directory: the blocks under
@@ -43,32 +45,70 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 # Writes the bash blocks under `## <heading>` of <file> to <base>.<n>.sh, each line without its
-# indent, and prints their count: 0 when <file> does not exist.
+# indent, and prints their count: 0 when <file> does not exist. Writes to <base>.bad a line for
+# each fence under the heading, counted from 1, whose info string is not exactly `bash`.
 extract() {
   [ -f "$1" ] || { echo 0; return; }
+  : > "$3.bad"
   awk -v h="## $2" -v base="$3" '
-    fence && /^ *```/ { fence = 0; next }
+    fence && /^ *(```|~~~)/ { fence = 0; next }
     fence { if (keep) { sub(/^ */, ""); print > file }; next }
-    /^ *```/ { fence = 1; keep = sec && $0 ~ /^ *```bash$/; if (keep) file = base "." ++n ".sh"; next }
-    /^## / { sec = ($0 == h) }
+    /^ *(```|~~~)/ {
+      fence = 1
+      keep = sec && $0 ~ /^ *```bash$/
+      if (keep) file = base "." ++n ".sh"
+      if (sec) { f++; if (!keep) { l = $0; sub(/^ */, "", l); print f ": " l > (base ".bad") } }
+      next
+    }
+    /^## / { sec = ($0 == h); f = 0 }
     END { print n + 0 }
   ' "$1"
 }
 
+# Prints <line> twice: without anything quoted, then without single-quoted text only. A single
+# quote, a double quote and a backslash are read as the shell reads them.
+unquoted() {
+  awk '
+    { bare = ""; dq = ""; q = ""; n = length($0)
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (q == "\x27") { if (c == q) q = ""; continue }
+        if (c == "\\") { i++; if (q == "\"") dq = dq c substr($0, i, 1); continue }
+        if (q == "\"") { if (c == q) q = ""; else dq = dq c; continue }
+        if (c == "\x27" || c == "\"") { q = c; continue }
+        bare = bare c; dq = dq c
+      }
+      print bare; print dq }
+  ' <<<"$1"
+}
+
 # Prints a line for each recipe line in the blocks under `## <heading>` of <file> that does not
-# run in the sandbox, uses a glob, or names a .ns/ path other than one unit's folder.
+# run in the sandbox, chains or substitutes a command, uses a glob, brace or `..`, or names a
+# .ns/ path other than one unit's folder; and for each fence there that is not bash.
 lint() {
-  local file=$1 heading=$2 n i where line
+  local file=$1 heading=$2 n i where line bare dq tok
   n=$(extract "$file" "$heading" "$tmp/lint")
+  while IFS= read -r line; do
+    [ -z "$line" ] || echo "$(basename "$file") ## $heading block ${line%%:*} is not a bash block: ${line#*: }"
+  done < "$tmp/lint.bad"
   for i in $(seq "$n"); do
     where="$(basename "$file") ## $heading block $i"
     while IFS= read -r line; do
       case "$line" in '' | '#'*) continue ;; esac
       case "$line" in '"$V/sandbox" '*) ;; *) echo "$where does not run in the sandbox: $line" ;; esac
       case "$line" in *[*?]*) echo "$where uses a glob: $line" ;; esac
-      if grep -q '\.ns/' <<<"$line" && grep -q '\.ns/\([^a-z0-9]\|$\)' <<<"$line"; then
-        echo "$where names a .ns/ path other than one unit's folder (.ns/<unit-id>): $line"
+      { read -r bare; read -r dq; } < <(unquoted "$line")
+      if [[ "$bare" == *[\;\&\|\<\>]* || "$dq" == *'`'* || "$dq" == *'$('* ]]; then
+        echo "$where runs something outside the sandbox (chain, redirect or substitution): $line"
       fi
+      if [[ "$bare" == *[\[\{]* || "$dq" == *..* ]]; then
+        echo "$where uses a bracket, brace or ..: $line"
+      fi
+      for tok in $(grep -o '[^ ]*\.ns/[^ ]*' <<<"$line" || true); do
+        if ! grep -Eq '\.ns/(\$NS_UNIT|<unit-id>|[0-9]+-[a-z0-9-]+)(/[A-Za-z0-9_.-]+)*["'\'']?$' <<<"$tok"; then
+          echo "$where names a .ns/ path other than one unit's folder (.ns/\$NS_UNIT): $line"
+        fi
+      done
     done < "$tmp/lint.$i.sh"
   done
 }

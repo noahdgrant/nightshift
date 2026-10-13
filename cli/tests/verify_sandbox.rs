@@ -42,25 +42,68 @@ fn entries(dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Every variable the sandbox unsets: the caller's forge, model and git settings.
+const UNSET: &[&str] = &[
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GH_HOST",
+    "GH_CONFIG_DIR",
+    "GH_REPO",
+    "GITLAB_TOKEN",
+    "GITLAB_HOST",
+    "GLAB_TOKEN",
+    "GLAB_CONFIG_DIR",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "XDG_CONFIG_HOME",
+    "SSH_AUTH_SOCK",
+    "SSH_ASKPASS",
+    "GIT_ASKPASS",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_7",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_7",
+];
+
 /// Runs `program args` with a fresh `TMPDIR` and `OUT`, `CARGO_TARGET_DIR` at the crate's build,
-/// and the caller's forge, model and git location variables set to decoys.
+/// and every variable in `UNSET` set to a decoy.
 fn run(tmp: &Path, program: &Path, args: &[&str]) -> Output {
+    run_with_path(tmp, program, args, None)
+}
+
+/// As `run`, with `path_tail` put first on the caller's `PATH`.
+fn run_with_path(tmp: &Path, program: &Path, args: &[&str], path_tail: Option<&Path>) -> Output {
     let mut c = common::command(program);
     c.args(args)
         .env("TMPDIR", tmp.join("t"))
         .env("OUT", tmp.join("out"))
         .env("CARGO_TARGET_DIR", target_dir())
         .env_remove("V");
-    for v in [
-        "GH_TOKEN",
-        "GITHUB_TOKEN",
-        "GH_CONFIG_DIR",
-        "GITLAB_TOKEN",
-        "ANTHROPIC_API_KEY",
-        "XDG_CONFIG_HOME",
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-    ] {
+    if let Some(tail) = path_tail {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = std::env::split_paths(&path).collect::<Vec<_>>();
+        dirs.insert(0, tail.to_path_buf());
+        c.env("PATH", std::env::join_paths(dirs).unwrap());
+    }
+    for v in UNSET {
         c.env(v, tmp.join("leaked"));
     }
     c.output()
@@ -84,6 +127,15 @@ impl Sandbox {
 
     fn run(&self, args: &[&str]) -> Output {
         run(self.tmp.path(), &self.v.join("sandbox"), args)
+    }
+
+    fn run_with_path(&self, args: &[&str], path_tail: &Path) -> Output {
+        run_with_path(
+            self.tmp.path(),
+            &self.v.join("sandbox"),
+            args,
+            Some(path_tail),
+        )
     }
 
     fn ok(&self, args: &[&str]) -> String {
@@ -161,24 +213,50 @@ fn a_missing_fake_is_named_and_nothing_is_created() {
 }
 
 #[test]
-fn ssh_and_the_real_gh_fail_inside_the_sandbox() {
+fn ssh_fails_inside_the_sandbox() {
     let s = Sandbox::new();
     for args in [
         vec!["ssh", "-T", "git@github.com"],
         vec!["git", "ls-remote", "git@github.com:o/r.git"],
         vec!["git", "ls-remote", "ssh://git@github.com/o/r.git"],
-        // The real gh, wherever it is on the caller's PATH, has no account in the sandbox HOME.
-        vec![
-            "sh",
-            "-c",
-            r#"PATH=${PATH#"$V/bin:"}; command -v gh >/dev/null || exit 9; gh auth token"#,
-        ],
     ] {
         let out = s.run(&args);
         assert!(!out.status.success(), "{args:?} succeeded: {out:?}");
     }
     let out = s.run(&["ssh", "-T", "git@github.com"]);
-    assert!(stderr(&out).contains("sandbox"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("sandbox: ssh is cut off"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(s.ok(&["sh", "-c", "echo $GIT_SSH_COMMAND"]), "false");
+    let out = s.run(&["git", "ls-remote", "ssh://git@github.com/o/r.git"]);
+    assert!(stderr(&out).contains("fatal:"), "{}", stderr(&out));
+}
+
+#[test]
+fn a_real_gh_on_the_callers_path_finds_no_account_inside_the_sandbox() {
+    let s = Sandbox::new();
+    let bin = s.tmp.path().join("real-bin");
+    fs::create_dir(&bin).unwrap();
+    let stub = "#!/bin/sh\nif [ -n \"${GH_TOKEN-}${GITHUB_TOKEN-}${GH_CONFIG_DIR-}\" ] || [ -e \"$HOME/.config/gh/hosts.yml\" ]; then\n  echo account\n  exit 0\nfi\necho 'stub gh: no account' >&2\nexit 1\n";
+    common::write_exe(&bin.join("gh"), stub);
+    let out = s.run_with_path(
+        &[
+            "sh",
+            "-c",
+            r#"PATH=${PATH#"$V/bin:"}; test "$(command -v gh)" = "$1"; gh auth token"#,
+            "_",
+            &bin.join("gh").display().to_string(),
+        ],
+        &bin,
+    );
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        stderr(&out).contains("stub gh: no account"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]
@@ -195,17 +273,21 @@ fn the_fakes_and_the_built_ns_come_first_on_path() {
 #[test]
 fn the_callers_tokens_and_git_locations_are_unset() {
     let s = Sandbox::new();
-    let vars = "GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR GITLAB_TOKEN ANTHROPIC_API_KEY XDG_CONFIG_HOME GIT_DIR GIT_WORK_TREE";
     let seen = s.ok(&[
         "sh",
         "-c",
         "for v in $1; do eval \"printf '%s=%s\\n' $v \\\"\\${$v-unset}\\\"\"; done",
         "_",
-        vars,
+        &UNSET.join(" "),
     ]);
-    for v in vars.split(' ') {
-        assert!(seen.contains(&format!("{v}=unset")), "{seen}");
+    for v in UNSET {
+        assert!(
+            seen.lines().any(|l| l == format!("{v}=unset")),
+            "{v}: {seen}"
+        );
     }
+    let tz = s.ok(&["sh", "-c", "echo $TZ $GIT_CONFIG_NOSYSTEM $GIT_SSH_COMMAND"]);
+    assert_eq!(tz, "UTC 1 false");
     let env = s.ok(&["sh", "-c", "echo $HOME $GIT_SSH_COMMAND $NS_CONFIG $TMPDIR"]);
     let v = s.v.display();
     assert_eq!(env, format!("{v}/home false {v}/config.toml {v}/tmp"));

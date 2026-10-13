@@ -12,7 +12,7 @@ This directory is the maintained source for verifying what a user of `ns` sees. 
 
 ## Driving conventions
 
-- Every command a recipe runs is one line in a fenced `bash` block under `Driving it with ns`, starting `"$V/sandbox" `: [the sandbox](../SKILL.md#the-sandbox) is the only way to drive. No `cd`, no `export`, no glob, and a `.ns/` path only as one unit's folder. `scripts/check-verify-recipes.sh` fails CI on a recipe line that breaks these rules. A command shown in prose or under `Gotchas` is not a recipe.
+- Every command a recipe runs is one line in a fenced `bash` block under `Driving it with ns`, starting `"$V/sandbox" `: [the sandbox](../SKILL.md#the-sandbox) is the only way to drive. No `cd`, no `export`, no chaining outside single quotes, no glob, and a `.ns/` path only as one unit's folder. `scripts/check-verify-recipes.sh` fails CI on a recipe line that breaks these rules. A command shown in prose or under `Gotchas` is not a recipe.
 - `"$V/sandbox"` runs in `$V/repo`, for commands that act on a target repo. `"$V/sandbox" --src` runs in this checkout, for commands that act on nightshift's skills (lint, eval, install).
 - Start each recipe from the baseline unless its preconditions say otherwise. Recipes in a file run top to bottom and clean up the state they add; a recipe that needs a state another file leaves (a worktree, a `.nightshift/`) says so, and a fresh sandbox is always safe.
 - Prefer JSON field names and exit codes over human-readable text. Read results with `jq` through the sandbox: `"$V/sandbox" sh -c 'jq .ok "$OUT/<id>.out"'`.

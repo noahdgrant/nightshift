@@ -14,8 +14,8 @@
 #
 # "$V/sandbox" runs <command> in $V/repo, or in the checkout with --src, with $V/bin first on
 # PATH, HOME, NS_CONFIG, FAKE_CTRL, FAKE_GH_DIR and TMPDIR in the sandbox, GIT_SSH_COMMAND=false,
-# and the caller's forge tokens, model key, XDG_CONFIG_HOME, ssh agent and git location
-# variables unset. V, NS_SRC, NS and OUT are set. <command> may be `cap <name> <command...>`,
+# and the caller's forge tokens and config, model key and config, XDG_CONFIG_HOME, ssh agent,
+# askpass helpers and git location and config variables unset. V, NS_SRC, NS and OUT are set. <command> may be `cap <name> <command...>`,
 # which saves the command, stdout, stderr and exit code as $OUT/<name>.{cmd,out,err,exit} and
 # prints the exit code. Exits 2 with usage when there is no command or $V is not a sandbox, else
 # with <command>'s exit code.
@@ -103,7 +103,10 @@ fi
 unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_HOST GH_CONFIG_DIR \
   GITLAB_TOKEN GITLAB_HOST ANTHROPIC_API_KEY OPENAI_API_KEY CODEX_API_KEY XDG_CONFIG_HOME \
   SSH_AUTH_SOCK GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
-  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX GIT_CONFIG_GLOBAL
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX GIT_CONFIG_GLOBAL GLAB_TOKEN \
+  GLAB_CONFIG_DIR GH_REPO GIT_ASKPASS SSH_ASKPASS GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS \
+  ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CONFIG_DIR CLAUDE_CODE_OAUTH_TOKEN \
+  "${!GIT_CONFIG_KEY_@}" "${!GIT_CONFIG_VALUE_@}"
 export V NS_SRC NS OUT PATH="$V/bin:$PATH" HOME="$V/home" NS_CONFIG="$V/config.toml" \
   FAKE_CTRL="$V/ctrl" FAKE_GH_DIR="$V/ghd" TMPDIR="$V/tmp" TZ=UTC GIT_SSH_COMMAND=false \
   GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t \

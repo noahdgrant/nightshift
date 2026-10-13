@@ -31,9 +31,9 @@ Note the printed `$V`. Every later shell sets `V=<that dir>` first; nothing else
 
 Rules for every recipe, and every command you add:
 
-- One line, starting `"$V/sandbox" `. No `cd`, no `export`, no hand-built environment. `scripts/check-verify-recipes.sh` fails CI on a recipe line that does not.
+- One line, starting `"$V/sandbox" `. No `cd`, no `export`, no hand-built environment, and no `;` `&` `|` `<` `>`, backtick or `$(` outside single quotes: chain inside `sh -c '...'`. Every fence under `Doctor`, `Drive` and `Driving it with ns` is `bash`. `scripts/check-verify-recipes.sh` fails CI on a recipe line that does not.
 - Name files by absolute path under `$V`, which your shell and the sandbox expand alike. `$NS_SRC`, `$OUT` and `$FAKE_CTRL` exist only inside: put them in single quotes under `sh -c`, as in `"$V/sandbox" sh -c 'ls "$FAKE_CTRL"'`.
-- No glob (`*`, `?`) anywhere, and a `.ns/` path only as one unit's folder, `.ns/<unit-id>`. Hook guards and `//**/secrets/**` deny rules block the rest, and the check fails on them.
+- No glob (`*`, `?`), bracket, brace or `..` outside single quotes, and a `.ns/` path only as one unit's folder, `.ns/<unit-id>`. Hook guards and `//**/secrets/**` deny rules block the rest, and the check fails on them.
 - Write file contents as an argument, not inside the quotes: `"$V/sandbox" sh -c 'echo "$1" > "$2"' _ '<text>' "$V/<file>"`.
 - The throwaway repo's remote is `origin`, and the only token is `fake-token`.
 
