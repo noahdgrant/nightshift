@@ -1074,6 +1074,15 @@ fn py_inventory(branch: &str) -> Env {
     })
 }
 
+/// The log of every gate run, for a failure message.
+fn gate_logs(e: &Env) -> String {
+    gate_events(e)
+        .iter()
+        .filter_map(|g| g["log"].as_str())
+        .map(|l| format!("--- {l}\n{}\n", fs::read_to_string(l).unwrap_or_default()))
+        .collect()
+}
+
 /// Every artifact the unit's phases wrote, for a failure message.
 fn artifacts(e: &Env, unit: &str) -> String {
     let dir = e.worktree(unit).join(".ns").join(unit);
@@ -1098,7 +1107,7 @@ fn py_inventory_reaches_done(branch: &str) {
         "{}\nstdout={v}\nstderr={}\n{}",
         out.status,
         String::from_utf8_lossy(&out.stderr),
-        artifacts(&e, UNIT)
+        artifacts(&e, UNIT) + &gate_logs(&e)
     );
     assert_eq!(e.calls(), ["triage", "build", "verify", "review", "ship"]);
     let g = gate_events(&e);
