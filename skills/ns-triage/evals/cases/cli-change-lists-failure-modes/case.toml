@@ -1,0 +1,40 @@
+description = "A ready-for-agent brief for a CLI change (an `inventory remove-item` command) lists the failure modes it found on the code path: the brief comment carries a `**Failure modes:**` section with at least one entry that is not a `none` one-liner."
+fixture = "py-inventory"
+skills = ["ns-triage"]
+# ns-build is not installed, so the auto hand-off stops at triage.
+extra_skills = ["ns-contract"]
+requires = []
+timeout_minutes = 15
+prompt = """
+Triage .scratch/stock-items/issues/01-remove-item-command.md. gates: auto
+"""
+
+[[check]]
+type = "regex"
+path = ".scratch/stock-items/issues/01-remove-item-command.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?ready-for-agent`?\s*$'
+present = true
+
+[[check]]
+# The Failure modes section has text on its own line or in the lines under it,
+# up to the next bold field or heading, and is not a "none" one-liner.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, sys
+text = open(".scratch/stock-items/issues/01-remove-item-command.md", encoding="utf-8").read()
+m = re.search(r"(?ms)^[*_ \t]*Failure modes:?[*_]*:?(.*?)(?=^[ \t]*(?:\*\*|__|#)|\Z)", text)
+if not m:
+    sys.exit("no Failure modes section in the brief comment")
+entries = [l.strip(" \t-*_") for l in m.group(1).splitlines()]
+entries = [e for e in entries if e]
+print("failure modes:", entries)
+if not any(not e.lower().startswith("none") for e in entries):
+    sys.exit("Failure modes section is empty or only says none")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]
