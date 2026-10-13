@@ -38,7 +38,7 @@ Read whatever exists. Assume nothing:
   - `Cargo.toml`: `cargo build/test/clippy/fmt`, and `[workspace]` members
   - `.pre-commit-config.yaml`: the lint and format hooks
   - CI workflows (`.github/workflows/`, `.gitlab-ci.yml`): the commands CI runs. Treat these as the ground truth when they disagree with a Makefile or README. CI logs also give run durations.
-- **Hooks**: an existing pre-commit hook setup, checked in the order [hooks.md](references/hooks.md) gives (`core.hooksPath`, `.githooks/`, `.pre-commit-config.yaml`, `.husky/`, `lefthook.yml`, an executable `.git/hooks/pre-commit`), and any script that already runs CI locally.
+- **Hooks**: an existing pre-commit hook setup, checked in the order [hooks.md](references/hooks.md) gives (`core.hooksPath`, `.githooks/pre-commit`, `.pre-commit-config.yaml`, `.husky/pre-commit`, `lefthook.yml`, an executable `.git/hooks/pre-commit`), and any script that already runs CI locally.
 - **Test seams**: host unit tests, a simulator or emulator (QEMU, `native_sim`, Renode, a device simulator), and hardware-in-the-loop (a bench runner, a `hil` marker or env, a self-hosted CI runner with a board attached).
 - **Worktree traps**: does a fresh `git worktree` build its own sources? Common traps:
   - submodules a new worktree lacks (`.gitmodules`)

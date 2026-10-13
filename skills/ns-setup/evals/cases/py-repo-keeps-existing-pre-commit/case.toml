@@ -15,7 +15,7 @@ commands = ["rm -r docs/agents"]
 
 [[check]]
 type = "command"
-run = '''test ! -e scripts/ci-local.sh && test ! -e .githooks && test -z "$(git config core.hooksPath)"'''
+run = '''test ! -e scripts/ci-local.sh && test ! -e .githooks && test -z "$(git config --local core.hooksPath)"'''
 expect_exit = 0
 
 [[check]]

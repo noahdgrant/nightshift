@@ -7,10 +7,10 @@ How `ns-setup` finds a repo's pre-commit hook, and the files it proposes when th
 Check in this order and stop at the first hit:
 
 1. `git config --local core.hooksPath` is set (a global value does not count) and that directory holds an executable `pre-commit`. Otherwise continue down the list.
-2. `.githooks/` exists.
+2. `.githooks/pre-commit` exists.
 3. `.pre-commit-config.yaml` exists (pre-commit.com).
-4. `.husky/` exists (husky).
-5. `lefthook.yml` exists (lefthook).
+4. `.husky/pre-commit` exists (husky).
+5. `lefthook.yml` exists and has a `pre-commit:` key (lefthook).
 6. `.git/hooks/pre-commit` exists and is executable. In a worktree, look under `git rev-parse --git-common-dir`, not `.git/`.
 
 On a hit, change no files: no new script, no new hook, no `git config`. Record the hook in `stack.md`'s `## Hooks` section. If it is not enabled (steps 2 to 5 with `core.hooksPath` unset or not pointing at it, or `pre-commit install` / `husky` / `lefthook install` not run), record "present, not enabled" with the enabling command, and name that command in the final message. Never run it for a pre-existing hook. If the hit is our own partial setup (`.githooks/pre-commit` calling `scripts/ci-local.sh --fast`, `core.hooksPath` unset), say to finish by running `git config core.hooksPath .githooks`.
