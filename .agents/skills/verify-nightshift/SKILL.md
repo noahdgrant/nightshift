@@ -17,7 +17,7 @@ Read [features/README.md](features/README.md) before driving, then use the featu
 
 ```bash
 cargo build --manifest-path cli/Cargo.toml
-export NS_SRC=$PWD NS=$PWD/cli/target/debug/ns
+export NS_SRC=$PWD NS=$(cd "${CARGO_TARGET_DIR:-cli/target}" && pwd)/debug/ns
 export V=$(mktemp -d /tmp/ns-verify.XXXXXX)
 mkdir -p "$V/bin" "$V/home/.claude" "$V/ctrl" "$V/ghd"
 cp cli/tests/fixtures/factory/{claude,gh,glab} "$V/bin/"
@@ -47,7 +47,7 @@ EOF
 echo "$V"
 ```
 
-Ready when `cargo build` finished and `git -C "$V/repo" log --oneline` shows `init`. Note the printed `$V`. Every later shell runs `. <that dir>/env.sh` first: it restores `NS_SRC`, `NS`, `V`, `OUT` and the `cap` helper. A shell without it would reach the real `claude`, `gh` and `HOME`.
+`NS` is the binary that build wrote: under `$CARGO_TARGET_DIR` when it is set, else `cli/target`. Ready when `cargo build` finished and `git -C "$V/repo" log --oneline` shows `init`. Note the printed `$V`. Every later shell runs `. <that dir>/env.sh` first: it restores `NS_SRC`, `NS`, `V`, `OUT` and the `cap` helper. A shell without it would reach the real `claude`, `gh` and `HOME`.
 
 Every recipe, and every command you add, follows [ns-verify's sandbox recipes](../../../skills/ns-verify/SKILL.md#sandbox-recipes): the throwaway repo gets `origin` from `git remote add`, files are named by absolute path under `$V` or `$NS_SRC`, and the only token is `fake-token`. A `cd` sets only the repo an `ns` command acts on. A command a harness denies ends verify `blocked` ([denied commands](../../../skills/ns-verify/SKILL.md#denied-commands)). Write a git remote as `origin`, or put `--` before a variable remote (`git push -q -- "$R" main`): a hook guard may read a bare `"$R"` as a hidden flag and deny the command.
 
@@ -58,13 +58,13 @@ Every recipe, and every command you add, follows [ns-verify's sandbox recipes](.
 Run before the first drive and whenever anything looks off:
 
 ```bash
-. "$V/env.sh"
+. "$V/env.sh"; cd "$V/repo"
 for b in claude gh glab; do case "$(command -v $b)" in "$V/bin/"*) ;; *) echo "NOT FAKE: $b"; esac; done
 "$NS" --version && git -C "$NS_SRC" rev-parse --short HEAD
 "$NS" doctor | jq -c '{ok, problems, forge: .forge.github, claude: .harnesses.claude.path}'
 ```
 
-Worth driving when no `NOT FAKE` line prints, `ok` is `true`, `problems` is `[]`, `forge` shows `"account":"octocat"`, and `claude` is `$V/bin/claude`. Stop on any `NOT FAKE` line: the next `ns run` or `ns watch` would start a real model or call a real forge.
+Worth driving when no `NOT FAKE` line prints, `ok` is `true`, `problems` is `[]`, `forge` shows `"account":"octocat"`, and `claude` is `$V/bin/claude`. Stop on any `NOT FAKE` line: the next `ns run` or `ns watch` would start a real model or call a real forge. Doctor runs in `$V/repo`, whose `origin` is local: from `$NS_SRC`, `ns doctor` would `ssh -T` this repo's real forge host. `scripts/check-verify-recipes.sh` runs Launch and Doctor in CI and checks these results.
 
 ## Drive
 
