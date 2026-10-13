@@ -303,6 +303,14 @@ fn a_command_past_its_timeout_fails_naming_the_command() {
     assert_eq!(e.to_string(), "`sleep 600` timed out after 0s");
 }
 
+/// The deadline always applies: a hook that never holds does not keep the child running.
+#[test]
+fn the_deadline_fires_when_the_early_hook_never_does() {
+    let mut p = sh(Kind::Tool, "sleep 600");
+    p.timeout(Duration::ZERO).expire_when(|| false);
+    assert_eq!(p.output().unwrap_err().kind(), ErrorKind::TimedOut);
+}
+
 /// A timeout kills the whole process group: once the test stops waiting for the child, the
 /// write end of a FIFO held by the child and its background descendant reaches EOF.
 #[test]

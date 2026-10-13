@@ -49,6 +49,7 @@ pub struct Proc {
     cmd: Command,
     timeout: Duration,
     stdin: Option<Vec<u8>>,
+    #[cfg(test)]
     expire_when: Option<Box<dyn Fn() -> bool + Send>>,
 }
 
@@ -102,6 +103,7 @@ impl Proc {
             cmd,
             timeout: kind.timeout(),
             stdin: None,
+            #[cfg(test)]
             expire_when: None,
         }
     }
@@ -147,7 +149,8 @@ impl Proc {
         self
     }
 
-    /// Time out as soon as `expired` holds, so a test can end a child after an event.
+    /// Also time out as soon as `expired` holds, so a test can end a child after an event; the
+    /// deadline still applies.
     #[cfg(test)]
     fn expire_when(&mut self, expired: impl Fn() -> bool + Send + 'static) -> &mut Self {
         self.expire_when = Some(Box::new(expired));
@@ -206,7 +209,11 @@ impl Proc {
                 let _ = pipe.write_all(&bytes);
             });
         }
-        let waited = wait_until(&mut child, deadline, self.expire_when.as_deref());
+        #[cfg(test)]
+        let early = self.expire_when.as_deref();
+        #[cfg(not(test))]
+        let early = ();
+        let waited = wait_until(&mut child, deadline, early);
         kill_group(child.id());
         let status = waited?;
         let Some(status) = status else {
@@ -233,8 +240,23 @@ impl Proc {
     }
 }
 
-fn expired(deadline: Instant, early: Option<&(dyn Fn() -> bool + Send)>) -> bool {
-    early.map_or_else(|| Instant::now() >= deadline, |f| f())
+/// The test-only way to end a wait before its deadline; nothing outside tests.
+#[cfg(test)]
+type Early<'a> = Option<&'a (dyn Fn() -> bool + Send)>;
+#[cfg(not(test))]
+type Early<'a> = ();
+
+#[cfg(test)]
+fn early_holds(early: Early) -> bool {
+    early.is_some_and(|f| f())
+}
+#[cfg(not(test))]
+fn early_holds(_: Early) -> bool {
+    false
+}
+
+fn expired(deadline: Instant, early: Early) -> bool {
+    Instant::now() >= deadline || early_holds(early)
 }
 
 /// The child's exit status, or `None` once it is past `deadline` (or `early` holds) and its
@@ -242,7 +264,7 @@ fn expired(deadline: Instant, early: Option<&(dyn Fn() -> bool + Send)>) -> bool
 fn wait_until(
     child: &mut Child,
     deadline: Instant,
-    early: Option<&(dyn Fn() -> bool + Send)>,
+    early: Early,
 ) -> std::io::Result<Option<ExitStatus>> {
     loop {
         if let Some(s) = child.try_wait()? {
