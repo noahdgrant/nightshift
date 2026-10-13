@@ -6,6 +6,7 @@ use crate::pin::settings_json as settings;
 mod files;
 mod git;
 mod shell;
+mod tmp;
 
 fn bash_call(cmd: &str) -> Value {
     json!({"tool_name": "Bash", "tool_input": {"command": cmd}})
