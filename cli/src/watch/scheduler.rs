@@ -1,4 +1,4 @@
-//! The night's scheduler (docs/FACTORY.md, "Parallel units"). Each unit runs as its own child
+//! The night's scheduler (docs/factory/watch.md, "Parallel units"). Each unit runs as its own child
 //! `ns run` on the night's snapshot, up to `parallel` at once. The scheduler fills free slots
 //! (triage pass, then the queue, claiming each issue before its unit starts), settles each unit
 //! that ends, pauses every unit on a usage limit, and on a stop lets running units finish or,

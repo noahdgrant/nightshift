@@ -1,6 +1,6 @@
 # Java rule pack
 
-The rules `ns rules check` runs on a Java repo (`docs/FACTORY.md`, "Rules"). The pack composes PMD 7 and `ast-grep`, both of which read source only, so it needs no build and works the same under Maven and Gradle. `check.sh` runs one check per subcommand and prints each finding as the JSON line `ns` reads (`{tool, rule, file, line, message}`). It exits 0 with no findings, 1 with findings, and 2 with a `check.sh:` line, and no findings, when the check could not run.
+The rules `ns rules check` runs on a Java repo (`docs/factory/run.md`, "Rules"). The pack composes PMD 7 and `ast-grep`, both of which read source only, so it needs no build and works the same under Maven and Gradle. `check.sh` runs one check per subcommand and prints each finding as the JSON line `ns` reads (`{tool, rule, file, line, message}`). It exits 0 with no findings, 1 with findings, and 2 with a `check.sh:` line, and no findings, when the check could not run.
 
 ## Rules
 

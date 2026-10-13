@@ -1,5 +1,5 @@
 //! `ns watch`'s triage pass: the triage phase alone, on issues nobody has triaged yet, so the
-//! follow-ups and escapes filed tonight can join tonight's queue (docs/FACTORY.md, ns watch).
+//! follow-ups and escapes filed tonight can join tonight's queue (docs/factory/watch.md).
 
 use std::collections::BTreeSet;
 

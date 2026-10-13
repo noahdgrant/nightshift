@@ -12,4 +12,4 @@ nightshift merges its own PRs when review passes, CI is green and no file that n
 
 ## Reason
 
-Only `ns run`'s merge step merges, only its own unit's PR, only by squash. A PR merged by a phase stops the run. Spec: `docs/FACTORY.md`.
+Only `ns run`'s merge step merges, only its own unit's PR, only by squash. A PR merged by a phase stops the run. Spec: `docs/factory/merge.md`.

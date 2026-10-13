@@ -1,6 +1,6 @@
-//! The per-unit CPU share, `ns run --cpus` (docs/FACTORY.md, "CPU share"). `ns run` puts `NS_CPUS`,
-//! `RUST_TEST_THREADS` and `CARGO_BUILD_JOBS` on each phase, gate and setup command it starts;
-//! a variable the operator already set is left as it is.
+//! The per-unit CPU share, `ns run --cpus` (docs/factory/watch.md, "Parallel units"). `ns run`
+//! puts `NS_CPUS`, `RUST_TEST_THREADS` and `CARGO_BUILD_JOBS` on each phase, gate and setup
+//! command it starts; a variable the operator already set is left as it is.
 
 use serde_json::{json, Map, Value};
 use std::process::Command;

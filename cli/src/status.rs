@@ -32,7 +32,8 @@ const BUCKETS: [(&str, &str, &[&str]); 5] = [
 ];
 const OTHER: &str = "other";
 
-/// The run-log events that say what main's CI did to the night (docs/FACTORY.md, "Main's CI").
+/// The run-log events that say what main's CI did to the night (docs/factory/watch.md,
+/// "Main's CI").
 const MAIN_EVENTS: [&str; 3] = ["main_red", "main_green", "main_red_unfixed"];
 
 type Event = Map<String, Value>;
