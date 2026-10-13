@@ -476,6 +476,7 @@ impl<'a> Scheduler<'a> {
         let Some(update) = self.plan.update.as_mut() else {
             return;
         };
+        let to = update.at_drain_end(&repo.root, to);
         if let HandOff::Failed(e) = update.hand_off(repo, &to, &carried) {
             update.give_up(repo, to, e);
         }
