@@ -290,7 +290,7 @@ fn every_kind_starts_its_children_with_its_default_timeout() {
 #[test]
 fn a_child_that_ends_before_its_deadline_is_left_alone() {
     let mut p = sh(Kind::Tool, "echo done");
-    p.timeout(Duration::from_secs(3600));
+    p.timeout(Duration::from_secs(u64::from(u16::MAX)));
     assert_eq!(stdout(&p.output().unwrap()), "done\n");
 }
 
