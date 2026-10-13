@@ -464,6 +464,8 @@ mod tests {
             "Raise that issue's priority label to the highest among its existing and new items";
         assert!(flat.contains(raise), "{raise}");
         assert!(flat.contains("never lower it"), "never lower it");
+        let reuse = "that already carries the `Source: review_escape` line";
+        assert!(flat.contains(reuse), "{reuse}");
     }
 
     fn t(s: &str) -> i64 {
