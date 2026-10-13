@@ -195,13 +195,25 @@ impl Scan {
         if names(FREEZERS) {
             self.frozen = true;
         }
-        let may_set_any = names(REWRITERS)
-            || self.frozen
-            || words.iter().any(|w| w.text == "=~")
-            || command.is_some_and(|c| {
-                ALWAYS_SETTERS.contains(&c)
-                    || (SETTERS.contains(&c) && words.iter().any(|w| !w.expansions.is_empty()))
-            });
+        let real = words.iter().find(|w| {
+            env_assignment(&w.text).is_none()
+                && !PREFIXES.contains(&w.text.as_str())
+                && !(w.text.starts_with('-') && w.expansions.is_empty())
+        });
+        let harmless = match real {
+            None => true,
+            Some(w) if !w.expansions.is_empty() => {
+                self.frozen = true;
+                false
+            }
+            Some(w) => {
+                let c = basename(&w.text);
+                HARMLESS.contains(&c)
+                    || (c == "export" && words.iter().all(|w| w.expansions.is_empty()))
+            }
+        };
+        let may_set_any =
+            !harmless || names(REWRITERS) || self.frozen || words.iter().any(|w| w.text == "=~");
         if may_set_any {
             self.vars.clear();
         }
@@ -280,9 +292,11 @@ fn check_command(s: &str, scan: &mut Scan) -> Option<String> {
 /// The command has a loop or defines a function, so a statement may run after one that
 /// follows it in the text.
 fn repeats_or_defers(toks: &[Tok]) -> bool {
-    const WORDS: &[&str] = &["while", "until", "for", "select", "function"];
+    const WORDS: &[&str] = &[
+        "while", "until", "for", "select", "function", "eval", "source", ".",
+    ];
     toks.iter().enumerate().any(|(i, t)| match t {
-        Tok::Word(w) => WORDS.contains(&w.text.as_str()),
+        Tok::Word(w) => WORDS.contains(&basename(&w.text)),
         Tok::SubshellOpen => {
             matches!(
                 i.checked_sub(1).and_then(|j| toks.get(j)),
@@ -497,9 +511,17 @@ const REWRITERS: &[&str] = &[
 /// change what a later assignment, or any command, sets.
 const FREEZERS: &[&str] = &["declare", "typeset", "local", "trap", "alias"];
 
-/// Builtins that set variables the scan can't name from their words (`REPLY`, `OPTARG`, an
-/// array), so each clears every learned variable.
-const ALWAYS_SETTERS: &[&str] = &["read", "mapfile", "readarray", "getopts"];
+/// Words that come before a segment's command, or modify how it runs.
+const PREFIXES: &[&str] = &[
+    "time", "!", "if", "then", "else", "elif", "while", "until", "do", "builtin", "command",
+];
+
+/// Commands that cannot set a shell variable. A segment whose command is any other, however
+/// it is prefixed, clears every learned variable.
+const HARMLESS: &[&str] = &[
+    "rm", "cp", "mv", "git", "echo", "cat", "ls", "test", "cd", "true", "false", ":", "mkdir",
+    "touch",
+];
 
 /// Shell-managed variables the shell rewrites unseen: never learned from an assignment.
 const SHELL_MANAGED: &[&str] = &[
@@ -528,11 +550,6 @@ const SHELL_MANAGED: &[&str] = &[
     "HISTCMD",
     "FUNCNAME",
     "MAPFILE",
-];
-
-/// Builtins that can set a variable named by one of their arguments.
-const SETTERS: &[&str] = &[
-    "printf", "export", "readonly", "unset", "builtin", "command",
 ];
 
 /// The word `text` names the variable `name`, assigns it, or ends with it as an option's

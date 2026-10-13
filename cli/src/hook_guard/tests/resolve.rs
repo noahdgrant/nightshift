@@ -231,7 +231,9 @@ fn every_compound_word_stops_the_scan_following_the_command() {
 
 #[test]
 fn every_builtin_that_may_set_a_variable_forgets_it() {
-    for s in SETTERS {
+    for s in [
+        "printf", "export", "readonly", "unset", "builtin", "command",
+    ] {
         let c = format!("U=build.md; {s} \"$V\"; rm .ns/u1/$U");
         assert!(denied(&c), "{c}");
     }
@@ -330,5 +332,44 @@ fn a_resolved_variable_does_not_make_an_eval_word_look_literal() {
         "T=U; command eval $T=.git; rm -r $U/hooks",
     ] {
         assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_variable_set_by_code_the_command_defines_is_not_resolved() {
+    for c in [
+        "eval 'f(){ U=hooks; }'; U=x; f; rm -r .git/$U",
+        ". ./defs; U=x; f; rm -r .git/$U",
+        "source ./defs; U=x; f; rm -r .git/$U",
+        "eval 'trap \"U=hooks\" DEBUG'; U=x; true; rm -r .git/$U",
+        "E=eval; $E 'f(){ U=hooks; }'; U=x; f; rm -r .git/$U",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_setter_behind_a_keyword_clears_the_variables() {
+    for setter in [
+        "read \"$N\" <<< -n",
+        "readarray \"$N\" < f",
+        "mapfile \"$N\" < f",
+        "getopts a \"$N\"",
+        "printf -v \"$N\" %s -n",
+        "export \"$N=-n\"",
+    ] {
+        for wrap in [
+            "time {}",
+            "! {}",
+            "if true; then {}; fi",
+            "builtin {}",
+            "command {}",
+        ] {
+            let c = format!(
+                "F=-q; N=$(echo F); {}; git commit $F",
+                wrap.replace("{}", setter)
+            );
+            assert!(denied(&c), "{c}");
+        }
     }
 }
