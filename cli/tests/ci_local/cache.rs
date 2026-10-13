@@ -250,3 +250,92 @@ fn the_cache_keeps_the_entries_used_last() {
     git(root, &["checkout", "-q", &second]);
     ran_everything(&repo.run(&[], &max));
 }
+
+/// The times of the pass cache's entries, by name.
+fn cache_times(repo: &Repo) -> Vec<(String, std::time::SystemTime)> {
+    let dir = repo.dir.path().join(".git/ns/ci-passed");
+    repo.cached()
+        .into_iter()
+        .map(|e| {
+            let time = fs::metadata(dir.join(&e)).unwrap().modified().unwrap();
+            (e, time)
+        })
+        .collect()
+}
+
+/// Asserts the entry for the checked-out tree is the newest in the cache, tied with none.
+fn newest_is_checked_out(repo: &Repo, out: &Output) {
+    let times = cache_times(repo);
+    let (newest, time) = times.iter().max_by_key(|(_, t)| *t).unwrap();
+    let ties = times.iter().filter(|(_, t)| t == time).count();
+    assert_eq!(ties, 1, "{times:?}\n{}", stderr(out));
+    let body = fs::read_to_string(repo.dir.path().join(".git/ns/ci-passed").join(newest)).unwrap();
+    let tree = git(repo.dir.path(), &["write-tree"]);
+    assert!(body.starts_with(&format!("tree {tree}\n")), "{body}");
+}
+
+/// A `date` that runs `seconds` for `date +%s` and the real `date` otherwise, and the `PATH`
+/// that puts it ahead of `repo`'s stubs. The directory lives as long as the returned guard.
+fn clock(repo: &Repo, seconds: &str) -> (tempfile::TempDir, String) {
+    let real = ["/usr/bin/date", "/bin/date"]
+        .into_iter()
+        .find(|p| Path::new(p).is_file())
+        .expect("date is required to run ci-local");
+    let dir = tempfile::tempdir().unwrap();
+    write_exe(
+        &dir.path().join("date"),
+        format!("#!/bin/sh\n[ \"$1\" != +%s ] || {seconds}\nexec {real} \"$@\"\n"),
+    );
+    let path = format!(
+        "{}:{}:/usr/bin:/bin",
+        dir.path().display(),
+        repo.dir.path().join("bin").display()
+    );
+    (dir, path)
+}
+
+/// Entries whose times tie with each other and with the clock, as after a coarse timestamp
+/// tick or a clock that stepped back, still go in the order they were used.
+#[test]
+fn the_cache_keeps_the_entries_used_last_when_their_times_tie_with_the_clock() {
+    let repo = Repo::new();
+    repo.commit_all();
+    let root = repo.dir.path();
+    ran_everything(&repo.run(&[], &[]));
+    let first = git(root, &["rev-parse", "HEAD"]);
+    commit(root, "README", "2\n");
+    let second = git(root, &["rev-parse", "HEAD"]);
+    ran_everything(&repo.run(&[], &[]));
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;
+    let tie = std::time::UNIX_EPOCH + std::time::Duration::from_secs(now);
+    for (entry, _) in cache_times(&repo) {
+        fs::File::options()
+            .write(true)
+            .open(root.join(".git/ns/ci-passed").join(entry))
+            .unwrap()
+            .set_modified(tie)
+            .unwrap();
+    }
+    let (_clock, path) = clock(&repo, &format!("exec echo {now}"));
+    let max = [("CI_LOCAL_CACHE_MAX", "2"), ("PATH", &path)];
+
+    git(root, &["checkout", "-q", &first]);
+    let out = repo.run(&[], &max);
+    skipped(&out, root);
+    newest_is_checked_out(&repo, &out);
+    git(root, &["checkout", "-q", "main"]);
+    commit(root, "README", "3\n");
+    let out = repo.run(&[], &max);
+    ran_everything(&out);
+    newest_is_checked_out(&repo, &out);
+    assert_eq!(repo.cached().len(), 2);
+    git(root, &["checkout", "-q", &first]);
+    skipped(&repo.run(&[], &max), root);
+    git(root, &["checkout", "-q", &second]);
+    ran_everything(&repo.run(&[], &max));
+}

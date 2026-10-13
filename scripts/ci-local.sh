@@ -82,6 +82,18 @@ compute_cache_key() {
   cache_dir=$common/ns/ci-passed
 }
 
+# Marks the entry $1 used last, so eviction never ranks it behind another entry: its time is now,
+# or a second after the newest entry's when that is now or later (a tie, a coarse timestamp, a
+# clock that stepped back). An entry another run evicts meanwhile is left out, and $1 is never
+# created.
+mark_used() {
+  local now newest
+  now=$(date +%s) || return 1
+  newest=$({ stat -c %Y "$cache_dir"/* 2>/dev/null || true; } | sort -n | tail -n 1)
+  [ "$now" -gt "${newest:-0}" ] || now=$((newest + 1))
+  touch -c -d "@$now" "$1"
+}
+
 # Records a pass of the key computed before the run, if the checkout still holds that key, and
 # keeps the cache_max entries used last.
 record_pass() {
@@ -100,6 +112,7 @@ record_pass() {
     rm -f "$tmp"
     return 1
   fi
+  mark_used "$entry" || return 1
   ls -1t "$cache_dir" | tail -n +$((cache_max + 1)) | while read -r old; do
     rm -f "$cache_dir/$old"
   done
@@ -156,7 +169,7 @@ if [ "$fast" -eq 0 ]; then
     entry=$cache_dir/$cache_key
     when=$(sed -n 's/^when //p' "$entry")
     where=$(sed -n 's/^where //p' "$entry")
-    touch "$entry" 2>/dev/null || true
+    mark_used "$entry" 2>/dev/null || true
     echo "ci-local: tree $cache_tree already passed ($when, $where)" >&2
     exit 0
   fi
