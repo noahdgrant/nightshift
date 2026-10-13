@@ -13,7 +13,7 @@ Status: early. The core path (triage → build → verify → review → ship) i
                      └─ needs-repro ──► ns-troubleshoot ──────┘
 ```
 
-Each unit of work gets its own git worktree. Phases hand off through files in `.ns/<unit>/` (`brief.md`, `build.md`, `evidence.md`, `review.md`, `pr.md`), so each phase can start in a fresh context. A phase's gate either stops for a human or, under `gates: auto`, moves on by itself. Deploying and releasing always wait for a human. Merging waits for one under `merge.policy = "human"` (the default) or when the PR touches a file that needs human review, and [`docs/FACTORY.md`](docs/FACTORY.md#merge) lists the other cases.
+Each unit of work gets its own git worktree. Phases hand off through files in `.ns/<unit>/` (`brief.md`, `build.md`, `evidence.md`, `review.md`, `pr.md`), so each phase can start in a fresh context. A phase's gate either stops for a human or, under `gates: auto`, moves on by itself. Deploying and releasing always wait for a human. Merging waits for one under `merge.policy = "human"` (the default) or when the PR touches a file that needs human review, and [`docs/factory/merge.md`](docs/factory/merge.md) lists the other cases.
 
 The [layers diagram](docs/DESIGN.md#layers) shows how the operator, `ns watch`, `ns run`, the phase skills and `ns-auto` fit together.
 
@@ -48,7 +48,7 @@ ns doctor
 ns watch --until 06:30
 ```
 
-It takes `status:ready-for-agent` issues one at a time (`--parallel 3` runs three at once) and starts no new unit after 06:30. A unit already running finishes. [`docs/FACTORY.md`](docs/FACTORY.md#ns-watch) lists the other stop conditions, such as `limits.max_units`.
+It takes `status:ready-for-agent` issues one at a time (`--parallel 3` runs three at once) and starts no new unit after 06:30. A unit already running finishes. [`docs/factory/watch.md`](docs/factory/watch.md) lists the other stop conditions, such as `limits.max_units`.
 
 The worktree is not a sandbox. Each phase runs claude with permissions bypassed, so it can use the `GH_TOKEN` it inherits and read or change anything your user can. Run it on a dedicated machine or VM, with a bot account or a fine-grained token limited to the repo as the only GitHub login on that machine, and mark only issues you trust as ready.
 

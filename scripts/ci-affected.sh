@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The tests for the paths in NS_GATE_FILES, one per line. Under [gate] local = "build-only",
 # ns run's gate after review and in the merge step runs this after ci-local.sh --fast, with the
-# paths changed since its full gate last went green (docs/FACTORY.md, "Gate").
+# paths changed since its full gate last went green (docs/factory/run.md, "Gate").
 #
 # cargo test runs on any change, since the cli tests read files across the repo. A rule pack's
 # tests (each pack scripts/rule-packs.sh lists) and the py-inventory fixture tests run when a

@@ -1,5 +1,5 @@
 //! Fix main first, in the scheduler's fill: which issues red main lets start and what the run log
-//! says of it (docs/FACTORY.md, "Main's CI").
+//! says of it (docs/factory/watch.md, "Main's CI").
 
 use std::collections::BTreeSet;
 

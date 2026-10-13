@@ -28,192 +28,24 @@ cargo install --path cli
 
 ## Commands
 
-### `ns worktree new <unit-id> [--base <branch>] [--repo <path>] [--no-setup]`
-
-Creates `<root>/../<repo-name>.worktrees/<unit-id>` on branch `ns/<unit-id>`, where `<root>` is the main worktree of the repo you run it from. The base defaults to the local branch behind `origin/HEAD`, else the current `HEAD`. It also creates `.ns/<unit-id>/` in the worktree and adds `.ns/` to the common `.git/info/exclude`.
-
-Prints `{"unit","path","branch","artifacts","setup"}`. If the worktree exists, it prints the same JSON. If only the branch exists (after `remove`), it checks the branch out again. Unit ids match `[a-z0-9][a-z0-9-]*`.
-
-When the worktree is newly created, `new` runs the setup commands from `<root>/.nightshift/nightshift.toml`:
-
-```toml
-[worktree]
-setup = ["git submodule update --init"]
-```
-
-Each command runs with `sh -c` in the new worktree, with `NS_UNIT`, `NS_WORKTREE` and `NS_MAIN_ROOT` set. Their output goes to stderr. `setup` in the JSON lists `{"run","exit"}` per command that ran. The first failing command stops the rest and makes `new` exit 1. The worktree stays in place, and `ns worktree setup <unit-id>` retries. An idempotent repeat of `new` runs nothing and prints `"setup": []`, and so does `--no-setup`.
-
-`.nightshift/` is the factory definition root (D15 in `docs/decisions/`). The whole file is parsed against the schema in [docs/FACTORY.md](../docs/FACTORY.md), and unknown tables or keys are rejected (exit 2).
-
-### `ns worktree setup <unit-id> [--repo <path>]`
-
-Re-runs the `[worktree] setup` commands in the unit's existing worktree. Prints `{"unit","path","setup"}` and exits 1 if a command fails. A unit with no worktree is an error that names `ns worktree new`.
-
-### `ns worktree list [--repo <path>]`
-
-Prints a JSON array of worktrees on `ns/*` branches. Each entry has `unit`, `path`, `branch`, `artifacts` and `status`. `status` is `null`, or `{"file","phase","status","updated"}` from the artifact with the newest `updated` in its frontmatter. Ties go to the later phase.
-
-### `ns worktree remove <unit-id> [--dry-run] [--force] [--repo <path>]`
-
-Removes the unit's worktree and keeps its branch. A worktree with uncommitted changes is refused unless `--force` is given. Artifacts under `.ns/` are ignored, so they don't count as changes. Removing a unit that has no worktree prints `"action": "none"` and exits 0.
-
-### `ns ask --role <role> [--prompt-file <f>] [--write] [--cwd <dir>] [--dry-run]`
-
-Runs the harness configured for the role. The prompt is read from `--prompt-file`, or from stdin, and sent to the harness on stdin. The harness's stdout streams through. The default is read-only. `--write` uses the harness's `command_write`, so the harness can edit files and run commands. `--cwd` runs the harness in that directory, such as a unit's worktree. `--dry-run` prints the resolved command, mode, cwd and whether the binary is on PATH, as JSON, without running anything.
-
-The role lookup falls back from the most specific name: `review.security`, then `review`, then `default`.
-
-Under the factory's `billing = "subscription"` (the default, and the mode outside a repo), the harness never sees the API-key variables of claude or codex. See Billing in `docs/FACTORY.md`.
-
-### `ns lint [path] [--human]`
-
-Checks the skills under `path` (default `./skills`). Under `skills/`, a directory is a skill if it has a `SKILL.md` or an `ns-` name, and others are skipped. Under a repo-local root such as `.agents/skills` (the canonicalized root's parent is named `.agents`), every non-hidden directory is a skill, and one without `SKILL.md` reports `missing SKILL.md`. For each skill:
-
-- the frontmatter parses as YAML
-- `name` equals the directory name and starts with `ns-` (the prefix is not required under a repo-local root)
-- `description` is non-empty and at most 1024 characters
-- each `metadata.upstream` entry (a string or a list) matches `owner/repo@<7-40 hex>:path`
-- every relative link (`](x)`, `](./x)`, `](../x)`) in any `.md` file of the skill points to an existing path. URLs with a scheme, absolute paths and bare `#anchor` links are skipped, anchors are stripped, and fenced code blocks and inline code spans are skipped.
-- each `features/*.md` file (except `features/README.md`) has exactly four H2 headings in order: `Sub-features`, `How to get to it (user POV)`, `Driving it with <tool>`, `Gotchas`. A mismatch reports `features/x.md: H2 headings must be, in order: ...; found: ...`.
-- every `.md` file under the skill's `references/` is linked from some `.md` file in the skill. A link to a directory counts as a link to its `README.md`.
-
-Prints `{"ok","skills","errors":[{"skill","file","message"}]}` and exits 1 if there are errors. `--human` prints one line per error.
-
-### `ns install [--source <dir>] [--harness <h>]... [--target <dir>]... [--dry-run]`
-
-Symlinks each `<source>/ns-*` directory (default source `./skills`) into each target. `--harness` picks a harness's skill directory, and may repeat:
-
-| Harness | Directory |
-|---|---|
-| `claude` | `~/.claude/skills` |
-| `codex` | `~/.agents/skills` |
-| `agents` | `~/.agents/skills` |
-| `cursor` | `~/.cursor/skills` |
-
-The targets are every `--harness` directory plus every `--target` directory, with duplicates removed. With neither flag, the default is `--harness agents --harness claude`. Target directories are created if missing. Each action is one of:
-
-| Action | Meaning |
-|---|---|
-| `link` | new symlink |
-| `unchanged` | already points at the source |
-| `relink` | replaced an `ns-*` symlink that pointed at another checkout of the same skill, or at nothing |
-| `prune` | removed a dangling `ns-*` symlink into the source, for a skill that was deleted |
-| `conflict` | a real directory or an unrelated symlink is in the way. Left alone, and the command exits 1 |
-
-### `ns eval [skill...] [options]`
-
-Implements [docs/EVALS.md](../docs/EVALS.md): trigger evals from `skills/<skill>/evals/triggers.toml` and behaviour cases from `skills/<skill>/evals/cases/<id>/case.toml`, run against fixtures in `evals/fixtures/<name>/`. With no skill named, it takes every skill that has an `evals/` directory. `tdd` and `ns-tdd` both work.
-
-```
-ns eval [skill...] [--case <id>]... [--arms with,without | --compare <ref>]
-        [--trials N] [--changed-since <ref>] [--budget-usd X] [--max-runs N]
-        [--triggers-only | --cases-only] [--dry-run] [--no-cache] [--out <file>]
-        [--skills-dir <dir>] [--no-write-results] [--human]
-        [--harness <name>] [--model <m>] [--trigger-timeout <secs>]
-```
-
-- `--dry-run` prints the plan as JSON: harness command, skills, cases, arms with the skills each installs, trials planned, cached baseline trials, the resolved fixture env, skipped items with reasons, and estimated runs (`min`, `max`, capped by `max_runs`). It never starts a harness and writes nothing.
-- Fixtures are read from `<skills-dir>/../evals/fixtures`. A case whose `fixture` resolves outside that directory stops the command (exit 1). A missing fixture, a missing capability, or a missing skill skips the case with a reason.
-- `--case` selects cases and skips trigger evals. `--changed-since <ref>` keeps only skills with a file changed since `ref`, including uncommitted and untracked files.
-- `--compare <ref>` runs arms `with` and `old`. `old` installs the case's skills as they were at `ref`, extracted with `git archive`.
-- Stdout is one JSON object: runs, cost, budget state, per-skill cases with every trial and check, trigger results, `skipped`, and `results_files`. `--out` writes the same JSON to a file. `--human` adds a table on stderr. Progress lines go to stderr.
-- The run exits 0 when it completes, whatever the pass rates. Failing trials are measurements, not errors.
-
-How a trial runs:
-
-1. The fixture is copied to `<tmp>/ns-eval-*/repo` (without `fixture.toml`), `git init`ed and committed. `.ns/` goes into `.git/info/exclude`, as in a real worktree.
-2. The case's `files/` overlay is copied in. Other files in the case directory sit beside the repo while `setup.commands` run, so `cp ../brief.md .ns/x/` works. They are removed before the agent starts. The result is committed: this post-setup commit is the base for `diff_scope`, `{changed_tests}`, `fails_on_base` and the judge's diff.
-3. `$HOME` is a throwaway directory holding the arm's skills in `.claude/skills/` and `.agents/skills/`, plus symlinks to the harness's `carry` files from your real home. `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_*_HOME` and `NS_CONFIG` are unset.
-4. The harness runs with the prompt on stdin, cwd in the scratch repo, the fixture `[env]` and capability `path_prepend` applied, in its own process group. The group is killed at `timeout_minutes` (default 20). `ns eval` refuses to start a harness anywhere but a scratch dir under the system temp dir.
-5. Checks run in the scratch repo with the same environment. The judge calls `ns ask --role eval.judge --cwd <scratch repo>` with the rubric, the case prompt and the diff, and reads `pass` or `fail` from the first line. The scratch dir is then removed.
-
-Trigger evals run each prompt once, in an empty scratch dir with only the skill installed, and are killed after `--trigger-timeout` seconds (default 180). `claude-stream-json` counts a trigger as loaded on a `Skill` tool call naming the skill, or a `Read` of `<skill>/SKILL.md`. `codex-jsonl` counts a shell command naming `<skill>/SKILL.md`. A harness with `output = "none"` reports no metrics and triggers as `unsupported`. User-invoked skills (`disable-model-invocation: true`) have no trigger evals.
-
-Run control:
-
-- **Baseline cache.** `without` trials are stored under `<transcripts>/cache/<key>.json`, keyed by the case directory's content, the fixture's content, harness name, model, and the extra skills' content. A hit is reused, and new trials are appended. `--no-cache` reruns and replaces it.
-- **Adaptive trials.** Each arm starts at `trials` and gains one trial per round, up to `max_trials`, while any arm has mixed outcomes.
-- **Budget.** No trial starts once the reported cost reaches `budget_usd` or the run count reaches `max_runs`. Whatever didn't run is reported as `budget`. Cached trials cost nothing.
-
-Results: for every skill where something ran, `skills/<skill>/evals/results/<YYYY-MM-DD>-<short-sha>.json` holds the config, the commit and whether the skill dir was dirty, per-case and per-arm metrics (pass rate, median input and output tokens, cost, wall time and turns, outcomes), and skill metrics: `uplift` (mean per-case pass-rate gap against `without`, or `old`), `efficiency` (median tokens and wall time, `with` against the baseline) and trigger precision and recall. No transcripts. `--no-write-results` skips it. Transcripts go to `<transcripts>/runs/<run-id>/<skill>/<case>/<arm>-<n>.jsonl`, next to the harness's stderr.
-
-### `ns factory validate [--factory <dir>]`
-
-Parses `<dir>/nightshift.toml` (default `<main-worktree>/.nightshift/`) and checks gates, billing, merge policy and globs, phase names, harness names (user config or built in) and each `agents/<role>/agent.md` (frontmatter `role` matches the directory, placeholders are known). Prints `{"ok","path","name","phases","errors","warnings"}` with every phase's resolved skill, harness, model, timeout, attempts and prompt source. `warnings` lists keys that load but do nothing, such as the removed `[queue] triage_per_night`; they leave `ok` true. Exits 1 on any error.
-
-### `ns score <unit-id> [--scorer <name>] [--factory <dir>] [--dry-run]`
-
-Grades a finished unit with each scorer in `scorers/` (or the one `--scorer` names): builds a prompt from the rubric and labels, the `*.md` files in `.ns/<unit>/` and the PR outcome from `gh`, runs the scorer's role read-only through the `ns ask` path, and maps the reply's last `label: <value>` line to a score. Appends `{unit,scorer,label,score,pass}` per scorer to `ns/scores.jsonl` in the common git dir, and nothing when any judge names no known label (exit 1). `--dry-run` prints each prompt and writes nothing, but still calls `gh`. See `docs/FACTORY.md`, "Scoring".
-
-### `ns run [<unit-id>] [--issue <n>] [--from <phase>] [--gates stop|auto] [--base <ref>] [--cpus <n>] [--dry-run] [--factory <dir>]`
-
-Implements `ns run` in [docs/FACTORY.md](../docs/FACTORY.md): creates or reuses the unit's worktree, reads `.ns/<unit>/*.md`, picks the next phase from the state table, runs the phase's harness headless in the worktree with the rendered prompt on stdin, and repeats until the unit is done, merged, split, stuck, paused or out of budget. With only `--issue`, the unit id is `<n>-<slug of the issue title>` (read with `gh issue view`).
-
-- **Harness.** Each phase uses the `command_write` of its harness: `[harness.<name>]` from the user config, else the built-in. The built-in claude command for `ns run` is `claude -p --permission-mode bypassPermissions --model {model} --output-format stream-json --verbose`. Headless `acceptEdits` can't run shell commands, and the phases need Bash. Permissions are bypassed, so the agent can run any command as your user; cwd is always the unit's worktree, but nothing else confines it. Run it on a machine where that is acceptable. A configured claude command gets `--output-format stream-json --verbose` added if it lacks them.
-- **Files.** Transcripts: `<git-common-dir>/ns/transcripts/<unit>/<phase>-<attempt>.jsonl` (plus `.stderr`). Run log: `<git-common-dir>/ns/runs.jsonl`. Locks: `<git-common-dir>/ns-run-<unit>.lock` (one `ns run` per unit), `<git-common-dir>/ns-watch.lock` (one `ns watch` per repo), `<git-common-dir>/ns-merge.lock` (one merge step's update, CI wait and merge at a time per repo) and `<git-common-dir>/ns-worktree.lock` (one `ns worktree new` creating a worktree at a time per repo), each an OS `flock` whose file names the holder while held.
-- **Guards.** After every phase: the default branch on `origin` must not have moved to a commit of this unit, and a PR named in `pr.md` must not be merged. Either stops the run as stuck.
-- **Merge.** With `[merge] policy = "auto"`, a passing `pr.md` leads to the merge step: under `[gate] local = "build-only"`, update a PR head that lacks the default branch's tip and gate nothing locally; else with a gate and `local_queue` on (the default), gate the merge of the PR head with the default branch in a scratch worktree; else update a branch that is behind and gate the PR head; wait for checks to register on the PR head (bounded by `ci_register_timeout`), wait for CI (bounded by `ci_timeout_minutes`), send CI failures and conflicts back to build (conflicts to ship under `build-only`), leave PRs that change `human_review` files to a human, else `gh pr merge --squash`. Outcome `merged`.
-- **Quality records.** When a unit ends `merged`, `done` or `stuck`, `ns run` pushes one record per review attempt to `origin`'s `nightshift/quality` branch. If the push fails, the records wait in `<git-common-dir>/ns/quality-outbox.jsonl` for the next run, and the unit's outcome is unchanged.
-- **Cleanup.** After its merge step merges the PR and the unit's records are saved (pushed, or in the outbox), `ns run` removes the unit's worktree and local `ns/<unit>` branch. A worktree with uncommitted changes to tracked files, or a branch holding changes the merged PR head doesn't, stays. `cleanup` in the output says which, and why.
-- **Billing.** `[defaults] billing = "subscription"` (the default) removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY` from claude's environment and `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `CODEX_API_KEY` from codex's, drops `--bare`, and refuses to start (exit 2) without `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. A usage-limit error from claude ends the run as `paused` (exit 4) without using an attempt. `budget_usd` is a soft cap on the reported cost, unset by default on a subscription.
-- **CPU share.** `--cpus <n>` sets `NS_CPUS`, `RUST_TEST_THREADS` and `CARGO_BUILD_JOBS` to `<n>` for every phase and gate, leaving any of them already set in the environment as it is. The `start` event in the run log records each value and whether it was `computed` or `inherited`. Without `--cpus` none is set. `ns watch` passes `--cpus max(1, cores / --parallel)`. `--cpus 0` or a non-number exits 2. Details in `docs/FACTORY.md` ("Parallel units").
-- `--dry-run` prints the next decision, the rendered prompt and the command. It creates no worktree, takes no lock, and calls no harness.
-
-### `ns watch [--once] [--until HH:MM] [--max-units N] [--parallel N] [--dry-run] [--factory <dir>]`
-
-Lists open issues labelled `[queue] ready_label` with `gh`, drops issues whose first line, after any leading `🤖` disclosure line, is `Blocked by: #a, #b` with any blocker open, and issues an open PR closes (unless the PR is from the issue's own unit branch, which resumes at the merge step), then sorts by the first matching `[queue] order` label and the issue number. For each unit it swaps the ready label for the in-progress label, fetches `origin`, and starts `ns run --issue <n> --base origin/<default>` as a child process on a snapshot of the config and factory definition taken at start, up to `--parallel` (or `[limits] parallel`, default 1) at once, each with `--cpus max(1, cores / parallel)`, each free slot taking the first ready issue whose brief's predicted `touches` overlap no running unit's, else the first (`[queue] overlap_ignore` names files that never count; `docs/FACTORY.md`, "Parallel units"); a usage limit in one unit pauses the others at their next phase, and the budget counts every unit's spend (`docs/FACTORY.md`, "Parallel units"). Afterwards: `merged` removes the in-progress label (and `human_merge_label` from the PR), `done` sets `done_label` and labels the unit's PR, if it has one, `human_merge_label` (default `needs-human-merge`, created in red when missing) with a comment saying why it needs a human merge, so `gh pr list --label needs-human-merge` is the merge queue (every comment and issue `ns watch` posts opens with `🤖 *Posted by nightshift, an AI agent.*`), `split` (triage split the issue into child issues) sets `split_label` (default `status:split`, created when missing), and at start and between units each issue under it closes once its children are all completed, or goes to `stuck_label` when one was closed as not planned (`split_parents` in the output; `docs/FACTORY.md`, "Split parents"), `stuck` (or a `done` that needs a human merge, whose PR is labelled too) sets `stuck_label` and comments the reason, `budget` (also a runner lock or merge lock wait cut short by `--until`, or a budget found spent once the locks are held) returns the issue to the ready label and stops, and `paused` sleeps until the usage limit resets and resumes the same unit, or returns the issue and stops if the reset is past `--until`. While main's CI is red it starts only the fix issue, and stops with `stopped: "main_red_unfixed"` when that issue's unit ends `stuck`, `budget` or `split` with main still red (`docs/FACTORY.md`, "Main's CI"). At start it returns open in-progress issues that no live `ns run` holds to the ready label, keeping their worktrees so the units resume (`requeued` in the output). At start and between units it removes the worktrees of units a human merged since, as `ns clean` does (`cleaned` in the output, `clean` under `--dry-run`). On SIGINT or SIGTERM it starts nothing new, passes the signal to each unit's `ns run`, which ends its running phase's process group (SIGTERM, then SIGKILL after 5 s), returns every unit's issue to the ready label, prints the summary with `stopped: "SIGINT"` or `"SIGTERM"`, and exits 130 or 143. A second `ns watch` on the repo exits 5. `--dry-run` prints the ordered queue, with the running units each ready issue overlaps (`overlaps`), the skip reasons, the in-progress issues it would return (`requeue`), the label it would put on a PR that needs a human merge (`human_merge_label`), and each split parent with what it would do (`split_parents`). `gh` and every phase get `GH_TOKEN` from `[forge.github]` in the config, or from the environment when it is already set (see [`[forge]`](#forge)). `--until` is local time, and the `until` and `reset_at` it prints are local with their offset (`2026-10-09T06:30:00-04:00`). `NS_NOW` (unix seconds) pins the clock for tests.
-
-### `ns clean [--dry-run]`
-
-Removes every unit worktree, and its local `ns/<unit>` branch, whose issue is closed and whose PR (from `pr.md`) merged, closes the issue and comes from `ns/<unit>`. It saves the units' quality records first; records left in the outbox count as saved. It never removes a worktree with uncommitted changes to tracked files, one whose HEAD left `ns/<unit>`, one whose branch holds changes the merged PR head doesn't (whitespace counts), or a unit whose run lock a live `ns run` holds. Prints `{ok, command, dry_run, status, removed, kept, records}`, with a reason for every kept unit; `status` is `cleaned`, `planned` or `nothing-to-clean`. `--dry-run` prints `planned` and removes or records nothing, though it reads `gh` and may fetch a PR head. Exits 1 when a removal failed. Details in `docs/FACTORY.md` (Cleanup).
-
-### `ns log [--unit <id>] [--since <time>] [-f] [--json] [--phase-output]`
-
-Prints `<git-common-dir>/ns/runs.jsonl`, the events `ns run` and `ns watch` append, one line per event: time, event, short sha, issue, phase, attempt, status, duration, outcome, PR link and reason, leaving out what the event lacks. The PR link is built from `origin`'s URL. `-f` prints the log so far, then polls it every 0.5 s for new lines, like `tail -f`. `--unit` keeps one unit's events, and `--since` (UTC, inclusive) drops older and undated ones. `--json` prints one object per event holding only `ts`, `event`, `sha`, `unit`, `issue`, `phase`, `attempt`, `status`, `wall_s`, `outcome`, `pr`, `pr_url` and `reason`, so prompts, transcript paths and errors in the log never reach the output. Lines that are not JSON are skipped and counted on stderr.
-
-`--phase-output` prints, instead of the run log, the newest phase transcript `ns run` wrote under `<git-common-dir>/ns/transcripts/<unit>/` (of the unit the run log names last without `--unit`; its path goes to stderr): the last 20 assistant messages and tool calls, one line each (`assistant: <text>`, `tool: <name> <input JSON>`), text cut at 200 characters as `ns transcripts read --compact` cuts it. Known credential shapes are replaced by `[redacted]` first: tokens with a known prefix (`ghp_`, `glpat-`, `sk-`, `AKIA`, ...), JWTs, bearer and basic credentials, URL passwords, `--password X`-style flags, `curl -u user:pass`, private key blocks, and the rest of the line after any `*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*API_KEY*`-like assignment (a JSON key's value too). Other secrets can still show. `--json` prints `{"kind":"assistant","text"}` or `{"kind":"tool","name","input"}` per entry. `-f` then follows that transcript and moves on to the next phase's. It does not take `--since`, and exits 1 when the unit has no transcript yet.
-
-### `ns status [--since <time>] [--json]`
-
-Summarises the night in four parts. Running: each unit a live `ns run` holds (its run lock), with its last logged phase. Ended: each other unit by the outcome of its last `end` event at or after `--since` (UTC, inclusive; default 24 hours ago): merged, PR for a human (`done`), stuck (`stuck` or `budget`), paused, split, and other (anything else, such as `interrupted`, shown only when present). Next: the ready issues `ns watch` would take, in its order, from the same queue reader; when the forge can't be read it prints `queue unavailable` and gives the reason on stderr. Main: the `main_red`, `main_green` and `main_red_unfixed` events `ns watch` logged at or after `--since`, oldest first, shown only when there are some (`docs/FACTORY.md`, "Main's CI"). Entries hold only the fields `ns log` prints. `--json` prints one object, `{since, running, ended: {merged, pr_for_human, stuck, paused, split, other}, main, next}`, with `main` an empty list when there are none and `next` null when the queue is unavailable.
-
-### `ns quality [--since <date>] [--json]`, `ns quality import <dir> [--dry-run]`
-
-Reads the quality records on `origin`'s `nightshift/quality` branch (fetched first) and in the outbox. For a unit with no record, it reads the review artifacts in its linked worktree (`.ns/<unit>/review.md`, `review/cycle-*.md`, `history/review*`). It adds the run log and prints JSON: first-pass yield, first-pass Critical and Important findings per 100 changed lines (overall and by axis), cycles to clean, leftovers, escapes blamed to the commit and PR that introduced the line, and a trend by local day. `--since` keeps units whose newest review artifact was updated on or after that local date. `gaps` counts artifacts it couldn't parse and findings missing a field. It changes nothing but the remote-tracking ref. `ns run` writes a unit's records when it ends, and `ns quality import` writes them for archived worktrees. The metrics and their targets are in `docs/FACTORY.md` (Quality).
-
-`ns quality --bugs [--since <date>] [--until <date>] [--weeks N] [--json]` counts the `type:fix` issues opened in each ISO week (UTC), by source and severity, read from the `[queue] source` forge, with their rate per merged unit and per 1,000 changed lines and each rate's trend. It prints tables, or with `--json` one object:
-
-- `ok`, `label` (`type:fix`), `since` and `until` (UTC, null when unset; `--weeks` sets `since`).
-- `weeks`: one entry per ISO week, oldest first, each `{week, monday, opened, review_escape, factory_introduced, ci_main, human, critical_high, rest, merged_units, changed_lines, per_unit, per_kloc, undercounted}`. `week` is `2026-W41` and `monday` its first day. `merged_units` counts the PRs merged that week from `ns/` branches and `changed_lines` their additions plus deletions (0 for a week with no unit; null when a merged unit has no line count, as on GitLab). `per_unit` is `opened` per merged unit and `per_kloc` per 1,000 changed lines, rounded to 3 places, each null when its divisor is zero or unknown. `undercounted` is true when the forge's cap (200 PRs, 100 on GitLab) cut the merged-PR list short and the week starts before `merged_prs.oldest`, so PRs merged in it may be missing. The forge lists by creation time, so a PR created long before it merged can be missing from a later week too; the list is read from the report's first week on, which keeps that to long-lived PRs.
-- `total`: the issue counts over every week.
-- `trend`: `{per_unit, per_kloc}`, each `{direction, slope, weeks}`. `direction` is `rising`, `flat`, `falling` or `insufficient` (fewer than 4 weeks with a rate that are not undercounted), `slope` the least-squares change per week (null when insufficient), and `weeks` how many weeks it was fitted on.
-- `merged_prs`: the merged-PR list the rates come from, `{listed, truncated, oldest}`; `oldest` is when its oldest PR merged, null when none is listed. The units and lines of a week count only PRs merged inside `--since` and `--until`.
-- `issues`: each counted issue, `{number, title, opened, week, source, by, severity}`, plus `introduced_by` (`{commit, summary, pr}`) when blamed and `blame_error` when its blame failed. `source` is `review_escape`, `factory_introduced`, `ci_main` or `human`, `by` is `marker`, `review_text`, `ci_title`, `blame` or `default`, and `severity` is `critical_high` or `rest`.
-- `excluded`: the issues left out, closed as a duplicate or not planned, each `{number, title, week}`.
-
-How each source is decided is in `docs/FACTORY.md` (Quality, Bug counts).
-
-### `ns transcripts list [--since <date>] [--project <path>] [--new] [--mark]`
-
-Lists Claude Code sessions from `$CLAUDE_CONFIG_DIR/projects` (default `~/.claude/projects`) as `{"index","marked","sessions"}`, oldest first. Each session has `id`, `source`, `date` (its first event's timestamp), `project` (its working directory), `size`, `mtime` and `path`. `--since 2026-10-01` keeps sessions that started on or after that UTC date. `--project <path>` keeps sessions run in that directory (trailing slashes and symlinks are normalised; a session with no recorded working directory is matched by its Claude directory name). `--new` keeps sessions whose size or mtime differ from the index at `$XDG_DATA_HOME/nightshift/transcripts-index.json` (default `~/.local/share/nightshift/`). `--mark` records the listed sessions there as processed.
-
-### `ns transcripts read <id> [--compact]`
-
-Prints one session (an id or a unique prefix) as `{"id","source","date","project","path","entries"}`. Entries are user prompts, assistant text, tool calls with their JSON input, tool output, and errors, in order. Thinking and injected meta messages are left out. Text over 2000 characters ends in `…[truncated N chars]`. `--compact` cuts at 200, tool output included. Exits 1 if no session matches, 2 if the prefix matches several. Entries are verbatim and can contain secrets (tokens in tool output, pasted credentials), so review before sharing or committing them.
-
-Each harness's store is a `Reader` in `cli/src/transcripts.rs`. Only Claude Code has one so far. `--project` takes the path itself and the reader decides what matches. The same id under two project directories is two sessions: the index keys on source and store path, and `read` exits 2 with both paths.
-
-### `ns upstream status [--skills-dir <dir>] [--human]`, `ns upstream diff <skill> [--human]`
-
-Compare adapted skills with the upstream each records in `metadata.upstream` (`owner/repo@sha:path`, one or a list). Each repo is fetched with `git` from `https://github.com/owner/repo` into a bare cache at `<git-common-dir>/ns/upstream/owner/repo`: `--depth=1` the first time, plain fetches after that, and `--deepen` (64 commits, doubling) until the cache holds the recorded sha, so a short sha needs no fetch by id. A repo is fetched once per invocation. git's `url.<base>.insteadOf` redirects the fetch, to a mirror or, in the tests, to a local bare repo.
-
-`status` prints `{"ok","changed","skills":[{"skill","upstreams":[{"upstream","head","changed"}]}]}` for every skill with an upstream; `changed` says whether the path differs between the recorded sha and upstream HEAD. An entry that can't be checked (bad format, fetch failed, sha not in HEAD's history) has `error` instead, and the command exits 1. `diff` prints `{"skill","upstreams":[{"upstream","head","diff"}]}`, the path's diff from the recorded sha to HEAD; `--human` prints each diff under `=== <upstream> -> <head>`. An unknown skill, or one with no upstream, exits 2.
-
-### `ns doctor`
-
-Prints the config path, whether it exists and parses, and each configured role with its resolved harness, model, read-only and write commands, and whether the binary is on PATH. `distinct_harnesses` lists the providers in use, so a skill can tell whether two roles get a cross-provider check. `harnesses` reports which of `claude`, `codex`, `cursor-agent`, `gemini` and `opencode` are on PATH, and `pinning`, how `ns run` pins the skills that harness's phases see: `snapshot` for claude, `partial` for codex (it reads the snapshot through `.agents/skills`, next to the user's installed skills, unless the repo tracks `.agents/skills`: then the live directory stays and `ns run` logs `skills_unpinned`), `none` for cursor-agent (unconfirmed), gemini and opencode (`docs/FACTORY.md`, "Pinned skills and phase settings"). `forge` reports, per forge, whether it is `configured`, whether a token resolved (`token_resolved`), the `account` the forge's API returns for that token (`gh api user`, `glab api user`), and the `table` it came from. For the forge `origin` is on it also reports the `repo` from `origin`'s URL, whether the token can read it (`repo_readable`; false is a problem), and for an SSH origin the account `ssh -T` greets (`ssh: {dest, account}`). Fields that don't apply are null. The token itself is never printed. `warnings` lists what doesn't stop a night: an SSH account that differs from the token's, an SSH host that greets no account, a set `GH_TOKEN` or `GITLAB_TOKEN` that overrides the config, an SSH `origin` with no keepalive, a main checkout that is not on the default branch, and a linked worktree that holds the default branch, so the main checkout cannot switch to it. `ssh_keepalive` reports whether pushes to an SSH `origin` send keepalives (`ok`), and what sets `ServerAliveInterval` (`source`: `GIT_SSH_COMMAND`, `core.sshCommand`, or `ssh config`, from `ssh -G`); without one, a push whose pre-push hook runs for minutes can lose its idle connection. `claude_phases` reports that `ns run` phases and `ns eval` trials run claude with auto-memory off (`auto_memory: false`) and the variable that does it (`env`). `skill_dirs` reports, per harness (`claude`, `codex`, `agents`, `cursor`), the `path` that `ns install --harness` links into and `ns_skills`, how many `ns-*` skills it holds (0 when the directory is missing). `problems` lists anything that would make `ns ask` fail, and a forge token that doesn't resolve.
-
-Exits 1 when any check fails (`ok` is false, and `problems` says which), 0 otherwise; the report is printed either way. Warnings never change the exit code.
+One page per command, in [docs/cli/](../docs/cli/):
+
+- [`ns worktree`](../docs/cli/worktree.md)
+- [`ns ask`](../docs/cli/ask.md)
+- [`ns lint`](../docs/cli/lint.md)
+- [`ns install`](../docs/cli/install.md)
+- [`ns eval`](../docs/cli/eval.md)
+- [`ns factory`](../docs/cli/factory.md)
+- [`ns score`](../docs/cli/score.md)
+- [`ns run`](../docs/cli/run.md)
+- [`ns watch`](../docs/cli/watch.md)
+- [`ns clean`](../docs/cli/clean.md)
+- [`ns log`](../docs/cli/log.md)
+- [`ns status`](../docs/cli/status.md)
+- [`ns quality`](../docs/cli/quality.md)
+- [`ns transcripts`](../docs/cli/transcripts.md)
+- [`ns upstream`](../docs/cli/upstream.md)
+- [`ns doctor`](../docs/cli/doctor.md)
 
 ## Config
 

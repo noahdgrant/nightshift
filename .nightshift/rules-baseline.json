@@ -15,7 +15,7 @@
       "file": "cli/src/run.rs",
       "line": 1,
       "message": "file is past 1000 lines; split it along a seam (quality bar, Size: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "//! `ns run`: drive one unit through the phases (docs/FACTORY.md)."
+      "snippet": "//! `ns run`: drive one unit through the phases (docs/factory/run.md)."
     },
     {
       "tool": "ast-grep",

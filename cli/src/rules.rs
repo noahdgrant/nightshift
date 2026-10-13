@@ -1,5 +1,5 @@
 //! `ns rules check` and `ns rules baseline`: run the repo's rule pack and ratchet its violations
-//! against a committed baseline (docs/FACTORY.md, "Rules").
+//! against a committed baseline (docs/factory/run.md, "Rules").
 
 use std::collections::HashMap;
 use std::fs::{self, File};

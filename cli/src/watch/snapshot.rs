@@ -1,5 +1,5 @@
-//! What `ns watch` hands each `ns run` it starts (docs/FACTORY.md, "Parallel units"): a copy of
-//! the config and factory definition it read at start, the night's facts in `night.json`, the
+//! What `ns watch` hands each `ns run` it starts (docs/factory/watch.md, "Parallel units"): a copy
+//! of the config and factory definition it read at start, the night's facts in `night.json`, the
 //! hold file a usage limit writes, and the spend file every unit adds its phase costs to.
 
 use std::fs;
