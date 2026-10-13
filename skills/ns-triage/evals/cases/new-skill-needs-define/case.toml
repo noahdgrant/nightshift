@@ -1,0 +1,52 @@
+description = "A team member asks for a new agent skill (skills/cycle-count/) with acceptance criteria that look complete, and records no agreed design. A new skill always leaves its triggers, scope, authority and trust boundaries open, so under gates: auto triage should route it to needs-define with Triage Notes naming those open decisions, write no Agent Brief, and start no unit (#346)."
+fixture = "py-inventory"
+skills = ["ns-triage"]
+# Same skill set as design-choice-needs-define: ns-define is not installed, so the auto hand-off stops at triage.
+extra_skills = ["ns-contract"]
+requires = []
+timeout_minutes = 10
+prompt = """
+Triage .scratch/cycle-count-skill/issues/01-add-cycle-count-skill.md. gates: auto
+"""
+
+[[check]]
+type = "regex"
+path = ".scratch/cycle-count-skill/issues/01-add-cycle-count-skill.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?needs-define`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/cycle-count-skill/issues/01-add-cycle-count-skill.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?(needs-triage|ready-for-agent|ready-for-human|needs-info|wontfix|closed)'
+present = false
+
+[[check]]
+type = "regex"
+path = ".scratch/cycle-count-skill/issues/01-add-cycle-count-skill.md"
+pattern = '(?m)^#+\s*Agent Brief'
+present = false
+
+[[check]]
+type = "regex"
+path = ".scratch/cycle-count-skill/issues/01-add-cycle-count-skill.md"
+pattern = '🤖 \*Posted by nightshift, an AI agent\.\*'
+present = true
+
+[[check]]
+# No unit started: no brief.md anywhere and no ns/* branch or extra worktree.
+type = "command"
+run = '''
+! ls .ns/*/brief.md ../"$(basename "$PWD")".worktrees/*/.ns/*/brief.md 2>/dev/null | grep -q . && ! git branch --list 'ns/*' | grep -q . && [ "$(git worktree list | wc -l)" -eq 1 ]
+'''
+expect_exit = 0
+
+[[check]]
+# Not built and not rejected: tracker edits only.
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]
+
+[[check]]
+type = "judge"
+rubric = "Read the Triage Notes in .scratch/cycle-count-skill/issues/01-add-cycle-count-skill.md. Pass only if they route the issue to ns-define because it adds a new skill whose design no team member has recorded as agreed, and list open design decisions such as when the skill triggers, its scope against receive-delivery, what it may run or change (authority), and how it treats the counts file (trust boundary). Fail if they call the issue fully specified, choose those answers as settled, or route it for being large or unclear instead."
+required = false

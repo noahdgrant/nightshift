@@ -72,6 +72,8 @@ jobs:
         run: cli/target/debug/ns lint skills --human
       - name: Lint repo-local skills
         run: cli/target/debug/ns lint .agents/skills --human
+      - name: Run verify-nightshift's Launch and Doctor recipes (fake claude and gh; jq ships with the runner)
+        run: scripts/check-verify-recipes.sh
       - name: Check human-review markers
         run: cli/target/debug/ns check-markers --human
       - name: Rules check (new violations only, against .nightshift/rules-baseline.json)
