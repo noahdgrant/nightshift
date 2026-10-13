@@ -400,6 +400,7 @@ fn exec(staged: &Path, args: Vec<OsString>) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proc::Kind;
 
     fn os(v: &[&str]) -> Vec<OsString> {
         v.iter().map(OsString::from).collect()
@@ -534,14 +535,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut slow = Proc::tool("sh");
         slow.args(["-c", "sleep 300"]);
-        let start = std::time::Instant::now();
         let log = dir.path().join("log");
-        let e = logged(&mut slow, Duration::from_millis(200), &log)
+        let e = logged(&mut slow, Duration::ZERO, &log)
             .unwrap()
             .output()
             .unwrap_err();
         assert!(e.to_string().contains("timed out"), "{e}");
-        assert!(start.elapsed() < Duration::from_secs(120));
     }
 
     #[test]
@@ -551,7 +550,7 @@ mod tests {
         quick.args(["-c", "echo out; echo err >&2; (sleep 300 &); exit 3"]);
         let start = std::time::Instant::now();
         let log = dir.path().join("log");
-        let out = logged(&mut quick, Duration::from_secs(600), &log)
+        let out = logged(&mut quick, Kind::Tool.timeout(), &log)
             .unwrap()
             .output()
             .unwrap();
