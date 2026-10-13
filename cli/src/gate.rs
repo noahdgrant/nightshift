@@ -297,6 +297,13 @@ struct MergeVerdict {
     red: Option<Red>,
 }
 
+/// A kept merge verdict that [`Gate::merge_verdict`] hands back.
+#[derive(Clone)]
+pub enum Reused {
+    Green,
+    Red(Red),
+}
+
 pub struct Job<'a> {
     pub cmd: &'a str,
     /// Whether `cmd` is the full gate, logged as `local_full`, else `local_fast`.
@@ -434,12 +441,12 @@ impl Gate {
     }
 
     /// The verdict of the last gate on a merge result, when it was the merge of `head` into
-    /// `base`: `Some(None)` is green. Reused until either side moves.
-    pub fn merge_verdict(&self, head: &str, base: &str) -> Option<Option<Red>> {
+    /// `base`. Reused until either side moves.
+    pub fn merge_verdict(&self, head: &str, base: &str) -> Option<Reused> {
         self.merged
             .as_ref()
             .filter(|v| same_sha(&v.head, head) && same_sha(&v.base, base))
-            .map(|v| v.red.clone())
+            .map(|v| v.red.clone().map_or(Reused::Green, Reused::Red))
     }
 
     /// Run the gate in `job.worktree`, which holds the merge of PR head `job.head` into

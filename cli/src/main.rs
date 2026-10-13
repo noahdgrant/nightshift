@@ -275,12 +275,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
             } => return ratchet::update(factory.as_deref(), allow_loosen, dry_run, format(human)),
         },
         Cmd::Rules { command } => match command {
-            RulesCmd::Check { human } => return rules::check(human),
+            RulesCmd::Check { human } => return rules::check(format(human)),
             RulesCmd::Baseline {
                 allow_growth,
                 dry_run,
                 human,
-            } => return rules::baseline(allow_growth, dry_run, human),
+            } => return rules::baseline(allow_growth, dry_run, format(human)),
         },
         Cmd::Transcripts { command } => match command {
             TranscriptsCmd::List {
