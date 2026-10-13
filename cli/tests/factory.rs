@@ -3893,19 +3893,24 @@ fn dropping_a_background_run_kills_the_phase_in_its_own_session() {
 #[test]
 fn a_run_past_its_timeout_fails_and_kills_the_phase_in_its_own_session() {
     let e = Env::new();
-    let pid = e.ctrl.join("phase.pid");
+    let entered = e.ctrl.join("entered");
+    mkfifo(&entered);
     e.queue("build", &["pass:script"]);
-    e.ctl("build.sh", &format!("echo $$ > {pid:?}; sleep 30"));
-    let panic = std::panic::catch_unwind(|| {
-        e.ns()
-            .args(["run", "--issue", "7"])
-            .timeout(Duration::from_secs(3))
-            .output()
-    })
-    .unwrap_err();
+    e.ctl("build.sh", &format!("echo $$ > {entered:?}; sleep 600"));
+    let mut run = e
+        .ns()
+        .args(["run", "--issue", "7"])
+        .timeout(Duration::from_secs(3))
+        .start();
+    // The run's timeout starts at the wait, once the phase is in, however slow the start.
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(fs::read_to_string(entered));
+    });
+    let pid = rx.recv_timeout(common::TIMEOUT).unwrap().unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.wait())).unwrap_err();
     let msg = panic.downcast_ref::<String>().unwrap();
     assert!(msg.contains("timed out after 3s"), "{msg}");
-    let pid = fs::read_to_string(&pid).unwrap();
     assert!(exits(&pid), "phase {pid} outlived its run");
 }
 
