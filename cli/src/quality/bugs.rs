@@ -85,6 +85,8 @@ pub struct Bug {
     pub source: Source,
     pub by: By,
     pub severity: Band,
+    /// The bugs it counts as: one per checklist item for a `review_escape`, at least one.
+    pub bugs: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub introduced_by: Option<Blame>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,17 +113,17 @@ pub struct Counts {
 
 impl Counts {
     fn add(&mut self, b: &Bug) {
-        self.opened += 1;
+        self.opened += b.bugs;
         *match b.source {
             Source::ReviewEscape => &mut self.review_escape,
             Source::FactoryIntroduced => &mut self.factory_introduced,
             Source::CiMain => &mut self.ci_main,
             Source::Human => &mut self.human,
-        } += 1;
+        } += b.bugs;
         *match b.severity {
             Band::CriticalHigh => &mut self.critical_high,
             Band::Rest => &mut self.rest,
-        } += 1;
+        } += b.bugs;
     }
 }
 
@@ -172,6 +174,21 @@ fn marked(body: &str) -> Option<Source> {
         .find_map(|v| Source::parse(v.trim().trim_matches('`')))
 }
 
+/// The `- [ ]` and `- [x]` lines of `body` outside code fences: one per finding `ns-review` groups
+/// into an escape issue.
+fn checklist_items(body: &str) -> usize {
+    let mut fenced = false;
+    body.lines()
+        .map(str::trim_start)
+        .filter(|l| {
+            if l.starts_with("```") {
+                fenced = !fenced;
+            }
+            !fenced && ["- [ ]", "- [x]", "- [X]"].iter().any(|b| l.starts_with(b))
+        })
+        .count()
+}
+
 fn band(labels: &[String]) -> Band {
     if labels
         .iter()
@@ -199,6 +216,7 @@ pub fn classify(
         source: Source::Human,
         by: By::Default,
         severity: band(&i.labels),
+        bugs: 1,
         introduced_by: None,
         blame_error: None,
     };
@@ -213,6 +231,9 @@ pub fn classify(
     };
     if let Some((s, by)) = guess {
         (bug.source, bug.by) = (s, by);
+        if s == Source::ReviewEscape {
+            bug.bugs = checklist_items(&i.body).max(1);
+        }
         return bug;
     }
     match trace(f) {
@@ -586,6 +607,40 @@ mod tests {
         assert_eq!(sev(&["priority:low"]), Band::Rest);
         assert_eq!(sev(&["priority:highest"]), Band::Rest);
         assert_eq!(sev(&[]), Band::Rest);
+    }
+
+    #[test]
+    fn a_review_escape_counts_one_bug_per_checklist_item_and_others_count_one() {
+        let grouped = format!(
+            "{ESCAPED}\n\n- [ ] `a.rs:1` x\n  - [x] `a.rs:2` y\n- [X] `a.rs:3` z\n\n```\n- [ ] fenced\n```\n> - [ ] quoted\n-  [ ] loose\n- [] bare"
+        );
+        let item_less = "Source: review_escape\n`a.rs:1` x";
+        let human = "Source: human\n- [ ] a\n- [ ] b";
+        let bugs = |body: &str| {
+            classify(
+                &filed(1, "2026-10-05", "fix: x", body, &[]),
+                &no_trace,
+                &BTreeSet::new(),
+            )
+            .bugs
+        };
+        assert_eq!(bugs(&grouped), 3);
+        assert_eq!(bugs(item_less), 1);
+        assert_eq!(bugs(human), 1);
+        let r = report(
+            &[
+                filed(1, "2026-10-05", "fix: a", &grouped, &["priority:high"]),
+                filed(2, "2026-10-06", "fix: b", item_less, &[]),
+                filed(3, "2026-10-12", "fix: c", human, &[]),
+            ],
+            Window::default(),
+            t("2026-10-14"),
+            &no_trace,
+            &BTreeSet::new(),
+        );
+        assert_eq!(r.weeks[0].counts, counts([4, 4, 0, 0, 0, 3, 1]));
+        assert_eq!(r.weeks[1].counts, counts([1, 0, 0, 0, 1, 0, 1]));
+        assert_eq!(r.total, counts([5, 4, 0, 0, 1, 3, 2]));
     }
 
     fn fixtures() -> Vec<Filed> {

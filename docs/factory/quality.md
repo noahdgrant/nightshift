@@ -61,4 +61,6 @@ Each issue gets one source, and `by` says what decided it, first match wins:
 
 The marker is one line in the body, `Source: review_escape`, and wins over every guess. A phase that files a fix issue should write it. Merged PRs come from the forge's 200 most recent (100 on GitLab). A blame that fails leaves the issue `human` and says why in `blame_error`, and a blame on a PR outside the factory keeps its `introduced_by`. Severity is `critical_high` for an issue labelled `priority:critical` or `priority:high`, and `rest` for any other priority or none.
 
+An issue counts as one bug, except a `review_escape` one. `ns-review` files one issue per area and kind with a checklist item per finding, so it counts one bug per `- [ ]` or `- [x]` line in its body, at least one. A checklist line inside a code fence doesn't count, and neither does one in a comment: review adds the items of a comment to the body too. Every count, `opened`, the source and the severity, counts the same bugs, and `bugs` on each issue says how many.
+
 Without `--json` it prints a table, one row per week and a total. With `--json` it prints `{ok, label, since, until, weeks, total, issues, excluded}`; `docs/cli/quality.md` lists the keys. Rates per merged unit or per changed line, and the trend, are not computed yet.
