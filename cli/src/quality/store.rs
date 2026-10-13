@@ -3,13 +3,12 @@
 //! `commit-tree`), so writing never touches a working tree, an index or a local branch.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
 use crate::git;
+use crate::proc::Proc;
 
 pub const BRANCH: &str = "nightshift/quality";
 pub const FILE: &str = "records.jsonl";
@@ -21,7 +20,14 @@ pub fn outbox(common: &Path) -> PathBuf {
 }
 
 // `publish` holds the outbox lock across its network calls, so they must end (git::net).
-use git::{net, unattended as cmd};
+use git::net;
+
+/// Local git in `root`.
+fn cmd(root: &Path, args: &[&str]) -> Proc {
+    let mut c = git::command();
+    c.arg("-C").arg(root).args(args);
+    c
+}
 
 fn fail(args: &[&str], stderr: &[u8]) -> anyhow::Error {
     anyhow::anyhow!(
@@ -40,18 +46,10 @@ fn piped(root: &Path, args: &[&str], input: &[u8], ident: bool) -> Result<Vec<u8
             .is_ok_and(|o| o.status.success());
         fallback_identity(&mut c, known);
     }
-    let mut child = c
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    let out = c
+        .stdin(input.to_vec())
+        .output()
         .context("failed to run git; is it installed and on PATH?")?;
-    child
-        .stdin
-        .take()
-        .expect("stdin is piped")
-        .write_all(input)?;
-    let out = child.wait_with_output()?;
     if !out.status.success() {
         return Err(fail(args, &out.stderr));
     }
@@ -64,7 +62,7 @@ fn text(root: &Path, args: &[&str], input: &[u8]) -> Result<String> {
 }
 
 /// Commit as the configured user, or as `nightshift` when the repo has no identity.
-fn fallback_identity(c: &mut Command, known: bool) {
+fn fallback_identity(c: &mut Proc, known: bool) {
     if !known {
         for (k, v) in [
             ("GIT_AUTHOR_NAME", "nightshift"),
@@ -593,7 +591,7 @@ mod tests {
     #[test]
     fn network_commands_never_prompt_and_keep_a_chosen_ssh_command() {
         let s = setup();
-        let env = |c: &Command, k: &str| {
+        let env = |c: &Proc, k: &str| {
             c.get_envs()
                 .find(|(n, _)| *n == k)
                 .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
@@ -651,14 +649,17 @@ mod tests {
 
     #[test]
     fn without_an_identity_the_commit_is_by_nightshift() {
-        let mut c = Command::new("true");
+        let set = |c: &Proc| -> Vec<(String, String)> {
+            c.get_envs()
+                .filter_map(|(k, v)| Some((k.to_str()?.into(), v?.to_str()?.into())))
+                .collect()
+        };
+        let mut c = Proc::tool("true");
         fallback_identity(&mut c, true);
-        assert_eq!(c.get_envs().count(), 0);
+        assert_eq!(set(&c), []);
         fallback_identity(&mut c, false);
-        let envs: Vec<_> = c
-            .get_envs()
-            .map(|(k, v)| (k.to_str().unwrap(), v.unwrap().to_str().unwrap()))
-            .collect();
+        let envs = set(&c);
+        let envs: Vec<_> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         assert_eq!(envs.len(), 4);
         assert!(envs.contains(&("GIT_COMMITTER_EMAIL", "nightshift@localhost")));
     }

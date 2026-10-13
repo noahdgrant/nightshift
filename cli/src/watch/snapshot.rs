@@ -341,7 +341,9 @@ mod tests {
     #[test]
     fn a_snapshot_sweeps_the_dirs_of_dead_watches_only() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let mut child = crate::proc::Proc::tool("true")
+            .spawn(tempfile::tempfile().unwrap())
+            .unwrap();
         let dead = child.id();
         child.wait().unwrap();
         let ns = tmp.path().join("ns");

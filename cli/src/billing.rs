@@ -70,12 +70,6 @@ pub fn api_env(argv: &[String]) -> &'static [&'static str] {
     }
 }
 
-pub fn scrub(cmd: &mut Command, argv: &[String]) {
-    for k in api_env(argv) {
-        cmd.env_remove(k);
-    }
-}
-
 fn credentials_path() -> PathBuf {
     crate::config::expand_tilde("~/.claude/.credentials.json")
 }
@@ -250,14 +244,6 @@ mod tests {
         assert_eq!(api_env(&v(&["claude", "-p"])), API_ENV);
         assert_eq!(api_env(&v(&["codex", "exec"])), CODEX_API_ENV);
         assert!(api_env(&v(&["sh", "-c", "true"])).is_empty());
-        let mut cmd = Command::new("codex");
-        cmd.env("OPENAI_API_KEY", "k");
-        scrub(&mut cmd, &v(&["codex", "exec"]));
-        let removed: Vec<_> = cmd.get_envs().filter(|(_, v)| v.is_none()).collect();
-        assert_eq!(removed.len(), CODEX_API_ENV.len());
-        assert!(removed
-            .iter()
-            .all(|(k, _)| !k.to_string_lossy().starts_with("ANTHROPIC")));
     }
 
     #[test]

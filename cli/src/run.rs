@@ -328,7 +328,7 @@ fn same_worktree(predicted: &Path, actual: &Path) -> Result<()> {
 // ---------------------------------------------------------------- gh and git helpers
 
 pub fn gh(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = crate::git::scrub(&mut Command::new("gh"))
+    let out = crate::proc::scrub_git(&mut Command::new("gh"))
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())

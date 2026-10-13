@@ -3,7 +3,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -11,6 +10,7 @@ use serde_json::Value;
 use super::{ClosingPrs, Filed, Forge, IssueState, MergedPr, MergedPrs, Post, PrState};
 use crate::config::ForgeKind;
 use crate::error::SfError;
+use crate::proc::Proc;
 use crate::watch::ci::{Check, HeadChecks, Outcome};
 use crate::watch::{closed_by, Issue};
 
@@ -23,10 +23,10 @@ pub struct GitLab {
 }
 
 fn glab(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = crate::git::scrub(&mut Command::new("glab"))
+    let out = Proc::forge("glab")
         .args(args)
         .current_dir(cwd)
-        .stdin(Stdio::null())
+        .until_stop()
         .output()
         .context("cannot run glab; is it installed and on PATH?")?;
     if !out.status.success() {

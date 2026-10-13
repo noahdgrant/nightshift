@@ -3,7 +3,6 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::Result;
 
@@ -112,7 +111,7 @@ pub(super) fn find_or_file(
 }
 
 /// `git fetch origin`, run unattended (`git::net`): it never prompts and a stalled transfer ends.
-fn fetch_origin(root: &Path) -> Command {
+fn fetch_origin(root: &Path) -> crate::proc::Proc {
     git::net(root, &["fetch", "--quiet", "origin"])
 }
 

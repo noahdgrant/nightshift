@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use crate::error::SfError;
 use crate::frontmatter;
 use crate::git::{self, Repo, WorktreeEntry};
+use crate::proc::Proc;
 use crate::run::{holder_pid, Lock, WORKTREE_LOCK};
 
 pub const BRANCH_PREFIX: &str = "ns/";
@@ -67,31 +68,42 @@ fn run_setup(
 ) -> Result<Vec<SetupResult>> {
     let mut results = Vec::new();
     for c in commands {
-        let mut sh = Command::new("sh");
-        crate::git::scrub(&mut sh);
-        crate::cpus::apply(&mut sh);
-        let status = sh
+        let ran = Proc::tool("sh")
             .arg("-c")
             .arg(c)
             .current_dir(path)
+            .envs(crate::cpus::vars())
             .env("NS_UNIT", unit)
             .env("NS_WORKTREE", path)
             .env("NS_MAIN_ROOT", root)
-            .stdin(Stdio::null())
-            .stdout(std::io::stderr())
-            .stderr(std::io::stderr())
-            .status()
-            .with_context(|| format!("cannot run setup command {c:?}"))?;
-        let ok = status.success();
+            .output_to(stderr_file()?)
+            .until_stop()
+            .output();
+        // A stop kills the command as a signal would, with no exit code.
+        let exit = match ran {
+            Ok(out) => out.status.code(),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => None,
+            Err(e) => return Err(e).with_context(|| format!("cannot run setup command {c:?}")),
+        };
         results.push(SetupResult {
             run: c.clone(),
-            exit: status.code(),
+            exit,
         });
-        if !ok {
+        if exit != Some(0) {
             break;
         }
     }
     Ok(results)
+}
+
+/// This process's stderr as a file a child can write to.
+fn stderr_file() -> Result<fs::File> {
+    use std::os::fd::AsFd;
+    let fd = std::io::stderr()
+        .as_fd()
+        .try_clone_to_owned()
+        .context("cannot duplicate stderr")?;
+    Ok(fs::File::from(fd))
 }
 
 /// Where a worktree records that its setup finished: the worktree's own git dir, so the record

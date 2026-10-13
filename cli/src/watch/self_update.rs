@@ -7,9 +7,7 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -17,9 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{triage, Tonight};
-use crate::eval::trial::run_process;
 use crate::gate::stderr_tail;
 use crate::git::{self, Repo};
+use crate::proc::Proc;
 use crate::run;
 use crate::stop;
 
@@ -39,21 +37,16 @@ fn ceiling(default: Duration) -> Duration {
         .map_or(default, Duration::from_millis)
 }
 
-/// Run `cmd` to its end with its output in `log`, or kill it and its process group when a stop
-/// is requested or `ceiling` passes (both errors). Files, not pipes, so a straggler in the group
-/// can't hold anything open. The exit status and the end of the log.
-fn run_bounded(mut cmd: Command, ceiling: Duration, log: &Path) -> Result<(ExitStatus, String)> {
+/// `cmd` bounded by `ceiling` and a stop, its output going to a new `log`. Files, not pipes,
+/// so a straggler in its group can't hold anything open.
+fn logged<'a>(cmd: &'a mut Proc, ceiling: Duration, log: &Path) -> Result<&'a mut Proc> {
     let out = File::create(log).with_context(|| format!("cannot create {}", log.display()))?;
-    cmd.stdout(out.try_clone()?).stderr(out);
-    match run_process(cmd, None, ceiling) {
-        Err(e) if e.kind() == ErrorKind::Interrupted => bail!("stopped"),
-        Err(e) => Err(e.into()),
-        Ok((Some(status), _, _)) => Ok((
-            status,
-            fs::read(log).map(|b| warning_tail(&b)).unwrap_or_default(),
-        )),
-        Ok((None, _, _)) => bail!("timed out after {}s", ceiling.as_secs_f32().round()),
-    }
+    Ok(cmd.timeout(ceiling).until_stop().output_to(out))
+}
+
+/// The end of `log`, for an error.
+fn log_tail(log: &Path) -> String {
+    fs::read(log).map(|b| warning_tail(&b)).unwrap_or_default()
 }
 
 /// The commit this `ns` was built from: `NS_BUILD_COMMIT` in the environment, which tests set,
@@ -219,17 +212,20 @@ impl SelfUpdate {
         let _ = fs::remove_dir_all(&src);
         fs::create_dir_all(&src).with_context(|| format!("cannot create {}", src.display()))?;
         extract(&repo.root, to, &src)?;
-        let mut cargo = Command::new("cargo");
+        let mut cargo = Proc::tool("cargo");
         cargo
             .args(["build", "--release", "--locked", "--manifest-path"])
             .arg(src.join("cli/Cargo.toml"))
             .arg("--target-dir")
             .arg(stage.join("target"))
             .env("NS_BUILD_COMMIT", to);
-        let (status, said) = run_bounded(cargo, ceiling(BUILD_CEILING), &stage.join("build.log"))
-            .context("cargo build")?;
+        let log = stage.join("build.log");
+        let status = logged(&mut cargo, ceiling(BUILD_CEILING), &log)?
+            .output()
+            .context("cargo build")?
+            .status;
         if !status.success() {
-            bail!("cargo build: {status}: {said}");
+            bail!("cargo build: {status}: {}", log_tail(&log));
         }
         let staged = stage.join(format!("ns-{to}"));
         fs::copy(stage.join("target/release/ns"), &staged)
@@ -241,10 +237,13 @@ impl SelfUpdate {
     /// `--version` names `to`, and `watch --dry-run` takes the arguments the exec will give it.
     fn check(&self, staged: &Path, to: &str, state: &Path) -> Result<()> {
         let log = staged.with_extension("log");
-        let mut version = Command::new(staged);
+        let mut version = Proc::tool(staged);
         version.arg("--version");
-        let (status, said) = run_bounded(version, ceiling(CHECK_CEILING), &log)
-            .with_context(|| format!("{} --version", staged.display()))?;
+        let status = logged(&mut version, ceiling(CHECK_CEILING), &log)?
+            .output()
+            .with_context(|| format!("{} --version", staged.display()))?
+            .status;
+        let said = log_tail(&log);
         if !status.success() || !said.contains(to) {
             bail!("the new ns --version said {:?}, not {to}", said.trim());
         }
@@ -252,17 +251,19 @@ impl SelfUpdate {
         // can't read fails the check here, not after the exec.
         let probe = staged.with_extension("night.json");
         fs::copy(state, &probe).with_context(|| format!("cannot copy {}", state.display()))?;
-        let mut dry = Command::new(staged);
+        let mut dry = Proc::tool(staged);
         dry.args(args_for(self.args.iter().cloned(), &probe));
         if !self.args.iter().any(|a| a == "--dry-run") {
             dry.arg("--dry-run");
         }
-        let result = run_bounded(dry, ceiling(CHECK_CEILING), &log)
-            .with_context(|| format!("{} watch --dry-run", staged.display()));
+        let result = logged(&mut dry, ceiling(CHECK_CEILING), &log).and_then(|d| {
+            d.output()
+                .with_context(|| format!("{} watch --dry-run", staged.display()))
+        });
         let _ = fs::remove_file(&probe);
-        let (status, said) = result?;
+        let status = result?.status;
         if !status.success() {
-            bail!("the new ns watch --dry-run: {status}: {said}");
+            bail!("the new ns watch --dry-run: {status}: {}", log_tail(&log));
         }
         Ok(())
     }
@@ -270,25 +271,22 @@ impl SelfUpdate {
 
 /// `git archive <to> cli | tar -x -C <into>`: the source to build, with no worktree to clean up.
 fn extract(root: &Path, to: &str, into: &Path) -> Result<()> {
-    let mut archive = git::command()
+    let git = git::command()
         .arg("-C")
         .arg(root)
         .args(["archive", "--format=tar", to, "cli"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("cannot run git archive")?;
-    let tar = Command::new("tar")
-        .arg("-x")
-        .arg("-C")
-        .arg(into)
-        .stdin(archive.stdout.take().expect("piped"))
         .output()
-        .context("cannot run tar")?;
-    let git = archive.wait_with_output().context("git archive")?;
+        .context("cannot run git archive")?;
     if !git.status.success() {
         bail!("git archive {to}: {}", warning_tail(&git.stderr));
     }
+    let tar = Proc::tool("tar")
+        .arg("-x")
+        .arg("-C")
+        .arg(into)
+        .stdin(git.stdout)
+        .output()
+        .context("cannot run tar")?;
     if !tar.status.success() {
         bail!("tar: {}", warning_tail(&tar.stderr));
     }
@@ -382,20 +380,7 @@ fn exec(staged: &Path, args: Vec<OsString>) -> anyhow::Error {
     let _ = std::io::stderr().flush();
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt;
-        let mut cmd = Command::new(staged);
-        cmd.args(args);
-        // SAFETY: the closure only does pthread_sigmask(3) and an atomic load.
-        unsafe {
-            cmd.pre_exec(|| {
-                stop::block();
-                match stop::requested() {
-                    Some(_) => Err(std::io::ErrorKind::Interrupted.into()),
-                    None => Ok(()),
-                }
-            });
-        }
-        let e = cmd.exec();
+        let e = Proc::tool(staged).args(args).exec();
         // std set SIGPIPE to its default for the new program; this one goes on, and a harness
         // that exits early must not kill it.
         // SAFETY: signal(2) with SIG_IGN installs no handler.
@@ -547,10 +532,14 @@ mod tests {
     #[test]
     fn a_command_that_outlives_its_ceiling_is_killed() {
         let dir = tempfile::tempdir().unwrap();
-        let mut slow = Command::new("sh");
+        let mut slow = Proc::tool("sh");
         slow.args(["-c", "sleep 300"]);
         let start = std::time::Instant::now();
-        let e = run_bounded(slow, Duration::from_millis(200), &dir.path().join("log")).unwrap_err();
+        let log = dir.path().join("log");
+        let e = logged(&mut slow, Duration::from_millis(200), &log)
+            .unwrap()
+            .output()
+            .unwrap_err();
         assert!(e.to_string().contains("timed out"), "{e}");
         assert!(start.elapsed() < Duration::from_secs(120));
     }
@@ -558,41 +547,21 @@ mod tests {
     #[test]
     fn a_command_that_ends_is_not_held_by_a_straggler_in_its_group() {
         let dir = tempfile::tempdir().unwrap();
-        let mut quick = Command::new("sh");
+        let mut quick = Proc::tool("sh");
         quick.args(["-c", "echo out; echo err >&2; (sleep 300 &); exit 3"]);
         let start = std::time::Instant::now();
-        let (status, said) =
-            run_bounded(quick, Duration::from_secs(600), &dir.path().join("log")).unwrap();
-        assert_eq!(status.code(), Some(3));
+        let log = dir.path().join("log");
+        let out = logged(&mut quick, Duration::from_secs(600), &log)
+            .unwrap()
+            .output()
+            .unwrap();
+        let said = log_tail(&log);
+        assert_eq!(out.status.code(), Some(3));
         assert!(said.contains("out") && said.contains("err"), "{said}");
         assert!(
             start.elapsed() < Duration::from_secs(120),
             "waited on a straggler"
         );
-    }
-
-    #[test]
-    fn exec_holds_a_stop_pending_through_to_the_new_program() {
-        use std::os::unix::process::CommandExt;
-        let mut cmd = Command::new("grep");
-        cmd.args(["-E", "^(SigBlk|SigPnd|ShdPnd)", "/proc/self/status"]);
-        // SAFETY: only pthread_sigmask(3) and kill(2) in the closure.
-        unsafe {
-            cmd.pre_exec(|| {
-                stop::block();
-                libc::kill(libc::getpid(), libc::SIGTERM);
-                Ok(())
-            });
-        }
-        let out = cmd.output().unwrap();
-        let text = String::from_utf8_lossy(&out.stdout);
-        let mask = |key: &str| {
-            let line = text.lines().find(|l| l.starts_with(key)).unwrap();
-            u64::from_str_radix(line.split_whitespace().nth(1).unwrap(), 16).unwrap()
-        };
-        let (int, term) = (1 << (libc::SIGINT - 1), 1 << (libc::SIGTERM - 1));
-        assert_eq!(mask("SigBlk") & (int | term), int | term, "{text}");
-        assert_eq!((mask("SigPnd") | mask("ShdPnd")) & term, term, "{text}");
     }
 
     fn sigpipe_ignored() -> bool {

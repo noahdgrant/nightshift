@@ -37,6 +37,14 @@ fn child_env(kind: Kind, program: &str, vars: &[&str]) -> String {
     stdout(&p.output().unwrap())
 }
 
+/// All of `f` from its start: the child moved the offset this shared descriptor has.
+fn read_back(f: &mut File) -> String {
+    let mut text = String::new();
+    f.seek(SeekFrom::Start(0)).unwrap();
+    f.read_to_string(&mut text).unwrap();
+    text
+}
+
 fn mkfifo(path: &Path) {
     let c = CString::new(path.as_os_str().as_bytes()).unwrap();
     // SAFETY: mkfifo(3) with a valid NUL-terminated path.
@@ -429,4 +437,112 @@ fn the_child_runs_in_the_directory_the_caller_names() {
         stdout(&p.output().unwrap()).trim_end(),
         want.to_str().unwrap()
     );
+}
+
+/// What [`Proc::exec`] relies on: SIGINT and SIGTERM blocked before an exec stay blocked, and
+/// one that lands in between stays pending for the new program.
+#[test]
+fn exec_holds_a_stop_pending_through_to_the_new_program() {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new("grep");
+    cmd.args(["-E", "^(SigBlk|SigPnd|ShdPnd)", "/proc/self/status"]);
+    // SAFETY: only pthread_sigmask(3) and kill(2) in the closure.
+    unsafe {
+        cmd.pre_exec(|| {
+            crate::stop::block();
+            libc::kill(libc::getpid(), libc::SIGTERM);
+            Ok(())
+        });
+    }
+    let out = cmd.output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mask = |key: &str| {
+        let line = text.lines().find(|l| l.starts_with(key)).unwrap();
+        u64::from_str_radix(line.split_whitespace().nth(1).unwrap(), 16).unwrap()
+    };
+    let (int, term) = (1 << (libc::SIGINT - 1), 1 << (libc::SIGTERM - 1));
+    assert_eq!(mask("SigBlk") & (int | term), int | term, "{text}");
+    assert_eq!((mask("SigPnd") | mask("ShdPnd")) & term, term, "{text}");
+}
+
+#[test]
+fn output_to_sends_both_streams_to_the_file_as_the_child_writes() {
+    let mut log = tempfile::tempfile().unwrap();
+    let mut p = sh(Kind::Tool, "echo out; echo err >&2; exit 3");
+    let out = p.output_to(log.try_clone().unwrap()).output().unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(out.stdout.is_empty() && out.stderr.is_empty());
+    let text = read_back(&mut log);
+    assert_eq!(text, "out\nerr\n");
+}
+
+#[test]
+fn a_stop_kills_the_child_and_fails_naming_it() {
+    let mut p = Proc::tool("sleep");
+    p.arg("600").stop_when(|| true);
+    let e = p.output().unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::Interrupted);
+    assert_eq!(e.to_string(), "`sleep 600` stopped by a signal");
+}
+
+#[test]
+fn a_child_that_ends_before_a_stop_is_left_alone() {
+    let mut p = sh(Kind::Tool, "echo done");
+    p.stop_when(|| false);
+    assert_eq!(stdout(&p.output().unwrap()), "done\n");
+}
+
+#[test]
+fn until_stop_ends_the_child_only_when_a_stop_is_requested() {
+    let mut p = sh(Kind::Tool, "echo done");
+    p.until_stop();
+    assert_eq!(stdout(&p.output().unwrap()), "done\n");
+}
+
+#[test]
+fn envs_reach_the_child() {
+    let mut p = sh(Kind::Tool, r#"echo "$A $B""#);
+    p.envs([("A", "1"), ("B", "2")]);
+    assert_eq!(stdout(&p.output().unwrap()), "1 2\n");
+}
+
+/// A spawned child gets its kind's scrub and closed stdin, writes stdout to the file the caller
+/// gives, and leads a session of its own.
+#[test]
+fn a_spawned_child_runs_scrubbed_in_its_own_session() {
+    let mut log = tempfile::tempfile().unwrap();
+    let vars = git::LOCATION_VARS.iter().map(|v| (*v, "/decoy"));
+    let mut p = Proc::inheriting(Kind::Tool, "sh", vars);
+    p.arg("-c")
+        .arg(r#"read line; echo "read=$?"; env; ps -o sid= -p $$"#);
+    let mut child = p.spawn(log.try_clone().unwrap()).unwrap();
+    let pid = child.id();
+    assert!(child.wait().unwrap().success());
+    let text = read_back(&mut log);
+    assert!(text.starts_with("read=1\n"), "{text}");
+    for v in git::LOCATION_VARS {
+        assert!(!text.contains(&format!("{v}=")), "passed {v}");
+    }
+    assert_eq!(text.lines().last().unwrap().trim(), pid.to_string());
+}
+
+#[test]
+fn a_spawned_subscription_harness_never_sees_the_api_billing_variables() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("claude");
+    crate::testutil::write_exe(&bin, "#!/bin/sh\nexec sh \"$@\"\n");
+    let vars = billing::API_ENV.iter().map(|v| (*v, "decoy"));
+    let mut p = Proc::inheriting(
+        Kind::Harness { subscription: true },
+        bin.to_str().unwrap(),
+        vars,
+    );
+    p.arg("-c").arg("env");
+    let mut log = tempfile::tempfile().unwrap();
+    let mut child = p.spawn(log.try_clone().unwrap()).unwrap();
+    assert!(child.wait().unwrap().success());
+    let env = read_back(&mut log);
+    for v in billing::API_ENV {
+        assert!(!env.contains(&format!("{v}=")), "got {v}");
+    }
 }

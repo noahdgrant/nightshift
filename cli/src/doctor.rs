@@ -2,7 +2,7 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -13,6 +13,7 @@ use crate::config::{self, Forge, ForgeKind};
 use crate::forge;
 use crate::git;
 use crate::install;
+use crate::proc::Proc;
 use crate::which::which;
 
 pub const KNOWN_HARNESSES: &[&str] = &["claude", "codex", "cursor-agent", "gemini", "opencode"];
@@ -304,13 +305,13 @@ fn keepalive_entry() -> (Value, Option<String>) {
 
 /// Whether `ssh -G` resolves a `ServerAliveInterval` above 0 for `t`. It reads the config only.
 fn ssh_config_keepalive(t: &forge::SshTarget) -> bool {
-    let mut cmd = Command::new("ssh");
+    let mut cmd = Proc::tool("ssh");
     cmd.arg("-G");
     if let Some(p) = &t.port {
         cmd.args(["-p", p]);
     }
-    cmd.arg("--").arg(&t.dest).stdin(Stdio::null());
-    let Ok(out) = forge::output_within(cmd, forge::PROBE_TIMEOUT) else {
+    cmd.arg("--").arg(&t.dest);
+    let Ok(out) = cmd.timeout(forge::PROBE_TIMEOUT).until_stop().output() else {
         return false;
     };
     out.status.success()
@@ -415,13 +416,13 @@ fn ssh_account(t: &forge::SshTarget) -> Option<String> {
 }
 
 fn ssh_account_within(program: &OsStr, t: &forge::SshTarget, limit: Duration) -> Option<String> {
-    let mut cmd = Command::new(program);
+    let mut cmd = Proc::tool(program);
     cmd.args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
     if let Some(p) = &t.port {
         cmd.args(["-p", p]);
     }
-    cmd.arg("--").arg(&t.dest).stdin(Stdio::null());
-    let out = forge::output_within(cmd, limit).ok()?;
+    cmd.arg("--").arg(&t.dest);
+    let out = cmd.timeout(limit).until_stop().output().ok()?;
     let text = format!(
         "{}\n{}",
         String::from_utf8_lossy(&out.stdout),
