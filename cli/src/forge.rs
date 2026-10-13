@@ -494,21 +494,26 @@ fn hide(text: &str, tokens: impl IntoIterator<Item = String>) -> String {
 const HINT: &str =
     "check it with:\n  ns doctor\nor export the token variable yourself before starting ns";
 
+/// How long a `token_command` may take before it is killed.
+const TOKEN_TIMEOUT: Duration = PROBE_TIMEOUT;
+
 fn fetch(kind: ForgeKind, source: &TokenSource) -> Result<String, SfError> {
+    fetch_within(kind, source, TOKEN_TIMEOUT)
+}
+
+fn fetch_within(kind: ForgeKind, source: &TokenSource, limit: Duration) -> Result<String, SfError> {
     let name = kind.name();
     let token = match source {
         TokenSource::Command(c) => {
-            let out = crate::git::scrub(&mut Command::new("sh"))
-                .args(["-c", c])
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-                .map_err(|e| {
-                    SfError::usage(
-                        format!("forge {name}: cannot run token_command `{c}`: {e}"),
-                        HINT,
-                    )
-                })?;
+            let mut cmd = Command::new("sh");
+            crate::git::scrub(&mut cmd).args(["-c", c]);
+            let out = output_within(cmd, limit).map_err(|e| {
+                let what = match e.kind() {
+                    std::io::ErrorKind::TimedOut => format!("token_command `{c}` {e}"),
+                    _ => format!("cannot run token_command `{c}`: {e}"),
+                };
+                SfError::usage(format!("forge {name}: {what}"), HINT)
+            })?;
             if !out.status.success() {
                 return Err(SfError::usage(
                     format!("forge {name}: token_command `{c}` failed ({})", out.status),
@@ -866,6 +871,34 @@ mod tests {
         assert!(!e.message.contains("secret-out"), "{}", e.message);
         let e = fetch(ForgeKind::Github, &TokenSource::Command("true".into())).unwrap_err();
         assert!(e.message.contains("printed no token"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_token_command_that_outlives_its_limit_is_killed_with_an_error() {
+        let started = Instant::now();
+        let e = fetch_within(
+            ForgeKind::Github,
+            &TokenSource::Command("printf 'secret-%s' out; sleep 30".into()),
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(e.code, crate::error::EXIT_USAGE);
+        assert!(e.message.contains("forge github"), "{}", e.message);
+        assert!(e.message.contains("timed out after"), "{}", e.message);
+        assert!(!e.message.contains("cannot run"), "{}", e.message);
+        assert!(!e.message.contains("secret-out"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_token_command_that_finishes_in_time_returns_its_token() {
+        let t = fetch_within(
+            ForgeKind::Gitlab,
+            &TokenSource::Command("echo tok".into()),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        assert_eq!(t, "tok");
     }
 
     fn envs(cmd: &Command) -> Vec<(String, String)> {
