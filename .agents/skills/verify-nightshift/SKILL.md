@@ -23,7 +23,7 @@ echo "$V"
 
 [`scripts/sandbox.sh`](scripts/sandbox.sh) `--new` makes the sandbox `$V` with `mktemp` and prints it: a throwaway git repo `$V/repo` on `main` with a bare `origin` at `$V/remote.git`, a throwaway `HOME` at `$V/home` with this checkout's `ns-*` skills installed for claude, the ns config `$V/config.toml`, the fake `claude`, `gh` and `glab`, an `ssh` that always fails, and the `ns` that build wrote (under `$CARGO_TARGET_DIR` when it is set, else `cli/target`). It stops before creating anything when that `ns` or a fake is missing, naming it. Evidence goes in `$OUT` ([Evidence](#evidence)).
 
-Note the printed `$V`. Every later shell sets `V=<that dir>` first; nothing else carries over.
+Note the printed `$V`; nothing else carries over to later shells. When you run a recipe, write `$V` outside single quotes as that literal absolute path, so the command starts with the path: `<printed dir>/sandbox ns --version`, not `"$V/sandbox" ns --version` or `V=...; "$V/sandbox" ...`. A hook guard denies a command named by a shell expansion when `git` appears in the same command. The recipes below keep the `"$V/sandbox"` placeholder; inside single quotes, `$V` is set by the sandbox.
 
 ## The sandbox
 
@@ -32,7 +32,7 @@ Note the printed `$V`. Every later shell sets `V=<that dir>` first; nothing else
 Rules for every recipe, and every command you add:
 
 - One line, starting `"$V/sandbox" `. No `cd`, no `export`, no hand-built environment, and no `;` `&` `|` `<` `>`, backtick or `$(` outside single quotes: chain inside `sh -c '...'`. Close every quote on its own line and end no line in a backslash, so a quote never spans lines. Every fence under `Doctor`, `Drive` and `Driving it with ns` is `bash`. `scripts/check-verify-recipes.sh` fails CI on a recipe line that does not.
-- Name files by absolute path under `$V`, which your shell and the sandbox expand alike. `$NS_SRC`, `$OUT` and `$FAKE_CTRL` exist only inside: put them in single quotes under `sh -c`, as in `"$V/sandbox" sh -c 'ls "$FAKE_CTRL"'`.
+- Name files by absolute path under `$V`, the literal path outside single quotes and `$V` inside them. `$NS_SRC`, `$OUT` and `$FAKE_CTRL` exist only inside: put them in single quotes under `sh -c`, as in `"$V/sandbox" sh -c 'ls "$FAKE_CTRL"'`.
 - No glob (`*`, `?`), bracket, brace or `..` outside single quotes, no `$'...'` or `$"..."` anywhere outside them, and a `.ns/` path only as one unit's folder, `.ns/<unit-id>`. Hook guards and `//**/secrets/**` deny rules block the rest, and the check fails on them.
 - Write file contents as an argument, not inside the quotes: `"$V/sandbox" sh -c 'echo "$1" > "$2"' _ '<text>' "$V/<file>"`.
 - The throwaway repo's remote is `origin`, and the only token is `fake-token`.
