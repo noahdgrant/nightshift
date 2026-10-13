@@ -36,6 +36,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: cli
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Install the pinned tools cli/tests run (rules_pack*.rs run the rule packs, factory.rs the py-inventory fixture; jq ships with the runner)
         id: tools
         working-directory: .
