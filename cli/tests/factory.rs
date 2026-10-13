@@ -9696,11 +9696,9 @@ fn a_capped_phase_that_times_out_fails_on_the_timeout() {
     );
 }
 
-/// Fake `systemd-run` and `systemctl` that pass the cgroup probe and run each command in a
-/// "scope" logged to `ctrl/scopes`. `systemctl show` reports `first` (`ActiveState Result`)
-/// for a scope's first `n` asks and `then` after; `reset-failed` logs the scope and how many
-/// asks it had to `ctrl/reset`.
-fn fake_systemd(e: &Env, n: u32, first: &str, then: &str) {
+/// Fake `systemd-run` that passes the cgroup probe and runs each command in a "scope" logged
+/// to `ctrl/scopes`.
+fn fake_systemd_run(e: &Env) {
     let c = e.ctrl.display();
     write_exe(
         &e.bin.join("systemd-run"),
@@ -9708,16 +9706,44 @@ fn fake_systemd(e: &Env, n: u32, first: &str, then: &str) {
             "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    --collect) echo 67108864; exit 0 ;;\n    --unit=*) echo \"${{1#--unit=}}\" >> '{c}/scopes' ;;\n    --) shift; break ;;\n  esac\n  shift\ndone\nexec \"$@\"\n"
         ),
     );
-    let show = |s: &str| {
-        let (state, result) = s.split_once(' ').unwrap();
-        format!("printf 'ActiveState={state}\\nResult={result}\\n'")
-    };
+}
+
+/// Fake `systemctl` whose `show` runs the shell `report` for each ask, with the scope's ask
+/// count so far in `$n` and its directory of state in `$d`; it prints the `ActiveState` and
+/// `Result` lines. `reset-failed` logs the scope, how many asks it had and the state the last
+/// one reported to `ctrl/reset`.
+fn fake_systemctl(e: &Env, report: &str) {
+    let c = e.ctrl.display();
     write_exe(
         &e.bin.join("systemctl"),
         format!(
-            "#!/bin/sh\nd='{c}/asks'; mkdir -p \"$d\"\ncase \"$2\" in\n  show) n=$(( $(cat \"$d/$3\" 2>/dev/null || echo 0) + 1 )); echo $n > \"$d/$3\"\n    if [ $n -le {n} ]; then {}; else {}; fi ;;\n  reset-failed) echo \"$3 $(cat \"$d/$3\" 2>/dev/null || echo 0)\" >> '{c}/reset' ;;\nesac\n",
-            show(first),
-            show(then)
+            "#!/bin/sh\nd='{c}/asks'; mkdir -p \"$d\"\ncase \"$2\" in\n  show) n=$(( $(cat \"$d/$3\" 2>/dev/null || echo 0) + 1 )); echo $n > \"$d/$3\"\n    {report}\n    printf 'ActiveState=%s\\nResult=%s\\n' \"$state\" \"$result\"; echo \"$state\" > \"$d/$3.last\" ;;\n  reset-failed) echo \"$3 $(cat \"$d/$3\" 2>/dev/null || echo 0) $(cat \"$d/$3.last\" 2>/dev/null)\" >> '{c}/reset' ;;\nesac\n"
+        ),
+    );
+}
+
+/// Fake `systemd-run` and `systemctl` where `systemctl show` reports `first`
+/// (`ActiveState Result`) for a scope's first `n` asks and `then` after.
+fn fake_systemd(e: &Env, n: u32, first: &str, then: &str) {
+    fake_systemd_run(e);
+    let (fs, fr) = first.split_once(' ').unwrap();
+    let (ts, tr) = then.split_once(' ').unwrap();
+    fake_systemctl(
+        e,
+        &format!(
+            "if [ $n -le {n} ]; then state={fs}; result={fr}; else state={ts}; result={tr}; fi"
+        ),
+    );
+}
+
+/// Fake `systemd-run` and `systemctl` where a scope reports `active success` until `secs`
+/// seconds after the first ask about it, then `failed oom-kill`.
+fn fake_systemd_failing_after(e: &Env, secs: u32) {
+    fake_systemd_run(e);
+    fake_systemctl(
+        e,
+        &format!(
+            "now=$(date +%s); [ -f \"$d/$3.t\" ] || echo $now > \"$d/$3.t\"\n    if [ $(( now - $(cat \"$d/$3.t\") )) -lt {secs} ]; then state=active; result=success; else state=failed; result=oom-kill; fi"
         ),
     );
 }
@@ -9785,7 +9811,7 @@ fn a_capped_gate_killed_by_a_signal_still_resets_its_scope() {
 }
 
 #[test]
-fn a_stop_during_a_capped_phase_resets_its_scope() {
+fn a_capped_phase_whose_run_process_errors_on_a_stop_still_resets_its_scope() {
     let e = Env::new();
     e.factory("[limits]\nmemory_mb = 64\n");
     fake_systemd(&e, 0, "active success", "inactive success");
@@ -9796,7 +9822,7 @@ fn a_stop_during_a_capped_phase_resets_its_scope() {
 }
 
 #[test]
-fn a_stop_during_a_capped_gate_resets_its_scope() {
+fn a_capped_gate_whose_run_process_errors_on_a_stop_still_resets_its_scope() {
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");
     let f = fifo(&e);
@@ -9812,14 +9838,19 @@ fn a_stop_during_a_capped_gate_resets_its_scope() {
 }
 
 #[test]
-fn a_scope_that_fails_after_the_settle_deadline_is_still_reset() {
+fn a_scope_that_fails_after_the_settle_deadline_is_not_an_overrun_but_is_still_reset() {
     let e = Env::new();
     e.factory("[limits]\nmemory_mb = 64\n");
-    // Active for 4 s of asks, past the 3 s ns waits for the result, then failed by an OOM kill.
-    fake_systemd(&e, 40, "active success", "failed oom-kill");
+    // Active past the 3 s ns waits for the result and failed before the 10 s it waits to
+    // release the scope: the late failure is cleared, not reported.
+    fake_systemd_failing_after(&e, 6);
     e.queue("build", &["pass:commit"]);
-    e.run(&["run", "--issue", "7"], 0);
-    assert_every_scope_reset(&e, 40);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_every_scope_reset(&e, 0);
+    for line in recorded(&e, "reset").lines() {
+        assert!(line.ends_with(" failed"), "reset before it failed: {line}");
+    }
 }
 
 #[test]
