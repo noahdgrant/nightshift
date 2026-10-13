@@ -56,6 +56,8 @@ Read whatever exists. Assume nothing:
 
 Time the fast commands (lint, host unit tests) by running each once. Take slow ones from CI durations.
 
+A command that starts its own parallel workers (twister, `make -j`, `ctest -j`, `pytest -n`) takes its worker count from `NS_CPUS` when it is set, as in `-j "${NS_CPUS:-$(nproc)}"`. Under `ns watch --parallel`, `NS_CPUS` is each unit's share of the cores, so units don't starve each other's timeout-bound tests. Cargo needs nothing: it reads `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS`, which `ns run` sets beside it.
+
 ### 2. Present findings and ask
 
 Summarise what's present and what's missing. Then take the sections in order: one section, one answer, then the next. Lead each with the recommended answer so the user can accept it in a word. Skip a section when exploration settled it.

@@ -176,6 +176,7 @@ Running `ns score` twice on a unit appends two lines; a reader takes the last li
 ns run <unit-id> [--issue <n>] [--from <phase>] [--gates stop|auto] [--dry-run] [--factory <dir>]
 ns run --issue <n>                 # unit id <n>-<slug from the issue title>
 ns run <unit-id> --base origin/main   # base for a new worktree (ns watch passes it)
+ns run <unit-id> --cpus 4             # CPU share for every phase and gate (ns watch passes it)
 ```
 
 Steps:
@@ -454,6 +455,8 @@ The triage pass and the cleanup run in `ns watch` itself, between units, as with
 Units share the repo, and its locks (D43) keep them apart: a unit's run lock, the worktree lock while a worktree is cut, the merge lock around each merge, and each runner's locks around its phases (see "Runners" and "Merge"). A unit waiting for a lock holds its slot.
 
 `ns watch` prints `ns watch: #<n> <title> (worker <w>)` when worker `w` starts a unit (`, resumed` for a resume) and `ns watch: #<n> <outcome> (worker <w>)` when it ends; every unit's record in `units` has its `worker`, and the run log gets `worker_start` (`worker`, `issue`, `run_pid`, `resumed`) and `worker_end` (`worker`, `issue`, `unit`, `outcome`, `exit`) events. The unit's own events carry its `ns run`'s pid. Quality records are written by each unit's `ns run` when it ends, as for one unit.
+
+**CPU share.** `ns watch` starts each unit's `ns run` with `--cpus max(1, cores / N)`, cores being what the OS reports as available to `ns watch`. `ns run --cpus <n>`, from `ns watch` or by hand, sets `NS_CPUS`, `RUST_TEST_THREADS` and `CARGO_BUILD_JOBS` to `<n>` on each phase command, gate command and worktree setup command it starts. A variable already set in the environment wins (an empty one counts as unset), one variable at a time, so an operator's `RUST_TEST_THREADS=2` stays 2. Without `--cpus`, `ns run` sets none of them. The run log's `start` event has `cpus`, each variable with its `value` and `source` (`computed` or `inherited`), or null without `--cpus`. `NS_CPUS` is the stack-neutral one: a gate or verify script that starts parallel work of its own reads it (see `docs/agents/verify.md`). `--cpus 0` or a non-number is a usage error (exit 2). The triage pass, which `ns watch` runs itself, gets no share.
 
 With N above 1, set `[limits] memory_mb` (see "Memory cap"). Each unit's `ns run` wraps its own phases and gates in the cap, so N units can use up to N times `memory_mb`; pick a cap that leaves room for N of them. `--dry-run` shows the `parallel` it would use.
 
