@@ -24,6 +24,7 @@ Read `brief.md` and `build.md`. Use only these and the repo, never chat history.
 - Note `build.md`'s Open risks and Deviations. Untested paths and unreached seams are where the surface check matters most.
 - Number the acceptance criteria `AC1..ACn` in the brief's order. For a bug, the brief's repro is a criterion of its own: it must fail on the base and pass on the branch.
 - A criterion with no observable end state can't be verified. Record it as INCONCLUSIVE with "criterion not checkable" and carry on with the rest.
+- A criterion about the PR (its body, `Closes` line, labels or merge) is out of verify's scope: the PR doesn't exist yet. A brief should hold it under **Ship note**, but an older one may list it as a criterion. Give it the verdict `ship` and drive nothing for it; `ns-ship` checks it against the PR body. A criterion that mixes a PR item with behaviour verify can check splits into two IDs (`AC4a`, `AC4b`): the behaviour gets checked, and only the PR half is `ship`. Nothing else qualifies, so a check verify could run, however hard, never gets `ship`.
 
 Done when every criterion has an ID and a sentence naming the observable state that would prove it.
 
@@ -70,6 +71,7 @@ Verdicts:
 - **PASS**: the criterion's end state was observed on the matching surface.
 - **FAIL**: a different end state was observed.
 - **INCONCLUSIVE**: the check couldn't run, ran on the wrong surface, or the evidence doesn't show the end state. Before settling here, try to make it checkable: extend the control CLI or feature map, or synthesize the trigger.
+- **ship**: a PR criterion from step 1, left to `ns-ship`. It needs no command, excerpt or artifact.
 
 Run the verify skill's Cleanup when done, then confirm the artifacts still exist. Anything you started outside it, stop per [killing processes](../ns-contract/SKILL.md#killing-processes).
 
@@ -125,6 +127,7 @@ Verify skill: <path> · Doctor: pass
 | ID | Criterion | Verdict | Surface |
 |---|---|---|---|
 | AC1 | <criterion> | PASS | <bench, CLI, HTTP, emulator, tests> |
+| AC2 | <PR criterion> | ship | PR, checked by ns-ship |
 
 ## AC1: <criterion>
 
@@ -135,19 +138,21 @@ Verify skill: <path> · Doctor: pass
   ```
 - Artifact: `.ns/<unit-id>/evidence/<file>`
 
+(A `ship` criterion has its table row and no section.)
+
 ## Numbers
 
 <per number: verdict, value with unit, run count, range, limiter; or "none">
 
 ## Gaps
 
-<per FAIL or INCONCLUSIVE: what was seen, and what would fix it or make it checkable; or "none">
+<per FAIL or INCONCLUSIVE: what was seen, and what would fix it or make it checkable; or "none". A `ship` criterion is not a gap.>
 ````
 
 Set `status` from the first rule that holds:
 
 - `blocked`: a harness denied a command ([denied commands](#denied-commands)), whatever the verdicts.
-- `pass`: every criterion is PASS.
+- `pass`: every criterion is PASS or `ship`.
 - `fail`: any criterion is FAIL. `ns-build` picks the unit up from the Gaps section.
 - `blocked`: no FAIL, but at least one INCONCLUSIVE. Gaps names the blocker (a bench, credentials, a criterion the human must sharpen).
 
