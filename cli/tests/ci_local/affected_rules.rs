@@ -107,3 +107,24 @@ fn a_new_wall_clock_wait_fails_the_step_and_a_baselined_one_passes() {
     assert!(found.contains("new: cli/tests/new.rs:"), "{found}");
     assert!(found.contains("ast-grep/wall-clock-in-test"), "{found}");
 }
+
+#[test]
+fn the_step_runs_the_ns_under_cargo_target_dir() {
+    let repo = Repo::new();
+    let target = repo.dir.path().join("target");
+    write_exe(
+        &target.join("debug/ns"),
+        "#!/bin/sh\necho target ns ran: \"$*\" >&2\n",
+    );
+    let out = affected(
+        &repo,
+        Some("cli/src/lib.rs"),
+        &[("CARGO_TARGET_DIR", target.to_str().unwrap())],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("target ns ran: rules check --only ast-grep --human"),
+        "{}",
+        stderr(&out)
+    );
+}
