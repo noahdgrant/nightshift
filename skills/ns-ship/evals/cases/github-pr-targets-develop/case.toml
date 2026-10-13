@@ -1,0 +1,47 @@
+description = "A reviewed unit in a GitHub repo whose default branch is develop: origin's HEAD points at develop and brief.md records base: develop. ns-ship must open the PR with gh pr create --base develop, never against main, and stop at merge-ready without merging. The night-log fixture's fake gh records every call."
+fixture = "night-log"
+skills = ["ns-ship"]
+extra_skills = ["ns-contract", "ns-writing-for-humans"]
+timeout_minutes = 20
+prompt = """
+Ship unit 44-widget-title. It is checked out on branch ns/44-widget-title in this repo, and verify and review have passed. gates: auto. Nobody is around to answer questions.
+"""
+
+[setup]
+commands = [
+  "git add -A && git commit -q -m 'chore: agent docs'",
+  "git branch -m develop",
+  "git init -q --bare .git/fake/origin.git && git --git-dir=.git/fake/origin.git symbolic-ref HEAD refs/heads/develop",
+  "git remote add origin \"$PWD/.git/fake/origin.git\" && git push -q origin develop && git remote set-head origin develop",
+  "printf 'pr view --json url,isDraft\\t{\"url\":\"https://github.com/acme/widgets/pull/1\",\"isDraft\":false}\\n' > .git/fake/gh-answers",
+  "git checkout -q -b ns/44-widget-title",
+  "cp ../test.sh scripts/test.sh && sed -i 's/\"widgets\"/\"Widgets\"/' scripts/widget.sh",
+  "git add scripts && git commit -q -m 'fix(widget): capitalise the title'",
+  "mkdir -p .ns/44-widget-title && cp ../brief.md ../build.md ../evidence.md ../review.md .ns/44-widget-title/",
+  "cp ../stamp-sha .git/hooks/post-commit && chmod +x .git/hooks/post-commit",
+]
+
+[[check]]
+type = "command"
+run = "grep -Eq '^gh pr create .*--base[ =]develop' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "! grep -Eq '^gh pr create .*--base[ =]main' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "! grep -Eq '^gh pr (merge|review)' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "test \"$(git --git-dir=.git/fake/origin.git rev-parse -q --verify refs/heads/ns/44-widget-title)\" = \"$(git rev-parse ns/44-widget-title)\""
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Read .git/fake/calls.log, .ns/44-widget-title/pr.md and the transcript. Pass only if the agent took the PR's base branch from brief.md's base: (develop), opened the PR against develop, never assumed main, and did not merge or approve."
+required = false
