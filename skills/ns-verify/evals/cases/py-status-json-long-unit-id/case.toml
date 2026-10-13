@@ -1,0 +1,65 @@
+description = "Verify a committed build of `inventory status --json` whose unit ID is 48 characters long, with NS_UNIT unset (as outside `ns run`) and the phase settings' `Read(//**/secrets/**)` deny rule in .claude/settings.json. ns-verify must reach the unit's directory by its exact name, `.ns/$NS_UNIT/` after a literal `NS_UNIT=<id>` or the ID written out, never with a glob (`cd .ns/6*/`, `cd .ns/*/`), which the deny rule blocks, or an invented `U=`, and write evidence.md with status: pass. The deny rule is Claude Code's project settings, so the glob denial happens only under the claude harness."
+fixture = "py-inventory"
+skills = ["ns-verify"]
+extra_skills = [
+  "ns-contract",
+  "ns-principle-prove-it-works",
+  "ns-principle-explain-the-number",
+  "ns-principle-test-behavior-not-implementation",
+]
+requires = ["python"]
+timeout_minutes = 20
+prompt = """
+Verify unit 6-print-stock-levels-as-json-for-scripts-to-read. You are already in its worktree, on branch ns/6-print-stock-levels-as-json-for-scripts-to-read, and its brief and build artifacts are in its unit directory under .ns/. gates: auto. Nobody is around to answer questions. Stop after writing evidence.md: don't review or ship.
+"""
+
+[setup]
+# As in py-status-json-all-criteria-met, with a unit ID too long to type comfortably. main also
+# gets the phase settings' secrets deny rule in .claude/settings.json, which denies a `cd` into a
+# glob. Setup writes it, rather than a files/ overlay, because `ns guard-hooks` protects every
+# .claude/settings*.json from a phase's writes.
+commands = [
+  "mkdir -p .claude && python3 -c \"import json; json.dump({'permissions': {'deny': ['Read(//**/secrets/**)']}}, open('.claude/settings.json', 'w'), indent=2)\"",
+  "cp ../verify.md docs/agents/verify.md",
+  "python3 -c \"p='AGENTS.md'; s=open(p).read(); o='**Verify**: not set up yet.'; assert o in s, 'AGENTS.md has no Verify line to update'; open(p,'w').write(s.replace(o, '**Verify**: drive the CLI directly.'))\"",
+  "git add -A && git commit -q -m 'docs(agents): verify by driving the CLI'",
+  "git checkout -q -b ns/6-print-stock-levels-as-json-for-scripts-to-read",
+  "git apply ../build.patch",
+  "git add -A && git commit -q -m 'feat(cli): print stock levels as JSON with status --json'",
+  "mkdir -p .ns/6-print-stock-levels-as-json-for-scripts-to-read && cp ../brief.md .ns/6-print-stock-levels-as-json-for-scripts-to-read/",
+  "sed \"s/@SHA@/$(git rev-parse --short HEAD)/\" ../build.md > .ns/6-print-stock-levels-as-json-for-scripts-to-read/build.md",
+]
+
+[[check]]
+type = "frontmatter"
+path = ".ns/6-print-stock-levels-as-json-for-scripts-to-read/evidence.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+# The commands and artifact paths evidence.md records name the unit's directory exactly: no glob
+# into .ns/ and no invented short variable for the ID.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, sys
+text = open(".ns/6-print-stock-levels-as-json-for-scripts-to-read/evidence.md", encoding="utf-8").read()
+glob = re.search(r"\.ns/[^\s/`'\"]*[*?\[]", text)
+if glob:
+    sys.exit(f"evidence.md names the unit directory with a glob: {glob.group(0)!r}")
+if re.search(r"(?<![\w$])U=", text):
+    sys.exit("evidence.md assigns an invented U= variable")
+print("unit directory named exactly")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# Verify observes; it changes no code, tests, docs or settings.
+type = "diff_scope"
+allow = [".ns/**"]
+
+[[check]]
+type = "judge"
+rubric = "Did every shell command in the transcript that reached the unit's directory name it exactly, as `.ns/$NS_UNIT/` after a literal `NS_UNIT=6-print-stock-levels-as-json-for-scripts-to-read` or with the ID written out, with no glob in a `cd` or a path (`cd .ns/6*/`, `cd .ns/*/`, `ls .ns/*/evidence`) and no invented short variable such as `U=`? Fail it if any such command appears, even one the harness denied and verify then rewrote."
+required = false
