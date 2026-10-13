@@ -324,6 +324,21 @@ fn a_recipe_outside_the_sandbox_fails_naming_the_file_and_block_before_anything_
 }
 
 #[test]
+fn a_doctor_recipe_with_src_fails_naming_the_file_and_block() {
+    for recipe in [
+        r#""$V/sandbox" --src cap x ns doctor"#,
+        r#""$V/sandbox" cap x ns doctor --src"#,
+        r#""$V/sandbox" sh -c 'ns doctor --src'"#,
+    ] {
+        let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(recipe))]);
+        assert_fails_with(
+            &out,
+            "run.md ## Driving it with ns block 1 runs ns doctor with --src",
+        );
+    }
+}
+
+#[test]
 fn a_glob_in_a_recipe_fails_naming_the_block() {
     for recipe in [
         r#""$V/sandbox" ls "$V"/repo.worktrees/*/.ns/7-x"#,
@@ -594,6 +609,16 @@ fn a_stale_command_in_the_real_recipes_fails_wherever_it_sits() {
         let out = run_real(stale, fresh);
         assert!(!out.status.success(), "{fresh} passed: {}", stderr(&out));
     }
+}
+
+#[test]
+fn src_added_to_the_real_install_link_doctor_recipe_fails() {
+    let out = run_real(
+        "\"$V/sandbox\" cap install-link-doctor ns doctor",
+        "\"$V/sandbox\" --src cap install-link-doctor ns doctor",
+    );
+    assert_fails_with(&out, "install.md ## Driving it with ns block");
+    assert_fails_with(&out, "runs ns doctor with --src");
 }
 
 #[test]

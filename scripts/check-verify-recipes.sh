@@ -10,7 +10,7 @@
 # recipes. First, without running anything, every line of every recipe must start with
 # `"$V/sandbox" `, chain, redirect or substitute nothing outside single quotes (`;` `&` `|` `<` `>`,
 # a backtick, `$(`), use no glob (`*` `?`), bracket, brace, `$'`, `$"` or `..` outside single
-# quotes, close every quote and end no line in a backslash, and name a `.ns/` path only as one
+# quotes, run `ns doctor` without `--src`, close every quote and end no line in a backslash, and name a `.ns/` path only as one
 # unit's folder (`.ns/$NS_UNIT`, `.ns/<unit-id>` or a concrete id). Every fence under those
 # headings must be exactly ```bash. Fails naming the file, heading and block of each line that does not.
 #
@@ -103,6 +103,7 @@ lint() {
     while IFS= read -r line; do
       case "$line" in '' | '#'*) continue ;; esac
       case "$line" in '"$V/sandbox" '*) ;; *) echo "$where does not run in the sandbox: $line" ;; esac
+      case "$line" in *'ns doctor'*--src* | *--src*'ns doctor'*) echo "$where runs ns doctor with --src, which reads the real origin (#536): $line" ;; esac
       { read -r bare; read -r dq; read -r flags; } < <(unquoted "$line")
       case "$dq" in *[*?]*) echo "$where uses a glob: $line" ;; esac
       case "$flags" in *ansi*) echo "$where uses \$' or \$\" quoting: $line" ;; esac
