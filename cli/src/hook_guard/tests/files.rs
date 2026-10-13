@@ -739,6 +739,7 @@ fn the_taint_of_a_cd_into_tmpdir_ends_with_its_subshell_or_a_later_cd() {
         "cd $TMPDIR && tar xf a.tar; cd /repo && cargo test --manifest-path ../Cargo.toml",
         "cd $TMPDIR; cd; cat ../x",
         "cd $TMPDIR; cd -; cat ../x",
+        "cd $TMPDIR; cd; ../x",
         "echo $(cd $TMPDIR && pwd); cat ../x",
     ] {
         assert!(!denied(c), "{c}");
