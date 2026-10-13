@@ -1022,3 +1022,235 @@ fn import_needs_a_directory() {
         .assert()
         .code(2);
 }
+
+/// A repo whose `lib.rs` line 2 came from factory PR #41 (branch `ns/9-b`) and line 3 from a
+/// person's PR #40, with a fake `gh` that lists the given `type:fix` issues and the two PRs.
+fn bugs_fixture(issues: &[Value]) -> (TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap().join("myrepo");
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    commit(&root, "lib.rs", "fn a() {}\n", "init");
+    commit(
+        &root,
+        "lib.rs",
+        "fn a() {}\nfn b() {}\n",
+        "feat: add b (#41)",
+    );
+    commit(
+        &root,
+        "lib.rs",
+        "fn a() {}\nfn b() {}\nfn c() {}\n",
+        "feat: add c (#40)",
+    );
+    let fake = tmp.path().join("fake");
+    let lines: Vec<String> = issues.iter().map(Value::to_string).collect();
+    write(fake.join("issues.jsonl"), &(lines.join("\n") + "\n"));
+    let prs = json!([
+        {"number": 41, "body": "Closes #9", "headRefName": "ns/9-b", "isCrossRepository": false},
+        {"number": 40, "body": "Closes #8", "headRefName": "someone/c", "isCrossRepository": false},
+    ]);
+    write(fake.join("prs.json"), &prs.to_string());
+    common::write_exe(
+        &fake.join("bin/gh"),
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{d}/calls'\ncase \"$*\" in\n  \"api --paginate repos/{{owner}}/{{repo}}/issues?state=all&labels=type:fix&per_page=100 \"*) cat '{d}/issues.jsonl' ;;\n  \"pr list --state merged \"*) cat '{d}/prs.json' ;;\n  *) echo \"fake gh: $*\" >&2; exit 1 ;;\nesac\n",
+            d = fake.display()
+        ),
+    );
+    (tmp, root)
+}
+
+fn fix_issue(n: u64, opened: &str, title: &str, body: &str, labels: &[&str]) -> Value {
+    let labels: Vec<Value> = labels.iter().map(|l| json!({"name": l})).collect();
+    json!({"number": n, "title": title, "body": body, "labels": labels,
+           "authorAssociation": "OWNER", "createdAt": opened, "state": "open", "stateReason": null})
+}
+
+fn ns_bugs(tmp: &TempDir, root: &Path, args: &[&str]) -> Ns {
+    let path = format!(
+        "{}:{}",
+        tmp.path().join("fake/bin").display(),
+        std::env::var("PATH").unwrap()
+    );
+    let mut c = ns();
+    c.current_dir(root)
+        .env("PATH", path)
+        .env("NS_NOW", "4072075200")
+        .args(["quality", "--bugs"])
+        .args(args);
+    c
+}
+
+#[test]
+fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
+    let mut dup = fix_issue(
+        14,
+        "2099-01-08T00:00:00Z",
+        "fix: again",
+        "Same as #13.",
+        &[],
+    );
+    dup["state"] = json!("closed");
+    dup["stateReason"] = json!("duplicate");
+    let issues = [
+        fix_issue(
+            10,
+            "2099-01-05T09:00:00Z",
+            "fix: a drops errors",
+            "`lib.rs:1` drops errors.\n\nThis escaped an earlier review.",
+            &["type:fix", "priority:high"],
+        ),
+        fix_issue(
+            11,
+            "2099-01-11T23:59:59Z",
+            "fix: b panics",
+            "`lib.rs:2` panics on empty input.",
+            &["type:fix", "priority:critical"],
+        ),
+        fix_issue(
+            12,
+            "2099-01-12T00:00:00Z",
+            "fix: main is red at abcdef0: test",
+            "",
+            &["type:fix", "priority:critical"],
+        ),
+        fix_issue(
+            13,
+            "2099-01-14T10:00:00Z",
+            "fix: c is slow",
+            "`lib.rs:3` takes a second.",
+            &["type:fix", "priority:medium"],
+        ),
+        dup,
+    ];
+    let (tmp, root) = bugs_fixture(&issues);
+    let out = ns_bugs(&tmp, &root, &["--json"]).output();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let by: Vec<(u64, &str, &str, &str)> = v["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["number"].as_u64().unwrap(),
+                i["source"].as_str().unwrap(),
+                i["by"].as_str().unwrap(),
+                i["severity"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        by,
+        [
+            (10, "review_escape", "review_text", "critical_high"),
+            (11, "factory_introduced", "blame", "critical_high"),
+            (12, "ci_main", "ci_title", "critical_high"),
+            (13, "human", "default", "rest"),
+        ]
+    );
+    assert_eq!(v["issues"][1]["introduced_by"]["pr"], 41);
+    assert_eq!(v["issues"][3]["introduced_by"]["pr"], 40);
+    assert_eq!(
+        v["excluded"],
+        json!([{"number": 14, "title": "fix: again", "week": "2099-W02"}])
+    );
+    assert_eq!(
+        v["weeks"],
+        json!([
+            {"week": "2099-W02", "monday": "2099-01-05", "opened": 2, "review_escape": 1,
+             "factory_introduced": 1, "ci_main": 0, "human": 0, "critical_high": 2, "rest": 0},
+            {"week": "2099-W03", "monday": "2099-01-12", "opened": 2, "review_escape": 0,
+             "factory_introduced": 0, "ci_main": 1, "human": 1, "critical_high": 1, "rest": 1},
+        ])
+    );
+    assert_eq!(v["total"]["opened"], 4);
+    assert_eq!(
+        (v["ok"].clone(), v["label"].clone()),
+        (json!(true), json!("type:fix"))
+    );
+
+    let out = ns_bugs(&tmp, &root, &["--weeks", "1"]).output();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("\n2099-W03       2      0       0       1     1         1    1\n"),
+        "{text}"
+    );
+    assert!(!text.contains("2099-W02"), "{text}");
+    assert!(!text.contains("Left out"), "{text}");
+}
+
+#[test]
+fn bugs_fails_when_the_forge_cannot_list_issues() {
+    let (tmp, root) = bugs_fixture(&[]);
+    fs::remove_file(tmp.path().join("fake/issues.jsonl")).unwrap();
+    ns_bugs(&tmp, &root, &[]).assert().code(1).stderr(
+        predicate::str::contains("issues?state=all&labels=type:fix")
+            .and(predicate::str::contains("failed: cat:")),
+    );
+}
+
+#[test]
+fn weeks_needs_bugs_and_one_or_more() {
+    ns().args(["quality", "--weeks", "2"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--bugs"));
+    ns().args(["quality", "--bugs", "--weeks", "0"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--weeks must be 1 or more"));
+}
+
+#[test]
+fn bugs_fails_when_the_forge_cannot_list_merged_prs() {
+    let (tmp, root) = bugs_fixture(&[]);
+    fs::remove_file(tmp.path().join("fake/prs.json")).unwrap();
+    ns_bugs(&tmp, &root, &[]).assert().code(1).stderr(
+        predicate::str::contains("gh pr list --state merged")
+            .and(predicate::str::contains("failed: cat:")),
+    );
+}
+
+#[test]
+fn bugs_names_why_an_issue_opened_before_any_commit_was_not_blamed() {
+    let (tmp, root) = bugs_fixture(&[fix_issue(
+        20,
+        "1999-01-04T00:00:00Z",
+        "fix: old",
+        "`lib.rs:2` panics.",
+        &[],
+    )]);
+    let out = ns_bugs(
+        &tmp,
+        &root,
+        &["--json", "--since", "1999-01-01", "--until", "1999-01-10"],
+    )
+    .output();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let i = &v["issues"][0];
+    assert_eq!(
+        (i["number"].as_u64(), i["source"].as_str()),
+        (Some(20), Some("human"))
+    );
+    assert_eq!(
+        i["blame_error"],
+        "no commit on main before the issue opened"
+    );
+    assert_eq!(v["weeks"].as_array().unwrap().len(), 2);
+}
