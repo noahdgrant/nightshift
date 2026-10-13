@@ -41,7 +41,7 @@ Explore the code the map needs as [guard the context window](../ns-principle-gua
 
 Then [surface the assumptions](../ns-principle-surface-assumptions/SKILL.md) the map rests on. When the brief, the code, the docs or a test disagree, [manage the confusion](../ns-principle-manage-confusion/SKILL.md) before the first slice.
 
-Done when every acceptance criterion is mapped to a seam where a test can observe it. Write the map down; it seeds the test list.
+Done when every acceptance criterion, and every instance the brief's **Instances** section covers, is mapped to a seam where a test can observe it. Write the map down; it seeds the test list.
 
 If the work touches an external API, a library version or a vendor SDK, read [source-driven.md](references/source-driven.md) before writing that code.
 
@@ -62,6 +62,8 @@ While building, apply these principles:
 - [Keep scope tight](../ns-principle-keep-scope-tight/SKILL.md) on every diff: work outside the brief goes in `build.md` as a `file:` line (Open risks, below).
 - [Push back](../ns-principle-push-back/SKILL.md) when the brief asks for something the code or a test shows is wrong.
 
+**Fix the class.** When the brief lists Instances, fix every one it covers, each with its own red test. Leave an instance marked filed separately to its issue. Then add a **guard** for the class where one is practical: a lint or `ast-grep` rule that flags the faulty construct, a test that checks every instance at once, or a type or shared helper that makes the defect unwritable. Record the guard, or why none is practical, under Class guard in `build.md`. An instance you find that the brief missed is a `file:` line.
+
 **Open risks** come in two kinds, and each line in `build.md` starts with its kind:
 
 - `file:` a concrete defect or missing work outside the unit's scope, with its location and the evidence you saw. `ns-ship` files it as a `needs-triage` issue when it opens the PR, and writes the issue number back.
@@ -73,7 +75,7 @@ While building, apply these principles:
 
 **Commit each green slice** with a Conventional Commit, `type(scope): subject` (`feat(uart): time out reads after 50 ms`). One logical change per commit, each one building and passing on its own. The repo's hooks run on every commit and never get skipped ([git hooks](../ns-contract/SKILL.md#git-hooks)): when one fails, fix what it reports. Run single test files during the loop and the typecheck when the stack has one. Stop a test, gate or server you started per [killing processes](../ns-contract/SKILL.md#killing-processes), never by name or pattern.
 
-Done when every acceptance criterion has a passing test and a commit, and the working tree is clean.
+Done when every acceptance criterion and every covered instance has a passing test and a commit, and the working tree is clean.
 
 ## 4. Self-check
 
@@ -126,6 +128,9 @@ Branches: <n> listed, all tested. One line per branch: <file:line> <branch>: <te
 | Mutation | Location | Command | Result |
 |---|---|---|---|
 | `>=` to `>` | `src/x.py:17` | `timeout 60 pytest -q tests/test_x.py` | killed |
+
+## Class guard
+<the rule, test or type that stops the defect class coming back, or why none is practical>. Only when the brief lists Instances
 
 ## Deviations from the brief
 <what changed and why>, or "none"

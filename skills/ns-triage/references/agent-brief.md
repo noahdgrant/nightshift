@@ -43,6 +43,12 @@ Fill them from the code paths the change involves, found while exploring the cod
 - **Edge cases**: the empty, unset, boundary, concurrent and resumed states that apply to this path, and the behaviour each one gets.
 - **Out of scope**: what the agent must leave alone. This keeps it from gold-plating or making assumptions about adjacent features.
 
+### Instances: fix the class, not the report
+
+A brief that fixes a defect carries **Instances**: the search run for every other place the same defect can occur, and each hit. That holds for a `bug`, and for an enhancement or `ready-for-human` brief that fixes a defect. Search for the defect's shape, not the reporter's wording: a `grep` or `ast-grep` pattern for the faulty construct, or the callers and copies you read. A search that finds only the reported place says so, with the search, so a reader can tell "searched" from "forgot".
+
+Each hit is covered by this brief, or names the issue it was filed under (`filed separately: #536`). Build fixes every covered hit and adds a guard for the class, and review flags a fix that leaves one out. When the hits are too many for one unit, split them per [triage](../SKILL.md) step 5, each child with its own Instances.
+
 ### Route when the next phase isn't obvious
 
 `**Route:**` is optional. A brief that moves to `ready-for-agent` goes to `ns-build`, so triage usually leaves it out. `ns-troubleshoot` always writes it, because its brief can go to `ns-build`, to `ns-define` for a redesign, or nowhere. `ns run` reads only the frontmatter `status`, so the Route never overrides it.
@@ -83,6 +89,13 @@ Describe what should happen after the agent's work is complete.
   its behaviour
 - Or one line: "none; <why none apply>"
 
+**Instances:** (required when the brief fixes a defect)
+- Search: the grep, ast-grep pattern or reading that looked for the defect's
+  shape everywhere
+- `symbol_name()`: the reported instance, covered
+- `other_symbol()`: covered, or "filed separately: #N"
+- Or one line: "only the reported instance; <search> found no other"
+
 **Decisions:** each settled design decision and who settled it, quoted (omit when none; see [design decisions](../SKILL.md#design-decisions))
 
 **Key interfaces:**
@@ -121,7 +134,17 @@ that end mid-word (e.g. "Use when the user wants to confi").
 
 **Desired behavior:**
 Truncation should break at the last word boundary before 1024 characters
-and append "..." to indicate truncation.
+and append "..." to indicate truncation. The same rule applies to every field
+listed under Instances, through one shared helper.
+
+**Instances:**
+- Search: `grep -rn '\[:1024\]\|\[:MAX_' src/` for fixed-width slices, then
+  read each hit's caller
+- `parse_frontmatter()`, the description field: the reported instance, covered
+- `parse_frontmatter()`, the `argument-hint` field: the same 1024-char slice,
+  covered
+- `render_listing()`, the one-line summary: cuts at 80 chars mid-word, filed
+  separately: #88
 
 **Failure modes:** none; truncation is pure string handling on a description
 the parser has already read, and a parse error keeps its current message.
@@ -138,7 +161,7 @@ the parser has already read, and a parse error keeps its current message.
 - `parse_frontmatter(text: str) -> SkillMetadata`, or whatever function reads
   SKILL.md frontmatter and extracts the description
 
-**Size:** one module (frontmatter parsing), four pytest cases, about 40 lines
+**Size:** one module (frontmatter parsing), five pytest cases, about 50 lines
 
 **Touches:** `src/skills/frontmatter.py`, `tests/test_frontmatter.py`
 
@@ -149,10 +172,12 @@ the parser has already read, and a parse error keeps its current message.
 - [ ] Truncated descriptions end with "..."
 - [ ] The total length including "..." does not exceed 1024 chars
 - [ ] A pytest case covers each of the above
+- [ ] The `argument-hint` field truncates by the same rule
 
 **Out of scope:**
 - Changing the 1024 char limit itself
 - Multi-line description support
+- The listing summary (#88)
 ```
 
 ### Good Agent Brief (enhancement)
@@ -283,5 +308,6 @@ This is bad because:
 - References file paths and line numbers in the spec, where they go stale, instead of path globs on a `**Touches:**` line
 - No acceptance criteria
 - No failure modes or edge cases, so build guesses them
+- No Instances, so the fix covers one place and the next ticket reports the copy
 - No scope boundaries
 - No description of current vs desired behavior
