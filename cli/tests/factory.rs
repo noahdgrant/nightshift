@@ -1016,6 +1016,286 @@ fn verify_fail_goes_back_to_build_with_feedback() {
     assert!(p.contains("verify said fail"), "{p}");
 }
 
+/// Shell that adds a commit to `origin`'s main, as another actor merging a PR would.
+fn move_main_sh(e: &Env) -> String {
+    let r = e.base.join("remote.git");
+    format!(
+        "r={r:?}; c=$(git --git-dir=\"$r\" commit-tree \"$(git --git-dir=\"$r\" rev-parse main^{{tree}})\" -p main -m other) && git --git-dir=\"$r\" update-ref refs/heads/main \"$c\"",
+        r = r.display()
+    )
+}
+
+fn remote_main(e: &Env) -> String {
+    git(&e.base.join("remote.git"), &["rev-parse", "main"])
+}
+
+fn rebase_events(e: &Env) -> Vec<Value> {
+    fs::read_to_string(e.root.join(".git/ns/runs.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["event"] == "rebase_after_base_moved")
+        .collect()
+}
+
+/// Build 1 commits and another actor moves main; verify gets five attempts, so only build's cap
+/// can end the unit.
+fn base_moves_during_build(e: &Env, extra: &str) {
+    e.factory(&format!("[phases.verify]\nmax_attempts = 5\n{extra}"));
+    e.ctl(
+        "build.sh",
+        &format!(
+            "echo b >> work.txt && git add work.txt && git -c user.name=f -c user.email=f@f commit -qm b && {}",
+            move_main_sh(e)
+        ),
+    );
+}
+
+#[test]
+fn a_verify_no_go_for_base_movement_rebases_onto_the_newest_main_at_no_attempts_cost() {
+    let e = Env::new();
+    base_moves_during_build(&e, "");
+    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["fail:base moved", "fail", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "build", "verify", "build", "verify", "review", "ship"]
+    );
+    let main = remote_main(&e);
+    let p = e.prompt(4, "build");
+    assert!(p.contains("base moved"), "{p}");
+    assert!(
+        p.contains(&format!("rebase onto the newest origin/main ({main})")),
+        "{p}"
+    );
+    assert!(!e.prompt(6, "build").contains("rebase onto the newest"));
+    let wt = e.worktree(UNIT);
+    assert_eq!(git(&wt, &["rev-parse", "origin/main"]), main, "fetched");
+    let r = rebase_events(&e);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0]["attempt"], 2);
+    assert_eq!(r[0]["onto"], main.as_str());
+    assert_eq!(r[0]["cause"], "evidence.md failed");
+}
+
+#[test]
+fn a_ship_no_go_for_base_movement_goes_to_build_at_no_attempts_cost() {
+    let e = Env::new();
+    base_moves_during_build(&e, "[phases.ship]\nmax_attempts = 5\n");
+    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["pass", "fail", "pass"]);
+    e.queue("ship", &["fail:base moved", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        &e.calls()[..6],
+        ["triage", "build", "verify", "review", "ship", "build"]
+    );
+    let r = rebase_events(&e);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0]["cause"], "pr.md failed: base moved");
+}
+
+#[test]
+fn a_free_rebase_build_that_fails_leaves_the_unit_stuck_at_the_normal_cap() {
+    let e = Env::new();
+    base_moves_during_build(&e, "");
+    e.queue("build", &["pass:script", "fail", "pass:commit"]);
+    e.queue("verify", &["fail:base moved"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["reason"], "build is out of attempts (2)", "{v}");
+    assert_eq!(e.calls(), ["triage", "build", "verify", "build"]);
+}
+
+#[test]
+fn a_review_no_go_for_base_movement_goes_to_build_at_no_attempts_cost() {
+    let e = Env::new();
+    base_moves_during_build(&e, "[phases.review]\nmax_attempts = 5\n");
+    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["pass", "fail", "pass"]);
+    e.queue("review", &["fail:base moved", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        &e.calls()[..6],
+        ["triage", "build", "verify", "review", "build", "verify"]
+    );
+    let r = rebase_events(&e);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0]["cause"], "review.md failed");
+}
+
+#[test]
+fn a_free_rebase_build_that_times_out_leaves_the_unit_stuck_at_the_normal_cap() {
+    let e = Env::new();
+    base_moves_during_build(&e, "");
+    e.queue("build", &["pass:script", "blocked:sleep", "pass:commit"]);
+    e.queue("verify", &["fail:base moved"]);
+    let out = e
+        .ns()
+        .env("NS_PHASE_TIMEOUT_MS", "build=1500")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("build is out of attempts (2)"),
+        "{v}"
+    );
+    assert_eq!(e.calls(), ["triage", "build", "verify", "build"]);
+}
+
+#[test]
+fn a_free_rebase_build_that_writes_no_artifact_leaves_the_unit_stuck_at_the_normal_cap() {
+    let e = Env::new();
+    base_moves_during_build(&e, "");
+    e.queue("build", &["pass:script", "none", "pass:commit"]);
+    e.queue("verify", &["fail:base moved"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("build is out of attempts (2)"),
+        "{v}"
+    );
+    assert_eq!(e.calls(), ["triage", "build", "verify", "build"]);
+}
+
+#[test]
+fn a_free_rebase_that_gives_up_waiting_for_a_lock_still_rebases_on_the_retry() {
+    let e = Env::new();
+    let lock = e.base.join("locks/bench-1.lock");
+    let log = e.root.join(".git/ns/runs.jsonl");
+    e.factory("[phases.build]\nrunner = \"bench\"\n");
+    e.runner("bench", "kind = \"bench\"\nlocks = [\"bench-1\"]\n");
+    e.config(&format!(
+        "[runners]\nlock_dir = {:?}\n",
+        lock.parent().unwrap().to_str().unwrap()
+    ));
+    // After the first build lets go of the lock, a holder takes it and keeps it until the
+    // run has logged its first give-up, so the rebase build's first wait ends at the timeout.
+    e.ctl(
+        "build.sh",
+        &format!(
+            "echo b >> work.txt && git add work.txt && git -c user.name=f -c user.email=f@f commit -qm b && {}; \
+             (setsid timeout 30 flock -x {lock:?} sh -c 'until grep -q lock_wait_timeout {log:?}; do sleep 0.05; done' </dev/null >/dev/null 2>&1 &)",
+            move_main_sh(&e)
+        ),
+    );
+    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["fail:base moved", "pass"]);
+    let out = e
+        .ns()
+        .env_remove("NS_NOW")
+        .env("NS_PHASE_TIMEOUT_MS", "build=4000")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["outcome"], "done", "{v}");
+    let main = remote_main(&e);
+    let p = e.prompt(4, "build");
+    assert!(
+        p.contains(&format!("rebase onto the newest origin/main ({main})")),
+        "{p}"
+    );
+    assert_eq!(rebase_events(&e).len(), 1);
+}
+
+#[test]
+fn a_red_gate_after_a_rebase_with_main_moved_since_rebases_once_more() {
+    let e = Env::new();
+    let n = e.ctrl.join("gates");
+    let n = n.display();
+    // Gate 2 (after the rebase) and gate 3 (after the extra rebase) go red and move main.
+    base_moves_during_build(
+        &e,
+        &format!(
+            "[phases.build]\ngate = \"n=$(($(cat {n} 2>/dev/null || echo 0)+1)); echo $n > {n}; case $n in 2|3) {m}; echo boom; exit 1;; esac\"\n",
+            m = move_main_sh(&e).replace('"', "\\\"")
+        ),
+    );
+    e.queue(
+        "build",
+        &["pass:script", "pass:commit", "pass:commit", "pass:commit"],
+    );
+    e.queue("verify", &["fail:base moved", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "build", "build", "build", "verify", "review", "ship"]
+    );
+    let r = rebase_events(&e);
+    assert_eq!(r.len(), 2, "one extra rebase, never a second: {r:?}");
+    assert_eq!(r[1]["attempt"], 3);
+    assert_eq!(
+        r[1]["cause"],
+        "the CI gate failed after a rebase and main moved since"
+    );
+    let p = e.prompt(5, "build");
+    assert!(p.contains("boom"), "{p}");
+    assert!(p.contains("rebase onto the newest origin/main"), "{p}");
+    // The third red spent build's second attempt.
+    assert!(!e.prompt(6, "build").contains("rebase onto the newest"));
+}
+
+#[test]
+fn a_red_gate_after_a_rebase_with_main_still_spends_an_attempt() {
+    let e = Env::new();
+    let n = e.ctrl.join("gates");
+    let n = n.display();
+    base_moves_during_build(
+        &e,
+        &format!(
+            "[phases.build]\ngate = \"n=$(($(cat {n} 2>/dev/null || echo 0)+1)); echo $n > {n}; [ $n -ne 2 ] || {{ echo boom; exit 1; }}\"\n"
+        ),
+    );
+    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["fail:base moved", "fail"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["reason"], "build is out of attempts (2)", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "build", "build", "verify"]
+    );
+    assert_eq!(rebase_events(&e).len(), 1);
+}
+
+#[test]
+fn a_build_that_fails_saying_base_moved_still_spends_an_attempt() {
+    let e = Env::new();
+    e.queue("build", &["fail:base moved", "fail:base moved"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["reason"], "build is out of attempts (2)", "{v}");
+    assert_eq!(e.calls(), ["triage", "build", "build"]);
+    assert!(rebase_events(&e).is_empty());
+}
+
+#[test]
+fn without_an_origin_a_base_moved_no_go_spends_an_attempt() {
+    let e = Env::new();
+    git(&e.root, &["remote", "remove", "origin"]);
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    e.queue("verify", &["fail:base moved", "fail"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert!(
+        v["reason"].as_str().unwrap().contains("out of attempts"),
+        "{v}"
+    );
+    assert!(rebase_events(&e).is_empty());
+}
+
 #[test]
 fn attempt_limit_gives_stuck() {
     let e = Env::new();
@@ -4022,21 +4302,37 @@ fn build_only_sends_a_conflict_with_main_back_to_ship() {
     for (file, text) in [("pr-12.merge", "DIRTY"), ("update-12.fail", "")] {
         let e = Env::new();
         remote_queue(&e, AUTO);
-        main_moves(&e, "from-main", "x\n");
+        let tip = main_moves(&e, "from-main", "x\n");
         e.gh_file(file, text);
         let v = e.run(&["run", "--issue", "7"], 1);
         assert_eq!(v["outcome"], "stuck", "{file}: {v}");
         assert_eq!(v["reason"], "ship is out of attempts (2)", "{file}: {v}");
+        // The first conflict's reship is free. Main stays where it was, so the next one uses
+        // ship's second attempt and the unit ends stuck instead of looping.
         let calls = e.calls();
         assert_eq!(
             calls,
-            ["triage", "build", "verify", "review", "ship", "ship"],
+            ["triage", "build", "verify", "review", "ship", "ship", "ship"],
             "{file}"
         );
         let p = e.prompt(6, "ship");
         assert!(
             p.contains("PR #12 conflicts with main: rebase onto main and resolve conflicts"),
             "{file}: {p}"
+        );
+        assert!(
+            p.contains(&format!(
+                "merge in the newest origin/main ({tip}). This ship costs no attempt."
+            )),
+            "{file}: {p}"
+        );
+        assert!(!e.prompt(7, "ship").contains("costs no attempt"), "{file}");
+        let r = rebase_events(&e);
+        assert_eq!(r.len(), 1, "{file}: {r:?}");
+        assert_eq!(
+            (&r[0]["phase"], &r[0]["cause"]),
+            (&json!("ship"), &json!("the PR conflicts with its base")),
+            "{file}"
         );
         assert!(!e.gh_calls().contains("pr merge"), "{file}");
         assert!(
@@ -4106,9 +4402,14 @@ fn auto_merge_conflict_goes_back_to_build() {
     let v: Value = serde_json::from_slice(&v.stdout).unwrap();
     let p = e.prompt(6, "build");
     assert!(p.contains("rebase onto main"), "{p}");
-    // max_attempts 2: the second conflict leaves the unit stuck at build.
+    // The first conflict's rebuild is free. Main stays where it was, so the later ones use
+    // build's two attempts and the unit ends stuck instead of looping.
     assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(v["reason"], "build is out of attempts (2)", "{v}");
     assert!(!e.gh_calls().contains("pr merge"));
+    let r = rebase_events(&e);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0]["cause"], "PR #12 conflicts with main");
 }
 
 fn update_branch_events(e: &Env) -> usize {
@@ -4225,7 +4526,8 @@ fn a_failed_update_branch_logs_its_cause() {
     );
     e.run(&["run", "--issue", "7"], 1);
     let failed = update_failures(&e);
-    assert_eq!(failed.len(), 2, "{failed:?}");
+    // The first failure's rebuild is a free rebase; the next two use build's attempts.
+    assert_eq!(failed.len(), 3, "{failed:?}");
     let err = failed[0]["error"].as_str().unwrap();
     assert!(
         err.contains("merge conflict between base and head"),
@@ -9394,6 +9696,177 @@ fn a_capped_phase_that_times_out_fails_on_the_timeout() {
     );
 }
 
+/// Fake `systemd-run` that passes the cgroup probe and runs each command in a "scope" logged
+/// to `ctrl/scopes`.
+fn fake_systemd_run(e: &Env) {
+    let c = e.ctrl.display();
+    write_exe(
+        &e.bin.join("systemd-run"),
+        format!(
+            "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    --collect) echo 67108864; exit 0 ;;\n    --unit=*) echo \"${{1#--unit=}}\" >> '{c}/scopes' ;;\n    --) shift; break ;;\n  esac\n  shift\ndone\nexec \"$@\"\n"
+        ),
+    );
+}
+
+/// Fake `systemctl` whose `show` runs the shell `report` for each ask, with the scope's ask
+/// count so far in `$n` and its directory of state in `$d`; it prints the `ActiveState` and
+/// `Result` lines. `reset-failed` logs the scope, how many asks it had and the state the last
+/// one reported to `ctrl/reset`.
+fn fake_systemctl(e: &Env, report: &str) {
+    let c = e.ctrl.display();
+    write_exe(
+        &e.bin.join("systemctl"),
+        format!(
+            "#!/bin/sh\nd='{c}/asks'; mkdir -p \"$d\"\ncase \"$2\" in\n  show) n=$(( $(cat \"$d/$3\" 2>/dev/null || echo 0) + 1 )); echo $n > \"$d/$3\"\n    {report}\n    printf 'ActiveState=%s\\nResult=%s\\n' \"$state\" \"$result\"; echo \"$state\" > \"$d/$3.last\" ;;\n  reset-failed) echo \"$3 $(cat \"$d/$3\" 2>/dev/null || echo 0) $(cat \"$d/$3.last\" 2>/dev/null)\" >> '{c}/reset' ;;\nesac\n"
+        ),
+    );
+}
+
+/// Fake `systemd-run` and `systemctl` where `systemctl show` reports `first`
+/// (`ActiveState Result`) for a scope's first `n` asks and `then` after.
+fn fake_systemd(e: &Env, n: u32, first: &str, then: &str) {
+    fake_systemd_run(e);
+    let (fs, fr) = first.split_once(' ').unwrap();
+    let (ts, tr) = then.split_once(' ').unwrap();
+    fake_systemctl(
+        e,
+        &format!(
+            "if [ $n -le {n} ]; then state={fs}; result={fr}; else state={ts}; result={tr}; fi"
+        ),
+    );
+}
+
+/// Fake `systemd-run` and `systemctl` where a scope reports `active success` until `secs`
+/// seconds after the first ask about it, then `failed oom-kill`.
+fn fake_systemd_failing_after(e: &Env, secs: u32) {
+    fake_systemd_run(e);
+    fake_systemctl(
+        e,
+        &format!(
+            "now=$(date +%s); [ -f \"$d/$3.t\" ] || echo $now > \"$d/$3.t\"\n    if [ $(( now - $(cat \"$d/$3.t\") )) -lt {secs} ]; then state=active; result=success; else state=failed; result=oom-kill; fi"
+        ),
+    );
+}
+
+/// Each scope the run started was reset once, after systemd had been asked about it more
+/// than `asks` times.
+fn assert_every_scope_reset(e: &Env, asks: u32) {
+    let scopes = recorded(e, "scopes");
+    let reset = fs::read_to_string(e.ctrl.join("reset")).unwrap_or_default();
+    assert!(!scopes.is_empty());
+    for unit in scopes.lines() {
+        let lines: Vec<&str> = reset
+            .lines()
+            .filter(|l| l.split(' ').next() == Some(unit))
+            .collect();
+        assert_eq!(lines.len(), 1, "{unit} reset: {reset}");
+        let n: u32 = lines[0].split(' ').nth(1).unwrap().parse().unwrap();
+        assert!(
+            n > asks,
+            "{unit} reset after {n} asks, want more than {asks}"
+        );
+    }
+}
+
+#[test]
+fn every_capped_phase_and_gate_scope_is_reset_after_it_exits_zero_or_not() {
+    let e = Env::new();
+    let flag = e.ctrl.join("gate-green");
+    e.factory(&format!(
+        "[limits]\nmemory_mb = 64\n[phases.build]\ngate = \"test -f {f} || {{ touch {f}; exit 1; }}\"\n",
+        f = flag.display()
+    ));
+    fake_systemd(&e, 0, "active success", "inactive success");
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(memory_cap(&e)["via"], "systemd-run");
+    assert_eq!(gate_events(&e)[0]["green"], false);
+    assert_every_scope_reset(&e, 0);
+}
+
+#[test]
+fn a_capped_phase_that_times_out_still_resets_its_scope() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    fake_systemd(&e, 0, "active success", "inactive success");
+    e.ctl("build.sh", "true\n");
+    e.queue("build", &["pass:script+sleep", "pass:commit"]);
+    let v = run_with_phase_timeout(&e, 0);
+    assert_eq!(build_event(&e, 1)["reason"], "timed out after 1.5 s", "{v}");
+    assert_every_scope_reset(&e, 0);
+}
+
+#[test]
+fn a_capped_gate_killed_by_a_signal_still_resets_its_scope() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n[phases.build]\ngate = \"kill -9 $$\"\n");
+    fake_systemd(&e, 0, "active success", "inactive success");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(
+        v["reason"],
+        "build is out of attempts (2): the CI gate was killed by SIGKILL"
+    );
+    assert_every_scope_reset(&e, 0);
+}
+
+#[test]
+fn a_capped_phase_whose_run_process_errors_on_a_stop_still_resets_its_scope() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    fake_systemd(&e, 0, "active success", "inactive success");
+    let f = blocking_build(&e);
+    let r = interrupt(&e, f, libc::SIGTERM, false);
+    assert_interrupted(&e, &r, "SIGTERM", 143);
+    assert_every_scope_reset(&e, 0);
+}
+
+#[test]
+fn a_capped_gate_whose_run_process_errors_on_a_stop_still_resets_its_scope() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    let f = fifo(&e);
+    e.factory(&format!(
+        "[limits]\nmemory_mb = 64\n[phases.build]\ngate = {:?}\n",
+        blocks(&f)
+    ));
+    fake_systemd(&e, 0, "active success", "inactive success");
+    e.queue("build", &["pass:commit"]);
+    let r = interrupt(&e, f, libc::SIGTERM, false);
+    assert_interrupted(&e, &r, "SIGTERM", 143);
+    assert_every_scope_reset(&e, 0);
+}
+
+#[test]
+fn a_scope_that_fails_after_the_settle_deadline_is_not_an_overrun_but_is_still_reset() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    // Active past the 3 s ns waits for the result and failed before the 10 s it waits to
+    // release the scope: the late failure is cleared, not reported.
+    fake_systemd_failing_after(&e, 6);
+    e.queue("build", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_every_scope_reset(&e, 0);
+    for line in recorded(&e, "reset").lines() {
+        assert!(line.ends_with(" failed"), "reset before it failed: {line}");
+    }
+}
+
+#[test]
+fn an_oom_kill_seen_while_the_scope_deactivates_is_detected_and_reset_once_it_fails() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    fake_systemd(&e, 5, "deactivating oom-kill", "failed oom-kill");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(
+        v["reason"],
+        "triage is out of attempts (2): the last attempt exceeded the 64 MB memory limit",
+        "{v}"
+    );
+    assert_every_scope_reset(&e, 5);
+}
+
 #[test]
 fn a_cap_nothing_here_can_enforce_is_a_usage_error_before_any_phase() {
     let e = Env::new();
@@ -11294,6 +11767,155 @@ fn watch_parallel_once_and_max_units_cap_the_units_started() {
     assert_eq!(by_issue(&units(&v)), each(&[4], "done"), "{v}");
 }
 
+/// A build that records its CPU variables to `seen` and commits, and a build gate that records
+/// them too. Returns `seen`, one `<who>:<NS_CPUS>:<RUST_TEST_THREADS>:<CARGO_BUILD_JOBS>` line
+/// per build and gate.
+fn cpus_seen(e: &Env) -> PathBuf {
+    let seen = e.ctrl.join("cpus-seen");
+    let dump = |who: &str| {
+        format!(
+            "echo \"{who}:${{NS_CPUS-unset}}:${{RUST_TEST_THREADS-unset}}:${{CARGO_BUILD_JOBS-unset}}\" >> {}\n",
+            seen.display()
+        )
+    };
+    build_only(e, "");
+    e.ctl("ci.sh", &dump("gate"));
+    e.ctl(
+        "build.sh",
+        &format!(
+            "{}date >> built.txt && git add built.txt && git -c user.name=f -c user.email=f@f commit -qm built",
+            dump("build")
+        ),
+    );
+    e.queue("build", &["pass:script"]);
+    seen
+}
+
+#[test]
+fn run_cpus_sets_all_three_variables_for_phases_and_gates_and_logs_them() {
+    let e = Env::new();
+    let seen = cpus_seen(&e);
+    let v = e.run(&["run", "--issue", "7", "--cpus", "3"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        fs::read_to_string(&seen).unwrap(),
+        "build:3:3:3\ngate:3:3:3\n"
+    );
+    let start = &events_named(&e, "start")[0];
+    assert_eq!(
+        start["cpus"],
+        serde_json::json!({
+            "NS_CPUS": {"value": "3", "source": "computed"},
+            "RUST_TEST_THREADS": {"value": "3", "source": "computed"},
+            "CARGO_BUILD_JOBS": {"value": "3", "source": "computed"},
+        }),
+        "{start}"
+    );
+}
+
+#[test]
+fn run_without_cpus_sets_none_of_the_variables() {
+    let e = Env::new();
+    let seen = cpus_seen(&e);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        fs::read_to_string(&seen).unwrap(),
+        "build:unset:unset:unset\ngate:unset:unset:unset\n"
+    );
+    assert!(events_named(&e, "start")[0]["cpus"].is_null());
+}
+
+#[test]
+fn run_cpus_passes_a_variable_already_set_through_unchanged() {
+    let vars = ["NS_CPUS", "RUST_TEST_THREADS", "CARGO_BUILD_JOBS"];
+    for (i, set) in vars.iter().enumerate() {
+        let e = Env::new();
+        let seen = cpus_seen(&e);
+        let out = e
+            .ns()
+            .args(["run", "--issue", "7", "--cpus", "2"])
+            .env(set, "16")
+            .output();
+        assert!(out.status.success(), "{set}: {out:?}");
+        let mut values = ["2", "2", "2"];
+        values[i] = "16";
+        let line = |who: &str| format!("{who}:{}:{}:{}\n", values[0], values[1], values[2]);
+        assert_eq!(
+            fs::read_to_string(&seen).unwrap(),
+            format!("{}{}", line("build"), line("gate")),
+            "{set}"
+        );
+        let cpus = &events_named(&e, "start")[0]["cpus"];
+        for (j, var) in vars.iter().enumerate() {
+            let (value, source) = if i == j {
+                ("16", "inherited")
+            } else {
+                ("2", "computed")
+            };
+            assert_eq!(
+                cpus[var],
+                serde_json::json!({"value": value, "source": source}),
+                "{set}: {var}"
+            );
+        }
+    }
+}
+
+#[test]
+fn run_cpus_reaches_the_worktree_setup_commands() {
+    let e = Env::new();
+    let seen = e.ctrl.join("setup-seen");
+    let cmd = format!(
+        "echo \"${{NS_CPUS-unset}}:${{RUST_TEST_THREADS-unset}}:${{CARGO_BUILD_JOBS-unset}}\" >> {}",
+        seen.display()
+    );
+    e.factory(&format!("[worktree]\nsetup = {:?}\n", [cmd]));
+    let v = e.run(&["run", "--issue", "7", "--cpus", "3"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(fs::read_to_string(&seen).unwrap(), "3:3:3\n");
+}
+
+#[test]
+fn run_cpus_must_be_a_number_of_at_least_one() {
+    let e = Env::new();
+    for bad in ["0", "x"] {
+        e.ns()
+            .args(["run", "--issue", "7", "--cpus", bad])
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains("--cpus"));
+    }
+    assert!(e.calls().is_empty(), "{:?}", e.calls());
+}
+
+#[test]
+fn watch_gives_each_unit_its_share_of_the_cores() {
+    let cores = std::thread::available_parallelism().unwrap().get();
+    for parallel in [1, 2, 3, cores + 1] {
+        let e = Env::new();
+        two_ready(&e);
+        let seen = e.ctrl.join("cpus-seen");
+        e.ctl(
+            "build.sh",
+            &format!(
+                "echo \"$NS_CPUS:$CARGO_BUILD_JOBS\" >> {}\n",
+                seen.display()
+            ),
+        );
+        e.queue("build", &["pass:script", "pass:script"]);
+        let p = parallel.to_string();
+        let v = e.run(&["watch", "--parallel", &p], 0);
+        assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+        let share = (cores / parallel).max(1);
+        assert_eq!(
+            fs::read_to_string(&seen).unwrap(),
+            format!("{share}:{share}\n{share}:{share}\n"),
+            "--parallel {parallel} on {cores} cores"
+        );
+    }
+}
+
 #[test]
 fn watch_parallel_settles_the_other_unit_when_one_ends_without_a_result() {
     let e = Env::new();
@@ -11965,6 +12587,79 @@ fn draining_starts_no_unit_and_waits_for_the_running_one() {
     );
 }
 
+/// A night with two units held in their builds, drained for a `cli/` change that lands once
+/// unit 3 ends; `between` runs while unit 2 is still building. The night's stderr and the commit
+/// the drain began for.
+fn drained_while_the_base_moves(e: &Env, from: &str, between: impl FnOnce()) -> (String, String) {
+    two_ready(e);
+    let (in_a, go_a) = hold_phase(e, A, "build");
+    let (in_b, go_b) = hold_phase(e, B, "build");
+    let mut w = Watching::start(watch_from(e, from).args(["watch", "--parallel", "2"]));
+    w.entered(&in_a);
+    w.entered(&in_b);
+    let noted = land(e, "cli/x", "new\n");
+    release(&go_b);
+    w.line("draining");
+    between();
+    release(&go_a);
+    let (code, _, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    (err, noted)
+}
+
+fn assert_built(e: &Env, from: &str, to: &str, text: &str, err: &str) {
+    assert_eq!(cargo_calls(e), 1, "{err}");
+    assert_eq!(
+        fs::read_to_string(e.ctrl.join("cargo-built")).unwrap(),
+        text
+    );
+    let ev = events_named(e, "self_update");
+    assert_eq!(ev.len(), 1, "{err}");
+    assert_eq!((&ev[0]["from"], &ev[0]["to"]), (&json!(from), &json!(to)));
+    assert!(
+        err.contains(&format!("self-update: building {}", &to[..12])),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!("self-update {} -> {}", &from[..12], &to[..12])),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_drain_hands_off_to_the_base_at_its_end_not_its_start() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    let mut newer = String::new();
+    let (err, _) = drained_while_the_base_moves(&e, &from, || {
+        newer = land(&e, "cli/x", "newer\n");
+    });
+    assert_built(&e, &from, &newer, "newer\n", &err);
+}
+
+#[test]
+fn a_failed_fetch_at_the_drain_end_hands_off_to_the_noted_commit() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    failing_fetch(&e);
+    let (err, noted) = drained_while_the_base_moves(&e, &from, || {
+        land(&e, "cli/x", "newer\n");
+        e.ctl("fetch-fails", "");
+    });
+    assert_built(&e, &from, &noted, "new\n", &err);
+}
+
+/// A `git` on PATH whose `fetch` fails once `$FAKE_CTRL/fetch-fails` exists.
+fn failing_fetch(e: &Env) {
+    write_exe(
+        &e.bin.join("git"),
+        format!(
+            "#!/bin/sh\ncase \" $* \" in *\" fetch \"*) [ -e \"$FAKE_CTRL/fetch-fails\" ] && {{ echo 'fatal: unreachable' >&2; exit 128; }} ;; esac\nexec {} \"$@\"\n",
+            real_git()
+        ),
+    );
+}
+
 /// A night on a nightshift repo whose origin has a `cli/` change the build commit lacks, with
 /// the fake cargo in `mode`; its summary and stderr.
 fn night_with_a_failed_update(mode: &str) -> (Env, String, Value, String) {
@@ -12032,21 +12727,22 @@ fn a_failed_check_keeps_the_old_binary_and_is_not_retried() {
     assert_kept_the_old_binary(&e, &to, &v, &err, "--version said \"ns 0.1.0 (0000000)\"");
 }
 
+/// The path of the real `git`, for a fake one to exec.
+fn real_git() -> String {
+    let out = StdCommand::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().into()
+}
+
 fn counting_git(e: &Env) {
-    let real = String::from_utf8(
-        StdCommand::new("sh")
-            .args(["-c", "command -v git"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
     let p = e.bin.join("git");
     write_exe(
         &p,
         format!(
             "#!/bin/sh\ncase \" $* \" in *\" fetch \"*) echo >> \"$FAKE_CTRL/git-fetches\" ;; esac\nexec {} \"$@\"\n",
-            real.trim()
+            real_git()
         ),
     );
 }
@@ -13521,11 +14217,17 @@ fn every_step_keeps_the_local_queue_and_sends_a_conflict_back_to_build() {
     e.gh_file("pr-12.merge", "DIRTY");
     let v = e.run(&["run", "--issue", "7"], 1);
     assert_eq!(v["outcome"], "stuck", "{v}");
+    // The first conflict's rebuild is free; the next, with main unmoved, uses build's second
+    // attempt.
     assert_eq!(
         e.calls(),
-        ["triage", "build", "verify", "review", "ship", "build", "verify", "review", "ship"]
+        [
+            "triage", "build", "verify", "review", "ship", "build", "verify", "review", "ship",
+            "build"
+        ]
     );
     assert!(e.prompt(6, "build").contains("PR #12 conflicts with main"));
+    assert_eq!(rebase_events(&e).len(), 1);
 }
 
 #[test]
@@ -13620,6 +14322,7 @@ fn a_merge_result_that_conflicts_goes_back_to_build_to_rebase() {
     let p = e.prompt(6, "build");
     assert!(p.contains("PR #12 conflicts with main"), "{p}");
     assert!(p.contains("rebase onto main"), "{p}");
+    assert!(p.contains("rebase onto the newest origin/main"), "{p}");
     assert!(!e.gh_calls().contains("pr merge"));
     assert_eq!(gate_verdicts(&e), verdicts(&[("build", true)]));
     assert!(run_events(&e).iter().any(|ev| ev["event"] == "conflict"));

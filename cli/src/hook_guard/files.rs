@@ -67,13 +67,32 @@ fn names_skills(name: &str) -> bool {
 
 /// `pattern` (`*` and `?`; a `[` set counts as a match) matches `text`.
 pub(super) fn glob_matches(pattern: &[u8], text: &[u8]) -> bool {
-    match pattern.split_first() {
-        None => text.is_empty(),
-        Some((b'*', rest)) => (0..=text.len()).any(|i| glob_matches(rest, &text[i..])),
-        Some((b'[', _)) => true,
-        Some((c, rest)) => text
-            .split_first()
-            .is_some_and(|(t, tail)| (*c == b'?' || c == t) && glob_matches(rest, tail)),
+    let (mut p, mut t) = (0, 0);
+    let mut backtrack: Option<(usize, usize)> = None;
+    loop {
+        match pattern.get(p) {
+            Some(b'[') => return true,
+            Some(b'*') => {
+                backtrack = Some((p, t));
+                p += 1;
+                continue;
+            }
+            Some(c) if t < text.len() && (*c == b'?' || *c == text[t]) => {
+                p += 1;
+                t += 1;
+                continue;
+            }
+            None if t == text.len() => return true,
+            _ => {}
+        }
+        match backtrack {
+            Some((star, at)) if at < text.len() => {
+                backtrack = Some((star, at + 1));
+                p = star + 1;
+                t = at + 1;
+            }
+            _ => return false,
+        }
     }
 }
 
@@ -188,6 +207,82 @@ pub(super) fn stays_inside(depth: usize, path: &str) -> bool {
     walk(depth, &components(path)).is_some()
 }
 
+/// What a path holds where an expansion's depth can't be known.
+pub(super) const UNREAD: char = '\0';
+
+/// `w` read as a path. An expansion that is a whole part of it (`$X`, `${X}`, `"$X"`) is one
+/// unknown directory, `*`: a glob for one part, so a check for `skills` or a unit's directory
+/// still matches it. Any other expansion is `UNREAD`: two in one part, one beside other text,
+/// a glob or a `..` part, one in a word with a brace, or one that isn't a plain parameter.
+pub(super) fn path(w: &Word) -> String {
+    let text = w.text.as_str();
+    let mut parts: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0;
+    for part in text.split('/') {
+        if !matches!(part, "" | ".") {
+            parts.push((start, start + part.len()));
+        }
+        start += part.len() + 1;
+    }
+    let is_dot_dot = |&(s, e): &(usize, usize)| &text[s..e] == "..";
+    let differs = |j: Option<usize>, at: usize| {
+        j.and_then(|j| w.expansions.get(j))
+            .is_none_or(|o| o.at != at)
+    };
+    w.filled(|i| {
+        let e = &w.expansions[i];
+        let (before, after) = text.split_at(e.at);
+        let alone = differs(i.checked_sub(1), e.at) && differs(Some(i + 1), e.at);
+        let whole_part = (before.is_empty() || before.ends_with('/'))
+            && (after.is_empty() || after.starts_with('/'));
+        let prev = parts.partition_point(|&(_, end)| end <= e.at);
+        let next = parts.partition_point(|&(start, _)| start < e.at);
+        let beside_dot_dot = prev.checked_sub(1).is_some_and(|p| is_dot_dot(&parts[p]))
+            || parts.get(next).is_some_and(is_dot_dot);
+        if e.name.is_some() && alone && whole_part && !beside_dot_dot {
+            '*'
+        } else {
+            UNREAD
+        }
+    })
+}
+
+/// `w` read as a directory to change to: an expansion of unknown depth is dropped, as if empty.
+pub(super) fn dir_path(w: &Word) -> String {
+    path(w).replace(UNREAD, "")
+}
+
+/// `path` has an unknown part (`UNREAD`) below one of the `roots` parts, or is a relative path
+/// (one that doesn't start with a char of `absolute`) from a working directory in a protected
+/// path: the shell or the write may land anywhere in it, or outside it.
+pub(super) fn unread_below_protected(
+    path: &str,
+    roots: &[&str],
+    absolute: [char; 2],
+    from: Cwd,
+) -> bool {
+    if !path.contains(UNREAD) {
+        return false;
+    }
+    components(path)
+        .into_iter()
+        .take_while(|p| !p.contains(UNREAD))
+        .any(|p| roots.contains(&p))
+        || (!path.starts_with(absolute) && (from.hooks.is_some() || from.ns.is_some()))
+}
+
+/// `dir` (the word `w` read as a path to change to) loses track of a protected working
+/// directory: it has an unknown part below a protected path (`.ns`, `.githooks` or `.git`), or
+/// it is relative to a working directory that is protected and has any expansion in it. An
+/// expansion can be `.` or `..`, so even a whole-part one does not make a known directory
+/// below a protected working directory.
+pub(super) fn cd_loses_protected_cwd(w: &Word, from: Cwd) -> bool {
+    let dir = path(w);
+    let protected_cwd = from.hooks.is_some() || from.ns.is_some();
+    (protected_cwd && !w.expansions.is_empty() && !dir.starts_with(['/', '~']))
+        || unread_below_protected(&dir, &[".ns", ".githooks", ".git"], ['/', '~'], from)
+}
+
 /// The parts of `path` between slashes, without the empty and `.` ones.
 pub(super) fn components(path: &str) -> Vec<&str> {
     path.split('/')
@@ -205,14 +300,14 @@ pub(super) fn option_value(arg: &str) -> &str {
 
 /// A file command that edits, moves or deletes something in `.githooks/`.
 pub(super) fn file_tool(prog: &str, args: &[Word], scan: &mut Scan) -> Option<String> {
-    let hit = |a: &&Word| scan.touches_hooks(&a.text);
+    let hit = |a: &&Word| scan.touches_hooks(&path(a));
     let found = match prog {
         "rm" | "rmdir" | "unlink" | "shred" | "mv" | "chmod" | "chown" | "truncate" | "tee"
         | "ln" | "touch" => args.iter().find(hit),
         "cp" | "install" if has_target_directory_flag(args) => args.iter().find(hit),
         "cp" | "install" | "rsync" => args.last().filter(hit),
         "dd" => args.iter().find(|a| {
-            a.text
+            path(a)
                 .strip_prefix("of=")
                 .is_some_and(|f| scan.touches_hooks(f))
         }),
@@ -264,7 +359,7 @@ pub(super) fn find(args: &[Word], scan: &mut Scan) -> Option<String> {
         )
     };
     if args.iter().any(acts) {
-        if let Some(dir) = args.iter().find(|a| scan.touches_hooks(&a.text)) {
+        if let Some(dir) = args.iter().find(|a| scan.touches_hooks(&path(a))) {
             return Some(format!("find {} in {PROTECTED}", dir.text));
         }
         if let Some(pattern) = args.windows(2).find_map(|p| {

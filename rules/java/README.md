@@ -36,7 +36,7 @@ ast-grep can't see a comment beside a node, so `rules/suppression-reason.yml` ma
 
 The `ns-setup` skill installs the pack, and [its steps](../../skills/ns-setup/references/rules-java.md) work by hand too. Run `install.sh <repo>` from the nightshift checkout. It needs `java` 11 or later (PMD runs on it), `ast-grep`, `jq`, `unzip` and `sha256sum` on `PATH`, and fails with a message naming the missing one. It:
 
-1. downloads the PMD release pinned in `scripts/ci-tools.toml` (`[pmd]`: version, url, sha256) into `${XDG_CACHE_HOME:-~/.cache}/nightshift/`, unless it is already there, and checks its sha256. A zip that doesn't match is removed. `--offline` fails instead of downloading; `scripts/ci-tools.sh install pmd` fills the same cache.
+1. downloads the PMD release pinned in `scripts/ci-tools.d/pmd.toml` (version, url, sha256) into `${XDG_CACHE_HOME:-~/.cache}/nightshift/`, unless it is already there, and checks its sha256. A zip that doesn't match is removed. `--offline` fails instead of downloading; `scripts/ci-tools.sh install pmd` fills the same cache.
 2. copies `check.sh`, `ruleset.xml`, `sgconfig.yml`, `rules/`, `utils/` and PMD (as `pmd/`) to `.nightshift/rules/java/` in the repo, with a `.gitignore` that keeps `pmd/` out of git.
 3. seeds the allowlist on the first install (below).
 4. adds the row in `stack-row.md` to the Commands table of `docs/agents/stack.md`, with `{pack}` as `.nightshift/rules/java` and `{target}` as `.`, replacing any older `rules` row.

@@ -498,6 +498,9 @@ queue unavailable
                 _ => Ok(self.0.clone()),
             }
         }
+        fn labelled_issues(&self, _: &str) -> Result<Vec<crate::watch::forge::Filed>> {
+            Ok(Vec::new())
+        }
         fn closing_prs(&self, _: PrState) -> Result<ClosingPrs> {
             Ok(ClosingPrs::new())
         }

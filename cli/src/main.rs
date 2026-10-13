@@ -9,6 +9,7 @@ mod build_stamp;
 mod clean;
 mod clock;
 mod config;
+mod cpus;
 mod decisions;
 mod doctor;
 mod error;
@@ -200,6 +201,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
             factory,
             night,
+            cpus,
         }) => {
             return run::cli(run::RunArgs {
                 unit: unit_id,
@@ -211,6 +213,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 base,
                 triage_only: false,
                 night,
+                cpus,
             })
         }
         Cmd::Watch(Watch {
@@ -242,7 +245,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
             command: None,
             since,
             until,
-            json: _,
+            json,
+            bugs: true,
+            weeks,
+        }) => return quality::bugs::cli(since, until, weeks, json),
+        Cmd::Quality(Quality {
+            command: None,
+            since,
+            until,
+            ..
         }) => return quality::cli(since, until),
         Cmd::Clean(Clean { dry_run }) => return clean::cli(dry_run),
         Cmd::Log(Log {
@@ -306,7 +317,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 human,
             } => return upstream::diff_cli(&skills_dir, &skill, human),
         },
-        Cmd::Doctor(_) => doctor::run()?,
+        Cmd::Doctor(_) => return doctor::run(),
         Cmd::GuardHooks(_) => hook_guard::run()?,
     }
     Ok(ExitCode::SUCCESS)

@@ -1068,19 +1068,72 @@ fn ask_unconfigured_exits_3_with_example() {
         .code(3);
 }
 
+/// The JSON of a finished `ns doctor`, after checking it exits 0 when `ok` is true and 1 otherwise.
+fn doctor_report(out: &std::process::Output) -> Value {
+    let v = json(&out.stdout);
+    let ok = v["ok"].as_bool().unwrap_or_else(|| panic!("no ok: {v}"));
+    assert_eq!(out.status.code(), Some(if ok { 0 } else { 1 }), "{v}");
+    v
+}
+
+#[test]
+fn doctor_exits_1_when_a_check_fails_and_0_when_all_pass() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    let doctor = |toml: &str| {
+        fs::write(&cfg, toml).unwrap();
+        ns().current_dir(tmp.path())
+            .env("NS_CONFIG", &cfg)
+            .env("GIT_CEILING_DIRECTORIES", tmp.path())
+            .env_remove("GH_TOKEN")
+            .env_remove("GITLAB_TOKEN")
+            .arg("doctor")
+            .assert()
+            .get_output()
+            .clone()
+    };
+
+    let out = doctor("[harness.echo]\ncommand = [\"cat\"]\n[roles.default]\nharness = \"echo\"\n");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(json(&out.stdout)["ok"], true);
+
+    for (toml, problem) in [
+        (
+            "[harness.echo]\ncommand = [\"cat\"]\n[roles.review]\nharness = \"echo\"\n",
+            "no [roles.default]",
+        ),
+        ("[roles.default\n", ""),
+    ] {
+        let out = doctor(toml);
+        assert_eq!(out.status.code(), Some(1), "{toml}");
+        let v = json(&out.stdout);
+        assert_eq!(v["ok"], false, "{toml}");
+        assert!(v["problems"].to_string().contains(problem), "{v}");
+    }
+
+    ns().args(["doctor", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Exit codes: 0 every check passed (ok is true), 1 a check failed",
+        ));
+}
+
 #[test]
 fn doctor_reports_config() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = config(tmp.path());
-    let v = json(
-        &ns()
-            .current_dir(tmp.path())
+    let v = doctor_report(
+        ns().current_dir(tmp.path())
             .env("NS_CONFIG", &cfg)
             .arg("doctor")
             .assert()
-            .success()
-            .get_output()
-            .stdout,
+            .get_output(),
     );
     assert_eq!(v["config"]["exists"], true);
     assert_eq!(v["config"]["parses"], true);
@@ -1119,15 +1172,12 @@ fn doctor_reports_which_harness_skill_dirs_hold_the_ns_skills() {
     fs::create_dir(cursor.join("other")).unwrap();
     fs::write(cursor.join("other/SKILL.md"), "x").unwrap();
 
-    let v = json(
-        &ns()
-            .current_dir(home.path())
+    let v = doctor_report(
+        ns().current_dir(home.path())
             .env("HOME", home.path())
             .arg("doctor")
             .assert()
-            .success()
-            .get_output()
-            .stdout,
+            .get_output(),
     );
     let dirs = &v["skill_dirs"];
     assert_eq!(dirs["cursor"]["path"], cursor.to_string_lossy().as_ref());
@@ -1146,16 +1196,13 @@ fn doctor_reports_whether_core_hooks_path_points_at_githooks() {
     let (_tmp, root) = repo();
     fs::create_dir(root.join(".githooks")).unwrap();
     let doctor = || {
-        json(
-            &ns()
-                .current_dir(&root)
+        doctor_report(
+            ns().current_dir(&root)
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .arg("doctor")
                 .assert()
-                .success()
-                .get_output()
-                .stdout,
+                .get_output(),
         )
     };
     let fix = "git config core.hooksPath .githooks";
@@ -1212,10 +1259,9 @@ fn doctor_warns_when_the_default_branch_is_not_in_the_main_checkout() {
             .current_dir(&root)
             .arg("doctor")
             .assert()
-            .success()
             .get_output()
             .clone();
-        let w: Vec<String> = json(&out.stdout)["warnings"]
+        let w: Vec<String> = doctor_report(&out)["warnings"]
             .as_array()
             .unwrap()
             .iter()
@@ -1286,16 +1332,13 @@ fn doctor_checks_hooks_path_from_a_subdirectory() {
     let (_tmp, root) = repo();
     fs::create_dir(root.join(".githooks")).unwrap();
     fs::create_dir(root.join("sub")).unwrap();
-    let v = json(
-        &ns()
-            .current_dir(root.join("sub"))
+    let v = doctor_report(
+        ns().current_dir(root.join("sub"))
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .arg("doctor")
             .assert()
-            .success()
-            .get_output()
-            .stdout,
+            .get_output(),
     );
     assert_eq!(v["hooks"]["ok"], false);
     assert_eq!(v["hooks"]["path"], Value::Null);
@@ -1306,15 +1349,7 @@ fn doctor_skips_the_hooks_check_without_a_githooks_dir() {
     let (_tmp, root) = repo();
     let outside = tempfile::tempdir().unwrap();
     for dir in [root.as_path(), outside.path()] {
-        let v = json(
-            &ns()
-                .current_dir(dir)
-                .arg("doctor")
-                .assert()
-                .success()
-                .get_output()
-                .stdout,
-        );
+        let v = doctor_report(ns().current_dir(dir).arg("doctor").assert().get_output());
         assert_eq!(v["hooks"]["ok"], true, "{}", dir.display());
         assert_eq!(v["hooks"]["fix"], Value::Null);
         assert!(!v["problems"].to_string().contains("hooksPath"));
@@ -1361,7 +1396,7 @@ fn doctor_reports_forge_account_but_never_the_token() {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(!all.contains(TOKEN), "{all}");
-        json(&out.stdout)
+        doctor_report(&out)
     };
 
     let v = doctor(&format!(
@@ -1436,7 +1471,7 @@ fn doctor_with_a_set_gh_token_runs_no_token_command() {
         !marker.exists(),
         "token_command ran though GH_TOKEN was set"
     );
-    let v = json(&out.stdout);
+    let v = doctor_report(&out);
     assert_eq!(
         v["forge"]["github"],
         serde_json::json!({"configured": true, "token_resolved": true, "account": "octocat",
@@ -1558,7 +1593,7 @@ esac"#
         let out = c.arg("doctor").assert().get_output().clone();
         let args = fs::read_to_string(&ssh_args).unwrap_or_default();
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
-        (json(&out.stdout), err, args)
+        (doctor_report(&out), err, args)
     }
 }
 
@@ -3140,6 +3175,35 @@ fn guard_hooks_denies_a_write_through_a_skills_link_by_relative_and_absolute_pat
         );
     }
     assert!(!guard(bash("rm -rf build".into())));
+}
+
+#[test]
+fn guard_hooks_resolves_the_phase_unit_and_asks_for_a_rewrite_of_an_unread_word() {
+    let guard = |unit: Option<&str>, command: &str| {
+        let mut c = ns();
+        c.env_remove("NS_UNIT").env_remove("NS_WORKTREE");
+        if let Some(unit) = unit {
+            c.env("NS_UNIT", unit);
+        }
+        let call = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": command}});
+        let out = c
+            .arg("guard-hooks")
+            .write_stdin(call.to_string())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap()
+    };
+    let write = "echo x > .ns/$NS_UNIT/review-$NS_UNIT.md";
+    assert_eq!(guard(Some("u1"), write), "");
+    let unread = guard(None, write);
+    assert!(unread.contains("\"deny\""), "{unread}");
+    assert!(unread.contains("Write tool"), "{unread}");
+    assert!(!unread.contains("blocked"), "{unread}");
+    let bypass = guard(Some("u1"), "rm -rf .ns/$NS_UNIT");
+    assert!(bypass.contains("ns: blocked: "), "{bypass}");
 }
 
 #[test]

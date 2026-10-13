@@ -1,0 +1,3 @@
+version = "0.20.2"
+install = "install-action"
+check = "cargo-deny --version"

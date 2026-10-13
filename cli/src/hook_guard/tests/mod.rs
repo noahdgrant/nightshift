@@ -5,7 +5,13 @@ use crate::pin::settings_json as settings;
 
 mod files;
 mod git;
+mod resolve;
 mod shell;
+
+/// Why `call` would skip the git hooks, with no variable known.
+fn check(call: &Value) -> Option<String> {
+    verdict(call, &Vars::new(), Unread::Keep)
+}
 
 fn bash_call(cmd: &str) -> Value {
     json!({"tool_name": "Bash", "tool_input": {"command": cmd}})
@@ -153,4 +159,36 @@ fn each_rule_names_itself_in_the_denial() {
     }
     let edit = json!({"tool_name": "Edit", "tool_input": {"file_path": "/r/.githooks/x"}});
     assert!(check(&edit).unwrap().contains("in .githooks/"));
+}
+
+/// The phase transcripts' real denials, reduced to the part that matters.
+#[test]
+fn real_denials_stay_denied_and_unit_artifact_writes_pass() {
+    for c in [
+        "U=u1 && S=$(git rev-parse --short HEAD) && cat > .ns/$U/review.md <<EOF\nunit: $U\nEOF",
+        "U=u1\ncat > .ns/$U/pr.md <<'EOF'\nbody\nEOF",
+        "U=u1; cat > .ns/$U/evidence.md <<EOF\nx\nEOF",
+        "U=u1\ncat > .ns/$U/brief.md <<'EOF'\nx\nEOF",
+        "{ printf -- \"---\\nunit: $U\\n\"; cat /tmp/body.md; } > .ns/$U/pr.md",
+        "NOW=$(date -u +%FT%TZ) && cat > .ns/$U/review.md <<E\nx\nE",
+        "git push -q \"$V/remote.git\" main",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    for c in [
+        "git commit -n -m x",
+        "git commit --no-verify -m x",
+        "git push --no-verify",
+        "D=$(mktemp -d); GIT_DIR=$D cargo test",
+        "GIT_DIR=/tmp/nonexist bash x.sh",
+        "git --git-dir=/o log",
+        "git --git-dir=/tmp for-each-ref",
+        "mut(){ d=$(mktemp -d); (cd $d && eval \"$1\"); }",
+        "sh -c \"$X\"",
+        "$G commit -n",
+        "X=n; git commit -a$X -m x",
+        "cd \"$(dirname $NS_PHASE_SETTINGS)\" && rm phase-settings.json",
+    ] {
+        assert!(denied(c), "{c}");
+    }
 }

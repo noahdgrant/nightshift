@@ -9,6 +9,7 @@ Examples:
   ns run --issue 142
   ns run 142-uart-timeout --dry-run
   ns run 142-uart-timeout --from verify
+  ns run --issue 142 --cpus 4
 
 Spec: docs/factory/run.md. Prints {unit,outcome,phase,reason,pr,cost_usd,phases}. Events go to
 <git-common-dir>/ns/runs.jsonl, harness transcripts to <git-common-dir>/ns/transcripts/.
@@ -18,6 +19,10 @@ nightshift/quality branch (network); a failed push leaves them in
 After its merge step merges the PR and the records are saved, it removes the unit's worktree and
 local ns/<unit> branch, unless it has uncommitted tracked changes or commits the PR lacks (see
 ns clean --help); `cleanup` in the output says which.
+
+CPU share: --cpus N sets NS_CPUS, RUST_TEST_THREADS and CARGO_BUILD_JOBS to N for every phase
+and gate, each unless already set. ns watch passes --cpus max(1, cores / --parallel). The start
+event in runs.jsonl records each value and whether it was computed or inherited.
 
 Forge tokens: [forge.github] / [forge.gitlab] in the ns config (see ns ask --help for the path)
 are resolved once and exported as GH_TOKEN / GITLAB_TOKEN to every child; a set variable wins,
@@ -62,4 +67,7 @@ pub(crate) struct Run {
     /// Set by ns watch: the night directory with its hold, spend and facts
     #[arg(long, value_name = "DIR", hide = true)]
     pub night: Option<PathBuf>,
+    /// CPU share for every phase and gate (default: none; see CPU share below)
+    #[arg(long, value_name = "N", value_parser = crate::cpus::parse)]
+    pub cpus: Option<u32>,
 }

@@ -7,8 +7,9 @@ How to build, test, lint and format this repo. The `ns-*` skills run these comma
 - Rust (stable, 2021 edition) for the `ns` CLI in `cli/`
 - Markdown skills in `skills/ns-*/`, with TOML eval cases in `skills/*/evals/`
 - Python 3.11+ and C (Zephyr) only inside the eval fixtures under `evals/fixtures/`
-- JavaScript and TypeScript only in the rule pack `rules/js/`, whose tests need Node 18 and npm (`scripts/ci-tools.toml`)
-- Java 11+ and PMD only for the Java rule pack's tests (`rules/java/tests/run.sh`, `cli/tests/rules_pack_java.rs`); `scripts/ci-tools.sh install pmd` fetches the pinned PMD
+- The rule packs under `rules/`, listed in `rules/README.md`. Two need a toolchain of their own for their tests:
+  - JavaScript and TypeScript only in `rules/js/`, whose tests need Node 18 and npm (`scripts/ci-tools.d/`)
+  - Java 11+ and PMD only for `rules/java/`'s tests (`rules/java/tests/run.sh`, `cli/tests/rules_pack_java.rs`); `scripts/ci-tools.sh install pmd` fetches the pinned PMD
 - `scripts/ci-tools.sh` needs Python 3.11+ on PATH (it reads `tomllib`) and fails with a message naming it otherwise
 
 ## Setup
@@ -29,8 +30,9 @@ Run from the repo root. Use the binary built from this worktree (`cli/target/deb
 | skill lint | `cli/target/debug/ns lint skills --human` and `cli/target/debug/ns lint .agents/skills --human` (repo-local skills, no `ns-` prefix required) | 1 s |
 | eval cases valid | `cli/target/debug/ns eval --dry-run` | 1 s |
 | private refs | `scripts/check-private.sh` | 1 s |
+| verify recipes | `scripts/check-verify-recipes.sh` (runs the Launch and Doctor recipes of `.agents/skills/verify-nightshift/SKILL.md` in a throwaway sandbox with the fake `claude` and `gh`, and fails naming a stale block or a bad Doctor result; needs `jq`) | 10 s |
 | rules | `rules/rust/check.sh clippy cli`, `rules/rust/check.sh deny cli`, `rules/rust/check.sh ast-grep cli` (the Rust rule pack; needs `jq`, `ast-grep` and `cargo-deny`) | 10 s |
-| ci-local | `scripts/ci-local.sh` (all of CI, including `scripts/check-git-dir-decoy.sh`, which runs `cargo test` under a decoy `GIT_DIR`). It fails first on a tool missing from `scripts/ci-tools.toml` or at another version. Under `[gate] local = "build-only"` only the `ns run` gate after build runs all of it; the other gates, pre-commit and the `.githooks` pre-push hook (at each commit pushed, one push at a time) run its `--fast` subset | 1 min |
+| ci-local | `scripts/ci-local.sh` (all of CI, including `scripts/check-git-dir-decoy.sh`, which runs `cargo test` under a decoy `GIT_DIR`). It fails first on a tool not pinned in `scripts/ci-tools.d/` or at another version. Under `[gate] local = "build-only"` only the `ns run` gate after build runs all of it; the other gates, pre-commit and the `.githooks` pre-push hook (at each commit pushed, one push at a time) run its `--fast` subset | 1 min |
 | ci-affected | `scripts/ci-affected.sh` (the tests for the paths in `NS_GATE_FILES`: `cargo test` on any change, and each rule pack's or fixture's tests when a path under it changed). The fast gate runs it after `ci-local.sh --fast` | 1 min |
 
 ## Test seams

@@ -10,9 +10,25 @@ pub(super) struct Word {
     pub(super) opaque: bool,
     /// The whole word is one double-quoted variable, `"$name"` or `"${name}"`.
     pub(super) quoted_var: bool,
-    /// Where the literal text after the last expansion starts, when every expansion sits in
-    /// double quotes, so none splits the word or adds text after that point.
-    pub(super) tail_at: Option<usize>,
+    /// Each expansion the guard can't resolve, in order. `text` holds nothing in its place.
+    pub(super) expansions: Vec<Expansion>,
+    /// An expansion outside double quotes, one that lists words, or a brace can split the word
+    /// or add words.
+    pub(super) splits: bool,
+    /// An unquoted `{` opened in the word.
+    pub(super) braced: bool,
+    /// Nothing quoted, escaped or expanded comes before the word's first `=`, so the word
+    /// can be an assignment.
+    pub(super) assignable: bool,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub(super) struct Expansion {
+    /// Where in the word's `text` it sat.
+    pub(super) at: usize,
+    /// The name of a plain parameter, `$name` or `${name}`, in a word with no brace: one
+    /// string. `None` for any other expansion.
+    pub(super) name: Option<String>,
 }
 
 impl Word {
@@ -21,8 +37,63 @@ impl Word {
             text: text.to_string(),
             opaque: false,
             quoted_var: false,
-            tail_at: None,
+            expansions: Vec::new(),
+            splits: false,
+            braced: false,
+            assignable: true,
         }
+    }
+
+    /// The word with each expansion `value` gives text for written in as that text. The word
+    /// stays opaque only if an expansion left in it still hides a flag or a command, or a
+    /// brace does.
+    pub(super) fn resolved<'v>(&self, value: impl Fn(&Expansion) -> Option<&'v str>) -> Word {
+        let mut text = String::new();
+        let mut expansions = Vec::new();
+        let mut from = 0;
+        for e in &self.expansions {
+            text.push_str(&self.text[from..e.at]);
+            from = e.at;
+            match value(e) {
+                Some(v) => text.push_str(v),
+                None => expansions.push(Expansion {
+                    at: text.len(),
+                    name: e.name.clone(),
+                }),
+            }
+        }
+        text.push_str(&self.text[from..]);
+        let first = self.expansions.first().map_or(self.text.len(), |e| e.at);
+        let gains_equals = !self.text[..first].contains('=') && text.contains('=');
+        let opaque = if self.braced {
+            self.opaque
+        } else {
+            expansions
+                .first()
+                .is_some_and(|e| hides_flag_or_command(&text[..e.at]))
+        };
+        Word {
+            opaque,
+            quoted_var: self.quoted_var,
+            splits: self.splits,
+            braced: self.braced,
+            assignable: self.assignable && !gains_equals,
+            text,
+            expansions,
+        }
+    }
+
+    /// The text with each expansion as `fill(i)` for the `i`th one.
+    pub(super) fn filled(&self, fill: impl Fn(usize) -> char) -> String {
+        let mut out = String::new();
+        let mut from = 0;
+        for (i, e) in self.expansions.iter().enumerate() {
+            out.push_str(&self.text[from..e.at]);
+            out.push(fill(i));
+            from = e.at;
+        }
+        out.push_str(&self.text[from..]);
+        out
     }
 }
 
@@ -38,11 +109,25 @@ pub(super) enum Tok {
     /// `<<` or `<<-`: a heredoc body is the command's stdin.
     Heredoc,
     /// `;`, `&&`, `|`, a newline or a brace: one command ends.
-    CommandEnd,
+    CommandEnd(Sep),
     /// `(`: one command ends and a subshell begins, so a `cd` inside it is undone at `)`.
     SubshellOpen,
     /// `)`: the subshell ends.
     SubshellClose,
+}
+
+/// What ends a command, as far as it decides whether the next one runs in the same shell.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub(super) enum Sep {
+    /// `;` or a newline: the next command runs whatever this one did.
+    Seq,
+    /// `&&`: the next command runs only after this one ran.
+    And,
+    /// `||`, `|` or `&`: the next command may run without this one, or either may run in a
+    /// subshell.
+    Branch,
+    /// A brace: a compound command begins or ends.
+    Group,
 }
 
 #[derive(Default)]
@@ -56,16 +141,24 @@ struct WordBuf {
     /// The word is one double-quoted variable and nothing else.
     quoted_var: bool,
     in_double_quotes: bool,
-    /// Where `text` stood after the last expansion.
-    tail_at: Option<usize>,
+    expansions: Vec<Expansion>,
     /// An expansion outside double quotes can split the word or add words.
     splits: bool,
+    /// Where in `text` the first quote or escape began.
+    quoted_at: Option<usize>,
 }
 
 impl WordBuf {
-    fn mark_expansion(&mut self) {
-        self.expansion_at.get_or_insert(self.text.len());
-        self.tail_at = Some(self.text.len());
+    fn mark_quoted(&mut self) {
+        self.quoted = true;
+        let at = self.text.len();
+        self.quoted_at.get_or_insert(at);
+    }
+
+    fn mark_expansion(&mut self, name: Option<String>) {
+        let at = self.text.len();
+        self.expansion_at.get_or_insert(at);
+        self.expansions.push(Expansion { at, name });
         self.splits |= !self.in_double_quotes;
     }
 
@@ -73,31 +166,43 @@ impl WordBuf {
         let opaque = self
             .expansion_at
             .is_some_and(|at| hides_flag_or_command(&self.text[..at]));
+        let braced = self.brace_at.is_some();
+        let assignable = self.text.find('=').is_none_or(|eq| {
+            self.quoted_at.is_none_or(|at| at > eq) && self.expansion_at.is_none_or(|at| at > eq)
+        });
+        let expansions = self
+            .expansions
+            .into_iter()
+            .map(|e| Expansion {
+                name: e.name.filter(|_| !braced),
+                ..e
+            })
+            .collect();
         Word {
             text: self.text,
             opaque,
             quoted_var: self.quoted_var,
-            tail_at: self
-                .tail_at
-                .filter(|_| !self.splits && self.brace_at.is_none()),
+            expansions,
+            splits: self.splits || braced,
+            braced,
+            assignable,
         }
     }
 }
 
-/// A braced body is one safe word only when it is a plain parameter name. Any operator,
-/// subscript, indirection or quote may list words, so the body is not trusted.
-fn lists_words(body: &str) -> bool {
-    let plain_name = body.strip_suffix('}').is_some_and(|name| {
-        let mut chars = name.chars();
-        match chars.next() {
-            Some(c) if c.is_ascii_digit() => chars.all(|c| c.is_ascii_digit()),
-            Some(c) if c.is_ascii_alphabetic() || c == '_' => {
-                chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-            }
-            _ => false,
+/// A braced body is one safe word only when it is a plain parameter name, which this returns.
+/// Any operator, subscript, indirection or quote may list words, so the body is not trusted.
+fn plain_name(body: &str) -> Option<String> {
+    let name = body.strip_suffix('}')?;
+    let mut chars = name.chars();
+    let plain = match chars.next() {
+        Some(c) if c.is_ascii_digit() => chars.all(|c| c.is_ascii_digit()),
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
         }
-    });
-    !plain_name
+        _ => false,
+    };
+    plain.then(|| name.to_string())
 }
 
 /// The opacity rule: an expansion hides what the word is unless the text ahead of it ends an
@@ -123,6 +228,9 @@ pub(super) struct Lexed {
     pub(super) main: Vec<Tok>,
     /// Each `$(...)`, backtick or `<(...)` body, flattened.
     pub(super) substitutions: Vec<Vec<Tok>>,
+    /// Arithmetic (`((...))`, `$((...))`, `$[...]`) or a `${name=value}` form, which can set a
+    /// variable in the shell without naming it in a word, is somewhere in the command.
+    pub(super) assigns: bool,
 }
 
 struct Lexer<'a> {
@@ -134,6 +242,7 @@ struct Lexer<'a> {
     next_word_is_delimiter: bool,
     in_arithmetic: bool,
     arithmetic_next: bool,
+    assigns: bool,
 }
 
 /// Split a shell command into words and operators. Quotes join and are removed, so a bypass
@@ -146,6 +255,7 @@ pub(super) fn tokens(s: &str) -> Lexed {
     Lexed {
         main: lx.out,
         substitutions: lx.substitutions,
+        assigns: lx.assigns,
     }
 }
 
@@ -160,6 +270,7 @@ impl<'a> Lexer<'a> {
             next_word_is_delimiter: false,
             in_arithmetic: false,
             arithmetic_next: false,
+            assigns: false,
         }
     }
 
@@ -185,9 +296,9 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn command_end(&mut self) {
+    fn command_end(&mut self, sep: Sep) {
         self.end_word();
-        self.out.push(Tok::CommandEnd);
+        self.out.push(Tok::CommandEnd(sep));
     }
 
     fn blank_follows(&mut self) -> bool {
@@ -223,11 +334,14 @@ impl<'a> Lexer<'a> {
                     self.end_word();
                     self.out.push(Tok::SubshellClose);
                 }
-                ';' | '|' => self.command_end(),
+                ';' => self.command_end(Sep::Seq),
+                '|' => self.command_end(Sep::Branch),
                 '&' => self.ampersand(),
                 '>' => self.greater(),
                 '<' => self.less(),
-                '{' | '}' if self.cur.is_none() && self.blank_follows() => self.command_end(),
+                '{' | '}' if self.cur.is_none() && self.blank_follows() => {
+                    self.command_end(Sep::Group);
+                }
                 '{' => {
                     let buf = self.buf();
                     buf.brace_at.get_or_insert(buf.text.len());
@@ -246,7 +360,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn single_quoted(&mut self) {
-        self.buf().quoted = true;
+        self.buf().mark_quoted();
         for c in self.chars.by_ref() {
             if c == '\'' {
                 return;
@@ -286,7 +400,7 @@ impl<'a> Lexer<'a> {
 
     fn double_quoted(&mut self) {
         let lone = self.cur.is_none() && self.lone_variable_ahead();
-        self.buf().quoted = true;
+        self.buf().mark_quoted();
         self.buf().quoted_var = lone;
         self.buf().in_double_quotes = true;
         self.double_quoted_body();
@@ -316,7 +430,7 @@ impl<'a> Lexer<'a> {
 
     fn escape(&mut self) {
         if let Some(c) = self.chars.next().filter(|c| *c != '\n') {
-            self.buf().quoted = true;
+            self.buf().mark_quoted();
             self.push(c);
         }
     }
@@ -335,28 +449,40 @@ impl<'a> Lexer<'a> {
             Some('(') => {
                 self.chars.next();
                 self.arithmetic_next = self.chars.peek() == Some(&'(');
+                self.assigns |= self.arithmetic_next;
                 self.expansion(Close::Paren);
             }
             Some('{') => {
                 self.chars.next();
-                self.buf().mark_expansion();
-                if self.braced_body() {
-                    self.buf().splits = true;
-                }
+                self.assigns |= self
+                    .chars
+                    .peek()
+                    .is_some_and(|c| c.is_whitespace() || *c == '|');
+                let name = self.braced_body();
+                let buf = self.buf();
+                buf.splits |= name.is_none();
+                buf.mark_expansion(name);
             }
             Some(c) if c.is_ascii_alphanumeric() || c == '_' => {
-                while self
+                let mut name = String::new();
+                while let Some(c) = self
                     .chars
                     .next_if(|c| c.is_ascii_alphanumeric() || *c == '_')
-                    .is_some()
-                {}
-                self.buf().mark_expansion();
+                {
+                    name.push(c);
+                }
+                self.buf()
+                    .mark_expansion((!c.is_ascii_digit()).then_some(name));
             }
             Some(c) if "@*#?!$-".contains(c) => {
                 self.chars.next();
                 let buf = self.buf();
-                buf.mark_expansion();
+                buf.mark_expansion(None);
                 buf.splits |= c == '@';
+            }
+            Some('[') => {
+                self.assigns = true;
+                self.push('$');
             }
             _ => self.push('$'),
         }
@@ -365,11 +491,11 @@ impl<'a> Lexer<'a> {
     /// Consume a `${...}` body up to its matching `}`, so a `;`, `&`, `#` or quote inside it
     /// neither splits the command nor hides the words after it. Nested braces, quotes and
     /// substitutions are tracked. A body with no end swallows the rest of the command: the
-    /// shell rejects it, and the word it sits in is already opaque. Returns whether the body
-    /// lists words even in double quotes: true unless the body is a plain parameter name
-    /// (see `lists_words`). The body keeps its quotes and its closing `}`; an unterminated body
+    /// shell rejects it, and the word it sits in is already opaque. Returns the parameter's
+    /// name when the body is a plain one (see `plain_name`); any other body lists words even in
+    /// double quotes. The body keeps its quotes and its closing `}`; an unterminated body
     /// lists words.
-    fn braced_body(&mut self) -> bool {
+    fn braced_body(&mut self) -> Option<String> {
         let mut depth = 1usize;
         let mut body = String::new();
         while let Some(c) = self.chars.next() {
@@ -379,7 +505,7 @@ impl<'a> Lexer<'a> {
                 '}' => {
                     depth -= 1;
                     if depth == 0 {
-                        return lists_words(&body);
+                        return plain_name(&body);
                     }
                 }
                 '\\' => {
@@ -396,10 +522,11 @@ impl<'a> Lexer<'a> {
                 '"' => self.quoted_in_braces(&mut body),
                 '$' if self.chars.next_if_eq(&'(').is_some() => self.expansion(Close::Paren),
                 '`' => self.expansion(Close::Backtick),
+                '=' => self.assigns = true,
                 _ => {}
             }
         }
-        lists_words(&body)
+        None
     }
 
     /// A double-quoted string inside a `${...}` body, up to its closing quote.
@@ -419,7 +546,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn ansi_c_quoted(&mut self) {
-        self.buf().quoted = true;
+        self.buf().mark_quoted();
         while let Some(c) = self.chars.next() {
             match c {
                 '\'' => return,
@@ -484,13 +611,14 @@ impl<'a> Lexer<'a> {
 
     fn arithmetic_command(&mut self) {
         self.arithmetic_next = true;
+        self.assigns = true;
         self.substitution(Close::Paren);
-        self.out.push(Tok::CommandEnd);
+        self.out.push(Tok::CommandEnd(Sep::Seq));
     }
 
     fn expansion(&mut self, close: Close) {
         self.substitution(close);
-        self.buf().mark_expansion();
+        self.buf().mark_expansion(None);
     }
 
     fn process_substitution(&mut self) {
@@ -520,8 +648,10 @@ impl<'a> Lexer<'a> {
             self.chars.next_if_eq(&'>');
             self.end_word();
             self.out.push(Tok::RedirectOut);
+        } else if self.chars.next_if_eq(&'&').is_some() {
+            self.command_end(Sep::And);
         } else {
-            self.command_end();
+            self.command_end(Sep::Branch);
         }
     }
 
@@ -586,7 +716,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn newline(&mut self) {
-        self.command_end();
+        self.command_end(Sep::Seq);
         for heredoc in std::mem::take(&mut self.pending_heredocs) {
             self.skip_heredoc_body(&heredoc);
         }
@@ -607,6 +737,7 @@ impl<'a> Lexer<'a> {
             }
         }
         if !heredoc.quoted {
+            self.assigns |= body.contains(['$', '`']);
             let mut body_lexer = Lexer::new(&body);
             body_lexer.find_substitutions();
             self.substitutions.append(&mut body_lexer.substitutions);

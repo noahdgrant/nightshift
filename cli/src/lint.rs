@@ -13,6 +13,9 @@ use crate::decisions;
 use crate::error::SfError;
 use crate::frontmatter;
 
+mod rules_index;
+use rules_index::check_rules_index;
+
 pub const MAX_DESCRIPTION: usize = 1024;
 
 const USER_INVOKED_ONLY: &[&str] = &["ns-auto"];
@@ -398,6 +401,9 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
         if repo.join("docs/decisions").is_dir() {
             errors.extend(decisions::check(repo));
         }
+        if repo.join("rules").is_dir() {
+            errors.extend(check_rules_index(&repo.join("rules")));
+        }
     }
     Ok(Report {
         ok: errors.is_empty(),
@@ -610,6 +616,25 @@ mod tests {
         let report = lint_dir(root).unwrap();
         let msgs = report.errors.into_iter().map(|e| e.message).collect();
         (report.skills, msgs)
+    }
+
+    #[test]
+    fn rules_index_is_checked_when_the_parent_has_rules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        write_skill_at(&skills, "ns-a", "");
+        let report = lint_dir(&skills).unwrap();
+        assert!(report.ok, "{:?}", report.errors);
+        assert!(report.errors.iter().all(|e| e.skill != "rules"));
+
+        fs::create_dir_all(tmp.path().join("rules/c")).unwrap();
+        let report = lint_dir(&skills).unwrap();
+        assert!(!report.ok);
+        assert!(
+            report.errors.iter().any(|e| e.skill == "rules"),
+            "{:?}",
+            report.errors
+        );
     }
 
     #[test]

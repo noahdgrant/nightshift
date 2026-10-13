@@ -440,6 +440,19 @@ class CheckBriefTest(unittest.TestCase):
     def test_triage_phase_fails(self):
         self.assertIn("phase", check(good().replace("phase: troubleshoot", "phase: triage")))
 
+    def test_empty_repro_fails(self):
+        self.assertEqual(check(with_repro("")), ["repro body", "repro holds a command", "repro ran red"])
+
+    def test_repro_without_an_inventory_command_fails(self):
+        repro = "Reserve with a 5 minute hold, reload, and fulfil just before the hold ends.\n"
+        self.assertEqual(check(with_repro(repro)), ["repro holds a command", "repro ran red"])
+
+    def test_empty_root_cause_fails(self):
+        self.assertEqual(
+            check(with_cause("")),
+            ["root cause body", "root cause names expires_at", "root cause names the truncation site"],
+        )
+
     def test_root_cause_without_expires_at_fails(self):
         cause = "`Reservation.to_dict` in `models.py` cuts the stored time to the minute, so a reload loses up to 59 s."
         self.assertIn("root cause names expires_at", check(with_cause(cause)))

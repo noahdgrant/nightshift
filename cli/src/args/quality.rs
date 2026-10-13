@@ -12,6 +12,8 @@ Examples:
   ns quality --since 2026-10-01 --until 2026-10-09
   ns quality --json | jq .first_pass
   ns quality import /tmp/unit-artifacts --dry-run
+  ns quality --bugs --weeks 4
+  ns quality --bugs --since 2026-09-01 --json | jq .total
 
 Spec: docs/factory/quality.md (Quality). Fetches origin's nightshift/quality branch (network) and reads
 its records.jsonl plus <git-common-dir>/ns/quality-outbox.jsonl: one record per review attempt,
@@ -25,8 +27,13 @@ escape_findings,trend,run_log,gaps,per_unit,records}; per_unit[].source is recor
 --since and --until are inclusive and UTC, and so is their echo in the output: a bare date
 is 00:00:00 for --since and 23:59:59 for --until. trend and per_unit days are local (TZ).
 
-Exit codes: 0 ok, 1 git failed, 2 usage error (bad --since or --until, --until before --since,
-not in a git repo).";
+--bugs reads the type:fix issues in any state from the [queue] source forge (network) and
+prints a table per ISO week (UTC); --json prints {ok,label,since,until,weeks,total,issues,
+excluded} instead. Issues closed as duplicate or not planned are left out. --weeks N keeps
+the last N ISO weeks, this one included.
+
+Exit codes: 0 ok, 1 git or the forge failed, 2 usage error (bad --since or --until, --until
+before --since, --weeks 0 or an --until before its weeks, not in a git repo).";
 
 /// Report how well units pass review: first-pass yield, findings per 100 lines, leftovers, escapes
 #[derive(Args)]
@@ -40,9 +47,15 @@ pub(crate) struct Quality {
     /// Only units whose newest review artifact was updated, and run-log events, at or before this UTC time (YYYY-MM-DDTHH:MM:SSZ, or YYYY-MM-DD for 23:59:59 UTC)
     #[arg(long, value_name = "TIME")]
     pub until: Option<String>,
-    /// Print JSON (the default and only format)
+    /// Print JSON: the default for the review report, and for --bugs instead of its table
     #[arg(long)]
     pub json: bool,
+    /// Count the type:fix issues opened in each ISO week, by source and severity, instead of the review report
+    #[arg(long)]
+    pub bugs: bool,
+    /// With --bugs, only the last N ISO weeks, this one included
+    #[arg(long, value_name = "N", requires = "bugs")]
+    pub weeks: Option<u32>,
 }
 
 #[derive(Subcommand)]

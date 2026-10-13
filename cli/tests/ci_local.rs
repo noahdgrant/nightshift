@@ -1,16 +1,20 @@
 //! `scripts/ci-local.sh`, run in a temp repo against stub `cargo`, `ns`, `python3`, `python`
-//! and the tools `scripts/ci-tools.toml` pins, checked by the real `scripts/ci-tools.sh`.
+//! and the tools `scripts/ci-tools.d/` pins, checked by the real `scripts/ci-tools.sh`.
 
+#[path = "ci_local/cache.rs"]
+mod cache;
 mod common;
 
 use std::fs;
+
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use common::write_exe;
 
-const ALL_STEPS: [&str; 19] = [
-    "pinned tools (scripts/ci-tools.toml)",
+/// The full run's steps before the rule packs'.
+const BEFORE_PACKS: &[&str] = &[
+    "pinned tools (scripts/ci-tools.d)",
     "cargo fmt --check",
     "cargo clippy",
     "cargo test",
@@ -18,22 +22,51 @@ const ALL_STEPS: [&str; 19] = [
     "build ns",
     "ns lint",
     "ns lint .agents/skills",
+    "verify-nightshift Launch and Doctor recipes",
     "ns check-markers",
     "ns rules check",
     "ns ratchet check",
     "ns eval --dry-run",
     "py-inventory fixture tests",
-    "Python rule pack tests",
-    "JavaScript/TypeScript rule pack tests",
-    "C rule pack tests",
-    "Java rule pack tests",
-    "ns-troubleshoot brief checker tests",
-    "private guard",
 ];
 
-/// The steps `--fast` runs, the pre-commit hook's subset of `ALL_STEPS`, in its order.
-const FAST_STEPS: [&str; 8] = [
-    "pinned tools (scripts/ci-tools.toml)",
+/// The full run's steps after the rule packs'.
+const AFTER_PACKS: &[&str] = &["ns-troubleshoot brief checker tests", "private guard"];
+
+/// This checkout's rule packs, as `scripts/rule-packs.sh` finds them: each `rules/<pack>/` with
+/// a `tests/run.sh`, with the name in its `NAME`, in order of `<pack>`.
+fn packs() -> Vec<(String, String)> {
+    let rules = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rules");
+    let mut packs: Vec<_> = fs::read_dir(rules)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.join("tests/run.sh").is_file())
+        .map(|p| {
+            let pack = p.file_name().unwrap().to_string_lossy().into_owned();
+            let name = fs::read_to_string(p.join("NAME")).unwrap();
+            (pack, name.trim_end().to_owned())
+        })
+        .collect();
+    packs.sort();
+    packs
+}
+
+/// Every step a full run takes, in order: one per rule pack among the fixed ones.
+fn all_steps() -> Vec<String> {
+    let packs = packs()
+        .into_iter()
+        .map(|(_, name)| format!("{name} rule pack tests"));
+    BEFORE_PACKS
+        .iter()
+        .map(|s| s.to_string())
+        .chain(packs)
+        .chain(AFTER_PACKS.iter().map(|s| s.to_string()))
+        .collect()
+}
+
+/// The steps `--fast` runs, the pre-commit hook's subset of `all_steps`, in its order.
+const FAST_STEPS: &[&str] = &[
+    "pinned tools (scripts/ci-tools.d)",
     "cargo fmt --check",
     "cargo clippy",
     "build ns",
@@ -48,9 +81,9 @@ const CARGO: &str = r#"#!/bin/sh
 case "$FAIL_ON" in ?*) case "cargo $*" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
 "#;
 
-/// Fails when `$FAIL_ON` is `decoy`.
-const DECOY: &str = r#"#!/bin/sh
-[ "$FAIL_ON" != decoy ]
+/// A stub script that fails when its path contains `$FAIL_ON`.
+const SCRIPT: &str = r#"#!/bin/sh
+case "$FAIL_ON" in ?*) case "$0" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
 "#;
 
 /// Prints `$PLAN` for `eval --dry-run`, even when it then fails because its command line
@@ -105,16 +138,23 @@ esac
     )
 }
 
+/// `scripts/ci-tools.d/`, where each pinned tool has a `<tool>.toml`.
+fn pins() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci-tools.d")
+}
+
 /// Each pinned tool's name, command (the first word of its `check`), version and `check`.
 fn pinned_tools() -> Vec<(String, String, String, String)> {
-    let list = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci-tools.toml");
-    let list: toml::Table = toml::from_str(&fs::read_to_string(list).unwrap()).unwrap();
-    list.iter()
-        .map(|(name, t)| {
+    fs::read_dir(pins())
+        .unwrap()
+        .map(|e| {
+            let path = e.unwrap().path();
+            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            let t: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
             let check = t["check"].as_str().unwrap();
             let command = check.split_whitespace().next().unwrap().to_owned();
             (
-                name.clone(),
+                name,
                 command,
                 t["version"].as_str().unwrap().to_owned(),
                 check.to_owned(),
@@ -139,17 +179,26 @@ impl Repo {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts");
-        for script in ["ci-local.sh", "ci-tools.sh", "ci-affected.sh"] {
+        for script in [
+            "ci-local.sh",
+            "ci-tools.sh",
+            "ci-affected.sh",
+            "rule-packs.sh",
+        ] {
             write_exe(
                 &root.join("scripts").join(script),
                 fs::read_to_string(scripts.join(script)).unwrap(),
             );
         }
-        fs::copy(
-            scripts.join("ci-tools.toml"),
-            root.join("scripts/ci-tools.toml"),
-        )
-        .unwrap();
+        fs::create_dir_all(root.join("scripts/ci-tools.d")).unwrap();
+        for pin in fs::read_dir(pins()).unwrap() {
+            let pin = pin.unwrap();
+            fs::copy(
+                pin.path(),
+                root.join("scripts/ci-tools.d").join(pin.file_name()),
+            )
+            .unwrap();
+        }
         for (_, command, version, _) in pinned_tools() {
             write_exe(
                 &root.join("bin").join(&command),
@@ -157,18 +206,16 @@ impl Repo {
             );
         }
         write_exe(&root.join("scripts/check-private.sh"), "#!/bin/sh\n");
-        write_exe(&root.join("scripts/check-git-dir-decoy.sh"), DECOY);
+        write_exe(&root.join("scripts/check-git-dir-decoy.sh"), SCRIPT);
+        write_exe(&root.join("scripts/check-verify-recipes.sh"), SCRIPT);
         write_exe(&root.join("cli/target/debug/ns"), NS);
         write_exe(&root.join("bin/cargo"), CARGO);
         let python = python_stub(&real_python3());
         write_exe(&root.join("bin/python3"), &python);
         write_exe(&root.join("bin/python"), &python);
         fs::create_dir_all(root.join("evals/fixtures/py-inventory")).unwrap();
-        for pack in ["python", "js", "java"] {
-            write_exe(
-                &root.join("rules").join(pack).join("tests/run.sh"),
-                rule_pack_tests(pack),
-            );
+        for (pack, name) in packs() {
+            add_pack(root, &pack, &name);
         }
         let cases = root.join("skills/ns-troubleshoot/evals/cases");
         for case in ["py-hold-expires-early", "py-lost-hold-needs-redesign"] {
@@ -248,6 +295,14 @@ impl Repo {
     }
 }
 
+/// Adds a rule pack named `name` in `rules/<pack>/`, whose tests are `rule_pack_tests(pack)`.
+fn add_pack(root: &Path, pack: &str, name: &str) {
+    let dir = root.join("rules").join(pack);
+    write_exe(&dir.join("tests/run.sh"), rule_pack_tests(pack));
+    fs::write(dir.join("NAME"), format!("{name}\n")).unwrap();
+    fs::write(dir.join("TOOLS"), "ruff\n").unwrap();
+}
+
 /// `bash` and the system tools `scripts/ci-local.sh` runs outside its stubs.
 const SYSTEM_TOOLS: [&str; 4] = ["bash", "dirname", "mktemp", "rm"];
 
@@ -266,7 +321,7 @@ fn steps(out: &Output) -> Vec<String> {
 fn every_step_runs_in_order_and_the_run_passes() {
     let out = Repo::new().run(&[], &[]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(steps(&out), ALL_STEPS);
+    assert_eq!(steps(&out), all_steps());
     assert!(!stderr(&out).contains("SKIPPED"));
     assert!(!stderr(&out).contains("ci-tools:"));
     assert!(stderr(&out).contains("pytest ran in py-inventory: -q"));
@@ -276,39 +331,43 @@ fn every_step_runs_in_order_and_the_run_passes() {
         )));
     }
     assert!(!stderr(&out).contains("python ran in py-no-checker"));
-    assert!(stderr(&out).contains("python rule pack tests ran"));
-    assert!(stderr(&out).contains("java rule pack tests ran"));
-    assert!(stderr(&out).contains(": -I -m unittest discover -s rules/c/tests\n"));
+    assert!(packs().len() >= 2, "{:?}", packs());
+    for (pack, _) in packs() {
+        assert!(stderr(&out).contains(&format!("{pack} rule pack tests ran")));
+    }
     assert!(stderr(&out).contains("ci-local: all checks passed"));
 }
 
 #[test]
 fn a_failing_step_stops_the_run() {
-    for (fail_on, step) in [
+    let fixed = [
         ("cargo clippy", "cargo clippy"),
         ("decoy", "cargo test under a decoy GIT_DIR"),
         ("pytest ran", "py-inventory fixture tests"),
         ("lint .agents/skills", "ns lint .agents/skills"),
+        ("recipes", "verify-nightshift Launch and Doctor recipes"),
         ("ns check-markers", "ns check-markers"),
         ("ns rules", "ns rules check"),
         ("ns ratchet", "ns ratchet check"),
         ("ns eval", "ns eval --dry-run"),
-        ("python rule pack tests ran", "Python rule pack tests"),
-        (
-            "js rule pack tests ran",
-            "JavaScript/TypeScript rule pack tests",
-        ),
-        ("discover -s rules/c/tests", "C rule pack tests"),
-        ("java rule pack tests ran", "Java rule pack tests"),
         (
             "python ran in py-hold-expires-early",
             "ns-troubleshoot brief checker tests",
         ),
-    ] {
-        let out = Repo::new().run(&[], &[("FAIL_ON", fail_on)]);
+    ]
+    .map(|(f, s)| (f.to_owned(), s.to_owned()));
+    let packs = packs().into_iter().map(|(pack, name)| {
+        (
+            format!("{pack} rule pack tests ran"),
+            format!("{name} rule pack tests"),
+        )
+    });
+    let all = all_steps();
+    for (fail_on, step) in fixed.into_iter().chain(packs) {
+        let out = Repo::new().run(&[], &[("FAIL_ON", &fail_on)]);
         assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-        let at = ALL_STEPS.iter().position(|s| *s == step).unwrap();
-        assert_eq!(steps(&out), ALL_STEPS[..=at]);
+        let at = all.iter().position(|s| *s == step).unwrap();
+        assert_eq!(steps(&out), all[..=at]);
         assert!(stderr(&out).contains(&format!("ci-local: FAILED at step: {step}\n")));
         assert!(!stderr(&out).contains("all checks passed"));
     }
@@ -321,7 +380,7 @@ fn a_missing_pinned_tool_fails_the_run_first_naming_its_install_command() {
         fs::remove_file(repo.dir.path().join("bin").join(&command)).unwrap();
         let out = repo.run_on_bin_only(&[], &[]);
         assert_eq!(out.status.code(), Some(1), "{name}: {}", stderr(&out));
-        assert_eq!(steps(&out), ALL_STEPS[..1]);
+        assert_eq!(steps(&out), all_steps()[..1]);
         let err = stderr(&out);
         assert!(
             err.contains(&format!(
@@ -346,7 +405,7 @@ fn a_wrong_version_pinned_tool_fails_the_run_first() {
         );
         let out = repo.run(&[], &[]);
         assert_eq!(out.status.code(), Some(1), "{name}: {}", stderr(&out));
-        assert_eq!(steps(&out), ALL_STEPS[..1]);
+        assert_eq!(steps(&out), all_steps()[..1]);
         let err = stderr(&out);
         assert!(
             err.contains(&format!(
@@ -364,7 +423,7 @@ fn without_python3_the_run_fails_at_the_first_step() {
     fs::remove_file(repo.dir.path().join("bin/python3")).unwrap();
     let out = repo.run_on_bin_only(&[], &[]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert_eq!(steps(&out), ALL_STEPS[..1]);
+    assert_eq!(steps(&out), all_steps()[..1]);
     assert!(stderr(&out).contains("ci-local: FAILED at step: pinned tools"));
 }
 
@@ -402,7 +461,7 @@ fn the_ns_run_is_the_one_under_cargo_target_dir_when_that_is_set() {
     fs::rename(root.join("cli/target/debug/ns"), shared.join("debug/ns")).unwrap();
     let out = repo.run(&[], &[("CARGO_TARGET_DIR", shared.to_str().unwrap())]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(steps(&out), ALL_STEPS);
+    assert_eq!(steps(&out), all_steps());
 
     let out = repo.run(&[], &[]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
@@ -421,7 +480,7 @@ fn a_relative_cargo_target_dir_is_relative_to_the_repo_root() {
     .unwrap();
     let out = repo.run(&[], &[("CARGO_TARGET_DIR", "shared")]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(steps(&out), ALL_STEPS);
+    assert_eq!(steps(&out), all_steps());
 }
 
 #[test]
@@ -512,250 +571,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
-fn commit(dir: &Path, file: &str, text: &str) {
-    let path = dir.join(file);
-    let mut body = fs::read_to_string(&path).unwrap_or_default();
-    body.push_str(text);
-    fs::write(&path, body).unwrap();
-    git(dir, &["add", file]);
-    git(dir, &["commit", "-q", "-m", file]);
-}
-
-/// The line a run that skips on a cached pass prints, up to the `where` it names.
-fn already_passed(dir: &Path) -> String {
-    let tree = git(dir, &["write-tree"]);
-    format!("ci-local: tree {tree} already passed (")
-}
-
-fn ran_everything(out: &Output) {
-    assert!(out.status.success(), "{}", stderr(out));
-    assert_eq!(steps(out), ALL_STEPS);
-    assert!(!stderr(out).contains("already passed"), "{}", stderr(out));
-}
-
-fn skipped(out: &Output, dir: &Path) {
-    assert!(out.status.success(), "{}", stderr(out));
-    assert!(steps(out).is_empty(), "{}", stderr(out));
-    assert!(
-        stderr(out).contains(&already_passed(dir)),
-        "{}",
-        stderr(out)
-    );
-}
-
-#[test]
-fn a_second_full_run_on_the_same_tree_skips_naming_when_and_where_it_passed() {
-    let repo = Repo::new();
-    repo.commit_all();
-    let root = repo.dir.path();
-    ran_everything(&repo.run(&[], &[]));
-    assert_eq!(repo.cached().len(), 1);
-
-    let out = repo.run(&[], &[]);
-    skipped(&out, root);
-    let head = git(root, &["rev-parse", "--short", "HEAD"]);
-    let err = stderr(&out);
-    let line = err.lines().find(|l| l.contains("already passed")).unwrap();
-    let rest = line.strip_prefix(&already_passed(root)).unwrap();
-    let (when, place) = rest.strip_suffix(')').unwrap().split_once(", ").unwrap();
-    assert_eq!(when.len(), "2026-10-12T00:00:00Z".len(), "{line}");
-    assert!(when.ends_with('Z'), "{line}");
-    let root = root.canonicalize().unwrap();
-    assert_eq!(place, format!("{} at {head}", root.display()));
-    assert_eq!(repo.cached().len(), 1);
-}
-
-#[test]
-fn a_changed_file_ci_tools_toml_or_ci_local_sh_runs_again() {
-    let repo = Repo::new();
-    repo.commit_all();
-    let root = repo.dir.path();
-    ran_everything(&repo.run(&[], &[]));
-    for (file, text) in [
-        ("README", "changed\n"),
-        ("scripts/ci-tools.toml", "\n# changed\n"),
-        ("scripts/ci-local.sh", "\n# changed\n"),
-    ] {
-        commit(root, file, text);
-        ran_everything(&repo.run(&[], &[]));
-        skipped(&repo.run(&[], &[]), root);
-    }
-    assert_eq!(repo.cached().len(), 4);
-}
-
-#[test]
-fn a_failure_is_never_cached() {
-    let repo = Repo::new();
-    repo.commit_all();
-    let out = repo.run(&[], &[("FAIL_ON", "ns ratchet")]);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert!(repo.cached().is_empty());
-    let out = repo.run(&[], &[("FAIL_ON", "ns ratchet")]);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    ran_everything(&repo.run(&[], &[]));
-}
-
-#[test]
-fn no_cache_runs_on_a_tree_that_passed() {
-    let repo = Repo::new();
-    repo.commit_all();
-    ran_everything(&repo.run(&[], &[]));
-    ran_everything(&repo.run(&["--no-cache"], &[]));
-    let out = repo.run(&["--no-cache"], &[("FAIL_ON", "ns ratchet")]);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    for args in [&["--fast", "--no-cache"][..], &["--no-cache", "--fast"]] {
-        let out = repo.run(args, &[]);
-        assert!(out.status.success(), "{}", stderr(&out));
-        assert_eq!(steps(&out), FAST_STEPS);
-    }
-    let out = repo.run(&["--no-cache", "--no-cache"], &[]);
-    assert_eq!(out.status.code(), Some(2));
-}
-
-#[test]
-fn fast_neither_uses_nor_fills_the_cache() {
-    let repo = Repo::new();
-    repo.commit_all();
-    let out = repo.run(&["--fast"], &[]);
-    assert_eq!(steps(&out), FAST_STEPS);
-    assert!(repo.cached().is_empty());
-    ran_everything(&repo.run(&[], &[]));
-    let out = repo.run(&["--fast"], &[]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(steps(&out), FAST_STEPS);
-}
-
-#[test]
-fn a_dirty_working_tree_never_uses_or_fills_the_cache() {
-    let repo = Repo::new();
-    repo.commit_all();
-    let root = repo.dir.path();
-    ran_everything(&repo.run(&[], &[]));
-
-    fs::write(root.join("README"), "unstaged\n").unwrap();
-    let out = repo.run(&[], &[]);
-    ran_everything(&out);
-    assert!(stderr(&out).contains("ci-local: the working tree differs from the index"));
-    assert_eq!(repo.cached().len(), 1);
-    git(root, &["checkout", "README"]);
-
-    fs::write(root.join("scratch"), "untracked\n").unwrap();
-    let out = repo.run(&[], &[]);
-    ran_everything(&out);
-    assert!(stderr(&out).contains("ci-local: the working tree has untracked files"));
-    assert_eq!(repo.cached().len(), 1);
-    fs::remove_file(root.join("scratch")).unwrap();
-
-    skipped(&repo.run(&[], &[]), root);
-}
-
-#[test]
-fn a_run_that_changes_the_tree_it_tests_is_not_recorded() {
-    let repo = Repo::new();
-    repo.commit_all();
-    let root = repo.dir.path();
-    write_exe(
-        &root.join("scripts/check-private.sh"),
-        "#!/bin/sh\necho edited >> README\n",
-    );
-    git(root, &["commit", "-qam", "edits"]);
-    let out = repo.run(&[], &[]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert!(stderr(&out).contains("ci-local: the tree changed during the run"));
-    assert!(repo.cached().is_empty());
-}
-
-/// The pre-push hook records the pushed commit's tree; the gate in another worktree, and the
-/// merge queue's gate on a merge result staged in a scratch worktree, skip on it.
-#[test]
-fn pre_push_the_gate_and_the_merge_queue_share_the_cache() {
-    let repo = Repo::new();
-    let root = repo.dir.path();
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.githooks/pre-push");
-    write_exe(
-        &root.join(".githooks/pre-push"),
-        fs::read_to_string(src).unwrap(),
-    );
-    repo.commit_all();
-    write_exe(&root.join(".git/pre-push-target/debug/ns"), NS);
-    git(root, &["checkout", "-q", "-b", "pr"]);
-    commit(root, "pr.txt", "pr\n");
-    let pr = git(root, &["rev-parse", "HEAD"]);
-    git(root, &["checkout", "-q", "main"]);
-    commit(root, "main.txt", "main\n");
-    git(root, &["checkout", "-q", "pr"]);
-    git(root, &["merge", "-q", "--no-edit", "main"]);
-    let merged = git(root, &["rev-parse", "HEAD"]);
-
-    let mut hook = common::command("sh");
-    hook.arg(root.join(".githooks/pre-push"))
-        .current_dir(root)
-        .env("GIT_DIR", root.join(".git"))
-        .env_remove("GIT_WORK_TREE")
-        .write_stdin(format!(
-            "refs/heads/pr {merged} refs/heads/pr {}\n",
-            "0".repeat(40)
-        ));
-    repo.stub_env(&mut hook, &[]);
-    let out = hook.output();
-    ran_everything(&out);
-    assert_eq!(repo.cached().len(), 1);
-
-    let worktrees = tempfile::tempdir().unwrap();
-    let gate = worktrees.path().join("gate");
-    git(
-        root,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "--detach",
-            gate.to_str().unwrap(),
-            &merged,
-        ],
-    );
-    skipped(&repo.run_in(&gate, &[], &[]), &gate);
-
-    let scratch = worktrees.path().join("merge-queue");
-    git(
-        root,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "--detach",
-            scratch.to_str().unwrap(),
-            &pr,
-        ],
-    );
-    git(&scratch, &["merge", "-q", "--no-commit", "--no-ff", "main"]);
-    skipped(&repo.run_in(&scratch, &[], &[]), &scratch);
-    assert_eq!(repo.cached().len(), 1);
-}
-
-#[test]
-fn the_cache_keeps_the_entries_used_last() {
-    let repo = Repo::new();
-    repo.commit_all();
-    let root = repo.dir.path();
-    let max = [("CI_LOCAL_CACHE_MAX", "2")];
-    ran_everything(&repo.run(&[], &max));
-    let first = git(root, &["rev-parse", "HEAD"]);
-    commit(root, "README", "2\n");
-    let second = git(root, &["rev-parse", "HEAD"]);
-    ran_everything(&repo.run(&[], &max));
-    git(root, &["checkout", "-q", &first]);
-    skipped(&repo.run(&[], &max), root);
-    git(root, &["checkout", "-q", "main"]);
-    commit(root, "README", "3\n");
-    ran_everything(&repo.run(&[], &max));
-    assert_eq!(repo.cached().len(), 2);
-    git(root, &["checkout", "-q", &first]);
-    skipped(&repo.run(&[], &max), root);
-    git(root, &["checkout", "-q", &second]);
-    ran_everything(&repo.run(&[], &max));
-}
-
 /// `scripts/ci-affected.sh` with `NS_GATE_FILES` set to `files`, or unset.
 fn affected(repo: &Repo, files: Option<&str>, env: &[(&str, &str)]) -> Output {
     let mut cmd = common::command("bash");
@@ -771,32 +586,43 @@ fn affected(repo: &Repo, files: Option<&str>, env: &[(&str, &str)]) -> Output {
 #[test]
 fn ci_affected_runs_cargo_test_and_the_tests_under_each_changed_path() {
     let repo = Repo::new();
-    let all = [
-        "cargo test",
-        "python rule pack tests",
-        "js rule pack tests",
-        "java rule pack tests",
-        "C rule pack tests",
-        "py-inventory fixture tests",
-    ];
+    let packs = packs();
+    let [(a, a_name), (b, b_name), ..] = &packs[..] else {
+        panic!("this checkout needs two rule packs: {packs:?}");
+    };
+    let (a_step, b_step) = (
+        format!("{a_name} rule pack tests"),
+        format!("{b_name} rule pack tests"),
+    );
+    let mut all = vec!["cargo test".to_owned()];
+    all.extend(packs.iter().map(|(_, n)| format!("{n} rule pack tests")));
+    all.push("py-inventory fixture tests".to_owned());
     for (files, want) in [
-        (None, &all[..]),
-        (Some(""), &[][..]),
-        (Some("skills/ns-build/SKILL.md"), &all[..1]),
+        (None, all.clone()),
+        (Some(String::new()), vec![]),
         (
-            Some("rules/js/src/a.ts\nrules/c/tests/test_x.py\ndocs/FACTORY.md"),
-            &["cargo test", "js rule pack tests", "C rule pack tests"][..],
+            Some("skills/ns-build/SKILL.md".to_owned()),
+            all[..1].to_vec(),
+        ),
+        (Some(format!("rules/{a}x/y\nrules/{a}")), all[..1].to_vec()),
+        (
+            Some(format!(
+                "rules/{b}/src/a.ts\nrules/{a}/tests/test_x.py\ndocs/FACTORY.md"
+            )),
+            vec!["cargo test".to_owned(), a_step.clone(), b_step.clone()],
         ),
         (
-            Some("evals/fixtures/py-inventory/x.py\nrules/java/a.java"),
-            &[
-                "cargo test",
-                "java rule pack tests",
-                "py-inventory fixture tests",
-            ][..],
+            Some(format!(
+                "evals/fixtures/py-inventory/x.py\nrules/{b}/a.java"
+            )),
+            vec![
+                "cargo test".to_owned(),
+                b_step,
+                "py-inventory fixture tests".to_owned(),
+            ],
         ),
     ] {
-        let out = affected(&repo, files, &[]);
+        let out = affected(&repo, files.as_deref(), &[]);
         assert!(out.status.success(), "{files:?}: {}", stderr(&out));
         assert_eq!(steps(&out), want, "{files:?}");
     }
@@ -805,12 +631,127 @@ fn ci_affected_runs_cargo_test_and_the_tests_under_each_changed_path() {
 #[test]
 fn ci_affected_stops_at_a_failing_step() {
     let repo = Repo::new();
+    let packs = packs();
+    let [(a, a_name), (b, _), ..] = &packs[..] else {
+        panic!("this checkout needs two rule packs: {packs:?}");
+    };
     let out = affected(
         &repo,
-        Some("rules/python/a.py\nrules/js/a.ts"),
-        &[("FAIL_ON", "python rule pack")],
+        Some(&format!("rules/{a}/a.py\nrules/{b}/a.ts")),
+        &[("FAIL_ON", &format!("{a} rule pack"))],
     );
     assert_eq!(out.status.code(), Some(1));
-    assert_eq!(steps(&out), ["cargo test", "python rule pack tests"]);
-    assert!(stderr(&out).contains("ci-affected: FAILED at step: python rule pack tests"));
+    let step = format!("{a_name} rule pack tests");
+    assert_eq!(steps(&out), ["cargo test", &step]);
+    assert!(stderr(&out).contains(&format!("ci-affected: FAILED at step: {step}")));
+}
+
+/// The rule packs `scripts/rule-packs.sh` lists in `root`.
+fn listed_packs(root: &Path) -> Output {
+    let mut cmd = common::command("bash");
+    cmd.arg(root.join("scripts/rule-packs.sh"));
+    cmd.output()
+}
+
+#[test]
+fn a_new_pack_needs_only_files_under_its_own_directory() {
+    let repo = Repo::new();
+    repo.commit_all();
+    let root = repo.dir.path();
+    add_pack(root, "zz", "Zed");
+    git(root, &["add", "-A"]);
+    let changed = git(root, &["diff", "--cached", "--name-only"]);
+    assert_eq!(
+        changed,
+        "rules/zz/NAME\nrules/zz/TOOLS\nrules/zz/tests/run.sh"
+    );
+
+    let out = listed_packs(root);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let list = String::from_utf8_lossy(&out.stdout);
+    assert!(list.ends_with("zz\tZed\n"), "{list}");
+
+    let out = repo.run(&[], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let mut want = all_steps();
+    let at = want.len() - AFTER_PACKS.len();
+    want.insert(at, "Zed rule pack tests".to_owned());
+    assert_eq!(steps(&out), want);
+    assert!(stderr(&out).contains("zz rule pack tests ran"));
+
+    let out = affected(&repo, Some("rules/zz/tests/run.sh"), &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(steps(&out), ["cargo test", "Zed rule pack tests"]);
+    assert!(stderr(&out).contains("zz rule pack tests ran"));
+}
+
+#[test]
+fn a_pack_without_a_one_line_name_fails_the_run_naming_its_name_file() {
+    for name in [None, Some(""), Some("One\nTwo\n"), Some("One\tTwo\n")] {
+        let repo = Repo::new();
+        let root = repo.dir.path();
+        add_pack(root, "zz", "Zed");
+        match name {
+            Some(n) => fs::write(root.join("rules/zz/NAME"), n).unwrap(),
+            None => fs::remove_file(root.join("rules/zz/NAME")).unwrap(),
+        }
+        let want = "rule-packs: rules/zz/NAME must hold the pack's name on one line\n";
+        let out = listed_packs(root);
+        assert_eq!(out.status.code(), Some(1), "{name:?}");
+        assert_eq!(stderr(&out), want, "{name:?}");
+
+        for args in [&[][..], &["--fast"]] {
+            let out = repo.run(args, &[]);
+            assert_eq!(out.status.code(), Some(1), "{name:?}: {}", stderr(&out));
+            assert!(steps(&out).is_empty(), "{name:?}: {}", stderr(&out));
+            assert!(stderr(&out).contains(want), "{name:?}: {}", stderr(&out));
+        }
+
+        let out = affected(&repo, Some("rules/zz/x"), &[]);
+        assert_eq!(out.status.code(), Some(1), "{name:?}: {}", stderr(&out));
+        assert!(stderr(&out).contains(want), "{name:?}: {}", stderr(&out));
+    }
+}
+
+#[test]
+fn a_pack_without_tool_names_fails_the_run_naming_its_tools_file() {
+    for tools in [None, Some(""), Some("\n"), Some(" \t\n")] {
+        let repo = Repo::new();
+        let root = repo.dir.path();
+        add_pack(root, "zz", "Zed");
+        match tools {
+            Some(t) => fs::write(root.join("rules/zz/TOOLS"), t).unwrap(),
+            None => fs::remove_file(root.join("rules/zz/TOOLS")).unwrap(),
+        }
+        let want = "rule-packs: rules/zz/TOOLS must name the pack's pinned tools\n";
+        let out = listed_packs(root);
+        assert_eq!(out.status.code(), Some(1), "{tools:?}");
+        assert_eq!(stderr(&out), want, "{tools:?}");
+    }
+}
+
+#[test]
+fn a_rules_directory_without_tests_run_sh_is_no_pack() {
+    let repo = Repo::new();
+    let root = repo.dir.path();
+    fs::create_dir_all(root.join("rules/nopack/tests")).unwrap();
+    fs::write(root.join("rules/nopack/NAME"), "Nope\n").unwrap();
+    let out = repo.run(&[], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(steps(&out), all_steps());
+
+    fs::remove_dir_all(root.join("rules")).unwrap();
+    let out = listed_packs(root);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    let out = repo.run(&[], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let fixed: Vec<_> = BEFORE_PACKS.iter().chain(AFTER_PACKS).copied().collect();
+    assert_eq!(steps(&out), fixed);
+    let out = affected(&repo, Some("rules/x/y"), &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(steps(&out), ["cargo test"]);
+    let out = affected(&repo, None, &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(steps(&out), ["cargo test", "py-inventory fixture tests"]);
 }

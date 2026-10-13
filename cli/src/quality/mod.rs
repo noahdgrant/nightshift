@@ -4,6 +4,7 @@
 
 mod artifacts;
 mod blame;
+pub mod bugs;
 mod metrics;
 mod record;
 mod runlog;

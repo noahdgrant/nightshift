@@ -3,6 +3,7 @@
 ```
 ns quality [--since YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--until YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--json]
 ns quality import <dir> [--dry-run]
+ns quality --bugs [--since ...] [--until ...] [--weeks N] [--json]
 ```
 
 `ns quality` measures whether build writes code that passes review. It reads each unit's quality record first, and for a unit with no record, its review artifacts in the linked worktrees (`.ns/<unit>/review.md`, `review/cycle-*.md`, and archived `history/review*`). It adds the run log and prints JSON. The main checkout is skipped. First-pass numbers come from a unit's oldest review artifact, since a rebuilt unit's later review starts from a different diff. Everything else comes from the newest.
@@ -43,3 +44,21 @@ Worktrees get removed once their change merges (see ["Cleanup"](unit-lifecycle.m
 To read the trend, run `ns quality` from any clone and look at `trend`: one summary per local day, oldest first. First-pass yield should rise and findings per 100 lines should fall. To see the raw records, run `git show origin/nightshift/quality:records.jsonl`.
 
 `ns quality import <dir>` turns archived unit worktrees into records and pushes them in one commit. `<dir>` holds one directory per unit, laid out as in its worktree (`<dir>/<unit>/.ns/<unit>/review.md`). It skips units the branch or the outbox already has, so a rerun reports `already-done`. Issue numbers come from the unit id, PRs from `pr.md` or the run log, and outcomes from the run log. `--dry-run` fetches the branch to see what is recorded, and pushes nothing.
+
+## Bug counts
+
+`ns quality --bugs` counts the bugs that reach the tracker: the `type:fix` issues opened in each ISO week (UTC), in any state, read from the `[queue] source` forge. An issue counts in the week it was opened. One closed as a duplicate or not planned is left out and listed under `excluded`. GitLab records no close reason, so there every closed issue counts. Weeks run from `--since`, else the oldest issue's week, through `--until`'s week, else this one, and a week with no issues counts zero. `--weeks N` keeps the last N weeks, this one included, or starts at `--since` when that is later. `--weeks 0`, or an `--until` before the weeks start, exits 2.
+
+Each issue gets one source, and `by` says what decided it, first match wins:
+
+| Source | Decided by (`by`) |
+|---|---|
+| The one a `Source:` line names (`review_escape`, `factory_introduced`, `ci_main` or `human`) | `marker` |
+| `review_escape`: `ns-review` filed it for pre-existing code; its body has "This escaped an earlier review." | `review_text` |
+| `ci_main`: `ns watch` filed it for a red `main`; its title starts `fix: main is red at` | `ci_title` |
+| `factory_introduced`: `git blame` of the first `path:line` in its body, on the default branch as it stood when the issue opened, names a PR (`(#123)` in the subject) that merged from an `ns/` branch | `blame` |
+| `human`: anything else | `default` |
+
+The marker is one line in the body, `Source: review_escape`, and wins over every guess. A phase that files a fix issue should write it. Merged PRs come from the forge's 200 most recent (100 on GitLab). A blame that fails leaves the issue `human` and says why in `blame_error`, and a blame on a PR outside the factory keeps its `introduced_by`. Severity is `critical_high` for an issue labelled `priority:critical` or `priority:high`, and `rest` for any other priority or none.
+
+Without `--json` it prints a table, one row per week and a total. With `--json` it prints `{ok, label, since, until, weeks, total, issues, excluded}`; `docs/cli/quality.md` lists the keys. Rates per merged unit or per changed line, and the trend, are not computed yet.

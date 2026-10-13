@@ -161,6 +161,7 @@ pub fn run(
     }
     let (mut c, watch) = memcap::command(cap, "sh");
     crate::git::scrub(&mut c);
+    crate::cpus::apply(&mut c);
     c.env(ratchet::FACTORY_VAR, std::path::absolute(ratchets.factory)?)
         .env(ratchet::REPORT_VAR, &report);
     match ratchets.night {
