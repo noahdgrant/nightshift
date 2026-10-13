@@ -183,7 +183,7 @@ cache=$tmp/cache
 out=$(XDG_CACHE_HOME=$cache "$src/install.sh" --offline "$tmp/no-java" 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 2 ] && grep -qF "and --offline won't download it; fetch it with: scripts/ci-tools.sh install pmd" <<<"$out" ||
   fail "install: --offline with no cached zip gave exit $rc:" "$out"
-version=$(sed -n '/^\[pmd\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$src/../../scripts/ci-tools.toml")
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$src/../../scripts/ci-tools.d/pmd.toml")
 mkdir -p "$cache/nightshift"
 echo 'not PMD' >"$cache/nightshift/pmd-dist-$version-bin.zip"
 out=$(XDG_CACHE_HOME=$cache "$src/install.sh" --offline "$tmp/no-java" 2>&1) && rc=0 || rc=$?
@@ -212,11 +212,11 @@ cp "$tmp/stack.md" "$tmp/not-git/docs/agents/stack.md"
 out=$(GIT_CEILING_DIRECTORIES=$tmp "$src/install.sh" --offline "$tmp/not-git" 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 2 ] && [ "$out" = "install.sh: $tmp/not-git is not a git work tree" ] || fail "install: a repo outside git gave exit $rc:" "$out"
 
-# A checkout whose scripts/ci-tools.toml pins a stand-in PMD, a zip served from a file:// url,
+# A checkout whose scripts/ci-tools.d/pmd.toml pins a stand-in PMD, a zip served from a file:// url,
 # tests the download and the zip's contents without the network. pin_pmd writes the pin for the
 # zip at $1, and zip_pmd writes a zip whose $2 is a script printing "stand-in PMD".
 fake=$tmp/fake
-mkdir -p "$fake/rules" "$fake/scripts"
+mkdir -p "$fake/rules" "$fake/scripts/ci-tools.d"
 cp -R "$src" "$fake/rules/java"
 zip_pmd() {
   python3 -I -c '
@@ -230,7 +230,7 @@ with zipfile.ZipFile(sys.argv[1], "w") as z:
 pin_pmd() {
   local sha
   sha=$(python3 -I -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1")
-  printf '[pmd]\nversion = "9.9"\nurl = "file://%s"\nsha256 = "%s"\nbin = "pmd-bin-{version}/bin/pmd"\n' "$1" "$sha" >"$fake/scripts/ci-tools.toml"
+  printf 'version = "9.9"\nurl = "file://%s"\nsha256 = "%s"\nbin = "pmd-bin-{version}/bin/pmd"\n' "$1" "$sha" >"$fake/scripts/ci-tools.d/pmd.toml"
 }
 mkdir "$tmp/served"
 zip_pmd "$tmp/served/pmd-dist-9.9-bin.zip" pmd-bin-9.9/bin/pmd
@@ -261,14 +261,14 @@ pin_pmd "$tmp/served/pmd-dist-9.9-bin.zip"
 out=$(XDG_CACHE_HOME=$tmp/unfetched-cache "$fake/rules/java/install.sh" "$tmp/unfetched" 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 2 ] && [ "$out" = "install.sh: $tmp/unfetched-cache/nightshift/pmd-dist-9.9-bin.zip has no pmd-bin-9.9/bin/pmd" ] && [ ! -e "$tmp/unfetched/.nightshift" ] ||
   fail "install: a zip without PMD gave exit $rc:" "$out"
-sed -i '/^sha256/d' "$fake/scripts/ci-tools.toml"
+sed -i '/^sha256/d' "$fake/scripts/ci-tools.d/pmd.toml"
 out=$("$fake/rules/java/install.sh" "$tmp/unfetched" 2>&1) && rc=0 || rc=$?
-[ "$rc" -eq 2 ] && [ "$out" = "install.sh: $fake/rules/java/../../scripts/ci-tools.toml has no [pmd] version, url, sha256 and bin" ] ||
+[ "$rc" -eq 2 ] && [ "$out" = "install.sh: $fake/rules/java/../../scripts/ci-tools.d/pmd.toml has no version, url, sha256 and bin" ] ||
   fail "install: a pin with no sha256 gave exit $rc:" "$out"
-rm "$fake/scripts/ci-tools.toml"
+rm "$fake/scripts/ci-tools.d/pmd.toml"
 out=$("$fake/rules/java/install.sh" "$tmp/unfetched" 2>&1) && rc=0 || rc=$?
-[ "$rc" -eq 2 ] && [ "$out" = "install.sh: $fake/rules/java/../../scripts/ci-tools.toml is missing; run install.sh from a nightshift checkout" ] ||
-  fail "install: no ci-tools.toml gave exit $rc:" "$out"
+[ "$rc" -eq 2 ] && [ "$out" = "install.sh: $fake/rules/java/../../scripts/ci-tools.d/pmd.toml is missing; run install.sh from a nightshift checkout" ] ||
+  fail "install: no pmd.toml gave exit $rc:" "$out"
 
 # A rerun over a pack whose duplicate-helper rule lost its ignores line refuses, rather than
 # drop the repo's list.

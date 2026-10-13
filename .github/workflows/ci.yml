@@ -111,7 +111,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install pytest (scripts/ci-tools.toml)
+      - name: Install pytest (scripts/ci-tools.d)
         working-directory: .
         run: scripts/ci-tools.sh install pytest
       - run: pytest -q
@@ -122,28 +122,33 @@ jobs:
             (cd "$(dirname "$test")" && python -m unittest -q test_check_brief)
           done
 
-  rule-packs:
-    name: Rule pack tests (python)
+  rule-pack-list:
+    name: List the rule packs
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
+    outputs:
+      packs: ${{ steps.list.outputs.packs }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: cli
-      - name: Build ns
-        run: cargo build --manifest-path cli/Cargo.toml
-      - run: scripts/ci-tools.sh install ruff ast-grep
-      - run: rules/python/tests/run.sh
+      - name: Each rules/<pack>/ with a tests/run.sh, named by its NAME (scripts/rule-packs.sh)
+        id: list
+        run: |
+          # Not piped, so a pack with no NAME fails the step: run steps have no pipefail.
+          list=$(scripts/rule-packs.sh)
+          packs=$(jq -Rcn '[inputs | split("\t") | {pack: .[0], name: .[1]}]' <<<"$list")
+          echo "packs=$packs" >> "$GITHUB_OUTPUT"
 
-  rule-pack-js:
-    name: Rule pack tests (JavaScript/TypeScript)
+  rule-packs:
+    name: Rule pack tests (${{ matrix.name }})
+    needs: rule-pack-list
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.rule-pack-list.outputs.packs) }}
+    env:
+      PACK: ${{ matrix.pack }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -155,43 +160,20 @@ jobs:
           workspaces: cli
       - name: Build ns
         run: cargo build --manifest-path cli/Cargo.toml
-      - run: scripts/ci-tools.sh install ast-grep node npm
-      - run: rules/js/tests/run.sh
-      - name: rules/js/tests/run.sh under a decoy GIT_DIR
-        run: scripts/check-git-dir-decoy.sh rules/js/tests/run.sh
-
-  rule-pack-c:
-    name: Rule pack tests (C)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Install the pinned tools in rules/<pack>/TOOLS (PMD's zip is cached for install.sh --offline)
+        id: tools
+        run: |
+          read -ra tools < "rules/$PACK/TOOLS" || [ "${#tools[@]}" -gt 0 ]
+          scripts/ci-tools.sh install "${tools[@]}"
+      - if: steps.tools.outputs.install-action != ''
+        uses: taiki-e/install-action@v2
         with:
-          python-version: "3.12"
-      - run: scripts/ci-tools.sh install ast-grep clang-tidy
-      - run: python -m unittest discover -s rules/c/tests
-
-  rule-pack-java:
-    name: Rule pack tests (Java)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: cli
-      - name: Build ns
-        run: cargo build --manifest-path cli/Cargo.toml
-      - name: Install the pinned tools (PMD's zip is cached for install.sh --offline)
-        run: scripts/ci-tools.sh install ast-grep java pmd
-      - run: rules/java/tests/run.sh
-      - name: Java rule pack tests under a decoy GIT_DIR
-        run: scripts/check-git-dir-decoy.sh rules/java/tests/run.sh
+          tool: ${{ steps.tools.outputs.install-action }}
+      - name: rules/<pack>/tests/run.sh
+        run: |
+          "rules/$PACK/tests/run.sh"
+      - name: rules/<pack>/tests/run.sh under a decoy GIT_DIR
+        run: scripts/check-git-dir-decoy.sh "rules/$PACK/tests/run.sh"
 
   private-refs:
     name: Private-reference guard

@@ -17,7 +17,7 @@ use crate::config::{self, Config};
 use crate::error::SfError;
 use crate::eval::parser::{ClaudeStreamJson, OutputParser};
 use crate::eval::trial::run_process;
-use crate::factory::{self, artifact_of, Factory, PhaseSettings, PHASES};
+use crate::factory::{self, artifact_of, Factory, LocalGate, PhaseSettings, PHASES};
 use crate::forge;
 use crate::gate;
 use crate::git::same_sha;
@@ -1235,6 +1235,10 @@ fn drive(
                         forced = Some(run("build", &red.feedback, red.reason));
                         continue;
                     }
+                    MergeStep::Reship(feedback) => {
+                        forced = Some(run("ship", &feedback, "the PR conflicts with its base"));
+                        continue;
+                    }
                 }
             }
             Decision::Run {
@@ -1798,6 +1802,8 @@ fn head_after_update(
 enum MergeStep {
     Finish(Finish),
     Rebuild(gate::Red),
+    /// Back to ship with this `{feedback}`.
+    Reship(String),
 }
 
 /// Back to build with `feedback` because CI on the PR failed.
@@ -1810,12 +1816,18 @@ fn ci_failed(feedback: String) -> MergeStep {
     })
 }
 
-/// Back to build to rebase PR #`n` onto `default`, which it conflicts with.
+/// Back to build to rebase PR #`n` onto `default`, which it conflicts with, or to ship under
+/// `[gate] local = "build-only"`.
 fn conflicts(ctx: &Ctx<'_>, n: u64, default: &str) -> MergeStep {
     ctx.log(json!({"event": "conflict", "pr": n}));
-    ci_failed(format!(
+    let feedback = format!(
         "PR #{n} conflicts with {default}: rebase onto {default} and resolve conflicts, then force-push with --force-with-lease"
-    ))
+    );
+    if ctx.fac.gate.local == LocalGate::BuildOnly {
+        MergeStep::Reship(feedback)
+    } else {
+        ci_failed(feedback)
+    }
 }
 
 fn human(reason: impl Into<String>) -> MergeStep {
@@ -1854,26 +1866,37 @@ fn merge_step(
         };
 
     // Strict required checks: a PR behind its base gets the base merged in, then fresh checks,
-    // unless the local merge queue gates the merge result instead.
-    let queued = ctx.fac.merge.local_queue && ctx.gate.rest.is_some();
+    // unless the local merge queue gates the merge result instead. Under build-only GitHub's
+    // checks on the PR head with the base merged in are the merge queue, and no local gate runs.
+    let remote = ctx.fac.gate.local == LocalGate::BuildOnly;
+    let queued = !remote && ctx.fac.merge.local_queue && ctx.gate.rest.is_some();
     let default = remote_default(wt)
         .map(|d| d.0)
         .unwrap_or_else(|| "main".into());
     let conflict = || conflicts(ctx, n, &default);
     let register_minutes = ctx.fac.merge.ci_register_timeout;
     let mut merge_head = pr_head.to_string();
-    match merge_state(wt, &ns, register_minutes, &shared.clock)?.as_str() {
+    let behind = match merge_state(wt, &ns, register_minutes, &shared.clock)?.as_str() {
         Some("DIRTY") => return Ok(conflict()),
-        Some("BEHIND") if !queued => {
-            match update_branch(ctx, n, pr_head, &default, &shared.clock, &conflict)? {
-                Ok(h) => merge_head = h,
-                Err(step) => return Ok(step),
+        Some("BEHIND") => !queued,
+        _ if remote => match fetch_tip(wt, &default) {
+            Ok(tip) => !git::ok(wt, &["merge-base", "--is-ancestor", &tip, pr_head]),
+            Err(e) => {
+                return Ok(human(format!(
+                    "cannot fetch {default} to update PR #{n}: {e:#}; needs a human merge"
+                )))
             }
+        },
+        _ => false,
+    };
+    if behind {
+        match update_branch(ctx, n, pr_head, &default, &shared.clock, &conflict)? {
+            Ok(h) => merge_head = h,
+            Err(step) => return Ok(step),
         }
-        _ => {}
     }
 
-    if let Some(cmd) = &ctx.gate.rest {
+    if let Some(cmd) = ctx.gate.rest.as_ref().filter(|_| !remote) {
         let step = if queued {
             gate_merge_result(ctx, gate_state, cmd, n, pr_head, &default, run)?
         } else {

@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
-# Install or check the pinned tools CI runs, from scripts/ci-tools.toml. This script is the
-# only reader of that list.
+# Install or check the pinned tools CI runs, from scripts/ci-tools.d/: one <tool>.toml per tool,
+# named for it. This script is the only reader of those pins, but for rules/java/install.sh,
+# which reads pmd.toml.
+#
+#   version  the pin
+#   install  how CI installs it: pip (package, default the tool's name), apt (package; its bin,
+#            default /usr/bin/<package>, linked onto PATH as the tool's name), install-action
+#            (taiki-e/install-action) or download (the zip at url, checked against sha256, with
+#            its bin, a path inside the zip, linked onto PATH); {version} in url and bin is the pin
+#   check    a command whose output names the installed version
 #
 #   scripts/ci-tools.sh install [<tool>...]   CI installs each tool (default: all of them)
 #   scripts/ci-tools.sh check [<tool>...]     fails on a missing or wrong-version tool,
@@ -14,7 +22,7 @@
 # bin linked into ~/.local/bin, which install adds to $GITHUB_PATH.
 set -euo pipefail
 
-list="$(dirname "${BASH_SOURCE[0]}")/ci-tools.toml"
+pins="$(dirname "${BASH_SOURCE[0]}")/ci-tools.d"
 
 case ${1:-} in
   install | check) mode=$1; shift ;;
@@ -33,14 +41,20 @@ python=$(python3 -I -c 'import sys; print("%d.%d" % sys.version_info[:2]); sys.e
 
 # One tab-separated line per tool: name, version, install method, package (a download's url),
 # check command, bin and sha256. bin and sha256 come last, as tabs between empty fields collapse.
-tools=$(python3 -I - "$list" "$@" <<'PY'
-import sys, tomllib
-with open(sys.argv[1], "rb") as f:
-    tools = tomllib.load(f)
+tools=$(python3 -I - "$pins" "$@" <<'PY'
+import pathlib, sys, tomllib
+pins = pathlib.Path(sys.argv[1])
+if not pins.is_dir():
+    print(f"ci-tools: no directory {pins} of tool pins", file=sys.stderr)
+    sys.exit(2)
+tools = {}
+for path in sorted(pins.glob("*.toml")):
+    with open(path, "rb") as f:
+        tools[path.stem] = tomllib.load(f)
 names = sys.argv[2:] or list(tools)
 unknown = [n for n in names if n not in tools]
 if unknown:
-    print("ci-tools: not in scripts/ci-tools.toml:", *unknown, file=sys.stderr)
+    print("ci-tools: no pin in scripts/ci-tools.d/ for:", *unknown, file=sys.stderr)
     sys.exit(2)
 for n in names:
     t = tools[n]

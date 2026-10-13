@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use common::{copy_exe, exits, write_exe, Group, Ns};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
@@ -1390,19 +1390,16 @@ fn build_only_runs_one_full_gate_after_build_and_fast_ones_with_the_files_change
         .contains("ci.sh --fast) && ("));
     let v = e.run(&["run", "--issue", "7"], 0);
     assert_eq!(v["outcome"], "merged", "{v}");
-    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\nfast\nfast\n");
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\nfast\n");
     assert_eq!(
         gate_where(&e),
         [
             ("build".into(), "local_full".into()),
-            ("review".into(), "local_fast".into()),
-            ("merge".into(), "local_fast".into())
+            ("review".into(), "local_fast".into())
         ]
     );
-    assert_eq!(
-        fs::read_to_string(&affected).unwrap(),
-        "[work.txt]\n[from-main\nwork.txt]\n"
-    );
+    assert_eq!(fs::read_to_string(&affected).unwrap(), "[work.txt]\n");
+    assert!(e.gh_calls().contains("pr update-branch 12"));
 }
 
 #[test]
@@ -2615,8 +2612,17 @@ fn line_until(
 
 #[test]
 fn two_units_merge_one_at_a_time_each_against_the_main_the_other_left() {
+    two_units_merge_one_at_a_time(AUTO);
+}
+
+#[test]
+fn under_build_only_two_units_still_merge_one_at_a_time() {
+    two_units_merge_one_at_a_time(&format!("{AUTO}[gate]\nlocal = \"build-only\"\n"));
+}
+
+fn two_units_merge_one_at_a_time(factory: &str) {
     let e = Env::new();
-    e.factory(AUTO);
+    e.factory(factory);
     e.issue(8, "Fix the other", "OPEN");
     e.ctl(&format!("pr-{UNIT}"), "12");
     e.ctl("pr-8-fix-the-other", "13");
@@ -3929,6 +3935,156 @@ fn build_only_with_no_fast_gate_updates_a_branch_behind_main_and_gates_only_afte
     assert_eq!(v["outcome"], "merged", "{v}");
     assert!(e.gh_calls().contains("pr update-branch 12"));
     assert_eq!(gate_where(&e), [("build".into(), "local_full".into())]);
+}
+
+/// `[gate] local = "build-only"` with auto merge, its fast and full gates logged to the returned
+/// file, a build that commits, and PR #12 green on GitHub.
+fn remote_queue(e: &Env, merge: &str) -> PathBuf {
+    let (runs, _) = build_only(e, merge);
+    e.ctl("pr", "12");
+    e.gh_file("checks-12.json", GREEN);
+    e.queue("build", &["pass:script", "pass:script"]);
+    runs
+}
+
+const UPDATED: &str = "00000000000000000000000000000000000000aa";
+
+#[test]
+fn build_only_merges_on_github_updating_the_pr_head_to_main_and_waiting_for_its_checks() {
+    let e = Env::new();
+    let runs = remote_queue(&e, AUTO);
+    // GitHub says CLEAN, as with no "up to date" rule, but the PR head lacks main's tip.
+    main_moves(&e, "from-main", "x\n");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let calls = e.gh_calls();
+    let upd = calls.find("pr update-branch 12").expect("update-branch");
+    let watch = calls.find("pr checks 12 --watch").unwrap();
+    let merge = calls
+        .find(&format!(
+            "pr merge 12 --squash --match-head-commit {UPDATED}"
+        ))
+        .unwrap_or_else(|| panic!("{calls}"));
+    assert!(upd < watch && watch < merge, "{calls}");
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\n");
+    assert_eq!(gate_where(&e), [("build".into(), "local_full".into())]);
+    let passed: Vec<Value> = run_events(&e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "ci_passed")
+        .collect();
+    assert_eq!(passed.len(), 1, "{passed:?}");
+    assert_eq!(
+        (&passed[0]["where"], &passed[0]["sha"]),
+        (&json!("github"), &json!(UPDATED))
+    );
+    assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
+}
+
+#[test]
+fn build_only_does_not_update_a_pr_head_that_holds_main() {
+    let e = Env::new();
+    remote_queue(&e, AUTO);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let calls = e.gh_calls();
+    assert!(!calls.contains("pr update-branch"), "{calls}");
+    assert!(calls.contains("pr checks 12 --watch"), "{calls}");
+}
+
+#[test]
+fn build_only_sends_red_github_checks_back_to_build_naming_the_check() {
+    let e = Env::new();
+    let runs = remote_queue(&e, AUTO);
+    e.gh_file("checks-12-1.json", RED);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let calls = e.calls();
+    let rebuild = calls.iter().rposition(|c| c == "build").unwrap();
+    assert!(
+        rebuild > calls.iter().position(|c| c == "ship").unwrap(),
+        "{calls:?}"
+    );
+    let p = e.prompt(rebuild + 1, "build");
+    assert!(p.contains("CI failed on PR #12: ci (fail)"), "{p}");
+    let failed: Vec<Value> = run_events(&e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "ci_failed")
+        .collect();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0]["where"], "github");
+    assert_eq!(failed[0]["checks"], json!(["ci (fail)"]));
+    // The rebuild's gate is the full one; the merge step runs no local gate.
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\nfull\n");
+}
+
+#[test]
+fn build_only_sends_a_conflict_with_main_back_to_ship() {
+    for (file, text) in [("pr-12.merge", "DIRTY"), ("update-12.fail", "")] {
+        let e = Env::new();
+        remote_queue(&e, AUTO);
+        main_moves(&e, "from-main", "x\n");
+        e.gh_file(file, text);
+        let v = e.run(&["run", "--issue", "7"], 1);
+        assert_eq!(v["outcome"], "stuck", "{file}: {v}");
+        assert_eq!(v["reason"], "ship is out of attempts (2)", "{file}: {v}");
+        let calls = e.calls();
+        assert_eq!(
+            calls,
+            ["triage", "build", "verify", "review", "ship", "ship"],
+            "{file}"
+        );
+        let p = e.prompt(6, "ship");
+        assert!(
+            p.contains("PR #12 conflicts with main: rebase onto main and resolve conflicts"),
+            "{file}: {p}"
+        );
+        assert!(!e.gh_calls().contains("pr merge"), "{file}");
+        assert!(
+            run_events(&e)
+                .iter()
+                .any(|ev| ev["event"] == "conflict" && ev["pr"] == 12),
+            "{file}"
+        );
+    }
+}
+
+#[test]
+fn build_only_needs_a_human_merge_when_main_cannot_be_fetched() {
+    let e = Env::new();
+    remote_queue(&e, AUTO);
+    e.queue("ship", &["pass:script"]);
+    e.ctl(
+        "ship.sh",
+        "git remote set-url origin \"$FAKE_CTRL/gone.git\"",
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["needs_human"], true, "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("cannot fetch main to update PR #12: git fetch origin main failed"),
+        "{reason}"
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
+#[test]
+fn build_only_waits_for_github_checks_at_most_ci_timeout_minutes() {
+    let e = Env::new();
+    remote_queue(
+        &e,
+        &AUTO.replace("ci_timeout_minutes = 1", "ci_timeout_minutes = 0"),
+    );
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in *\"pr checks\"*--watch*) sleep 30; exit 0 ;; esac\n",
+    );
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(
+        v["reason"], "CI on PR #12 did not finish within 0 min",
+        "{v}"
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
 }
 
 #[test]
@@ -13485,6 +13641,40 @@ fn the_local_queue_gates_the_merge_with_main_and_merges_without_update_branch() 
     );
     assert!(merge_gate_failures(&e).is_empty());
     assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
+}
+
+#[test]
+fn every_step_keeps_the_local_queue_and_sends_a_conflict_back_to_build() {
+    let every_step = |e: &Env, log: &Path| {
+        e.factory(&format!(
+            "{AUTO}[gate]\nlocal = \"every-step\"\n[phases.build]\n{}",
+            where_gate(log)
+        ));
+        e.ctl("pr", "12");
+        e.gh_file("checks-12.json", GREEN);
+    };
+    let e = Env::new();
+    let log = e.ctrl.join("gates");
+    every_step(&e, &log);
+    e.queue("build", &["pass:commit"]);
+    main_moves(&e, "from-main", "x\n");
+    e.gh_file("pr-12.merge", "BEHIND");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(fs::read_to_string(&log).unwrap(), "branch\nmerged\n");
+    assert!(!e.gh_calls().contains("pr update-branch"));
+
+    let e = Env::new();
+    every_step(&e, &e.ctrl.join("gates"));
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    e.gh_file("pr-12.merge", "DIRTY");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "ship", "build", "verify", "review", "ship"]
+    );
+    assert!(e.prompt(6, "build").contains("PR #12 conflicts with main"));
 }
 
 #[test]
