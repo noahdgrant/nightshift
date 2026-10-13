@@ -4789,6 +4789,29 @@ fn build_only_stops_reshipping_for_a_base_that_moves_on_every_check() {
 }
 
 #[test]
+fn build_only_a_reship_earns_no_credit_when_origin_default_cannot_be_read() {
+    let e = Env::new();
+    remote_queue(&e, AUTO);
+    e.gh_file("pr-12.merge", "DIRTY");
+    e.ctl(
+        "review.sh",
+        "git remote set-url origin \"$FAKE_CTRL/gone.git\"",
+    );
+    e.queue("review", &["pass:script"]);
+    e.queue("ship", &["pass", "fail:review", "fail:review"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(v["reason"], "ship is out of attempts (2)", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "ship", "ship", "review"]
+    );
+    assert!(!run_events(&e).iter().any(|ev| {
+        ev["event"] == "ship_after_base_moved" || ev["event"] == "rebase_after_base_moved"
+    }));
+}
+
+#[test]
 fn build_only_needs_a_human_merge_when_main_cannot_be_fetched() {
     let e = Env::new();
     remote_queue(&e, AUTO);
