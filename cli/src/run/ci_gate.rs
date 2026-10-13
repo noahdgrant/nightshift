@@ -38,7 +38,7 @@ impl Ctx<'_> {
         phase: &'j str,
         attempt: u32,
     ) -> gate::Job<'j> {
-        let full = self.gate.full(cmd);
+        let full = self.gate.commands.full(cmd);
         let files = (!full)
             .then(|| {
                 let since = gate_state
@@ -59,10 +59,10 @@ impl Ctx<'_> {
             head,
             phase,
             attempt,
-            cap: self.cap,
+            cap: self.env.cap,
             ratchets: gate::Ratchets {
                 factory: &self.root,
-                night: self.night.as_deref(),
+                night: self.gate.night.as_deref(),
             },
         }
     }

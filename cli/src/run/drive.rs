@@ -92,7 +92,7 @@ pub(super) fn drive(
         "event": "start",
         "default_branch": baseline.as_ref().map(|b| &b.0),
         "default_sha": baseline.as_ref().map(|b| &b.1),
-        "memory_cap": ctx.cap.map(|c| json!({
+        "memory_cap": ctx.env.cap.map(|c| json!({
             "mb": c.mb,
             "via": c.via.label(),
             "fallback": c.fallback,
@@ -206,7 +206,7 @@ pub(super) fn drive(
         let timeout = phase_timeout(phase, p.timeout_minutes);
         eprintln!("ns run: {} {phase} attempt {attempt} ({why})", ctx.unit);
         let locks = RunnerLocks::acquire(
-            &ctx.lock_dir,
+            &ctx.env.lock_dir,
             &fac.locks(&p),
             &ctx.unit,
             &shared.clock,
@@ -319,7 +319,7 @@ pub(super) fn drive(
         if !crate::git::ssh_command_set(&ctx.worktree) {
             env.push(("GIT_SSH_COMMAND", crate::git::SSH_KEEPALIVE.to_string()));
         }
-        let tmp = match phase_tmpdir(&ctx.tmp, phase, attempt) {
+        let tmp = match phase_tmpdir(&ctx.env.tmp, phase, attempt) {
             Ok(tmp) => tmp,
             Err(e) => {
                 restore(&moves);
@@ -327,7 +327,7 @@ pub(super) fn drive(
             }
         };
         env.push(("TMPDIR", tmp.to_string_lossy().into_owned()));
-        pin::write_settings(&ctx.common, &ctx.unit, &ctx.ns)?;
+        pin::write_settings(&ctx.common, &ctx.unit, &ctx.env.ns)?;
         let r = run_harness(
             &commands[phase],
             &prompt,
@@ -336,7 +336,7 @@ pub(super) fn drive(
             timeout,
             &transcript,
             subscription,
-            ctx.cap,
+            ctx.env.cap,
         );
         drop(held);
         if let Some(sig) = r.as_ref().err().and(crate::stop::requested()) {
@@ -488,7 +488,9 @@ pub(super) fn drive(
         } else {
             gate_trigger(phase, art.as_ref(), head_moved)
         };
-        if let Some((cmd, trigger)) = trigger.and_then(|t| Some((ctx.gate.for_trigger(t)?, t))) {
+        if let Some((cmd, trigger)) =
+            trigger.and_then(|t| Some((ctx.gate.commands.for_trigger(t)?, t)))
+        {
             let red = ctx.gate(&mut gate_state, trigger, cmd, phase, attempt);
             if let Some(sig) = red.as_ref().err().and(crate::stop::requested()) {
                 let mut ev = json!({"event": "gate", "phase": phase, "attempt": attempt});

@@ -463,12 +463,23 @@ struct Ctx<'a> {
     issue_url: String,
     gates: String,
     base: String,
-    lock_dir: PathBuf,
+    gate: GateSettings,
+    env: PhaseEnv<'a>,
+}
+
+/// How the CI gate runs.
+struct GateSettings {
     /// The CI gate commands; `None` runs no gate.
-    gate: gate::Commands,
-    cap: Option<&'a Cap>,
+    commands: gate::Commands,
     /// The night directory of the `ns watch` this runs under.
     night: Option<PathBuf>,
+}
+
+/// What a phase runs under besides its prompt and command.
+struct PhaseEnv<'a> {
+    lock_dir: PathBuf,
+    /// The memory cap phases and the gates after them run under.
+    cap: Option<&'a Cap>,
     /// The `ns` binary the phase settings' hook runs.
     ns: PathBuf,
     /// The directory of this unit's phase `TMPDIR`s, `Repo::unit_tmp`.
@@ -719,12 +730,16 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         issue_url,
         gates,
         base,
-        lock_dir: lock_dir(cfg.as_ref(), &repo.common_dir),
-        gate: gate.clone(),
-        cap: cap.as_ref(),
-        night: shared.night.as_ref().map(|n| n.path().to_path_buf()),
-        ns: ns.clone(),
-        tmp: repo.unit_tmp(&unit),
+        gate: GateSettings {
+            commands: gate.clone(),
+            night: shared.night.as_ref().map(|n| n.path().to_path_buf()),
+        },
+        env: PhaseEnv {
+            lock_dir: lock_dir(cfg.as_ref(), &repo.common_dir),
+            cap: cap.as_ref(),
+            ns: ns.clone(),
+            tmp: repo.unit_tmp(&unit),
+        },
     };
     for ev in pinned {
         ctx.log(ev);
@@ -875,12 +890,16 @@ fn dry_run(
         issue_url: issue_url.to_string(),
         gates: gates.to_string(),
         base: base.unwrap_or_default(),
-        lock_dir: PathBuf::new(),
-        gate: gate.clone(),
-        cap: None,
-        night: None,
-        ns: PathBuf::new(),
-        tmp: PathBuf::new(),
+        gate: GateSettings {
+            commands: gate.clone(),
+            night: None,
+        },
+        env: PhaseEnv {
+            lock_dir: PathBuf::new(),
+            cap: None,
+            ns: PathBuf::new(),
+            tmp: PathBuf::new(),
+        },
     };
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
@@ -907,8 +926,8 @@ fn dry_run(
         "decision": decision_json,
         "prompt": prompt,
         "command": command,
-        "gate": ctx.gate.build,
-        "gate_rest": ctx.gate.rest,
+        "gate": ctx.gate.commands.build,
+        "gate_rest": ctx.gate.commands.rest,
         "budget_usd": fac.budget_usd(),
         "billing": fac.defaults.billing,
         "merge_policy": fac.merge.policy,

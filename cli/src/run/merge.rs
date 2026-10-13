@@ -245,7 +245,7 @@ pub(super) fn merge_step(
     // unless the local merge queue gates the merge result instead. Under build-only GitHub's
     // checks on the PR head with the base merged in are the merge queue, and no local gate runs.
     let remote = ctx.fac.gate.local == LocalGate::BuildOnly;
-    let queued = !remote && ctx.fac.merge.local_queue && ctx.gate.rest.is_some();
+    let queued = !remote && ctx.fac.merge.local_queue && ctx.gate.commands.rest.is_some();
     let default = remote_default(wt)
         .map(|d| d.0)
         .unwrap_or_else(|| "main".into());
@@ -272,7 +272,7 @@ pub(super) fn merge_step(
         }
     }
 
-    if let Some(cmd) = ctx.gate.rest.as_ref().filter(|_| !remote) {
+    if let Some(cmd) = ctx.gate.commands.rest.as_ref().filter(|_| !remote) {
         let step = if queued {
             gate_merge_result(ctx, gate_state, cmd, n, pr_head, &default, run)?
         } else {
