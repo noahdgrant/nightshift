@@ -23,7 +23,7 @@ pub const TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a finished `ns` may take to close its output pipes before its stragglers are killed.
 const POST_EXIT_GRACE: Duration = Duration::from_millis(500);
 
-/// How long [`exits`] waits for a process to die.
+/// How long a test polls for a signal handler to run.
 pub const EXIT_WAIT: Duration = Duration::from_secs(5);
 
 const TREE_VAR: &str = "NS_TEST_TREE";
@@ -399,23 +399,39 @@ fn kill_tree(running: Option<u32>, tag: &str) {
     }
 }
 
-/// Whether `pid` has exited, waiting up to [`EXIT_WAIT`] for it to. A zombie counts as exited.
+/// Whether `pid` has exited, waiting for its exit on a pidfd. A zombie counts as exited.
+/// [`TIMEOUT`] is only a hang guard: past it, the process outlived what killed it.
 pub fn exits(pid: &str) -> bool {
-    let deadline = Instant::now() + EXIT_WAIT;
-    loop {
-        let out = Command::new("ps")
-            .args(["-o", "stat=", "-p", pid.trim()])
-            .output()
-            .unwrap();
-        let stat = String::from_utf8_lossy(&out.stdout);
-        if stat.trim().is_empty() || stat.trim().starts_with('Z') {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        thread::sleep(Duration::from_millis(50));
+    let pid: libc::pid_t = pid.trim().parse().unwrap();
+    // SAFETY: pidfd_open(2) takes a pid and flags and returns a new fd or -1.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as libc::c_int;
+    if fd < 0 {
+        let gone = std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        assert!(
+            gone,
+            "pidfd_open {pid}: {}",
+            std::io::Error::last_os_error()
+        );
+        return true;
     }
+    let mut p = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let guard = TIMEOUT.as_millis() as libc::c_int;
+    // SAFETY: poll(2) on one pollfd that lives across the call; then close the fd this opened.
+    let ready = unsafe {
+        let n = libc::poll(&mut p, 1, guard);
+        libc::close(fd);
+        n
+    };
+    assert!(
+        ready >= 0,
+        "poll {pid}: {}",
+        std::io::Error::last_os_error()
+    );
+    ready == 1
 }
 
 /// Write `contents` to `path` as an executable (mode 755), creating its parent, so that it can

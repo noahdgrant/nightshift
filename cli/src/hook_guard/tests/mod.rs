@@ -21,6 +21,56 @@ fn denied(cmd: &str) -> bool {
     check(&bash_call(cmd)).is_some()
 }
 
+/// The most CPU time a check of one long command may take, in ms. Linear work takes a few ms; a
+/// blowup takes seconds.
+const CPU_BUDGET_MS: u64 = 500;
+
+/// `f`'s result, and whether it ran within [`CPU_BUDGET_MS`] of this thread's CPU time. Other
+/// processes on a busy machine don't add to it, as they add to the wall clock.
+fn within_cpu_budget<T>(f: impl FnOnce() -> T) -> (T, bool) {
+    let before = thread_cpu_time();
+    let out = f();
+    let spent = thread_cpu_time() - before;
+    (out, spent < std::time::Duration::from_millis(CPU_BUDGET_MS))
+}
+
+fn thread_cpu_time() -> std::time::Duration {
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime(2) writes one timespec into `t`, which lives across the call.
+    assert_eq!(
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) },
+        0
+    );
+    std::time::Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
+}
+
+#[test]
+fn the_cpu_budget_counts_only_the_calling_threads_work() {
+    let budget = std::time::Duration::from_millis(CPU_BUDGET_MS);
+    let ((), fast) = within_cpu_budget(|| {
+        std::thread::spawn(move || {
+            let start = thread_cpu_time();
+            while thread_cpu_time() - start < budget {}
+        })
+        .join()
+        .unwrap()
+    });
+    assert!(fast);
+}
+
+#[test]
+fn the_cpu_budget_fails_a_calling_thread_that_burns_it() {
+    let budget = std::time::Duration::from_millis(CPU_BUDGET_MS);
+    let ((), fast) = within_cpu_budget(|| {
+        let start = thread_cpu_time();
+        while thread_cpu_time() - start < budget {}
+    });
+    assert!(!fast);
+}
+
 #[test]
 fn the_denial_names_the_rule() {
     let why = check(&bash_call("git commit -n -m x")).unwrap();

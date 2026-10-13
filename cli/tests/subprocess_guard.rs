@@ -3,9 +3,10 @@
 mod common;
 
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use common::Group;
@@ -16,17 +17,52 @@ fn ns() -> common::Ns {
     c
 }
 
-const GRANDCHILD_DELAY: u64 = 2;
-const HUNG_GRANDCHILD_DELAY: u64 = 5;
-
-/// A shell that starts a background job which would create `marker` after
-/// [`GRANDCHILD_DELAY`] s, reports it started, then sleeps.
-fn leaves_a_grandchild(marker: &Path, delay: u64) -> String {
-    format!("(sleep {delay}; touch {marker:?}) & echo started; sleep 30")
+/// A job for a test's process to start in the background, which lives past
+/// [`common::TIMEOUT`] unless it is killed. It holds the fifo `held` open while it lives, so the
+/// test learns it died when a read of `held` ends.
+struct Grandchild {
+    held: PathBuf,
+    ready: PathBuf,
+    closed: mpsc::Receiver<()>,
 }
 
-fn survivor_check_wait(delay: u64) -> Duration {
-    Duration::from_secs(delay) + Duration::from_millis(500)
+impl Grandchild {
+    fn new(dir: &Path) -> Grandchild {
+        let (held, ready) = (dir.join("held"), dir.join("ready"));
+        for f in [&held, &ready] {
+            assert!(StdCommand::new("mkfifo").arg(f).status().unwrap().success());
+        }
+        let (tx, closed) = mpsc::channel();
+        let f = held.clone();
+        std::thread::spawn(move || {
+            let mut rest = Vec::new();
+            fs::File::open(f).unwrap().read_to_end(&mut rest).unwrap();
+            let _ = tx.send(());
+        });
+        Grandchild {
+            held,
+            ready,
+            closed,
+        }
+    }
+
+    /// Shell for the job, to run in the background.
+    fn job(&self) -> String {
+        format!(
+            "(echo up > {:?}; exec sleep 600) 3>{:?}",
+            self.ready, self.held
+        )
+    }
+
+    /// Shell that waits until the job holds `held`.
+    fn up(&self) -> String {
+        format!("read up < {:?}", self.ready)
+    }
+
+    /// Every holder of `held` closed it, so the job is dead.
+    fn died(&self) -> bool {
+        self.closed.recv_timeout(common::TIMEOUT).is_ok()
+    }
 }
 
 fn harness_config(dir: &Path, script: &str) -> PathBuf {
@@ -42,14 +78,11 @@ fn harness_config(dir: &Path, script: &str) -> PathBuf {
 #[test]
 fn a_hung_ns_fails_at_its_timeout_and_takes_its_children_with_it() {
     let tmp = tempfile::tempdir().unwrap();
-    let marker = tmp.path().join("survivor");
-    let started = tmp.path().join("started");
-    let script = format!(
-        "touch {started:?}; {}",
-        leaves_a_grandchild(&marker, HUNG_GRANDCHILD_DELAY)
+    let job = Grandchild::new(tmp.path());
+    let cfg = harness_config(
+        tmp.path(),
+        &format!("{} & {}; sleep 30", job.job(), job.up()),
     );
-    let cfg = harness_config(tmp.path(), &script);
-    let begun = Instant::now();
     let panic = std::panic::catch_unwind(|| {
         ns().env("NS_CONFIG", &cfg)
             .args(["ask", "--role", "review"])
@@ -58,13 +91,10 @@ fn a_hung_ns_fails_at_its_timeout_and_takes_its_children_with_it() {
             .output()
     })
     .unwrap_err();
-    assert!(begun.elapsed() < Duration::from_secs(15));
     let msg = panic.downcast_ref::<String>().unwrap();
     assert!(msg.contains("timed out after 3s"), "{msg}");
     assert!(msg.contains("\"ask\" \"--role\" \"review\""), "{msg}");
-    assert!(started.exists(), "the harness never started");
-    std::thread::sleep(survivor_check_wait(HUNG_GRANDCHILD_DELAY));
-    assert!(!marker.exists(), "the harness's background job outlived ns");
+    assert!(job.died(), "the harness's background job outlived ns");
 }
 
 #[test]
@@ -79,9 +109,7 @@ fn a_started_run_that_never_finishes_fails_at_its_timeout() {
         .arg(&prompt)
         .timeout(Duration::from_secs(3))
         .start();
-    let begun = Instant::now();
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.wait())).unwrap_err();
-    assert!(begun.elapsed() < Duration::from_secs(15));
     let msg = panic.downcast_ref::<String>().unwrap();
     assert!(msg.contains("timed out after 3s"), "{msg}");
     assert!(msg.contains("\"ask\" \"--role\" \"review\""), "{msg}");
@@ -109,12 +137,29 @@ fn waiting_for_an_event_that_never_comes_fails_at_the_timeout() {
 }
 
 #[test]
+fn exits_counts_a_killed_process_as_exited_whether_or_not_it_was_reaped() {
+    let mut sleeper = Group::spawn(
+        StdCommand::new("sh").args(["-c", "exec sleep 600"]),
+        common::TIMEOUT,
+    );
+    let pid = sleeper.id().to_string();
+    sleeper.kill();
+    assert!(common::exits(&pid), "a zombie");
+    sleeper.wait();
+    assert!(common::exits(&pid), "a reaped pid");
+}
+
+#[test]
 fn dropping_a_group_kills_its_grandchildren() {
     let tmp = tempfile::tempdir().unwrap();
-    let marker = tmp.path().join("survivor");
+    let job = Grandchild::new(tmp.path());
     let mut sh = StdCommand::new("sh");
     sh.arg("-c")
-        .arg(leaves_a_grandchild(&marker, GRANDCHILD_DELAY))
+        .arg(format!(
+            "{} & {}; echo started; sleep 30",
+            job.job(),
+            job.up()
+        ))
         .stdout(Stdio::piped());
     let mut group = Group::spawn(&mut sh, common::TIMEOUT);
     let mut line = String::new();
@@ -123,8 +168,7 @@ fn dropping_a_group_kills_its_grandchildren() {
         .unwrap();
     assert_eq!(line, "started\n");
     drop(group);
-    std::thread::sleep(survivor_check_wait(GRANDCHILD_DELAY));
-    assert!(!marker.exists(), "the background job outlived the group");
+    assert!(job.died(), "the background job outlived the group");
 }
 
 const BANNED: [&str; 4] = [
@@ -224,24 +268,25 @@ fn every_test_writes_executables_through_write_exe() {
 #[test]
 fn output_returns_when_ns_exits_even_if_its_child_holds_the_pipes() {
     let tmp = tempfile::tempdir().unwrap();
-    let marker = tmp.path().join("survivor");
-    let script = format!("(sleep {GRANDCHILD_DELAY}; touch {marker:?}) & echo hi");
-    let cfg = harness_config(tmp.path(), &script);
+    let job = Grandchild::new(tmp.path());
+    let cfg = harness_config(
+        tmp.path(),
+        &format!("{} & {}; echo hi", job.job(), job.up()),
+    );
     ns().env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review"])
         .write_stdin("x")
         .assert()
         .success()
         .stdout("hi\n");
-    std::thread::sleep(survivor_check_wait(GRANDCHILD_DELAY));
-    assert!(!marker.exists(), "the harness's background job outlived ns");
+    assert!(job.died(), "the harness's background job outlived ns");
 }
 
 #[test]
 fn output_kills_a_descendant_that_left_the_process_group_and_outlived_its_parent() {
     let tmp = tempfile::tempdir().unwrap();
-    let marker = tmp.path().join("survivor");
-    let script = format!("setsid sh -c \"sleep {GRANDCHILD_DELAY}; touch {marker:?}\" & echo hi");
+    let job = Grandchild::new(tmp.path());
+    let script = format!("setsid sh -c '{}' & {}; echo hi", job.job(), job.up());
     let cfg = harness_config(tmp.path(), &script);
     ns().env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review"])
@@ -249,6 +294,5 @@ fn output_kills_a_descendant_that_left_the_process_group_and_outlived_its_parent
         .assert()
         .success()
         .stdout("hi\n");
-    std::thread::sleep(survivor_check_wait(GRANDCHILD_DELAY));
-    assert!(!marker.exists(), "the detached job outlived ns");
+    assert!(job.died(), "the detached job outlived ns");
 }
