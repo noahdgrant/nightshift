@@ -65,7 +65,8 @@ fn run_in(
         .arg(&path)
         .env("TMPDIR", tmp.path())
         .env_remove("OUT")
-        .env_remove("V");
+        .env_remove("V")
+        .env_remove("NS_UNIT");
     for v in [
         "GIT_DIR",
         "GIT_WORK_TREE",
@@ -407,6 +408,13 @@ fn a_recipe_naming_a_ns_path_other_than_one_units_folder_fails() {
         let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(&exact))]);
         assert!(out.status.success(), "{unit}: {}", stderr(&out));
     }
+}
+
+#[test]
+fn the_recipes_see_the_run_md_unit_as_ns_unit() {
+    let recipe = format!("{RUN_OK}\n  \"$V/sandbox\" test \"$NS_UNIT\" = 7-fix-the-thing");
+    let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(&recipe))]);
+    assert!(out.status.success(), "{}", stderr(&out));
 }
 
 #[test]

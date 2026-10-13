@@ -15,7 +15,8 @@
 # headings must be exactly ```bash. Fails naming the file, heading and block of each line that does not.
 #
 # Then runs, in order in one bash shell (errexit, nounset, pipefail) from the repo root, with stdin
-# from /dev/null, git location variables unset and OUT in a temporary directory: the blocks under
+# from /dev/null, git location variables unset, OUT in a temporary directory and NS_UNIT, unexported,
+# set to 7-fix-the-thing (the unit run.md drives) whatever the caller's is: the blocks under
 # SKILL.md's `## Launch`, `## Doctor` and `## Drive`, then those under features/run.md's
 # `## Driving it with ns`. This script holds no copy of them. Launch builds ns itself: under
 # $CARGO_TARGET_DIR when set, else cli/target.
@@ -151,7 +152,8 @@ emit() {
   printf 'out=%q\nexport OUT=%q\n' "$tmp/recipes.out" "$tmp/evidence"
   cat <<'EOF'
 set -euo pipefail
-unset V
+unset V NS_UNIT
+NS_UNIT=7-fix-the-thing
 block=setup
 exec 3>&1 >"$out"
 finish() {
