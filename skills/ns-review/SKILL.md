@@ -27,7 +27,7 @@ Input: `.ns/<unit-id>/brief.md` and the branch. Output: `.ns/<unit-id>/review.md
 ## 1. Gather the artifact and contract
 
 1. Work in the unit's worktree (`ns worktree list`, or `git worktree list`). If `brief.md` is missing, stop with `status: blocked` and name it.
-2. Find the base branch: the one `brief.md` names, else the repo default (`git symbolic-ref --short refs/remotes/origin/HEAD`).
+2. Find the base branch: `<base>`, from here on, is `origin/` followed by `brief.md`'s `base:`, resolved as [base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts) says.
 3. Write the diff, including uncommitted work, to a file:
    ```bash
    mkdir -p .ns/$NS_UNIT/review

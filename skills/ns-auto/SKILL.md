@@ -20,7 +20,7 @@ Before any phase runs, every term below has a value. Take the terms the prompt a
 |---|---|---|
 | Goal | the issue or brief this run delivers | none: without a goal, stop and ask |
 | Done | the checkable condition that ends the run | `evidence.md`, `review.md` and `pr.md` pass at HEAD |
-| Unit and worktree | unit ID, worktree path, base branch | `<issue>-<slug>`, the path `ns worktree new` prints, `main` |
+| Unit and worktree | unit ID, worktree path, base branch | `<issue>-<slug>`, the path `ns worktree new` prints, the repo's default branch ([base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts)) |
 | Allowed actions | the gate policy; whether the run may push `ns/<unit-id>`, open a PR and comment on the tracker; and whether phases may run with permissions bypassed | `gates: stop`, no push, no bypass |
 | Escape hatch | when to stop early and hand back: a deadline, a budget, a phase to stop after, where the report goes | stop at the first stuck unit, report in this session |
 

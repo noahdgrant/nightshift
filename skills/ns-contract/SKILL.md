@@ -62,7 +62,15 @@ updated: 2026-10-08T21:14:00Z
 ---
 ```
 
-`brief.md` also records `base:`, the branch the unit's worktree came from. Later phases diff against it. A phase may add its own keys (`ns-ship` adds `pr:`).
+`brief.md` also records `base:`, the bare name of the branch the unit's worktree came from: the repo's default branch, or the integration branch given to `ns worktree new --base`. A phase may add its own keys (`ns-ship` adds `pr:`).
+
+**Base branch.** Every phase reads the base from `brief.md`'s `base:` and never assumes a branch name: a repo's default may be `master` or `develop`. Diffs and rebases use `origin/<base>`, and `ns-ship` opens the PR against `<base>`. When the brief has no `base:`, resolve the default branch:
+
+```bash
+base=$(git symbolic-ref --short refs/remotes/origin/HEAD) && base=${base#origin/}
+```
+
+When that fails too (`origin/HEAD` unset), write the phase's artifact with `status: blocked` and the first body line `no base: brief.md has no base: and origin/HEAD does not resolve`.
 
 `brief.md` may record `touches:`, a list of path globs relative to the repo root for the files and directories the unit will probably change (`cli/src/run.rs`, `skills/ns-review/**`). It is a scheduling prediction: two units overlap when their globs match the same file, and overlapping units are better not run side by side. The brief comment carries the same list as one line, `` **Touches:** `cli/src/run.rs`, `skills/ns-review/**` ``. A brief with no `touches:`, or an empty or malformed one, makes no prediction. `ns-triage` writes it ([agent-brief.md](../ns-triage/references/agent-brief.md)).
 

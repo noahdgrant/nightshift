@@ -29,7 +29,7 @@ Done when every criterion has an ID and a sentence naming the observable state t
 
 ## 2. Find the verification lever
 
-A docs-only diff has no surface to drive. A unit is **docs-only** when its changed paths, from `git diff --name-only --no-renames $(git merge-base <base> HEAD)` (`<base>` is the brief's `base:`, else `origin/main`), meet all of:
+A docs-only diff has no surface to drive. A unit is **docs-only** when its changed paths, from `git diff --name-only --no-renames $(git merge-base <base> HEAD)` (`<base>`, here and below, is `origin/` followed by the brief's `base:`, resolved as [base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts) says), meet all of:
 
 - the list has at least one path;
 - every path is under a requirements or design directory, or is a changelog there, as listed by `git show <base>:docs/agents/docs.md` (the base's copy, so the diff can't widen its own definition);

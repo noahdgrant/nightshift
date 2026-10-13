@@ -121,18 +121,20 @@ Read `docs/agents/issue-tracker.md` for the forge and how PRs link issues. When 
 git push -u origin "ns/$NS_UNIT"
 ```
 
-Then open it on the forge. Run this block in one shell, so `$body` stays set, with only your forge's commands:
+Then open it on the forge, against the brief's `base:` ([base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts)). Run this block in one shell, so `$body` and `$base` stay set, with only your forge's commands:
 
 ```bash
+base=$(awk '/^---$/ {n++; next} n==1 && /^base:/ {print $2; exit}' .ns/$NS_UNIT/brief.md)
+[ -n "$base" ] || { base=$(git symbolic-ref --short refs/remotes/origin/HEAD) && base=${base#origin/}; } || exit 1   # no base: pr.md is blocked
 body=$(mktemp)   # private, unguessable path
 awk 'f; /^---$/ && ++n==2 {f=1}' .ns/$NS_UNIT/pr.md > "$body"   # body without frontmatter
 
 # GitHub
-gh pr create --base main --head "ns/$NS_UNIT" --title "<title>" --body-file "$body"
+gh pr create --base "$base" --head "ns/$NS_UNIT" --title "<title>" --body-file "$body"
 gh pr view --json url,isDraft
 
 # GitLab
-glab mr create --source-branch "ns/$NS_UNIT" --target-branch main --title "<title>" --description-file "$body" --yes
+glab mr create --source-branch "ns/$NS_UNIT" --target-branch "$base" --title "<title>" --description-file "$body" --yes
 glab mr view -F json   # web_url, iid, draft
 
 rm -f "$body"
