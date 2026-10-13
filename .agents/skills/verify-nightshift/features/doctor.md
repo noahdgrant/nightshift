@@ -4,8 +4,8 @@
 
 ## Sub-features
 
-- `doctor-ok` reports `ok: true` with no problems on a complete config, and each harness binary's path or `null`.
-- `doctor-problems` lists a missing `[roles.default]` under `problems`.
+- `doctor-ok` reports `ok: true` with no problems on a complete config, and each harness binary's path or `null`, and exits 0.
+- `doctor-problems` lists a missing `[roles.default]` under `problems`, and exits 1 with the full report still on stdout.
 - `doctor-skill-dirs` counts `ns-*` skills per harness directory.
 
 ## How to get to it (user POV)
@@ -19,11 +19,11 @@ Preconditions:
 
 - Baseline, in `$V/repo`.
 
-- **Healthy.** Run `cap doctor-ok "$NS" doctor`. `ok` is `true`, `problems` is `[]`, `harnesses.claude.path` is `$V/bin/claude`, `harnesses.codex.on_path` is `false`.
-- **Problem.** Run `: > "$V/c-empty.toml"` and `cap doctor-problems env NS_CONFIG="$V/c-empty.toml" "$NS" doctor`. `problems` contains `no [roles.default]`.
+- **Healthy.** Run `cap doctor-ok "$NS" doctor`. It exits `0`; `ok` is `true`, `problems` is `[]`, `harnesses.claude.path` is `$V/bin/claude`, `harnesses.codex.on_path` is `false`.
+- **Problem.** Run `: > "$V/c-empty.toml"` and `cap doctor-problems env NS_CONFIG="$V/c-empty.toml" "$NS" doctor`. It exits `1`; `ok` is `false` and `problems` contains `no [roles.default]`.
 - **Skill dirs.** Read `skill_dirs` from `$OUT/doctor-ok.out`, or run `cap doctor-skill-dirs "$NS" doctor` after [install](./install.md). Each path is under `$V/home`; `ns_skills` is `0` in a fresh sandbox before [install](./install.md), and the number of links install made after it (the Install recipes end with every link restored, so doctor run after them shows the full count).
 
 ## Gotchas
 
-- `ok: false` still exits `0`. Assert on `ok` and `problems`, not the exit code.
+- `ns doctor` exits `1` exactly when `ok` is `false`. Warnings never change the exit code.
 - `forge` fields are covered in [forge-config.md](./forge-config.md).

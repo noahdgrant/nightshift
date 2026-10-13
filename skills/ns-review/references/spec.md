@@ -4,14 +4,16 @@ What must hold on this axis is the **Spec** section of the [quality bar](../../n
 
 Does the diff do what `brief.md` asked, and no more? Ignore how well the code is written. Other reviewers cover that.
 
-Read the brief's goal, acceptance criteria and out-of-scope notes first. Then walk the diff.
+Read the brief's goal, acceptance criteria, failure modes, edge cases and out-of-scope notes first. Then walk the diff, and for each failure mode and edge case the brief lists, find the code that handles it.
 
 ## Report three kinds of finding
 
-1. **Missing or partial**: a requirement or acceptance criterion the diff does not implement, or implements only in part. Critical when it is an acceptance criterion; Important otherwise.
+1. **Missing or partial**: a requirement or acceptance criterion the diff does not implement, or implements only in part, including a failure mode or edge case from the brief that the diff leaves unhandled. Critical when it is an acceptance criterion; Important otherwise.
 2. **Scope creep**: behaviour in the diff the brief did not ask for, including refactors, new options, renamed public interfaces and drive-by fixes. Important when it changes behaviour callers can see; Suggestion when it is an internal tidy-up that belongs in its own change.
-3. **Implemented wrong**: code that looks like it addresses a requirement but gets it wrong (wrong unit, wrong boundary, wrong error, wrong default). Critical when it breaks an acceptance criterion.
+3. **Implemented wrong**: code that looks like it addresses a requirement but gets it wrong (wrong unit, wrong boundary, wrong error, wrong default), including a failure mode or edge case handled differently from what the brief says. Critical when it breaks an acceptance criterion.
 
 Quote the brief line for every finding, next to the `file:line`.
 
-If the brief has no acceptance criteria, report that as a contract gap and review against its stated goal. If the brief is missing, report `BLOCKED`.
+Behaviour for a failure or edge case the brief does not list stays scope creep (kind 2).
+
+If the brief has no acceptance criteria, report that as a contract gap and review against its stated goal. A brief written before Failure modes and Edge cases were required may lack them: report the missing section as a contract gap, never as a finding against the code. If the brief is missing, report `BLOCKED`.

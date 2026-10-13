@@ -2,7 +2,7 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -17,7 +17,8 @@ use crate::which::which;
 
 pub const KNOWN_HARNESSES: &[&str] = &["claude", "codex", "cursor-agent", "gemini", "opencode"];
 
-pub fn run() -> Result<()> {
+/// Prints the report, and exits 1 when any check fails (`ok` is false). Warnings never fail it.
+pub fn run() -> Result<ExitCode> {
     let path = config::path();
     let exists = path.is_file();
     let (parses, error, cfg) = match config::load(&path) {
@@ -95,8 +96,9 @@ pub fn run() -> Result<()> {
     warnings.extend(default_branch_warnings());
     let hooks = hooks_entry(&mut problems);
 
+    let ok = parses && problems.is_empty();
     let out = json!({
-        "ok": parses && problems.is_empty(),
+        "ok": ok,
         "config": {
             "path": path.to_string_lossy(),
             "exists": exists,
@@ -121,7 +123,7 @@ pub fn run() -> Result<()> {
         "warnings": warnings,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
-    Ok(())
+    Ok(ExitCode::from(u8::from(!ok)))
 }
 
 /// Whether the current repo's `core.hooksPath` points at its `.githooks/`. A repo without
