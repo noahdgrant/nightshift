@@ -58,11 +58,7 @@ impl Word {
                 }),
             }
         }
-        if expansions.len() == self.expansions.len() {
-            return self.clone();
-        }
         text.push_str(&self.text[from..]);
-        let left = !expansions.is_empty();
         let opaque = if self.braced {
             self.opaque
         } else {
@@ -72,8 +68,8 @@ impl Word {
         };
         Word {
             opaque,
-            quoted_var: self.quoted_var && left,
-            splits: self.braced || (self.splits && left),
+            quoted_var: self.quoted_var,
+            splits: self.splits,
             braced: self.braced,
             text,
             expansions,
@@ -123,7 +119,7 @@ pub(super) enum Sep {
     /// `||`, `|` or `&`: the next command may run without this one, or either may run in a
     /// subshell.
     Branch,
-    /// A brace or an arithmetic command: a compound command begins or ends.
+    /// A brace: a compound command begins or ends.
     Group,
 }
 
@@ -594,7 +590,7 @@ impl<'a> Lexer<'a> {
         self.arithmetic_next = true;
         self.assigns = true;
         self.substitution(Close::Paren);
-        self.out.push(Tok::CommandEnd(Sep::Group));
+        self.out.push(Tok::CommandEnd(Sep::Seq));
     }
 
     fn expansion(&mut self, close: Close) {
