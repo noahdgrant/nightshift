@@ -174,6 +174,7 @@ full_step "cargo test under a decoy GIT_DIR" scripts/check-git-dir-decoy.sh
 step "build ns" cargo build --manifest-path cli/Cargo.toml
 step "ns lint" "$ns" lint skills --human
 step "ns lint .agents/skills" "$ns" lint .agents/skills --human
+full_step "verify-nightshift Launch and Doctor recipes" scripts/check-verify-recipes.sh
 step "ns check-markers" "$ns" check-markers --human
 full_step "ns rules check" "$ns" rules check --human
 full_step "ns ratchet check" "$ns" ratchet check --human

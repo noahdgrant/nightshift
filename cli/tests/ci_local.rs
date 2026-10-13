@@ -20,6 +20,7 @@ const BEFORE_PACKS: &[&str] = &[
     "build ns",
     "ns lint",
     "ns lint .agents/skills",
+    "verify-nightshift Launch and Doctor recipes",
     "ns check-markers",
     "ns rules check",
     "ns ratchet check",
@@ -78,9 +79,9 @@ const CARGO: &str = r#"#!/bin/sh
 case "$FAIL_ON" in ?*) case "cargo $*" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
 "#;
 
-/// Fails when `$FAIL_ON` is `decoy`.
-const DECOY: &str = r#"#!/bin/sh
-[ "$FAIL_ON" != decoy ]
+/// A stub script that fails when its path contains `$FAIL_ON`.
+const SCRIPT: &str = r#"#!/bin/sh
+case "$FAIL_ON" in ?*) case "$0" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac
 "#;
 
 /// Prints `$PLAN` for `eval --dry-run`, even when it then fails because its command line
@@ -203,7 +204,8 @@ impl Repo {
             );
         }
         write_exe(&root.join("scripts/check-private.sh"), "#!/bin/sh\n");
-        write_exe(&root.join("scripts/check-git-dir-decoy.sh"), DECOY);
+        write_exe(&root.join("scripts/check-git-dir-decoy.sh"), SCRIPT);
+        write_exe(&root.join("scripts/check-verify-recipes.sh"), SCRIPT);
         write_exe(&root.join("cli/target/debug/ns"), NS);
         write_exe(&root.join("bin/cargo"), CARGO);
         let python = python_stub(&real_python3());
@@ -341,6 +343,7 @@ fn a_failing_step_stops_the_run() {
         ("decoy", "cargo test under a decoy GIT_DIR"),
         ("pytest ran", "py-inventory fixture tests"),
         ("lint .agents/skills", "ns lint .agents/skills"),
+        ("recipes", "verify-nightshift Launch and Doctor recipes"),
         ("ns check-markers", "ns check-markers"),
         ("ns rules", "ns rules check"),
         ("ns ratchet", "ns ratchet check"),
