@@ -458,6 +458,12 @@ fn phase_tmpdir(parent: &Path, phase: &str, attempt: u32) -> Result<PathBuf> {
     anyhow::bail!("no free {phase}-<n> directory in {}", parent.display())
 }
 
+/// Whether a path with these attributes is a directory owned by `euid` that no group or other
+/// bit opens.
+fn usable_only_by_us(is_dir: bool, uid: u32, euid: u32, mode: u32) -> bool {
+    is_dir && uid == euid && mode & 0o077 == 0
+}
+
 /// Create `dir` with mode 0700, or check the one there is a directory only this user can use: the
 /// system temp dir is shared, and another user could have made it first.
 fn private_dir(dir: &Path) -> Result<()> {
@@ -467,8 +473,8 @@ fn private_dir(dir: &Path) -> Result<()> {
     }
     let m = fs::symlink_metadata(dir).with_context(|| format!("cannot read {}", dir.display()))?;
     // SAFETY: geteuid has no preconditions and cannot fail.
-    let mine = m.uid() == unsafe { libc::geteuid() };
-    if !(m.is_dir() && mine && m.mode() & 0o077 == 0) {
+    let euid = unsafe { libc::geteuid() };
+    if !usable_only_by_us(m.is_dir(), m.uid(), euid, m.mode()) {
         anyhow::bail!(
             "{} is not a directory only this user can use; remove it",
             dir.display()
@@ -1461,7 +1467,13 @@ fn drive(
         if !crate::git::ssh_command_set(&ctx.worktree) {
             env.push(("GIT_SSH_COMMAND", crate::git::SSH_KEEPALIVE.to_string()));
         }
-        let tmp = phase_tmpdir(&ctx.tmp, phase, attempt)?;
+        let tmp = match phase_tmpdir(&ctx.tmp, phase, attempt) {
+            Ok(tmp) => tmp,
+            Err(e) => {
+                restore(&moves);
+                return Err(e);
+            }
+        };
         env.push(("TMPDIR", tmp.to_string_lossy().into_owned()));
         pin::write_settings(&ctx.common, &ctx.unit, &ctx.ns)?;
         let r = run_harness(
@@ -1546,8 +1558,16 @@ fn drive(
         let written = art.is_some();
         if art.as_ref().is_some_and(|a| a.status == "pass") {
             passed.insert(phase);
-            // A failed phase's scratch files stay for a human to read, until `ns clean`.
-            let _ = fs::remove_dir_all(&tmp);
+            // A failed phase's scratch files stay for a human to read, until `ns clean`. A pass
+            // whose scratch dir will not go is logged, not failed: `ns clean` removes the leftover.
+            if let Err(e) = fs::remove_dir_all(&tmp) {
+                ctx.log(json!({
+                    "event": "tmpdir_not_removed",
+                    "phase": phase,
+                    "path": tmp.display().to_string(),
+                    "error": e.to_string(),
+                }));
+            }
         }
         if !written {
             restore(&moves);
@@ -2685,6 +2705,20 @@ mod tests {
         private_dir(&private).unwrap();
         let err = private_dir(&dir.path().join("no/such")).unwrap_err();
         assert!(err.to_string().contains("cannot create"), "{err}");
+    }
+
+    #[test]
+    fn a_dir_is_ours_alone_only_when_we_own_it_and_group_and_other_have_no_bits() {
+        assert!(usable_only_by_us(true, 1000, 1000, 0o40700));
+        assert!(usable_only_by_us(true, 1000, 1000, 0o40500));
+        assert!(!usable_only_by_us(true, 1001, 1000, 0o40700), "owner");
+        assert!(!usable_only_by_us(false, 1000, 1000, 0o100600), "not a dir");
+        for bit in [0o040, 0o020, 0o010, 0o004, 0o002, 0o001] {
+            assert!(
+                !usable_only_by_us(true, 1000, 1000, 0o40700 | bit),
+                "{bit:o}"
+            );
+        }
     }
 
     #[test]

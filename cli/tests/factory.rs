@@ -1466,8 +1466,37 @@ fn a_phase_that_times_out_keeps_its_tmpdir() {
     let v: Value = serde_json::from_slice(&v).unwrap();
     assert_eq!(v["outcome"], "done", "{v}");
     let tmp = unit_tmp(&e, UNIT);
-    assert!(tmp.join("build-1/scratch").is_file());
+    // `ns` makes the directory before it starts the phase, so the kill cannot beat it; what the
+    // phase wrote there depends on how soon it started, so is not checked.
+    assert!(tmp.join("build-1").is_dir());
     assert!(!tmp.join("build-2").exists());
+}
+
+#[test]
+fn a_passing_phase_whose_tmpdir_will_not_go_is_logged_not_failed() {
+    use std::os::unix::fs::PermissionsExt;
+    let uid = std::process::Command::new("id").arg("-u").output().unwrap();
+    if uid.stdout == b"0\n" {
+        return;
+    }
+    let e = Env::new();
+    e.ctl(
+        "build.sh",
+        r#"mkdir "$TMPDIR/locked" && touch "$TMPDIR/locked/f" && chmod 500 "$TMPDIR/locked""#,
+    );
+    e.queue("build", &["pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    let dir = unit_tmp(&e, UNIT).join("build-1");
+    fs::set_permissions(dir.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert!(dir.join("locked/f").is_file());
+    let ev = run_events(&e)
+        .into_iter()
+        .find(|ev| ev["event"] == "tmpdir_not_removed")
+        .expect("a tmpdir_not_removed event");
+    assert_eq!(ev["phase"], "build", "{ev}");
+    assert_eq!(ev["path"], dir.to_str().unwrap(), "{ev}");
+    assert!(ev["error"].as_str().is_some_and(|m| !m.is_empty()), "{ev}");
 }
 
 #[test]
@@ -1475,18 +1504,24 @@ fn a_phase_tmpdir_parent_another_user_could_use_stops_the_run_before_the_phase()
     use std::os::unix::fs::PermissionsExt;
     let e = Env::new();
     let tmp = unit_tmp(&e, UNIT);
-    fs::create_dir(&tmp).unwrap();
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let calls = e.calls();
+    let review = e.worktree(UNIT).join(format!(".ns/{UNIT}/review.md"));
+    assert!(review.is_file());
+    let kept = fs::read_dir(&tmp).unwrap().count();
     fs::set_permissions(&tmp, fs::Permissions::from_mode(0o777)).unwrap();
     e.ns()
-        .args(["run", "--issue", "7"])
+        .args(["run", "--issue", "7", "--from", "review"])
         .assert()
         .failure()
         .stderr(predicates::str::contains(format!(
             "{} is not a directory only this user can use",
             tmp.display()
         )));
-    assert!(e.calls().is_empty());
-    assert!(fs::read_dir(&tmp).unwrap().next().is_none());
+    assert_eq!(e.calls(), calls);
+    assert_eq!(fs::read_dir(&tmp).unwrap().count(), kept);
+    assert!(review.is_file(), "the refused phase's artifact stays put");
 }
 
 #[test]
