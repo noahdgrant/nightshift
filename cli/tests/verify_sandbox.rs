@@ -206,9 +206,11 @@ fn the_callers_tokens_and_git_locations_are_unset() {
     for v in vars.split(' ') {
         assert!(seen.contains(&format!("{v}=unset")), "{seen}");
     }
-    let env = s.ok(&["sh", "-c", "echo $HOME $GIT_SSH_COMMAND $NS_CONFIG"]);
+    let env = s.ok(&["sh", "-c", "echo $HOME $GIT_SSH_COMMAND $NS_CONFIG $TMPDIR"]);
     let v = s.v.display();
-    assert_eq!(env, format!("{v}/home false {v}/config.toml"));
+    assert_eq!(env, format!("{v}/home false {v}/config.toml {v}/tmp"));
+    let made = s.ok(&["mktemp", "-d"]);
+    assert!(made.starts_with(&format!("{v}/tmp/")), "{made}");
 }
 
 #[test]
