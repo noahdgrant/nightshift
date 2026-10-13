@@ -70,10 +70,10 @@ Bad: a third copy of the glob options.
 let opts = MatchOptions { require_literal_separator: true, ..Default::default() };
 ```
 
-Good: call the one place that owns them.
+Good: use the one place that owns them, the `MATCH` constant in `cli/src/touches.rs`.
 
 ```rust
-touches::matches(pattern, path)
+pat.matches_with(file, MATCH)
 ```
 
 Units: 47, 419, 425, 454, 466.

@@ -297,7 +297,7 @@ struct MergeVerdict {
     red: Option<Red>,
 }
 
-/// A kept merge verdict that [`Gate::merge_verdict`] hands back.
+/// Replaces `Option<Option<Red>>`: `Green` means the kept merge gate passed, `Red` carries its failure.
 #[derive(Clone)]
 pub enum Reused {
     Green,
