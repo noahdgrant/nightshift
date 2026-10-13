@@ -339,3 +339,39 @@ fn the_cache_keeps_the_entries_used_last_when_their_times_tie_with_the_clock() {
     git(root, &["checkout", "-q", &second]);
     ran_everything(&repo.run(&[], &max));
 }
+
+/// A pass whose entry can't be marked used is still recorded, and says so; a hit on it still
+/// skips.
+#[test]
+fn a_clock_that_fails_still_records_the_pass_and_skips_on_it() {
+    let repo = Repo::new();
+    repo.commit_all();
+    let root = repo.dir.path();
+    let (_clock, path) = clock(&repo, "exit 1");
+    let env = [("PATH", path.as_str())];
+    let out = repo.run(&[], &env);
+    ran_everything(&out);
+    assert!(
+        stderr(&out).contains("ci-local: could not record the pass in "),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(repo.cached().len(), 1);
+    skipped(&repo.run(&[], &env), root);
+}
+
+/// An entry another run evicts while this one marks it used stays evicted, never an empty
+/// entry a later run would skip on.
+#[test]
+fn an_entry_evicted_while_it_is_marked_used_is_not_recreated() {
+    let repo = Repo::new();
+    repo.commit_all();
+    let root = repo.dir.path();
+    let cache = root.join(".git/ns/ci-passed");
+    let (_clock, path) = clock(&repo, &format!("rm -f {}/*", cache.display()));
+    let out = repo.run(&[], &[("PATH", path.as_str())]);
+    ran_everything(&out);
+    assert_eq!(repo.cached(), Vec::<String>::new(), "{}", stderr(&out));
+    assert!(!stderr(&out).contains(": line "), "{}", stderr(&out));
+    ran_everything(&repo.run(&[], &[]));
+}
