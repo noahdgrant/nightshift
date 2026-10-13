@@ -621,7 +621,7 @@ mod tests {
         let (reader, writer) = std::io::pipe().unwrap();
         let fd = writer.as_raw_fd();
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", "sleep 300 & echo $$ >&3; sleep 300"]);
+        cmd.args(["-c", "sleep 600 & echo $$ >&3; sleep 300"]);
         // SAFETY: dup2(2) and fcntl(2) are async-signal-safe. Clearing FD_CLOEXEC keeps fd 3
         // open across exec even when the pipe already was fd 3, where dup2 changes nothing.
         unsafe {
@@ -634,27 +634,53 @@ mod tests {
         }
         // Every process the shell starts inherits fd 3, so the pipe reads EOF only once the
         // shell and all its descendants have exited, however early the timeout fired.
+        enum Event {
+            Group(String),
+            Returned(std::io::ErrorKind),
+            Eof,
+        }
         let (tx, rx) = std::sync::mpsc::channel();
+        let reader_tx = tx.clone();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(reader);
             let mut group = String::new();
             let _ = reader.read_line(&mut group);
-            let _ = tx.send(group);
+            let _ = reader_tx.send(Event::Group(group));
             let _ = reader.read_to_end(&mut Vec::new());
-            let _ = tx.send(String::new());
+            let _ = reader_tx.send(Event::Eof);
         });
-        output_within(cmd, Duration::from_millis(500)).unwrap_err();
-        drop(writer);
+        std::thread::spawn(move || {
+            let kind = output_within(cmd, Duration::from_millis(500))
+                .unwrap_err()
+                .kind();
+            let _ = tx.send(Event::Returned(kind));
+        });
+        let mut writer = Some(writer);
         let hang_guard = Duration::from_secs(60);
-        let group = rx.recv_timeout(hang_guard).unwrap();
-        if rx.recv_timeout(hang_guard).is_err() {
-            // The shell's pid is its group id: `run_process` makes it a group leader.
-            if let Ok(pgid) = group.trim().parse::<libc::pid_t>() {
-                // SAFETY: kill(2) on the group this test started, so it outlives no failure.
-                unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        let deadline = std::time::Instant::now() + hang_guard;
+        let (mut group, mut returned, mut eof) = (String::new(), None, false);
+        while returned.is_none() || !eof {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(Event::Group(g)) => {
+                    group = g;
+                    drop(writer.take());
+                }
+                Ok(Event::Returned(kind)) => returned = Some(kind),
+                Ok(Event::Eof) => eof = true,
+                Err(_) => {
+                    // The shell's pid is its group id: `run_process` makes it a group leader.
+                    if let Ok(pgid) = group.trim().parse::<libc::pid_t>() {
+                        // SAFETY: kill(2) on the group this test started, so it outlives no failure.
+                        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                    }
+                    panic!(
+                        "after {hang_guard:?}: output_within returned={returned:?}, pipe closed={eof}"
+                    );
+                }
             }
-            panic!("a descendant still holds the pipe after {hang_guard:?}");
         }
+        assert_eq!(returned, Some(std::io::ErrorKind::TimedOut));
     }
 
     #[test]
