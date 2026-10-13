@@ -33,9 +33,15 @@ The agent needs to know when it's done. Every Agent Brief has concrete, testable
 - **Good:** "Running `gh issue list --label needs-triage` returns issues that have been through initial classification"
 - **Bad:** "Triage should work correctly"
 
-### Explicit scope boundaries
+### Failure modes, edge cases and scope, from the code
 
-State what is out of scope. This keeps the agent from gold-plating or making assumptions about adjacent features.
+Every brief carries **Failure modes**, **Edge cases** and **Out of scope**. Where the brief is silent, build guesses, and review flags the guess. A section that does not apply says so in one line (`Edge cases: none; the command takes no input.`), so a reader can tell "considered" from "forgotten".
+
+Fill them from the code paths the change involves, found while exploring the codebase, not from a generic list:
+
+- **Failure modes**: what happens on each error the path can raise and each dependency that can be unavailable or invalid (a missing or corrupt file, a failed call, bad input), and what the user sees: message, exit code, state left behind.
+- **Edge cases**: the empty, unset, boundary, concurrent and resumed states that apply to this path, and the behaviour each one gets.
+- **Out of scope**: what the agent must leave alone. This keeps it from gold-plating or making assumptions about adjacent features.
 
 ### Route when the next phase isn't obvious
 
@@ -66,7 +72,16 @@ For enhancements, this is the status quo the feature builds on.
 
 **Desired behavior:**
 Describe what should happen after the agent's work is complete.
-Be specific about edge cases and error conditions.
+
+**Failure modes:** (required)
+- Each error or unavailable dependency on the code path: what the user sees
+  (message, exit code) and what state is left
+- Or one line: "none; <why the path cannot fail>"
+
+**Edge cases:** (required)
+- Each empty, unset, boundary, concurrent or resumed state that applies, and
+  its behaviour
+- Or one line: "none; <why none apply>"
 
 **Decisions:** each settled design decision and who settled it, quoted (omit when none; see [design decisions](../SKILL.md#design-decisions))
 
@@ -84,7 +99,7 @@ Be specific about edge cases and error conditions.
 - [ ] Specific, testable criterion 2
 - [ ] Specific, testable criterion 3
 
-**Out of scope:**
+**Out of scope:** (required)
 - Thing that should NOT be changed or addressed in this issue
 - Adjacent feature that might seem related but is separate
 ```
@@ -107,6 +122,15 @@ that end mid-word (e.g. "Use when the user wants to confi").
 **Desired behavior:**
 Truncation should break at the last word boundary before 1024 characters
 and append "..." to indicate truncation.
+
+**Failure modes:** none; truncation is pure string handling on a description
+the parser has already read, and a parse error keeps its current message.
+
+**Edge cases:**
+- A description of exactly 1024 chars is unchanged
+- A first word longer than 1021 chars has no boundary to break at: cut it at
+  1021 chars and append "..."
+- An empty or missing description stays empty, with no "..."
 
 **Key interfaces:**
 - The `SkillMetadata` dataclass's `description: str` field: no type change
@@ -150,6 +174,17 @@ Rejected feature requests should be documented in `.out-of-scope/<concept>.md`
 files that capture the decision, reasoning, and links to all issues that
 requested the feature. When triaging new issues, these files should be
 checked for matches.
+
+**Failure modes:**
+- No `.out-of-scope/` directory: triage treats it as no prior rejections and
+  creates the directory on the first wontfix
+- A file without a `**Decision:**` line: triage names the file in its notes
+  and skips it for matching, never fails the run
+
+**Edge cases:**
+- Two rejections of one concept on the same day append to one file, no
+  duplicate entry for the same issue link
+- A reopened issue already listed in "Prior requests" stays listed once
 
 **Key interfaces:**
 - Markdown file format in `.out-of-scope/`: each file should have a
@@ -197,6 +232,15 @@ With `--json`, all output (including errors) is well-formed JSON on stdout,
 and the command's exit codes are unchanged. The existing human-readable output
 is untouched when the flag is absent.
 
+**Failure modes:**
+- The tracker is unreachable: under `--json`, `{"error": "<message>"}` on
+  stdout and the same non-zero exit code as without the flag
+- An argument error from the parser: same shape, same exit code
+
+**Edge cases:**
+- No matching issues: `[]`, exit 0
+- A title holding quotes or newlines comes out escaped, still valid JSON
+
 **Key interfaces:**
 - The command's error path should emit `{"error": "<message>"}` under `--json`
   instead of the plain-text error
@@ -238,5 +282,6 @@ This is bad because:
 - Vague description ("the triage thing is broken")
 - References file paths and line numbers in the spec, where they go stale, instead of path globs on a `**Touches:**` line
 - No acceptance criteria
+- No failure modes or edge cases, so build guesses them
 - No scope boundaries
 - No description of current vs desired behavior
