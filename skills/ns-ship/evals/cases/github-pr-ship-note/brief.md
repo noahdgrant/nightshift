@@ -16,6 +16,7 @@ Issue: #44
 - [ ] `sh scripts/widget.sh title` prints `Widgets`.
 
 **Ship note:**
+- The PR body says `Closes #44`.
 - The PR body names #45 as the follow-up for the admin page title.
 
-**Out of scope:** the admin page title (#45).
+**Out of scope:** the admin page title.

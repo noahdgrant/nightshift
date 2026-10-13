@@ -12,7 +12,7 @@ commands = [
   "git add -A && git commit -q -m 'chore: agent docs'",
   "git init -q --bare .git/fake/origin.git",
   "git remote add origin \"$PWD/.git/fake/origin.git\" && git push -q origin main && git remote set-head origin main",
-  "printf 'pr view --json url,isDraft\\t{\"url\":\"https://github.com/acme/widgets/pull/1\",\"isDraft\":false}\\n' > .git/fake/gh-answers",
+  "printf 'pr view --json url,isDraft\\t{\"url\":\"https://github.com/acme/widgets/pull/1\",\"isDraft\":false}\\nissue view 45\\t{\"number\":45,\"state\":\"OPEN\",\"title\":\"Admin page title\"}\\n' > .git/fake/gh-answers",
   "git checkout -q -b ns/44-widget-title",
   "cp ../test.sh scripts/test.sh && sed -i 's/\"widgets\"/\"Widgets\"/' scripts/widget.sh",
   "git add scripts && git commit -q -m 'fix(widget): capitalise the title'",
@@ -30,6 +30,12 @@ expect_exit = 0
 # The Ship note's item: the body names #45.
 type = "command"
 run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | grep -Eq '#45\\b'"
+expect_exit = 0
+
+[[check]]
+# The Verification section records the ship check.
+type = "command"
+run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | grep -Eq '^[-*] .*Ship note:'"
 expect_exit = 0
 
 [[check]]
