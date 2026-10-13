@@ -35,7 +35,7 @@ Done when every question has an answer, from code or from the user, and you know
 
 - **Skill**: the repo's agent skills dir if one exists (`.agents/skills/`, `.claude/skills/`, `.cursor/skills/`, checked in that order), else `.agents/skills/`. The user may name another. The skill lives at `<dir>/verify-<project>/`.
 - **Control CLI**: the repo's language and conventions. Default is Python with `argparse`, or `click` if the repo already uses it. Put it in the repo's existing `scripts/` or `tools/` dir, else `tools/control-<project>.py`. If the repo has a Python package with console scripts, add a `control-<project>` entry point too.
-- **Evidence**: `.ns/verify/<run-id>/` by default, overridable with `--out`. Add `.ns/` to `.git/info/exclude` if it is not there. `ns-verify` passes `--out .ns/<unit-id>/evidence/`.
+- **Evidence**: `.ns/verify/<run-id>/` by default, overridable with `--out`. Add `.ns/` to `.git/info/exclude` if it is not there. `ns-verify` passes `--out .ns/$NS_UNIT/evidence/`.
 
 ## 3. Build the control CLI
 

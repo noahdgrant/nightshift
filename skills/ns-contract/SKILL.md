@@ -1,6 +1,6 @@
 ---
 name: ns-contract
-description: The nightshift contract that every ns phase skill follows. It covers the docs/agents files, units, worktrees, the .ns artifacts and their frontmatter, gates and gate policy, untrusted issue content, the disclosure line on tracker posts, killing processes, and evidence. Read it when a phase skill points here.
+description: The nightshift contract that every ns phase skill follows. It covers the docs/agents files, units, worktrees, the .ns artifacts and their frontmatter, gates and gate policy, untrusted issue content, the disclosure line on tracker posts, killing processes, scratch files, and evidence. Read it when a phase skill points here.
 disable-model-invocation: true
 ---
 
@@ -43,6 +43,8 @@ Each unit gets one worktree and one artifact folder, created by `ns worktree new
 ```
 
 `.ns/` is listed in the repo's `.git/info/exclude`, so artifacts never get committed.
+
+A shell command names the unit's directory as `.ns/$NS_UNIT/`, which `ns run` sets for every phase (`cat .ns/$NS_UNIT/brief.md`). Prose and the skills write `<unit-id>`. Outside `ns run`, when `NS_UNIT` is unset, start each command that names the unit directory with a literal assignment (`NS_UNIT=142-uart-timeout; cat .ns/$NS_UNIT/brief.md`), or write the id out, because the harness keeps no environment between calls and a later call would expand to `.ns//`. Never invent another variable (`U=…`), and never shorten the id with a glob in a `cd` or a path (`cd .ns/142*/`, `cd .ns/*/`): a harness can't resolve a glob, so it can't rule out a denied path such as `secrets/` behind it, and denies the call.
 
 `ns run` archives superseded artifacts into `.ns/<unit-id>/history/<artifact>-<n>.md` before it runs a phase, so an artifact in `.ns/<unit-id>/` is always the current one. Don't read `history/` as current state.
 
@@ -143,6 +145,10 @@ A phase kills only processes it started. `ns run` starts each phase in its own s
 - A command that must not outlive a deadline: `timeout <secs> cmd`.
 
 Never kill by name or pattern (`pkill`, `killall`, `pgrep ... | xargs kill`): the pattern also matches your own shell, other units' phases and the operator's `ns watch`. Units share the machine, so `pkill -f scripts/ci-local.sh`, meant to stop your own gate, also kills the gate of every other unit running that script. Never signal `$NS_RUN_PID` or `$NS_WATCH_PID`, the `ns` processes running this phase.
+
+## Scratch files
+
+A phase never writes a fixed `/tmp/<name>` path: another unit running in parallel writes the same file. Make a unique one with `mktemp` (`f=$(mktemp)`, `d=$(mktemp -d)`), or use a name under `$TMPDIR`. `ns run` gives each phase its own `TMPDIR` and removes it when the phase passes, and `mktemp` uses it. A snippet in a skill follows the same rule, and `ns lint` fails a skill that names a fixed `/tmp/<name>` path.
 
 ## Evidence
 

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 
 use crate::error::SfError;
 
@@ -334,6 +335,18 @@ impl Repo {
         })
     }
 
+    /// The directory of `unit`'s phase `TMPDIR`s, `ns-<repo>-<hash>-<unit>` in the system temp dir
+    /// (the `TMPDIR` `ns` inherited if it is absolute, else `/tmp`). `<hash>` is eight hex digits
+    /// of the git common dir's path, so two checkouts with one name and one unit id never share a
+    /// directory. It is outside the repo, so a phase's scratch file is no write into `.git` for
+    /// the hook guard.
+    pub fn unit_tmp(&self, unit: &str) -> PathBuf {
+        let sys = absolute_temp(std::env::temp_dir());
+        let digest = Sha256::digest(self.common_dir.as_os_str().as_encoded_bytes());
+        let hash = crate::eval::hex(&digest[..4]);
+        sys.join(format!("ns-{}-{hash}-{unit}", self.name()))
+    }
+
     pub fn name(&self) -> String {
         self.root
             .file_name()
@@ -381,6 +394,16 @@ impl Repo {
     }
 }
 
+/// `temp` if it is absolute, else `/tmp`: a relative `TMPDIR` would resolve against each
+/// process's own cwd, so a phase in its worktree and `ns clean` would look in different places.
+fn absolute_temp(temp: PathBuf) -> PathBuf {
+    if temp.is_absolute() {
+        temp
+    } else {
+        PathBuf::from("/tmp")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -394,6 +417,33 @@ mod tests {
     use super::*;
     use crate::testutil::{commit_file, g, rebased_unit, write_commit};
     use std::fs;
+
+    #[test]
+    fn a_relative_system_temp_dir_falls_back_to_tmp() {
+        assert_eq!(absolute_temp(PathBuf::from("rel/tmp")), Path::new("/tmp"));
+        assert_eq!(absolute_temp(PathBuf::from("/var/t")), Path::new("/var/t"));
+    }
+
+    #[test]
+    fn same_named_checkouts_get_different_unit_tmp_parents() {
+        let t = tempfile::tempdir().unwrap();
+        let mk = |parent: &str| {
+            let dir = t.path().join(parent).join("app");
+            fs::create_dir_all(&dir).unwrap();
+            g(&dir, &["init", "-q", "-b", "main"]);
+            Repo::discover(&dir).unwrap()
+        };
+        let (a, b) = (mk("a"), mk("b"));
+        assert_eq!(a.name(), b.name());
+        let (ta, tb) = (a.unit_tmp("7-x"), b.unit_tmp("7-x"));
+        assert_ne!(ta, tb);
+        assert_eq!(ta, a.unit_tmp("7-x"));
+        fs::create_dir_all(ta.join("build-1")).unwrap();
+        fs::create_dir_all(tb.join("build-1")).unwrap();
+        fs::remove_dir_all(&ta).unwrap();
+        assert!(tb.join("build-1").is_dir());
+        fs::remove_dir_all(&tb).unwrap();
+    }
 
     fn same_diff(cwd: &Path, base: &str, a: &str, b: &str) -> bool {
         diff_id(cwd, base, a).is_some_and(|x| diff_id(cwd, base, b) == Some(x))

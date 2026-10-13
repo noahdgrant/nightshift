@@ -1,6 +1,7 @@
-//! Cleanup: a unit's worktree and local `ns/<unit>` branch go once its change merged and its
-//! quality record is saved (docs/factory/unit-lifecycle.md, Cleanup). `ns run` cleans after its own
-//! merge, `ns watch` at start and between units, and `ns clean` on demand.
+//! Cleanup: a unit's worktree, local `ns/<unit>` branch and the `TMPDIR`s its failed phases
+//! kept go once its change merged and its quality record is saved (docs/factory/unit-lifecycle.md,
+//! Cleanup). `ns run` cleans after its own merge, `ns watch` at start and between units, and
+//! `ns clean` on demand.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -226,8 +227,8 @@ fn holds(dir: &Path, base: &str, tip: &str, pr_head: &str, pr: u64) -> bool {
     id.is_some() && id == git::exact_diff_id(dir, base, pr_head)
 }
 
-/// Remove the worktree, then the branch, under the worktree lock: `git branch -D` edits
-/// `.git/config`, as a `git worktree add` does. Errors name what is left.
+/// Remove the `TMPDIR`s its failed phases kept, then the worktree and its branch. Errors name what
+/// is left.
 fn remove(repo: &Repo, m: &Merged) -> Result<(), String> {
     let path = m.path.to_string_lossy().into_owned();
     if m.on_default.is_some() {
@@ -235,13 +236,35 @@ fn remove(repo: &Repo, m: &Merged) -> Result<(), String> {
         git::run(&m.path, &["checkout", "--quiet", "--detach"])
             .map_err(|e| format!("worktree not detached: {e:#}"))?;
     }
+    // The TMPDIRs go first: once the worktree or branch is gone the unit is no longer found, and
+    // a later step failing would leave them for good.
+    let tmp = repo.unit_tmp(&m.unit);
+    let tmp_kept = remove_unit_tmp(&tmp).err();
     // --force: untracked and ignored files (build output, .ns/) go with it; tracked changes were
     // checked just before.
     git::run(&repo.root, &["worktree", "remove", "--force", &path])
         .map_err(|e| format!("worktree not removed: {e:#}"))?;
-    if m.on_default.is_some() {
-        return Ok(());
+    if m.on_default.is_none() {
+        delete_branch(repo, m)?;
     }
+    match tmp_kept {
+        Some(e) => Err(format!("worktree removed, {} kept: {e}", tmp.display())),
+        None => Ok(()),
+    }
+}
+
+/// Remove a unit's phase `TMPDIR`s; a directory already gone is removed.
+fn remove_unit_tmp(tmp: &Path) -> Result<(), std::io::Error> {
+    match std::fs::remove_dir_all(tmp) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Delete the unit's branch under the worktree lock: `git branch -D` edits `.git/config`, as a
+/// `git worktree add` does.
+fn delete_branch(repo: &Repo, m: &Merged) -> Result<(), String> {
     let kept = |e: anyhow::Error| format!("worktree removed, branch {} kept: {e:#}", m.branch());
     let me = json!({"pid": std::process::id(), "unit": m.unit});
     let _config = Lock::wait(&repo.common_dir, WORKTREE_LOCK, &me, None, |by| {
