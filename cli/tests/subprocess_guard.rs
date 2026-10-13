@@ -137,6 +137,19 @@ fn waiting_for_an_event_that_never_comes_fails_at_the_timeout() {
 }
 
 #[test]
+fn exits_counts_a_killed_process_as_exited_whether_or_not_it_was_reaped() {
+    let mut sleeper = Group::spawn(
+        StdCommand::new("sh").args(["-c", "exec sleep 600"]),
+        common::TIMEOUT,
+    );
+    let pid = sleeper.id().to_string();
+    sleeper.kill();
+    assert!(common::exits(&pid), "a zombie");
+    sleeper.wait();
+    assert!(common::exits(&pid), "a reaped pid");
+}
+
+#[test]
 fn dropping_a_group_kills_its_grandchildren() {
     let tmp = tempfile::tempdir().unwrap();
     let job = Grandchild::new(tmp.path());

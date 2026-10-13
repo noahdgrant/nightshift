@@ -48,6 +48,20 @@ fn thread_cpu_time() -> std::time::Duration {
 }
 
 #[test]
+fn the_cpu_budget_counts_only_the_calling_threads_work() {
+    let budget = std::time::Duration::from_millis(CPU_BUDGET_MS);
+    let ((), fast) = within_cpu_budget(|| {
+        std::thread::spawn(move || {
+            let start = thread_cpu_time();
+            while thread_cpu_time() - start < budget {}
+        })
+        .join()
+        .unwrap()
+    });
+    assert!(fast);
+}
+
+#[test]
 fn the_denial_names_the_rule() {
     let why = check(&bash_call("git commit -n -m x")).unwrap();
     assert!(why.contains("git commit -n"), "{why}");
