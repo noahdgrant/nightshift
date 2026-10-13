@@ -56,6 +56,24 @@ fn in_unit_tmp(parts: &[&str]) -> bool {
         })
 }
 
+/// The raw `word` goes up from `$TMPDIR`, which could land on the unit's `phase-settings.json`.
+/// The lexer drops variable names, so this reads the command's own text.
+pub(super) fn escapes_tmpdir(path: &str) -> bool {
+    (path.contains("$TMPDIR") || path.contains("${TMPDIR")) && path.split('/').any(|p| p == "..")
+}
+
+/// A `ln` argument that could plant a link out of a phase's `TMPDIR`: one in the unit's `tmp`
+/// directory or under `$TMPDIR`, or one naming the phase settings file. A link there, written
+/// through later, would reach past the `tmp` exception.
+fn links_through_tmp(path: &str) -> bool {
+    let parts = components(path);
+    path.contains("TMPDIR")
+        || path.contains(pin::SETTINGS_FILE)
+        || parts
+            .windows(5)
+            .any(|p| p[1] == pin::COMMON_NS && p[2] == pin::COMMON_UNITS && p[4] == pin::TMP_DIR)
+}
+
 /// `name` is `target`, or a glob that could match it.
 fn names_in_common_dir(name: &str, target: &str) -> bool {
     if !name.contains(['*', '?', '[']) {
@@ -223,8 +241,11 @@ pub(super) fn option_value(arg: &str) -> &str {
 pub(super) fn file_tool(prog: &str, args: &[Word], scan: &mut Scan) -> Option<String> {
     let hit = |a: &&Word| scan.touches_hooks(&a.text);
     let found = match prog {
+        "ln" => args
+            .iter()
+            .find(|a| hit(a) || links_through_tmp(option_value(&a.text))),
         "rm" | "rmdir" | "unlink" | "shred" | "mv" | "chmod" | "chown" | "truncate" | "tee"
-        | "ln" | "touch" => args.iter().find(hit),
+        | "touch" => args.iter().find(hit),
         "cp" | "install" if has_target_directory_flag(args) => args.iter().find(hit),
         "cp" | "install" | "rsync" => args.last().filter(hit),
         "dd" => args.iter().find(|a| {

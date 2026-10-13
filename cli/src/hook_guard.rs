@@ -69,6 +69,19 @@ pub fn check(call: &Value) -> Option<String> {
                     pin::SETTINGS_VAR
                 ));
             }
+            let words: Vec<&str> = command
+                .split(|c: char| c.is_whitespace() || "'\"`;|&<>()=".contains(c))
+                .collect();
+            if let Some(word) = words.iter().find(|w| escapes_tmpdir(w)) {
+                return Some(format!(
+                    "{word} goes up from $TMPDIR, out of a phase's scratch directory ({PROTECTED})"
+                ));
+            }
+            if words.contains(&"ln") && words.iter().any(|w| w.contains("TMPDIR")) {
+                return Some(format!(
+                    "ln with $TMPDIR: a link out of a phase's scratch directory could reach {PROTECTED}"
+                ));
+            }
             check_command(command, &mut scan)
         }
         tool if FILE_TOOLS.contains(&tool) => ["file_path", "notebook_path"]

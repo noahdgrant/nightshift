@@ -547,9 +547,29 @@ fn a_phase_may_write_inside_its_unit_tmp_directory() {
         "rm -rf /r/.git/ns/a/.git/x/units/u1/tmp/b",
         "cd /r/.git/ns/units/u1/tmp/build-1 && rm ../../phase-settings.json",
         "cd /r/.git/ns/units/u1/tmp/build-1 && touch x",
+        "echo {} > $TMPDIR/../../phase-settings.json",
+        "echo {} > ${TMPDIR}/../../phase-settings.json",
+        "rm \"$TMPDIR/../../phase-settings.json\"",
+        "ln -s ../../phase-settings.json /r/.git/ns/units/u1/tmp/build-1/l",
+        "ln -s ../../phase-settings.json $TMPDIR/l",
+        "ln -s .. $TMPDIR/l",
+        "ln -s /r/.git/ns/units/u1 /r/.git/ns/units/u1/tmp/build-1/l",
+        "ln -s ../../phase-settings.json l",
+        "rm -rf /r/.git/ns/units/u1/tmp/b?ild-1/x",
+        "rm -rf /r/.git/ns/units/u1/tmp/[b]uild-1/x",
     ] {
         assert!(denied(c), "{c}");
     }
+    for p in [
+        "/r/.git/ns/units/u1/tmp/../phase-settings.json",
+        "/r/.git/ns/units/u1/tmp/b?ild-1/x",
+        "/r/.git/ns/units/u1/tmp/[b]uild-1/x",
+    ] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_some(), "{p}");
+    }
+    assert!(!denied("echo x > $TMPDIR/out.txt"));
+    assert!(!denied("ln -s a b"));
 }
 
 #[test]
