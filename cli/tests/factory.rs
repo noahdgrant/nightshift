@@ -11234,6 +11234,20 @@ fn run_cpus_passes_a_variable_already_set_through_unchanged() {
 }
 
 #[test]
+fn run_cpus_reaches_the_worktree_setup_commands() {
+    let e = Env::new();
+    let seen = e.ctrl.join("setup-seen");
+    let cmd = format!(
+        "echo \"${{NS_CPUS-unset}}:${{RUST_TEST_THREADS-unset}}:${{CARGO_BUILD_JOBS-unset}}\" >> {}",
+        seen.display()
+    );
+    e.factory(&format!("[worktree]\nsetup = {:?}\n", [cmd]));
+    let v = e.run(&["run", "--issue", "7", "--cpus", "3"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(fs::read_to_string(&seen).unwrap(), "3:3:3\n");
+}
+
+#[test]
 fn run_cpus_must_be_a_number_of_at_least_one() {
     let e = Env::new();
     for bad in ["0", "x"] {

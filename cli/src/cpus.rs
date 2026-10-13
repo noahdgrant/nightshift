@@ -16,10 +16,9 @@ pub fn parse(s: &str) -> Result<u32, String> {
     })
 }
 
-/// The CPUs each of `parallel` units gets on `cores`: an even split, never below 1. `parallel` is
-/// 1 or more (`ns watch` checks it).
+/// The CPUs each of `parallel` units gets on `cores`: an even split, never below 1.
 pub fn share(cores: usize, parallel: usize) -> usize {
-    (cores / parallel).max(1)
+    (cores / parallel.max(1)).max(1)
 }
 
 /// The share for each of `parallel` units on this machine.
@@ -59,7 +58,8 @@ pub fn settings(n: u32, get: impl Fn(&str) -> Option<String>) -> Vec<Setting> {
 static ACTIVE: OnceLock<Vec<Setting>> = OnceLock::new();
 
 /// Fix the settings for `--cpus n` for this process and return them. [`apply`] puts them on each
-/// phase and gate it starts.
+/// phase, gate and setup command it starts. The first call wins, because the settings are kept
+/// in a process-wide global.
 pub fn activate(n: u32) -> &'static [Setting] {
     ACTIVE.get_or_init(|| {
         settings(n, |v| {
@@ -102,6 +102,7 @@ mod tests {
         assert_eq!(share(4, 4), 1);
         assert_eq!(share(4, 9), 1);
         assert_eq!(share(1, 1), 1);
+        assert_eq!(share(4, 0), 4);
     }
 
     #[test]
