@@ -61,13 +61,16 @@ static ACTIVE: OnceLock<Vec<Setting>> = OnceLock::new();
 /// Fix the settings for `--cpus n` for this process and return them. [`apply`] puts them on each
 /// phase, gate and setup command it starts. Panics on a second call.
 pub fn activate(n: u32) -> &'static [Setting] {
+    fill(&ACTIVE, n)
+}
+
+fn fill(cell: &'static OnceLock<Vec<Setting>>, n: u32) -> &'static [Setting] {
     let s = settings(n, |v| {
         std::env::var_os(v).map(|x| x.to_string_lossy().into_owned())
     });
-    ACTIVE
-        .set(s)
+    cell.set(s)
         .expect("cpus::activate is called once per process");
-    ACTIVE.get().expect("set above")
+    cell.get().expect("set above")
 }
 
 /// Give `cmd` each computed variable; an inherited one reaches it through the environment.
@@ -147,7 +150,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "once per process")]
     fn a_second_activate_panics() {
-        activate(2);
-        activate(2);
+        static LOCAL: OnceLock<Vec<Setting>> = OnceLock::new();
+        fill(&LOCAL, 2);
+        fill(&LOCAL, 2);
     }
 }
