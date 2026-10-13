@@ -531,10 +531,16 @@ fn a_wall_clock_wait_in_test_code_is_flagged_and_production_code_is_not() {
             unit("#[cfg(not(test))]"),
             unit("#[test]"),
             unit("#[tokio::test(flavor = \"multi_thread\")]"),
+            unit("#[test]\n#[ignore]\n#[should_panic]"),
+            unit("#[test]\n/// Naps.\n#[ignore]"),
             unit("#[cfg(test)]\nmod tests {"),
             "}\n".to_string(),
         ]
         .concat(),
+    );
+    r.write(
+        "tests/common/unit.rs",
+        &format!("#[test]\n{}", WAITS.replace("fn waits", "fn test")),
     );
     let wall = |file: &str, line, snippet: &str| {
         (
@@ -558,10 +564,11 @@ fn a_wall_clock_wait_in_test_code_is_flagged_and_production_code_is_not() {
         walls("src/main.rs"),
         walls("src/waits.rs")[2 * per..].to_vec(),
         walls("tests/common/mod.rs"),
+        walls("tests/common/unit.rs"),
     ]
     .concat();
     want.sort();
-    assert_eq!(want.len(), 1 + per * 4, "{want:?}");
+    assert_eq!(want.len(), 1 + per * 7, "{want:?}");
     let new = r.new_findings();
     assert!(
         new.iter().all(|f| f["message"]
@@ -595,6 +602,20 @@ fn a_wall_clock_wait_in_test_code_is_flagged_and_production_code_is_not() {
             "std::thread::sleep(Duration::from_millis(1));"
         )
     );
+}
+
+#[test]
+fn the_two_wall_clock_rules_match_the_same_code_and_say_the_same_thing() {
+    use serde::Deserialize;
+    let text = fs::read_to_string(pack().join("ast-grep.yml")).unwrap();
+    let parts: Vec<serde_yaml::Value> = serde_yaml::Deserializer::from_str(&text)
+        .map(|d| serde_yaml::Value::deserialize(d).unwrap())
+        .filter(|d| d["id"] == "wall-clock-in-test")
+        .collect();
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0]["rule"]["any"], parts[1]["rule"]["any"]);
+    assert!(parts[0]["rule"]["any"].is_sequence());
+    assert_eq!(parts[0]["message"], parts[1]["message"]);
 }
 
 #[test]

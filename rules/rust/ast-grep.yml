@@ -19,7 +19,7 @@ rule:
   regex: '^(?:[^\n]*\n){1000}[\s\S]'
 ---
 # wall-clock-in-test, part 1 of 2: in a tests/ directory, any code. Part 2 below matches the same
-# code inside #[test] and #[cfg(test)] items anywhere; keep the two `any` lists the same.
+# code inside #[test] and #[cfg(test)] items anywhere.
 id: wall-clock-in-test
 language: rust
 severity: error
@@ -76,6 +76,7 @@ rule:
     stopBy: end
     all:
       - any: [{kind: function_item}, {kind: mod_item}]
-      - any:
-          - follows: {kind: attribute_item, regex: '^#\[(test|cfg\(test\)|[\w:]+::test(\(.*\))?)\]$'}
-          - follows: {kind: attribute_item, follows: {kind: attribute_item, regex: '^#\[(test|cfg\(test\)|[\w:]+::test(\(.*\))?)\]$'}}
+      - follows:
+          kind: attribute_item
+          regex: '^#\[(test|cfg\(test\)|[\w:]+::test(\(.*\))?)\]$'
+          stopBy: {not: {any: [{kind: attribute_item}, {kind: line_comment}, {kind: block_comment}]}}
