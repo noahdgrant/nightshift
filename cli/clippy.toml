@@ -1,0 +1,2 @@
+# Three or more bool parameters is a signature to replace with an enum or a struct (CODING_STANDARDS.md).
+max-fn-params-bools = 2
