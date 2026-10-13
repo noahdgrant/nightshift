@@ -24,7 +24,7 @@ pub struct Rates {
     pub per_unit: Option<f64>,
     /// Null when no line changed or the count is unknown.
     pub per_kloc: Option<f64>,
-    /// The week starts before the oldest merged PR in a list the forge's cap cut short.
+    /// The forge's cap may have cut merged PRs from the list, so this week may miss some.
     pub undercounted: bool,
 }
 
@@ -107,7 +107,7 @@ pub struct Trends {
 pub struct Listed {
     pub listed: usize,
     pub truncated: bool,
-    /// When the oldest listed PR merged.
+    /// When the oldest listed PR merged, for information.
     pub oldest: Option<String>,
 }
 
@@ -175,11 +175,9 @@ impl Report {
         if self.weeks.iter().any(|w| w.rates.undercounted) {
             let _ = writeln!(
                 s,
-                "\n* The forge listed only its {} most recent merged PRs, the oldest merged {}. \
-                 Units and lines in a week before that may be undercounted, so its rates may be \
-                 high; the trend leaves it out.",
-                self.merged_prs.listed,
-                self.merged_prs.oldest.as_deref().unwrap_or("never")
+                "\n* The forge's list of merged PRs was cut short at {}. Units and lines in any \
+                 week may be undercounted, so its rates may be high; the trend leaves it out.",
+                self.merged_prs.listed
             );
         }
         if self.weeks.iter().any(|w| w.rates.changed_lines.is_none()) {
@@ -193,6 +191,8 @@ impl Report {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::quality::bugs::tests::{filed, merged, no_trace, pr, t};
     use crate::quality::bugs::{report, WEEK};
@@ -242,6 +242,15 @@ mod tests {
         // Mean 1.09, slope 0.06: past 0.0545.
         assert_eq!(direction(&[1.0, 1.06, 1.12, 1.18]), Direction::Rising);
         assert_eq!(direction(&[1.18, 1.12, 1.06, 1.0]), Direction::Falling);
+        // Mean 1, slope 0.049 and 0.051 of it.
+        assert_eq!(
+            direction(&[0.9265, 0.9755, 1.0245, 1.0735]),
+            Direction::Flat
+        );
+        assert_eq!(
+            direction(&[0.9235, 0.9745, 1.0255, 1.0765]),
+            Direction::Rising
+        );
     }
 
     #[test]
@@ -327,6 +336,7 @@ mod tests {
             },
             t("2026-10-14"),
             &|_| Err("x".into()),
+            &BTreeSet::new(),
             &merged(&prs, truncated),
         )
     }
@@ -385,82 +395,43 @@ mod tests {
     }
 
     #[test]
-    fn weeks_before_the_oldest_pr_of_a_truncated_list_are_undercounted_and_not_fitted() {
+    fn every_week_of_a_truncated_list_is_undercounted_and_not_fitted() {
         let r = series(&[1, 1, 2, 2, 4, 5], true);
-        let under: Vec<bool> = r.weeks.iter().map(|w| w.rates.undercounted).collect();
-        assert_eq!(under, [false; 6]);
-        assert_eq!(r.trend.per_unit.weeks, 6);
-        // Without the August PR the oldest merged 2026-09-08, after the first week starts.
-        let filed: Vec<Filed> = Vec::new();
-        let prs: Vec<MergedPr> = vec![
-            pr(1, "ns/a", "2026-09-08", Some(10)),
-            pr(2, "ns/b", "2026-09-14T00:00:00Z", Some(10)),
-        ];
-        let w = Window {
-            since: Some(t("2026-09-07")),
-            until: Some(t("2026-09-20")),
-        };
-        let mut r = report(&filed, w, 0, &no_trace, &merged(&prs, true));
-        let under: Vec<bool> = r.weeks.iter().map(|w| w.rates.undercounted).collect();
-        assert_eq!(under, [true, false]);
-        r = report(&filed, w, 0, &no_trace, &merged(&prs, false));
-        assert!(r.weeks.iter().all(|w| !w.rates.undercounted));
-        let monday = [pr(2, "ns/b", "2026-09-14T00:00:00Z", Some(10))];
-        r = report(&filed, w, 0, &no_trace, &merged(&monday, true));
-        let under: Vec<bool> = r.weeks.iter().map(|w| w.rates.undercounted).collect();
-        assert_eq!(under, [true, false]);
-        r = report(&filed, w, 0, &no_trace, &merged(&[], true));
         assert!(r.weeks.iter().all(|w| w.rates.undercounted));
-        assert_eq!(r.merged_prs.oldest, None);
+        assert_eq!(r.trend.per_unit.direction, Direction::Insufficient);
+        assert_eq!(r.trend.per_unit.weeks, 0);
+        assert!(r.merged_prs.truncated);
+        let r = series(&[1, 1, 2, 2, 4, 5], false);
+        assert!(r.weeks.iter().all(|w| !w.rates.undercounted));
     }
 
     #[test]
-    fn undercounted_weeks_are_left_out_of_the_trend() {
-        let filed: Vec<Filed> = (0..6)
-            .map(|i| {
-                let mut f = filed(
-                    i + 1,
-                    "2026-09-07T12:00:00Z",
-                    "fix: x",
-                    "Source: human",
-                    &[],
-                );
-                f.opened += i as i64 * WEEK;
-                f
-            })
-            .collect();
-        // Two fixes a unit in the first week, which starts before the oldest listed PR, then one
-        // a unit: flat once the first is left out.
-        let mut prs = vec![pr(1, "ns/a", "2026-09-07T12:00:00Z", Some(100))];
-        prs.push(pr(2, "ns/b", "2026-09-14T12:00:00Z", Some(100)));
-        for i in 0..4 {
-            prs.push(MergedPr {
-                merged: t("2026-09-21T12:00:00Z") + i * WEEK,
-                ..pr(10 + i as u64, "ns/c", "2026-09-21", Some(100))
-            });
-        }
+    fn a_since_inside_a_week_counts_units_and_fixes_from_it_on() {
+        let filed = vec![
+            filed(1, "2026-09-08", "fix: a", "Source: human", &[]),
+            filed(2, "2026-09-10", "fix: b", "Source: human", &[]),
+        ];
+        let prs = vec![
+            pr(1, "ns/a", "2026-09-08", Some(100)),
+            pr(2, "ns/b", "2026-09-10T12:00:00Z", Some(100)),
+            pr(3, "ns/c", "2026-09-11", Some(100)),
+        ];
         let w = Window {
-            since: Some(t("2026-09-07")),
-            until: Some(t("2026-10-12T23:59:59Z")),
+            since: Some(t("2026-09-10")),
+            until: None,
         };
-        let mut all = filed.clone();
-        all.extend(filed.iter().take(1).map(|f| {
-            let mut f = f.clone();
-            f.issue.number += 50;
-            f
-        }));
-        let r = report(&all, w, 0, &no_trace, &merged(&prs, true));
-        let under: Vec<bool> = r.weeks.iter().map(|w| w.rates.undercounted).collect();
-        assert_eq!(under, [true, false, false, false, false, false]);
-        assert_eq!(r.weeks[0].rates.per_unit, Some(2.0));
-        assert_eq!(
-            r.trend.per_unit,
-            Trend {
-                direction: Direction::Flat,
-                slope: Some(0.0),
-                weeks: 5
-            }
+        let r = report(
+            &filed,
+            w,
+            t("2026-09-12"),
+            &|_| Err("x".into()),
+            &BTreeSet::new(),
+            &merged(&prs, false),
         );
+        assert_eq!(r.weeks.len(), 1);
+        assert_eq!(r.weeks[0].counts.opened, 1);
+        assert_eq!(r.weeks[0].rates.merged_units, 2);
+        assert_eq!(r.weeks[0].rates.per_unit, Some(0.5));
     }
 
     #[test]
@@ -477,7 +448,14 @@ mod tests {
             since: Some(t("2026-09-07")),
             until: Some(t("2026-09-27")),
         };
-        let r = report(&filed, w, 0, &no_trace, &merged(&prs, true));
+        let r = report(
+            &filed,
+            w,
+            0,
+            &no_trace,
+            &BTreeSet::new(),
+            &merged(&prs, true),
+        );
         let text = r.text();
         let rates: Vec<&str> = text
             .lines()
@@ -490,15 +468,14 @@ mod tests {
                 "",
                 "week      units  lines fix/unit fix/kloc",
                 "2026-W37      1    300     2.00     6.67 *",
-                "2026-W38      1      -     0.00        -",
-                "2026-W39      0      0        -        -",
+                "2026-W38      1      -     0.00        - *",
+                "2026-W39      0      0        -        - *",
                 "",
-                "trend per unit: insufficient, needs 4 weeks with a rate, has 1",
+                "trend per unit: insufficient, needs 4 weeks with a rate, has 0",
                 "trend per 1,000 lines: insufficient, needs 4 weeks with a rate, has 0",
                 "",
-                "* The forge listed only its 2 most recent merged PRs, the oldest merged \
-                 2026-09-08T00:00:00Z. Units and lines in a week before that may be undercounted, \
-                 so its rates may be high; the trend leaves it out.",
+                "* The forge's list of merged PRs was cut short at 2. Units and lines in any \
+                 week may be undercounted, so its rates may be high; the trend leaves it out.",
                 "",
                 "The forge's merged-PR list gives no changed lines, so there is no rate per 1,000 lines.",
             ]

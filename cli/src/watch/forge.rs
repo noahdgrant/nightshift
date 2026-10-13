@@ -52,14 +52,14 @@ pub struct MergedPr {
     pub changed: Option<u64>,
 }
 
-/// The forge's most recent merged PRs, and whether its cap cut the list short.
+/// The forge's merged PRs, and whether its cap cut the list short.
 #[derive(Debug, Default)]
 pub struct MergedPrs {
     pub prs: Vec<MergedPr>,
     pub truncated: bool,
 }
 
-/// How many merged PRs `gh pr list` reads.
+/// How many PRs one `gh pr list` reads.
 const PR_LIMIT: usize = 200;
 
 /// Issue number -> the PR that closes it and that PR's head branch, empty for a fork's.
@@ -88,8 +88,9 @@ pub trait Forge {
     /// Issues carrying `label` in any state, never PRs.
     fn labelled_issues(&self, label: &str) -> Result<Vec<Filed>>;
     fn closing_prs(&self, state: PrState) -> Result<ClosingPrs>;
-    /// The most recently merged PRs, in any order.
-    fn merged_prs(&self) -> Result<MergedPrs>;
+    /// The PRs merged at or after `since` (all of them when `None`), up to the forge's cap, in
+    /// any order. The list is `truncated` when the cap may have cut PRs from it.
+    fn merged_prs(&self, since: Option<i64>) -> Result<MergedPrs>;
     fn is_closed(&self, n: u64) -> Result<bool>;
     fn state(&self, n: u64) -> Result<IssueState>;
     /// The forge's sub-issues of `n`, in any state.
@@ -402,20 +403,23 @@ impl Forge for GitHub {
         Ok(by_issue)
     }
 
-    fn merged_prs(&self) -> Result<MergedPrs> {
-        let prs = gh_json(
-            &self.root,
-            &[
-                "pr",
-                "list",
-                "--state",
-                "merged",
-                "--limit",
-                &PR_LIMIT.to_string(),
-                "--json",
-                "number,headRefName,isCrossRepository,mergedAt,additions,deletions",
-            ],
-        )?;
+    fn merged_prs(&self, since: Option<i64>) -> Result<MergedPrs> {
+        let mut args = vec![
+            "pr".to_string(),
+            "list".into(),
+            "--state".into(),
+            "merged".into(),
+            "--limit".into(),
+            PR_LIMIT.to_string(),
+            "--json".into(),
+            "number,headRefName,isCrossRepository,mergedAt,additions,deletions".into(),
+        ];
+        if let Some(t) = since {
+            args.push("--search".into());
+            args.push(format!("merged:>={}", &crate::clock::iso(t)[..10]));
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let prs = gh_json(&self.root, &args)?;
         Ok(parse_merged(&prs))
     }
 
@@ -702,6 +706,7 @@ mod tests {
             ]
         );
         assert!(!m.truncated);
+        assert_eq!(PR_LIMIT, 200);
         let full: Vec<Value> = (1..=PR_LIMIT as u64)
             .map(|n| serde_json::json!({"number": n, "mergedAt": null}))
             .collect();

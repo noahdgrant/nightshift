@@ -119,6 +119,16 @@ fn to_merged_prs(all: &[Value]) -> MergedPrs {
     }
 }
 
+/// The API path listing the merged MRs from `since` on.
+fn merged_path(since: Option<i64>) -> String {
+    let after = since.map_or(String::new(), |t| {
+        format!("&merged_after={}", crate::clock::iso(t).replace(':', "%3A"))
+    });
+    format!(
+        "projects/:id/merge_requests?state=merged&order_by=updated_at&per_page={MR_LIMIT}{after}"
+    )
+}
+
 /// A merged MR, its source branch empty when it came from a fork. One with no merge time it can
 /// read is left out.
 fn to_merged(mr: &Value) -> Option<MergedPr> {
@@ -236,8 +246,9 @@ impl Forge for GitLab {
             PrState::Open => "opened",
             PrState::Merged => "merged",
         };
-        let path =
-            format!("projects/:id/merge_requests?state={state}&order_by=updated_at&per_page=100");
+        let path = format!(
+            "projects/:id/merge_requests?state={state}&order_by=updated_at&per_page={MR_LIMIT}"
+        );
         let mut by_issue = BTreeMap::new();
         for mr in items(&glab(&self.root, &["api", &path])?)? {
             for n in closed_by(mr["description"].as_str().unwrap_or("")) {
@@ -255,11 +266,9 @@ impl Forge for GitLab {
         Ok(by_issue)
     }
 
-    /// The 100 most recently updated merged MRs. GitLab's list gives no line counts.
-    fn merged_prs(&self) -> Result<MergedPrs> {
-        let path = format!(
-            "projects/:id/merge_requests?state=merged&order_by=updated_at&per_page={MR_LIMIT}"
-        );
+    /// The merged MRs from `since` on, up to 100. GitLab's list gives no line counts.
+    fn merged_prs(&self, since: Option<i64>) -> Result<MergedPrs> {
+        let path = merged_path(since);
         Ok(to_merged_prs(&items(&glab(&self.root, &["api", &path])?)?))
     }
 
@@ -447,6 +456,21 @@ mod tests {
         let full = vec![serde_json::json!({}); MR_LIMIT];
         assert!(to_merged_prs(&full).truncated);
         assert!(!to_merged_prs(&full[1..]).truncated);
+    }
+
+    #[test]
+    fn the_merged_list_asks_for_100_merged_after_the_start() {
+        assert_eq!(MR_LIMIT, 100);
+        assert_eq!(
+            merged_path(None),
+            "projects/:id/merge_requests?state=merged&order_by=updated_at&per_page=100"
+        );
+        let since = crate::clock::parse_iso("2026-09-07").unwrap();
+        assert_eq!(
+            merged_path(Some(since)),
+            "projects/:id/merge_requests?state=merged&order_by=updated_at&per_page=100\
+             &merged_after=2026-09-07T00%3A00%3A00Z"
+        );
     }
 
     #[test]
