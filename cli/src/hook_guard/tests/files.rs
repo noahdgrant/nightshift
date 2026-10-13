@@ -209,10 +209,14 @@ fn cd_up_keeps_a_protected_directory_unless_provably_outside() {
 #[test]
 fn chained_find_exec_is_checked_in_linear_time() {
     let chain = "find . -exec find . ".repeat(40);
-    let started = std::time::Instant::now();
-    assert!(denied(&format!(r"{chain} -exec git commit -n ;")));
-    assert!(!denied(&format!(r"{chain} -exec true ;")));
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let (hits, fast) = within_cpu_budget(|| {
+        (
+            denied(&format!(r"{chain} -exec git commit -n ;")),
+            denied(&format!(r"{chain} -exec true ;")),
+        )
+    });
+    assert_eq!(hits, (true, false));
+    assert!(fast);
 }
 
 #[test]
@@ -693,9 +697,8 @@ fn a_cd_of_unknown_depth_under_a_protected_path_is_denied() {
 fn many_adjacent_expansions_in_a_git_push_word_finish_fast() {
     let many = "$a".repeat(40);
     let word = format!("\"r{many}-x\"");
-    let start = std::time::Instant::now();
-    let long = denied(&format!("git push {word}"));
-    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    let (long, fast) = within_cpu_budget(|| denied(&format!("git push {word}")));
+    assert!(fast);
     assert!(!long);
     assert!(denied(&format!("git push \"--no-v{many}\"")));
     assert!(glob_matches(&b"*".repeat(40), b"x"));
@@ -737,10 +740,13 @@ fn a_cd_to_a_lone_expansion_from_a_protected_cwd_is_denied() {
 #[test]
 fn many_expansions_in_a_path_word_finish_fast() {
     let many = "/$a".repeat(8000);
-    let start = std::time::Instant::now();
-    let hit = denied(&format!("rm .ns{many}"));
-    let hit_dots = denied(&format!("rm .ns{}", "/./$a".repeat(8000)));
-    assert!(start.elapsed() < std::time::Duration::from_millis(500));
+    let ((hit, hit_dots), fast) = within_cpu_budget(|| {
+        (
+            denied(&format!("rm .ns{many}")),
+            denied(&format!("rm .ns{}", "/./$a".repeat(8000))),
+        )
+    });
+    assert!(fast);
     assert!(hit);
     assert!(hit_dots);
 }
