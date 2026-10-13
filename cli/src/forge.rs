@@ -616,8 +616,9 @@ mod tests {
     #[test]
     fn output_within_leaves_no_descendant_running_after_a_timeout() {
         use std::io::{BufRead, BufReader};
-        use std::os::fd::AsRawFd;
-        use std::os::unix::process::CommandExt;
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        const TIMEOUT_MS: u64 = 500;
+        const HANG_GUARD_SECS: u64 = 60;
         let (reader, writer) = std::io::pipe().unwrap();
         let fd = writer.as_raw_fd();
         let mut cmd = Command::new("sh");
@@ -632,8 +633,7 @@ mod tests {
                 Ok(())
             });
         }
-        // Every process the shell starts inherits fd 3, so the pipe reads EOF only once the
-        // shell and all its descendants have exited, however early the timeout fired.
+        // Every process the shell starts inherits fd 3: the pipe reads EOF only once all have exited.
         enum Event {
             Group(String),
             Returned(Option<std::io::ErrorKind>),
@@ -642,32 +642,22 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let reader_tx = tx.clone();
         std::thread::spawn(move || {
-            let mut reader = BufReader::new(reader);
-            let mut group = String::new();
+            let (mut reader, mut group) = (BufReader::new(reader), String::new());
             let _ = reader.read_line(&mut group);
             let _ = reader_tx.send(Event::Group(group));
             let _ = reader.read_to_end(&mut Vec::new());
             let _ = reader_tx.send(Event::Eof);
         });
         std::thread::spawn(move || {
-            let outcome = output_within(cmd, Duration::from_millis(500));
+            let outcome = output_within(cmd, Duration::from_millis(TIMEOUT_MS));
             let _ = tx.send(Event::Returned(outcome.err().map(|e| e.kind())));
         });
-        let mut writer = Some(writer);
-        let hang_guard = Duration::from_secs(60);
-        let deadline = std::time::Instant::now() + hang_guard;
+        let (mut writer, hang_guard) = (Some(writer), Duration::from_secs(HANG_GUARD_SECS));
         let (mut group, mut returned, mut eof) = (String::new(), None, false);
         while returned.is_none() || !eof {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            match rx.recv_timeout(left) {
-                Ok(Event::Group(g)) => {
-                    group = g;
-                    drop(writer.take());
-                }
-                Ok(Event::Returned(kind)) => {
-                    returned = Some(kind);
-                    drop(writer.take());
-                }
+            match rx.recv_timeout(hang_guard) {
+                Ok(Event::Group(g)) => group = g,
+                Ok(Event::Returned(kind)) => returned = Some(kind),
                 Ok(Event::Eof) => eof = true,
                 Err(_) => {
                     // The shell's pid is its group id: `run_process` makes it a group leader.
@@ -680,6 +670,7 @@ mod tests {
                     );
                 }
             }
+            drop(writer.take());
         }
         assert_eq!(returned, Some(Some(std::io::ErrorKind::TimedOut)));
     }
