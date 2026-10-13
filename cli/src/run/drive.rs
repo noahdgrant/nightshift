@@ -207,10 +207,13 @@ pub(super) fn drive(
             *reruns.entry(phase).or_default() += 1;
             rebased_onto = Some(sha.clone());
         }
-        // Any other phase ends the chain.
         let follows_base = match phase {
             "verify" | "review" => false,
-            _ => std::mem::take(&mut ship_follows_base) && phase == "ship",
+            "ship" => std::mem::take(&mut ship_follows_base),
+            _ => {
+                ship_follows_base = false;
+                false
+            }
         };
         if follows_base {
             *reruns.entry(phase).or_default() += 1;

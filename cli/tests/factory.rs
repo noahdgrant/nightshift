@@ -4674,6 +4674,91 @@ fn build_only_a_build_after_a_moved_base_makes_the_next_ship_cost_an_attempt() {
 }
 
 #[test]
+fn build_only_a_reship_that_changes_nothing_does_not_make_the_next_reship_a_chain_ship() {
+    let e = Env::new();
+    remote_queue(&e, AUTO);
+    e.gh_file("pr-12.merge", "DIRTY");
+    e.ctl("ship.sh", &move_main_sh(&e));
+    e.queue(
+        "ship",
+        &[
+            "pass:script",
+            "pass:script",
+            "pass:script",
+            "fail:review",
+            "fail:review",
+        ],
+    );
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(v["reason"], "ship is out of attempts (2)", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "ship", "ship", "ship", "ship", "review"]
+    );
+    assert!(!run_events(&e)
+        .iter()
+        .any(|ev| ev["event"] == "ship_after_base_moved"));
+}
+
+#[test]
+fn build_only_a_credited_ship_that_gives_up_on_a_lock_is_credited_again_on_its_retry() {
+    let e = Env::new();
+    let locks = e.base.join("locks");
+    fs::create_dir_all(&locks).unwrap();
+    remote_queue(&e, &format!("{AUTO}[phases.ship]\nrunner = \"bench\"\n"));
+    e.runner("bench", "kind = \"bench\"\nlocks = [\"bench-1\"]\n");
+    e.config(&format!(
+        "[runners]\nlock_dir = {:?}\n",
+        locks.to_str().unwrap()
+    ));
+    e.gh_file("pr-12.merge", "DIRTY");
+    ship_brings_in_main(&e, 0);
+    // The review that precedes the credited ship tells the test it is running and waits, so the
+    // test takes the ship's lock before the ship asks for it.
+    let ready = e.ctrl.join("ready");
+    let go = e.ctrl.join("go");
+    for f in [&ready, &go] {
+        assert!(StdCommand::new("mkfifo").arg(f).status().unwrap().success());
+    }
+    e.ctl(
+        "review.sh",
+        &format!("echo in > {ready:?}; cat {go:?} > /dev/null\n"),
+    );
+    e.queue("ship", &["pass", "pass:script"]);
+    e.queue("review", &["pass", "pass:script"]);
+    let mut run = e.ns().args(["run", "--issue", "7"]).start();
+    let mut stderr = run.take_stderr();
+    let (tx, rx) = mpsc::channel();
+    let tx_err = tx.clone();
+    thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stderr.read_to_string(&mut text);
+        let _ = tx_err.send(Some(text));
+    });
+    thread::spawn(move || {
+        let _ = fs::read_to_string(&ready);
+        let _ = tx.send(None);
+    });
+    assert!(run.recv(&rx).is_none(), "the run ended before its review");
+    let lock = fs::File::create(locks.join("bench-1.lock")).unwrap();
+    lock.lock().unwrap();
+    fs::write(&go, "go\n").unwrap();
+    let stderr = run.recv(&rx).expect("stderr");
+    drop(lock);
+    assert_eq!(run.wait().code(), Some(1), "{stderr}");
+    let log = run_events(&e);
+    let attempts = |event: &str| -> Vec<Value> {
+        log.iter()
+            .filter(|ev| ev["event"] == event)
+            .map(|ev| ev["attempt"].clone())
+            .collect()
+    };
+    assert_eq!(attempts("lock_wait_timeout"), [3, 4], "{stderr}");
+    assert_eq!(attempts("ship_after_base_moved"), [3, 4, 5], "{stderr}");
+}
+
+#[test]
 fn build_only_stops_reshipping_for_a_base_that_moves_on_every_check() {
     let e = Env::new();
     remote_queue(&e, AUTO);
