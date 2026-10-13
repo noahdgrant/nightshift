@@ -4,7 +4,7 @@ Loop recipes for firmware bugs, fastest first. Each one ends in **one command** 
 
 Prefer the highest loop on the list that still reaches the bug. A host loop runs in seconds and needs no bench; a HIL loop takes minutes and holds a shared resource.
 
-`$OUT` is the unit's troubleshoot directory, `.ns/<unit-id>/troubleshoot/`, as in the skill. Set it from the worktree root in the same command that uses it (`OUT=.ns/142-uart-timeout/troubleshoot`, or `.ns/$NS_UNIT/troubleshoot` under `ns run`), since the harness keeps no environment between calls. Every recipe keeps its builds, captures, logs and checker scripts there.
+`$OUT` is the unit's troubleshoot directory, `.ns/<unit-id>/troubleshoot/`, as in the skill. Start every command that uses it with `export OUT=` and the unit ID written out literally (`export OUT=.ns/142-uart-timeout/troubleshoot`), from the worktree root. The export is needed so child scripts such as `$OUT/bisect-check.sh` see it, and it goes in each command because the harness keeps no environment between calls. Every recipe block below runs in such a command. Every recipe keeps its builds, captures, logs and checker scripts there.
 
 Contents: [ztest on native_sim](#twister-and-ztest-on-native_sim) · [Emulator](#emulator) · [Serial capture](#serial-capture) · [HIL case runner](#hil-case-runner) · [Logic analyzer](#logic-analyzer-capture) · [git bisect on target](#git-bisect-run-on-target)
 
