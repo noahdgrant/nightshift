@@ -3,9 +3,11 @@
 use super::files::skills_link;
 use super::*;
 
+const OWN: Option<&str> = Some("/r/.git/ns/units/u1/tmp/build-1");
+
 fn write_denied(p: &str) -> bool {
     let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
-    check(&call).is_some()
+    check_in(&call, OWN).is_some()
 }
 
 #[test]
@@ -13,7 +15,6 @@ fn a_phase_may_write_inside_its_unit_tmp_directory() {
     for p in [
         "/r/.git/ns/units/u1/tmp/build-1/notes.txt",
         "/r/.git/ns/units/u1/tmp/build-1",
-        "/r/.git/ns/units/u1/tmp",
     ] {
         assert!(!write_denied(p), "{p}");
     }
@@ -26,7 +27,7 @@ fn a_phase_may_write_inside_its_unit_tmp_directory() {
         "cd $TMPDIR && mktemp && echo x > out.txt",
         "cat $TMPDIR/phase-settings.json",
     ] {
-        assert!(!denied(c), "{c}");
+        assert!(check_in(&bash_call(c), OWN).is_none(), "{c}");
     }
 }
 

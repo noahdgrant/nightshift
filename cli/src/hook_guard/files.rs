@@ -1,5 +1,8 @@
 //! The paths the guard protects and the file commands that write to them.
 
+use std::cell::RefCell;
+use std::path::Path;
+
 use super::*;
 use crate::pin;
 
@@ -16,7 +19,7 @@ pub(super) fn is_protected(path: &str) -> bool {
 /// `ns/units/<unit>/phase-settings.json` under any common dir, and the `.git` directory (or file,
 /// in a worktree) itself with everything under `.git/ns`, so the `ns` directory and `ns/units`
 /// cannot be moved, removed or copied over to swap that file, except a phase's own scratch space
-/// (`in_unit_tmp`). Only writes are denied; reading
+/// (`in_phase_tmp`). Only writes are denied; reading
 /// stays free, and `ns` commands a phase runs name none of these paths. A shell standing in a unit's directory
 /// may write its artifacts, so the directory helpers call this and not `is_protected`.
 fn protected_paths(path: &str) -> bool {
@@ -30,7 +33,7 @@ fn protected_paths(path: &str) -> bool {
         || (parts
             .windows(2)
             .any(|p| p[0] == ".git" && names_in_common_dir(p[1], pin::COMMON_NS))
-            && !in_unit_tmp(&parts))
+            && !in_phase_tmp(path))
         || parts.windows(4).any(|p| {
             p[0] == pin::COMMON_NS && p[1] == pin::COMMON_UNITS && p[3] == pin::SETTINGS_FILE
         })
@@ -42,30 +45,103 @@ fn protected_paths(path: &str) -> bool {
             .any(|p| p[0] == pin::NS_DIR && names_skills(p[2]))
 }
 
-/// `parts` are an absolute path in `.git/ns/units/<unit>/tmp`, where `ns run` puts each phase's
-/// `TMPDIR`. A `..` or a glob could reach past it, so either keeps the path protected.
-fn in_unit_tmp(parts: &[&str]) -> bool {
+thread_local! {
+    /// The running phase's `TMPDIR` as given and with its parent resolved, while `check` runs.
+    static PHASE_TMP: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Run `f` with `tmpdir` as the phase's own `TMPDIR` for `in_phase_tmp`. A `tmpdir` not of the
+/// shape `ns run` gives (`is_phase_tmpdir`) exempts nothing.
+pub(super) fn with_phase_tmp<T>(tmpdir: Option<&str>, f: impl FnOnce() -> T) -> T {
+    let dirs: Vec<String> = tmpdir
+        .filter(|d| is_phase_tmpdir(d))
+        .map(|d| {
+            let dir = Path::new(d);
+            let real = dir
+                .parent()
+                .and_then(|p| p.canonicalize().ok())
+                .zip(dir.file_name())
+                .map(|(p, name)| p.join(name).to_string_lossy().into_owned())
+                .filter(|r| is_phase_tmpdir(r));
+            std::iter::once(d.to_string()).chain(real).collect()
+        })
+        .unwrap_or_default();
+    let outer = PHASE_TMP.replace(dirs);
+    let out = f();
+    PHASE_TMP.set(outer);
+    out
+}
+
+/// `dir` is a plain absolute `.../ns/units/<unit>/tmp/<phase>-<n>`, where `ns run` puts a
+/// phase's `TMPDIR`.
+fn is_phase_tmpdir(dir: &str) -> bool {
+    let parts = components(dir);
+    let numbered = |name: &str| {
+        name.rsplit_once('-').is_some_and(|(phase, n)| {
+            !phase.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+        })
+    };
+    dir.starts_with('/')
+        && is_plain(&parts)
+        && matches!(
+            parts.as_slice(),
+            [.., ns, units, _, tmp, name]
+                if *ns == pin::COMMON_NS && *units == pin::COMMON_UNITS
+                    && *tmp == pin::TMP_DIR && numbered(name)
+        )
+}
+
+/// `path` is the running phase's own `TMPDIR` or in it, by an absolute path with no `..` or
+/// glob, which could reach past it.
+pub(super) fn in_phase_tmp(path: &str) -> bool {
+    let parts = components(path);
+    path.starts_with('/')
+        && is_plain(&parts)
+        && PHASE_TMP.with_borrow(|dirs| dirs.iter().any(|d| parts.starts_with(&components(d))))
+}
+
+/// No part of a path is `..` or a glob.
+fn is_plain(parts: &[&str]) -> bool {
     !parts
         .iter()
         .any(|p| *p == ".." || p.contains(['*', '?', '[']))
-        && parts.windows(5).any(|p| {
-            p[0] == ".git"
-                && p[1] == pin::COMMON_NS
-                && p[2] == pin::COMMON_UNITS
-                && p[4] == pin::TMP_DIR
-        })
+}
+
+/// `path` (from `cwd` when relative) with its longest existing ancestor resolved, symlinks
+/// followed, so a write through a link out of `TMPDIR` is checked where it lands. A path with
+/// no existing ancestor comes back as given.
+pub(super) fn resolved(path: &str, cwd: Option<&str>) -> String {
+    let full = Path::new(cwd.unwrap_or("")).join(path);
+    let mut base = full.as_path();
+    let mut tail = Vec::new();
+    loop {
+        if let Ok(real) = base.canonicalize() {
+            let real = tail.iter().rev().fold(real, |p, name| p.join(name));
+            return real.to_string_lossy().into_owned();
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name);
+                base = parent;
+            }
+            _ => return full.to_string_lossy().into_owned(),
+        }
+    }
 }
 
 /// A command that goes up from a phase's `TMPDIR` to the unit's `phase-settings.json`.
 /// `TMPDIR` is `.git/ns/units/<unit>/tmp/<phase>-<n>`, so two `..` after it land on that file.
 /// The lexer drops variable names and does not follow `cd $TMPDIR`, so this reads the command's
-/// words. It denies a word that has `TMPDIR` and a `..` part, and, while the shell is in
+/// words. It denies a word that has `TMPDIR` and a `..` part, and, while the shell may be in
 /// `TMPDIR` (after a `cd` or `pushd` whose first non-option argument has `TMPDIR`), any word with
-/// a `..` part or named like the settings file. Another `cd` ends that, and so does the `)` that
-/// closes the `(` the `cd` was inside, whether a subshell or a `$(...)`. A `..` elsewhere
-/// (`cd .. && cargo test > $TMPDIR/out.log`) is fine.
+/// a `..` part or named like the settings file. A `cd` to a literal absolute or home path, or to
+/// home, ends that; a `cd` to a relative path or an expansion (`cd .`, `cd "$PWD"`) may stay in
+/// `TMPDIR`, so it does not. `cd -` goes back to where the `cd` before it left, and `popd` may.
+/// The `)` that closes the `(` the `cd` was inside ends it too, whether a subshell or a `$(...)`.
+/// A `..` elsewhere (`cd .. && cargo test > $TMPDIR/out.log`) is fine.
 pub(super) fn tmpdir_reaches_settings(command: &str) -> Option<String> {
     let mut in_tmp = false;
+    let mut was_in_tmp = false;
     let mut scopes: Vec<bool> = Vec::new();
     let mut cd_pending = false;
     for segment in segments(command) {
@@ -86,8 +162,17 @@ pub(super) fn tmpdir_reaches_settings(command: &str) -> Option<String> {
                     "{word} after a cd into $TMPDIR could reach the phase settings ({PROTECTED})"
                 ));
             }
-            if cd_pending && !word.starts_with('-') {
-                in_tmp = word.contains("TMPDIR");
+            if cd_pending && (*word == "-" || !word.starts_with('-')) {
+                let next = if word.contains("TMPDIR") {
+                    true
+                } else if *word == "-" {
+                    was_in_tmp
+                } else if word.starts_with(['/', '~']) && !word.contains(['$', '`']) {
+                    false
+                } else {
+                    in_tmp
+                };
+                was_in_tmp = std::mem::replace(&mut in_tmp, next);
                 cd_pending = false;
             }
             for c in word.chars() {
@@ -97,12 +182,14 @@ pub(super) fn tmpdir_reaches_settings(command: &str) -> Option<String> {
                     _ => {}
                 }
             }
-            if matches!(word.trim_start_matches(['(', '$']), "cd" | "pushd") {
-                cd_pending = true;
+            match word.trim_start_matches(['(', '$']) {
+                "cd" | "pushd" => cd_pending = true,
+                "popd" => in_tmp |= was_in_tmp,
+                _ => {}
             }
         }
         if cd_pending {
-            in_tmp = false;
+            was_in_tmp = std::mem::replace(&mut in_tmp, false);
             cd_pending = false;
         }
     }
@@ -121,18 +208,24 @@ fn segments(command: &str) -> impl Iterator<Item = &str> {
 /// ln`), `sh -c 'ln ..'`, redirections and shell constructs cannot hide it. The one exception is
 /// a segment whose command word (after assignments, keywords and redirections) is in
 /// `NON_LINKING`: there `cargo test link` names a verb as a plain argument. Such a segment still
-/// counts a verb that opens a `(` or `$(`. The other tokens of the segment are the arguments:
+/// counts a verb that opens a `(` or `$(`. The other tokens of the segment are the arguments, so
+/// a verb-named token is never its own argument (`touch $TMPDIR/link` passes):
 /// - `ln` and `link` are denied when an argument mentions `TMPDIR`, an `ns/units` path component
 ///   or `phase-settings.json`. That includes `ln -s a $TMPDIR/l`, whose target is harmless: the
 ///   guard does not tell a safe target from an unsafe one, so it denies them all.
 /// - `cp`, `rsync` and `install` are denied when an argument names an `ns/units` path component
-///   or `phase-settings.json`; `cp` also when it has a link flag (`-s`, `-l`, `--symbolic-link`,
-///   `--link`) and an argument mentions `TMPDIR`.
+///   or `phase-settings.json`, unless it is a plain path in the phase's own `TMPDIR`
+///   (`in_phase_tmp`); `cp` also when it has a link flag (`-s`, `-l`, `--symbolic-link`,
+///   `--link`) and an argument mentions `TMPDIR` or names a unit path.
+/// - After a segment with a `cd` or `pushd` and a later `TMPDIR` token, `ln`, `link` and `cp` with
+///   a link flag are denied whatever their arguments: a later `cd .` or `cd -` could still stand
+///   in `TMPDIR`, so the guard does not follow where the shell is.
 ///
 /// Out of reach: a script the phase writes (`python -c os.symlink`) and a path a shell builds
 /// (`$(dirname $TMPDIR)`). A false deny remains for an unknown command with a verb-named argument
-/// and `TMPDIR` (`mytool link $TMPDIR/x`).
+/// and `TMPDIR` (`mytool link $TMPDIR/x`), and for a link anywhere after a `cd` into `TMPDIR`.
 pub(super) fn links_into_unit(command: &str) -> Option<String> {
+    let mut entered_tmp = false;
     for segment in segments(command) {
         let tokens: Vec<String> = segment
             .split_whitespace()
@@ -146,16 +239,22 @@ pub(super) fn links_into_unit(command: &str) -> Option<String> {
             if !matches!(verb, "ln" | "link" | "cp" | "rsync" | "install") || (safe && !opens) {
                 continue;
             }
-            let hit = if matches!(verb, "ln" | "link") {
-                tokens
-                    .iter()
-                    .find(|a| a.contains("TMPDIR") || names_unit_or_settings(a))
-            } else if verb == "cp" && tokens[i + 1..].iter().any(|a| is_link_flag(a)) {
-                tokens
-                    .iter()
-                    .find(|a| a.contains("TMPDIR") || names_unit_or_settings(a))
+            let links = matches!(verb, "ln" | "link")
+                || (verb == "cp" && tokens[i + 1..].iter().any(|a| is_link_flag(a)));
+            if links && entered_tmp {
+                return Some(format!(
+                    "{verb} after a cd into $TMPDIR: a link out of a phase's scratch directory could reach {PROTECTED}"
+                ));
+            }
+            let mut args = tokens
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, a)| a);
+            let hit = if links {
+                args.find(|a| a.contains("TMPDIR") || names_unit_or_settings(a))
             } else {
-                tokens.iter().find(|a| names_unit_or_settings(a))
+                args.find(|a| names_unit_or_settings(a) && !in_phase_tmp(a))
             };
             if let Some(arg) = hit {
                 return Some(format!(
@@ -163,6 +262,10 @@ pub(super) fn links_into_unit(command: &str) -> Option<String> {
                 ));
             }
         }
+        entered_tmp |= tokens
+            .iter()
+            .position(|t| matches!(t.trim_start_matches(['(', '$']), "cd" | "pushd"))
+            .is_some_and(|at| tokens[at + 1..].iter().any(|t| t.contains("TMPDIR")));
     }
     None
 }

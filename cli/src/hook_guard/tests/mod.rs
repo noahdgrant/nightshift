@@ -5,8 +5,17 @@ use crate::pin::settings_json as settings;
 
 mod files;
 mod git;
+mod phase_tmp;
 mod shell;
 mod tmp;
+
+fn check(call: &Value) -> Option<String> {
+    check_in(call, None)
+}
+
+fn check_in(call: &Value, tmpdir: Option<&str>) -> Option<String> {
+    super::check(call, tmpdir)
+}
 
 fn bash_call(cmd: &str) -> Value {
     json!({"tool_name": "Bash", "tool_input": {"command": cmd}})

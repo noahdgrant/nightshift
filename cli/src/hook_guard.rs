@@ -40,7 +40,8 @@ pub fn run() -> anyhow::Result<()> {
     let Ok(call) = serde_json::from_str::<Value>(&input) else {
         return Ok(());
     };
-    if let Some(why) = check(&call) {
+    let tmpdir = std::env::var("TMPDIR").ok();
+    if let Some(why) = check(&call, tmpdir.as_deref()) {
         let out = json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -53,8 +54,13 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Why `call` would skip the git hooks, or `None` when it wouldn't.
-pub fn check(call: &Value) -> Option<String> {
+/// Why `call` would skip the git hooks, or `None` when it wouldn't. `tmpdir` is the phase's
+/// `TMPDIR`, the one directory under `.git/ns` it may write to (`in_phase_tmp`).
+pub fn check(call: &Value, tmpdir: Option<&str>) -> Option<String> {
+    with_phase_tmp(tmpdir, || check_call(call))
+}
+
+fn check_call(call: &Value) -> Option<String> {
     let input = &call["tool_input"];
     match call["tool_name"].as_str()? {
         BASH_TOOL => {
@@ -78,7 +84,7 @@ pub fn check(call: &Value) -> Option<String> {
         tool if FILE_TOOLS.contains(&tool) => ["file_path", "notebook_path"]
             .iter()
             .filter_map(|k| input[k].as_str())
-            .find(|p| is_protected(p))
+            .find(|p| is_protected(p) || is_protected(&resolved(p, call["cwd"].as_str())))
             .map(|p| format!("edit of {p} in {PROTECTED}")),
         _ => None,
     }
