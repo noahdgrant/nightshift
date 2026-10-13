@@ -466,6 +466,8 @@ mod tests {
         assert!(flat.contains("never lower it"), "never lower it");
         let reuse = "that already carries the `Source: review_escape` line";
         assert!(flat.contains(reuse), "{reuse}");
+        let dup = "skipping any finding whose location and defect an existing item already names";
+        assert!(flat.contains(dup), "{dup}");
     }
 
     fn t(s: &str) -> i64 {
