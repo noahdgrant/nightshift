@@ -32,6 +32,14 @@ pub enum IssueState {
     NotPlanned,
 }
 
+/// An issue in any state, and when it was opened in unix seconds.
+#[derive(Clone, Debug)]
+pub struct Filed {
+    pub issue: Issue,
+    pub opened: i64,
+    pub state: IssueState,
+}
+
 /// Issue number -> the PR that closes it and that PR's head branch, empty for a fork's.
 pub type ClosingPrs = BTreeMap<u64, (u64, String)>;
 
@@ -55,6 +63,8 @@ impl Post {
 pub trait Forge {
     /// Open issues, never PRs; `label` narrows the list to issues carrying it.
     fn open_issues(&self, label: Option<&str>) -> Result<Vec<Issue>>;
+    /// Issues carrying `label` in any state, never PRs.
+    fn labelled_issues(&self, label: &str) -> Result<Vec<Filed>>;
     fn closing_prs(&self, state: PrState) -> Result<ClosingPrs>;
     fn is_closed(&self, n: u64) -> Result<bool>;
     fn state(&self, n: u64) -> Result<IssueState>;
@@ -188,21 +198,41 @@ const TEAM: [&str; 3] = ["OWNER", "MEMBER", "COLLABORATOR"];
 fn parse_issues(text: &str) -> Vec<Issue> {
     text.lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .map(|i| Issue {
-            number: i["number"].as_u64().unwrap_or(0),
-            title: i["title"].as_str().unwrap_or("").to_string(),
-            labels: i["labels"]
-                .as_array()
-                .map(|l| {
-                    l.iter()
-                        .filter_map(|x| x["name"].as_str().or(x.as_str()).map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            body: i["body"].as_str().unwrap_or("").to_string(),
-            team: TEAM.contains(&i["authorAssociation"].as_str().unwrap_or("")),
-        })
+        .map(|i| to_issue(&i))
         .filter(|i| i.number > 0)
+        .collect()
+}
+
+fn to_issue(i: &Value) -> Issue {
+    Issue {
+        number: i["number"].as_u64().unwrap_or(0),
+        title: i["title"].as_str().unwrap_or("").to_string(),
+        labels: i["labels"]
+            .as_array()
+            .map(|l| {
+                l.iter()
+                    .filter_map(|x| x["name"].as_str().or(x.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        body: i["body"].as_str().unwrap_or("").to_string(),
+        team: TEAM.contains(&i["authorAssociation"].as_str().unwrap_or("")),
+    }
+}
+
+/// One issue per line, as printed by the `--jq` filter in `labelled_issues`. An issue with no
+/// opening time it can read is left out.
+fn parse_filed(text: &str) -> Vec<Filed> {
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|i| {
+            Some(Filed {
+                issue: to_issue(&i),
+                opened: crate::clock::parse_iso(i["createdAt"].as_str()?)?,
+                state: issue_state(&i),
+            })
+        })
+        .filter(|f| f.issue.number > 0)
         .collect()
 }
 
@@ -322,9 +352,10 @@ pub(super) fn first_other(v: &Value, key: &str, red: &str) -> Option<String> {
         .map(String::from)
 }
 
-/// The state `gh issue view --json state,stateReason` gives.
+/// The state `gh issue view --json state,stateReason` gives, or the REST API's lowercase one.
 fn issue_state(v: &Value) -> IssueState {
-    match (v["state"].as_str(), v["stateReason"].as_str()) {
+    let upper = |k: &str| v[k].as_str().map(str::to_ascii_uppercase);
+    match (upper("state").as_deref(), upper("stateReason").as_deref()) {
         (Some("CLOSED"), None | Some("" | "COMPLETED")) => IssueState::Completed,
         (Some("CLOSED"), _) => IssueState::NotPlanned,
         _ => IssueState::Open,
@@ -364,6 +395,20 @@ impl Forge for GitHub {
                 &path,
                 "--jq",
                 ".[] | select(.pull_request | not) | {number, title, labels, body, authorAssociation: .author_association}",
+            ],
+        )?))
+    }
+
+    fn labelled_issues(&self, label: &str) -> Result<Vec<Filed>> {
+        let path = format!("repos/{{owner}}/{{repo}}/issues?state=all&labels={label}&per_page=100");
+        Ok(parse_filed(&gh(
+            &self.root,
+            &[
+                "api",
+                "--paginate",
+                &path,
+                "--jq",
+                ".[] | select(.pull_request | not) | {number, title, labels, body, authorAssociation: .author_association, createdAt: .created_at, state, stateReason: .state_reason}",
             ],
         )?))
     }
@@ -637,10 +682,36 @@ mod tests {
             assert_eq!(state(v), Completed);
         }
         assert_eq!(state(serde_json::json!({"state": "CLOSED"})), Completed);
-        for reason in ["NOT_PLANNED", "DUPLICATE"] {
+        for reason in ["NOT_PLANNED", "DUPLICATE", "not_planned", "duplicate"] {
             let v = serde_json::json!({"state": "CLOSED", "stateReason": reason});
             assert_eq!(state(v), NotPlanned, "{reason}");
         }
+        let v = serde_json::json!({"state": "closed", "stateReason": "completed"});
+        assert_eq!(state(v), Completed);
+        assert_eq!(state(serde_json::json!({"state": "open"})), Open);
+    }
+
+    #[test]
+    fn parse_filed_reads_when_each_issue_opened_and_how_it_closed() {
+        let text = [
+            r#"{"number": 7, "title": "fix: a", "labels": [{"name": "type:fix"}], "body": "b", "authorAssociation": "OWNER", "createdAt": "2026-10-05T10:00:00Z", "state": "closed", "stateReason": "duplicate"}"#,
+            r#"{"number": 8, "title": "fix: b", "labels": [], "body": "", "createdAt": "2026-10-06T00:00:00Z", "state": "open", "stateReason": null}"#,
+            r#"{"number": 9, "title": "no time", "createdAt": null, "state": "open"}"#,
+            r#"{"number": 0, "title": "no number", "createdAt": "2026-10-06T00:00:00Z", "state": "open"}"#,
+            "not json",
+        ]
+        .join("\n");
+        let f = parse_filed(&text);
+        assert_eq!(f.len(), 2, "{f:?}");
+        assert_eq!(f[0].issue.number, 7);
+        assert_eq!(f[0].issue.labels, ["type:fix"]);
+        assert!(f[0].issue.team);
+        assert_eq!(
+            f[0].opened,
+            crate::clock::parse_iso("2026-10-05T10:00:00Z").unwrap()
+        );
+        assert_eq!(f[0].state, IssueState::NotPlanned);
+        assert_eq!((f[1].issue.number, f[1].state), (8, IssueState::Open));
     }
 
     #[test]

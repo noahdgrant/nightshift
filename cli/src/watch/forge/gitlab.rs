@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::{ClosingPrs, Forge, IssueState, Post, PrState};
+use super::{ClosingPrs, Filed, Forge, IssueState, Post, PrState};
 use crate::config::ForgeKind;
 use crate::error::SfError;
 use crate::watch::ci::{Check, HeadChecks, Outcome};
@@ -95,6 +95,31 @@ fn to_issue(i: &Value, team: &BTreeSet<u64>) -> Issue {
     }
 }
 
+/// GitLab records no close reason, so a closed issue counts as completed. One with no opening
+/// time it can read is left out.
+fn to_filed(i: &Value, team: &BTreeSet<u64>) -> Option<Filed> {
+    Some(Filed {
+        issue: to_issue(i, team),
+        opened: time(i["created_at"].as_str()?)?,
+        state: match i["state"].as_str() {
+            Some("closed") => IssueState::Completed,
+            _ => IssueState::Open,
+        },
+    })
+}
+
+/// GitLab's `2026-10-05T10:00:00.123Z` in unix seconds, the fraction dropped.
+fn time(s: &str) -> Option<i64> {
+    let whole = match (s.get(..19), s.get(19..).and_then(|r| r.strip_prefix('.'))) {
+        (Some(head), Some(frac)) => format!(
+            "{head}{}",
+            frac.trim_start_matches(|c: char| c.is_ascii_digit())
+        ),
+        _ => s.to_string(),
+    };
+    crate::clock::parse_iso(&whole)
+}
+
 impl GitLab {
     fn list(&self, path: &str) -> Result<Vec<Value>> {
         items(&glab(&self.root, &["api", "--paginate", path])?)
@@ -162,6 +187,19 @@ impl Forge for GitLab {
             .list(&path)?
             .iter()
             .map(|i| to_issue(i, &team))
+            .collect())
+    }
+
+    fn labelled_issues(&self, label: &str) -> Result<Vec<Filed>> {
+        let team = self.team()?;
+        let path = format!(
+            "projects/:id/issues?state=all&labels={}&per_page=100",
+            encode(label)
+        );
+        Ok(self
+            .list(&path)?
+            .iter()
+            .filter_map(|i| to_filed(i, &team))
             .collect())
     }
 
@@ -346,6 +384,28 @@ mod tests {
     fn glab_that_cannot_start_says_so() {
         let e = glab(Path::new("/nonexistent/dir"), &["version"]).unwrap_err();
         assert!(format!("{e:#}").contains("cannot run glab"), "{e:#}");
+    }
+
+    #[test]
+    fn to_filed_reads_the_opening_time_and_counts_a_closed_issue_completed() {
+        let team = BTreeSet::from([5]);
+        let i = serde_json::json!({"iid": 4, "title": "fix: x", "labels": ["type:fix"], "description": "d", "author": {"id": 5}, "created_at": "2026-10-05T10:00:00.000Z", "state": "closed"});
+        let f = to_filed(&i, &team).unwrap();
+        assert_eq!((f.issue.number, f.issue.team), (4, true));
+        assert_eq!(
+            f.opened,
+            crate::clock::parse_iso("2026-10-05T10:00:00Z").unwrap()
+        );
+        assert_eq!(f.state, IssueState::Completed);
+        let open =
+            serde_json::json!({"iid": 5, "created_at": "2026-10-05T10:00:00Z", "state": "opened"});
+        assert_eq!(to_filed(&open, &team).unwrap().state, IssueState::Open);
+        assert!(to_filed(&serde_json::json!({"iid": 6, "state": "opened"}), &team).is_none());
+        let at = crate::clock::parse_iso("2026-10-05T10:00:00Z");
+        assert_eq!(time("2026-10-05T10:00:00Z"), at);
+        assert_eq!(time("2026-10-05T12:00:00.5+02:00"), at);
+        assert_eq!(time("2026-10-05T10:00:00."), at);
+        assert_eq!(time("2026-10-05"), crate::clock::parse_iso("2026-10-05"));
     }
 
     #[test]

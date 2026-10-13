@@ -13,7 +13,7 @@ use crate::factory::Factory;
 use crate::git::{self, Repo};
 
 /// Every fix issue's title starts so, whatever sha and check it names: one open is reused.
-pub(super) const TITLE_PREFIX: &str = "fix: main is red at";
+pub(crate) const TITLE_PREFIX: &str = "fix: main is red at";
 
 /// The labels a fix issue is filed with, besides the queue's ready label.
 const LABELS: [&str; 2] = ["type:fix", "priority:critical"];

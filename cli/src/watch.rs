@@ -22,6 +22,7 @@ use crate::worktree::BRANCH_PREFIX;
 
 pub mod ci;
 mod fix_main;
+pub(crate) use fix_main::TITLE_PREFIX as FIX_MAIN_TITLE;
 pub mod forge;
 mod scheduler;
 use scheduler::overlap;
@@ -1027,6 +1028,9 @@ Open after at least 2 fix attempts: C1, I2, I4.
                 .filter(|i| label.is_none_or(|l| i.labels.iter().any(|x| x == l)))
                 .cloned()
                 .collect())
+        }
+        fn labelled_issues(&self, _: &str) -> Result<Vec<crate::watch::forge::Filed>> {
+            Ok(Vec::new())
         }
         fn closing_prs(&self, _: PrState) -> Result<ClosingPrs> {
             Ok(ClosingPrs::new())

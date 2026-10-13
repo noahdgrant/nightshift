@@ -359,9 +359,15 @@ conflicts and left alone; the command then exits 1. Safe to re-run.")]
         /// Only units whose newest review artifact was updated, and run-log events, at or before this UTC time (YYYY-MM-DDTHH:MM:SSZ, or YYYY-MM-DD for 23:59:59 UTC)
         #[arg(long, value_name = "TIME")]
         until: Option<String>,
-        /// Print JSON (the default and only format)
+        /// Print JSON: the default for the review report, and for --bugs instead of its table
         #[arg(long)]
         json: bool,
+        /// Count the type:fix issues opened in each ISO week, by source and severity, instead of the review report
+        #[arg(long)]
+        bugs: bool,
+        /// With --bugs, only the last N ISO weeks, this one included
+        #[arg(long, value_name = "N", requires = "bugs")]
+        weeks: Option<u32>,
     },
 
     /// Hold measured values (binary size, coverage) to the values recorded in ratchets.json
@@ -591,6 +597,8 @@ Examples:
   ns quality --since 2026-10-01 --until 2026-10-09
   ns quality --json | jq .first_pass
   ns quality import /tmp/unit-artifacts --dry-run
+  ns quality --bugs --weeks 4
+  ns quality --bugs --since 2026-09-01 --json | jq .total
 
 Spec: docs/FACTORY.md (Quality). Fetches origin's nightshift/quality branch (network) and reads
 its records.jsonl plus <git-common-dir>/ns/quality-outbox.jsonl: one record per review attempt,
@@ -604,8 +612,13 @@ escape_findings,trend,run_log,gaps,per_unit,records}; per_unit[].source is recor
 --since and --until are inclusive and UTC, and so is their echo in the output: a bare date
 is 00:00:00 for --since and 23:59:59 for --until. trend and per_unit days are local (TZ).
 
-Exit codes: 0 ok, 1 git failed, 2 usage error (bad --since or --until, --until before --since,
-not in a git repo).";
+--bugs reads the type:fix issues in any state from the [queue] source forge (network) and
+prints a table per ISO week (UTC); --json prints {ok,label,since,until,weeks,total,issues,
+excluded} instead. Issues closed as duplicate or not planned are left out. --weeks N keeps
+the last N ISO weeks, this one included.
+
+Exit codes: 0 ok, 1 git or the forge failed, 2 usage error (bad --since or --until, --until
+before --since, --weeks 0 or an --until before its weeks, not in a git repo).";
 
 const EVAL_HELP: &str = "\
 Examples:
