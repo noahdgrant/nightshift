@@ -79,7 +79,7 @@ Done when every acceptance criterion and every covered instance has a passing te
 
 ## 4. Self-check
 
-Review will check your diff against the [quality bar](../ns-contract/references/quality-bar.md). Meet it first. The base is the branch `brief.md` records as `base:`, else `origin/main`. Diff against it with `git diff "$(git merge-base <base> HEAD)"` and work through three checks. Fix what each one finds test-first, with the `ns-tdd` skill, and commit.
+Review will check your diff against the [quality bar](../ns-contract/references/quality-bar.md). Meet it first. The base is `origin/<base>`, with `<base>` from `brief.md`'s `base:` as [base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts) says. Diff against it with `git diff "$(git merge-base origin/<base> HEAD)"` and work through three checks. Fix what each one finds test-first, with the `ns-tdd` skill, and commit.
 
 1. **The bar.** Mark every item of the quality bar against your diff: met, fixed (with the commit), or not applicable with a one-line reason.
 2. **Every branch tested.** List each branch and error path the diff adds: each `if` arm, early return, raised or returned error, loop that can run zero times. Every one needs a test that takes it, whether or not an acceptance criterion names it.
@@ -89,9 +89,9 @@ Done when every bar item is marked, every listed branch has a test, and every mu
 
 ## 5. Rebase, tidy, and run the full checks
 
-`git fetch origin` and rebase onto the base branch (`origin/main` unless the brief names another), with the repo's hooks on ([git hooks](../ns-contract/SKILL.md#git-hooks)). Tidy the history now: small commits that each build and pass, ordered to tell the story, with bodies written using `ns-writing-for-humans`. This is the history that verify, review and ship will see; nothing rewrites it later.
+`git fetch origin` and rebase onto `origin/<base>`, with the repo's hooks on ([git hooks](../ns-contract/SKILL.md#git-hooks)). Tidy the history now: small commits that each build and pass, ordered to tell the story, with bodies written using `ns-writing-for-humans`. This is the history that verify, review and ship will see; nothing rewrites it later.
 
-When the feedback says the base moved (a NO-GO whose first line starts `base moved`, a merge conflict, or `ns run`'s "The base moved" line), the rebase is the job. Run `git fetch origin` now and rebase onto the newest `origin/<default>`, never a commit an earlier artifact or the feedback noted. Resolve conflicts, then go on through this step as usual.
+When the feedback says the base moved (a NO-GO whose first line starts `base moved`, a merge conflict, or `ns run`'s "The base moved" line), the rebase is the job. Run `git fetch origin` now and rebase onto the newest `origin/<base>`, never a commit an earlier artifact or the feedback noted. Resolve conflicts, then go on through this step as usual.
 
 Then run the full test, lint and build commands from `docs/agents/stack.md`, once, on the final commit. Capture each command and the lines of output that prove its result.
 
