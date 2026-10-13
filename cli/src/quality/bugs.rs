@@ -1,5 +1,5 @@
 //! `ns quality --bugs`: the `type:fix` issues opened in each ISO week, by source and severity
-//! (docs/FACTORY.md, Quality).
+//! (docs/factory/quality.md).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;

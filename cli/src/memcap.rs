@@ -1,4 +1,4 @@
-//! The opt-in memory cap, `[limits] memory_mb` (docs/FACTORY.md, "Memory cap"). Phases and
+//! The opt-in memory cap, `[limits] memory_mb` (docs/factory/run.md, "Memory cap"). Phases and
 //! the gate start under it: in a systemd user scope with `MemoryMax` where that works, else
 //! under `prlimit --as`.
 

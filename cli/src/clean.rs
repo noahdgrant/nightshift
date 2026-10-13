@@ -1,6 +1,6 @@
 //! Cleanup: a unit's worktree and local `ns/<unit>` branch go once its change merged and its
-//! quality record is saved (docs/FACTORY.md, Cleanup). `ns run` cleans after its own merge,
-//! `ns watch` at start and between units, and `ns clean` on demand.
+//! quality record is saved (docs/factory/unit-lifecycle.md, Cleanup). `ns run` cleans after its own
+//! merge, `ns watch` at start and between units, and `ns clean` on demand.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

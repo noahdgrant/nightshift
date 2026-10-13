@@ -1,5 +1,5 @@
 //! `ns score <unit>`: grade a finished unit with the factory's scorers and append each result
-//! to the run ledger, `<common git dir>/ns/scores.jsonl` (docs/FACTORY.md, Scorers).
+//! to the run ledger, `<common git dir>/ns/scores.jsonl` (docs/factory/scorers.md).
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -99,7 +99,7 @@ fn scorers(root: &Path, only: Option<&str>) -> Result<Vec<Scorer>> {
     if picked.is_empty() {
         return Err(
             SfError::general(format!("no scorers in {}", root.join("scorers").display()))
-                .hint("add one; the format is in docs/FACTORY.md (Scorers)")
+                .hint("add one; the format is in docs/factory/scorers.md (Scorers)")
                 .into(),
         );
     }

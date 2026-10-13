@@ -1,4 +1,4 @@
-//! Prefer a ready issue whose predicted `touches` overlap no running unit's (docs/FACTORY.md,
+//! Prefer a ready issue whose predicted `touches` overlap no running unit's (docs/factory/watch.md,
 //! "Parallel units"). Overlap orders the queue and never holds an issue back.
 
 use std::cell::LazyCell;

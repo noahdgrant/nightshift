@@ -1,5 +1,5 @@
 //! `ns watch`: pull ready issues from GitHub and run them, each as its own `ns run`, up to
-//! `--parallel` at once (docs/FACTORY.md).
+//! `--parallel` at once (docs/factory/watch.md).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -348,7 +348,7 @@ fn fresh_base(root: &Path) -> Option<String> {
 }
 
 /// Whether a phase of `fac` loads the installed skills, which a sync changes under it: a codex
-/// phase (docs/FACTORY.md, "Pinned skills and phase settings").
+/// phase (docs/factory/run.md, "Pinned skills and phase settings").
 fn reads_installed_skills(fac: &Factory) -> bool {
     factory::PHASES
         .iter()

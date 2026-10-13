@@ -1,7 +1,7 @@
 //! Stamp the commit `ns` is built from into `NS_BUILD_COMMIT`, which `ns --version` shows and
-//! `ns watch`'s self-update compares against (docs/FACTORY.md, "When the watched repo is
-//! nightshift"). A `NS_BUILD_COMMIT` already set, as the self-update sets it for a source tree
-//! with no `.git`, wins; a tree that is neither gets `unknown`.
+//! `ns watch`'s self-update compares against (docs/factory/starting-a-night.md, "When the
+//! watched repo is nightshift"). A `NS_BUILD_COMMIT` already set, as the self-update sets it
+//! for a source tree with no `.git`, wins; a tree that is neither gets `unknown`.
 
 mod build_stamp;
 

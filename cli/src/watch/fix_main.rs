@@ -1,5 +1,5 @@
 //! Fix main first: while main's CI is red, `ns watch` files one issue to fix it, or reuses the
-//! open one, and starts no other unit (docs/FACTORY.md, "Main's CI").
+//! open one, and starts no other unit (docs/factory/watch.md, "Main's CI").
 
 use std::collections::BTreeSet;
 use std::path::Path;
