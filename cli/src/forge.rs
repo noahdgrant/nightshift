@@ -636,7 +636,7 @@ mod tests {
         // shell and all its descendants have exited, however early the timeout fired.
         enum Event {
             Group(String),
-            Returned(std::io::ErrorKind),
+            Returned(Option<std::io::ErrorKind>),
             Eof,
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -650,10 +650,8 @@ mod tests {
             let _ = reader_tx.send(Event::Eof);
         });
         std::thread::spawn(move || {
-            let kind = output_within(cmd, Duration::from_millis(500))
-                .unwrap_err()
-                .kind();
-            let _ = tx.send(Event::Returned(kind));
+            let outcome = output_within(cmd, Duration::from_millis(500));
+            let _ = tx.send(Event::Returned(outcome.err().map(|e| e.kind())));
         });
         let mut writer = Some(writer);
         let hang_guard = Duration::from_secs(60);
@@ -666,7 +664,10 @@ mod tests {
                     group = g;
                     drop(writer.take());
                 }
-                Ok(Event::Returned(kind)) => returned = Some(kind),
+                Ok(Event::Returned(kind)) => {
+                    returned = Some(kind);
+                    drop(writer.take());
+                }
                 Ok(Event::Eof) => eof = true,
                 Err(_) => {
                     // The shell's pid is its group id: `run_process` makes it a group leader.
@@ -680,7 +681,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(returned, Some(std::io::ErrorKind::TimedOut));
+        assert_eq!(returned, Some(Some(std::io::ErrorKind::TimedOut)));
     }
 
     #[test]
