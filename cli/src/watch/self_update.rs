@@ -148,6 +148,19 @@ impl SelfUpdate {
         Some(to)
     }
 
+    /// The commit to build when the drain begun for `noted` ends: `origin/<default>` fetched
+    /// again, as units merged during the drain, unless that commit failed tonight, else `noted`.
+    /// `pending` kept a failed commit from being noted, and none fails before a hand-off.
+    pub fn at_drain_end(&self, root: &Path, noted: String) -> String {
+        let tip = super::fresh_base(root)
+            .and_then(|base| git::run(root, &["rev-parse", &format!("{base}^{{commit}}")]).ok());
+        self.choose(tip, noted)
+    }
+
+    fn choose(&self, tip: Option<String>, noted: String) -> String {
+        tip.filter(|t| !self.failed.contains(t)).unwrap_or(noted)
+    }
+
     /// Build `to`, check it and exec it with `night`. Returns only when that failed or a stop
     /// came first.
     pub fn hand_off(&self, repo: &Repo, to: &str, night: &Carried) -> HandOff {
@@ -436,6 +449,24 @@ mod tests {
             }
             _ => {}
         }
+    }
+
+    fn update(failed: &[&str]) -> SelfUpdate {
+        SelfUpdate {
+            from: "a".into(),
+            failed: failed.iter().map(|c| c.to_string()).collect(),
+            args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_drain_end_builds_the_newest_commit_that_has_not_failed() {
+        let pick = |failed: &[&str], tip: Option<&str>| {
+            update(failed).choose(tip.map(String::from), "noted".into())
+        };
+        assert_eq!(pick(&[], Some("tip")), "tip");
+        assert_eq!(pick(&[], None), "noted");
+        assert_eq!(pick(&["tip"], Some("tip")), "noted");
     }
 
     #[test]
