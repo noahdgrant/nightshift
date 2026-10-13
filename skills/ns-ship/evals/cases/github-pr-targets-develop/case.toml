@@ -42,6 +42,12 @@ run = "test \"$(git --git-dir=.git/fake/origin.git rev-parse -q --verify refs/he
 expect_exit = 0
 
 [[check]]
+type = "frontmatter"
+path = ".ns/44-widget-title/pr.md"
+key = "status"
+equals = "pass"
+
+[[check]]
 type = "judge"
 rubric = "Read .git/fake/calls.log, .ns/44-widget-title/pr.md and the transcript. Pass only if the agent took the PR's base branch from brief.md's base: (develop), opened the PR against develop, never assumed main, and did not merge or approve."
 required = false

@@ -121,11 +121,12 @@ Read `docs/agents/issue-tracker.md` for the forge and how PRs link issues. When 
 git push -u origin "ns/$NS_UNIT"
 ```
 
-Then open it on the forge, against the brief's `base:` ([base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts)). Run this block in one shell, so `$body` and `$base` stay set, with only your forge's commands:
+Then open it on the forge, against the brief's `base:` ([base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts)). When `$base` is still empty, write `pr.md` with `status: blocked` and the first body line from the contract's base branch paragraph, and stop without opening the PR. Otherwise run this block in one shell, so `$body` and `$base` stay set, with only your forge's commands:
 
 ```bash
-base=$(awk '/^---$/ {n++; next} n==1 && /^base:/ {print $2; exit}' .ns/$NS_UNIT/brief.md)
-[ -n "$base" ] || { base=$(git symbolic-ref --short refs/remotes/origin/HEAD) && base=${base#origin/}; } || exit 1   # no base: pr.md is blocked
+base=$(awk '/^---\r?$/ {n++; next} n==1 && /^base:/ {sub(/\r$/, ""); print $2; exit}' .ns/$NS_UNIT/brief.md)
+[ -n "$base" ] || base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+base=${base#origin/}
 body=$(mktemp)   # private, unguessable path
 awk 'f; /^---$/ && ++n==2 {f=1}' .ns/$NS_UNIT/pr.md > "$body"   # body without frontmatter
 
