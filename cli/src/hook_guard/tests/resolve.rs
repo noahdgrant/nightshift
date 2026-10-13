@@ -37,6 +37,18 @@ fn a_literal_assignment_earlier_in_the_command_is_resolved() {
 }
 
 #[test]
+fn an_expansion_that_gains_an_equals_sign_is_a_command_and_not_an_assignment() {
+    for c in [
+        "F=U=build.md; $F; rm -r .ns/u1/$U",
+        "F=U=build.md; xyz$F; rm -r .ns/u1/$U",
+        "F=U=build.md; \"$F\"; rm -r .ns/u1/$U",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    assert!(!denied("V=build.md; U=$V; rm .ns/u1/$U"));
+}
+
+#[test]
 fn an_assignment_that_may_not_hold_is_not_resolved() {
     for c in [
         "(U=build.md; rm .ns/u1/$U)",
@@ -292,7 +304,20 @@ fn a_loop_or_function_anywhere_stops_the_scan_following_assignments() {
     ] {
         assert!(denied(c), "{c}");
     }
-    assert!(judged("while :; do git commit $NS_UNIT; done", &phase()).is_none());
+}
+
+#[test]
+fn a_loop_or_function_body_leaves_a_phase_variable_unresolved() {
+    for c in [
+        "while true; do rm -rf .ns/u1/$NS_UNIT; export NS_UNIT=skills; done",
+        "for i in 1 2; do rm -rf .ns/u1/$NS_UNIT; NS_UNIT=skills; done",
+        "until false; do cd .ns/u1 && rm -rf $NS_WORKTREE/.ns/u1/history; NS_WORKTREE=/; done",
+        "f() { rm -rf .ns/u1/$NS_UNIT; NS_UNIT=skills; }; f; f",
+        "while :; do git commit $NS_UNIT; done",
+    ] {
+        assert!(judged(c, &phase()).is_some(), "{c}");
+    }
+    assert!(judged("rm -rf .ns/u1/$NS_UNIT/build.md", &phase()).is_none());
 }
 
 #[test]
@@ -517,6 +542,32 @@ fn a_name_or_value_over_its_cap_is_not_learned() {
     let by_value = |n: usize| format!("A=build.md; A={}; rm .ns/u1/$A", value(n));
     assert!(denied(&by_value(MAX_VALUE + 1)));
     assert!(denied(&format!("A={}; rm .ns/u1/$A", value(MAX_VALUE))));
+}
+
+#[test]
+fn the_learn_cap_the_word_cap_and_the_budget_each_hold_to_the_byte() {
+    let value = |n: usize| "a".repeat(n);
+    let learn = |n: usize| format!("A={}; cd .ns/u1 && rm $A", value(n));
+    assert!(!denied(&learn(MAX_VALUE)));
+    assert!(denied(&learn(MAX_VALUE + 1)));
+    let word = |pad: usize| {
+        format!(
+            "A={}; cd .ns/u1 && rm {}$A",
+            value(MAX_VALUE - 1),
+            value(pad)
+        )
+    };
+    assert!(!denied(&word(1)));
+    assert!(denied(&word(2)));
+    let uses = |n: usize| {
+        format!(
+            "A={}; cd .ns/u1 && {}",
+            value(MAX_VALUE),
+            "rm $A; ".repeat(n)
+        )
+    };
+    assert!(!denied(&uses(MAX_RESOLVED / MAX_VALUE)));
+    assert!(denied(&uses(MAX_RESOLVED / MAX_VALUE + 1)));
 }
 
 #[test]

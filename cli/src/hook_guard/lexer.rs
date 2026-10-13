@@ -63,6 +63,8 @@ impl Word {
             }
         }
         text.push_str(&self.text[from..]);
+        let first = self.expansions.first().map_or(self.text.len(), |e| e.at);
+        let gains_equals = !self.text[..first].contains('=') && text.contains('=');
         let opaque = if self.braced {
             self.opaque
         } else {
@@ -75,7 +77,7 @@ impl Word {
             quoted_var: self.quoted_var,
             splits: self.splits,
             braced: self.braced,
-            assignable: self.assignable,
+            assignable: self.assignable && !gains_equals,
             text,
             expansions,
         }

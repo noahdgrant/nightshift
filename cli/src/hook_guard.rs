@@ -359,6 +359,9 @@ fn check_command(s: &str, scan: &mut Scan) -> Option<String> {
     scan.following = scan.depth == 1 && !lexed.assigns;
     if scan.depth == 1 {
         scan.learning = !repeats_or_defers(&lexed.main);
+        if !scan.learning {
+            scan.vars.clear();
+        }
         scan.budget = MAX_RESOLVED;
     }
     let why = check_tokens(lexed.main, scan).or_else(|| {
