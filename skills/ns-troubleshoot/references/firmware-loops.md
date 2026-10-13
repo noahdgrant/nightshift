@@ -4,7 +4,7 @@ Loop recipes for firmware bugs, fastest first. Each one ends in **one command** 
 
 Prefer the highest loop on the list that still reaches the bug. A host loop runs in seconds and needs no bench; a HIL loop takes minutes and holds a shared resource.
 
-`$OUT` is the unit's troubleshoot directory, `.ns/<unit-id>/troubleshoot/`, as in the skill. Set it once (`export OUT=.ns/<unit-id>/troubleshoot`) from the worktree root. Every recipe keeps its builds, captures, logs and checker scripts there.
+`$OUT` is the unit's troubleshoot directory, `.ns/<unit-id>/troubleshoot/`, as in the skill. Set it once (`export OUT=.ns/$NS_UNIT/troubleshoot`) from the worktree root. Every recipe keeps its builds, captures, logs and checker scripts there.
 
 Contents: [ztest on native_sim](#twister-and-ztest-on-native_sim) · [Emulator](#emulator) · [Serial capture](#serial-capture) · [HIL case runner](#hil-case-runner) · [Logic analyzer](#logic-analyzer-capture) · [git bisect on target](#git-bisect-run-on-target)
 

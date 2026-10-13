@@ -30,8 +30,8 @@ Input: `.ns/<unit-id>/brief.md` and the branch. Output: `.ns/<unit-id>/review.md
 2. Find the base branch: the one `brief.md` names, else the repo default (`git symbolic-ref --short refs/remotes/origin/HEAD`).
 3. Write the diff, including uncommitted work, to a file:
    ```bash
-   mkdir -p .ns/<unit-id>/review
-   git diff "$(git merge-base <base> HEAD)" > .ns/<unit-id>/review/diff.patch
+   mkdir -p .ns/$NS_UNIT/review
+   git diff "$(git merge-base <base> HEAD)" > .ns/$NS_UNIT/review/diff.patch
    ```
    An empty diff means there is nothing to review: stop with `status: blocked`.
    Reviewers read `diff.patch` from disk. Keep it out of your own context beyond what judging a finding needs, as [guard the context window](../ns-principle-guard-the-context-window/SKILL.md) says.
