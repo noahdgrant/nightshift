@@ -78,7 +78,18 @@ pub(super) fn git_global_options(
             if value.opaque && matches!(arg, "-c" | "--config-env") {
                 return Err(unreadable("a git config option"));
             }
-            global_option(arg, &value.text, scan, &mut aliases)?;
+            let value = if arg == "-C" {
+                if cd_loses_protected_cwd(value, scan.cwd) {
+                    return Err(format!(
+                        "git -C {} into a directory of unknown depth in a protected path",
+                        value.text
+                    ));
+                }
+                dir_path(value)
+            } else {
+                value.text.clone()
+            };
+            global_option(arg, &value, scan, &mut aliases)?;
             2
         } else if arg.starts_with('-') {
             1
@@ -151,7 +162,7 @@ pub(super) fn git_command(args: &[Word], scan: &mut Scan) -> Option<String> {
         "config" => config(rest, scan),
         "rm" | "mv" => rest
             .iter()
-            .find(|a| scan.touches_hooks(&a.text))
+            .find(|a| scan.touches_hooks(&path(a)))
             .map(|a| format!("git {name} {} in {PROTECTED}", a.text)),
         _ => None,
     }
@@ -159,9 +170,9 @@ pub(super) fn git_command(args: &[Word], scan: &mut Scan) -> Option<String> {
 
 /// An opaque word is let through where a flag can't be told from an argument only if it
 /// follows a literal argument (`origin $branch`) or a literal `--` that ends the options.
-/// Outside `push` it may also be quoted whole (`"$branch"`). On `push` it may instead end in
-/// literal text no `--no-verify` ends in (`"$V/remote.git"`), as a whole `"$R"` there could
-/// hold `--no-verify`.
+/// Outside `push` it may also be quoted whole (`"$branch"`). On `push` it may instead be a
+/// word no expansion can turn into `--no-verify` (`"$V/remote.git"`), as a whole `"$R"` there
+/// could hold it.
 pub(super) fn skips_hooks(name: &str, rest: &[Word]) -> Option<String> {
     let mut positional = false;
     let mut before: Option<&Word> = None;
@@ -175,7 +186,7 @@ pub(super) fn skips_hooks(name: &str, rest: &[Word]) -> Option<String> {
         if a.opaque {
             let let_through = positional
                 || if name == "push" {
-                    tail_is_not_no_verify(a)
+                    !could_be_no_verify(a)
                 } else {
                     a.quoted_var
                 };
@@ -207,14 +218,18 @@ fn leaves_double_dash_alone(w: &Word) -> bool {
     }
 }
 
-/// The literal text after an opaque word's last expansion rules out `--no-verify`: it can't
-/// be the end of any spelling git accepts, and holds no glob or brace that could rewrite it.
-fn tail_is_not_no_verify(w: &Word) -> bool {
-    let Some(tail) = w.tail_at.map(|at| &w.text[at..]) else {
-        return false;
-    };
+/// `w`, with each expansion read as any text (`*`), could be a spelling of `--no-verify` git
+/// accepts, or `--no-verify=` with a value, which `no_verify` reads as the flag: an `=`, or an
+/// expansion at the end, could supply it. An expansion that splits the word could be anything.
+fn could_be_no_verify(w: &Word) -> bool {
+    if w.splits {
+        return true;
+    }
+    let pattern = w.filled(|_| '*');
     let mut spellings = ("--no-v".len()..="--no-verify".len()).map(|n| &"--no-verify"[..n]);
-    !tail.contains(['=', '*', '?', '[', '{']) && !spellings.any(|s| s.ends_with(tail))
+    pattern.ends_with('*')
+        || pattern.contains('=')
+        || spellings.any(|s| glob_matches(pattern.as_bytes(), s.as_bytes()))
 }
 
 /// `git rebase -x CMD`, `--exec CMD` and `--exec=CMD` run CMD in a shell.
