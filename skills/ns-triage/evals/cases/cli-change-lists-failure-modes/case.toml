@@ -25,20 +25,21 @@ python3 - <<'PYEOF'
 import re, sys
 text = open(".scratch/stock-items/issues/01-remove-item-command.md", encoding="utf-8").read()
 label = re.compile(r"^[ \t>#*_-]*Failure modes:?[*_]*:?(.*)$", re.I)
-stop = re.compile(r"^[ \t]*(?:(?:\*\*|__|#)|[-*][ \t]+(?:\*\*|__)[^*_]*:|[>]*[ \t]*[A-Z][A-Za-z ]+:)")
+fields = "Edge cases|Out of scope|Decisions|Key interfaces|Acceptance criteria|Touches|Size|Route|Summary|Category|Current behavior|Desired behavior|Assumptions"
+stop = re.compile(r"^(?:#|(?:[-*][ \t]+)?(?:\*\*|__)?(?:" + fields + r")[*_]*(?::|$))", re.I)
 lines = text.splitlines()
 start = next((i for i, l in enumerate(lines) if label.match(l)), None)
 if start is None:
     sys.exit("no Failure modes section in the brief comment")
 body = [label.match(lines[start]).group(1)]
 for l in lines[start + 1:]:
-    if stop.match(l):
+    if stop.match(re.sub(r"^[ \t>]+", "", l)):
         break
     body.append(l)
 entries = [l.strip(" \t-*_>") for l in body]
 entries = [e for e in entries if e and e.lower() != "(required)"]
 print("failure modes:", entries)
-if not any(not e.lower().startswith("none") for e in entries):
+if not any(not re.match(r"none\s*(?:[;.]|$)", e, re.I) for e in entries):
     sys.exit("Failure modes section is empty or only says none")
 PYEOF
 '''
