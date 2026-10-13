@@ -38,6 +38,7 @@ Read whatever exists. Assume nothing:
   - `Cargo.toml`: `cargo build/test/clippy/fmt`, and `[workspace]` members
   - `.pre-commit-config.yaml`: the lint and format hooks
   - CI workflows (`.github/workflows/`, `.gitlab-ci.yml`): the commands CI runs. Treat these as the ground truth when they disagree with a Makefile or README. CI logs also give run durations.
+- **Hooks**: an existing pre-commit hook setup, checked in the order [hooks.md](references/hooks.md) gives (`core.hooksPath`, `.githooks/`, `.pre-commit-config.yaml`, `.husky/`, `lefthook.yml`, an executable `.git/hooks/pre-commit`), and any script that already runs CI locally.
 - **Test seams**: host unit tests, a simulator or emulator (QEMU, `native_sim`, Renode, a device simulator), and hardware-in-the-loop (a bench runner, a `hil` marker or env, a self-hosted CI runner with a board attached).
 - **Worktree traps**: does a fresh `git worktree` build its own sources? Common traps:
   - submodules a new worktree lacks (`.gitmodules`)
@@ -64,9 +65,11 @@ Summarise what's present and what's missing. Then take the sections in order: on
 
 **Section A: Stack.** Show the drafted commands and seams. Ask only about the gaps: usually the HIL setup (what hardware, how to reach it, how long a run takes), and which command to trust when two disagree. A seam the project lacks is recorded as `none`. On a Python stack, also offer the Python rule pack (recommended: **yes**). It checks every unit for suppressions without a reason, imports outside an allowlist, duplicate helpers and files past 1000 lines. When the repo has a `package.json`, offer the JavaScript/TypeScript rule pack (recommended: **yes**). It runs ESLint, `tsc` when there is a `tsconfig.json`, and ast-grep, from its own `node_modules` under `.nightshift/rules/js/`, and leaves the repo's `package.json` and lockfile alone. When the repo has C sources, offer the C rule pack (recommended: **yes**) and show its `rules` row. When it has a `pom.xml` or `build.gradle(.kts)`, offer the Java rule pack (recommended: **yes**): the same four checks plus nine PMD rules, run on source only, so Maven and Gradle repos install it alike.
 
-**Section B: Verify.** If a verify skill and control CLI exist, confirm their names. Otherwise record "not set up yet: run ns-setup-verify" without asking.
+**Section B: Hooks.** If Explore found a hook setup, show it as what `stack.md` will record and change nothing. Otherwise propose the pre-commit hook in [hooks.md](references/hooks.md) (recommended: **yes**): `scripts/ci-local.sh` running CI's commands in CI's order, with a `--fast` subset; `.githooks/pre-commit` running `scripts/ci-local.sh --fast`; and `git config core.hooksPath .githooks` for the main checkout and as a `[worktree] setup` line. Show the drafted script, built from this repo's CI. Under `gates: stop`, wait for a yes. Under `gates: auto`, take it, and leave the `.nightshift/nightshift.toml` line to whoever merges, as [hooks.md](references/hooks.md) says.
 
-**Section C: Issue tracker.** Propose GitHub if a remote points at GitHub, GitLab if at GitLab. Otherwise offer:
+**Section C: Verify.** If a verify skill and control CLI exist, confirm their names. Otherwise record "not set up yet: run ns-setup-verify" without asking.
+
+**Section D: Issue tracker.** Propose GitHub if a remote points at GitHub, GitLab if at GitLab. Otherwise offer:
 
 - **GitHub**: issues live in the repo's GitHub Issues (`gh` CLI)
 - **GitLab**: issues live in the repo's GitLab Issues (`glab` CLI)
@@ -75,19 +78,19 @@ Summarise what's present and what's missing. Then take the sections in order: on
 
 The GitHub and GitLab templates carry a "PRs as a request surface" flag, defaulted **off**. Leave it off and don't raise it.
 
-**Section D: Triage labels.** Ask exactly one question:
+**Section E: Triage labels.** Ask exactly one question:
 
 > Do you want to keep the default triage labels? (recommended: **yes**)
 
 The defaults are the canonical roles with each label equal to its name, and each priority as `priority:<role>`, the labels `ns watch` sorts on (see [triage-labels.md](references/triage-labels.md)). On **no**, usually because the tracker already uses other names, collect the overrides so `ns-triage` applies existing labels instead of creating duplicates. Custom priority labels also go, highest first, in `[queue] priority` of `.nightshift/nightshift.toml`.
 
-**Section E: Domain docs.** Default to **single-context** (one `GLOSSARY.md` + `docs/adr/` at the root) and write it without asking. Offer **multi-context** (a root `GLOSSARY-MAP.md` pointing to per-context `GLOSSARY.md` files) only when exploration found multi-context signals.
+**Section F: Domain docs.** Default to **single-context** (one `GLOSSARY.md` + `docs/adr/` at the root) and write it without asking. Offer **multi-context** (a root `GLOSSARY-MAP.md` pointing to per-context `GLOSSARY.md` files) only when exploration found multi-context signals.
 
-**Section F: Docs.** Propose the directories exploration found (the layout under them is fixed by `ns-requirements`), else the defaults in [docs.md](references/docs.md), with a pull request on this repo as the review surface. Ask only when existing docs live somewhere else or reviewers work in another tool. List any ID keys already in use. Ask for the commands that check the docs (IDs, terms, links), or `none`.
+**Section G: Docs.** Propose the directories exploration found (the layout under them is fixed by `ns-requirements`), else the defaults in [docs.md](references/docs.md), with a pull request on this repo as the review surface. Ask only when existing docs live somewhere else or reviewers work in another tool. List any ID keys already in use. Ask for the commands that check the docs (IDs, terms, links), or `none`.
 
 ### 3. Confirm
 
-Show the user a draft of every file from the table above, the `## Agent skills` block, and any labels to create. Let them edit before writing.
+Show the user a draft of every file from the table above, the hook files from Section B, the `## Agent skills` block, and any labels to create. Let them edit before writing.
 
 ### 4. Write
 
@@ -112,6 +115,8 @@ If the user took the C rule pack in Section A, install it as its [README](../../
 If the user took the Java rule pack in Section A, install it as [rules-java.md](references/rules-java.md) says.
 
 If no pack was installed, give the `rules` row the command `none`.
+
+If the user took the hook in Section B, write `scripts/ci-local.sh` and `.githooks/pre-commit`, make both executable, and run `git config core.hooksPath .githooks`, as [hooks.md](references/hooks.md) says. Fill `stack.md`'s `ci-local` row and `## Hooks` section either way, from the hook found or the one written. Under `gates: auto`, put the `[worktree] setup` line in the final message rather than in `.nightshift/nightshift.toml`.
 
 If the worktree check found traps:
 - write the fix-up commands to `.nightshift/nightshift.toml` under `[worktree] setup = [...]`. `ns worktree new` runs them in each new worktree, with `NS_UNIT`, `NS_WORKTREE` and `NS_MAIN_ROOT` set, and again when a stop, a crash or a failed command cut them short. Make each safe to rerun on a worktree it already set up.
@@ -139,6 +144,6 @@ Repo settings the `ns-*` skills read. Edit the files directly to change them.
 
 ### 5. Done
 
-Done when all six `docs/agents/` files exist with no unfilled placeholders, the instructions file holds the block, and every rule pack that applies (Rust for a `Cargo.toml`, and each pack the user took in Section A) is installed with `ns rules check` exiting 0. Tell the user which seams are `none` or unmeasured, and, if verify isn't set up, that `ns-setup-verify` is the next step. They can edit `docs/agents/*.md` directly later. Re-run this skill to switch trackers or start over.
+Done when all six `docs/agents/` files exist with no unfilled placeholders, the instructions file holds the block, and every rule pack that applies (Rust for a `Cargo.toml`, and each pack the user took in Section A) is installed with `ns rules check` exiting 0, and `stack.md` records the repo's hook, found or written. Tell the user which seams are `none` or unmeasured, and, if verify isn't set up, that `ns-setup-verify` is the next step. They can edit `docs/agents/*.md` directly later. Re-run this skill to switch trackers or start over.
 
 Then offer an agent-readiness audit: it finds what in the codebase helps or hurts agents and files the top findings as issues. On yes, load the `ns-agent-readiness` skill and run it under `gates: stop`, so the user picks what to file.
