@@ -154,6 +154,8 @@ struct Scan {
     unread: Unread,
     /// The tokens being checked are the top-level command, whose variables are followed.
     following: bool,
+    /// The command has no loop or function, so an assignment can be followed in order.
+    learning: bool,
 }
 
 /// What the scan makes of an expansion it has no value for.
@@ -205,7 +207,12 @@ impl Scan {
             self.vars.clear();
             flow.compound = true;
         }
-        if flow.runs && !flow.compound && !self.frozen && matches!(sep, Sep::Seq | Sep::And) {
+        if self.learning
+            && flow.runs
+            && !flow.compound
+            && !self.frozen
+            && matches!(sep, Sep::Seq | Sep::And)
+        {
             self.vars.extend(literal_assignments(words));
         }
         flow.runs = sep == Sep::Seq;
@@ -253,6 +260,9 @@ fn check_command(s: &str, scan: &mut Scan) -> Option<String> {
     let lexed = tokens(s);
     let outer = scan.following;
     scan.following = scan.depth == 1 && !lexed.assigns;
+    if scan.depth == 1 {
+        scan.learning = !repeats_or_defers(&lexed.main);
+    }
     let why = check_tokens(lexed.main, scan).or_else(|| {
         scan.following = false;
         lexed
@@ -263,6 +273,22 @@ fn check_command(s: &str, scan: &mut Scan) -> Option<String> {
     scan.following = outer;
     scan.depth -= 1;
     why
+}
+
+/// The command has a loop or defines a function, so a statement may run after one that
+/// follows it in the text.
+fn repeats_or_defers(toks: &[Tok]) -> bool {
+    const WORDS: &[&str] = &["while", "until", "for", "select", "function"];
+    toks.iter().enumerate().any(|(i, t)| match t {
+        Tok::Word(w) => WORDS.contains(&w.text.as_str()),
+        Tok::SubshellOpen => {
+            matches!(
+                i.checked_sub(1).and_then(|j| toks.get(j)),
+                Some(Tok::Word(_))
+            ) && matches!(toks.get(i + 1), Some(Tok::SubshellClose))
+        }
+        _ => false,
+    })
 }
 
 /// How far the top-level command so far is known to run, for `Scan::settle`.
@@ -462,7 +488,7 @@ const REWRITERS: &[&str] = &[
 
 /// Builtins after which the scan learns no assignment: a variable's attributes or a trap can
 /// change what a later assignment, or any command, sets.
-const FREEZERS: &[&str] = &["declare", "typeset", "local", "trap"];
+const FREEZERS: &[&str] = &["declare", "typeset", "local", "trap", "alias"];
 
 /// Builtins that can set a variable named by one of their arguments.
 const SETTERS: &[&str] = &[

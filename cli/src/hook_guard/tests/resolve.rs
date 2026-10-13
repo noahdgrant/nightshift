@@ -274,3 +274,33 @@ fn a_braced_word_with_an_expansion_stays_opaque_after_resolving() {
     assert!(!d.unread, "{}", d.why);
     assert!(denied("F=--no-verify; git push $F$X"));
 }
+
+#[test]
+fn a_loop_or_function_anywhere_stops_the_scan_following_assignments() {
+    for c in [
+        "U=zz; while :; do rm -r .git/$U; U=hooks; done",
+        "U=zz\nwhile :\ndo\nrm -r .git/$U\nU=hooks\ndone",
+        "U=ok; for i in 1 2; do git commit $U; U=-n; done",
+        "U=ok; until false; do git commit $U; U=-n; done",
+        "U=ok; select i in 1 2; do git commit $U; U=-n; done",
+        "U=zz; f(){ rm -r .git/$U; }; U=hooks; f",
+        "U=zz\nf(){\nrm -r .git/$U\n}\nU=hooks\nf",
+        "U=zz; function f { rm -r .git/$U; }; U=hooks; f",
+        "U=ok; git commit $U; f() { :; }",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    assert!(judged("while :; do git commit $NS_UNIT; done", &phase()).is_none());
+}
+
+#[test]
+fn an_alias_that_assigns_a_variable_forgets_the_variables() {
+    assert!(denied("alias g=\"F=--no-verify\"; F=ok; g; git commit $F"));
+}
+
+#[test]
+fn a_value_with_an_expansion_in_it_is_not_resolved() {
+    for c in ["U=build.md$X; rm .ns/u1/$U", "U=${X}build.md; rm .ns/u1/$U"] {
+        assert!(denied(c), "{c}");
+    }
+}
