@@ -13,7 +13,7 @@ Run Comment Sicko on the scope, audit its report, and act on what survives the a
 
 ## Scope
 
-Use the caller's files or diff. Otherwise use the current diff against the base branch, working tree included: `git diff "$(git merge-base <base> HEAD)"`, with the base from `.ns/<unit-id>/brief.md` or the repo default branch.
+Use the caller's files or diff. Otherwise use the current diff against the base branch, working tree included: `git diff "$(git merge-base origin/<base> HEAD)"`, with `<base>` resolved as [base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts) says.
 
 ## Steps
 

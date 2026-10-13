@@ -1101,6 +1101,23 @@ fn a_ship_no_go_for_base_movement_goes_to_build_at_no_attempts_cost() {
 }
 
 #[test]
+fn the_ship_after_a_free_rebase_build_is_not_free() {
+    let e = Env::new();
+    base_moves_during_build(&e, "");
+    e.queue("build", &["pass:script", "pass:commit"]);
+    e.queue("verify", &["fail:base moved", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "build", "verify", "review", "ship"]
+    );
+    assert!(!run_events(&e)
+        .iter()
+        .any(|ev| ev["event"] == "ship_after_base_moved"));
+}
+
+#[test]
 fn a_free_rebase_build_that_fails_leaves_the_unit_stuck_at_the_normal_cap() {
     let e = Env::new();
     base_moves_during_build(&e, "");
@@ -3893,19 +3910,24 @@ fn dropping_a_background_run_kills_the_phase_in_its_own_session() {
 #[test]
 fn a_run_past_its_timeout_fails_and_kills_the_phase_in_its_own_session() {
     let e = Env::new();
-    let pid = e.ctrl.join("phase.pid");
+    let entered = e.ctrl.join("entered");
+    mkfifo(&entered);
     e.queue("build", &["pass:script"]);
-    e.ctl("build.sh", &format!("echo $$ > {pid:?}; sleep 30"));
-    let panic = std::panic::catch_unwind(|| {
-        e.ns()
-            .args(["run", "--issue", "7"])
-            .timeout(Duration::from_secs(3))
-            .output()
-    })
-    .unwrap_err();
+    e.ctl("build.sh", &format!("echo $$ > {entered:?}; sleep 600"));
+    let mut run = e
+        .ns()
+        .args(["run", "--issue", "7"])
+        .timeout(Duration::from_secs(3))
+        .start();
+    // The run's timeout starts at the wait, once the phase is in, however slow the start.
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(fs::read_to_string(entered));
+    });
+    let pid = rx.recv_timeout(common::TIMEOUT).unwrap().unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.wait())).unwrap_err();
     let msg = panic.downcast_ref::<String>().unwrap();
     assert!(msg.contains("timed out after 3s"), "{msg}");
-    let pid = fs::read_to_string(&pid).unwrap();
     assert!(exits(&pid), "phase {pid} outlived its run");
 }
 
@@ -4552,6 +4574,246 @@ fn build_only_sends_a_conflict_with_main_back_to_ship() {
             "{file}"
         );
     }
+}
+
+/// A ship script that commits and clears PR #12's conflict, except on its run `move_on`, where
+/// another actor moves main and the PR conflicts again.
+fn ship_brings_in_main(e: &Env, move_on: u32) {
+    e.ctl(
+        "ship.sh",
+        &format!(
+            "n=$(( $(cat \"$FAKE_CTRL/ships\" 2>/dev/null || echo 0) + 1 )); echo $n > \"$FAKE_CTRL/ships\"\n\
+             if [ $n = {move_on} ]; then {} && echo DIRTY > \"$FAKE_GH_DIR/pr-12.merge\"\n\
+             else echo $n >> main-in.txt && git add main-in.txt && git -c user.name=f -c user.email=f@f commit -qm \"merge main $n\" && echo CLEAN > \"$FAKE_GH_DIR/pr-12.merge\"; fi\n",
+            move_main_sh(e)
+        ),
+    );
+}
+
+#[test]
+fn build_only_ships_that_follow_a_moved_base_cost_ship_no_attempts() {
+    let e = Env::new();
+    remote_queue(&e, AUTO);
+    e.gh_file("pr-12.merge", "DIRTY");
+    ship_brings_in_main(&e, 2);
+    // Each reship merges main in; review's rerun after it commits a fix, so verify and ship run
+    // again. The first of those ships finds main moved and the PR conflicting again.
+    e.queue(
+        "ship",
+        &["pass", "pass:script", "pass:script", "pass:script", "pass"],
+    );
+    e.queue("review", &["pass", "pass:commit", "pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(
+        e.calls(),
+        [
+            "triage", "build", "verify", "review", "ship", "ship", "verify", "review", "verify",
+            "ship", "ship", "verify", "review", "verify", "ship"
+        ]
+    );
+    let free: Vec<Value> = run_events(&e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "ship_after_base_moved")
+        .collect();
+    assert_eq!(free.len(), 2, "{free:?}");
+    assert_eq!(rebase_events(&e).len(), 2);
+}
+
+#[test]
+fn build_only_ships_that_fail_after_a_moved_base_still_run_out_of_attempts() {
+    let e = Env::new();
+    remote_queue(&e, AUTO);
+    e.gh_file("pr-12.merge", "DIRTY");
+    e.queue("ship", &["pass", "fail:review", "fail:review"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(v["reason"], "ship is out of attempts (2)", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "ship", "ship", "review"]
+    );
+}
+
+#[test]
+fn build_only_a_failing_ship_after_a_moved_base_gives_its_free_attempt_back() {
+    let e = Env::new();
+    remote_queue(&e, AUTO);
+    e.gh_file("pr-12.merge", "DIRTY");
+    ship_brings_in_main(&e, 0);
+    e.queue("ship", &["pass", "pass:script", "fail:review"]);
+    e.queue("review", &["pass", "pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["reason"], "ship is out of attempts (2)", "{v}");
+    assert_eq!(
+        e.calls(),
+        [
+            "triage", "build", "verify", "review", "ship", "ship", "verify", "review", "verify",
+            "ship", "review"
+        ]
+    );
+}
+
+#[test]
+fn build_only_a_build_after_a_moved_base_makes_the_next_ship_cost_an_attempt() {
+    let e = Env::new();
+    remote_queue(&e, AUTO);
+    e.gh_file("pr-12.merge", "DIRTY");
+    ship_brings_in_main(&e, 0);
+    e.queue("ship", &["pass", "pass:script", "pass"]);
+    e.queue("review", &["pass", "fail"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(
+        e.calls(),
+        [
+            "triage", "build", "verify", "review", "ship", "ship", "verify", "review", "build",
+            "verify", "review", "ship"
+        ]
+    );
+    let free = run_events(&e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "ship_after_base_moved")
+        .count();
+    assert_eq!(free, 0);
+}
+
+#[test]
+fn build_only_a_reship_that_changes_nothing_does_not_make_the_next_reship_a_chain_ship() {
+    let e = Env::new();
+    remote_queue(&e, AUTO);
+    e.gh_file("pr-12.merge", "DIRTY");
+    e.ctl("ship.sh", &move_main_sh(&e));
+    e.queue(
+        "ship",
+        &[
+            "pass:script",
+            "pass:script",
+            "pass:script",
+            "fail:review",
+            "fail:review",
+        ],
+    );
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(v["reason"], "ship is out of attempts (2)", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "ship", "ship", "ship", "ship", "review"]
+    );
+    assert!(!run_events(&e)
+        .iter()
+        .any(|ev| ev["event"] == "ship_after_base_moved"));
+}
+
+#[test]
+fn build_only_a_credited_ship_that_gives_up_on_a_lock_is_credited_again_on_its_retry() {
+    let e = Env::new();
+    let locks = e.base.join("locks");
+    fs::create_dir_all(&locks).unwrap();
+    remote_queue(&e, &format!("{AUTO}[phases.ship]\nrunner = \"bench\"\n"));
+    e.runner("bench", "kind = \"bench\"\nlocks = [\"bench-1\"]\n");
+    e.config(&format!(
+        "[runners]\nlock_dir = {:?}\n",
+        locks.to_str().unwrap()
+    ));
+    e.gh_file("pr-12.merge", "DIRTY");
+    ship_brings_in_main(&e, 0);
+    // The review that precedes the credited ship tells the test it is running and waits, so the
+    // test takes the ship's lock before the ship asks for it.
+    let ready = e.ctrl.join("ready");
+    let go = e.ctrl.join("go");
+    for f in [&ready, &go] {
+        assert!(StdCommand::new("mkfifo").arg(f).status().unwrap().success());
+    }
+    e.ctl(
+        "review.sh",
+        &format!("echo in > {ready:?}; cat {go:?} > /dev/null\n"),
+    );
+    e.queue("ship", &["pass", "pass:script"]);
+    e.queue("review", &["pass", "pass:script"]);
+    let mut run = e.ns().args(["run", "--issue", "7"]).start();
+    let mut stderr = run.take_stderr();
+    let (tx, rx) = mpsc::channel();
+    let tx_err = tx.clone();
+    thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stderr.read_to_string(&mut text);
+        let _ = tx_err.send(Some(text));
+    });
+    thread::spawn(move || {
+        let _ = fs::read_to_string(&ready);
+        let _ = tx.send(None);
+    });
+    assert!(run.recv(&rx).is_none(), "the run ended before its review");
+    let lock = fs::File::create(locks.join("bench-1.lock")).unwrap();
+    lock.lock().unwrap();
+    fs::write(&go, "go\n").unwrap();
+    let stderr = run.recv(&rx).expect("stderr");
+    drop(lock);
+    assert_eq!(run.wait().code(), Some(1), "{stderr}");
+    let log = run_events(&e);
+    let attempts = |event: &str| -> Vec<Value> {
+        log.iter()
+            .filter(|ev| ev["event"] == event)
+            .map(|ev| ev["attempt"].clone())
+            .collect()
+    };
+    assert_eq!(attempts("lock_wait_timeout"), [3, 4], "{stderr}");
+    assert_eq!(attempts("ship_after_base_moved"), [3, 4, 5], "{stderr}");
+}
+
+#[test]
+fn build_only_stops_reshipping_for_a_base_that_moves_on_every_check() {
+    let e = Env::new();
+    remote_queue(&e, AUTO);
+    e.gh_file("pr-12.merge", "DIRTY");
+    e.ctl("ship.sh", &move_main_sh(&e));
+    e.queue("ship", &["pass:script"; 7]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(
+        v["reason"], "ship was sent back 5 times because the base moved (cap 5)",
+        "{v}"
+    );
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "ship", "ship", "ship", "ship", "ship", "ship"]
+    );
+    assert_eq!(rebase_events(&e).len(), 5);
+    let capped: Vec<Value> = run_events(&e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "reship_cap")
+        .collect();
+    assert_eq!(capped.len(), 1, "{capped:?}");
+    assert_eq!(
+        (&capped[0]["reships"], &capped[0]["cap"]),
+        (&json!(5), &json!(5))
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
+#[test]
+fn build_only_a_reship_earns_no_credit_when_origin_default_cannot_be_read() {
+    let e = Env::new();
+    remote_queue(&e, AUTO);
+    e.gh_file("pr-12.merge", "DIRTY");
+    e.ctl(
+        "review.sh",
+        "git remote set-url origin \"$FAKE_CTRL/gone.git\"",
+    );
+    e.queue("review", &["pass:script"]);
+    e.queue("ship", &["pass", "fail:review", "fail:review"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(v["reason"], "ship is out of attempts (2)", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "ship", "ship", "review"]
+    );
+    assert!(!run_events(&e).iter().any(|ev| {
+        ev["event"] == "ship_after_base_moved" || ev["event"] == "rebase_after_base_moved"
+    }));
 }
 
 #[test]

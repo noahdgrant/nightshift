@@ -28,6 +28,7 @@ mod markers;
 mod memcap;
 mod phase_output;
 mod pin;
+mod proc;
 mod quality;
 mod ratchet;
 mod review_md;
@@ -284,7 +285,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             } => return ratchet::update(factory.as_deref(), allow_loosen, dry_run, format(human)),
         },
         Cmd::Rules(Rules { command }) => match command {
-            RulesCmd::Check { human } => return rules::check(format(human)),
+            RulesCmd::Check { human, only } => return rules::check(only.as_deref(), format(human)),
             RulesCmd::Baseline {
                 allow_growth,
                 dry_run,

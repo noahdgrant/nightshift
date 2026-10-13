@@ -33,7 +33,7 @@ Run from the repo root. Use the binary built from this worktree (`cli/target/deb
 | verify recipes | `scripts/check-verify-recipes.sh` (runs the Launch and Doctor recipes of `.agents/skills/verify-nightshift/SKILL.md` in a throwaway sandbox with the fake `claude` and `gh`, and fails naming a stale block or a bad Doctor result; needs `jq`) | 10 s |
 | rules | `rules/rust/check.sh clippy cli`, `rules/rust/check.sh deny cli`, `rules/rust/check.sh ast-grep cli` (the Rust rule pack; needs `jq`, `ast-grep` and `cargo-deny`) | 10 s |
 | ci-local | `scripts/ci-local.sh` (all of CI, including `scripts/check-git-dir-decoy.sh`, which runs `cargo test` under a decoy `GIT_DIR`). It fails first on a tool not pinned in `scripts/ci-tools.d/` or at another version. Under `[gate] local = "build-only"` only the `ns run` gate after build runs all of it; the other gates, pre-commit and the `.githooks` pre-push hook (at each commit pushed, one push at a time) run its `--fast` subset | 1 min |
-| ci-affected | `scripts/ci-affected.sh` (the tests for the paths in `NS_GATE_FILES`: `cargo test` on any change, and each rule pack's or fixture's tests when a path under it changed). The fast gate runs it after `ci-local.sh --fast` | 1 min |
+| ci-affected | `scripts/ci-affected.sh` (the tests for the paths in `NS_GATE_FILES`: `cargo test` and the `rules` row's ast-grep commands (`ns rules check --only ast-grep`, about 0.5 s) on any change, and each rule pack's or fixture's tests when a path under it changed). The fast gate runs it after `ci-local.sh --fast` | 1 min |
 
 ## Test seams
 

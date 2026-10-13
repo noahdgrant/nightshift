@@ -1,6 +1,8 @@
 //! `scripts/ci-local.sh`, run in a temp repo against stub `cargo`, `ns`, `python3`, `python`
 //! and the tools `scripts/ci-tools.d/` pins, checked by the real `scripts/ci-tools.sh`.
 
+#[path = "ci_local/affected_rules.rs"]
+mod affected_rules;
 #[path = "ci_local/cache.rs"]
 mod cache;
 mod common;
@@ -571,6 +573,9 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
+/// The steps `scripts/ci-affected.sh` runs on any change, before the tests under changed paths.
+const AFFECTED_ALWAYS: &[&str] = &["cargo test", "ns rules check --only ast-grep"];
+
 /// `scripts/ci-affected.sh` with `NS_GATE_FILES` set to `files`, or unset.
 fn affected(repo: &Repo, files: Option<&str>, env: &[(&str, &str)]) -> Output {
     let mut cmd = common::command("bash");
@@ -594,32 +599,30 @@ fn ci_affected_runs_cargo_test_and_the_tests_under_each_changed_path() {
         format!("{a_name} rule pack tests"),
         format!("{b_name} rule pack tests"),
     );
-    let mut all = vec!["cargo test".to_owned()];
+    let always: Vec<String> = AFFECTED_ALWAYS.iter().map(|s| s.to_string()).collect();
+    let mut all = always.clone();
     all.extend(packs.iter().map(|(_, n)| format!("{n} rule pack tests")));
     all.push("py-inventory fixture tests".to_owned());
     for (files, want) in [
         (None, all.clone()),
         (Some(String::new()), vec![]),
-        (
-            Some("skills/ns-build/SKILL.md".to_owned()),
-            all[..1].to_vec(),
-        ),
-        (Some(format!("rules/{a}x/y\nrules/{a}")), all[..1].to_vec()),
+        (Some("skills/ns-build/SKILL.md".to_owned()), always.clone()),
+        (Some(format!("rules/{a}x/y\nrules/{a}")), always.clone()),
         (
             Some(format!(
                 "rules/{b}/src/a.ts\nrules/{a}/tests/test_x.py\ndocs/FACTORY.md"
             )),
-            vec!["cargo test".to_owned(), a_step.clone(), b_step.clone()],
+            [always.clone(), vec![a_step.clone(), b_step.clone()]].concat(),
         ),
         (
             Some(format!(
                 "evals/fixtures/py-inventory/x.py\nrules/{b}/a.java"
             )),
-            vec![
-                "cargo test".to_owned(),
-                b_step,
-                "py-inventory fixture tests".to_owned(),
-            ],
+            [
+                always.clone(),
+                vec![b_step, "py-inventory fixture tests".to_owned()],
+            ]
+            .concat(),
         ),
     ] {
         let out = affected(&repo, files.as_deref(), &[]);
@@ -642,7 +645,7 @@ fn ci_affected_stops_at_a_failing_step() {
     );
     assert_eq!(out.status.code(), Some(1));
     let step = format!("{a_name} rule pack tests");
-    assert_eq!(steps(&out), ["cargo test", &step]);
+    assert_eq!(steps(&out), [AFFECTED_ALWAYS, &[&step]].concat());
     assert!(stderr(&out).contains(&format!("ci-affected: FAILED at step: {step}")));
 }
 
@@ -681,7 +684,10 @@ fn a_new_pack_needs_only_files_under_its_own_directory() {
 
     let out = affected(&repo, Some("rules/zz/tests/run.sh"), &[]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(steps(&out), ["cargo test", "Zed rule pack tests"]);
+    assert_eq!(
+        steps(&out),
+        [AFFECTED_ALWAYS, &["Zed rule pack tests"]].concat()
+    );
     assert!(stderr(&out).contains("zz rule pack tests ran"));
 }
 
@@ -750,8 +756,11 @@ fn a_rules_directory_without_tests_run_sh_is_no_pack() {
     assert_eq!(steps(&out), fixed);
     let out = affected(&repo, Some("rules/x/y"), &[]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(steps(&out), ["cargo test"]);
+    assert_eq!(steps(&out), AFFECTED_ALWAYS);
     let out = affected(&repo, None, &[]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(steps(&out), ["cargo test", "py-inventory fixture tests"]);
+    assert_eq!(
+        steps(&out),
+        [AFFECTED_ALWAYS, &["py-inventory fixture tests"]].concat()
+    );
 }

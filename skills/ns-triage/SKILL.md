@@ -147,7 +147,7 @@ The unit ID is `<issue-number>-<slug>`, with a short kebab-case slug from the ti
 unit: 142-uart-timeout
 phase: triage
 status: pass
-base: main          # the branch the worktree came from
+base: develop       # computed, below
 touches:            # the brief's Touches globs, one per line
   - cli/src/run.rs
   - skills/ns-review/**
@@ -158,6 +158,14 @@ Issue: <issue URL>
 ## Agent Brief
 ...
 ```
+
+`base:` is the branch the worktree came from, as a bare name ([base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts)). Compute it, never write a literal branch name:
+
+```bash
+base=$(git symbolic-ref --short refs/remotes/origin/HEAD) && base=${base#origin/}
+```
+
+A unit started with `ns worktree new --base <branch>` records that branch instead. When `origin/HEAD` does not resolve (a clone made with `git init` and `git remote add`), use the main checkout's current branch (`git -C <main checkout> branch --show-current`), which `ns worktree new` also falls back to, and say so on a line under `Issue:`: `Base: <branch>, from the main checkout (origin/HEAD unset).`
 
 The unit is started when the issue carries `ready-for-agent`, the brief comment is posted, and `brief.md` exists in the worktree with `status: pass`.
 
