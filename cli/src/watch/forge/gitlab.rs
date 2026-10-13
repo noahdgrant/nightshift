@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::{ClosingPrs, Filed, Forge, IssueState, Post, PrState};
+use super::{ClosingPrs, Filed, Forge, IssueState, MergedPr, MergedPrs, Post, PrState};
 use crate::config::ForgeKind;
 use crate::error::SfError;
 use crate::watch::ci::{Check, HeadChecks, Outcome};
@@ -105,6 +105,49 @@ fn to_filed(i: &Value, team: &BTreeSet<u64>) -> Option<Filed> {
             Some("closed") => IssueState::Completed,
             _ => IssueState::Open,
         },
+    })
+}
+
+/// How many merge requests one list reads.
+const MR_LIMIT: usize = 100;
+
+/// The merged MRs in one list, truncated when it is full.
+fn to_merged_prs(all: &[Value]) -> MergedPrs {
+    MergedPrs {
+        prs: all.iter().filter_map(to_merged).collect(),
+        truncated: all.len() >= MR_LIMIT,
+    }
+}
+
+/// The API path listing the merged MRs from `since` on.
+fn merged_path(since: Option<i64>) -> String {
+    let after = since.map_or(String::new(), |t| {
+        format!("&merged_after={}", crate::clock::iso(t).replace(':', "%3A"))
+    });
+    format!(
+        "projects/:id/merge_requests?state=merged&order_by=created_at&per_page={MR_LIMIT}{after}"
+    )
+}
+
+/// An MR's source branch, empty for a fork's: its name says nothing about this project's units.
+fn own_branch(mr: &Value) -> String {
+    let own =
+        mr["source_project_id"].is_u64() && mr["source_project_id"] == mr["target_project_id"];
+    if own {
+        mr["source_branch"].as_str().unwrap_or("").to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// A merged MR, its source branch empty when it came from a fork. One with no merge time it can
+/// read is left out.
+fn to_merged(mr: &Value) -> Option<MergedPr> {
+    Some(MergedPr {
+        number: mr["iid"].as_u64()?,
+        head: own_branch(mr),
+        merged: time(mr["merged_at"].as_str()?)?,
+        changed: None,
     })
 }
 
@@ -209,23 +252,22 @@ impl Forge for GitLab {
             PrState::Open => "opened",
             PrState::Merged => "merged",
         };
-        let path =
-            format!("projects/:id/merge_requests?state={state}&order_by=updated_at&per_page=100");
+        let path = format!(
+            "projects/:id/merge_requests?state={state}&order_by=updated_at&per_page={MR_LIMIT}"
+        );
         let mut by_issue = BTreeMap::new();
         for mr in items(&glab(&self.root, &["api", &path])?)? {
             for n in closed_by(mr["description"].as_str().unwrap_or("")) {
-                // A fork's branch name says nothing about this project's units.
-                let own = mr["source_project_id"].is_u64()
-                    && mr["source_project_id"] == mr["target_project_id"];
-                let head = if own {
-                    mr["source_branch"].as_str().unwrap_or("").to_string()
-                } else {
-                    String::new()
-                };
-                by_issue.insert(n, (mr["iid"].as_u64().unwrap_or(0), head));
+                by_issue.insert(n, (mr["iid"].as_u64().unwrap_or(0), own_branch(&mr)));
             }
         }
         Ok(by_issue)
+    }
+
+    /// The merged MRs from `since` on, up to 100. GitLab's list gives no line counts.
+    fn merged_prs(&self, since: Option<i64>) -> Result<MergedPrs> {
+        let path = merged_path(since);
+        Ok(to_merged_prs(&items(&glab(&self.root, &["api", &path])?)?))
     }
 
     /// `n` is always an issue iid: a merge request is `!n`, numbered apart, so it never blocks.
@@ -379,6 +421,62 @@ impl Forge for GitLab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn to_merged_prs_reads_each_mrs_branch_and_merge_time_but_no_lines() {
+        let mrs = serde_json::json!([
+            {"iid": 4, "source_branch": "ns/9-b", "source_project_id": 1, "target_project_id": 1,
+             "merged_at": "2026-10-05T10:00:00.123Z"},
+            {"iid": 5, "source_branch": "ns/9-b", "source_project_id": 2, "target_project_id": 1,
+             "merged_at": "2026-10-06T00:00:00Z"},
+            {"iid": 6, "source_branch": "x", "merged_at": null},
+            {"iid": 7, "source_branch": "ns/9-b", "merged_at": "2026-10-07T00:00:00Z"},
+        ]);
+        let m = to_merged_prs(mrs.as_array().unwrap());
+        let at = |s| crate::clock::parse_iso(s).unwrap();
+        assert_eq!(
+            m.prs,
+            [
+                MergedPr {
+                    number: 4,
+                    head: "ns/9-b".into(),
+                    merged: at("2026-10-05T10:00:00Z"),
+                    changed: None
+                },
+                MergedPr {
+                    number: 5,
+                    head: String::new(),
+                    merged: at("2026-10-06T00:00:00Z"),
+                    changed: None
+                },
+                MergedPr {
+                    number: 7,
+                    head: String::new(),
+                    merged: at("2026-10-07T00:00:00Z"),
+                    changed: None
+                },
+            ]
+        );
+        assert!(!m.truncated);
+        let full = vec![serde_json::json!({}); MR_LIMIT];
+        assert!(to_merged_prs(&full).truncated);
+        assert!(!to_merged_prs(&full[1..]).truncated);
+    }
+
+    #[test]
+    fn the_merged_list_asks_for_100_merged_after_the_start() {
+        assert_eq!(MR_LIMIT, 100);
+        assert_eq!(
+            merged_path(None),
+            "projects/:id/merge_requests?state=merged&order_by=created_at&per_page=100"
+        );
+        let since = crate::clock::parse_iso("2026-09-07").unwrap();
+        assert_eq!(
+            merged_path(Some(since)),
+            "projects/:id/merge_requests?state=merged&order_by=created_at&per_page=100\
+             &merged_after=2026-09-07T00%3A00%3A00Z"
+        );
+    }
 
     #[test]
     fn glab_that_cannot_start_says_so() {

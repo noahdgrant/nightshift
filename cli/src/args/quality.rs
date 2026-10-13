@@ -27,10 +27,12 @@ escape_findings,trend,run_log,gaps,per_unit,records}; per_unit[].source is recor
 --since and --until are inclusive and UTC, and so is their echo in the output: a bare date
 is 00:00:00 for --since and 23:59:59 for --until. trend and per_unit days are local (TZ).
 
---bugs reads the type:fix issues in any state from the [queue] source forge (network) and
-prints a table per ISO week (UTC); --json prints {ok,label,since,until,weeks,total,issues,
-excluded} instead. Issues closed as duplicate or not planned are left out. --weeks N keeps
-the last N ISO weeks, this one included.
+--bugs reads the type:fix issues in any state and the merged PRs from the [queue] source
+forge (network) and prints a table per ISO week (UTC), then each week's fix issues per merged
+unit (an ns/ PR) and per 1,000 changed lines, and each rate's trend (rising, flat, falling,
+or insufficient under 4 weeks); --json prints {ok,label,since,until,weeks,total,trend,
+merged_prs,issues,excluded} instead. Issues closed as duplicate or not planned are left out.
+--weeks N keeps the last N ISO weeks, this one included.
 
 Exit codes: 0 ok, 1 git or the forge failed, 2 usage error (bad --since or --until, --until
 before --since, --weeks 0 or an --until before its weeks, not in a git repo).";
@@ -50,7 +52,7 @@ pub(crate) struct Quality {
     /// Print JSON: the default for the review report, and for --bugs instead of its table
     #[arg(long)]
     pub json: bool,
-    /// Count the type:fix issues opened in each ISO week, by source and severity, instead of the review report
+    /// Count the type:fix issues opened in each ISO week, by source and severity, with their rate per merged unit and per 1,000 changed lines, instead of the review report
     #[arg(long)]
     pub bugs: bool,
     /// With --bugs, only the last N ISO weeks, this one included
