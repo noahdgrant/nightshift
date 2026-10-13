@@ -5,10 +5,6 @@
 # ns check-markers and the private guard. The .githooks pre-commit hook runs --fast on the
 # working tree; the pre-push hook runs the full suite at each commit pushed.
 #
-# Under ns run --cpus (ns watch --parallel), cargo build and cargo test keep to the unit's CPU
-# share through CARGO_BUILD_JOBS and RUST_TEST_THREADS, which ns run sets beside NS_CPUS. No
-# step starts parallel work of its own, so none reads NS_CPUS.
-#
 # Uses the ns this run builds: cli/target/debug/ns, or under $CARGO_TARGET_DIR when that
 # is set, as the pre-push hook sets it. The private guard reads
 # PRIVATE_DENYLIST from the environment, as in CI. It fails first on a missing or

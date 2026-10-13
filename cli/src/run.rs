@@ -231,7 +231,7 @@ pub fn cli(args: RunArgs) -> Result<ExitCode> {
     let mut shared = Shared::new();
     shared.cpus = args
         .cpus
-        .map(|n| crate::cpus::log_value(&crate::cpus::export(n)));
+        .map(|n| crate::cpus::log_value(crate::cpus::activate(n)));
     let night = match &args.night {
         Some(dir) => {
             crate::stop::install_for_watch().context("cannot handle SIGINT and SIGTERM")?;
@@ -404,6 +404,7 @@ fn run_harness(
     }
     let (mut cmd, watch) = memcap::command(cap, &argv[0]);
     crate::git::scrub(&mut cmd);
+    crate::cpus::apply(&mut cmd);
     cmd.args(&argv[1..])
         .current_dir(cwd)
         .stdout(out)

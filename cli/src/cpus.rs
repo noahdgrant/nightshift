@@ -3,6 +3,8 @@
 //! the operator already set is left as it is.
 
 use serde_json::{json, Map, Value};
+use std::process::Command;
+use std::sync::OnceLock;
 
 /// The variables `--cpus` sets: one stack-neutral, two that cargo and the Rust test runner read.
 pub const VARS: [&str; 3] = ["NS_CPUS", "RUST_TEST_THREADS", "CARGO_BUILD_JOBS"];
@@ -54,16 +56,23 @@ pub fn settings(n: u32, get: impl Fn(&str) -> Option<String>) -> Vec<Setting> {
         .collect()
 }
 
-/// Set each computed variable in this process, so every child it starts inherits it, and return
-/// the settings. Call it before any thread starts: other threads may read the environment.
-pub fn export(n: u32) -> Vec<Setting> {
-    let s = settings(n, |v| {
-        std::env::var_os(v).map(|x| x.to_string_lossy().into_owned())
-    });
-    for x in s.iter().filter(|x| !x.inherited) {
-        std::env::set_var(x.var, &x.value);
+static ACTIVE: OnceLock<Vec<Setting>> = OnceLock::new();
+
+/// Fix the settings for `--cpus n` for this process and return them. [`apply`] puts them on each
+/// phase and gate it starts.
+pub fn activate(n: u32) -> &'static [Setting] {
+    ACTIVE.get_or_init(|| {
+        settings(n, |v| {
+            std::env::var_os(v).map(|x| x.to_string_lossy().into_owned())
+        })
+    })
+}
+
+/// Give `cmd` each computed variable; an inherited one reaches it through the environment.
+pub fn apply(cmd: &mut Command) {
+    for x in ACTIVE.get().into_iter().flatten().filter(|x| !x.inherited) {
+        cmd.env(x.var, &x.value);
     }
-    s
 }
 
 /// The settings for the run log: each variable's value and whether it was computed or inherited.

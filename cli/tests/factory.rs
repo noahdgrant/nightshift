@@ -11199,24 +11199,38 @@ fn run_without_cpus_sets_none_of_the_variables() {
 
 #[test]
 fn run_cpus_passes_a_variable_already_set_through_unchanged() {
-    let e = Env::new();
-    let seen = cpus_seen(&e);
-    let out = e
-        .ns()
-        .args(["run", "--issue", "7", "--cpus", "2"])
-        .env("RUST_TEST_THREADS", "16")
-        .output();
-    assert!(out.status.success(), "{out:?}");
-    assert_eq!(
-        fs::read_to_string(&seen).unwrap(),
-        "build:2:16:2\ngate:2:16:2\n"
-    );
-    let cpus = &events_named(&e, "start")[0]["cpus"];
-    assert_eq!(
-        cpus["RUST_TEST_THREADS"],
-        serde_json::json!({"value": "16", "source": "inherited"})
-    );
-    assert_eq!(cpus["NS_CPUS"]["source"], "computed", "{cpus}");
+    let vars = ["NS_CPUS", "RUST_TEST_THREADS", "CARGO_BUILD_JOBS"];
+    for (i, set) in vars.iter().enumerate() {
+        let e = Env::new();
+        let seen = cpus_seen(&e);
+        let out = e
+            .ns()
+            .args(["run", "--issue", "7", "--cpus", "2"])
+            .env(set, "16")
+            .output();
+        assert!(out.status.success(), "{set}: {out:?}");
+        let mut values = ["2", "2", "2"];
+        values[i] = "16";
+        let line = |who: &str| format!("{who}:{}:{}:{}\n", values[0], values[1], values[2]);
+        assert_eq!(
+            fs::read_to_string(&seen).unwrap(),
+            format!("{}{}", line("build"), line("gate")),
+            "{set}"
+        );
+        let cpus = &events_named(&e, "start")[0]["cpus"];
+        for (j, var) in vars.iter().enumerate() {
+            let (value, source) = if i == j {
+                ("16", "inherited")
+            } else {
+                ("2", "computed")
+            };
+            assert_eq!(
+                cpus[var],
+                serde_json::json!({"value": value, "source": source}),
+                "{set}: {var}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -11235,7 +11249,7 @@ fn run_cpus_must_be_a_number_of_at_least_one() {
 #[test]
 fn watch_gives_each_unit_its_share_of_the_cores() {
     let cores = std::thread::available_parallelism().unwrap().get();
-    for parallel in [1, 2] {
+    for parallel in [1, 2, 3, cores + 1] {
         let e = Env::new();
         two_ready(&e);
         let seen = e.ctrl.join("cpus-seen");
