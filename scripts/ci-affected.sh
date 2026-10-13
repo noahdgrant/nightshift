@@ -3,10 +3,12 @@
 # ns run's gate after review and in the merge step runs this after ci-local.sh --fast, with the
 # paths changed since its full gate last went green (docs/factory/run.md, "Gate").
 #
-# cargo test runs on any change, since the cli tests read files across the repo. A rule pack's
-# tests (each pack scripts/rule-packs.sh lists) and the py-inventory fixture tests run when a
-# path under them changed. With
-# NS_GATE_FILES unset every step runs; set and empty, none does.
+# cargo test runs on any change, since the cli tests read files across the repo, and so do the
+# ast-grep commands of the rules row, against the committed baseline: they take seconds, and a
+# review fix that breaks one would otherwise first fail in GitHub CI. Clippy and cargo-deny stay
+# in the full gate. A rule pack's tests (each pack scripts/rule-packs.sh lists) and the
+# py-inventory fixture tests run when a path under them changed. With NS_GATE_FILES unset every
+# step runs; set and empty, none does.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -33,6 +35,8 @@ step() {
 
 packs=$(scripts/rule-packs.sh)
 step "cargo test" cargo test --manifest-path cli/Cargo.toml
+# cargo test built this ns.
+step "ns rules check --only ast-grep" "${CARGO_TARGET_DIR:-cli/target}/debug/ns" rules check --only ast-grep --human
 # On fd 3, so a pack's tests can't read the list from stdin.
 while IFS=$'\t' read -r -u 3 pack name; do
   if [ -n "$pack" ] && changed "rules/$pack/"; then

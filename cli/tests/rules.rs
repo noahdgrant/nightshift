@@ -561,3 +561,50 @@ fn a_failing_base_command_short_circuits_the_rules_check() {
     assert!(err.contains("base failed"), "{err}");
     assert!(!err.contains("ns rules:"), "{err}");
 }
+
+#[test]
+fn only_runs_the_commands_containing_its_text_and_reports_no_fixed() {
+    let r = Repo::new();
+    r.findings("lint-a", "src.py:2:5: eval is banned\n");
+    r.findings("lint-b", "src.py:3:5: eval is banned\n");
+    r.ns(&["baseline", "--allow-growth"]);
+    r.findings("lint-a", "");
+    r.findings(
+        "lint-b",
+        "src.py:2:5: eval is banned\nsrc.py:3:5: eval is banned\n",
+    );
+
+    let (code, v, err) = r.ns(&["check", "--only", "lint-a"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(
+        v["commands"],
+        serde_json::json!([{"command": "./lint-a", "tool": "lint-a", "exit": 0, "findings": 0}])
+    );
+    assert_eq!(v["fixed"], serde_json::json!([]));
+    assert!(!err.contains("are gone"), "{err}");
+
+    let (code, v, err) = r.ns(&["check", "--only", "lint-b"]);
+    assert_eq!(code, Some(1), "{v} {err}");
+    assert_eq!(files_and_lines(&v["new"]), [("src.py".into(), 2)]);
+    assert_eq!(v["baselined"], 1);
+}
+
+#[test]
+fn only_matching_no_command_is_a_usage_error_naming_the_commands() {
+    let r = Repo::new();
+    let (code, v, err) = r.ns(&["check", "--only", "ast-grep"]);
+    assert_eq!(code, Some(2), "{v} {err}");
+    assert!(
+        err.contains("no command in the rules row contains `ast-grep`"),
+        "{err}"
+    );
+    assert!(err.contains("./lint-a"), "{err}");
+}
+
+#[test]
+fn only_with_no_rules_row_checks_nothing() {
+    let r = Repo::with_stack("| build | `make` |\n");
+    let (code, v, err) = r.ns(&["check", "--only", "ast-grep"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["commands"], serde_json::json!([]));
+}
