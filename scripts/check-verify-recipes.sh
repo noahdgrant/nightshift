@@ -9,9 +9,10 @@
 # or under a feature file's `## Driving it with ns`. Prose and blocks under other headings are not
 # recipes. First, without running anything, every line of every recipe must start with
 # `"$V/sandbox" `, chain, redirect or substitute nothing outside single quotes (`;` `&` `|` `<` `>`,
-# a backtick, `$(`), use no glob, bracket, brace or `..`, and name a `.ns/` path only as one unit's
-# folder (`.ns/$NS_UNIT`, `.ns/<unit-id>` or a concrete id). Every fence under those headings must
-# be exactly ```bash. Fails naming the file, heading and block of each line that does not.
+# a backtick, `$(`), use no glob (`*` `?`), bracket, brace, `$'`, `$"` or `..` outside single
+# quotes, close every quote and end no line in a backslash, and name a `.ns/` path only as one
+# unit's folder (`.ns/$NS_UNIT`, `.ns/<unit-id>` or a concrete id). Every fence under those
+# headings must be exactly ```bash. Fails naming the file, heading and block of each line that does not.
 #
 # Then runs, in order in one bash shell (errexit, nounset, pipefail) from the repo root, with stdin
 # from /dev/null, git location variables unset and OUT in a temporary directory: the blocks under
@@ -65,28 +66,33 @@ extract() {
   ' "$1"
 }
 
-# Prints <line> twice: without anything quoted, then without single-quoted text only. A single
-# quote, a double quote and a backslash are read as the shell reads them.
+# Prints <line> three times: without anything quoted, without single-quoted text only, and a word
+# for each problem the other two cannot show: `ansi` for a `$'` or `$"` outside single quotes,
+# `open` for a quote still open or a backslash last at the end of the line. A single quote, a
+# double quote and a backslash are read as the shell reads them.
 unquoted() {
   awk '
-    { bare = ""; dq = ""; q = ""; n = length($0)
+    { bare = ""; dq = ""; q = ""; flags = ""; n = length($0)
       for (i = 1; i <= n; i++) {
         c = substr($0, i, 1)
         if (q == "\x27") { if (c == q) q = ""; continue }
-        if (c == "\\") { i++; if (q == "\"") dq = dq c substr($0, i, 1); continue }
+        if (c == "$" && substr($0, i + 1, 1) ~ /^[\x27"]$/) flags = flags " ansi"
+        if (c == "\\") { if (i == n) flags = flags " open"; i++; if (q == "\"") dq = dq c substr($0, i, 1); continue }
         if (q == "\"") { if (c == q) q = ""; else dq = dq c; continue }
         if (c == "\x27" || c == "\"") { q = c; continue }
         bare = bare c; dq = dq c
       }
-      print bare; print dq }
+      if (q != "") flags = flags " open"
+      print bare; print dq; print flags }
   ' <<<"$1"
 }
 
 # Prints a line for each recipe line in the blocks under `## <heading>` of <file> that does not
-# run in the sandbox, chains or substitutes a command, uses a glob, brace or `..`, or names a
-# .ns/ path other than one unit's folder; and for each fence there that is not bash.
+# run in the sandbox, chains or substitutes a command, uses a glob, brace, `$'`, `$"` or `..`, ends
+# a line inside a quote or after a backslash, or names a .ns/ path other than one unit's folder;
+# and for each fence there that is not bash.
 lint() {
-  local file=$1 heading=$2 n i where line bare dq tok
+  local file=$1 heading=$2 n i where line bare dq flags tok
   n=$(extract "$file" "$heading" "$tmp/lint")
   while IFS= read -r line; do
     [ -z "$line" ] || echo "$(basename "$file") ## $heading block ${line%%:*} is not a bash block: ${line#*: }"
@@ -96,8 +102,10 @@ lint() {
     while IFS= read -r line; do
       case "$line" in '' | '#'*) continue ;; esac
       case "$line" in '"$V/sandbox" '*) ;; *) echo "$where does not run in the sandbox: $line" ;; esac
-      case "$line" in *[*?]*) echo "$where uses a glob: $line" ;; esac
-      { read -r bare; read -r dq; } < <(unquoted "$line")
+      { read -r bare; read -r dq; read -r flags; } < <(unquoted "$line")
+      case "$dq" in *[*?]*) echo "$where uses a glob: $line" ;; esac
+      case "$flags" in *ansi*) echo "$where uses \$' or \$\" quoting: $line" ;; esac
+      case "$flags" in *open*) echo "$where ends a line inside a quote or after a backslash: $line" ;; esac
       if [[ "$bare" == *[\;\&\|\<\>]* || "$dq" == *'`'* || "$dq" == *'$('* ]]; then
         echo "$where runs something outside the sandbox (chain, redirect or substitution): $line"
       fi

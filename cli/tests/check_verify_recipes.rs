@@ -326,10 +326,51 @@ fn a_recipe_outside_the_sandbox_fails_naming_the_file_and_block_before_anything_
 fn a_glob_in_a_recipe_fails_naming_the_block() {
     for recipe in [
         r#""$V/sandbox" ls "$V"/repo.worktrees/*/.ns/7-x"#,
-        r#""$V/sandbox" sh -c 'ls "$V"/ghd/labels-?'"#,
+        r#""$V/sandbox" ls "$V/ghd/labels-?""#,
+        r#""$V/sandbox" ls $V/ghd/labels-?"#,
     ] {
         let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(recipe))]);
         assert_fails_with(&out, "run.md ## Driving it with ns block 1 uses a glob");
+    }
+}
+
+#[test]
+fn a_glob_character_inside_single_quotes_is_not_a_glob() {
+    let recipe = r#""$V/sandbox" sh -c 'echo ".x[]?" "a*" >/dev/null' _ '*?'"#;
+    let out = run_with_features(
+        &skill(LAUNCH, DOCTOR_OK),
+        &[("run.md", feature(&format!("{RUN_OK}\n  {recipe}")))],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn ansi_c_and_locale_quoting_fails_naming_the_block() {
+    for recipe in [
+        r#""$V/sandbox" echo a$'\'' ; id"#,
+        r#""$V/sandbox" echo $'a'"#,
+        r#""$V/sandbox" echo $"a""#,
+    ] {
+        let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(recipe))]);
+        assert_fails_with(
+            &out,
+            "run.md ## Driving it with ns block 1 uses $' or $\" quoting",
+        );
+    }
+}
+
+#[test]
+fn a_quote_or_backslash_open_at_the_end_of_a_line_fails_naming_the_block() {
+    for recipe in [
+        "\"$V/sandbox\" echo '\n  \"$V/sandbox\" '; id; echo '\n  \"$V/sandbox\" '",
+        "\"$V/sandbox\" echo \"\n  \"$V/sandbox\" \"; id; echo \"\n  \"$V/sandbox\" \"",
+        "\"$V/sandbox\" echo a\\\n  \"$V/sandbox\" true",
+    ] {
+        let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(recipe))]);
+        assert_fails_with(
+            &out,
+            "run.md ## Driving it with ns block 1 ends a line inside a quote or after a backslash",
+        );
     }
 }
 
