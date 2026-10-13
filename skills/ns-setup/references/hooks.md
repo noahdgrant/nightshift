@@ -6,14 +6,16 @@ How `ns-setup` finds a repo's pre-commit hook, and the files it proposes when th
 
 Check in this order and stop at the first hit:
 
-1. `git config core.hooksPath` is set: the hooks live in that directory.
+1. `git config --local core.hooksPath` is set (a global value does not count) and that directory holds an executable `pre-commit`. Otherwise continue down the list.
 2. `.githooks/` exists.
 3. `.pre-commit-config.yaml` exists (pre-commit.com).
 4. `.husky/` exists (husky).
 5. `lefthook.yml` exists (lefthook).
 6. `.git/hooks/pre-commit` exists and is executable. In a worktree, look under `git rev-parse --git-common-dir`, not `.git/`.
 
-On a hit, record the hook in `stack.md`'s `## Hooks` section and change nothing: no new script, no new hook, no `git config`. Its `ci-local` row is the repo's existing script that runs CI locally when there is one, else `none` (plain, no backticks, so the gate finds no command).
+On a hit, change no files: no new script, no new hook, no `git config`. Record the hook in `stack.md`'s `## Hooks` section. If it is not enabled (steps 2 to 5 with `core.hooksPath` unset or not pointing at it, or `pre-commit install` / `husky` / `lefthook install` not run), record "present, not enabled" with the enabling command, and name that command in the final message. Never run it for a pre-existing hook. If the hit is our own partial setup (`.githooks/pre-commit` calling `scripts/ci-local.sh --fast`, `core.hooksPath` unset), say to finish by running `git config core.hooksPath .githooks`.
+
+The `ci-local` row is the repo's existing script that runs CI locally when it accepts `--fast`, since the gate appends ` --fast` to the row command. Otherwise it is `none` (plain, no backticks, so the gate finds no command), and `## Hooks` names the script. When a script that runs CI already exists, never overwrite it: propose only `.githooks/pre-commit` and the `git config` line.
 
 ## Proposal
 
@@ -38,7 +40,7 @@ With no hit, propose three things, all derived from the repo's real CI workflow 
 exec scripts/ci-local.sh --fast
 ```
 
-**`git config core.hooksPath .githooks`** for the main checkout, and the same command as a `[worktree] setup` entry in `.nightshift/nightshift.toml`, so every unit worktree runs the hook:
+**`git config core.hooksPath .githooks`** for the main checkout, set last, and the same command as a `[worktree] setup` entry in `.nightshift/nightshift.toml`, so every unit worktree runs the hook:
 
 ```toml
 [worktree]
@@ -50,7 +52,7 @@ The `ci-local` row of `stack.md` names `scripts/ci-local.sh`. The `ns run` gate 
 ### Gates
 
 - `gates: stop`: show the three files and the `git config` line, and wait for a yes before writing any of them. After the yes, write the `[worktree] setup` entry to `.nightshift/nightshift.toml`, appended to the existing `setup` array when the worktree trap fix-ups write one too.
-- `gates: auto`: write `scripts/ci-local.sh` and `.githooks/pre-commit`, run the `git config` line in the main checkout, and fill the `ci-local` row and `## Hooks` section. Leave `.nightshift/nightshift.toml` alone, since many repos have its changes reviewed by a human. Give the `[worktree] setup` line in the final message for whoever merges to add.
+- `gates: auto`: write `scripts/ci-local.sh` and `.githooks/pre-commit`, run the `git config` line in the main checkout last, after the files exist, and fill the `ci-local` row and `## Hooks` section. Leave `.nightshift/nightshift.toml` alone, since many repos have its changes reviewed by a human. Give the `[worktree] setup` line in the final message for whoever merges to add.
 
 `ns-setup`, run by the user to onboard a repo, is the sanctioned writer of `core.hooksPath` and `.githooks/`, which `skills/ns-contract` (Git hooks) forbids to phases. Never do this inside an `ns run` phase: if the guard denies the write, report it, and do not retry or bypass it.
 
