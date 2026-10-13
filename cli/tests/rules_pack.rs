@@ -496,6 +496,107 @@ fn a_file_past_1000_lines_is_too_long() {
     r.assert_clean();
 }
 
+/// Wall-clock code for `wall-clock-in-test`: each line ending `// wall` is a finding in test code.
+/// Neither file it goes in is compiled, so it needn't type-check.
+const WAITS: &str = "fn waits(start: Instant, d: Duration, clock: Clock, n: u64) {
+    sleep(d); // wall
+    tokio::time::sleep(d).await; // wall
+    let limit = Duration::from_millis(300); // wall
+    if start.elapsed() >= limit {} // wall
+    while Instant::now() < start {} // wall
+    assert!(Instant::now() >= start); // wall
+    let elapsed = start.elapsed();
+    println!(\"{:?}\", start.elapsed());
+    assert!(elapsed < limit); // wall
+    let later = Instant::now() + d;
+    let fake = Duration::from_secs(n);
+    assert!(clock.now() > later);
+    assert_eq!(n, \"start.elapsed() < limit\");
+}
+";
+
+#[test]
+fn a_wall_clock_wait_in_test_code_is_flagged_and_production_code_is_not() {
+    let r = Repo::new();
+    r.write(
+        "src/main.rs",
+        "use std::thread::sleep;\nuse std::time::Duration;\n\nfn main() {\n    println!(\"{}\", extra::ONE);\n    sleep(Duration::from_millis(1));\n}\n\n#[test]\n#[ignore]\nfn naps() {\n    sleep(Duration::from_millis(1)); // wall\n}\n",
+    );
+    r.write("tests/common/mod.rs", WAITS);
+    let unit = |attr: &str| format!("{attr}\n{}", WAITS.replace("fn waits", "fn test"));
+    r.write(
+        "src/waits.rs",
+        &[
+            WAITS.to_string(),
+            unit("#[cfg(not(test))]"),
+            unit("#[test]"),
+            unit("#[tokio::test(flavor = \"multi_thread\")]"),
+            unit("#[cfg(test)]\nmod tests {"),
+            "}\n".to_string(),
+        ]
+        .concat(),
+    );
+    let wall = |file: &str, line, snippet: &str| {
+        (
+            s("ast-grep"),
+            s("wall-clock-in-test"),
+            s(file),
+            Some(line),
+            snippet.split_whitespace().collect::<Vec<_>>().join(" "),
+        )
+    };
+    let walls = |file: &str| -> Vec<Key> {
+        r.read(file)
+            .lines()
+            .zip(1..)
+            .filter(|(text, _)| text.ends_with("// wall"))
+            .map(|(text, line)| wall(file, line, text))
+            .collect()
+    };
+    let per = WAITS.lines().filter(|l| l.ends_with("// wall")).count();
+    let mut want = [
+        walls("src/main.rs"),
+        walls("src/waits.rs")[2 * per..].to_vec(),
+        walls("tests/common/mod.rs"),
+    ]
+    .concat();
+    want.sort();
+    assert_eq!(want.len(), 1 + per * 4, "{want:?}");
+    let new = r.new_findings();
+    assert!(
+        new.iter().all(|f| f["message"]
+            .as_str()
+            .unwrap()
+            .contains("CODING_STANDARDS.md")),
+        "{new:?}"
+    );
+    let mut got = new.iter().map(key).collect::<Vec<_>>();
+    got.sort();
+    assert_eq!(got, want);
+
+    let (code, v, err) = r.rules(&["baseline", "--allow-growth"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    let (code, v, err) = r.check();
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(
+        (&v["baselined"], &v["new"]),
+        (&want.len().into(), &Value::Array(vec![])),
+        "{v}"
+    );
+    r.write(
+        "extra/tests/wait.rs",
+        "pub fn settle() {\n    std::thread::sleep(Duration::from_millis(1));\n}\n",
+    );
+    assert_eq!(
+        r.one_finding("CODING_STANDARDS.md"),
+        wall(
+            "extra/tests/wait.rs",
+            2,
+            "std::thread::sleep(Duration::from_millis(1));"
+        )
+    );
+}
+
 #[test]
 fn a_second_definition_of_a_road_is_a_duplicate_helper() {
     let r = Repo::new();

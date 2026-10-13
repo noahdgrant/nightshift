@@ -17,3 +17,65 @@ message: "file is past 1000 lines; split it along a seam (quality bar, Size: ski
 rule:
   kind: source_file
   regex: '^(?:[^\n]*\n){1000}[\s\S]'
+---
+# wall-clock-in-test, part 1 of 2: in a tests/ directory, any code. Part 2 below matches the same
+# code inside #[test] and #[cfg(test)] items anywhere; keep the two `any` lists the same.
+id: wall-clock-in-test
+language: rust
+severity: error
+message: "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")"
+files: ["**/tests/**/*.rs"]
+rule:
+  any:
+    - kind: call_expression
+      has: {field: function, regex: '(^|::)sleep$'}
+    - kind: call_expression
+      all:
+        - has: {field: function, regex: '(^|::)Duration::from_[a-z0-9_]+$'}
+        - has: {field: arguments, regex: '^\(\s*[0-9][0-9_.]*\s*\)$'}
+    - kind: binary_expression
+      all:
+        - has: {field: operator, regex: '^[<>]=?$'}
+        - has: {kind: call_expression, has: {field: function, regex: '(^|::)Instant::now$|\.elapsed$'}, stopBy: end}
+    - kind: token_tree
+      all:
+        - has: {regex: '^[<>]=?$'}
+        - has:
+            kind: identifier
+            any:
+              - regex: '^elapsed$'
+              - {regex: '^now$', follows: {regex: '^::$', follows: {regex: '^Instant$'}}}
+---
+# wall-clock-in-test, part 2 of 2: inside a #[test] or #[cfg(test)] item (a test fn or a tests
+# module). check.sh drops a finding both parts report.
+id: wall-clock-in-test
+language: rust
+severity: error
+message: "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")"
+rule:
+  any:
+    - kind: call_expression
+      has: {field: function, regex: '(^|::)sleep$'}
+    - kind: call_expression
+      all:
+        - has: {field: function, regex: '(^|::)Duration::from_[a-z0-9_]+$'}
+        - has: {field: arguments, regex: '^\(\s*[0-9][0-9_.]*\s*\)$'}
+    - kind: binary_expression
+      all:
+        - has: {field: operator, regex: '^[<>]=?$'}
+        - has: {kind: call_expression, has: {field: function, regex: '(^|::)Instant::now$|\.elapsed$'}, stopBy: end}
+    - kind: token_tree
+      all:
+        - has: {regex: '^[<>]=?$'}
+        - has:
+            kind: identifier
+            any:
+              - regex: '^elapsed$'
+              - {regex: '^now$', follows: {regex: '^::$', follows: {regex: '^Instant$'}}}
+  inside:
+    stopBy: end
+    all:
+      - any: [{kind: function_item}, {kind: mod_item}]
+      - any:
+          - follows: {kind: attribute_item, regex: '^#\[(test|cfg\(test\)|[\w:]+::test(\(.*\))?)\]$'}
+          - follows: {kind: attribute_item, follows: {kind: attribute_item, regex: '^#\[(test|cfg\(test\)|[\w:]+::test(\(.*\))?)\]$'}}
