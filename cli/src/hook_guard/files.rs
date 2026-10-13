@@ -67,13 +67,32 @@ fn names_skills(name: &str) -> bool {
 
 /// `pattern` (`*` and `?`; a `[` set counts as a match) matches `text`.
 pub(super) fn glob_matches(pattern: &[u8], text: &[u8]) -> bool {
-    match pattern.split_first() {
-        None => text.is_empty(),
-        Some((b'*', rest)) => (0..=text.len()).any(|i| glob_matches(rest, &text[i..])),
-        Some((b'[', _)) => true,
-        Some((c, rest)) => text
-            .split_first()
-            .is_some_and(|(t, tail)| (*c == b'?' || c == t) && glob_matches(rest, tail)),
+    let (mut p, mut t) = (0, 0);
+    let mut backtrack: Option<(usize, usize)> = None;
+    loop {
+        match pattern.get(p) {
+            Some(b'[') => return true,
+            Some(b'*') => {
+                backtrack = Some((p, t));
+                p += 1;
+                continue;
+            }
+            Some(c) if t < text.len() && (*c == b'?' || *c == text[t]) => {
+                p += 1;
+                t += 1;
+                continue;
+            }
+            None if t == text.len() => return true,
+            _ => {}
+        }
+        match backtrack {
+            Some((star, at)) if at < text.len() => {
+                backtrack = Some((star, at + 1));
+                p = star + 1;
+                t = at + 1;
+            }
+            _ => return false,
+        }
     }
 }
 
@@ -215,6 +234,22 @@ pub(super) fn path(w: &Word) -> String {
 /// `w` read as a directory to change to: an expansion of unknown depth is dropped, as if empty.
 pub(super) fn dir_path(w: &Word) -> String {
     path(w).replace(UNREAD, "")
+}
+
+/// `dir`, read as a path to change to, has a part of unknown depth below a protected path
+/// (`.ns`, `.githooks` or `.git`), or is relative to a working directory that is protected: the
+/// shell may end up anywhere in it, or outside it.
+pub(super) fn cd_loses_protected_cwd(dir: &str, from: Cwd) -> bool {
+    if !dir.contains(UNREAD) {
+        return false;
+    }
+    let known = components(dir)
+        .into_iter()
+        .take_while(|p| !p.contains(UNREAD));
+    let below = known
+        .into_iter()
+        .any(|p| matches!(p, ".ns" | ".githooks" | ".git"));
+    below || (!dir.starts_with(['/', '~']) && (from.hooks.is_some() || from.ns.is_some()))
 }
 
 /// The parts of `path` between slashes, without the empty and `.` ones.

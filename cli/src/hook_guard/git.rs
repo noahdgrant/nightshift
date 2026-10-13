@@ -79,6 +79,12 @@ pub(super) fn git_global_options(
                 return Err(unreadable("a git config option"));
             }
             let value = if arg == "-C" {
+                if cd_loses_protected_cwd(&path(value), scan.cwd) {
+                    return Err(format!(
+                        "git -C {} into a directory of unknown depth in a protected path",
+                        value.text
+                    ));
+                }
                 dir_path(value)
             } else {
                 value.text.clone()

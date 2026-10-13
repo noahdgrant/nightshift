@@ -123,7 +123,8 @@ impl Scan {
             .iter()
             .take_while(|p| !p.contains(UNREAD))
             .any(|p| *p == pin::NS_DIR)
-            || (!path.starts_with(['-', '/', UNREAD]) && self.cwd.ns.is_some())
+            || (!path.starts_with(['-', '/'])
+                && (self.cwd.ns.is_some() || self.cwd.hooks.is_some()))
     }
 }
 
@@ -230,10 +231,7 @@ fn check_segment(words: &[Word], scan: &mut Scan) -> Option<String> {
             continue;
         }
         return match prog {
-            "cd" | "pushd" => {
-                change_directory(&w[1..], scan);
-                None
-            }
+            "cd" | "pushd" => change_directory(&w[1..], scan),
             "popd" => {
                 scan.cwd = Cwd::default();
                 None
@@ -272,11 +270,21 @@ fn opaque_command(words: &[Word]) -> Option<String> {
     near_git.then(|| "a command named by a shell expansion next to git or .githooks".to_string())
 }
 
-fn change_directory(args: &[Word], scan: &mut Scan) {
+fn change_directory(args: &[Word], scan: &mut Scan) -> Option<String> {
     let dir = args
         .iter()
         .find(|a| a.text == "-" || !a.text.starts_with('-'));
+    if let Some(d) = dir {
+        let read = path(d);
+        if cd_loses_protected_cwd(&read, scan.cwd) {
+            return Some(format!(
+                "cd {} into a directory of unknown depth in a protected path",
+                d.text
+            ));
+        }
+    }
     scan.cwd = dir.map_or_else(Cwd::default, |d| cd_to(&dir_path(d), scan.cwd));
+    None
 }
 
 /// The working directory after `cd dir` (or `git -C dir`) from `from`.

@@ -639,6 +639,9 @@ fn a_path_part_of_unknown_depth_under_ns_is_denied() {
         "echo x > .ns/x$U/evidence.md",
         "cd .ns/u1 && echo x > x/$(f)",
         "rm .githooks/$(f)",
+        "cd .ns/u1 && rm -rf $(echo ..)/u1/skills",
+        "cd .ns/u1 && echo x > \"$(f)/x\"",
+        "cd .githooks && echo x > \"$(f)/pre-commit\"",
     ] {
         assert!(denied(c), "{c}");
     }
@@ -647,7 +650,8 @@ fn a_path_part_of_unknown_depth_under_ns_is_denied() {
         "echo x > out/$U-x.md",
         "echo x > $(f)/.ns/u1/build.md",
         "cd .ns/u1 && echo x > /tmp/$(f)",
-        "cd .ns/u1 && echo x > \"$(f)/x\"",
+        "cd /tmp && echo x > \"$(f)/x\"",
+        "cd src && echo x > $(f)/x",
         "cd .ns/u1 && rm -f$(x) build.md",
     ] {
         assert!(!denied(c), "{c}");
@@ -660,4 +664,47 @@ fn a_skills_link_is_still_read_past_an_expansion_after_it() {
     let path = skills_link(dir.path(), ".claude/skills", "../.ns/u1/skills");
     assert!(denied(&format!("rm -rf {path}/$S")));
     assert!(denied(&format!("sed -i s/a/b/ {path}/$S/SKILL.md")));
+}
+
+#[test]
+fn a_cd_of_unknown_depth_under_a_protected_path_is_denied() {
+    for c in [
+        "cd .ns/$U/.. && rm -rf u1",
+        "cd .ns/$U$V && echo x > skills/a",
+        "cd .ns/${U:-x} && echo x > skills/a",
+        "cd .ns/$(f) && echo x > skills/a",
+        "cd .githooks/$U$V && rm ../pre-commit",
+        "git -C .githooks/$U$V rm ../pre-commit",
+        "cd .git/$U$V && echo x > ../hooks/pre-commit",
+        "cd .ns/u1 && cd $(f) && rm -rf skills",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "cd .ns/$U && echo x > evidence.md",
+        "cd /tmp/$A$B && echo x > y",
+        "cd src/$(f) && echo x > y",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn many_adjacent_expansions_in_a_git_push_word_finish_fast() {
+    let many = "$a".repeat(40);
+    let word = format!("\"r{many}-x\"");
+    let start = std::time::Instant::now();
+    let long = denied(&format!("git push {word}"));
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(!long);
+    assert!(denied(&format!("git push \"--no-v{many}\"")));
+    assert!(glob_matches(&b"*".repeat(40), b"x"));
+    assert!(!glob_matches(
+        &[b"*".repeat(40), b"-x".to_vec()].concat(),
+        b"--no-verify"
+    ));
+    assert!(glob_matches(
+        &[b"*".repeat(40), b"-verify".to_vec()].concat(),
+        b"--no-verify"
+    ));
 }
