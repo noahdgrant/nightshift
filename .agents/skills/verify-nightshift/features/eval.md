@@ -16,15 +16,39 @@
 
 Preconditions:
 
-- Baseline, in `$NS_SRC`.
+- Baseline. `ns eval --dry-run` reads this repo's skills and fixtures, so it runs with `--src`.
 
-- **All skills.** Run `cap eval-plan-all "$NS" eval --dry-run`. Exit `0`; `dry_run` is `true` and `skills` lists every skill with an `evals/` directory.
-- **One skill.** Run `cap eval-plan-one "$NS" eval ns-tdd --dry-run`. `skills` holds only `ns-tdd`, with its cases, and `estimated_runs` is set.
-- **One case.** Run `cap eval-plan-one-case "$NS" eval ns-tdd --case py-capacity-off-by-one --dry-run`. Only that case is planned.
-- **Unknown.** Run `cap eval-unknown "$NS" eval ns-nope --dry-run`. Exit `2`.
-- **No harness.** Check `$FAKE_CTRL/calls` is empty or unchanged. A dry run never calls the harness.
+- **All skills.** Exit `0`; `dry_run` is `true` and `skills` lists every skill with an `evals/` directory.
+
+  ```bash
+  "$V/sandbox" --src cap eval-plan-all ns eval --dry-run
+  ```
+
+- **One skill.** `skills` holds only `ns-tdd`, with its cases, and `estimated_runs` is set.
+
+  ```bash
+  "$V/sandbox" --src cap eval-plan-one ns eval ns-tdd --dry-run
+  ```
+
+- **One case.** Only that case is planned.
+
+  ```bash
+  "$V/sandbox" --src cap eval-plan-one-case ns eval ns-tdd --case py-capacity-off-by-one --dry-run
+  ```
+
+- **Unknown.** Exit `2`.
+
+  ```bash
+  "$V/sandbox" --src cap eval-unknown ns eval ns-nope --dry-run
+  ```
+
+- **No harness.** `eval-no-harness` exits non-zero, or lists no phase these recipes added: a dry run never calls the harness.
+
+  ```bash
+  "$V/sandbox" cap eval-no-harness cat "$V/ctrl/calls"
+  ```
 
 ## Gotchas
 
 - Never drop `--dry-run`. A real eval spends the plan's usage, even with the fake `claude` first on PATH, because a harness override in config can name another binary.
-- `--dry-run` reads fixtures from `<skills-dir>/../evals/fixtures`, so run it from `$NS_SRC`.
+- `--dry-run` reads fixtures from `<skills-dir>/../evals/fixtures`, so run it with `--src`.
