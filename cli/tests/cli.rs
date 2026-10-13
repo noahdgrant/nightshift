@@ -1999,6 +1999,80 @@ fn every_subcommand_help_has_examples() {
 }
 
 #[test]
+fn help_lists_public_subcommands_and_hides_guard_hooks() {
+    let out = ns().arg("--help").assert().success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    for cmd in [
+        "worktree",
+        "ask",
+        "lint",
+        "check-markers",
+        "install",
+        "eval",
+        "factory",
+        "score",
+        "run",
+        "watch",
+        "clean",
+        "log",
+        "status",
+        "quality",
+        "ratchet",
+        "rules",
+        "transcripts",
+        "upstream",
+        "doctor",
+    ] {
+        assert!(
+            stdout
+                .lines()
+                .any(|l| l.split_whitespace().next() == Some(cmd)),
+            "ns --help does not list {cmd}:\n{stdout}"
+        );
+    }
+    assert!(!stdout.contains("guard-hooks"), "{stdout}");
+}
+
+#[test]
+fn help_of_run_and_watch_hides_internal_flags() {
+    for (args, shown, hidden) in [
+        (
+            ["run", "--help"],
+            &[
+                "--issue",
+                "--from",
+                "--gates",
+                "--base",
+                "--dry-run",
+                "--cpus",
+            ][..],
+            "--night",
+        ),
+        (
+            ["watch", "--help"],
+            &[
+                "--once",
+                "--until",
+                "--parallel",
+                "--dry-run",
+                "--no-self-update",
+            ][..],
+            "--resume-night",
+        ),
+    ] {
+        let out = ns().args(args).assert().success();
+        let stdout = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+        for flag in shown {
+            assert!(stdout.contains(flag), "ns {args:?} lacks {flag}:\n{stdout}");
+        }
+        assert!(
+            !stdout.contains(hidden),
+            "ns {args:?} shows {hidden}:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn check_markers_passes_a_clean_tree_and_names_bad_markers() {
     let (_tmp, root) = repo();
     // Spelled out at run time so this file holds no real markers.
