@@ -1211,6 +1211,43 @@ fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
 }
 
 #[test]
+fn bugs_counts_a_review_escape_per_checklist_item() {
+    let grouped = "\u{1F916} *Posted by nightshift, an AI agent.*\n\n- [ ] `a.rs:1` (Critical, missed by tests): x. Evidence: e\n- [ ] `a.rs:2` (Important, missed by tests): y. Evidence: e\n- [x] `a.rs:3` (Suggestion, missed by tests): z. Evidence: e\n\nThis escaped an earlier review.\n\nSource: review_escape";
+    let (tmp, root) = bugs_fixture(&[
+        fix_issue(
+            20,
+            "2099-01-05T09:00:00Z",
+            "fix: a.rs escapes",
+            grouped,
+            &["type:fix", "priority:critical"],
+        ),
+        fix_issue(
+            21,
+            "2099-01-06T09:00:00Z",
+            "fix: lone escape",
+            "`b.rs:1` x.\n\nThis escaped an earlier review.",
+            &["type:fix", "priority:low"],
+        ),
+    ]);
+    let out = ns_bugs(&tmp, &root, &["--json"]).output();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["issues"][0]["number"], 20);
+    assert_eq!(v["issues"][0]["bugs"], 3);
+    assert_eq!(v["issues"][1]["number"], 21);
+    assert_eq!(v["issues"][1]["bugs"], 1);
+    assert_eq!(v["weeks"][0]["opened"], 4);
+    assert_eq!(v["weeks"][0]["review_escape"], 4);
+    assert_eq!(v["weeks"][0]["critical_high"], 3);
+    assert_eq!(v["weeks"][0]["rest"], 1);
+    assert_eq!(v["total"]["opened"], 4);
+}
+
+#[test]
 fn bugs_weeks_keeps_only_the_latest_weeks() {
     let (tmp, root) = bugs_fixture(&bugs_mixed_issues());
     let out = ns_bugs(&tmp, &root, &["--weeks", "1"]).output();
