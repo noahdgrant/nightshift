@@ -384,6 +384,17 @@ fn build_only_warns_when_the_ci_local_row_shows_no_fast_support() {
 }
 
 #[test]
+fn build_only_accepts_any_ci_local_row_showing_fast() {
+    let build_only = parse("[gate]\nlocal = \"build-only\"\n").unwrap();
+    let mixed =
+        "| ci-local | `make ci` | 2 min |\n| ci-local | `scripts/ci-local.sh --fast` | 1 min |\n";
+    assert_eq!(build_only.fast_gate_warning(mixed), None);
+    let neither = "| ci-local | `make ci` | 2 min |\n| ci-local | `make check` | 1 min |\n";
+    let w = build_only.fast_gate_warning(neither).expect("a warning");
+    assert!(w.contains("`make ci --fast`"), "{w}");
+}
+
+#[test]
 fn build_only_checks_a_build_gate_override_in_place_of_the_row() {
     let gate = |cmd: &str| {
         parse(&format!(
