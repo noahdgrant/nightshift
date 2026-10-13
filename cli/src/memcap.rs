@@ -16,6 +16,10 @@ const MIB: u64 = 1024 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long to wait for systemd to settle a scope after its process exits.
 const SETTLE: Duration = Duration::from_secs(3);
+/// How long a dropped scope may take to stop before it is reset anyway.
+const RELEASE: Duration = Duration::from_secs(10);
+/// The states of a scope systemd has not settled yet.
+const SETTLING: &[&str] = &["active", "activating", "deactivating", "reloading"];
 /// Messages runtimes print when an allocation fails, each matched within one line. Under
 /// RLIMIT_AS nothing is killed at the cap; the allocation fails and the program reports it.
 const ALLOC_FAILED: &[&str] = &[
@@ -53,8 +57,24 @@ pub struct Cap {
 /// How a capped run is told apart afterwards.
 pub enum Watch {
     None,
-    Scope { unit: String, mb: u64 },
+    Scope(Scope),
     Rlimit { mb: u64 },
+}
+
+/// A systemd scope a run starts in. Dropping it waits for the scope to stop and clears it, on
+/// every path, so a failed one doesn't pile up in `systemctl --user --failed`.
+pub struct Scope {
+    unit: String,
+    mb: u64,
+}
+
+impl Drop for Scope {
+    fn drop(&mut self) {
+        settle(&self.unit, RELEASE);
+        let _ = Command::new("systemctl")
+            .args(["--user", "reset-failed", &self.unit])
+            .output();
+    }
 }
 
 /// "exceeded the 64 MB memory limit".
@@ -119,7 +139,7 @@ pub fn command(cap: Option<&Cap>, program: impl AsRef<OsStr>) -> (Command, Watch
             let unit = scope_name();
             let mut c = Command::new("systemd-run");
             c.args(scope_args(&unit, cap.mb)).arg(program);
-            (c, Watch::Scope { unit, mb: cap.mb })
+            (c, Watch::Scope(Scope { unit, mb: cap.mb }))
         }
         Via::Rlimit => {
             let mut c = Command::new("prlimit");
@@ -174,13 +194,12 @@ impl Watch {
         timed_out: bool,
         output: impl FnOnce() -> String,
     ) -> Option<Cut> {
-        let failed = !status.is_some_and(|s| s.success());
-        // Asked even after a timeout, so a failed scope is cleared.
-        let over = self.exceeded(failed, output);
         if timed_out {
             return None;
         }
-        over.map(Cut::Exceeded)
+        let failed = !status.is_some_and(|s| s.success());
+        self.exceeded(failed, output)
+            .map(Cut::Exceeded)
             .or_else(|| status.and_then(signal_of).map(Cut::Signal))
     }
 
@@ -191,7 +210,7 @@ impl Watch {
     fn exceeded(&self, failed: bool, output: impl FnOnce() -> String) -> Option<u64> {
         match self {
             Watch::None => None,
-            Watch::Scope { unit, mb } => oom_killed(unit).then_some(*mb),
+            Watch::Scope(s) => oom_killed(&s.unit).then_some(s.mb),
             Watch::Rlimit { mb } => (failed && allocation_failed(&output())).then_some(*mb),
         }
     }
@@ -221,25 +240,21 @@ fn allocation_failed(output: &str) -> bool {
     })
 }
 
-/// Whether systemd ended `unit` with `oom-kill`. Waits for the scope to stop, then clears a
-/// failed scope so it doesn't pile up in `systemctl --user --failed`.
+/// Whether systemd ended `unit` with `oom-kill`, waiting for the scope to stop.
 fn oom_killed(unit: &str) -> bool {
-    let deadline = Instant::now() + SETTLE;
-    let (state, result) = loop {
+    settle(unit, SETTLE) == "oom-kill"
+}
+
+/// Ask systemd about `unit` until it stops or `wait` passes; its last result.
+fn settle(unit: &str, wait: Duration) -> String {
+    let deadline = Instant::now() + wait;
+    loop {
         let (state, result) = scope_state(unit);
-        let settling = ["active", "activating", "deactivating", "reloading"];
-        let decided = !result.is_empty() && result != "success";
-        if decided || !settling.contains(&state.as_str()) || Instant::now() >= deadline {
-            break (state, result);
+        if !SETTLING.contains(&state.as_str()) || Instant::now() >= deadline {
+            return result;
         }
         std::thread::sleep(Duration::from_millis(100));
-    };
-    if state == "failed" {
-        let _ = Command::new("systemctl")
-            .args(["--user", "reset-failed", unit])
-            .output();
     }
-    result == "oom-kill"
 }
 
 fn scope_state(unit: &str) -> (String, String) {
@@ -338,10 +353,10 @@ mod tests {
     fn the_cgroup_runs_the_program_in_a_named_scope_with_memory_max() {
         let (mut c, w) = command(Some(&cap(Via::Cgroup)), "claude");
         c.arg("-p");
-        let Watch::Scope { unit, mb } = w else {
+        let Watch::Scope(Scope { unit, mb }) = &w else {
             panic!("not a scope")
         };
-        assert_eq!(mb, 64);
+        assert_eq!(*mb, 64);
         assert!(
             unit.starts_with("ns-") && unit.ends_with(".scope"),
             "{unit}"
@@ -366,7 +381,7 @@ mod tests {
             ]
         );
         let (_, again) = command(Some(&cap(Via::Cgroup)), "claude");
-        let Watch::Scope { unit: other, .. } = again else {
+        let Watch::Scope(Scope { unit: other, .. }) = &again else {
             panic!()
         };
         assert_ne!(unit, other);
@@ -411,10 +426,10 @@ mod tests {
 
     #[test]
     fn a_scope_systemd_does_not_know_did_not_exceed() {
-        let w = Watch::Scope {
+        let w = Watch::Scope(Scope {
             unit: "ns-never-started-0-0.scope".into(),
             mb: 64,
-        };
+        });
         let t = Instant::now();
         assert_eq!(w.exceeded(true, || "MemoryError".into()), None);
         assert!(t.elapsed() < SETTLE, "{:?}", t.elapsed());
@@ -508,9 +523,11 @@ mod tests {
         let (r, st, w) = hog_watched(Via::Cgroup, 256);
         assert_eq!(r, Some(Cut::Exceeded(64)));
         assert!(!st.unwrap().success());
-        let Watch::Scope { unit, .. } = w else {
+        let Watch::Scope(Scope { unit, .. }) = &w else {
             panic!("not a scope")
         };
+        let unit = unit.clone();
+        drop(w);
         assert_ne!(scope_state(&unit).0, "failed", "{unit} was left failed");
         let (r, st) = hog(Via::Cgroup, 8);
         assert_eq!(r, None);
