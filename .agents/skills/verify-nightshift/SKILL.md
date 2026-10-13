@@ -18,7 +18,7 @@ Read [features/README.md](features/README.md) before driving, then use the featu
 ```bash
 cargo build --manifest-path cli/Cargo.toml
 export NS_SRC=$PWD NS=$(cd "${CARGO_TARGET_DIR:-cli/target}" && pwd)/debug/ns
-export V=$(mktemp -d /tmp/ns-verify.XXXXXX)
+export V=$(mktemp -d -t ns-verify.XXXXXX)
 mkdir -p "$V/bin" "$V/home/.claude" "$V/ctrl" "$V/ghd"
 cp cli/tests/fixtures/factory/{claude,gh,glab} "$V/bin/"
 echo '{}' > "$V/home/.claude/.credentials.json"

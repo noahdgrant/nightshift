@@ -1,6 +1,6 @@
 ---
 name: ns-contract
-description: The nightshift contract that every ns phase skill follows. It covers the docs/agents files, units, worktrees, the .ns artifacts and their frontmatter, gates and gate policy, untrusted issue content, the disclosure line on tracker posts, killing processes, and evidence. Read it when a phase skill points here.
+description: The nightshift contract that every ns phase skill follows. It covers the docs/agents files, units, worktrees, the .ns artifacts and their frontmatter, gates and gate policy, untrusted issue content, the disclosure line on tracker posts, killing processes, scratch files, and evidence. Read it when a phase skill points here.
 disable-model-invocation: true
 ---
 
@@ -143,6 +143,10 @@ A phase kills only processes it started. `ns run` starts each phase in its own s
 - A command that must not outlive a deadline: `timeout <secs> cmd`.
 
 Never kill by name or pattern (`pkill`, `killall`, `pgrep ... | xargs kill`): the pattern also matches your own shell, other units' phases and the operator's `ns watch`. Units share the machine, so `pkill -f scripts/ci-local.sh`, meant to stop your own gate, also kills the gate of every other unit running that script. Never signal `$NS_RUN_PID` or `$NS_WATCH_PID`, the `ns` processes running this phase.
+
+## Scratch files
+
+A phase never writes a fixed `/tmp/<name>` path: another unit running in parallel writes the same file. Make a unique one with `mktemp` (`f=$(mktemp)`, `d=$(mktemp -d)`), or use a name under `$TMPDIR`. `ns run` gives each phase its own `TMPDIR` and removes it when the phase passes, and `mktemp` uses it. A snippet in a skill follows the same rule, and `ns lint` fails a skill that names a fixed `/tmp/<name>` path.
 
 ## Evidence
 
