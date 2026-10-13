@@ -12416,6 +12416,79 @@ fn draining_starts_no_unit_and_waits_for_the_running_one() {
     );
 }
 
+/// A night with two units held in their builds, drained for a `cli/` change that lands once
+/// unit 3 ends; `between` runs while unit 2 is still building. The night's stderr and the commit
+/// the drain began for.
+fn drained_while_the_base_moves(e: &Env, from: &str, between: impl FnOnce()) -> (String, String) {
+    two_ready(e);
+    let (in_a, go_a) = hold_phase(e, A, "build");
+    let (in_b, go_b) = hold_phase(e, B, "build");
+    let mut w = Watching::start(watch_from(e, from).args(["watch", "--parallel", "2"]));
+    w.entered(&in_a);
+    w.entered(&in_b);
+    let noted = land(e, "cli/x", "new\n");
+    release(&go_b);
+    w.line("draining");
+    between();
+    release(&go_a);
+    let (code, _, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    (err, noted)
+}
+
+fn assert_built(e: &Env, from: &str, to: &str, text: &str, err: &str) {
+    assert_eq!(cargo_calls(e), 1, "{err}");
+    assert_eq!(
+        fs::read_to_string(e.ctrl.join("cargo-built")).unwrap(),
+        text
+    );
+    let ev = events_named(e, "self_update");
+    assert_eq!(ev.len(), 1, "{err}");
+    assert_eq!((&ev[0]["from"], &ev[0]["to"]), (&json!(from), &json!(to)));
+    assert!(
+        err.contains(&format!("self-update: building {}", &to[..12])),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!("self-update {} -> {}", &from[..12], &to[..12])),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_drain_hands_off_to_the_base_at_its_end_not_its_start() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    let mut newer = String::new();
+    let (err, _) = drained_while_the_base_moves(&e, &from, || {
+        newer = land(&e, "cli/x", "newer\n");
+    });
+    assert_built(&e, &from, &newer, "newer\n", &err);
+}
+
+#[test]
+fn a_failed_fetch_at_the_drain_end_hands_off_to_the_noted_commit() {
+    let e = Env::new();
+    let from = nightshift_repo(&e);
+    failing_fetch(&e);
+    let (err, noted) = drained_while_the_base_moves(&e, &from, || {
+        land(&e, "cli/x", "newer\n");
+        e.ctl("fetch-fails", "");
+    });
+    assert_built(&e, &from, &noted, "new\n", &err);
+}
+
+/// A `git` on PATH whose `fetch` fails once `$FAKE_CTRL/fetch-fails` exists.
+fn failing_fetch(e: &Env) {
+    write_exe(
+        &e.bin.join("git"),
+        format!(
+            "#!/bin/sh\ncase \" $* \" in *\" fetch \"*) [ -e \"$FAKE_CTRL/fetch-fails\" ] && {{ echo 'fatal: unreachable' >&2; exit 128; }} ;; esac\nexec {} \"$@\"\n",
+            real_git()
+        ),
+    );
+}
+
 /// A night on a nightshift repo whose origin has a `cli/` change the build commit lacks, with
 /// the fake cargo in `mode`; its summary and stderr.
 fn night_with_a_failed_update(mode: &str) -> (Env, String, Value, String) {
@@ -12483,21 +12556,22 @@ fn a_failed_check_keeps_the_old_binary_and_is_not_retried() {
     assert_kept_the_old_binary(&e, &to, &v, &err, "--version said \"ns 0.1.0 (0000000)\"");
 }
 
+/// The path of the real `git`, for a fake one to exec.
+fn real_git() -> String {
+    let out = StdCommand::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().into()
+}
+
 fn counting_git(e: &Env) {
-    let real = String::from_utf8(
-        StdCommand::new("sh")
-            .args(["-c", "command -v git"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
     let p = e.bin.join("git");
     write_exe(
         &p,
         format!(
             "#!/bin/sh\ncase \" $* \" in *\" fetch \"*) echo >> \"$FAKE_CTRL/git-fetches\" ;; esac\nexec {} \"$@\"\n",
-            real.trim()
+            real_git()
         ),
     );
 }
