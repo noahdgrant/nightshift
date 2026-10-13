@@ -9,6 +9,7 @@ mod build_stamp;
 mod clean;
 mod clock;
 mod config;
+mod cpus;
 mod decisions;
 mod doctor;
 mod error;
@@ -199,6 +200,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
             factory,
             night,
+            cpus,
         } => {
             return run::cli(run::RunArgs {
                 unit: unit_id,
@@ -210,6 +212,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 base,
                 triage_only: false,
                 night,
+                cpus,
             })
         }
         Cmd::Watch {

@@ -46,7 +46,7 @@ Read whatever exists. Assume nothing:
   - shared resources only one agent may use at a time (a workspace, a bench)
 
   Read any worktree notes in `AGENTS.md`. Then prove it: create a scratch worktree, run the build, and check that its outputs name the worktree path (e.g. `compile_commands.json`, `build.ninja`). Remove the scratch worktree afterwards.
-- **Rule pack**: nightshift ships a pack per language under `rules/`. A `Cargo.toml` takes the Rust pack, a Python stack the Python pack, a `package.json` the JavaScript/TypeScript pack, C sources (`*.c`, `*.h`) the [C rule pack](../../rules/c/README.md), and a Maven or Gradle build (`pom.xml`, `build.gradle`, `build.gradle.kts`) the [Java rule pack](../../rules/java/README.md). For C, note whether `ast-grep` and `clang-tidy` are on `PATH`, and how the build writes `compile_commands.json`. For Java, note whether `java -version` reports 11 or later.
+- **Rule pack**: nightshift ships a pack per language under `rules/`, listed in [rules/README.md](../../rules/README.md). A `Cargo.toml` takes the Rust pack, a Python stack the Python pack, a `package.json` the JavaScript/TypeScript pack, C sources (`*.c`, `*.h`) the [C rule pack](../../rules/c/README.md), and a Maven or Gradle build (`pom.xml`, `build.gradle`, `build.gradle.kts`) the [Java rule pack](../../rules/java/README.md). For C, note whether `ast-grep` and `clang-tidy` are on `PATH`, and how the build writes `compile_commands.json`. For Java, note whether `java -version` reports 11 or later.
 - **Verify**: a `verify-<project>` skill in the repo and a control CLI it drives.
 - **Tracker**: `git remote -v`. GitHub or GitLab? A `.scratch/` directory means local markdown issues are already in use.
 - **Labels**: on GitHub, `gh label list`. On GitLab, `glab label list`.
@@ -55,6 +55,8 @@ Read whatever exists. Assume nothing:
 - **Multi-context signals**: several independently built packages or apps with their own source tree (a uv or Cargo workspace, several firmware apps under one west manifest). Their absence means single-context, which is almost every repo.
 
 Time the fast commands (lint, host unit tests) by running each once. Take slow ones from CI durations.
+
+A command that starts its own parallel workers (twister, `make -j`, `ctest -j`, `pytest -n`) takes its worker count from `NS_CPUS` when it is set, as in `-j "${NS_CPUS:-$(nproc)}"`. Under `ns watch --parallel`, `NS_CPUS` is each unit's share of the cores, so units don't starve each other's timeout-bound tests. Cargo needs nothing: it reads `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS`, which `ns run` sets beside it.
 
 ### 2. Present findings and ask
 
@@ -137,6 +139,6 @@ Repo settings the `ns-*` skills read. Edit the files directly to change them.
 
 ### 5. Done
 
-Done when all six `docs/agents/` files exist with no unfilled placeholders, the instructions file holds the block, and every rule pack that applies (Rust for a `Cargo.toml`, Python, JavaScript/TypeScript, C or Java if the user took it) is installed with `ns rules check` exiting 0. Tell the user which seams are `none` or unmeasured, and, if verify isn't set up, that `ns-setup-verify` is the next step. They can edit `docs/agents/*.md` directly later. Re-run this skill to switch trackers or start over.
+Done when all six `docs/agents/` files exist with no unfilled placeholders, the instructions file holds the block, and every rule pack that applies (Rust for a `Cargo.toml`, and each pack the user took in Section A) is installed with `ns rules check` exiting 0. Tell the user which seams are `none` or unmeasured, and, if verify isn't set up, that `ns-setup-verify` is the next step. They can edit `docs/agents/*.md` directly later. Re-run this skill to switch trackers or start over.
 
 Then offer an agent-readiness audit: it finds what in the codebase helps or hurts agents and files the top findings as issues. On yes, load the `ns-agent-readiness` skill and run it under `gates: stop`, so the user picks what to file.

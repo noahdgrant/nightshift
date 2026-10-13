@@ -33,10 +33,19 @@ static NEXT_TREE: AtomicU32 = AtomicU32::new(0);
 static NEXT_EXE: AtomicU32 = AtomicU32::new(0);
 
 /// `ns` built from this crate, bounded by [`TIMEOUT`]. It runs outside any `ns run` phase the
-/// tests themselves may run in, so the phase's `NS_UNIT` and `NS_WORKTREE` do not leak in.
+/// tests themselves may run in, so the phase's `NS_UNIT`, `NS_WORKTREE` and CPU share do not
+/// leak in.
 pub fn ns() -> Ns {
     let mut c = command(ns_path());
-    c.env_remove("NS_UNIT").env_remove("NS_WORKTREE");
+    for v in [
+        "NS_UNIT",
+        "NS_WORKTREE",
+        "NS_CPUS",
+        "RUST_TEST_THREADS",
+        "CARGO_BUILD_JOBS",
+    ] {
+        c.env_remove(v);
+    }
     c
 }
 

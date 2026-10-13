@@ -516,7 +516,15 @@ impl<'a> Scheduler<'a> {
             .night()
             .path()
             .join(format!("result-{}-{}.json", issue.number, self.results));
-        let child = spawn(self.plan.snap, &issue, base, &night.shared.clock, &result)?;
+        let cpus = crate::cpus::share_here(self.plan.parallel);
+        let child = spawn(
+            self.plan.snap,
+            &issue,
+            base,
+            cpus,
+            &night.shared.clock,
+            &result,
+        )?;
         let again = if resumed { ", resumed" } else { "" };
         eprintln!(
             "ns watch: #{} {} (worker {n}{again})",
