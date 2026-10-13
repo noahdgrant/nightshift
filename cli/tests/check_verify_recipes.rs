@@ -248,3 +248,27 @@ fn the_recipes_never_see_an_inherited_git_dir() {
     );
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+fn real_skill() -> String {
+    fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../.agents/skills/verify-nightshift/SKILL.md"),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_stale_command_in_the_real_recipes_fails_wherever_it_sits() {
+    let real = real_skill();
+    for (stale, fresh) in [
+        ("push -q origin main", "push -q origin nosuchbranch"),
+        ("commit -qm init", "commit --nosuchflag"),
+        ("\"$NS\" --version", "\"$NS\" --nosuchflag"),
+    ] {
+        assert!(
+            real.contains(stale),
+            "recipe changed, update the test: {stale}"
+        );
+        let out = run(&real.replace(stale, fresh));
+        assert!(!out.status.success(), "{fresh} passed: {}", stderr(&out));
+    }
+}

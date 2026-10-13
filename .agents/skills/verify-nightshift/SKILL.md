@@ -34,9 +34,11 @@ printf '[roles.default]\nharness = "claude"\n[forge.github]\ntoken_command = "ec
 git init -q --bare -b main "$V/remote.git"
 git init -q -b main "$V/repo"
 echo hi > "$V/repo/README"
-git -C "$V/repo" add . && git -C "$V/repo" commit -qm init
+git -C "$V/repo" add .
+git -C "$V/repo" commit -qm init
 git -C "$V/repo" remote add origin "$V/remote.git"
-git -C "$V/repo" push -q origin main && git -C "$V/repo" remote set-head origin main
+git -C "$V/repo" push -q origin main
+git -C "$V/repo" remote set-head origin main
 export OUT=${OUT:-$NS_SRC/.ns/verify/$(date -u +%Y%m%dT%H%M%SZ)}
 mkdir -p "$OUT"
 printf 'export NS_SRC=%q NS=%q V=%q OUT=%q\n' "$NS_SRC" "$NS" "$V" "$OUT" >> "$V/env.sh"
@@ -60,7 +62,8 @@ Run before the first drive and whenever anything looks off:
 ```bash
 . "$V/env.sh"; cd "$V/repo"
 for b in claude gh glab; do case "$(command -v $b)" in "$V/bin/"*) ;; *) echo "NOT FAKE: $b"; esac; done
-"$NS" --version && git -C "$NS_SRC" rev-parse --short HEAD
+"$NS" --version
+git -C "$NS_SRC" rev-parse --short HEAD
 "$NS" doctor | jq -c '{ok, problems, forge: .forge.github, claude: .harnesses.claude.path}'
 ```
 
