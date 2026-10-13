@@ -468,6 +468,8 @@ mod tests {
         assert!(flat.contains(reuse), "{reuse}");
         let dup = "skipping any finding whose location and defect an existing item already names";
         assert!(flat.contains(dup), "{dup}");
+        let legacy = "When the issue's body has no checklist items, first turn its original finding into an item (location, severity and evidence from its body), then append the new ones";
+        assert!(flat.contains(legacy), "{legacy}");
     }
 
     fn t(s: &str) -> i64 {
