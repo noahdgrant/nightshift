@@ -449,3 +449,10 @@ fn a_stale_command_in_the_real_recipes_fails_wherever_it_sits() {
         assert!(!out.status.success(), "{fresh} passed: {}", stderr(&out));
     }
 }
+
+#[test]
+fn blank_and_comment_lines_in_a_recipe_are_not_commands() {
+    let recipe = format!("# seed first\n\n  {RUN_OK}");
+    let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(&recipe))]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}

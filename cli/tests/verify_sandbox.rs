@@ -262,3 +262,99 @@ fn two_sandboxes_get_their_own_directories() {
     assert_ne!(a.v, b.v);
     assert_eq!(a.ok(&["sh", "-c", "echo $V"]), a.v.display().to_string());
 }
+
+#[test]
+fn a_command_line_missing_its_command_exits_2_with_usage() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir(tmp.path().join("t")).unwrap();
+    let out = run(tmp.path(), &script(), &["--new", "extra"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(entries(&tmp.path().join("t")).is_empty());
+    let s = Sandbox::new();
+    for args in [vec!["--src"], vec!["cap", "x"], vec!["--src", "cap"]] {
+        let out = s.run(&args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(stderr(&out).contains("usage:"), "{}", stderr(&out));
+    }
+}
+
+#[test]
+fn a_relative_cargo_target_dir_is_read_from_the_checkout() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir(tmp.path().join("t")).unwrap();
+    let out = common::command(script())
+        .arg("--new")
+        .env("TMPDIR", tmp.path().join("t"))
+        .env("OUT", tmp.path().join("out"))
+        .env("CARGO_TARGET_DIR", "no-such-target")
+        .output();
+    assert!(!out.status.success());
+    let want = repo().join("no-such-target/debug/ns");
+    assert!(
+        stderr(&out).contains(&want.display().to_string()),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// A copy of the script in a checkout of its own under `tmp/src`, with the fakes and one skill,
+/// so `--new` can write its default evidence directory there.
+fn checkout_copy(tmp: &Path) -> PathBuf {
+    let src = tmp.join("src");
+    let copy = src.join(".agents/skills/verify-nightshift/scripts/sandbox.sh");
+    common::copy_exe(&script(), &copy);
+    for f in ["claude", "gh", "glab"] {
+        let rel = format!("cli/tests/fixtures/factory/{f}");
+        common::copy_exe(&repo().join(&rel), &src.join(rel));
+    }
+    fs::create_dir_all(src.join("skills/ns-x")).unwrap();
+    fs::write(
+        src.join("skills/ns-x/SKILL.md"),
+        "---\nname: ns-x\ndescription: x\n---\n",
+    )
+    .unwrap();
+    copy
+}
+
+#[test]
+fn evidence_defaults_to_a_run_directory_in_the_checkout() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir(tmp.path().join("t")).unwrap();
+    let copy = checkout_copy(tmp.path());
+    let out = common::command(&copy)
+        .arg("--new")
+        .env("TMPDIR", tmp.path().join("t"))
+        .env("CARGO_TARGET_DIR", target_dir())
+        .env_remove("OUT")
+        .output();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v = PathBuf::from(stdout(&out));
+    let evidence = common::command(v.join("sandbox"))
+        .args(["sh", "-c", "echo $OUT"])
+        .output();
+    let evidence = PathBuf::from(stdout(&evidence));
+    assert_eq!(
+        evidence.parent().unwrap(),
+        tmp.path().join("src/.ns/verify")
+    );
+    assert!(evidence.is_dir());
+    let suffix = v.extension().unwrap().to_string_lossy().into_owned();
+    assert!(
+        evidence
+            .display()
+            .to_string()
+            .ends_with(&format!("Z-{suffix}")),
+        "{evidence:?} {v:?}"
+    );
+}
+
+#[test]
+fn a_failed_setup_removes_the_half_made_sandbox() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir(tmp.path().join("t")).unwrap();
+    let copy = checkout_copy(tmp.path());
+    fs::remove_dir_all(tmp.path().join("src/skills")).unwrap();
+    let out = run(tmp.path(), &copy, &["--new"]);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert!(entries(&tmp.path().join("t")).is_empty());
+}

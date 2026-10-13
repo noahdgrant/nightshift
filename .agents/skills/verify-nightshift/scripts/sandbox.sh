@@ -40,7 +40,8 @@ new() {
     [ -f "$f" ] || { echo "sandbox.sh: no fake at $f" >&2; exit 1; }
   done
   v=$(mktemp -d -t ns-verify.XXXXXX)
-  trap 'rm -rf -- "$v"' EXIT
+  # Expanded now: v is local, and gone by the time an errexit runs the trap.
+  trap "rm -rf -- $(printf %q "$v")" EXIT
   local out=${OUT:-$src/.ns/verify/$(date -u +%Y%m%dT%H%M%SZ)-${v##*.}}
   mkdir -p "$v/bin" "$v/home/.claude" "$v/ctrl" "$v/ghd" "$v/tmp" "$out"
   cp "$src"/cli/tests/fixtures/factory/{claude,gh,glab} "$v/bin/"
@@ -86,7 +87,7 @@ if [ "$1" = --new ]; then
 fi
 
 V=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-if [ ! -f "$V/env" ] || [ ! -L "$V/sandbox" ]; then
+if [ ! -f "$V/env" ]; then
   echo "sandbox.sh: $V is not a sandbox; create one with sandbox.sh --new," \
     "then run \"\$V/sandbox\" <command...>" >&2
   exit 2
