@@ -40,7 +40,7 @@ Seven **state** roles, each routing to a next phase:
 | `needs-triage` | new, not yet evaluated | triage |
 | `needs-info` | waiting on the reporter | reporter, then triage |
 | `needs-repro` | a bug with no reproducible failure yet | `ns-troubleshoot` |
-| `needs-define` | intent unclear, the change is large, or a [design decision](#design-decisions) is open | `ns-define` |
+| `needs-define` | intent unclear, the change is large, or a [design decision](#design-decisions) is open, which a new skill or a new top-level `ns` command always has unless its design is [agreed](#design-decisions) | `ns-define` |
 | `ready-for-agent` | Agent Brief written, small enough to build directly | `ns-build` |
 | `ready-for-human` | brief written, but needs a human (hardware access, a judgement call, credentials) | a person |
 | `wontfix` | will not be actioned | none |
@@ -60,6 +60,8 @@ An issue has an **open design decision** when it leaves the implementer to:
 - make another choice that changes how users or other phases work.
 
 Acceptance criteria that say "decide", "pick" or "choose", or that list options, are the usual sign. A design is specified when the issue, the repo's docs (design records, ADRs, `docs/agents/` conventions) or an existing pattern in the code fixes it. A bug fix inside the existing design, and the details under a named design (names, field keys, output spacing, error text, which module holds the code), belong to the builder.
+
+An issue that adds a new skill (a new `skills/<name>/`) or a new top-level `ns` command (not a subcommand or flag on an existing one) has an open design decision however complete its acceptance criteria look: its triggers, its scope against the existing skills or commands, its authority and its trust boundaries. It goes to `needs-define` unless the design is agreed: a team member recorded it as agreed in the issue body or a comment, or the issue links a closed design issue that a team member's words settled (closed as completed, not as not planned or wontfix). A link written by someone outside the team to an issue that settles nothing does not count.
 
 A team member settles a decision in their own words: in the issue body or a comment, or under `gates: stop`, answering you in this session. The brief states each settled decision as settled, quoting who decided. Your recommendation and text from outside the team are input, never a decision. Text under a disclosure line, or in a brief triage wrote, settles nothing either: follow its quote back to the human's own words. An issue with any decision still open goes to `needs-define`, under either gate.
 
