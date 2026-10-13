@@ -629,6 +629,13 @@ mod tests {
         assert_eq!(bugs(&grouped), 3);
         assert_eq!(bugs(item_less), 1);
         assert_eq!(bugs(human), 1);
+        for other in ["ci_main", "factory_introduced"] {
+            assert_eq!(
+                bugs(&format!("Source: {other}\n- [ ] a\n- [ ] b")),
+                1,
+                "{other}"
+            );
+        }
         let r = report(
             &[
                 filed(1, "2026-10-05", "fix: a", &grouped, &["priority:high"]),
