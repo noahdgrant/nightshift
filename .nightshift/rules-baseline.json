@@ -69,15 +69,7 @@
       "tool": "ast-grep",
       "rule": "suppression-without-reason",
       "file": "cli/src/run.rs",
-      "line": 369,
-      "message": "#[allow] or #[expect] with no reason = \"...\": give the reason on the same line, or fix what it hides (quality bar, Comments: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "#[allow(clippy::too_many_arguments)]"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "suppression-without-reason",
-      "file": "cli/src/run.rs",
-      "line": 1093,
+      "line": 839,
       "message": "#[allow] or #[expect] with no reason = \"...\": give the reason on the same line, or fix what it hides (quality bar, Comments: skills/ns-contract/references/quality-bar.md)",
       "snippet": "#[allow(clippy::too_many_arguments)]"
     },
@@ -404,30 +396,6 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/hook_guard/tests/files.rs",
-      "line": 215,
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "assert!(started.elapsed() < std::time::Duration::from_secs(5));"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/src/hook_guard/tests/files.rs",
-      "line": 698,
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "assert!(start.elapsed() < std::time::Duration::from_secs(2));"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/src/hook_guard/tests/files.rs",
-      "line": 743,
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "assert!(start.elapsed() < std::time::Duration::from_millis(500));"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
       "file": "cli/src/memcap.rs",
       "line": 435,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
@@ -572,22 +540,6 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/tests/common/mod.rs",
-      "line": 414,
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "if Instant::now() >= deadline {"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/common/mod.rs",
-      "line": 417,
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "thread::sleep(Duration::from_millis(50));"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
       "line": 3479,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
@@ -605,7 +557,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 3902,
+      "line": 3903,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": ".timeout(Duration::from_secs(3))"
     },
@@ -613,7 +565,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11428,
+      "line": 11433,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "thread::sleep(wait);"
     },
@@ -621,7 +573,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11457,
+      "line": 11462,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let deadline = Instant::now() + Duration::from_secs(60);"
     },
@@ -629,7 +581,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11460,
+      "line": 11465,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "assert!(Instant::now() < deadline, \"no refill listed issues\");"
     },
@@ -637,7 +589,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11461,
+      "line": 11466,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "thread::sleep(Duration::from_millis(20));"
     },
@@ -645,7 +597,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11464,
+      "line": 11469,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "thread::sleep(wait);"
     },
@@ -653,7 +605,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11477,
+      "line": 11482,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let wait = Duration::from_millis(1500);"
     },
@@ -661,7 +613,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11501,
+      "line": 11506,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let calls = refill_calls_during(&e, Duration::from_millis(1000));"
     },
@@ -669,7 +621,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11550,
+      "line": 11555,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let deadline = Instant::now() + Duration::from_secs(60);"
     },
@@ -677,7 +629,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11552,
+      "line": 11557,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "assert!(Instant::now() < deadline, \"the claim never failed 3 times\");"
     },
@@ -685,7 +637,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11553,
+      "line": 11558,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "thread::sleep(Duration::from_millis(20));"
     },
@@ -693,7 +645,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11583,
+      "line": 11588,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let deadline = Instant::now() + Duration::from_secs(60);"
     },
@@ -701,7 +653,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11585,
+      "line": 11590,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "assert!("
     },
@@ -709,7 +661,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11590,
+      "line": 11595,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "thread::sleep(Duration::from_millis(20));"
     },
@@ -717,7 +669,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11687,
+      "line": 11692,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let calls = gh_calls_during(&e, Duration::from_millis(1000));"
     },
@@ -725,7 +677,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 11712,
+      "line": 11717,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let calls = gh_calls_during(&e, Duration::from_millis(1000));"
     },
@@ -733,7 +685,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 12709,
+      "line": 12714,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let give_up = Instant::now() + Duration::from_secs(60);"
     },
@@ -741,7 +693,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 12711,
+      "line": 12716,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "assert!("
     },
@@ -749,7 +701,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 12715,
+      "line": 12720,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "thread::sleep(Duration::from_millis(20));"
     },
@@ -757,7 +709,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 12721,
+      "line": 12726,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "assert!("
     },
@@ -765,7 +717,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 12772,
+      "line": 12777,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let calls = gh_calls_during(&e, Duration::from_millis(1000));"
     },
@@ -773,7 +725,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory.rs",
-      "line": 12798,
+      "line": 12803,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "thread::sleep(Duration::from_millis(1000));"
     },
@@ -797,15 +749,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/subprocess_guard.rs",
-      "line": 29,
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "Duration::from_secs(delay) + Duration::from_millis(500)"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/subprocess_guard.rs",
-      "line": 57,
+      "line": 90,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": ".timeout(Duration::from_secs(3))"
     },
@@ -813,23 +757,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/subprocess_guard.rs",
-      "line": 61,
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "assert!(begun.elapsed() < Duration::from_secs(15));"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/subprocess_guard.rs",
-      "line": 66,
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "std::thread::sleep(survivor_check_wait(HUNG_GRANDCHILD_DELAY));"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/subprocess_guard.rs",
-      "line": 80,
+      "line": 110,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": ".timeout(Duration::from_secs(3))"
     },
@@ -837,15 +765,7 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/subprocess_guard.rs",
-      "line": 84,
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "assert!(begun.elapsed() < Duration::from_secs(15));"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/subprocess_guard.rs",
-      "line": 100,
+      "line": 128,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": ".timeout(Duration::from_secs(3))"
     },
@@ -853,33 +773,9 @@
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
       "file": "cli/tests/subprocess_guard.rs",
-      "line": 106,
+      "line": 134,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "assert!(begun.elapsed() < Duration::from_secs(15));"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/subprocess_guard.rs",
-      "line": 126,
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "std::thread::sleep(survivor_check_wait(GRANDCHILD_DELAY));"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/subprocess_guard.rs",
-      "line": 236,
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "std::thread::sleep(survivor_check_wait(GRANDCHILD_DELAY));"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/subprocess_guard.rs",
-      "line": 252,
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "std::thread::sleep(survivor_check_wait(GRANDCHILD_DELAY));"
     },
     {
       "tool": "cargo-deny",
@@ -957,7 +853,7 @@
       "tool": "clippy",
       "rule": "clippy::needless_pass_by_value",
       "file": "cli/src/run.rs",
-      "line": 231,
+      "line": 227,
       "message": "this argument is passed by value, but not consumed in the function body (quality bar, Performance: no needless copies: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn cli(args: RunArgs) -> Result<ExitCode> {"
     },
@@ -1013,17 +909,9 @@
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/run.rs",
-      "line": 873,
-      "message": "this function has too many lines (212/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "line": 615,
+      "message": "this function has too many lines (216/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<RunResult> {"
-    },
-    {
-      "tool": "clippy",
-      "rule": "clippy::too_many_lines",
-      "file": "cli/src/run.rs",
-      "line": 1208,
-      "message": "this function has too many lines (442/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "fn drive("
     },
     {
       "tool": "clippy",
