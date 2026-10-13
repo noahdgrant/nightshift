@@ -443,7 +443,6 @@ fn a_failed_setup_removes_the_half_made_sandbox() {
 
 #[test]
 fn a_failed_early_setup_step_fails_the_setup_and_removes_the_sandbox() {
-    use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
     fs::create_dir(tmp.path().join("t")).unwrap();
     let decoy = tmp.path().join("decoy");
@@ -455,16 +454,13 @@ fn a_failed_early_setup_step_fails_the_setup_and_removes_the_sandbox() {
             .stdout,
     )
     .unwrap();
-    let git = decoy.join("git");
-    fs::write(
-        &git,
+    common::write_exe(
+        &decoy.join("git"),
         format!(
             "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = push ] && {{ echo 'decoy: push refused' >&2; exit 1; }}; done\nexec {} \"$@\"\n",
             real.trim()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let out = run_with_path(tmp.path(), &script(), &["--new"], Some(&decoy));
     assert!(!out.status.success(), "setup passed: {}", stdout(&out));
     assert!(stderr(&out).contains("push refused"), "{}", stderr(&out));
