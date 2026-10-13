@@ -1547,7 +1547,7 @@ fn drive(
         if art.as_ref().is_some_and(|a| a.status == "pass") {
             passed.insert(phase);
             // A failed phase's scratch files stay for a human to read, until `ns clean`.
-            fs::remove_dir_all(&tmp).ok();
+            let _ = fs::remove_dir_all(&tmp);
         }
         if !written {
             restore(&moves);
@@ -2375,8 +2375,10 @@ fn gate_merge_result(
         return Ok(step);
     }
     let reused = gate_state.merge_verdict(pr_head, &base);
-    let red = match reused.clone() {
-        Some(red) => red,
+    let was_reused = reused.is_some();
+    let red = match reused {
+        Some(gate::Reused::Green) => None,
+        Some(gate::Reused::Red(red)) => Some(red),
         None => {
             let scratch = match Scratch::add(wt, &ctx.common, &ctx.unit, pr_head) {
                 Ok(s) => s,
@@ -2408,7 +2410,7 @@ fn gate_merge_result(
         }
     };
     if red.is_some() {
-        log_merge_gate_failed(ctx, n, pr_head, &base, reused.is_some());
+        log_merge_gate_failed(ctx, n, pr_head, &base, was_reused);
     }
     Ok(red.map(MergeStep::Rebuild))
 }
