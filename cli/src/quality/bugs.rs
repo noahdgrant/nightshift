@@ -455,6 +455,15 @@ mod tests {
         assert!(skill.contains(&marker), "{marker}");
         let item = "   - [ ] `<file:line>`";
         assert!(skill.contains(item), "{item}");
+        let flat: String = skill
+            .lines()
+            .map(str::trim_start)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let raise =
+            "Raise that issue's priority label to the highest among its existing and new items";
+        assert!(flat.contains(raise), "{raise}");
+        assert!(flat.contains("never lower it"), "never lower it");
     }
 
     fn t(s: &str) -> i64 {
