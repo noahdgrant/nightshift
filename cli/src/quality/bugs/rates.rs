@@ -1,5 +1,5 @@
 //! The fix issues per merged unit and per 1,000 changed lines in each week of `ns quality --bugs`,
-//! and each rate's trend (docs/FACTORY.md, Quality, Bug counts).
+//! and each rate's trend (docs/factory/quality.md).
 
 use std::fmt::Write as _;
 

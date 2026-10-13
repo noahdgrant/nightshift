@@ -65,4 +65,4 @@ Each week also gets two rates: its fix issues per merged unit, and per 1,000 cha
 
 Each rate has a trend over the weeks shown: the least-squares slope of the rate against the week, fitted on the weeks with a rate that are not undercounted. Fewer than 4 such weeks is `insufficient`. A slope within 5% of the mean rate, per week, is `flat`; otherwise it is `rising` or `falling`.
 
-Without `--json` it prints a table, one row per week and a total, then a table of the rates and a line per trend. With `--json` it prints `{ok, label, since, until, weeks, total, trend, merged_prs, issues, excluded}`; `cli/README.md` lists the keys.
+Without `--json` it prints a table, one row per week and a total, then a table of the rates and a line per trend. With `--json` it prints `{ok, label, since, until, weeks, total, trend, merged_prs, issues, excluded}`; `docs/cli/quality.md` lists the keys.

@@ -681,6 +681,7 @@ mod tests {
             {"number": 43, "headRefName": "x", "isCrossRepository": false,
              "mergedAt": "2026-10-06T00:00:00Z"},
             {"number": 44, "headRefName": "x", "isCrossRepository": false, "mergedAt": null},
+            {"number": 45, "headRefName": "ns/9-b", "mergedAt": "2026-10-07T00:00:00Z"},
         ]);
         let m = parse_merged(&prs);
         let at = |s| crate::clock::parse_iso(s).unwrap();
@@ -703,6 +704,12 @@ mod tests {
                     number: 43,
                     head: "x".into(),
                     merged: at("2026-10-06T00:00:00Z"),
+                    changed: None
+                },
+                MergedPr {
+                    number: 45,
+                    head: String::new(),
+                    merged: at("2026-10-07T00:00:00Z"),
                     changed: None
                 },
             ]

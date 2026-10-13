@@ -430,6 +430,7 @@ mod tests {
             {"iid": 5, "source_branch": "ns/9-b", "source_project_id": 2, "target_project_id": 1,
              "merged_at": "2026-10-06T00:00:00Z"},
             {"iid": 6, "source_branch": "x", "merged_at": null},
+            {"iid": 7, "source_branch": "ns/9-b", "merged_at": "2026-10-07T00:00:00Z"},
         ]);
         let m = to_merged_prs(mrs.as_array().unwrap());
         let at = |s| crate::clock::parse_iso(s).unwrap();
@@ -446,6 +447,12 @@ mod tests {
                     number: 5,
                     head: String::new(),
                     merged: at("2026-10-06T00:00:00Z"),
+                    changed: None
+                },
+                MergedPr {
+                    number: 7,
+                    head: String::new(),
+                    merged: at("2026-10-07T00:00:00Z"),
                     changed: None
                 },
             ]
