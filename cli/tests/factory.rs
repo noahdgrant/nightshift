@@ -1417,9 +1417,6 @@ fn each_phase_gets_its_own_tmpdir_and_a_passing_phase_leaves_none_behind() {
     let e = Env::new();
     e.issue(8, "Fix other", "OPEN");
     record_tmpdir(&e);
-    let stale = unit_tmp(&e, UNIT).join("build-1");
-    fs::create_dir_all(&stale).unwrap();
-    fs::write(stale.join("stale"), "from an earlier run\n").unwrap();
     for (n, unit) in [("7", UNIT), ("8", "8-fix-other")] {
         e.queue(&format!("build.{unit}"), &["pass:script"]);
         let v = e.run(&["run", "--issue", n], 0);
@@ -1453,18 +1450,43 @@ fn a_failed_phase_keeps_its_tmpdir() {
 }
 
 #[test]
-fn a_tmpdir_that_cannot_be_emptied_stops_the_run_before_the_phase() {
+fn a_rerun_keeps_the_tmpdirs_a_failed_run_kept() {
     let e = Env::new();
-    let dir = unit_tmp(&e, UNIT).join("triage-1");
-    fs::create_dir_all(dir.parent().unwrap()).unwrap();
-    fs::write(&dir, "a file, not a directory\n").unwrap();
+    record_tmpdir(&e);
+    e.queue("build", &["fail:script", "fail:script"]);
+    e.run(&["run", "--issue", "7"], 1);
+    let tmp = unit_tmp(&e, UNIT);
+    let kept = [tmp.join("build-1"), tmp.join("build-2")];
+    for dir in &kept {
+        assert!(dir.join("scratch").is_file(), "{}", dir.display());
+    }
+    e.queue("build", &["pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let dirs = ["build-1", "build-2", "build-3"].map(|d| tmp.join(d));
+    assert_eq!(
+        phase_tmpdirs(&e, UNIT),
+        dirs.iter().map(|d| d.to_str().unwrap()).collect::<Vec<_>>()
+    );
+    for dir in &kept {
+        assert!(dir.join("scratch").is_file(), "{}", dir.display());
+    }
+    assert!(!tmp.join("build-3").exists());
+}
+
+#[test]
+fn a_tmpdir_that_cannot_be_created_stops_the_run_before_the_phase() {
+    let e = Env::new();
+    let tmp = unit_tmp(&e, UNIT);
+    fs::create_dir_all(tmp.parent().unwrap()).unwrap();
+    fs::write(&tmp, "a file, not a directory\n").unwrap();
     e.ns()
         .args(["run", "--issue", "7"])
         .assert()
         .failure()
         .stderr(predicates::str::contains(format!(
-            "cannot empty {}",
-            dir.display()
+            "cannot create {}",
+            tmp.join("triage-1").display()
         )));
     assert!(e.calls().is_empty());
 }

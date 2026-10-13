@@ -439,18 +439,23 @@ fn run_harness(
     })
 }
 
-/// An empty `TMPDIR` for one attempt of `phase`, private to `unit`, so parallel units never
-/// share a scratch file. A same-named directory an earlier run kept is emptied.
+/// A new, empty `TMPDIR` for one attempt of `phase`, private to `unit`, so parallel units never
+/// share a scratch file. It is `<phase>-<n>` for the first `n` from `attempt` not taken, so a
+/// directory a failed phase of an earlier run kept survives until `ns clean`.
 fn phase_tmpdir(common: &Path, unit: &str, phase: &str, attempt: u32) -> Result<PathBuf> {
-    let dir = pin::tmp_path(common, unit).join(format!("{phase}-{attempt}"));
-    match fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            return Err(e).with_context(|| format!("cannot empty {}", dir.display()))
+    let parent = pin::tmp_path(common, unit);
+    for n in attempt.. {
+        let dir = parent.join(format!("{phase}-{n}"));
+        let made = fs::create_dir_all(&parent).and_then(|()| fs::create_dir(&dir));
+        match made {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.exists() => continue,
+            made => {
+                made.with_context(|| format!("cannot create {}", dir.display()))?;
+                return Ok(dir);
+            }
         }
-        _ => {}
     }
-    fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    Ok(dir)
+    anyhow::bail!("no free {phase}-<n> directory in {}", parent.display())
 }
 
 /// Take the merge lock for `unit`, waiting while another unit merges, each wait logged by

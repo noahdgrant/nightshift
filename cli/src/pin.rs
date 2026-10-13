@@ -44,7 +44,7 @@ pub fn settings_path(common_dir: &Path, unit: &str) -> PathBuf {
     unit_dir(common_dir, unit).join(SETTINGS_FILE)
 }
 
-/// The directory that holds `unit`'s phase `TMPDIR`s, one `<phase>-<attempt>` each.
+/// The directory that holds `unit`'s phase `TMPDIR`s, one `<phase>-<n>` each.
 pub fn tmp_path(common_dir: &Path, unit: &str) -> PathBuf {
     unit_dir(common_dir, unit).join(TMP_DIR)
 }
