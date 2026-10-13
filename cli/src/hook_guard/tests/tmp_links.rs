@@ -127,7 +127,7 @@ fn a_tmpdir_that_cannot_be_read_exempts_nothing() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
     let readable = std::fs::read_dir(&locked).is_ok();
     let why = unit.bash("echo x > $TMPDIR/out.txt");
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
     if !readable {
         assert!(why.is_some());
     }
