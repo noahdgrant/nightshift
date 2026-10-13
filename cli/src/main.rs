@@ -28,6 +28,7 @@ mod markers;
 mod memcap;
 mod phase_output;
 mod pin;
+mod proc;
 mod quality;
 mod ratchet;
 mod review_md;
