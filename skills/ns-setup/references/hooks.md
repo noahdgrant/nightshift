@@ -1,6 +1,6 @@
 # Hooks
 
-How `ns-setup` finds a repo's pre-commit hook, and the files it proposes when there is none.
+How `ns-setup` finds a repo's pre-commit hook, the files it proposes when there is none, and the `[merge] human_review` list it proposes in every repo.
 
 ## Detection
 
@@ -57,6 +57,25 @@ The `ci-local` row of `stack.md` names `scripts/ci-local.sh`. The `ns run` gate 
 `ns-setup`, run by the user to onboard a repo, is the sanctioned writer of `core.hooksPath` and `.githooks/`, which `skills/ns-contract` (Git hooks) forbids to phases. Never do this inside an `ns run` phase: if the guard denies the write, report it, and do not retry or bypass it.
 
 Before handing over, run `sh -n scripts/ci-local.sh` and then `scripts/ci-local.sh --fast` once. A step that fails on today's code is a finding to report, not a reason to drop the step.
+
+## Merge review list
+
+`[merge] human_review` in `.nightshift/nightshift.toml` lists the globs whose changes need a human merge (`docs/factory/merge.md`). Empty, `policy = "auto"` lets `ns run` merge changes to the factory's own guardrails with no human. Propose a starter list in every run, built from paths the repo has:
+
+- the CI config: `.github/**` on GitHub, `.gitlab-ci.yml` on GitLab (the tracker Section D found)
+- the hook directory: `.githooks/**`, or the hook found in Detection (`.pre-commit-config.yaml`, `.husky/**`, `lefthook.yml`)
+- the local CI script: the `ci-local` row of `stack.md`, such as `scripts/ci-local.sh`
+- `.nightshift/**`, always
+
+List only paths that exist, counting the files Section B writes, so a repo with none of them gets `[".nightshift/**"]`. When the file already has a `human_review`, keep every entry the owner wrote and add only the missing ones. Leave `policy` as it is.
+
+```toml
+[merge]
+human_review = [".github/**", ".githooks/**", "scripts/ci-local.sh", ".nightshift/**"]
+```
+
+- `gates: stop`: show the list and let the owner edit it. After a yes, write it to `.nightshift/nightshift.toml`. On a no, write nothing and tell the owner the repo keeps an empty `human_review`.
+- `gates: auto`: leave `.nightshift/nightshift.toml` alone, as Gates says, and give the `[merge]` block in the final message for whoever merges to add.
 
 ## Example: Python
 
