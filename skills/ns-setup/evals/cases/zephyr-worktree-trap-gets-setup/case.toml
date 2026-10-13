@@ -66,8 +66,6 @@ grep -Fx -- "-- Application: $main/app" "$tmp/main.log" || { echo "the main chec
 expect_exit = 0
 
 [[check]]
-# twister runs a worker per core unless -j says otherwise; under ns watch --parallel, the test
-# command stack.md names (or the script it calls) caps that at the unit's share, NS_CPUS.
 type = "command"
 run = '''grep -rqF NS_CPUS docs/agents/stack.md scripts/'''
 expect_exit = 0

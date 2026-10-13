@@ -1,6 +1,6 @@
-//! The per-unit CPU share, `ns run --cpus` (docs/FACTORY.md, "CPU share"). Every phase and gate
-//! of the run inherits it as `NS_CPUS`, `RUST_TEST_THREADS` and `CARGO_BUILD_JOBS`; a variable
-//! the operator already set is left as it is.
+//! The per-unit CPU share, `ns run --cpus` (docs/FACTORY.md, "CPU share"). `ns run` puts `NS_CPUS`,
+//! `RUST_TEST_THREADS` and `CARGO_BUILD_JOBS` on each phase, gate and setup command it starts;
+//! a variable the operator already set is left as it is.
 
 use serde_json::{json, Map, Value};
 use std::process::Command;
@@ -37,10 +37,11 @@ pub struct Setting {
     pub inherited: bool,
 }
 
-/// Each of [`VARS`] for `--cpus n`: the value `get` returns for it, else `n`.
+/// Each of [`VARS`] for `--cpus n`: the value `get` returns for it, else `n`. An empty value
+/// counts as unset.
 pub fn settings(n: u32, get: impl Fn(&str) -> Option<String>) -> Vec<Setting> {
     VARS.iter()
-        .map(|&var| match get(var) {
+        .map(|&var| match get(var).filter(|v| !v.is_empty()) {
             Some(value) => Setting {
                 var,
                 value,
@@ -58,14 +59,15 @@ pub fn settings(n: u32, get: impl Fn(&str) -> Option<String>) -> Vec<Setting> {
 static ACTIVE: OnceLock<Vec<Setting>> = OnceLock::new();
 
 /// Fix the settings for `--cpus n` for this process and return them. [`apply`] puts them on each
-/// phase, gate and setup command it starts. The first call wins, because the settings are kept
-/// in a process-wide global.
+/// phase, gate and setup command it starts. Panics on a second call.
 pub fn activate(n: u32) -> &'static [Setting] {
-    ACTIVE.get_or_init(|| {
-        settings(n, |v| {
-            std::env::var_os(v).map(|x| x.to_string_lossy().into_owned())
-        })
-    })
+    let s = settings(n, |v| {
+        std::env::var_os(v).map(|x| x.to_string_lossy().into_owned())
+    });
+    ACTIVE
+        .set(s)
+        .expect("cpus::activate is called once per process");
+    ACTIVE.get().expect("set above")
 }
 
 /// Give `cmd` each computed variable; an inherited one reaches it through the environment.
@@ -131,8 +133,21 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_variable_counts_as_unset() {
+        let s = settings(3, |_| Some(String::new()));
+        assert!(s.iter().all(|x| x.value == "3" && !x.inherited), "{s:?}");
+    }
+
+    #[test]
     fn with_nothing_set_every_variable_is_computed() {
         let s = settings(2, |_| None);
         assert!(s.iter().all(|x| x.value == "2" && !x.inherited), "{s:?}");
+    }
+
+    #[test]
+    #[should_panic(expected = "once per process")]
+    fn a_second_activate_panics() {
+        activate(2);
+        activate(2);
     }
 }
