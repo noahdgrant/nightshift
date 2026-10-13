@@ -448,7 +448,7 @@ fn phase_tmpdir(common: &Path, unit: &str, phase: &str, attempt: u32) -> Result<
         let dir = parent.join(pin::phase_tmp_name(phase, n));
         let made = fs::create_dir_all(&parent).and_then(|()| fs::create_dir(&dir));
         match made {
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.exists() => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.exists() => {}
             made => {
                 made.with_context(|| format!("cannot create {}", dir.display()))?;
                 return Ok(dir);
