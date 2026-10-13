@@ -251,13 +251,10 @@ pub fn report(
         .iter()
         .filter(|p| p.head.starts_with(BRANCH_PREFIX) && window.contains(Some(p.merged)))
         .collect();
-    let kept: Vec<&Filed> = filed
-        .iter()
-        .filter(|f| window.contains(Some(f.opened)))
+    let counted = counted_issues(filed, window);
+    let gone: Vec<&Filed> = in_window(filed, window)
+        .filter(|f| f.state == IssueState::NotPlanned)
         .collect();
-    let (gone, counted): (Vec<&Filed>, Vec<&Filed>) = kept
-        .into_iter()
-        .partition(|f| f.state == IssueState::NotPlanned);
     let mut issues: Vec<Bug> = counted
         .iter()
         .map(|f| classify(f, trace, factory_prs))
@@ -412,14 +409,26 @@ fn trace(repo: &Repo, base: Option<&str>, f: &Filed) -> Result<Blame, String> {
     blame::blame(&repo.root, Some(&at), Some(&f.issue.body))
 }
 
+fn in_window(filed: &[Filed], window: Window) -> impl Iterator<Item = &Filed> {
+    filed
+        .iter()
+        .filter(move |f| window.contains(Some(f.opened)))
+}
+
+/// The issues inside `window` the report counts: those not closed as not planned.
+fn counted_issues(filed: &[Filed], window: Window) -> Vec<&Filed> {
+    in_window(filed, window)
+        .filter(|f| f.state != IssueState::NotPlanned)
+        .collect()
+}
+
 /// When the first week of the report starts: its window's start, else the oldest issue's week.
 fn first_week(filed: &[Filed], window: Window) -> Option<i64> {
     window
         .since
         .or_else(|| {
-            filed
-                .iter()
-                .filter(|f| f.state != IssueState::NotPlanned && window.contains(Some(f.opened)))
+            counted_issues(filed, window)
+                .into_iter()
                 .map(|f| f.opened)
                 .min()
         })
@@ -778,6 +787,39 @@ mod tests {
         );
         let weeks: Vec<&str> = r.weeks.iter().map(|w| w.week.as_str()).collect();
         assert_eq!(weeks, ["2026-W41", "2026-W42"]);
+    }
+
+    fn undercounted_weeks(prs: &[MergedPr], truncated: bool) -> Vec<bool> {
+        let w = Window {
+            since: Some(t("2026-10-05")),
+            until: None,
+        };
+        report(
+            &[],
+            w,
+            t("2026-10-20"),
+            &no_trace,
+            &BTreeSet::new(),
+            &merged(prs, truncated),
+        )
+        .weeks
+        .iter()
+        .map(|w| w.rates.undercounted)
+        .collect()
+    }
+
+    #[test]
+    fn a_week_starting_exactly_at_the_oldest_listed_merge_is_not_undercounted() {
+        let prs = [pr(1, "ns/1", "2026-10-12T00:00:00Z", Some(1))];
+        assert_eq!(undercounted_weeks(&prs, true), [true, false, false]);
+        let prs = [pr(1, "ns/1", "2026-10-12T00:00:01Z", Some(1))];
+        assert_eq!(undercounted_weeks(&prs, true), [true, true, false]);
+    }
+
+    #[test]
+    fn a_full_list_with_no_usable_pr_leaves_every_week_undercounted() {
+        assert_eq!(undercounted_weeks(&[], true), [true, true, true]);
+        assert_eq!(undercounted_weeks(&[], false), [false, false, false]);
     }
 
     #[test]

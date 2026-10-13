@@ -125,21 +125,27 @@ fn merged_path(since: Option<i64>) -> String {
         format!("&merged_after={}", crate::clock::iso(t).replace(':', "%3A"))
     });
     format!(
-        "projects/:id/merge_requests?state=merged&order_by=updated_at&per_page={MR_LIMIT}{after}"
+        "projects/:id/merge_requests?state=merged&order_by=created_at&per_page={MR_LIMIT}{after}"
     )
+}
+
+/// An MR's source branch, empty for a fork's: its name says nothing about this project's units.
+fn own_branch(mr: &Value) -> String {
+    let own =
+        mr["source_project_id"].is_u64() && mr["source_project_id"] == mr["target_project_id"];
+    if own {
+        mr["source_branch"].as_str().unwrap_or("").to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// A merged MR, its source branch empty when it came from a fork. One with no merge time it can
 /// read is left out.
 fn to_merged(mr: &Value) -> Option<MergedPr> {
-    let own =
-        mr["source_project_id"].is_u64() && mr["source_project_id"] == mr["target_project_id"];
     Some(MergedPr {
         number: mr["iid"].as_u64()?,
-        head: match own {
-            true => mr["source_branch"].as_str().unwrap_or("").to_string(),
-            false => String::new(),
-        },
+        head: own_branch(mr),
         merged: time(mr["merged_at"].as_str()?)?,
         changed: None,
     })
@@ -252,15 +258,7 @@ impl Forge for GitLab {
         let mut by_issue = BTreeMap::new();
         for mr in items(&glab(&self.root, &["api", &path])?)? {
             for n in closed_by(mr["description"].as_str().unwrap_or("")) {
-                // A fork's branch name says nothing about this project's units.
-                let own = mr["source_project_id"].is_u64()
-                    && mr["source_project_id"] == mr["target_project_id"];
-                let head = if own {
-                    mr["source_branch"].as_str().unwrap_or("").to_string()
-                } else {
-                    String::new()
-                };
-                by_issue.insert(n, (mr["iid"].as_u64().unwrap_or(0), head));
+                by_issue.insert(n, (mr["iid"].as_u64().unwrap_or(0), own_branch(&mr)));
             }
         }
         Ok(by_issue)
@@ -463,12 +461,12 @@ mod tests {
         assert_eq!(MR_LIMIT, 100);
         assert_eq!(
             merged_path(None),
-            "projects/:id/merge_requests?state=merged&order_by=updated_at&per_page=100"
+            "projects/:id/merge_requests?state=merged&order_by=created_at&per_page=100"
         );
         let since = crate::clock::parse_iso("2026-09-07").unwrap();
         assert_eq!(
             merged_path(Some(since)),
-            "projects/:id/merge_requests?state=merged&order_by=updated_at&per_page=100\
+            "projects/:id/merge_requests?state=merged&order_by=created_at&per_page=100\
              &merged_after=2026-09-07T00%3A00%3A00Z"
         );
     }

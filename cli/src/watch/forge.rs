@@ -263,6 +263,14 @@ fn parse_filed(text: &str) -> Vec<Filed> {
         .collect()
 }
 
+/// A PR's head branch, empty for a fork's: its name says nothing about this repo's units.
+fn own_head(p: &Value) -> String {
+    match p["isCrossRepository"].as_bool() {
+        Some(false) => p["headRefName"].as_str().unwrap_or("").to_string(),
+        _ => String::new(),
+    }
+}
+
 /// `gh pr list`'s merged PRs. One with no merge time it can read is left out.
 fn parse_merged(prs: &Value) -> MergedPrs {
     let all = prs.as_array().map_or(&[][..], Vec::as_slice);
@@ -272,10 +280,7 @@ fn parse_merged(prs: &Value) -> MergedPrs {
             .filter_map(|p| {
                 Some(MergedPr {
                     number: p["number"].as_u64()?,
-                    head: match p["isCrossRepository"].as_bool() {
-                        Some(false) => p["headRefName"].as_str().unwrap_or("").to_string(),
-                        _ => String::new(),
-                    },
+                    head: own_head(p),
                     merged: crate::clock::parse_iso(p["mergedAt"].as_str()?)?,
                     changed: p["additions"]
                         .as_u64()
@@ -394,12 +399,7 @@ impl Forge for GitHub {
         let mut by_issue = BTreeMap::new();
         for p in prs.as_array().cloned().unwrap_or_default() {
             for n in closed_by(p["body"].as_str().unwrap_or("")) {
-                // A fork's branch name says nothing about this repo's units.
-                let head = match p["isCrossRepository"].as_bool() {
-                    Some(false) => p["headRefName"].as_str().unwrap_or("").to_string(),
-                    _ => String::new(),
-                };
-                by_issue.insert(n, (p["number"].as_u64().unwrap_or(0), head));
+                by_issue.insert(n, (p["number"].as_u64().unwrap_or(0), own_head(&p)));
             }
         }
         Ok(by_issue)
