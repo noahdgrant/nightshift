@@ -36,10 +36,26 @@ for l in lines[start + 1:]:
     if stop.match(re.sub(r"^[ \t>]+", "", l)):
         break
     body.append(l)
-entries = [l.strip(" \t-*_>") for l in body]
+bullet = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+")
+entries = []
+base = None
+for l in body:
+    l = re.sub(r"^[ \t]*>[ \t>]*", "", l).rstrip()
+    if not l.strip():
+        continue
+    indent = len(l) - len(l.lstrip())
+    top = bullet.match(l) and (base is None or indent <= base)
+    if top:
+        base = indent if base is None else base
+    if top or not entries:
+        entries.append(bullet.sub("", l).strip())
+    else:
+        entries[-1] += " " + l.strip()
+entries = [re.sub(r"[*_`]", "", e).strip() for e in entries]
 entries = [e for e in entries if e and e.lower() != "(required)"]
 print("failure modes:", entries)
-if not any(not re.match(r"none\s*(?:[;.]|$)", e, re.I) for e in entries):
+none = re.compile(r"none(?:\s*[;.:,(\u2014\u2013]|\s+[-\u2014\u2013]|\s*$)", re.I)
+if not any(not none.match(e) for e in entries):
     sys.exit("Failure modes section is empty or only says none")
 PYEOF
 '''
