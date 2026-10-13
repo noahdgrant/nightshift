@@ -1,0 +1,37 @@
+# Checks validated by hand: the fixture plus a stack.md whose ci-local row is `make ci` passes every check; a row of none, a row of `scripts/ci-local.sh`, an added scripts/ci-local.sh, an edited Makefile, a pre-commit hook running make ci --fast (checked in a stand-in directory, since the hook guard blocks writes under .githooks/), and a nightshift.toml setting local = "build-only" each fail one.
+description = "Set up a Python repo whose CI runs `make ci`, a target that takes no --fast: setup records `make ci` as stack.md's ci-local row under the default gate mode, leaves the Makefile alone and writes no ci-local script."
+fixture = "py-inventory"
+skills = ["ns-setup"]
+extra_skills = []
+requires = ["python"]
+timeout_minutes = 20
+prompt = """
+Set this repo up for the nightshift skills. gates: auto. Nobody is around to answer questions, so take the recommended answer for each one and carry on. This scratch copy has no nightshift checkout next to it, so if a rule pack's files cannot be copied, say so in your final message instead of inventing them. Don't commit.
+"""
+
+[setup]
+# files/ adds a Makefile whose ci target runs ruff check, ruff format --check and pytest, and a CI workflow that runs make ci.
+commands = ["rm -r docs/agents"]
+
+[[check]]
+# The default gate runs the row as written, so a script without --fast is still the ci-local command.
+type = "regex"
+path = "docs/agents/stack.md"
+pattern = "\\| *ci-local *\\| *`make ci`"
+present = true
+
+[[check]]
+type = "command"
+run = '''git diff --quiet HEAD -- Makefile && test ! -e scripts/ci-local.sh'''
+expect_exit = 0
+
+[[check]]
+# make ci takes no --fast, so no hook may pass it one.
+type = "command"
+run = '''! grep -rqs -- '--fast' .githooks'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = '''! grep -qs 'local *= *"build-only"' .nightshift/nightshift.toml'''
+expect_exit = 0
