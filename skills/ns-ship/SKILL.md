@@ -33,7 +33,7 @@ If either check fails, write `pr.md` with `status: fail`, name what is missing i
 GO needs every line below to hold on the current `HEAD`. Record each one. The Verification and Rollback sections are built from them.
 
 - The test, lint, and build commands from `docs/agents/stack.md` pass.
-- `evidence.md` covers every acceptance criterion in `brief.md`. An `inconclusive` item is not covered.
+- `evidence.md` covers every acceptance criterion in `brief.md`. An `inconclusive` item is not covered. A `ship` item is covered by step 5's ship check.
 - `review.md` has no open Critical or Important finding in changed code.
 - The diff holds no secrets, credentials, or debug-only switches left on.
 - You can write a rollback plan. A change you can't undo needs a stated way forward instead (for example, a fix-forward migration).
@@ -97,6 +97,10 @@ a pseudocode sketch, call tree, file tree, or `diff` sketch. Pick one, two at mo
 A two-way door is cheap to walk back: a revert restores the old behaviour. A one-way door can't be walked back: deleted data, a schema or wire-format change already consumed, a bootloader or partition change on shipped units. Say which, and why.
 
 Put screenshots, captures, or logs only where they prove a claim. Keep SHAs, review-panel output, and file-by-file lists out of the body. Link `evidence.md` content or CI artifacts instead.
+
+### Ship check
+
+List the brief's **Ship note** items and the criteria `evidence.md` marks `ship`. Check each against the body you just wrote: the `Closes` line, each issue it must name, each label the PR needs. Add a missing item to the body, then check again; a missing label goes on in step 7, right after the PR opens (`gh pr edit <number> --add-label <label>`, GitLab `glab mr update <iid> --label <label>`). An item the PR can't carry, such as an issue that doesn't exist (`gh issue view <n>` fails), is NO-GO: write `pr.md` with `status: fail`, the item named in the first body line, and stop. Record the result as one Verification bullet, `Ship note: <item>, <item>: in the body`. A brief with no Ship note and no `ship` criteria has nothing to check.
 
 ## 6. Save pr.md
 
