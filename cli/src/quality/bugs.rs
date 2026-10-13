@@ -24,7 +24,7 @@ pub const LABEL: &str = "type:fix";
 /// The body line naming an issue's source, as `Source: review_escape`.
 const MARKER: &str = "Source:";
 
-/// The sentence `ns-review` ends every escape it files with (skills/ns-review, step 7).
+/// The sentence `ns-review` ends every escape it files with.
 const ESCAPED: &str = "This escaped an earlier review.";
 
 const DAY: i64 = 86_400;
@@ -422,6 +422,17 @@ pub fn cli(
 mod tests {
     use super::*;
     use crate::watch::Issue;
+
+    #[test]
+    fn ns_review_files_escapes_with_the_text_and_marker_read_here() {
+        let skill = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../skills/ns-review/SKILL.md"),
+        )
+        .unwrap();
+        assert!(skill.contains(ESCAPED), "{ESCAPED}");
+        let marker = format!("`{MARKER} review_escape`");
+        assert!(skill.contains(&marker), "{marker}");
+    }
 
     fn t(s: &str) -> i64 {
         clock::parse_iso(s).unwrap()

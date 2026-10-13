@@ -1024,7 +1024,8 @@ fn import_needs_a_directory() {
 }
 
 /// A repo whose `lib.rs` line 2 came from factory PR #41 (branch `ns/9-b`) and line 3 from a
-/// person's PR #40, with a fake `gh` that lists the given `type:fix` issues and the two PRs.
+/// person's PR #40, with a fake `gh` that serves the given REST-shaped `type:fix` issues through
+/// the `--jq` filter it is passed, run by the real `jq`, and the two PRs.
 fn bugs_fixture(issues: &[Value]) -> (TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap().join("myrepo");
@@ -1044,8 +1045,7 @@ fn bugs_fixture(issues: &[Value]) -> (TempDir, PathBuf) {
         "feat: add c (#40)",
     );
     let fake = tmp.path().join("fake");
-    let lines: Vec<String> = issues.iter().map(Value::to_string).collect();
-    write(fake.join("issues.jsonl"), &(lines.join("\n") + "\n"));
+    write(fake.join("issues.json"), &json!(issues).to_string());
     let prs = json!([
         {"number": 41, "body": "Closes #9", "headRefName": "ns/9-b", "isCrossRepository": false},
         {"number": 40, "body": "Closes #8", "headRefName": "someone/c", "isCrossRepository": false},
@@ -1054,7 +1054,7 @@ fn bugs_fixture(issues: &[Value]) -> (TempDir, PathBuf) {
     common::write_exe(
         &fake.join("bin/gh"),
         format!(
-            "#!/bin/sh\necho \"$*\" >> '{d}/calls'\ncase \"$*\" in\n  \"api --paginate repos/{{owner}}/{{repo}}/issues?state=all&labels=type:fix&per_page=100 \"*) cat '{d}/issues.jsonl' ;;\n  \"pr list --state merged \"*) cat '{d}/prs.json' ;;\n  *) echo \"fake gh: $*\" >&2; exit 1 ;;\nesac\n",
+            "#!/bin/sh\necho \"$*\" >> '{d}/calls'\ncase \"$*\" in\n  \"api --paginate repos/{{owner}}/{{repo}}/issues?state=all&labels=type:fix&per_page=100 \"*) for a; do :; done; jq -c \"$a\" '{d}/issues.json' ;;\n  \"pr list --state merged \"*) cat '{d}/prs.json' ;;\n  *) echo \"fake gh: $*\" >&2; exit 1 ;;\nesac\n",
             d = fake.display()
         ),
     );
@@ -1064,7 +1064,7 @@ fn bugs_fixture(issues: &[Value]) -> (TempDir, PathBuf) {
 fn fix_issue(n: u64, opened: &str, title: &str, body: &str, labels: &[&str]) -> Value {
     let labels: Vec<Value> = labels.iter().map(|l| json!({"name": l})).collect();
     json!({"number": n, "title": title, "body": body, "labels": labels,
-           "authorAssociation": "OWNER", "createdAt": opened, "state": "open", "stateReason": null})
+           "author_association": "OWNER", "created_at": opened, "state": "open", "state_reason": null})
 }
 
 fn ns_bugs(tmp: &TempDir, root: &Path, args: &[&str]) -> Ns {
@@ -1092,7 +1092,15 @@ fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
         &[],
     );
     dup["state"] = json!("closed");
-    dup["stateReason"] = json!("duplicate");
+    dup["state_reason"] = json!("duplicate");
+    let mut pull = fix_issue(
+        15,
+        "2099-01-06T00:00:00Z",
+        "fix: a pull request",
+        "",
+        &["type:fix"],
+    );
+    pull["pull_request"] = json!({"url": "https://example.test/pulls/15"});
     let issues = [
         fix_issue(
             10,
@@ -1123,6 +1131,7 @@ fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
             &["type:fix", "priority:medium"],
         ),
         dup,
+        pull,
     ];
     let (tmp, root) = bugs_fixture(&issues);
     let out = ns_bugs(&tmp, &root, &["--json"]).output();
@@ -1193,10 +1202,10 @@ fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
 #[test]
 fn bugs_fails_when_the_forge_cannot_list_issues() {
     let (tmp, root) = bugs_fixture(&[]);
-    fs::remove_file(tmp.path().join("fake/issues.jsonl")).unwrap();
+    fs::remove_file(tmp.path().join("fake/issues.json")).unwrap();
     ns_bugs(&tmp, &root, &[]).assert().code(1).stderr(
         predicate::str::contains("issues?state=all&labels=type:fix")
-            .and(predicate::str::contains("failed: cat:")),
+            .and(predicate::str::contains("failed:")),
     );
 }
 
@@ -1218,7 +1227,7 @@ fn bugs_fails_when_the_forge_cannot_list_merged_prs() {
     fs::remove_file(tmp.path().join("fake/prs.json")).unwrap();
     ns_bugs(&tmp, &root, &[]).assert().code(1).stderr(
         predicate::str::contains("gh pr list --state merged")
-            .and(predicate::str::contains("failed: cat:")),
+            .and(predicate::str::contains("failed:")),
     );
 }
 
