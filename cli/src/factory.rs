@@ -395,6 +395,11 @@ impl Factory {
             ),
             None => {}
         }
+        if self.merge.auto() && self.merge.human_review.is_empty() {
+            out.push(
+                "merge.policy = \"auto\" and merge.human_review is empty, so ns run merges every PR with no human, changes to CI config, hooks and .nightshift/** included (docs/factory/merge.md); list those paths in human_review".into(),
+            );
+        }
         out
     }
 

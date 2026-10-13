@@ -114,6 +114,24 @@ fn defaults_and_budget_by_billing() {
 }
 
 #[test]
+fn auto_merge_with_no_human_review_warns() {
+    for quiet in [
+        "[merge]\npolicy = \"human\"\n",
+        "[merge]\npolicy = \"auto\"\nhuman_review = [\".github/**\"]\n",
+    ] {
+        assert!(parse(quiet).unwrap().warnings().is_empty(), "{quiet}");
+    }
+    let f = parse("[merge]\npolicy = \"auto\"\n").unwrap();
+    let w = f.warnings();
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(
+        w[0].contains("merge.policy = \"auto\"") && w[0].contains("merge.human_review is empty"),
+        "{w:?}"
+    );
+    assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+}
+
+#[test]
 fn a_removed_triage_per_night_parses_with_a_warning() {
     assert!(parse("").unwrap().warnings().is_empty());
     assert!(parse(FULL).unwrap().warnings().is_empty());
