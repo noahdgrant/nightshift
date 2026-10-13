@@ -1,7 +1,7 @@
 //! The running phase's own `TMPDIR`: the one directory under `.git/ns` a phase may write to,
 //! while nothing in it is a symlink that could lead a write out of it.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 
 use super::files::components;
@@ -17,6 +17,7 @@ const MAX_WALK: usize = 20_000;
 pub(super) struct PhaseTmp {
     dirs: Vec<String>,
     distrust: OnceCell<Option<String>>,
+    blamed: RefCell<Option<String>>,
 }
 
 impl PhaseTmp {
@@ -39,13 +40,53 @@ impl PhaseTmp {
         PhaseTmp {
             dirs,
             distrust: OnceCell::new(),
+            blamed: RefCell::new(None),
         }
     }
 
     /// `path` is the phase's `TMPDIR` or in it, by an absolute path with no part below it that
-    /// could be `..`, and the directory holds no symlink.
+    /// could be `..`, and no part of the path itself, from `TMPDIR` down, is a symlink. A
+    /// symlink elsewhere in `TMPDIR` does not matter. The first link found is kept for `blamed`.
     pub fn exempts(&self, path: &str) -> bool {
-        self.holds(path) && self.distrust().is_none()
+        if !self.holds(path) {
+            return false;
+        }
+        match self.link_on(path) {
+            Some(link) => {
+                self.blamed.borrow_mut().get_or_insert(link);
+                false
+            }
+            None => true,
+        }
+    }
+
+    /// The symlink a write to `path`, which `holds` says is in `TMPDIR`, would go through.
+    fn link_on(&self, path: &str) -> Option<String> {
+        let parts = components(path);
+        let root = self
+            .dirs
+            .iter()
+            .map(|d| components(d))
+            .find(|r| parts.starts_with(r))?;
+        let mut at = PathBuf::from("/");
+        for (i, part) in parts.iter().enumerate() {
+            at.push(part);
+            if i + 1 < root.len() {
+                continue;
+            }
+            match std::fs::symlink_metadata(&at) {
+                Ok(m) if m.is_symlink() => return Some(format!("{} is a symlink", at.display())),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+                Err(e) => return Some(format!("{} could not be read ({e})", at.display())),
+            }
+        }
+        None
+    }
+
+    /// The symlink that made `exempts` refuse a path in `TMPDIR`, if one did.
+    pub fn blamed(&self) -> Option<String> {
+        self.blamed.borrow().clone()
     }
 
     fn holds(&self, path: &str) -> bool {
@@ -68,9 +109,27 @@ impl PhaseTmp {
             .as_deref()
     }
 
-    /// `distrust`, if this call has already looked.
-    pub fn found_distrust(&self) -> Option<&str> {
-        self.distrust.get().and_then(|d| d.as_deref())
+    /// The command assigns, unsets or redeclares `TMPDIR`, or reaches a variable by an
+    /// expansion the guard does not write out (`${TMPDIR:-x}`, `${!v}`), so `$TMPDIR` may not be
+    /// the phase's path when the shell reads it. Only a plain `$TMPDIR` or `${TMPDIR}` is not one.
+    pub fn rebinds(&self, command: &str) -> bool {
+        if self.dirs.is_empty() {
+            return false;
+        }
+        if command.contains("${!") {
+            return true;
+        }
+        command.match_indices("TMPDIR").any(|(i, name)| {
+            let (before, after) = (&command[..i], &command[i + name.len()..]);
+            let plain = match before.strip_suffix("${") {
+                Some(_) => after.starts_with('}'),
+                None => {
+                    before.ends_with('$')
+                        && !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                }
+            };
+            !plain
+        })
     }
 
     /// `command` with each `$TMPDIR` and `${TMPDIR}` outside single quotes written out, so the

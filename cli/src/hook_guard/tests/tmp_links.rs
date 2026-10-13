@@ -1,4 +1,5 @@
-//! A symlink anywhere in the phase's `TMPDIR` turns off its exemption, however it got there.
+//! A write through a symlink in the phase's `TMPDIR` is denied, however the link got there; a
+//! symlink elsewhere in it is not in the way.
 
 use super::*;
 
@@ -52,20 +53,40 @@ fn a_write_through_a_link_a_git_alias_planted_is_denied_and_names_the_link() {
         "echo x > $TMPDIR/hk/pre-commit",
         "echo x | tee -a $TMPDIR/hk/pre-commit",
         "echo x > \"${TMPDIR}/hk/pre-commit\"",
-        "echo x > $TMPDIR/out.txt",
     ] {
         let why = unit.bash(c).unwrap_or_else(|| panic!("not denied: {c}"));
         assert!(why.contains("symlink") && why.contains("hk"), "{c}: {why}");
     }
-    let write = json!({
-        "tool_name": "Write",
-        "tool_input": {"file_path": format!("{}/notes.txt", unit.tmp())},
-    });
-    assert!(check_in(&write, Some(unit.tmp())).is_some());
+    let write = |name: &str| {
+        let path = format!("{}/{name}", unit.tmp());
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": path}});
+        check_in(&call, Some(unit.tmp()))
+    };
+    assert!(write("hk/pre-commit").is_some());
+    assert_eq!(write("notes.txt"), None);
 }
 
 #[test]
-fn a_link_cp_a_copied_into_tmpdir_turns_off_the_exemption() {
+fn a_symlink_elsewhere_in_tmpdir_does_not_deny_writes_that_miss_it() {
+    let unit = Unit::new();
+    std::os::unix::fs::symlink("../../../../../hooks", unit.tmp.join("venv")).unwrap();
+    for c in [
+        "echo x > $TMPDIR/a",
+        "echo x | tee -a $TMPDIR/sub/file",
+        "cargo test > \"${TMPDIR}/out.log\"",
+        "touch $TMPDIR/new",
+    ] {
+        assert_eq!(unit.bash(c), None, "{c}");
+    }
+    let why = unit.bash("echo x > $TMPDIR/venv/pre-commit").unwrap();
+    assert!(
+        why.contains("venv") && why.contains("is a symlink"),
+        "{why}"
+    );
+}
+
+#[test]
+fn a_link_cp_a_copied_into_tmpdir_denies_a_write_through_it() {
     let unit = Unit::new();
     let src = unit.tmp.parent().unwrap().parent().unwrap().join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -77,12 +98,8 @@ fn a_link_cp_a_copied_into_tmpdir_turns_off_the_exemption() {
         .status()
         .unwrap();
     assert!(copied.success());
-    for c in [
-        "echo '{}' > $TMPDIR/copy/up/phase-settings.json",
-        "echo x > /dev/null; touch $TMPDIR/new",
-    ] {
-        assert!(unit.bash(c).is_some(), "{c}");
-    }
+    let c = "echo '{}' > $TMPDIR/copy/up/phase-settings.json";
+    assert!(unit.bash(c).is_some(), "{c}");
     let abs = format!("echo x > {}/copy/up/phase-settings.json", unit.tmp());
     assert!(unit.bash(&abs).is_some(), "{abs}");
 }
@@ -107,19 +124,18 @@ fn a_tmpdir_with_no_symlink_still_allows_writes() {
 }
 
 #[test]
-fn a_tmpdir_too_big_to_walk_exempts_nothing() {
+fn a_tmpdir_too_big_to_walk_still_allows_a_write_that_misses_a_link() {
     let unit = Unit::new();
     let many = unit.tmp.join("many");
     std::fs::create_dir(&many).unwrap();
     for i in 0..20_001 {
         std::fs::File::create(many.join(i.to_string())).unwrap();
     }
-    let why = unit.bash("echo x > $TMPDIR/out.txt").unwrap();
-    assert!(why.contains("TMPDIR"), "{why}");
+    assert_eq!(unit.bash("echo x > $TMPDIR/out.txt"), None);
 }
 
 #[test]
-fn a_tmpdir_that_cannot_be_read_exempts_nothing() {
+fn an_unreadable_directory_in_tmpdir_does_not_deny_a_write_beside_it() {
     use std::os::unix::fs::PermissionsExt;
     let unit = Unit::new();
     let locked = unit.tmp.join("locked");
@@ -132,5 +148,5 @@ fn a_tmpdir_that_cannot_be_read_exempts_nothing() {
         eprintln!("SKIPPED: a mode 000 directory is readable here (running as root?)");
         return;
     }
-    assert!(why.is_some());
+    assert_eq!(why, None);
 }

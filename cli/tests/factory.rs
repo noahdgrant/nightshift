@@ -1450,6 +1450,18 @@ fn a_failed_phase_keeps_its_tmpdir() {
 }
 
 #[test]
+fn a_blocked_phase_keeps_its_tmpdir() {
+    let e = Env::new();
+    record_tmpdir(&e);
+    e.queue("build", &["blocked:script"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    let dir = unit_tmp(&e, UNIT).join("build-1");
+    assert_eq!(phase_tmpdirs(&e, UNIT), [dir.to_str().unwrap()]);
+    assert!(dir.join("scratch").is_file());
+}
+
+#[test]
 fn a_rerun_keeps_the_tmpdirs_a_failed_run_kept() {
     let e = Env::new();
     record_tmpdir(&e);

@@ -2604,6 +2604,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_dangling_symlink_where_a_phase_tmpdir_goes_is_an_error_not_a_skipped_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = pin::tmp_path(dir.path(), "u1");
+        fs::create_dir_all(&parent).unwrap();
+        let slot = parent.join(pin::phase_tmp_name("build", 1));
+        std::os::unix::fs::symlink(dir.path().join("gone"), &slot).unwrap();
+        assert!(!slot.exists());
+        let err = phase_tmpdir(dir.path(), "u1", "build", 1).unwrap_err();
+        assert!(err.to_string().contains("cannot create"), "{err}");
+        assert!(!parent.join(pin::phase_tmp_name("build", 2)).exists());
+    }
+
+    #[test]
     fn workflow_refusal_needs_both_the_refusal_and_a_workflow() {
         assert!(workflow_refusal(
             "gh pr update-branch 12 failed: GraphQL: refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope"

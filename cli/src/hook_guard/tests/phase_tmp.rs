@@ -46,17 +46,17 @@ fn a_write_through_a_symlink_out_of_the_phase_tmpdir_is_denied() {
         format!("{tmp}/up/phase-settings.json"),
         format!("{tmp}/up/new-file"),
         format!("{tmp}/up/missing/dir/file"),
-        format!("{tmp}/notes.txt"),
     ] {
         assert!(write_denied_in(&p, Some(tmp)), "{p}");
     }
-    std::fs::remove_file(format!("{tmp}/up")).unwrap();
     for p in [
         format!("{tmp}/notes.txt"),
         format!("{tmp}/sub/dir/notes.txt"),
     ] {
         assert!(!write_denied_in(&p, Some(tmp)), "{p}");
     }
+    std::fs::remove_file(format!("{tmp}/up")).unwrap();
+    assert!(!write_denied_in(&format!("{tmp}/up/new-file"), Some(tmp)));
 }
 
 #[test]
@@ -243,7 +243,7 @@ fn a_phase_tmpdir_that_is_itself_a_symlink_out_exempts_nothing() {
     let tmp = tmps.join("build-1");
     let tmp = tmp.to_str().unwrap();
     let why = check_in(&bash_call("echo x > $TMPDIR/pre-commit"), Some(tmp)).unwrap();
-    assert!(why.contains("it is a symlink"), "{why}");
+    assert!(why.contains("is a symlink"), "{why}");
     assert!(write_denied_in(&format!("{tmp}/pre-commit"), Some(tmp)));
 }
 
@@ -283,4 +283,34 @@ fn a_directory_that_cannot_be_read_exempts_nothing() {
     }
     let why = why.expect("an unreadable directory must withdraw the exemption");
     assert!(why.contains("could not be read"), "{why}");
+}
+
+#[test]
+fn a_command_that_rebinds_tmpdir_gets_no_substitution_and_is_denied() {
+    for c in [
+        "TMPDIR=.githooks; echo x > $TMPDIR/pre-commit",
+        "TMPDIR=.githooks echo x > $TMPDIR/pre-commit",
+        "export TMPDIR=.githooks && cp /x $TMPDIR/pre-commit",
+        "declare TMPDIR=.githooks; echo x > ${TMPDIR}/pre-commit",
+        "typeset -x TMPDIR=.githooks; echo x > $TMPDIR/pre-commit",
+        "local TMPDIR=.githooks; echo x > $TMPDIR/pre-commit",
+        "read TMPDIR <<< .githooks; echo x > $TMPDIR/pre-commit",
+        "env TMPDIR=.githooks sh -c 'echo x > $TMPDIR/pre-commit'",
+        "unset TMPDIR; echo x > $TMPDIR/pre-commit",
+        "echo x > ${TMPDIR:-.githooks}/pre-commit",
+        "echo x > ${TMPDIR:=.githooks}/pre-commit",
+        "v=TMPDIR; TMPDIR=.githooks; echo x > ${!v}/pre-commit",
+        "echo x > ${!v}/pre-commit",
+    ] {
+        assert!(denied_in(c, OWN), "{c}");
+    }
+    for c in [
+        "echo x > $TMPDIR/a",
+        "echo x > ${TMPDIR}/a",
+        "echo x > \"$TMPDIR\"/a",
+        "echo '$TMPDIR' > $TMPDIR/a",
+    ] {
+        assert!(!denied_in(c, OWN), "{c}");
+    }
+    assert!(!denied_in("TMPDIR=/tmp/x cargo test", "/not/a/phase/dir"));
 }

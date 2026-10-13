@@ -57,13 +57,15 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 /// Why `call` would skip the git hooks, or `None` when it wouldn't. `tmpdir` is the phase's
-/// `TMPDIR`, the one directory under `.git/ns` it may write to while it holds no symlink
-/// (`PhaseTmp`). A denial of a call that reached into it while it held one names the symlink.
+/// `TMPDIR`, the one directory under `.git/ns` it may write to, but not through a symlink
+/// (`PhaseTmp`). A denial of a write through one names the symlink.
 pub fn check(call: &Value, tmpdir: Option<&str>) -> Option<String> {
     let tmp = PhaseTmp::new(tmpdir);
     let why = check_call(call, &tmp)?;
-    Some(match tmp.found_distrust() {
-        Some(distrust) => format!("{why}; the phase TMPDIR exempts no write while {distrust}"),
+    Some(match tmp.blamed() {
+        Some(link) => {
+            format!("{why}; a write through a symlink in the phase TMPDIR is denied: {link}")
+        }
         None => why,
     })
 }
@@ -84,6 +86,12 @@ fn check_call(call: &Value, tmp: &PhaseTmp) -> Option<String> {
                 tmpdir_reaches_settings(command).or_else(|| links_into_unit(command, tmp))
             {
                 return Some(why);
+            }
+            if tmp.rebinds(command) {
+                return Some(
+                    "a command that sets TMPDIR or reads it by an expansion the guard cannot write out as a path"
+                        .to_string(),
+                );
             }
             let command = tmp.substituted(command);
             if command.contains("TMPDIR") && tmp.distrust().is_some() {
