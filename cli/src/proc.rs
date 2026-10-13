@@ -9,7 +9,7 @@
 use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::{billing, git};
@@ -49,7 +49,6 @@ pub struct Proc {
     cmd: Command,
     timeout: Duration,
     stdin: Option<Vec<u8>>,
-    #[cfg(test)]
     expire_when: Option<Box<dyn Fn() -> bool + Send>>,
 }
 
@@ -103,7 +102,6 @@ impl Proc {
             cmd,
             timeout: kind.timeout(),
             stdin: None,
-            #[cfg(test)]
             expire_when: None,
         }
     }
@@ -200,35 +198,17 @@ impl Proc {
         }
         let deadline = Instant::now() + self.timeout;
         let mut child = self.cmd.spawn()?;
-        let writer = match (self.stdin.take(), child.stdin.take()) {
-            (Some(bytes), Some(mut pipe)) => Some(std::thread::spawn(move || {
-                // A child may exit before reading everything; its exit status tells the story.
+        if let (Some(bytes), Some(mut pipe)) = (self.stdin.take(), child.stdin.take()) {
+            // Never joined: a descendant in another session can hold the pipe's read end and
+            // keep this write blocked after the group is killed. A child may also exit before
+            // reading everything; its exit status tells the story.
+            std::thread::spawn(move || {
                 let _ = pipe.write_all(&bytes);
-            })),
-            _ => None,
-        };
-        let status = loop {
-            if let Some(s) = child.try_wait()? {
-                break Some(s);
-            }
-            #[cfg(not(test))]
-            let expired = Instant::now() >= deadline;
-            #[cfg(test)]
-            let expired = self
-                .expire_when
-                .as_ref()
-                .map_or_else(|| Instant::now() >= deadline, |f| f());
-            if expired {
-                kill_group(child.id());
-                child.wait()?;
-                break None;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        kill_group(child.id());
-        if let Some(w) = writer {
-            let _ = w.join();
+            });
         }
+        let waited = wait_until(&mut child, deadline, self.expire_when.as_deref());
+        kill_group(child.id());
+        let status = waited?;
         let Some(status) = status else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
@@ -250,6 +230,30 @@ impl Proc {
             stdout: read(&mut out)?,
             stderr: read(&mut err)?,
         })
+    }
+}
+
+fn expired(deadline: Instant, early: Option<&(dyn Fn() -> bool + Send)>) -> bool {
+    early.map_or_else(|| Instant::now() >= deadline, |f| f())
+}
+
+/// The child's exit status, or `None` once it is past `deadline` (or `early` holds) and its
+/// group has been killed.
+fn wait_until(
+    child: &mut Child,
+    deadline: Instant,
+    early: Option<&(dyn Fn() -> bool + Send)>,
+) -> std::io::Result<Option<ExitStatus>> {
+    loop {
+        if let Some(s) = child.try_wait()? {
+            return Ok(Some(s));
+        }
+        if expired(deadline, early) {
+            kill_group(child.id());
+            child.wait()?;
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

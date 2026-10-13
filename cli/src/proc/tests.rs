@@ -130,6 +130,35 @@ fn network_git_fails_instead_of_asking_for_a_password() {
     assert!(err.contains("terminal prompts disabled"), "{err}");
 }
 
+/// An unattended run has no stdin and no terminal (#515): git asked for credentials must fail
+/// at once rather than wait for an answer nobody can give.
+#[test]
+fn unattended_network_git_with_no_stdin_fails_fast_instead_of_prompting() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut conn in listener.incoming().flatten() {
+            let mut buf = [0u8; 4096];
+            let _ = conn.read(&mut buf);
+            let _ = conn.write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"x\"\r\n\
+                  Content-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+    let mut p = Proc::git_network();
+    p.arg("ls-remote")
+        .arg(format!("http://127.0.0.1:{port}/repo.git"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_ASKPASS")
+        .env_remove("SSH_ASKPASS");
+    let out = p.output().unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("terminal prompts disabled"), "{err}");
+}
+
 #[test]
 fn the_git_kinds_run_git() {
     for mut p in [Proc::git_local(), Proc::git_network()] {
@@ -138,15 +167,38 @@ fn the_git_kinds_run_git() {
     }
 }
 
+const PROBE_MARK: &str = "NS_PROC_STDIN_PROBE";
+
 #[test]
 fn stdin_is_closed_unless_the_caller_writes_to_it() {
+    let me = std::env::current_exe().unwrap();
+    let out = std::process::Command::new(me)
+        .args(["--exact", "proc::tests::stdin_probe", "--test-threads=1"])
+        .env(PROBE_MARK, "1")
+        .stdin(Stdio::piped())
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{log}");
+    assert!(log.contains("1 passed"), "the probe did not run: {log}");
+    let mut p = sh(Kind::Tool, "cat");
+    p.stdin(b"hello".to_vec());
+    assert_eq!(stdout(&p.output().unwrap()), "hello");
+}
+
+/// Run by the test above in a process whose own stdin is a pipe, so a child that inherited it
+/// would not see `/dev/null`.
+#[test]
+fn stdin_probe() {
+    if std::env::var_os(PROBE_MARK).is_none() {
+        return;
+    }
+    let own = std::fs::read_link("/proc/self/fd/0").unwrap();
+    assert!(own.to_string_lossy().starts_with("pipe:"), "{own:?}");
     for kind in KINDS {
         let out = sh(kind, "readlink /proc/$$/fd/0").output().unwrap();
         assert_eq!(stdout(&out), "/dev/null\n", "{kind:?}");
     }
-    let mut p = sh(Kind::Tool, "cat");
-    p.stdin(b"hello".to_vec());
-    assert_eq!(stdout(&p.output().unwrap()), "hello");
 }
 
 #[test]
@@ -154,6 +206,37 @@ fn a_child_that_exits_without_reading_its_stdin_still_returns() {
     let mut p = sh(Kind::Tool, "exit 4");
     p.stdin(vec![b'x'; 1 << 20]);
     assert_eq!(p.output().unwrap().status.code(), Some(4));
+}
+
+struct KillOnDrop(PathBuf);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(pid) = std::fs::read_to_string(&self.0)
+            .ok()
+            .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+        {
+            // SAFETY: kill(2) on a pid the test's own child recorded.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_descendant_in_another_session_holding_stdin_does_not_hang_the_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let pidfile = dir.path().join("pid");
+    let _cleanup = KillOnDrop(pidfile.clone());
+    let mut p = sh(
+        Kind::Tool,
+        r#"exec 3<&0
+           setsid sh -c 'echo $$ > "$0.tmp"; mv "$0.tmp" "$0"; exec sleep 600' "$0" <&3 &
+           until [ -s "$0" ]; do :; done"#,
+    );
+    p.arg(&pidfile).stdin(vec![b'x'; 1 << 20]);
+    assert!(p.output().unwrap().status.success());
 }
 
 #[test]
@@ -182,11 +265,33 @@ fn a_missing_binary_is_the_spawn_error() {
 }
 
 #[test]
-fn every_kind_has_a_timeout_its_children_start_with() {
-    for kind in KINDS {
-        assert!(kind.timeout() > Duration::ZERO, "{kind:?}");
-        assert_eq!(Proc::new(kind, "sh").timeout, kind.timeout(), "{kind:?}");
+fn every_kind_starts_its_children_with_its_default_timeout() {
+    let want = [
+        (Kind::GitLocal, 600),
+        (Kind::GitNetwork, 600),
+        (Kind::Harness { subscription: true }, 7200),
+        (
+            Kind::Harness {
+                subscription: false,
+            },
+            7200,
+        ),
+        (Kind::Forge, 120),
+        (Kind::Tool, 1800),
+    ];
+    assert_eq!(want.map(|(k, _)| k), KINDS);
+    for (kind, secs) in want {
+        let limit = Duration::from_secs(secs);
+        assert_eq!(kind.timeout(), limit, "{kind:?}");
+        assert_eq!(Proc::new(kind, "sh").timeout, limit, "{kind:?}");
     }
+}
+
+#[test]
+fn a_child_that_ends_before_its_deadline_is_left_alone() {
+    let mut p = sh(Kind::Tool, "echo done");
+    p.timeout(Duration::from_secs(3600));
+    assert_eq!(stdout(&p.output().unwrap()), "done\n");
 }
 
 #[test]
@@ -195,10 +300,7 @@ fn a_command_past_its_timeout_fails_naming_the_command() {
     p.arg("600").timeout(Duration::ZERO);
     let e = p.output().unwrap_err();
     assert_eq!(e.kind(), ErrorKind::TimedOut);
-    assert!(
-        e.to_string().starts_with("`sleep 600` timed out after "),
-        "{e}"
-    );
+    assert_eq!(e.to_string(), "`sleep 600` timed out after 0s");
 }
 
 /// A timeout kills the whole process group: once the test stops waiting for the child, the
