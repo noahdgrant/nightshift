@@ -30,8 +30,8 @@ Input: `.ns/<unit-id>/brief.md` and the branch. Output: `.ns/<unit-id>/review.md
 2. Find the base branch: the one `brief.md` names, else the repo default (`git symbolic-ref --short refs/remotes/origin/HEAD`).
 3. Write the diff, including uncommitted work, to a file:
    ```bash
-   mkdir -p .ns/<unit-id>/review
-   git diff "$(git merge-base <base> HEAD)" > .ns/<unit-id>/review/diff.patch
+   mkdir -p .ns/$NS_UNIT/review
+   git diff "$(git merge-base <base> HEAD)" > .ns/$NS_UNIT/review/diff.patch
    ```
    An empty diff means there is nothing to review: stop with `status: blocked`.
    Reviewers read `diff.patch` from disk. Keep it out of your own context beyond what judging a finding needs, as [guard the context window](../ns-principle-guard-the-context-window/SKILL.md) says.
@@ -82,12 +82,18 @@ Done when every reviewer on the panel has a result or a gap entry. A gap is reru
 6. **Scope** each finding, from the diff and the code at its location:
    - **Changed code**: the diff caused it. Its location is a line the diff adds, or the defect comes from a line the diff removes or a behaviour it changes (a dropped guard, a broken caller), or it is something the diff leaves out (a missing test, an unmet acceptance criterion).
    - **Pre-existing code**: the defect was there before the diff, unchanged by it. The unit didn't cause it and doesn't own that code, so it never blocks the unit and never goes to the fix loop. It is an **escape**: an earlier review missed it.
-7. **File each escape** you didn't dismiss, whatever its severity, in the tracker per `docs/agents/issue-tracker.md`. Run its duplicate search first; when an open issue already covers the defect, use that issue instead of filing a new one. A new issue gets:
-   - a body opening with the [disclosure line](../ns-contract/SKILL.md#disclosure), then the finding, its location, severity and evidence, a link to the unit's issue (or the unit ID when it has none), the sentence "This escaped an earlier review.", and a line `Source: review_escape` that `ns quality --bugs` counts it by
-   - the `needs-triage` state, a category label (`bug` for a defect), and an area label when `docs/agents/triage-labels.md` lists areas, using the label strings that file names
-   - a priority role from severity: Critical, or any finding with security among its axes, gets `critical` (`high` when `triage-labels.md` has no `critical` row); Important gets `high`; Suggestion gets `low`
+7. **File the escapes** you didn't dismiss, at every severity, Suggestions included, in the tracker per `docs/agents/issue-tracker.md`. Group them first: escapes in one module (one file, or one small package) of one kind (the category label: `bug` for a defect) form a **group**, and each group goes to one issue. One escape alone is a group of one, and the same module with a different kind is a different group. Each finding in a group is one checklist item:
 
-   Then set the finding's status to `deferred: #<n>`, and set its `Missed by` to the axis whose reviewer should have caught it in the earlier review, the one its defect belongs to (an untested boundary is `tests`, a wrong result `correctness`). Name that axis in the issue body too. An escape a later pass raises again keeps its ID and its `deferred` status. If the tracker can't be reached, leave the finding `open` and name it under Gaps in `review.md`; it still doesn't block.
+   ```markdown
+   - [ ] `<file:line>` (<severity>, missed by <axis>): <finding>. Evidence: <evidence>
+   ```
+
+   For each group, run the duplicate search for its module and kind. When an open issue that already carries the `Source: review_escape` line covers that module and kind, add the group to it: append its items to the issue's body, where `ns quality --bugs` counts them (When the issue's body has no checklist items, first turn its original finding into an item (location, severity and evidence from its body), then append the new ones), skipping any finding whose location and defect an existing item already names, then comment the same items so the history shows them. The comment opens with the [disclosure line](../ns-contract/SKILL.md#disclosure). If the body edit fails, keep the comment and name the issue under Gaps in `review.md`. Raise that issue's priority label to the highest among its existing and new items, using the rule below; never lower it, because `ns quality --bugs` bands every item by the issue's labels. Reuse only such an open issue: a closed one, or one without that line (a human-filed bug, say), gets a new issue, and you never edit another source's issue. A new issue gets:
+   - a body opening with the disclosure line, then the module and kind, the group's checklist, a link to the unit's issue (or the unit ID when it has none), the sentence "This escaped an earlier review.", and a line `Source: review_escape` that `ns quality --bugs` counts it by
+   - the `needs-triage` state, a category label (`bug` for a defect), and an area label when `docs/agents/triage-labels.md` lists areas, using the label strings that file names
+   - the highest priority role among its items, each from its severity: Critical, or any finding with security among its axes, gets `critical` (`high` when `triage-labels.md` has no `critical` row); Important gets `high`; Suggestion gets `low`
+
+   Then set each finding's status to `deferred: #<n>`, its group's issue (a skipped duplicate points there too, appended nowhere and counted once), and set its `Missed by` to the axis whose reviewer should have caught it in the earlier review, the one its defect belongs to (an untested boundary is `tests`, a wrong result `correctness`). Its checklist item names that axis too. An escape a later pass raises again keeps its ID and its `deferred` status. If the tracker can't be reached, leave the finding `open` and name it under Gaps in `review.md`; it still doesn't block.
 
 Done when every raw finding is merged, ranked and carries a severity, scope, bucket and status, and every escape you kept is `deferred` to an issue or named under Gaps.
 
