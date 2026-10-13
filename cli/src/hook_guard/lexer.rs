@@ -449,7 +449,7 @@ impl<'a> Lexer<'a> {
                     name.push(c);
                 }
                 self.buf()
-                    .mark_expansion(Some(name).filter(|_| !c.is_ascii_digit()));
+                    .mark_expansion((!c.is_ascii_digit()).then_some(name));
             }
             Some(c) if "@*#?!$-".contains(c) => {
                 self.chars.next();
