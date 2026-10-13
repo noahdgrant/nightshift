@@ -57,6 +57,17 @@ pub enum Direction {
     Insufficient,
 }
 
+impl Direction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Direction::Rising => "rising",
+            Direction::Flat => "flat",
+            Direction::Falling => "falling",
+            Direction::Insufficient => "insufficient",
+        }
+    }
+}
+
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Trend {
     pub direction: Direction,
@@ -66,8 +77,15 @@ pub struct Trend {
     pub weeks: usize,
 }
 
-/// The trend of the rates `(week index, rate)`.
-pub fn trend(points: &[(usize, f64)]) -> Trend {
+/// A week's rate, the week counted by its index in the window.
+#[derive(Clone, Copy)]
+pub struct Point {
+    pub week: usize,
+    pub rate: f64,
+}
+
+/// The trend of the weekly rates.
+pub fn trend(points: &[Point]) -> Trend {
     let n = points.len();
     if n < TREND_MIN {
         return Trend {
@@ -76,11 +94,11 @@ pub fn trend(points: &[(usize, f64)]) -> Trend {
             weeks: n,
         };
     }
-    let mean_x = points.iter().map(|p| p.0 as f64).sum::<f64>() / n as f64;
-    let mean_y = points.iter().map(|p| p.1).sum::<f64>() / n as f64;
-    let (num, den) = points.iter().fold((0.0, 0.0), |(num, den), &(x, y)| {
-        let dx = x as f64 - mean_x;
-        (num + dx * (y - mean_y), den + dx * dx)
+    let mean_x = points.iter().map(|p| p.week as f64).sum::<f64>() / n as f64;
+    let mean_y = points.iter().map(|p| p.rate).sum::<f64>() / n as f64;
+    let (num, den) = points.iter().fold((0.0, 0.0), |(num, den), p| {
+        let dx = p.week as f64 - mean_x;
+        (num + dx * (p.rate - mean_y), den + dx * dx)
     });
     let slope = num / den;
     let direction = if slope.abs() <= FLAT * mean_y {
@@ -115,11 +133,16 @@ pub struct Listed {
 /// Each rate's trend over `weeks`, fitted on the weeks with that rate that are not undercounted.
 pub fn trends(weeks: &[Week]) -> Trends {
     let fit = |rate: fn(&Rates) -> Option<f64>| {
-        let points: Vec<(usize, f64)> = weeks
+        let points: Vec<Point> = weeks
             .iter()
             .enumerate()
             .filter(|(_, w)| !w.rates.undercounted)
-            .filter_map(|(i, w)| Some((i, rate(&w.rates)?)))
+            .filter_map(|(i, w)| {
+                Some(Point {
+                    week: i,
+                    rate: rate(&w.rates)?,
+                })
+            })
             .collect();
         trend(&points)
     };
@@ -163,12 +186,13 @@ impl Report {
                 Some(slope) => writeln!(
                     s,
                     "trend {name}: {}, {slope:+.3} a week over {} weeks",
-                    format!("{:?}", t.direction).to_lowercase(),
+                    t.direction.as_str(),
                     t.weeks
                 ),
                 None => writeln!(
                     s,
-                    "trend {name}: insufficient, needs {TREND_MIN} weeks with a rate, has {}",
+                    "trend {name}: {}, needs {TREND_MIN} weeks with a rate, has {}",
+                    t.direction.as_str(),
                     t.weeks
                 ),
             };
@@ -203,13 +227,18 @@ mod tests {
     use crate::watch::forge::Filed;
 
     fn direction(rates: &[f64]) -> Direction {
-        let points: Vec<(usize, f64)> = rates.iter().copied().enumerate().collect();
+        let points: Vec<Point> = rates
+            .iter()
+            .enumerate()
+            .map(|(week, &rate)| Point { week, rate })
+            .collect();
         trend(&points).direction
     }
 
     #[test]
     fn a_trend_is_the_least_squares_slope_and_needs_four_weeks() {
-        let falling = [(0, 2.0), (1, 1.5), (2, 1.0), (3, 0.5)];
+        let at = |week, rate| Point { week, rate };
+        let falling = [at(0, 2.0), at(1, 1.5), at(2, 1.0), at(3, 0.5)];
         assert_eq!(
             trend(&falling),
             Trend {
@@ -221,7 +250,7 @@ mod tests {
         assert_eq!(direction(&[0.1, 0.4, 0.3, 0.9, 1.0]), Direction::Rising);
         assert_eq!(direction(&[1.0, 0.8, 0.9, 0.2]), Direction::Falling);
         assert_eq!(
-            trend(&[(0, 0.5), (1, 1.0), (5, 2.0), (9, 4.0)]).slope,
+            trend(&[at(0, 0.5), at(1, 1.0), at(5, 2.0), at(9, 4.0)]).slope,
             Some(0.372)
         );
         assert_eq!(
