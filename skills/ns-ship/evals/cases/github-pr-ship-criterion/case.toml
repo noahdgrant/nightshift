@@ -33,6 +33,12 @@ run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | grep -Eq '#4
 expect_exit = 0
 
 [[check]]
+# The Verification section records the ship check.
+type = "command"
+run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | grep -Eq '^[-*] .*Ship note:'"
+expect_exit = 0
+
+[[check]]
 type = "command"
 run = "grep -Eq '^gh pr create ' .git/fake/calls.log"
 expect_exit = 0

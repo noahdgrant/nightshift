@@ -25,7 +25,7 @@ Each item is checkable against the diff: met, or not met at a `file:line`, or no
 
 ## Spec
 
-- Every acceptance criterion in `brief.md` is implemented in full. *(Critical)*
+- Every acceptance criterion in `brief.md` is implemented in full. *(Critical)* A PR-text criterion (body, `Closes`, labels, merge) belongs to `ns-ship` ([ship note](../../ns-triage/references/agent-brief.md#ship-note-pr-text)).
 - The diff changes no behaviour callers can see beyond what the brief asked for: no new options, renamed public interfaces or drive-by fixes.
 - Internal tidy-ups the brief didn't ask for go in their own change. *(Suggestion)*
 
