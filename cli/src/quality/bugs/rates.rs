@@ -24,7 +24,8 @@ pub struct Rates {
     pub per_unit: Option<f64>,
     /// Null when no line changed or the count is unknown.
     pub per_kloc: Option<f64>,
-    /// The forge's cap may have cut merged PRs from the list, so this week may miss some.
+    /// The forge's cap may have cut merged PRs from the list, so this week may miss some: it
+    /// starts before the oldest merge the full list holds.
     pub undercounted: bool,
 }
 
@@ -107,7 +108,7 @@ pub struct Trends {
 pub struct Listed {
     pub listed: usize,
     pub truncated: bool,
-    /// When the oldest listed PR merged, for information.
+    /// When the oldest listed PR merged: weeks starting before it are undercounted if truncated.
     pub oldest: Option<String>,
 }
 
@@ -175,9 +176,11 @@ impl Report {
         if self.weeks.iter().any(|w| w.rates.undercounted) {
             let _ = writeln!(
                 s,
-                "\n* The forge's list of merged PRs was cut short at {}. Units and lines in any \
-                 week may be undercounted, so its rates may be high; the trend leaves it out.",
-                self.merged_prs.listed
+                "\n* The forge's list of merged PRs was cut short at {} and its oldest merged at {}. \
+                 A week starting before then may be undercounted, so its rate may be high; the \
+                 trend leaves it out.",
+                self.merged_prs.listed,
+                self.merged_prs.oldest.as_deref().unwrap_or("unknown")
             );
         }
         if self.weeks.iter().any(|w| w.rates.changed_lines.is_none()) {
@@ -292,6 +295,11 @@ mod tests {
     /// One fix issue a week for six weeks from 2026-09-07, `units` ns/ PRs of 100 lines merged
     /// in each, and a fork PR and a human PR every week that never count.
     fn series(units: &[usize], truncated: bool) -> Report {
+        listed(units, truncated, 0)
+    }
+
+    /// As [`series`], with no PR listed merged before week `from`, the weeks a full list lost.
+    fn listed(units: &[usize], truncated: bool, from: usize) -> Report {
         let filed: Vec<Filed> = (0..6)
             .map(|i| {
                 let mut f = filed(
@@ -306,7 +314,7 @@ mod tests {
             })
             .collect();
         let mut prs = Vec::new();
-        for (i, &n) in units.iter().enumerate() {
+        for (i, &n) in units.iter().enumerate().skip(from) {
             let at = |p: MergedPr| MergedPr {
                 merged: p.merged + i as i64 * WEEK,
                 ..p
@@ -327,7 +335,9 @@ mod tests {
                 Some(1000),
             )));
         }
-        prs.push(pr(999, "ns/old", "2026-08-01", Some(50)));
+        if from == 0 {
+            prs.push(pr(999, "ns/old", "2026-08-01", Some(50)));
+        }
         report(
             &filed,
             Window {
@@ -395,14 +405,47 @@ mod tests {
     }
 
     #[test]
-    fn every_week_of_a_truncated_list_is_undercounted_and_not_fitted() {
-        let r = series(&[1, 1, 2, 2, 4, 5], true);
-        assert!(r.weeks.iter().all(|w| w.rates.undercounted));
-        assert_eq!(r.trend.per_unit.direction, Direction::Insufficient);
-        assert_eq!(r.trend.per_unit.weeks, 0);
+    fn only_the_weeks_before_the_oldest_listed_merge_of_a_full_list_are_undercounted() {
+        let r = listed(&[1, 1, 2, 2, 4, 5], true, 1);
+        let flags: Vec<bool> = r.weeks.iter().map(|w| w.rates.undercounted).collect();
+        assert_eq!(flags, [true, true, false, false, false, false]);
         assert!(r.merged_prs.truncated);
+        assert_eq!(r.merged_prs.oldest.as_deref(), Some("2026-09-15T00:00:00Z"));
+        assert_eq!(r.trend.per_unit.direction, Direction::Falling);
+        assert_eq!(r.trend.per_unit.weeks, 4);
+        let r = series(&[1, 1, 2, 2, 4, 5], true);
+        assert!(r.weeks.iter().all(|w| !w.rates.undercounted));
         let r = series(&[1, 1, 2, 2, 4, 5], false);
         assert!(r.weeks.iter().all(|w| !w.rates.undercounted));
+        let r = listed(&[1, 1, 2, 2, 4, 5], true, 3);
+        assert_eq!(r.trend.per_unit.direction, Direction::Insufficient);
+        assert_eq!(r.trend.per_unit.weeks, 2);
+    }
+
+    #[test]
+    fn an_until_inside_a_week_leaves_out_units_merged_after_it() {
+        let filed = vec![filed(1, "2026-09-08", "fix: a", "Source: human", &[])];
+        let prs = vec![
+            pr(1, "ns/a", "2026-09-08", Some(100)),
+            pr(2, "ns/b", "2026-09-10T12:00:00Z", Some(300)),
+            pr(3, "ns/c", "2026-09-11", Some(900)),
+        ];
+        let w = Window {
+            since: Some(t("2026-09-07")),
+            until: Some(t("2026-09-10T12:00:00Z")),
+        };
+        let r = report(
+            &filed,
+            w,
+            t("2026-09-12"),
+            &|_| Err("x".into()),
+            &BTreeSet::new(),
+            &merged(&prs, false),
+        );
+        assert_eq!(r.weeks.len(), 1);
+        assert_eq!(r.weeks[0].rates.merged_units, 2);
+        assert_eq!(r.weeks[0].rates.changed_lines, Some(400));
+        assert_eq!(r.weeks[0].rates.per_unit, Some(0.5));
     }
 
     #[test]
@@ -468,14 +511,15 @@ mod tests {
                 "",
                 "week      units  lines fix/unit fix/kloc",
                 "2026-W37      1    300     2.00     6.67 *",
-                "2026-W38      1      -     0.00        - *",
-                "2026-W39      0      0        -        - *",
+                "2026-W38      1      -     0.00        -",
+                "2026-W39      0      0        -        -",
                 "",
-                "trend per unit: insufficient, needs 4 weeks with a rate, has 0",
+                "trend per unit: insufficient, needs 4 weeks with a rate, has 1",
                 "trend per 1,000 lines: insufficient, needs 4 weeks with a rate, has 0",
                 "",
-                "* The forge's list of merged PRs was cut short at 2. Units and lines in any \
-                 week may be undercounted, so its rates may be high; the trend leaves it out.",
+                "* The forge's list of merged PRs was cut short at 2 and its oldest merged at \
+                 2026-09-08T00:00:00Z. A week starting before then may be undercounted, so its \
+                 rate may be high; the trend leaves it out.",
                 "",
                 "The forge's merged-PR list gives no changed lines, so there is no rate per 1,000 lines.",
             ]

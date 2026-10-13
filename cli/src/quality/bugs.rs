@@ -272,9 +272,6 @@ pub fn report(
         })
         .collect();
     excluded.sort_by_key(|e| e.number);
-    let first = window
-        .since
-        .or_else(|| counted.iter().map(|f| f.opened).min());
     let last = window.until.unwrap_or(now);
     let mut by_week: BTreeMap<&str, Vec<&Bug>> = BTreeMap::new();
     for b in &issues {
@@ -287,8 +284,7 @@ pub fn report(
     let oldest = merged.prs.iter().map(|p| p.merged).min();
     let mut weeks = Vec::new();
     let mut total = Counts::default();
-    if let Some(first) = first {
-        let mut m = monday(first);
+    if let Some(mut m) = first_week(filed, window) {
         while m <= last {
             let week = iso_week(m);
             let mut counts = Counts::default();
@@ -296,8 +292,9 @@ pub fn report(
                 counts.add(b);
                 total.add(b);
             }
+            let undercounted = merged.truncated && oldest.is_none_or(|o| m < o);
             let units = units_by_week.remove(&week).unwrap_or_default();
-            let rates = Rates::new(counts.opened, &units, merged.truncated);
+            let rates = Rates::new(counts.opened, &units, undercounted);
             weeks.push(Week {
                 week,
                 monday: clock::iso(m)[..10].to_string(),

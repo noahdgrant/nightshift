@@ -89,7 +89,9 @@ pub trait Forge {
     fn labelled_issues(&self, label: &str) -> Result<Vec<Filed>>;
     fn closing_prs(&self, state: PrState) -> Result<ClosingPrs>;
     /// The PRs merged at or after `since` (all of them when `None`), up to the forge's cap, in
-    /// any order. The list is `truncated` when the cap may have cut PRs from it.
+    /// any order. The list is `truncated` when the cap may have cut PRs from it. Forges list by
+    /// creation time, so the cut PRs are the oldest created: a PR created long before it merged
+    /// can be missing from a week the oldest listed merge precedes.
     fn merged_prs(&self, since: Option<i64>) -> Result<MergedPrs>;
     fn is_closed(&self, n: u64) -> Result<bool>;
     fn state(&self, n: u64) -> Result<IssueState>;

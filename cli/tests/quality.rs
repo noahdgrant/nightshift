@@ -1259,6 +1259,16 @@ fn weeks_needs_bugs_and_one_or_more() {
 }
 
 #[test]
+fn bugs_fails_when_the_forge_cannot_list_closing_prs() {
+    let (tmp, root) = bugs_fixture(&[]);
+    fs::remove_file(tmp.path().join("fake/prs.json")).unwrap();
+    ns_bugs(&tmp, &root, &[]).assert().code(1).stderr(
+        predicate::str::contains("gh pr list --state merged")
+            .and(predicate::str::contains("failed:")),
+    );
+}
+
+#[test]
 fn bugs_fails_when_the_forge_cannot_list_merged_prs() {
     let (tmp, root) = bugs_fixture(&[]);
     fs::remove_file(tmp.path().join("fake/merged.json")).unwrap();
@@ -1370,10 +1380,10 @@ fn bugs_json_has_a_falling_trend_over_four_weeks() {
 }
 
 #[test]
-fn bugs_json_flags_every_week_undercounted_when_the_merged_list_is_full() {
+fn bugs_json_flags_only_the_weeks_older_than_a_full_merged_list_undercounted() {
     let (tmp, root) = bugs_fixture(&four_weeks());
     let prs: Vec<Value> = (0..200)
-        .map(|n| merged_pr(100 + n, FOUR_WEEKS[0]))
+        .map(|n| merged_pr(100 + n, FOUR_WEEKS[1]))
         .collect();
     write(tmp.path().join("fake/merged.json"), &json!(prs).to_string());
     let out = ns_bugs(&tmp, &root, &["--json"]).output();
@@ -1381,9 +1391,14 @@ fn bugs_json_flags_every_week_undercounted_when_the_merged_list_is_full() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["merged_prs"]["truncated"], true);
     assert_eq!(v["merged_prs"]["listed"], 200);
-    for w in v["weeks"].as_array().unwrap() {
-        assert_eq!(w["undercounted"], true, "{w}");
-    }
+    assert_eq!(v["merged_prs"]["oldest"], "2098-12-23T10:00:00Z");
+    let flags: Vec<bool> = v["weeks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["undercounted"].as_bool().unwrap())
+        .collect();
+    assert_eq!(flags, [true, true, false, false, false]);
     assert_eq!(v["trend"]["per_unit"]["direction"], "insufficient");
 }
 
