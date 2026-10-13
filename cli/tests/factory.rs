@@ -9696,6 +9696,146 @@ fn a_capped_phase_that_times_out_fails_on_the_timeout() {
     );
 }
 
+/// Fake `systemd-run` and `systemctl` that pass the cgroup probe and run each command in a
+/// "scope" logged to `ctrl/scopes`. `systemctl show` reports `first` (`ActiveState Result`)
+/// for a scope's first `n` asks and `then` after; `reset-failed` logs the scope and how many
+/// asks it had to `ctrl/reset`.
+fn fake_systemd(e: &Env, n: u32, first: &str, then: &str) {
+    let c = e.ctrl.display();
+    write_exe(
+        &e.bin.join("systemd-run"),
+        format!(
+            "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    --collect) echo 67108864; exit 0 ;;\n    --unit=*) echo \"${{1#--unit=}}\" >> '{c}/scopes' ;;\n    --) shift; break ;;\n  esac\n  shift\ndone\nexec \"$@\"\n"
+        ),
+    );
+    let show = |s: &str| {
+        let (state, result) = s.split_once(' ').unwrap();
+        format!("printf 'ActiveState={state}\\nResult={result}\\n'")
+    };
+    write_exe(
+        &e.bin.join("systemctl"),
+        format!(
+            "#!/bin/sh\nd='{c}/asks'; mkdir -p \"$d\"\ncase \"$2\" in\n  show) n=$(( $(cat \"$d/$3\" 2>/dev/null || echo 0) + 1 )); echo $n > \"$d/$3\"\n    if [ $n -le {n} ]; then {}; else {}; fi ;;\n  reset-failed) echo \"$3 $(cat \"$d/$3\" 2>/dev/null || echo 0)\" >> '{c}/reset' ;;\nesac\n",
+            show(first),
+            show(then)
+        ),
+    );
+}
+
+/// Each scope the run started was reset once, after systemd had been asked about it more
+/// than `asks` times.
+fn assert_every_scope_reset(e: &Env, asks: u32) {
+    let scopes = recorded(e, "scopes");
+    let reset = fs::read_to_string(e.ctrl.join("reset")).unwrap_or_default();
+    assert!(!scopes.is_empty());
+    for unit in scopes.lines() {
+        let lines: Vec<&str> = reset
+            .lines()
+            .filter(|l| l.split(' ').next() == Some(unit))
+            .collect();
+        assert_eq!(lines.len(), 1, "{unit} reset: {reset}");
+        let n: u32 = lines[0].split(' ').nth(1).unwrap().parse().unwrap();
+        assert!(
+            n > asks,
+            "{unit} reset after {n} asks, want more than {asks}"
+        );
+    }
+}
+
+#[test]
+fn every_capped_phase_and_gate_scope_is_reset_after_it_exits_zero_or_not() {
+    let e = Env::new();
+    let flag = e.ctrl.join("gate-green");
+    e.factory(&format!(
+        "[limits]\nmemory_mb = 64\n[phases.build]\ngate = \"test -f {f} || {{ touch {f}; exit 1; }}\"\n",
+        f = flag.display()
+    ));
+    fake_systemd(&e, 0, "active success", "inactive success");
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(memory_cap(&e)["via"], "systemd-run");
+    assert_eq!(gate_events(&e)[0]["green"], false);
+    assert_every_scope_reset(&e, 0);
+}
+
+#[test]
+fn a_capped_phase_that_times_out_still_resets_its_scope() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    fake_systemd(&e, 0, "active success", "inactive success");
+    e.ctl("build.sh", "true\n");
+    e.queue("build", &["pass:script+sleep", "pass:commit"]);
+    let v = run_with_phase_timeout(&e, 0);
+    assert_eq!(build_event(&e, 1)["reason"], "timed out after 1.5 s", "{v}");
+    assert_every_scope_reset(&e, 0);
+}
+
+#[test]
+fn a_capped_gate_killed_by_a_signal_still_resets_its_scope() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n[phases.build]\ngate = \"kill -9 $$\"\n");
+    fake_systemd(&e, 0, "active success", "inactive success");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(
+        v["reason"],
+        "build is out of attempts (2): the CI gate was killed by SIGKILL"
+    );
+    assert_every_scope_reset(&e, 0);
+}
+
+#[test]
+fn a_stop_during_a_capped_phase_resets_its_scope() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    fake_systemd(&e, 0, "active success", "inactive success");
+    let f = blocking_build(&e);
+    let r = interrupt(&e, f, libc::SIGTERM, false);
+    assert_interrupted(&e, &r, "SIGTERM", 143);
+    assert_every_scope_reset(&e, 0);
+}
+
+#[test]
+fn a_stop_during_a_capped_gate_resets_its_scope() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    let f = fifo(&e);
+    e.factory(&format!(
+        "[limits]\nmemory_mb = 64\n[phases.build]\ngate = {:?}\n",
+        blocks(&f)
+    ));
+    fake_systemd(&e, 0, "active success", "inactive success");
+    e.queue("build", &["pass:commit"]);
+    let r = interrupt(&e, f, libc::SIGTERM, false);
+    assert_interrupted(&e, &r, "SIGTERM", 143);
+    assert_every_scope_reset(&e, 0);
+}
+
+#[test]
+fn a_scope_that_fails_after_the_settle_deadline_is_still_reset() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    // Active for 4 s of asks, past the 3 s ns waits for the result, then failed by an OOM kill.
+    fake_systemd(&e, 40, "active success", "failed oom-kill");
+    e.queue("build", &["pass:commit"]);
+    e.run(&["run", "--issue", "7"], 0);
+    assert_every_scope_reset(&e, 40);
+}
+
+#[test]
+fn an_oom_kill_seen_while_the_scope_deactivates_is_detected_and_reset_once_it_fails() {
+    let e = Env::new();
+    e.factory("[limits]\nmemory_mb = 64\n");
+    fake_systemd(&e, 5, "deactivating oom-kill", "failed oom-kill");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(
+        v["reason"],
+        "triage is out of attempts (2): the last attempt exceeded the 64 MB memory limit",
+        "{v}"
+    );
+    assert_every_scope_reset(&e, 5);
+}
+
 #[test]
 fn a_cap_nothing_here_can_enforce_is_a_usage_error_before_any_phase() {
     let e = Env::new();
