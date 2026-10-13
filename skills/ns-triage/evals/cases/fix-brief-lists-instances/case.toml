@@ -1,0 +1,61 @@
+# Checks validated by hand against written outcomes: a brief whose Instances section names the search and both
+# stock_levels and low_stock passes; a brief with no Instances section, or one naming only stock_levels, fails.
+description = "Reproducible bug report on `status` counting expired reservations (seeded defect (b), Warehouse.stock_levels). Setup commits Warehouse.low_stock with the same unfiltered sum, a second instance the report never mentions. Under gates: auto, triage must reproduce the bug, mark it ready-for-agent, and write an Agent Brief whose Instances section records the search and names both stock_levels and low_stock."
+fixture = "py-inventory"
+skills = ["ns-triage"]
+# As in bug-ready-for-agent: ns-contract only, so the auto hand-off reports the routing and the trial ends at triage.
+extra_skills = ["ns-contract"]
+requires = ["python"]
+timeout_minutes = 15
+prompt = """
+Triage .scratch/reservations/issues/01-status-counts-expired-holds.md. gates: auto
+"""
+
+[setup]
+commands = [
+  "git apply ../low-stock.patch",
+  "git add src tests && git commit -q -m 'feat(warehouse): list items low on stock'",
+]
+
+[[check]]
+type = "regex"
+path = ".scratch/reservations/issues/01-status-counts-expired-holds.md"
+pattern = '(?m)^\**Status:?\**:?\s*`?ready-for-agent`?\s*$'
+present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/reservations/issues/01-status-counts-expired-holds.md"
+pattern = '(?m)^\**Category:?\**:?\s*`?bug`?\s*$'
+present = true
+
+[[check]]
+# The Agent Brief has an Instances section that names both copies of the unfiltered sum.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, sys
+text = open(".scratch/reservations/issues/01-status-counts-expired-holds.md", encoding="utf-8").read()
+brief = re.split(r"(?m)^#+\s*Agent Brief", text, maxsplit=1)
+if len(brief) < 2:
+    sys.exit("no Agent Brief")
+m = re.search(r"(?ims)^[#*_ \t]*Instances\b[*_:]*(.*?)(?=^[#*_ \t]*(Failure modes|Edge cases|Decisions|Key interfaces|Size|Touches|Acceptance criteria)\b|\Z)", brief[1])
+if not m:
+    sys.exit("the Agent Brief has no Instances section")
+section = m.group(1)
+missing = [name for name in ("stock_levels", "low_stock") if name not in section]
+if missing:
+    sys.exit(f"Instances does not name {missing}:\n{section}")
+print("Instances names stock_levels and low_stock")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]
+
+[[check]]
+type = "judge"
+rubric = "Read the Agent Brief in .scratch/reservations/issues/01-status-counts-expired-holds.md. Pass only if its Instances section states the search that was run (a grep, an ast-grep pattern, or the code read) for other places reservations are summed without an expiry check, lists Warehouse.stock_levels and Warehouse.low_stock as hits, and either covers both in this brief or names the issue the other was filed under."
+required = false

@@ -615,46 +615,64 @@ mod tests {
 
     #[test]
     fn output_within_leaves_no_descendant_running_after_a_timeout() {
-        let dir = tempfile::tempdir().unwrap();
-        let pidfile = dir.path().join("pid");
+        use std::io::{BufRead, BufReader};
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        const TIMEOUT_MS: u64 = 500;
+        const HANG_GUARD_SECS: u64 = 60;
+        let (reader, writer) = std::io::pipe().unwrap();
+        let fd = writer.as_raw_fd();
         let mut cmd = Command::new("sh");
-        cmd.arg("-c")
-            .arg(r#"sleep 30 & echo $! > "$0"; sleep 30"#)
-            .arg(&pidfile);
-        output_within(cmd, Duration::from_millis(500)).unwrap_err();
-        let pid = std::fs::read_to_string(&pidfile)
-            .unwrap()
-            .trim()
-            .to_string();
-        let running = |pid: &str| {
-            std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| has_not_exited(&s))
-        };
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while running(&pid) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
+        cmd.args(["-c", "sleep 600 & echo $$ >&3; sleep 300"]);
+        // SAFETY: dup2(2) and fcntl(2) are async-signal-safe. Clearing FD_CLOEXEC keeps fd 3
+        // open across exec even when the pipe already was fd 3, where dup2 changes nothing.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::dup2(fd, 3) == -1 || libc::fcntl(3, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
         }
-        assert!(!running(&pid), "descendant {pid} still running");
-    }
-
-    /// Whether a `/proc/<pid>/stat` line shows a process that has not exited. A dead process is
-    /// a zombie (`Z`), then briefly `X` while its parent reaps it, then gone.
-    fn has_not_exited(stat: &str) -> bool {
-        !stat
-            .rsplit(") ")
-            .next()
-            .unwrap_or("")
-            .starts_with(['Z', 'X'])
-    }
-
-    #[test]
-    fn a_zombie_or_a_process_being_reaped_has_exited() {
-        let stat = |state: char| format!("68832 (sleep) {state} 493 68650 68650 0 -1");
-        for state in ['R', 'S', 'D', 'T'] {
-            assert!(has_not_exited(&stat(state)), "{state}");
+        // Every process the shell starts inherits fd 3: the pipe reads EOF only once all have exited.
+        enum Event {
+            Group(String),
+            Returned(Option<std::io::ErrorKind>),
+            Eof,
         }
-        for state in ['Z', 'X'] {
-            assert!(!has_not_exited(&stat(state)), "{state}");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader_tx = tx.clone();
+        std::thread::spawn(move || {
+            let (mut reader, mut group) = (BufReader::new(reader), String::new());
+            let _ = reader.read_line(&mut group);
+            let _ = reader_tx.send(Event::Group(group));
+            let _ = reader.read_to_end(&mut Vec::new());
+            let _ = reader_tx.send(Event::Eof);
+        });
+        std::thread::spawn(move || {
+            let outcome = output_within(cmd, Duration::from_millis(TIMEOUT_MS));
+            let _ = tx.send(Event::Returned(outcome.err().map(|e| e.kind())));
+        });
+        let (mut writer, hang_guard) = (Some(writer), Duration::from_secs(HANG_GUARD_SECS));
+        let (mut group, mut returned, mut eof) = (String::new(), None, false);
+        while returned.is_none() || !eof {
+            match rx.recv_timeout(hang_guard) {
+                Ok(Event::Group(g)) => group = g,
+                Ok(Event::Returned(kind)) => returned = Some(kind),
+                Ok(Event::Eof) => eof = true,
+                Err(_) => {
+                    // The shell's pid is its group id: `run_process` makes it a group leader.
+                    if let Ok(pgid) = group.trim().parse::<libc::pid_t>() {
+                        // SAFETY: kill(2) on the group this test started, so it outlives no failure.
+                        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                    }
+                    panic!(
+                        "after {hang_guard:?}: output_within returned={returned:?}, pipe closed={eof}"
+                    );
+                }
+            }
+            drop(writer.take());
         }
+        assert_eq!(returned, Some(Some(std::io::ErrorKind::TimedOut)));
     }
 
     #[test]
