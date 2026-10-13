@@ -15,6 +15,7 @@ Examples:
   ns rules check
   ns rules check --human
   ns rules check | jq .new
+  ns rules check --only ast-grep
 
 Spec: docs/factory/run.md (Rules). Runs each command in the `rules` row of docs/agents/stack.md
 with sh -c at the top of the git checkout, e.g.
@@ -28,9 +29,14 @@ A command that exits non-zero and prints no finding is an error, as is one that 
 exits 126 or 127, runs over 300 s (NS_RULES_TIMEOUT_MS) or prints over 8 MiB
 (NS_RULES_MAX_OUTPUT_BYTES), whatever it printed first. No rules row: nothing runs.
 
+--only <text> runs only the commands that contain <text>, and is a usage error when the row
+has commands but none contains it. Its fixed is always empty, since the entries of the commands
+it skipped would read as fixed.
+
 Prints {ok,command,baseline,commands,findings,baselined,new,fixed}; fixed lists baseline
 entries nothing matched (drop them with ns rules baseline).
-Exit codes: 0 no new violations, 1 new violations or a command failed, 2 not in a git repo.";
+Exit codes: 0 no new violations, 1 new violations or a command failed, 2 not in a git repo or
+--only matched no command.";
 
 const RULES_BASELINE_HELP: &str = "\
 Examples:
@@ -56,6 +62,9 @@ pub(crate) enum RulesCmd {
         /// Print one readable line per new or fixed violation instead of JSON
         #[arg(long)]
         human: bool,
+        /// Run only the rules-row commands that contain this text
+        #[arg(long, value_name = "TEXT")]
+        only: Option<String>,
     },
     /// Rewrite the baseline from the current violations; it may only shrink
     #[command(after_help = RULES_BASELINE_HELP)]

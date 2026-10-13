@@ -3910,19 +3910,24 @@ fn dropping_a_background_run_kills_the_phase_in_its_own_session() {
 #[test]
 fn a_run_past_its_timeout_fails_and_kills_the_phase_in_its_own_session() {
     let e = Env::new();
-    let pid = e.ctrl.join("phase.pid");
+    let entered = e.ctrl.join("entered");
+    mkfifo(&entered);
     e.queue("build", &["pass:script"]);
-    e.ctl("build.sh", &format!("echo $$ > {pid:?}; sleep 30"));
-    let panic = std::panic::catch_unwind(|| {
-        e.ns()
-            .args(["run", "--issue", "7"])
-            .timeout(Duration::from_secs(3))
-            .output()
-    })
-    .unwrap_err();
+    e.ctl("build.sh", &format!("echo $$ > {entered:?}; sleep 600"));
+    let mut run = e
+        .ns()
+        .args(["run", "--issue", "7"])
+        .timeout(Duration::from_secs(3))
+        .start();
+    // The run's timeout starts at the wait, once the phase is in, however slow the start.
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(fs::read_to_string(entered));
+    });
+    let pid = rx.recv_timeout(common::TIMEOUT).unwrap().unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.wait())).unwrap_err();
     let msg = panic.downcast_ref::<String>().unwrap();
     assert!(msg.contains("timed out after 3s"), "{msg}");
-    let pid = fs::read_to_string(&pid).unwrap();
     assert!(exits(&pid), "phase {pid} outlived its run");
 }
 
@@ -5750,6 +5755,52 @@ fn factory_validate_reports_problems() {
         .stdout
         .clone();
     assert!(String::from_utf8_lossy(&out).contains("unknown placeholder {bogus}"));
+}
+
+#[test]
+fn factory_validate_warns_when_build_only_has_no_fast_ci_local() {
+    let e = Env::new();
+    fs::create_dir_all(e.root.join("docs/agents")).unwrap();
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        "| Task | Command | Takes |\n|---|---|---|\n| ci-local | `make ci` | 2 min |\n",
+    )
+    .unwrap();
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["errors"], serde_json::json!([]), "{v}");
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("ci-local") && warnings.contains("`make ci --fast`"),
+        "{v}"
+    );
+    e.factory("");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["warnings"], serde_json::json!([]), "{v}");
+}
+
+#[test]
+fn factory_validate_build_only_fast_warning_edge_cases() {
+    let e = Env::new();
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["warnings"], serde_json::json!([]), "{v}");
+    fs::create_dir_all(e.root.join("docs/agents")).unwrap();
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        "| Task | Command | Takes |\n|---|---|---|\n| ci-local | `scripts/ci-local.sh --fast` | 1 min |\n",
+    )
+    .unwrap();
+    e.factory("[gate]\nlocal = \"build-only\"\n[phases.build]\ngate = \"make ci\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["ok"], true, "{v}");
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("[phases.build] gate") && warnings.contains("`make ci --fast`"),
+        "{v}"
+    );
 }
 
 #[test]

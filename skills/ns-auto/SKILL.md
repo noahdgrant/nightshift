@@ -20,7 +20,7 @@ Before any phase runs, every term below has a value. Take the terms the prompt a
 |---|---|---|
 | Goal | the issue or brief this run delivers | none: without a goal, stop and ask |
 | Done | the checkable condition that ends the run | `evidence.md`, `review.md` and `pr.md` pass at HEAD |
-| Unit and worktree | unit ID, worktree path, base branch | `<issue>-<slug>`, the path `ns worktree new` prints, `main` |
+| Unit and worktree | unit ID, worktree path, base branch | `<issue>-<slug>`, the path `ns worktree new` prints, the repo's default branch ([base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts)) |
 | Allowed actions | the gate policy; whether the run may push `ns/<unit-id>`, open a PR and comment on the tracker; and whether phases may run with permissions bypassed | `gates: stop`, no push, no bypass |
 | Escape hatch | when to stop early and hand back: a deadline, a budget, a phase to stop after, where the report goes | stop at the first stuck unit, report in this session |
 
@@ -85,7 +85,7 @@ Read the frontmatter of every artifact in `.ns/<unit-id>/`, skipping `history/`.
 
 Then two checks on P:
 
-- **Attempts.** Count P's lines in the run log after the last invocation marker, so each invocation gets fresh attempts. A verify or review line right after a P line that passed is free: HEAD moved under the pass, and the rerun failed nothing. A build line sent back by an evidence, review or pr `fail` whose first line starts with `base moved` (after an optional `NO-GO:`), after build passed, is free too, once per new `origin/<default>` sha: fetch it first and pass build its sha. Two attempts per run unless the contract says otherwise. A P that has used them is stuck.
+- **Attempts.** Count P's lines in the run log after the last invocation marker, so each invocation gets fresh attempts. A verify or review line right after a P line that passed is free: HEAD moved under the pass, and the rerun failed nothing. A build line sent back by an evidence, review or pr `fail` whose first line starts with `base moved` (after an optional `NO-GO:`), after build passed, is free too, once per new `origin/<base>` sha: fetch it first and pass build its sha. Two attempts per run unless the contract says otherwise. A P that has used them is stuck.
 - **Push.** When P is ship and the contract grants no push, stop: an escape-hatch stop, reported as such.
 
 ### Archive and capture feedback

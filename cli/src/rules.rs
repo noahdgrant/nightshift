@@ -312,8 +312,26 @@ fn print(v: &Value, human: &[(&str, &[Finding])], summary: &str, format: Format)
     Ok(())
 }
 
-pub fn check(format: Format) -> Result<ExitCode> {
-    let c = ctx("ns rules check")?;
+pub fn check(only: Option<&str>, format: Format) -> Result<ExitCode> {
+    let mut c = ctx("ns rules check")?;
+    if let Some(text) = only.filter(|_| !c.commands.is_empty()) {
+        let all = std::mem::take(&mut c.commands);
+        c.commands = all
+            .iter()
+            .filter(|cmd| cmd.contains(text))
+            .cloned()
+            .collect();
+        if c.commands.is_empty() {
+            return Err(SfError::usage(
+                format!("no command in the rules row contains `{text}`"),
+                format!(
+                    "pick text from one of {STACK}'s rules commands:\n  {}",
+                    all.join("\n  ")
+                ),
+            )
+            .into());
+        }
+    }
     if c.commands.is_empty() {
         eprintln!("ns rules: no rules row in {STACK}; nothing to check");
         let v = json!({
@@ -331,7 +349,10 @@ pub fn check(format: Format) -> Result<ExitCode> {
     }
     let run = run_pack(&c.root, &c.commands)?;
     let baseline = load_baseline(&c.root.join(BASELINE))?.unwrap_or_default();
-    let (new, baselined, fixed) = compare(&run.findings, &baseline);
+    let (new, baselined, mut fixed) = compare(&run.findings, &baseline);
+    if only.is_some() {
+        fixed.clear();
+    }
     let ok = new.is_empty();
     let v = json!({
         "ok": ok,
