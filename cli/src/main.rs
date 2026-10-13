@@ -244,7 +244,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
             command: None,
             since,
             until,
-            json: _,
+            json,
+            bugs: true,
+            weeks,
+        } => return quality::bugs::cli(since, until, weeks, json),
+        Cmd::Quality {
+            command: None,
+            since,
+            until,
+            ..
         } => return quality::cli(since, until),
         Cmd::Clean { dry_run } => return clean::cli(dry_run),
         Cmd::Log {
