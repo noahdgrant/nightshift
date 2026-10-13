@@ -445,7 +445,7 @@ mod tests {
     use crate::watch::Issue;
 
     #[test]
-    fn ns_review_files_escapes_with_the_text_and_marker_read_here() {
+    fn ns_review_files_escapes_with_the_text_marker_and_checklist_read_here() {
         let skill = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../skills/ns-review/SKILL.md"),
         )
@@ -453,6 +453,8 @@ mod tests {
         assert!(skill.contains(ESCAPED), "{ESCAPED}");
         let marker = format!("`{MARKER} review_escape`");
         assert!(skill.contains(&marker), "{marker}");
+        let item = "   - [ ] `<file:line>`";
+        assert!(skill.contains(item), "{item}");
     }
 
     fn t(s: &str) -> i64 {
