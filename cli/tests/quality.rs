@@ -1047,14 +1047,21 @@ fn bugs_fixture(issues: &[Value]) -> (TempDir, PathBuf) {
     let fake = tmp.path().join("fake");
     write(fake.join("issues.json"), &json!(issues).to_string());
     let prs = json!([
-        {"number": 41, "body": "Closes #9", "headRefName": "ns/9-b", "isCrossRepository": false},
-        {"number": 40, "body": "Closes #8", "headRefName": "someone/c", "isCrossRepository": false},
+        {"number": 41, "body": "Closes #9", "headRefName": "ns/9-b", "isCrossRepository": false,
+         "mergedAt": "2099-01-06T10:00:00Z", "additions": 300, "deletions": 100},
+        {"number": 40, "body": "Closes #8", "headRefName": "someone/c", "isCrossRepository": false,
+         "mergedAt": "2099-01-06T09:00:00Z", "additions": 5, "deletions": 0},
+        {"number": 42, "body": "", "headRefName": "ns/12-d", "isCrossRepository": false,
+         "mergedAt": "2099-01-13T10:00:00Z", "additions": 150, "deletions": 50},
+        {"number": 43, "body": "", "headRefName": "ns/13-e", "isCrossRepository": false,
+         "mergedAt": "2099-01-14T10:00:00Z", "additions": 100, "deletions": 0},
     ]);
     write(fake.join("prs.json"), &prs.to_string());
+    write(fake.join("merged.json"), &prs.to_string());
     common::write_exe(
         &fake.join("bin/gh"),
         format!(
-            "#!/bin/sh\necho \"$*\" >> '{d}/calls'\ncase \"$*\" in\n  \"api --paginate repos/{{owner}}/{{repo}}/issues?state=all&labels=type:fix&per_page=100 \"*) for a; do :; done; jq -c \"$a\" '{d}/issues.json' ;;\n  \"pr list --state merged \"*) cat '{d}/prs.json' ;;\n  *) echo \"fake gh: $*\" >&2; exit 1 ;;\nesac\n",
+            "#!/bin/sh\necho \"$*\" >> '{d}/calls'\ncase \"$*\" in\n  \"api --paginate repos/{{owner}}/{{repo}}/issues?state=all&labels=type:fix&per_page=100 \"*) for a; do :; done; jq -c \"$a\" '{d}/issues.json' ;;\n  \"pr list --state merged --limit 200 --json number,body,headRefName,isCrossRepository\") cat '{d}/prs.json' ;;\n  \"pr list --state merged --limit 200 --json number,headRefName,isCrossRepository,mergedAt,additions,deletions\"*) cat '{d}/merged.json' ;;\n  *) echo \"fake gh: $*\" >&2; exit 1 ;;\nesac\n",
             d = fake.display()
         ),
     );
@@ -1176,10 +1183,25 @@ fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
         v["weeks"],
         json!([
             {"week": "2099-W02", "monday": "2099-01-05", "opened": 2, "review_escape": 1,
-             "factory_introduced": 1, "ci_main": 0, "human": 0, "critical_high": 2, "rest": 0},
+             "factory_introduced": 1, "ci_main": 0, "human": 0, "critical_high": 2, "rest": 0,
+             "merged_units": 1, "changed_lines": 400, "per_unit": 2.0, "per_kloc": 5.0,
+             "undercounted": false},
             {"week": "2099-W03", "monday": "2099-01-12", "opened": 2, "review_escape": 0,
-             "factory_introduced": 0, "ci_main": 1, "human": 1, "critical_high": 1, "rest": 1},
+             "factory_introduced": 0, "ci_main": 1, "human": 1, "critical_high": 1, "rest": 1,
+             "merged_units": 2, "changed_lines": 300, "per_unit": 1.0, "per_kloc": 6.667,
+             "undercounted": false},
         ])
+    );
+    assert_eq!(
+        v["trend"],
+        json!({
+            "per_unit": {"direction": "insufficient", "slope": null, "weeks": 2},
+            "per_kloc": {"direction": "insufficient", "slope": null, "weeks": 2},
+        })
+    );
+    assert_eq!(
+        v["merged_prs"],
+        json!({"listed": 4, "truncated": false, "oldest": "2099-01-06T09:00:00Z"})
     );
     assert_eq!(v["total"]["opened"], 4);
     assert_eq!(
@@ -1239,6 +1261,14 @@ fn bugs_weeks_keeps_only_the_latest_weeks() {
         text.contains("\n2099-W03       2      0       0       1     1         1    1\n"),
         "{text}"
     );
+    assert!(
+        text.contains("\n2099-W03      2    300     1.00     6.67\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\ntrend per unit: insufficient, needs 4 weeks with a rate, has 1\n"),
+        "{text}"
+    );
     assert!(!text.contains("2099-W02"), "{text}");
     assert!(!text.contains("Left out"), "{text}");
 }
@@ -1266,13 +1296,147 @@ fn weeks_needs_bugs_and_one_or_more() {
 }
 
 #[test]
-fn bugs_fails_when_the_forge_cannot_list_merged_prs() {
+fn bugs_fails_when_the_forge_cannot_list_closing_prs() {
     let (tmp, root) = bugs_fixture(&[]);
     fs::remove_file(tmp.path().join("fake/prs.json")).unwrap();
     ns_bugs(&tmp, &root, &[]).assert().code(1).stderr(
         predicate::str::contains("gh pr list --state merged")
             .and(predicate::str::contains("failed:")),
     );
+}
+
+#[test]
+fn bugs_fails_when_the_forge_cannot_list_merged_prs() {
+    let (tmp, root) = bugs_fixture(&[]);
+    fs::remove_file(tmp.path().join("fake/merged.json")).unwrap();
+    ns_bugs(&tmp, &root, &[]).assert().code(1).stderr(
+        predicate::str::contains("mergedAt,additions,deletions")
+            .and(predicate::str::contains("failed:")),
+    );
+}
+
+#[test]
+fn bugs_reads_the_merged_prs_since_the_first_week() {
+    let (tmp, root) = bugs_fixture(&bugs_mixed_issues());
+    ns_bugs(&tmp, &root, &["--json"]).assert().success();
+    let calls = fs::read_to_string(tmp.path().join("fake/calls")).unwrap();
+    assert!(
+        calls.contains(
+            "pr list --state merged --limit 200 --json \
+             number,headRefName,isCrossRepository,mergedAt,additions,deletions \
+             --search merged:>=2099-01-05\n"
+        ),
+        "{calls}"
+    );
+    let (tmp, root) = bugs_fixture(&bugs_mixed_issues());
+    ns_bugs(&tmp, &root, &["--json", "--since", "2099-01-07T12:00:00Z"])
+        .assert()
+        .success();
+    let calls = fs::read_to_string(tmp.path().join("fake/calls")).unwrap();
+    assert!(calls.contains("--search merged:>=2099-01-05\n"), "{calls}");
+}
+
+#[test]
+fn bugs_a_mid_week_since_counts_units_and_fixes_from_it_on() {
+    let (tmp, root) = bugs_fixture(&bugs_mixed_issues());
+    let out = ns_bugs(&tmp, &root, &["--json", "--since", "2099-01-06T10:00:00Z"]).output();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let w = &v["weeks"][0];
+    assert_eq!(w["week"], "2099-W02");
+    assert_eq!(w["opened"], 1);
+    assert_eq!(
+        (w["merged_units"].clone(), w["changed_lines"].clone()),
+        (json!(1), json!(400))
+    );
+    assert_eq!(w["per_unit"], 1.0);
+}
+
+#[test]
+fn bugs_a_factory_pr_without_a_closing_reference_does_not_make_a_bug_factory_introduced() {
+    let (tmp, root) = bugs_fixture(&[fix_issue(
+        21,
+        "2099-01-14T00:00:00Z",
+        "fix: d",
+        "`lib.rs:4` breaks.",
+        &[],
+    )]);
+    commit(
+        &root,
+        "lib.rs",
+        "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\n",
+        "feat: add d (#42)",
+    );
+    let out = ns_bugs(&tmp, &root, &["--json"]).output();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["issues"][0]["introduced_by"]["pr"], 42);
+    assert_eq!(v["issues"][0]["source"], "human");
+}
+
+const FOUR_WEEKS: [&str; 4] = ["2098-12-16", "2098-12-23", "2098-12-30", "2099-01-06"];
+
+fn four_weeks() -> Vec<Value> {
+    (0..4)
+        .map(|i| {
+            fix_issue(
+                30 + i as u64,
+                &format!("{}T09:00:00Z", FOUR_WEEKS[i]),
+                "fix: x",
+                "Source: human",
+                &[],
+            )
+        })
+        .collect()
+}
+
+fn merged_pr(n: u64, day: &str) -> Value {
+    json!({"number": n, "headRefName": "ns/u", "isCrossRepository": false,
+           "mergedAt": format!("{day}T10:00:00Z"), "additions": 100, "deletions": 0})
+}
+
+#[test]
+fn bugs_json_has_a_falling_trend_over_four_weeks() {
+    let (tmp, root) = bugs_fixture(&four_weeks());
+    let mut prs = Vec::new();
+    for (i, n) in [1u64, 2, 3, 4].into_iter().enumerate() {
+        for j in 0..n {
+            prs.push(merged_pr(100 + i as u64 * 10 + j, FOUR_WEEKS[i]));
+        }
+    }
+    write(tmp.path().join("fake/merged.json"), &json!(prs).to_string());
+    let out = ns_bugs(&tmp, &root, &["--json"]).output();
+    assert!(out.status.success());
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["trend"],
+        json!({
+            "per_unit": {"direction": "falling", "slope": -0.242, "weeks": 4},
+            "per_kloc": {"direction": "falling", "slope": -2.417, "weeks": 4},
+        })
+    );
+    assert_eq!(v["merged_prs"]["truncated"], false);
+}
+
+#[test]
+fn bugs_json_flags_only_the_weeks_older_than_a_full_merged_list_undercounted() {
+    let (tmp, root) = bugs_fixture(&four_weeks());
+    let prs: Vec<Value> = (0..200)
+        .map(|n| merged_pr(100 + n, FOUR_WEEKS[1]))
+        .collect();
+    write(tmp.path().join("fake/merged.json"), &json!(prs).to_string());
+    let out = ns_bugs(&tmp, &root, &["--json"]).output();
+    assert!(out.status.success());
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["merged_prs"]["truncated"], true);
+    assert_eq!(v["merged_prs"]["listed"], 200);
+    assert_eq!(v["merged_prs"]["oldest"], "2098-12-23T10:00:00Z");
+    let flags: Vec<bool> = v["weeks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["undercounted"].as_bool().unwrap())
+        .collect();
+    assert_eq!(flags, [true, true, false, false, false]);
+    assert_eq!(v["trend"]["per_unit"]["direction"], "insufficient");
 }
 
 #[test]

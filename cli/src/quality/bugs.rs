@@ -1,4 +1,5 @@
-//! `ns quality --bugs`: the `type:fix` issues opened in each ISO week, by source and severity
+//! `ns quality --bugs`: the `type:fix` issues opened in each ISO week, by source and severity,
+//! their rate per merged unit and per 1,000 changed lines, and each rate's trend
 //! (docs/factory/quality.md).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -8,13 +9,14 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+use self::rates::{Listed, Rates};
 use super::blame::{self, Blame};
 use super::Window;
 use crate::clock::{self, Clock};
 use crate::error::SfError;
 use crate::factory;
 use crate::git::{self, Repo};
-use crate::watch::forge::{self, Filed, IssueState, PrState};
+use crate::watch::forge::{self, Filed, IssueState, MergedPr, MergedPrs, PrState};
 use crate::watch::FIX_MAIN_TITLE;
 use crate::worktree::BRANCH_PREFIX;
 
@@ -26,6 +28,8 @@ const MARKER: &str = "Source:";
 
 /// The sentence `ns-review` ends every escape it files with.
 const ESCAPED: &str = "This escaped an earlier review.";
+
+mod rates;
 
 const DAY: i64 = 86_400;
 const WEEK: i64 = 7 * DAY;
@@ -133,6 +137,8 @@ pub struct Week {
     pub monday: String,
     #[serde(flatten)]
     pub counts: Counts,
+    #[serde(flatten)]
+    pub rates: Rates,
 }
 
 #[derive(Serialize, Debug)]
@@ -143,6 +149,8 @@ pub struct Report {
     pub until: Option<String>,
     pub weeks: Vec<Week>,
     pub total: Counts,
+    pub trend: rates::Trends,
+    pub merged_prs: Listed,
     pub issues: Vec<Bug>,
     pub excluded: Vec<Excluded>,
 }
@@ -250,20 +258,24 @@ pub fn classify(
 
 /// The report on `filed`, kept to `window`. Weeks run from the window's start, else the oldest
 /// issue's week, through the week of its end, else of `now`; a week with no issue counts zero.
+/// The PRs in `merged` from `ns/` branches merged inside `window` are the factory's merged units.
 pub fn report(
     filed: &[Filed],
     window: Window,
     now: i64,
     trace: &dyn Fn(&Filed) -> Result<Blame, String>,
     factory_prs: &BTreeSet<u64>,
+    merged: &MergedPrs,
 ) -> Report {
-    let kept: Vec<&Filed> = filed
+    let units: Vec<&MergedPr> = merged
+        .prs
         .iter()
-        .filter(|f| window.contains(Some(f.opened)))
+        .filter(|p| p.head.starts_with(BRANCH_PREFIX) && window.contains(Some(p.merged)))
         .collect();
-    let (gone, counted): (Vec<&Filed>, Vec<&Filed>) = kept
-        .into_iter()
-        .partition(|f| f.state == IssueState::NotPlanned);
+    let counted = counted_issues(filed, window);
+    let gone: Vec<&Filed> = in_window(filed, window)
+        .filter(|f| f.state == IssueState::NotPlanned)
+        .collect();
     let mut issues: Vec<Bug> = counted
         .iter()
         .map(|f| classify(f, trace, factory_prs))
@@ -278,18 +290,19 @@ pub fn report(
         })
         .collect();
     excluded.sort_by_key(|e| e.number);
-    let first = window
-        .since
-        .or_else(|| counted.iter().map(|f| f.opened).min());
     let last = window.until.unwrap_or(now);
     let mut by_week: BTreeMap<&str, Vec<&Bug>> = BTreeMap::new();
     for b in &issues {
         by_week.entry(b.week.as_str()).or_default().push(b);
     }
+    let mut units_by_week: BTreeMap<String, Vec<&MergedPr>> = BTreeMap::new();
+    for p in units {
+        units_by_week.entry(iso_week(p.merged)).or_default().push(p);
+    }
+    let oldest = merged.prs.iter().map(|p| p.merged).min();
     let mut weeks = Vec::new();
     let mut total = Counts::default();
-    if let Some(first) = first {
-        let mut m = monday(first);
+    if let Some(mut m) = first_week(filed, window) {
         while m <= last {
             let week = iso_week(m);
             let mut counts = Counts::default();
@@ -297,14 +310,19 @@ pub fn report(
                 counts.add(b);
                 total.add(b);
             }
+            let undercounted = merged.truncated && oldest.is_none_or(|o| m < o);
+            let units = units_by_week.remove(&week).unwrap_or_default();
+            let rates = Rates::new(counts.opened, &units, undercounted);
             weeks.push(Week {
                 week,
                 monday: clock::iso(m)[..10].to_string(),
                 counts,
+                rates,
             });
             m += WEEK;
         }
     }
+    let trend = rates::trends(&weeks);
     Report {
         ok: true,
         label: LABEL,
@@ -312,6 +330,12 @@ pub fn report(
         until: window.until.map(clock::iso),
         weeks,
         total,
+        trend,
+        merged_prs: Listed {
+            listed: merged.prs.len(),
+            truncated: merged.truncated,
+            oldest: oldest.map(clock::iso),
+        },
         issues,
         excluded,
     }
@@ -357,6 +381,7 @@ impl Report {
                 n.join(", ")
             );
         }
+        self.rates_text(&mut s);
         s
     }
 }
@@ -405,6 +430,32 @@ fn trace(repo: &Repo, base: Option<&str>, f: &Filed) -> Result<Blame, String> {
     blame::blame(&repo.root, Some(&at), Some(&f.issue.body))
 }
 
+fn in_window(filed: &[Filed], window: Window) -> impl Iterator<Item = &Filed> {
+    filed
+        .iter()
+        .filter(move |f| window.contains(Some(f.opened)))
+}
+
+/// The issues inside `window` the report counts: those not closed as not planned.
+fn counted_issues(filed: &[Filed], window: Window) -> Vec<&Filed> {
+    in_window(filed, window)
+        .filter(|f| f.state != IssueState::NotPlanned)
+        .collect()
+}
+
+/// When the first week of the report starts: its window's start, else the oldest issue's week.
+fn first_week(filed: &[Filed], window: Window) -> Option<i64> {
+    window
+        .since
+        .or_else(|| {
+            counted_issues(filed, window)
+                .into_iter()
+                .map(|f| f.opened)
+                .min()
+        })
+        .map(monday)
+}
+
 pub fn cli(
     since: Option<String>,
     until: Option<String>,
@@ -423,6 +474,7 @@ pub fn cli(
         .filter(|(_, head)| head.starts_with(BRANCH_PREFIX))
         .map(|(pr, _)| pr)
         .collect();
+    let merged = forge.merged_prs(first_week(&filed, window))?;
     let base = repo.default_base().ok();
     let r = report(
         &filed,
@@ -430,6 +482,7 @@ pub fn cli(
         now,
         &|f| trace(&repo, base.as_deref(), f),
         &factory_prs,
+        &merged,
     );
     if as_json {
         println!("{}", serde_json::to_string_pretty(&r)?);
@@ -472,11 +525,11 @@ mod tests {
         assert!(flat.contains(legacy), "{legacy}");
     }
 
-    fn t(s: &str) -> i64 {
+    pub(super) fn t(s: &str) -> i64 {
         clock::parse_iso(s).unwrap()
     }
 
-    fn filed(n: u64, opened: &str, title: &str, body: &str, labels: &[&str]) -> Filed {
+    pub(super) fn filed(n: u64, opened: &str, title: &str, body: &str, labels: &[&str]) -> Filed {
         Filed {
             issue: Issue {
                 number: n,
@@ -498,7 +551,23 @@ mod tests {
         }
     }
 
-    fn no_trace(_: &Filed) -> Result<Blame, String> {
+    pub(super) fn pr(number: u64, head: &str, merged: &str, changed: Option<u64>) -> MergedPr {
+        MergedPr {
+            number,
+            head: head.into(),
+            merged: t(merged),
+            changed,
+        }
+    }
+
+    pub(super) fn merged(prs: &[MergedPr], truncated: bool) -> MergedPrs {
+        MergedPrs {
+            prs: prs.to_vec(),
+            truncated,
+        }
+    }
+
+    pub(super) fn no_trace(_: &Filed) -> Result<Blame, String> {
         panic!("traced an issue whose source was already known")
     }
 
@@ -661,6 +730,7 @@ mod tests {
             t("2026-10-14"),
             &no_trace,
             &BTreeSet::new(),
+            &MergedPrs::default(),
         );
         assert_eq!(r.weeks[0].counts, counts([4, 4, 0, 0, 0, 3, 1]));
         assert_eq!(r.weeks[1].counts, counts([1, 0, 0, 0, 1, 0, 1]));
@@ -725,6 +795,7 @@ mod tests {
             now,
             &|_| Ok(blamed(Some(41))),
             &BTreeSet::from([41]),
+            &merged(&[pr(41, "ns/9-b", "2026-09-01", Some(10))], false),
         );
         let weeks: Vec<(&str, &str)> = r
             .weeks
@@ -768,6 +839,7 @@ mod tests {
             t("2026-12-01"),
             &|_| Err("x".into()),
             &BTreeSet::new(),
+            &MergedPrs::default(),
         );
         let weeks: Vec<&str> = r.weeks.iter().map(|w| w.week.as_str()).collect();
         assert_eq!(weeks, ["2026-W41", "2026-W42"]);
@@ -785,14 +857,61 @@ mod tests {
             since: Some(t("2026-10-05")),
             until: None,
         };
-        let r = report(&[], w, t("2026-10-12"), &no_trace, &BTreeSet::new());
+        let r = report(
+            &[],
+            w,
+            t("2026-10-12"),
+            &no_trace,
+            &BTreeSet::new(),
+            &MergedPrs::default(),
+        );
         let weeks: Vec<&str> = r.weeks.iter().map(|w| w.week.as_str()).collect();
         assert_eq!(weeks, ["2026-W41", "2026-W42"]);
     }
 
+    fn undercounted_weeks(prs: &[MergedPr], truncated: bool) -> Vec<bool> {
+        let w = Window {
+            since: Some(t("2026-10-05")),
+            until: None,
+        };
+        report(
+            &[],
+            w,
+            t("2026-10-20"),
+            &no_trace,
+            &BTreeSet::new(),
+            &merged(prs, truncated),
+        )
+        .weeks
+        .iter()
+        .map(|w| w.rates.undercounted)
+        .collect()
+    }
+
+    #[test]
+    fn a_week_starting_exactly_at_the_oldest_listed_merge_is_not_undercounted() {
+        let prs = [pr(1, "ns/1", "2026-10-12T00:00:00Z", Some(1))];
+        assert_eq!(undercounted_weeks(&prs, true), [true, false, false]);
+        let prs = [pr(1, "ns/1", "2026-10-12T00:00:01Z", Some(1))];
+        assert_eq!(undercounted_weeks(&prs, true), [true, true, false]);
+    }
+
+    #[test]
+    fn a_full_list_with_no_usable_pr_leaves_every_week_undercounted() {
+        assert_eq!(undercounted_weeks(&[], true), [true, true, true]);
+        assert_eq!(undercounted_weeks(&[], false), [false, false, false]);
+    }
+
     #[test]
     fn no_issues_and_no_since_is_no_weeks() {
-        let r = report(&[], Window::default(), 0, &no_trace, &BTreeSet::new());
+        let r = report(
+            &[],
+            Window::default(),
+            0,
+            &no_trace,
+            &BTreeSet::new(),
+            &MergedPrs::default(),
+        );
         assert!(r.weeks.is_empty());
         assert_eq!(r.total, Counts::default());
         assert!(r.text().contains("total"));
@@ -832,6 +951,7 @@ mod tests {
             t("2026-10-14"),
             &|_| Err("x".into()),
             &BTreeSet::new(),
+            &MergedPrs::default(),
         );
         let text = r.text();
         let lines: Vec<&str> = text.lines().collect();
