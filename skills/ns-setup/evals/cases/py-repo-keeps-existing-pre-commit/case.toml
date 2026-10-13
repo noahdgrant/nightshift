@@ -1,4 +1,4 @@
-# Checks validated by hand: the fixture plus a stack.md whose Hooks section names .pre-commit-config.yaml passes every check; an added scripts/ci-local.sh or .githooks/, a set core.hooksPath, and a stack.md that never mentions the config each fail one.
+# Checks validated by hand: the fixture plus a stack.md whose Hooks section names .pre-commit-config.yaml passes every check; an added scripts/ci-local.sh or .githooks/, a set core.hooksPath, and a stack.md that never mentions the config each fail one. A stack.md that names the config only in the commands table, or whose ci-local row is a script, fails the Hooks and none-row checks.
 description = "Set up a Python repo that already has a .pre-commit-config.yaml: setup records the existing hook in stack.md and adds no hook files, no ci-local script and no core.hooksPath."
 fixture = "py-inventory"
 skills = ["ns-setup"]
@@ -26,5 +26,12 @@ expect_exit = 0
 [[check]]
 type = "regex"
 path = "docs/agents/stack.md"
-pattern = "pre-commit-config\\.yaml"
+pattern = "(?s)## Hooks.*pre-commit-config\\.yaml"
+present = true
+
+[[check]]
+# No script was written, so the ci-local row is plain none.
+type = "regex"
+path = "docs/agents/stack.md"
+pattern = "\\| *ci-local *\\| *none *\\|"
 present = true

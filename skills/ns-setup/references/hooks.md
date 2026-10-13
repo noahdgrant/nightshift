@@ -23,10 +23,11 @@ With no hit, propose three things, all derived from the repo's real CI workflow 
 
 - runs the commands CI runs, in CI's order, stopping at the first failure
 - with `--fast`, runs only the quick subset: format check, lint, typecheck and the unit tests, if they finish in about 30 s. Skip a step CI doesn't run.
-- with no argument, runs everything, slow seams included
+- with no argument, runs everything, slow seams included, and exits 0 when no slow step follows the quick ones
 - exits 2 with a usage line on any other argument
 - is POSIX `sh` (`#!/bin/sh`, `set -eu`), no bashisms, and calls only tools CI already installs. It adds no runtime dependency.
 - `cd`s to the repo root first, so a hook or a gate can run it from anywhere
+- mirrors only verification steps (format, lint, typecheck, test, build). Never copy a step that deploys, publishes, releases, pushes an image or package, flashes hardware, or needs a secret or token: leave it out and say so in `stack.md`.
 - passes `NS_CPUS` to any command that starts its own workers (see Explore in `SKILL.md`)
 
 **`.githooks/pre-commit`**, executable:
@@ -44,11 +45,11 @@ exec scripts/ci-local.sh --fast
 setup = ["git config core.hooksPath .githooks"]
 ```
 
-The `ci-local` row of `stack.md` names `scripts/ci-local.sh`. The `ns run` gate reads that row, and runs it with `--fast` after every phase but build.
+The `ci-local` row of `stack.md` names `scripts/ci-local.sh`. The `ns run` gate reads that row, and runs it plain after build. Under `[gate] local = "build-only"` it runs it with `--fast` after every other phase; under the default `every-step` it runs it plain each step.
 
 ### Gates
 
-- `gates: stop`: show the three files and the `git config` line, and wait for a yes before writing any of them.
+- `gates: stop`: show the three files and the `git config` line, and wait for a yes before writing any of them. After the yes, write the `[worktree] setup` entry to `.nightshift/nightshift.toml`, appended to the existing `setup` array when the worktree trap fix-ups write one too.
 - `gates: auto`: write `scripts/ci-local.sh` and `.githooks/pre-commit`, run the `git config` line in the main checkout, and fill the `ci-local` row and `## Hooks` section. Leave `.nightshift/nightshift.toml` alone, since many repos have its changes reviewed by a human. Give the `[worktree] setup` line in the final message for whoever merges to add.
 
 Before handing over, run `sh -n scripts/ci-local.sh` and then `scripts/ci-local.sh --fast` once. A step that fails on today's code is a finding to report, not a reason to drop the step.
@@ -74,7 +75,7 @@ ruff check .
 ruff format --check .
 mypy src
 pytest -q -m "not slow"
-[ "$fast" = 1 ] && exit 0
+if [ "$fast" = 1 ]; then exit 0; fi
 pytest -q -m slow
 ```
 
@@ -97,8 +98,8 @@ esac
 
 find app tests -name '*.[ch]' -exec clang-format --dry-run --Werror {} +
 west twister -p native_sim -T tests -j "${NS_CPUS:-$(nproc)}"
-[ "$fast" = 1 ] && exit 0
+if [ "$fast" = 1 ]; then exit 0; fi
 west build -p always -b nrf52840dk/nrf52840 app
 ```
 
-Twister on `native_sim` belongs in `--fast` only when it finishes in about 30 s. When it takes longer, move it after the `exit 0` line and say so in `stack.md`.
+Twister on `native_sim` belongs in `--fast` only when it finishes in about 30 s. When it takes longer, move it after the `exit 0` block and say so in `stack.md`.

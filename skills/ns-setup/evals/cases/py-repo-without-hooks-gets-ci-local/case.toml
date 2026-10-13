@@ -1,4 +1,4 @@
-# Checks validated by hand: a ci-local.sh running ruff check, ruff format --check and pytest in that order, an executable .githooks/pre-commit that execs it with --fast, core.hooksPath set, and a ci-local row passes every check; a hook calling the script without --fast, a bash script, a script with pytest before ruff, and a [worktree] setup line written to .nightshift/nightshift.toml each fail one.
+# Checks validated by hand: a ci-local.sh running ruff check, ruff format --check and pytest in that order, an executable .githooks/pre-commit that execs it with --fast, core.hooksPath set, and a ci-local row passes every check; a hook calling the script without --fast, a bash script, a script with pytest before ruff, and a [worktree] setup line written to .nightshift/nightshift.toml each fail one. A script that accepts --bogus or does not cd to the root, and a hook whose exec line is commented out, each fail one.
 description = "Set up a Python repo with a CI workflow and no pre-commit hook: setup writes scripts/ci-local.sh mirroring CI in order, a .githooks/pre-commit that runs it with --fast, points core.hooksPath at it, names the script as stack.md's ci-local command, and leaves the .nightshift/ worktree line to whoever merges."
 fixture = "py-inventory"
 skills = ["ns-setup"]
@@ -25,8 +25,14 @@ pattern = "(?s)ruff check.*ruff format --check.*pytest"
 present = true
 
 [[check]]
+# Run by absolute path from another directory: exit 2 (not a failed cd) proves the script cds to the repo root first and rejects an unknown argument.
 type = "command"
-run = '''test -x .githooks/pre-commit && grep -Eq 'scripts/ci-local\.sh +--fast' .githooks/pre-commit'''
+run = '''d=$(pwd) && cd / && "$d/scripts/ci-local.sh" --bogus 2>/dev/null'''
+expect_exit = 2
+
+[[check]]
+type = "command"
+run = '''test -x .githooks/pre-commit && grep -Eq '^exec +scripts/ci-local\.sh +--fast' .githooks/pre-commit'''
 expect_exit = 0
 
 [[check]]
@@ -48,5 +54,10 @@ expect_exit = 0
 
 [[check]]
 type = "judge"
-rubric = "Did the setup derive scripts/ci-local.sh from the repo's CI workflow (not a generic template), keep --fast to the quick steps, and give the `git config core.hooksPath .githooks` [worktree] setup line for .nightshift/nightshift.toml in its final message for whoever merges, rather than writing it?"
+rubric = "Did the setup derive scripts/ci-local.sh from the repo's CI workflow (not a generic template) and keep --fast to the quick steps?"
 required = false
+
+[[check]]
+type = "judge"
+rubric = "Does the final message give the `git config core.hooksPath .githooks` line as a [worktree] setup entry for .nightshift/nightshift.toml, for whoever merges to add, rather than saying it was written?"
+required = true
