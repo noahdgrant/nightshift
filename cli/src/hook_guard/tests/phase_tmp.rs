@@ -1,6 +1,7 @@
 //! Only the running phase's own `TMPDIR` is exempt, and a link cannot lead out of it.
 
 use super::*;
+use crate::hook_guard::phase_tmp::{find_link, PhaseTmp};
 
 const OWN: &str = "/r/.git/ns/units/u1/tmp/build-1";
 
@@ -164,4 +165,122 @@ fn a_plain_copy_into_the_phases_own_tmpdir_by_absolute_path_is_allowed() {
     ] {
         assert!(denied_in(c, OWN), "{c}");
     }
+}
+
+#[test]
+fn substituted_writes_out_only_the_unquoted_variable() {
+    let tmp = PhaseTmp::new(Some(OWN));
+    for (command, expected) in [
+        ("echo x > $TMPDIR/a", format!("echo x > {OWN}/a")),
+        ("echo x > ${TMPDIR}/a", format!("echo x > {OWN}/a")),
+        ("echo x > \"$TMPDIR/a\"", format!("echo x > \"{OWN}/a\"")),
+        ("echo '$TMPDIR/a'", "echo '$TMPDIR/a'".to_string()),
+        ("echo $TMPDIR_X/a", "echo $TMPDIR_X/a".to_string()),
+        ("echo $TMPDIR2/a", "echo $TMPDIR2/a".to_string()),
+        ("echo \\$TMPDIR/a", "echo \\$TMPDIR/a".to_string()),
+        ("echo '$TMPDIR' $TMPDIR", format!("echo '$TMPDIR' {OWN}")),
+    ] {
+        assert_eq!(tmp.substituted(command), expected, "{command}");
+    }
+}
+
+#[test]
+fn a_tmpdir_a_shell_would_split_is_left_as_the_variable() {
+    let tmp = PhaseTmp::new(Some("/r/.git/ns/units/u 1/tmp/build-1"));
+    assert_eq!(tmp.substituted("echo x > $TMPDIR/a"), "echo x > $TMPDIR/a");
+}
+
+#[test]
+fn a_distrusted_tmpdir_denies_a_command_it_cannot_write_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join(".git/ns/units/u1/tmp/build-1");
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::os::unix::fs::symlink("../..", tmp.join("up")).unwrap();
+    let tmp = tmp.to_str().unwrap();
+    let why = check_in(&bash_call("echo x > '$TMPDIR/a'"), Some(tmp)).unwrap();
+    assert!(why.contains("cannot write out as a path"), "{why}");
+    std::fs::remove_file(format!("{tmp}/up")).unwrap();
+    assert_eq!(
+        check_in(&bash_call("echo x > '$TMPDIR/a'"), Some(tmp)),
+        None
+    );
+}
+
+#[test]
+fn a_tmpdir_reached_through_a_symlinked_parent_is_exempt_by_both_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let real = root.join("real/.git/ns/units/u1/tmp");
+    std::fs::create_dir_all(real.join("build-1")).unwrap();
+    std::os::unix::fs::symlink(root.join("real"), root.join("alias")).unwrap();
+    let by_link = format!("{}/alias/.git/ns/units/u1/tmp/build-1", root.display());
+    let by_real = format!("{}/real/.git/ns/units/u1/tmp/build-1", root.display());
+    for p in [&by_link, &by_real] {
+        assert!(
+            !write_denied_in(&format!("{p}/n.txt"), Some(&by_link)),
+            "{p}"
+        );
+        assert!(!denied_in(&format!("echo x > {p}/n.txt"), &by_link), "{p}");
+    }
+    assert!(write_denied_in(
+        &format!("{}/real/.git/ns/units/u1/tmp/build-2/n.txt", root.display()),
+        Some(&by_link)
+    ));
+}
+
+#[test]
+fn a_phase_tmpdir_that_is_itself_a_symlink_out_exempts_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let tmps = root.join(".git/ns/units/u1/tmp");
+    std::fs::create_dir_all(&tmps).unwrap();
+    std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+    std::os::unix::fs::symlink(root.join(".git/hooks"), tmps.join("build-1")).unwrap();
+    let tmp = tmps.join("build-1");
+    let tmp = tmp.to_str().unwrap();
+    let why = check_in(&bash_call("echo x > $TMPDIR/pre-commit"), Some(tmp)).unwrap();
+    assert!(why.contains("it is a symlink"), "{why}");
+    assert!(write_denied_in(&format!("{tmp}/pre-commit"), Some(tmp)));
+}
+
+#[test]
+fn the_walk_allows_the_cap_and_denies_one_over() {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..3 {
+        std::fs::File::create(dir.path().join(i.to_string())).unwrap();
+    }
+    assert_eq!(find_link(dir.path(), 3), None);
+    let why = find_link(dir.path(), 2).unwrap();
+    assert!(why.contains("more than 2 entries"), "{why}");
+}
+
+#[test]
+fn the_walk_counts_entries_below_subdirectories() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+    std::fs::File::create(dir.path().join("a/b/f")).unwrap();
+    assert_eq!(find_link(dir.path(), 3), None);
+    assert!(find_link(dir.path(), 2).is_some());
+}
+
+#[test]
+fn a_directory_that_cannot_be_read_exempts_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let locked = dir.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = std::fs::read_dir(&locked).is_ok();
+    let why = find_link(dir.path(), 100);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if readable {
+        eprintln!("SKIPPED: a mode 000 directory is readable here (running as root?)");
+        return;
+    }
+    let why = why.expect("an unreadable directory must withdraw the exemption");
+    assert!(why.contains("could not be read"), "{why}");
 }

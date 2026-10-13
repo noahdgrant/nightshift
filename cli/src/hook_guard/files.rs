@@ -67,15 +67,6 @@ pub(super) fn resolved(path: &str, cwd: Option<&str>) -> String {
 }
 
 /// A command that goes up from a phase's `TMPDIR` to the unit's `phase-settings.json`.
-/// `TMPDIR` is `.git/ns/units/<unit>/tmp/<phase>-<n>`, so two `..` after it land on that file.
-/// The lexer drops variable names and does not follow `cd $TMPDIR`, so this reads the command's
-/// words. It denies a word that has `TMPDIR` and a `..` part, and, while the shell may be in
-/// `TMPDIR` (after a `cd` or `pushd` whose first non-option argument has `TMPDIR`), any word with
-/// a `..` part or named like the settings file. A `cd` to a literal absolute or home path, or to
-/// home, ends that; a `cd` to a relative path or an expansion (`cd .`, `cd "$PWD"`) may stay in
-/// `TMPDIR`, so it does not. `cd -` goes back to where the `cd` before it left, and `popd` may.
-/// The `)` that closes the `(` the `cd` was inside ends it too, whether a subshell or a `$(...)`.
-/// A `..` elsewhere (`cd .. && cargo test > $TMPDIR/out.log`) is fine.
 pub(super) fn tmpdir_reaches_settings(command: &str) -> Option<String> {
     let mut in_tmp = false;
     let mut was_in_tmp = false;
@@ -138,29 +129,8 @@ fn segments(command: &str) -> impl Iterator<Item = &str> {
     command.split([';', '&', '|', '\n', '`'])
 }
 
-/// A command that can plant a link or copy the phase settings. A link in a phase's `TMPDIR` that
-/// points at the unit's `phase-settings.json`, written through later, would reach past the `tmp`
-/// exception. Per segment, the guard fails closed: a token whose basename is a verb (`ln`, `link`,
-/// `cp`, `rsync`, `install`) counts wherever it stands, so wrappers it does not know (`timeout 5
-/// ln`), `sh -c 'ln ..'`, redirections and shell constructs cannot hide it. The one exception is
-/// a segment whose command word (after assignments, keywords and redirections) is in
-/// `NON_LINKING`: there `cargo test link` names a verb as a plain argument. Such a segment still
-/// counts a verb that opens a `(` or `$(`. The other tokens of the segment are the arguments, so
-/// a verb-named token is never its own argument (`touch $TMPDIR/link` passes):
-/// - `ln` and `link` are denied when an argument mentions `TMPDIR`, an `ns/units` path component
-///   or `phase-settings.json`. That includes `ln -s a $TMPDIR/l`, whose target is harmless: the
-///   guard does not tell a safe target from an unsafe one, so it denies them all.
-/// - `cp`, `rsync` and `install` are denied when an argument names an `ns/units` path component
-///   or `phase-settings.json`, unless it is a plain path in the phase's own `TMPDIR`
-///   (`PhaseTmp::exempts`); `cp` also when it has a link flag (`-s`, `-l`, `--symbolic-link`,
-///   `--link`) and an argument mentions `TMPDIR` or names a unit path.
-/// - After a segment with a `cd` or `pushd` and a later `TMPDIR` token, `ln`, `link` and `cp` with
-///   a link flag are denied whatever their arguments: a later `cd .` or `cd -` could still stand
-///   in `TMPDIR`, so the guard does not follow where the shell is.
-///
-/// Out of reach: a script the phase writes (`python -c os.symlink`) and a path a shell builds
-/// (`$(dirname $TMPDIR)`). A false deny remains for an unknown command with a verb-named argument
-/// and `TMPDIR` (`mytool link $TMPDIR/x`), and for a link anywhere after a `cd` into `TMPDIR`.
+/// A command that can plant a link, or copy the phase settings, where a write would reach past
+/// the `tmp` exception.
 pub(super) fn links_into_unit(command: &str, tmp: &PhaseTmp) -> Option<String> {
     let mut entered_tmp = false;
     for segment in segments(command) {
@@ -175,10 +145,10 @@ pub(super) fn links_into_unit(command: &str, tmp: &PhaseTmp) -> Option<String> {
             let bare = bare.rsplit_once("=!").map_or(bare, |(_, shell)| shell);
             let verb = bare.rsplit('/').next().unwrap_or(bare);
             let opens = token.starts_with(['(', '$']) || (i > 0 && tokens[i - 1].ends_with('('));
-            if !matches!(verb, "ln" | "link" | "cp" | "rsync" | "install") || (safe && !opens) {
+            if !(LINK_VERBS.contains(&verb) || COPY_VERBS.contains(&verb)) || (safe && !opens) {
                 continue;
             }
-            let links = matches!(verb, "ln" | "link")
+            let links = LINK_VERBS.contains(&verb)
                 || (verb == "cp" && tokens[i + 1..].iter().any(|a| is_link_flag(a)));
             if links && entered_tmp {
                 return Some(format!(
@@ -208,6 +178,9 @@ pub(super) fn links_into_unit(command: &str, tmp: &PhaseTmp) -> Option<String> {
     }
     None
 }
+
+const LINK_VERBS: [&str; 2] = ["ln", "link"];
+const COPY_VERBS: [&str; 3] = ["cp", "rsync", "install"];
 
 /// Commands that never make a link from their arguments, so a verb-named argument is plain text.
 const NON_LINKING: [&str; 25] = [

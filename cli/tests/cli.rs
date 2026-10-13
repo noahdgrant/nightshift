@@ -3143,6 +3143,40 @@ fn guard_hooks_denies_a_write_through_a_skills_link_by_relative_and_absolute_pat
 }
 
 #[test]
+fn guard_hooks_reads_the_phase_tmpdir_from_the_environment() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    let own = dir.join(".git/ns/units/u1/tmp/build-1");
+    let other = dir.join(".git/ns/units/u2/tmp/build-1");
+    fs::create_dir_all(&own).unwrap();
+    let denied = |tmpdir: Option<&std::path::Path>, file: &std::path::Path| {
+        let mut cmd = ns();
+        cmd.current_dir(&dir)
+            .arg("guard-hooks")
+            .env_remove("TMPDIR");
+        if let Some(t) = tmpdir {
+            cmd.env("TMPDIR", t);
+        }
+        let call = serde_json::json!({
+            "tool_name": "Write",
+            "tool_input": {"file_path": file.join("notes.txt")},
+        });
+        let out = cmd
+            .write_stdin(call.to_string())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap().contains("\"deny\"")
+    };
+    assert!(!denied(Some(&own), &own));
+    assert!(denied(None, &own));
+    assert!(denied(Some(&other), &own));
+    assert!(denied(Some(&own), &other));
+}
+
+#[test]
 fn doctor_reports_no_account_when_gh_api_user_fails_or_prints_nothing() {
     for login in ["half-a-login; exit 1", "''"] {
         let (v, _, _) = Doctor {

@@ -60,7 +60,11 @@ impl PhaseTmp {
     /// Why the `TMPDIR` exempts nothing: it holds a symlink, or the guard could not walk it all.
     pub fn distrust(&self) -> Option<&str> {
         self.distrust
-            .get_or_init(|| self.dirs.first().and_then(|d| find_link(Path::new(d))))
+            .get_or_init(|| {
+                self.dirs
+                    .first()
+                    .and_then(|d| find_link(Path::new(d), MAX_WALK))
+            })
             .as_deref()
     }
 
@@ -124,7 +128,7 @@ fn could_be_up(part: &str) -> bool {
 
 /// The first symlink under `root`, `root` itself included, without following any; or why the
 /// walk could not finish. A `root` that does not exist holds nothing.
-fn find_link(root: &Path) -> Option<String> {
+pub(super) fn find_link(root: &Path, max_walk: usize) -> Option<String> {
     match std::fs::symlink_metadata(root) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => return Some(format!("it could not be read ({e})")),
@@ -140,9 +144,9 @@ fn find_link(root: &Path) -> Option<String> {
         };
         for entry in entries {
             seen += 1;
-            if seen > MAX_WALK {
+            if seen > max_walk {
                 return Some(format!(
-                    "it has more than {MAX_WALK} entries to check for a symlink"
+                    "it has more than {max_walk} entries to check for a symlink"
                 ));
             }
             let found = entry.and_then(|e| Ok((e.path(), e.file_type()?)));
