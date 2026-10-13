@@ -296,6 +296,10 @@ impl Repo {
     }
 
     /// Resolve the main worktree from any directory inside the repo (or a linked worktree).
+    ///
+    /// Works out what `git worktree list` gives as its first entry without running it: that
+    /// reads every linked worktree's `.git/worktrees/<name>/commondir`, and fails on one a
+    /// concurrent `git worktree add` is still writing (#514).
     pub fn discover(start: &Path) -> Result<Repo> {
         if !ok(start, &["rev-parse", "--git-dir"]) {
             return Err(SfError::usage(
@@ -308,19 +312,25 @@ impl Repo {
             start,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         )?;
-        let list = worktrees(start)?;
-        let main = list
-            .first()
-            .ok_or_else(|| SfError::general("git worktree list returned nothing"))?;
-        if main.bare {
+        // Git's own test for a bare main worktree: `core.bare` set, or no work tree here.
+        if run(start, &["rev-parse", "--is-bare-repository"])? == "true"
+            || run(start, &["config", "--bool", "core.bare"]).is_ok_and(|v| v == "true")
+        {
             return Err(SfError::general(
                 "bare repositories are not supported; run from a repo with a main worktree",
             )
             .into());
         }
+        // Git names the main worktree after the common dir (a real path, from
+        // `--path-format=absolute`), less a trailing `/.git`.
+        let common = PathBuf::from(common);
+        let root = match common.parent() {
+            Some(parent) if common.ends_with(".git") => parent.to_path_buf(),
+            _ => common.clone(),
+        };
         Ok(Repo {
-            root: main.path.clone(),
-            common_dir: PathBuf::from(common),
+            root,
+            common_dir: common,
         })
     }
 
@@ -397,6 +407,103 @@ mod tests {
         assert_eq!(e[0].branch.as_deref(), Some("refs/heads/main"));
         assert_eq!(e[1].branch, None);
         assert!(e[2].bare);
+    }
+
+    #[test]
+    fn discover_ignores_a_worktree_another_git_is_still_writing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        let main = dir.join("main");
+        fs::create_dir(&main).unwrap();
+        g(&main, &["init", "-q", "-b", "main"]);
+        commit_file(&main, "README", "hi\n");
+        // What `git worktree add` leaves before it writes `commondir`.
+        let half = main.join(".git/worktrees/half");
+        fs::create_dir_all(&half).unwrap();
+        fs::write(
+            half.join("gitdir"),
+            dir.join("half/.git").to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        fs::write(half.join("commondir"), "").unwrap();
+        let repo = Repo::discover(&main).unwrap();
+        assert_eq!(repo.root, main);
+        assert_eq!(repo.common_dir, main.join(".git"));
+    }
+
+    #[test]
+    fn discover_finds_the_main_worktree_git_lists_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        let main = dir.join("main");
+        fs::create_dir(&main).unwrap();
+        g(&main, &["init", "-q", "-b", "main"]);
+        commit_file(&main, "README", "hi\n");
+        fs::create_dir(main.join("sub")).unwrap();
+        g(&main, &["worktree", "add", "-q", "../linked"]);
+        std::os::unix::fs::symlink(&main, dir.join("link")).unwrap();
+        let sep = dir.join("sepwt");
+        g(
+            &dir,
+            &["init", "-q", "--separate-git-dir", "sep.git", "sepwt"],
+        );
+        commit_file(&sep, "README", "hi\n");
+        g(
+            &main,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                main.to_str().unwrap(),
+                "sm",
+            ],
+        );
+        for start in [
+            main.clone(),
+            main.join("sub"),
+            main.join(".git"),
+            dir.join("linked"),
+            dir.join("link"),
+            sep,
+            main.join("sm"),
+        ] {
+            let repo = Repo::discover(&start).unwrap();
+            let listed = &worktrees(&start).unwrap()[0];
+            assert_eq!(repo.root, listed.path, "from {}", start.display());
+            assert_eq!(
+                repo.common_dir.to_string_lossy(),
+                run(
+                    &start,
+                    &["rev-parse", "--path-format=absolute", "--git-common-dir"]
+                )
+                .unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn discover_refuses_a_bare_repo_and_its_worktrees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        g(&dir, &["init", "-q", "-b", "main", "src"]);
+        commit_file(&dir.join("src"), "README", "hi\n");
+        g(&dir, &["clone", "-q", "--bare", "src", "bare.git"]);
+        let bare = dir.join("bare.git");
+        g(&bare, &["worktree", "add", "-q", "../bwt"]);
+        g(&dir, &["clone", "-q", "--bare", "src", "unset.git"]);
+        let unset = dir.join("unset.git");
+        g(&unset, &["config", "--unset", "core.bare"]);
+        for start in [bare, dir.join("bwt"), unset] {
+            assert!(worktrees(&start).unwrap()[0].bare, "{}", start.display());
+            let err = Repo::discover(&start).err().unwrap().to_string();
+            assert!(
+                err.contains("bare repositories"),
+                "{}: {err}",
+                start.display()
+            );
+        }
     }
 
     #[test]
