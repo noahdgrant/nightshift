@@ -47,6 +47,7 @@ extract() {
   printf 'out=%q\nexport OUT=%q\n' "$tmp/recipes.out" "$tmp/evidence"
   cat <<'EOF'
 set -euo pipefail
+unset V
 block=setup
 exec 3>&1 >"$out"
 finish() {

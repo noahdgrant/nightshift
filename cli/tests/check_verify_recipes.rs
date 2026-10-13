@@ -212,6 +212,31 @@ fn the_last_json_line_is_the_one_checked() {
 }
 
 #[test]
+fn an_inherited_sandbox_variable_is_not_removed_when_launch_fails_early() {
+    let canary = tempfile::tempdir().unwrap();
+    let keep = canary.path().join("keep");
+    fs::create_dir(&keep).unwrap();
+    let skill_dir = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let path = skill_dir.path().join("SKILL.md");
+    let launch = format!("/nonexistent/ns-build --release\n{LAUNCH}");
+    fs::write(&path, skill(&launch, DOCTOR_OK)).unwrap();
+    let out = common::command("bash")
+        .arg(script("check-verify-recipes.sh"))
+        .arg(&path)
+        .env("TMPDIR", tmp.path())
+        .env_remove("OUT")
+        .env("V", &keep)
+        .output();
+    assert_fails_with(&out, "Launch block 1");
+    assert!(
+        keep.is_dir(),
+        "the caller's V was removed: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn the_recipes_never_see_an_inherited_git_dir() {
     let launch = format!(
         "{LAUNCH}\n[ -z \"${{GIT_DIR-}}\" ] && [ -z \"${{GIT_WORK_TREE-}}\" ]\ngit init -q \"$V/repo\"\ngit -C \"$V/repo\" config ns.touched 1"
