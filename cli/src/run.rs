@@ -445,7 +445,7 @@ fn run_harness(
 fn phase_tmpdir(common: &Path, unit: &str, phase: &str, attempt: u32) -> Result<PathBuf> {
     let parent = pin::tmp_path(common, unit);
     for n in attempt.. {
-        let dir = parent.join(format!("{phase}-{n}"));
+        let dir = parent.join(pin::phase_tmp_name(phase, n));
         let made = fs::create_dir_all(&parent).and_then(|()| fs::create_dir(&dir));
         match made {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.exists() => continue,

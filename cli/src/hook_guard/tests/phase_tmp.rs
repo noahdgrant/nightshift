@@ -45,9 +45,11 @@ fn a_write_through_a_symlink_out_of_the_phase_tmpdir_is_denied() {
         format!("{tmp}/up/phase-settings.json"),
         format!("{tmp}/up/new-file"),
         format!("{tmp}/up/missing/dir/file"),
+        format!("{tmp}/notes.txt"),
     ] {
         assert!(write_denied_in(&p, Some(tmp)), "{p}");
     }
+    std::fs::remove_file(format!("{tmp}/up")).unwrap();
     for p in [
         format!("{tmp}/notes.txt"),
         format!("{tmp}/sub/dir/notes.txt"),

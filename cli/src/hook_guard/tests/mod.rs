@@ -8,6 +8,8 @@ mod git;
 mod phase_tmp;
 mod shell;
 mod tmp;
+mod tmp_cwd;
+mod tmp_links;
 
 fn check(call: &Value) -> Option<String> {
     check_in(call, None)

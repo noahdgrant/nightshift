@@ -79,7 +79,7 @@ pub(super) fn git_global_options(
                 return Err(unreadable("a git config option"));
             }
             let value = if arg == "-C" {
-                if cd_loses_protected_cwd(value, scan.cwd) {
+                if cd_loses_protected_cwd(value, &scan.cwd) {
                     return Err(format!(
                         "git -C {} into a directory of unknown depth in a protected path",
                         value.text
@@ -114,7 +114,7 @@ pub(super) fn global_option(
     let denial = match option {
         "-c" => config_pair(value, scan, aliases),
         "-C" => {
-            scan.cwd = cd_to(value, scan.cwd);
+            scan.cwd = cd_to(value, &scan.cwd, scan.tmp);
             None
         }
         "--config-env" => config_env(value),
@@ -127,7 +127,7 @@ pub(super) fn global_option(
 }
 
 pub(super) fn git(args: &[Word], scan: &mut Scan) -> Option<String> {
-    let outer_cwd = scan.cwd;
+    let outer_cwd = scan.cwd.clone();
     let why = git_command(args, scan);
     scan.cwd = outer_cwd;
     why
@@ -162,7 +162,7 @@ pub(super) fn git_command(args: &[Word], scan: &mut Scan) -> Option<String> {
         "config" => config(rest, scan),
         "rm" | "mv" => rest
             .iter()
-            .find(|a| scan.touches_hooks(&path(a)))
+            .find(|a| scan.touches_word(a))
             .map(|a| format!("git {name} {} in {PROTECTED}", a.text)),
         _ => None,
     }

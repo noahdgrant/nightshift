@@ -1,6 +1,5 @@
 //! The paths the guard protects and the file commands that write to them.
 
-use std::cell::RefCell;
 use std::path::Path;
 
 use super::*;
@@ -8,8 +7,8 @@ use crate::pin;
 
 /// `path` is a protected path (`protected_paths`), or `.ns` or a unit's directory in it: move or
 /// delete either, then recreate it, to swap the snapshot.
-pub(super) fn is_protected(path: &str) -> bool {
-    protected_paths(path) || is_ns_or_unit_dir(&components(path))
+pub(super) fn is_protected(path: &str, tmp: &PhaseTmp) -> bool {
+    protected_paths(path, tmp) || is_ns_or_unit_dir(&components(path))
 }
 
 /// `path` is in `.githooks/`, `.git/hooks` or `.git/config`, or is a Claude Code settings file
@@ -19,10 +18,10 @@ pub(super) fn is_protected(path: &str) -> bool {
 /// `ns/units/<unit>/phase-settings.json` under any common dir, and the `.git` directory (or file,
 /// in a worktree) itself with everything under `.git/ns`, so the `ns` directory and `ns/units`
 /// cannot be moved, removed or copied over to swap that file, except a phase's own scratch space
-/// (`in_phase_tmp`). Only writes are denied; reading
+/// (`PhaseTmp::exempts`). Only writes are denied; reading
 /// stays free, and `ns` commands a phase runs name none of these paths. A shell standing in a unit's directory
 /// may write its artifacts, so the directory helpers call this and not `is_protected`.
-fn protected_paths(path: &str) -> bool {
+fn protected_paths(path: &str, tmp: &PhaseTmp) -> bool {
     let parts = components(path);
     parts.contains(&".githooks")
         || parts.windows(2).any(|p| {
@@ -33,7 +32,7 @@ fn protected_paths(path: &str) -> bool {
         || (parts
             .windows(2)
             .any(|p| p[0] == ".git" && names_in_common_dir(p[1], pin::COMMON_NS))
-            && !in_phase_tmp(path))
+            && !tmp.exempts(path))
         || parts.windows(4).any(|p| {
             p[0] == pin::COMMON_NS && p[1] == pin::COMMON_UNITS && p[3] == pin::SETTINGS_FILE
         })
@@ -43,68 +42,6 @@ fn protected_paths(path: &str) -> bool {
         || parts
             .windows(3)
             .any(|p| p[0] == pin::NS_DIR && names_skills(p[2]))
-}
-
-thread_local! {
-    /// The running phase's `TMPDIR` as given and with its parent resolved, while `check` runs.
-    static PHASE_TMP: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Run `f` with `tmpdir` as the phase's own `TMPDIR` for `in_phase_tmp`. A `tmpdir` not of the
-/// shape `ns run` gives (`is_phase_tmpdir`) exempts nothing.
-pub(super) fn with_phase_tmp<T>(tmpdir: Option<&str>, f: impl FnOnce() -> T) -> T {
-    let dirs: Vec<String> = tmpdir
-        .filter(|d| is_phase_tmpdir(d))
-        .map(|d| {
-            let dir = Path::new(d);
-            let real = dir
-                .parent()
-                .and_then(|p| p.canonicalize().ok())
-                .zip(dir.file_name())
-                .map(|(p, name)| p.join(name).to_string_lossy().into_owned())
-                .filter(|r| is_phase_tmpdir(r));
-            std::iter::once(d.to_string()).chain(real).collect()
-        })
-        .unwrap_or_default();
-    let outer = PHASE_TMP.replace(dirs);
-    let out = f();
-    PHASE_TMP.set(outer);
-    out
-}
-
-/// `dir` is a plain absolute `.../ns/units/<unit>/tmp/<phase>-<n>`, where `ns run` puts a
-/// phase's `TMPDIR`.
-fn is_phase_tmpdir(dir: &str) -> bool {
-    let parts = components(dir);
-    let numbered = |name: &str| {
-        name.rsplit_once('-').is_some_and(|(phase, n)| {
-            !phase.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
-        })
-    };
-    dir.starts_with('/')
-        && is_plain(&parts)
-        && matches!(
-            parts.as_slice(),
-            [.., ns, units, _, tmp, name]
-                if *ns == pin::COMMON_NS && *units == pin::COMMON_UNITS
-                    && *tmp == pin::TMP_DIR && numbered(name)
-        )
-}
-
-/// `path` is the running phase's own `TMPDIR` or in it, by an absolute path with no `..` or
-/// glob, which could reach past it.
-pub(super) fn in_phase_tmp(path: &str) -> bool {
-    let parts = components(path);
-    path.starts_with('/')
-        && is_plain(&parts)
-        && PHASE_TMP.with_borrow(|dirs| dirs.iter().any(|d| parts.starts_with(&components(d))))
-}
-
-/// No part of a path is `..` or a glob.
-fn is_plain(parts: &[&str]) -> bool {
-    !parts
-        .iter()
-        .any(|p| *p == ".." || p.contains(['*', '?', '[']))
 }
 
 /// `path` (from `cwd` when relative) with its longest existing ancestor resolved, symlinks
@@ -215,7 +152,7 @@ fn segments(command: &str) -> impl Iterator<Item = &str> {
 ///   guard does not tell a safe target from an unsafe one, so it denies them all.
 /// - `cp`, `rsync` and `install` are denied when an argument names an `ns/units` path component
 ///   or `phase-settings.json`, unless it is a plain path in the phase's own `TMPDIR`
-///   (`in_phase_tmp`); `cp` also when it has a link flag (`-s`, `-l`, `--symbolic-link`,
+///   (`PhaseTmp::exempts`); `cp` also when it has a link flag (`-s`, `-l`, `--symbolic-link`,
 ///   `--link`) and an argument mentions `TMPDIR` or names a unit path.
 /// - After a segment with a `cd` or `pushd` and a later `TMPDIR` token, `ln`, `link` and `cp` with
 ///   a link flag are denied whatever their arguments: a later `cd .` or `cd -` could still stand
@@ -224,16 +161,18 @@ fn segments(command: &str) -> impl Iterator<Item = &str> {
 /// Out of reach: a script the phase writes (`python -c os.symlink`) and a path a shell builds
 /// (`$(dirname $TMPDIR)`). A false deny remains for an unknown command with a verb-named argument
 /// and `TMPDIR` (`mytool link $TMPDIR/x`), and for a link anywhere after a `cd` into `TMPDIR`.
-pub(super) fn links_into_unit(command: &str) -> Option<String> {
+pub(super) fn links_into_unit(command: &str, tmp: &PhaseTmp) -> Option<String> {
     let mut entered_tmp = false;
     for segment in segments(command) {
         let tokens: Vec<String> = segment
             .split_whitespace()
             .map(|t| t.replace(['\'', '"', '\\'], ""))
             .collect();
-        let safe = command_word(&tokens).is_some_and(|w| NON_LINKING.contains(&w));
+        let safe = command_word(&tokens)
+            .is_some_and(|w| NON_LINKING.contains(&w) && !(w == "git" && runs_config(&tokens)));
         for (i, token) in tokens.iter().enumerate() {
             let bare = token.trim_start_matches(['(', '$']);
+            let bare = bare.rsplit_once("=!").map_or(bare, |(_, shell)| shell);
             let verb = bare.rsplit('/').next().unwrap_or(bare);
             let opens = token.starts_with(['(', '$']) || (i > 0 && tokens[i - 1].ends_with('('));
             if !matches!(verb, "ln" | "link" | "cp" | "rsync" | "install") || (safe && !opens) {
@@ -254,7 +193,7 @@ pub(super) fn links_into_unit(command: &str) -> Option<String> {
             let hit = if links {
                 args.find(|a| a.contains("TMPDIR") || names_unit_or_settings(a))
             } else {
-                args.find(|a| names_unit_or_settings(a) && !in_phase_tmp(a))
+                args.find(|a| names_unit_or_settings(a) && !tmp.exempts(a))
             };
             if let Some(arg) = hit {
                 return Some(format!(
@@ -276,6 +215,15 @@ const NON_LINKING: [&str; 25] = [
     "pnpm", "yarn", "pytest", "ls", "head", "tail", "wc", "sort", "diff", "gh", "test", "which",
     "type",
 ];
+
+/// A `git` segment's tokens set an alias to a shell command (`alias.x=!...`) or read config from
+/// the environment (`--config-env`), either of which can run a link-maker.
+fn runs_config(tokens: &[String]) -> bool {
+    tokens.iter().any(|t| {
+        t.starts_with("--config-env")
+            || (t.to_ascii_lowercase().contains("alias.") && t.contains("=!"))
+    })
+}
 
 /// The basename of the segment's command word: the first token that is not an assignment, a
 /// shell keyword or brace, or a redirection with its target. `None` when the segment has none.
@@ -395,32 +343,45 @@ fn is_under_snapshot_link(path: &str, parts: &[&str], link: &str) -> bool {
 }
 
 /// Where a shell is, as far as the guard follows it.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(super) struct Cwd {
     /// How many directories below a protected path, or `None` when not in one.
     pub hooks: Option<usize>,
     /// How many directories below `.ns/`: `.ns/<unit>` is 1. A relative `skills` there is the
     /// unit's snapshot, and the unit's directory is protected itself.
     pub ns: Option<usize>,
+    /// The absolute directory, when it is in the phase's `TMPDIR`: a relative path from it is
+    /// checked where it lands.
+    pub tmp: Option<String>,
 }
 
 impl Cwd {
     /// The working directory `dir` names.
-    pub fn of(dir: &str) -> Cwd {
+    pub fn of(dir: &str, tmp: &PhaseTmp) -> Cwd {
+        if tmp.exempts(dir) {
+            return Cwd {
+                tmp: Some(joined(dir, "")),
+                ..Cwd::default()
+            };
+        }
         let parts = components(dir);
         Cwd {
-            hooks: protected_depth(dir),
+            hooks: protected_depth(dir, tmp),
             ns: parts
                 .iter()
                 .rposition(|p| *p == pin::NS_DIR)
                 .and_then(|i| walk(0, &parts[i + 1..])),
+            tmp: None,
         }
     }
 
     /// The working directory after `cd` to the relative `dir` from `from`.
-    pub fn relative(from: Cwd, dir: &str) -> Cwd {
+    pub fn relative(from: &Cwd, dir: &str, tmp: &PhaseTmp) -> Cwd {
+        if let Some(base) = &from.tmp {
+            return Cwd::of(&joined(base, dir), tmp);
+        }
         let parts = components(dir);
-        let named = Cwd::of(dir);
+        let named = Cwd::of(dir, tmp);
         Cwd {
             hooks: named.hooks.or_else(|| {
                 from.hooks.map(|depth| {
@@ -432,7 +393,13 @@ impl Cwd {
             ns: named
                 .ns
                 .or_else(|| from.ns.and_then(|depth| walk(depth, &parts))),
+            tmp: None,
         }
+    }
+
+    /// A relative path or an expansion of unknown depth from here may land in a protected path.
+    pub fn is_protected(&self) -> bool {
+        self.hooks.is_some() || self.ns.is_some() || self.tmp.is_some()
     }
 }
 
@@ -471,20 +438,20 @@ pub(super) fn reaches_unit_file(mut depth: usize, path: &str) -> bool {
 
 /// A working directory whose relative paths are protected: inside `.githooks/` or the `.git`
 /// directory itself.
-pub(super) fn is_protected_directory(dir: &str) -> bool {
+pub(super) fn is_protected_directory(dir: &str, tmp: &PhaseTmp) -> bool {
     let parts = components(dir);
-    protected_paths(dir) || parts.contains(&".git")
+    protected_paths(dir, tmp) || parts.contains(&".git")
 }
 
 /// How many directories below a protected path the directory `dir` is, or `None` when it is
 /// not in one.
-pub(super) fn protected_depth(dir: &str) -> Option<usize> {
-    if !is_protected_directory(dir) {
+pub(super) fn protected_depth(dir: &str, tmp: &PhaseTmp) -> Option<usize> {
+    if !is_protected_directory(dir, tmp) {
         return None;
     }
     let parts = components(dir);
     let root = (0..parts.len())
-        .find(|&i| parts[i] == ".git" || protected_paths(&parts[..=i].join("/")))?;
+        .find(|&i| parts[i] == ".git" || protected_paths(&parts[..=i].join("/"), tmp))?;
     Some(parts.len() - root - 1)
 }
 
@@ -545,7 +512,7 @@ pub(super) fn unread_below_protected(
     path: &str,
     roots: &[&str],
     absolute: [char; 2],
-    from: Cwd,
+    from: &Cwd,
 ) -> bool {
     if !path.contains(UNREAD) {
         return false;
@@ -554,7 +521,7 @@ pub(super) fn unread_below_protected(
         .into_iter()
         .take_while(|p| !p.contains(UNREAD))
         .any(|p| roots.contains(&p))
-        || (!path.starts_with(absolute) && (from.hooks.is_some() || from.ns.is_some()))
+        || (!path.starts_with(absolute) && from.is_protected())
 }
 
 /// `dir` (the word `w` read as a path to change to) loses track of a protected working
@@ -562,10 +529,9 @@ pub(super) fn unread_below_protected(
 /// it is relative to a working directory that is protected and has any expansion in it. An
 /// expansion can be `.` or `..`, so even a whole-part one does not make a known directory
 /// below a protected working directory.
-pub(super) fn cd_loses_protected_cwd(w: &Word, from: Cwd) -> bool {
+pub(super) fn cd_loses_protected_cwd(w: &Word, from: &Cwd) -> bool {
     let dir = path(w);
-    let protected_cwd = from.hooks.is_some() || from.ns.is_some();
-    (protected_cwd && !w.expansions.is_empty() && !dir.starts_with(['/', '~']))
+    (from.is_protected() && !w.expansions.is_empty() && !dir.starts_with(['/', '~']))
         || unread_below_protected(&dir, &[".ns", ".githooks", ".git"], ['/', '~'], from)
 }
 
@@ -586,7 +552,7 @@ pub(super) fn option_value(arg: &str) -> &str {
 
 /// A file command that edits, moves or deletes something in `.githooks/`.
 pub(super) fn file_tool(prog: &str, args: &[Word], scan: &mut Scan) -> Option<String> {
-    let hit = |a: &&Word| scan.touches_hooks(&path(a));
+    let hit = |a: &&Word| scan.touches_word(a);
     let found = match prog {
         "rm" | "ln" | "rmdir" | "unlink" | "shred" | "mv" | "chmod" | "chown" | "truncate"
         | "tee" | "touch" => args.iter().find(hit),
@@ -645,7 +611,7 @@ pub(super) fn find(args: &[Word], scan: &mut Scan) -> Option<String> {
         )
     };
     if args.iter().any(acts) {
-        if let Some(dir) = args.iter().find(|a| scan.touches_hooks(&path(a))) {
+        if let Some(dir) = args.iter().find(|a| scan.touches_word(a)) {
             return Some(format!("find {} in {PROTECTED}", dir.text));
         }
         if let Some(pattern) = args.windows(2).find_map(|p| {

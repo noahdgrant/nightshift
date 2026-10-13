@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 mod files;
 mod git;
 mod lexer;
+mod phase_tmp;
 #[cfg(test)]
 mod tests;
 mod wrappers;
@@ -17,6 +18,7 @@ mod wrappers;
 use files::*;
 use git::*;
 use lexer::{tokens, Tok, Word};
+use phase_tmp::{joined, PhaseTmp};
 use wrappers::*;
 
 const RULE: &str = "The factory contract's Git hooks rule (skills/ns-contract/SKILL.md, \"Git hooks\") says a phase never skips the repo's hooks. Fix what the hook reports and commit or push again; when the cause lies outside the unit, stop with status: blocked.";
@@ -55,19 +57,22 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 /// Why `call` would skip the git hooks, or `None` when it wouldn't. `tmpdir` is the phase's
-/// `TMPDIR`, the one directory under `.git/ns` it may write to (`in_phase_tmp`).
+/// `TMPDIR`, the one directory under `.git/ns` it may write to while it holds no symlink
+/// (`PhaseTmp`). A denial of a call that reached into it while it held one names the symlink.
 pub fn check(call: &Value, tmpdir: Option<&str>) -> Option<String> {
-    with_phase_tmp(tmpdir, || check_call(call))
+    let tmp = PhaseTmp::new(tmpdir);
+    let why = check_call(call, &tmp)?;
+    Some(match tmp.found_distrust() {
+        Some(distrust) => format!("{why}; the phase TMPDIR exempts no write while {distrust}"),
+        None => why,
+    })
 }
 
-fn check_call(call: &Value) -> Option<String> {
+fn check_call(call: &Value, tmp: &PhaseTmp) -> Option<String> {
     let input = &call["tool_input"];
+    let cwd = call["cwd"].as_str();
     match call["tool_name"].as_str()? {
         BASH_TOOL => {
-            let mut scan = Scan {
-                cwd: call["cwd"].as_str().map(Cwd::of).unwrap_or_default(),
-                ..Scan::default()
-            };
             let command = input["command"].as_str()?;
             if command.contains(pin::SETTINGS_VAR) {
                 return Some(format!(
@@ -75,16 +80,28 @@ fn check_call(call: &Value) -> Option<String> {
                     pin::SETTINGS_VAR
                 ));
             }
-            if let Some(why) = tmpdir_reaches_settings(command).or_else(|| links_into_unit(command))
+            if let Some(why) =
+                tmpdir_reaches_settings(command).or_else(|| links_into_unit(command, tmp))
             {
                 return Some(why);
             }
-            check_command(command, &mut scan)
+            let command = tmp.substituted(command);
+            if command.contains("TMPDIR") && tmp.distrust().is_some() {
+                return Some("a $TMPDIR the guard cannot write out as a path".to_string());
+            }
+            let mut scan = Scan {
+                tmp,
+                cwd: cwd.map(|d| Cwd::of(d, tmp)).unwrap_or_default(),
+                depth: 0,
+                outer_cwds: Vec::new(),
+                stdin_is_text: false,
+            };
+            check_command(&command, &mut scan)
         }
         tool if FILE_TOOLS.contains(&tool) => ["file_path", "notebook_path"]
             .iter()
             .filter_map(|k| input[k].as_str())
-            .find(|p| is_protected(p) || is_protected(&resolved(p, call["cwd"].as_str())))
+            .find(|p| is_protected(p, tmp) || is_protected(&resolved(p, cwd), tmp))
             .map(|p| format!("edit of {p} in {PROTECTED}")),
         _ => None,
     }
@@ -94,8 +111,9 @@ fn unreadable(what: &str) -> String {
     format!("{what} takes a word built by a shell expansion that could be a flag that skips the hooks; write the word out literally")
 }
 
-#[derive(Default)]
-struct Scan {
+struct Scan<'a> {
+    /// The phase's `TMPDIR`.
+    tmp: &'a PhaseTmp,
     /// An earlier `cd` or `pushd`, or this git's `-C`, went into a protected path: how many
     /// directories below it the working directory is.
     cwd: Cwd,
@@ -106,15 +124,34 @@ struct Scan {
     stdin_is_text: bool,
 }
 
-impl Scan {
-    /// `path` is protected, or is relative to a working directory that is.
+impl Scan<'_> {
+    /// The word `w` names a protected path. From a working directory in the phase's `TMPDIR`, a
+    /// relative word with an expansion may be `..`, so it counts as one.
+    fn touches_word(&self, w: &Word) -> bool {
+        let p = path(w);
+        (self.cwd.tmp.is_some() && !w.expansions.is_empty() && !p.starts_with(['-', '/']))
+            || self.touches_hooks(&p)
+    }
+
+    /// `path` is protected, or is relative to a working directory that is. A literal path is
+    /// also checked with its existing part resolved through symlinks.
     fn touches_hooks(&self, path: &str) -> bool {
         let path = option_value(path);
         if path.contains(UNREAD) {
             let erased = path.replace(UNREAD, "");
             return self.touches_hooks(&erased) || self.unread_under_ns(path);
         }
-        is_protected(path)
+        if let Some(base) = self
+            .cwd
+            .tmp
+            .as_deref()
+            .filter(|_| !path.starts_with(['-', '/']))
+        {
+            return self.touches_hooks(&joined(base, path));
+        }
+        let literal = path.starts_with('/') && !path.contains(['*', '?', '[']);
+        is_protected(path, self.tmp)
+            || (literal && is_protected(&resolved(path, None), self.tmp))
             || (!path.starts_with(['-', '/'])
                 && (self
                     .cwd
@@ -129,7 +166,7 @@ impl Scan {
     /// An expansion of unknown depth sits below a `.ns` part of `path`, or in a relative path
     /// from a working directory below `.ns`, so it may reach a unit's directory or `skills`.
     fn unread_under_ns(&self, path: &str) -> bool {
-        unread_below_protected(path, &[pin::NS_DIR], ['-', '/'], self.cwd)
+        unread_below_protected(path, &[pin::NS_DIR], ['-', '/'], &self.cwd)
     }
 }
 
@@ -166,7 +203,7 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
             Tok::Heredoc => stdin_is_text = true,
             Tok::RedirectOut => {
                 if let Some(Tok::Word(f)) = toks.next_if(is_word) {
-                    if scan.touches_hooks(&path(&f)) {
+                    if scan.touches_word(&f) {
                         return Some(format!("write to {} in {PROTECTED}", f.text));
                     }
                 }
@@ -181,7 +218,7 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
                 words.clear();
                 stdin_is_text = false;
                 match tok {
-                    Tok::SubshellOpen => scan.outer_cwds.push(scan.cwd),
+                    Tok::SubshellOpen => scan.outer_cwds.push(scan.cwd.clone()),
                     Tok::SubshellClose => {
                         if let Some(outer) = scan.outer_cwds.pop() {
                             scan.cwd = outer;
@@ -211,7 +248,7 @@ fn check_segment(words: &[Word], scan: &mut Scan) -> Option<String> {
     loop {
         let first = w.first()?;
         if first.opaque {
-            return opaque_command(w);
+            return opaque_command(w, scan.tmp);
         }
         let text = first.text.as_str();
         if let Some((name, value)) = env_assignment(text) {
@@ -264,13 +301,13 @@ fn check_words(words: &[Word], scan: &mut Scan) -> Option<String> {
 }
 
 /// A command named by an expansion is unreadable; deny it when git or the hooks are near.
-fn opaque_command(words: &[Word]) -> Option<String> {
+fn opaque_command(words: &[Word], tmp: &PhaseTmp) -> Option<String> {
     let names_git = words.first().is_some_and(|w| w.text.starts_with("git"));
     let near_git = names_git
         || words.iter().any(|w| {
             w.text.split(['{', '}', ',']).any(|p| basename(p) == "git")
                 || is_guarded_subcommand(&w.text)
-                || is_protected(&w.text)
+                || is_protected(&w.text, tmp)
         });
     near_git.then(|| "a command named by a shell expansion next to git or .githooks".to_string())
 }
@@ -280,23 +317,25 @@ fn change_directory(args: &[Word], scan: &mut Scan) -> Option<String> {
         .iter()
         .find(|a| a.text == "-" || !a.text.starts_with('-'));
     if let Some(d) = dir {
-        if cd_loses_protected_cwd(d, scan.cwd) {
+        if cd_loses_protected_cwd(d, &scan.cwd) {
             return Some(format!(
                 "cd {} into a directory of unknown depth in a protected path",
                 d.text
             ));
         }
     }
-    scan.cwd = dir.map_or_else(Cwd::default, |d| cd_to(&dir_path(d), scan.cwd));
+    scan.cwd = dir.map_or_else(Cwd::default, |d| cd_to(&dir_path(d), &scan.cwd, scan.tmp));
     None
 }
 
 /// The working directory after `cd dir` (or `git -C dir`) from `from`.
-fn cd_to(dir: &str, from: Cwd) -> Cwd {
+fn cd_to(dir: &str, from: &Cwd, tmp: &PhaseTmp) -> Cwd {
+    let relative = !dir.starts_with(['/', '~']);
     match dir {
-        d if is_protected_directory(d) => Cwd::of(d),
-        d if !d.starts_with(['/', '~']) => Cwd::relative(from, d),
-        d => Cwd::of(d),
+        d if relative && from.tmp.is_some() => Cwd::relative(from, d, tmp),
+        d if is_protected_directory(d, tmp) => Cwd::of(d, tmp),
+        d if relative => Cwd::relative(from, d, tmp),
+        d => Cwd::of(d, tmp),
     }
 }
 
