@@ -621,6 +621,8 @@ fn a_link_maker_naming_tmpdir_or_the_units_directory_is_denied() {
         "command ln -s a $TMPDIR/l",
         "env ln -s a $TMPDIR/l",
         "echo a | xargs ln -s $TMPDIR/l",
+        "echo a | xargs -n 1 ln -s a $TMPDIR/l",
+        "\"ln\" -s a $TMPDIR/l",
         "FOO=1 ln -s a $TMPDIR/l",
         "echo $(ln -s a $TMPDIR/l)",
         "true; link /r/.git/ns/units/u1/phase-settings.json /r/.git/ns/units/u1/tmp/build-1/l",
