@@ -328,7 +328,7 @@ One runaway test binary can take all of a machine's memory and, with it, the nig
 
 When it is set, `ns run` and `ns watch` probe once at start (a dry run doesn't) and print which mechanism they use; each unit's `start` event in the run log records it as `memory_cap: {mb, via, fallback}`. With a cap set, `ns run` checks that the harness binary exists before wrapping it, so a missing one is still the usage error, exit 2.
 
-- **cgroup** (`via: "systemd-run"`), where `systemd-run --user` accepts the scope's properties and sets its `memory.max` (the probe starts a scope with the same properties as a real run): the command runs as `systemd-run --user --scope -p MemoryMax=<n>M -p MemorySwapMax=0 -p OOMPolicy=stop`. At the cap the kernel kills a process in the scope and systemd stops the rest. `ns` reads the scope's result from systemd (`oom-kill`), so the cap is detected exactly.
+- **cgroup** (`via: "systemd-run"`), where `systemd-run --user` accepts the scope's properties and sets its `memory.max` (the probe starts a scope with the same properties as a real run): the command runs as `systemd-run --user --scope -p MemoryMax=<n>M -p MemorySwapMax=0 -p OOMPolicy=stop`. At the cap the kernel kills a process in the scope and systemd stops the rest. `ns` reads the scope's result from systemd (`oom-kill`), so the cap is detected exactly. Once the run is over, on every path (an exit, a timeout, a kill, a stop), `ns` waits up to 10 s for the scope to stop and then runs `systemctl --user reset-failed` on it, so failed scopes don't pile up in `systemctl --user --failed`.
 - **RLIMIT_AS** (`via: "prlimit"`), otherwise: the command runs as `prlimit --as=<bytes>`, and `fallback` says why the cgroup wasn't used. Nothing is killed at the cap. An allocation past it fails and the program decides what to do. `ns` counts a run as over the cap when it failed and its output (the gate log's tail, or the harness's stderr) holds a line with a common allocation-failure message (Rust's `memory allocation of <n> bytes failed`, a line starting `MemoryError`, `std::bad_alloc`, `Cannot allocate memory`, Go's `fatal error: runtime: out of memory`, V8's `Fatal process out of memory`). That is a heuristic: a failure that prints none of them reads as an ordinary failure. The limit is per process, not per run: each process the run starts gets its own `memory_mb`, so `cargo test` or `make -j8` can use many times the cap in total. RLIMIT_AS also counts reserved address space, not memory in use, so runtimes that reserve large ranges (sanitizers, the JVM, Go, V8) need a cap well above what they use.
 - Neither works: `ns run` and `ns watch` exit 2 before any phase runs.
 
@@ -583,6 +583,7 @@ Removal first deletes the phase `TMPDIR`s the unit's failed phases kept (`<git-c
 ```
 ns quality [--since YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--until YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--json]
 ns quality import <dir> [--dry-run]
+ns quality --bugs [--since ...] [--until ...] [--weeks N] [--json]
 ```
 
 `ns quality` measures whether build writes code that passes review. It reads each unit's quality record first, and for a unit with no record, its review artifacts in the linked worktrees (`.ns/<unit>/review.md`, `review/cycle-*.md`, and archived `history/review*`). It adds the run log and prints JSON. The main checkout is skipped. First-pass numbers come from a unit's oldest review artifact, since a rebuilt unit's later review starts from a different diff. Everything else comes from the newest.
@@ -623,6 +624,24 @@ Worktrees get removed once their change merges (see "Cleanup"), so the history l
 To read the trend, run `ns quality` from any clone and look at `trend`: one summary per local day, oldest first. First-pass yield should rise and findings per 100 lines should fall. To see the raw records, run `git show origin/nightshift/quality:records.jsonl`.
 
 `ns quality import <dir>` turns archived unit worktrees into records and pushes them in one commit. `<dir>` holds one directory per unit, laid out as in its worktree (`<dir>/<unit>/.ns/<unit>/review.md`). It skips units the branch or the outbox already has, so a rerun reports `already-done`. Issue numbers come from the unit id, PRs from `pr.md` or the run log, and outcomes from the run log. `--dry-run` fetches the branch to see what is recorded, and pushes nothing.
+
+### Bug counts
+
+`ns quality --bugs` counts the bugs that reach the tracker: the `type:fix` issues opened in each ISO week (UTC), in any state, read from the `[queue] source` forge. An issue counts in the week it was opened. One closed as a duplicate or not planned is left out and listed under `excluded`. GitLab records no close reason, so there every closed issue counts. Weeks run from `--since`, else the oldest issue's week, through `--until`'s week, else this one, and a week with no issues counts zero. `--weeks N` keeps the last N weeks, this one included, or starts at `--since` when that is later. `--weeks 0`, or an `--until` before the weeks start, exits 2.
+
+Each issue gets one source, and `by` says what decided it, first match wins:
+
+| Source | Decided by (`by`) |
+|---|---|
+| The one a `Source:` line names (`review_escape`, `factory_introduced`, `ci_main` or `human`) | `marker` |
+| `review_escape`: `ns-review` filed it for pre-existing code; its body has "This escaped an earlier review." | `review_text` |
+| `ci_main`: `ns watch` filed it for a red `main`; its title starts `fix: main is red at` | `ci_title` |
+| `factory_introduced`: `git blame` of the first `path:line` in its body, on the default branch as it stood when the issue opened, names a PR (`(#123)` in the subject) that merged from an `ns/` branch | `blame` |
+| `human`: anything else | `default` |
+
+The marker is one line in the body, `Source: review_escape`, and wins over every guess. A phase that files a fix issue should write it. Merged PRs come from the forge's 200 most recent (100 on GitLab). A blame that fails leaves the issue `human` and says why in `blame_error`, and a blame on a PR outside the factory keeps its `introduced_by`. Severity is `critical_high` for an issue labelled `priority:critical` or `priority:high`, and `rest` for any other priority or none.
+
+Without `--json` it prints a table, one row per week and a total. With `--json` it prints `{ok, label, since, until, weeks, total, issues, excluded}`; `cli/README.md` lists the keys. Rates per merged unit or per changed line, and the trend, are not computed yet.
 
 ## Trust
 
@@ -731,9 +750,9 @@ On the nightshift source, `ns watch` updates its own binary, so units that merge
 
 Each time `ns watch` fills its slots, it fetches and looks for commits on `origin/<default>` that touch `cli/` and that the build commit lacks. When it finds some, it enters DRAINING: it prints `ns watch: origin/<default> has cli/ changes since this ns was built (<from> -> <to>); draining: no new unit until the running ones end`, claims nothing and runs no triage pass. Running units finish undisturbed, and paused ones still resume. Idle slots are fine. With `--parallel 1` the update comes between units; at the start of a night with an old binary, it comes before the first unit.
 
-When no unit runs or is paused, it updates:
+When no unit runs or is paused, it updates to the newest commit: it fetches again and builds the `origin/<default>` tip, which takes in the units merged during the drain. When that fetch fails, or the tip is a commit that failed tonight, it builds the commit it noted when the drain began. The messages and the `self_update` event below name the commit built.
 
-1. Extract `cli/` at the new commit (`git archive`) into `<git-common-dir>/ns/self-update/src`, and build it with `cargo build --release --locked`, its target directory `<git-common-dir>/ns/self-update/target`, then copy the binary to `<git-common-dir>/ns/self-update/ns-<sha>`. The installed `ns` is never touched.
+1. Extract `cli/` at that commit (`git archive`) into `<git-common-dir>/ns/self-update/src`, and build it with `cargo build --release --locked`, its target directory `<git-common-dir>/ns/self-update/target`, then copy the binary to `<git-common-dir>/ns/self-update/ns-<sha>`. The installed `ns` is never touched.
 2. Check that `ns-<sha> --version` names the new commit and that `ns-<sha> watch --dry-run` exits 0, run with this `ns watch`'s own arguments and a copy of the night's state, so an argument the new binary no longer takes fails the check here, not after the exec. A dry run given `--resume-night` only reads the arguments and the state: it lists no queue and calls neither `gh` nor the network, so a flaky connection cannot fail the check.
 3. Write the night's state to `<git-common-dir>/ns/self-update/night-<pid>.json`, print `ns watch: self-update <from> -> <to>; handing off to <path>`, log a `self_update` event (`from`, `to`) in the run log, and `exec` the new binary with the same arguments plus a hidden `--resume-night <file>`. The process keeps its pid. The new binary reads the state, removes the file, and carries on: the deadline, the spend, the units run so far and the issues finished, the triage pass's runs and the issues it tried, the harness-failure count, the units claimed toward `--max-units`. Its summary covers the whole night.
 

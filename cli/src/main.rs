@@ -244,7 +244,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
             command: None,
             since,
             until,
-            json: _,
+            json,
+            bugs: true,
+            weeks,
+        } => return quality::bugs::cli(since, until, weeks, json),
+        Cmd::Quality {
+            command: None,
+            since,
+            until,
+            ..
         } => return quality::cli(since, until),
         Cmd::Clean { dry_run } => return clean::cli(dry_run),
         Cmd::Log {
@@ -308,7 +316,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 human,
             } => return upstream::diff_cli(&skills_dir, &skill, human),
         },
-        Cmd::Doctor => doctor::run()?,
+        Cmd::Doctor => return doctor::run(),
         Cmd::GuardHooks => hook_guard::run()?,
     }
     Ok(ExitCode::SUCCESS)

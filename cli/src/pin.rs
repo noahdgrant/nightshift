@@ -54,13 +54,6 @@ pub fn phase_tmp_name(phase: &str, n: u32) -> String {
     format!("{phase}-{n}")
 }
 
-/// `name` is of the shape `phase_tmp_name` gives.
-pub fn is_phase_tmp_name(name: &str) -> bool {
-    name.rsplit_once('-').is_some_and(|(phase, n)| {
-        !phase.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
-    })
-}
-
 fn unit_dir(common_dir: &Path, unit: &str) -> PathBuf {
     common_dir.join(COMMON_NS).join(COMMON_UNITS).join(unit)
 }
@@ -496,9 +489,5 @@ mod tests {
     #[test]
     fn a_phase_tmp_name_is_the_phase_and_a_number() {
         assert_eq!(phase_tmp_name("build", 3), "build-3");
-        assert!(is_phase_tmp_name(&phase_tmp_name("ship-it", 12)));
-        for name in ["build", "build-", "-1", "build-x", "build-1a", ""] {
-            assert!(!is_phase_tmp_name(name), "{name}");
-        }
     }
 }

@@ -376,7 +376,7 @@ fn the_units_skill_snapshot_and_its_directory_are_protected() {
 }
 
 /// A symlink in a temp dir named like a skill link, to `target`.
-pub(super) fn skills_link(dir: &Path, link: &str, target: &str) -> String {
+fn skills_link(dir: &Path, link: &str, target: &str) -> String {
     let path = dir.join(link);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(target, &path).unwrap();
@@ -514,4 +514,233 @@ fn the_ns_directory_under_the_git_dir_cannot_be_swapped() {
         let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
         assert!(check(&call).is_some(), "{p}");
     }
+}
+
+#[test]
+fn reading_the_ns_directory_and_other_ns_commands_stay_allowed() {
+    for c in [
+        "ls /r/.git/ns",
+        "cat /r/.git/ns/units/u1/phase-settings.json",
+        "cp /r/.git/ns/units/u1/phase-settings.json /tmp/copy",
+        "cp -r /r/.git/ns /tmp/copy",
+        "ns ask --harness claude hello",
+        "ns verify",
+        "mv /tmp/y /tmp/x",
+        "rm -rf /r/ns",
+        "rm -rf /r/.git/ns-other",
+        "rm -rf /r/.github",
+        "rm -rf /r/foo.git",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    for p in ["/r/ns", "/r/foo.git/ns", "/r/.github/ns"] {
+        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+        assert!(check(&call).is_none(), "{p}");
+    }
+}
+
+#[test]
+fn glob_matches_reads_star_question_mark_and_sets() {
+    for (pattern, text, want) in [
+        ("skills", "skills", true),
+        ("skills", "skill", false),
+        ("*", "skills", true),
+        ("*", "", true),
+        ("sk*", "skills", true),
+        ("*s", "skills", true),
+        ("*x", "skills", false),
+        ("?", "", false),
+        ("?", "a", true),
+        ("skill?", "skills", true),
+        ("ski??s", "skills", true),
+        ("sk?", "skills", false),
+        ("s[k]ills", "skills", true),
+        ("[", "", true),
+        ("", "", true),
+        ("", "a", false),
+    ] {
+        assert_eq!(
+            files::glob_matches(pattern.as_bytes(), text.as_bytes()),
+            want,
+            "{pattern} vs {text}"
+        );
+    }
+}
+
+#[test]
+fn a_path_part_that_is_one_expansion_is_one_unknown_directory() {
+    for c in [
+        "cat > .ns/$U/evidence.md <<'EOF'\nx\nEOF",
+        "echo x > \".ns/$U/review.md\"",
+        "echo x > .ns/${U}/review.md",
+        "echo x > .ns/\"$U\"/review.md",
+        "echo x > \".ns/${NS_UNIT}/pr.md\"",
+        "cp x .ns/$U/build.md",
+        "rm .ns/$U/history/review-1.md",
+        "rm .ns/$U/*.md",
+        "echo x > $WT/.ns/$U/pr.md",
+        "cd .ns/$U && rm build.md",
+        "cd .ns && echo x > $U/evidence.md",
+        "git -C .ns/$U rm build.md",
+        "git rm .ns/$U/build.md",
+        "find .ns/$U/history -delete",
+        "dd if=x of=.ns/$U/build.md",
+        "echo x > \"$F\"",
+        "rm \"$(mktemp)\"",
+        "echo x > \"$(git rev-parse --show-toplevel)/.ns/u1/build.md\"",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    for c in [
+        "rm -r .ns/$U",
+        "rm -rf .ns/$U/",
+        "rm -rf \".ns/$U\"",
+        "rm -rf .ns/${U}",
+        "mv .ns/$U /tmp/x",
+        "echo x > .ns/$U",
+        "rm -rf .ns/$U/skills",
+        "sed -i s/a/b/ .ns/$U/skills/ns-x/SKILL.md",
+        "rm -rf .ns/$U/$F",
+        "rm -rf .ns/$U/*",
+        "ln -sfn .ns/$U/skills .claude/skills",
+        "cd .ns/$U && rm -rf skills",
+        "cd .ns/$U; rm -rf $F",
+        "git -C .ns/$U rm -r skills",
+        "cd .ns && rm -rf $U",
+        "cd .ns && rm -rf $U/skills",
+        "rm -rf .git/$X",
+        "rm .githooks/$F",
+        "cd .githooks && rm $F",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_path_part_of_unknown_depth_under_ns_is_denied() {
+    for c in [
+        "echo x > .ns/$A$B/evidence.md",
+        "echo x > .ns/\"$A$B\"/evidence.md",
+        "echo x > .ns/$U-x/evidence.md",
+        "echo x > .ns/$U*/evidence.md",
+        "echo x > .ns/{$U,x}/evidence.md",
+        "rm -rf .ns/$U/{a,skills}",
+        "rm -rf .ns/$U/../u1",
+        "rm -rf .ns/$U/..",
+        "rm -rf .ns/../$U",
+        "rm -rf .ns/$U..",
+        "echo x > .ns/u1/../$U/evidence.md",
+        "cd .ns/$(f) && rm -rf u1",
+        "echo x > .ns/$(cat u)/evidence.md",
+        "echo x > .ns/`cat u`/evidence.md",
+        "echo x > .ns/${U:-u1}/evidence.md",
+        "echo x > .ns/$@/evidence.md",
+        "echo x > .ns/$1/evidence.md",
+        "echo x > .ns/x$U/evidence.md",
+        "cd .ns/u1 && echo x > x/$(f)",
+        "rm .githooks/$(f)",
+        "cd .ns/u1 && rm -rf $(echo ..)/u1/skills",
+        "cd .ns/u1 && echo x > \"$(f)/x\"",
+        "cd .githooks && echo x > \"$(f)/pre-commit\"",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "echo x > /tmp/$A$B",
+        "echo x > out/$U-x.md",
+        "echo x > $(f)/.ns/u1/build.md",
+        "cd .ns/u1 && echo x > /tmp/$(f)",
+        "cd /tmp && echo x > \"$(f)/x\"",
+        "cd src && echo x > $(f)/x",
+        "cd .ns/u1 && rm -f$(x) build.md",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_skills_link_is_still_read_past_an_expansion_after_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = skills_link(dir.path(), ".claude/skills", "../.ns/u1/skills");
+    assert!(denied(&format!("rm -rf {path}/$S")));
+    assert!(denied(&format!("sed -i s/a/b/ {path}/$S/SKILL.md")));
+}
+
+#[test]
+fn a_cd_of_unknown_depth_under_a_protected_path_is_denied() {
+    for c in [
+        "cd .ns/$U/.. && rm -rf u1",
+        "cd .ns/$U$V && echo x > skills/a",
+        "cd .ns/${U:-x} && echo x > skills/a",
+        "cd .ns/$(f) && echo x > skills/a",
+        "cd .githooks/$U$V && rm ../pre-commit",
+        "git -C .githooks/$U$V rm ../pre-commit",
+        "cd .git/$U$V && echo x > ../hooks/pre-commit",
+        "cd .ns/u1 && cd $(f) && rm -rf skills",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "cd .ns/$U && echo x > evidence.md",
+        "cd /tmp/$A$B && echo x > y",
+        "cd src/$(f) && echo x > y",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn many_adjacent_expansions_in_a_git_push_word_finish_fast() {
+    let many = "$a".repeat(40);
+    let word = format!("\"r{many}-x\"");
+    let start = std::time::Instant::now();
+    let long = denied(&format!("git push {word}"));
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(!long);
+    assert!(denied(&format!("git push \"--no-v{many}\"")));
+    assert!(glob_matches(&b"*".repeat(40), b"x"));
+    assert!(!glob_matches(
+        &[b"*".repeat(40), b"-x".to_vec()].concat(),
+        b"--no-verify"
+    ));
+    assert!(glob_matches(
+        &[b"*".repeat(40), b"-verify".to_vec()].concat(),
+        b"--no-verify"
+    ));
+}
+
+#[test]
+fn a_cd_to_a_lone_expansion_from_a_protected_cwd_is_denied() {
+    for c in [
+        "cd .ns/u1 && cd $U && echo x > skills/a",
+        "cd .ns/u1 && cd \"$U\" && rm -rf skills",
+        "cd .ns/u1 && git -C $U rm -r skills",
+        "git -C .ns/u1 -C $U rm -r skills",
+        "pushd .ns/u1 && pushd $U && rm -rf skills",
+        "cd .ns/u1 && (cd $U; rm -rf skills)",
+        "cd .ns/u1; cd $V; cd $V; echo a > skills/x",
+        "cd .ns/u1; cd $V; rm -r .",
+        "cd .githooks && cd $U && rm pre-commit",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "cd $U && echo x > y",
+        "cd /tmp && cd $U && echo x > y",
+        "cd .ns/u1 && cd /tmp/$U && echo x > y",
+        "cd .ns/$U && echo x > evidence.md",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn many_expansions_in_a_path_word_finish_fast() {
+    let many = "/$a".repeat(8000);
+    let start = std::time::Instant::now();
+    let hit = denied(&format!("rm .ns{many}"));
+    let hit_dots = denied(&format!("rm .ns{}", "/./$a".repeat(8000)));
+    assert!(start.elapsed() < std::time::Duration::from_millis(500));
+    assert!(hit);
+    assert!(hit_dots);
 }

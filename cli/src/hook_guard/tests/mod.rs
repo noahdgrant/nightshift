@@ -5,18 +5,12 @@ use crate::pin::settings_json as settings;
 
 mod files;
 mod git;
-mod phase_tmp;
+mod resolve;
 mod shell;
-mod tmp;
-mod tmp_cwd;
-mod tmp_links;
 
+/// Why `call` would skip the git hooks, with no variable known.
 fn check(call: &Value) -> Option<String> {
-    check_in(call, None)
-}
-
-fn check_in(call: &Value, tmpdir: Option<&str>) -> Option<String> {
-    super::check(call, tmpdir)
+    verdict(call, &Vars::new(), Unread::Keep)
 }
 
 fn bash_call(cmd: &str) -> Value {
