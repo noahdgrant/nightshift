@@ -56,33 +56,123 @@ fn in_unit_tmp(parts: &[&str]) -> bool {
         })
 }
 
-/// A command that mentions `TMPDIR` and also has a `..` path part or names the phase settings
-/// file. `TMPDIR` is `.git/ns/units/<unit>/tmp/<phase>-<n>`, so two `..` after it (or after a
-/// `cd` into it) land on the unit's `phase-settings.json`. The lexer drops variable names and
-/// does not follow `cd $TMPDIR`, so this reads the command's own text, not one word.
-pub(super) fn tmpdir_reaches_settings(command: &str, words: &[&str]) -> Option<String> {
-    if !command.contains("TMPDIR") {
-        return None;
+/// A command that goes up from a phase's `TMPDIR` to the unit's `phase-settings.json`.
+/// `TMPDIR` is `.git/ns/units/<unit>/tmp/<phase>-<n>`, so two `..` after it land on that file.
+/// The lexer drops variable names and does not follow `cd $TMPDIR`, so this reads the command's
+/// words. It denies a word that has `TMPDIR` and a `..` part, and, after a `cd` or `pushd` whose
+/// argument has `TMPDIR`, any later word with a `..` part or named like the settings file. A
+/// `..` elsewhere in the command (`cd .. && cargo test > $TMPDIR/out.log`) is fine.
+pub(super) fn tmpdir_reaches_settings(command: &str) -> Option<String> {
+    let mut in_tmp = false;
+    for segment in segments(command) {
+        let segment = segment.replace(['\'', '"', '\\'], "");
+        let words: Vec<&str> = segment
+            .split(|c: char| c.is_whitespace() || "<>=".contains(c))
+            .filter(|w| !w.is_empty())
+            .collect();
+        for (i, word) in words.iter().enumerate() {
+            let up = word.split('/').any(|p| p == "..");
+            if up && word.contains("TMPDIR") {
+                return Some(format!(
+                    "{word} goes up from $TMPDIR, a phase's scratch directory ({PROTECTED})"
+                ));
+            }
+            if in_tmp && (up || word.rsplit('/').next() == Some(pin::SETTINGS_FILE)) {
+                return Some(format!(
+                    "{word} after a cd into $TMPDIR could reach the phase settings ({PROTECTED})"
+                ));
+            }
+            if matches!(word.trim_start_matches('('), "cd" | "pushd")
+                && words[i + 1..].iter().any(|w| w.contains("TMPDIR"))
+            {
+                in_tmp = true;
+            }
+        }
     }
-    let up = words.iter().find(|w| w.split('/').any(|p| p == ".."));
-    let settings = words
-        .iter()
-        .find(|w| w.rsplit('/').next() == Some(pin::SETTINGS_FILE));
-    let word = up.or(settings)?;
-    Some(format!(
-        "a command with $TMPDIR and {word}: it could go up from a phase's scratch directory ({PROTECTED})"
-    ))
+    None
 }
 
-/// A `ln` argument that could plant a link out of a phase's `TMPDIR`: one in the unit's `tmp`
-/// directory, or one naming the phase settings file. A link there, written
-/// through later, would reach past the `tmp` exception.
-fn links_through_tmp(path: &str) -> bool {
-    let parts = components(path);
-    path.contains(pin::SETTINGS_FILE)
-        || parts
-            .windows(5)
-            .any(|p| p[1] == pin::COMMON_NS && p[2] == pin::COMMON_UNITS && p[4] == pin::TMP_DIR)
+/// The parts of `command` between `;`, `&`, `|`, newlines and backticks.
+fn segments(command: &str) -> impl Iterator<Item = &str> {
+    command.split([';', '&', '|', '\n', '`'])
+}
+
+/// Words that run the command after them.
+const WRAPPERS: &[&str] = &[
+    "command", "env", "xargs", "sudo", "exec", "nohup", "time", "nice", "builtin", "then", "do",
+    "else", "!", "doas", "setsid", "timeout", "stdbuf",
+];
+
+/// Short option letters and long options with which `cp` makes a link or copies one as a link.
+const CP_LINK_SHORT: &str = "slarRdP";
+const CP_LINK_LONG: &[&str] = &[
+    "--symbolic-link",
+    "--link",
+    "--archive",
+    "--recursive",
+    "--no-dereference",
+];
+const RSYNC_LINK_SHORT: &str = "laH";
+const RSYNC_LINK_LONG: &[&str] = &["--links", "--archive", "--hard-links", "--safe-links"];
+
+/// A command that can plant a link, with an argument that is in `ns/units` or mentions
+/// `TMPDIR`. A link in a phase's `TMPDIR` that points at the unit's `phase-settings.json`, written
+/// through later, would reach past the `tmp` exception, whatever the link-maker is called
+/// (`ln`, `link`, `cp -s`, `install`, `rsync -a`) and however it is reached (`/bin/ln`, `\ln`,
+/// `command ln`, `env ln`, `xargs ln`). A script the phase writes is out of reach.
+pub(super) fn links_into_unit(command: &str) -> Option<String> {
+    let units = format!("{}/{}", pin::COMMON_NS, pin::COMMON_UNITS);
+    for segment in segments(command) {
+        let tokens: Vec<String> = segment
+            .split_whitespace()
+            .map(|t| t.replace(['\'', '"', '\\'], ""))
+            .collect();
+        let (mut at_command, mut wrapped) = (true, false);
+        for (i, token) in tokens.iter().enumerate() {
+            let bare = token.trim_start_matches(['(', '$', '{']);
+            if bare.len() != token.len() {
+                at_command = true;
+            }
+            let name = bare.rsplit('/').next().unwrap_or(bare);
+            if at_command || wrapped {
+                let rest = &tokens[i + 1..];
+                if makes_links(name, rest) {
+                    if let Some(arg) = rest.iter().find(|a| {
+                        a.contains("TMPDIR") || a.contains(&units) || a.contains(pin::SETTINGS_FILE)
+                    }) {
+                        return Some(format!(
+                            "{name} {arg}: a link out of a phase's scratch directory could reach {PROTECTED}"
+                        ));
+                    }
+                }
+                if WRAPPERS.contains(&name) {
+                    wrapped = true;
+                } else if !(bare.starts_with('-') || bare.contains('=')) {
+                    at_command = false;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// `name` run with `args` makes a link.
+fn makes_links(name: &str, args: &[String]) -> bool {
+    let has_flag = |short: &str, long: &[&str]| {
+        args.iter().any(|a| {
+            if a.starts_with("--") {
+                long.iter().any(|l| a.split('=').next() == Some(l))
+            } else {
+                a.starts_with('-') && a.chars().skip(1).any(|c| short.contains(c))
+            }
+        })
+    };
+    match name {
+        "ln" | "link" | "install" => true,
+        "cp" => has_flag(CP_LINK_SHORT, CP_LINK_LONG),
+        "rsync" => has_flag(RSYNC_LINK_SHORT, RSYNC_LINK_LONG),
+        _ => false,
+    }
 }
 
 /// `name` is `target`, or a glob that could match it.
@@ -252,11 +342,8 @@ pub(super) fn option_value(arg: &str) -> &str {
 pub(super) fn file_tool(prog: &str, args: &[Word], scan: &mut Scan) -> Option<String> {
     let hit = |a: &&Word| scan.touches_hooks(&a.text);
     let found = match prog {
-        "ln" => args
-            .iter()
-            .find(|a| hit(a) || links_through_tmp(option_value(&a.text))),
-        "rm" | "rmdir" | "unlink" | "shred" | "mv" | "chmod" | "chown" | "truncate" | "tee"
-        | "touch" => args.iter().find(hit),
+        "rm" | "ln" | "rmdir" | "unlink" | "shred" | "mv" | "chmod" | "chown" | "truncate"
+        | "tee" | "touch" => args.iter().find(hit),
         "cp" | "install" if has_target_directory_flag(args) => args.iter().find(hit),
         "cp" | "install" | "rsync" => args.last().filter(hit),
         "dd" => args.iter().find(|a| {

@@ -69,16 +69,9 @@ pub fn check(call: &Value) -> Option<String> {
                     pin::SETTINGS_VAR
                 ));
             }
-            let words: Vec<&str> = command
-                .split(|c: char| c.is_whitespace() || "'\"`;|&<>()=".contains(c))
-                .collect();
-            if let Some(why) = tmpdir_reaches_settings(command, &words) {
+            if let Some(why) = tmpdir_reaches_settings(command).or_else(|| links_into_unit(command))
+            {
                 return Some(why);
-            }
-            if words.contains(&"ln") && command.contains("TMPDIR") {
-                return Some(format!(
-                    "ln with $TMPDIR: a link out of a phase's scratch directory could reach {PROTECTED}"
-                ));
             }
             check_command(command, &mut scan)
         }

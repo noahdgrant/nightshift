@@ -516,6 +516,11 @@ fn the_ns_directory_under_the_git_dir_cannot_be_swapped() {
     }
 }
 
+fn write_denied(p: &str) -> bool {
+    let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
+    check(&call).is_some()
+}
+
 #[test]
 fn a_phase_may_write_inside_its_unit_tmp_directory() {
     for p in [
@@ -523,16 +528,23 @@ fn a_phase_may_write_inside_its_unit_tmp_directory() {
         "/r/.git/ns/units/u1/tmp/build-1",
         "/r/.git/ns/units/u1/tmp",
     ] {
-        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
-        assert!(check(&call).is_none(), "{p}");
+        assert!(!write_denied(p), "{p}");
     }
     for c in [
         "echo x > /r/.git/ns/units/u1/tmp/build-1/notes.txt",
         "rm -rf /r/.git/ns/units/u1/tmp/build-1",
         "mv /r/.git/ns/units/u1/tmp/build-1/a /r/.git/ns/units/u1/tmp/build-1/b",
+        "echo x > $TMPDIR/out.txt",
+        "ln -s a b",
+        "cd $TMPDIR && mktemp && echo x > out.txt",
+        "cat $TMPDIR/phase-settings.json",
     ] {
         assert!(!denied(c), "{c}");
     }
+}
+
+#[test]
+fn a_path_that_leaves_or_globs_the_unit_tmp_directory_stays_protected() {
     for c in [
         "echo {} > /r/.git/ns/units/u1/tmp/build-1/../../phase-settings.json",
         "rm -rf /r/.git/ns/units/u1/tmp/..",
@@ -547,22 +559,6 @@ fn a_phase_may_write_inside_its_unit_tmp_directory() {
         "rm -rf /r/.git/ns/a/.git/x/units/u1/tmp/b",
         "cd /r/.git/ns/units/u1/tmp/build-1 && rm ../../phase-settings.json",
         "cd /r/.git/ns/units/u1/tmp/build-1 && touch x",
-        "echo {} > $TMPDIR/../../phase-settings.json",
-        "echo {} > ${TMPDIR}/../../phase-settings.json",
-        "rm \"$TMPDIR/../../phase-settings.json\"",
-        "ln -s ../../phase-settings.json /r/.git/ns/units/u1/tmp/build-1/l",
-        "ln -s ../../phase-settings.json $TMPDIR/l",
-        "ln -s .. $TMPDIR/l",
-        "ln -s /r/.git/ns/units/u1 /r/.git/ns/units/u1/tmp/build-1/l",
-        "ln -s ../../phase-settings.json l",
-        "ln -s a /r/.git/ns/units/u1/tmp/build-1/l",
-        "ln -s a $TMPDIR/l",
-        "cd $TMPDIR && echo {} > ../../phase-settings.json",
-        "cd $TMPDIR; echo {} > ../../phase-settings.json",
-        "pushd $TMPDIR; echo {} > ../../phase-settings.json",
-        "echo {} > \"$TMPDIR\"/../../phase-settings.json",
-        "echo {} > $(echo $TMPDIR)/../../phase-settings.json",
-        "cd $TMPDIR && echo {} > /r/.git/ns/units/u1/phase-settings.json",
         "rm -rf /r/.git/ns/units/u1/tmp/b?ild-1/x",
         "rm -rf /r/.git/ns/units/u1/tmp/[b]uild-1/x",
     ] {
@@ -573,12 +569,89 @@ fn a_phase_may_write_inside_its_unit_tmp_directory() {
         "/r/.git/ns/units/u1/tmp/b?ild-1/x",
         "/r/.git/ns/units/u1/tmp/[b]uild-1/x",
     ] {
-        let call = json!({"tool_name": "Write", "tool_input": {"file_path": p}});
-        assert!(check(&call).is_some(), "{p}");
+        assert!(write_denied(p), "{p}");
     }
-    assert!(!denied("echo x > $TMPDIR/out.txt"));
-    assert!(!denied("ln -s a b"));
-    assert!(!denied("cd $TMPDIR && mktemp && echo x > out.txt"));
+}
+
+#[test]
+fn going_up_from_tmpdir_to_the_phase_settings_is_denied() {
+    for c in [
+        "echo {} > $TMPDIR/../../phase-settings.json",
+        "echo {} > ${TMPDIR}/../../phase-settings.json",
+        "rm \"$TMPDIR/../../phase-settings.json\"",
+        "echo {} > \"$TMPDIR\"/../../phase-settings.json",
+        "echo {} > $(echo $TMPDIR)/../../phase-settings.json",
+        "cd $TMPDIR && echo {} > ../../phase-settings.json",
+        "cd $TMPDIR; echo {} > ../../phase-settings.json",
+        "cd \"$TMPDIR\" && echo {} > ../../phase-settings.json",
+        "pushd $TMPDIR; echo {} > ../../phase-settings.json",
+        "cd $TMPDIR && echo {} > phase-settings.json",
+        "cd $TMPDIR && cd .. && cd .. && echo {} > x",
+        "cd $TMPDIR && echo {} > /r/.git/ns/units/u1/phase-settings.json",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_dotdot_that_does_not_follow_tmpdir_is_allowed() {
+    for c in [
+        "cd .. && cargo test > $TMPDIR/out.log",
+        "cp ../docs/x.md $TMPDIR/x.md",
+        "git -C .. diff > \"$TMPDIR/d.patch\"",
+        "cd .. && gh pr create --body-file $TMPDIR/pr.md",
+        "cd ../.. ; echo x > $TMPDIR/a ; cat ../x",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_link_maker_naming_tmpdir_or_the_units_directory_is_denied() {
+    for c in [
+        "ln -s ../../phase-settings.json /r/.git/ns/units/u1/tmp/build-1/l",
+        "ln -s ../../phase-settings.json $TMPDIR/l",
+        "ln -s .. $TMPDIR/l",
+        "ln -s /r/.git/ns/units/u1 /r/.git/ns/units/u1/tmp/build-1/l",
+        "ln -s ../../phase-settings.json l",
+        "ln -s a /r/.git/ns/units/u1/tmp/build-1/l",
+        "ln -s a $TMPDIR/l",
+        "/bin/ln -s $(dirname $TMPDIR) $TMPDIR/l",
+        "\\ln -s a $TMPDIR/l",
+        "command ln -s a $TMPDIR/l",
+        "env ln -s a $TMPDIR/l",
+        "echo a | xargs ln -s $TMPDIR/l",
+        "FOO=1 ln -s a $TMPDIR/l",
+        "echo $(ln -s a $TMPDIR/l)",
+        "true; link /r/.git/ns/units/u1/phase-settings.json /r/.git/ns/units/u1/tmp/build-1/l",
+        "cp -l /r/.git/ns/units/u1/phase-settings.json $TMPDIR/",
+        "cp -s /r/.git/ns/units/u1/phase-settings.json $TMPDIR/",
+        "cp -rs /r/.git/ns/units/u1/*son $TMPDIR/",
+        "cp --symbolic-link /r/.git/ns/units/u1/phase-settings.json $TMPDIR/",
+        "cp -a /r/.git/ns/units/u1/phase-settings.json $TMPDIR/",
+        "install /r/.git/ns/units/u1/phase-settings.json $TMPDIR/l",
+        "rsync -a /r/.git/ns/units/u1/ $TMPDIR/",
+        "rsync --links /r/.git/ns/units/u1/phase-settings.json $TMPDIR/",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_link_maker_that_names_neither_tmpdir_nor_the_units_directory_is_allowed() {
+    for c in [
+        "ln -s a b",
+        "cp a b",
+        "cp ../docs/x.md $TMPDIR/x.md",
+        "cp -v a $TMPDIR/b",
+        "rsync -v a $TMPDIR/b",
+        "rsync -a src/ dst/",
+        "echo link $TMPDIR/x",
+        "ln -s a b; echo x > $TMPDIR/out",
+        "cargo install --path . > $TMPDIR/out",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
 }
 
 #[test]
