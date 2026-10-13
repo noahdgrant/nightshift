@@ -118,21 +118,21 @@ pr: <url, filled after step 7>
 Read `docs/agents/issue-tracker.md` for the forge and how PRs link issues. When it says GitLab, the PR is a merge request and every forge command goes through `glab`. Otherwise use `gh`. If the file is missing, load `ns-setup`. Issue and PR comments follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content).
 
 ```bash
-git push -u origin ns/<unit-id>
+git push -u origin "ns/$NS_UNIT"
 ```
 
 Then open it on the forge. Run this block in one shell, so `$body` stays set, with only your forge's commands:
 
 ```bash
 body=$(mktemp)   # private, unguessable path
-awk 'f; /^---$/ && ++n==2 {f=1}' .ns/<unit-id>/pr.md > "$body"   # body without frontmatter
+awk 'f; /^---$/ && ++n==2 {f=1}' .ns/$NS_UNIT/pr.md > "$body"   # body without frontmatter
 
 # GitHub
-gh pr create --base main --head ns/<unit-id> --title "<title>" --body-file "$body"
+gh pr create --base main --head "ns/$NS_UNIT" --title "<title>" --body-file "$body"
 gh pr view --json url,isDraft
 
 # GitLab
-glab mr create --source-branch ns/<unit-id> --target-branch main --title "<title>" --description-file "$body" --yes
+glab mr create --source-branch "ns/$NS_UNIT" --target-branch main --title "<title>" --description-file "$body" --yes
 glab mr view -F json   # web_url, iid, draft
 
 rm -f "$body"

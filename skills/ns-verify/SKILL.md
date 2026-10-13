@@ -47,7 +47,7 @@ Prefer a judge who is not the author. If this context also ran `ns-build`, hand 
 
 ## 3. Drive each criterion on its matching surface
 
-Map each criterion to the feature-map entry that covers it, then drive that entry through the verify skill and control CLI. Pass `--out .ns/<unit-id>/evidence/` so artifacts land with the unit. Match the check to the change:
+Map each criterion to the feature-map entry that covers it, then drive that entry through the verify skill and control CLI. Pass `--out .ns/$NS_UNIT/evidence/` so artifacts land with the unit. Match the check to the change:
 
 - A CLI change runs the real command.
 - A service change sends the real request and reads the result back through a second view.
@@ -81,6 +81,7 @@ Write each command in the plainest form a harness deny rule leaves alone:
 
 - A sandbox repo gets its fake origin when it is made: `git init`, then `git remote add origin <path>`.
 - Name files by absolute, resolved path (`cat "$V/repo/file"`). A `cd` sets only the directory a tool acts on; file arguments stay absolute.
+- Name the unit's directory exactly, `.ns/$NS_UNIT/` ([units of work](../ns-contract/SKILL.md#units-of-work-and-artifacts)). No glob in a `cd` or a path (`cd .ns/6*/evidence`, `cd .ns/*/`): the harness can't rule out a denied path behind it.
 - Sandbox credentials are visibly fake: `fake-…` values.
 
 ### Denied commands
@@ -95,7 +96,7 @@ A harness permission that denies a command ends the drive. The command runs as w
 
 ## 4. Fan out a large surface
 
-When the criteria span several feature-map entries, or one entry is large, load the `ns-swarm` skill with one worker per feature-map entry. Each worker brief carries the unit ID, the exact commit SHA, its criterion IDs, the feature file path, and its own `--out .ns/<unit-id>/evidence/<feature>/`. Workers run with role `verify` in write mode (`ns ask --role verify --write --cwd <worktree>`), because they execute commands.
+When the criteria span several feature-map entries, or one entry is large, load the `ns-swarm` skill with one worker per feature-map entry. Each worker brief carries the unit ID, the exact commit SHA, its criterion IDs, the feature file path, and its own `--out .ns/$NS_UNIT/evidence/<feature>/`. Workers run with role `verify` in write mode (`ns ask --role verify --write --cwd <worktree>`), because they execute commands.
 
 Map worker reports to verdicts: PASS to PASS, ISSUES to FAIL, BLOCKED to INCONCLUSIVE. A missing or SHA-less result is INCONCLUSIVE. A worker that reports a denied command ends verify as [denied commands](#denied-commands) says, with that worker's rule and command. Workers that share one bench or one instance run one at a time.
 

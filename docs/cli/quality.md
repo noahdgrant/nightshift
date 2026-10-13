@@ -7,9 +7,9 @@ Reads the quality records on `origin`'s `nightshift/quality` branch (fetched fir
 `ns quality --bugs [--since <date>] [--until <date>] [--weeks N] [--json]` counts the `type:fix` issues opened in each ISO week (UTC), by source and severity, read from the `[queue] source` forge. It prints a table, or with `--json` one object:
 
 - `ok`, `label` (`type:fix`), `since` and `until` (UTC, null when unset; `--weeks` sets `since`).
-- `weeks`: one entry per ISO week, oldest first, each `{week, monday, opened, review_escape, factory_introduced, ci_main, human, critical_high, rest}`. `week` is `2026-W41` and `monday` its first day.
+- `weeks`: one entry per ISO week, oldest first, each `{week, monday, opened, review_escape, factory_introduced, ci_main, human, critical_high, rest}`. `week` is `2026-W41` and `monday` its first day. Each count is of bugs: an issue counts one, and a `review_escape` issue one per checklist item.
 - `total`: the same counts over every week.
-- `issues`: each counted issue, `{number, title, opened, week, source, by, severity}`, plus `introduced_by` (`{commit, summary, pr}`) when blamed and `blame_error` when its blame failed. `source` is `review_escape`, `factory_introduced`, `ci_main` or `human`, `by` is `marker`, `review_text`, `ci_title`, `blame` or `default`, and `severity` is `critical_high` or `rest`.
+- `issues`: each counted issue, `{number, title, opened, week, source, by, severity, bugs}`, plus `introduced_by` (`{commit, summary, pr}`) when blamed and `blame_error` when its blame failed. `source` is `review_escape`, `factory_introduced`, `ci_main` or `human`, `by` is `marker`, `review_text`, `ci_title`, `blame` or `default`, `severity` is `critical_high` or `rest`, and `bugs` is how many bugs the issue counts as.
 - `excluded`: the issues left out, closed as a duplicate or not planned, each `{number, title, week}`.
 
 How each source is decided is in `docs/factory/quality.md` (Bug counts).
