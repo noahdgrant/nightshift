@@ -24,7 +24,7 @@ fn a_literal_assignment_earlier_in_the_command_is_resolved() {
         "U=u1 V=build.md; rm .ns/$U/$V",
         "U='build.md'; rm \".ns/u1/$U\"",
         "U=build.md; echo x > .ns/u1/$U",
-        "U=build.md; export V; read -r W; rm .ns/u1/$U",
+        "U=build.md; export V; rm .ns/u1/$U",
         "U=u1; cp x .ns/$U/history/$F",
         "F=--file; git commit $F=$M",
         "U=u1; cd .ns/$U && rm build.md",
@@ -301,6 +301,34 @@ fn an_alias_that_assigns_a_variable_forgets_the_variables() {
 #[test]
 fn a_value_with_an_expansion_in_it_is_not_resolved() {
     for c in ["U=build.md$X; rm .ns/u1/$U", "U=${X}build.md; rm .ns/u1/$U"] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_variable_the_shell_rewrites_unseen_is_not_resolved() {
+    for c in [
+        "_=safe; echo --no-verify; git commit $_ -m x",
+        "REPLY=a; read <<< --no-verify; git commit $REPLY -m x",
+        "OPTARG=a; getopts \"a:\" o -a--no-verify; git commit $OPTARG -m x",
+        "U=ok; mapfile A < f; git commit $U -m x",
+        "U=ok; readarray A < f; git commit $U -m x",
+        "U=ok; getopts a o; git commit $U -m x",
+        "BASH_REMATCH=a; [[ --no-verify =~ (.*) ]]; git commit $BASH_REMATCH -m x",
+        "U=ok; [[ x =~ (y) ]]; git commit $U -m x",
+        "OPTIND=a; git commit $OPTIND -m x",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_resolved_variable_does_not_make_an_eval_word_look_literal() {
+    for c in [
+        "U=ok; T=U; eval $T=.git; rm -r $U/hooks",
+        "T=U; eval $T=.git; rm -r $U/hooks",
+        "T=U; command eval $T=.git; rm -r $U/hooks",
+    ] {
         assert!(denied(c), "{c}");
     }
 }

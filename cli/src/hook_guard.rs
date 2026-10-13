@@ -169,8 +169,8 @@ enum Unread {
 impl Scan {
     /// `w` with what the scan knows written in: at the top level of the command each variable
     /// in `vars`, and under `Unread::Fill` every other expansion.
-    fn read(&self, w: Word) -> Word {
-        let w = if self.following {
+    fn read(&self, w: Word, known: bool) -> Word {
+        let w = if self.following && known {
             w.resolved(|e| Some(self.vars.get(e.name.as_ref()?)?.as_str()))
         } else {
             w
@@ -197,8 +197,10 @@ impl Scan {
         }
         let may_set_any = names(REWRITERS)
             || self.frozen
+            || words.iter().any(|w| w.text == "=~")
             || command.is_some_and(|c| {
-                SETTERS.contains(&c) && words.iter().any(|w| !w.expansions.is_empty())
+                ALWAYS_SETTERS.contains(&c)
+                    || (SETTERS.contains(&c) && words.iter().any(|w| !w.expansions.is_empty()))
             });
         if may_set_any {
             self.vars.clear();
@@ -315,7 +317,12 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
     let mut toks = toks.into_iter().peekable();
     while let Some(tok) = toks.next() {
         let tok = match tok {
-            Tok::Word(w) => Tok::Word(scan.read(w)),
+            Tok::Word(w) => {
+                let rewrites = words.iter().any(|p| {
+                    REWRITERS.contains(&basename(&p.text)) || FREEZERS.contains(&basename(&p.text))
+                });
+                Tok::Word(scan.read(w, !rewrites))
+            }
             tok => tok,
         };
         match tok {
@@ -332,7 +339,7 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
             Tok::Heredoc => stdin_is_text = true,
             Tok::RedirectOut => {
                 if let Some(Tok::Word(f)) = toks.next_if(is_word) {
-                    let f = scan.read(f);
+                    let f = scan.read(f, true);
                     if scan.touches_hooks(&path(&f)) {
                         return Some(format!("write to {} in {PROTECTED}", f.text));
                     }
@@ -490,18 +497,42 @@ const REWRITERS: &[&str] = &[
 /// change what a later assignment, or any command, sets.
 const FREEZERS: &[&str] = &["declare", "typeset", "local", "trap", "alias"];
 
+/// Builtins that set variables the scan can't name from their words (`REPLY`, `OPTARG`, an
+/// array), so each clears every learned variable.
+const ALWAYS_SETTERS: &[&str] = &["read", "mapfile", "readarray", "getopts"];
+
+/// Shell-managed variables the shell rewrites unseen: never learned from an assignment.
+const SHELL_MANAGED: &[&str] = &[
+    "_",
+    "REPLY",
+    "OPTARG",
+    "OPTIND",
+    "BASH_REMATCH",
+    "PWD",
+    "OLDPWD",
+    "RANDOM",
+    "SECONDS",
+    "LINENO",
+    "COPROC",
+    "IFS",
+    "BASH_COMMAND",
+    "BASHPID",
+    "EPOCHSECONDS",
+    "EPOCHREALTIME",
+    "SRANDOM",
+    "PIPESTATUS",
+    "PPID",
+    "SHLVL",
+    "UID",
+    "EUID",
+    "HISTCMD",
+    "FUNCNAME",
+    "MAPFILE",
+];
+
 /// Builtins that can set a variable named by one of their arguments.
 const SETTERS: &[&str] = &[
-    "read",
-    "mapfile",
-    "readarray",
-    "printf",
-    "getopts",
-    "export",
-    "readonly",
-    "unset",
-    "builtin",
-    "command",
+    "printf", "export", "readonly", "unset", "builtin", "command",
 ];
 
 /// The word `text` names the variable `name`, assigns it, or ends with it as an option's
@@ -531,7 +562,7 @@ fn literal_assignments(words: &[Word]) -> Vec<(String, String)> {
     };
     let literal = |w: &Word| {
         let (name, value) = env_assignment(&w.text)?;
-        (w.expansions.is_empty() && is_literal_value(value))
+        (w.expansions.is_empty() && is_literal_value(value) && !SHELL_MANAGED.contains(&name))
             .then(|| (name.to_string(), value.to_string()))
     };
     assignments
