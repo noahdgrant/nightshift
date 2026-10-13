@@ -75,6 +75,7 @@ impl Env {
         fs::write(home.join(".claude/.credentials.json"), "{}").unwrap();
         let ctrl = base.join("ctrl");
         let ghd = base.join("ghd");
+        fs::create_dir(base.join("systmp")).unwrap();
         fs::create_dir(&ctrl).unwrap();
         fs::create_dir(&ghd).unwrap();
         fs::write(ghd.join("issues.jsonl"), "").unwrap();
@@ -248,6 +249,7 @@ impl Env {
             .env("NS_CONFIG", self.base.join("no-config.toml"))
             .env("FAKE_CTRL", &self.ctrl)
             .env("FAKE_GH_DIR", &self.ghd)
+            .env("TMPDIR", self.base.join("systmp"))
             .env("ANTHROPIC_API_KEY", "must-not-leak")
             .env("NS_NOW", NOW.to_string())
             .env("TZ", "UTC")
@@ -1390,11 +1392,13 @@ fn a_phase_under_watch_knows_the_watch_pid() {
     assert_eq!(phase_ids(&e)[0], format!("{run} {pid}"));
 }
 
-/// Each build phase records its `TMPDIR` and what was in it, then leaves a file there.
+/// Each build phase records its `TMPDIR` and what was in it, and the modes of it and its parent,
+/// then leaves a file there.
 fn record_tmpdir(e: &Env) {
     e.ctl(
         "build.sh",
         r#"{ echo "$TMPDIR"; ls -A "$TMPDIR"; } >> "$FAKE_CTRL/tmpdir-$NS_UNIT"
+stat -c %a "$TMPDIR" "$TMPDIR/.." >> "$FAKE_CTRL/mode-$NS_UNIT"
 touch "$TMPDIR/scratch""#,
     );
 }
@@ -1408,8 +1412,9 @@ fn phase_tmpdirs(e: &Env, unit: &str) -> Vec<String> {
         .collect()
 }
 
+/// The directory of `unit`'s phase `TMPDIR`s, in the system temp dir `ns` inherited.
 fn unit_tmp(e: &Env, unit: &str) -> PathBuf {
-    e.root.join(".git/ns/units").join(unit).join("tmp")
+    e.base.join("systmp").join(format!("ns-myrepo-{unit}"))
 }
 
 #[test]
@@ -1429,7 +1434,59 @@ fn each_phase_gets_its_own_tmpdir_and_a_passing_phase_leaves_none_behind() {
     for unit in [UNIT, "8-fix-other"] {
         let left: Vec<_> = fs::read_dir(unit_tmp(&e, unit)).unwrap().collect();
         assert!(left.is_empty(), "{unit}: {left:?}");
+        let modes = fs::read_to_string(e.ctrl.join(format!("mode-{unit}"))).unwrap();
+        assert_eq!(modes, "700\n700\n", "{unit}");
     }
+    let worktrees = e.base.join("myrepo.worktrees");
+    assert!(worktrees.join(UNIT).is_dir());
+    for d in [&dir, &other] {
+        assert!(!d.starts_with(&e.root), "{} is in the repo", d.display());
+        assert!(
+            !d.starts_with(&worktrees),
+            "{} is in a worktree",
+            d.display()
+        );
+    }
+}
+
+#[test]
+fn a_phase_that_times_out_keeps_its_tmpdir() {
+    let e = Env::new();
+    record_tmpdir(&e);
+    e.queue("build", &["pass:script+sleep", "pass:script"]);
+    let v = e
+        .ns()
+        .env("NS_PHASE_TIMEOUT_MS", "build=1500")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&v).unwrap();
+    assert_eq!(v["outcome"], "done", "{v}");
+    let tmp = unit_tmp(&e, UNIT);
+    assert!(tmp.join("build-1/scratch").is_file());
+    assert!(!tmp.join("build-2").exists());
+}
+
+#[test]
+fn a_phase_tmpdir_parent_another_user_could_use_stops_the_run_before_the_phase() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new();
+    let tmp = unit_tmp(&e, UNIT);
+    fs::create_dir(&tmp).unwrap();
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o777)).unwrap();
+    e.ns()
+        .args(["run", "--issue", "7"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(format!(
+            "{} is not a directory only this user can use",
+            tmp.display()
+        )));
+    assert!(e.calls().is_empty());
+    assert!(fs::read_dir(&tmp).unwrap().next().is_none());
 }
 
 #[test]
@@ -1488,18 +1545,17 @@ fn a_rerun_keeps_the_tmpdirs_a_failed_run_kept() {
 
 #[test]
 fn a_tmpdir_that_cannot_be_created_stops_the_run_before_the_phase() {
+    use std::os::unix::fs::PermissionsExt;
     let e = Env::new();
     let tmp = unit_tmp(&e, UNIT);
-    fs::create_dir_all(tmp.parent().unwrap()).unwrap();
-    fs::write(&tmp, "a file, not a directory\n").unwrap();
-    e.ns()
-        .args(["run", "--issue", "7"])
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains(format!(
-            "cannot create {}",
-            tmp.join("triage-1").display()
-        )));
+    fs::create_dir(&tmp).unwrap();
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o500)).unwrap();
+    let out = e.ns().args(["run", "--issue", "7"]).assert().failure();
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o700)).unwrap();
+    out.stderr(predicates::str::contains(format!(
+        "cannot create {}",
+        tmp.join("triage-1").display()
+    )));
     assert!(e.calls().is_empty());
 }
 
@@ -10932,6 +10988,7 @@ fn clean_reports_a_branch_it_could_not_delete() {
     let e = Env::new();
     let done = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
     fs::write(e.root.join(".git/refs/heads/ns/3-done.lock"), "").unwrap();
+    fs::create_dir_all(unit_tmp(&e, "3-done").join("build-1")).unwrap();
     let v = e.run(&["clean"], 1);
     let reason = &reasons(&v)["3-done"];
     assert!(
@@ -10940,6 +10997,10 @@ fn clean_reports_a_branch_it_could_not_delete() {
     );
     assert!(!done.exists());
     assert!(branch_exists(&e, "3-done"));
+    assert!(
+        !unit_tmp(&e, "3-done").exists(),
+        "a failed branch deletion kept it"
+    );
 }
 
 #[test]
@@ -10947,7 +11008,6 @@ fn clean_reports_a_tmpdir_it_could_not_remove() {
     let e = Env::new();
     let done = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
     let tmp = unit_tmp(&e, "3-done");
-    fs::create_dir_all(tmp.parent().unwrap()).unwrap();
     fs::write(&tmp, "a file, not a directory\n").unwrap();
     let v = e.run(&["clean"], 1);
     let reason = &reasons(&v)["3-done"];

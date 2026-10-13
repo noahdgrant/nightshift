@@ -35,27 +35,15 @@ pub const COMMON_UNITS: &str = "units";
 /// The variable that names the settings file to a phase.
 pub const SETTINGS_VAR: &str = "NS_PHASE_SETTINGS";
 pub const SETTINGS_FILE: &str = "phase-settings.json";
-/// The directory under a unit's that holds each phase's `TMPDIR`.
-pub const TMP_DIR: &str = "tmp";
 
 /// The settings file a claude phase of `unit` runs with. It lives under the git common dir,
 /// outside every worktree, so a phase cannot reach it by editing its own worktree.
 pub fn settings_path(common_dir: &Path, unit: &str) -> PathBuf {
-    unit_dir(common_dir, unit).join(SETTINGS_FILE)
-}
-
-/// The directory that holds `unit`'s phase `TMPDIR`s, one `<phase>-<n>` each.
-pub fn tmp_path(common_dir: &Path, unit: &str) -> PathBuf {
-    unit_dir(common_dir, unit).join(TMP_DIR)
-}
-
-/// The name of the `n`th `TMPDIR` of `phase` under `tmp_path`.
-pub fn phase_tmp_name(phase: &str, n: u32) -> String {
-    format!("{phase}-{n}")
-}
-
-fn unit_dir(common_dir: &Path, unit: &str) -> PathBuf {
-    common_dir.join(COMMON_NS).join(COMMON_UNITS).join(unit)
+    common_dir
+        .join(COMMON_NS)
+        .join(COMMON_UNITS)
+        .join(unit)
+        .join(SETTINGS_FILE)
 }
 
 fn skills_path(worktree: &Path, unit: &str) -> PathBuf {
@@ -484,10 +472,5 @@ mod tests {
         let why = link_to(&agents, &target).unwrap().expect("a reason");
         assert!(why.contains("tracked"), "{why}");
         assert!(!fs::symlink_metadata(&agents).unwrap().is_symlink());
-    }
-
-    #[test]
-    fn a_phase_tmp_name_is_the_phase_and_a_number() {
-        assert_eq!(phase_tmp_name("build", 3), "build-3");
     }
 }

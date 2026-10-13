@@ -9,7 +9,7 @@ date: 2026-10-13
 
 ## Decision
 
-The `ns-contract` rule that a phase never writes a fixed `/tmp/<name>` path (Scratch files) has no eval case. `ns lint` fails any skill that names such a path (`fixed_tmp_paths`), and `ns run` gives each phase its own `TMPDIR`, which the CLI tests cover (`cli/tests/factory.rs`, `cli/src/hook_guard/tests/`).
+The `ns-contract` rule that a phase never writes a fixed `/tmp/<name>` path (Scratch files) has no eval case. `ns lint` fails any skill that names such a path (`fixed_tmp_paths`), and `ns run` gives each phase its own `TMPDIR`, which the CLI tests cover (`cli/tests/factory.rs`).
 
 ## Reason
 

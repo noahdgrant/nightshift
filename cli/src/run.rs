@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
@@ -439,15 +440,14 @@ fn run_harness(
     })
 }
 
-/// A new, empty `TMPDIR` for one attempt of `phase`, private to `unit`, so parallel units never
-/// share a scratch file. It is `<phase>-<n>` for the first `n` from `attempt` not taken, so a
-/// directory a failed phase of an earlier run kept survives until `ns clean`.
-fn phase_tmpdir(common: &Path, unit: &str, phase: &str, attempt: u32) -> Result<PathBuf> {
-    let parent = pin::tmp_path(common, unit);
+/// A new, empty `TMPDIR` for one attempt of `phase` in `parent`, the unit's `Repo::unit_tmp`, so
+/// parallel units never share a scratch file. It is `<phase>-<n>` for the first `n` from `attempt`
+/// not taken, so a directory a failed phase of an earlier run kept survives until `ns clean`.
+fn phase_tmpdir(parent: &Path, phase: &str, attempt: u32) -> Result<PathBuf> {
+    private_dir(parent)?;
     for n in attempt.. {
-        let dir = parent.join(pin::phase_tmp_name(phase, n));
-        let made = fs::create_dir_all(&parent).and_then(|()| fs::create_dir(&dir));
-        match made {
+        let dir = parent.join(format!("{phase}-{n}"));
+        match fs::DirBuilder::new().mode(0o700).create(&dir) {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.exists() => {}
             made => {
                 made.with_context(|| format!("cannot create {}", dir.display()))?;
@@ -456,6 +456,25 @@ fn phase_tmpdir(common: &Path, unit: &str, phase: &str, attempt: u32) -> Result<
         }
     }
     anyhow::bail!("no free {phase}-<n> directory in {}", parent.display())
+}
+
+/// Create `dir` with mode 0700, or check the one there is a directory only this user can use: the
+/// system temp dir is shared, and another user could have made it first.
+fn private_dir(dir: &Path) -> Result<()> {
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        made => return made.with_context(|| format!("cannot create {}", dir.display())),
+    }
+    let m = fs::symlink_metadata(dir).with_context(|| format!("cannot read {}", dir.display()))?;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let mine = m.uid() == unsafe { libc::geteuid() };
+    if !(m.is_dir() && mine && m.mode() & 0o077 == 0) {
+        anyhow::bail!(
+            "{} is not a directory only this user can use; remove it",
+            dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// Take the merge lock for `unit`, waiting while another unit merges, each wait logged by
@@ -661,6 +680,8 @@ struct Ctx<'a> {
     night: Option<PathBuf>,
     /// The `ns` binary the phase settings' hook runs.
     ns: PathBuf,
+    /// The directory of this unit's phase `TMPDIR`s, `Repo::unit_tmp`.
+    tmp: PathBuf,
 }
 
 impl Ctx<'_> {
@@ -966,6 +987,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         cap: cap.as_ref(),
         night: shared.night.as_ref().map(|n| n.path().to_path_buf()),
         ns: ns.clone(),
+        tmp: repo.unit_tmp(&unit),
     };
     for ev in pinned {
         ctx.log(ev);
@@ -1121,6 +1143,7 @@ fn dry_run(
         cap: None,
         night: None,
         ns: PathBuf::new(),
+        tmp: PathBuf::new(),
     };
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
@@ -1438,7 +1461,7 @@ fn drive(
         if !crate::git::ssh_command_set(&ctx.worktree) {
             env.push(("GIT_SSH_COMMAND", crate::git::SSH_KEEPALIVE.to_string()));
         }
-        let tmp = phase_tmpdir(&ctx.common, &ctx.unit, phase, attempt)?;
+        let tmp = phase_tmpdir(&ctx.tmp, phase, attempt)?;
         env.push(("TMPDIR", tmp.to_string_lossy().into_owned()));
         pin::write_settings(&ctx.common, &ctx.unit, &ctx.ns)?;
         let r = run_harness(
@@ -2604,16 +2627,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_phase_tmpdir_takes_the_first_free_attempt_and_is_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("ns-r-u1");
+        assert_eq!(
+            phase_tmpdir(&parent, "build", 2).unwrap(),
+            parent.join("build-2")
+        );
+        let made = phase_tmpdir(&parent, "build", 2).unwrap();
+        assert_eq!(made, parent.join("build-3"));
+        for d in [&parent, &made] {
+            let mode = fs::metadata(d).unwrap().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}", d.display());
+        }
+        assert_eq!(
+            phase_tmpdir(&parent, "build", 1).unwrap(),
+            parent.join("build-1")
+        );
+    }
+
+    #[test]
     fn a_dangling_symlink_where_a_phase_tmpdir_goes_is_an_error_not_a_skipped_slot() {
         let dir = tempfile::tempdir().unwrap();
-        let parent = pin::tmp_path(dir.path(), "u1");
-        fs::create_dir_all(&parent).unwrap();
-        let slot = parent.join(pin::phase_tmp_name("build", 1));
+        let parent = dir.path().join("ns-r-u1");
+        let slot = parent.join("build-1");
+        phase_tmpdir(&parent, "verify", 1).unwrap();
         std::os::unix::fs::symlink(dir.path().join("gone"), &slot).unwrap();
-        assert!(!slot.exists());
-        let err = phase_tmpdir(dir.path(), "u1", "build", 1).unwrap_err();
+        let err = phase_tmpdir(&parent, "build", 1).unwrap_err();
         assert!(err.to_string().contains("cannot create"), "{err}");
-        assert!(!parent.join(pin::phase_tmp_name("build", 2)).exists());
+        assert!(!parent.join("build-2").exists());
+    }
+
+    #[test]
+    fn a_phase_tmpdir_parent_that_is_not_a_private_dir_of_ours_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let open = dir.path().join("open");
+        fs::create_dir(&open).unwrap();
+        fs::set_permissions(&open, fs::Permissions::from_mode(0o750)).unwrap();
+        let link = dir.path().join("link");
+        let private = dir.path().join("private");
+        fs::create_dir(&private).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        std::os::unix::fs::symlink(&private, &link).unwrap();
+        let file = dir.path().join("file");
+        fs::write(&file, "").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        for p in [&open, &link, &file] {
+            let err = private_dir(p).unwrap_err().to_string();
+            assert!(
+                err.contains("not a directory only this user can use"),
+                "{err}"
+            );
+        }
+        private_dir(&private).unwrap();
+        let err = private_dir(&dir.path().join("no/such")).unwrap_err();
+        assert!(err.to_string().contains("cannot create"), "{err}");
     }
 
     #[test]

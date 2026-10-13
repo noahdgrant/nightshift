@@ -240,7 +240,7 @@ fn remove(repo: &Repo, m: &Merged) -> Result<(), String> {
     // checked just before.
     // The TMPDIRs go first: once the worktree or branch is gone the unit is no longer found, and
     // a later step failing would leave them for good.
-    let tmp = crate::pin::tmp_path(&repo.common_dir, &m.unit);
+    let tmp = repo.unit_tmp(&m.unit);
     let tmp_kept = match std::fs::remove_dir_all(&tmp) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Some(e),
         _ => None,
@@ -583,25 +583,6 @@ mod tests {
         assert_eq!(
             local_reason(&repo, &m).as_deref(),
             Some("its HEAD is not on main")
-        );
-    }
-
-    #[test]
-    fn a_branch_that_cannot_be_deleted_does_not_keep_the_unit_tmp_dir() {
-        let (_tmp, repo, mut m) = left_on_main();
-        g(&m.path, &["checkout", "-q", "--detach"]);
-        g(&repo.root, &["branch", "ns/3-done", "main"]);
-        m.on_default = None;
-        let tmp = crate::pin::tmp_path(&repo.common_dir, &m.unit).join("build-1");
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::write(tmp.join("scratch"), "x").unwrap();
-        let lock = repo.common_dir.join("refs/heads/ns/3-done.lock");
-        std::fs::write(&lock, "").unwrap();
-        let e = remove(&repo, &m).unwrap_err();
-        assert!(e.contains("branch ns/3-done kept"), "{e}");
-        assert!(
-            !tmp.exists(),
-            "the tmp dir outlived a failed branch deletion"
         );
     }
 

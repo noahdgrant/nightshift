@@ -324,6 +324,13 @@ impl Repo {
         })
     }
 
+    /// The directory of `unit`'s phase `TMPDIR`s, `ns-<repo>-<unit>` in the system temp dir (the
+    /// `TMPDIR` `ns` inherited, else `/tmp`). It is outside the repo, so a phase's scratch file is
+    /// no write into `.git` for the hook guard.
+    pub fn unit_tmp(&self, unit: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("ns-{}-{unit}", self.name()))
+    }
+
     pub fn name(&self) -> String {
         self.root
             .file_name()
