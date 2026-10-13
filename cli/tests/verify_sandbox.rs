@@ -81,6 +81,16 @@ const UNSET: &[&str] = &[
     "GIT_CONFIG_KEY_7",
     "GIT_CONFIG_VALUE_0",
     "GIT_CONFIG_VALUE_7",
+    "NS_UNIT",
+    "NS_WORKTREE",
+    "NS_PHASE_SETTINGS",
+    "NS_PHASE",
+    "NS_RUN_PID",
+    "NS_WATCH_PID",
+    "NS_ATTEMPT",
+    "NS_CPUS",
+    "NS_FORGE_EXPORTED",
+    "NS_FORGE_CHECKED",
 ];
 
 /// Runs `program args` with a fresh `TMPDIR` and `OUT`, `CARGO_TARGET_DIR` at the crate's build,

@@ -383,6 +383,9 @@ fn a_recipe_naming_a_ns_path_other_than_one_units_folder_fails() {
         r#""$V/sandbox" ls "$V/repo/.ns/verify""#,
         r#""$V/sandbox" ls "$V/repo/.ns/foo""#,
         r#""$V/sandbox" ls "$V/repo/.ns/x/../..""#,
+        r#""$V/sandbox" sh -c 'ls .ns/$NS_UNIT/../../x'"#,
+        r#""$V/sandbox" sh -c 'ls .ns/$NS_UNIT/./x'"#,
+        r#""$V/sandbox" sh -c 'ls .ns/7-x/..'"#,
     ] {
         let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(recipe))]);
         assert_fails_with(
@@ -485,6 +488,21 @@ fn commands_outside_the_recipe_blocks_are_not_recipes() {
     assert!(out.status.success(), "{}", stderr(&out));
 }
 
+fn run_pass_lines(outcomes: &[&str]) -> String {
+    let lines: Vec<String> = outcomes
+        .iter()
+        .map(|o| format!(r#"echo "{{\"outcome\":\"{o}\"}}" >> "$OUT/run-pass.out""#))
+        .collect();
+    format!(r#""$V/sandbox" sh -c '{}'"#, lines.join("; "))
+}
+
+#[test]
+fn the_last_run_pass_result_decides() {
+    let recipe = run_pass_lines(&["stuck", "done"]);
+    let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(&recipe))]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
 #[test]
 fn a_run_that_does_not_end_done_fails() {
     for (recipe, needle) in [
@@ -493,6 +511,10 @@ fn a_run_that_does_not_end_done_fails() {
             "run-pass outcome is \"stuck\", not \"done\"",
         ),
         (r#""$V/sandbox" true"#.to_string(), "no run-pass result"),
+        (
+            run_pass_lines(&["done", "stuck"]),
+            "run-pass outcome is \"stuck\", not \"done\"",
+        ),
     ] {
         let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(&recipe))]);
         assert_fails_with(&out, needle);

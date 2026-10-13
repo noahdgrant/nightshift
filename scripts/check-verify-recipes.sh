@@ -114,7 +114,7 @@ lint() {
         echo "$where uses a bracket, brace or ..: $line"
       fi
       for tok in $(grep -o '[^ ]*\.ns/[^ ]*' <<<"$line" || true); do
-        if ! grep -Eq '\.ns/(\$NS_UNIT|<unit-id>|[0-9]+-[a-z0-9-]+)(/[A-Za-z0-9_.-]+)*["'\'']?$' <<<"$tok"; then
+        if ! grep -Eq '\.ns/(\$NS_UNIT|<unit-id>|[0-9]+-[a-z0-9-]+)(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*["'\'']?$' <<<"$tok" || [[ "$tok" == *..* ]]; then
           echo "$where names a .ns/ path other than one unit's folder (.ns/\$NS_UNIT): $line"
         fi
       done
