@@ -1016,6 +1016,286 @@ fn verify_fail_goes_back_to_build_with_feedback() {
     assert!(p.contains("verify said fail"), "{p}");
 }
 
+/// Shell that adds a commit to `origin`'s main, as another actor merging a PR would.
+fn move_main_sh(e: &Env) -> String {
+    let r = e.base.join("remote.git");
+    format!(
+        "r={r:?}; c=$(git --git-dir=\"$r\" commit-tree \"$(git --git-dir=\"$r\" rev-parse main^{{tree}})\" -p main -m other) && git --git-dir=\"$r\" update-ref refs/heads/main \"$c\"",
+        r = r.display()
+    )
+}
+
+fn remote_main(e: &Env) -> String {
+    git(&e.base.join("remote.git"), &["rev-parse", "main"])
+}
+
+fn rebase_events(e: &Env) -> Vec<Value> {
+    fs::read_to_string(e.root.join(".git/ns/runs.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["event"] == "rebase_after_base_moved")
+        .collect()
+}
+
+/// Build 1 commits and another actor moves main; verify gets five attempts, so only build's cap
+/// can end the unit.
+fn base_moves_during_build(e: &Env, extra: &str) {
+    e.factory(&format!("[phases.verify]\nmax_attempts = 5\n{extra}"));
+    e.ctl(
+        "build.sh",
+        &format!(
+            "echo b >> work.txt && git add work.txt && git -c user.name=f -c user.email=f@f commit -qm b && {}",
+            move_main_sh(e)
+        ),
+    );
+}
+
+#[test]
+fn a_verify_no_go_for_base_movement_rebases_onto_the_newest_main_at_no_attempts_cost() {
+    let e = Env::new();
+    base_moves_during_build(&e, "");
+    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["fail:base moved", "fail", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "build", "verify", "build", "verify", "review", "ship"]
+    );
+    let main = remote_main(&e);
+    let p = e.prompt(4, "build");
+    assert!(p.contains("base moved"), "{p}");
+    assert!(
+        p.contains(&format!("rebase onto the newest origin/main ({main})")),
+        "{p}"
+    );
+    assert!(!e.prompt(6, "build").contains("rebase onto the newest"));
+    let wt = e.worktree(UNIT);
+    assert_eq!(git(&wt, &["rev-parse", "origin/main"]), main, "fetched");
+    let r = rebase_events(&e);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0]["attempt"], 2);
+    assert_eq!(r[0]["onto"], main.as_str());
+    assert_eq!(r[0]["cause"], "evidence.md failed");
+}
+
+#[test]
+fn a_ship_no_go_for_base_movement_goes_to_build_at_no_attempts_cost() {
+    let e = Env::new();
+    base_moves_during_build(&e, "[phases.ship]\nmax_attempts = 5\n");
+    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["pass", "fail", "pass"]);
+    e.queue("ship", &["fail:base moved", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        &e.calls()[..6],
+        ["triage", "build", "verify", "review", "ship", "build"]
+    );
+    let r = rebase_events(&e);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0]["cause"], "pr.md failed: base moved");
+}
+
+#[test]
+fn a_free_rebase_build_that_fails_leaves_the_unit_stuck_at_the_normal_cap() {
+    let e = Env::new();
+    base_moves_during_build(&e, "");
+    e.queue("build", &["pass:script", "fail", "pass:commit"]);
+    e.queue("verify", &["fail:base moved"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["reason"], "build is out of attempts (2)", "{v}");
+    assert_eq!(e.calls(), ["triage", "build", "verify", "build"]);
+}
+
+#[test]
+fn a_review_no_go_for_base_movement_goes_to_build_at_no_attempts_cost() {
+    let e = Env::new();
+    base_moves_during_build(&e, "[phases.review]\nmax_attempts = 5\n");
+    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["pass", "fail", "pass"]);
+    e.queue("review", &["fail:base moved", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        &e.calls()[..6],
+        ["triage", "build", "verify", "review", "build", "verify"]
+    );
+    let r = rebase_events(&e);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0]["cause"], "review.md failed");
+}
+
+#[test]
+fn a_free_rebase_build_that_times_out_leaves_the_unit_stuck_at_the_normal_cap() {
+    let e = Env::new();
+    base_moves_during_build(&e, "");
+    e.queue("build", &["pass:script", "blocked:sleep", "pass:commit"]);
+    e.queue("verify", &["fail:base moved"]);
+    let out = e
+        .ns()
+        .env("NS_PHASE_TIMEOUT_MS", "build=1500")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("build is out of attempts (2)"),
+        "{v}"
+    );
+    assert_eq!(e.calls(), ["triage", "build", "verify", "build"]);
+}
+
+#[test]
+fn a_free_rebase_build_that_writes_no_artifact_leaves_the_unit_stuck_at_the_normal_cap() {
+    let e = Env::new();
+    base_moves_during_build(&e, "");
+    e.queue("build", &["pass:script", "none", "pass:commit"]);
+    e.queue("verify", &["fail:base moved"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("build is out of attempts (2)"),
+        "{v}"
+    );
+    assert_eq!(e.calls(), ["triage", "build", "verify", "build"]);
+}
+
+#[test]
+fn a_free_rebase_that_gives_up_waiting_for_a_lock_still_rebases_on_the_retry() {
+    let e = Env::new();
+    let lock = e.base.join("locks/bench-1.lock");
+    let log = e.root.join(".git/ns/runs.jsonl");
+    e.factory("[phases.build]\nrunner = \"bench\"\n");
+    e.runner("bench", "kind = \"bench\"\nlocks = [\"bench-1\"]\n");
+    e.config(&format!(
+        "[runners]\nlock_dir = {:?}\n",
+        lock.parent().unwrap().to_str().unwrap()
+    ));
+    // After the first build lets go of the lock, a holder takes it and keeps it until the
+    // run has logged its first give-up, so the rebase build's first wait ends at the timeout.
+    e.ctl(
+        "build.sh",
+        &format!(
+            "echo b >> work.txt && git add work.txt && git -c user.name=f -c user.email=f@f commit -qm b && {}; \
+             (setsid timeout 30 flock -x {lock:?} sh -c 'until grep -q lock_wait_timeout {log:?}; do sleep 0.05; done' </dev/null >/dev/null 2>&1 &)",
+            move_main_sh(&e)
+        ),
+    );
+    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["fail:base moved", "pass"]);
+    let out = e
+        .ns()
+        .env_remove("NS_NOW")
+        .env("NS_PHASE_TIMEOUT_MS", "build=4000")
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["outcome"], "done", "{v}");
+    let main = remote_main(&e);
+    let p = e.prompt(4, "build");
+    assert!(
+        p.contains(&format!("rebase onto the newest origin/main ({main})")),
+        "{p}"
+    );
+    assert_eq!(rebase_events(&e).len(), 1);
+}
+
+#[test]
+fn a_red_gate_after_a_rebase_with_main_moved_since_rebases_once_more() {
+    let e = Env::new();
+    let n = e.ctrl.join("gates");
+    let n = n.display();
+    // Gate 2 (after the rebase) and gate 3 (after the extra rebase) go red and move main.
+    base_moves_during_build(
+        &e,
+        &format!(
+            "[phases.build]\ngate = \"n=$(($(cat {n} 2>/dev/null || echo 0)+1)); echo $n > {n}; case $n in 2|3) {m}; echo boom; exit 1;; esac\"\n",
+            m = move_main_sh(&e).replace('"', "\\\"")
+        ),
+    );
+    e.queue(
+        "build",
+        &["pass:script", "pass:commit", "pass:commit", "pass:commit"],
+    );
+    e.queue("verify", &["fail:base moved", "pass"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "build", "build", "build", "verify", "review", "ship"]
+    );
+    let r = rebase_events(&e);
+    assert_eq!(r.len(), 2, "one extra rebase, never a second: {r:?}");
+    assert_eq!(r[1]["attempt"], 3);
+    assert_eq!(
+        r[1]["cause"],
+        "the CI gate failed after a rebase and main moved since"
+    );
+    let p = e.prompt(5, "build");
+    assert!(p.contains("boom"), "{p}");
+    assert!(p.contains("rebase onto the newest origin/main"), "{p}");
+    // The third red spent build's second attempt.
+    assert!(!e.prompt(6, "build").contains("rebase onto the newest"));
+}
+
+#[test]
+fn a_red_gate_after_a_rebase_with_main_still_spends_an_attempt() {
+    let e = Env::new();
+    let n = e.ctrl.join("gates");
+    let n = n.display();
+    base_moves_during_build(
+        &e,
+        &format!(
+            "[phases.build]\ngate = \"n=$(($(cat {n} 2>/dev/null || echo 0)+1)); echo $n > {n}; [ $n -ne 2 ] || {{ echo boom; exit 1; }}\"\n"
+        ),
+    );
+    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
+    e.queue("verify", &["fail:base moved", "fail"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["reason"], "build is out of attempts (2)", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "build", "build", "verify"]
+    );
+    assert_eq!(rebase_events(&e).len(), 1);
+}
+
+#[test]
+fn a_build_that_fails_saying_base_moved_still_spends_an_attempt() {
+    let e = Env::new();
+    e.queue("build", &["fail:base moved", "fail:base moved"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["reason"], "build is out of attempts (2)", "{v}");
+    assert_eq!(e.calls(), ["triage", "build", "build"]);
+    assert!(rebase_events(&e).is_empty());
+}
+
+#[test]
+fn without_an_origin_a_base_moved_no_go_spends_an_attempt() {
+    let e = Env::new();
+    git(&e.root, &["remote", "remove", "origin"]);
+    e.queue("build", &["pass:commit", "pass:commit"]);
+    e.queue("verify", &["fail:base moved", "fail"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert!(
+        v["reason"].as_str().unwrap().contains("out of attempts"),
+        "{v}"
+    );
+    assert!(rebase_events(&e).is_empty());
+}
+
 #[test]
 fn attempt_limit_gives_stuck() {
     let e = Env::new();
@@ -4022,21 +4302,37 @@ fn build_only_sends_a_conflict_with_main_back_to_ship() {
     for (file, text) in [("pr-12.merge", "DIRTY"), ("update-12.fail", "")] {
         let e = Env::new();
         remote_queue(&e, AUTO);
-        main_moves(&e, "from-main", "x\n");
+        let tip = main_moves(&e, "from-main", "x\n");
         e.gh_file(file, text);
         let v = e.run(&["run", "--issue", "7"], 1);
         assert_eq!(v["outcome"], "stuck", "{file}: {v}");
         assert_eq!(v["reason"], "ship is out of attempts (2)", "{file}: {v}");
+        // The first conflict's reship is free. Main stays where it was, so the next one uses
+        // ship's second attempt and the unit ends stuck instead of looping.
         let calls = e.calls();
         assert_eq!(
             calls,
-            ["triage", "build", "verify", "review", "ship", "ship"],
+            ["triage", "build", "verify", "review", "ship", "ship", "ship"],
             "{file}"
         );
         let p = e.prompt(6, "ship");
         assert!(
             p.contains("PR #12 conflicts with main: rebase onto main and resolve conflicts"),
             "{file}: {p}"
+        );
+        assert!(
+            p.contains(&format!(
+                "merge in the newest origin/main ({tip}). This ship costs no attempt."
+            )),
+            "{file}: {p}"
+        );
+        assert!(!e.prompt(7, "ship").contains("costs no attempt"), "{file}");
+        let r = rebase_events(&e);
+        assert_eq!(r.len(), 1, "{file}: {r:?}");
+        assert_eq!(
+            (&r[0]["phase"], &r[0]["cause"]),
+            (&json!("ship"), &json!("the PR conflicts with its base")),
+            "{file}"
         );
         assert!(!e.gh_calls().contains("pr merge"), "{file}");
         assert!(
@@ -4106,9 +4402,14 @@ fn auto_merge_conflict_goes_back_to_build() {
     let v: Value = serde_json::from_slice(&v.stdout).unwrap();
     let p = e.prompt(6, "build");
     assert!(p.contains("rebase onto main"), "{p}");
-    // max_attempts 2: the second conflict leaves the unit stuck at build.
+    // The first conflict's rebuild is free. Main stays where it was, so the later ones use
+    // build's two attempts and the unit ends stuck instead of looping.
     assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(v["reason"], "build is out of attempts (2)", "{v}");
     assert!(!e.gh_calls().contains("pr merge"));
+    let r = rebase_events(&e);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0]["cause"], "PR #12 conflicts with main");
 }
 
 fn update_branch_events(e: &Env) -> usize {
@@ -4225,7 +4526,8 @@ fn a_failed_update_branch_logs_its_cause() {
     );
     e.run(&["run", "--issue", "7"], 1);
     let failed = update_failures(&e);
-    assert_eq!(failed.len(), 2, "{failed:?}");
+    // The first failure's rebuild is a free rebase; the next two use build's attempts.
+    assert_eq!(failed.len(), 3, "{failed:?}");
     let err = failed[0]["error"].as_str().unwrap();
     assert!(
         err.contains("merge conflict between base and head"),
@@ -13521,11 +13823,17 @@ fn every_step_keeps_the_local_queue_and_sends_a_conflict_back_to_build() {
     e.gh_file("pr-12.merge", "DIRTY");
     let v = e.run(&["run", "--issue", "7"], 1);
     assert_eq!(v["outcome"], "stuck", "{v}");
+    // The first conflict's rebuild is free; the next, with main unmoved, uses build's second
+    // attempt.
     assert_eq!(
         e.calls(),
-        ["triage", "build", "verify", "review", "ship", "build", "verify", "review", "ship"]
+        [
+            "triage", "build", "verify", "review", "ship", "build", "verify", "review", "ship",
+            "build"
+        ]
     );
     assert!(e.prompt(6, "build").contains("PR #12 conflicts with main"));
+    assert_eq!(rebase_events(&e).len(), 1);
 }
 
 #[test]
@@ -13620,6 +13928,7 @@ fn a_merge_result_that_conflicts_goes_back_to_build_to_rebase() {
     let p = e.prompt(6, "build");
     assert!(p.contains("PR #12 conflicts with main"), "{p}");
     assert!(p.contains("rebase onto main"), "{p}");
+    assert!(p.contains("rebase onto the newest origin/main"), "{p}");
     assert!(!e.gh_calls().contains("pr merge"));
     assert_eq!(gate_verdicts(&e), verdicts(&[("build", true)]));
     assert!(run_events(&e).iter().any(|ev| ev["event"] == "conflict"));
