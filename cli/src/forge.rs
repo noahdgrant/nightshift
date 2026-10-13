@@ -627,14 +627,34 @@ mod tests {
             .trim()
             .to_string();
         let running = |pid: &str| {
-            std::fs::read_to_string(format!("/proc/{pid}/stat"))
-                .is_ok_and(|s| !s.rsplit(") ").next().unwrap_or("").starts_with('Z'))
+            std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| has_not_exited(&s))
         };
         let deadline = Instant::now() + Duration::from_secs(5);
         while running(&pid) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!running(&pid), "descendant {pid} still running");
+    }
+
+    /// Whether a `/proc/<pid>/stat` line shows a process that has not exited. A dead process is
+    /// a zombie (`Z`), then briefly `X` while its parent reaps it, then gone.
+    fn has_not_exited(stat: &str) -> bool {
+        !stat
+            .rsplit(") ")
+            .next()
+            .unwrap_or("")
+            .starts_with(['Z', 'X'])
+    }
+
+    #[test]
+    fn a_zombie_or_a_process_being_reaped_has_exited() {
+        let stat = |state: char| format!("68832 (sleep) {state} 493 68650 68650 0 -1");
+        for state in ['R', 'S', 'D', 'T'] {
+            assert!(has_not_exited(&stat(state)), "{state}");
+        }
+        for state in ['Z', 'X'] {
+            assert!(!has_not_exited(&stat(state)), "{state}");
+        }
     }
 
     #[test]
