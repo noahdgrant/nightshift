@@ -1475,8 +1475,8 @@ fn a_phase_that_times_out_keeps_its_tmpdir() {
 #[test]
 fn a_passing_phase_whose_tmpdir_will_not_go_is_logged_not_failed() {
     use std::os::unix::fs::PermissionsExt;
-    let uid = std::process::Command::new("id").arg("-u").output().unwrap();
-    if uid.stdout == b"0\n" {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
         return;
     }
     let e = Env::new();
