@@ -1,0 +1,3 @@
+version = "9.2.0"
+install = "apt"
+check = "npm --version"

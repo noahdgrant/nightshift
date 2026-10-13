@@ -1,0 +1,6 @@
+# The JavaScript/TypeScript rule pack (rules/js/): its tools come from its own lockfile, run
+# under this Node and installed with this npm.
+version = "18"
+install = "apt"
+package = "nodejs"
+check = "node --version"
