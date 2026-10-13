@@ -1412,9 +1412,15 @@ fn phase_tmpdirs(e: &Env, unit: &str) -> Vec<String> {
         .collect()
 }
 
-/// The directory of `unit`'s phase `TMPDIR`s, in the system temp dir `ns` inherited.
+/// The directory of `unit`'s phase `TMPDIR`s, in the system temp dir `ns` inherited:
+/// `ns-<repo>-<8 hex of sha256 of the git common dir>-<unit>`.
 fn unit_tmp(e: &Env, unit: &str) -> PathBuf {
-    e.base.join("systmp").join(format!("ns-myrepo-{unit}"))
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(e.root.join(".git").as_os_str().as_encoded_bytes());
+    let hash: String = digest[..4].iter().map(|b| format!("{b:02x}")).collect();
+    e.base
+        .join("systmp")
+        .join(format!("ns-myrepo-{hash}-{unit}"))
 }
 
 #[test]

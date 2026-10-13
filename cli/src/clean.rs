@@ -236,15 +236,12 @@ fn remove(repo: &Repo, m: &Merged) -> Result<(), String> {
         git::run(&m.path, &["checkout", "--quiet", "--detach"])
             .map_err(|e| format!("worktree not detached: {e:#}"))?;
     }
-    // --force: untracked and ignored files (build output, .ns/) go with it; tracked changes were
-    // checked just before.
     // The TMPDIRs go first: once the worktree or branch is gone the unit is no longer found, and
     // a later step failing would leave them for good.
     let tmp = repo.unit_tmp(&m.unit);
-    let tmp_kept = match std::fs::remove_dir_all(&tmp) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Some(e),
-        _ => None,
-    };
+    let tmp_kept = remove_unit_tmp(&tmp).err();
+    // --force: untracked and ignored files (build output, .ns/) go with it; tracked changes were
+    // checked just before.
     git::run(&repo.root, &["worktree", "remove", "--force", &path])
         .map_err(|e| format!("worktree not removed: {e:#}"))?;
     if m.on_default.is_none() {
@@ -253,6 +250,15 @@ fn remove(repo: &Repo, m: &Merged) -> Result<(), String> {
     match tmp_kept {
         Some(e) => Err(format!("worktree removed, {} kept: {e}", tmp.display())),
         None => Ok(()),
+    }
+}
+
+/// Remove a unit's phase `TMPDIR`s; a directory already gone is removed.
+fn remove_unit_tmp(tmp: &Path) -> Result<(), std::io::Error> {
+    match std::fs::remove_dir_all(tmp) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
