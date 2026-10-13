@@ -1,4 +1,4 @@
-//! `ns run`: drive one unit through the phases (docs/FACTORY.md).
+//! `ns run`: drive one unit through the phases (docs/factory/run.md).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};

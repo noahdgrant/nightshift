@@ -1,5 +1,6 @@
 //! Split parents: issues triage split into child issues, which wait under `[queue] split_label`
-//! until `ns watch` closes them once their children are done (docs/FACTORY.md, "Split parents").
+//! until `ns watch` closes them once their children are done (docs/factory/watch.md,
+//! "Split parents").
 
 use std::collections::BTreeSet;
 use std::path::Path;

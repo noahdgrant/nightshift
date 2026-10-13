@@ -1,4 +1,5 @@
-//! Keep installed skills that live in the watched repo at `origin/<default>` (docs/FACTORY.md).
+//! Keep installed skills that live in the watched repo at `origin/<default>`
+//! (docs/factory/watch.md).
 //!
 //! A unit runs in a fresh worktree, so skills checked into the repo are current. A skill
 //! installed as a symlink into the main checkout is not: `ns watch` merges skill changes to

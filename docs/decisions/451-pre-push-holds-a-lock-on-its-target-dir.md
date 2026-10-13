@@ -12,7 +12,7 @@ amends: [D67]
 
 `.githooks/pre-push` still builds every run in one cargo target dir, `pre-push-target` under the common git dir, or `CARGO_TARGET_DIR` when set (D67). For its whole run it now holds an OS `flock` on `<target dir>.lock`. A push that finds the lock held prints that it is waiting and blocks until the other push finishes. `ci-local.sh` runs with the lock's file descriptor closed, so a process it leaves behind can't keep the lock. The hook exports `NS_PRE_PUSH_LOCK`, the lock it holds, and a run nested inside it with that same lock (this repo's tests run the hook during CI) runs under its parent's lock rather than waiting on it forever. Without `flock` on PATH the hook refuses the push and says how to install it.
 
-`ns run` gives each phase `GIT_SSH_COMMAND="ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40"` unless `GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand` is already set. `ns doctor` reports `ssh_keepalive` and warns when `origin` is SSH and none of `GIT_SSH_COMMAND`, `core.sshCommand` or the `ssh -G` config sets `ServerAliveInterval`. `docs/FACTORY.md` ("Before the first night") tells the operator to set it.
+`ns run` gives each phase `GIT_SSH_COMMAND="ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40"` unless `GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand` is already set. `ns doctor` reports `ssh_keepalive` and warns when `origin` is SSH and none of `GIT_SSH_COMMAND`, `core.sshCommand` or the `ssh -G` config sets `ServerAliveInterval`. `docs/factory/starting-a-night.md` ("Before the first night") tells the operator to set it.
 
 ## Reason
 

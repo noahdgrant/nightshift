@@ -183,7 +183,7 @@ Trigger evals parse the harness transcript for the skill being loaded. `claude-s
 
 ## Quality results
 
-`ns quality` results (docs/FACTORY.md, Quality), newest first.
+`ns quality` results (docs/factory/quality.md), newest first.
 
 ### ns-build self-check (#150), measured 2026-10-10
 

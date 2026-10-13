@@ -114,7 +114,7 @@ pub struct Merge {
     /// Minutes to wait for the first check to register on the PR head before concluding no CI.
     pub ci_register_timeout: u64,
     /// Gate the merge of the PR head into the fresh default branch under the merge lock, in
-    /// place of update-branch and the gate on the PR head (docs/FACTORY.md, "Merge"). Ignored
+    /// place of update-branch and the gate on the PR head (docs/factory/merge.md). Ignored
     /// under `[gate] local = "build-only"`, where GitHub's checks gate the merge.
     pub local_queue: bool,
 }
@@ -156,7 +156,7 @@ impl Merge {
     }
 }
 
-/// `[gate]`: where the CI gate runs all of local CI (docs/FACTORY.md, "Gate").
+/// `[gate]`: where the CI gate runs all of local CI (docs/factory/run.md, "Gate").
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct GateDef {
@@ -279,7 +279,7 @@ pub struct Queue {
     pub triage_label: String,
     /// Read main's CI at the start of a night (`crate::watch::ci`).
     pub fix_main_first: bool,
-    /// Files no two units overlap on, whatever their `touches` predict (docs/FACTORY.md,
+    /// Files no two units overlap on, whatever their `touches` predict (docs/factory/watch.md,
     /// "Parallel units").
     pub overlap_ignore: Vec<String>,
     /// Removed (D42): `--until` and the budget bound the triage pass, not a count. Read only so
@@ -388,10 +388,10 @@ impl Factory {
         let mut out = Vec::new();
         match &self.queue.removed_triage_per_night {
             Some(v) if v.as_integer() == Some(0) => out.push(
-                "[queue] triage_per_night is no longer used, so 0 no longer turns the triage pass off: it runs tonight. Only gates = \"stop\" turns it off (docs/FACTORY.md, Triage pass); remove the key".into(),
+                "[queue] triage_per_night is no longer used, so 0 no longer turns the triage pass off: it runs tonight. Only gates = \"stop\" turns it off (docs/factory/watch.md, Triage pass); remove the key".into(),
             ),
             Some(_) => out.push(
-                "[queue] triage_per_night is no longer used: --until and the budget bound the triage pass (docs/FACTORY.md, Triage pass); remove it".into(),
+                "[queue] triage_per_night is no longer used: --until and the budget bound the triage pass (docs/factory/watch.md, Triage pass); remove it".into(),
             ),
             None => {}
         }

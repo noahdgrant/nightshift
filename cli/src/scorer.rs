@@ -1,4 +1,4 @@
-//! Scorer definitions: `scorers/<name>.md` in the factory definition (docs/FACTORY.md, Scorers).
+//! Scorer definitions: `scorers/<name>.md` in the factory definition (docs/factory/scorers.md).
 
 use std::fs;
 use std::path::Path;
