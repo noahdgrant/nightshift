@@ -59,18 +59,22 @@ fn in_unit_tmp(parts: &[&str]) -> bool {
 /// A command that goes up from a phase's `TMPDIR` to the unit's `phase-settings.json`.
 /// `TMPDIR` is `.git/ns/units/<unit>/tmp/<phase>-<n>`, so two `..` after it land on that file.
 /// The lexer drops variable names and does not follow `cd $TMPDIR`, so this reads the command's
-/// words. It denies a word that has `TMPDIR` and a `..` part, and, after a `cd` or `pushd` whose
-/// argument has `TMPDIR`, any later word with a `..` part or named like the settings file. A
-/// `..` elsewhere in the command (`cd .. && cargo test > $TMPDIR/out.log`) is fine.
+/// words. It denies a word that has `TMPDIR` and a `..` part, and, while the shell is in
+/// `TMPDIR` (after a `cd` or `pushd` whose first non-option argument has `TMPDIR`), any word with
+/// a `..` part or named like the settings file. Another `cd` ends that, and so does the `)` that
+/// closes the `(` the `cd` was inside, whether a subshell or a `$(...)`. A `..` elsewhere
+/// (`cd .. && cargo test > $TMPDIR/out.log`) is fine.
 pub(super) fn tmpdir_reaches_settings(command: &str) -> Option<String> {
     let mut in_tmp = false;
+    let mut scopes: Vec<bool> = Vec::new();
+    let mut cd_pending = false;
     for segment in segments(command) {
         let segment = segment.replace(['\'', '"', '\\'], "");
         let words: Vec<&str> = segment
-            .split(|c: char| c.is_whitespace() || "<>=".contains(c))
+            .split(|c: char| c.is_whitespace() || c == '>' || c == '=')
             .filter(|w| !w.is_empty())
             .collect();
-        for (i, word) in words.iter().enumerate() {
+        for word in &words {
             let up = word.split('/').any(|p| p == "..");
             if up && word.contains("TMPDIR") {
                 return Some(format!(
@@ -82,11 +86,24 @@ pub(super) fn tmpdir_reaches_settings(command: &str) -> Option<String> {
                     "{word} after a cd into $TMPDIR could reach the phase settings ({PROTECTED})"
                 ));
             }
-            if matches!(word.trim_start_matches('('), "cd" | "pushd")
-                && words[i + 1..].iter().any(|w| w.contains("TMPDIR"))
-            {
-                in_tmp = true;
+            if cd_pending && !word.starts_with('-') {
+                in_tmp = word.contains("TMPDIR");
+                cd_pending = false;
             }
+            for c in word.chars() {
+                match c {
+                    '(' => scopes.push(in_tmp),
+                    ')' => in_tmp = scopes.pop().unwrap_or(in_tmp),
+                    _ => {}
+                }
+            }
+            if matches!(word.trim_start_matches(['(', '$']), "cd" | "pushd") {
+                cd_pending = true;
+            }
+        }
+        if cd_pending {
+            in_tmp = false;
+            cd_pending = false;
         }
     }
     None
@@ -97,81 +114,72 @@ fn segments(command: &str) -> impl Iterator<Item = &str> {
     command.split([';', '&', '|', '\n', '`'])
 }
 
-/// Words that run the command after them.
-const WRAPPERS: &[&str] = &[
-    "command", "env", "xargs", "sudo", "exec", "nohup", "time", "nice", "builtin", "then", "do",
-    "else", "!", "doas", "setsid", "timeout", "stdbuf",
-];
-
-/// Short option letters and long options with which `cp` makes a link or copies one as a link.
-const CP_LINK_SHORT: &str = "slarRdP";
-const CP_LINK_LONG: &[&str] = &[
-    "--symbolic-link",
-    "--link",
-    "--archive",
-    "--recursive",
-    "--no-dereference",
-];
-const RSYNC_LINK_SHORT: &str = "laH";
-const RSYNC_LINK_LONG: &[&str] = &["--links", "--archive", "--hard-links", "--safe-links"];
-
-/// A command that can plant a link, with an argument that is in `ns/units` or mentions
-/// `TMPDIR`. A link in a phase's `TMPDIR` that points at the unit's `phase-settings.json`, written
-/// through later, would reach past the `tmp` exception, whatever the link-maker is called
-/// (`ln`, `link`, `cp -s`, `install`, `rsync -a`) and however it is reached (`/bin/ln`, `\ln`,
-/// `command ln`, `env ln`, `xargs ln`). A script the phase writes is out of reach.
+/// A command that can plant a link or copy the phase settings. A link in a phase's `TMPDIR` that
+/// points at the unit's `phase-settings.json`, written through later, would reach past the `tmp`
+/// exception. Per segment, a token whose basename is a verb is enough, wherever it stands
+/// (`/bin/ln`, `\ln`, `env ln`, `busybox ln`, `find ... -exec ln`), and the other tokens of the
+/// segment are its arguments:
+/// - `ln` and `link` are denied when an argument mentions `TMPDIR`, an `ns/units` path component
+///   or `phase-settings.json`. That includes `ln -s a $TMPDIR/l`, whose target is harmless: the
+///   guard does not tell a safe target from an unsafe one, so it denies them all.
+/// - `cp`, `rsync` and `install` are denied when an argument names an `ns/units` path component
+///   or `phase-settings.json`; `cp` also when it has a link flag (`-s`, `-l`, `--symbolic-link`,
+///   `--link`) and an argument mentions `TMPDIR`.
+///
+/// Out of reach: a script the phase writes (`python -c os.symlink`) and a path a shell builds
+/// (`$(dirname $TMPDIR)`).
 pub(super) fn links_into_unit(command: &str) -> Option<String> {
-    let units = format!("{}/{}", pin::COMMON_NS, pin::COMMON_UNITS);
     for segment in segments(command) {
         let tokens: Vec<String> = segment
             .split_whitespace()
             .map(|t| t.replace(['\'', '"', '\\'], ""))
             .collect();
-        let (mut at_command, mut wrapped) = (true, false);
         for (i, token) in tokens.iter().enumerate() {
-            let bare = token.trim_start_matches(['(', '$', '{']);
-            if bare.len() != token.len() {
-                at_command = true;
+            let bare = token.trim_start_matches(['(', '$']);
+            let verb = bare.rsplit('/').next().unwrap_or(bare);
+            if !matches!(verb, "ln" | "link" | "cp" | "rsync" | "install") {
+                continue;
             }
-            let name = bare.rsplit('/').next().unwrap_or(bare);
-            if at_command || wrapped {
-                let rest = &tokens[i + 1..];
-                if makes_links(name, rest) {
-                    if let Some(arg) = rest.iter().find(|a| {
-                        a.contains("TMPDIR") || a.contains(&units) || a.contains(pin::SETTINGS_FILE)
-                    }) {
-                        return Some(format!(
-                            "{name} {arg}: a link out of a phase's scratch directory could reach {PROTECTED}"
-                        ));
-                    }
-                }
-                if WRAPPERS.contains(&name) {
-                    wrapped = true;
-                } else if !(bare.starts_with('-') || bare.contains('=')) {
-                    at_command = false;
-                }
+            let others = || {
+                tokens
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(_, t)| t)
+            };
+            let hit = if matches!(verb, "ln" | "link") {
+                others().find(|a| a.contains("TMPDIR") || names_unit_or_settings(a))
+            } else if verb == "cp" && tokens[i + 1..].iter().any(|a| is_link_flag(a)) {
+                others().find(|a| a.contains("TMPDIR") || names_unit_or_settings(a))
+            } else {
+                others().find(|a| names_unit_or_settings(a))
+            };
+            if let Some(arg) = hit {
+                return Some(format!(
+                    "{verb} {arg}: a link out of a phase's scratch directory could reach {PROTECTED}"
+                ));
             }
         }
     }
     None
 }
 
-/// `name` run with `args` makes a link.
-fn makes_links(name: &str, args: &[String]) -> bool {
-    let has_flag = |short: &str, long: &[&str]| {
-        args.iter().any(|a| {
-            if a.starts_with("--") {
-                long.iter().any(|l| a.split('=').next() == Some(l))
-            } else {
-                a.starts_with('-') && a.chars().skip(1).any(|c| short.contains(c))
-            }
-        })
-    };
-    match name {
-        "ln" | "link" | "install" => true,
-        "cp" => has_flag(CP_LINK_SHORT, CP_LINK_LONG),
-        "rsync" => has_flag(RSYNC_LINK_SHORT, RSYNC_LINK_LONG),
-        _ => false,
+/// `arg` has an `ns/units` path component pair (not `runs/units`) or names the settings file.
+fn names_unit_or_settings(arg: &str) -> bool {
+    arg.contains(pin::SETTINGS_FILE)
+        || arg
+            .split('/')
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|p| p[0] == pin::COMMON_NS && p[1] == pin::COMMON_UNITS)
+}
+
+/// `arg` is a `cp` option that makes a symbolic or hard link: `-s`, `-l` (alone or among other
+/// short letters, as in `-rs`), `--symbolic-link` or `--link`.
+fn is_link_flag(arg: &str) -> bool {
+    match arg.strip_prefix("--") {
+        Some(long) => matches!(long, "symbolic-link" | "link"),
+        None => arg.starts_with('-') && arg.chars().skip(1).any(|c| matches!(c, 's' | 'l')),
     }
 }
 

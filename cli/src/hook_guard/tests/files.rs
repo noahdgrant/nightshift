@@ -607,52 +607,152 @@ fn a_dotdot_that_does_not_follow_tmpdir_is_allowed() {
 }
 
 #[test]
-fn a_link_maker_naming_tmpdir_or_the_units_directory_is_denied() {
+fn ln_and_link_naming_tmpdir_the_units_directory_or_the_settings_file_are_denied() {
     for c in [
-        "ln -s ../../phase-settings.json /r/.git/ns/units/u1/tmp/build-1/l",
-        "ln -s ../../phase-settings.json $TMPDIR/l",
-        "ln -s .. $TMPDIR/l",
-        "ln -s /r/.git/ns/units/u1 /r/.git/ns/units/u1/tmp/build-1/l",
         "ln -s ../../phase-settings.json l",
+        "ln -s .. $TMPDIR/l",
+        "ln -s /r/.git/ns/units/u1 l",
+        "ln -s ns/units l",
+        "link /r/.git/ns/units/u1/phase-settings.json l",
+        "link a $TMPDIR/l",
         "ln -s a /r/.git/ns/units/u1/tmp/build-1/l",
-        "ln -s a $TMPDIR/l",
-        "/bin/ln -s $(dirname $TMPDIR) $TMPDIR/l",
-        "\\ln -s a $TMPDIR/l",
-        "command ln -s a $TMPDIR/l",
-        "env ln -s a $TMPDIR/l",
-        "echo a | xargs ln -s $TMPDIR/l",
-        "echo a | xargs -n 1 ln -s a $TMPDIR/l",
-        "\"ln\" -s a $TMPDIR/l",
-        "FOO=1 ln -s a $TMPDIR/l",
-        "echo $(ln -s a $TMPDIR/l)",
-        "true; link /r/.git/ns/units/u1/phase-settings.json /r/.git/ns/units/u1/tmp/build-1/l",
-        "cp -l /r/.git/ns/units/u1/phase-settings.json $TMPDIR/",
-        "cp -s /r/.git/ns/units/u1/phase-settings.json $TMPDIR/",
-        "cp -rs /r/.git/ns/units/u1/*son $TMPDIR/",
-        "cp --symbolic-link /r/.git/ns/units/u1/phase-settings.json $TMPDIR/",
-        "cp -a /r/.git/ns/units/u1/phase-settings.json $TMPDIR/",
-        "install /r/.git/ns/units/u1/phase-settings.json $TMPDIR/l",
-        "rsync -a /r/.git/ns/units/u1/ $TMPDIR/",
-        "rsync --links /r/.git/ns/units/u1/phase-settings.json $TMPDIR/",
     ] {
         assert!(denied(c), "{c}");
     }
 }
 
 #[test]
-fn a_link_maker_that_names_neither_tmpdir_nor_the_units_directory_is_allowed() {
+fn ln_with_a_harmless_target_into_tmpdir_is_denied_on_purpose() {
+    assert!(denied("ln -s a $TMPDIR/l"));
+}
+
+#[test]
+fn a_link_maker_is_found_at_any_token_position() {
     for c in [
-        "ln -s a b",
-        "cp a b",
-        "cp ../docs/x.md $TMPDIR/x.md",
+        "/bin/ln -s a $TMPDIR/l",
+        "\\ln -s a $TMPDIR/l",
+        "\"ln\" -s a $TMPDIR/l",
+        "'link' a $TMPDIR/l",
+        "command ln -s a $TMPDIR/l",
+        "env ln -s a $TMPDIR/l",
+        "FOO=1 ln -s a $TMPDIR/l",
+        "echo a | xargs -n 1 ln -s a $TMPDIR/l",
+        "busybox ln -s /r/.git/ns/units/u1 $TMPDIR/l",
+        "echo $(ln -s a $TMPDIR/l)",
+        "(ln -s a $TMPDIR/l)",
+        "echo `ln -s a $TMPDIR/l`",
+        "true; ln -s a $TMPDIR/l",
+        "find . -maxdepth 0 -exec ln -s ../.. $TMPDIR/l \\;",
+        "find $TMPDIR -prune -exec ln -s .. {}/l \\;",
+        "find $TMPDIR -prune -exec cp -s a {}/l \\;",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn cp_rsync_and_install_naming_the_units_directory_or_the_settings_file_are_denied() {
+    for c in [
+        "cp /r/.git/ns/units/u1/phase-settings.json /tmp/copy",
+        "cp -r /r/.git/ns/units/u1 /tmp/copy",
+        "cp x phase-settings.json",
+        "rsync -a /r/.git/ns/units/u1/ /tmp/x",
+        "rsync x ../../phase-settings.json",
+        "install /r/.git/ns/units/u1/phase-settings.json $TMPDIR/l",
+        "install x ns/units/u1/y",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn cp_with_a_link_flag_and_tmpdir_is_denied() {
+    for c in [
+        "cp -s a $TMPDIR/l",
+        "cp -l a $TMPDIR/l",
+        "cp -rs a $TMPDIR/l",
+        "cp -sv a $TMPDIR/l",
+        "cp --symbolic-link a $TMPDIR/l",
+        "cp --link a $TMPDIR/l",
+        "cp $TMPDIR/a -s b",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn copies_that_create_no_link_are_allowed() {
+    for c in [
+        "install -m755 target/debug/foo $TMPDIR/bin/foo",
+        "install -s a $TMPDIR/b",
+        "cp -r src $TMPDIR/copy",
+        "cp -a src $TMPDIR/copy",
         "cp -v a $TMPDIR/b",
+        "cp a $TMPDIR/b",
+        "cp ../docs/x.md $TMPDIR/x.md",
+        "cp -s a b",
+        "cp --symbolic-link a b",
+        "rsync -a repo/ $TMPDIR/x",
+        "rsync -l a $TMPDIR/x",
         "rsync -v a $TMPDIR/b",
         "rsync -a src/ dst/",
-        "echo link $TMPDIR/x",
-        "ln -s a b; echo x > $TMPDIR/out",
-        "cargo install --path . > $TMPDIR/out",
+        "cp -r /r/.git/ns /tmp/copy",
     ] {
         assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_link_maker_that_names_nothing_protected_is_allowed() {
+    for c in [
+        "ln -s a b",
+        "ln -s build/runs/units/x l",
+        "ln -s build/ns/other/units l",
+        "ln -s ns-units l",
+        "cp build/runs/units/x y",
+        "link a b",
+        "ln -s a b; echo x > $TMPDIR/out",
+        "cargo install --path . > $TMPDIR/out",
+        "echo x > $TMPDIR/out",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_verb_word_in_an_echo_with_tmpdir_is_denied_as_a_known_false_positive() {
+    assert!(denied("echo link $TMPDIR/x"));
+}
+
+#[test]
+fn the_taint_of_a_cd_into_tmpdir_ends_with_its_subshell_or_a_later_cd() {
+    for c in [
+        "(cd \"$TMPDIR\" && tar xf a.tar); cargo test --manifest-path ../Cargo.toml",
+        "(cd $TMPDIR && tar xf a.tar) && cat ../x",
+        "cd $TMPDIR && tar xf a.tar; cd /repo && cargo test --manifest-path ../Cargo.toml",
+        "cd $TMPDIR; cd; cat ../x",
+        "cd $TMPDIR; cd -; cat ../x",
+        "echo $(cd $TMPDIR && pwd); cat ../x",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn the_taint_of_a_cd_into_tmpdir_survives_a_command_substitution_and_a_cd_option() {
+    for c in [
+        "cd $TMPDIR && echo $(pwd) && echo {} > ../../phase-settings.json",
+        "cd -P $TMPDIR && echo {} > ../../x",
+        "cd $TMPDIR; (cd /repo); cat ../x",
+        "cd $TMPDIR && echo {} >../../x",
+        "cd $TMPDIR && cp --target-directory=.. a",
+        "cd $TMPDIR && echo {} > \\.\\./\\.\\./x",
+        "cd $TMPDIR && echo {} > '..'/'..'/x",
+        "echo `cd $TMPDIR`; echo {} > $TMPDIR/\\.\\./\\.\\./x",
+        "$(cd $TMPDIR && echo {} > ../../x)",
+        "echo ) ; cd $TMPDIR && echo {} > ../../x",
+    ] {
+        assert!(denied(c), "{c}");
     }
 }
 
@@ -661,7 +761,7 @@ fn reading_the_ns_directory_and_other_ns_commands_stay_allowed() {
     for c in [
         "ls /r/.git/ns",
         "cat /r/.git/ns/units/u1/phase-settings.json",
-        "cp /r/.git/ns/units/u1/phase-settings.json /tmp/copy",
+        "cat /r/.git/ns/units/u1/tmp/x",
         "cp -r /r/.git/ns /tmp/copy",
         "ns ask --harness claude hello",
         "ns verify",
