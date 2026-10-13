@@ -186,17 +186,22 @@ impl Scan {
     /// literal value for certain and forget those it may change. `flow` says whether the
     /// segment ran for certain, in this shell.
     fn settle(&mut self, words: &[Word], sep: Sep, flow: &mut Flow) {
-        let command = words.iter().find(|w| env_assignment(&w.text).is_none());
+        let command = words.iter().find(|w| assignment(w).is_none());
         let command = command.map(|w| basename(&w.text));
         if command.is_some_and(|c| COMPOUND_WORDS.contains(&c)) {
             flow.compound = true;
         }
-        let names = |list: &[&str]| words.iter().any(|w| list.contains(&basename(&w.text)));
+        let names = |list: &[&str]| {
+            words
+                .iter()
+                .enumerate()
+                .any(|(i, w)| names_builtin(list, &words[..i], w))
+        };
         if names(FREEZERS) {
             self.frozen = true;
         }
         let real = words.iter().find(|w| {
-            env_assignment(&w.text).is_none()
+            assignment(w).is_none()
                 && !PREFIXES.contains(&w.text.as_str())
                 && !(w.text.starts_with('-') && w.expansions.is_empty())
         });
@@ -235,7 +240,21 @@ impl Scan {
 
     /// Forget each variable the word `w` may set: it names it, or assigns it.
     fn forget(&mut self, w: &Word) {
-        self.vars.retain(|name, _| !may_set(&w.text, name));
+        if self.vars.is_empty() {
+            return;
+        }
+        if w.text.starts_with('-') {
+            self.vars.retain(|name, _| !may_set(&w.text, name));
+        } else {
+            let end = w
+                .text
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(w.text.len());
+            let (name, rest) = w.text.split_at(end);
+            if rest.is_empty() || rest.starts_with(['=', '+', '[']) {
+                self.vars.remove(name);
+            }
+        }
     }
 
     /// `path` is protected, or is relative to a working directory that is.
@@ -293,9 +312,19 @@ fn check_command(s: &str, scan: &mut Scan) -> Option<String> {
 /// follows it in the text.
 fn repeats_or_defers(toks: &[Tok]) -> bool {
     const WORDS: &[&str] = &[
-        "while", "until", "for", "select", "function", "eval", "source", ".",
+        "while", "until", "for", "select", "function", "eval", "source",
     ];
     toks.iter().enumerate().any(|(i, t)| match t {
+        Tok::Word(w) if basename(&w.text) == "." => {
+            let before =
+                toks[..i]
+                    .iter()
+                    .rev()
+                    .map_while(|t| if let Tok::Word(p) = t { Some(p) } else { None });
+            before
+                .into_iter()
+                .all(|p| assignment(p).is_some() || PREFIXES.contains(&p.text.as_str()))
+        }
         Tok::Word(w) => WORDS.contains(&basename(&w.text)),
         Tok::SubshellOpen => {
             matches!(
@@ -323,6 +352,7 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
     let top = scan.following;
     let is_word = |t: &Tok| matches!(t, Tok::Word(_));
     let mut words: Vec<Word> = Vec::new();
+    let mut rewrites = false;
     let mut stdin_is_text = false;
     let mut flow = Flow {
         runs: true,
@@ -331,12 +361,7 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
     let mut toks = toks.into_iter().peekable();
     while let Some(tok) = toks.next() {
         let tok = match tok {
-            Tok::Word(w) => {
-                let rewrites = words.iter().any(|p| {
-                    REWRITERS.contains(&basename(&p.text)) || FREEZERS.contains(&basename(&p.text))
-                });
-                Tok::Word(scan.read(w, !rewrites))
-            }
+            Tok::Word(w) => Tok::Word(scan.read(w, !rewrites)),
             tok => tok,
         };
         match tok {
@@ -344,6 +369,8 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
                 if top {
                     scan.forget(&w);
                 }
+                rewrites |=
+                    names_builtin(REWRITERS, &words, &w) || names_builtin(FREEZERS, &words, &w);
                 words.push(w);
             }
             Tok::Herestring => {
@@ -374,6 +401,7 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
                     scan.settle(&words, sep, &mut flow);
                 }
                 words.clear();
+                rewrites = false;
                 stdin_is_text = false;
                 match tok {
                     Tok::SubshellOpen => scan.outer_cwds.push(scan.cwd),
@@ -509,15 +537,15 @@ const REWRITERS: &[&str] = &[
 
 /// Builtins after which the scan learns no assignment: a variable's attributes or a trap can
 /// change what a later assignment, or any command, sets.
-const FREEZERS: &[&str] = &["declare", "typeset", "local", "trap", "alias"];
+const FREEZERS: &[&str] = &["declare", "typeset", "local", "readonly", "trap", "alias"];
 
 /// Words that come before a segment's command, or modify how it runs.
 const PREFIXES: &[&str] = &[
     "time", "!", "if", "then", "else", "elif", "while", "until", "do", "builtin", "command",
 ];
 
-/// Commands that cannot set a shell variable. A segment whose command is any other, however
-/// it is prefixed, clears every learned variable.
+/// Commands that set no variable the scan learns (see `SHELL_MANAGED`). A segment whose
+/// command is any other, however it is prefixed, clears every learned variable.
 const HARMLESS: &[&str] = &[
     "rm", "cp", "mv", "git", "echo", "cat", "ls", "test", "cd", "true", "false", ":", "mkdir",
     "touch",
@@ -552,6 +580,17 @@ const SHELL_MANAGED: &[&str] = &[
     "MAPFILE",
 ];
 
+/// `w`, which follows `before` in its segment, is a builtin in `list`. The source builtin `.`
+/// counts only where a command goes: elsewhere it is a path.
+fn names_builtin(list: &[&str], before: &[Word], w: &Word) -> bool {
+    let name = basename(&w.text);
+    list.contains(&name)
+        && (name != "."
+            || before
+                .iter()
+                .all(|p| assignment(p).is_some() || PREFIXES.contains(&p.text.as_str())))
+}
+
 /// The word `text` names the variable `name`, assigns it, or ends with it as an option's
 /// value (`-vU`), so the command may set it.
 fn may_set(text: &str, name: &str) -> bool {
@@ -578,7 +617,7 @@ fn literal_assignments(words: &[Word]) -> Vec<(String, String)> {
         _ => words,
     };
     let literal = |w: &Word| {
-        let (name, value) = env_assignment(&w.text)?;
+        let (name, value) = assignment(w)?;
         (w.expansions.is_empty() && is_literal_value(value) && !SHELL_MANAGED.contains(&name))
             .then(|| (name.to_string(), value.to_string()))
     };
@@ -587,6 +626,12 @@ fn literal_assignments(words: &[Word]) -> Vec<(String, String)> {
         .map(literal)
         .collect::<Option<Vec<_>>>()
         .unwrap_or_default()
+}
+
+/// `w` assigns a variable: it has the shape `name=value`, and nothing quoted or expanded
+/// comes before the `=`, which would make it a command name.
+fn assignment(w: &Word) -> Option<(&str, &str)> {
+    w.assignable.then(|| env_assignment(&w.text)).flatten()
 }
 
 fn env_assignment(word: &str) -> Option<(&str, &str)> {

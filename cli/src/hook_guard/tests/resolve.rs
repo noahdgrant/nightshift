@@ -373,3 +373,85 @@ fn a_setter_behind_a_keyword_clears_the_variables() {
         }
     }
 }
+
+#[test]
+fn a_readonly_variable_stops_the_scan_learning_assignments() {
+    for c in [
+        "readonly F=-n; export F=ok; git commit $F -m x",
+        "export U=--no-verify; readonly U; U=ok; git commit $U",
+        "readonly -p; readonly F=-n; F=ok; git commit $F",
+        "export -n F; readonly F=-n; F=ok; git commit $F",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_quoted_or_escaped_name_is_not_an_assignment() {
+    for c in [
+        "U=--no-verify; \\U=ok; git commit $U",
+        "U=--no-verify; \"U\"=ok; git commit $U",
+        "U=--no-verify; 'U'=ok; git commit $U",
+        "U=--no-verify; U\\=ok; git commit $U",
+        "U=--no-verify; V=U; $V=ok; git commit $U",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in ["U=build.md; rm .ns/u1/$U", "U='build.md'; rm .ns/u1/$U"] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_current_shell_command_substitution_stops_the_scan_following() {
+    for c in [
+        "F=ok; echo ${ read F <<< -n; }; git commit $F",
+        "F=ok; echo ${| read F <<< -n; }; git commit $F",
+        "F=ok; echo ${\tread F <<< -n; }; git commit $F",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn every_shell_managed_variable_is_refused_as_an_assignment() {
+    for v in SHELL_MANAGED {
+        let c = format!("{v}=build.md; rm .ns/u1/${v}");
+        assert!(denied(&c), "{c}");
+    }
+}
+
+#[test]
+fn a_long_command_gives_the_same_verdict() {
+    let words = |n: usize| {
+        (0..n)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let assigns = |n: usize| {
+        (0..n)
+            .map(|i| format!("V{i}=a{i}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let n = 2000;
+    assert!(!denied(&format!(
+        "echo {}; U=build.md; rm .ns/u1/$U",
+        words(n)
+    )));
+    assert!(denied(&format!("echo {}; U=u1; rm -r .ns/$U", words(n))));
+    assert!(!denied(&format!(
+        "{}; U=build.md; rm .ns/u1/$U",
+        assigns(n)
+    )));
+    assert!(denied(&format!("{}; U=u1; rm -r .ns/$U", assigns(n))));
+    let uses = "U=x; echo $U; ".repeat(n);
+    assert!(denied(&format!("{uses}U=u1; rm -r .ns/$U")));
+}
+
+#[test]
+fn a_dot_that_is_not_the_source_builtin_does_not_stop_resolving() {
+    assert!(!denied("U=build.md; git add .; rm .ns/u1/$U"));
+    assert!(denied("U=build.md; . f; rm .ns/u1/$U"));
+}

@@ -17,6 +17,9 @@ pub(super) struct Word {
     pub(super) splits: bool,
     /// An unquoted `{` opened in the word.
     pub(super) braced: bool,
+    /// Nothing quoted, escaped or expanded comes before the word's first `=`, so the word
+    /// can be an assignment.
+    pub(super) assignable: bool,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -37,6 +40,7 @@ impl Word {
             expansions: Vec::new(),
             splits: false,
             braced: false,
+            assignable: true,
         }
     }
 
@@ -71,6 +75,7 @@ impl Word {
             quoted_var: self.quoted_var,
             splits: self.splits,
             braced: self.braced,
+            assignable: self.assignable,
             text,
             expansions,
         }
@@ -137,9 +142,17 @@ struct WordBuf {
     expansions: Vec<Expansion>,
     /// An expansion outside double quotes can split the word or add words.
     splits: bool,
+    /// Where in `text` the first quote or escape began.
+    quoted_at: Option<usize>,
 }
 
 impl WordBuf {
+    fn mark_quoted(&mut self) {
+        self.quoted = true;
+        let at = self.text.len();
+        self.quoted_at.get_or_insert(at);
+    }
+
     fn mark_expansion(&mut self, name: Option<String>) {
         let at = self.text.len();
         self.expansion_at.get_or_insert(at);
@@ -152,6 +165,9 @@ impl WordBuf {
             .expansion_at
             .is_some_and(|at| hides_flag_or_command(&self.text[..at]));
         let braced = self.brace_at.is_some();
+        let assignable = self.text.find('=').is_none_or(|eq| {
+            self.quoted_at.is_none_or(|at| at > eq) && self.expansion_at.is_none_or(|at| at > eq)
+        });
         let expansions = self
             .expansions
             .into_iter()
@@ -167,6 +183,7 @@ impl WordBuf {
             expansions,
             splits: self.splits || braced,
             braced,
+            assignable,
         }
     }
 }
@@ -341,7 +358,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn single_quoted(&mut self) {
-        self.buf().quoted = true;
+        self.buf().mark_quoted();
         for c in self.chars.by_ref() {
             if c == '\'' {
                 return;
@@ -381,7 +398,7 @@ impl<'a> Lexer<'a> {
 
     fn double_quoted(&mut self) {
         let lone = self.cur.is_none() && self.lone_variable_ahead();
-        self.buf().quoted = true;
+        self.buf().mark_quoted();
         self.buf().quoted_var = lone;
         self.buf().in_double_quotes = true;
         self.double_quoted_body();
@@ -411,7 +428,7 @@ impl<'a> Lexer<'a> {
 
     fn escape(&mut self) {
         if let Some(c) = self.chars.next().filter(|c| *c != '\n') {
-            self.buf().quoted = true;
+            self.buf().mark_quoted();
             self.push(c);
         }
     }
@@ -435,6 +452,10 @@ impl<'a> Lexer<'a> {
             }
             Some('{') => {
                 self.chars.next();
+                self.assigns |= self
+                    .chars
+                    .peek()
+                    .is_some_and(|c| c.is_whitespace() || *c == '|');
                 let name = self.braced_body();
                 let buf = self.buf();
                 buf.splits |= name.is_none();
@@ -523,7 +544,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn ansi_c_quoted(&mut self) {
-        self.buf().quoted = true;
+        self.buf().mark_quoted();
         while let Some(c) = self.chars.next() {
             match c {
                 '\'' => return,
