@@ -708,3 +708,39 @@ fn many_adjacent_expansions_in_a_git_push_word_finish_fast() {
         b"--no-verify"
     ));
 }
+
+#[test]
+fn a_cd_to_a_lone_expansion_from_a_protected_cwd_is_denied() {
+    for c in [
+        "cd .ns/u1 && cd $U && echo x > skills/a",
+        "cd .ns/u1 && cd \"$U\" && rm -rf skills",
+        "cd .ns/u1 && git -C $U rm -r skills",
+        "git -C .ns/u1 -C $U rm -r skills",
+        "pushd .ns/u1 && pushd $U && rm -rf skills",
+        "cd .ns/u1 && (cd $U; rm -rf skills)",
+        "cd .ns/u1; cd $V; cd $V; echo a > skills/x",
+        "cd .ns/u1; cd $V; rm -r .",
+        "cd .githooks && cd $U && rm pre-commit",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "cd $U && echo x > y",
+        "cd /tmp && cd $U && echo x > y",
+        "cd .ns/u1 && cd /tmp/$U && echo x > y",
+        "cd .ns/$U && echo x > evidence.md",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn many_expansions_in_a_path_word_finish_fast() {
+    let many = "/$a".repeat(8000);
+    let start = std::time::Instant::now();
+    let hit = denied(&format!("rm .ns{many}"));
+    let hit_dots = denied(&format!("rm .ns{}", "/./$a".repeat(8000)));
+    assert!(start.elapsed() < std::time::Duration::from_millis(500));
+    assert!(hit);
+    assert!(hit_dots);
+}

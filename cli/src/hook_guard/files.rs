@@ -215,14 +215,30 @@ pub(super) const UNREAD: char = '\0';
 /// still matches it. Any other expansion is `UNREAD`: two in one part, one beside other text,
 /// a glob or a `..` part, one in a word with a brace, or one that isn't a plain parameter.
 pub(super) fn path(w: &Word) -> String {
+    let text = w.text.as_str();
+    let mut parts: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0;
+    for part in text.split('/') {
+        if !matches!(part, "" | ".") {
+            parts.push((start, start + part.len()));
+        }
+        start += part.len() + 1;
+    }
+    let is_dot_dot = |&(s, e): &(usize, usize)| &text[s..e] == "..";
+    let differs = |j: Option<usize>, at: usize| {
+        j.and_then(|j| w.expansions.get(j))
+            .is_none_or(|o| o.at != at)
+    };
     w.filled(|i| {
         let e = &w.expansions[i];
-        let (before, after) = w.text.split_at(e.at);
-        let alone = w.expansions.iter().filter(|o| o.at == e.at).count() == 1;
+        let (before, after) = text.split_at(e.at);
+        let alone = differs(i.checked_sub(1), e.at) && differs(Some(i + 1), e.at);
         let whole_part = (before.is_empty() || before.ends_with('/'))
             && (after.is_empty() || after.starts_with('/'));
-        let beside_dot_dot =
-            components(before).last() == Some(&"..") || components(after).first() == Some(&"..");
+        let prev = parts.partition_point(|&(_, end)| end <= e.at);
+        let next = parts.partition_point(|&(start, _)| start < e.at);
+        let beside_dot_dot = prev.checked_sub(1).is_some_and(|p| is_dot_dot(&parts[p]))
+            || parts.get(next).is_some_and(is_dot_dot);
         if e.plain && alone && whole_part && !beside_dot_dot {
             '*'
         } else {
@@ -236,20 +252,35 @@ pub(super) fn dir_path(w: &Word) -> String {
     path(w).replace(UNREAD, "")
 }
 
-/// `dir`, read as a path to change to, has a part of unknown depth below a protected path
-/// (`.ns`, `.githooks` or `.git`), or is relative to a working directory that is protected: the
-/// shell may end up anywhere in it, or outside it.
-pub(super) fn cd_loses_protected_cwd(dir: &str, from: Cwd) -> bool {
-    if !dir.contains(UNREAD) {
+/// `path` has an unknown part (`UNREAD`) below one of the `roots` parts, or is a relative path
+/// (one that doesn't start with a char of `absolute`) from a working directory in a protected
+/// path: the shell or the write may land anywhere in it, or outside it.
+pub(super) fn unread_below_protected(
+    path: &str,
+    roots: &[&str],
+    absolute: [char; 2],
+    from: Cwd,
+) -> bool {
+    if !path.contains(UNREAD) {
         return false;
     }
-    let known = components(dir)
+    components(path)
         .into_iter()
-        .take_while(|p| !p.contains(UNREAD));
-    let below = known
-        .into_iter()
-        .any(|p| matches!(p, ".ns" | ".githooks" | ".git"));
-    below || (!dir.starts_with(['/', '~']) && (from.hooks.is_some() || from.ns.is_some()))
+        .take_while(|p| !p.contains(UNREAD))
+        .any(|p| roots.contains(&p))
+        || (!path.starts_with(absolute) && (from.hooks.is_some() || from.ns.is_some()))
+}
+
+/// `dir` (the word `w` read as a path to change to) loses track of a protected working
+/// directory: it has an unknown part below a protected path (`.ns`, `.githooks` or `.git`), or
+/// it is relative to a working directory that is protected and has any expansion in it. An
+/// expansion can be `.` or `..`, so even a whole-part one does not make a known directory
+/// below a protected working directory.
+pub(super) fn cd_loses_protected_cwd(w: &Word, from: Cwd) -> bool {
+    let dir = path(w);
+    let protected_cwd = from.hooks.is_some() || from.ns.is_some();
+    (protected_cwd && !w.expansions.is_empty() && !dir.starts_with(['/', '~']))
+        || unread_below_protected(&dir, &[".ns", ".githooks", ".git"], ['/', '~'], from)
 }
 
 /// The parts of `path` between slashes, without the empty and `.` ones.

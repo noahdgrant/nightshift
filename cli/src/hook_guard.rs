@@ -119,12 +119,7 @@ impl Scan {
     /// An expansion of unknown depth sits below a `.ns` part of `path`, or in a relative path
     /// from a working directory below `.ns`, so it may reach a unit's directory or `skills`.
     fn unread_under_ns(&self, path: &str) -> bool {
-        components(path)
-            .iter()
-            .take_while(|p| !p.contains(UNREAD))
-            .any(|p| *p == pin::NS_DIR)
-            || (!path.starts_with(['-', '/'])
-                && (self.cwd.ns.is_some() || self.cwd.hooks.is_some()))
+        unread_below_protected(path, &[pin::NS_DIR], ['-', '/'], self.cwd)
     }
 }
 
@@ -275,8 +270,7 @@ fn change_directory(args: &[Word], scan: &mut Scan) -> Option<String> {
         .iter()
         .find(|a| a.text == "-" || !a.text.starts_with('-'));
     if let Some(d) = dir {
-        let read = path(d);
-        if cd_loses_protected_cwd(&read, scan.cwd) {
+        if cd_loses_protected_cwd(d, scan.cwd) {
             return Some(format!(
                 "cd {} into a directory of unknown depth in a protected path",
                 d.text
