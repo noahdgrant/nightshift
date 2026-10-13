@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 
 use crate::error::SfError;
 use crate::eval::trial::run_process;
+use crate::ratchet::Format;
 
 pub const BASELINE: &str = ".nightshift/rules-baseline.json";
 const STACK: &str = "docs/agents/stack.md";
@@ -296,21 +297,22 @@ fn line(f: &Finding) -> String {
     format!("{}{at}: {who}: {}", f.file, f.message)
 }
 
-fn print(v: &Value, human: &[(&str, &[Finding])], summary: String, as_human: bool) -> Result<()> {
-    if as_human {
-        for (label, list) in human {
-            for f in *list {
-                println!("{label}: {}", line(f));
+fn print(v: &Value, human: &[(&str, &[Finding])], summary: &str, format: Format) -> Result<()> {
+    match format {
+        Format::Human => {
+            for (label, list) in human {
+                for f in *list {
+                    println!("{label}: {}", line(f));
+                }
             }
+            println!("{summary}");
         }
-        println!("{summary}");
-    } else {
-        println!("{}", serde_json::to_string_pretty(v)?);
+        Format::Json => println!("{}", serde_json::to_string_pretty(v)?),
     }
     Ok(())
 }
 
-pub fn check(human: bool) -> Result<ExitCode> {
+pub fn check(format: Format) -> Result<ExitCode> {
     let c = ctx("ns rules check")?;
     if c.commands.is_empty() {
         eprintln!("ns rules: no rules row in {STACK}; nothing to check");
@@ -324,12 +326,7 @@ pub fn check(human: bool) -> Result<ExitCode> {
             "new": [],
             "fixed": [],
         });
-        print(
-            &v,
-            &[],
-            "0 findings, 0 baselined, 0 new, 0 fixed".into(),
-            human,
-        )?;
+        print(&v, &[], "0 findings, 0 baselined, 0 new, 0 fixed", format)?;
         return Ok(ExitCode::SUCCESS);
     }
     let run = run_pack(&c.root, &c.commands)?;
@@ -352,7 +349,7 @@ pub fn check(human: bool) -> Result<ExitCode> {
         new.len(),
         fixed.len()
     );
-    print(&v, &[("new", &new), ("fixed", &fixed)], summary, human)?;
+    print(&v, &[("new", &new), ("fixed", &fixed)], &summary, format)?;
     if !fixed.is_empty() {
         eprintln!(
             "ns rules: {} baselined violations are gone; drop them with:\n  ns rules baseline",
@@ -369,7 +366,7 @@ pub fn check(human: bool) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-pub fn baseline(allow_growth: bool, dry_run: bool, human: bool) -> Result<ExitCode> {
+pub fn baseline(allow_growth: bool, dry_run: bool, format: Format) -> Result<ExitCode> {
     let c = ctx("ns rules baseline")?;
     if c.commands.is_empty() {
         return Err(SfError::usage(
@@ -421,8 +418,8 @@ pub fn baseline(allow_growth: bool, dry_run: bool, human: bool) -> Result<ExitCo
     print(
         &v,
         &[("added", &added), ("dropped", &dropped)],
-        summary,
-        human,
+        &summary,
+        format,
     )?;
     if refused {
         eprintln!(
