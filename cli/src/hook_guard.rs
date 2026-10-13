@@ -41,6 +41,9 @@ const MAX_NAME: usize = 64;
 const MAX_VALUE: usize = 4096;
 const MAX_VARS: usize = 1024;
 
+/// The most bytes of variable values the scan writes into one command's words.
+const MAX_RESOLVED: usize = 256 * 1024;
+
 #[cfg(test)]
 thread_local! {
     static OPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -174,6 +177,8 @@ struct Scan {
     following: bool,
     /// The command has no loop or function, so an assignment can be followed in order.
     learning: bool,
+    /// How many more bytes of values the scan may write into this command's words.
+    budget: usize,
 }
 
 /// What the scan makes of an expansion it has no value for.
@@ -187,9 +192,16 @@ enum Unread {
 impl Scan {
     /// `w` with what the scan knows written in: at the top level of the command each variable
     /// in `vars`, and under `Unread::Fill` every other expansion.
-    fn read(&self, w: Word, known: bool) -> Word {
+    fn read(&mut self, w: Word, known: bool) -> Word {
         count_op(1 + w.expansions.len());
-        let w = if self.following && known && self.fits(&w) {
+        let added = if self.following && known && !w.expansions.is_empty() {
+            self.added(&w).filter(|a| *a <= self.budget)
+        } else {
+            None
+        };
+        let w = if let Some(added) = added {
+            count_op(added + w.text.len());
+            self.budget -= added;
             w.resolved(|e| Some(self.vars.get(e.name.as_ref()?)?.as_str()))
         } else {
             w
@@ -201,20 +213,21 @@ impl Scan {
         }
     }
 
-    /// Writing in the known variables leaves `w` no longer than `MAX_VALUE`.
-    fn fits(&self, w: &Word) -> bool {
-        let mut len = w.text.len();
+    /// The bytes writing in the known variables adds to `w`, if that leaves it no longer than
+    /// `MAX_VALUE`.
+    fn added(&self, w: &Word) -> Option<usize> {
+        let mut added = 0;
         for e in &w.expansions {
-            len += e
+            added += e
                 .name
                 .as_ref()
                 .and_then(|n| self.vars.get(n))
                 .map_or(0, String::len);
-            if len > MAX_VALUE {
-                return false;
+            if w.text.len() + added > MAX_VALUE {
+                return None;
             }
         }
-        len <= MAX_VALUE
+        Some(added)
     }
 
     /// After the top-level segment `words`, ended by `sep`, learn the variables it assigns a
@@ -226,13 +239,14 @@ impl Scan {
         if command.is_some_and(|c| COMPOUND_WORDS.contains(&c)) {
             flow.compound = true;
         }
-        let names = |list: &[&str]| {
-            words
-                .iter()
-                .enumerate()
-                .any(|(i, w)| names_builtin(list, &words[..i], w))
-        };
-        if names(FREEZERS) {
+        let (mut freezes, mut rewrites) = (false, false);
+        let mut at_command = true;
+        for w in words {
+            freezes |= names_builtin(FREEZERS, at_command, w);
+            rewrites |= names_builtin(REWRITERS, at_command, w);
+            at_command &= before_command(w);
+        }
+        if freezes {
             self.frozen = true;
         }
         let real = words.iter().find(|w| {
@@ -253,7 +267,7 @@ impl Scan {
             }
         };
         let may_set_any =
-            !harmless || names(REWRITERS) || self.frozen || words.iter().any(|w| w.text == "=~");
+            !harmless || rewrites || self.frozen || words.iter().any(|w| w.text == "=~");
         if may_set_any {
             self.vars.clear();
         }
@@ -291,7 +305,7 @@ impl Scan {
                 .min(MAX_NAME);
             let tail = &w.text[w.text.len() - ident..];
             for start in 0..tail.len() {
-                count_op(1);
+                count_op(tail.len() - start);
                 self.vars.remove(&tail[start..]);
             }
         } else {
@@ -345,6 +359,7 @@ fn check_command(s: &str, scan: &mut Scan) -> Option<String> {
     scan.following = scan.depth == 1 && !lexed.assigns;
     if scan.depth == 1 {
         scan.learning = !repeats_or_defers(&lexed.main);
+        scan.budget = MAX_RESOLVED;
     }
     let why = check_tokens(lexed.main, scan).or_else(|| {
         scan.following = false;
@@ -364,25 +379,25 @@ fn repeats_or_defers(toks: &[Tok]) -> bool {
     const WORDS: &[&str] = &[
         "while", "until", "for", "select", "function", "eval", "source",
     ];
-    toks.iter().enumerate().any(|(i, t)| match t {
-        Tok::Word(w) if basename(&w.text) == "." => {
-            let before =
-                toks[..i]
-                    .iter()
-                    .rev()
-                    .map_while(|t| if let Tok::Word(p) = t { Some(p) } else { None });
-            before
-                .into_iter()
-                .all(|p| assignment(p).is_some() || PREFIXES.contains(&p.text.as_str()))
+    let mut at_command = true;
+    toks.iter().enumerate().any(|(i, t)| {
+        count_op(1);
+        let found = match t {
+            Tok::Word(w) if basename(&w.text) == "." => at_command,
+            Tok::Word(w) => WORDS.contains(&basename(&w.text)),
+            Tok::SubshellOpen => {
+                matches!(
+                    i.checked_sub(1).and_then(|j| toks.get(j)),
+                    Some(Tok::Word(_))
+                ) && matches!(toks.get(i + 1), Some(Tok::SubshellClose))
+            }
+            _ => false,
+        };
+        match t {
+            Tok::Word(w) => at_command &= before_command(w),
+            _ => at_command = true,
         }
-        Tok::Word(w) => WORDS.contains(&basename(&w.text)),
-        Tok::SubshellOpen => {
-            matches!(
-                i.checked_sub(1).and_then(|j| toks.get(j)),
-                Some(Tok::Word(_))
-            ) && matches!(toks.get(i + 1), Some(Tok::SubshellClose))
-        }
-        _ => false,
+        found
     })
 }
 
@@ -403,6 +418,7 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
     let is_word = |t: &Tok| matches!(t, Tok::Word(_));
     let mut words: Vec<Word> = Vec::new();
     let mut rewrites = false;
+    let mut at_command = true;
     let mut stdin_is_text = false;
     let mut flow = Flow {
         runs: true,
@@ -419,8 +435,9 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
                 if top {
                     scan.forget(&w);
                 }
-                rewrites |=
-                    names_builtin(REWRITERS, &words, &w) || names_builtin(FREEZERS, &words, &w);
+                rewrites |= names_builtin(REWRITERS, at_command, &w)
+                    || names_builtin(FREEZERS, at_command, &w);
+                at_command &= before_command(&w);
                 words.push(w);
             }
             Tok::Herestring => {
@@ -452,6 +469,7 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
                 }
                 words.clear();
                 rewrites = false;
+                at_command = true;
                 stdin_is_text = false;
                 match tok {
                     Tok::SubshellOpen => scan.outer_cwds.push(scan.cwd),
@@ -647,15 +665,17 @@ const SHELL_MANAGED: &[&str] = &[
     "BASH_ARGV0",
 ];
 
-/// `w`, which follows `before` in its segment, is a builtin in `list`. The source builtin `.`
-/// counts only where a command goes: elsewhere it is a path.
-fn names_builtin(list: &[&str], before: &[Word], w: &Word) -> bool {
+/// `w` comes before a segment's command: an assignment or a prefix word.
+fn before_command(w: &Word) -> bool {
+    assignment(w).is_some() || PREFIXES.contains(&w.text.as_str())
+}
+
+/// `w` is a builtin in `list`. The source builtin `.` counts only where a command goes
+/// (`at_command`, every word before it in its segment being `before_command`): elsewhere it
+/// is a path.
+fn names_builtin(list: &[&str], at_command: bool, w: &Word) -> bool {
     let name = basename(&w.text);
-    list.contains(&name)
-        && (name != "."
-            || before
-                .iter()
-                .all(|p| assignment(p).is_some() || PREFIXES.contains(&p.text.as_str())))
+    list.contains(&name) && (name != "." || at_command)
 }
 
 /// The word `text` names the variable `name`, assigns it, or ends with it as an option's
@@ -690,7 +710,10 @@ fn literal_assignments(words: &[Word]) -> Vec<(String, String)> {
             && value.len() <= MAX_VALUE
             && name.len() <= MAX_NAME
             && !SHELL_MANAGED.contains(&name))
-        .then(|| (name.to_string(), value.to_string()))
+        .then(|| {
+            count_op(name.len() + value.len());
+            (name.to_string(), value.to_string())
+        })
     };
     assignments
         .iter()

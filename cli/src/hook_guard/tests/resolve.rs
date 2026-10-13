@@ -414,8 +414,11 @@ fn a_current_shell_command_substitution_stops_the_scan_following() {
 }
 
 #[test]
-fn every_shell_managed_variable_is_refused_as_an_assignment() {
-    for v in SHELL_MANAGED {
+fn every_shell_managed_variable_but_ifs_and_pwd_is_refused_as_an_assignment() {
+    for v in SHELL_MANAGED
+        .iter()
+        .filter(|v| !["IFS", "PWD", "OLDPWD"].contains(*v))
+    {
         let c = format!("{v}=build.md; rm .ns/u1/${v}");
         assert!(denied(&c), "{c}");
     }
@@ -468,6 +471,52 @@ fn the_work_grows_linearly_with_the_command() {
         format!("{}; read {dashes}; rm .ns/u1/$A0", assigns(n / 4))
     });
     linear(|n| format!("{}U=u1; rm -r .ns/$U", "U=x; echo $U; ".repeat(n)));
+    linear(|n| format!("{}{}; rm .ns/u1/$A", "A=b ".repeat(n), ". ".repeat(n)));
+    linear(|n| format!("{}echo -{}; rm .ns/u1/$A", "A=b; ".repeat(3), "a".repeat(n)));
+}
+
+#[test]
+fn a_variable_used_many_times_is_resolved_within_a_byte_budget() {
+    let c = format!("A={}; {}", "a".repeat(4000), "echo $A ".repeat(32000));
+    assert!(ops_for(&c) < 4 * MAX_RESOLVED + 40 * 32000);
+}
+
+#[test]
+fn a_command_that_spends_the_resolving_budget_stops_resolving() {
+    let big = "a".repeat(4000);
+    let uses = |n: usize| {
+        format!(
+            "A={big}; U={}; {}rm .ns/u1/$U",
+            "u".repeat(3000),
+            "echo $A; ".repeat(n)
+        )
+    };
+    let (few, many) = (uses(10), uses(200));
+    assert!(!denied(&few));
+    assert!(denied(&many));
+    let flag = format!("A={big}; {}F=-n; git commit $F", "echo $A; ".repeat(200));
+    assert!(denied(&flag));
+}
+
+#[test]
+fn more_learned_variables_than_the_cap_are_all_forgotten() {
+    let fill = |n: usize| (0..n).map(|i| format!("V{i}=a; ")).collect::<String>();
+    let under = format!("U=build.md; {}rm .ns/u1/$U", fill(MAX_VARS - 1));
+    let over = format!("U=build.md; {}rm .ns/u1/$U", fill(MAX_VARS));
+    assert!(!denied(&under));
+    assert!(denied(&over));
+}
+
+#[test]
+fn a_name_or_value_over_its_cap_is_not_learned() {
+    let name = |n: usize| "N".repeat(n);
+    let value = |n: usize| "a".repeat(n);
+    let by_name = |n: usize| format!("{0}=build.md; rm .ns/u1/${0}", name(n));
+    assert!(!denied(&by_name(MAX_NAME)));
+    assert!(denied(&by_name(MAX_NAME + 1)));
+    let by_value = |n: usize| format!("A=build.md; A={}; rm .ns/u1/$A", value(n));
+    assert!(denied(&by_value(MAX_VALUE + 1)));
+    assert!(denied(&format!("A={}; rm .ns/u1/$A", value(MAX_VALUE))));
 }
 
 #[test]
@@ -563,4 +612,13 @@ fn a_long_command_gives_the_same_verdict() {
 fn a_dot_that_is_not_the_source_builtin_does_not_stop_resolving() {
     assert!(!denied("U=build.md; git add .; rm .ns/u1/$U"));
     assert!(denied("U=build.md; . f; rm .ns/u1/$U"));
+}
+
+#[test]
+fn a_value_over_the_cap_costs_no_copy() {
+    let c = format!(
+        "{}rm .ns/u1/$A",
+        format!("A={}; ", "a".repeat(MAX_VALUE + 1)).repeat(500)
+    );
+    assert!(ops_for(&c) < 100 * 500);
 }
