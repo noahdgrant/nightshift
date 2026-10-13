@@ -615,45 +615,45 @@ mod tests {
 
     #[test]
     fn output_within_leaves_no_descendant_running_after_a_timeout() {
-        let dir = tempfile::tempdir().unwrap();
-        let pidfile = dir.path().join("pid");
+        use std::io::{BufRead, BufReader};
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let (reader, writer) = std::io::pipe().unwrap();
+        let fd = writer.as_raw_fd();
         let mut cmd = Command::new("sh");
-        cmd.arg("-c")
-            .arg(r#"sleep 30 & echo $! > "$0"; sleep 30"#)
-            .arg(&pidfile);
+        cmd.args(["-c", "sleep 300 & echo $$ >&3; sleep 300"]);
+        // SAFETY: dup2(2) and fcntl(2) are async-signal-safe. Clearing FD_CLOEXEC keeps fd 3
+        // open across exec even when the pipe already was fd 3, where dup2 changes nothing.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::dup2(fd, 3) == -1 || libc::fcntl(3, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        // Every process the shell starts inherits fd 3, so the pipe reads EOF only once the
+        // shell and all its descendants have exited, however early the timeout fired.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(reader);
+            let mut group = String::new();
+            let _ = reader.read_line(&mut group);
+            let _ = tx.send(group);
+            let _ = reader.read_to_end(&mut Vec::new());
+            let _ = tx.send(String::new());
+        });
         output_within(cmd, Duration::from_millis(500)).unwrap_err();
-        let pid = std::fs::read_to_string(&pidfile)
-            .unwrap()
-            .trim()
-            .to_string();
-        let running = |pid: &str| {
-            std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| has_not_exited(&s))
-        };
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while running(&pid) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(!running(&pid), "descendant {pid} still running");
-    }
-
-    /// Whether a `/proc/<pid>/stat` line shows a process that has not exited. A dead process is
-    /// a zombie (`Z`), then briefly `X` while its parent reaps it, then gone.
-    fn has_not_exited(stat: &str) -> bool {
-        !stat
-            .rsplit(") ")
-            .next()
-            .unwrap_or("")
-            .starts_with(['Z', 'X'])
-    }
-
-    #[test]
-    fn a_zombie_or_a_process_being_reaped_has_exited() {
-        let stat = |state: char| format!("68832 (sleep) {state} 493 68650 68650 0 -1");
-        for state in ['R', 'S', 'D', 'T'] {
-            assert!(has_not_exited(&stat(state)), "{state}");
-        }
-        for state in ['Z', 'X'] {
-            assert!(!has_not_exited(&stat(state)), "{state}");
+        drop(writer);
+        let hang_guard = Duration::from_secs(60);
+        let group = rx.recv_timeout(hang_guard).unwrap();
+        if rx.recv_timeout(hang_guard).is_err() {
+            // The shell's pid is its group id: `run_process` makes it a group leader.
+            if let Ok(pgid) = group.trim().parse::<libc::pid_t>() {
+                // SAFETY: kill(2) on the group this test started, so it outlives no failure.
+                unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            }
+            panic!("a descendant still holds the pipe after {hang_guard:?}");
         }
     }
 
