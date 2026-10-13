@@ -308,7 +308,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 human,
             } => return upstream::diff_cli(&skills_dir, &skill, human),
         },
-        Cmd::Doctor => doctor::run()?,
+        Cmd::Doctor => return doctor::run(),
         Cmd::GuardHooks => hook_guard::run()?,
     }
     Ok(ExitCode::SUCCESS)
