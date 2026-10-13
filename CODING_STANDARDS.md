@@ -60,6 +60,31 @@ assert!(exempt(&tmp).is_empty());
 
 Units: 47, 115, 152, 409, 454.
 
+## A test never waits on the clock
+
+A test never sleeps, and never asserts on real elapsed time. It waits for an event: a child exiting, a file appearing, a message on a channel. Or it moves the fake clock forward: `NS_NOW` for a spawned `ns`, `clock::Clock::pinned` in a unit test. A real timeout in a test is only a hang guard: generous, and never the thing the test checks. A test timed by the wall clock passes on an idle machine and fails when units contend for the CPU, which is how the factory always runs.
+
+The Rust rule pack's `wall-clock-in-test` rule (`rules/rust/ast-grep.yml`) flags a sleep, an `Instant::now()` or `.elapsed()` comparison, and a literal `Duration` in test code, with today's cases baselined.
+
+Bad: the test passes only if the child exits within a second.
+
+```rust
+let start = Instant::now();
+kill(&child);
+std::thread::sleep(Duration::from_millis(100));
+assert!(start.elapsed() < Duration::from_secs(1));
+```
+
+Good: wait for the exit itself, with a hang guard the test never checks.
+
+```rust
+kill(&child);
+let status = child.wait()?; // the test binary's own timeout is the hang guard
+assert!(!status.success());
+```
+
+Units: 449, 482, 499, 512, 514.
+
 ## Reuse the helper that exists
 
 Before writing a glob matcher, a shell-word splitter, a base-ref lookup or a remove-if-present, search for the one the repo already has. A second copy drifts from the first.
