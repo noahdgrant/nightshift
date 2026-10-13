@@ -35,6 +35,24 @@ const FILLER: &str = "unread";
 /// Variables the guard knows the value of, by name.
 type Vars = HashMap<String, String>;
 
+/// The longest variable name the scan learns, and the longest value and the count it keeps:
+/// beyond them a variable stays unknown, which keeps the scan linear in the command.
+const MAX_NAME: usize = 64;
+const MAX_VALUE: usize = 4096;
+const MAX_VARS: usize = 1024;
+
+#[cfg(test)]
+thread_local! {
+    static OPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn count_op(n: usize) {
+    #[cfg(test)]
+    OPS.with(|c| c.set(c.get() + n));
+    #[cfg(not(test))]
+    let _ = n;
+}
+
 /// How deep `eval`, `sh -c` and aliases may nest before the guard gives up and denies.
 const MAX_NESTING: usize = 8;
 
@@ -170,7 +188,8 @@ impl Scan {
     /// `w` with what the scan knows written in: at the top level of the command each variable
     /// in `vars`, and under `Unread::Fill` every other expansion.
     fn read(&self, w: Word, known: bool) -> Word {
-        let w = if self.following && known {
+        count_op(1 + w.expansions.len());
+        let w = if self.following && known && self.fits(&w) {
             w.resolved(|e| Some(self.vars.get(e.name.as_ref()?)?.as_str()))
         } else {
             w
@@ -180,6 +199,22 @@ impl Scan {
         } else {
             w
         }
+    }
+
+    /// Writing in the known variables leaves `w` no longer than `MAX_VALUE`.
+    fn fits(&self, w: &Word) -> bool {
+        let mut len = w.text.len();
+        for e in &w.expansions {
+            len += e
+                .name
+                .as_ref()
+                .and_then(|n| self.vars.get(n))
+                .map_or(0, String::len);
+            if len > MAX_VALUE {
+                return false;
+            }
+        }
+        len <= MAX_VALUE
     }
 
     /// After the top-level segment `words`, ended by `sep`, learn the variables it assigns a
@@ -233,6 +268,9 @@ impl Scan {
             && matches!(sep, Sep::Seq | Sep::And)
         {
             self.vars.extend(literal_assignments(words));
+            if self.vars.len() > MAX_VARS {
+                self.vars.clear();
+            }
         }
         flow.runs = sep == Sep::Seq;
         flow.compound |= sep == Sep::Group;
@@ -244,8 +282,20 @@ impl Scan {
             return;
         }
         if w.text.starts_with('-') {
-            self.vars.retain(|name, _| !may_set(&w.text, name));
+            let ident = w
+                .text
+                .bytes()
+                .rev()
+                .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                .count()
+                .min(MAX_NAME);
+            let tail = &w.text[w.text.len() - ident..];
+            for start in 0..tail.len() {
+                count_op(1);
+                self.vars.remove(&tail[start..]);
+            }
         } else {
+            count_op(1);
             let end = w
                 .text
                 .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
@@ -578,6 +628,23 @@ const SHELL_MANAGED: &[&str] = &[
     "HISTCMD",
     "FUNCNAME",
     "MAPFILE",
+    "SHELLOPTS",
+    "BASHOPTS",
+    "BASH_VERSINFO",
+    "BASH_SOURCE",
+    "BASH_SUBSHELL",
+    "DIRSTACK",
+    "COLUMNS",
+    "LINES",
+    "HOSTNAME",
+    "BASH_CMDS",
+    "BASH_ALIASES",
+    "BASH_ARGV",
+    "BASH_ARGC",
+    "BASH_LINENO",
+    "GROUPS",
+    "BASH_VERSION",
+    "BASH_ARGV0",
 ];
 
 /// `w`, which follows `before` in its segment, is a builtin in `list`. The source builtin `.`
@@ -618,8 +685,12 @@ fn literal_assignments(words: &[Word]) -> Vec<(String, String)> {
     };
     let literal = |w: &Word| {
         let (name, value) = assignment(w)?;
-        (w.expansions.is_empty() && is_literal_value(value) && !SHELL_MANAGED.contains(&name))
-            .then(|| (name.to_string(), value.to_string()))
+        (w.expansions.is_empty()
+            && is_literal_value(value)
+            && value.len() <= MAX_VALUE
+            && name.len() <= MAX_NAME
+            && !SHELL_MANAGED.contains(&name))
+        .then(|| (name.to_string(), value.to_string()))
     };
     assignments
         .iter()

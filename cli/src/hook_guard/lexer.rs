@@ -735,6 +735,7 @@ impl<'a> Lexer<'a> {
             }
         }
         if !heredoc.quoted {
+            self.assigns |= body.contains(['$', '`']);
             let mut body_lexer = Lexer::new(&body);
             body_lexer.find_substitutions();
             self.substitutions.append(&mut body_lexer.substitutions);

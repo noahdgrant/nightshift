@@ -422,6 +422,115 @@ fn every_shell_managed_variable_is_refused_as_an_assignment() {
 }
 
 #[test]
+fn a_value_that_doubles_each_statement_is_not_followed() {
+    let doubling = "A=x; ".to_string() + &"A=$A$A; ".repeat(40);
+    assert!(denied(&format!("{doubling}git commit $A")));
+    assert!(denied(&format!("{doubling}rm -r .ns/$A")));
+    assert!(!denied(&format!("{doubling}echo $A")));
+    let many = "A=x; ".to_string() + &"A=$A$A$A$A; ".repeat(2000);
+    assert!(denied(&format!("{many}git commit $A")));
+}
+
+#[test]
+fn a_value_within_the_cap_is_still_followed() {
+    let c = format!("A={}; A=$A$A; rm .ns/u1/$A", "a".repeat(1000));
+    assert!(!denied(&c));
+    assert!(denied(&format!(
+        "A={}; A=$A$A; rm -r .ns/$A",
+        "u".repeat(1000)
+    )));
+}
+
+fn ops_for(cmd: &str) -> usize {
+    OPS.with(|c| c.set(0));
+    denied(cmd);
+    OPS.with(|c| c.get())
+}
+
+fn linear(shape: impl Fn(usize) -> String) {
+    let (small, large) = (ops_for(&shape(2000)), ops_for(&shape(4000)));
+    assert!(small > 0);
+    assert!(
+        large <= small * 5 / 2,
+        "{small} ops at n=2000, {large} at n=4000"
+    );
+}
+
+#[test]
+fn the_work_grows_linearly_with_the_command() {
+    linear(|n| format!("echo {}; U=u1; rm -r .ns/$U", words(n)));
+    linear(|n| format!("{}; U=u1; rm -r .ns/$U", assigns(n)));
+    linear(|n| {
+        let dashes = (0..n)
+            .map(|i| format!("-r{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("{}; read {dashes}; rm .ns/u1/$A0", assigns(n / 4))
+    });
+    linear(|n| format!("{}U=u1; rm -r .ns/$U", "U=x; echo $U; ".repeat(n)));
+}
+
+#[test]
+fn a_dash_word_still_forgets_the_variable_it_ends_with() {
+    for c in [
+        "U=build.md; read -rU; rm .ns/u1/$U",
+        "F=ok; printf -vF -- -n; git commit $F",
+        "F=ok; read -r F <<< -n; git commit $F",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+fn words(n: usize) -> String {
+    (0..n)
+        .map(|i| format!("w{i}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn assigns(n: usize) -> String {
+    (0..n)
+        .map(|i| format!("V{i}=a{i}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+#[test]
+fn a_heredoc_body_that_assigns_stops_the_scan_following() {
+    for c in [
+        "N=-q; : <<EOF\n$((N=7))\nEOF\ngit commit $N",
+        "N=-q; : <<EOF\n${ N=--no-verify; }\nEOF\ngit commit $N",
+        "N=-q; : <<-EOF\n\t$((N=7))\n\tEOF\ngit commit $N",
+        "N=-q; : <<EOF\n`echo`\nEOF\ngit commit $N",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    for c in [
+        "N=-q; : <<'EOF'\n$((N=7))\nEOF\ngit commit $N",
+        "U=build.md; cat <<'EOF'\n$((N=7))\nEOF\nrm .ns/u1/$U",
+        "U=build.md; cat <<EOF\nplain\nEOF\nrm .ns/u1/$U",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_name_or_dot_neighbour_of_an_assignment_keeps_the_verdict() {
+    for c in [
+        "F=build.md; rm .ns/u1/${F}",
+        "F=build.md; cd . && rm .ns/u1/$F",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+    for c in [
+        "U=build.md; (. f); rm .ns/u1/$U",
+        "U=build.md; . f; rm .ns/u1/$U",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
 fn a_long_command_gives_the_same_verdict() {
     let words = |n: usize| {
         (0..n)
