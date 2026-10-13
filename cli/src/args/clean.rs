@@ -7,7 +7,7 @@ Examples:
   ns clean --dry-run
   ns clean
 
-Spec: docs/FACTORY.md (Cleanup). For each worktree on a branch ns/<unit>, reads the issue
+Spec: docs/factory/unit-lifecycle.md (Cleanup). For each worktree on a branch ns/<unit>, reads the issue
 the unit id starts with and the PR in .ns/<unit>/pr.md with gh (network). A unit goes when the
 issue is closed and the PR merged, closes the issue and comes from ns/<unit>. Its quality record
 is written first (a push to origin's nightshift/quality, or the outbox when that fails); then the

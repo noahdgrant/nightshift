@@ -13,7 +13,7 @@ Examples:
   ns quality --json | jq .first_pass
   ns quality import /tmp/unit-artifacts --dry-run
 
-Spec: docs/FACTORY.md (Quality). Fetches origin's nightshift/quality branch (network) and reads
+Spec: docs/factory/quality.md (Quality). Fetches origin's nightshift/quality branch (network) and reads
 its records.jsonl plus <git-common-dir>/ns/quality-outbox.jsonl: one record per review attempt,
 written by ns run when a unit ends. A unit with no record is read from .ns/<unit>/review.md,
 review/cycle-*.md and history/review* in its linked worktree. Also reads

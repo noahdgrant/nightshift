@@ -19,7 +19,7 @@ Examples:
   ns ratchet check | jq '.ratchets[] | select(.status == \"worse\")'
   ns ratchet check --factory path/to/factory
 
-Spec: docs/FACTORY.md (Ratchets). Runs the command of each [ratchets.<name>] table in
+Spec: docs/factory/run.md (Ratchets). Runs the command of each [ratchets.<name>] table in
 nightshift.toml with sh -c at the top of the git checkout, e.g.
   [ratchets.flash]
   command = \"scripts/flash-size.sh\"   # prints one number on stdout

@@ -10,7 +10,7 @@ Examples:
   ns score 142-uart-timeout --scorer evidence
   ns score 142-uart-timeout --dry-run
 
-Spec: docs/FACTORY.md (Scoring). Builds a prompt per scorer from its rubric and labels, every
+Spec: docs/factory/scorers.md (Scoring). Builds a prompt per scorer from its rubric and labels, every
 *.md in .ns/<unit>/ (the unit's worktree, else the main checkout) and the PR outcome: the PR in
 pr.md read with gh (network, --dry-run too), whether a commit on the default branch reverts its
 merge commit, and its review count. Runs the scorer's role read-only through `ns ask` and takes

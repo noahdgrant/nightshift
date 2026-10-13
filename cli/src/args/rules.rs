@@ -16,7 +16,7 @@ Examples:
   ns rules check --human
   ns rules check | jq .new
 
-Spec: docs/FACTORY.md (Rules). Runs each command in the `rules` row of docs/agents/stack.md
+Spec: docs/factory/run.md (Rules). Runs each command in the `rules` row of docs/agents/stack.md
 with sh -c at the top of the git checkout, e.g.
   | rules | `ruff check --output-format=concise .`, `./scripts/rules-json` | 10 s |
 Each output line (stdout or stderr) that is a JSON object with \"file\" (and optionally

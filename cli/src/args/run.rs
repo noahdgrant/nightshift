@@ -10,7 +10,7 @@ Examples:
   ns run 142-uart-timeout --dry-run
   ns run 142-uart-timeout --from verify
 
-Spec: docs/FACTORY.md. Prints {unit,outcome,phase,reason,pr,cost_usd,phases}. Events go to
+Spec: docs/factory/run.md. Prints {unit,outcome,phase,reason,pr,cost_usd,phases}. Events go to
 <git-common-dir>/ns/runs.jsonl, harness transcripts to <git-common-dir>/ns/transcripts/.
 A unit that ends merged, done or stuck pushes its review quality records to origin's
 nightshift/quality branch (network); a failed push leaves them in

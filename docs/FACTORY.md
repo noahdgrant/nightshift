@@ -9,8 +9,8 @@ The minimum slice of D15 to D17 (`docs/decisions/`) that runs nightshift unatten
   nightshift.toml          the definition root
   agents/<role>/agent.md   one role per phase (optional: built-in default prompts exist)
   runners/<name>.toml      exclusive locks a phase holds (optional; see "Runners")
-  scorers/<name>.md        a rubric that grades finished units (optional; see "Scorers")
-  ratchets.json            recorded values of the [ratchets.*] tables (see "Ratchets")
+  scorers/<name>.md        a rubric that grades finished units (optional; see factory/scorers.md)
+  ratchets.json            recorded values of the [ratchets.*] tables (see factory/run.md#ratchets)
 ```
 
 The root is the directory holding `nightshift.toml`: `.nightshift/` in a product repo, or the repo root of a factory repo. `ns` finds it from `--factory <dir>`, else `<main-worktree-root>/.nightshift/`.
@@ -36,7 +36,7 @@ skill = "ns-triage"
 [phases.build]
 skill = "ns-build"
 timeout_minutes = 90
-gate = "scripts/ci-local.sh"       # build only. Unset: the ci-local row of docs/agents/stack.md. See "Gate"
+gate = "scripts/ci-local.sh"       # build only. Unset: the ci-local row of docs/agents/stack.md. See factory/run.md#gate
 [phases.verify]
 skill = "ns-verify"
 runner = "bench"                   # a runners/<name>.toml. Unset: no locks
@@ -52,39 +52,39 @@ in_progress_label = "status:in-progress"
 done_label = "status:in-review"    # set when the unit ends with an open PR
 human_merge_label = "needs-human-merge"   # set on that PR; created in red if missing
 stuck_label = "status:ready-for-human"
-split_label = "status:split"   # set when triage split the issue into child issues; created if missing. See "Split parents"
+split_label = "status:split"   # set when triage split the issue into child issues; created if missing. See factory/watch.md#split-parents
 triage_label = "status:needs-triage"   # issues ns watch triages before it picks a unit
 priority = ["priority:high", "priority:medium", "priority:low"]  # sorted on first; no match goes last
 order = ["type:fix", "type:feat", "type:refactor", "type:test", "type:docs", "type:chore"]
-fix_main_first = true              # while main's CI is red, work only its fix issue. See "Main's CI"
-overlap_ignore = []                # globs of files no two units overlap on. See "Parallel units"
+fix_main_first = true              # while main's CI is red, work only its fix issue. See factory/watch.md#mains-ci
+overlap_ignore = []                # globs of files no two units overlap on. See factory/watch.md#parallel-units
 
 [limits]
 max_units = 8                      # optional cap per `ns watch` invocation; unset means no cap
 budget_usd = 25.0                  # soft cap, summed from harness cost reports. Unset: no cap
                                    # under billing = "subscription", 25.0 under "api"
 memory_mb = 16384                  # optional cap on each phase and gate, in MiB. Unset: no cap.
-                                   # See "Memory cap"
+                                   # See factory/run.md#memory-cap
 parallel = 2                       # units ns watch runs at once; --parallel wins. Unset: 1.
-                                   # See "Parallel units"
+                                   # See factory/watch.md#parallel-units
 
 [merge]                            # absent table: policy = "human"
-policy = "auto"                    # auto | human. See "Merge"
+policy = "auto"                    # auto | human. See factory/merge.md
 human_review = [".github/**", "scripts/check-private.sh", ".nightshift/**", ".githooks/**"]
 ci_timeout_minutes = 30
 ci_register_timeout = 3            # minutes to wait for the PR head's first check before "no CI"
 local_queue = true                 # gate the merge with the default branch before merging (the
                                    # default; off under [gate] local = "build-only").
-                                   # See "Local merge queue"
+                                   # See factory/merge.md#local-merge-queue
 
 [gate]
-local = "build-only"               # every-step (the default) | build-only. See "Gate"
+local = "build-only"               # every-step (the default) | build-only. See factory/run.md#gate
 
-[supervise]                        # read by the ns-supervise skill only. See "Supervising a night"
+[supervise]                        # read by the ns-supervise skill only. See factory/starting-a-night.md#supervising-a-night
 notify = "notify-send nightshift"  # optional command each ping is also sent to. Unset: none
 silence_minutes = 45               # minutes with no run-log event, while units run, before a ping
 
-[ratchets.flash]                   # a measured value that may never get worse. See "Ratchets"
+[ratchets.flash]                   # a measured value that may never get worse. See factory/run.md#ratchets
 command = "scripts/flash-size.sh"  # prints one number on stdout
 better = "lower"                   # lower | higher
 tolerance = "0.5%"                 # of the recorded value, or an absolute number. Unset: 0
@@ -128,7 +128,7 @@ Each lock is the file `<lock_dir>/<name>.lock`. While a run holds it, the file r
 lock_dir = "~/.local/state/nightshift/locks"
 ```
 
-**A held lock makes the run wait**, not refuse. It prints `ns run: <unit> <phase> waits for lock <name> (held by pid <pid>, unit <unit>)` to stderr, logs a `lock_wait` event, and tries again with a backoff of up to 5 s until the holder lets go. The wait is bounded by the waiting phase's own timeout, counted from when the wait began, and by `ns watch --until`, whichever comes first; a hung holder, or a harness left running by a killed `ns`, can hold the lock for longer than its own run's timeout. On giving up, the run releases the locks it already took, prints `ns run: <unit> <phase> gave up waiting for lock <name> (held by pid <pid>, unit <unit>) at the phase timeout` (or `at --until`), and logs a `lock_wait_timeout` event with the lock, the holder and the `bound` (`timeout` or `until`). The phase timeout counts as a failed attempt, retried within `max_attempts`, and the out-of-attempts reason names the lock. `--until` ends the run as `budget` with that reason, and `ns watch` stops the night with `until`. A lock taken at or past `--until`, or taken with the budget spent, is released the same way (as `budget`), so the phase doesn't start after the deadline or on a spent budget. Exit 5 still means only the unit's run lock (below) or, for `ns watch`, its watch lock. The lock is an OS `flock` on the file, so the kernel drops a run's hold when its process dies, and a file naming a dead pid is taken over at once. If `ns` is hard-killed (SIGKILL or a crash), the lock frees at once while its harness child may still be running, since the child does not inherit the lock.
+**A held lock makes the run wait**, not refuse. It prints `ns run: <unit> <phase> waits for lock <name> (held by pid <pid>, unit <unit>)` to stderr, logs a `lock_wait` event, and tries again with a backoff of up to 5 s until the holder lets go. The wait is bounded by the waiting phase's own timeout, counted from when the wait began, and by `ns watch --until`, whichever comes first; a hung holder, or a harness left running by a killed `ns`, can hold the lock for longer than its own run's timeout. On giving up, the run releases the locks it already took, prints `ns run: <unit> <phase> gave up waiting for lock <name> (held by pid <pid>, unit <unit>) at the phase timeout` (or `at --until`), and logs a `lock_wait_timeout` event with the lock, the holder and the `bound` (`timeout` or `until`). The phase timeout counts as a failed attempt, retried within `max_attempts`, and the out-of-attempts reason names the lock. `--until` ends the run as `budget` with that reason, and `ns watch` stops the night with `until`. A lock taken at or past `--until`, or taken with the budget spent, is released the same way (as `budget`), so the phase doesn't start after the deadline or on a spent budget. Exit 5 still means only the unit's run lock (see [ns run](factory/run.md)) or, for `ns watch`, its watch lock. The lock is an OS `flock` on the file, so the kernel drops a run's hold when its process dies, and a file naming a dead pid is taken over at once. If `ns` is hard-killed (SIGKILL or a crash), the lock frees at once while its harness child may still be running, since the child does not inherit the lock.
 
 ## Scorers
 
