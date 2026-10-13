@@ -97,21 +97,21 @@ fn phase_vars(env: impl Fn(&str) -> Option<String>) -> Vars {
 
 /// Whether `call` would skip the git hooks, with `vars` known to hold their values.
 fn judge(call: &Value, vars: &Vars) -> Option<Denial> {
-    let why = verdict(call, vars, false)?;
-    let unread = verdict(call, vars, true).is_none();
+    let why = verdict(call, vars, Unread::Keep)?;
+    let unread = verdict(call, vars, Unread::Fill).is_none();
     Some(Denial { why, unread })
 }
 
-/// Why `call` would skip the git hooks, with `vars` known to hold their values and, when
-/// `fill`, every other expansion read as `FILLER`.
-fn verdict(call: &Value, vars: &Vars, fill: bool) -> Option<String> {
+/// Why `call` would skip the git hooks, with `vars` known to hold their values and, under
+/// `Unread::Fill`, every other expansion read as `FILLER`.
+fn verdict(call: &Value, vars: &Vars, unread: Unread) -> Option<String> {
     let input = &call["tool_input"];
     match call["tool_name"].as_str()? {
         BASH_TOOL => {
             let mut scan = Scan {
                 cwd: call["cwd"].as_str().map(Cwd::of).unwrap_or_default(),
                 vars: vars.clone(),
-                fill,
+                unread,
                 ..Scan::default()
             };
             let command = input["command"].as_str()?;
@@ -148,20 +148,32 @@ struct Scan {
     stdin_is_text: bool,
     /// Variables whose value the top-level command is known to hold at this point.
     vars: Vars,
-    /// Read every expansion not in `vars` as `FILLER`.
-    fill: bool,
+    /// A command ran that changes how a later assignment sets its variable, or runs code on
+    /// its own: no variable is learned from here on.
+    frozen: bool,
+    unread: Unread,
+    /// The tokens being checked are the top-level command, whose variables are followed.
+    following: bool,
+}
+
+/// What the scan makes of an expansion it has no value for.
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Unread {
+    #[default]
+    Keep,
+    Fill,
 }
 
 impl Scan {
-    /// `w` with what the scan knows written in: at the top level of the command (`top`) each
-    /// variable in `vars`, and under `fill` every other expansion.
-    fn read(&self, w: Word, top: bool) -> Word {
-        let w = if top {
+    /// `w` with what the scan knows written in: at the top level of the command each variable
+    /// in `vars`, and under `Unread::Fill` every other expansion.
+    fn read(&self, w: Word) -> Word {
+        let w = if self.following {
             w.resolved(|e| Some(self.vars.get(e.name.as_ref()?)?.as_str()))
         } else {
             w
         };
-        if self.fill {
+        if self.unread == Unread::Fill {
             w.resolved(|_| Some(FILLER))
         } else {
             w
@@ -177,10 +189,15 @@ impl Scan {
         if command.is_some_and(|c| COMPOUND_WORDS.contains(&c)) {
             flow.compound = true;
         }
-        let may_set_any = command.is_some_and(|c| {
-            matches!(c, "eval" | "source" | "." | "declare" | "typeset" | "local")
-                || (SETTERS.contains(&c) && words.iter().any(|w| !w.expansions.is_empty()))
-        });
+        let names = |list: &[&str]| words.iter().any(|w| list.contains(&basename(&w.text)));
+        if names(FREEZERS) {
+            self.frozen = true;
+        }
+        let may_set_any = names(REWRITERS)
+            || self.frozen
+            || command.is_some_and(|c| {
+                SETTERS.contains(&c) && words.iter().any(|w| !w.expansions.is_empty())
+            });
         if may_set_any {
             self.vars.clear();
         }
@@ -188,7 +205,7 @@ impl Scan {
             self.vars.clear();
             flow.compound = true;
         }
-        if flow.runs && !flow.compound && matches!(sep, Sep::Seq | Sep::And) {
+        if flow.runs && !flow.compound && !self.frozen && matches!(sep, Sep::Seq | Sep::And) {
             self.vars.extend(literal_assignments(words));
         }
         flow.runs = sep == Sep::Seq;
@@ -234,13 +251,16 @@ fn check_command(s: &str, scan: &mut Scan) -> Option<String> {
     }
     scan.depth += 1;
     let lexed = tokens(s);
-    let top = scan.depth == 1 && !lexed.assigns;
-    let why = check_tokens(lexed.main, scan, top).or_else(|| {
+    let outer = scan.following;
+    scan.following = scan.depth == 1 && !lexed.assigns;
+    let why = check_tokens(lexed.main, scan).or_else(|| {
+        scan.following = false;
         lexed
             .substitutions
             .into_iter()
-            .find_map(|toks| check_tokens(toks, scan, false))
+            .find_map(|toks| check_tokens(toks, scan))
     });
+    scan.following = outer;
     scan.depth -= 1;
     why
 }
@@ -254,10 +274,11 @@ struct Flow {
     compound: bool,
 }
 
-/// Check the tokens of one command. `top` is the command the phase ran, not one nested in an
-/// `eval`, a `sh -c` or a substitution, and it has no arithmetic or `${name=value}` that could
-/// set a variable unseen: only there are its variables followed.
-fn check_tokens(toks: Vec<Tok>, scan: &mut Scan, top: bool) -> Option<String> {
+/// Check the tokens of one command. `scan.following` is set for the command the phase ran, not
+/// one nested in an `eval`, a `sh -c` or a substitution, and it has no arithmetic or
+/// `${name=value}` that could set a variable unseen: only there are its variables followed.
+fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
+    let top = scan.following;
     let is_word = |t: &Tok| matches!(t, Tok::Word(_));
     let mut words: Vec<Word> = Vec::new();
     let mut stdin_is_text = false;
@@ -268,7 +289,7 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan, top: bool) -> Option<String> {
     let mut toks = toks.into_iter().peekable();
     while let Some(tok) = toks.next() {
         let tok = match tok {
-            Tok::Word(w) => Tok::Word(scan.read(w, top)),
+            Tok::Word(w) => Tok::Word(scan.read(w)),
             tok => tok,
         };
         match tok {
@@ -285,7 +306,7 @@ fn check_tokens(toks: Vec<Tok>, scan: &mut Scan, top: bool) -> Option<String> {
             Tok::Heredoc => stdin_is_text = true,
             Tok::RedirectOut => {
                 if let Some(Tok::Word(f)) = toks.next_if(is_word) {
-                    let f = scan.read(f, top);
+                    let f = scan.read(f);
                     if scan.touches_hooks(&path(&f)) {
                         return Some(format!("write to {} in {PROTECTED}", f.text));
                     }
@@ -433,6 +454,16 @@ const COMPOUND_WORDS: &[&str] = &[
     "esac", "function", "!", "coproc",
 ];
 
+/// Builtins that can change a variable in a way the scan does not follow, so it forgets all of
+/// them.
+const REWRITERS: &[&str] = &[
+    "eval", "source", ".", "declare", "typeset", "local", "let", "trap",
+];
+
+/// Builtins after which the scan learns no assignment: a variable's attributes or a trap can
+/// change what a later assignment, or any command, sets.
+const FREEZERS: &[&str] = &["declare", "typeset", "local", "trap"];
+
 /// Builtins that can set a variable named by one of their arguments.
 const SETTERS: &[&str] = &[
     "read",
@@ -443,7 +474,6 @@ const SETTERS: &[&str] = &[
     "export",
     "readonly",
     "unset",
-    "let",
     "builtin",
     "command",
 ];
@@ -459,9 +489,10 @@ fn may_set(text: &str, name: &str) -> bool {
 /// A value a variable can be resolved to: the same text wherever it is expanded, quoted or
 /// not, so no blank, glob, quote or other character the shell reads.
 fn is_literal_value(value: &str) -> bool {
-    value
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "_./:@%+,=-".contains(c))
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_./:@%+,=-".contains(c))
 }
 
 /// The variables a segment that only assigns (`U=lit`, `export U=lit`) sets to a literal

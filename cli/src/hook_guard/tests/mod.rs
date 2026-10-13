@@ -10,7 +10,7 @@ mod shell;
 
 /// Why `call` would skip the git hooks, with no variable known.
 fn check(call: &Value) -> Option<String> {
-    verdict(call, &Vars::new(), false)
+    verdict(call, &Vars::new(), Unread::Keep)
 }
 
 fn bash_call(cmd: &str) -> Value {

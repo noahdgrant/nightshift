@@ -176,3 +176,101 @@ fn a_bypass_keeps_its_message() {
     let edit = json!({"tool_name": "Edit", "tool_input": {"file_path": "/r/.githooks/x"}});
     assert!(!judge(&edit, &Vars::new()).unwrap().unread);
 }
+
+#[test]
+fn an_empty_value_is_not_resolved() {
+    for c in [
+        "F=; $F git commit -n -m x",
+        "F=; $F git push --no-verify",
+        "export F=; $F git commit -n",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+    let empty = |name: &str| (name == "NS_UNIT").then(String::new);
+    assert!(phase_vars(empty).is_empty());
+    assert!(judged("$NS_UNIT git commit -n -m x", &phase_vars(empty)).is_some());
+}
+
+#[test]
+fn a_command_that_may_rewrite_variables_unseen_forgets_them() {
+    for c in [
+        "F=x; if source f; then :; fi; git commit $F",
+        "F=x; time source f; git commit $F",
+        "F=x; ! source f; git commit $F",
+        "F=x; builtin source f; git commit $F",
+        "F=x; command . f; git commit $F",
+        "F=x; builtin eval 'F=-n'; git commit $F",
+        "F=x; while source f; do :; done; git commit $F",
+        "F=x; let 'F = 5'; git commit $F",
+        "F=x; trap 'F=-n' DEBUG; git commit $F",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn a_declaration_or_trap_stops_the_scan_learning_assignments() {
+    for c in [
+        "F=x; declare -l F; F=-N; git commit $F",
+        "typeset -u F; F=-n; git commit $F",
+        "local -i F; F=-n; git commit $F",
+        "F=x; trap ' F=-n' DEBUG; git commit $F",
+        "trap 'F=-n' DEBUG; F=x; git commit $F",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn every_compound_word_stops_the_scan_following_the_command() {
+    for w in COMPOUND_WORDS {
+        let c = format!("{w} true; U=build.md; rm .ns/u1/$U");
+        assert!(denied(&c), "{c}");
+    }
+}
+
+#[test]
+fn every_builtin_that_may_set_a_variable_forgets_it() {
+    for s in SETTERS {
+        let c = format!("U=build.md; {s} \"$V\"; rm .ns/u1/$U");
+        assert!(denied(&c), "{c}");
+    }
+    for c in [
+        "U=build.md; typeset -n R=U; R=x; rm .ns/u1/$U",
+        "U=build.md; local U; rm .ns/u1/$U",
+        "U=build.md; builtin read U; rm .ns/u1/$U",
+        "U=build.md; command read U; rm .ns/u1/$U",
+        "U=build.md; builtin read \"$V\"; rm .ns/u1/$U",
+        "U=build.md; command read \"$V\"; rm .ns/u1/$U",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
+fn only_a_plain_literal_value_is_resolved() {
+    for v in [
+        "", "~", "a;b", "$x", "a\\b", "a?", "{a,b}", "a b", "a*", "a[b]", "a&b", "a|b", "a<b",
+        "a>b", "a(b)", "a!b", "a#b", "a`b", "a\"b", "a^b",
+    ] {
+        assert!(!is_literal_value(v), "{v:?}");
+    }
+    for v in ["a:b@c%d+e,f=g", "--no-verify", "x_y.z/w-1"] {
+        assert!(is_literal_value(v), "{v}");
+    }
+    assert!(judged("F=a:b@c%d+e,f=g; git commit $F", &Vars::new()).is_none());
+    for c in [
+        "F=~; git commit $F",
+        "F='a;b'; git commit $F",
+        "F='a?'; git commit $F",
+    ] {
+        assert!(judged(c, &Vars::new()).is_some_and(|d| d.unread), "{c}");
+    }
+}
+
+#[test]
+fn a_braced_word_with_an_expansion_stays_opaque_after_resolving() {
+    let d = judged("F=--no-verify; git push {$F,x}", &Vars::new()).unwrap();
+    assert!(!d.unread, "{}", d.why);
+    assert!(denied("F=--no-verify; git push $F$X"));
+}
