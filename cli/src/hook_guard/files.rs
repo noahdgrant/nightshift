@@ -116,9 +116,11 @@ fn segments(command: &str) -> impl Iterator<Item = &str> {
 
 /// A command that can plant a link or copy the phase settings. A link in a phase's `TMPDIR` that
 /// points at the unit's `phase-settings.json`, written through later, would reach past the `tmp`
-/// exception. Per segment, a token whose basename is a verb is enough, wherever it stands
-/// (`/bin/ln`, `\ln`, `env ln`, `busybox ln`, `find ... -exec ln`), and the other tokens of the
-/// segment are its arguments:
+/// exception. Per segment, a token whose basename is a verb counts at command position: the
+/// first word (`/bin/ln`, `\ln`, `FOO=1 ln`), after a wrapper that starts the segment (`env ln`,
+/// `busybox ln`, `xargs -n 1 ln`), after `find`'s `-exec`, or opening a `(` or `$(`. A later
+/// argument named like a verb (`cargo test link`) is not one. The other tokens of the segment are
+/// its arguments:
 /// - `ln` and `link` are denied when an argument mentions `TMPDIR`, an `ns/units` path component
 ///   or `phase-settings.json`. That includes `ln -s a $TMPDIR/l`, whose target is harmless: the
 ///   guard does not tell a safe target from an unsafe one, so it denies them all.
@@ -134,10 +136,26 @@ pub(super) fn links_into_unit(command: &str) -> Option<String> {
             .split_whitespace()
             .map(|t| t.replace(['\'', '"', '\\'], ""))
             .collect();
+        let start = tokens
+            .iter()
+            .position(|t| !is_command_prefix(t))
+            .unwrap_or(tokens.len());
+        let wrapped = tokens.get(start).is_some_and(|t| {
+            let bare = t.trim_start_matches(['(', '$']);
+            WRAPPERS.contains(&bare.rsplit('/').next().unwrap_or(bare))
+        });
+        let mut after_exec = false;
         for (i, token) in tokens.iter().enumerate() {
             let bare = token.trim_start_matches(['(', '$']);
             let verb = bare.rsplit('/').next().unwrap_or(bare);
-            if !matches!(verb, "ln" | "link" | "cp" | "rsync" | "install") {
+            let at_command = i >= start && (i == start || wrapped || after_exec);
+            let substitution = token.starts_with(['(', '$']);
+            if matches!(token.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir") {
+                after_exec = true;
+            }
+            if !(at_command || substitution)
+                || !matches!(verb, "ln" | "link" | "cp" | "rsync" | "install")
+            {
                 continue;
             }
             let hit = if matches!(verb, "ln" | "link") {
@@ -159,6 +177,23 @@ pub(super) fn links_into_unit(command: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Commands that run the rest of their line as a command.
+const WRAPPERS: [&str; 12] = [
+    "env", "command", "busybox", "sudo", "doas", "xargs", "nohup", "time", "nice", "exec",
+    "builtin", "setsid",
+];
+
+/// `token` can stand before a command word: an assignment (`FOO=1`) or a shell keyword or brace.
+fn is_command_prefix(token: &str) -> bool {
+    matches!(
+        token,
+        "{" | "!" | "if" | "then" | "else" | "elif" | "do" | "while" | "until"
+    ) || (!token.starts_with('-')
+        && token.split_once('=').is_some_and(|(k, _)| {
+            !k.is_empty() && k.chars().all(|c| c.is_alphanumeric() || c == '_')
+        }))
 }
 
 /// `arg` has an `ns/units` path component pair (not `runs/units`) or names the settings file.

@@ -706,6 +706,20 @@ fn copies_that_create_no_link_are_allowed() {
 }
 
 #[test]
+fn a_verb_name_that_is_only_an_argument_is_allowed() {
+    for c in [
+        "cargo test link > $TMPDIR/out.log",
+        "cargo test ln > $TMPDIR/x",
+        "grep link f > $TMPDIR/x",
+        "git log --grep cp > $TMPDIR/x",
+        "echo install $TMPDIR/x",
+        "echo link $TMPDIR/x",
+    ] {
+        assert!(!denied(c), "{c}");
+    }
+}
+
+#[test]
 fn a_link_maker_that_names_nothing_protected_is_allowed() {
     for c in [
         "ln -s a b",
@@ -724,11 +738,6 @@ fn a_link_maker_that_names_nothing_protected_is_allowed() {
     ] {
         assert!(!denied(c), "{c}");
     }
-}
-
-#[test]
-fn a_verb_word_in_an_echo_with_tmpdir_is_denied_as_a_known_false_positive() {
-    assert!(denied("echo link $TMPDIR/x"));
 }
 
 #[test]
