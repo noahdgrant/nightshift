@@ -52,6 +52,8 @@ The `ci-local` row of `stack.md` names `scripts/ci-local.sh`. The `ns run` gate 
 - `gates: stop`: show the three files and the `git config` line, and wait for a yes before writing any of them. After the yes, write the `[worktree] setup` entry to `.nightshift/nightshift.toml`, appended to the existing `setup` array when the worktree trap fix-ups write one too.
 - `gates: auto`: write `scripts/ci-local.sh` and `.githooks/pre-commit`, run the `git config` line in the main checkout, and fill the `ci-local` row and `## Hooks` section. Leave `.nightshift/nightshift.toml` alone, since many repos have its changes reviewed by a human. Give the `[worktree] setup` line in the final message for whoever merges to add.
 
+`ns-setup`, run by the user to onboard a repo, is the sanctioned writer of `core.hooksPath` and `.githooks/`, which `skills/ns-contract` (Git hooks) forbids to phases. Never do this inside an `ns run` phase: if the guard denies the write, report it, and do not retry or bypass it.
+
 Before handing over, run `sh -n scripts/ci-local.sh` and then `scripts/ci-local.sh --fast` once. A step that fails on today's code is a finding to report, not a reason to drop the step.
 
 ## Example: Python

@@ -31,6 +31,12 @@ run = '''d=$(pwd) && cd / && "$d/scripts/ci-local.sh" --bogus 2>/dev/null'''
 expect_exit = 2
 
 [[check]]
+# --fast runs clean from outside the repo and still runs both ruff steps (stub ruff logs its calls; the fixture CI has no slow step, so fast and plain run the same commands).
+type = "command"
+run = '''d=$(pwd) && s=$(mktemp -d) && printf '#!/bin/sh\necho "$*" >> "%s/log"\n' "$s" > "$s/ruff" && chmod +x "$s/ruff" && cd / && PATH="$s:$PATH" "$d/scripts/ci-local.sh" --fast >/dev/null 2>&1 && grep -qx 'check .' "$s/log" && grep -qx 'format --check .' "$s/log"'''
+expect_exit = 0
+
+[[check]]
 type = "command"
 run = '''test -x .githooks/pre-commit && grep -Eq '^exec +scripts/ci-local\.sh +--fast' .githooks/pre-commit'''
 expect_exit = 0
@@ -44,6 +50,12 @@ expect_exit = 0
 type = "regex"
 path = "docs/agents/stack.md"
 pattern = "\\| *ci-local *\\| *`[^`]*scripts/ci-local\\.sh"
+present = true
+
+[[check]]
+type = "regex"
+path = "docs/agents/stack.md"
+pattern = "(?s)## Hooks.*\\.githooks/pre-commit"
 present = true
 
 [[check]]
