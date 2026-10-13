@@ -14,6 +14,8 @@ Classify each merged finding. The first matching row wins.
 | Noted | Valid but not actionable (premature, too low impact to track) | `dismissed: noted: <why>` |
 | Dismissed | Wrong, a hypothetical the call path rules out, a preference, or missing context the repo supplies | `dismissed: <why>` |
 
+A spec finding that a fix adds no guard for its class is dismissed when `build.md`'s Class guard section says why none is practical: `dismissed: no guard practical: <the reason>`. With no reason there, it stays open.
+
 Scrutinise a dismissal of a security or correctness finding twice. If Act on holds more than about five items, check whether you are filtering hard enough. The Dismissed list stays in the file: it lets the human override you.
 
 ## Severity mapping
