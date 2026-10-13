@@ -71,7 +71,7 @@ pub(super) fn tmpdir_reaches_settings(command: &str) -> Option<String> {
     for segment in segments(command) {
         let segment = segment.replace(['\'', '"', '\\'], "");
         let words: Vec<&str> = segment
-            .split(|c: char| c.is_whitespace() || c == '>' || c == '=')
+            .split(|c: char| c.is_whitespace() || c == '=')
             .filter(|w| !w.is_empty())
             .collect();
         for word in &words {
@@ -140,19 +140,16 @@ pub(super) fn links_into_unit(command: &str) -> Option<String> {
             if !matches!(verb, "ln" | "link" | "cp" | "rsync" | "install") {
                 continue;
             }
-            let others = || {
+            let hit = if matches!(verb, "ln" | "link") {
                 tokens
                     .iter()
-                    .enumerate()
-                    .filter(|(j, _)| *j != i)
-                    .map(|(_, t)| t)
-            };
-            let hit = if matches!(verb, "ln" | "link") {
-                others().find(|a| a.contains("TMPDIR") || names_unit_or_settings(a))
+                    .find(|a| a.contains("TMPDIR") || names_unit_or_settings(a))
             } else if verb == "cp" && tokens[i + 1..].iter().any(|a| is_link_flag(a)) {
-                others().find(|a| a.contains("TMPDIR") || names_unit_or_settings(a))
+                tokens
+                    .iter()
+                    .find(|a| a.contains("TMPDIR") || names_unit_or_settings(a))
             } else {
-                others().find(|a| names_unit_or_settings(a))
+                tokens.iter().find(|a| names_unit_or_settings(a))
             };
             if let Some(arg) = hit {
                 return Some(format!(
@@ -179,7 +176,7 @@ fn names_unit_or_settings(arg: &str) -> bool {
 fn is_link_flag(arg: &str) -> bool {
     match arg.strip_prefix("--") {
         Some(long) => matches!(long, "symbolic-link" | "link"),
-        None => arg.starts_with('-') && arg.chars().skip(1).any(|c| matches!(c, 's' | 'l')),
+        None => arg.starts_with('-') && arg.chars().any(|c| matches!(c, 's' | 'l')),
     }
 }
 

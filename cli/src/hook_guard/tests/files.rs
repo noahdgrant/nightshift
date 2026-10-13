@@ -697,6 +697,9 @@ fn copies_that_create_no_link_are_allowed() {
         "rsync -v a $TMPDIR/b",
         "rsync -a src/ dst/",
         "cp -r /r/.git/ns /tmp/copy",
+        "xargs -s 100 cp a $TMPDIR/b",
+        "cp lsx $TMPDIR/x",
+        "cp --force --no-clobber a $TMPDIR/b",
     ] {
         assert!(!denied(c), "{c}");
     }
@@ -714,6 +717,10 @@ fn a_link_maker_that_names_nothing_protected_is_allowed() {
         "ln -s a b; echo x > $TMPDIR/out",
         "cargo install --path . > $TMPDIR/out",
         "echo x > $TMPDIR/out",
+        "ln a b | tee $TMPDIR/out",
+        "ln a b & echo > $TMPDIR/out",
+        "ln a b\necho $TMPDIR/out",
+        "echo `ln a b` $TMPDIR/out",
     ] {
         assert!(!denied(c), "{c}");
     }
@@ -744,7 +751,7 @@ fn the_taint_of_a_cd_into_tmpdir_survives_a_command_substitution_and_a_cd_option
         "cd $TMPDIR && echo $(pwd) && echo {} > ../../phase-settings.json",
         "cd -P $TMPDIR && echo {} > ../../x",
         "cd $TMPDIR; (cd /repo); cat ../x",
-        "cd $TMPDIR && echo {} >../../x",
+        "cd $TMPDIR && echo {} > \"../..\"/x",
         "cd $TMPDIR && cp --target-directory=.. a",
         "cd $TMPDIR && echo {} > \\.\\./\\.\\./x",
         "cd $TMPDIR && echo {} > '..'/'..'/x",
