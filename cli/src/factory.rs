@@ -398,6 +398,28 @@ impl Factory {
         out
     }
 
+    /// Under `[gate] local = "build-only"`, the gate appends ` --fast` to the base command
+    /// (`[phases.build] gate`, else the `ci-local` row of `stack_md`). A warning when that base
+    /// shows no `--fast` support: the override's text, or every `ci-local` row, never names it.
+    pub fn fast_gate_warning(&self, stack_md: &str) -> Option<String> {
+        if self.gate.local != LocalGate::BuildOnly {
+            return None;
+        }
+        let (source, base, fast) = match self.phase("build").gate {
+            Some(g) => ("[phases.build] gate", g.clone(), g.contains("--fast")),
+            None => (
+                "the ci-local row of docs/agents/stack.md",
+                crate::gate::ci_local(stack_md)?,
+                crate::stack::rows(stack_md, "ci-local").any(|r| r.contains("--fast")),
+            ),
+        };
+        (!fast).then(|| {
+            format!(
+                "[gate] local = \"build-only\" runs `{base} --fast` after every phase but build, and {source} shows no --fast support; add --fast to the script, or set [gate] local = \"every-step\" (docs/factory/run.md, Where the gate runs all of CI)"
+            )
+        })
+    }
+
     /// Semantic checks beyond parsing; each string is one problem.
     pub fn problems(&self, cfg: Option<&config::Config>) -> Vec<String> {
         let mut out = Vec::new();
@@ -750,6 +772,9 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
                 scorers = found;
                 problems.extend(bad);
                 warnings = f.warnings();
+                let stack =
+                    fs::read_to_string(main_root.join("docs/agents/stack.md")).unwrap_or_default();
+                warnings.extend(f.fast_gate_warning(&stack));
                 for name in PHASES {
                     let p = f.phase(name);
                     let custom = root.join("agents").join(name).join("agent.md").is_file();
