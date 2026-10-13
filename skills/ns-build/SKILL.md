@@ -18,13 +18,14 @@ Read `docs/agents/stack.md` for the test, lint, typecheck and build commands. If
 
 Run `ns worktree new <unit-id>`. It is idempotent and prints `{"unit","path","branch","artifacts"}`. Work in `path` from here on.
 
-Without `ns`, do the same by hand from the main checkout:
+Without `ns`, do the same by hand from the main checkout, with `NS_UNIT` set to the unit's ID ([units of work](../ns-contract/SKILL.md#units-of-work-and-artifacts)):
 
 ```bash
+NS_UNIT=<unit-id>
 repo=$(basename "$(git rev-parse --show-toplevel)")
-wt="../$repo.worktrees/<unit-id>"
-[ -d "$wt" ] || git worktree add "$wt" -b ns/<unit-id>
-mkdir -p "$wt/.ns/<unit-id>"
+wt="../$repo.worktrees/$NS_UNIT"
+[ -d "$wt" ] || git worktree add "$wt" -b "ns/$NS_UNIT"
+mkdir -p "$wt/.ns/$NS_UNIT"
 grep -qxF '.ns/' "$(git rev-parse --git-common-dir)/info/exclude" || echo '.ns/' >> "$(git rev-parse --git-common-dir)/info/exclude"
 ```
 

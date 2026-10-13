@@ -178,6 +178,16 @@ Phases run unattended with permissions bypassed, and on a public repo anyone can
 
 What remains: the team's own text is trusted in full, so a team member who pastes untrusted text into an issue or comment passes it through as instructions. `ns run --issue <n>` started by hand runs any issue, whoever wrote it, and only the skills' rule guards its comments.
 
+## Hook guard
+
+Every claude phase runs `ns guard-hooks` before each Bash, Edit, Write, MultiEdit and NotebookEdit call ([Run](factory/run.md), "Phases don't skip the repo's git hooks"). It reads a Bash command as shell words, and a word built by a shell expansion is one it may not be able to read:
+
+- **What it resolves.** `NS_UNIT` and `NS_WORKTREE`, from its own environment, which `ns run` gives the phase; and a variable the command assigns a literal value to before it uses it (`NS_UNIT=142-uart-timeout; cd .ns/$NS_UNIT`). A value is written into the word, and the word is judged as if typed out.
+- **What stands in for the rest.** Every other expansion stays unread. To learn whether a denial came only from such a word, the guard judges the command again with each unread expansion replaced by `unread`, a name no protected path or flag has.
+- **What the denial says.** When the stand-in lets the command through, only an unreadable word caused the denial. The reason starts `ns: denied:` and tells the phase to write the word out literally, or write the file with the Write tool, and carry on: the denial is no reason to stop. Any other denial starts `ns: blocked:` and names the rule it enforces.
+
+Claude Code's own permission rules read paths the same way, without the guard's resolution: it can't resolve a glob in a `cd` (`cd .ns/142*/`), so it can't rule out a `secrets` directory behind it, and `Read(//**/secrets/**)` denies the call. So a phase names its unit directory exactly, `.ns/$NS_UNIT/`, and never with a glob (`skills/ns-contract/SKILL.md`, "Units of work and artifacts").
+
 ## Starting a night
 
 See [Starting a night](factory/starting-a-night.md): [Before the first night](factory/starting-a-night.md#before-the-first-night), [Install the timer](factory/starting-a-night.md#install-the-timer), [When the watched repo is nightshift](factory/starting-a-night.md#when-the-watched-repo-is-nightshift), [Stopping a night](factory/starting-a-night.md#stopping-a-night), [Supervising a night](factory/starting-a-night.md#supervising-a-night), [In the morning](factory/starting-a-night.md#in-the-morning), [Resuming a unit](factory/starting-a-night.md#resuming-a-unit).
