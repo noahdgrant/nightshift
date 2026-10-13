@@ -44,6 +44,9 @@ fn recheck_budget(
     }
 }
 
+/// The most times one `ns run` sends a passed ship back because its PR conflicts with the base.
+const RESHIP_CAP: u32 = 5;
+
 /// Why a build runs only to rebase onto the newest default branch, which costs no attempt.
 enum Rebase {
     /// Verify, review, ship or the merge step said the base moved.
@@ -78,6 +81,10 @@ pub(super) fn drive(
     let mut forced_rebase: Option<Rebase> = None;
     // The default branch's sha the last free rebase went onto: each free one needs a new move.
     let mut rebased_onto: Option<String> = None;
+    let mut reships = 0;
+    // A free ship that brought the base in passed: the ship after the verify and review reruns it
+    // caused is free too.
+    let mut ship_follows_base = false;
     let mut forced: Option<Decision> = from.map(|f| {
         run(
             PHASES.iter().find(|p| **p == f).copied().unwrap_or("build"),
@@ -141,6 +148,7 @@ pub(super) fn drive(
                 return Ok(finish(Outcome::Split, r, Some("triage")));
             }
             Decision::Done => {
+                ship_follows_base = false;
                 if !fac.merge.auto() {
                     return Ok(finish(Outcome::Done, "pr.md passed", Some("ship")));
                 }
@@ -155,6 +163,15 @@ pub(super) fn drive(
                         continue;
                     }
                     MergeStep::Reship(feedback) => {
+                        reships += 1;
+                        if reships > RESHIP_CAP {
+                            ctx.log(json!({"event": "reship_cap", "reships": RESHIP_CAP, "cap": RESHIP_CAP}));
+                            return Ok(finish(
+                                Outcome::Stuck,
+                                format!("ship was sent back {RESHIP_CAP} times because the base moved (cap {RESHIP_CAP})"),
+                                Some("ship"),
+                            ));
+                        }
                         forced = Some(run("ship", &feedback, "the PR conflicts with its base"));
                         forced_rebase = Some(Rebase::BaseMoved);
                         continue;
@@ -189,6 +206,15 @@ pub(super) fn drive(
         if let Some((_, (_, sha))) = &rebase {
             *reruns.entry(phase).or_default() += 1;
             rebased_onto = Some(sha.clone());
+        }
+        // Any other phase ends the chain.
+        let follows_base = match phase {
+            "verify" | "review" => false,
+            _ => std::mem::take(&mut ship_follows_base) && phase == "ship",
+        };
+        if follows_base {
+            *reruns.entry(phase).or_default() += 1;
+            ctx.log(json!({"event": "ship_after_base_moved", "attempt": attempt}));
         }
         if attempt - reruns.get(phase).copied().unwrap_or(0) > p.max_attempts {
             let mut reason = format!("{phase} is out of attempts ({})", p.max_attempts);
@@ -254,6 +280,10 @@ pub(super) fn drive(
                     *reruns.entry(phase).or_default() -= 1;
                     rebased_onto = before_credit;
                     forced_rebase = Some(kind);
+                }
+                if follows_base {
+                    *reruns.entry(phase).or_default() -= 1;
+                    ship_follows_base = true;
                 }
                 continue;
             }
@@ -404,12 +434,13 @@ pub(super) fn drive(
             last_failure.remove(phase);
         }
         let art = read_art(&art_path);
-        if rebase.is_some() && art.as_ref().is_none_or(|a| a.status != "pass") {
+        if (rebase.is_some() || follows_base) && art.as_ref().is_none_or(|a| a.status != "pass") {
             *reruns.entry(phase).or_default() -= 1;
         }
         let written = art.is_some();
         if art.as_ref().is_some_and(|a| a.status == "pass") {
             passed.insert(phase);
+            ship_follows_base |= phase == "ship" && rebase.is_some();
             // A failed phase's scratch files stay for a human to read, until `ns clean`. A pass
             // whose scratch dir will not go is logged, not failed: `ns clean` removes the leftover.
             if let Err(e) = fs::remove_dir_all(&tmp) {
