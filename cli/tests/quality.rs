@@ -1047,8 +1047,14 @@ fn bugs_fixture(issues: &[Value]) -> (TempDir, PathBuf) {
     let fake = tmp.path().join("fake");
     write(fake.join("issues.json"), &json!(issues).to_string());
     let prs = json!([
-        {"number": 41, "body": "Closes #9", "headRefName": "ns/9-b", "isCrossRepository": false},
-        {"number": 40, "body": "Closes #8", "headRefName": "someone/c", "isCrossRepository": false},
+        {"number": 41, "body": "Closes #9", "headRefName": "ns/9-b", "isCrossRepository": false,
+         "mergedAt": "2099-01-06T10:00:00Z", "additions": 300, "deletions": 100},
+        {"number": 40, "body": "Closes #8", "headRefName": "someone/c", "isCrossRepository": false,
+         "mergedAt": "2099-01-06T09:00:00Z", "additions": 5, "deletions": 0},
+        {"number": 42, "body": "", "headRefName": "ns/12-d", "isCrossRepository": false,
+         "mergedAt": "2099-01-13T10:00:00Z", "additions": 150, "deletions": 50},
+        {"number": 43, "body": "", "headRefName": "ns/13-e", "isCrossRepository": false,
+         "mergedAt": "2099-01-14T10:00:00Z", "additions": 100, "deletions": 0},
     ]);
     write(fake.join("prs.json"), &prs.to_string());
     common::write_exe(
@@ -1176,10 +1182,25 @@ fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
         v["weeks"],
         json!([
             {"week": "2099-W02", "monday": "2099-01-05", "opened": 2, "review_escape": 1,
-             "factory_introduced": 1, "ci_main": 0, "human": 0, "critical_high": 2, "rest": 0},
+             "factory_introduced": 1, "ci_main": 0, "human": 0, "critical_high": 2, "rest": 0,
+             "merged_units": 1, "changed_lines": 400, "per_unit": 2.0, "per_kloc": 5.0,
+             "undercounted": false},
             {"week": "2099-W03", "monday": "2099-01-12", "opened": 2, "review_escape": 0,
-             "factory_introduced": 0, "ci_main": 1, "human": 1, "critical_high": 1, "rest": 1},
+             "factory_introduced": 0, "ci_main": 1, "human": 1, "critical_high": 1, "rest": 1,
+             "merged_units": 2, "changed_lines": 300, "per_unit": 1.0, "per_kloc": 6.667,
+             "undercounted": false},
         ])
+    );
+    assert_eq!(
+        v["trend"],
+        json!({
+            "per_unit": {"direction": "insufficient", "slope": null, "weeks": 2},
+            "per_kloc": {"direction": "insufficient", "slope": null, "weeks": 2},
+        })
+    );
+    assert_eq!(
+        v["merged_prs"],
+        json!({"listed": 4, "truncated": false, "oldest": "2099-01-06T09:00:00Z"})
     );
     assert_eq!(v["total"]["opened"], 4);
     assert_eq!(
@@ -1200,6 +1221,14 @@ fn bugs_weeks_keeps_only_the_latest_weeks() {
     );
     assert!(
         text.contains("\n2099-W03       2      0       0       1     1         1    1\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\n2099-W03      2    300     1.00     6.67\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\ntrend per unit: insufficient, needs 4 weeks with a rate, has 1\n"),
         "{text}"
     );
     assert!(!text.contains("2099-W02"), "{text}");

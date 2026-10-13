@@ -503,6 +503,9 @@ queue unavailable
         fn closing_prs(&self, _: PrState) -> Result<ClosingPrs> {
             Ok(ClosingPrs::new())
         }
+        fn merged_prs(&self) -> Result<crate::watch::forge::MergedPrs> {
+            unreachable!("ns status only reads the queue")
+        }
         fn is_closed(&self, _: u64) -> Result<bool> {
             Ok(false)
         }

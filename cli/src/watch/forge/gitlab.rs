@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::{ClosingPrs, Filed, Forge, IssueState, Post, PrState};
+use super::{ClosingPrs, Filed, Forge, IssueState, MergedPr, MergedPrs, Post, PrState};
 use crate::config::ForgeKind;
 use crate::error::SfError;
 use crate::watch::ci::{Check, HeadChecks, Outcome};
@@ -105,6 +105,33 @@ fn to_filed(i: &Value, team: &BTreeSet<u64>) -> Option<Filed> {
             Some("closed") => IssueState::Completed,
             _ => IssueState::Open,
         },
+    })
+}
+
+/// How many merge requests one list reads.
+const MR_LIMIT: usize = 100;
+
+/// The merged MRs in one list, truncated when it is full.
+fn to_merged_prs(all: &[Value]) -> MergedPrs {
+    MergedPrs {
+        prs: all.iter().filter_map(to_merged).collect(),
+        truncated: all.len() >= MR_LIMIT,
+    }
+}
+
+/// A merged MR, its source branch empty when it came from a fork. One with no merge time it can
+/// read is left out.
+fn to_merged(mr: &Value) -> Option<MergedPr> {
+    let own =
+        mr["source_project_id"].is_u64() && mr["source_project_id"] == mr["target_project_id"];
+    Some(MergedPr {
+        number: mr["iid"].as_u64()?,
+        head: match own {
+            true => mr["source_branch"].as_str().unwrap_or("").to_string(),
+            false => String::new(),
+        },
+        merged: time(mr["merged_at"].as_str()?)?,
+        changed: None,
     })
 }
 
@@ -226,6 +253,14 @@ impl Forge for GitLab {
             }
         }
         Ok(by_issue)
+    }
+
+    /// The 100 most recently updated merged MRs. GitLab's list gives no line counts.
+    fn merged_prs(&self) -> Result<MergedPrs> {
+        let path = format!(
+            "projects/:id/merge_requests?state=merged&order_by=updated_at&per_page={MR_LIMIT}"
+        );
+        Ok(to_merged_prs(&items(&glab(&self.root, &["api", &path])?)?))
     }
 
     /// `n` is always an issue iid: a merge request is `!n`, numbered apart, so it never blocks.
@@ -379,6 +414,40 @@ impl Forge for GitLab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn to_merged_prs_reads_each_mrs_branch_and_merge_time_but_no_lines() {
+        let mrs = serde_json::json!([
+            {"iid": 4, "source_branch": "ns/9-b", "source_project_id": 1, "target_project_id": 1,
+             "merged_at": "2026-10-05T10:00:00.123Z"},
+            {"iid": 5, "source_branch": "ns/9-b", "source_project_id": 2, "target_project_id": 1,
+             "merged_at": "2026-10-06T00:00:00Z"},
+            {"iid": 6, "source_branch": "x", "merged_at": null},
+        ]);
+        let m = to_merged_prs(mrs.as_array().unwrap());
+        let at = |s| crate::clock::parse_iso(s).unwrap();
+        assert_eq!(
+            m.prs,
+            [
+                MergedPr {
+                    number: 4,
+                    head: "ns/9-b".into(),
+                    merged: at("2026-10-05T10:00:00Z"),
+                    changed: None
+                },
+                MergedPr {
+                    number: 5,
+                    head: String::new(),
+                    merged: at("2026-10-06T00:00:00Z"),
+                    changed: None
+                },
+            ]
+        );
+        assert!(!m.truncated);
+        let full = vec![serde_json::json!({}); MR_LIMIT];
+        assert!(to_merged_prs(&full).truncated);
+        assert!(!to_merged_prs(&full[1..]).truncated);
+    }
 
     #[test]
     fn glab_that_cannot_start_says_so() {

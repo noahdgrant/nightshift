@@ -641,7 +641,11 @@ Each issue gets one source, and `by` says what decided it, first match wins:
 
 The marker is one line in the body, `Source: review_escape`, and wins over every guess. A phase that files a fix issue should write it. Merged PRs come from the forge's 200 most recent (100 on GitLab). A blame that fails leaves the issue `human` and says why in `blame_error`, and a blame on a PR outside the factory keeps its `introduced_by`. Severity is `critical_high` for an issue labelled `priority:critical` or `priority:high`, and `rest` for any other priority or none.
 
-Without `--json` it prints a table, one row per week and a total. With `--json` it prints `{ok, label, since, until, weeks, total, issues, excluded}`; `cli/README.md` lists the keys. Rates per merged unit or per changed line, and the trend, are not computed yet.
+Each week also gets two rates: its fix issues per merged unit, and per 1,000 changed lines merged. A merged unit is a PR merged that week from an `ns/` branch, and its changed lines are the PR's additions plus deletions. Both come from the same list of merged PRs as the blame, so a rate for a week before the oldest PR in a full list (200 on GitHub, 100 on GitLab) may be too high: that week is marked `undercounted`. GitLab's list gives no line counts, so there the rate per 1,000 lines is null. A week with no merged unit, or no changed lines, has a null rate.
+
+Each rate has a trend over the weeks shown: the least-squares slope of the rate against the week, fitted on the weeks with a rate that are not undercounted. Fewer than 4 such weeks is `insufficient`. A slope within 5% of the mean rate, per week, is `flat`; otherwise it is `rising` or `falling`.
+
+Without `--json` it prints a table, one row per week and a total, then a table of the rates and a line per trend. With `--json` it prints `{ok, label, since, until, weeks, total, trend, merged_prs, issues, excluded}`; `cli/README.md` lists the keys.
 
 ## Trust
 

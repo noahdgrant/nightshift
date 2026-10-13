@@ -1035,6 +1035,9 @@ Open after at least 2 fix attempts: C1, I2, I4.
         fn closing_prs(&self, _: PrState) -> Result<ClosingPrs> {
             Ok(ClosingPrs::new())
         }
+        fn merged_prs(&self) -> Result<crate::watch::forge::MergedPrs> {
+            Ok(crate::watch::forge::MergedPrs::default())
+        }
         fn is_closed(&self, n: u64) -> Result<bool> {
             match n {
                 99 => anyhow::bail!("unreadable"),
