@@ -1,4 +1,4 @@
-//! `scripts/ci-tools.sh`, run in a temp copy against its own tool list and stub tools.
+//! `scripts/ci-tools.sh`, run in a temp copy against its own tool pins and stub tools.
 
 mod common;
 
@@ -38,7 +38,8 @@ struct Repo {
 }
 
 impl Repo {
-    /// The script with `list` as its tool list, and only `bash`, `dirname` and a `python3`
+    /// The script with a `scripts/ci-tools.d/<tool>.toml` for each `[<tool>]` table in `list`,
+    /// and only `bash`, `dirname` and a `python3`
     /// that logs `-m pip` runs on PATH.
     fn new(list: &str) -> Repo {
         let dir = tempfile::tempdir().unwrap();
@@ -48,7 +49,13 @@ impl Repo {
             &root.join("scripts/ci-tools.sh"),
             fs::read_to_string(script).unwrap(),
         );
-        fs::write(root.join("scripts/ci-tools.toml"), list).unwrap();
+        let pins = root.join("scripts/ci-tools.d");
+        fs::create_dir_all(&pins).unwrap();
+        let list: toml::Table = toml::from_str(list).unwrap();
+        for (tool, pin) in list {
+            let pin = toml::to_string(&pin).unwrap();
+            fs::write(pins.join(format!("{tool}.toml")), pin).unwrap();
+        }
         fs::create_dir_all(root.join("bin")).unwrap();
         for tool in ["bash", "dirname"] {
             std::os::unix::fs::symlink(real(tool), root.join("bin").join(tool)).unwrap();
@@ -174,6 +181,8 @@ fn check_reports_every_bad_tool_and_only_the_ones_named() {
     assert_eq!(out.status.code(), Some(1));
     let err = stderr(&out);
     assert_eq!(err.lines().count(), 3, "{err}");
+    let order: Vec<_> = err.lines().map(|l| l.split(' ').nth(1).unwrap()).collect();
+    assert_eq!(order, ["gadget", "gizmo", "widget"], "{err}");
     for tool in [
         "widget is not on PATH",
         "gadget is not version 18",
@@ -257,7 +266,7 @@ fn an_unknown_tool_or_method_is_a_usage_error() {
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(
         stderr(&out),
-        "ci-tools: not in scripts/ci-tools.toml: nope nada\n"
+        "ci-tools: no pin in scripts/ci-tools.d/ for: nope nada\n"
     );
 
     let list = "[odd]\nversion = \"1\"\ninstall = \"brew\"\ncheck = \"odd --version\"\n";
@@ -270,6 +279,27 @@ fn an_unknown_tool_or_method_is_a_usage_error() {
             "ci-tools: odd: install must be pip, apt, install-action or download, not brew\n"
         );
         assert_eq!(repo.log(), "");
+    }
+}
+
+#[test]
+fn a_missing_pin_directory_is_an_error() {
+    for mode in ["check", "install"] {
+        let repo = all_installed();
+        fs::remove_dir_all(repo.dir.path().join("scripts/ci-tools.d")).unwrap();
+        let out = repo.run(&[mode], &[]);
+        assert_eq!(out.status.code(), Some(2), "{mode}");
+        assert!(
+            stderr(&out).starts_with("ci-tools: no directory "),
+            "{mode}: {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).ends_with("/scripts/ci-tools.d of tool pins\n"),
+            "{mode}: {}",
+            stderr(&out)
+        );
+        assert_eq!(repo.log(), "", "{mode}");
     }
 }
 
@@ -289,6 +319,8 @@ fn a_bad_mode_prints_usage_and_exits_2() {
 fn an_empty_list_has_nothing_to_check_or_install() {
     for mode in ["check", "install"] {
         let repo = Repo::new("# no tools yet\n");
+        let readme = repo.dir.path().join("scripts/ci-tools.d/README.md");
+        fs::write(readme, "[not]\nversion = \"1\"\n").unwrap();
         let out = repo.run(&[mode], &[]);
         assert!(out.status.success(), "{mode}: {}", stderr(&out));
         assert_eq!(stderr(&out), "", "{mode}");

@@ -95,7 +95,7 @@ sha=$(git rev-parse --short HEAD)
   if [ "$art" = pr ] && [ -s "$prf" ]; then echo "pr: https://github.com/o/r/pull/$(cat "$prf")"; fi
   echo "updated: 2026-10-08T00:00:00Z"
   echo ---
-  echo "$phase said $status $extra"
+  case "$extra" in "base moved"*) echo "$extra";; *) echo "$phase said $status $extra";; esac
   [ -f "$ctrl/$phase.body" ] && cat "$ctrl/$phase.body"
 } > "$dir/$art.md"
 if [ "$extra" = sleep ] || [ "$sleepy" = 1 ]; then exec sleep 30; fi

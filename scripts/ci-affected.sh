@@ -4,7 +4,8 @@
 # paths changed since its full gate last went green (docs/FACTORY.md, "Gate").
 #
 # cargo test runs on any change, since the cli tests read files across the repo. A rule pack's
-# tests and the py-inventory fixture tests run when a path under them changed. With
+# tests (each pack scripts/rule-packs.sh lists) and the py-inventory fixture tests run when a
+# path under them changed. With
 # NS_GATE_FILES unset every step runs; set and empty, none does.
 set -euo pipefail
 
@@ -30,15 +31,14 @@ step() {
   fi
 }
 
+packs=$(scripts/rule-packs.sh)
 step "cargo test" cargo test --manifest-path cli/Cargo.toml
-for pack in python js java; do
-  if changed "rules/$pack/"; then
-    step "$pack rule pack tests" "rules/$pack/tests/run.sh"
+# On fd 3, so a pack's tests can't read the list from stdin.
+while IFS=$'\t' read -r -u 3 pack name; do
+  if [ -n "$pack" ] && changed "rules/$pack/"; then
+    step "$name rule pack tests" "rules/$pack/tests/run.sh"
   fi
-done
-if changed rules/c/; then
-  step "C rule pack tests" python3 -I -m unittest discover -s rules/c/tests
-fi
+done 3<<<"$packs"
 if changed evals/fixtures/py-inventory/; then
   step "py-inventory fixture tests" bash -c 'cd evals/fixtures/py-inventory && pytest -q'
 fi

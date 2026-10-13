@@ -7,7 +7,7 @@
 #
 #   install.sh [--offline] <repo>
 #
-# PMD's version, url and sha256 are the [pmd] pin in scripts/ci-tools.toml. The zip is kept in
+# PMD's version, url and sha256 are its pin in scripts/ci-tools.d/pmd.toml. The zip is kept in
 # ${XDG_CACHE_HOME:-~/.cache}/nightshift/, where `scripts/ci-tools.sh install pmd` also puts it,
 # and checked against the sha256 on every install. --offline fails rather than download it.
 set -eu
@@ -50,13 +50,12 @@ major=${version%%[!0-9]*}
 [ "${major:-0}" -ge 11 ] ||
   fail "PMD needs Java 11 or later, and the java on PATH is ${version:-of unknown version}; install a newer JDK or JRE (apt install openjdk-21-jre-headless) and rerun"
 
-# The [pmd] table of scripts/ci-tools.toml, with {version} filled in.
-pins=$pack/../../scripts/ci-tools.toml
+# PMD's pin in scripts/ci-tools.d/pmd.toml, with {version} filled in.
+pins=$pack/../../scripts/ci-tools.d/pmd.toml
 [ -f "$pins" ] || fail "$pins is missing; run install.sh from a nightshift checkout"
 pin() {
   awk -v key="$1" '
-    /^\[/ { table = ($0 == "[pmd]") }
-    table && $1 == key && $2 == "=" { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }
+    $1 == key && $2 == "=" { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }
   ' "$pins"
 }
 pmd_version=$(pin version)
@@ -64,7 +63,7 @@ url=$(pin url | sed "s/{version}/$pmd_version/g")
 sha=$(pin sha256)
 bin=$(pin bin | sed "s/{version}/$pmd_version/g")
 [ -n "$pmd_version" ] && [ -n "$url" ] && [ -n "$sha" ] && [ -n "$bin" ] ||
-  fail "$pins has no [pmd] version, url, sha256 and bin"
+  fail "$pins has no version, url, sha256 and bin"
 
 cache=${XDG_CACHE_HOME:-$HOME/.cache}/nightshift
 archive=$cache/${url##*/}

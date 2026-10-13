@@ -17,7 +17,7 @@ use crate::config::{self, Config};
 use crate::error::SfError;
 use crate::eval::parser::{ClaudeStreamJson, OutputParser};
 use crate::eval::trial::run_process;
-use crate::factory::{self, artifact_of, Factory, PhaseSettings, PHASES};
+use crate::factory::{self, artifact_of, Factory, LocalGate, PhaseSettings, PHASES};
 use crate::forge;
 use crate::gate;
 use crate::git::same_sha;
@@ -32,8 +32,8 @@ pub(crate) mod currency;
 mod locks;
 
 use currency::{
-    archive_as, archive_for, decide, known_pr, read_art, read_state, restore, run, Art, Decision,
-    State, UnitDiff,
+    archive_as, archive_for, decide, known_pr, read_art, read_state, rebases_for_base, restore,
+    run, Art, Decision, State, UnitDiff,
 };
 pub use locks::{holder_pid, run_lock, Lock, WORKTREE_LOCK};
 use locks::{lock_dir, Acquired, Bound, RunnerLocks, MERGE_LOCK};
@@ -70,6 +70,8 @@ pub struct RunArgs {
     pub triage_only: bool,
     /// The night directory of the `ns watch` that started this run (`--night`).
     pub night: Option<PathBuf>,
+    /// The CPU share every phase and gate gets (`--cpus`), or `None` to set nothing.
+    pub cpus: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +170,8 @@ pub struct Shared {
     pub until: Option<i64>,
     /// The night of the `ns watch` this runs under: its hold and the spend of all its units.
     pub night: Option<NightDir>,
+    /// What `--cpus` set for every phase and gate, for the run log.
+    pub cpus: Option<Value>,
 }
 
 impl Shared {
@@ -178,6 +182,7 @@ impl Shared {
             watch_pid: None,
             until: None,
             night: None,
+            cpus: None,
         }
     }
 
@@ -224,6 +229,9 @@ impl Shared {
 
 pub fn cli(args: RunArgs) -> Result<ExitCode> {
     let mut shared = Shared::new();
+    shared.cpus = args
+        .cpus
+        .map(|n| crate::cpus::log_value(crate::cpus::activate(n)));
     let night = match &args.night {
         Some(dir) => {
             crate::stop::install_for_watch().context("cannot handle SIGINT and SIGTERM")?;
@@ -396,6 +404,7 @@ fn run_harness(
     }
     let (mut cmd, watch) = memcap::command(cap, &argv[0]);
     crate::git::scrub(&mut cmd);
+    crate::cpus::apply(&mut cmd);
     cmd.args(&argv[1..])
         .current_dir(cwd)
         .stdout(out)
@@ -1153,6 +1162,15 @@ fn dry_run(
     })
 }
 
+/// Why a build runs only to rebase onto the newest default branch, which costs no attempt.
+enum Rebase {
+    /// Verify, review, ship or the merge step said the base moved.
+    BaseMoved,
+    /// The gate after a `BaseMoved` rebuild went red and the base moved again since. Never
+    /// leads to another.
+    MovedSinceRebase,
+}
+
 fn drive(
     ctx: &Ctx<'_>,
     args: &RunArgs,
@@ -1171,6 +1189,9 @@ fn drive(
         .triage_only
         .then_some("triage")
         .or(args.from.as_deref());
+    let mut forced_rebase: Option<Rebase> = None;
+    // The default branch's sha the last free rebase went onto: each free one needs a new move.
+    let mut rebased_onto: Option<String> = None;
     let mut forced: Option<Decision> = from.map(|f| {
         run(
             PHASES.iter().find(|p| **p == f).copied().unwrap_or("build"),
@@ -1190,6 +1211,7 @@ fn drive(
             "via": c.via.label(),
             "fallback": c.fallback,
         })),
+        "cpus": shared.cpus,
     }));
     loop {
         crate::stop::check()?;
@@ -1203,7 +1225,14 @@ fn drive(
                 &ctx.head(),
             )),
         );
-        let decision = forced.take().unwrap_or_else(|| decide(&state));
+        let (decision, rebase) = match forced.take() {
+            Some(d) => (d, forced_rebase.take()),
+            None => {
+                let d = decide(&state);
+                let r = rebases_for_base(&state, &d).then_some(Rebase::BaseMoved);
+                (d, r)
+            }
+        };
         let (phase, feedback, why) = match decision {
             Decision::Stuck(r) => {
                 if last_artifact.is_none() {
@@ -1239,6 +1268,16 @@ fn drive(
                         forced = Some(run("build", &red.feedback, red.reason));
                         continue;
                     }
+                    MergeStep::Reship(feedback) => {
+                        forced = Some(run("ship", &feedback, "the PR conflicts with its base"));
+                        forced_rebase = Some(Rebase::BaseMoved);
+                        continue;
+                    }
+                    MergeStep::Rebase(feedback, why) => {
+                        forced = Some(run("build", &feedback, why));
+                        forced_rebase = Some(Rebase::BaseMoved);
+                        continue;
+                    }
                 }
             }
             Decision::Run {
@@ -1253,6 +1292,17 @@ fn drive(
         // it. Ship moves HEAD, so its attempts still bound a ship that changes the diff each time.
         if matches!(phase, "verify" | "review") && passed.remove(phase) {
             *reruns.entry(phase).or_default() += 1;
+        }
+        // A build that only rebases because the base moved fails nothing either.
+        let rebase = rebase.and_then(|r| {
+            remote_default(&ctx.worktree)
+                .filter(|(_, sha)| rebased_onto.as_ref() != Some(sha))
+                .map(|d| (r, d))
+        });
+        let before_credit = rebased_onto.clone();
+        if let Some((_, (_, sha))) = &rebase {
+            *reruns.entry(phase).or_default() += 1;
+            rebased_onto = Some(sha.clone());
         }
         if attempt - reruns.get(phase).copied().unwrap_or(0) > p.max_attempts {
             let mut reason = format!("{phase} is out of attempts ({})", p.max_attempts);
@@ -1314,6 +1364,11 @@ fn drive(
                     feedback,
                     why,
                 });
+                if let Some((kind, _)) = rebase {
+                    *reruns.entry(phase).or_default() -= 1;
+                    rebased_onto = before_credit;
+                    forced_rebase = Some(kind);
+                }
                 continue;
             }
         };
@@ -1327,6 +1382,27 @@ fn drive(
         }
         let art_path = ctx.artifacts.join(artifact_of(phase));
         let moves = archive_for(&ctx.artifacts, phase, &state)?;
+        let mut feedback = feedback;
+        if let Some((_, (branch, sha))) = &rebase {
+            // The phase takes in the default branch as it is now, not a commit noted earlier. Ship
+            // merges the base in and never rebases (skills/ns-ship).
+            let _ = git::run(&ctx.worktree, &["fetch", "-q", "origin", branch]);
+            let how = if phase == "build" {
+                "rebase onto"
+            } else {
+                "merge in"
+            };
+            feedback.push_str(&format!(
+                "\n\nThe base moved: fetch origin and {how} the newest origin/{branch} ({sha}). This {phase} costs no attempt.\n"
+            ));
+            ctx.log(json!({
+                "event": "rebase_after_base_moved",
+                "phase": phase,
+                "attempt": attempt,
+                "onto": sha,
+                "cause": why,
+            }));
+        }
         let mut prompt = ctx.prompt(&p, attempt, &feedback)?;
         if args.triage_only {
             prompt.push_str(factory::TRIAGE_ONLY);
@@ -1436,6 +1512,9 @@ fn drive(
             last_failure.remove(phase);
         }
         let art = read_art(&art_path);
+        if rebase.is_some() && art.as_ref().is_none_or(|a| a.status != "pass") {
+            *reruns.entry(phase).or_default() -= 1;
+        }
         let written = art.is_some();
         if art.as_ref().is_some_and(|a| a.status == "pass") {
             passed.insert(phase);
@@ -1524,6 +1603,17 @@ fn drive(
             if let Some(red) = red? {
                 if let Some(k) = red.stuck_reason() {
                     last_failure.insert("build", k);
+                }
+                if let Some((Rebase::BaseMoved, (branch, onto))) = &rebase {
+                    if remote_sha(&ctx.worktree, branch).is_some_and(|now| now != *onto) {
+                        forced = Some(run(
+                            "build",
+                            &red.feedback,
+                            format!("the CI gate failed after a rebase and {branch} moved since"),
+                        ));
+                        forced_rebase = Some(Rebase::MovedSinceRebase);
+                        continue;
+                    }
                 }
                 forced = Some(run("build", &red.feedback, red.reason));
             }
@@ -1806,6 +1896,10 @@ fn head_after_update(
 enum MergeStep {
     Finish(Finish),
     Rebuild(gate::Red),
+    /// Back to ship, only to bring in the base, with this `{feedback}`.
+    Reship(String),
+    /// Back to build only to rebase, with its feedback and why.
+    Rebase(String, String),
 }
 
 /// Back to build with `feedback` because CI on the PR failed.
@@ -1818,12 +1912,18 @@ fn ci_failed(feedback: String) -> MergeStep {
     })
 }
 
-/// Back to build to rebase PR #`n` onto `default`, which it conflicts with.
+/// Back to build to rebase PR #`n` onto `default`, which it conflicts with, or to ship under
+/// `[gate] local = "build-only"`.
 fn conflicts(ctx: &Ctx<'_>, n: u64, default: &str) -> MergeStep {
     ctx.log(json!({"event": "conflict", "pr": n}));
-    ci_failed(format!(
+    let feedback = format!(
         "PR #{n} conflicts with {default}: rebase onto {default} and resolve conflicts, then force-push with --force-with-lease"
-    ))
+    );
+    if ctx.fac.gate.local == LocalGate::BuildOnly {
+        MergeStep::Reship(feedback)
+    } else {
+        MergeStep::Rebase(feedback, format!("PR #{n} conflicts with {default}"))
+    }
 }
 
 fn human(reason: impl Into<String>) -> MergeStep {
@@ -1862,26 +1962,37 @@ fn merge_step(
         };
 
     // Strict required checks: a PR behind its base gets the base merged in, then fresh checks,
-    // unless the local merge queue gates the merge result instead.
-    let queued = ctx.fac.merge.local_queue && ctx.gate.rest.is_some();
+    // unless the local merge queue gates the merge result instead. Under build-only GitHub's
+    // checks on the PR head with the base merged in are the merge queue, and no local gate runs.
+    let remote = ctx.fac.gate.local == LocalGate::BuildOnly;
+    let queued = !remote && ctx.fac.merge.local_queue && ctx.gate.rest.is_some();
     let default = remote_default(wt)
         .map(|d| d.0)
         .unwrap_or_else(|| "main".into());
     let conflict = || conflicts(ctx, n, &default);
     let register_minutes = ctx.fac.merge.ci_register_timeout;
     let mut merge_head = pr_head.to_string();
-    match merge_state(wt, &ns, register_minutes, &shared.clock)?.as_str() {
+    let behind = match merge_state(wt, &ns, register_minutes, &shared.clock)?.as_str() {
         Some("DIRTY") => return Ok(conflict()),
-        Some("BEHIND") if !queued => {
-            match update_branch(ctx, n, pr_head, &default, &shared.clock, &conflict)? {
-                Ok(h) => merge_head = h,
-                Err(step) => return Ok(step),
+        Some("BEHIND") => !queued,
+        _ if remote => match fetch_tip(wt, &default) {
+            Ok(tip) => !git::ok(wt, &["merge-base", "--is-ancestor", &tip, pr_head]),
+            Err(e) => {
+                return Ok(human(format!(
+                    "cannot fetch {default} to update PR #{n}: {e:#}; needs a human merge"
+                )))
             }
+        },
+        _ => false,
+    };
+    if behind {
+        match update_branch(ctx, n, pr_head, &default, &shared.clock, &conflict)? {
+            Ok(h) => merge_head = h,
+            Err(step) => return Ok(step),
         }
-        _ => {}
     }
 
-    if let Some(cmd) = &ctx.gate.rest {
+    if let Some(cmd) = ctx.gate.rest.as_ref().filter(|_| !remote) {
         let step = if queued {
             gate_merge_result(ctx, gate_state, cmd, n, pr_head, &default, run)?
         } else {

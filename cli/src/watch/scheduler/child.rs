@@ -15,15 +15,16 @@ pub(super) const SIGTERM: i32 = libc::SIGTERM;
 #[cfg(not(unix))]
 pub(super) const SIGTERM: i32 = 15;
 
-/// Start `ns run <unit> --issue <n>` on the night's snapshot, its result written to `result`. It gets
-/// its own process group, so a terminal's Ctrl-C reaches only `ns watch`, which passes it on
-/// once; and on Linux it gets SIGTERM if `ns watch` dies, so no unit outlives its night. The
-/// kernel sends that signal when the thread that spawned the child ends, so units must be
-/// started from the thread that runs the whole night, as the scheduler does.
+/// Start `ns run <unit> --issue <n> --cpus <cpus>` on the night's snapshot, its result written to
+/// `result`. It gets its own process group, so a terminal's Ctrl-C reaches only `ns watch`, which
+/// passes it on once; and on Linux it gets SIGTERM if `ns watch` dies, so no unit outlives its
+/// night. The kernel sends that signal when the thread that spawned the child ends, so units must
+/// be started from the thread that runs the whole night, as the scheduler does.
 pub(super) fn spawn(
     snap: &Snapshot,
     issue: &Issue,
     base: Option<String>,
+    cpus: usize,
     clock: &clock::Clock,
     result: &Path,
 ) -> Result<Child> {
@@ -43,6 +44,7 @@ pub(super) fn spawn(
         .arg(snap.night().path())
         .arg("--factory")
         .arg(snap.factory())
+        .args(["--cpus", &cpus.to_string()])
         .env("NS_CONFIG", snap.config())
         .stdin(Stdio::null())
         .stdout(out)

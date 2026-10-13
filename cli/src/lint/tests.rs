@@ -242,6 +242,25 @@ fn lint_messages(root: &Path) -> (usize, Vec<String>) {
 }
 
 #[test]
+fn rules_index_is_checked_when_the_parent_has_rules() {
+    let tmp = tempfile::tempdir().unwrap();
+    let skills = tmp.path().join("skills");
+    write_skill_at(&skills, "ns-a", "");
+    let report = lint_dir(&skills).unwrap();
+    assert!(report.ok, "{:?}", report.errors);
+    assert!(report.errors.iter().all(|e| e.skill != "rules"));
+
+    fs::create_dir_all(tmp.path().join("rules/c")).unwrap();
+    let report = lint_dir(&skills).unwrap();
+    assert!(!report.ok);
+    assert!(
+        report.errors.iter().any(|e| e.skill == "rules"),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
 fn decisions_are_checked_when_the_parent_has_docs_decisions() {
     let tmp = tempfile::tempdir().unwrap();
     let skills = tmp.path().join("skills");

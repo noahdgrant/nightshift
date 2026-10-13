@@ -70,7 +70,7 @@ While building, apply these principles:
 
 **Size.** Build every acceptance criterion whatever the diff's size, past the soft limit too ([unit size](../ns-contract/SKILL.md#target-repo-configuration)). A large unit is review's prompt to suggest a split, never a reason to stop.
 
-**Commit each green slice** with a Conventional Commit, `type(scope): subject` (`feat(uart): time out reads after 50 ms`). One logical change per commit, each one building and passing on its own. The repo's hooks run on every commit and never get skipped ([git hooks](../ns-contract/SKILL.md#git-hooks)): when one fails, fix what it reports. Run single test files during the loop and the typecheck when the stack has one.
+**Commit each green slice** with a Conventional Commit, `type(scope): subject` (`feat(uart): time out reads after 50 ms`). One logical change per commit, each one building and passing on its own. The repo's hooks run on every commit and never get skipped ([git hooks](../ns-contract/SKILL.md#git-hooks)): when one fails, fix what it reports. Run single test files during the loop and the typecheck when the stack has one. Stop a test, gate or server you started per [killing processes](../ns-contract/SKILL.md#killing-processes), never by name or pattern.
 
 Done when every acceptance criterion has a passing test and a commit, and the working tree is clean.
 
@@ -87,6 +87,8 @@ Done when every bar item is marked, every listed branch has a test, and every mu
 ## 5. Rebase, tidy, and run the full checks
 
 `git fetch origin` and rebase onto the base branch (`origin/main` unless the brief names another), with the repo's hooks on ([git hooks](../ns-contract/SKILL.md#git-hooks)). Tidy the history now: small commits that each build and pass, ordered to tell the story, with bodies written using `ns-writing-for-humans`. This is the history that verify, review and ship will see; nothing rewrites it later.
+
+When the feedback says the base moved (a NO-GO whose first line starts `base moved`, a merge conflict, or `ns run`'s "The base moved" line), the rebase is the job. Run `git fetch origin` now and rebase onto the newest `origin/<default>`, never a commit an earlier artifact or the feedback noted. Resolve conflicts, then go on through this step as usual.
 
 Then run the full test, lint and build commands from `docs/agents/stack.md`, once, on the final commit. Capture each command and the lines of output that prove its result.
 

@@ -13,6 +13,9 @@ use crate::decisions;
 use crate::error::SfError;
 use crate::frontmatter;
 
+mod rules_index;
+use rules_index::check_rules_index;
+
 pub const MAX_DESCRIPTION: usize = 1024;
 
 const USER_INVOKED_ONLY: &[&str] = &["ns-auto"];
@@ -428,6 +431,9 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
     if let Some(repo) = fs::canonicalize(root)?.parent() {
         if repo.join("docs/decisions").is_dir() {
             errors.extend(decisions::check(repo));
+        }
+        if repo.join("rules").is_dir() {
+            errors.extend(check_rules_index(&repo.join("rules")));
         }
     }
     Ok(Report {
