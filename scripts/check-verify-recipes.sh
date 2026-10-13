@@ -126,7 +126,12 @@ found=$(
   lint "$skill" Doctor
   lint "$skill" Drive
   for f in "$features"/*.md; do
-    if [ -f "$f" ]; then lint "$f" "Driving it with ns"; fi
+    [ -f "$f" ] || continue
+    [ "$(basename "$f")" = README.md ] && continue
+    if ! grep -qx '## Driving it with ns' "$f"; then
+      echo "$(basename "$f") has no ## Driving it with ns heading, so its recipes would go unlinted"
+    fi
+    lint "$f" "Driving it with ns"
   done
 )
 if [ -n "$found" ]; then

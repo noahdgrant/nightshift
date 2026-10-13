@@ -580,3 +580,18 @@ fn blank_and_comment_lines_in_a_recipe_are_not_commands() {
     let out = run_with_features(&skill(LAUNCH, DOCTOR_OK), &[("run.md", feature(&recipe))]);
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+#[test]
+fn a_feature_file_with_a_misspelled_recipe_heading_fails_naming_it() {
+    let bad = feature(RUN_OK).replace("## Driving it with ns", "## Driving it with nz");
+    let out = run_with_features(
+        &skill(LAUNCH, DOCTOR_OK),
+        &[
+            ("run.md", feature(RUN_OK)),
+            ("README.md", "# Map\n".to_string()),
+            ("typo.md", bad),
+        ],
+    );
+    assert_fails_with(&out, "typo.md has no ## Driving it with ns");
+    assert!(!stderr(&out).contains("README.md"), "{}", stderr(&out));
+}

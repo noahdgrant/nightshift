@@ -54,7 +54,7 @@ new() {
   echo '[ "$1 $2" = "api user" ] && { echo octocat; exit 0; }' > "$v/ghd/hook.sh"
   printf '[roles.default]\nharness = "claude"\n[forge.github]\ntoken_command = "echo fake-token"\n' > "$v/config.toml"
   printf 'NS_SRC=%q\nNS=%q\nOUT=%q\n' "$src" "$ns" "$out" > "$v/env"
-  "$v/sandbox" --src sh -c '
+  "$v/sandbox" --src sh -ec '
     git init -q --bare -b main "$V/remote.git"
     git init -q -b main "$V/repo"
     echo hi > "$V/repo/README"
