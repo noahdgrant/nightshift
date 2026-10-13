@@ -18,13 +18,13 @@ rule:
   kind: source_file
   regex: '^(?:[^\n]*\n){1000}[\s\S]'
 ---
-# wall-clock-in-test, part 1 of 2: in a tests/ directory, any code. Part 2 below matches the same
+# wall-clock-in-test, part 1 of 2: in a tests/ directory or a file named tests.rs, any code. Part 2 below matches the same
 # code inside #[test] and #[cfg(test)] items anywhere.
 id: wall-clock-in-test
 language: rust
 severity: error
 message: "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")"
-files: ["**/tests/**/*.rs"]
+files: ["**/tests/**/*.rs", "**/tests.rs"]
 rule:
   any:
     - kind: call_expression

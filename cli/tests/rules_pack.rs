@@ -523,6 +523,7 @@ fn a_wall_clock_wait_in_test_code_is_flagged_and_production_code_is_not() {
         "use std::thread::sleep;\nuse std::time::Duration;\n\nfn main() {\n    println!(\"{}\", extra::ONE);\n    sleep(Duration::from_millis(1));\n}\n\n#[test]\n#[ignore]\nfn naps() {\n    sleep(Duration::from_millis(1)); // wall\n}\n",
     );
     r.write("tests/common/mod.rs", WAITS);
+    r.write("src/gate/tests.rs", WAITS);
     let unit = |attr: &str| format!("{attr}\n{}", WAITS.replace("fn waits", "fn test"));
     r.write(
         "src/waits.rs",
@@ -564,11 +565,12 @@ fn a_wall_clock_wait_in_test_code_is_flagged_and_production_code_is_not() {
         walls("src/main.rs"),
         walls("src/waits.rs")[2 * per..].to_vec(),
         walls("tests/common/mod.rs"),
+        walls("src/gate/tests.rs"),
         walls("tests/common/unit.rs"),
     ]
     .concat();
     want.sort();
-    assert_eq!(want.len(), 1 + per * 7, "{want:?}");
+    assert_eq!(want.len(), 1 + per * 8, "{want:?}");
     let new = r.new_findings();
     assert!(
         new.iter().all(|f| f["message"]
