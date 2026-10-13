@@ -44,7 +44,7 @@ Each unit gets one worktree and one artifact folder, created by `ns worktree new
 
 `.ns/` is listed in the repo's `.git/info/exclude`, so artifacts never get committed.
 
-A shell command names the unit's directory as `.ns/$NS_UNIT/`, which `ns run` sets for every phase (`cat .ns/$NS_UNIT/brief.md`). Prose and the skills write `<unit-id>`. Outside `ns run`, when `NS_UNIT` is unset, set it once as a literal assignment, `NS_UNIT=142-uart-timeout`, so a snippet doesn't expand to `.ns//`. Never invent another variable (`U=…`), and never shorten the id with a glob in a `cd` or a path (`cd .ns/142*/`, `cd .ns/*/`): a harness can't resolve a glob, so it can't rule out a denied path such as `secrets/` behind it, and denies the call.
+A shell command names the unit's directory as `.ns/$NS_UNIT/`, which `ns run` sets for every phase (`cat .ns/$NS_UNIT/brief.md`). Prose and the skills write `<unit-id>`. Outside `ns run`, when `NS_UNIT` is unset, start each command that names the unit directory with a literal assignment (`NS_UNIT=142-uart-timeout; cat .ns/$NS_UNIT/brief.md`), or write the id out, because the harness keeps no environment between calls and a later call would expand to `.ns//`. Never invent another variable (`U=…`), and never shorten the id with a glob in a `cd` or a path (`cd .ns/142*/`, `cd .ns/*/`): a harness can't resolve a glob, so it can't rule out a denied path such as `secrets/` behind it, and denies the call.
 
 `ns run` archives superseded artifacts into `.ns/<unit-id>/history/<artifact>-<n>.md` before it runs a phase, so an artifact in `.ns/<unit-id>/` is always the current one. Don't read `history/` as current state.
 

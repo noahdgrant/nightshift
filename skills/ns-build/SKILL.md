@@ -21,6 +21,7 @@ Run `ns worktree new <unit-id>`. It is idempotent and prints `{"unit","path","br
 Without `ns`, do the same by hand from the main checkout, with `NS_UNIT` set to the unit's ID ([units of work](../ns-contract/SKILL.md#units-of-work-and-artifacts)):
 
 ```bash
+NS_UNIT=<unit-id>
 repo=$(basename "$(git rev-parse --show-toplevel)")
 wt="../$repo.worktrees/$NS_UNIT"
 [ -d "$wt" ] || git worktree add "$wt" -b "ns/$NS_UNIT"
