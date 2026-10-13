@@ -5,7 +5,13 @@ use crate::pin::settings_json as settings;
 
 mod files;
 mod git;
+mod resolve;
 mod shell;
+
+/// Why `call` would skip the git hooks, with no variable known.
+fn check(call: &Value) -> Option<String> {
+    verdict(call, &Vars::new(), false)
+}
 
 fn bash_call(cmd: &str) -> Value {
     json!({"tool_name": "Bash", "tool_input": {"command": cmd}})

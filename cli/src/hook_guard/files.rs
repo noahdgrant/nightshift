@@ -239,7 +239,7 @@ pub(super) fn path(w: &Word) -> String {
         let next = parts.partition_point(|&(start, _)| start < e.at);
         let beside_dot_dot = prev.checked_sub(1).is_some_and(|p| is_dot_dot(&parts[p]))
             || parts.get(next).is_some_and(is_dot_dot);
-        if e.plain && alone && whole_part && !beside_dot_dot {
+        if e.name.is_some() && alone && whole_part && !beside_dot_dot {
             '*'
         } else {
             UNREAD
