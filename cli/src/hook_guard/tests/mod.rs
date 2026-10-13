@@ -62,6 +62,16 @@ fn the_cpu_budget_counts_only_the_calling_threads_work() {
 }
 
 #[test]
+fn the_cpu_budget_fails_a_calling_thread_that_burns_it() {
+    let budget = std::time::Duration::from_millis(CPU_BUDGET_MS);
+    let ((), fast) = within_cpu_budget(|| {
+        let start = thread_cpu_time();
+        while thread_cpu_time() - start < budget {}
+    });
+    assert!(!fast);
+}
+
+#[test]
 fn the_denial_names_the_rule() {
     let why = check(&bash_call("git commit -n -m x")).unwrap();
     assert!(why.contains("git commit -n"), "{why}");
