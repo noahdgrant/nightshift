@@ -706,6 +706,38 @@ fn copies_that_create_no_link_are_allowed() {
 }
 
 #[test]
+fn a_link_maker_behind_a_wrapper_a_redirection_or_a_shell_construct_is_denied() {
+    for c in [
+        "sh -c 'ln -s a $TMPDIR/l'",
+        "bash -c 'ln -s a $TMPDIR/l'",
+        "timeout 5 ln -s a $TMPDIR/l",
+        "stdbuf -o0 ln -s a $TMPDIR/l",
+        "ionice -c3 ln -s a $TMPDIR/l",
+        "flock /tmp/x ln -s a $TMPDIR/l",
+        "strace ln -s a $TMPDIR/l",
+        "taskset 1 ln -s a $TMPDIR/l",
+        "parallel ln -s a $TMPDIR/l",
+        "ssh host ln -s a $TMPDIR/l",
+        "su -c \"ln -s a $TMPDIR/l\"",
+        "watch ln -s a $TMPDIR/l",
+        "unshare -r ln -s a $TMPDIR/l",
+        "chroot / ln -s a $TMPDIR/l",
+        ">/dev/null ln -s a $TMPDIR/l",
+        "2>&1 ln -s a $TMPDIR/l",
+        "> /dev/null ln -s a $TMPDIR/l",
+        "FOO=\"a b\" ln -s a $TMPDIR/l",
+        "case x in x) ln -s a $TMPDIR/l;; esac",
+        "f() { ln -s a $TMPDIR/l; }; f",
+        "function f { ln -s a $TMPDIR/l; }; f",
+        "( ln -s a $TMPDIR/l )",
+        "echo \"$( ln -s a $TMPDIR/l)\"",
+        "echo $( ln -s a $TMPDIR/l)",
+    ] {
+        assert!(denied(c), "{c}");
+    }
+}
+
+#[test]
 fn a_verb_name_that_is_only_an_argument_is_allowed() {
     for c in [
         "cargo test link > $TMPDIR/out.log",

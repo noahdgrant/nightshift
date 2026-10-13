@@ -116,11 +116,12 @@ fn segments(command: &str) -> impl Iterator<Item = &str> {
 
 /// A command that can plant a link or copy the phase settings. A link in a phase's `TMPDIR` that
 /// points at the unit's `phase-settings.json`, written through later, would reach past the `tmp`
-/// exception. Per segment, a token whose basename is a verb counts at command position: the
-/// first word (`/bin/ln`, `\ln`, `FOO=1 ln`), after a wrapper that starts the segment (`env ln`,
-/// `busybox ln`, `xargs -n 1 ln`), after `find`'s `-exec`, or opening a `(` or `$(`. A later
-/// argument named like a verb (`cargo test link`) is not one. The other tokens of the segment are
-/// its arguments:
+/// exception. Per segment, the guard fails closed: a token whose basename is a verb (`ln`, `link`,
+/// `cp`, `rsync`, `install`) counts wherever it stands, so wrappers it does not know (`timeout 5
+/// ln`), `sh -c 'ln ..'`, redirections and shell constructs cannot hide it. The one exception is
+/// a segment whose command word (after assignments, keywords and redirections) is in
+/// `NON_LINKING`: there `cargo test link` names a verb as a plain argument. Such a segment still
+/// counts a verb that opens a `(` or `$(`. The other tokens of the segment are the arguments:
 /// - `ln` and `link` are denied when an argument mentions `TMPDIR`, an `ns/units` path component
 ///   or `phase-settings.json`. That includes `ln -s a $TMPDIR/l`, whose target is harmless: the
 ///   guard does not tell a safe target from an unsafe one, so it denies them all.
@@ -129,33 +130,20 @@ fn segments(command: &str) -> impl Iterator<Item = &str> {
 ///   `--link`) and an argument mentions `TMPDIR`.
 ///
 /// Out of reach: a script the phase writes (`python -c os.symlink`) and a path a shell builds
-/// (`$(dirname $TMPDIR)`).
+/// (`$(dirname $TMPDIR)`). A false deny remains for an unknown command with a verb-named argument
+/// and `TMPDIR` (`mytool link $TMPDIR/x`).
 pub(super) fn links_into_unit(command: &str) -> Option<String> {
     for segment in segments(command) {
         let tokens: Vec<String> = segment
             .split_whitespace()
             .map(|t| t.replace(['\'', '"', '\\'], ""))
             .collect();
-        let start = tokens
-            .iter()
-            .position(|t| !is_command_prefix(t))
-            .unwrap_or(tokens.len());
-        let wrapped = tokens.get(start).is_some_and(|t| {
-            let bare = t.trim_start_matches(['(', '$']);
-            WRAPPERS.contains(&bare.rsplit('/').next().unwrap_or(bare))
-        });
-        let mut after_exec = false;
+        let safe = command_word(&tokens).is_some_and(|w| NON_LINKING.contains(&w));
         for (i, token) in tokens.iter().enumerate() {
             let bare = token.trim_start_matches(['(', '$']);
             let verb = bare.rsplit('/').next().unwrap_or(bare);
-            let at_command = i >= start && (i == start || wrapped || after_exec);
-            let substitution = token.starts_with(['(', '$']);
-            if matches!(token.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir") {
-                after_exec = true;
-            }
-            if !(at_command || substitution)
-                || !matches!(verb, "ln" | "link" | "cp" | "rsync" | "install")
-            {
+            let opens = token.starts_with(['(', '$']) || (i > 0 && tokens[i - 1].ends_with('('));
+            if !matches!(verb, "ln" | "link" | "cp" | "rsync" | "install") || (safe && !opens) {
                 continue;
             }
             let hit = if matches!(verb, "ln" | "link") {
@@ -179,11 +167,31 @@ pub(super) fn links_into_unit(command: &str) -> Option<String> {
     None
 }
 
-/// Commands that run the rest of their line as a command.
-const WRAPPERS: [&str; 12] = [
-    "env", "command", "busybox", "sudo", "doas", "xargs", "nohup", "time", "nice", "exec",
-    "builtin", "setsid",
+/// Commands that never make a link from their arguments, so a verb-named argument is plain text.
+const NON_LINKING: [&str; 25] = [
+    "cargo", "grep", "egrep", "fgrep", "rg", "git", "echo", "printf", "cat", "make", "npm", "npx",
+    "pnpm", "yarn", "pytest", "ls", "head", "tail", "wc", "sort", "diff", "gh", "test", "which",
+    "type",
 ];
+
+/// The basename of the segment's command word: the first token that is not an assignment, a
+/// shell keyword or brace, or a redirection with its target. `None` when the segment has none.
+fn command_word(tokens: &[String]) -> Option<&str> {
+    let mut i = 0;
+    while let Some(token) = tokens.get(i) {
+        i += 1;
+        let op = token.trim_start_matches(|c: char| c.is_ascii_digit());
+        if op.starts_with(['>', '<']) {
+            if op.trim_start_matches(['>', '<']).is_empty() {
+                i += 1;
+            }
+        } else if !is_command_prefix(token) {
+            let bare = token.trim_start_matches(['(', '$']);
+            return Some(bare.rsplit('/').next().unwrap_or(bare));
+        }
+    }
+    None
+}
 
 /// `token` can stand before a command word: an assignment (`FOO=1`) or a shell keyword or brace.
 fn is_command_prefix(token: &str) -> bool {
