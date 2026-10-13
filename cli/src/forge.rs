@@ -207,7 +207,7 @@ pub fn start(origin: &Origin, dry_run: bool) -> Result<(), SfError> {
     }
     export(origin)?;
     let checked = checked_by_parent(kind, repo);
-    if let Some(r) = checks_repo(repo, forges.get(kind).is_some(), dry_run, checked) {
+    if let Some(r) = checks_repo(repo, forges.get(kind), dry_run, checked) {
         if let Err(e) = can_read(kind, r, None) {
             return Err(SfError::usage(
                 unreadable(kind, r, account(kind, None).as_deref(), &source, &e),
@@ -224,8 +224,13 @@ pub fn start(origin: &Origin, dry_run: bool) -> Result<(), SfError> {
 }
 
 /// The repo `start` probes: only for a configured forge, on a real run that no parent checked.
-fn checks_repo(repo: Option<&str>, configured: bool, dry_run: bool, checked: bool) -> Option<&str> {
-    repo.filter(|_| configured && !dry_run && !checked)
+fn checks_repo<'a>(
+    repo: Option<&'a str>,
+    forge: Option<&Forge>,
+    dry_run: bool,
+    checked: bool,
+) -> Option<&'a str> {
+    repo.filter(|_| forge.is_some() && !dry_run && !checked)
 }
 
 /// The error for a token that can't read `repo`, naming the account, else where the token came
@@ -830,12 +835,18 @@ mod tests {
 
     #[test]
     fn the_repo_is_checked_only_for_a_configured_forge_on_a_real_run_not_yet_checked() {
-        let r = Some("o/r");
-        assert_eq!(checks_repo(r, true, false, false), r);
-        assert_eq!(checks_repo(r, false, false, false), None);
-        assert_eq!(checks_repo(r, true, true, false), None);
-        assert_eq!(checks_repo(r, true, false, true), None);
-        assert_eq!(checks_repo(None, true, false, false), None);
+        let forge = Forge {
+            token: TokenSource::Command("true".into()),
+            host: None,
+            owners: Default::default(),
+            repos: Default::default(),
+        };
+        let (r, f) = (Some("o/r"), Some(&forge));
+        assert_eq!(checks_repo(r, f, false, false), r);
+        assert_eq!(checks_repo(r, None, false, false), None);
+        assert_eq!(checks_repo(r, f, true, false), None);
+        assert_eq!(checks_repo(r, f, false, true), None);
+        assert_eq!(checks_repo(None, f, false, false), None);
     }
 
     #[test]
