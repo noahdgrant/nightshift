@@ -1082,8 +1082,7 @@ fn ns_bugs(tmp: &TempDir, root: &Path, args: &[&str]) -> Ns {
     c
 }
 
-#[test]
-fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
+fn bugs_mixed_issues() -> Vec<Value> {
     let mut dup = fix_issue(
         14,
         "2099-01-08T00:00:00Z",
@@ -1101,7 +1100,7 @@ fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
         &["type:fix"],
     );
     pull["pull_request"] = json!({"url": "https://example.test/pulls/15"});
-    let issues = [
+    vec![
         fix_issue(
             10,
             "2099-01-05T09:00:00Z",
@@ -1132,8 +1131,12 @@ fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
         ),
         dup,
         pull,
-    ];
-    let (tmp, root) = bugs_fixture(&issues);
+    ]
+}
+
+#[test]
+fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
+    let (tmp, root) = bugs_fixture(&bugs_mixed_issues());
     let out = ns_bugs(&tmp, &root, &["--json"]).output();
     assert!(
         out.status.success(),
@@ -1183,7 +1186,11 @@ fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
         (v["ok"].clone(), v["label"].clone()),
         (json!(true), json!("type:fix"))
     );
+}
 
+#[test]
+fn bugs_weeks_keeps_only_the_latest_weeks() {
+    let (tmp, root) = bugs_fixture(&bugs_mixed_issues());
     let out = ns_bugs(&tmp, &root, &["--weeks", "1"]).output();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
