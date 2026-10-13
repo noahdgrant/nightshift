@@ -555,6 +555,14 @@ fn a_phase_may_write_inside_its_unit_tmp_directory() {
         "ln -s .. $TMPDIR/l",
         "ln -s /r/.git/ns/units/u1 /r/.git/ns/units/u1/tmp/build-1/l",
         "ln -s ../../phase-settings.json l",
+        "ln -s a /r/.git/ns/units/u1/tmp/build-1/l",
+        "ln -s a $TMPDIR/l",
+        "cd $TMPDIR && echo {} > ../../phase-settings.json",
+        "cd $TMPDIR; echo {} > ../../phase-settings.json",
+        "pushd $TMPDIR; echo {} > ../../phase-settings.json",
+        "echo {} > \"$TMPDIR\"/../../phase-settings.json",
+        "echo {} > $(echo $TMPDIR)/../../phase-settings.json",
+        "cd $TMPDIR && echo {} > /r/.git/ns/units/u1/phase-settings.json",
         "rm -rf /r/.git/ns/units/u1/tmp/b?ild-1/x",
         "rm -rf /r/.git/ns/units/u1/tmp/[b]uild-1/x",
     ] {
@@ -570,6 +578,7 @@ fn a_phase_may_write_inside_its_unit_tmp_directory() {
     }
     assert!(!denied("echo x > $TMPDIR/out.txt"));
     assert!(!denied("ln -s a b"));
+    assert!(!denied("cd $TMPDIR && mktemp && echo x > out.txt"));
 }
 
 #[test]

@@ -72,12 +72,10 @@ pub fn check(call: &Value) -> Option<String> {
             let words: Vec<&str> = command
                 .split(|c: char| c.is_whitespace() || "'\"`;|&<>()=".contains(c))
                 .collect();
-            if let Some(word) = words.iter().find(|w| escapes_tmpdir(w)) {
-                return Some(format!(
-                    "{word} goes up from $TMPDIR, out of a phase's scratch directory ({PROTECTED})"
-                ));
+            if let Some(why) = tmpdir_reaches_settings(command, &words) {
+                return Some(why);
             }
-            if words.contains(&"ln") && words.iter().any(|w| w.contains("TMPDIR")) {
+            if words.contains(&"ln") && command.contains("TMPDIR") {
                 return Some(format!(
                     "ln with $TMPDIR: a link out of a phase's scratch directory could reach {PROTECTED}"
                 ));

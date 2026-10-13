@@ -56,19 +56,30 @@ fn in_unit_tmp(parts: &[&str]) -> bool {
         })
 }
 
-/// The raw `word` goes up from `$TMPDIR`, which could land on the unit's `phase-settings.json`.
-/// The lexer drops variable names, so this reads the command's own text.
-pub(super) fn escapes_tmpdir(path: &str) -> bool {
-    (path.contains("$TMPDIR") || path.contains("${TMPDIR")) && path.split('/').any(|p| p == "..")
+/// A command that mentions `TMPDIR` and also has a `..` path part or names the phase settings
+/// file. `TMPDIR` is `.git/ns/units/<unit>/tmp/<phase>-<n>`, so two `..` after it (or after a
+/// `cd` into it) land on the unit's `phase-settings.json`. The lexer drops variable names and
+/// does not follow `cd $TMPDIR`, so this reads the command's own text, not one word.
+pub(super) fn tmpdir_reaches_settings(command: &str, words: &[&str]) -> Option<String> {
+    if !command.contains("TMPDIR") {
+        return None;
+    }
+    let up = words.iter().find(|w| w.split('/').any(|p| p == ".."));
+    let settings = words
+        .iter()
+        .find(|w| w.rsplit('/').next() == Some(pin::SETTINGS_FILE));
+    let word = up.or(settings)?;
+    Some(format!(
+        "a command with $TMPDIR and {word}: it could go up from a phase's scratch directory ({PROTECTED})"
+    ))
 }
 
 /// A `ln` argument that could plant a link out of a phase's `TMPDIR`: one in the unit's `tmp`
-/// directory or under `$TMPDIR`, or one naming the phase settings file. A link there, written
+/// directory, or one naming the phase settings file. A link there, written
 /// through later, would reach past the `tmp` exception.
 fn links_through_tmp(path: &str) -> bool {
     let parts = components(path);
-    path.contains("TMPDIR")
-        || path.contains(pin::SETTINGS_FILE)
+    path.contains(pin::SETTINGS_FILE)
         || parts
             .windows(5)
             .any(|p| p[1] == pin::COMMON_NS && p[2] == pin::COMMON_UNITS && p[4] == pin::TMP_DIR)
