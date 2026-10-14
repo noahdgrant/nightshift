@@ -1,5 +1,4 @@
 #!/bin/sh
-# All of CI. Each run is recorded so the eval can see which commit it checked.
 set -e
 log="$(git rev-parse --git-common-dir)/ns-eval-ci-local.log"
 if [ -z "$(git status --porcelain --untracked-files=all)" ]; then state=clean; else state=dirty; fi

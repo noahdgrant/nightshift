@@ -31,8 +31,6 @@ commands = [
 ]
 
 [[check]]
-# Runs before any check that starts pytest, since those runs are logged too. ci-local ran, and its
-# last run checked HEAD on a clean tree, and the tree is still clean: nothing changed after the gate.
 type = "command"
 run = '''
 log="$(git rev-parse --git-common-dir)/ns-eval-ci-local.log"
@@ -44,7 +42,6 @@ last=$(tail -n 1 "$log"); head=$(git rev-parse HEAD)
 expect_exit = 0
 
 [[check]]
-# Every full-suite pytest run came from ci-local: build ran no bare `python3 -m pytest -q`.
 type = "command"
 run = '''
 log="$(git rev-parse --git-common-dir)/ns-eval-full-runs.log"
