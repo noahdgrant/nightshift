@@ -69,10 +69,10 @@ The React rules (`rules-of-hooks`, `exhaustive-deps`, `jsx-a11y` and `no-danger`
 `no-internal-modules` keeps other code out of a module's insides: an import may reach only a module's entry points. It is off until the repo declares them in `utils/entry-points.json`, the pack's fourth place for the repo's data, as a JSON array of globs:
 
 ```json
-["**/index.js", "**/index.ts", "src/packages/*/client.ts"]
+["**/index.js", "**/index.ts", "**/packages/*/client.ts"]
 ```
 
-An import that goes one step down (`./lib`, `pkg`) is always fine. One that goes deeper (`./lib/secret.js`, `pkg/dist/x`) fails unless its path, or the file it resolves to, matches a glob; one that resolves to no file is never flagged. The file ships as `[]`; an empty or missing file also leaves the rule off, and one that isn't a JSON array of strings fails the ESLint run with a message naming it.
+An import that goes one step down (`./lib`, `pkg`) is always fine. One that goes deeper (`./lib/secret.js`, `pkg/dist/x`) fails unless its path, or the file it resolves to, matches a glob; one that resolves to no file is never flagged. A glob is matched against the import path with `./` and `..` collapsed, and against the absolute path of the file it resolves to, so a relative import of `src/packages/a/client.ts` matches `**/packages/*/client.ts`. A glob without a leading `**/` (`packages/*/client.ts`) matches only a bare package-style import path, never a relative import. The file ships as `[]`; an empty or missing file also leaves the rule off, and one that isn't a JSON array of strings fails the ESLint run with a message naming it.
 
 ## The allowlist
 

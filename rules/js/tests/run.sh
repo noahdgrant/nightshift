@@ -325,6 +325,22 @@ if jq -e 'select(.file == "multi/first-second.js" and .rule == "import-x/no-inte
   fail "no-internal-modules: an import matching the second of two globs was flagged: $out"
 fi
 rm -r "$repo/multi"
+
+# A glob with a path prefix (`**/packages/*/client.js`) matches a relative import of the entry
+# point; a sibling file it doesn't match still fails.
+mkdir -p "$repo/prefixed/packages/a"
+printf 'export const client = 1;\n' >"$repo/prefixed/packages/a/client.js"
+printf 'export const other = 1;\n' >"$repo/prefixed/packages/a/other.js"
+printf 'import { client } from "./packages/a/client.js";\nexport const used = client;\n' >"$repo/prefixed/entry.js"
+printf 'import { other } from "./packages/a/other.js";\nexport const used = other;\n' >"$repo/prefixed/sibling.js"
+printf '["**/packages/*/client.js"]\n' >"$entry_points"
+out=$(cd "$repo" && .nightshift/rules/js/check.sh eslint prefixed 2>&1) || true
+jq -e 'select(.file == "prefixed/sibling.js" and .rule == "import-x/no-internal-modules")' <<<"$out" >/dev/null ||
+  fail "no-internal-modules: a sibling of a path-prefixed entry point gave no finding: $out"
+if jq -e 'select(.file == "prefixed/entry.js" and .rule == "import-x/no-internal-modules")' <<<"$out" >/dev/null; then
+  fail "no-internal-modules: a relative import of a path-prefixed entry point was flagged: $out"
+fi
+rm -r "$repo/prefixed"
 printf '["**/index.js"]\n' >"$entry_points"
 
 # A pack installed before entry-points.json existed is upgraded: a rerun adds the shipped
