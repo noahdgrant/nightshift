@@ -89,8 +89,8 @@ fn ci_runs_without_the_merge_lock_and_only_the_merge_waits_for_it() {
     assert_eq!(v["outcome"], "merged", "{v}");
 }
 
-/// Hook text that moves `origin`'s main and puts PR 12 behind it on PR 12's CI waits: every
-/// wait, or only the first when `once`.
+/// Hook text that moves `origin`'s main in `work.txt`, a file PR 12 changes, and puts PR 12
+/// behind it on PR 12's CI waits: every wait, or only the first when `once`.
 fn main_moves_during_ci(e: &Env, once: bool) {
     let guard = if once {
         format!("mkdir {:?} 2>/dev/null && ", e.ctrl.join("moved"))
@@ -101,7 +101,7 @@ fn main_moves_during_ci(e: &Env, once: bool) {
         "hook.sh",
         &format!(
             "case \"$*\" in \"pr checks 12 --watch\") {guard}{{ {}; echo BEHIND > \"$d/pr-12.merge\"; }} ;; esac\n",
-            move_main_sh(e)
+            move_main_in_work_sh(e)
         ),
     );
 }

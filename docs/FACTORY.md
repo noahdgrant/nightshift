@@ -79,8 +79,8 @@ local_queue = true                 # gate the merge with the default branch befo
 
 [gate]
 local = "build-only"               # every-step (the default) | build-only. See factory/run.md#gate
-                                   # build-only needs an organisation-owned repo: see
-                                   # factory/merge.md#github-merge-queue
+                                   # on a personal-account repo build-only tests the PR head,
+                                   # not the merge: see factory/merge.md#github-merge-queue
 
 [supervise]                        # read by the ns-supervise skill only. See factory/starting-a-night.md#supervising-a-night
 notify = "notify-send nightshift"  # optional command each ping is also sent to. Unset: none

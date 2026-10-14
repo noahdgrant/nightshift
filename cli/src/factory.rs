@@ -426,12 +426,13 @@ impl Factory {
         })
     }
 
-    /// Under `[gate] local = "build-only"` the merge step runs GitHub's merge queue, which only an
-    /// organisation-owned repo has. A warning when the forge reports `owner_type` (the repo's
-    /// `owner.type`) as `User`, a personal account.
+    /// A repo owned by a personal account has no GitHub merge queue, so under
+    /// `[gate] local = "build-only"` the merge step tests the PR head and updates it only when the
+    /// default branch changed one of its files. A warning when the forge reports `owner_type` (the
+    /// repo's `owner.type`) as `User`, a personal account.
     pub fn owner_warning(&self, owner_type: Option<&str>) -> Option<String> {
         (self.gate.local == LocalGate::BuildOnly && owner_type == Some("User")).then(|| {
-            "[gate] local = \"build-only\" runs GitHub's merge queue, which needs an organisation-owned repo, and this repo's owner is a personal account; set [gate] local = \"every-step\" and keep [merge] local_queue = true, the local merge queue (docs/factory/merge.md, GitHub merge queue)".into()
+            "[gate] local = \"build-only\" on a repo owned by a personal account, which has no GitHub merge queue: the merge step tests the PR head on GitHub and updates it only when the default branch changed one of its files, so a conflict between files is left to main's CI; set [gate] local = \"every-step\" and keep [merge] local_queue = true to test every merge result locally (docs/factory/merge.md, GitHub merge queue)".into()
         })
     }
 
