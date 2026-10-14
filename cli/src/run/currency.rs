@@ -431,6 +431,13 @@ pub fn decide(s: &State) -> Decision {
     let Some(pr) = s.arts.get("ship") else {
         return run("ship", "", "no pr.md");
     };
+    decide_ship(pr, stale_why("pr.md", pr))
+}
+
+/// Where a `pr.md` sends the unit: by its `next` when it is `ns-artifact/2`, else by the `/1`
+/// rules (a `base moved` first line to build, a named verify or review to that phase). `stale`
+/// is why a passed one that isn't current reruns ship.
+fn decide_ship(pr: &Art, stale: String) -> Decision {
     if pr.status == "fail" {
         if let Some(n) = pr.next.as_deref() {
             return match n {
@@ -450,7 +457,7 @@ pub fn decide(s: &State) -> Decision {
         }
     }
     match pr.status.as_str() {
-        "pass" => run("ship", "", stale_why("pr.md", pr)),
+        "pass" => run("ship", "", stale),
         "fail" if base_moved(&pr.body) => run("build", &pr.body, "pr.md failed: base moved"),
         "fail" => match named_phase(&pr.body) {
             Some(p) => run(
