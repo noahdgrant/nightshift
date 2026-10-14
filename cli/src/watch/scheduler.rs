@@ -16,15 +16,16 @@ use serde_json::json;
 mod child;
 pub(super) mod overlap;
 mod red;
+mod update;
 
 use self::child::{signal, spawn, stop_signal, SIGTERM};
 use self::red::Gate;
-use super::self_update::{probe_state, Built, HandOff, SelfUpdate};
+use super::self_update::{Built, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
 use super::transitions::{self, Event, State};
 use super::{
-    ended_cleanly, fix_main::Fix, fresh_base, open_findings, queue, skills_drain, split,
-    sync_skills, triage, Forge, Issue, Night, Post, Tonight, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
+    ended_cleanly, fix_main::Fix, open_findings, queue, split, triage, Forge, Issue, Night, Post,
+    Tonight, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
 };
 use crate::clock;
 use crate::error::SfError;
@@ -395,9 +396,9 @@ impl<'a> Scheduler<'a> {
         }
         // A listing can name an issue twice.
         ready.retain(|i| taken.insert(i.number));
-        let ignore = &self.plan.loaded.fac.queue.overlap_ignore;
-        let mut picker =
-            overlap::Picker::new(self.plan.forge, || overlap::rule(self.plan.repo, ignore));
+        let (repo, loaded) = (self.plan.repo, self.plan.loaded);
+        let ignore = &loaded.fac.queue.overlap_ignore;
+        let mut picker = overlap::Picker::new(forge, || overlap::rule(repo, ignore));
         while !ready.is_empty() {
             // A stop during the read claims nothing more.
             if !self.free() || stop::requested().is_some() {
@@ -407,35 +408,50 @@ impl<'a> Scheduler<'a> {
                 self.stopping = Some(why);
                 break;
             }
-            let mut events = Vec::new();
-            let (repo, running) = (self.plan.repo, &self.running);
-            let taken = picker.take(
-                &mut ready,
-                || running_touches(repo, forge, running),
-                night.shared.clock.now(),
-                &mut self.holds,
-                &mut events,
-            );
-            for ev in events {
-                run::log_event(&repo.common_dir, ev);
-            }
             // Every issue left overlaps a running unit and has not waited long enough.
-            let Some(issue) = taken else {
+            let Some(issue) = self.pick(&mut picker, &mut ready, night) else {
                 break;
             };
-            let q = &self.plan.loaded.fac.queue;
-            let n = issue.number;
-            let forge = self.plan.forge;
-            if let Err(e) = transitions::apply(forge, q, n, State::Ready, Event::Claim) {
-                let _ = transitions::apply(forge, q, n, State::InProgress, Event::StartFailed);
-                return Err(e.into());
-            }
-            if let Err(e) = self.start(issue, night, false) {
-                let _ = transitions::apply(forge, q, n, State::InProgress, Event::StartFailed);
-                return Err(e.into());
-            }
-            self.started += 1;
+            self.claim(issue, night)?;
         }
+        Ok(())
+    }
+
+    /// The ready issue to start next, as the overlap pick chooses, its holds logged.
+    fn pick(
+        &mut self,
+        picker: &mut overlap::Picker<'_>,
+        ready: &mut Vec<Issue>,
+        night: &Night,
+    ) -> Option<Issue> {
+        let mut events = Vec::new();
+        let (repo, forge, running) = (self.plan.repo, self.plan.forge, &self.running);
+        let taken = picker.take(
+            ready,
+            || running_touches(repo, forge, running),
+            night.shared.clock.now(),
+            &mut self.holds,
+            &mut events,
+        );
+        for ev in events {
+            run::log_event(&repo.common_dir, ev);
+        }
+        taken
+    }
+
+    /// Claim `issue` and start its unit; a claim or start that fails puts it back to ready.
+    fn claim(&mut self, issue: Issue, night: &mut Night) -> Result<()> {
+        let (forge, q) = (self.plan.forge, &self.plan.loaded.fac.queue);
+        let n = issue.number;
+        if let Err(e) = transitions::apply(forge, q, n, State::Ready, Event::Claim) {
+            let _ = transitions::apply(forge, q, n, State::InProgress, Event::StartFailed);
+            return Err(e);
+        }
+        if let Err(e) = self.start(issue, night, false) {
+            let _ = transitions::apply(forge, q, n, State::InProgress, Event::StartFailed);
+            return Err(e);
+        }
+        self.started += 1;
         Ok(())
     }
 
@@ -469,81 +485,6 @@ impl<'a> Scheduler<'a> {
             if let Err(e) = split::swept(common) {
                 eprintln!("ns watch: the split sweep may run again: {e:#}");
             }
-        }
-    }
-
-    /// Look at origin's default branch: start building a new `ns` when it has `cli/` changes the
-    /// binary new units run lacks, and return a skills sync to drain for when it has skill changes
-    /// the checkout lacks and a phase reads the installed skills.
-    fn check_base(&mut self, night: &Night) -> Option<Drain> {
-        if self.plan.update.is_none() && !night.skills_drain {
-            return None;
-        }
-        let repo = self.plan.repo;
-        let base = fresh_base(&repo.root)?;
-        if let Some(u) = self.plan.update.as_mut() {
-            if let Some(to) = u.pending(&repo.root, &base) {
-                u.start(repo, to);
-            }
-        }
-        if !night.skills_drain {
-            return None;
-        }
-        let to = skills_drain(repo, &base, &self.skills_tried)?;
-        Some(Drain { base, to })
-    }
-
-    /// A build ended: check and adopt its binary for new units, or give it up.
-    fn built(&mut self, b: Built, night: &Night, tonight: &Tonight) {
-        let carried = night.carry(self.plan.deadline, self.started, tonight);
-        let repo = self.plan.repo;
-        let Some(u) = self.plan.update.as_mut() else {
-            return;
-        };
-        match b {
-            Built::Stopped(to) => {
-                eprintln!(
-                    "ns watch: self-update to {} abandoned: stopping",
-                    super::self_update::short(&to)
-                );
-            }
-            Built::Failed(to, e) => u.give_up(repo, to, e),
-            Built::Ok(to) => match probe_state(&repo.common_dir, &carried) {
-                Ok(state) => u.adopt(repo, to, state.path()),
-                Err(e) => u.give_up(repo, to, e),
-            },
-        }
-    }
-
-    /// A skills drain or an adopted `ns`, with nothing left running or paused, and no stop: time
-    /// to sync or hand off.
-    fn ready_to_hand_off(&self) -> bool {
-        (self.draining.is_some() || self.plan.update.as_ref().is_some_and(|u| u.adopted()))
-            && self.running.is_empty()
-            && self.resume.is_empty()
-            && self.paused_until.is_none()
-            && self.stopping.is_none()
-    }
-
-    /// Sync the skills drained for, else hand off to the adopted `ns`. A hand-off returns when
-    /// its exec failed, which is logged and kept from being tried again, or when a stop came
-    /// first and the loop's top winds down.
-    fn hand_off(&mut self, night: &mut Night, tonight: &Tonight) {
-        if let Some(Drain { base, to }) = self.draining.take() {
-            if stop::requested().is_some() {
-                return;
-            }
-            sync_skills(self.plan.repo, &base, None, &mut night.skills_warned);
-            self.skills_tried.insert(to);
-            return;
-        }
-        let carried = night.carry(self.plan.deadline, self.started, tonight);
-        let repo = self.plan.repo;
-        let Some(update) = self.plan.update.as_mut() else {
-            return;
-        };
-        if let HandOff::Failed(to, e) = update.hand_off(repo, &carried) {
-            update.give_up(repo, to, e);
         }
     }
 
