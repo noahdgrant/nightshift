@@ -5,6 +5,7 @@
 mod common;
 
 use std::fs;
+use std::path::Path;
 
 use common::LOCATION_VARS;
 
@@ -85,4 +86,111 @@ fn ns_started_with_git_location_variables_passes_none_to_a_child_script() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(fs::read_to_string(&report).unwrap(), "");
+}
+
+fn repo_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
+}
+
+/// The names in `git::LOCATION_VARS`, read from its source.
+fn crate_location_vars() -> Vec<String> {
+    let src = fs::read_to_string(repo_root().join("cli/src/git.rs")).unwrap();
+    let start = src.find("pub const LOCATION_VARS: &[&str] = &[").unwrap();
+    let list = &src[start..start + src[start..].find("];").unwrap()];
+    list.split('"')
+        .skip(1)
+        .step_by(2)
+        .map(String::from)
+        .collect()
+}
+
+/// `Ok` when the script's first command, after comments, blank lines and `set`/`shopt` option
+/// lines, is an `unset` of exactly the git location variables.
+fn unsets_first(script: &str) -> Result<(), String> {
+    let mut lines = script
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .skip_while(|l| l.starts_with("set -") || l.starts_with("shopt -"));
+    let mut first = String::new();
+    for line in lines.by_ref() {
+        match line.strip_suffix('\\') {
+            Some(part) => first.push_str(part),
+            None => {
+                first.push_str(line);
+                break;
+            }
+        }
+    }
+    let mut words = first.split_whitespace();
+    if words.next() != Some("unset") {
+        return Err(format!("its first command is not an unset: {first:?}"));
+    }
+    let mut got: Vec<_> = words.collect();
+    got.sort_unstable();
+    let mut want = LOCATION_VARS.to_vec();
+    want.sort_unstable();
+    if got != want {
+        return Err(format!("it unsets {got:?}, not {want:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn the_tests_list_of_git_location_variables_matches_the_crates() {
+    assert_eq!(crate_location_vars(), LOCATION_VARS);
+}
+
+#[test]
+fn every_script_entry_point_unsets_the_git_location_variables_first() {
+    let root = repo_root();
+    let mut scripts = vec![root.join("scripts/ci-local.sh")];
+    let hooks: Vec<_> = fs::read_dir(root.join(".githooks"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert!(hooks.len() >= 2, "{hooks:?}");
+    let packs: Vec<_> = fs::read_dir(root.join("rules"))
+        .unwrap()
+        .map(|e| e.unwrap().path().join("tests/run.sh"))
+        .filter(|p| p.is_file())
+        .collect();
+    assert!(packs.len() >= 2, "{packs:?}");
+    scripts.extend(hooks);
+    scripts.extend(packs);
+    let bad: Vec<_> = scripts
+        .iter()
+        .filter_map(|p| {
+            unsets_first(&fs::read_to_string(p).unwrap())
+                .err()
+                .map(|e| format!("{}: {e}", p.display()))
+        })
+        .collect();
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+#[test]
+fn the_unset_check_rejects_a_late_or_partial_unset() {
+    let all = LOCATION_VARS.join(" ");
+    for ok in [
+        format!("#!/bin/sh\n# c\n\nunset {all}\ngit status\n"),
+        format!(
+            "#!/bin/sh\nset -eu\nshopt -s nullglob\nunset GIT_DIR \\\n  {}\n",
+            LOCATION_VARS[1..].join(" ")
+        ),
+    ] {
+        assert_eq!(unsets_first(&ok), Ok(()), "{ok}");
+    }
+    for (bad, why) in [
+        (format!("#!/bin/sh\ncd x\nunset {all}\n"), "not an unset"),
+        (
+            "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE\n".to_owned(),
+            "it unsets",
+        ),
+        (format!("#!/bin/sh\nunset {all} PATH\n"), "it unsets"),
+        ("#!/bin/sh\n".to_owned(), "not an unset"),
+    ] {
+        let err = unsets_first(&bad).unwrap_err();
+        assert!(err.contains(why), "{bad}: {err}");
+    }
 }
