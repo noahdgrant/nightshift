@@ -335,6 +335,95 @@ fn reports_every_metric_from_fixture_artifacts() {
     assert_eq!(v["gaps"]["findings_axis_from_raised_by"], 1);
 }
 
+/// a's C1 (pass 0, fixed in cycle 1 with no attempt count), I1 (pass 0, deferred) and I2 (pass
+/// 2, open). b's first attempt predates `Cycle:`, so its three Importants are left out.
+fn fixture_finding_flow() -> Value {
+    json!({
+        "findings": 3,
+        "without_cycle": 3,
+        "raised_per_pass": {
+            "critical": {"passes": [1, 0, 0, 0, 0, 0], "later": 0},
+            "important": {"passes": [1, 0, 1, 0, 0, 0], "later": 0}
+        },
+        "fix_rate": {
+            "critical": {
+                "findings": 0, "fixed_first_attempt": 0, "fixed_second_attempt": 0,
+                "fixed_later_attempt": 0, "open": 0, "fixed_attempts_unknown": 1,
+                "first_attempt_rate": null, "second_attempt_rate": null, "open_rate": null
+            },
+            "important": {
+                "findings": 1, "fixed_first_attempt": 0, "fixed_second_attempt": 0,
+                "fixed_later_attempt": 0, "open": 1, "fixed_attempts_unknown": 0,
+                "first_attempt_rate": 0.0, "second_attempt_rate": 0.0, "open_rate": 1.0
+            }
+        },
+        "cycles_to_fix": {"findings": 1, "median": 1.0, "max": 1, "next_cycle": 1, "left_out": 0},
+        "dismiss_rate": {"count": 0, "findings": 3, "rate": 0.0},
+        "late_finding_rate": {"count": 1, "findings": 3, "rate": 0.333}
+    })
+}
+
+#[test]
+fn reports_how_findings_arrive_and_get_fixed() {
+    let f = fixture();
+    let v = quality(&f, &[]);
+    assert_eq!(v["finding_flow"], fixture_finding_flow());
+    assert_eq!(
+        v["cycles_to_clean"],
+        json!({"units": 1, "median": 0.0, "max": 0, "not_clean": 1, "unknown": 0})
+    );
+    fn keys(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => m.iter().for_each(|(k, v)| {
+                out.push(k.clone());
+                keys(v, out)
+            }),
+            Value::Array(a) => a.iter().for_each(|v| keys(v, out)),
+            _ => {}
+        }
+    }
+    let mut all = Vec::new();
+    keys(&v, &mut all);
+    assert!(
+        !all.iter().any(|k| k.contains("wall") || k.contains("time")),
+        "no wall-time key: {all:?}"
+    );
+}
+
+#[test]
+fn human_output_shows_each_finding_metric() {
+    let f = fixture();
+    let out = ns()
+        .current_dir(&f.root)
+        .args(["quality", "--human"])
+        .output();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "Units: 2",
+        "Findings: 3 Critical and Important over every review attempt; 3 without a cycle left out",
+        "Raised per pass    0    1    2    3    4    5  later",
+        "  critical         1    0    0    0    0    0      0",
+        "  important        1    0    1    0    0    0      0",
+        "Fix rate           findings  attempt 1  attempt 2 (of the rest)  open  attempts unknown",
+        "  critical                0        n/a                      n/a   n/a                 1",
+        "  important               1      0.000                    0.000 1.000                 0",
+        "Cycles to fix: median 1.0, max 1, over 1 fixed (1 in the next cycle; 0 left out)",
+        "Dismiss rate: 0.000 (0 of 3)",
+        "Late-finding rate: 0.333 (1 of 3)",
+    ] {
+        assert!(text.contains(line), "missing {line:?} in:\n{text}");
+    }
+    ns().current_dir(&f.root)
+        .args(["quality", "--human", "--json"])
+        .assert()
+        .code(2);
+    ns().current_dir(&f.root)
+        .args(["quality", "--human", "--bugs"])
+        .assert()
+        .code(2);
+}
+
 #[test]
 fn days_are_local_and_since_filters_by_them() {
     let f = fixture();
@@ -587,6 +676,17 @@ fn a_repo_with_no_units_reports_zeroes() {
     assert_eq!(v["units"], 0);
     assert_eq!(v["run_log"]["present"], false);
     assert_eq!(v["cycles_to_clean"]["median"], Value::Null);
+    assert_eq!(v["finding_flow"]["findings"], 0);
+    assert_eq!(v["finding_flow"]["dismiss_rate"]["rate"], Value::Null);
+    assert_eq!(v["finding_flow"]["cycles_to_fix"]["median"], Value::Null);
+    let out = ns()
+        .current_dir(&root)
+        .args(["quality", "--human"])
+        .output();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("Dismiss rate: n/a (0 of 0)"), "{text}");
+    assert!(text.contains("Cycles to fix: n/a, over 0 fixed"), "{text}");
 }
 
 #[test]
