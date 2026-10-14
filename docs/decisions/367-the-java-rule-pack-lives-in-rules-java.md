@@ -3,7 +3,7 @@ id: ADR-367
 title: "The Java rule pack lives in rules/java/, on PMD 7 and ast-grep"
 issue: 367
 date: 2026-10-12
-amended_by: [ADR-433]
+amended_by: [ADR-433, ADR-638]
 ---
 
 # ADR-367: The Java rule pack lives in rules/java/, on PMD 7 and ast-grep
@@ -12,7 +12,7 @@ amended_by: [ADR-433]
 
 Builds on D50 and D55. The Java rule pack lives in `rules/java/` and installs into a repo's `.nightshift/rules/java/` with `install.sh`, which also writes the `rules` row from `stack-row.md`. It composes PMD 7 (`UnusedPrivateField`, `UnusedPrivateMethod`, `UnusedLocalVariable`, `UnusedFormalParameter`, `EmptyCatchBlock`, `OverrideBothEqualsAndHashcode`, `CompareObjectsWithEquals`, `AvoidCatchingThrowable`, `ReturnFromFinallyBlock`, in `ruleset.xml`, passed with `-R`) and `ast-grep` (`suppression-reason`, `dependency-allowlist`, `duplicate-helper`), with `file-size` at 1000 lines. One shell wrapper, `check.sh pmd|ast-grep|size <dir>`, prints D50's JSON lines and exits 2 with no findings when a check can't run, as the Rust and C packs do. The rule IDs are the issue's names without a prefix, as in the Python pack; the `tool` field already says which pack and tool a finding came from.
 
-PMD is pinned once, in `scripts/ci-tools.toml` (`[pmd]`: version, url, sha256). `scripts/ci-tools.sh` gains a `download` method that fetches a zip into `${XDG_CACHE_HOME:-~/.cache}/nightshift/`, checks its sha256 and links its bin onto `PATH`, and an apt `bin` path, for Java 21's JRE. `install.sh` reads the same pin, takes the zip from that cache or downloads it, checks the sha256 on every install, and copies PMD into the repo's pack as `pmd/`, which a `.gitignore` keeps out of git. It needs Java 11 or later on `PATH` and fails naming it. `--offline` fails rather than download, which is how `rules/java/tests/run.sh` and `cli/tests/rules_pack_java.rs` stay off the network: CI fills the cache with `scripts/ci-tools.sh install pmd` first. The pack's per-repo data, kept on a rerun, is the allowlist (`utils/allowed-package.yml`), the helper names (`utils/helper-name.yml`) and the `ignores` line of `rules/duplicate-helper.yml`. The first install seeds the allowlist with the repo's own packages and the packages it imports today. `run.sh` runs in the `rule-pack-java` CI job and `scripts/ci-local.sh`, also under a decoy `GIT_DIR`.
+PMD is pinned once, in `scripts/ci-tools.toml` (`[pmd]`: version, url, sha256). `scripts/ci-tools.sh` gains a `download` method that fetches a zip into `${XDG_CACHE_HOME:-~/.cache}/nightshift/`, checks its sha256 and links its bin onto `PATH`, and an apt `bin` path, for Java 21's JRE. `install.sh` reads the same pin, takes the zip from that cache or downloads it, checks the sha256 on every install, and copies PMD into the repo's pack as `pmd/`, which a `.gitignore` keeps out of git. It needs Java 11 or later on `PATH` and fails naming it. `--offline` fails rather than download, which is how `rules/java/tests/run.sh` and `cli/tests/rules_pack_java.rs` stay off the network: CI fills the cache with `scripts/ci-tools.sh install pmd` first. The pack's per-repo data, kept on a rerun, is the allowlist (`utils/allowed-package.yml`), the helper names (`utils/helper-name.yml`) and the `ignores` line of `rules/duplicate-helper.yml`. The first install seeds the allowlist with the repo's own packages and the packages it imports today. `run.sh` runs in the `rule-pack-java` CI job and `scripts/ci-local.sh`.
 
 ## Reason
 
