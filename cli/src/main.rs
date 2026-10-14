@@ -203,6 +203,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             factory,
             night,
             cpus,
+            fresh,
         }) => {
             return run::cli(run::RunArgs {
                 unit: unit_id,
@@ -215,6 +216,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 triage_only: false,
                 night,
                 cpus,
+                fresh,
             })
         }
         Cmd::Watch(Watch {

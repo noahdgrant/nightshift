@@ -1,6 +1,6 @@
 //! The phase driver: decide the next phase, run it under its locks and budget, and gate it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -8,9 +8,9 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use super::ci_gate::gate_trigger;
+use super::core::{Ledger, MergeBack, PhaseResult, Rebase};
 use super::currency::{
-    archive_as, archive_for, decide, known_pr, read_art, read_state, rebases_for_base, restore,
-    run, Decision, UnitDiff,
+    archive_as, archive_for, known_pr, read_art, read_state, restore, Decision, UnitDiff,
 };
 use super::locks::{Acquired, Bound, RunnerLocks};
 use super::merge::{merge_step, MergeStep};
@@ -44,23 +44,29 @@ fn recheck_budget(
     }
 }
 
-/// The most times one `ns run` sends a passed ship back because its PR conflicts with the base.
-const RESHIP_CAP: u32 = 5;
-
-/// Why a build runs only to rebase onto the newest default branch, which costs no attempt.
-enum Rebase {
-    /// Verify, review, ship or the merge step said the base moved.
-    BaseMoved,
-    /// The gate after a `BaseMoved` rebuild went red and the base moved again since. Never
-    /// leads to another.
-    MovedSinceRebase,
+/// Drive the unit to an outcome. A run that finishes removes its ledger, so the next `ns run`
+/// of the unit starts fresh; one that stops without finishing (a stop signal, a crash, a reboot)
+/// leaves it for the next run to resume.
+pub(super) fn drive(
+    ctx: &Ctx<'_>,
+    args: &RunArgs,
+    shared: &mut Shared,
+    commands: &BTreeMap<&'static str, Vec<String>>,
+    phases: &mut Vec<Value>,
+    last_artifact: &mut Option<String>,
+) -> Result<Finish> {
+    let r = drive_loop(ctx, args, shared, commands, phases, last_artifact);
+    if r.is_ok() {
+        let _ = fs::remove_file(ledger_path(&ctx.artifacts));
+    }
+    r
 }
 
 #[allow(
     clippy::too_many_lines,
     reason = "one loop over the phases; split it rather than grow it"
 )]
-pub(super) fn drive(
+fn drive_loop(
     ctx: &Ctx<'_>,
     args: &RunArgs,
     shared: &mut Shared,
@@ -70,31 +76,22 @@ pub(super) fn drive(
 ) -> Result<Finish> {
     let fac = ctx.fac;
     let subscription = fac.subscription();
-    let mut attempts: BTreeMap<&'static str, u32> = BTreeMap::new();
-    let mut last_failure: BTreeMap<&'static str, String> = BTreeMap::new();
-    let mut reruns: BTreeMap<&'static str, u32> = BTreeMap::new();
-    let mut passed: BTreeSet<&'static str> = BTreeSet::new();
     let from = args
         .triage_only
         .then_some("triage")
         .or(args.from.as_deref());
-    let mut forced_rebase: Option<Rebase> = None;
-    // The default branch's sha the last free rebase went onto: each free one needs a new move.
-    let mut rebased_onto: Option<String> = None;
-    let mut reships = 0;
-    // A free ship that brought the base in passed: the ship after the verify and review reruns it
-    // caused is free too.
-    let mut ship_follows_base = false;
-    let mut forced: Option<Decision> = from.map(|f| {
-        run(
-            PHASES.iter().find(|p| **p == f).copied().unwrap_or("build"),
-            "",
-            "--from",
-        )
-    });
+    let mut ledger = match (from, args.fresh) {
+        (None, false) => match load_ledger(&ctx.artifacts) {
+            Some(l) => {
+                ctx.log(json!({"event": "ledger_resumed", "path": ledger_path(&ctx.artifacts).to_string_lossy()}));
+                l
+            }
+            None => Ledger::new(None),
+        },
+        _ => Ledger::new(from),
+    };
     let mut baseline = remote_default(&ctx.worktree);
     let mut gate_state = gate::Gate::default();
-    let mut merges = 0;
     ctx.log(json!({
         "event": "start",
         "default_branch": baseline.as_ref().map(|b| &b.0),
@@ -107,6 +104,7 @@ pub(super) fn drive(
         "cpus": shared.cpus,
     }));
     loop {
+        save_ledger(ctx, &ledger);
         crate::stop::check()?;
         let state = read_state(
             &ctx.artifacts,
@@ -118,14 +116,7 @@ pub(super) fn drive(
                 &ctx.head(),
             )),
         );
-        let (decision, rebase) = match forced.take() {
-            Some(d) => (d, forced_rebase.take()),
-            None => {
-                let d = decide(&state);
-                let r = rebases_for_base(&state, &d).then_some(Rebase::BaseMoved);
-                (d, r)
-            }
-        };
+        let (decision, rebase) = ledger.next(&state);
         let (phase, feedback, why) = match decision {
             Decision::Stuck(r) => {
                 if last_artifact.is_none() {
@@ -148,40 +139,26 @@ pub(super) fn drive(
                 return Ok(finish(Outcome::Split, r, Some("triage")));
             }
             Decision::Done => {
-                ship_follows_base = false;
                 if !fac.merge.auto() {
                     return Ok(finish(Outcome::Done, "pr.md passed", Some("ship")));
                 }
-                merges += 1;
-                match merge_step(ctx, &state, shared, &mut gate_state, merges)? {
+                ledger.merging();
+                let back = match merge_step(ctx, &state, shared, &mut gate_state, ledger.merges)? {
                     MergeStep::Finish(f) => return Ok(f),
-                    MergeStep::Rebuild(red) => {
-                        if let Some(k) = red.stuck_reason() {
-                            last_failure.insert("build", k);
-                        }
-                        forced = Some(run("build", &red.feedback, red.reason));
-                        continue;
-                    }
-                    MergeStep::Reship(feedback) => {
-                        reships += 1;
-                        if reships > RESHIP_CAP {
-                            ctx.log(json!({"event": "reship_cap", "reships": RESHIP_CAP, "cap": RESHIP_CAP}));
-                            return Ok(finish(
-                                Outcome::Stuck,
-                                format!("ship was sent back {RESHIP_CAP} times because the base moved (cap {RESHIP_CAP})"),
-                                Some("ship"),
-                            ));
-                        }
-                        forced = Some(run("ship", &feedback, "the PR conflicts with its base"));
-                        forced_rebase = Some(Rebase::BaseMoved);
-                        continue;
-                    }
-                    MergeStep::Rebase(feedback, why) => {
-                        forced = Some(run("build", &feedback, why));
-                        forced_rebase = Some(Rebase::BaseMoved);
-                        continue;
-                    }
+                    MergeStep::Rebuild(red) => MergeBack::Rebuild {
+                        stuck_reason: red.stuck_reason(),
+                        feedback: red.feedback,
+                        reason: red.reason,
+                    },
+                    MergeStep::Reship(feedback) => MergeBack::Reship(feedback),
+                    MergeStep::Rebase(feedback, why) => MergeBack::Rebase { feedback, why },
+                };
+                if let Err(reason) = ledger.merge_back(back) {
+                    let cap = super::core::RESHIP_CAP;
+                    ctx.log(json!({"event": "reship_cap", "reships": cap, "cap": cap}));
+                    return Ok(finish(Outcome::Stuck, reason, Some("ship")));
                 }
+                continue;
             }
             Decision::Run {
                 phase,
@@ -190,42 +167,20 @@ pub(super) fn drive(
             } => (phase, feedback, why),
         };
         let p = fac.phase(phase);
-        let attempt = attempts.get(phase).copied().unwrap_or(0) + 1;
-        // The first run of a verify or review after it passed fails nothing: HEAD moved under
-        // it. Ship moves HEAD, so its attempts still bound a ship that changes the diff each time.
-        if matches!(phase, "verify" | "review") && passed.remove(phase) {
-            *reruns.entry(phase).or_default() += 1;
-        }
-        // A build that only rebases because the base moved fails nothing either.
-        let rebase = rebase.and_then(|r| {
-            remote_default(&ctx.worktree)
-                .filter(|(_, sha)| rebased_onto.as_ref() != Some(sha))
-                .map(|d| (r, d))
-        });
-        let before_credit = rebased_onto.clone();
-        if let Some((_, (_, sha))) = &rebase {
-            *reruns.entry(phase).or_default() += 1;
-            rebased_onto = Some(sha.clone());
-        }
-        let follows_base = match phase {
-            "verify" | "review" => false,
-            "ship" => std::mem::take(&mut ship_follows_base),
-            _ => {
-                ship_follows_base = false;
-                false
-            }
+        let remote = rebase.and_then(|_| remote_default(&ctx.worktree));
+        let admitted = ledger.admit(phase, feedback, why, rebase, remote, p.max_attempts);
+        let (attempt, follows_base) = match &admitted {
+            Ok(a) => (a.attempt, a.follows_base),
+            Err(d) => (d.attempt, d.follows_base),
         };
         if follows_base {
-            *reruns.entry(phase).or_default() += 1;
             ctx.log(json!({"event": "ship_after_base_moved", "attempt": attempt}));
         }
-        if attempt - reruns.get(phase).copied().unwrap_or(0) > p.max_attempts {
-            let mut reason = format!("{phase} is out of attempts ({})", p.max_attempts);
-            if let Some(t) = last_failure.get(phase) {
-                reason.push_str(&format!(": {t}"));
-            }
-            return Ok(finish(Outcome::Stuck, reason, Some(phase)));
-        }
+        let adm = match admitted {
+            Ok(a) => a,
+            Err(d) => return Ok(finish(Outcome::Stuck, d.reason, Some(phase))),
+        };
+        let why = adm.why.clone();
         if let Some(reason) = budget_spent(fac.budget_usd(), shared.spent()) {
             return Ok(finish(Outcome::Budget, reason, Some(phase)));
         }
@@ -272,22 +227,7 @@ pub(super) fn drive(
                     "written": false,
                     "reason": reason,
                 }));
-                attempts.insert(phase, attempt);
-                last_failure.insert(phase, format!("the last attempt {reason}"));
-                forced = Some(Decision::Run {
-                    phase,
-                    feedback,
-                    why,
-                });
-                if let Some((kind, _)) = rebase {
-                    *reruns.entry(phase).or_default() -= 1;
-                    rebased_onto = before_credit;
-                    forced_rebase = Some(kind);
-                }
-                if follows_base {
-                    *reruns.entry(phase).or_default() -= 1;
-                    ship_follows_base = true;
-                }
+                ledger.lock_gave_up(adm, &reason);
                 continue;
             }
         };
@@ -301,8 +241,8 @@ pub(super) fn drive(
         }
         let art_path = ctx.artifacts.join(artifact_of(phase));
         let moves = archive_for(&ctx.artifacts, phase, &state)?;
-        let mut feedback = feedback;
-        if let Some((_, (branch, sha))) = &rebase {
+        let mut feedback = adm.feedback.clone();
+        if let Some((_, branch, sha)) = &adm.rebase {
             // The phase takes in the default branch as it is now, not a commit noted earlier. Ship
             // merges the base in and never rebases (skills/ns-ship).
             let _ = git::run(&ctx.worktree, &["fetch", "-q", "origin", branch]);
@@ -422,28 +362,18 @@ pub(super) fn drive(
             f.reset_at = limit.reset_at;
             return Ok(f);
         }
-        attempts.insert(phase, attempt);
-        if r.timed_out {
-            last_failure.insert(
-                phase,
-                format!(
-                    "the last attempt {}; raise its timeout_minutes or split the unit",
-                    gate::timed_out_after(timeout)
-                ),
-            );
-        } else if let Some(k) = &r.killed {
-            last_failure.insert(phase, format!("the last attempt {k}"));
-        } else {
-            last_failure.remove(phase);
-        }
         let art = read_art(&art_path);
-        if (rebase.is_some() || follows_base) && art.as_ref().is_none_or(|a| a.status != "pass") {
-            *reruns.entry(phase).or_default() -= 1;
-        }
+        ledger.phase_ended(
+            &adm,
+            &PhaseResult {
+                status: art.as_ref().map(|a| a.status.clone()),
+                timed_out: r.timed_out,
+                killed: r.killed.clone(),
+                timeout_text: gate::timed_out_after(timeout),
+            },
+        );
         let written = art.is_some();
         if art.as_ref().is_some_and(|a| a.status == "pass") {
-            passed.insert(phase);
-            ship_follows_base |= phase == "ship" && rebase.is_some();
             // A failed phase's scratch files stay for a human to read, until `ns clean`. A pass
             // whose scratch dir will not go is logged, not failed: `ns clean` removes the leftover.
             if let Err(e) = fs::remove_dir_all(&tmp) {
@@ -509,11 +439,7 @@ pub(super) fn drive(
         if cut_short && phase == "build" {
             if let Some(fb) = gate_state.red_feedback() {
                 let how = r.killed.as_deref().unwrap_or("timed out");
-                forced = Some(run(
-                    "build",
-                    fb,
-                    format!("{how} with the CI gate still red"),
-                ));
+                ledger.cut_short_build(fb, how);
             }
             continue;
         }
@@ -533,23 +459,42 @@ pub(super) fn drive(
                 return Err(crate::stop::error(sig));
             }
             if let Some(red) = red? {
-                if let Some(k) = red.stuck_reason() {
-                    last_failure.insert("build", k);
-                }
-                if let Some((Rebase::BaseMoved, (branch, onto))) = &rebase {
-                    if remote_sha(&ctx.worktree, branch).is_some_and(|now| now != *onto) {
-                        forced = Some(run(
-                            "build",
-                            &red.feedback,
-                            format!("the CI gate failed after a rebase and {branch} moved since"),
-                        ));
-                        forced_rebase = Some(Rebase::MovedSinceRebase);
-                        continue;
+                let moved_since = match &adm.rebase {
+                    Some((Rebase::BaseMoved, branch, onto)) => {
+                        remote_sha(&ctx.worktree, branch).is_some_and(|now| now != *onto)
                     }
-                }
-                forced = Some(run("build", &red.feedback, red.reason));
+                    _ => false,
+                };
+                let stuck = red.stuck_reason();
+                ledger.gate_red(&adm, &red.feedback, red.reason, stuck, moved_since);
             }
         }
+    }
+}
+
+/// Where the unit's ledger is kept between `ns run` invocations.
+fn ledger_path(artifacts: &std::path::Path) -> PathBuf {
+    artifacts.join("state.json")
+}
+
+/// The saved ledger, or `None` when there is none or it doesn't parse (a torn write, an older
+/// format): the run then starts a new one.
+fn load_ledger(artifacts: &std::path::Path) -> Option<Ledger> {
+    let text = fs::read_to_string(ledger_path(artifacts)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Write the ledger through a temp file and a rename, so a crash leaves the old one or the new
+/// one. A failed write is logged, not fatal: the run only loses what a restart would resume.
+fn save_ledger(ctx: &Ctx<'_>, ledger: &Ledger) {
+    let path = ledger_path(&ctx.artifacts);
+    let tmp = path.with_extension("json.tmp");
+    let write = serde_json::to_vec_pretty(ledger)
+        .map_err(anyhow::Error::from)
+        .and_then(|b| fs::write(&tmp, b).map_err(anyhow::Error::from))
+        .and_then(|()| fs::rename(&tmp, &path).map_err(anyhow::Error::from));
+    if let Err(e) = write {
+        ctx.log(json!({"event": "ledger_not_saved", "path": path.to_string_lossy(), "error": format!("{e:#}")}));
     }
 }
 
@@ -766,6 +711,21 @@ mod tests {
         assert_eq!(f.reason, "spent $5.00 of the $5.00 budget");
         assert_eq!(f.phase.as_deref(), Some("build"));
         acquire();
+    }
+
+    #[test]
+    fn a_saved_ledger_loads_and_a_torn_or_missing_one_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load_ledger(dir.path()), None);
+        let ledger = Ledger::new(Some("review"));
+        fs::write(
+            ledger_path(dir.path()),
+            serde_json::to_vec(&ledger).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(load_ledger(dir.path()), Some(ledger));
+        fs::write(ledger_path(dir.path()), "{\"attempts\": {\"bui").unwrap();
+        assert_eq!(load_ledger(dir.path()), None);
     }
 
     #[test]
