@@ -16,14 +16,44 @@
 
 Preconditions:
 
-- Baseline, in `$NS_SRC`. `HOME` is `$V/home`, so the targets are under the sandbox.
+- Baseline. `HOME` is `$V/home`, so the targets are under the sandbox. Launch already linked the skills into `$V/home/.claude/skills`, so these recipes use the `agents` harness directory, `$V/home/.agents/skills`, which starts empty.
+- `ns install` acts on this repo's skills, so it runs with `--src`. `ns doctor` runs without it, from `$V/repo`.
 
-- **Dry run.** Run `cap install-dry "$NS" install --source "$NS_SRC/skills" --dry-run`. `targets` are `$V/home/.agents/skills` and `$V/home/.claude/skills`; every action is `link`; `ls "$V/home/.claude/skills"` is still empty or missing.
-- **Link.** Run `cap install-link "$NS" install --source "$NS_SRC/skills" --harness claude`. `conflicts` is `0`. `ls -l "$V/home/.claude/skills"` shows links into `$NS_SRC/skills`, and `cap install-link-doctor "$NS" doctor` has `.skill_dirs.claude.ns_skills` matching the count.
-- **Re-run.** Run the same command again as `cap install-link-again "$NS" install --source "$NS_SRC/skills" --harness claude`. Every action is `unchanged`.
-- **Conflict.** Run `rm "$V/home/.claude/skills/ns-tdd" && mkdir "$V/home/.claude/skills/ns-tdd"` (plain setup), then `cap install-conflict "$NS" install --source "$NS_SRC/skills" --harness claude`. Exit `1`; stdout has `ns-tdd` with `"action": "conflict"` and `"conflicts": 1`; stderr starts `error: 1 conflict(s): real files or unrelated symlinks are in the way`; the directory is still there. Then restore the link: `rmdir "$V/home/.claude/skills/ns-tdd" && cap install-restore "$NS" install --source "$NS_SRC/skills" --harness claude`. `conflicts` is `0` and `ls -l "$V/home/.claude/skills/ns-tdd"` is a link again.
+- **Dry run.** `targets` is `$V/home/.agents/skills`; every action is `link`; `install-dry-none` exits non-zero, because the directory was not created.
+
+  ```bash
+  "$V/sandbox" --src cap install-dry ns install --source skills --harness agents --dry-run
+  "$V/sandbox" cap install-dry-none test -e "$V/home/.agents/skills"
+  ```
+
+- **Link.** `conflicts` is `0`. `install-link-ls` shows links into `$NS_SRC/skills`, and `install-link-doctor` has `.skill_dirs.agents.ns_skills` matching the number of actions.
+
+  ```bash
+  "$V/sandbox" --src cap install-link ns install --source skills --harness agents
+  "$V/sandbox" cap install-link-ls ls -l "$V/home/.agents/skills"
+  "$V/sandbox" cap install-link-doctor ns doctor
+  ```
+
+- **Re-run.** Every action is `unchanged`.
+
+  ```bash
+  "$V/sandbox" --src cap install-link-again ns install --source skills --harness agents
+  ```
+
+- **Conflict.** Replace one link with a real directory, then install. Exit `1`; stdout has `ns-tdd` with `"action": "conflict"` and `"conflicts": 1`; stderr starts `error: 1 conflict(s): real files or unrelated symlinks are in the way`; `install-conflict-dir` exits `0`, so the directory is still there. Then restore the link: `conflicts` is `0` and `install-restore-ls` shows a link again.
+
+  ```bash
+  "$V/sandbox" rm "$V/home/.agents/skills/ns-tdd"
+  "$V/sandbox" mkdir "$V/home/.agents/skills/ns-tdd"
+  "$V/sandbox" --src cap install-conflict ns install --source skills --harness agents
+  "$V/sandbox" cap install-conflict-dir test -d "$V/home/.agents/skills/ns-tdd"
+  "$V/sandbox" rmdir "$V/home/.agents/skills/ns-tdd"
+  "$V/sandbox" --src cap install-restore ns install --source skills --harness agents
+  "$V/sandbox" cap install-restore-ls ls -l "$V/home/.agents/skills/ns-tdd"
+  ```
 
 ## Gotchas
 
-- Without `HOME=$V/home` this links into the operator's real skill directories. Doctor's check of `HOME` matters here more than anywhere.
+- Outside the sandbox, `HOME` is the operator's, and this links into their real skill directories. Run `ns install` only through `"$V/sandbox"`.
 - Without `--source`, `ns install` uses `./skills` if present, else the checkout `ns` was built from.
+- Run `ns doctor` without `--src`, as `install-link-doctor` does. From `$NS_SRC` it reads this repo's real `origin` and tries `ssh -T` on its forge host (#536); see [doctor](./doctor.md).

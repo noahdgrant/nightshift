@@ -1,6 +1,6 @@
 # Hooks
 
-How `ns-setup` finds a repo's pre-commit hook, and the files it proposes when there is none.
+How `ns-setup` finds a repo's pre-commit hook, the files it proposes when there is none, and the `[merge] human_review` list it proposes in every repo.
 
 ## Detection
 
@@ -15,7 +15,7 @@ Check in this order and stop at the first hit:
 
 On a hit, change no files: no new script, no new hook, no `git config`. Record the hook in `stack.md`'s `## Hooks` section. If it is not enabled (steps 2 to 5 with `core.hooksPath` unset or not pointing at it, or `pre-commit install` / `husky` / `lefthook install` not run), record "present, not enabled" with the enabling command, and name that command in the final message. Never run it for a pre-existing hook. If the hit is our own partial setup (`.githooks/pre-commit` calling `scripts/ci-local.sh --fast`, `core.hooksPath` unset), say to finish by running `git config core.hooksPath .githooks`.
 
-The `ci-local` row is the repo's existing script that runs CI locally when it accepts `--fast`, since the gate appends ` --fast` to the row command. Otherwise it is `none` (plain, no backticks, so the gate finds no command), and `## Hooks` names the script. When a script that runs CI already exists, never overwrite it: propose only `.githooks/pre-commit` and the `git config` line.
+The `ci-local` row is the command of the repo's existing script that runs CI locally (`make ci`, `scripts/test-all.sh`), whatever flags it takes. Only `[gate] local = "build-only"` appends ` --fast` to it; the default `every-step` runs it as written, so a script with no `--fast` is fine there. Say in the row whether it accepts `--fast`, since `ns factory validate` warns under `build-only` when the row never names `--fast`. With no such script the row is `none` (plain, no backticks, so the gate finds no command). When a script that runs CI already exists, never overwrite it: propose only `.githooks/pre-commit` and the `git config` line. The hook runs the script with `--fast` only when it accepts it. Otherwise it runs a quick command the script doesn't cover (the lint or unit tests from the `stack.md` draft), or, when no step is quick, leave the hook out and say so.
 
 ## Proposal
 
@@ -57,6 +57,25 @@ The `ci-local` row of `stack.md` names `scripts/ci-local.sh`. The `ns run` gate 
 `ns-setup`, run by the user to onboard a repo, is the sanctioned writer of `core.hooksPath` and `.githooks/`, which `skills/ns-contract` (Git hooks) forbids to phases. Never do this inside an `ns run` phase: if the guard denies the write, report it, and do not retry or bypass it.
 
 Before handing over, run `sh -n scripts/ci-local.sh` and then `scripts/ci-local.sh --fast` once. A step that fails on today's code is a finding to report, not a reason to drop the step.
+
+## Merge review list
+
+`[merge] human_review` in `.nightshift/nightshift.toml` lists the globs whose changes need a human merge (`docs/factory/merge.md`). Empty, `policy = "auto"` lets `ns run` merge changes to the factory's own guardrails with no human. Propose a starter list in every run, built from paths the repo has:
+
+- the CI config: `.github/**` on GitHub, `.gitlab-ci.yml` on GitLab (the tracker Section D found)
+- the hook directory: `.githooks/**`, or the hook found in Detection (`.pre-commit-config.yaml`, `.husky/**`, `lefthook.yml`)
+- the local CI script: the `ci-local` row of `stack.md`, such as `scripts/ci-local.sh`
+- `.nightshift/**`, always
+
+List only paths that exist, counting the files Section B writes, so a repo with none of them gets `[".nightshift/**"]`. When the file already has a `human_review`, keep every entry the owner wrote and add only the missing ones. Leave `policy` as it is.
+
+```toml
+[merge]
+human_review = [".github/**", ".githooks/**", "scripts/ci-local.sh", ".nightshift/**"]
+```
+
+- `gates: stop`: show the list and let the owner edit it. After a yes, write it to `.nightshift/nightshift.toml`. On a no, write nothing and tell the owner the repo keeps an empty `human_review`.
+- `gates: auto`: leave `.nightshift/nightshift.toml` alone, as Gates says, and give the `[merge]` block in the final message for whoever merges to add.
 
 ## Example: Python
 

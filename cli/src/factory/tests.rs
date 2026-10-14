@@ -114,6 +114,24 @@ fn defaults_and_budget_by_billing() {
 }
 
 #[test]
+fn auto_merge_with_no_human_review_warns() {
+    for quiet in [
+        "[merge]\npolicy = \"human\"\n",
+        "[merge]\npolicy = \"auto\"\nhuman_review = [\".github/**\"]\n",
+    ] {
+        assert!(parse(quiet).unwrap().warnings().is_empty(), "{quiet}");
+    }
+    let f = parse("[merge]\npolicy = \"auto\"\n").unwrap();
+    let w = f.warnings();
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(
+        w[0].contains("merge.policy = \"auto\"") && w[0].contains("merge.human_review is empty"),
+        "{w:?}"
+    );
+    assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+}
+
+#[test]
 fn a_removed_triage_per_night_parses_with_a_warning() {
     assert!(parse("").unwrap().warnings().is_empty());
     assert!(parse(FULL).unwrap().warnings().is_empty());
@@ -356,4 +374,61 @@ fn gate_local_rejects_other_values_and_keys() {
         .to_string();
     assert!(e.contains("build-only") && e.contains("every-step"), "{e}");
     assert!(parse("[gate]\nremote = \"github\"\n").is_err());
+}
+
+#[test]
+fn build_only_warns_when_the_ci_local_row_shows_no_fast_support() {
+    let build_only = parse("[gate]\nlocal = \"build-only\"\n").unwrap();
+    let make = "| ci-local | `make ci` | 2 min |\n";
+    let w = build_only.fast_gate_warning(make).expect("a warning");
+    assert!(w.contains("ci-local") && w.contains("--fast"), "{w}");
+    assert!(w.contains("`make ci --fast`"), "{w}");
+    for shows_fast in [
+        "| ci-local | `scripts/ci-local.sh` (`--fast` runs the quick steps) | 1 min |\n",
+        "| ci-local | `make ci --fast` | 2 min |\n",
+    ] {
+        assert_eq!(
+            build_only.fast_gate_warning(shows_fast),
+            None,
+            "{shows_fast}"
+        );
+    }
+    for no_row in ["", "| ci-local | none | |\n", "| build | `make` | 1 s |\n"] {
+        assert_eq!(build_only.fast_gate_warning(no_row), None, "{no_row:?}");
+    }
+    assert_eq!(parse("").unwrap().fast_gate_warning(make), None);
+    let every = parse("[gate]\nlocal = \"every-step\"\n").unwrap();
+    assert_eq!(every.fast_gate_warning(make), None);
+}
+
+#[test]
+fn build_only_accepts_any_ci_local_row_showing_fast() {
+    let build_only = parse("[gate]\nlocal = \"build-only\"\n").unwrap();
+    let mixed =
+        "| ci-local | `make ci` | 2 min |\n| ci-local | `scripts/ci-local.sh --fast` | 1 min |\n";
+    assert_eq!(build_only.fast_gate_warning(mixed), None);
+    let neither = "| ci-local | `make ci` | 2 min |\n| ci-local | `make check` | 1 min |\n";
+    let w = build_only.fast_gate_warning(neither).expect("a warning");
+    assert!(w.contains("`make ci --fast`"), "{w}");
+}
+
+#[test]
+fn build_only_checks_a_build_gate_override_in_place_of_the_row() {
+    let gate = |cmd: &str| {
+        parse(&format!(
+            "[gate]\nlocal = \"build-only\"\n[phases.build]\ngate = \"{cmd}\"\n"
+        ))
+        .unwrap()
+    };
+    let fast_row = "| ci-local | `scripts/ci-local.sh --fast` | 1 min |\n";
+    let w = gate("make ci")
+        .fast_gate_warning(fast_row)
+        .expect("a warning");
+    assert!(
+        w.contains("[phases.build] gate") && w.contains("`make ci --fast`"),
+        "{w}"
+    );
+    assert!(gate("make ci").fast_gate_warning("").is_some());
+    let plain_row = "| ci-local | `make ci` | 2 min |\n";
+    assert_eq!(gate("ci.sh --fast").fast_gate_warning(plain_row), None);
 }

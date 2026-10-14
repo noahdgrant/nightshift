@@ -67,6 +67,8 @@ Summarise what's present and what's missing. Then take the sections in order: on
 
 **Section B: Hooks.** If Explore found a hook setup, show it as what `stack.md` will record and change nothing. Otherwise propose the pre-commit hook in [hooks.md](references/hooks.md) (recommended: **yes**): `scripts/ci-local.sh` running CI's commands in CI's order, with a `--fast` subset; `.githooks/pre-commit` running `scripts/ci-local.sh --fast`; and `git config core.hooksPath .githooks` for the main checkout and as a `[worktree] setup` line. Show the drafted script, built from this repo's CI. Gates follow [hooks.md](references/hooks.md), Gates.
 
+Then propose the `[merge] human_review` starter list from [hooks.md](references/hooks.md), Merge review list: the CI config, the hook, the local CI script and `.nightshift/**`, those the repo has.
+
 **Section C: Verify.** If a verify skill and control CLI exist, confirm their names. Otherwise record "not set up yet: run ns-setup-verify" without asking.
 
 **Section D: Issue tracker.** Propose GitHub if a remote points at GitHub, GitLab if at GitLab. Otherwise offer:
@@ -90,7 +92,7 @@ The defaults are the canonical roles with each label equal to its name, and each
 
 ### 3. Confirm
 
-Show the user a draft of every file from the table above, the hook files from Section B, the `## Agent skills` block, and any labels to create. Let them edit before writing.
+Show the user a draft of every file from the table above, the hook files and `human_review` list from Section B, the `## Agent skills` block, and any labels to create. Let them edit before writing.
 
 ### 4. Write
 
@@ -118,6 +120,8 @@ If no pack was installed, give the `rules` row the command `none`.
 
 If the user took the hook in Section B, write `scripts/ci-local.sh` and `.githooks/pre-commit`, make both executable, and run `git config core.hooksPath .githooks`, as [hooks.md](references/hooks.md) says. Fill `stack.md`'s `ci-local` row and `## Hooks` section either way, from the hook found or the one written. Gates, and where the `[worktree] setup` line goes, follow [hooks.md](references/hooks.md), Gates; if the trap fix-ups below also write a `setup` array, append to it.
 
+Write the `[merge] human_review` list, or give it in the final message, as [hooks.md](references/hooks.md), Merge review list says.
+
 If the worktree check found traps:
 - write the fix-up commands to `.nightshift/nightshift.toml` under `[worktree] setup = [...]`. `ns worktree new` runs them in each new worktree, with `NS_UNIT`, `NS_WORKTREE` and `NS_MAIN_ROOT` set, and again when a stop, a crash or a failed command cut them short. Make each safe to rerun on a worktree it already set up.
 - write the worktree-correct build and test commands into `stack.md`.
@@ -144,6 +148,6 @@ Repo settings the `ns-*` skills read. Edit the files directly to change them.
 
 ### 5. Done
 
-Done when all six `docs/agents/` files exist with no unfilled placeholders, the instructions file holds the block, and every rule pack that applies (Rust for a `Cargo.toml`, and each pack the user took in Section A) is installed with `ns rules check` exiting 0, and `stack.md` records the repo's hook, found or written. Tell the user which seams are `none` or unmeasured, and, if verify isn't set up, that `ns-setup-verify` is the next step. They can edit `docs/agents/*.md` directly later. Re-run this skill to switch trackers or start over.
+Done when all six `docs/agents/` files exist with no unfilled placeholders, the instructions file holds the block, and every rule pack that applies (Rust for a `Cargo.toml`, and each pack the user took in Section A) is installed with `ns rules check` exiting 0, `stack.md` records the repo's hook, found or written, and the `human_review` list is written or given in the final message. Tell the user which seams are `none` or unmeasured, and, if verify isn't set up, that `ns-setup-verify` is the next step. They can edit `docs/agents/*.md` directly later. Re-run this skill to switch trackers or start over.
 
 Then offer an agent-readiness audit: it finds what in the codebase helps or hurts agents and files the top findings as issues. On yes, load the `ns-agent-readiness` skill and run it under `gates: stop`, so the user picks what to file.

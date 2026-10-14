@@ -36,10 +36,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: cli
-      - name: Install the pinned tools cli/tests run (rules_pack*.rs run the rule packs; jq ships with the runner)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the pinned tools cli/tests run (rules_pack*.rs run the rule packs, factory.rs the py-inventory fixture; jq ships with the runner)
         id: tools
         working-directory: .
-        run: scripts/ci-tools.sh install ruff ast-grep cargo-deny java pmd
+        run: scripts/ci-tools.sh install pytest ruff ast-grep cargo-deny java pmd
       - uses: taiki-e/install-action@v2
         with:
           tool: ${{ steps.tools.outputs.install-action }}

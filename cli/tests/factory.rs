@@ -53,12 +53,20 @@ struct Env {
 
 impl Env {
     fn new() -> Env {
+        Env::with_repo("main", |root| {
+            fs::write(root.join("README"), "hi\n").unwrap();
+        })
+    }
+
+    /// An env whose repo holds what `fill` writes and a demo skill, committed on `branch`,
+    /// which is also `origin`'s default branch.
+    fn with_repo(branch: &str, fill: impl FnOnce(&Path)) -> Env {
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path().canonicalize().unwrap();
         let root = base.join("myrepo");
         fs::create_dir(&root).unwrap();
-        git(&root, &["init", "-q", "-b", "main"]);
-        fs::write(root.join("README"), "hi\n").unwrap();
+        git(&root, &["init", "-q", "-b", branch]);
+        fill(&root);
         // A repo that pins no skills is refused, so every unit has one to pin.
         fs::create_dir_all(root.join("skills/ns-demo")).unwrap();
         fs::write(root.join("skills/ns-demo/SKILL.md"), "demo\n").unwrap();
@@ -89,12 +97,12 @@ impl Env {
             ghd,
         };
         e.issue(7, "Fix the thing", "OPEN");
-        e.with_remote();
+        e.with_remote(branch);
         e
     }
 
-    /// Add a bare `origin` (`base/remote.git`) with `main` pushed and origin/HEAD set.
-    fn with_remote(&self) -> PathBuf {
+    /// Add a bare `origin` (`base/remote.git`) with `branch` pushed and origin/HEAD set to it.
+    fn with_remote(&self, branch: &str) {
         let remote = self.base.join("remote.git");
         git(
             &self.base,
@@ -103,7 +111,7 @@ impl Env {
                 "-q",
                 "--bare",
                 "-b",
-                "main",
+                branch,
                 remote.to_str().unwrap(),
             ],
         );
@@ -111,9 +119,8 @@ impl Env {
             &self.root,
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
-        git(&self.root, &["push", "-q", "origin", "main"]);
-        git(&self.root, &["remote", "set-head", "origin", "main"]);
-        remote
+        git(&self.root, &["push", "-q", "origin", branch]);
+        git(&self.root, &["remote", "set-head", "origin", branch]);
     }
 
     fn factory(&self, text: &str) {
@@ -1000,6 +1007,138 @@ fn happy_path_triage_to_done() {
     let lock = common.join(format!("ns-run-{UNIT}.lock"));
     assert_eq!(fs::read_to_string(&lock).unwrap(), "");
     assert!(lock_is_free(&lock));
+}
+
+/// Fail, naming the tool, rather than let a missing tool time out a phase or pass as a clean pack.
+fn need_python_tools() {
+    for tool in ["pytest", "ruff", "ast-grep"] {
+        let found = StdCommand::new(tool).arg("--version").output();
+        assert!(
+            found.is_ok_and(|o| o.status.success()),
+            "the py-inventory tests need `{tool}` on PATH; install it with scripts/ci-tools.sh install {tool}"
+        );
+    }
+}
+
+/// A copy of the py-inventory eval fixture on default branch `branch`, with the Python rule pack
+/// installed as `ns-setup` installs it, the fixture's existing violations baselined, and a
+/// `ci-local` row that runs its tests.
+fn py_inventory(branch: &str) -> Env {
+    need_python_tools();
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    Env::with_repo(branch, |root| {
+        common::copy_dir(&repo.join("evals/fixtures/py-inventory"), root);
+        let pack = root.join(".nightshift/rules/python");
+        fs::create_dir_all(&pack).unwrap();
+        for f in ["ruff.toml", "sgconfig.yml", "file-size.sh"] {
+            common::copy_exe(&repo.join("rules/python").join(f), &pack.join(f));
+        }
+        for d in ["rules", "utils"] {
+            common::copy_dir(&repo.join("rules/python").join(d), &pack.join(d));
+        }
+        let allowed = pack.join("utils/allowed-package.yml");
+        let text = fs::read_to_string(&allowed).unwrap();
+        fs::write(
+            &allowed,
+            text.replace("(?:)", "(?:inventory|pytest|conftest)"),
+        )
+        .unwrap();
+        let row = fs::read_to_string(repo.join("rules/python/stack-row.md")).unwrap();
+        let row = row
+            .replace("{pack}", ".nightshift/rules/python")
+            .replace("{target}", ".");
+        let stack = root.join("docs/agents/stack.md");
+        let text = fs::read_to_string(&stack).unwrap();
+        let typecheck = "| typecheck | none | |\n";
+        assert!(text.contains(typecheck), "{text}");
+        let rows = format!("{typecheck}{row}| ci-local | `pytest -q` | 1 s |\n");
+        fs::write(&stack, text.replace(typecheck, &rows)).unwrap();
+        common::ns()
+            .current_dir(root)
+            .args(["rules", "baseline", "--allow-growth"])
+            .assert()
+            .success();
+        let baseline = fs::read_to_string(root.join(".nightshift/rules-baseline.json")).unwrap();
+        let v: Value = serde_json::from_str(&baseline).unwrap();
+        assert!(
+            v["violations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|f| f["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("[suppression-reason]")),
+            "the baseline holds more than the fixture's unexplained suppressions: {baseline}"
+        );
+    })
+}
+
+/// The log of every gate run, for a failure message.
+fn gate_logs(e: &Env) -> String {
+    gate_events(e)
+        .iter()
+        .filter_map(|g| g["log"].as_str())
+        .map(|l| format!("--- {l}\n{}\n", fs::read_to_string(l).unwrap_or_default()))
+        .collect()
+}
+
+/// Every artifact the unit's phases wrote, for a failure message.
+fn artifacts(e: &Env, unit: &str) -> String {
+    let dir = e.worktree(unit).join(".ns").join(unit);
+    let mut out = String::new();
+    for f in fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let text = fs::read_to_string(f.path()).unwrap_or_default();
+        out.push_str(&format!("--- {}\n{text}\n", f.path().display()));
+    }
+    out
+}
+
+/// `ns run` takes one unit of py-inventory, on default branch `branch`, to done: the gate after
+/// build runs the fixture's own `ci-local` row and the Python rule pack, and no step makes a
+/// `main` branch.
+fn py_inventory_reaches_done(branch: &str) {
+    let e = py_inventory(branch);
+    e.queue("build", &["pass:commit"]);
+    let out = e.ns().args(["run", "--issue", "7"]).output();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    assert!(
+        out.status.success() && v["outcome"] == "done",
+        "{}\nstdout={v}\nstderr={}\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr),
+        artifacts(&e, UNIT) + &gate_logs(&e)
+    );
+    assert_eq!(e.calls(), ["triage", "build", "verify", "review", "ship"]);
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 1, "{g:?}");
+    assert_eq!(g[0]["green"], true, "{g:?}");
+    let cmd = g[0]["command"].as_str().unwrap();
+    assert!(
+        cmd.starts_with("(pytest -q) && ") && cmd.ends_with(" rules check"),
+        "{cmd}"
+    );
+    let log = fs::read_to_string(g[0]["log"].as_str().unwrap()).unwrap();
+    for proof in [
+        " passed in ",
+        "ns rules: ruff check --config .nightshift/rules/python/ruff.toml",
+        "ns rules: ast-grep scan",
+        "ns rules: .nightshift/rules/python/file-size.sh .",
+    ] {
+        assert!(log.contains(proof), "no {proof:?} in the gate log:\n{log}");
+    }
+    let refs = git(&e.root, &["for-each-ref", "--format=%(refname)"]);
+    assert!(!refs.lines().any(|r| r.ends_with("/main")), "{refs}");
+}
+
+#[test]
+fn py_inventory_on_branch_trunk_reaches_done() {
+    py_inventory_reaches_done("trunk");
+}
+
+#[test]
+fn py_inventory_on_branch_develop_reaches_done() {
+    py_inventory_reaches_done("develop");
 }
 
 #[test]
@@ -5755,6 +5894,72 @@ fn factory_validate_reports_problems() {
         .stdout
         .clone();
     assert!(String::from_utf8_lossy(&out).contains("unknown placeholder {bogus}"));
+}
+
+#[test]
+fn factory_validate_warns_when_build_only_has_no_fast_ci_local() {
+    let e = Env::new();
+    fs::create_dir_all(e.root.join("docs/agents")).unwrap();
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        "| Task | Command | Takes |\n|---|---|---|\n| ci-local | `make ci` | 2 min |\n",
+    )
+    .unwrap();
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["errors"], serde_json::json!([]), "{v}");
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("ci-local") && warnings.contains("`make ci --fast`"),
+        "{v}"
+    );
+    e.factory("");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["warnings"], serde_json::json!([]), "{v}");
+}
+
+#[test]
+fn factory_validate_build_only_fast_warning_edge_cases() {
+    let e = Env::new();
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["warnings"], serde_json::json!([]), "{v}");
+    fs::create_dir_all(e.root.join("docs/agents")).unwrap();
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        "| Task | Command | Takes |\n|---|---|---|\n| ci-local | `scripts/ci-local.sh --fast` | 1 min |\n",
+    )
+    .unwrap();
+    e.factory("[gate]\nlocal = \"build-only\"\n[phases.build]\ngate = \"make ci\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["ok"], true, "{v}");
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("[phases.build] gate") && warnings.contains("`make ci --fast`"),
+        "{v}"
+    );
+}
+
+#[test]
+fn factory_validate_warns_on_auto_merge_with_no_human_review() {
+    let e = Env::new();
+    e.factory("[merge]\npolicy = \"auto\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(
+        v["warnings"]
+            .to_string()
+            .contains("merge.human_review is empty"),
+        "{v}"
+    );
+    e.factory("[merge]\npolicy = \"auto\"\nhuman_review = [\".nightshift/**\"]\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["warnings"], serde_json::json!([]), "{v}");
+    e.factory("[merge]\npolicy = \"human\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["warnings"], serde_json::json!([]), "{v}");
 }
 
 #[test]
