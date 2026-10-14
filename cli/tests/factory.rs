@@ -6104,10 +6104,42 @@ fn factory_validate_keeps_the_token_off_another_host_when_no_forge_host_is_set()
         .assert()
         .code(0);
     assert!(
+        e.gh_calls().contains("--hostname other.example.com"),
+        "{}",
+        e.gh_calls()
+    );
+    assert!(
         !e.tokens_seen().contains(&"default-tok".to_string()),
         "{}",
         e.gh_calls()
     );
+}
+
+#[test]
+fn factory_validate_applies_the_configured_token_to_an_origin_on_the_configured_host() {
+    let e = github_owned_by(Some("User"));
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://ghe.example.com/o/r.git",
+        ],
+    );
+    e.config("[forge.github]\nhost = \"ghe.example.com\"\ntoken_env = \"DEFAULT_TOKEN\"\n");
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    e.ns()
+        .env("DEFAULT_TOKEN", "default-tok")
+        .args(["factory", "validate"])
+        .assert()
+        .code(0);
+    assert!(
+        e.gh_calls().contains("--hostname ghe.example.com"),
+        "{}",
+        e.gh_calls()
+    );
+    assert_eq!(e.tokens_seen(), ["default-tok"], "{}", e.gh_calls());
 }
 
 #[test]

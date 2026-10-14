@@ -474,6 +474,22 @@ pub fn repo_owner_type(
     origin_url: Option<&str>,
     creds: Option<&Credentials>,
 ) -> Option<String> {
+    repo_owner_type_within(
+        OsStr::new(ForgeKind::Github.cli()),
+        repo,
+        origin_url,
+        creds,
+        PROBE_TIMEOUT,
+    )
+}
+
+fn repo_owner_type_within(
+    program: &OsStr,
+    repo: &str,
+    origin_url: Option<&str>,
+    creds: Option<&Credentials>,
+    limit: Duration,
+) -> Option<String> {
     let host = origin_url
         .and_then(crate::watch::forge::host)
         .filter(|h| !h.eq_ignore_ascii_case("github.com"));
@@ -481,13 +497,13 @@ pub fn repo_owner_type(
         return None;
     }
     let kind = ForgeKind::Github;
-    let mut cmd = cli(OsStr::new(kind.cli()), kind, creds);
+    let mut cmd = cli(program, kind, creds);
     cmd.arg("api");
     if let Some(h) = host {
         cmd.args(["--hostname", h]);
     }
     cmd.args([&format!("repos/{repo}"), "--jq", ".owner.type"]);
-    let out = output_within(cmd, PROBE_TIMEOUT).ok()?;
+    let out = output_within(cmd, limit).ok()?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     out.status.success().then_some(text)
 }

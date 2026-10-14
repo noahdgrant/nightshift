@@ -439,3 +439,124 @@ fn apply_to_leaves_an_already_set_token_alone() {
         [("GITLAB_HOST".to_string(), "gl.example.com".to_string())]
     );
 }
+
+fn owner_fake(body: &str, origin: Option<&str>, limit: Duration) -> Option<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = fake_cli(dir.path(), body);
+    repo_owner_type_within(fake.as_os_str(), "o/r", origin, None, limit)
+}
+
+#[test]
+fn owner_type_is_none_when_the_cli_outlives_its_limit() {
+    let started = Instant::now();
+    assert_eq!(
+        owner_fake("exec sleep 30", None, Duration::from_millis(300)),
+        None
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[test]
+fn owner_type_is_what_the_cli_prints() {
+    assert_eq!(
+        owner_fake("echo User", None, Duration::from_secs(30)),
+        Some("User".to_string())
+    );
+}
+
+#[test]
+fn owner_type_never_runs_the_cli_for_an_unsafe_host() {
+    for url in [
+        "https://-oProxy/o/r.git",
+        "https://a;b.example.com/o/r.git",
+        "https://a$(x).example.com/o/r.git",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let ran = dir.path().join("ran");
+        let body = format!("touch '{}'; echo User", ran.display());
+        let fake = fake_cli(dir.path(), &body);
+        let got = repo_owner_type_within(
+            fake.as_os_str(),
+            "o/r",
+            Some(url),
+            None,
+            Duration::from_secs(30),
+        );
+        assert_eq!(got, None, "{url}");
+        assert!(!ran.exists(), "{url}");
+    }
+}
+
+fn origin_with(url: Option<&str>, forge: Option<&str>) -> Origin {
+    let forges = Forges {
+        github: forge.map(|t| toml::from_str(t).unwrap()),
+        gitlab: None,
+    };
+    Origin {
+        url: url.map(String::from),
+        kind: ForgeKind::Github,
+        repo: Some("o/r".into()),
+        forges,
+    }
+}
+
+#[test]
+fn creds_fit_host_compares_the_configured_host_with_the_origin_host() {
+    let host = |h: &str| format!("token_env = \"T\"\nhost = \"{h}\"\n");
+    let unset = "token_env = \"T\"\n".to_string();
+    let cases = [
+        (None, "https://github.com/o/r.git", true),
+        (Some(unset.clone()), "https://github.com/o/r.git", true),
+        (
+            Some(unset.clone()),
+            "https://other.example.com/o/r.git",
+            false,
+        ),
+        (
+            Some(host("ghe.example.com")),
+            "https://ghe.example.com/o/r.git",
+            true,
+        ),
+        (
+            Some(host("ghe.example.com")),
+            "git@ghe.example.com:o/r.git",
+            true,
+        ),
+        (
+            Some(host("GHE.Example.com")),
+            "https://ghe.example.com/o/r.git",
+            true,
+        ),
+        (
+            Some(host("ghe.example.com")),
+            "https://GHE.EXAMPLE.COM/o/r.git",
+            true,
+        ),
+        (
+            Some(host("https://ghe.example.com")),
+            "https://ghe.example.com/o/r.git",
+            true,
+        ),
+        (
+            Some(host("https://ghe.example.com:8443")),
+            "https://ghe.example.com/o/r.git",
+            true,
+        ),
+        (
+            Some(host("ghe.example.com")),
+            "https://github.com/o/r.git",
+            false,
+        ),
+        (
+            Some(host("ghe.example.com")),
+            "https://other.example.com/o/r.git",
+            false,
+        ),
+        (Some(host("github.com")), "https://github.com/o/r.git", true),
+    ];
+    for (forge, url, want) in cases {
+        let o = origin_with(Some(url), forge.as_deref());
+        assert_eq!(o.creds_fit_host(ForgeKind::Github), want, "{forge:?} {url}");
+    }
+    assert!(origin_with(None, Some(&unset)).creds_fit_host(ForgeKind::Github));
+}
