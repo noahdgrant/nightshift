@@ -227,9 +227,12 @@ pub fn new(
     };
     let out = crate::stop::scoped(|| ensure(&repo, unit, base, &setup))
         .context("cannot handle SIGINT and SIGTERM")??;
-    crate::stop::check()?;
+    let failed = setup_failed(&out.setup, unit);
+    if failed.is_none() {
+        crate::stop::check()?;
+    }
     println!("{}", serde_json::to_string_pretty(&out)?);
-    Ok(setup_failed(&out.setup, unit).unwrap_or(ExitCode::SUCCESS))
+    Ok(failed.unwrap_or(ExitCode::SUCCESS))
 }
 
 /// Where `ensure` puts a unit's worktree when it creates one.
@@ -356,14 +359,17 @@ pub fn setup(unit: &str, repo: Option<&Path>) -> Result<ExitCode> {
     };
     let results = crate::stop::scoped(|| run_recorded(&commands, unit, &entry.path, &repo.root))
         .context("cannot handle SIGINT and SIGTERM")??;
-    crate::stop::check()?;
+    let failed = setup_failed(&results, unit);
+    if failed.is_none() {
+        crate::stop::check()?;
+    }
     let out = json!({
         "unit": unit,
         "path": entry.path.to_string_lossy(),
         "setup": results,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
-    Ok(setup_failed(&results, unit).unwrap_or(ExitCode::SUCCESS))
+    Ok(failed.unwrap_or(ExitCode::SUCCESS))
 }
 
 const PHASE_ORDER: &[&str] = &[
