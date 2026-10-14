@@ -401,12 +401,13 @@ fn main_moves(e: &Env, file: &str, text: &str) -> String {
 
 /// The scratch worktrees of the local merge queue, as `git worktree list` and the disk see them.
 fn merge_queue_leftovers(e: &Env) -> Vec<String> {
+    let queue = e.root.join(".git/ns/merge-queue");
     let mut left: Vec<String> = git(&e.root, &["worktree", "list", "--porcelain"])
         .lines()
-        .filter(|l| l.contains("merge-queue"))
+        .filter(|l| l.contains(&*queue.to_string_lossy()))
         .map(String::from)
         .collect();
-    if let Ok(dir) = fs::read_dir(e.root.join(".git/ns/merge-queue")) {
+    if let Ok(dir) = fs::read_dir(&queue) {
         left.extend(dir.map(|d| d.unwrap().path().display().to_string()));
     }
     left
@@ -659,7 +660,7 @@ fn a_stop_during_the_merge_result_gate_merges_nothing_and_removes_the_scratch_wo
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");
     let f = fifo(&e);
-    let gate = format!("case $PWD in *merge-queue*) {};; esac", blocks(&f));
+    let gate = format!("case $PWD in */ns/merge-queue/*) {};; esac", blocks(&f));
     local_queue(&e, &format!("gate = {gate:?}\n"));
     e.queue("build", &["pass:commit"]);
     e.queue("ship", &["pass:script"]);
@@ -724,7 +725,7 @@ fn a_ratchet_over_the_line_on_the_merge_result_is_the_stuck_reason() {
     let e = Env::new();
     local_queue(
         &e,
-        "\n[ratchets.flash]\ncommand = \"case $PWD in *merge-queue*) echo 200;; *) echo 100;; esac\"\nbetter = \"lower\"\n",
+        "\n[ratchets.flash]\ncommand = \"case $PWD in */ns/merge-queue/*) echo 200;; *) echo 100;; esac\"\nbetter = \"lower\"\n",
     );
     fs::write(
         e.root.join(".nightshift/ratchets.json"),
@@ -747,7 +748,7 @@ fn a_gate_killed_on_the_merge_result_says_so_when_build_runs_out() {
     let e = Env::new();
     local_queue(
         &e,
-        "gate = \"case $PWD in *merge-queue*) kill -9 $$;; esac\"\n",
+        "gate = \"case $PWD in */ns/merge-queue/*) kill -9 $$;; esac\"\n",
     );
     e.queue("build", &["pass:commit", "fail"]);
     main_moves(&e, "from-main", "x\n");
@@ -881,7 +882,7 @@ fn a_killed_merge_gate_runs_again_on_an_unchanged_head_and_base() {
     local_queue(
         &e,
         &format!(
-            "max_attempts = 3\ngate = \"case $PWD in *merge-queue*) echo ran >> {}; test -f {m} || {{ touch {m}; kill -9 $$; }};; esac\"\n",
+            "max_attempts = 3\ngate = \"case $PWD in */ns/merge-queue/*) echo ran >> {}; test -f {m} || {{ touch {m}; kill -9 $$; }};; esac\"\n",
             log.display(),
             m = marker.display()
         ),
@@ -899,7 +900,7 @@ fn flaky_merge_gate(e: &Env, limits: &str, fail_once: &str) -> PathBuf {
     let log = e.ctrl.join("gates");
     let marker = e.ctrl.join("failed-once");
     e.factory(&format!(
-        "{AUTO}{limits}[phases.build]\nmax_attempts = 3\ngate = \"case $PWD in *merge-queue*) echo ran >> {}; test -f {m} || {{ touch {m}; {fail_once}; }};; esac\"\n",
+        "{AUTO}{limits}[phases.build]\nmax_attempts = 3\ngate = \"case $PWD in */ns/merge-queue/*) echo ran >> {}; test -f {m} || {{ touch {m}; {fail_once}; }};; esac\"\n",
         log.display(),
         m = marker.display()
     ));

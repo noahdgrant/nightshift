@@ -166,10 +166,6 @@ impl Proc {
         self
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "harness sites move here in #581")
-    )]
     pub fn env_remove(&mut self, key: impl AsRef<OsStr>) -> &mut Self {
         self.cmd.env_remove(key);
         self

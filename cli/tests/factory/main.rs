@@ -269,7 +269,8 @@ impl Env {
             .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
             .env_remove("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS")
             .env_remove("CLAUDE_CODE_DISABLE_AUTO_MEMORY")
-            .env_remove("GH_TOKEN");
+            .env_remove("GH_TOKEN")
+            .env_remove("GH_HOST");
         c
     }
 
@@ -366,6 +367,7 @@ include!("run_locks_and_merge_order.rs");
 include!("run_setup_signals.rs");
 include!("run_runners_and_github_checks.rs");
 include!("merge_conflicts_and_validate.rs");
+include!("validate_owner_warning.rs");
 include!("watch_fix_main.rs");
 include!("watch_nights_and_splits.rs");
 include!("forge_tokens.rs");

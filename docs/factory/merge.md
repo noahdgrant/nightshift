@@ -45,6 +45,8 @@ Under `build-only` GitHub's checks are the only gate after ship and in the merge
 
 `every-step` keeps the local merge queue, configured by `local_queue` as above.
 
+GitHub's merge queue needs an organisation-owned repo, so a repo owned by a personal account can't use `build-only`. Keep `[gate] local = "every-step"` (the default) with `[merge] local_queue = true` (the default): the local merge queue tests each merge result on the laptop instead. `ns factory validate` warns, without failing, when `build-only` is set and `gh api repos/<owner>/<repo>` reports the owner's type as `User`. It looks up `origin`'s repo only on GitHub, and gives no warning when `gh` is missing or the lookup fails.
+
 ## Marked regions
 
 `human_review` guards whole files. To guard part of a file, fence it. A region runs from a line containing `ns:human-review start`, optionally followed by `: <reason>`, through the next line containing `ns:human-review end`, marker lines included. Detection is by substring, so any comment syntax works. `start` and `end` may be followed by anything except a letter, digit, `_`, `-`, a quote or a backtick (so `start*/` and `end-->` count, but `endpoint` and a marker quoted in backticks do not). A firmware project fencing its brake limits, with the keyword written as `[ns:human-review]` so this page holds no live marker; drop the brackets in real code:

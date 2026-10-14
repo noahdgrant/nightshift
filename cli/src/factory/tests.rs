@@ -432,3 +432,19 @@ fn build_only_checks_a_build_gate_override_in_place_of_the_row() {
     let plain_row = "| ci-local | `make ci` | 2 min |\n";
     assert_eq!(gate("ci.sh --fast").fast_gate_warning(plain_row), None);
 }
+
+#[test]
+fn build_only_warns_only_when_the_owner_is_a_personal_account() {
+    let build_only = parse("[gate]\nlocal = \"build-only\"\n").unwrap();
+    let w = build_only.owner_warning(Some("User")).expect("a warning");
+    assert!(
+        w.contains("organisation") && w.contains("local = \"every-step\""),
+        "{w}"
+    );
+    for owner in [Some("Organization"), Some(""), Some("user"), None] {
+        assert_eq!(build_only.owner_warning(owner), None, "{owner:?}");
+    }
+    assert_eq!(parse("").unwrap().owner_warning(Some("User")), None);
+    let every = parse("[gate]\nlocal = \"every-step\"\n").unwrap();
+    assert_eq!(every.owner_warning(Some("User")), None);
+}

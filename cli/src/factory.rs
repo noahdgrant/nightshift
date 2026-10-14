@@ -426,6 +426,15 @@ impl Factory {
         })
     }
 
+    /// Under `[gate] local = "build-only"` the merge step runs GitHub's merge queue, which only an
+    /// organisation-owned repo has. A warning when the forge reports `owner_type` (the repo's
+    /// `owner.type`) as `User`, a personal account.
+    pub fn owner_warning(&self, owner_type: Option<&str>) -> Option<String> {
+        (self.gate.local == LocalGate::BuildOnly && owner_type == Some("User")).then(|| {
+            "[gate] local = \"build-only\" runs GitHub's merge queue, which needs an organisation-owned repo, and this repo's owner is a personal account; set [gate] local = \"every-step\" and keep [merge] local_queue = true, the local merge queue (docs/factory/merge.md, GitHub merge queue)".into()
+        })
+    }
+
     /// Semantic checks beyond parsing; each string is one problem.
     pub fn problems(&self, cfg: Option<&config::Config>) -> Vec<String> {
         let mut out = Vec::new();
@@ -736,6 +745,26 @@ fn agent_problems(root: &Path) -> Vec<String> {
     out
 }
 
+/// The owner type (`User` or `Organization`) of the GitHub repo `origin`
+/// names, looked up on the origin's own host. `None` when origin is not on
+/// GitHub or the lookup fails.
+fn github_owner_type(
+    main_root: &Path,
+    f: &Factory,
+    cfg: Option<&config::Config>,
+) -> Option<String> {
+    let origin = crate::forge::Origin::read(main_root, f.queue.source.as_deref(), cfg);
+    let repo = origin.repo_for(ForgeKind::Github)?;
+    let creds = origin
+        .forges
+        .get(ForgeKind::Github)
+        .filter(|_| origin.creds_fit_host(ForgeKind::Github))
+        .and_then(|fg| {
+            crate::forge::resolve(ForgeKind::Github, fg, origin.table_repo(ForgeKind::Github)).ok()
+        });
+    crate::forge::repo_owner_type(repo, origin.url_for(ForgeKind::Github), creds.as_ref())
+}
+
 /// `ns factory validate`.
 pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
     let start = std::env::current_dir()?;
@@ -781,6 +810,10 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
                 let stack =
                     fs::read_to_string(main_root.join("docs/agents/stack.md")).unwrap_or_default();
                 warnings.extend(f.fast_gate_warning(&stack));
+                if f.gate.local == LocalGate::BuildOnly {
+                    let owner = github_owner_type(&main_root, &f, cfg.as_ref());
+                    warnings.extend(f.owner_warning(owner.as_deref()));
+                }
                 for name in PHASES {
                     let p = f.phase(name);
                     let custom = root.join("agents").join(name).join("agent.md").is_file();

@@ -180,6 +180,26 @@ impl Origin {
         }
     }
 
+    /// Whether `kind`'s configured credentials are for the host `origin` is on: true when no
+    /// forge is configured, else when `origin`'s host is the forge's host (github.com when unset).
+    pub fn creds_fit_host(&self, kind: ForgeKind) -> bool {
+        self.creds_fit_env_host(kind, std::env::var(kind.host_var()).ok())
+    }
+
+    fn creds_fit_env_host(&self, kind: ForgeKind, env_host: Option<String>) -> bool {
+        let Some(forge) = self.forges.get(kind) else {
+            return true;
+        };
+        let want = pick_host(env_host, Some(forge)).unwrap_or_else(|| "github.com".into());
+        let got = self
+            .url_for(kind)
+            .and_then(watch_forge::host)
+            .unwrap_or("github.com");
+        watch_forge::host(&want)
+            .unwrap_or(&want)
+            .eq_ignore_ascii_case(got)
+    }
+
     /// The warning that [`Origin::table_repo`] dropped a table that would have matched `origin`.
     pub fn scope_warning(&self, kind: ForgeKind) -> Option<String> {
         let f = self.forges.get(kind)?;
@@ -437,6 +457,52 @@ fn account_output(
     cmd.output()
 }
 
+/// `owner.type` of GitHub `repo` (`User` or `Organization`), with `creds` as the other probes
+/// get them. `origin_url`'s host is passed to gh as `--hostname` unless it is github.com, so the
+/// lookup asks the host `origin` is on even when no forge host is configured; `None` for a host
+/// that fails `safe_host`, or when gh is missing, fails or times out.
+pub fn repo_owner_type(
+    repo: &str,
+    origin_url: Option<&str>,
+    creds: Option<&Credentials>,
+) -> Option<String> {
+    repo_owner_type_within(
+        OsStr::new(ForgeKind::Github.cli()),
+        repo,
+        origin_url,
+        creds,
+        PROBE_TIMEOUT,
+    )
+}
+
+fn repo_owner_type_within(
+    program: &OsStr,
+    repo: &str,
+    origin_url: Option<&str>,
+    creds: Option<&Credentials>,
+    limit: Duration,
+) -> Option<String> {
+    let host = origin_url
+        .and_then(crate::watch::forge::host)
+        .filter(|h| !h.eq_ignore_ascii_case("github.com"));
+    if host.is_some_and(|h| !safe_host(h)) {
+        return None;
+    }
+    let kind = ForgeKind::Github;
+    let mut cmd = cli(program, kind, creds, limit);
+    if creds.is_none() {
+        cmd.env_remove(kind.host_var());
+    }
+    cmd.arg("api");
+    if let Some(h) = host {
+        cmd.args(["--hostname", h]);
+    }
+    cmd.args([&format!("repos/{repo}"), "--jq", ".owner.type"]);
+    let out = cmd.output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    out.status.success().then_some(text)
+}
+
 /// Whether the token can read `repo`: `gh api repos/<repo>` or `glab api projects/<repo>`. The
 /// error is the CLI's stderr with the token hidden.
 pub fn can_read(kind: ForgeKind, repo: &str, creds: Option<&Credentials>) -> Result<(), String> {
@@ -548,400 +614,4 @@ fn fetch_within(kind: ForgeKind, source: &TokenSource, limit: Duration) -> Resul
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Instant;
-
-    fn fake_cli(dir: &Path, body: &str) -> std::path::PathBuf {
-        let fake = dir.join("fake");
-        let made = Proc::tool("sh")
-            .arg("-c")
-            .arg(r#"printf '%s\n' '#!/bin/sh' "$1" > "$0" && chmod 755 "$0""#)
-            .arg(&fake)
-            .arg(body)
-            .output()
-            .unwrap();
-        assert!(made.status.success());
-        fake
-    }
-
-    fn can_read_fake(body: &str, limit: Duration) -> Result<(), String> {
-        let dir = tempfile::tempdir().unwrap();
-        let fake = fake_cli(dir.path(), body);
-        can_read_within(fake.as_os_str(), ForgeKind::Github, "o/r", None, limit)
-    }
-
-    #[test]
-    fn can_read_names_the_cli_that_outlives_its_limit() {
-        let started = Instant::now();
-        let e = can_read_fake("exec sleep 30", Duration::from_millis(300)).unwrap_err();
-        assert_eq!(e, "gh timed out after 0.3s");
-        assert!(started.elapsed() < Duration::from_secs(10));
-    }
-
-    const STOP_MARK: &str = "NS_FORGE_STOP_PROBE";
-
-    #[test]
-    fn a_stop_ends_a_forge_cli_and_a_token_command_as_interrupted() {
-        crate::testutil::probe("forge::tests::stop_probe", STOP_MARK, "1");
-    }
-
-    #[test]
-    fn stop_probe() {
-        if std::env::var_os(STOP_MARK).is_none() {
-            return;
-        }
-        crate::stop::request(libc::SIGTERM);
-        let e = can_read_fake("exec sleep 600", PROBE_TIMEOUT).unwrap_err();
-        assert!(e.ends_with("stopped by a signal"), "{e}");
-        assert!(!e.contains("cannot run"), "{e}");
-        let source = TokenSource::Command("sleep 600".into());
-        let e = fetch_within(ForgeKind::Github, &source, PROBE_TIMEOUT).unwrap_err();
-        assert!(e.to_string().contains("stopped by a signal"), "{e}");
-    }
-
-    const ACCOUNT_MARK: &str = "NS_FORGE_ACCOUNT_STOP_PROBE";
-
-    #[test]
-    fn a_stop_ends_the_account_lookup_at_once_as_a_negative() {
-        crate::testutil::probe("forge::tests::account_stop_probe", ACCOUNT_MARK, "1");
-    }
-
-    #[test]
-    fn account_stop_probe() {
-        if std::env::var_os(ACCOUNT_MARK).is_none() {
-            return;
-        }
-        let _gh = crate::testutil::fake_on_path("gh", "exec sleep 600");
-        crate::stop::request(libc::SIGTERM);
-        assert_eq!(account(ForgeKind::Github, None), None);
-        let e = account_output(ForgeKind::Github, None).unwrap_err();
-        assert_eq!(e.kind(), std::io::ErrorKind::Interrupted, "{e}");
-    }
-
-    #[test]
-    fn a_stop_is_not_reported_as_a_command_that_cannot_run() {
-        let stopped = std::io::Error::new(std::io::ErrorKind::Interrupted, "`gh api` stopped");
-        assert_eq!(cannot_run("gh", &stopped), "`gh api` stopped");
-        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
-        assert!(cannot_run("gh", &missing).starts_with("cannot run gh: "));
-    }
-
-    #[test]
-    fn can_read_says_when_the_cli_cannot_run() {
-        let e = can_read_within(
-            OsStr::new("/nonexistent/gh"),
-            ForgeKind::Github,
-            "o/r",
-            None,
-            Duration::from_secs(5),
-        )
-        .unwrap_err();
-        assert!(e.starts_with("cannot run gh: "), "{e}");
-    }
-
-    #[test]
-    fn can_read_reports_the_exit_status_when_the_cli_prints_no_error() {
-        let e = can_read_fake("exit 3", Duration::from_secs(30)).unwrap_err();
-        assert!(e.starts_with("gh exited with "), "{e}");
-        assert!(e.contains('3'), "{e}");
-    }
-
-    #[test]
-    fn can_read_returns_the_cli_stderr() {
-        let e = can_read_fake("echo 'HTTP 404' >&2; exit 1", Duration::from_secs(30)).unwrap_err();
-        assert_eq!(e, "HTTP 404");
-        assert_eq!(can_read_fake("exit 0", Duration::from_secs(30)), Ok(()));
-    }
-
-    #[test]
-    fn an_empty_env_host_is_unset_so_the_configured_host_wins() {
-        let forge = Forge {
-            token: TokenSource::Command("true".into()),
-            host: Some("cfg.example".into()),
-            owners: Default::default(),
-            repos: Default::default(),
-        };
-        let pick = |env: Option<&str>, f| pick_host(env.map(String::from), f);
-        assert_eq!(
-            pick(Some("env.example"), Some(&forge)).as_deref(),
-            Some("env.example")
-        );
-        assert_eq!(pick(Some(""), Some(&forge)).as_deref(), Some("cfg.example"));
-        assert_eq!(pick(None, Some(&forge)).as_deref(), Some("cfg.example"));
-        assert_eq!(pick(Some(""), None), None);
-    }
-
-    #[test]
-    fn repo_path_reads_https_ssh_and_alias_urls() {
-        for (url, want) in [
-            (
-                "https://github.com/example-org/backend.git",
-                Some("example-org/backend"),
-            ),
-            (
-                "https://github.com/example-org/backend/",
-                Some("example-org/backend"),
-            ),
-            ("http://user@ghe.example.com/o/r", Some("o/r")),
-            (
-                "git@github.com:example-org/backend.git",
-                Some("example-org/backend"),
-            ),
-            (
-                "git@github-work:example-org/backend.git",
-                Some("example-org/backend"),
-            ),
-            ("github-work:o/r", Some("o/r")),
-            (
-                "ssh://git@gitlab.example.com:2222/team/sub/project.git",
-                Some("team/sub/project"),
-            ),
-            ("git@gitlab.com:team/sub/project", Some("team/sub/project")),
-            ("git://github.com/o/r.git", Some("o/r")),
-            ("git+ssh://git@github.com/o/r", Some("o/r")),
-            ("ssh+git://git@github.com/o/r", Some("o/r")),
-            ("SSH://git@github.com/o/r", None),
-            ("HTTPS://github.com/o/r", None),
-            ("ftp://github.com/o/r", None),
-            ("https://github.com/only-owner", None),
-            ("https://github.com//r", None),
-            ("https://github.com", None),
-            ("file:///tmp/a/remote.git", None),
-            ("/tmp/a/remote.git", None),
-            ("./dir:x/remote.git", None),
-        ] {
-            assert_eq!(repo_path(url).as_deref(), want, "{url}");
-        }
-    }
-
-    #[test]
-    fn ssh_target_keeps_the_alias_and_port() {
-        let t = |dest: &str, port: Option<&str>| {
-            Some(SshTarget {
-                dest: dest.into(),
-                port: port.map(String::from),
-            })
-        };
-        assert_eq!(
-            ssh_target("git@github-work:o/r.git"),
-            t("git@github-work", None)
-        );
-        assert_eq!(
-            ssh_target("ssh://git@gl.example.com:2222/g/p.git"),
-            t("git@gl.example.com", Some("2222"))
-        );
-        assert_eq!(
-            ssh_target("ssh://git@github.com/o/r"),
-            t("git@github.com", None)
-        );
-        for url in [
-            "git+ssh://git@github.com/o/r",
-            "ssh+git://git@github.com/o/r",
-        ] {
-            assert_eq!(ssh_target(url), t("git@github.com", None), "{url}");
-        }
-        assert_eq!(ssh_target("SSH://git@github.com/o/r"), None);
-        assert_eq!(ssh_target("git://github.com/o/r"), None);
-        assert_eq!(ssh_target("https://github.com/o/r"), None);
-        assert_eq!(ssh_target("/tmp/remote.git"), None);
-        assert_eq!(ssh_target("git@github.com:only"), None);
-    }
-
-    #[test]
-    fn ssh_target_refuses_shell_metacharacters_ssh_would_expand() {
-        for url in [
-            "git@h$(cmd):o/r",
-            "git@h`cmd`:o/r",
-            "git@h;cmd:o/r",
-            "git@h|cmd:o/r",
-            "git@h&cmd:o/r",
-            "git@h%h:o/r",
-            "g$x@host:o/r",
-            "g(x)@host:o/r",
-            "ssh://git@h$(cmd)/o/r",
-            "ssh://git@h%h:22/o/r",
-            "ssh://git@h;cmd:22/o/r",
-        ] {
-            assert_eq!(ssh_target(url), None, "{url}");
-        }
-    }
-
-    #[test]
-    fn ssh_target_uses_the_default_port_unless_the_url_names_a_valid_one() {
-        let dest = |url: &str| ssh_target(url).map(|t| (t.dest, t.port));
-        let plain = Some(("git@host".to_string(), None));
-        assert_eq!(dest("ssh://git@host:/o/r"), plain);
-        assert_eq!(dest("ssh://git@host:abc/o/r"), plain);
-        assert_eq!(dest("ssh://git@host:0/o/r"), plain);
-        assert_eq!(dest("ssh://git@host:65536/o/r"), plain);
-        assert_eq!(
-            dest("ssh://git@host:65535/o/r"),
-            Some(("git@host".to_string(), Some("65535".to_string())))
-        );
-        assert_eq!(
-            dest("ssh://git@[::1]:2222/o/r"),
-            Some(("git@[::1]".to_string(), Some("2222".to_string())))
-        );
-        assert_eq!(
-            dest("ssh://git@[::1]/o/r"),
-            Some(("git@[::1]".to_string(), None))
-        );
-        assert_eq!(
-            dest("git@my-alias_1.example:o/r"),
-            Some(("git@my-alias_1.example".to_string(), None))
-        );
-    }
-
-    #[test]
-    fn ssh_target_refuses_a_destination_ssh_would_read_as_an_option() {
-        for url in [
-            "-oProxyCommand=x:o/r",
-            "git@-oProxyCommand=x:o/r",
-            "ssh://-oProxyCommand=x/o/r",
-            "ssh://git@-oProxyCommand=x/o/r",
-            "ssh://a b/o/r",
-            "a\tb:o/r",
-            "ssh:///o/r",
-        ] {
-            assert_eq!(ssh_target(url), None, "{url}");
-        }
-    }
-
-    #[test]
-    fn hide_replaces_every_token_but_ignores_an_empty_one() {
-        let text = "HTTP 404 for tok-1 and tok-2";
-        let got = hide(
-            text,
-            ["tok-1".to_string(), String::new(), "tok-2".to_string()],
-        );
-        assert_eq!(got, "HTTP 404 for [token] and [token]");
-        assert_eq!(hide(text, [String::new()]), text);
-    }
-
-    #[test]
-    fn the_repo_is_checked_only_for_a_configured_forge_on_a_real_run_not_yet_checked() {
-        let forge = Forge {
-            token: TokenSource::Command("true".into()),
-            host: None,
-            owners: Default::default(),
-            repos: Default::default(),
-        };
-        let (r, f) = (Some("o/r"), Some(&forge));
-        assert_eq!(checks_repo(r, f, false, false), r);
-        assert_eq!(checks_repo(r, None, false, false), None);
-        assert_eq!(checks_repo(r, f, true, false), None);
-        assert_eq!(checks_repo(r, f, false, true), None);
-        assert_eq!(checks_repo(None, f, false, false), None);
-    }
-
-    #[test]
-    fn a_checked_value_is_inherited_only_for_its_forge_and_repo() {
-        assert_eq!(checked_value(ForgeKind::Github, Some("o/r")), "github:o/r");
-        assert_ne!(
-            checked_value(ForgeKind::Gitlab, Some("o/r")),
-            checked_value(ForgeKind::Github, Some("o/r"))
-        );
-        assert_ne!(
-            checked_value(ForgeKind::Github, None),
-            checked_value(ForgeKind::Github, Some("o/r"))
-        );
-    }
-
-    #[test]
-    fn command_output_is_trimmed() {
-        let t = fetch(
-            ForgeKind::Github,
-            &TokenSource::Command("printf '  tok\\n'".into()),
-        )
-        .unwrap();
-        assert_eq!(t, "tok");
-    }
-
-    #[test]
-    fn errors_name_the_forge_and_command_but_not_the_output() {
-        let c = "printf 'secret-%s' out; exit 3";
-        let e = fetch(ForgeKind::Gitlab, &TokenSource::Command(c.into())).unwrap_err();
-        assert_eq!(e.code, crate::error::EXIT_USAGE);
-        assert!(e.message.contains("forge gitlab"), "{}", e.message);
-        assert!(e.message.contains(c), "{}", e.message);
-        assert!(!e.message.contains("secret-out"), "{}", e.message);
-        let e = fetch(ForgeKind::Github, &TokenSource::Command("true".into())).unwrap_err();
-        assert!(e.message.contains("printed no token"), "{}", e.message);
-    }
-
-    #[test]
-    fn a_token_command_that_outlives_its_limit_is_killed_with_an_error() {
-        let started = Instant::now();
-        let e = fetch_within(
-            ForgeKind::Github,
-            &TokenSource::Command("printf 'secret-%s' out; sleep 30".into()),
-            Duration::from_millis(200),
-        )
-        .unwrap_err();
-        assert!(started.elapsed() < Duration::from_secs(10));
-        assert_eq!(e.code, crate::error::EXIT_USAGE);
-        assert!(e.message.contains("forge github"), "{}", e.message);
-        assert!(e.message.contains("timed out after"), "{}", e.message);
-        assert!(!e.message.contains("cannot run"), "{}", e.message);
-        assert!(!e.message.contains("secret-out"), "{}", e.message);
-    }
-
-    #[test]
-    fn a_token_command_that_finishes_in_time_returns_its_token() {
-        let t = fetch_within(
-            ForgeKind::Gitlab,
-            &TokenSource::Command("echo tok".into()),
-            Duration::from_secs(30),
-        )
-        .unwrap();
-        assert_eq!(t, "tok");
-    }
-
-    /// The variables set on `cmd`, leaving out the ones its kind removes.
-    fn envs(cmd: &Proc) -> Vec<(String, String)> {
-        let s = |o: &std::ffi::OsStr| o.to_string_lossy().into_owned();
-        cmd.get_envs()
-            .filter_map(|(k, v)| Some((s(k), s(v?))))
-            .collect()
-    }
-
-    #[test]
-    fn apply_to_sets_a_fetched_token_and_the_host() {
-        let creds = Credentials {
-            token: Token::Fetched("tok".into()),
-            host: Some("ghe.example.com".into()),
-        };
-        let mut cmd = Proc::forge("gh");
-        creds.apply_to(ForgeKind::Github, &mut cmd);
-        let mut got = envs(&cmd);
-        got.sort();
-        assert_eq!(
-            got,
-            [
-                ("GH_HOST".to_string(), "ghe.example.com".to_string()),
-                ("GH_TOKEN".to_string(), "tok".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn apply_to_leaves_an_already_set_token_alone() {
-        let creds = Credentials {
-            token: Token::AlreadySet,
-            host: None,
-        };
-        let mut cmd = Proc::forge("glab");
-        creds.apply_to(ForgeKind::Gitlab, &mut cmd);
-        assert!(envs(&cmd).is_empty(), "{:?}", envs(&cmd));
-        let creds = Credentials {
-            token: Token::AlreadySet,
-            host: Some("gl.example.com".into()),
-        };
-        creds.apply_to(ForgeKind::Gitlab, &mut cmd);
-        assert_eq!(
-            envs(&cmd),
-            [("GITLAB_HOST".to_string(), "gl.example.com".to_string())]
-        );
-    }
-}
+mod tests;
