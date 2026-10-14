@@ -3,4 +3,4 @@ expand_tilde cli/src/config.rs
 rows cli/src/stack.rs
 run_process cli/src/eval/trial.rs
 symlink cli/src/install.rs
-tail cli/src/eval/trial.rs
+tail cli/src/tail.rs
