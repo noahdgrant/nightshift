@@ -5804,6 +5804,26 @@ fn factory_validate_build_only_fast_warning_edge_cases() {
 }
 
 #[test]
+fn factory_validate_warns_on_auto_merge_with_no_human_review() {
+    let e = Env::new();
+    e.factory("[merge]\npolicy = \"auto\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(
+        v["warnings"]
+            .to_string()
+            .contains("merge.human_review is empty"),
+        "{v}"
+    );
+    e.factory("[merge]\npolicy = \"auto\"\nhuman_review = [\".nightshift/**\"]\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["warnings"], serde_json::json!([]), "{v}");
+    e.factory("[merge]\npolicy = \"human\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["warnings"], serde_json::json!([]), "{v}");
+}
+
+#[test]
 fn factory_validate_prints_the_supervise_settings() {
     let e = Env::new();
     let validate = || -> Value {

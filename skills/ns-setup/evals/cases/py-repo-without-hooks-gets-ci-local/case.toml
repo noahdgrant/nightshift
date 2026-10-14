@@ -1,5 +1,5 @@
-# Checks validated by hand: a ci-local.sh running ruff check, ruff format --check and pytest in that order, an executable .githooks/pre-commit that execs it with --fast, core.hooksPath set, and a ci-local row passes every check; a hook calling the script without --fast, a bash script, a script with pytest before ruff, and a [worktree] setup line written to .nightshift/nightshift.toml each fail one. A script that accepts --bogus or does not cd to the root, and a hook whose exec line is commented out, each fail one.
-description = "Set up a Python repo with a CI workflow and no pre-commit hook: setup writes scripts/ci-local.sh mirroring CI in order, a .githooks/pre-commit that runs it with --fast, points core.hooksPath at it, names the script as stack.md's ci-local command, and leaves the .nightshift/ worktree line to whoever merges."
+# Checks validated by hand: a ci-local.sh running ruff check, ruff format --check and pytest in that order, an executable .githooks/pre-commit that execs it with --fast, core.hooksPath set, and a ci-local row passes every check; a hook calling the script without --fast, a bash script, a script with pytest before ruff, and a [worktree] setup line or a human_review list written to .nightshift/nightshift.toml each fail one. A script that accepts --bogus or does not cd to the root, and a hook whose exec line is commented out, each fail one.
+description = "Set up a Python repo with a CI workflow and no pre-commit hook: setup writes scripts/ci-local.sh mirroring CI in order, a .githooks/pre-commit that runs it with --fast, points core.hooksPath at it, names the script as stack.md's ci-local command, and leaves the .nightshift/ worktree line and the [merge] human_review list to whoever merges."
 fixture = "py-inventory"
 skills = ["ns-setup"]
 extra_skills = []
@@ -72,4 +72,15 @@ required = false
 [[check]]
 type = "judge"
 rubric = "Does the final message give the `git config core.hooksPath .githooks` line as a [worktree] setup entry for .nightshift/nightshift.toml, for whoever merges to add, rather than saying it was written?"
+required = true
+
+[[check]]
+# gates: auto leaves human_review for whoever merges too.
+type = "command"
+run = '''! grep -qs human_review .nightshift/nightshift.toml'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Does the final message give a [merge] human_review block for .nightshift/nightshift.toml, including .github/** and .nightshift/**, for whoever merges to add, rather than saying it was written?"
 required = true
