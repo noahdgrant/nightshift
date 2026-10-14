@@ -227,6 +227,7 @@ pub fn new(
     };
     let out = crate::stop::scoped(|| ensure(&repo, unit, base, &setup))
         .context("cannot handle SIGINT and SIGTERM")??;
+    crate::stop::check()?;
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(setup_failed(&out.setup, unit).unwrap_or(ExitCode::SUCCESS))
 }
@@ -355,6 +356,7 @@ pub fn setup(unit: &str, repo: Option<&Path>) -> Result<ExitCode> {
     };
     let results = crate::stop::scoped(|| run_recorded(&commands, unit, &entry.path, &repo.root))
         .context("cannot handle SIGINT and SIGTERM")??;
+    crate::stop::check()?;
     let out = json!({
         "unit": unit,
         "path": entry.path.to_string_lossy(),
@@ -559,6 +561,34 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].exit, None);
         assert!(!dir.path().join("ran-after").exists());
+    }
+
+    const OUTSIDE_MARK: &str = "NS_WORKTREE_STOP_OUTSIDE_PROBE";
+
+    #[test]
+    fn a_stop_that_lands_outside_a_setup_command_ends_new_and_setup_as_stopped() {
+        crate::testutil::probe("worktree::tests::stop_outside_probe", OUTSIDE_MARK, "1");
+    }
+
+    #[test]
+    fn stop_outside_probe() {
+        if std::env::var_os(OUTSIDE_MARK).is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap().join("repo");
+        fs::create_dir(&root).unwrap();
+        crate::testutil::g(&root, &["init", "-q", "-b", "main"]);
+        crate::testutil::commit_file(&root, "README", "hi\n");
+        new("u-one", Some("main"), Some(&root), true).unwrap();
+        crate::stop::request(libc::SIGTERM);
+        for e in [
+            new("u-two", Some("main"), Some(&root), true).unwrap_err(),
+            super::setup("u-one", Some(&root)).unwrap_err(),
+        ] {
+            let e = e.downcast_ref::<SfError>().expect("a stop error");
+            assert_eq!(e.code, 128 + libc::SIGTERM);
+        }
     }
 
     const OUTPUT_MARK: &str = "NS_WORKTREE_SETUP_OUTPUT_PROBE";
