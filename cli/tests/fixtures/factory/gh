@@ -3,7 +3,14 @@
 d="$FAKE_GH_DIR"
 printf '%s\n' "$*" >> "$d/calls"
 printf '%s\n' "${GH_TOKEN:-}" >> "$d/tokens"
-printf '%s\n' "${GH_HOST:-}" >> "$d/hosts"
+# `--hostname <h>` after `api` names the host as GH_HOST does and wins over it, as in real gh: it
+# is recorded in hosts in place of GH_HOST, then dropped so the arms below match on the rest.
+if [ "$1" = api ] && [ "$2" = --hostname ]; then
+  printf '%s\n' "$3" >> "$d/hosts"
+  set -- api "${@:4}"
+else
+  printf '%s\n' "${GH_HOST:-}" >> "$d/hosts"
+fi
 # hook.sh, when it exists, is sourced first with gh's arguments: a test's way to act mid-run.
 [ -f "$d/hook.sh" ] && . "$d/hook.sh"
 case "$1 $2" in

@@ -502,6 +502,9 @@ fn repo_owner_type_within(
     }
     let kind = ForgeKind::Github;
     let mut cmd = cli(program, kind, creds);
+    if creds.is_none() {
+        cmd.env_remove(kind.host_var());
+    }
     cmd.arg("api");
     if let Some(h) = host {
         cmd.args(["--hostname", h]);

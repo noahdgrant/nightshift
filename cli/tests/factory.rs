@@ -6037,6 +6037,101 @@ fn factory_validate_looks_up_the_owner_on_the_origin_host() {
 }
 
 #[test]
+fn factory_validate_warns_once_for_a_personal_account_repo_on_another_host() {
+    let e = github_owned_by(Some("User"));
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://ghe.example.com/o/r.git",
+        ],
+    );
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    let owner_warnings = v["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w.as_str().unwrap().contains("organisation-owned"))
+        .count();
+    assert_eq!(owner_warnings, 1, "{v}");
+    assert_eq!(
+        fs::read_to_string(e.ghd.join("hosts")).unwrap().trim(),
+        "ghe.example.com"
+    );
+}
+
+#[test]
+fn factory_validate_keeps_an_ambient_gh_host_off_a_github_com_origin() {
+    let e = github_owned_by(Some("User"));
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    let out = e
+        .ns()
+        .env("GH_HOST", "other.example.com")
+        .args(["factory", "validate"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["warnings"].as_array().unwrap().len(), 1, "{v}");
+    let hosts = fs::read_to_string(e.ghd.join("hosts")).unwrap();
+    assert_eq!(hosts.trim(), "", "{hosts:?}");
+}
+
+#[test]
+fn factory_validate_applies_the_configured_token_when_gh_host_is_the_origin_host() {
+    let e = github_owned_by(Some("User"));
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://other.example.com/o/r.git",
+        ],
+    );
+    e.config("[forge.github]\nhost = \"ghe.example.com\"\ntoken_env = \"DEFAULT_TOKEN\"\n");
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    e.ns()
+        .env("DEFAULT_TOKEN", "default-tok")
+        .env("GH_HOST", "other.example.com")
+        .args(["factory", "validate"])
+        .assert()
+        .code(0);
+    assert_eq!(e.tokens_seen(), ["default-tok"], "{}", e.gh_calls());
+}
+
+#[test]
+fn factory_validate_withholds_the_token_when_gh_host_is_not_the_origin_host() {
+    let e = github_owned_by(Some("User"));
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://ghe.example.com/o/r.git",
+        ],
+    );
+    e.config("[forge.github]\nhost = \"ghe.example.com\"\ntoken_env = \"DEFAULT_TOKEN\"\n");
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    e.ns()
+        .env("DEFAULT_TOKEN", "default-tok")
+        .env("GH_HOST", "other.example.com")
+        .args(["factory", "validate"])
+        .assert()
+        .code(0);
+    assert!(
+        !e.tokens_seen().contains(&"default-tok".to_string()),
+        "{}",
+        e.gh_calls()
+    );
+}
+
+#[test]
 fn factory_validate_looks_up_the_owner_with_the_configured_token() {
     let e = github_owned_by(Some("User"));
     e.config("[forge.github]\ntoken_env = \"DEFAULT_TOKEN\"\n");
@@ -6148,7 +6243,15 @@ fn factory_validate_still_looks_up_the_owner_without_credentials_when_the_token_
     let e = github_owned_by(Some("User"));
     e.config("[forge.github]\ntoken_env = \"UNSET_VAR\"\n");
     e.factory("[gate]\nlocal = \"build-only\"\n");
-    let v = e.run(&["factory", "validate"], 0);
+    let out = e
+        .ns()
+        .env_remove("UNSET_VAR")
+        .args(["factory", "validate"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(
         e.gh_calls().contains("api repos/o/r --jq .owner.type"),
         "{}",
