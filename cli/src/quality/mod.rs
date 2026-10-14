@@ -5,6 +5,7 @@
 mod artifacts;
 mod blame;
 pub mod bugs;
+mod flow;
 mod metrics;
 mod record;
 mod runlog;
@@ -194,6 +195,7 @@ fn report(
         unreachable!("a struct serialises to an object")
     };
     out.as_object_mut().unwrap().extend(summary);
+    out["finding_flow"] = json!(flow::finding_flow(units));
     out["leftover_findings"] = json!(leftovers);
     out["escape_findings"] = json!(escapes);
     out["trend"] = json!(trend);
@@ -203,7 +205,60 @@ fn report(
     out
 }
 
-pub fn cli(since: Option<String>, until: Option<String>) -> Result<ExitCode> {
+fn optional<T: std::fmt::Debug>(v: Option<T>) -> String {
+    v.map_or("n/a".into(), |v| format!("{v:?}"))
+}
+
+fn text(s: &metrics::Summary, flow: &flow::FindingFlow) -> String {
+    let (fp, ctc) = (&s.first_pass, &s.cycles_to_clean);
+    format!(
+        "Units: {}\nFirst-pass yield: {} ({} clean, {} dirty, {} unknown)\n\
+         Cycles to clean: median {}, max {} ({} not clean, {} unknown)\n\
+         Leftovers: {}. Escapes: {}.\n\n{}",
+        s.units,
+        flow::rate(fp.yield_),
+        fp.clean,
+        fp.dirty,
+        fp.unknown,
+        optional(ctc.median),
+        optional(ctc.max),
+        ctc.not_clean,
+        ctc.unknown,
+        s.leftovers,
+        s.escapes,
+        flow::render(flow),
+    )
+}
+
+fn health(r: &Value) -> String {
+    let records = &r["records"];
+    let mut t = String::new();
+    if records["fetched"] == false {
+        t += &format!(
+            "Records: fetch failed ({}); read as last fetched\n",
+            records["fetch_error"].as_str().unwrap_or("unknown error")
+        );
+    }
+    let gaps = &r["gaps"];
+    let missing: u64 = [
+        "findings_without_axis",
+        "findings_without_severity",
+        "findings_without_scope",
+        "findings_without_cycle",
+        "findings_without_location",
+        "findings_without_status",
+    ]
+    .iter()
+    .filter_map(|k| gaps[k].as_u64())
+    .sum();
+    t += &format!(
+        "Gaps: {} unparsed artifacts, {missing} findings missing a field\n",
+        gaps["unparsed"].as_array().map_or(0, Vec::len)
+    );
+    t
+}
+
+pub fn cli(since: Option<String>, until: Option<String>, human: bool) -> Result<ExitCode> {
     let window = window(since, until)?;
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
     let mut unparsed = Vec::new();
@@ -236,7 +291,15 @@ pub fn cli(since: Option<String>, until: Option<String>) -> Result<ExitCode> {
         .collect();
     let mut r = report(&kept, window, &repo.root, log, unparsed);
     r["records"] = records;
-    println!("{}", serde_json::to_string_pretty(&r)?);
+    if human {
+        print!(
+            "{}{}",
+            text(&metrics::summarize(&kept), &flow::finding_flow(&kept)),
+            health(&r)
+        );
+    } else {
+        println!("{}", serde_json::to_string_pretty(&r)?);
+    }
     Ok(ExitCode::SUCCESS)
 }
 
