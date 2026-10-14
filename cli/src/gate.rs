@@ -1,5 +1,5 @@
-//! The deterministic CI gate `ns run` runs after build, after any phase that moves HEAD, and on
-//! the PR head before it merges (docs/factory/run.md, "Gate").
+//! The deterministic CI gate `ns run` runs after build, after any phase that moves HEAD (under
+//! `build-only`, not after ship), and on the PR head before it merges (docs/factory/run.md, "Gate").
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -44,8 +44,8 @@ pub fn command(fac: &Factory, repo_root: &Path, ns: &Path) -> Option<String> {
 /// The variable that holds, one per line, the paths a fast gate's `ci-affected` command tests.
 pub const FILES_VAR: &str = "NS_GATE_FILES";
 
-/// The gate commands `ns run` runs: `build` after build, `rest` after any other phase and in
-/// the merge step.
+/// The gate commands `ns run` runs: `build` after build, `rest` after any other phase (under
+/// `build-only`, other than ship) and in the merge step.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Commands {
     pub build: Option<String>,
@@ -325,7 +325,7 @@ pub struct Job<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trigger {
     BuildPassed,
-    /// A phase other than build moved HEAD.
+    /// A phase other than build moved HEAD. Under `build-only`, ship does not trigger the gate.
     PhaseMovedHead,
     BuildWroteNothing,
     /// The merge step is about to merge the PR head.
