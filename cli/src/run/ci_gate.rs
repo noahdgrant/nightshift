@@ -9,6 +9,7 @@ use serde_json::json;
 use super::currency::Art;
 use super::merge::{conflicts, fetch_tip, human, MergeStep};
 use super::Ctx;
+use crate::factory::LocalGate;
 use crate::gate;
 use crate::git::{self, same_sha};
 
@@ -68,15 +69,19 @@ impl Ctx<'_> {
     }
 }
 
+/// The gate to run after `phase`, if any. Under `build-only` none runs after ship: the PR's
+/// GitHub checks decide in the merge step.
 pub(super) fn gate_trigger(
     phase: &str,
     art: Option<&Art>,
     head_moved: bool,
+    local: LocalGate,
 ) -> Option<gate::Trigger> {
     match (phase, art) {
         ("build", Some(a)) if a.status == "pass" => Some(gate::Trigger::BuildPassed),
         ("build", None) => Some(gate::Trigger::BuildWroteNothing),
         ("build", _) => None,
+        ("ship", _) if local == LocalGate::BuildOnly => None,
         _ if head_moved => Some(gate::Trigger::PhaseMovedHead),
         _ => None,
     }
