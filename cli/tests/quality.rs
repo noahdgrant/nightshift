@@ -1626,3 +1626,170 @@ fn bugs_names_why_an_issue_opened_before_any_commit_was_not_blamed() {
     );
     assert_eq!(v["weeks"].as_array().unwrap().len(), 2);
 }
+
+/// Unit `6-panel`: a reduced first pass whose tests reviewer alone raised a fixed Important.
+fn panel_unit(f: &Fixture) {
+    let (wt, _) = unit_worktree(&f.root, "6-panel");
+    write(
+        wt.join(".ns/6-panel/review.md"),
+        &review(
+            "status: pass\nupdated: 2026-10-11T05:00:00Z\ncycles: 1\n",
+            "## Passes
+| Pass | Panel | Reviewer | Role | Provider | Tokens | Seconds | Cost (USD) |
+|---|---|---|---|---|---|---|---|
+| 0 | reduced | correctness | review.correctness | claude | 40000 | 100 | 0.40 |
+| 0 | reduced | tests | review.tests | claude | 20000 | 60 | 0.20 |
+
+## Important
+### I1. Untested branch
+- Axis: tests
+- Scope: changed
+- Cycle: 0
+- Status: fixed (cycle 1, abc1234)
+",
+        ),
+    );
+}
+
+#[test]
+fn reviewers_json_reports_each_reviewer_and_what_it_left_out() {
+    let f = fixture();
+    panel_unit(&f);
+    let v = quality(&f, &["--reviewers", "--json"]);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["units"], 3);
+    assert_eq!(
+        (v["attempts"].clone(), v["measured_attempts"].clone()),
+        (json!(4), json!(1))
+    );
+    let t = &v["reviewers"]["tests"];
+    assert_eq!(t["reviews"], 1);
+    assert_eq!(t["important"]["raised"], 2, "1-alpha's I2 and 6-panel's I1");
+    assert_eq!(t["important"]["unique_fixed"], 1);
+    assert_eq!(t["important"]["unique_fixed_per_review"], 1.0);
+    assert_eq!(t["important"]["unique_fixed_per_usd"], 5.0);
+    assert_eq!(t["cost"]["cost_usd"]["total"], 0.2);
+    assert_eq!(v["reviewers"]["correctness"]["critical"]["unique_fixed"], 1);
+    assert_eq!(v["excluded"]["escapes_unattributed"], 1, "1-alpha's I1");
+    assert_eq!(v["excluded"]["attempts_without_passes"], 3);
+    assert_eq!(v["overlap"].as_array().unwrap().len(), 28);
+    assert!(v.get("per_unit").is_none());
+    assert_eq!(v["records"]["fetched"], false);
+    let since = quality(&f, &["--reviewers", "--json", "--since", "2026-10-11"]);
+    assert_eq!(
+        (since["units"].clone(), since["attempts"].clone()),
+        (json!(2), json!(3))
+    );
+    assert_eq!(since["since"], "2026-10-11T00:00:00Z");
+}
+
+#[test]
+fn reviewers_until_drops_later_units() {
+    let f = fixture();
+    panel_unit(&f);
+    let all = quality(&f, &["--reviewers", "--json"]);
+    let v = quality(&f, &["--reviewers", "--json", "--until", "2026-10-10"]);
+    assert_eq!(v["until"], "2026-10-10T23:59:59Z");
+    assert!(v["units"].as_u64() < all["units"].as_u64(), "{v}");
+    assert!(v["attempts"].as_u64() < all["attempts"].as_u64(), "{v}");
+    assert_eq!(v["reviewers"]["tests"]["reviews"], 0, "6-panel is later");
+}
+
+#[test]
+fn reviewers_table_header_echoes_a_bounded_window() {
+    let f = fixture();
+    panel_unit(&f);
+    let out = ns()
+        .current_dir(&f.root)
+        .args([
+            "quality",
+            "--reviewers",
+            "--since",
+            "2026-10-11",
+            "--until",
+            "2026-10-12",
+        ])
+        .output();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.starts_with("Units: 2 (since 2026-10-11T00:00:00Z, until 2026-10-12T23:59:59Z)\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn reviewers_without_json_prints_a_table() {
+    let f = fixture();
+    panel_unit(&f);
+    let out = ns()
+        .current_dir(&f.root)
+        .args(["quality", "--reviewers"])
+        .output();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(serde_json::from_str::<Value>(&text).is_err(), "{text}");
+    assert!(text.starts_with("Units: 3 (since -, until -)\n"), "{text}");
+    let row = text
+        .lines()
+        .find(|l| l.starts_with("tests ") && l.contains("important"))
+        .unwrap();
+    assert_eq!(
+        row.split_whitespace().collect::<Vec<_>>(),
+        [
+            "tests",
+            "important",
+            "1",
+            "2",
+            "1",
+            "2",
+            "1",
+            "1",
+            "0",
+            "0",
+            "0"
+        ]
+    );
+    assert!(text.contains("Overlap: Jaccard"), "{text}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("read only local records"),
+        "a failed fetch is said on stderr"
+    );
+    let plain = quality(&f, &[]);
+    assert!(plain.get("per_unit").is_some() && plain.get("reviewers").is_none());
+}
+
+#[test]
+fn reviewers_table_adds_a_total_row_per_reviewer() {
+    let f = fixture();
+    panel_unit(&f);
+    let out = ns()
+        .current_dir(&f.root)
+        .args(["quality", "--reviewers"])
+        .output();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let row = text
+        .lines()
+        .find(|l| l.starts_with("correctness ") && l.contains("total"))
+        .unwrap();
+    let cols: Vec<&str> = row.split_whitespace().collect();
+    let v = quality(&f, &["--reviewers", "--json"]);
+    let c = &v["reviewers"]["correctness"];
+    assert_eq!(
+        cols[3].parse::<u64>().unwrap(),
+        c["critical"]["raised"].as_u64().unwrap() + c["important"]["raised"].as_u64().unwrap(),
+        "{row}"
+    );
+    assert_eq!(c["total"]["unique_fixed"], 1);
+}
+
+#[test]
+fn reviewers_conflicts_with_human_and_bugs() {
+    let f = fixture();
+    for other in ["--human", "--bugs"] {
+        ns().current_dir(&f.root)
+            .args(["quality", "--reviewers", other])
+            .assert()
+            .code(2);
+    }
+}

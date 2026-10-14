@@ -1,12 +1,13 @@
-//! `scripts/ci-affected.sh`'s ast-grep rules step, run with the real `ns`, `ast-grep` and Rust
-//! rule pack against this checkout's `rules` row and a temp crate.
+//! The ast-grep rules step of `scripts/ci-affected.sh` and of `scripts/ci-local.sh --fast`, run
+//! with the real `ns`, `ast-grep` and Rust rule pack against this checkout's `rules` row and a
+//! temp crate.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use super::{affected, common, git, stderr, steps, write_exe, Repo};
+use super::{affected, common, git, stderr, steps, write_exe, Repo, FAST_STEPS, NS};
 
 const STEP: &str = "ns rules check --only ast-grep";
 
@@ -127,4 +128,62 @@ fn the_step_runs_the_ns_under_cargo_target_dir() {
         "{}",
         stderr(&out)
     );
+}
+
+#[test]
+fn the_pre_commit_hook_refuses_a_new_wall_clock_wait() {
+    let repo = repo();
+    let root = repo.dir.path();
+    write_exe(
+        &root.join("cli/target/debug/ns"),
+        format!(
+            "#!/bin/sh\n[ \"$1\" = rules ] && exec {:?} \"$@\"\n{}",
+            common::ns_path(),
+            NS.trim_start_matches("#!/bin/sh\n")
+        ),
+    );
+    common::copy_exe(
+        &checkout().join(".githooks/pre-commit"),
+        &root.join(".githooks/pre-commit"),
+    );
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "hooks"]);
+    git(root, &["config", "core.hooksPath", ".githooks"]);
+    write_exe(&root.join("cli/tests/new.rs"), WAITS);
+    git(root, &["add", "cli/tests/new.rs"]);
+
+    let mut cmd = common::command("git");
+    cmd.args(["commit", "-q", "-m", "waits"]).current_dir(root);
+    repo.stub_env(&mut cmd, &[]);
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+    ] {
+        cmd.env_remove(var);
+    }
+    let out = cmd
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output();
+    assert_ne!(out.status.code(), Some(0), "{}", stderr(&out));
+    let err = stderr(&out);
+    let at = FAST_STEPS.iter().position(|s| *s == STEP).unwrap();
+    assert_eq!(steps(&out), FAST_STEPS[..=at], "{err}");
+    assert!(
+        err.contains(&format!("ci-local: FAILED at step: {STEP}\n")),
+        "{err}"
+    );
+    // Git hands a hook's stdout to stderr.
+    assert!(
+        err.contains("new: cli/tests/new.rs:3: ast-grep/wall-clock-in-test"),
+        "{err}"
+    );
+    assert_eq!(git(root, &["log", "-1", "--format=%s"]), "hooks");
 }

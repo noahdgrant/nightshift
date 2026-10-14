@@ -262,8 +262,18 @@ fn run(cli: Cli) -> Result<ExitCode> {
             since,
             until,
             human,
+            reviewers,
+            json,
             ..
-        }) => return quality::cli(since, until, human),
+        }) => {
+            let view = match (reviewers, human, json) {
+                (true, _, false) => quality::View::ReviewerTable,
+                (true, _, true) => quality::View::ReviewerJson,
+                (false, true, _) => quality::View::Text,
+                (false, false, _) => quality::View::Report,
+            };
+            return quality::cli(since, until, view);
+        }
         Cmd::Clean(Clean { dry_run }) => return clean::cli(dry_run),
         Cmd::Log(Log {
             unit,
