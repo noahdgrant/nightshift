@@ -6015,6 +6015,27 @@ fn factory_validate_warns_when_build_only_runs_on_a_personal_account_repo() {
 }
 
 #[test]
+fn factory_validate_looks_up_the_owner_on_the_origin_host() {
+    let e = github_owned_by(Some("User"));
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://ghe.example.com/o/r.git",
+        ],
+    );
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    e.run(&["factory", "validate"], 0);
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains("api --hostname ghe.example.com repos/o/r --jq .owner.type"),
+        "{calls}"
+    );
+}
+
+#[test]
 fn factory_validate_with_factory_path_looks_up_the_owner_of_the_cwd_repo() {
     let e = github_owned_by(Some("User"));
     let other = e.base.join("other-checkout");

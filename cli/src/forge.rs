@@ -382,7 +382,7 @@ fn safe_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-fn safe_host(host: &str) -> bool {
+pub(crate) fn safe_host(host: &str) -> bool {
     match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
         Some(v6) => !v6.is_empty() && v6.chars().all(|c| c.is_ascii_hexdigit() || c == ':'),
         None => safe_name(host) && !host.starts_with('-'),

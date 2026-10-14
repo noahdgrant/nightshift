@@ -798,9 +798,9 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
                         f.queue.source.as_deref(),
                         cfg.as_ref(),
                     );
-                    let owner = origin
-                        .repo_for(ForgeKind::Github)
-                        .and_then(owner::github_owner_type);
+                    let owner = origin.repo_for(ForgeKind::Github).and_then(|repo| {
+                        owner::github_owner_type(repo, origin.url_for(ForgeKind::Github))
+                    });
                     warnings.extend(f.owner_warning(owner.as_deref()));
                 }
                 for name in PHASES {
