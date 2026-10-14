@@ -486,6 +486,14 @@ fn a_stop_kills_the_child_and_fails_naming_it() {
 }
 
 #[test]
+fn a_stop_beats_an_expired_deadline() {
+    let mut p = Proc::tool("sleep");
+    p.arg("600").timeout(Duration::ZERO).stop_when(|| true);
+    let e = p.output().unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::Interrupted);
+}
+
+#[test]
 fn a_child_that_ends_before_a_stop_is_left_alone() {
     let mut p = sh(Kind::Tool, "echo done");
     p.stop_when(|| false);

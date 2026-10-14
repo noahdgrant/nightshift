@@ -225,7 +225,8 @@ pub fn new(
     } else {
         load_setup(&repo.root)?
     };
-    let out = ensure(&repo, unit, base, &setup)?;
+    let out = crate::stop::scoped(|| ensure(&repo, unit, base, &setup))
+        .context("cannot handle SIGINT and SIGTERM")??;
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(setup_failed(&out.setup, unit).unwrap_or(ExitCode::SUCCESS))
 }
@@ -352,7 +353,8 @@ pub fn setup(unit: &str, repo: Option<&Path>) -> Result<ExitCode> {
             .hint(format!("create it first:\n  ns worktree new {unit}"))
             .into());
     };
-    let results = run_recorded(&commands, unit, &entry.path, &repo.root)?;
+    let results = crate::stop::scoped(|| run_recorded(&commands, unit, &entry.path, &repo.root))
+        .context("cannot handle SIGINT and SIGTERM")??;
     let out = json!({
         "unit": unit,
         "path": entry.path.to_string_lossy(),
@@ -640,6 +642,30 @@ mod tests {
         let e = setup_exit(Err(timed_out), "sleep 9").unwrap_err();
         assert_eq!(e.to_string(), "cannot run setup command \"sleep 9\"");
         assert!(format!("{e:#}").contains("timed out"), "{e:#}");
+    }
+
+    #[test]
+    fn a_setup_command_past_its_limit_aborts_setup_with_the_procs_timeout() {
+        let ran = Proc::tool("sleep")
+            .arg("600")
+            .timeout(std::time::Duration::ZERO)
+            .output();
+        let e = setup_exit(ran, "sleep 600").unwrap_err();
+        assert_eq!(e.to_string(), "cannot run setup command \"sleep 600\"");
+        assert!(
+            format!("{e:#}").contains("`sleep 600` timed out after 0s"),
+            "{e:#}"
+        );
+    }
+
+    #[test]
+    fn a_setup_command_that_cannot_start_aborts_setup_and_skips_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("gone");
+        let commands = vec!["touch ran".to_string(), "touch ran-after".to_string()];
+        let e = run_setup(&commands, "u", &gone, dir.path()).unwrap_err();
+        assert_eq!(e.to_string(), "cannot run setup command \"touch ran\"");
+        assert!(!dir.path().join("ran-after").exists());
     }
 
     #[test]

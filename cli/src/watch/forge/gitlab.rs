@@ -46,7 +46,7 @@ fn glab(cwd: &Path, args: &[&str]) -> Result<String> {
 
 fn glab_unrunnable(e: std::io::Error) -> anyhow::Error {
     match e.kind() {
-        std::io::ErrorKind::Interrupted => e.into(),
+        std::io::ErrorKind::Interrupted | std::io::ErrorKind::TimedOut => e.into(),
         _ => anyhow::Error::new(e).context("cannot run glab; is it installed and on PATH?"),
     }
 }
@@ -437,6 +437,18 @@ mod tests {
         assert_eq!(
             glab_unrunnable(missing).to_string(),
             "cannot run glab; is it installed and on PATH?"
+        );
+    }
+
+    #[test]
+    fn a_glab_past_its_limit_reports_the_timeout_naming_the_command() {
+        let timed_out = std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "`glab api projects/:id` timed out after 120s",
+        );
+        assert_eq!(
+            glab_unrunnable(timed_out).to_string(),
+            "`glab api projects/:id` timed out after 120s"
         );
     }
 

@@ -2246,6 +2246,39 @@ fn factory_def(root: &Path, text: &str) {
 }
 
 #[test]
+fn a_sigint_to_worktree_new_ends_the_setup_command() {
+    let (_tmp, root) = repo();
+    factory_def(
+        &root,
+        "name = \"demo\"\n\n[worktree]\nsetup = [\"echo $$ > setup.pid; sleep 600\"]\n",
+    );
+    let pid_file = root.parent().unwrap().join("myrepo.worktrees/u1/setup.pid");
+    let mut ns = ns();
+    let mut g = ns
+        .current_dir(&root)
+        .args(["worktree", "new", "u1"])
+        .start();
+    let deadline = std::time::Instant::now() + common::TIMEOUT;
+    let pid = loop {
+        if let Some(pid) = fs::read_to_string(&pid_file)
+            .ok()
+            .filter(|p| p.ends_with('\n'))
+        {
+            break pid;
+        }
+        assert!(std::time::Instant::now() < deadline, "setup never started");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    // SAFETY: kill(2) on the ns process this test started.
+    assert_eq!(
+        unsafe { libc::kill(g.id() as libc::pid_t, libc::SIGINT) },
+        0
+    );
+    assert!(!g.wait().success());
+    assert!(common::exits(&pid), "the setup command outlived ns");
+}
+
+#[test]
 fn worktree_new_runs_setup_once() {
     let (_tmp, root) = repo();
     factory_def(

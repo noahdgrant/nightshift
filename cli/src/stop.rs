@@ -28,6 +28,46 @@ pub fn install_for_watch() -> std::io::Result<()> {
     handle(false)
 }
 
+/// Run `f` with [`install`]'s handlers, then put back the ones that were set. For a command
+/// whose children are in sessions of their own, so a terminal's Ctrl-C reaches only this
+/// process and `f` has to end them itself, but whose later code does not poll for a stop.
+#[cfg(unix)]
+pub fn scoped<T>(f: impl FnOnce() -> T) -> std::io::Result<T> {
+    // SAFETY: zeroed sigaction structs, filled in by sigaction(2) below.
+    let mut saved: [libc::sigaction; 2] = unsafe { std::mem::zeroed() };
+    install_saving(&mut saved)?;
+    let r = f();
+    for (sig, old) in [libc::SIGINT, libc::SIGTERM].into_iter().zip(&saved) {
+        // SAFETY: sigaction(2) with the action it returned earlier.
+        unsafe {
+            libc::sigaction(sig, old, std::ptr::null_mut());
+        }
+    }
+    Ok(r)
+}
+
+#[cfg(not(unix))]
+pub fn scoped<T>(f: impl FnOnce() -> T) -> std::io::Result<T> {
+    Ok(f())
+}
+
+#[cfg(unix)]
+fn install_saving(saved: &mut [libc::sigaction; 2]) -> std::io::Result<()> {
+    for (sig, old) in [libc::SIGINT, libc::SIGTERM].into_iter().zip(saved) {
+        // SAFETY: as in `handle`; the previous action goes to `old`.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = record as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            sa.sa_flags = libc::SA_RESTART | libc::SA_RESETHAND;
+            libc::sigemptyset(&mut sa.sa_mask);
+            if libc::sigaction(sig, &sa, old) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Record `sig` as the stop, as if it had arrived, unless a stop is already recorded: `ns watch`
 /// stops the night when a signal stopped one of its units.
 pub fn request(sig: i32) {
