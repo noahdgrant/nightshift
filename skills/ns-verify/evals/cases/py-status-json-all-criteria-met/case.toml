@@ -34,6 +34,24 @@ key = "status"
 equals = "pass"
 
 [[check]]
+type = "frontmatter"
+path = ".ns/6-status-json/evidence.md"
+key = "schema"
+equals = "ns-artifact/2"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/6-status-json/evidence.md"
+key = "cause"
+equals = "none"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/6-status-json/evidence.md"
+key = "next"
+equals = "review"
+
+[[check]]
 # The summary table has one row per criterion (AC1..AC3, no more), each PASS with the criterion
 # written out. Each criterion has a section whose command runs `status --json` and whose excerpt
 # shows real output: the quoted JSON keys, AC2's JSON for the SKU its command names, AC3's error.

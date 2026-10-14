@@ -91,10 +91,10 @@ Write each command in the plainest form a harness deny rule leaves alone:
 A harness permission that denies a command ends the drive. The command runs as written or not at all: report the denial, and leave the command and the rule as they are, with no reworded retry, other tool or settings edit to get past it.
 
 1. Stop driving and run the verify skill's Cleanup.
-2. Write `evidence.md` with `status: blocked`. Its first body line, above the title, is `denied by <rule>: <command>`, such as ``denied by `Bash(git push:*)`: `git push -q origin main` ``. Use the rule as the harness reported it, or `unknown rule` when it named none.
+2. Write `evidence.md` with `status: blocked`, `cause: denied` and `next: human`. Its `reason` is `denied by <rule>: <command>`, such as ``reason: "denied by `Bash(git push:*)`: `git push -q origin main`"``. Use the rule as the harness reported it, or `unknown rule` when it named none.
 3. Criteria with a verdict keep it. The rest are INCONCLUSIVE, and Gaps names the rule a human must allow or the recipe that must change.
 
-`ns run` reports that first line as the unit's stuck reason, and `ns-supervise` pings on it.
+`ns run` reports that `reason` as the unit's stuck reason, and `ns-supervise` pings on it.
 
 ## 4. Fan out a large surface
 
@@ -112,9 +112,13 @@ Write `.ns/<unit-id>/evidence.md`:
 
 ````markdown
 ---
+schema: ns-artifact/2
 unit: <unit-id>
 phase: verify
 status: pass | fail | blocked
+cause: none | criteria_failed | denied | needs_human
+next: review | build | human
+reason: "<one line: the verdicts, or the failing criteria or the blocker>"
 sha: <git rev-parse --short HEAD>
 updated: <UTC timestamp>
 ---
@@ -149,12 +153,14 @@ Verify skill: <path> · Doctor: pass
 <per FAIL or INCONCLUSIVE: what was seen, and what would fix it or make it checkable; or "none". A `ship` criterion is not a gap.>
 ````
 
-Set `status` from the first rule that holds:
+Set `status`, `cause` and `next` from the first rule that holds:
 
-- `blocked`: a harness denied a command ([denied commands](#denied-commands)), whatever the verdicts.
-- `pass`: every criterion is PASS or `ship`, and at least one is PASS.
-- `fail`: any criterion is FAIL. `ns-build` picks the unit up from the Gaps section.
-- `blocked`: no FAIL, but at least one INCONCLUSIVE. Gaps names the blocker (a bench, credentials, a criterion the human must sharpen). Also `blocked` when no criterion is PASS and none is FAIL or INCONCLUSIVE (every one is `ship`): Gaps names "no checkable criterion".
+- `blocked`, `cause: denied`, `next: human`: a harness denied a command ([denied commands](#denied-commands)), whatever the verdicts.
+- `pass`, `cause: none`, `next: review`: every criterion is PASS or `ship`, and at least one is PASS.
+- `fail`, `cause: criteria_failed`, `next: build`: any criterion is FAIL. `reason` names the failing criteria, and `ns-build` picks the unit up from the Gaps section.
+- `blocked`, `cause: needs_human`, `next: human`: no FAIL, but at least one INCONCLUSIVE. Gaps names the blocker (a bench, credentials, a criterion the human must sharpen). Also `blocked` when no criterion is PASS and none is FAIL or INCONCLUSIVE (every one is `ship`): Gaps names "no checkable criterion".
+
+Then run `ns artifact check .ns/$NS_UNIT/evidence.md --phase verify` and fix every error it reports ([artifact schema](../ns-contract/SKILL.md#units-of-work-and-artifacts)).
 
 ## Gate
 

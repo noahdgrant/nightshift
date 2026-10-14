@@ -67,6 +67,18 @@ key = "status"
 equals = "pass"
 
 [[check]]
+type = "frontmatter"
+path = ".ns/44-widget-title/pr.md"
+key = "schema"
+equals = "ns-artifact/2"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/44-widget-title/pr.md"
+key = "cause"
+equals = "none"
+
+[[check]]
 type = "judge"
 rubric = "Read .ns/44-widget-title/brief.md, .ns/44-widget-title/pr.md and the transcript. Pass only if the agent checked the brief's Ship note against the PR body before writing pr.md, the body sent closes #44 and names #45 as the follow-up, and the agent did not merge or approve."
 required = false

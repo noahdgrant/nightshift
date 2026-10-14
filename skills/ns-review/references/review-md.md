@@ -30,9 +30,14 @@ Scrutinise a dismissal of a security or correctness finding twice. If Act on hol
 
 ```markdown
 ---
+schema: ns-artifact/2
 unit: <unit-id>
 phase: review
 status: pass        # pass | fail | blocked
+cause: none         # none | findings_open | gate_red | criteria_failed | needs_human
+next: ship          # ship on a pass; build on a fail; human when blocked
+reason: "<one line: the outcome, or what build must fix, or the blocker>"
+findings: []        # when blocked on open findings: their IDs, Criticals first
 sha: <git rev-parse --short HEAD>
 updated: <ISO-8601 UTC>
 base: <base branch>@<sha>
@@ -92,10 +97,18 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 - <escape the tracker couldn't take: its ID and why. It doesn't block.>
 ```
 
-Status follows the Gate in `SKILL.md`. For any `blocked` status, the first body line, before the title, is the one-sentence reason `ns watch` quotes. When the fix loop stops with findings open, it names the open Criticals and Importants in changed code, Criticals first:
+Status, `cause` and `next` follow the Gate in `SKILL.md`. For any `blocked` status, `reason` is the one-sentence reason `ns watch` quotes. When the fix loop stops with findings open, `findings` lists the open Criticals and Importants in changed code, Criticals first, `reason` names them, and the options open the body, before the title:
 
 ```markdown
-Open after at least 2 fix attempts: C1, I2, I4.
+---
+...
+status: blocked
+cause: findings_open
+next: human
+reason: "Open after at least 2 fix attempts: C1, I2, I4."
+findings: [C1, I2, I4]
+...
+---
 
 Options: fix by hand on the unit's branch then delete `.ns/<unit>/review.md` so `ns run` reviews again, split the issue, or route it to `ns-define`.
 
