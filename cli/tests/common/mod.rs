@@ -399,14 +399,18 @@ fn kill_tree(running: Option<u32>, tag: &str) {
     }
 }
 
-/// Whether `pid` has exited, waiting for its exit on a pidfd. A zombie counts as exited.
+/// Whether `pid` has exited, waiting for its exit on a pidfd. A zombie counts as exited, and so
+/// does a pid the kernel is reaping: pidfd_open(2) fails EINVAL once it has lost its leader.
 /// [`TIMEOUT`] is only a hang guard: past it, the process outlived what killed it.
 pub fn exits(pid: &str) -> bool {
     let pid: libc::pid_t = pid.trim().parse().unwrap();
     // SAFETY: pidfd_open(2) takes a pid and flags and returns a new fd or -1.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as libc::c_int;
     if fd < 0 {
-        let gone = std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        let gone = matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH | libc::EINVAL)
+        );
         assert!(
             gone,
             "pidfd_open {pid}: {}",

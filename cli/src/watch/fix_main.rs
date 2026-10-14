@@ -3,7 +3,6 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::Result;
 
@@ -99,7 +98,8 @@ pub(super) fn find_or_file(
     let title = title(main);
     let body = Post::new(&body(repo, forge, main));
     let mut labels: Vec<&str> = LABELS.to_vec();
-    labels.push(&fac.queue.ready_label);
+    let q = &fac.queue;
+    labels.push(super::transitions::filed(q));
     let number = forge.create_issue(&title, &body, &labels)?;
     let issue = Issue {
         number,
@@ -112,7 +112,7 @@ pub(super) fn find_or_file(
 }
 
 /// `git fetch origin`, run unattended (`git::net`): it never prompts and a stalled transfer ends.
-fn fetch_origin(root: &Path) -> Command {
+fn fetch_origin(root: &Path) -> crate::proc::Proc {
     git::net(root, &["fetch", "--quiet", "origin"])
 }
 

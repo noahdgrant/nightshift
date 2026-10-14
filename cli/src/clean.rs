@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::{ExitCode, Stdio};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -212,10 +212,7 @@ fn holds(dir: &Path, base: &str, tip: &str, pr_head: &str, pr: u64) -> bool {
     }
     if !is_commit(dir, pr_head) {
         let pull = format!("refs/pull/{pr}/head");
-        let _ = git::net(dir, &["fetch", "--quiet", "--no-tags", "origin", &pull])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let _ = git::net(dir, &["fetch", "--quiet", "--no-tags", "origin", &pull]).output();
         if !is_commit(dir, pr_head) {
             return false;
         }

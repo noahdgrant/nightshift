@@ -62,7 +62,7 @@ fn measure(cmd: &str, root: &Path, timeout: Duration) -> Result<f64, String> {
     let err = tempfile::NamedTempFile::new()
         .map_err(|e| format!("cannot create a file for output: {e}"))?;
     let mut c = Command::new("sh");
-    crate::git::scrub(&mut c);
+    crate::proc::scrub_git(&mut c);
     for v in VARS {
         c.env_remove(v);
     }

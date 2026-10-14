@@ -60,7 +60,7 @@ setup = ["git config core.hooksPath .githooks"]
 human_review = [".github/**", ".githooks/**", "scripts/ci-local.sh", ".nightshift/**"]
 ```
 
-`[worktree] setup` makes every unit worktree run the hook too. `merge.policy` stays unset, which means `human`: every unit ends at an open PR for you to merge. Turn on `policy = "auto"` only after a few nights of PRs you would have merged as they were. [`docs/FACTORY.md`](../FACTORY.md) lists every other key and its default.
+`[worktree] setup` makes every unit worktree run the hook too. The file leaves `[gate] local` unset, which means `every-step`, with the local merge queue ([merge.md](merge.md#local-merge-queue)). Keep it that way on a repo owned by a personal account: `build-only` hands the merge to GitHub's merge queue, which only an organisation-owned repo has. `merge.policy` stays unset, which means `human`: every unit ends at an open PR for you to merge. Turn on `policy = "auto"` only after a few nights of PRs you would have merged as they were. [`docs/FACTORY.md`](../FACTORY.md) lists every other key and its default.
 
 Commit `docs/agents/`, the hook, the rule pack and `.nightshift/` together and push them to the default branch. Each unit's worktree is cut from `origin`, so a phase sees only what you pushed.
 
@@ -89,7 +89,7 @@ ns factory validate
 
 `ns doctor` ([doc](../cli/doctor.md)) checks the config, the harnesses on PATH, the skill directories and the forge account. Its `warnings` don't stop a night, but read them. ["Before the first night"](starting-a-night.md#before-the-first-night) has the fix for the common ones, such as an SSH `origin` with no keepalive.
 
-`ns factory validate` ([doc](../cli/factory.md)) parses `.nightshift/nightshift.toml` and prints each phase's skill, harness, model and timeout. Without the file it fails with `nightshift.toml does not exist; ns run would use the built-in defaults`, which means step 3 didn't land in this checkout. With `policy = "auto"` and an empty `human_review` it warns.
+`ns factory validate` ([doc](../cli/factory.md)) parses `.nightshift/nightshift.toml` and prints each phase's skill, harness, model and timeout. Without the file it fails with `nightshift.toml does not exist; ns run would use the built-in defaults`, which means step 3 didn't land in this checkout. With `policy = "auto"` and an empty `human_review` it warns, and with `[gate] local = "build-only"` on a repo GitHub reports as owned by a personal account.
 
 It worked when both print `"ok": true` and exit 0.
 
@@ -113,7 +113,7 @@ It worked when the run prints `"outcome": "done"` with a `pr`, and the PR's chec
 
 ## 7. Run a short `ns watch`
 
-Mark two or three small issues `status:ready-for-agent`, or run `ns-triage` on them and let it label them. Check the queue:
+Mark two or three small issues `status:ready-for-agent`, or run `ns-triage` on them in a session and let it label them (under `ns watch`, the triage pass labels them from its outcome). Check the queue:
 
 ```bash
 ns watch --dry-run

@@ -11,6 +11,9 @@ Examples:
   ns run 142-uart-timeout --from verify
   ns run --issue 142 --cpus 4
 
+Attempts, credits and a pending forced phase are kept in .ns/<unit>/state.json, so a restart
+resumes them; --fresh, --from or a missing or unreadable file starts a new ledger.
+
 Spec: docs/factory/run.md. Prints {unit,outcome,phase,reason,pr,cost_usd,phases}. Events go to
 <git-common-dir>/ns/runs.jsonl, harness transcripts to <git-common-dir>/ns/transcripts/.
 A unit that ends merged, done or stuck pushes its review quality records to origin's
@@ -70,4 +73,7 @@ pub(crate) struct Run {
     /// CPU share for every phase and gate (default: none; see CPU share below)
     #[arg(long, value_name = "N", value_parser = crate::cpus::parse)]
     pub cpus: Option<u32>,
+    /// Forget the attempts and credits .ns/<unit>/state.json kept, e.g. after fixing an artifact by hand
+    #[arg(long)]
+    pub fresh: bool,
 }

@@ -236,9 +236,9 @@ impl Plan {
     ) -> Result<Vec<u8>> {
         let (resolved, command) = (&self.resolved, &self.command);
         let mut cmd = Command::new(bin);
-        git::scrub(&mut cmd);
+        crate::proc::scrub_git(&mut cmd);
         if subscription(cwd)? {
-            billing::scrub(&mut cmd, command);
+            crate::proc::scrub_billing(&mut cmd, command);
         }
         if let Some(dir) = cwd {
             cmd.current_dir(dir);

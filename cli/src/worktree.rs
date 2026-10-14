@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use crate::error::SfError;
 use crate::frontmatter;
 use crate::git::{self, Repo, WorktreeEntry};
+use crate::proc::Proc;
 use crate::run::{holder_pid, Lock, WORKTREE_LOCK};
 
 pub const BRANCH_PREFIX: &str = "ns/";
@@ -67,31 +68,47 @@ fn run_setup(
 ) -> Result<Vec<SetupResult>> {
     let mut results = Vec::new();
     for c in commands {
-        let mut sh = Command::new("sh");
-        crate::git::scrub(&mut sh);
-        crate::cpus::apply(&mut sh);
-        let status = sh
+        let ran = Proc::tool("sh")
             .arg("-c")
             .arg(c)
             .current_dir(path)
+            .envs(crate::cpus::vars())
             .env("NS_UNIT", unit)
             .env("NS_WORKTREE", path)
             .env("NS_MAIN_ROOT", root)
-            .stdin(Stdio::null())
-            .stdout(std::io::stderr())
-            .stderr(std::io::stderr())
-            .status()
-            .with_context(|| format!("cannot run setup command {c:?}"))?;
-        let ok = status.success();
+            .output_to(stderr_file()?)
+            .until_stop()
+            .output();
+        let exit = setup_exit(ran, c)?;
         results.push(SetupResult {
             run: c.clone(),
-            exit: status.code(),
+            exit,
         });
-        if !ok {
+        if exit != Some(0) {
             break;
         }
     }
     Ok(results)
+}
+
+/// A setup command's exit code. A stop kills the command as a signal would, with no exit code;
+/// a command that cannot run, or runs out of time, aborts setup.
+fn setup_exit(ran: std::io::Result<std::process::Output>, command: &str) -> Result<Option<i32>> {
+    match ran {
+        Ok(out) => Ok(out.status.code()),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("cannot run setup command {command:?}")),
+    }
+}
+
+/// This process's stderr as a file a child can write to.
+fn stderr_file() -> Result<fs::File> {
+    use std::os::fd::AsFd;
+    let fd = std::io::stderr()
+        .as_fd()
+        .try_clone_to_owned()
+        .context("cannot duplicate stderr")?;
+    Ok(fs::File::from(fd))
 }
 
 /// Where a worktree records that its setup finished: the worktree's own git dir, so the record
@@ -208,9 +225,14 @@ pub fn new(
     } else {
         load_setup(&repo.root)?
     };
-    let out = ensure(&repo, unit, base, &setup)?;
+    let out = crate::stop::scoped(|| ensure(&repo, unit, base, &setup))
+        .context("cannot handle SIGINT and SIGTERM")??;
+    let failed = setup_failed(&out.setup, unit);
+    if failed.is_none() {
+        crate::stop::check()?;
+    }
     println!("{}", serde_json::to_string_pretty(&out)?);
-    Ok(setup_failed(&out.setup, unit).unwrap_or(ExitCode::SUCCESS))
+    Ok(failed.unwrap_or(ExitCode::SUCCESS))
 }
 
 /// Where `ensure` puts a unit's worktree when it creates one.
@@ -335,14 +357,19 @@ pub fn setup(unit: &str, repo: Option<&Path>) -> Result<ExitCode> {
             .hint(format!("create it first:\n  ns worktree new {unit}"))
             .into());
     };
-    let results = run_recorded(&commands, unit, &entry.path, &repo.root)?;
+    let results = crate::stop::scoped(|| run_recorded(&commands, unit, &entry.path, &repo.root))
+        .context("cannot handle SIGINT and SIGTERM")??;
+    let failed = setup_failed(&results, unit);
+    if failed.is_none() {
+        crate::stop::check()?;
+    }
     let out = json!({
         "unit": unit,
         "path": entry.path.to_string_lossy(),
         "setup": results,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
-    Ok(setup_failed(&results, unit).unwrap_or(ExitCode::SUCCESS))
+    Ok(failed.unwrap_or(ExitCode::SUCCESS))
 }
 
 const PHASE_ORDER: &[&str] = &[
@@ -497,6 +524,163 @@ pub fn remove(unit: &str, dry_run: bool, force: bool, repo: Option<&Path>) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::ErrorKind;
+
+    fn setup(commands: &[&str], dir: &Path) -> Vec<SetupResult> {
+        let commands: Vec<String> = commands.iter().map(|c| c.to_string()).collect();
+        run_setup(&commands, "u", dir, dir).unwrap()
+    }
+
+    #[test]
+    fn a_failing_setup_command_records_its_exit_and_the_rest_do_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let results = setup(&["exit 3", "touch ran-after"], dir.path());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].run, "exit 3");
+        assert_eq!(results[0].exit, Some(3));
+        assert!(!dir.path().join("ran-after").exists());
+    }
+
+    #[test]
+    fn passing_setup_commands_all_run_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let results = setup(&["touch a", "test -e a"], dir.path());
+        let exits: Vec<_> = results.iter().map(|r| r.exit).collect();
+        assert_eq!(exits, [Some(0), Some(0)]);
+    }
+
+    const STOP_MARK: &str = "NS_WORKTREE_SETUP_STOP_PROBE";
+
+    #[test]
+    fn a_stop_ends_setup_with_no_exit_code_and_skips_the_rest() {
+        crate::testutil::probe("worktree::tests::stop_probe", STOP_MARK, "1");
+    }
+
+    #[test]
+    fn stop_probe() {
+        if std::env::var_os(STOP_MARK).is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        crate::stop::request(libc::SIGTERM);
+        let results = setup(&["sleep 600", "touch ran-after"], dir.path());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].exit, None);
+        assert!(!dir.path().join("ran-after").exists());
+    }
+
+    const OUTSIDE_MARK: &str = "NS_WORKTREE_STOP_OUTSIDE_PROBE";
+
+    #[test]
+    fn a_stop_that_lands_outside_a_setup_command_ends_new_and_setup_as_stopped() {
+        crate::testutil::probe("worktree::tests::stop_outside_probe", OUTSIDE_MARK, "1");
+    }
+
+    #[test]
+    fn stop_outside_probe() {
+        if std::env::var_os(OUTSIDE_MARK).is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap().join("repo");
+        fs::create_dir(&root).unwrap();
+        crate::testutil::g(&root, &["init", "-q", "-b", "main"]);
+        crate::testutil::commit_file(&root, "README", "hi\n");
+        new("u-one", Some("main"), Some(&root), true).unwrap();
+        crate::stop::request(libc::SIGTERM);
+        for e in [
+            new("u-two", Some("main"), Some(&root), true).unwrap_err(),
+            super::setup("u-one", Some(&root)).unwrap_err(),
+        ] {
+            let e = e.downcast_ref::<SfError>().expect("a stop error");
+            assert_eq!(e.code, 128 + libc::SIGTERM);
+        }
+    }
+
+    const OUTPUT_MARK: &str = "NS_WORKTREE_SETUP_OUTPUT_PROBE";
+
+    fn output_probe_run() -> std::process::Output {
+        let mut probe =
+            crate::testutil::probe_command("worktree::tests::output_probe", OUTPUT_MARK, "1");
+        for v in crate::cpus::VARS {
+            probe.env_remove(v);
+        }
+        crate::testutil::run_probe(probe)
+    }
+
+    #[test]
+    fn setup_output_goes_to_stderr_and_never_to_stdout() {
+        let out = output_probe_run();
+        let (stdout, stderr) = (
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(!stdout.contains("setup-says-out"), "{stdout}");
+        assert!(stderr.contains("setup-says-out\n"), "{stderr}");
+        assert!(stderr.contains("setup-says-err\n"), "{stderr}");
+    }
+
+    #[test]
+    fn a_setup_command_gets_the_unit_the_paths_and_the_cpu_settings() {
+        let out = output_probe_run();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("NS_UNIT=unit-x\n"), "{stderr}");
+        assert!(stderr.contains("NS_WORKTREE=/tmp\n"), "{stderr}");
+        assert!(stderr.contains("NS_MAIN_ROOT=/\n"), "{stderr}");
+        for v in crate::cpus::VARS {
+            assert!(stderr.contains(&format!("{v}=3\n")), "{v}: {stderr}");
+        }
+    }
+
+    /// Run by the tests above in a process whose stdout and stderr they read.
+    #[test]
+    fn output_probe() {
+        if std::env::var_os(OUTPUT_MARK).is_none() {
+            return;
+        }
+        crate::cpus::activate(3);
+        let commands = vec!["echo setup-says-out; echo setup-says-err >&2; env".to_string()];
+        let results = run_setup(&commands, "unit-x", Path::new("/tmp"), Path::new("/")).unwrap();
+        assert_eq!(results[0].exit, Some(0));
+    }
+
+    #[test]
+    fn a_timed_out_setup_command_aborts_setup_naming_the_command() {
+        let timed_out = std::io::Error::new(ErrorKind::TimedOut, "`sh -c sleep 9` timed out");
+        let e = setup_exit(Err(timed_out), "sleep 9").unwrap_err();
+        assert_eq!(e.to_string(), "cannot run setup command \"sleep 9\"");
+        assert!(format!("{e:#}").contains("timed out"), "{e:#}");
+    }
+
+    #[test]
+    fn a_setup_command_past_its_limit_aborts_setup_with_the_procs_timeout() {
+        let ran = Proc::tool("sleep")
+            .arg("600")
+            .timeout(std::time::Duration::ZERO)
+            .output();
+        let e = setup_exit(ran, "sleep 600").unwrap_err();
+        assert_eq!(e.to_string(), "cannot run setup command \"sleep 600\"");
+        assert!(
+            format!("{e:#}").contains("`sleep 600` timed out after 0s"),
+            "{e:#}"
+        );
+    }
+
+    #[test]
+    fn a_setup_command_that_cannot_start_aborts_setup_and_skips_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("gone");
+        let commands = vec!["touch ran".to_string(), "touch ran-after".to_string()];
+        let e = run_setup(&commands, "u", &gone, dir.path()).unwrap_err();
+        assert_eq!(e.to_string(), "cannot run setup command \"touch ran\"");
+        assert!(!dir.path().join("ran-after").exists());
+    }
+
+    #[test]
+    fn an_interrupted_setup_command_has_no_exit_code() {
+        let stopped = std::io::Error::from(ErrorKind::Interrupted);
+        assert_eq!(setup_exit(Err(stopped), "x").unwrap(), None);
+    }
 
     #[test]
     fn the_exclude_list_gains_only_the_entries_it_lacks() {

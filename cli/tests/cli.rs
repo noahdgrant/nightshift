@@ -2093,6 +2093,8 @@ fn every_subcommand_help_has_examples() {
         vec!["ask", "--help"],
         vec!["lint", "--help"],
         vec!["check-markers", "--help"],
+        vec!["artifact", "--help"],
+        vec!["artifact", "check", "--help"],
         vec!["install", "--help"],
         vec!["doctor", "--help"],
         vec!["quality", "--help"],
@@ -2114,6 +2116,7 @@ fn help_lists_public_subcommands_and_hides_guard_hooks() {
         "ask",
         "lint",
         "check-markers",
+        "artifact",
         "install",
         "eval",
         "factory",
@@ -2243,6 +2246,71 @@ fn check_markers_passes_a_clean_tree_and_names_bad_markers() {
 fn factory_def(root: &Path, text: &str) {
     fs::create_dir_all(root.join(".nightshift")).unwrap();
     fs::write(root.join(".nightshift/nightshift.toml"), text).unwrap();
+}
+
+/// A setup command that writes its shell's pid and its `sleep`'s pid to the fifo `pids`, then
+/// waits on the sleep.
+fn slow_setup(pids: &Path) -> String {
+    format!(
+        "name = \"demo\"\n\n[worktree]\nsetup = [\"sleep 600 & echo $$ $! > {}; wait\"]\n",
+        pids.display()
+    )
+}
+
+/// Signal an `ns worktree` run whose setup command sleeps, and check that the shell and the
+/// `sleep` it started both end, and that ns reports the stop as a failed setup command.
+fn a_signal_ends_the_setup_command(args: &[&str], sig: libc::c_int, prepare: impl Fn(&Path)) {
+    let (_tmp, root) = repo();
+    prepare(&root);
+    let fifo = root.parent().unwrap().join("pids");
+    assert!(StdCommand::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    factory_def(&root, &slow_setup(&fifo));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(fs::read_to_string(fifo).unwrap()));
+    let mut ns = ns();
+    let mut g = ns.current_dir(&root).args(args).start();
+    let line = g.recv(&rx);
+    let pids: Vec<&str> = line.split_whitespace().collect();
+    assert_eq!(pids.len(), 2, "{line:?}");
+    // SAFETY: kill(2) on the ns process this test started.
+    assert_eq!(unsafe { libc::kill(g.id() as libc::pid_t, sig) }, 0);
+    let status = g.wait();
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut g.take_stderr(), &mut stderr).unwrap();
+    assert_eq!(status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("exited with a signal") && stderr.contains("ns worktree setup u1"),
+        "{stderr}"
+    );
+    for pid in &pids {
+        assert!(common::exits(pid), "pid {pid} outlived ns");
+    }
+}
+
+#[test]
+fn a_sigint_to_worktree_new_ends_the_setup_command() {
+    a_signal_ends_the_setup_command(&["worktree", "new", "u1"], libc::SIGINT, |_| ());
+}
+
+#[test]
+fn a_sigterm_to_worktree_new_ends_the_setup_command() {
+    a_signal_ends_the_setup_command(&["worktree", "new", "u1"], libc::SIGTERM, |_| ());
+}
+
+#[test]
+fn a_sigint_or_sigterm_to_worktree_setup_ends_the_setup_command() {
+    for sig in [libc::SIGINT, libc::SIGTERM] {
+        a_signal_ends_the_setup_command(&["worktree", "setup", "u1"], sig, |root| {
+            ns().current_dir(root)
+                .args(["worktree", "new", "u1"])
+                .assert()
+                .success();
+        });
+    }
 }
 
 #[test]
@@ -3398,4 +3466,93 @@ fn doctor_reports_no_account_when_gh_api_user_fails_or_prints_nothing() {
         assert_eq!(v["forge"]["github"]["account"], Value::Null, "{login}");
         assert_eq!(v["forge"]["github"]["token_resolved"], true, "{login}");
     }
+}
+
+const VALID_EVIDENCE: &str = "---
+schema: ns-artifact/2
+unit: 142-uart-timeout
+phase: verify
+status: fail
+cause: criteria_failed
+next: build
+reason: \"AC2 fails: the timeout is still 5s\"
+sha: 0e05787
+updated: 2026-10-08T21:14:00Z
+---
+# Evidence: 142-uart-timeout
+";
+
+fn artifact_check(text: &str, extra: &[&str]) -> (Option<i32>, serde_json::Value) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("evidence.md");
+    fs::write(&file, text).unwrap();
+    let out = ns()
+        .args(["artifact", "check", file.to_str().unwrap()])
+        .args(extra)
+        .output();
+    (
+        out.status.code(),
+        serde_json::from_slice(&out.stdout).unwrap(),
+    )
+}
+
+#[test]
+fn artifact_check_prints_the_routing_fields_of_a_valid_artifact() {
+    let (code, v) = artifact_check(VALID_EVIDENCE, &["--phase", "verify"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["schema"], "ns-artifact/2");
+    assert_eq!(v["phase"], "verify");
+    assert_eq!(v["status"], "fail");
+    assert_eq!(v["cause"], "criteria_failed");
+    assert_eq!(v["next"], "build");
+    assert_eq!(v["errors"], serde_json::json!([]));
+}
+
+#[test]
+fn artifact_check_exits_1_with_each_error_and_the_values_as_written() {
+    let text = VALID_EVIDENCE.replace("cause: criteria_failed", "cause: flaky");
+    let (code, v) = artifact_check(&text, &["--phase", "review"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["cause"], "flaky");
+    assert_eq!(v["phase"], "verify");
+    assert_eq!(
+        v["errors"],
+        serde_json::json!([
+            "`phase: verify` but this artifact is checked as `review`",
+            "`cause: flaky` is not one of none, findings_open, criteria_failed, gate_red, base_moved, denied, needs_human, out_of_scope",
+        ])
+    );
+}
+
+#[test]
+fn artifact_check_rejects_a_v1_artifact() {
+    let (code, v) = artifact_check("---\nstatus: pass\nsha: abc1234\n---\nbody\n", &[]);
+    assert_eq!(code, Some(1));
+    assert_eq!(v["schema"], serde_json::Value::Null);
+    assert_eq!(
+        v["errors"][0],
+        "`schema` is missing: add `schema: ns-artifact/2` (an artifact with no schema reads as ns-artifact/1)"
+    );
+}
+
+#[test]
+fn artifact_check_usage_errors_exit_2() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.md");
+    ns().args(["artifact", "check", missing.to_str().unwrap()])
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(predicate::str::contains("cannot read"))
+        .stderr(predicate::str::contains("ns artifact check"));
+    let file = dir.path().join("evidence.md");
+    fs::write(&file, VALID_EVIDENCE).unwrap();
+    ns().args(["artifact", "check", file.to_str().unwrap(), "--phase", "qa"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "possible values: triage, build, verify, review, review-fix, ship",
+        ));
 }

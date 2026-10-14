@@ -1,13 +1,12 @@
 //! Thin wrapper around the `git` binary.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
 use crate::error::SfError;
+use crate::proc::Proc;
 
 /// Variables through which a parent git process (a hook, `git rebase --exec`, `git bisect run`)
 /// points child git commands at its own repository. `GIT_DIR` overrides even `git -C <dir>`, so
@@ -22,14 +21,6 @@ pub const LOCATION_VARS: &[&str] = &[
     "GIT_NAMESPACE",
     "GIT_PREFIX",
 ];
-
-/// Remove inherited git location variables, so the command acts only on the repo it names.
-pub fn scrub(cmd: &mut Command) -> &mut Command {
-    for v in LOCATION_VARS {
-        cmd.env_remove(v);
-    }
-    cmd
-}
 
 #[cfg(test)]
 thread_local! {
@@ -46,13 +37,11 @@ pub fn spawns() -> usize {
     SPAWNS.with(std::cell::Cell::get)
 }
 
-/// A `git` command with inherited location variables removed.
-pub fn command() -> Command {
+/// A `git` command on a local repo ([`Proc::git_local`]).
+pub fn command() -> Proc {
     #[cfg(test)]
     SPAWNS.with(|c| c.set(c.get() + 1));
-    let mut c = Command::new("git");
-    scrub(&mut c);
-    c
+    Proc::git_local()
 }
 
 /// The SSH command `ns run`'s phases push with when the user chose none. A pre-push hook that
@@ -86,18 +75,6 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
-/// A git command for `root` that never prompts for credentials, for work `ns` does unattended.
-pub fn unattended(root: &Path, args: &[&str]) -> Command {
-    let mut c = command();
-    c.arg("-C")
-        .arg(root)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
-        .stdin(Stdio::null());
-    c
-}
-
 /// A transfer that moves fewer bytes a second than this, for `LOW_SPEED_SECS`, fails.
 const LOW_SPEED_BYTES: &str = "1000";
 const LOW_SPEED_SECS: &str = "60";
@@ -106,13 +83,18 @@ const LOW_SPEED_SECS: &str = "60";
 pub const SSH: &str =
     "ssh -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4";
 
-/// [`unattended`] for a command that talks to `origin`, which must end even when origin
-/// doesn't answer: a stalled HTTP transfer fails, and ssh runs in batch mode with timeouts
-/// ([`SSH`]) unless the user chose an ssh command (`GIT_SSH_COMMAND`, `GIT_SSH` or
-/// `core.sshCommand`).
-pub fn net(root: &Path, args: &[&str]) -> Command {
-    let mut c = unattended(root, args);
-    c.env("GIT_HTTP_LOW_SPEED_LIMIT", LOW_SPEED_BYTES)
+/// A git command in `root` that talks to `origin` ([`Proc::git_network`], which never prompts
+/// for credentials), and must end even when origin doesn't answer: a stalled HTTP transfer
+/// fails, and ssh runs in batch mode with timeouts ([`SSH`]) unless the user chose an ssh
+/// command (`GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand`).
+pub fn net(root: &Path, args: &[&str]) -> Proc {
+    #[cfg(test)]
+    SPAWNS.with(|c| c.set(c.get() + 1));
+    let mut c = Proc::git_network();
+    c.arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_HTTP_LOW_SPEED_LIMIT", LOW_SPEED_BYTES)
         .env("GIT_HTTP_LOW_SPEED_TIME", LOW_SPEED_SECS);
     let chosen = ["GIT_SSH_COMMAND", "GIT_SSH"]
         .iter()
@@ -179,24 +161,106 @@ fn patch_id(cwd: &Path, base: &str, sha: &str, verbatim: bool) -> Option<String>
         .output()
         .ok()
         .filter(|o| o.status.success())?;
-    let mut child = command()
+    let out = command()
         .arg("-C")
         .arg(cwd)
         // `--verbatim` is `--stable` with whitespace kept; git refuses the two together.
         .args(["patch-id", if verbatim { "--verbatim" } else { "--stable" }])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
+        .stdin(diff.stdout)
+        .output()
         .ok()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(&diff.stdout);
-    }
-    let out = child.wait_with_output().ok()?;
     String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .next()
         .map(String::from)
+}
+
+/// Whether the unit took in a newer base between `a` and `b`: its own changes start somewhere else
+/// ([`unit_start`]), as after a merge of the base or a rebase onto it. False when either start
+/// can't be read.
+pub fn took_in_base(cwd: &Path, base: &str, a: &str, b: &str) -> bool {
+    match (unit_start(cwd, base, a), unit_start(cwd, base, b)) {
+        (Some(x), Some(y)) => x != y,
+        _ => false,
+    }
+}
+
+/// How many changed lines of the unit's own diff differ between `a` and `b`: the `+` and `-`
+/// lines of each one's diff from its [`unit_start`], per file, with context and line numbers
+/// dropped, counted as a multiset difference. 0 when the unit's changes are the same, as after a
+/// clean rebase. `None` when either diff can't be read.
+pub fn interdiff_lines(cwd: &Path, base: &str, a: &str, b: &str) -> Option<usize> {
+    let (x, y) = (unit_lines(cwd, base, a)?, unit_lines(cwd, base, b)?);
+    Some(multiset_diff(&x, &y).len())
+}
+
+/// The files whose own changed lines differ between `a` and `b`, as `git diff --name-only`
+/// would name them: what a phase that moved HEAD from `a` to `b` changed in the unit, without
+/// the files a merge of the base brought in.
+pub fn interdiff_files(cwd: &Path, base: &str, a: &str, b: &str) -> Option<Vec<String>> {
+    let (x, y) = (unit_lines(cwd, base, a)?, unit_lines(cwd, base, b)?);
+    let mut files: Vec<String> = multiset_diff(&x, &y)
+        .into_iter()
+        .filter_map(|l| {
+            let header = l.split('\0').next()?;
+            // `diff --git a/<path> b/<path>`: the b side, as --name-only names it.
+            header.rsplit_once(" b/").map(|(_, p)| p.to_string())
+        })
+        .collect();
+    files.sort();
+    files.dedup();
+    Some(files)
+}
+
+/// The lines in only one of the two sorted-or-not lists, counting repeats.
+fn multiset_diff(a: &[String], b: &[String]) -> Vec<String> {
+    let (mut x, mut y) = (a.to_vec(), b.to_vec());
+    x.sort();
+    y.sort();
+    let (mut i, mut j, mut out) = (0, 0, Vec::new());
+    while i < x.len() && j < y.len() {
+        match x[i].cmp(&y[j]) {
+            std::cmp::Ordering::Equal => {
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => {
+                out.push(x[i].clone());
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                out.push(y[j].clone());
+                j += 1;
+            }
+        }
+    }
+    out.extend(x[i..].iter().cloned());
+    out.extend(y[j..].iter().cloned());
+    out
+}
+
+/// The unit's own `+` and `-` lines at `sha`, each prefixed by its file's `diff --git` header.
+fn unit_lines(cwd: &Path, base: &str, sha: &str) -> Option<Vec<String>> {
+    let lines = |sha: &str| -> Option<Vec<String>> {
+        if sha.is_empty() || sha.starts_with('-') || base.starts_with('-') {
+            return None;
+        }
+        let start = unit_start(cwd, base, sha)?;
+        let out = run(cwd, &["diff-tree", "-p", "-U0", "--no-color", &start, sha]).ok()?;
+        let mut file = String::new();
+        let mut v = Vec::new();
+        for l in out.lines() {
+            if let Some(rest) = l.strip_prefix("diff --git ") {
+                file = rest.to_string();
+            } else if (l.starts_with('+') && !l.starts_with("+++"))
+                || (l.starts_with('-') && !l.starts_with("---"))
+            {
+                v.push(format!("{file}\0{l}"));
+            }
+        }
+        Some(v)
+    };
+    lines(sha)
 }
 
 /// Where `sha`'s own changes start: the newest common ancestor of `sha` with `base` and with every
@@ -447,6 +511,20 @@ mod tests {
 
     fn same_diff(cwd: &Path, base: &str, a: &str, b: &str) -> bool {
         diff_id(cwd, base, a).is_some_and(|x| diff_id(cwd, base, b) == Some(x))
+    }
+
+    #[test]
+    fn a_network_command_runs_in_the_repo_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        g(dir.path(), &["init", "-q"]);
+        let out = net(dir.path(), &["rev-parse", "--show-toplevel"])
+            .output()
+            .unwrap();
+        let want = dir.path().canonicalize().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim_end(),
+            want.to_str().unwrap()
+        );
     }
 
     #[test]
@@ -761,5 +839,66 @@ mod tests {
         );
         g(&dir, &["checkout", "-q", "--detach"]);
         assert_eq!(repo.default_base().unwrap(), sha);
+    }
+
+    #[test]
+    fn interdiff_counts_only_lines_the_unit_itself_changed() {
+        let r = rebased_unit();
+        assert_eq!(
+            interdiff_lines(&r.dir, "main", &r.reviewed, &r.rebased),
+            Some(0),
+            "a clean rebase changes none of the unit's lines"
+        );
+        g(&r.dir, &["checkout", "-q", "unit"]);
+        let edited = commit_file(&r.dir, "work.txt", "one\ntwo\n");
+        assert_eq!(
+            interdiff_lines(&r.dir, "main", &r.rebased, &edited),
+            Some(1),
+            "one added line"
+        );
+        let swapped = commit_file(&r.dir, "work.txt", "uno\ntwo\n");
+        assert_eq!(
+            interdiff_lines(&r.dir, "main", &r.rebased, &swapped),
+            Some(3),
+            "one line removed and two added"
+        );
+        assert_eq!(interdiff_lines(&r.dir, "main", "nope", &swapped), None);
+    }
+
+    #[test]
+    fn took_in_base_sees_a_rebase_and_not_an_own_commit() {
+        let r = rebased_unit();
+        assert!(took_in_base(&r.dir, "main", &r.reviewed, &r.rebased));
+        g(&r.dir, &["checkout", "-q", "unit"]);
+        let own = commit_file(&r.dir, "work.txt", "one\ntwo\n");
+        assert!(!took_in_base(&r.dir, "main", &r.rebased, &own));
+    }
+
+    #[test]
+    fn took_in_base_sees_a_merge_of_the_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        g(&dir, &["init", "-q", "-b", "main"]);
+        commit_file(&dir, "README", "hi\n");
+        g(&dir, &["checkout", "-qb", "unit"]);
+        let reviewed = commit_file(&dir, "work.txt", "one\n");
+        g(&dir, &["checkout", "-q", "main"]);
+        commit_file(&dir, "UPSTREAM", "x\n");
+        g(&dir, &["checkout", "-q", "unit"]);
+        g(
+            &dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "merge",
+                "-q",
+                "--no-edit",
+                "main",
+            ],
+        );
+        let merged = g(&dir, &["rev-parse", "HEAD"]);
+        assert!(took_in_base(&dir, "main", &reviewed, &merged));
     }
 }

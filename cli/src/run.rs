@@ -24,6 +24,7 @@ use crate::watch::NightDir;
 use crate::worktree;
 
 mod ci_gate;
+mod core;
 pub(crate) mod currency;
 mod drive;
 mod locks;
@@ -65,6 +66,8 @@ pub struct RunArgs {
     pub base: Option<String>,
     /// Run the triage phase once and stop (`ns watch`'s triage pass), whatever `from` says.
     pub triage_only: bool,
+    /// Start a new ledger instead of resuming `.ns/<unit>/state.json` (`--fresh`).
+    pub fresh: bool,
     /// The night directory of the `ns watch` that started this run (`--night`).
     pub night: Option<PathBuf>,
     /// The CPU share every phase and gate gets (`--cpus`), or `None` to set nothing.
@@ -328,7 +331,7 @@ fn same_worktree(predicted: &Path, actual: &Path) -> Result<()> {
 // ---------------------------------------------------------------- gh and git helpers
 
 pub fn gh(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = crate::git::scrub(&mut Command::new("gh"))
+    let out = crate::proc::scrub_git(&mut Command::new("gh"))
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -716,7 +719,12 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
 
     let _lock = Lock::acquire(&repo.common_dir, &unit, args.issue)?;
     let base = resolve_base(&repo, args)?;
-    let wt = worktree::ensure(&repo, &unit, Some(&base), &fac.worktree.setup)?;
+    let ensure = || worktree::ensure(&repo, &unit, Some(&base), &fac.worktree.setup);
+    let wt = if shared.night.is_some() {
+        ensure()?
+    } else {
+        crate::stop::scoped(ensure).context("cannot handle SIGINT and SIGTERM")??
+    };
     same_worktree(&wt_path, Path::new(&wt.path))?;
     let pinned = pin::pin(Path::new(&wt.path), &repo.common_dir, &unit, &base, ns)?;
     let ctx = Ctx {

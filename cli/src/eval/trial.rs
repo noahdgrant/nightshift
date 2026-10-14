@@ -127,7 +127,7 @@ fn make_home(home: &Path, skills: &[PathBuf], carry: &[String]) -> Result<()> {
 }
 
 /// A `git` command for scratch repos: fixed identity, no user or system config.
-pub fn git_cmd(dir: &Path) -> Command {
+pub fn git_cmd(dir: &Path) -> crate::proc::Proc {
     let mut c = crate::git::command();
     c.arg("-C")
         .arg(dir)
@@ -427,7 +427,7 @@ pub fn run_sh(
 ) -> Result<ProcResult> {
     let out = File::create(log).with_context(|| format!("cannot create {}", log.display()))?;
     let mut cmd = Command::new("sh");
-    crate::git::scrub(&mut cmd);
+    crate::proc::scrub_git(&mut cmd);
     cmd.arg("-c")
         .arg(script)
         .current_dir(cwd)
@@ -462,14 +462,14 @@ pub fn run_harness(
     let err = File::create(stderr_path)
         .with_context(|| format!("cannot create {}", stderr_path.display()))?;
     let mut cmd = Command::new(bin);
-    crate::git::scrub(&mut cmd);
+    crate::proc::scrub_git(&mut cmd);
     cmd.args(args)
         .current_dir(&scratch.repo)
         .stdout(out)
         .stderr(err);
     sandbox_env(&mut cmd, scratch);
     if subscription {
-        crate::billing::scrub(&mut cmd, argv);
+        crate::proc::scrub_billing(&mut cmd, argv);
     }
     if crate::billing::is_claude(argv) {
         crate::billing::wait_for_bg_tasks(&mut cmd);
@@ -504,7 +504,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let marker = tmp.path().join("survivor");
         let mut cmd = Command::new("sh");
-        crate::git::scrub(&mut cmd);
+        crate::proc::scrub_git(&mut cmd);
         cmd.arg("-c")
             .arg(format!("(sleep 1; touch {}) & sleep 30", marker.display()));
         let (status, timed_out, wall) = run_process(cmd, None, Duration::from_millis(200)).unwrap();
@@ -520,7 +520,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ids = tmp.path().join("ids");
         let mut cmd = Command::new("sh");
-        crate::git::scrub(&mut cmd);
+        crate::proc::scrub_git(&mut cmd);
         cmd.arg("-c")
             .arg("ps -o sid=,pgid= -p $$")
             .stdout(File::create(&ids).unwrap());
