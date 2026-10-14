@@ -94,6 +94,22 @@ fn files_and_lines(list: &Value) -> Vec<(String, u64)> {
         .collect()
 }
 
+/// The baseline file's entries as `(file, snippet)`, checking none stores a line.
+fn baselined(r: &Repo) -> Vec<(String, String)> {
+    r.baseline().unwrap()["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            assert!(f.get("line").is_none(), "a baseline entry has a line: {f}");
+            (
+                f["file"].as_str().unwrap().to_string(),
+                f["snippet"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
 #[test]
 fn a_new_violation_fails_and_names_tool_rule_file_line_and_snippet() {
     let r = Repo::new();
@@ -142,7 +158,7 @@ fn a_baselined_violation_passes() {
         .collect();
     assert_eq!(names, ["rules-baseline.json"]);
     assert_eq!(b["version"], 1);
-    assert_eq!(files_and_lines(&b["violations"]), [("src.py".into(), 2)]);
+    assert_eq!(baselined(&r), [("src.py".into(), "x = eval(s)".into())]);
 
     let (code, v, err) = r.ns(&["check"]);
     assert_eq!(code, Some(0), "{v} {err}");
@@ -163,21 +179,27 @@ fn a_fixed_violation_is_reported_by_check_and_dropped_by_baseline() {
 
     let (code, v, err) = r.ns(&["check"]);
     assert_eq!(code, Some(0), "{v} {err}");
-    assert_eq!(files_and_lines(&v["fixed"]), [("src.py".into(), 2)]);
+    let fixed = v["fixed"].as_array().unwrap();
+    assert_eq!(fixed.len(), 1, "{v}");
+    assert_eq!(fixed[0]["snippet"], "x = eval(s)");
+    assert!(fixed[0]["line"].is_null(), "{v}");
     assert!(err.contains("1 baselined violations are gone"), "{err}");
-    assert_eq!(
-        files_and_lines(&r.baseline().unwrap()["violations"]).len(),
-        2
+    assert_eq!(baselined(&r).len(), 2);
+    let out = common::ns()
+        .args(["rules", "check", "--human"])
+        .current_dir(&r.root)
+        .output();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("fixed: src.py: lint-a: eval is banned\n"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
     );
 
     let (code, v, err) = r.ns(&["baseline"]);
     assert_eq!(code, Some(0), "{v} {err}");
     assert_eq!(v["status"], "written");
-    assert_eq!(files_and_lines(&v["dropped"]), [("src.py".into(), 2)]);
-    assert_eq!(
-        files_and_lines(&r.baseline().unwrap()["violations"]),
-        [("src.py".into(), 3)]
-    );
+    assert_eq!(v["dropped"][0]["snippet"], "x = eval(s)", "{v}");
+    assert_eq!(baselined(&r), [("src.py".into(), "y = eval(s)".into())]);
 
     let (code, v, _) = r.ns(&["baseline"]);
     assert_eq!(code, Some(0));
@@ -217,10 +239,7 @@ fn growth_is_refused_without_allow_growth() {
 
     let (code, v, _) = r.ns(&["baseline", "--allow-growth"]);
     assert_eq!(code, Some(0), "{v}");
-    assert_eq!(
-        files_and_lines(&r.baseline().unwrap()["violations"]).len(),
-        2
-    );
+    assert_eq!(baselined(&r).len(), 2);
 }
 
 #[test]
@@ -234,6 +253,59 @@ fn a_line_number_shift_is_not_a_new_violation() {
     assert_eq!(code, Some(0), "{v} {err}");
     assert_eq!(v["baselined"], 1);
     assert_eq!(v["fixed"], serde_json::json!([]));
+}
+
+#[test]
+fn a_line_number_shift_leaves_the_baseline_byte_for_byte_unchanged() {
+    let r = Repo::new();
+    r.findings(
+        "lint-a",
+        "src.py:2:5: eval is banned\nsrc.py:3:5: eval is banned\n",
+    );
+    r.ns(&["baseline", "--allow-growth"]);
+    let before = fs::read_to_string(r.path(BASELINE)).unwrap();
+    fs::write(r.path("src.py"), format!("\n\n{SRC}")).unwrap();
+    r.findings(
+        "lint-a",
+        "src.py:4:5: eval is banned\nsrc.py:5:5: eval is banned\n",
+    );
+    let (code, v, err) = r.ns(&["baseline"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["status"], "already-done");
+    assert_eq!(fs::read_to_string(r.path(BASELINE)).unwrap(), before);
+    let (code, v, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["new"][0], Value::Null, "{v}");
+    assert_eq!(v["baselined"], 2);
+
+    r.findings("lint-a", "src.py:5:5: eval is banned\n");
+    let (code, v, err) = r.ns(&["baseline"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["status"], "written");
+    assert_eq!(baselined(&r), [("src.py".into(), "y = eval(s)".into())]);
+}
+
+#[test]
+fn a_baseline_with_line_fields_still_loads_and_ignores_them() {
+    let r = Repo::new();
+    fs::create_dir_all(r.path(".nightshift")).unwrap();
+    let entry = |line: u64, snippet: &str| {
+        serde_json::json!({"tool": "lint-a", "rule": "", "file": "src.py", "line": line,
+            "message": "eval is banned", "snippet": snippet})
+    };
+    let old = serde_json::json!({"version": 1, "violations": [entry(9, "x = eval(s)"), entry(9, "y = eval(s)")]});
+    fs::write(r.path(BASELINE), old.to_string()).unwrap();
+    r.findings("lint-a", "src.py:3:5: eval is banned\n");
+    let (code, v, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["baselined"], 1);
+    assert_eq!(v["fixed"][0]["snippet"], "x = eval(s)", "{v}");
+    assert!(v["fixed"][0]["line"].is_null(), "{v}");
+
+    let (code, v, err) = r.ns(&["baseline"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["status"], "written");
+    assert_eq!(baselined(&r), [("src.py".into(), "y = eval(s)".into())]);
 }
 
 #[test]
@@ -333,31 +405,77 @@ fn a_clean_repo_gets_an_empty_baseline_without_allow_growth() {
 }
 
 #[test]
-fn the_baseline_is_sorted_whatever_order_the_tools_print() {
+fn the_baseline_is_sorted_by_key_whatever_order_the_tools_print() {
     let r = Repo::new();
+    fs::write(r.path("src.py"), "import os\ny = eval(s)\nx = eval(s)\n").unwrap();
     r.findings("lint-b", "src.py:2:5: eval is banned\n");
     r.findings(
         "lint-a",
         "src.py:3:5: eval is banned\nsrc.py:2:5: eval is banned\n",
     );
     r.ns(&["baseline", "--allow-growth"]);
-    let tools_and_lines: Vec<(String, u64)> = r.baseline().unwrap()["violations"]
+    let tools_and_snippets: Vec<(String, String)> = r.baseline().unwrap()["violations"]
         .as_array()
         .unwrap()
         .iter()
         .map(|f| {
             (
                 f["tool"].as_str().unwrap().into(),
-                f["line"].as_u64().unwrap(),
+                f["snippet"].as_str().unwrap().into(),
             )
         })
         .collect();
     assert_eq!(
-        tools_and_lines,
+        tools_and_snippets,
         [
-            ("lint-a".into(), 2),
-            ("lint-a".into(), 3),
-            ("lint-b".into(), 2)
+            ("lint-a".into(), "x = eval(s)".into()),
+            ("lint-a".into(), "y = eval(s)".into()),
+            ("lint-b".into(), "y = eval(s)".into())
+        ]
+    );
+}
+
+#[test]
+fn the_baseline_orders_by_tool_rule_file_snippet_then_message() {
+    let r = Repo::new();
+    fs::write(r.path("a.py"), "aa\nbb\n").unwrap();
+    fs::write(r.path("b.py"), "cc\n").unwrap();
+    let f = |rule: &str, file: &str, line: u32, message: &str| {
+        format!(
+            "{{\"rule\": \"{rule}\", \"file\": \"{file}\", \"line\": {line}, \"message\": \"{message}\"}}\n"
+        )
+    };
+    r.findings("lint-b", &f("R1", "b.py", 1, "m"));
+    r.findings(
+        "lint-a",
+        &[
+            f("R2", "a.py", 1, "m"),
+            f("R1", "b.py", 1, "m"),
+            f("R1", "a.py", 2, "a"),
+            f("R1", "a.py", 1, "z"),
+            f("R1", "a.py", 1, "a"),
+        ]
+        .concat(),
+    );
+    r.ns(&["baseline", "--allow-growth"]);
+    let written: Vec<[String; 5]> = r.baseline().unwrap()["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            ["tool", "rule", "file", "snippet", "message"].map(|k| e[k].as_str().unwrap().into())
+        })
+        .collect();
+    let row = |a: &str, b: &str, c: &str, d: &str, e: &str| [a, b, c, d, e].map(String::from);
+    assert_eq!(
+        written,
+        [
+            row("lint-a", "R1", "a.py", "aa", "a"),
+            row("lint-a", "R1", "a.py", "aa", "z"),
+            row("lint-a", "R1", "a.py", "bb", "a"),
+            row("lint-a", "R1", "b.py", "cc", "m"),
+            row("lint-a", "R2", "a.py", "aa", "m"),
+            row("lint-b", "R1", "b.py", "cc", "m"),
         ]
     );
 }

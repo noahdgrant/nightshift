@@ -38,10 +38,46 @@ impl Finding {
     }
 }
 
+/// A finding as the baseline stores it: without its line, so a line shift leaves the file
+/// unchanged. A `line` in an older file is ignored.
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+struct Entry {
+    tool: String,
+    rule: String,
+    file: String,
+    snippet: String,
+    message: String,
+}
+
+impl From<&Finding> for Entry {
+    fn from(f: &Finding) -> Entry {
+        Entry {
+            tool: f.tool.clone(),
+            rule: f.rule.clone(),
+            file: f.file.clone(),
+            message: f.message.clone(),
+            snippet: f.snippet.clone(),
+        }
+    }
+}
+
+impl From<Entry> for Finding {
+    fn from(e: Entry) -> Finding {
+        Finding {
+            tool: e.tool,
+            rule: e.rule,
+            file: e.file,
+            line: None,
+            message: e.message,
+            snippet: e.snippet,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Baseline {
     version: u32,
-    violations: Vec<Finding>,
+    violations: Vec<Entry>,
 }
 
 /// The commands in a table row `| rules | `<cmd>`, `<cmd>` | ... |`: every backticked span
@@ -261,7 +297,7 @@ fn load_baseline(path: &Path) -> Result<Option<Vec<Finding>>> {
         SfError::general(format!("{} is not a rules baseline: {e}", path.display()))
             .hint("restore it from git:\n  git checkout -- .nightshift/rules-baseline.json\nor delete it and have a human rerun:\n  ns rules baseline --allow-growth")
     })?;
-    Ok(Some(b.violations))
+    Ok(Some(b.violations.into_iter().map(Finding::from).collect()))
 }
 
 struct Ctx {
@@ -406,9 +442,11 @@ pub fn baseline(allow_growth: bool, dry_run: bool, format: Format) -> Result<Exi
     } else if dry_run {
         "planned"
     } else {
+        let mut violations: Vec<Entry> = run.findings.iter().map(Entry::from).collect();
+        violations.sort();
         let text = serde_json::to_string_pretty(&Baseline {
             version: 1,
-            violations: run.findings.clone(),
+            violations,
         })?;
         fs::create_dir_all(path.parent().unwrap_or(&c.root))
             .with_context(|| format!("cannot create the directory for {}", path.display()))?;
