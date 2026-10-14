@@ -586,6 +586,12 @@ error[E0308]: mismatched types
   --> src/c.rs:13:5
 ";
     assert_eq!(failing_paths(out), ["src/d.rs", "src/c.rs"]);
+    let no_blank = "warning: unused\n --> src/a.rs:2:9\nerror: mismatched\n --> src/c.rs:3:1\n";
+    assert_eq!(
+        failing_paths(no_blank),
+        ["src/c.rs"],
+        "an error header ends the warning"
+    );
 }
 
 #[test]
