@@ -627,3 +627,14 @@ fn same_file_matches_what_the_printed_path_pins_down() {
     );
     assert!(same("b/src/main.rs", "b/src/main.rs"));
 }
+
+#[test]
+fn same_file_exact_match_wins_over_a_deeper_file_with_the_same_tail() {
+    let root = Path::new("/work/wt");
+    let tracked: Vec<String> = ["src/main.rs", "cli/src/main.rs"].map(String::from).into();
+    assert!(same_file("src/main.rs", "src/main.rs", root, &tracked));
+    assert!(
+        !same_file("cli/src/main.rs", "src/main.rs", root, &tracked),
+        "a root-relative print names the root file"
+    );
+}

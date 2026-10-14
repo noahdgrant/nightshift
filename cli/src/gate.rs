@@ -561,15 +561,21 @@ pub fn failing_paths(output: &str) -> Vec<String> {
 /// `changed`, a repo-relative path, is the file `failing` names, a path a tool printed in the
 /// worktree at `root`. An absolute path names the file at its rest under `root`. A relative one,
 /// printed from the root or a subdirectory such as `cli/`, names `changed` when it ends with it on
-/// a path boundary and no other of the `tracked` files does: with two crates, `src/main.rs`
+/// a path boundary and no other of the `tracked` files does (an exact match always names it): with two crates, `src/main.rs`
 /// names neither.
 pub fn same_file(changed: &str, failing: &str, root: &Path, tracked: &[String]) -> bool {
     let printed = Path::new(failing);
     if printed.is_absolute() {
         return printed.strip_prefix(root) == Ok(Path::new(changed));
     }
-    let ends = |t: &str| t == failing || t.ends_with(&format!("/{failing}"));
-    ends(changed) && !tracked.iter().any(|t| t != changed && ends(t))
+    if changed == failing {
+        return true;
+    }
+    let suffix = format!("/{failing}");
+    changed.ends_with(&suffix)
+        && !tracked
+            .iter()
+            .any(|t| t != changed && (t == failing || t.ends_with(&suffix)))
 }
 
 #[cfg(test)]

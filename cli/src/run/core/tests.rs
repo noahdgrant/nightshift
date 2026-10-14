@@ -569,3 +569,30 @@ fn a_fault_credit_or_a_free_ship_leaves_the_rewrite_for_the_next_attempt() {
     ended(&mut l, &a, None);
     assert!(admit(&mut l, "ship").unwrap().rewrite);
 }
+
+#[test]
+fn a_resumed_ledger_drops_a_forced_rebase_with_its_decision() {
+    let mut l = Ledger::new(None);
+    l.merge_back(MergeBack::Rebase {
+        feedback: String::new(),
+        why: "base moved".into(),
+    })
+    .unwrap();
+    l.saved_at("abc1234");
+    assert!(l.resumed_at("def5678"));
+    let (d, rebase) = l.next(&empty());
+    assert!(
+        rebase.is_none(),
+        "the dropped decision's rebase was replayed"
+    );
+    assert!(
+        matches!(
+            d,
+            Decision::Run {
+                phase: "triage",
+                ..
+            }
+        ),
+        "{d:?}"
+    );
+}

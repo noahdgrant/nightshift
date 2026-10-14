@@ -94,7 +94,7 @@ pr: <url, once it is open>
 
 Push the branch and open the PR as `docs/agents/issue-tracker.md` says: title from the commit, the body from `maintain.md` opened with the [disclosure line](../ns-contract/SKILL.md#disclosure), labels and the `Closes` line by the repo's rules, ready for review. Never merge it. A human merges, or `ns run`'s merge step does.
 
-Set `status: pass` when the PR is open and step 5 passed, `fail` when a check stays red, and `blocked` when the branch can't be pushed or the PR opened (no remote, no forge access). The first body line of a `fail` or `blocked` artifact names the cause in one sentence. Keep the branch either way.
+Set `status: pass` when the PR is open and step 5 passed, `fail` when a check stays red, and `blocked` when the branch can't be pushed or the PR opened (no remote, no forge access). The frontmatter `reason` of a `fail` or `blocked` artifact names the cause in one sentence. Keep the branch either way.
 
 Done when the skill's PR is open, or its `maintain.md` says why not.
 
