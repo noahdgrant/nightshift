@@ -580,11 +580,12 @@ warning: unused variable: `x`
 2 |     let x = 1;
   |         ^ help: prefix it with an underscore: `_x`
 
+thread 'x' (123) panicked at src/d.rs:4:5:
 src/b.c:4:1: warning: implicit declaration
 error[E0308]: mismatched types
   --> src/c.rs:13:5
 ";
-    assert_eq!(failing_paths(out), ["src/c.rs"]);
+    assert_eq!(failing_paths(out), ["src/d.rs", "src/c.rs"]);
 }
 
 #[test]

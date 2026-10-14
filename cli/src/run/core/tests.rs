@@ -536,3 +536,36 @@ fn a_ship_that_rebases_leaves_the_follows_base_credit() {
     let a = ship(&mut l, "s2").expect("the follows-base credit, kept");
     assert!(a.follows_base && a.rebase.is_none());
 }
+
+#[test]
+fn a_fault_credit_or_a_free_ship_leaves_the_rewrite_for_the_next_attempt() {
+    let mut l = Ledger::new(None);
+    let a = admit(&mut l, "build").unwrap();
+    ended(&mut l, &a, None);
+    l.artifact_invalid(&a, "build.md", &["x".into()]);
+    let r = admit(&mut l, "review").unwrap();
+    l.head_moved("review", "a000001", "b000002");
+    l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "review"));
+    let a = admit(&mut l, "build").unwrap();
+    assert_eq!((a.fault_of.as_deref(), a.rewrite), (Some("review"), false));
+    ended(&mut l, &a, Some("pass"));
+    assert!(admit(&mut l, "build").unwrap().rewrite);
+
+    let mut l = Ledger::new(None);
+    let a = l
+        .admit(
+            "ship",
+            String::new(),
+            "x".into(),
+            Some(Rebase::BaseMoved),
+            Some(main_at("s1")),
+            1,
+        )
+        .unwrap();
+    ended(&mut l, &a, Some("pass"));
+    l.artifact_invalid(&a, "pr.md", &["x".into()]);
+    let a = admit(&mut l, "ship").unwrap();
+    assert_eq!((a.follows_base, a.rewrite), (true, false));
+    ended(&mut l, &a, None);
+    assert!(admit(&mut l, "ship").unwrap().rewrite);
+}

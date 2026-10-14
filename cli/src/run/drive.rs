@@ -885,6 +885,24 @@ mod tests {
     }
 
     #[test]
+    fn a_ledger_with_nothing_forced_resumes_at_any_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::new(None);
+        ledger.saved_at("abc1234");
+        save(dir.path(), &ledger);
+        let (_, events) = start_ledger(&RunArgs::default(), dir.path(), "def5678");
+        assert_eq!(events[0]["forced_dropped"], false);
+    }
+
+    #[test]
+    fn an_unreadable_ledger_is_rederived_and_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(ledger_path(dir.path())).unwrap();
+        let (_, events) = start_ledger(&RunArgs::default(), dir.path(), "abc1234");
+        assert_eq!(events[0]["event"], "state_rederived", "{events:?}");
+    }
+
+    #[test]
     fn a_torn_ledger_is_rederived_and_logged() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(ledger_path(dir.path()), "{\"attempts\": {\"bui").unwrap();
