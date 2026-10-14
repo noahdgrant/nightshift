@@ -68,7 +68,9 @@ pub struct Plan {
 pub fn plan(repo: &Repo) -> Result<Plan> {
     let mut plan = Plan::default();
     let default = repo.default_base().ok();
-    let fac = factory::load(&factory::root(None, &repo.root))?;
+    let queue = factory::load(&factory::root(None, &repo.root))
+        .map(|f| f.queue)
+        .unwrap_or_default();
     for e in git::worktrees(&repo.root)? {
         let Some(branch) = e
             .branch
@@ -85,7 +87,7 @@ pub fn plan(repo: &Repo) -> Result<Plan> {
             },
             None => continue,
         };
-        match merged(&fac.queue, unit, &e.path, on_default) {
+        match merged(&queue, unit, &e.path, on_default) {
             Ok(m) => match held(repo, unit).or_else(|| local_reason(repo, &m)) {
                 None => plan.merged.push(m),
                 Some(r) => plan.kept.push(kept(unit, &e.path, r)),
@@ -593,6 +595,20 @@ mod tests {
             local_reason(&repo, &m).as_deref(),
             Some("its HEAD is not on main")
         );
+    }
+
+    #[test]
+    fn a_malformed_factory_file_does_not_stop_the_plan() {
+        let (_tmp, repo, m) = left_on_main();
+        g(&m.path, &["checkout", "-q", "-b", "ns/3-done"]);
+        let dir = repo.root.join(".nightshift");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("nightshift.toml"), "[queue\nsource = ").unwrap();
+        assert!(factory::load(&dir).is_err());
+        let plan = plan(&repo).expect("a malformed factory file must not abort the plan");
+        assert!(plan.merged.is_empty());
+        assert_eq!(plan.kept.len(), 1, "{:?}", plan.kept);
+        assert!(plan.kept[0].to_string().contains("3-done"));
     }
 
     #[test]

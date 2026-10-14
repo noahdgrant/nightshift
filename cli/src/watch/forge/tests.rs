@@ -248,6 +248,19 @@ fn last_green_skips_runs_on_the_red_head() {
 }
 
 #[test]
+fn commit_prs_refuses_what_is_not_a_commit_id_before_calling_the_forge() {
+    let root = std::env::temp_dir();
+    let github = GitHub { root: root.clone() };
+    let gitlab = gitlab::GitLab { root };
+    for sha in ["--output=x", "abc1234", &"a".repeat(41)] {
+        for forge in [&github as &dyn Forge, &gitlab] {
+            let e = forge.commit_prs(sha).unwrap_err();
+            assert!(format!("{e:#}").contains("not a commit id"), "{sha}: {e:#}");
+        }
+    }
+}
+
+#[test]
 fn last_green_skips_what_is_not_a_commit_id() {
     let runs = serde_json::json!([
         {"headSha": "--output=x"}, {"headSha": "abc"}, {"headSha": "zzzzzzzz"},
