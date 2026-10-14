@@ -169,7 +169,8 @@ pub enum LocalGate {
     /// Every gate runs the full command.
     #[default]
     EveryStep,
-    /// Only the gate after build runs the full command; every other gate runs the fast one.
+    /// Only the gate after build runs the full command; the gates after other phases run the fast
+    /// one, and none runs after ship.
     BuildOnly,
 }
 
@@ -420,7 +421,7 @@ impl Factory {
         };
         (!fast).then(|| {
             format!(
-                "[gate] local = \"build-only\" runs `{base} --fast` after every phase but build, and {source} shows no --fast support; add --fast to the script, or set [gate] local = \"every-step\" (docs/factory/run.md, Where the gate runs all of CI)"
+                "[gate] local = \"build-only\" runs `{base} --fast` after every phase but build and ship, and {source} shows no --fast support; add --fast to the script, or set [gate] local = \"every-step\" (docs/factory/run.md, Where the gate runs all of CI)"
             )
         })
     }
