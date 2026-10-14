@@ -6,10 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
 
-use super::currency::Art;
 use super::merge::{conflicts, fetch_tip, human, MergeStep};
 use super::Ctx;
-use crate::factory::LocalGate;
 use crate::gate;
 use crate::git::{self, same_sha};
 
@@ -66,24 +64,6 @@ impl Ctx<'_> {
                 night: self.gate.night.as_deref(),
             },
         }
-    }
-}
-
-/// The gate to run after `phase`, if any. Under `build-only` none runs after ship: the PR's
-/// GitHub checks decide in the merge step.
-pub(super) fn gate_trigger(
-    phase: &str,
-    art: Option<&Art>,
-    head_moved: bool,
-    local: LocalGate,
-) -> Option<gate::Trigger> {
-    match (phase, art) {
-        ("build", Some(a)) if a.status == "pass" => Some(gate::Trigger::BuildPassed),
-        ("build", None) => Some(gate::Trigger::BuildWroteNothing),
-        ("build", _) => None,
-        ("ship", _) if local == LocalGate::BuildOnly => None,
-        _ if head_moved => Some(gate::Trigger::PhaseMovedHead),
-        _ => None,
     }
 }
 
@@ -384,41 +364,5 @@ mod tests {
         fs::remove_dir_all(&path).unwrap();
         let s = Scratch::add(&wt, &common, "9-x", &head).unwrap();
         assert!(s.path.join("f.c").is_file());
-    }
-
-    /// Build triggers the gate on a pass or no artifact, and never otherwise; a later phase
-    /// triggers it by moving HEAD, except ship under `build-only`.
-    #[test]
-    fn gate_trigger_maps_each_phase_outcome() {
-        use gate::Trigger::*;
-        let art = |status: &str| Art {
-            status: status.into(),
-            ..Default::default()
-        };
-        let (pass, fail) = (art("pass"), art("fail"));
-        let every = LocalGate::EveryStep;
-        assert_eq!(
-            gate_trigger("build", Some(&pass), false, every),
-            Some(BuildPassed)
-        );
-        assert_eq!(gate_trigger("build", Some(&fail), false, every), None);
-        assert_eq!(gate_trigger("build", Some(&fail), true, every), None);
-        assert_eq!(
-            gate_trigger("build", None, false, every),
-            Some(BuildWroteNothing)
-        );
-        assert_eq!(
-            gate_trigger("verify", Some(&pass), true, every),
-            Some(PhaseMovedHead)
-        );
-        assert_eq!(gate_trigger("verify", Some(&pass), false, every), None);
-        assert_eq!(
-            gate_trigger("ship", Some(&pass), true, every),
-            Some(PhaseMovedHead)
-        );
-        assert_eq!(
-            gate_trigger("ship", Some(&pass), true, LocalGate::BuildOnly),
-            None
-        );
     }
 }

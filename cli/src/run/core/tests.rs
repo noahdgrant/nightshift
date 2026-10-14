@@ -2,11 +2,9 @@ use super::*;
 
 fn empty() -> State {
     State {
-        arts: BTreeMap::new(),
         head: "abc1234".into(),
         has_issue: true,
-        unit_diff: None,
-        carried: BTreeMap::new(),
+        ..State::default()
     }
 }
 

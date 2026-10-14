@@ -454,7 +454,7 @@ fn after(p: Phase) -> Next {
     }
 }
 
-/// A `/1` fail's cause and next, by `decide`'s rules in `run/currency.rs`.
+/// A `/1` fail's cause and next, by `decide`'s rules in `run/core/route.rs`.
 fn v1_fail(phase: Phase, body: &str) -> (Cause, Next) {
     match phase {
         Phase::Triage | Phase::Troubleshoot => (Cause::NeedsHuman, Next::Human),

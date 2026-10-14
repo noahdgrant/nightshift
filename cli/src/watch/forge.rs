@@ -1,6 +1,8 @@
 //! The forge `ns watch` reads its queue from and keeps issue state on, chosen by `[queue] source`
 //! (docs/FACTORY.md). Credentials are `crate::forge`'s job, not this module's.
 
+#[cfg(test)]
+pub(crate) mod fake;
 mod gitlab;
 mod main_checks;
 

@@ -8,7 +8,7 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
 use super::ci_gate::{gate_before_merge, gate_merge_result};
-use super::currency::{known_pr, State};
+use super::currency::{known_pr, learn_sha, State};
 use super::locks::{Bound, MERGE_LOCK};
 use super::{finish, gh, gh_json, holder_pid, remote_default, Ctx, Finish, Lock, Outcome, Shared};
 use crate::clock::Clock;
@@ -500,6 +500,8 @@ fn open_pr(ctx: &Ctx<'_>, state: &State) -> Result<Result<(u64, String, String),
     }
     let head = git::run(wt, &["rev-parse", "HEAD"]).unwrap_or_default();
     let pr_head = view["headRefOid"].as_str().unwrap_or("");
+    let mut state = state.clone();
+    learn_sha(&mut state, wt, &ctx.base, pr_head);
     if !state.current(pr_head) {
         return Ok(Err(human(format!(
             "PR head {pr_head} is not current with HEAD {head}; needs a human merge"

@@ -350,12 +350,12 @@ mod tests {
 
     #[test]
     fn a_triage_brief_sets_the_label_and_a_run_with_no_brief_leaves_it() {
-        use crate::watch::tests::Fake;
+        use crate::watch::forge::fake::FakeForge;
         let q = QueueConfig::default();
         let dir = tempfile::tempdir().unwrap();
         let brief = dir.path().join("brief.md");
         let at = brief.to_str().unwrap();
-        let f = Fake::default();
+        let f = FakeForge::default();
         f.labels
             .borrow_mut()
             .insert(5, vec!["status:needs-triage".into(), "type:fix".into()]);

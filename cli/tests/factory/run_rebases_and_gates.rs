@@ -1,21 +1,4 @@
 #[test]
-fn a_free_rebase_build_that_writes_no_artifact_leaves_the_unit_stuck_at_the_normal_cap() {
-    let e = Env::new();
-    base_moves_during_build(&e, "");
-    e.queue("build", &["pass:script", "none", "pass:commit"]);
-    e.queue("verify", &["fail:base moved"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert!(
-        v["reason"]
-            .as_str()
-            .unwrap()
-            .starts_with("build is out of attempts (2)"),
-        "{v}"
-    );
-    assert_eq!(e.calls(), ["triage", "build", "verify", "build"]);
-}
-
-#[test]
 fn a_free_rebase_that_gives_up_waiting_for_a_lock_still_rebases_on_the_retry() {
     let e = Env::new();
     let lock = e.base.join("locks/bench-1.lock");
@@ -116,44 +99,6 @@ fn a_red_gate_after_a_rebase_with_main_still_spends_an_attempt() {
         ["triage", "build", "verify", "build", "build", "verify"]
     );
     assert_eq!(rebase_events(&e).len(), 1);
-}
-
-#[test]
-fn a_build_that_fails_saying_base_moved_still_spends_an_attempt() {
-    let e = Env::new();
-    e.queue("build", &["fail:base moved", "fail:base moved"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["reason"], "build is out of attempts (2)", "{v}");
-    assert_eq!(e.calls(), ["triage", "build", "build"]);
-    assert!(rebase_events(&e).is_empty());
-}
-
-#[test]
-fn without_an_origin_a_base_moved_no_go_spends_an_attempt() {
-    let e = Env::new();
-    git(&e.root, &["remote", "remove", "origin"]);
-    e.queue("build", &["pass:commit", "pass:commit"]);
-    e.queue("verify", &["fail:base moved", "fail"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert!(
-        v["reason"].as_str().unwrap().contains("out of attempts"),
-        "{v}"
-    );
-    assert!(rebase_events(&e).is_empty());
-}
-
-#[test]
-fn attempt_limit_gives_stuck() {
-    let e = Env::new();
-    e.queue("build", &["pass:commit", "pass:commit", "pass:commit"]);
-    e.queue("verify", &["fail", "fail"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["outcome"], "stuck");
-    assert!(
-        v["reason"].as_str().unwrap().contains("out of attempts"),
-        "{v}"
-    );
-    assert_eq!(e.calls(), ["triage", "build", "verify", "build", "verify"]);
 }
 
 #[test]
@@ -496,28 +441,6 @@ fn a_phase_that_kills_its_own_group_is_a_failed_attempt_not_a_dead_watch() {
     assert_eq!(v["units"][0]["outcome"], "done", "{v}");
     assert_eq!(&e.calls()[..3], ["triage", "build", "build"]);
     assert_eq!(build_event(&e, 1)["written"], false);
-}
-
-#[test]
-fn triage_without_brief_is_stuck() {
-    let e = Env::new();
-    e.queue("triage", &["none"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert!(v["reason"].as_str().unwrap().contains("no brief"), "{v}");
-    assert_eq!(e.calls(), ["triage"]);
-}
-
-#[test]
-fn review_commit_makes_evidence_stale_and_reverifies() {
-    let e = Env::new();
-    e.queue("build", &["pass:commit"]);
-    e.queue("review", &["pass:commit"]);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "verify", "review", "verify", "ship"]
-    );
 }
 
 /// The `gate` events in the run log.

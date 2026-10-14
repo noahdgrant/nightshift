@@ -1,4 +1,7 @@
 use super::*;
+use crate::run::core::route::{
+    base_moved, decide, first_line, rebases_for_base, Carried, Decision,
+};
 use crate::testutil::{commit_file, g, rebased_unit, Rebased};
 
 fn art(status: &str, sha: &str) -> Art {
@@ -17,8 +20,7 @@ fn state(arts: &[(&'static str, Art)]) -> State {
         arts: arts.iter().cloned().collect(),
         head: "abc1234".into(),
         has_issue: true,
-        unit_diff: None,
-        carried: BTreeMap::new(),
+        ..State::default()
     }
 }
 
@@ -316,29 +318,40 @@ fn known_pr_skips_an_archive_whose_pr_does_not_parse() {
     assert_eq!(known_pr(d), Some(21));
 }
 
-fn real_state(r: &Rebased) -> State {
-    State {
-        arts: BTreeMap::new(),
-        head: r.rebased.clone(),
+/// The unit's state at `head`, with the diff ids of `shas` read against `main`.
+fn state_at(r: &Rebased, head: &str, shas: &[&str]) -> State {
+    let mut s = State {
+        head: head.to_string(),
         has_issue: true,
-        unit_diff: Some(UnitDiff::new(r.dir.clone(), "main".into(), &r.rebased)),
-        carried: BTreeMap::new(),
+        diffs: Some(Diffs {
+            head: git::diff_id(&r.dir, "main", head),
+            of: BTreeMap::new(),
+        }),
+        ..State::default()
+    };
+    for sha in shas {
+        learn_sha(&mut s, &r.dir, "main", sha);
     }
+    s
+}
+
+fn real_state(r: &Rebased) -> State {
+    state_at(r, &r.rebased, &[&r.reviewed])
 }
 
 #[test]
 fn current_matches_head_a_rebased_diff_and_nothing_else() {
     let r = rebased_unit();
-    let s = real_state(&r);
+    let first = g(&r.dir, &["rev-parse", "main"]);
+    let s = state_at(&r, &r.rebased, &[&r.reviewed, "0000000", &first]);
     assert!(s.current(&r.rebased));
     assert!(s.current(&r.rebased[..7]));
     assert!(s.current(&r.reviewed));
     assert!(!s.current("0000000"));
     assert!(!s.current(""));
-    let first = g(&r.dir, &["rev-parse", "main"]);
     assert!(!s.current(&first));
     let mut no_base = real_state(&r);
-    no_base.unit_diff = None;
+    no_base.diffs = None;
     assert!(!no_base.current(&r.reviewed));
 }
 
@@ -350,7 +363,7 @@ fn decide_is_done_for_artifacts_at_the_pre_rebase_sha() {
         s.arts.insert(p, art("pass", &r.reviewed));
     }
     assert_eq!(decide(&s), Decision::Done);
-    s.unit_diff = None;
+    s.diffs = None;
     assert_ne!(decide(&s), Decision::Done);
 }
 
@@ -380,9 +393,7 @@ fn a_rebase_archives_nothing_downstream() {
     .unwrap();
     commit_file(&r.dir, "work.txt", "two\n");
     let head = g(&r.dir, &["rev-parse", "HEAD"]);
-    let mut changed = real_state(&r);
-    changed.unit_diff = Some(UnitDiff::new(r.dir.clone(), "main".into(), &head));
-    changed.head = head;
+    let changed = state_at(&r, &head, &[&r.reviewed]);
     archive_for(d, "verify", &changed).unwrap();
     assert!(!d.join("review.md").exists() && !d.join("pr.md").exists());
 }
@@ -535,7 +546,7 @@ fn an_invalid_v2_artifact_counts_as_absent() {
     v2(d, "evidence.md", "verify", "fail", "nonsense", "build", "");
     let a = read_art(&d.join("evidence.md")).unwrap();
     assert!(a.invalid.as_ref().is_some_and(|e| !e.is_empty()), "{a:?}");
-    let s = read_state(d, "abc1234".into(), true, None);
+    let s = read_state(d, "abc1234".into(), true, None, Settings::default());
     assert!(!s.arts.contains_key("verify"));
 }
 

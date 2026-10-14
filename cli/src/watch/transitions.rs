@@ -306,7 +306,7 @@ fn set_status(forge: &dyn Forge, q: &QueueConfig, n: u64, end: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::watch::tests::Fake;
+    use crate::watch::forge::fake::FakeForge;
 
     /// Every row, with the label it must end on under the default queue.
     const ROWS: &[(State, Event, Option<&str>)] = &[
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(ROWS.len(), TABLE.len(), "a row has no test");
         let q = QueueConfig::default();
         for &(from, event, want) in ROWS {
-            let f = Fake::default();
+            let f = FakeForge::default();
             let start = vec![
                 "type:fix".to_string(),
                 "status:in-progress".into(),
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn a_move_with_no_row_is_an_error_and_edits_nothing() {
-        let f = Fake::default();
+        let f = FakeForge::default();
         f.labels
             .borrow_mut()
             .insert(7, vec!["status:ready-for-agent".into()]);
@@ -446,7 +446,7 @@ mod tests {
             split_label: "tracking".into(),
             ..QueueConfig::default()
         };
-        let f = Fake::default();
+        let f = FakeForge::default();
         apply(&f, &q, 3, State::InProgress, Event::Budget).unwrap();
         assert_eq!(f.labels(3).unwrap(), ["go"]);
         apply(&f, &q, 3, State::Triage, Event::Triaged(Next::Split)).unwrap();
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn a_split_label_that_cannot_be_created_still_moves_the_issue() {
-        let mut f = Fake::default();
+        let mut f = FakeForge::default();
         f.fails.insert("ensure_label");
         apply(
             &f,
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn a_forge_that_cannot_edit_labels_fails_the_move() {
-        let mut f = Fake::default();
+        let mut f = FakeForge::default();
         f.labels.borrow_mut().insert(2, vec!["status:x".into()]);
         f.fails.insert("edit_labels");
         let e = apply(&f, &QueueConfig::default(), 2, State::Ready, Event::Claim).unwrap_err();

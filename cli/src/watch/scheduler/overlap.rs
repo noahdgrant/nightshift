@@ -256,7 +256,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::watch::tests::Fake;
+    use crate::watch::forge::fake::FakeForge;
 
     fn issue(number: u64, body: &str) -> Issue {
         Issue {
@@ -295,7 +295,7 @@ mod tests {
         ready: &[Issue],
         running: &[(String, Vec<String>)],
         make: impl FnOnce() -> Overlap,
-        forge: &Fake,
+        forge: &FakeForge,
     ) -> Option<u64> {
         let mut ready = ready.to_vec();
         let mut picker = Picker::new(forge, make);
@@ -306,16 +306,16 @@ mod tests {
     }
 
     /// Issues 2, 3 and 4 in queue order; issue n's brief comment predicts `briefs[n - 2]`.
-    fn queued(briefs: [&str; 3]) -> (Fake, Vec<Issue>) {
+    fn queued(briefs: [&str; 3]) -> (FakeForge, Vec<Issue>) {
         let comments: BTreeMap<u64, Vec<String>> = (2..)
             .zip(briefs)
             .map(|(n, b)| (n, vec![brief(b)]))
             .collect();
         let ready = (2..=4).map(|n| issue(n, "")).collect();
         (
-            Fake {
+            FakeForge {
                 comments,
-                ..Fake::default()
+                ..FakeForge::default()
             },
             ready,
         )
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn the_newest_brief_predicts_and_an_unreadable_one_predicts_nothing() {
-        let mut forge = Fake::default();
+        let mut forge = FakeForge::default();
         let body = issue(2, &brief("`a.rs`"));
         assert_eq!(predicted(&forge, &body), ["a.rs"]);
         forge.comments.insert(
@@ -403,7 +403,7 @@ mod tests {
     }
 
     fn take_all(
-        forge: &Fake,
+        forge: &FakeForge,
         ready: &mut Vec<Issue>,
         running: &[(String, Vec<String>)],
     ) -> Vec<u64> {
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn one_ready_issue_beside_no_running_unit_reads_no_comments() {
-        let forge = Fake::default();
+        let forge = FakeForge::default();
         let mut ready = vec![issue(2, "")];
         let mut picker = Picker::new(&forge, || panic!("rule read"));
         let (mut holds, mut events) = (Holds::default(), Vec::new());
@@ -503,7 +503,7 @@ mod tests {
     /// One fill at `now` on `ready` beside a unit `1-fix-1` touching `cli/**`, with tonight's
     /// `holds`: the issue it starts, and the events it logs.
     fn fill_at(
-        forge: &Fake,
+        forge: &FakeForge,
         ready: &[Issue],
         now: i64,
         holds: &mut Holds,
