@@ -507,7 +507,6 @@ fn one_matrix_job_tests_every_rule_pack_scripts_rule_packs_sh_lists() {
         "PACK: ${{ matrix.pack }}",
         r#"read -ra tools < "rules/$PACK/TOOLS""#,
         r#"scripts/ci-tools.sh install "${tools[@]}""#,
-        r#"scripts/check-git-dir-decoy.sh "rules/$PACK/tests/run.sh""#,
     ] {
         assert!(
             job.contains(want),
@@ -522,6 +521,14 @@ fn one_matrix_job_tests_every_rule_pack_scripts_rule_packs_sh_lists() {
     let named = Regex::new(r"rules/[a-z]+/tests").unwrap();
     let hits: Vec<_> = named.find_iter(&yml).map(|m| m.as_str()).collect();
     assert!(hits.is_empty(), "ci.yml names a pack: {hits:?}");
+    assert!(
+        job.lines().filter(|l| l.contains("tests/run.sh\"")).count() == 1,
+        "the rule-packs job runs a pack's tests more than once:\n{job}"
+    );
+    assert!(
+        !yml.contains("check-git-dir-decoy"),
+        "ci.yml still runs the decoy GIT_DIR check, which the entry points replace (#638)"
+    );
 }
 
 #[test]
