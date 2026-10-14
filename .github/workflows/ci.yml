@@ -4,6 +4,11 @@ name: CI
 # date with main (parallel units kept rebasing), so a merge is not exactly what
 # CI tested: two PRs that each pass alone can still break main together. The
 # push run on main catches that.
+#
+# On a pull request the Rust job runs only the cargo test binaries that read a changed path
+# (scripts/ci-affected.sh --cargo-test, from scripts/ci-affected.map), and the fixture and rule
+# pack jobs skip their tests when no path under them changed. The skips are steps inside the
+# jobs, so every required check still reports. On a push to main everything runs.
 on:
   pull_request:
   push:
@@ -30,6 +35,8 @@ jobs:
         working-directory: cli
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the base's history, for the paths a pull request changed
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -46,9 +53,18 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: ${{ steps.tools.outputs.install-action }}
+      - name: Paths this pull request changed (scripts/ci-pr-files.sh; on a push to main every test runs)
+        if: github.event_name == 'pull_request'
+        working-directory: .
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: scripts/ci-pr-files.sh
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - name: cargo test, on a pull request only the binaries that read a changed path
+        working-directory: .
+        run: scripts/ci-affected.sh --cargo-test
 
   skills-and-evals:
     name: Skills lint and eval dry-run
@@ -110,14 +126,36 @@ jobs:
         working-directory: evals/fixtures/py-inventory
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the base's history, for the paths a pull request changed
+      - name: Paths this pull request changed (scripts/ci-pr-files.sh; on a push to main every test runs)
+        if: github.event_name == 'pull_request'
+        working-directory: .
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: scripts/ci-pr-files.sh
+      - name: Which fixtures changed (scripts/ci-affected.sh --changed)
+        id: changed
+        working-directory: .
+        run: |
+          for fixture in py_inventory=evals/fixtures/py-inventory/ troubleshoot=skills/ns-troubleshoot/; do
+            if scripts/ci-affected.sh --changed "${fixture#*=}"; then
+              echo "${fixture%%=*}=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "No path under ${fixture#*=} changed; its tests are skipped."
+            fi
+          done
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install pytest (scripts/ci-tools.d)
         working-directory: .
         run: scripts/ci-tools.sh install pytest
-      - run: pytest -q
+      - if: steps.changed.outputs.py_inventory == 'true'
+        run: pytest -q
       - name: ns-troubleshoot brief checker tests
+        if: steps.changed.outputs.troubleshoot == 'true'
         working-directory: skills/ns-troubleshoot/evals/cases
         run: |
           for test in */test_check_brief.py; do
@@ -153,25 +191,47 @@ jobs:
       PACK: ${{ matrix.pack }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+        with:
+          fetch-depth: 0 # the base's history, for the paths a pull request changed
+      - name: Paths this pull request changed (scripts/ci-pr-files.sh; on a push to main every test runs)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: scripts/ci-pr-files.sh
+      - name: Whether a path under rules/<pack>/ changed (scripts/ci-affected.sh --changed)
+        id: changed
+        run: |
+          if scripts/ci-affected.sh --changed "rules/$PACK/"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No path under rules/$PACK/ changed; its tests are skipped."
+          fi
+      - if: steps.changed.outputs.run == 'true'
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - if: steps.changed.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@stable
+      - if: steps.changed.outputs.run == 'true'
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: cli
       - name: Build ns
+        if: steps.changed.outputs.run == 'true'
         run: cargo build --manifest-path cli/Cargo.toml
       - name: Install the pinned tools in rules/<pack>/TOOLS (PMD's zip is cached for install.sh --offline)
         id: tools
+        if: steps.changed.outputs.run == 'true'
         run: |
           read -ra tools < "rules/$PACK/TOOLS" || [ "${#tools[@]}" -gt 0 ]
           scripts/ci-tools.sh install "${tools[@]}"
-      - if: steps.tools.outputs.install-action != ''
+      - if: steps.changed.outputs.run == 'true' && steps.tools.outputs.install-action != ''
         uses: taiki-e/install-action@v2
         with:
           tool: ${{ steps.tools.outputs.install-action }}
       - name: rules/<pack>/tests/run.sh
+        if: steps.changed.outputs.run == 'true'
         run: |
           "rules/$PACK/tests/run.sh"
 

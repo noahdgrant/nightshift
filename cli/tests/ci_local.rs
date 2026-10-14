@@ -6,6 +6,8 @@
     reason = "an integration test is a crate of its own and cannot use crate::proc"
 )]
 
+#[path = "ci_local/affected_map.rs"]
+mod affected_map;
 #[path = "ci_local/affected_rules.rs"]
 mod affected_rules;
 #[path = "ci_local/cache.rs"]
@@ -197,6 +199,11 @@ impl Repo {
                 fs::read_to_string(scripts.join(script)).unwrap(),
             );
         }
+        fs::copy(
+            scripts.join("ci-affected.map"),
+            root.join("scripts/ci-affected.map"),
+        )
+        .unwrap();
         fs::create_dir_all(root.join("scripts/ci-tools.d")).unwrap();
         for pin in fs::read_dir(pins()).unwrap() {
             let pin = pin.unwrap();
@@ -578,13 +585,29 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
-/// The steps `scripts/ci-affected.sh` runs on any change, before the tests under changed paths.
+/// The steps `scripts/ci-affected.sh` runs on a change to `cli/`, before the tests under changed
+/// paths.
 const AFFECTED_ALWAYS: &[&str] = &["cargo test", "ns rules check --only ast-grep"];
 
-/// `scripts/ci-affected.sh` with `NS_GATE_FILES` set to `files`, or unset.
+/// The cargo test step `scripts/ci-affected.sh` runs for a change under `skills/`.
+const CARGO_SKILLS: &str = "cargo test --bin ns --test ci_local --test cli --test verify_sandbox";
+
+/// The cargo test step for a change under `rules/`, `docs/` or `evals/fixtures/py-inventory/`.
+const CARGO_RULES: &str = "cargo test --bin ns --test ci_local --test factory --test git_location --test rules_pack --test rules_pack_java --test test_tools";
+
+/// The cargo test step for a change under both `skills/` and `rules/`.
+const CARGO_SKILLS_RULES: &str = "cargo test --bin ns --test ci_local --test cli --test factory --test git_location --test rules_pack --test rules_pack_java --test test_tools --test verify_sandbox";
+
+/// `ci_affected_args` with no arguments.
 fn affected(repo: &Repo, files: Option<&str>, env: &[(&str, &str)]) -> Output {
+    affected_args(repo, &[], files, env)
+}
+
+/// `scripts/ci-affected.sh args` with `NS_GATE_FILES` set to `files`, or unset.
+fn affected_args(repo: &Repo, args: &[&str], files: Option<&str>, env: &[(&str, &str)]) -> Output {
     let mut cmd = common::command("bash");
-    cmd.arg(repo.dir.path().join("scripts/ci-affected.sh"));
+    cmd.arg(repo.dir.path().join("scripts/ci-affected.sh"))
+        .args(args);
     repo.stub_env(&mut cmd, env);
     match files {
         Some(f) => cmd.env("NS_GATE_FILES", f),
@@ -594,7 +617,7 @@ fn affected(repo: &Repo, files: Option<&str>, env: &[(&str, &str)]) -> Output {
 }
 
 #[test]
-fn ci_affected_runs_cargo_test_and_the_tests_under_each_changed_path() {
+fn ci_affected_runs_the_mapped_cargo_tests_and_the_tests_under_each_changed_path() {
     let repo = Repo::new();
     let packs = packs();
     let [(a, a_name), (b, b_name), ..] = &packs[..] else {
@@ -604,35 +627,164 @@ fn ci_affected_runs_cargo_test_and_the_tests_under_each_changed_path() {
         format!("{a_name} rule pack tests"),
         format!("{b_name} rule pack tests"),
     );
-    let always: Vec<String> = AFFECTED_ALWAYS.iter().map(|s| s.to_string()).collect();
-    let mut all = always.clone();
+    let rules = AFFECTED_ALWAYS[1].to_owned();
+    let with = |cargo: &str, rest: &[&str]| -> Vec<String> {
+        [cargo.to_owned(), rules.clone()]
+            .into_iter()
+            .chain(rest.iter().map(|s| s.to_string()))
+            .collect()
+    };
+    let mut all: Vec<String> = AFFECTED_ALWAYS.iter().map(|s| s.to_string()).collect();
     all.extend(packs.iter().map(|(_, n)| format!("{n} rule pack tests")));
     all.push("py-inventory fixture tests".to_owned());
     for (files, want) in [
         (None, all.clone()),
         (Some(String::new()), vec![]),
-        (Some("skills/ns-build/SKILL.md".to_owned()), always.clone()),
-        (Some(format!("rules/{a}x/y\nrules/{a}")), always.clone()),
+        (
+            Some("skills/ns-build/SKILL.md".to_owned()),
+            with(CARGO_SKILLS, &[]),
+        ),
+        (
+            Some(format!("rules/{a}x/y\nrules/{a}")),
+            with(CARGO_RULES, &[]),
+        ),
         (
             Some(format!(
                 "rules/{b}/src/a.ts\nrules/{a}/tests/test_x.py\ndocs/FACTORY.md"
             )),
-            [always.clone(), vec![a_step.clone(), b_step.clone()]].concat(),
+            with(CARGO_RULES, &[&a_step, &b_step]),
         ),
         (
             Some(format!(
                 "evals/fixtures/py-inventory/x.py\nrules/{b}/a.java"
             )),
-            [
-                always.clone(),
-                vec![b_step, "py-inventory fixture tests".to_owned()],
-            ]
-            .concat(),
+            with(CARGO_RULES, &[&b_step, "py-inventory fixture tests"]),
+        ),
+        (
+            Some("skills/ns-build/SKILL.md\ncli/src/main.rs".to_owned()),
+            AFFECTED_ALWAYS.iter().map(|s| s.to_string()).collect(),
         ),
     ] {
         let out = affected(&repo, files.as_deref(), &[]);
         assert!(out.status.success(), "{files:?}: {}", stderr(&out));
         assert_eq!(steps(&out), want, "{files:?}");
+    }
+}
+
+#[test]
+fn ci_affected_picks_cargo_test_binaries_from_the_changed_paths() {
+    let repo = Repo::new();
+    let rules = AFFECTED_ALWAYS[1];
+    for (files, cargo) in [
+        (
+            "docs/DESIGN.md\ndocs/decisions/1-x.md",
+            Some("cargo test --bin ns"),
+        ),
+        ("contrib/notes.md", None),
+        ("cli/Cargo.toml", Some("cargo test")),
+        ("Cargo.lock", Some("cargo test")),
+        ("scripts/ci-local.sh", Some("cargo test")),
+        ("scripts/ci-affected.sh", Some("cargo test")),
+        ("scripts/ci-affected.map", Some("cargo test")),
+        ("scripts/ci-tools.d/ruff.toml", Some("cargo test")),
+        ("evals/fakes/x.sh\n\n", Some("cargo test --test eval_fakes")),
+        (
+            "evals/fakes/x.sh\n.github/workflows/ci.yml",
+            Some("cargo test --test ci_matrix --test eval_fakes --test test_tools"),
+        ),
+    ] {
+        let out = affected(&repo, Some(files), &[]);
+        assert!(out.status.success(), "{files:?}: {}", stderr(&out));
+        let want: Vec<&str> = cargo.into_iter().chain([rules]).collect();
+        assert_eq!(steps(&out), want, "{files:?}");
+        assert_eq!(
+            stderr(&out).contains("ci-affected: no test binary reads these paths"),
+            cargo.is_none(),
+            "{files:?}"
+        );
+    }
+    let out = affected(
+        &repo,
+        Some("skills/ns-build/SKILL.md"),
+        &[("FAIL_ON", "--test verify_sandbox")],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("ci-affected: FAILED at step: cargo test --bin ns"));
+}
+
+#[test]
+fn ci_affected_runs_everything_for_a_path_it_cannot_classify() {
+    let repo = Repo::new();
+    let all = steps(&affected(&repo, None, &[]));
+    assert_eq!(all[0], "cargo test");
+    for odd in [
+        "/etc/passwd",
+        "../x.md",
+        "docs/../cli/src/main.rs",
+        "docs/./x.md",
+        "\"docs/caf\\303\\251.md\"",
+        "docs/a\tb.md",
+    ] {
+        let out = affected(&repo, Some(&format!("docs/x.md\n{odd}")), &[]);
+        assert!(out.status.success(), "{odd:?}: {}", stderr(&out));
+        assert_eq!(steps(&out), all, "{odd:?}");
+    }
+}
+
+#[test]
+fn ci_affected_cargo_test_runs_only_the_cargo_test_step() {
+    let repo = Repo::new();
+    let packs = packs();
+    let pack = &packs[0].0;
+    for (files, want) in [
+        (
+            Some(format!("skills/x.md\nrules/{pack}/x")),
+            vec![CARGO_SKILLS_RULES.to_owned()],
+        ),
+        (None, vec!["cargo test".to_owned()]),
+        (Some("contrib/x".to_owned()), vec![]),
+        (Some(String::new()), vec![]),
+    ] {
+        let out = affected_args(&repo, &["--cargo-test"], files.as_deref(), &[]);
+        assert!(out.status.success(), "{files:?}: {}", stderr(&out));
+        assert_eq!(steps(&out), want, "{files:?}");
+    }
+}
+
+#[test]
+fn ci_affected_changed_says_whether_a_path_under_a_prefix_changed() {
+    let repo = Repo::new();
+    for (files, prefix, code) in [
+        (Some("rules/rust/a.yml\ndocs/x.md"), "rules/rust/", 0),
+        (Some("rules/rust/a.yml"), "rules/c/", 1),
+        (Some("docs/rules/c/x.md"), "rules/c/", 1),
+        (Some("rules/cx/a.yml"), "rules/c.", 1),
+        (Some("rules/c.x/a.yml"), "rules/c.", 0),
+        (Some("rules/rust/a.yml\n../x"), "rules/c/", 0),
+        (Some(""), "rules/c/", 1),
+        (None, "rules/c/", 0),
+    ] {
+        let out = affected_args(&repo, &["--changed", prefix], files, &[]);
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "{files:?} {prefix}: {}",
+            stderr(&out)
+        );
+        assert!(steps(&out).is_empty(), "{files:?}");
+    }
+    for args in [
+        &["--changed"][..],
+        &["--cargo"],
+        &["--cargo-test", "x"],
+        &["a", "b", "c"],
+    ] {
+        let out = affected_args(&repo, args, Some("x"), &[]);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(
+            stderr(&out).starts_with("usage: scripts/ci-affected.sh"),
+            "{args:?}"
+        );
     }
 }
 
@@ -650,8 +802,70 @@ fn ci_affected_stops_at_a_failing_step() {
     );
     assert_eq!(out.status.code(), Some(1));
     let step = format!("{a_name} rule pack tests");
-    assert_eq!(steps(&out), [AFFECTED_ALWAYS, &[&step]].concat());
+    assert_eq!(steps(&out), [CARGO_RULES, AFFECTED_ALWAYS[1], &step]);
     assert!(stderr(&out).contains(&format!("ci-affected: FAILED at step: {step}")));
+}
+
+/// `scripts/ci-pr-files.sh` run in `dir` from `base` to `head`, and what it wrote to
+/// `GITHUB_ENV`.
+fn pr_files(dir: &Path, base: &str, head: &str) -> (Output, String) {
+    let env = dir.join("github-env");
+    let out = common::command("bash")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci-pr-files.sh"))
+        .current_dir(dir)
+        .env("BASE", base)
+        .env("HEAD", head)
+        .env("GITHUB_ENV", &env)
+        .output();
+    (out, fs::read_to_string(&env).unwrap_or_default())
+}
+
+#[test]
+fn ci_pr_files_sets_the_paths_a_pull_request_changes_old_and_new_names_of_a_rename() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for f in ["cli/old.rs", "docs/gone.md", "skills/same.md"] {
+        fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+        fs::write(root.join(f), format!("{f}\n").repeat(20)).unwrap();
+    }
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    let base = git(root, &["rev-parse", "HEAD"]);
+    git(root, &["mv", "cli/old.rs", "docs/new.rs"]);
+    git(root, &["rm", "-q", "docs/gone.md"]);
+    fs::write(root.join("README"), "x\n").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "change"]);
+    let head = git(root, &["rev-parse", "HEAD"]);
+    let (out, env) = pr_files(root, &base, &head);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let lines: Vec<_> = env.lines().collect();
+    let [first, paths @ .., last] = &lines[..] else {
+        panic!("{env:?}");
+    };
+    let delim = first.strip_prefix("NS_GATE_FILES<<").unwrap();
+    assert_eq!(*last, delim);
+    assert_eq!(
+        paths,
+        ["README", "cli/old.rs", "docs/gone.md", "docs/new.rs"]
+    );
+
+    fs::remove_file(root.join("github-env")).unwrap();
+    let (out, env) = pr_files(root, &head, &head);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(env.lines().count(), 2, "{env:?}");
+
+    fs::remove_file(root.join("github-env")).unwrap();
+    let missing = "0123456789abcdef0123456789abcdef01234567";
+    let (out, env) = pr_files(root, missing, &head);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(env, "");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("::warning::ci-pr-files: git could not list"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 /// The rule packs `scripts/rule-packs.sh` lists in `root`.
@@ -691,7 +905,7 @@ fn a_new_pack_needs_only_files_under_its_own_directory() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(
         steps(&out),
-        [AFFECTED_ALWAYS, &["Zed rule pack tests"]].concat()
+        [CARGO_RULES, AFFECTED_ALWAYS[1], "Zed rule pack tests"]
     );
     assert!(stderr(&out).contains("zz rule pack tests ran"));
 }
@@ -761,7 +975,7 @@ fn a_rules_directory_without_tests_run_sh_is_no_pack() {
     assert_eq!(steps(&out), fixed);
     let out = affected(&repo, Some("rules/x/y"), &[]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(steps(&out), AFFECTED_ALWAYS);
+    assert_eq!(steps(&out), [CARGO_RULES, AFFECTED_ALWAYS[1]]);
     let out = affected(&repo, None, &[]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(
