@@ -19,14 +19,43 @@
 
 Preconditions:
 
-- Baseline, in `$V/repo`.
-- An echo harness config: `printf '[harness.echo]\ncommand = ["sed", "s/^/echo: /"]\n[roles.default]\nharness = "echo"\n' > "$V/c-ask.toml"`.
+- Baseline.
+- An echo harness config:
 
-- **Dry run.** Run `cap ask-dry "$NS" ask --role review.security --dry-run`. `matched_role` is `default`, `harness` `claude`, `binary` `$V/bin/claude`, `mode` `read-only`.
-- **Real run.** Run `cap ask-run env NS_CONFIG="$V/c-ask.toml" sh -c 'echo "Review this diff" | "$NS" ask --role review.security'`. Stdout is `echo: Review this diff`, exit `0`.
-- **No role.** Run `cap ask-no-role env NS_CONFIG=/dev/null "$NS" ask --role build --dry-run`. Exit `3`; stderr says `role "build" is not configured`.
-- **No binary.** Write `[harness.gone]\ncommand = ["no-such-harness-bin"]\n[roles.default]\nharness = "gone"` to `$V/c-gone.toml` and run `cap ask-no-binary env NS_CONFIG="$V/c-gone.toml" sh -c 'echo x | "$NS" ask --role build'`. Exit `4`.
-- **No write command.** Run `cap ask-no-write env NS_CONFIG="$V/c-ask.toml" sh -c 'echo x | "$NS" ask --role build --write'`. Exit `5`; stderr says `--write needs a command_write`.
+  ```bash
+  "$V/sandbox" sh -c 'printf "$1" > "$V/c-ask.toml"' _ '[harness.echo]\ncommand = ["sed", "s/^/echo: /"]\n[roles.default]\nharness = "echo"\n'
+  ```
+
+- **Dry run.** `matched_role` is `default`, `harness` `claude`, `binary` `$V/bin/claude`, `mode` `read-only`.
+
+  ```bash
+  "$V/sandbox" cap ask-dry ns ask --role review.security --dry-run
+  ```
+
+- **Real run.** Stdout is `echo: Review this diff`, exit `0`.
+
+  ```bash
+  "$V/sandbox" cap ask-run env NS_CONFIG="$V/c-ask.toml" sh -c 'echo "Review this diff" | ns ask --role review.security'
+  ```
+
+- **No role.** Exit `3`; stderr says `role "build" is not configured`.
+
+  ```bash
+  "$V/sandbox" cap ask-no-role env NS_CONFIG=/dev/null ns ask --role build --dry-run
+  ```
+
+- **No binary.** Exit `4`.
+
+  ```bash
+  "$V/sandbox" sh -c 'printf "$1" > "$V/c-gone.toml"' _ '[harness.gone]\ncommand = ["no-such-harness-bin"]\n[roles.default]\nharness = "gone"\n'
+  "$V/sandbox" cap ask-no-binary env NS_CONFIG="$V/c-gone.toml" sh -c 'echo x | ns ask --role build'
+  ```
+
+- **No write command.** Exit `5`; stderr says `--write needs a command_write`.
+
+  ```bash
+  "$V/sandbox" cap ask-no-write env NS_CONFIG="$V/c-ask.toml" sh -c 'echo x | ns ask --role build --write'
+  ```
 
 ## Gotchas
 

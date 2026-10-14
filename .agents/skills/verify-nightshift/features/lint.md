@@ -17,12 +17,32 @@
 
 Preconditions:
 
-- Baseline, in `$NS_SRC`.
+- Baseline. These recipes act on this repo's skills, so they run with `--src`.
 
-- **Clean.** Run `cap lint-clean "$NS" lint "$NS_SRC/skills"`. Exit `0`; `ok` is `true`, `errors` is `[]`, `skills` counts every `ns-*` directory.
-- **Errors.** Make a broken skill: `mkdir -p "$V/sk/ns-x" && printf -- '---\nname: ns-y\n---\n[a](./missing.md)\n' > "$V/sk/ns-x/SKILL.md"`. Run `cap lint-errors "$NS" lint "$V/sk"`. Exit `1`; `ok` is `false` and `errors` holds three entries for the bad name, the missing description and the broken link.
-- **Local.** Run `cap lint-local "$NS" lint "$NS_SRC/.agents/skills"`. Exit `0`; `ok` is `true` and `skills` is at least `1`.
-- **Human.** Run `cap lint-human "$NS" lint "$V/sk" --human`. Exit `1` and three lines: `name "ns-y" does not match directory "ns-x"`, `missing description`, `broken link: ./missing.md`.
+- **Clean.** Exit `0`; `ok` is `true`, `errors` is `[]`, `skills` counts every `ns-*` directory.
+
+  ```bash
+  "$V/sandbox" --src cap lint-clean ns lint skills
+  ```
+
+- **Errors.** Make a broken skill under `$V/sk`, then lint it. Exit `1`; `ok` is `false` and `errors` holds three entries for the bad name, the missing description and the broken link.
+
+  ```bash
+  "$V/sandbox" sh -c 'mkdir -p "$V/sk/ns-x" && printf -- "$1" > "$V/sk/ns-x/SKILL.md"' _ '---\nname: ns-y\n---\n[a](./missing.md)\n'
+  "$V/sandbox" cap lint-errors ns lint "$V/sk"
+  ```
+
+- **Local.** Exit `0`; `ok` is `true` and `skills` is at least `1`.
+
+  ```bash
+  "$V/sandbox" --src cap lint-local ns lint .agents/skills
+  ```
+
+- **Human.** Exit `1` and three lines: `name "ns-y" does not match directory "ns-x"`, `missing description`, `broken link: ./missing.md`.
+
+  ```bash
+  "$V/sandbox" cap lint-human ns lint "$V/sk" --human
+  ```
 
 ## Gotchas
 

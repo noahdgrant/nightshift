@@ -5897,6 +5897,52 @@ fn factory_validate_reports_problems() {
 }
 
 #[test]
+fn factory_validate_warns_when_build_only_has_no_fast_ci_local() {
+    let e = Env::new();
+    fs::create_dir_all(e.root.join("docs/agents")).unwrap();
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        "| Task | Command | Takes |\n|---|---|---|\n| ci-local | `make ci` | 2 min |\n",
+    )
+    .unwrap();
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["errors"], serde_json::json!([]), "{v}");
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("ci-local") && warnings.contains("`make ci --fast`"),
+        "{v}"
+    );
+    e.factory("");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["warnings"], serde_json::json!([]), "{v}");
+}
+
+#[test]
+fn factory_validate_build_only_fast_warning_edge_cases() {
+    let e = Env::new();
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["warnings"], serde_json::json!([]), "{v}");
+    fs::create_dir_all(e.root.join("docs/agents")).unwrap();
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        "| Task | Command | Takes |\n|---|---|---|\n| ci-local | `scripts/ci-local.sh --fast` | 1 min |\n",
+    )
+    .unwrap();
+    e.factory("[gate]\nlocal = \"build-only\"\n[phases.build]\ngate = \"make ci\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert_eq!(v["ok"], true, "{v}");
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("[phases.build] gate") && warnings.contains("`make ci --fast`"),
+        "{v}"
+    );
+}
+
+#[test]
 fn factory_validate_prints_the_supervise_settings() {
     let e = Env::new();
     let validate = || -> Value {
