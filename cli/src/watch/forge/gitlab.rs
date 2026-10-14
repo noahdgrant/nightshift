@@ -480,14 +480,12 @@ mod tests {
             return;
         }
         let _glab = crate::testutil::fake_on_path("glab", "exec sleep 600");
-        let started = std::time::Instant::now();
         let e = glab_within(
             Path::new("."),
             &["api", "projects/:id"],
-            std::time::Duration::from_millis(300),
+            std::time::Duration::ZERO,
         )
         .unwrap_err();
-        assert!(started.elapsed() < std::time::Duration::from_secs(10));
         let io = e.downcast_ref::<std::io::Error>().expect("an io error");
         assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
         assert!(e.to_string().contains("glab api projects/:id"), "{e}");

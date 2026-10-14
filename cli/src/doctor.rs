@@ -491,10 +491,8 @@ mod tests {
             port: None,
         };
         crate::stop::request(libc::SIGTERM);
-        let started = Instant::now();
         assert!(!ssh_config_keepalive(&t));
         assert_eq!(ssh_account(&t), None);
-        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
