@@ -25,6 +25,50 @@ pub enum PrState {
     Merged,
 }
 
+/// Where a PR stands, whichever forge it is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrStatus {
+    Open,
+    Merged,
+    /// Closed without merging.
+    Closed,
+}
+
+impl PrStatus {
+    pub fn name(self) -> &'static str {
+        match self {
+            PrStatus::Open => "OPEN",
+            PrStatus::Merged => "MERGED",
+            PrStatus::Closed => "CLOSED",
+        }
+    }
+}
+
+/// A PR as `ns run`'s guards and `ns clean` read it. `head_sha` is empty when the forge names
+/// none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pr {
+    pub status: PrStatus,
+    pub head_sha: String,
+    pub head_branch: String,
+    pub body: String,
+}
+
+/// A PR the forge links to a commit: its number, its head branch, and whether it merged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitPr {
+    pub number: u64,
+    pub head: String,
+    pub merged: bool,
+}
+
+/// An issue's title and the URL a human opens it at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssueLink {
+    pub title: String,
+    pub url: String,
+}
+
 /// Where an issue stands. A closed issue's reason is the forge's; one that names none is completed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IssueState {
@@ -94,6 +138,11 @@ pub trait Forge {
     /// can be missing from a week the oldest listed merge precedes.
     fn merged_prs(&self, since: Option<i64>) -> Result<MergedPrs>;
     fn is_closed(&self, n: u64) -> Result<bool>;
+    fn issue_link(&self, n: u64) -> Result<IssueLink>;
+    /// PR `n` (a GitLab merge request's iid).
+    fn pr(&self, n: u64) -> Result<Pr>;
+    /// The PRs that hold commit `sha`, in any state.
+    fn commit_prs(&self, sha: &str) -> Result<Vec<CommitPr>>;
     fn state(&self, n: u64) -> Result<IssueState>;
     /// The forge's sub-issues of `n`, in any state.
     fn sub_issues(&self, n: u64) -> Result<Vec<u64>>;
@@ -327,6 +376,45 @@ fn issue_state(v: &Value) -> IssueState {
     }
 }
 
+/// `gh issue view --json title,url`, or GitLab's issue with its `web_url`.
+fn parse_issue_link(v: &Value, url_key: &str) -> IssueLink {
+    IssueLink {
+        title: v["title"].as_str().unwrap_or("").to_string(),
+        url: v[url_key].as_str().unwrap_or("").to_string(),
+    }
+}
+
+/// `gh pr view --json state,headRefOid,headRefName,body`.
+fn parse_pr(v: &Value) -> Pr {
+    let text = |k: &str| v[k].as_str().unwrap_or("").to_string();
+    Pr {
+        status: match v["state"].as_str() {
+            Some("MERGED") => PrStatus::Merged,
+            Some("CLOSED") => PrStatus::Closed,
+            _ => PrStatus::Open,
+        },
+        head_sha: text("headRefOid"),
+        head_branch: text("headRefName"),
+        body: text("body"),
+    }
+}
+
+/// GitHub's `commits/<sha>/pulls` list. One with no number is left out.
+fn parse_commit_prs(pulls: &Value) -> Vec<CommitPr> {
+    pulls
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            Some(CommitPr {
+                number: p["number"].as_u64()?,
+                head: p["head"]["ref"].as_str().unwrap_or("").to_string(),
+                merged: p["merged_at"].as_str().is_some_and(|s| !s.is_empty()),
+            })
+        })
+        .collect()
+}
+
 /// The issue number at the end of the URL `gh issue create` prints.
 fn created_number(out: &str) -> Result<u64> {
     out.trim()
@@ -432,6 +520,33 @@ impl Forge for GitHub {
             &["issue", "view", &n.to_string(), "--json", "state"],
         )?;
         Ok(matches!(v["state"].as_str(), Some("CLOSED" | "MERGED")))
+    }
+
+    fn issue_link(&self, n: u64) -> Result<IssueLink> {
+        let v = gh_json(
+            &self.root,
+            &["issue", "view", &n.to_string(), "--json", "title,url"],
+        )?;
+        Ok(parse_issue_link(&v, "url"))
+    }
+
+    fn pr(&self, n: u64) -> Result<Pr> {
+        let v = gh_json(
+            &self.root,
+            &[
+                "pr",
+                "view",
+                &n.to_string(),
+                "--json",
+                "state,headRefOid,headRefName,body",
+            ],
+        )?;
+        Ok(parse_pr(&v))
+    }
+
+    fn commit_prs(&self, sha: &str) -> Result<Vec<CommitPr>> {
+        let path = format!("repos/{{owner}}/{{repo}}/commits/{}/pulls", head_sha(sha)?);
+        Ok(parse_commit_prs(&gh_json(&self.root, &["api", &path])?))
     }
 
     fn state(&self, n: u64) -> Result<IssueState> {
@@ -632,241 +747,4 @@ impl Forge for GitHub {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_post_opens_with_the_disclosure_then_a_blank_line_then_the_text() {
-        let post = Post::new("Fixed in #3.\n");
-        let mut lines = post.as_str().lines();
-        assert_eq!(
-            lines.next(),
-            Some("🤖 *Posted by nightshift, an AI agent.*")
-        );
-        assert_eq!(lines.next(), Some(""));
-        assert_eq!(lines.next(), Some("Fixed in #3."));
-        assert_eq!(lines.next(), None);
-    }
-
-    #[test]
-    fn a_closed_issue_is_not_planned_only_when_its_reason_says_other_than_completed() {
-        let state = |v: Value| issue_state(&v);
-        use IssueState::*;
-        assert_eq!(state(serde_json::json!({"state": "OPEN"})), Open);
-        assert_eq!(
-            state(serde_json::json!({"state": "OPEN", "stateReason": "REOPENED"})),
-            Open
-        );
-        for reason in [Value::Null, "".into(), "COMPLETED".into()] {
-            let v = serde_json::json!({"state": "CLOSED", "stateReason": reason});
-            assert_eq!(state(v), Completed);
-        }
-        assert_eq!(state(serde_json::json!({"state": "CLOSED"})), Completed);
-        for reason in ["NOT_PLANNED", "DUPLICATE", "not_planned", "duplicate"] {
-            let v = serde_json::json!({"state": "CLOSED", "stateReason": reason});
-            assert_eq!(state(v), NotPlanned, "{reason}");
-        }
-        let v = serde_json::json!({"state": "closed", "stateReason": "completed"});
-        assert_eq!(state(v), Completed);
-        assert_eq!(state(serde_json::json!({"state": "open"})), Open);
-    }
-
-    #[test]
-    fn parse_merged_reads_each_prs_head_merge_time_and_changed_lines() {
-        let prs = serde_json::json!([
-            {"number": 41, "headRefName": "ns/9-b", "isCrossRepository": false,
-             "mergedAt": "2026-10-05T10:00:00Z", "additions": 30, "deletions": 12},
-            {"number": 42, "headRefName": "ns/9-b", "isCrossRepository": true,
-             "mergedAt": "2026-10-06T00:00:00Z", "additions": 1, "deletions": 0},
-            {"number": 43, "headRefName": "x", "isCrossRepository": false,
-             "mergedAt": "2026-10-06T00:00:00Z"},
-            {"number": 44, "headRefName": "x", "isCrossRepository": false, "mergedAt": null},
-            {"number": 45, "headRefName": "ns/9-b", "mergedAt": "2026-10-07T00:00:00Z"},
-        ]);
-        let m = parse_merged(&prs);
-        let at = |s| crate::clock::parse_iso(s).unwrap();
-        assert_eq!(
-            m.prs,
-            [
-                MergedPr {
-                    number: 41,
-                    head: "ns/9-b".into(),
-                    merged: at("2026-10-05T10:00:00Z"),
-                    changed: Some(42)
-                },
-                MergedPr {
-                    number: 42,
-                    head: String::new(),
-                    merged: at("2026-10-06T00:00:00Z"),
-                    changed: Some(1)
-                },
-                MergedPr {
-                    number: 43,
-                    head: "x".into(),
-                    merged: at("2026-10-06T00:00:00Z"),
-                    changed: None
-                },
-                MergedPr {
-                    number: 45,
-                    head: String::new(),
-                    merged: at("2026-10-07T00:00:00Z"),
-                    changed: None
-                },
-            ]
-        );
-        assert!(!m.truncated);
-        assert_eq!(PR_LIMIT, 200);
-        let full: Vec<Value> = (1..=PR_LIMIT as u64)
-            .map(|n| serde_json::json!({"number": n, "mergedAt": null}))
-            .collect();
-        assert!(parse_merged(&Value::from(full.clone())).truncated);
-        assert!(!parse_merged(&Value::from(full[1..].to_vec())).truncated);
-        assert!(parse_merged(&serde_json::json!({})).prs.is_empty());
-    }
-
-    #[test]
-    fn parse_filed_reads_when_each_issue_opened_and_how_it_closed() {
-        let text = [
-            r#"{"number": 7, "title": "fix: a", "labels": [{"name": "type:fix"}], "body": "b", "authorAssociation": "OWNER", "createdAt": "2026-10-05T10:00:00Z", "state": "closed", "stateReason": "duplicate"}"#,
-            r#"{"number": 8, "title": "fix: b", "labels": [], "body": "", "createdAt": "2026-10-06T00:00:00Z", "state": "open", "stateReason": null}"#,
-            r#"{"number": 9, "title": "no time", "createdAt": null, "state": "open"}"#,
-            r#"{"number": 0, "title": "no number", "createdAt": "2026-10-06T00:00:00Z", "state": "open"}"#,
-            "not json",
-        ]
-        .join("\n");
-        let f = parse_filed(&text);
-        assert_eq!(f.len(), 2, "{f:?}");
-        assert_eq!(f[0].issue.number, 7);
-        assert_eq!(f[0].issue.labels, ["type:fix"]);
-        assert!(f[0].issue.team);
-        assert_eq!(
-            f[0].opened,
-            crate::clock::parse_iso("2026-10-05T10:00:00Z").unwrap()
-        );
-        assert_eq!(f[0].state, IssueState::NotPlanned);
-        assert_eq!((f[1].issue.number, f[1].state), (8, IssueState::Open));
-    }
-
-    #[test]
-    fn source_is_inferred_from_the_origin_host() {
-        let cases = [
-            (Some("https://gitlab.com/o/r.git"), "gitlab"),
-            (Some("git@gitlab.example:o/r.git"), "gitlab"),
-            (Some("https://gitlab.corp.example/o/r"), "gitlab"),
-            (Some("https://GitLab.com/o/r"), "gitlab"),
-            (Some("https://github.com/o/r"), "github"),
-            (Some("/srv/git/gitlab-mirror.git"), "github"),
-            (None, "github"),
-        ];
-        for (origin, want) in cases {
-            assert_eq!(inferred(origin, None).name(), want, "{origin:?}");
-        }
-        assert_eq!(
-            check(Some("github"), Some("https://gitlab.com/o/r"), None)
-                .unwrap()
-                .name(),
-            "github"
-        );
-    }
-
-    #[test]
-    fn source_is_gitlab_on_the_configured_gitlab_host() {
-        let origin = Some("git@Code.example.com:o/r.git");
-        for h in ["code.example.com", "https://CODE.example.com"] {
-            assert_eq!(inferred(origin, Some(h)).name(), "gitlab", "{h}");
-        }
-        assert_eq!(inferred(origin, Some("other.example")).name(), "github");
-        assert_eq!(
-            check(Some("github"), origin, Some("code.example.com"))
-                .unwrap()
-                .name(),
-            "github"
-        );
-    }
-
-    #[test]
-    fn check_takes_github_and_gitlab_and_refuses_unknown_with_the_hint() {
-        assert_eq!(
-            check(None, Some("https://github.com/o/r"), None).unwrap(),
-            ForgeKind::Github
-        );
-        assert_eq!(
-            check(Some("github"), None, None).unwrap(),
-            ForgeKind::Github
-        );
-        assert_eq!(
-            check(Some("gitlab"), None, None).unwrap(),
-            ForgeKind::Gitlab
-        );
-        assert_eq!(
-            check(None, Some("https://gitlab.com/o/r"), None).unwrap(),
-            ForgeKind::Gitlab
-        );
-        for (s, o) in [
-            (Some("bitbucket"), None),
-            (Some("svn"), Some("https://github.com/o/r")),
-        ] {
-            let e = check(s, o, None).unwrap_err().to_string();
-            assert!(e.contains("[queue] source"), "{e}");
-        }
-    }
-
-    #[test]
-    fn last_green_skips_runs_on_the_red_head() {
-        let runs = serde_json::json!([
-            {"headSha": "aaaaaaa"}, {"headSha": "aaaaaaa"}, {"headSha": "bbbbbbb"},
-            {"headSha": "ccccccc"}
-        ]);
-        assert_eq!(
-            first_other(&runs, "headSha", "aaaaaaa").as_deref(),
-            Some("bbbbbbb")
-        );
-        let only = serde_json::json!([{"headSha": "aaaaaaa"}]);
-        assert_eq!(first_other(&only, "headSha", "aaaaaaa"), None);
-        assert_eq!(first_other(&serde_json::json!([]), "headSha", "red"), None);
-    }
-
-    #[test]
-    fn last_green_skips_what_is_not_a_commit_id() {
-        let runs = serde_json::json!([
-            {"headSha": "--output=x"}, {"headSha": "abc"}, {"headSha": "zzzzzzzz"},
-            {"headSha": "é".repeat(8)}, {"headSha": "a".repeat(65)}, {"headSha": "AbC1234"}
-        ]);
-        assert_eq!(
-            first_other(&runs, "headSha", "red").as_deref(),
-            Some("AbC1234")
-        );
-    }
-
-    #[test]
-    fn created_number_reads_the_url_gh_prints() {
-        assert_eq!(
-            created_number("https://github.com/o/r/issues/123\n").unwrap(),
-            123
-        );
-        assert!(created_number("").is_err());
-        assert!(created_number("https://github.com/o/r/issues/new").is_err());
-    }
-
-    #[test]
-    fn path_reads_url_and_scp_forms_and_no_path_from_a_local_path() {
-        assert_eq!(path("https://gitlab.com/o/r.git"), Some("o/r.git"));
-        assert_eq!(path("ssh://git@gitlab.example:2222/o/r"), Some("o/r"));
-        assert_eq!(path("git@github.com:o/r.git"), Some("o/r.git"));
-        assert_eq!(path("https://gitlab.com"), None);
-        assert_eq!(path("/srv/git/gitlab:mirror.git"), None);
-    }
-
-    #[test]
-    fn host_reads_url_and_scp_forms_and_no_host_from_a_path() {
-        assert_eq!(host("https://gitlab.com/o/r.git"), Some("gitlab.com"));
-        assert_eq!(
-            host("ssh://git@gitlab.example:2222/o/r"),
-            Some("gitlab.example")
-        );
-        assert_eq!(host("https://user:pw@github.com/o/r"), Some("github.com"));
-        assert_eq!(host("git@github.com:o/r.git"), Some("github.com"));
-        assert_eq!(host("/srv/git/gitlab:mirror.git"), None);
-        assert_eq!(host("../gitlab-mirror"), None);
-    }
-}
+mod tests;
