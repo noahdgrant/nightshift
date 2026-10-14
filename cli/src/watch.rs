@@ -21,6 +21,7 @@ use crate::stop;
 use crate::worktree::BRANCH_PREFIX;
 
 pub mod ci;
+mod core;
 mod fix_main;
 pub(crate) use fix_main::TITLE_PREFIX as FIX_MAIN_TITLE;
 pub mod forge;

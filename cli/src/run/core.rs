@@ -19,6 +19,8 @@ pub mod route;
 pub mod step;
 
 #[cfg(test)]
+mod purity;
+#[cfg(test)]
 mod scenarios;
 #[cfg(test)]
 pub(crate) mod sim;
