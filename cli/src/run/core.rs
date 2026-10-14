@@ -115,6 +115,9 @@ pub struct Ledger {
     /// Phases that have had their one free rewrite in this run.
     #[serde(default)]
     rewritten: BTreeSet<String>,
+    /// HEAD when the ledger was last saved, which a forced decision was made against.
+    #[serde(default)]
+    head: Option<String>,
 }
 
 /// A phase run that moved HEAD from `from` to `to`.
@@ -149,6 +152,26 @@ impl Ledger {
             l.force(run(phase_named(f), "", "--from"), None);
         }
         l
+    }
+
+    /// The ledger is saved at `head`.
+    pub fn saved_at(&mut self, head: &str) {
+        self.head = Some(head.to_string());
+    }
+
+    /// The ledger is resumed at `head`: a forced decision made at another HEAD, or at one not
+    /// recorded, no longer fits the unit and is dropped. True when one was.
+    pub fn resumed_at(&mut self, head: &str) -> bool {
+        let same = self
+            .head
+            .as_deref()
+            .is_some_and(|h| crate::git::same_sha(h, head));
+        if same || self.forced.is_none() {
+            return false;
+        }
+        self.forced = None;
+        self.forced_rebase = None;
+        true
     }
 
     fn force(&mut self, d: Decision, rebase: Option<Rebase>) {

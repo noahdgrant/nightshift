@@ -84,20 +84,10 @@ fn drive_loop(
 ) -> Result<Finish> {
     let fac = ctx.fac;
     let subscription = fac.subscription();
-    let from = args
-        .triage_only
-        .then_some("triage")
-        .or(args.from.as_deref());
-    let mut ledger = match (from, args.fresh) {
-        (None, false) => match load_ledger(&ctx.artifacts) {
-            Some(l) => {
-                ctx.log(json!({"event": "ledger_resumed", "path": ledger_path(&ctx.artifacts).to_string_lossy()}));
-                l
-            }
-            None => Ledger::new(None),
-        },
-        _ => Ledger::new(from),
-    };
+    let (mut ledger, events) = start_ledger(args, &ctx.artifacts, &ctx.head());
+    for ev in events {
+        ctx.log(ev);
+    }
     let mut baseline = remote_default(&ctx.worktree);
     let mut gate_state = gate::Gate::default();
     ctx.log(json!({
@@ -112,11 +102,13 @@ fn drive_loop(
         "cpus": shared.cpus,
     }));
     loop {
+        let head = ctx.head();
+        ledger.saved_at(&head);
         save_ledger(ctx, &ledger);
         crate::stop::check()?;
         let state = read_state(
             &ctx.artifacts,
-            ctx.head(),
+            head,
             ctx.issue.is_some(),
             Some(UnitDiff::new(
                 ctx.worktree.clone(),
@@ -577,11 +569,45 @@ fn ledger_path(artifacts: &std::path::Path) -> PathBuf {
     artifacts.join("state.json")
 }
 
-/// The saved ledger, or `None` when there is none or it doesn't parse (a torn write, an older
-/// format): the run then starts a new one.
-fn load_ledger(artifacts: &std::path::Path) -> Option<Ledger> {
-    let text = fs::read_to_string(ledger_path(artifacts)).ok()?;
-    serde_json::from_str(&text).ok()
+/// The ledger a run starts from, with the events to log about it: a new one under `--from`,
+/// `--triage-only` or `--fresh`, else the saved one at `head`. A saved ledger that can't be read
+/// or doesn't parse (a torn write, an older format) is dropped, and the run re-derives its state
+/// from the artifacts.
+pub(super) fn start_ledger(
+    args: &RunArgs,
+    artifacts: &std::path::Path,
+    head: &str,
+) -> (Ledger, Vec<Value>) {
+    let from = args
+        .triage_only
+        .then_some("triage")
+        .or(args.from.as_deref());
+    if from.is_some() || args.fresh {
+        return (Ledger::new(from), vec![]);
+    }
+    let path = ledger_path(artifacts);
+    match load_ledger(artifacts) {
+        Ok(None) => (Ledger::new(None), vec![]),
+        Ok(Some(mut l)) => {
+            let dropped = l.resumed_at(head);
+            let ev = json!({"event": "ledger_resumed", "path": path.to_string_lossy(), "forced_dropped": dropped});
+            (l, vec![ev])
+        }
+        Err(e) => {
+            let ev = json!({"event": "state_rederived", "path": path.to_string_lossy(), "error": format!("{e:#}")});
+            (Ledger::new(None), vec![ev])
+        }
+    }
+}
+
+/// The saved ledger, `None` when there is none.
+fn load_ledger(artifacts: &std::path::Path) -> Result<Option<Ledger>> {
+    let text = match fs::read_to_string(ledger_path(artifacts)) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(Some(serde_json::from_str(&text)?))
 }
 
 /// Write the ledger through a temp file and a rename, so a crash leaves the old one or the new
@@ -789,19 +815,75 @@ mod tests {
         acquire();
     }
 
-    #[test]
-    fn a_saved_ledger_loads_and_a_torn_or_missing_one_does_not() {
+    /// The phase `ledger` runs next on a unit with no artifacts.
+    fn next_phase(ledger: &mut Ledger) -> String {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(load_ledger(dir.path()), None);
-        let ledger = Ledger::new(Some("review"));
-        fs::write(
-            ledger_path(dir.path()),
-            serde_json::to_vec(&ledger).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(load_ledger(dir.path()), Some(ledger));
+        match ledger
+            .next(&read_state(dir.path(), "abc1234".into(), true, None))
+            .0
+        {
+            Decision::Run { phase, .. } => phase.to_string(),
+            d => format!("{d:?}"),
+        }
+    }
+
+    fn save(dir: &std::path::Path, ledger: &Ledger) {
+        fs::write(ledger_path(dir), serde_json::to_vec(ledger).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_saved_ledger_resumes_and_a_missing_one_starts_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let resume = RunArgs::default();
+        let (mut l, events) = start_ledger(&resume, dir.path(), "abc1234");
+        assert_eq!((next_phase(&mut l).as_str(), events.len()), ("triage", 0));
+        let mut ledger = Ledger::new(Some("review"));
+        ledger.saved_at("abc1234");
+        save(dir.path(), &ledger);
+        let (mut l, events) = start_ledger(&resume, dir.path(), "abc1234");
+        assert_eq!(next_phase(&mut l), "review");
+        assert_eq!(events[0]["event"], "ledger_resumed");
+        assert_eq!(events[0]["forced_dropped"], false);
+        for args in [
+            RunArgs {
+                fresh: true,
+                ..RunArgs::default()
+            },
+            RunArgs {
+                from: Some("build".into()),
+                ..RunArgs::default()
+            },
+        ] {
+            let (mut l, events) = start_ledger(&args, dir.path(), "abc1234");
+            assert_ne!(next_phase(&mut l), "review", "{args:?}");
+            assert!(events.is_empty(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_forced_decision_saved_at_another_head_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::new(Some("review"));
+        ledger.saved_at("abc1234");
+        save(dir.path(), &ledger);
+        let (mut l, events) = start_ledger(&RunArgs::default(), dir.path(), "def5678");
+        assert_eq!(next_phase(&mut l), "triage");
+        assert_eq!(events[0]["event"], "ledger_resumed");
+        assert_eq!(events[0]["forced_dropped"], true);
+        save(dir.path(), &Ledger::new(Some("review")));
+        let (mut l, _) = start_ledger(&RunArgs::default(), dir.path(), "abc1234");
+        assert_eq!(next_phase(&mut l), "triage", "saved at no recorded HEAD");
+    }
+
+    #[test]
+    fn a_torn_ledger_is_rederived_and_logged() {
+        let dir = tempfile::tempdir().unwrap();
         fs::write(ledger_path(dir.path()), "{\"attempts\": {\"bui").unwrap();
-        assert_eq!(load_ledger(dir.path()), None);
+        let (mut l, events) = start_ledger(&RunArgs::default(), dir.path(), "abc1234");
+        assert_eq!(next_phase(&mut l), "triage");
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0]["event"], "state_rederived");
+        assert!(events[0]["error"].as_str().is_some_and(|e| !e.is_empty()));
     }
 
     #[test]
