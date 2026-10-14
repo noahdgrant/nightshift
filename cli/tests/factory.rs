@@ -6150,6 +6150,22 @@ fn factory_validate_looks_up_the_owner_with_the_configured_token() {
 }
 
 #[test]
+fn factory_validate_looks_up_the_owner_with_the_owner_table_token() {
+    let e = github_owned_by(Some("User"));
+    e.config(
+        "[forge.github]\ntoken_env = \"DEFAULT_TOKEN\"\n[forge.github.owners.\"o\"]\ntoken_env = \"OWNER_TOKEN\"\n",
+    );
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    e.ns()
+        .env("DEFAULT_TOKEN", "default-tok")
+        .env("OWNER_TOKEN", "owner-tok")
+        .args(["factory", "validate"])
+        .assert()
+        .code(0);
+    assert_eq!(e.tokens_seen(), ["owner-tok"], "{}", e.gh_calls());
+}
+
+#[test]
 fn factory_validate_keeps_the_configured_token_off_an_origin_on_another_host() {
     let e = github_owned_by(Some("User"));
     git(
