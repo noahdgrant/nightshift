@@ -182,16 +182,13 @@ impl Origin {
         }
     }
 
-    /// Whether `kind`'s configured credentials are for the host `origin` is on: true when the
-    /// forge has no host set, else when `origin`'s host (github.com by default) is that host.
+    /// Whether `kind`'s configured credentials are for the host `origin` is on: true when no
+    /// forge is configured, else when `origin`'s host is the forge's host (github.com when unset).
     pub fn creds_fit_host(&self, kind: ForgeKind) -> bool {
-        let Some(want) = self
-            .forges
-            .get(kind)
-            .and_then(|f| effective_host(kind, Some(f)))
-        else {
+        let Some(forge) = self.forges.get(kind) else {
             return true;
         };
+        let want = effective_host(kind, Some(forge)).unwrap_or_else(|| "github.com".into());
         let got = self
             .url_for(kind)
             .and_then(watch_forge::host)
