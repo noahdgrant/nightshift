@@ -8,7 +8,7 @@ pub(crate) mod trial;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -332,7 +332,7 @@ fn extract_at_ref(skills_dir: &Path, git_ref: &str) -> Result<(tempfile::TempDir
         .to_string_lossy()
         .into_owned();
     let tmp = tempfile::Builder::new().prefix("ns-eval-ref-").tempdir()?;
-    let status = crate::proc::scrub_git(&mut Command::new("sh"))
+    let out = crate::proc::Proc::tool("sh")
         .arg("-c")
         .arg("git -C \"$1\" archive --format=tar \"$2\" -- \"$3\" | tar -x -C \"$4\"")
         .arg("sh")
@@ -344,11 +344,12 @@ fn extract_at_ref(skills_dir: &Path, git_ref: &str) -> Result<(tempfile::TempDir
             rel.clone()
         })
         .arg(tmp.path())
-        .status()
+        .output()
         .context("cannot run git archive")?;
-    if !status.success() {
+    if !out.status.success() {
         return Err(SfError::general(format!(
-            "cannot extract {rel} at {git_ref} with git archive"
+            "cannot extract {rel} at {git_ref} with git archive: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
         ))
         .into());
     }
@@ -1494,6 +1495,21 @@ mod time {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_skills_dir_missing_at_the_ref_fails_with_what_git_archive_said() {
+        use crate::testutil::{commit_file, g};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        g(&root, &["init", "-q", "-b", "main"]);
+        let before = commit_file(&root, "README", "x");
+        fs::create_dir(root.join("skills")).unwrap();
+        commit_file(&root, "skills/SKILL.md", "x");
+        let e = extract_at_ref(&root.join("skills"), &before).unwrap_err();
+        let msg = format!("{e:#}");
+        assert!(msg.contains("cannot extract skills at"), "{msg}");
+        assert!(msg.contains("did not match"), "{msg}");
+    }
 
     fn rec(passed: bool) -> TrialRecord {
         TrialRecord {

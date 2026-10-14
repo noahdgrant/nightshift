@@ -22,16 +22,15 @@ fn command(program: impl AsRef<OsStr>) -> Command {
 }
 
 /// Remove inherited git location variables, so the command acts only on the repo it names.
-pub fn scrub_git(cmd: &mut Command) -> &mut Command {
+fn scrub_git(cmd: &mut Command) {
     for v in git::LOCATION_VARS {
         cmd.env_remove(v);
     }
-    cmd
 }
 
 /// Remove the variables that would make `argv`'s harness bill an API instead of the
 /// subscription.
-pub fn scrub_billing(cmd: &mut Command, argv: &[String]) {
+fn scrub_billing(cmd: &mut Command, argv: &[String]) {
     for k in billing::api_env(argv) {
         cmd.env_remove(k);
     }

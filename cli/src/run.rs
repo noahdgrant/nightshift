@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -331,10 +331,9 @@ fn same_worktree(predicted: &Path, actual: &Path) -> Result<()> {
 // ---------------------------------------------------------------- gh and git helpers
 
 pub fn gh(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = crate::proc::scrub_git(&mut Command::new("gh"))
+    let out = crate::proc::Proc::forge("gh")
         .args(args)
         .current_dir(cwd)
-        .stdin(Stdio::null())
         .output()
         .context("cannot run gh; is it installed and on PATH?")?;
     if !out.status.success() {

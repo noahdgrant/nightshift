@@ -893,6 +893,24 @@ fn ask_runs_harness_and_maps_exit_codes() {
         .stderr(predicate::str::contains("not on PATH"));
 }
 
+#[test]
+fn ask_passes_the_harness_stderr_through_and_keeps_it_out_of_stdout() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    fs::write(
+        &cfg,
+        "[harness.h]\ncommand = [\"sh\", \"-c\", \"cat; echo progress >&2\"]\n[roles.review]\nharness = \"h\"\n",
+    )
+    .unwrap();
+    ns().env("NS_CONFIG", &cfg)
+        .args(["ask", "--role", "review"])
+        .write_stdin("answer\n")
+        .assert()
+        .success()
+        .stdout("answer\n")
+        .stderr(predicate::str::contains("progress\n"));
+}
+
 const ASK_API_ENV: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
