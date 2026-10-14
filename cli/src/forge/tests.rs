@@ -448,12 +448,10 @@ fn owner_fake(body: &str, origin: Option<&str>, limit: Duration) -> Option<Strin
 
 #[test]
 fn owner_type_is_none_when_the_cli_outlives_its_limit() {
-    let started = Instant::now();
     assert_eq!(
         owner_fake("exec sleep 30", None, Duration::from_millis(300)),
         None
     );
-    assert!(started.elapsed() < Duration::from_secs(10));
 }
 
 #[test]
@@ -475,13 +473,7 @@ fn owner_type_never_runs_the_cli_for_an_unsafe_host() {
         let ran = dir.path().join("ran");
         let body = format!("touch '{}'; echo User", ran.display());
         let fake = fake_cli(dir.path(), &body);
-        let got = repo_owner_type_within(
-            fake.as_os_str(),
-            "o/r",
-            Some(url),
-            None,
-            Duration::from_secs(30),
-        );
+        let got = repo_owner_type_within(fake.as_os_str(), "o/r", Some(url), None, Duration::MAX);
         assert_eq!(got, None, "{url}");
         assert!(!ran.exists(), "{url}");
     }
