@@ -1,13 +1,12 @@
 //! Thin wrapper around the `git` binary.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
 use crate::error::SfError;
+use crate::proc::Proc;
 
 /// Variables through which a parent git process (a hook, `git rebase --exec`, `git bisect run`)
 /// points child git commands at its own repository. `GIT_DIR` overrides even `git -C <dir>`, so
@@ -22,14 +21,6 @@ pub const LOCATION_VARS: &[&str] = &[
     "GIT_NAMESPACE",
     "GIT_PREFIX",
 ];
-
-/// Remove inherited git location variables, so the command acts only on the repo it names.
-pub fn scrub(cmd: &mut Command) -> &mut Command {
-    for v in LOCATION_VARS {
-        cmd.env_remove(v);
-    }
-    cmd
-}
 
 #[cfg(test)]
 thread_local! {
@@ -46,13 +37,11 @@ pub fn spawns() -> usize {
     SPAWNS.with(std::cell::Cell::get)
 }
 
-/// A `git` command with inherited location variables removed.
-pub fn command() -> Command {
+/// A `git` command on a local repo ([`Proc::git_local`]).
+pub fn command() -> Proc {
     #[cfg(test)]
     SPAWNS.with(|c| c.set(c.get() + 1));
-    let mut c = Command::new("git");
-    scrub(&mut c);
-    c
+    Proc::git_local()
 }
 
 /// The SSH command `ns run`'s phases push with when the user chose none. A pre-push hook that
@@ -86,18 +75,6 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
-/// A git command for `root` that never prompts for credentials, for work `ns` does unattended.
-pub fn unattended(root: &Path, args: &[&str]) -> Command {
-    let mut c = command();
-    c.arg("-C")
-        .arg(root)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
-        .stdin(Stdio::null());
-    c
-}
-
 /// A transfer that moves fewer bytes a second than this, for `LOW_SPEED_SECS`, fails.
 const LOW_SPEED_BYTES: &str = "1000";
 const LOW_SPEED_SECS: &str = "60";
@@ -106,13 +83,18 @@ const LOW_SPEED_SECS: &str = "60";
 pub const SSH: &str =
     "ssh -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4";
 
-/// [`unattended`] for a command that talks to `origin`, which must end even when origin
-/// doesn't answer: a stalled HTTP transfer fails, and ssh runs in batch mode with timeouts
-/// ([`SSH`]) unless the user chose an ssh command (`GIT_SSH_COMMAND`, `GIT_SSH` or
-/// `core.sshCommand`).
-pub fn net(root: &Path, args: &[&str]) -> Command {
-    let mut c = unattended(root, args);
-    c.env("GIT_HTTP_LOW_SPEED_LIMIT", LOW_SPEED_BYTES)
+/// A git command in `root` that talks to `origin` ([`Proc::git_network`], which never prompts
+/// for credentials), and must end even when origin doesn't answer: a stalled HTTP transfer
+/// fails, and ssh runs in batch mode with timeouts ([`SSH`]) unless the user chose an ssh
+/// command (`GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand`).
+pub fn net(root: &Path, args: &[&str]) -> Proc {
+    #[cfg(test)]
+    SPAWNS.with(|c| c.set(c.get() + 1));
+    let mut c = Proc::git_network();
+    c.arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_HTTP_LOW_SPEED_LIMIT", LOW_SPEED_BYTES)
         .env("GIT_HTTP_LOW_SPEED_TIME", LOW_SPEED_SECS);
     let chosen = ["GIT_SSH_COMMAND", "GIT_SSH"]
         .iter()
@@ -179,20 +161,14 @@ fn patch_id(cwd: &Path, base: &str, sha: &str, verbatim: bool) -> Option<String>
         .output()
         .ok()
         .filter(|o| o.status.success())?;
-    let mut child = command()
+    let out = command()
         .arg("-C")
         .arg(cwd)
         // `--verbatim` is `--stable` with whitespace kept; git refuses the two together.
         .args(["patch-id", if verbatim { "--verbatim" } else { "--stable" }])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
+        .stdin(diff.stdout)
+        .output()
         .ok()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(&diff.stdout);
-    }
-    let out = child.wait_with_output().ok()?;
     String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .next()
@@ -535,6 +511,20 @@ mod tests {
 
     fn same_diff(cwd: &Path, base: &str, a: &str, b: &str) -> bool {
         diff_id(cwd, base, a).is_some_and(|x| diff_id(cwd, base, b) == Some(x))
+    }
+
+    #[test]
+    fn a_network_command_runs_in_the_repo_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        g(dir.path(), &["init", "-q"]);
+        let out = net(dir.path(), &["rev-parse", "--show-toplevel"])
+            .output()
+            .unwrap();
+        let want = dir.path().canonicalize().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim_end(),
+            want.to_str().unwrap()
+        );
     }
 
     #[test]

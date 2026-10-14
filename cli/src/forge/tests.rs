@@ -3,14 +3,14 @@ use std::time::Instant;
 
 fn fake_cli(dir: &Path, body: &str) -> std::path::PathBuf {
     let fake = dir.join("fake");
-    let made = Command::new("sh")
+    let made = Proc::tool("sh")
         .arg("-c")
         .arg(r#"printf '%s\n' '#!/bin/sh' "$1" > "$0" && chmod 755 "$0""#)
         .arg(&fake)
         .arg(body)
-        .status()
+        .output()
         .unwrap();
-    assert!(made.success());
+    assert!(made.status.success());
     fake
 }
 
@@ -26,6 +26,54 @@ fn can_read_names_the_cli_that_outlives_its_limit() {
     let e = can_read_fake("exec sleep 30", Duration::from_millis(300)).unwrap_err();
     assert_eq!(e, "gh timed out after 0.3s");
     assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+const STOP_MARK: &str = "NS_FORGE_STOP_PROBE";
+
+#[test]
+fn a_stop_ends_a_forge_cli_and_a_token_command_as_interrupted() {
+    crate::testutil::probe("forge::tests::stop_probe", STOP_MARK, "1");
+}
+
+#[test]
+fn stop_probe() {
+    if std::env::var_os(STOP_MARK).is_none() {
+        return;
+    }
+    crate::stop::request(libc::SIGTERM);
+    let e = can_read_fake("exec sleep 600", PROBE_TIMEOUT).unwrap_err();
+    assert!(e.ends_with("stopped by a signal"), "{e}");
+    assert!(!e.contains("cannot run"), "{e}");
+    let source = TokenSource::Command("sleep 600".into());
+    let e = fetch_within(ForgeKind::Github, &source, PROBE_TIMEOUT).unwrap_err();
+    assert!(e.to_string().contains("stopped by a signal"), "{e}");
+}
+
+const ACCOUNT_MARK: &str = "NS_FORGE_ACCOUNT_STOP_PROBE";
+
+#[test]
+fn a_stop_ends_the_account_lookup_at_once_as_a_negative() {
+    crate::testutil::probe("forge::tests::account_stop_probe", ACCOUNT_MARK, "1");
+}
+
+#[test]
+fn account_stop_probe() {
+    if std::env::var_os(ACCOUNT_MARK).is_none() {
+        return;
+    }
+    let _gh = crate::testutil::fake_on_path("gh", "exec sleep 600");
+    crate::stop::request(libc::SIGTERM);
+    assert_eq!(account(ForgeKind::Github, None), None);
+    let e = account_output(ForgeKind::Github, None).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::Interrupted, "{e}");
+}
+
+#[test]
+fn a_stop_is_not_reported_as_a_command_that_cannot_run() {
+    let stopped = std::io::Error::new(std::io::ErrorKind::Interrupted, "`gh api` stopped");
+    assert_eq!(cannot_run("gh", &stopped), "`gh api` stopped");
+    let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+    assert!(cannot_run("gh", &missing).starts_with("cannot run gh: "));
 }
 
 #[test]
@@ -53,68 +101,6 @@ fn can_read_returns_the_cli_stderr() {
     let e = can_read_fake("echo 'HTTP 404' >&2; exit 1", Duration::from_secs(30)).unwrap_err();
     assert_eq!(e, "HTTP 404");
     assert_eq!(can_read_fake("exit 0", Duration::from_secs(30)), Ok(()));
-}
-
-#[test]
-fn output_within_leaves_no_descendant_running_after_a_timeout() {
-    use std::io::{BufRead, BufReader};
-    use std::os::{fd::AsRawFd, unix::process::CommandExt};
-    const TIMEOUT_MS: u64 = 500;
-    const HANG_GUARD_SECS: u64 = 60;
-    let (reader, writer) = std::io::pipe().unwrap();
-    let fd = writer.as_raw_fd();
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", "sleep 600 & echo $$ >&3; sleep 300"]);
-    // SAFETY: dup2(2) and fcntl(2) are async-signal-safe. Clearing FD_CLOEXEC keeps fd 3
-    // open across exec even when the pipe already was fd 3, where dup2 changes nothing.
-    unsafe {
-        cmd.pre_exec(move || {
-            if libc::dup2(fd, 3) == -1 || libc::fcntl(3, libc::F_SETFD, 0) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    // Every process the shell starts inherits fd 3: the pipe reads EOF only once all have exited.
-    enum Event {
-        Group(String),
-        Returned(Option<std::io::ErrorKind>),
-        Eof,
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    let reader_tx = tx.clone();
-    std::thread::spawn(move || {
-        let (mut reader, mut group) = (BufReader::new(reader), String::new());
-        let _ = reader.read_line(&mut group);
-        let _ = reader_tx.send(Event::Group(group));
-        let _ = reader.read_to_end(&mut Vec::new());
-        let _ = reader_tx.send(Event::Eof);
-    });
-    std::thread::spawn(move || {
-        let outcome = output_within(cmd, Duration::from_millis(TIMEOUT_MS));
-        let _ = tx.send(Event::Returned(outcome.err().map(|e| e.kind())));
-    });
-    let (mut writer, hang_guard) = (Some(writer), Duration::from_secs(HANG_GUARD_SECS));
-    let (mut group, mut returned, mut eof) = (String::new(), None, false);
-    while returned.is_none() || !eof {
-        match rx.recv_timeout(hang_guard) {
-            Ok(Event::Group(g)) => group = g,
-            Ok(Event::Returned(kind)) => returned = Some(kind),
-            Ok(Event::Eof) => eof = true,
-            Err(_) => {
-                // The shell's pid is its group id: `run_process` makes it a group leader.
-                if let Ok(pgid) = group.trim().parse::<libc::pid_t>() {
-                    // SAFETY: kill(2) on the group this test started, so it outlives no failure.
-                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
-                }
-                panic!(
-                    "after {hang_guard:?}: output_within returned={returned:?}, pipe closed={eof}"
-                );
-            }
-        }
-        drop(writer.take());
-    }
-    assert_eq!(returned, Some(Some(std::io::ErrorKind::TimedOut)));
 }
 
 #[test]
@@ -283,37 +269,6 @@ fn hide_replaces_every_token_but_ignores_an_empty_one() {
 }
 
 #[test]
-fn output_within_kills_a_command_that_outlives_its_limit() {
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", "sleep 30"]);
-    let started = Instant::now();
-    let e = output_within(cmd, Duration::from_millis(200)).unwrap_err();
-    assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
-    assert!(started.elapsed() < Duration::from_secs(10));
-}
-
-#[test]
-fn output_within_returns_the_output_of_a_command_that_finishes() {
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", "echo out; echo err >&2; exit 3"]);
-    let out = output_within(cmd, Duration::from_secs(30)).unwrap();
-    assert_eq!(out.status.code(), Some(3));
-    assert_eq!(out.stdout, b"out\n");
-    assert_eq!(out.stderr, b"err\n");
-}
-
-#[test]
-fn output_within_keeps_the_output_when_a_descendant_holds_the_pipe() {
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", "sleep 30 & echo hi; exit 3"]);
-    let started = Instant::now();
-    let out = output_within(cmd, Duration::from_secs(30)).unwrap();
-    assert_eq!(out.status.code(), Some(3));
-    assert_eq!(out.stdout, b"hi\n");
-    assert!(started.elapsed() < Duration::from_secs(20));
-}
-
-#[test]
 fn the_repo_is_checked_only_for_a_configured_forge_on_a_real_run_not_yet_checked() {
     let forge = Forge {
         token: TokenSource::Command("true".into()),
@@ -392,12 +347,11 @@ fn a_token_command_that_finishes_in_time_returns_its_token() {
     assert_eq!(t, "tok");
 }
 
-fn envs(cmd: &Command) -> Vec<(String, String)> {
+/// The variables set on `cmd`, leaving out the ones its kind removes.
+fn envs(cmd: &Proc) -> Vec<(String, String)> {
+    let s = |o: &std::ffi::OsStr| o.to_string_lossy().into_owned();
     cmd.get_envs()
-        .map(|(k, v)| {
-            let s = |o: &std::ffi::OsStr| o.to_string_lossy().into_owned();
-            (s(k), v.map(s).unwrap_or_default())
-        })
+        .filter_map(|(k, v)| Some((s(k), s(v?))))
         .collect()
 }
 
@@ -407,7 +361,7 @@ fn apply_to_sets_a_fetched_token_and_the_host() {
         token: Token::Fetched("tok".into()),
         host: Some("ghe.example.com".into()),
     };
-    let mut cmd = Command::new("gh");
+    let mut cmd = Proc::forge("gh");
     creds.apply_to(ForgeKind::Github, &mut cmd);
     let mut got = envs(&cmd);
     got.sort();
@@ -426,7 +380,7 @@ fn apply_to_leaves_an_already_set_token_alone() {
         token: Token::AlreadySet,
         host: None,
     };
-    let mut cmd = Command::new("glab");
+    let mut cmd = Proc::forge("glab");
     creds.apply_to(ForgeKind::Gitlab, &mut cmd);
     assert!(envs(&cmd).is_empty(), "{:?}", envs(&cmd));
     let creds = Credentials {

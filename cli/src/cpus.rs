@@ -75,9 +75,17 @@ fn fill(cell: &'static OnceLock<Vec<Setting>>, n: u32) -> &'static [Setting] {
 
 /// Give `cmd` each computed variable; an inherited one reaches it through the environment.
 pub fn apply(cmd: &mut Command) {
-    for x in ACTIVE.get().into_iter().flatten().filter(|x| !x.inherited) {
-        cmd.env(x.var, &x.value);
-    }
+    cmd.envs(vars());
+}
+
+/// Each computed variable and its value, for a child to get ([`apply`]).
+pub fn vars() -> impl Iterator<Item = (&'static str, &'static str)> {
+    ACTIVE
+        .get()
+        .into_iter()
+        .flatten()
+        .filter(|x| !x.inherited)
+        .map(|x| (x.var, x.value.as_str()))
 }
 
 /// The settings for the run log: each variable's value and whether it was computed or inherited.

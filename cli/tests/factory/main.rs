@@ -364,6 +364,7 @@ include!("run_phases_and_skills.rs");
 include!("run_rebases_and_gates.rs");
 include!("run_ratchets_and_worktrees.rs");
 include!("run_locks_and_merge_order.rs");
+include!("run_setup_signals.rs");
 include!("run_runners_and_github_checks.rs");
 include!("merge_conflicts_and_validate.rs");
 include!("validate_owner_warning.rs");

@@ -21,6 +21,7 @@ use super::{triage, Tonight};
 use crate::eval::trial::run_process;
 use crate::gate::stderr_tail;
 use crate::git::{self, Repo};
+use crate::proc::Proc;
 use crate::run;
 use crate::stop;
 
@@ -438,25 +439,22 @@ fn spawn_build(repo: &Repo, to: &str) -> Result<(Child, PathBuf)> {
 
 /// `git archive <to> cli | tar -x -C <into>`: the source to build, with no worktree to clean up.
 fn extract(root: &Path, to: &str, into: &Path) -> Result<()> {
-    let mut archive = git::command()
+    let git = git::command()
         .arg("-C")
         .arg(root)
         .args(["archive", "--format=tar", to, "cli"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("cannot run git archive")?;
-    let tar = Command::new("tar")
-        .arg("-x")
-        .arg("-C")
-        .arg(into)
-        .stdin(archive.stdout.take().expect("piped"))
         .output()
-        .context("cannot run tar")?;
-    let git = archive.wait_with_output().context("git archive")?;
+        .context("cannot run git archive")?;
     if !git.status.success() {
         bail!("git archive {to}: {}", warning_tail(&git.stderr));
     }
+    let tar = Proc::tool("tar")
+        .arg("-x")
+        .arg("-C")
+        .arg(into)
+        .stdin(git.stdout)
+        .output()
+        .context("cannot run tar")?;
     if !tar.status.success() {
         bail!("tar: {}", warning_tail(&tar.stderr));
     }
@@ -550,20 +548,7 @@ fn exec(staged: &Path, args: Vec<OsString>) -> anyhow::Error {
     let _ = std::io::stderr().flush();
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt;
-        let mut cmd = Command::new(staged);
-        cmd.args(args);
-        // SAFETY: the closure only does pthread_sigmask(3) and an atomic load.
-        unsafe {
-            cmd.pre_exec(|| {
-                stop::block();
-                match stop::requested() {
-                    Some(_) => Err(std::io::ErrorKind::Interrupted.into()),
-                    None => Ok(()),
-                }
-            });
-        }
-        let e = cmd.exec();
+        let e = Proc::tool(staged).args(args).exec();
         // std set SIGPIPE to its default for the new program; this one goes on, and a harness
         // that exits early must not kill it.
         // SAFETY: signal(2) with SIG_IGN installs no handler.

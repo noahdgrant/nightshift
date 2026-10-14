@@ -317,7 +317,7 @@ fn judge(rubric: &str, ctx: &Ctx<'_>) -> Result<(bool, String)> {
     let out_path = s.root().join("logs").join("judge.out");
     let out = fs::File::create(&out_path)?;
     let mut cmd = Command::new(ctx.ns_exe);
-    crate::git::scrub(&mut cmd);
+    crate::proc::scrub_git(&mut cmd);
     cmd.args(["ask", "--role", "eval.judge", "--cwd"])
         .arg(&s.repo)
         .stdout(out)

@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -11,6 +11,7 @@ use serde_json::Value;
 use super::{ClosingPrs, Filed, Forge, IssueState, MergedPr, MergedPrs, Post, PrState};
 use crate::config::ForgeKind;
 use crate::error::SfError;
+use crate::proc::{Kind, Proc};
 use crate::watch::ci::{Check, HeadChecks, Outcome};
 use crate::watch::{closed_by, Issue};
 
@@ -23,12 +24,17 @@ pub struct GitLab {
 }
 
 fn glab(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = crate::git::scrub(&mut Command::new("glab"))
+    glab_within(cwd, args, Kind::Forge.timeout())
+}
+
+fn glab_within(cwd: &Path, args: &[&str], limit: Duration) -> Result<String> {
+    let out = Proc::forge("glab")
         .args(args)
         .current_dir(cwd)
-        .stdin(Stdio::null())
+        .timeout(limit)
+        .until_stop()
         .output()
-        .context("cannot run glab; is it installed and on PATH?")?;
+        .map_err(glab_unrunnable)?;
     if !out.status.success() {
         let token = std::env::var(ForgeKind::Gitlab.token_var()).ok();
         return Err(SfError::general(format!(
@@ -42,6 +48,13 @@ fn glab(cwd: &Path, args: &[&str]) -> Result<String> {
         .into());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn glab_unrunnable(e: std::io::Error) -> anyhow::Error {
+    match e.kind() {
+        std::io::ErrorKind::Interrupted | std::io::ErrorKind::TimedOut => e.into(),
+        _ => anyhow::Error::new(e).context("cannot run glab; is it installed and on PATH?"),
+    }
 }
 
 /// `text` with every copy of `token` hidden: a server may echo the credential it refused.
@@ -421,6 +434,64 @@ impl Forge for GitLab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_is_not_reported_as_a_missing_glab() {
+        let stopped = std::io::Error::new(std::io::ErrorKind::Interrupted, "`glab api` stopped");
+        assert_eq!(glab_unrunnable(stopped).to_string(), "`glab api` stopped");
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(
+            glab_unrunnable(missing).to_string(),
+            "cannot run glab; is it installed and on PATH?"
+        );
+    }
+
+    const STOP_MARK: &str = "NS_GLAB_STOP_PROBE";
+
+    #[test]
+    fn a_stop_ends_glab_as_interrupted_not_as_a_missing_glab() {
+        crate::testutil::probe("watch::forge::gitlab::tests::stop_probe", STOP_MARK, "1");
+    }
+
+    #[test]
+    fn stop_probe() {
+        if std::env::var_os(STOP_MARK).is_none() {
+            return;
+        }
+        let dir = crate::testutil::fake_on_path("glab", "exec sleep 20");
+        crate::stop::request(libc::SIGTERM);
+        let e = glab(dir.path(), &["api", "user"]).unwrap_err();
+        let io = e.downcast_ref::<std::io::Error>().expect("an io error");
+        assert_eq!(io.kind(), std::io::ErrorKind::Interrupted);
+        assert!(e.to_string().ends_with("stopped by a signal"), "{e}");
+        assert!(e.to_string().contains("glab api user"), "{e}");
+    }
+
+    const LIMIT_MARK: &str = "NS_GLAB_LIMIT_PROBE";
+
+    #[test]
+    fn a_glab_past_its_limit_reports_the_timeout_naming_the_command() {
+        crate::testutil::probe("watch::forge::gitlab::tests::limit_probe", LIMIT_MARK, "1");
+    }
+
+    #[test]
+    fn limit_probe() {
+        if std::env::var_os(LIMIT_MARK).is_none() {
+            return;
+        }
+        let _glab = crate::testutil::fake_on_path("glab", "exec sleep 600");
+        let e = glab_within(
+            Path::new("."),
+            &["api", "projects/:id"],
+            std::time::Duration::ZERO,
+        )
+        .unwrap_err();
+        let io = e.downcast_ref::<std::io::Error>().expect("an io error");
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+        assert!(e.to_string().contains("glab api projects/:id"), "{e}");
+        assert!(e.to_string().contains("timed out"), "{e}");
+        assert!(!e.to_string().contains("cannot run glab"), "{e}");
+    }
 
     #[test]
     fn to_merged_prs_reads_each_mrs_branch_and_merge_time_but_no_lines() {

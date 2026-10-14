@@ -37,6 +37,14 @@ fn child_env(kind: Kind, program: &str, vars: &[&str]) -> String {
     stdout(&p.output().unwrap())
 }
 
+/// All of `f` from its start: the child moved the offset this shared descriptor has.
+fn read_back(f: &mut File) -> String {
+    let mut text = String::new();
+    f.seek(SeekFrom::Start(0)).unwrap();
+    f.read_to_string(&mut text).unwrap();
+    text
+}
+
 fn mkfifo(path: &Path) {
     let c = CString::new(path.as_os_str().as_bytes()).unwrap();
     // SAFETY: mkfifo(3) with a valid NUL-terminated path.
@@ -429,4 +437,327 @@ fn the_child_runs_in_the_directory_the_caller_names() {
         stdout(&p.output().unwrap()).trim_end(),
         want.to_str().unwrap()
     );
+}
+
+/// What [`Proc::exec`] relies on: SIGINT and SIGTERM blocked before an exec stay blocked, and
+/// one that lands in between stays pending for the new program.
+#[test]
+fn exec_holds_a_stop_pending_through_to_the_new_program() {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new("grep");
+    cmd.args(["-E", "^(SigBlk|SigPnd|ShdPnd)", "/proc/self/status"]);
+    // SAFETY: only pthread_sigmask(3) and kill(2) in the closure.
+    unsafe {
+        cmd.pre_exec(|| {
+            crate::stop::block();
+            libc::kill(libc::getpid(), libc::SIGTERM);
+            Ok(())
+        });
+    }
+    let out = cmd.output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mask = |key: &str| {
+        let line = text.lines().find(|l| l.starts_with(key)).unwrap();
+        u64::from_str_radix(line.split_whitespace().nth(1).unwrap(), 16).unwrap()
+    };
+    let (int, term) = (1 << (libc::SIGINT - 1), 1 << (libc::SIGTERM - 1));
+    assert_eq!(mask("SigBlk") & (int | term), int | term, "{text}");
+    assert_eq!((mask("SigPnd") | mask("ShdPnd")) & term, term, "{text}");
+}
+
+#[test]
+fn output_to_sends_both_streams_to_the_file_as_the_child_writes() {
+    let mut log = tempfile::tempfile().unwrap();
+    let mut p = sh(Kind::Tool, "echo out; echo err >&2; exit 3");
+    let out = p.output_to(log.try_clone().unwrap()).output().unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(out.stdout.is_empty() && out.stderr.is_empty());
+    let text = read_back(&mut log);
+    assert_eq!(text, "out\nerr\n");
+}
+
+#[test]
+fn a_stop_kills_the_child_and_fails_naming_it() {
+    let mut p = Proc::tool("sleep");
+    p.arg("600").stop_when(|| true);
+    let e = p.output().unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::Interrupted);
+    assert_eq!(e.to_string(), "`sleep 600` stopped by a signal");
+}
+
+#[test]
+fn a_stop_beats_an_expired_deadline() {
+    let mut p = Proc::tool("sleep");
+    p.arg("600").timeout(Duration::ZERO).stop_when(|| true);
+    let e = p.output().unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::Interrupted);
+}
+
+#[test]
+fn a_child_that_ends_before_a_stop_is_left_alone() {
+    let mut p = sh(Kind::Tool, "echo done");
+    p.stop_when(|| false);
+    assert_eq!(stdout(&p.output().unwrap()), "done\n");
+}
+
+#[test]
+fn until_stop_ends_the_child_only_when_a_stop_is_requested() {
+    let mut p = sh(Kind::Tool, "echo done");
+    p.until_stop();
+    assert_eq!(stdout(&p.output().unwrap()), "done\n");
+}
+
+#[test]
+fn envs_reach_the_child() {
+    let mut p = sh(Kind::Tool, r#"echo "$A $B""#);
+    p.envs([("A", "1"), ("B", "2")]);
+    assert_eq!(stdout(&p.output().unwrap()), "1 2\n");
+}
+
+/// A spawned child gets its kind's scrub and closed stdin, writes stdout to the file the caller
+/// gives, and leads a session of its own.
+#[test]
+fn a_spawned_child_runs_scrubbed_in_its_own_session() {
+    let mut log = tempfile::tempfile().unwrap();
+    let vars = git::LOCATION_VARS.iter().map(|v| (*v, "/decoy"));
+    let mut p = Proc::inheriting(Kind::Tool, "sh", vars);
+    p.arg("-c")
+        .arg(r#"read line; echo "read=$?"; env; ps -o sid= -p $$"#);
+    let mut child = p.spawn(log.try_clone().unwrap()).unwrap();
+    let pid = child.id();
+    assert!(child.wait().unwrap().success());
+    let text = read_back(&mut log);
+    assert!(text.starts_with("read=1\n"), "{text}");
+    for v in git::LOCATION_VARS {
+        assert!(!text.contains(&format!("{v}=")), "passed {v}");
+    }
+    assert_eq!(text.lines().last().unwrap().trim(), pid.to_string());
+}
+
+#[test]
+fn a_spawned_subscription_harness_never_sees_the_api_billing_variables() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("claude");
+    crate::testutil::write_exe(&bin, "#!/bin/sh\nexec sh \"$@\"\n");
+    let vars = billing::API_ENV.iter().map(|v| (*v, "decoy"));
+    let mut p = Proc::inheriting(
+        Kind::Harness { subscription: true },
+        bin.to_str().unwrap(),
+        vars,
+    );
+    p.arg("-c").arg("env");
+    let mut log = tempfile::tempfile().unwrap();
+    let mut child = p.spawn(log.try_clone().unwrap()).unwrap();
+    assert!(child.wait().unwrap().success());
+    let env = read_back(&mut log);
+    for v in billing::API_ENV {
+        assert!(!env.contains(&format!("{v}=")), "got {v}");
+    }
+}
+
+const SPAWN_MARK: &str = "NS_PROC_SPAWN_STDERR_PROBE";
+
+#[test]
+fn a_spawned_child_writes_its_stderr_to_the_parents() {
+    let out = crate::testutil::probe("proc::tests::spawn_stderr_probe", SPAWN_MARK, "1");
+    let log = String::from_utf8_lossy(&out.stdout);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("spawned-child-stderr\n"), "{err}");
+    assert!(!log.contains("spawned-child-stderr"), "{log}");
+}
+
+#[test]
+fn spawn_stderr_probe() {
+    if std::env::var_os(SPAWN_MARK).is_none() {
+        return;
+    }
+    let mut p = sh(Kind::Tool, "echo spawned-child-stderr >&2");
+    let mut child = p.spawn(tempfile::tempfile().unwrap()).unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_spawned_child_gets_sigterm_when_the_thread_that_started_it_ends() {
+    use std::os::unix::process::ExitStatusExt;
+    let out = tempfile::tempfile().unwrap();
+    let mut child =
+        std::thread::spawn(move || sh(Kind::Tool, "exec sleep 600").spawn(out).unwrap())
+            .join()
+            .unwrap();
+    let pid = child.id() as libc::pid_t;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(child.wait().unwrap()));
+    let Ok(status) = rx.recv_timeout(Kind::Tool.timeout()) else {
+        // The waiter hasn't reaped the child, so its pid is still ours to kill.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        panic!("the child outlived the thread that started it");
+    };
+    assert_eq!(status.signal(), Some(libc::SIGTERM));
+}
+
+#[test]
+fn polling_starts_at_a_millisecond_and_doubles_up_to_twenty() {
+    let mut delay = FIRST_POLL;
+    let mut seen = vec![delay];
+    for _ in 0..7 {
+        delay = next_poll(delay);
+        seen.push(delay);
+    }
+    let ms: Vec<u128> = seen.iter().map(Duration::as_millis).collect();
+    assert_eq!(ms, [1, 2, 4, 8, 16, 20, 20, 20]);
+}
+
+#[test]
+fn scrub_billing_removes_every_codex_api_variable_and_no_anthropic_one() {
+    let argv = ["codex".to_string()];
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg("env");
+    for v in billing::CODEX_API_ENV.iter().chain(billing::API_ENV) {
+        cmd.env(v, "decoy");
+    }
+    scrub_billing(&mut cmd, &argv);
+    let env = String::from_utf8_lossy(&cmd.output().unwrap().stdout).into_owned();
+    for v in billing::CODEX_API_ENV {
+        assert!(!env.contains(&format!("{v}=")), "kept {v}");
+    }
+    for v in billing::API_ENV
+        .iter()
+        .filter(|v| v.starts_with("ANTHROPIC"))
+    {
+        assert!(env.contains(&format!("{v}=decoy")), "removed {v}");
+    }
+}
+
+#[test]
+fn scrub_git_removes_every_git_location_variable() {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg("env");
+    for v in git::LOCATION_VARS {
+        cmd.env(v, "/decoy");
+    }
+    cmd.env("GIT_AUTHOR_NAME", "kept");
+    scrub_git(&mut cmd);
+    let env = String::from_utf8_lossy(&cmd.output().unwrap().stdout).into_owned();
+    for v in git::LOCATION_VARS {
+        assert!(!env.contains(&format!("{v}=")), "kept {v}");
+    }
+    assert!(env.contains("GIT_AUTHOR_NAME=kept"), "{env}");
+}
+
+const EXEC_MARK: &str = "NS_PROC_EXEC_PROBE";
+
+fn run_exec_probe(mode: &str, envs: &[(&str, &str)]) -> String {
+    let out = crate::testutil::probe_command("proc::tests::exec_probe", EXEC_MARK, mode)
+        .envs(envs.iter().copied())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn exec_probe() {
+    let Ok(mode) = std::env::var(EXEC_MARK) else {
+        return;
+    };
+    match mode.as_str() {
+        "stopped" => {
+            crate::stop::request(libc::SIGTERM);
+            let e = Proc::tool("true").exec();
+            println!("{:?}", e.kind());
+        }
+        "blocked" => {
+            let e = Proc::tool("grep")
+                .args(["-E", "^SigBlk", "/proc/self/status"])
+                .exec();
+            panic!("exec failed: {e}");
+        }
+        "billing" => {
+            let bin = std::env::var("NS_PROC_EXEC_BIN").unwrap();
+            let e = Proc::harness(bin, true).arg("-c").arg("env").exec();
+            panic!("exec failed: {e}");
+        }
+        other => panic!("unknown mode {other}"),
+    }
+}
+
+#[test]
+fn exec_fails_as_interrupted_when_a_stop_was_already_requested() {
+    let text = run_exec_probe("stopped", &[]);
+    assert!(text.contains("... Interrupted\n"), "{text}");
+}
+
+#[test]
+fn exec_runs_the_program_with_sigint_and_sigterm_blocked() {
+    let text = run_exec_probe("blocked", &[]);
+    let line = text.lines().find(|l| l.contains("SigBlk:")).unwrap();
+    let mask = u64::from_str_radix(line.split_whitespace().last().unwrap(), 16).unwrap();
+    let (int, term) = (1 << (libc::SIGINT - 1), 1 << (libc::SIGTERM - 1));
+    assert_eq!(mask & (int | term), int | term, "{text}");
+}
+
+#[test]
+fn exec_scrubs_the_api_billing_variables_for_a_subscription_harness() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("claude");
+    crate::testutil::write_exe(&bin, "#!/bin/sh\nexec sh \"$@\"\n");
+    let mut envs = vec![("NS_PROC_EXEC_BIN", bin.to_str().unwrap())];
+    envs.extend(billing::API_ENV.iter().map(|v| (*v, "decoy")));
+    let env = run_exec_probe("billing", &envs);
+    assert!(env.contains("PATH="), "{env}");
+    for v in billing::API_ENV {
+        assert!(!env.contains(&format!("{v}=")), "kept {v}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn spawn_fails_when_the_parent_it_was_started_for_is_gone() {
+    let not_me = std::process::id() as libc::pid_t + 1;
+    let e = sh(Kind::Tool, "exit 0")
+        .spawn_for(not_me, tempfile::tempfile().unwrap())
+        .unwrap_err();
+    assert_eq!(e.raw_os_error(), Some(libc::ESRCH), "{e}");
+}
+
+const DIES_WITH_PARENT_MARK: &str = "NS_PROC_DIES_WITH_PARENT_PROBE";
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_git_child_of_a_process_killed_by_a_signal_does_not_outlive_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fifo, reader) = held_fifo(dir.path());
+    let mut probe = crate::testutil::probe_command(
+        "proc::tests::dies_with_parent_probe",
+        DIES_WITH_PARENT_MARK,
+        fifo.to_str().unwrap(),
+    );
+    let mut probe = probe.spawn().unwrap();
+    // Opening for read blocks until the git child opens the FIFO for write.
+    let mut ready = File::open(&fifo).unwrap();
+    let mut seen = [0u8; 1];
+    while seen[0] != b'\n' {
+        assert_eq!(ready.read(&mut seen).unwrap(), 1, "the git child never ran");
+    }
+    drop(ready);
+    probe.kill().unwrap();
+    probe.wait().unwrap();
+    wait_for_eof(reader);
+}
+
+/// Run by the test above: waits in `output()` on a fake `git` that holds the FIFO open.
+#[test]
+fn dies_with_parent_probe() {
+    let Some(fifo) = std::env::var_os(DIES_WITH_PARENT_MARK) else {
+        return;
+    };
+    let body = format!(
+        "exec 3>'{}'\necho ready >&3\nexec sleep 600",
+        fifo.to_string_lossy()
+    );
+    let _git = crate::testutil::fake_on_path("git", &body);
+    for mut p in [Proc::git_local(), Proc::git_network()] {
+        let _ = p.output();
+    }
 }

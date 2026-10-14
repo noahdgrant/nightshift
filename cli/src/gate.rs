@@ -160,7 +160,7 @@ pub fn run(
         _ => {}
     }
     let (mut c, watch) = memcap::command(cap, "sh");
-    crate::git::scrub(&mut c);
+    crate::proc::scrub_git(&mut c);
     crate::cpus::apply(&mut c);
     c.env(ratchet::FACTORY_VAR, std::path::absolute(ratchets.factory)?)
         .env(ratchet::REPORT_VAR, &report);
