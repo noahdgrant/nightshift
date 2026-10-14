@@ -588,17 +588,13 @@ fn a_spawned_child_gets_sigterm_when_the_thread_that_started_it_ends() {
         std::thread::spawn(move || sh(Kind::Tool, "exec sleep 600").spawn(out).unwrap())
             .join()
             .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if std::time::Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("the child outlived the thread that started it");
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    let pid = child.id() as libc::pid_t;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(child.wait().unwrap()));
+    let Ok(status) = rx.recv_timeout(Kind::Tool.timeout()) else {
+        // The waiter hasn't reaped the child, so its pid is still ours to kill.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        panic!("the child outlived the thread that started it");
     };
     assert_eq!(status.signal(), Some(libc::SIGTERM));
 }
