@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -10,7 +11,7 @@ use serde_json::Value;
 use super::{ClosingPrs, Filed, Forge, IssueState, MergedPr, MergedPrs, Post, PrState};
 use crate::config::ForgeKind;
 use crate::error::SfError;
-use crate::proc::Proc;
+use crate::proc::{Kind, Proc};
 use crate::watch::ci::{Check, HeadChecks, Outcome};
 use crate::watch::{closed_by, Issue};
 
@@ -23,9 +24,14 @@ pub struct GitLab {
 }
 
 fn glab(cwd: &Path, args: &[&str]) -> Result<String> {
+    glab_within(cwd, args, Kind::Forge.timeout())
+}
+
+fn glab_within(cwd: &Path, args: &[&str], limit: Duration) -> Result<String> {
     let out = Proc::forge("glab")
         .args(args)
         .current_dir(cwd)
+        .timeout(limit)
         .until_stop()
         .output()
         .map_err(glab_unrunnable)?;
@@ -461,16 +467,32 @@ mod tests {
         assert!(e.to_string().contains("glab api user"), "{e}");
     }
 
+    const LIMIT_MARK: &str = "NS_GLAB_LIMIT_PROBE";
+
     #[test]
     fn a_glab_past_its_limit_reports_the_timeout_naming_the_command() {
-        let timed_out = std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "`glab api projects/:id` timed out after 120s",
-        );
-        assert_eq!(
-            glab_unrunnable(timed_out).to_string(),
-            "`glab api projects/:id` timed out after 120s"
-        );
+        crate::testutil::probe("watch::forge::gitlab::tests::limit_probe", LIMIT_MARK, "1");
+    }
+
+    #[test]
+    fn limit_probe() {
+        if std::env::var_os(LIMIT_MARK).is_none() {
+            return;
+        }
+        let _glab = crate::testutil::fake_on_path("glab", "exec sleep 600");
+        let started = std::time::Instant::now();
+        let e = glab_within(
+            Path::new("."),
+            &["api", "projects/:id"],
+            std::time::Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        let io = e.downcast_ref::<std::io::Error>().expect("an io error");
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+        assert!(e.to_string().contains("glab api projects/:id"), "{e}");
+        assert!(e.to_string().contains("timed out"), "{e}");
+        assert!(!e.to_string().contains("cannot run glab"), "{e}");
     }
 
     #[test]
