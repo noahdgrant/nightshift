@@ -1,3 +1,4 @@
 export function later(): void {
-  setTimeout("tick()", 10);
+  const code: string = String(Date.now());
+  setTimeout(code, 10);
 }
