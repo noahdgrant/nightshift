@@ -23,7 +23,7 @@ pub const SKILLS_DIR: &str = "skills";
 pub const LINKS: &[&str] = &[CLAUDE_LINK, ".agents/skills"];
 
 /// The path claude reads project skills from.
-const CLAUDE_LINK: &str = ".claude/skills";
+pub const CLAUDE_LINK: &str = ".claude/skills";
 
 /// The factory's phase settings (docs/factory/run.md, "Phase settings"), versioned in
 /// `.nightshift/` so a change to them needs a human merge. `{ns}` stands for the `ns` binary.
