@@ -13,6 +13,9 @@ These are clippy lints in `cli/Cargo.toml` (`[lints.clippy]`) and `cli/clippy.to
 | `unused_result_ok` | `fs::remove_dir_all(&tmp).ok();`, a statement that drops an error unseen | 454 (four times) |
 | `fn_params_excessive_bools`, at 3 or more | `checks_repo(repo, true, false, true)`, a call nobody can read | 488 |
 | `option_option` | `Option<Option<Red>>`, where `Some(None)` means green | 466 |
+| `disallowed_methods` on `std::process::Command::new` | a child started without its kind's policy (environment scrub, timeout, closed stdin); start it through `crate::proc::Proc` | 556, 581 |
+
+Only `proc` lifts the `Command::new` ban in production code. A unit test in `cli/src` starts its children through `Proc`; only `testutil::probe_command` lifts the ban, because its caller spawns and kills the probe itself. The integration tests under `cli/tests/` are crates of their own and cannot reach `proc`. They start children through `common::command`, which lifts the ban on its own helpers and bounds the child the way `common::ns` does. A test crate that builds a `Command` directly lifts the ban at its root. `build.rs` is a crate of its own too, and lifts the ban on its one git call. `tests/subprocess_guard.rs` checks that clippy rejects a stray call and that nothing else in `cli/src` lifts the ban.
 
 A function doing several jobs is caught in part by `too_many_lines` at 100 lines (425, 488). The Rust rule pack (`rules/rust/clippy-lints.txt`) already runs it, through the `ns rules check` step of `scripts/ci-local.sh`, with today's long functions baselined.
 

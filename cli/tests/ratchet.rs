@@ -1,5 +1,10 @@
 //! `ns ratchet check` and `ns ratchet update` against commands that print canned numbers.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
 mod common;
 
 use std::fs;

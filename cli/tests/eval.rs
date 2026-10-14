@@ -1,5 +1,10 @@
 //! `ns eval` end to end against a fake harness that emits canned claude-stream-json.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
 mod common;
 
 use std::fs;

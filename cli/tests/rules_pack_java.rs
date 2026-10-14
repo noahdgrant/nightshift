@@ -4,6 +4,11 @@
 //! `install.sh --offline` takes PMD from the zip `scripts/ci-tools.sh install pmd` caches, so
 //! these tests never download it.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
 mod common;
 
 use std::fs;

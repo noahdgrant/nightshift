@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::SfError;
-use crate::eval::trial::run_process;
 use crate::ratchet::Format;
 
 pub const BASELINE: &str = ".nightshift/rules-baseline.json";
@@ -152,18 +151,17 @@ fn run_pack(root: &Path, cmds: &[String]) -> Result<Run> {
         eprintln!("ns rules: {cmd}");
         let tool = tool_name(cmd);
         let log = tempfile::tempfile().context("cannot create a file for rule output")?;
-        let mut c = Command::new("sh");
-        crate::proc::scrub_git(&mut c);
-        c.arg("-c")
+        let ended = crate::proc::Proc::tool("sh")
+            .arg("-c")
             .arg(cmd)
             .current_dir(root)
-            .stdout(log.try_clone()?)
-            .stderr(log.try_clone()?);
-        let (status, timed_out, _) = run_process(c, None, timeout)
+            .output_to(log.try_clone()?)
+            .timeout(timeout)
+            .run()
             .with_context(|| format!("cannot run rule command `{cmd}`"))?;
         let text = read_capped(log, cmd)?;
-        let exit = status.and_then(|s| s.code());
-        let broken = if timed_out {
+        let exit = ended.status.and_then(|s| s.code());
+        let broken = if ended.timed_out() {
             Some(format!("timed out after {}s", timeout.as_secs_f64()))
         } else {
             match exit {
