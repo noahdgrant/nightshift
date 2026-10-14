@@ -72,6 +72,8 @@ case "$1 $2" in
   "api repos/"*)
     # repo.fail: the token can't read the repo, with the file's text as gh's error.
     if [ -f "$d/repo.fail" ]; then cat "$d/repo.fail" >&2; exit 1; fi
+    # owner-type: the repo's owner.type (User or Organization); unset, an empty answer.
+    if [[ " $* " == *" .owner.type "* ]]; then cat "$d/owner-type" 2>/dev/null; exit 0; fi
     echo "${2#repos/}"
     ;;
   "api user")
