@@ -1,0 +1,31 @@
+# The cargo test targets scripts/ci-affected.sh runs for each changed path. One entry per line:
+# a repo path, or a prefix ending in `*`, then `all` or the cargo test target flags of the tests
+# that read it (`--test <name>`, or `--bin ns` for the unit tests in cli/src). A changed path
+# that matches an `all` entry runs the whole cargo test; the others run the union of their
+# entries' targets, and a path that matches no entry runs none. The `all` entries are the
+# sources, the scripts that run the tests and pin their tools, this map, and the files compiled
+# into ns. cli/tests/ci_local/affected_map.rs fails when a test names a repo path that no entry
+# lists for it.
+cli/* all
+Cargo.lock all
+scripts/ci-local.sh all
+scripts/ci-affected.sh all
+scripts/ci-affected.map all
+scripts/ci-tools.d/* all
+.nightshift/phase-settings.json all
+.agents/skills/* --test check_verify_recipes --test cli --test verify_sandbox
+.githooks/* --test ci_local --test cli --test git_location --bin ns
+.github/workflows/ci.yml --test ci_matrix --test test_tools
+.nightshift/nightshift.toml --test cli
+.nightshift/rules-baseline.json --test factory
+README.md --bin ns
+docs/* --bin ns
+docs/agents/* --test ci_local --test factory --test rules_pack --test rules_pack_java
+evals/fakes/* --test eval_fakes
+evals/fixtures/py-inventory/* --test ci_local --test factory
+rules/* --test ci_local --test factory --test git_location --test rules_pack --test rules_pack_java --test test_tools --bin ns
+scripts/* --test check_verify_recipes --test ci_local --test cli
+scripts/ci-tools.sh --test ci_tools --test rules_pack_java
+scripts/rule-packs.sh --test ci_matrix
+scripts/stress.sh --test stress
+skills/* --test ci_local --test cli --test verify_sandbox --bin ns
