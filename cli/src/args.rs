@@ -2,6 +2,7 @@
 //! (a command group shares one); this file holds the root and the `Cmd` enum naming them. `main`
 //! parses it and dispatches each command to its module.
 
+mod artifact;
 mod ask;
 mod check_markers;
 mod clean;
@@ -25,6 +26,7 @@ mod worktree;
 
 use clap::{Parser, Subcommand};
 
+pub(crate) use artifact::{Artifact, ArtifactCmd};
 pub(crate) use ask::Ask;
 pub(crate) use check_markers::CheckMarkers;
 pub(crate) use clean::Clean;
@@ -53,6 +55,7 @@ Examples:
   echo 'Review this diff' | ns ask --role review.security
   ns lint skills
   ns check-markers
+  ns artifact check .ns/142-uart-timeout/evidence.md --phase verify
   ns install --dry-run
   ns doctor
   ns eval ns-tdd --dry-run
@@ -97,6 +100,7 @@ pub(crate) enum Cmd {
     Ask(Ask),
     Lint(Lint),
     CheckMarkers(CheckMarkers),
+    Artifact(Artifact),
     Install(Install),
     Eval(Eval),
     Factory(Factory),

@@ -75,7 +75,7 @@ pattern = '🤖 \*Posted by nightshift, an AI agent\.\*'
 present = true
 
 [[check]]
-# The unit was started: brief.md exists with status: pass and a base, in the worktree `ns worktree new`
+# The unit was started: brief.md exists with schema ns-artifact/2, status: pass, next: build and a base, in the worktree `ns worktree new`
 # (or the git-worktree fallback) made at ../<repo>.worktrees/<unit>, or, tolerated, in the main checkout's .ns/.
 # The unit id should be 01-full-quantity-reservation-rejected; any 01-* slug is accepted.
 type = "command"
@@ -95,8 +95,9 @@ for path in briefs:
     if not m:
         print(f"{path}: no frontmatter"); continue
     fm = {k: v.strip("'\"") for k, v in re.findall(r"(?m)^(\w+):[ \t]*(.*?)[ \t]*(?:#.*)?$", m.group(1))}
-    ok = fm.get("status") == "pass" and fm.get("base", "") != "" and "Agent Brief" in text and "- [ ]" in text
-    print(f"{path}: status={fm.get('status')!r} base={fm.get('base')!r} ok={ok}")
+    ok = (fm.get("status") == "pass" and fm.get("schema") == "ns-artifact/2" and fm.get("next") == "build"
+          and fm.get("base", "") != "" and "Agent Brief" in text and "- [ ]" in text)
+    print(f"{path}: status={fm.get('status')!r} schema={fm.get('schema')!r} next={fm.get('next')!r} base={fm.get('base')!r} ok={ok}")
     if ok:
         sys.exit(0)
 sys.exit("no brief.md with status: pass, a base, and an Agent Brief with acceptance criteria")

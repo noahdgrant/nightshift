@@ -3,6 +3,7 @@
 ```
 ns quality [--since YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--until YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--json|--human]
 ns quality import <dir> [--dry-run]
+ns quality --reviewers [--since ...] [--until ...] [--json]
 ns quality --bugs [--since ...] [--until ...] [--weeks N] [--json]
 ```
 
@@ -33,6 +34,23 @@ The numbers need the finding fields `ns-review` writes: `Axis`, `Scope`, `Cycle`
 These are heuristics. A finding's severity comes from its `C`, `I` or `S` id prefix, so an `I5` noted as downgraded to a Suggestion still counts as Important, and a first-pass cycle file's ids all count, including any it lists as dismissed. An archived attempt's cycle files are read from `history/<stem>/` when present; `ns run` archives only `review.md`, so usually only the newest attempt has them.
 
 `gaps` reports what was missing: findings without a severity or each field, headings with a `Status:` that didn't parse as findings (`### C3-1.`), units whose first pass, first-pass count or change size is unknown, and artifacts that couldn't be read (no frontmatter, or cycle files with no review artifact). Read the numbers alongside them.
+
+## Reviewers
+
+`ns quality --reviewers` asks which reviewers earn their cost (#370). For each reviewer, per severity (Critical, Important) and for both together, it reports:
+
+- the passes it ran in
+- the findings it raised, and how many per pass
+- its unique findings, the ones no other reviewer raised, and how many of them ended `fixed`
+- its dismiss rate
+- the escapes attributed to it (`Missed by`)
+- its cost in tokens, seconds and dollars, as a median and a total, and its unique fixed findings per dollar
+
+A pairwise overlap shows how many findings two reviewers shared, and their Jaccard similarity. It prints a table, or JSON with `--json` (keys in `docs/cli/quality.md`).
+
+It reads the newest record of each review attempt of each unit in the window, not only the unit's newest attempt, since each attempt is a separate review. A finding counts when it is Critical or Important with `Scope: changed`, dismissed or not. The reviewers that raised it are its axes that name one of the eight reviewers, and it is unique when exactly one does. Per-pass numbers and cost need the Passes table, so an attempt from before the table counts in the raw numbers but not per pass, and a pass with no panel is not counted in reviews or cost. What can't be placed is left out and counted under `excluded`: a finding without a reviewer or a scope, an escape without `Missed by`, and a pass without a panel.
+
+On the records up to 2026-10-11T13:30:00Z (124 review attempts), it reproduces the hand analysis that started #370: tests raised 146 findings, 108 of them alone and 86 of those fixed; correctness raised 111, 41 and 32.
 
 ## Where the history lives
 

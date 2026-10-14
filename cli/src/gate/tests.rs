@@ -547,3 +547,35 @@ fn a_zero_exit_past_the_cap_is_not_green() {
     r.cut = Some(Cut::Exceeded(64));
     assert!(!r.green());
 }
+
+#[test]
+fn failing_paths_reads_compiler_test_and_rule_output() {
+    let out = "\
+error[E0308]: mismatched types
+  --> src/run/core/tests.rs:13:5
+thread 'x' (123) panicked at tests/factory.rs:4943:5:
+new: cli/src/proc/tests.rs:591: ast-grep/wall-clock-in-test: a test sleeps
+new: cli/src/proc/tests.rs:596: ast-grep/wall-clock-in-test: a test sleeps
+ns rules: 2 new violations; fix them, then rerun:
+  see https://example.com/a.html for more
+Finished `dev` profile in 1.2s
+";
+    assert_eq!(
+        failing_paths(out),
+        [
+            "src/run/core/tests.rs",
+            "tests/factory.rs",
+            "cli/src/proc/tests.rs"
+        ]
+    );
+    assert!(failing_paths("ci-local: all checks passed").is_empty());
+}
+
+#[test]
+fn same_file_matches_on_a_path_boundary_either_way() {
+    assert!(same_file("cli/src/x.rs", "src/x.rs"));
+    assert!(same_file("cli/src/x.rs", "cli/src/x.rs"));
+    assert!(same_file("cli/src/x.rs", "/work/wt/cli/src/x.rs"));
+    assert!(!same_file("cli/src/x.rs", "rc/x.rs"));
+    assert!(!same_file("cli/src/x.rs", "src/y.rs"));
+}

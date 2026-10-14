@@ -29,10 +29,12 @@ use scheduler::overlap;
 mod self_update;
 mod snapshot;
 mod split;
+mod transitions;
 mod triage;
 
 use forge::{ClosingPrs, Forge, Post, PrState};
 pub use snapshot::NightDir;
+use transitions::{Event, State};
 
 pub struct WatchArgs {
     pub once: bool,
@@ -196,19 +198,6 @@ pub(crate) fn queue(forge: &dyn Forge, fac: &Factory, finished: &BTreeSet<u64>) 
     Ok(Queue { ready, skipped })
 }
 
-const LABEL_EDIT_ATTEMPTS: u32 = 2;
-
-struct StatusDrift {
-    stray: Vec<String>,
-    missing: bool,
-}
-
-impl StatusDrift {
-    fn is_clean(&self) -> bool {
-        self.stray.is_empty() && !self.missing
-    }
-}
-
 /// A state label: any `status:` label, or one of the queue's own.
 fn is_status(q: &QueueConfig, label: &str) -> bool {
     label.starts_with("status:")
@@ -222,54 +211,6 @@ fn is_status(q: &QueueConfig, label: &str) -> bool {
         ]
         .iter()
         .any(|o| *o == label)
-}
-
-fn status_drift(
-    forge: &dyn Forge,
-    q: &QueueConfig,
-    n: u64,
-    end: Option<&str>,
-) -> Result<StatusDrift> {
-    let labels = forge.labels(n)?;
-    let stray = labels
-        .iter()
-        .filter(|l| Some(l.as_str()) != end && is_status(q, l))
-        .cloned()
-        .collect();
-    Ok(StatusDrift {
-        stray,
-        missing: end.is_some_and(|e| !labels.iter().any(|l| l == e)),
-    })
-}
-
-fn set_status(forge: &dyn Forge, q: &QueueConfig, n: u64, end: Option<&str>) -> Result<()> {
-    for _ in 0..LABEL_EDIT_ATTEMPTS {
-        let drift = status_drift(forge, q, n, end)?;
-        if drift.is_clean() {
-            return Ok(());
-        }
-        forge.edit_labels(n, &drift.stray, end.filter(|_| drift.missing))?;
-    }
-    let drift = status_drift(forge, q, n, end)?;
-    if drift.is_clean() {
-        return Ok(());
-    }
-    let mut problems = Vec::new();
-    if !drift.stray.is_empty() {
-        problems.push(format!(
-            "has stray status labels {}",
-            drift.stray.join(", ")
-        ));
-    }
-    if let Some(e) = end.filter(|_| drift.missing) {
-        problems.push(format!("is missing {e}"));
-    }
-    Err(SfError::general(format!(
-        "#{n} {} after {LABEL_EDIT_ATTEMPTS} label edits (want {})",
-        problems.join(" and "),
-        end.unwrap_or("no status label")
-    ))
-    .into())
 }
 
 /// Open issues carrying `in_progress_label`: those no live `ns run` holds, left so by a night
@@ -326,7 +267,7 @@ fn requeue_stale(
         );
     }
     for i in &found.stale {
-        set_status(forge, q, i.number, Some(&q.ready_label))?;
+        transitions::apply(forge, q, i.number, State::InProgress, Event::StaleRequeue)?;
         eprintln!(
             "ns watch: #{} was in progress with no live ns run; back to {}",
             i.number, q.ready_label
@@ -1233,13 +1174,13 @@ Open after at least 2 fix attempts: C1, I2, I4.
             .labels
             .borrow_mut()
             .insert(2, vec![ready.clone(), "type:fix".into()]);
-        set_status(&forge, q, 2, Some(&q.in_progress_label)).unwrap();
+        transitions::apply(&forge, q, 2, State::Ready, Event::Claim).unwrap();
         assert_eq!(
             forge.labels(2).unwrap(),
             ["type:fix", q.in_progress_label.as_str()]
         );
         forge.edit_labels(2, &[], Some(&ready)).unwrap();
-        set_status(&forge, q, 2, Some(&q.in_progress_label)).unwrap();
+        transitions::apply(&forge, q, 2, State::Ready, Event::Claim).unwrap();
         assert_eq!(
             forge.labels(2).unwrap(),
             ["type:fix", q.in_progress_label.as_str()]
