@@ -16,4 +16,6 @@ Quote the brief line for every finding, next to the `file:line`.
 
 Behaviour for a failure or edge case the brief does not list stays scope creep (kind 2).
 
+A PR-text criterion in an older brief (the body, `Closes`, labels, merge) and the brief's Ship note belong to `ns-ship` ([ship note](../../ns-triage/references/agent-brief.md#ship-note-pr-text)): never report them as a missing acceptance criterion.
+
 If the brief has no acceptance criteria, report that as a contract gap and review against its stated goal. A brief written before Failure modes, Edge cases and Instances were required may lack them: report the missing section as a contract gap, never as a finding against the code. If the brief is missing, report `BLOCKED`.

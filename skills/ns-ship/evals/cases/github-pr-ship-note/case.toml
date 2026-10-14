@@ -1,0 +1,72 @@
+description = "A reviewed unit whose brief carries a Ship note: the PR body must name #45 as a follow-up. ns-ship must check the note before writing pr.md, so pr.md's body holds both the `Closes #44` line and #45, and stop at merge-ready without merging. The night-log fixture's fake gh records every call."
+fixture = "night-log"
+skills = ["ns-ship"]
+extra_skills = ["ns-contract", "ns-writing-for-humans"]
+timeout_minutes = 20
+prompt = """
+Ship unit 44-widget-title. It is checked out on branch ns/44-widget-title in this repo, and verify and review have passed. gates: auto. Nobody is around to answer questions.
+"""
+
+[setup]
+commands = [
+  "git add -A && git commit -q -m 'chore: agent docs'",
+  "git init -q --bare .git/fake/origin.git",
+  "git remote add origin \"$PWD/.git/fake/origin.git\" && git push -q origin main && git remote set-head origin main",
+  "printf 'pr view --json url,isDraft\\t{\"url\":\"https://github.com/acme/widgets/pull/1\",\"isDraft\":false}\\nissue view 45\\t{\"number\":45,\"state\":\"OPEN\",\"title\":\"Admin page title\"}\\n' > .git/fake/gh-answers",
+  "git checkout -q -b ns/44-widget-title",
+  "cp ../test.sh scripts/test.sh && sed -i 's/\"widgets\"/\"Widgets\"/' scripts/widget.sh",
+  "git add scripts && git commit -q -m 'fix(widget): capitalise the title'",
+  "mkdir -p .ns/44-widget-title && cp ../brief.md ../build.md ../evidence.md ../review.md .ns/44-widget-title/",
+  "cp ../stamp-sha .git/hooks/post-commit && chmod +x .git/hooks/post-commit",
+]
+
+[[check]]
+# The body after the frontmatter closes the unit's issue.
+type = "command"
+run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | grep -Eiq '(close[sd]?|fix(e[sd])?|resolve[sd]?) #44\\b'"
+expect_exit = 0
+
+[[check]]
+# The Ship note's item: the body names #45.
+type = "command"
+run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | grep -Eq '#45\\b'"
+expect_exit = 0
+
+[[check]]
+# The Verification section records the ship check.
+type = "command"
+run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | grep -Eq '^[-*] .*Ship note:'"
+expect_exit = 0
+
+[[check]]
+# The label item is recorded as left for a human.
+type = "command"
+run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | grep -Eq '^[-*] .*Ship note: label .*: left for a human to set'"
+expect_exit = 0
+
+[[check]]
+# The merge item is recorded as left to the merge step.
+type = "command"
+run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | grep -Eq '^[-*] .*Ship note: .*left to the merge step'"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "grep -Eq '^gh pr create ' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "! grep -Eq '^gh pr (merge|review)' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "frontmatter"
+path = ".ns/44-widget-title/pr.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+type = "judge"
+rubric = "Read .ns/44-widget-title/brief.md, .ns/44-widget-title/pr.md and the transcript. Pass only if the agent checked the brief's Ship note against the PR body before writing pr.md, the body sent closes #44 and names #45 as the follow-up, and the agent did not merge or approve."
+required = false
