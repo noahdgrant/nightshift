@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks the fakes in bin/ against a scratch repo. Run from anywhere: evals/fakes/systemd/test.sh
 set -euo pipefail
-# An inherited GIT_DIR (scripts/check-git-dir-decoy.sh) would send the scratch repo's git elsewhere.
+# An inherited GIT_DIR (from a git hook) would send the scratch repo's git elsewhere.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
   GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
 bin=$(cd "$(dirname "$0")/bin" && pwd)

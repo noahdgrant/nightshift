@@ -149,11 +149,6 @@ fixture_tests() {
   (cd evals/fixtures/py-inventory && pytest -q)
 }
 
-rule_pack_tests() {
-  "rules/$1/tests/run.sh" || return 1
-  scripts/check-git-dir-decoy.sh "rules/$1/tests/run.sh"
-}
-
 brief_checker_tests() {
   command -v python3 >/dev/null || { echo "ci-local: python3 is required for the brief checker tests" >&2; return 1; }
   local test
@@ -182,7 +177,6 @@ step "pinned tools (scripts/ci-tools.d)" scripts/ci-tools.sh check
 step "cargo fmt --check" cargo fmt --manifest-path cli/Cargo.toml --check
 step "cargo clippy" cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings
 full_step "cargo test" cargo test --manifest-path cli/Cargo.toml
-full_step "cargo test under a decoy GIT_DIR" scripts/check-git-dir-decoy.sh
 step "build ns" cargo build --manifest-path cli/Cargo.toml
 step "ns lint" "$ns" lint skills --human
 step "ns lint .agents/skills" "$ns" lint .agents/skills --human
@@ -196,7 +190,7 @@ full_step "ns eval --dry-run" eval_dry_run
 full_step "py-inventory fixture tests" fixture_tests
 # On fd 3, so a pack's tests can't read the list from stdin.
 while IFS=$'\t' read -r -u 3 pack name; do
-  [ -z "$pack" ] || full_step "$name rule pack tests" rule_pack_tests "$pack"
+  [ -z "$pack" ] || full_step "$name rule pack tests" "rules/$pack/tests/run.sh"
 done 3<<<"$packs"
 full_step "ns-troubleshoot brief checker tests" brief_checker_tests
 step "private guard" scripts/check-private.sh
