@@ -31,6 +31,8 @@ Then, in each project you want to run the factory on:
 2. `ns-setup-verify`: generates the project's verification skill and control CLI.
 3. `ns-agent-readiness`: audits what in the codebase helps or hurts agents and files the top findings. `ns-setup` offers it.
 
+[`docs/factory/onboarding-a-repo.md`](docs/factory/onboarding-a-repo.md) walks a Python repo through every step, from `ns install` to its first supervised night.
+
 ## Run it overnight
 
 Log in to claude with your Claude subscription, and name the GitHub account that should open the PRs in `~/.config/nightshift/config.toml`:
