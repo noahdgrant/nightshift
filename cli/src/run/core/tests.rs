@@ -24,8 +24,8 @@ fn ended(l: &mut Ledger, a: &Admitted, status: Option<&str>) {
     );
 }
 
-fn remote(sha: &str) -> Option<(String, String)> {
-    Some(("main".into(), sha.into()))
+fn main_at(sha: &str) -> (String, String) {
+    ("main".into(), sha.into())
 }
 
 #[test]
@@ -106,7 +106,7 @@ fn a_rebase_onto_a_new_base_is_free_and_onto_the_same_base_is_not() {
             String::new(),
             "base moved".into(),
             Some(Rebase::BaseMoved),
-            remote(sha),
+            Some(main_at(sha)),
             2,
         )
     };
@@ -135,7 +135,7 @@ fn a_free_rebase_that_does_not_pass_gives_its_credit_back() {
             String::new(),
             "base moved".into(),
             Some(Rebase::BaseMoved),
-            remote("s1"),
+            Some(main_at("s1")),
             2,
         )
         .unwrap();
@@ -168,7 +168,7 @@ fn a_lock_give_up_counts_the_attempt_returns_credits_and_reruns_the_decision() {
             "fb".into(),
             "base moved".into(),
             Some(Rebase::BaseMoved),
-            remote("s1"),
+            Some(main_at("s1")),
             2,
         )
         .unwrap();
@@ -182,7 +182,7 @@ fn a_lock_give_up_counts_the_attempt_returns_credits_and_reruns_the_decision() {
             "fb".into(),
             "base moved".into(),
             r,
-            remote("s1"),
+            Some(main_at("s1")),
             2,
         )
         .unwrap();
@@ -202,7 +202,7 @@ fn a_ship_after_a_free_ships_reruns_is_free() {
             String::new(),
             "conflict".into(),
             Some(Rebase::BaseMoved),
-            remote("s1"),
+            Some(main_at("s1")),
             1,
         )
         .unwrap();
@@ -222,7 +222,7 @@ fn a_build_between_ships_cancels_the_free_ship() {
             String::new(),
             "conflict".into(),
             Some(Rebase::BaseMoved),
-            remote("s1"),
+            Some(main_at("s1")),
             1,
         )
         .unwrap();
@@ -283,7 +283,7 @@ fn a_red_gate_after_a_rebase_onto_a_base_that_moved_again_is_one_more_free_rebas
             String::new(),
             "base moved".into(),
             Some(Rebase::BaseMoved),
-            remote("s1"),
+            Some(main_at("s1")),
             2,
         )
         .unwrap();
@@ -322,7 +322,7 @@ fn a_ledger_survives_a_round_trip_through_json_mid_run() {
             String::new(),
             "conflict".into(),
             Some(Rebase::BaseMoved),
-            remote("s1"),
+            Some(main_at("s1")),
             2,
         )
         .unwrap();

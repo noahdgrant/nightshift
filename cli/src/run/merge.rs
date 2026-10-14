@@ -1,5 +1,5 @@
-//! The merge step: take the merge lock, bring the PR up to date with its base, wait for CI and
-//! squash-merge it (`merge.policy = "auto"`).
+//! The merge step: bring the PR up to date with its base and wait for CI, then take the merge
+//! lock and squash-merge it if the base has not moved since (`merge.policy = "auto"`).
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -212,10 +212,25 @@ pub(super) fn human(reason: impl Into<String>) -> MergeStep {
     MergeStep::Finish(f)
 }
 
+/// How many times the default branch may move between a merge step's CI wait and its merge
+/// before the unit ends stuck.
+pub(super) const BASE_MOVE_CAP: u32 = 5;
+
+/// A PR the merge step got ready without the merge lock: CI passed at `head`, and `base` is the
+/// tip of `origin/<default>` read before the update and CI wait, `None` when it couldn't be read.
+struct Ready {
+    head: String,
+    base: Option<String>,
+}
+
 /// `merge.policy = "auto"`: squash-merge this unit's PR when CI is green, review.md passed and is
 /// current at the PR head, the CI gate passed at that head, and no file or marked region that
 /// needs human review changed. The only place ns merges anything. `run` numbers this merge step
 /// in the invocation, for its gate log.
+///
+/// Optimistic: the update, gate and CI wait run without the merge lock, which is taken only for
+/// the final merge. A default branch that moved since CI started sends the PR round again, at
+/// most [`BASE_MOVE_CAP`] times.
 pub(super) fn merge_step(
     ctx: &Ctx<'_>,
     state: &State,
@@ -227,67 +242,141 @@ pub(super) fn merge_step(
         Ok(pr) => pr,
         Err(step) => return Ok(step),
     };
-    let pr_head = pr_head.as_str();
     let ns = n.to_string();
     let wt = &ctx.worktree;
-
-    // One merge at a time per repo, so a PR is updated and checked against the main the merge
-    // before it left. Its merge state is read once the lock is held.
-    let _merging =
-        match take_merge_lock(&ctx.common, &ctx.unit, &shared.clock, shared.until, |ev| {
-            ctx.log(ev)
-        })? {
-            Ok(lock) => lock,
-            Err(f) => return Ok(MergeStep::Finish(f)),
+    let default = remote_default(wt)
+        .map(|d| d.0)
+        .unwrap_or_else(|| "main".into());
+    let mut current = pr_head;
+    let mut moves = 0;
+    loop {
+        let ready = match get_ready(ctx, n, &current, &default, shared, gate_state, run)? {
+            Ok(r) => r,
+            Err(step) => return Ok(step),
         };
+        current.clone_from(&ready.head);
+
+        // One merge at a time per repo, held only for the final check and the merge.
+        let _merging =
+            match take_merge_lock(&ctx.common, &ctx.unit, &shared.clock, shared.until, |ev| {
+                ctx.log(ev)
+            })? {
+                Ok(lock) => lock,
+                Err(f) => return Ok(MergeStep::Finish(f)),
+            };
+        let base_now = fetch_tip(wt, &default).ok();
+        if base_now.is_some() && base_now != ready.base {
+            moves += 1;
+            ctx.log(json!({
+                "event": "merge_base_moved",
+                "pr": n,
+                "from": ready.base,
+                "to": base_now,
+                "attempt": moves,
+            }));
+            if moves > BASE_MOVE_CAP {
+                return Ok(MergeStep::Finish(finish(
+                    Outcome::Stuck,
+                    format!(
+                        "the default branch moved {BASE_MOVE_CAP} times during this PR's CI (cap {BASE_MOVE_CAP})"
+                    ),
+                    Some("merge"),
+                )));
+            }
+            continue;
+        }
+        // A view that fails or names no head leaves the check to --match-head-commit.
+        let view = gh_json(wt, &["pr", "view", &ns, "--json", "headRefOid"]).unwrap_or_default();
+        if let Some(now) = view["headRefOid"].as_str() {
+            if !same_sha(now, &ready.head) {
+                return Ok(human(format!(
+                    "PR #{n} head moved from {} to {now} after CI passed on it; needs a human merge",
+                    ready.head
+                )));
+            }
+        }
+        return final_merge(ctx, n, &head, &ready.head, &default, shared);
+    }
+}
+
+/// Bring PR #`n`, at `pr_head`, up to date with `default` when it is behind, gate it when the
+/// config calls for a gate here, and wait for its CI, all without the merge lock: the head CI
+/// passed on and the base read first, or how the merge step ends.
+fn get_ready(
+    ctx: &Ctx<'_>,
+    n: u64,
+    pr_head: &str,
+    default: &str,
+    shared: &Shared,
+    gate_state: &mut gate::Gate,
+    run: u32,
+) -> Result<Result<Ready, MergeStep>> {
+    let ns = n.to_string();
+    let wt = &ctx.worktree;
+    // Read before the merge state, so a merge that lands during the update counts as a move.
+    let base = fetch_tip(wt, default).ok();
 
     // Strict required checks: a PR behind its base gets the base merged in, then fresh checks,
     // unless the local merge queue gates the merge result instead. Under build-only GitHub's
     // checks on the PR head with the base merged in are the merge queue, and no local gate runs.
     let remote = ctx.fac.gate.local == LocalGate::BuildOnly;
     let queued = !remote && ctx.fac.merge.local_queue && ctx.gate.commands.rest.is_some();
-    let default = remote_default(wt)
-        .map(|d| d.0)
-        .unwrap_or_else(|| "main".into());
-    let conflict = || conflicts(ctx, n, &default);
+    let conflict = || conflicts(ctx, n, default);
     let register_minutes = ctx.fac.merge.ci_register_timeout;
     let mut merge_head = pr_head.to_string();
     let behind = match merge_state(wt, &ns, register_minutes, &shared.clock)?.as_str() {
-        Some("DIRTY") => return Ok(conflict()),
+        Some("DIRTY") => return Ok(Err(conflict())),
         Some("BEHIND") => !queued,
-        _ if remote => match fetch_tip(wt, &default) {
+        _ if remote => match fetch_tip(wt, default) {
             Ok(tip) => !git::ok(wt, &["merge-base", "--is-ancestor", &tip, pr_head]),
             Err(e) => {
-                return Ok(human(format!(
+                return Ok(Err(human(format!(
                     "cannot fetch {default} to update PR #{n}: {e:#}; needs a human merge"
-                )))
+                ))))
             }
         },
         _ => false,
     };
     if behind {
-        match update_branch(ctx, n, pr_head, &default, &shared.clock, &conflict)? {
+        match update_branch(ctx, n, pr_head, default, &shared.clock, &conflict)? {
             Ok(h) => merge_head = h,
-            Err(step) => return Ok(step),
+            Err(step) => return Ok(Err(step)),
         }
     }
 
     if let Some(cmd) = ctx.gate.commands.rest.as_ref().filter(|_| !remote) {
         let step = if queued {
-            gate_merge_result(ctx, gate_state, cmd, n, pr_head, &default, run)?
+            gate_merge_result(ctx, gate_state, cmd, n, pr_head, default, run)?
         } else {
             gate_before_merge(ctx, gate_state, cmd, n, &merge_head, run)?
         };
         if let Some(step) = step {
-            return Ok(step);
+            return Ok(Err(step));
         }
     }
 
     if let Some(step) = wait_for_ci(ctx, n, &merge_head, &shared.clock)? {
-        return Ok(step);
+        return Ok(Err(step));
     }
+    Ok(Ok(Ready {
+        head: merge_head,
+        base,
+    }))
+}
 
-    if let Some(step) = human_review(ctx, n, &default)? {
+/// Under the merge lock: check for files and regions that need human review, then squash-merge
+/// PR #`n` at `merge_head` and delete its branch. `head` is the worktree's HEAD, for the log.
+fn final_merge(
+    ctx: &Ctx<'_>,
+    n: u64,
+    head: &str,
+    merge_head: &str,
+    default: &str,
+    shared: &Shared,
+) -> Result<MergeStep> {
+    let ns = n.to_string();
+    let wt = &ctx.worktree;
+    if let Some(step) = human_review(ctx, n, default)? {
         return Ok(step);
     }
     // No --delete-branch: gh would check out the default branch in the unit's worktree first.
@@ -299,7 +388,7 @@ pub(super) fn merge_step(
             &ns,
             "--squash",
             "--match-head-commit",
-            &merge_head,
+            merge_head,
         ],
     );
     let state_now = gh_json(wt, &["pr", "view", &ns, "--json", "state"])

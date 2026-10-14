@@ -3175,10 +3175,11 @@ fn worktrees_cut_at_once_from_a_remote_base_all_land() {
     assert!(lock_is_free(&e.root.join(".git/ns-worktree.lock")));
 }
 
-/// Gh's CI wait blocks for whichever PR reaches it first, until `go` gets a line, and each
-/// wait's start and end land in `ctrl/order`. Merging a PR puts every other open one in `prs`
-/// behind main, reported as `UNKNOWN` for one view while GitHub works that out.
-fn merges_in_order(e: &Env, prs: &[u64]) -> PathBuf {
+/// Gh's CI wait blocks for whichever PR reaches it first, named in `ctrl/first-pr`, until
+/// another PR merges, and each wait's start and end land in `ctrl/order`. Merging a PR moves
+/// `origin`'s main, as a squash on GitHub does, and puts every other open one in `prs` behind
+/// main, reported as `UNKNOWN` for one view while GitHub works that out.
+fn merges_in_order(e: &Env, prs: &[u64]) {
     let go = e.ctrl.join("go");
     assert!(StdCommand::new("mkfifo")
         .arg(&go)
@@ -3192,13 +3193,15 @@ fn merges_in_order(e: &Env, prs: &[u64]) -> PathBuf {
             "case \"$1 $2 $4\" in\n\
              \"pr checks --watch\")\n\
                echo \"in $3\" >> {order:?}\n\
-               mkdir {first:?} 2>/dev/null && cat {go:?} > /dev/null\n\
+               mkdir {first:?} 2>/dev/null && echo \"$3\" > {first_pr:?} && cat {go:?} > /dev/null\n\
                echo \"out $3\" >> {order:?} ;;\n\
              \"pr merge \"*)\n\
+               {move_main}\n\
                for n in {others}; do\n\
                  [ \"$n\" != \"$3\" ] && [ \"$(cat \"$d/pr-$n.state\" 2>/dev/null)\" != MERGED ] \\\n\
                    && echo UNKNOWN > \"$d/pr-$n.merge\"\n\
-               done ;;\n\
+               done\n\
+               [ -d {first:?} ] && mkdir {released:?} 2>/dev/null && echo go > {go:?} ;;\n\
              \"pr view \"*)\n\
                if [ \"$(cat \"$d/pr-$3.merge\" 2>/dev/null)\" = UNKNOWN ]; then\n\
                  [ -f \"$d/unknown-$3\" ] && echo BEHIND > \"$d/pr-$3.merge\"\n\
@@ -3207,10 +3210,81 @@ fn merges_in_order(e: &Env, prs: &[u64]) -> PathBuf {
              esac\n",
             order = e.ctrl.join("order"),
             first = e.ctrl.join("first"),
+            first_pr = e.ctrl.join("first-pr"),
+            released = e.ctrl.join("released"),
+            move_main = move_main_sh(e),
             others = others.join(" "),
         ),
     );
-    go
+}
+
+/// After [`merges_in_order`]: the PR that reached CI first waited there, without the merge
+/// lock, while the other merged; then it saw main move, was updated to it, waited for CI again
+/// and merged.
+fn assert_merged_while_the_other_waited(e: &Env, prs: [u64; 2]) {
+    let first: u64 = fs::read_to_string(e.ctrl.join("first-pr"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let second = if first == prs[0] { prs[1] } else { prs[0] };
+    let order = fs::read_to_string(e.ctrl.join("order")).unwrap();
+    let order: Vec<&str> = order.lines().collect();
+    let of = |n: u64| -> Vec<&str> {
+        order
+            .iter()
+            .copied()
+            .filter(|l| l.ends_with(&format!(" {n}")))
+            .collect()
+    };
+    let (f, s) = (format!("{first}"), format!("{second}"));
+    assert_eq!(
+        of(first),
+        [
+            &*format!("in {f}"),
+            &*format!("out {f}"),
+            &*format!("in {f}"),
+            &*format!("out {f}")
+        ],
+        "{order:?}"
+    );
+    assert_eq!(
+        of(second),
+        [&*format!("in {s}"), &*format!("out {s}")],
+        "{order:?}"
+    );
+    let at = |l: String| order.iter().position(|o| *o == l).unwrap();
+    assert!(at(format!("out {s}")) < at(format!("out {f}")), "{order:?}");
+
+    let calls: Vec<String> = e.gh_calls().lines().map(String::from).collect();
+    let pos = |want: &str, from: usize| -> usize {
+        from + calls[from..]
+            .iter()
+            .position(|c| c.starts_with(want))
+            .unwrap_or_else(|| panic!("no {want:?} after call {from}: {calls:?}"))
+    };
+    let merged = pos(&format!("pr merge {s} --squash"), 0);
+    let updated = pos(&format!("pr update-branch {f}"), merged);
+    let checked = pos(&format!("pr checks {f} --watch"), updated);
+    pos(&format!("pr merge {f} --squash"), checked);
+    assert!(lock_is_free(&e.root.join(".git/ns-merge.lock")));
+    let moved: Vec<Value> = run_events(e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "merge_base_moved")
+        .collect();
+    assert_eq!(moved.len(), 1, "{moved:?}");
+    assert_eq!(
+        (&moved[0]["pr"], &moved[0]["attempt"]),
+        (&json!(first), &json!(1))
+    );
+    // Each merge added one commit to main: `from` is main before both, `to` after the first.
+    let remote = e.base.join("remote.git");
+    let main_at = |rev: &str| json!(git(&remote, &["rev-parse", rev]));
+    assert_eq!(
+        (&moved[0]["from"], &moved[0]["to"]),
+        (&main_at("main~2"), &main_at("main~1")),
+        "{moved:?}"
+    );
 }
 
 /// Start `ns run --issue <n>` for each of `issues`, their stderr lines merged into one channel,
@@ -3275,76 +3349,15 @@ fn two_units_merge_one_at_a_time(factory: &str) {
     e.queue("build", &["pass:commit", "pass:commit"]);
     e.gh_file("checks-12.json", GREEN);
     e.gh_file("checks-13.json", GREEN);
-    let go = merges_in_order(&e, &[12, 13]);
-    let (mut runs, rx) = start_runs(&e, &[7, 8]);
-    // One run waits for the merge lock while the other is in its CI wait. Without the lock, the
-    // second run's CI wait doesn't block, and it ends without waiting.
-    let mut seen = Vec::new();
-    let waited = line_until(
-        &runs[0],
-        &rx,
-        "merge waits for the merge lock (held by pid ",
-        &mut seen,
-    );
-    assert!(
-        waited,
-        "neither run waited for the merge lock:\n{}",
-        seen.join("\n")
-    );
-    // A thread, since a fifo write blocks until someone reads, and a broken run may not.
-    thread::spawn(move || fs::write(&go, "go\n"));
+    // The first run's CI wait ends only once the other run merged, so the other must take the
+    // merge lock while the first waits on CI. A step that held the lock through its CI wait
+    // would never let it, and the runs would hang.
+    merges_in_order(&e, &[12, 13]);
+    let (mut runs, _rx) = start_runs(&e, &[7, 8]);
     for r in &mut runs {
         assert!(r.wait().success());
     }
-
-    let order = fs::read_to_string(e.ctrl.join("order")).unwrap();
-    let order: Vec<&str> = order.lines().collect();
-    assert_eq!(order.len(), 4, "{order:?}");
-    let pr = |l: &str| l.split(' ').nth(1).unwrap().to_string();
-    let (first, second) = (pr(order[0]), pr(order[2]));
-    assert_ne!(first, second, "{order:?}");
-    assert_eq!(
-        order,
-        [
-            format!("in {first}"),
-            format!("out {first}"),
-            format!("in {second}"),
-            format!("out {second}")
-        ],
-    );
-    // After the first merge, the second PR is read again, updated to the main that merge left,
-    // and checked again before it merges.
-    let calls: Vec<String> = e.gh_calls().lines().map(String::from).collect();
-    let merged = calls
-        .iter()
-        .position(|c| c.starts_with(&format!("pr merge {first} ")))
-        .unwrap_or_else(|| panic!("{calls:?}"));
-    let after: Vec<&str> = calls[merged + 1..]
-        .iter()
-        .map(String::as_str)
-        .filter(|c| c.split(' ').nth(2) == Some(second.as_str()))
-        .collect();
-    let want = [
-        format!("pr view {second} --json mergeStateStatus"),
-        format!("pr view {second} --json mergeStateStatus"),
-        format!("pr update-branch {second}"),
-        format!("pr checks {second} --watch"),
-        format!("pr merge {second} --squash"),
-    ];
-    let mut at = 0;
-    for c in &after {
-        if at < want.len() && c.starts_with(&want[at]) {
-            at += 1;
-        }
-    }
-    assert_eq!(at, want.len(), "{after:?}");
-    assert!(lock_is_free(&e.root.join(".git/ns-merge.lock")));
-    let waits: Vec<Value> = run_events(&e)
-        .into_iter()
-        .filter(|ev| ev["event"] == "lock_wait" && ev["lock"] == "merge")
-        .collect();
-    assert_eq!(waits.len(), 1, "{waits:?}");
-    assert_eq!(waits[0]["phase"], "merge");
+    assert_merged_while_the_other_waited(&e, [12, 13]);
 }
 
 #[test]
@@ -3444,7 +3457,10 @@ fn a_stop_during_a_merge_lock_wait_returns_the_issue_to_the_queue() {
     assert_eq!(v["stopped"], "SIGTERM", "{v}");
     assert_eq!(v["units"][0]["outcome"], "interrupted", "{v}");
     assert_eq!(e.labels(2), ["type:fix", "status:ready-for-agent"]);
-    assert!(!e.gh_calls().contains("pr checks"));
+    // CI is waited on without the lock, so only the merge itself waits for it.
+    let calls = e.gh_calls();
+    assert!(calls.contains("pr checks 12 --watch"), "{calls}");
+    assert!(!calls.contains("pr merge"), "{calls}");
 }
 
 fn read_all(mut r: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
@@ -11893,27 +11909,12 @@ fn watch_parallel_units_merge_one_at_a_time() {
     e.queue(&format!("build.{B}"), &["pass:commit"]);
     e.gh_file("checks-12.json", GREEN);
     e.gh_file("checks-13.json", GREEN);
-    let go = merges_in_order(&e, &[12, 13]);
-    let mut w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
-    w.line("merge waits for the merge lock (held by pid ");
-    release(&go);
+    merges_in_order(&e, &[12, 13]);
+    let w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
     let (code, v, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(by_issue(&units(&v)), each(&[2, 3], "merged"), "{v}");
-    let order = fs::read_to_string(e.ctrl.join("order")).unwrap();
-    let order: Vec<&str> = order.lines().collect();
-    assert_eq!(order.len(), 4, "{order:?}");
-    let pr = |l: &str| l.split(' ').nth(1).unwrap().to_string();
-    assert_eq!(
-        order,
-        [
-            format!("in {}", pr(order[0])),
-            format!("out {}", pr(order[0])),
-            format!("in {}", pr(order[2])),
-            format!("out {}", pr(order[2])),
-        ]
-    );
-    assert_ne!(pr(order[0]), pr(order[2]), "{order:?}");
+    assert_merged_while_the_other_waited(&e, [12, 13]);
 }
 
 /// Unit 2 is ready and #5 sits in the backlog, untriaged: the night's first fill starts unit 2
@@ -15482,4 +15483,214 @@ fn a_small_change_a_merge_of_main_brings_in_keeps_evidence_and_runs_a_delta_revi
             .is_some_and(|d| d.ends_with("change the base brought in: delta review")),
         "{review}"
     );
+}
+
+#[test]
+fn ci_runs_without_the_merge_lock_and_only_the_merge_waits_for_it() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    let held = hold(
+        &e.root.join(".git/ns-merge.lock"),
+        r#"{"pid":42,"unit":"other"}"#,
+    );
+    let mut g = e.ns().args(["run", "--issue", "7"]).start_piped();
+    let stdout = read_all(g.take_stdout());
+    let (tx, rx) = mpsc::channel();
+    send_lines(g.take_stderr(), tx);
+    let mut seen = Vec::new();
+    let waited = line_until(
+        &g,
+        &rx,
+        "ns run: 7-fix-the-thing merge waits for the merge lock (held by pid 42, unit other)",
+        &mut seen,
+    );
+    assert!(waited, "{}", seen.join("\n"));
+    // The CI wait ended while another unit held the lock; the merge has not run.
+    let calls = e.gh_calls();
+    assert!(calls.contains("pr checks 12 --watch"), "{calls}");
+    assert!(!calls.contains("pr merge"), "{calls}");
+    drop(held);
+    assert!(g.wait().success());
+    let events: Vec<String> = run_events(&e)
+        .iter()
+        .filter_map(|ev| ev["event"].as_str().map(String::from))
+        .filter(|ev| ["ci_passed", "lock_wait", "merged"].contains(&ev.as_str()))
+        .collect();
+    assert_eq!(events, ["ci_passed", "lock_wait", "merged"]);
+    let v: Value = serde_json::from_slice(&g.recv(&stdout)).unwrap();
+    assert_eq!(v["outcome"], "merged", "{v}");
+}
+
+/// Hook text that moves `origin`'s main and puts PR 12 behind it on PR 12's CI waits: every
+/// wait, or only the first when `once`.
+fn main_moves_during_ci(e: &Env, once: bool) {
+    let guard = if once {
+        format!("mkdir {:?} 2>/dev/null && ", e.ctrl.join("moved"))
+    } else {
+        String::new()
+    };
+    e.gh_file(
+        "hook.sh",
+        &format!(
+            "case \"$*\" in \"pr checks 12 --watch\") {guard}{{ {}; echo BEHIND > \"$d/pr-12.merge\"; }} ;; esac\n",
+            move_main_sh(e)
+        ),
+    );
+}
+
+fn base_moves(e: &Env) -> Vec<Value> {
+    run_events(e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "merge_base_moved")
+        .collect()
+}
+
+#[test]
+fn a_main_that_moves_during_ci_updates_the_pr_and_waits_for_ci_again_before_merging() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file("updated-12.head", UPDATED_HEAD);
+    main_moves_during_ci(&e, true);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let moves = base_moves(&e);
+    assert_eq!(moves.len(), 1, "{moves:?}");
+    let remote = e.base.join("remote.git");
+    let main_at = |rev: &str| json!(git(&remote, &["rev-parse", rev]));
+    let m = &moves[0];
+    assert_eq!(
+        (&m["pr"], &m["from"], &m["to"], &m["attempt"]),
+        (&json!(12), &main_at("main~1"), &main_at("main"), &json!(1)),
+        "{m}"
+    );
+    let steps: Vec<String> = e
+        .gh_calls()
+        .lines()
+        .filter(|c| {
+            c.starts_with("pr checks 12 --watch")
+                || c.starts_with("pr update-branch")
+                || c.starts_with("pr merge")
+        })
+        .map(String::from)
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            "pr checks 12 --watch".to_string(),
+            "pr update-branch 12".into(),
+            "pr checks 12 --watch".into(),
+            format!("pr merge 12 --squash --match-head-commit {UPDATED_HEAD}"),
+        ]
+    );
+}
+
+#[test]
+fn a_main_that_moves_during_every_ci_wait_ends_stuck_at_the_cap() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    main_moves_during_ci(&e, false);
+    // update-branch hands out a new head each time, as GitHub's merge commits are.
+    let n = e.ctrl.join("updates");
+    let mut hook = fs::read_to_string(e.ghd.join("hook.sh")).unwrap();
+    hook.push_str(&format!(
+        "case \"$*\" in \"pr update-branch 12\") echo x >> {n:?}; printf '%040d\\n' \"$(wc -l < {n:?})\" > \"$d/updated-12.head\" ;; esac\n"
+    ));
+    e.gh_file("hook.sh", &hook);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(
+        v["reason"], "the default branch moved 5 times during this PR's CI (cap 5)",
+        "{v}"
+    );
+    let attempts: Vec<Value> = base_moves(&e)
+        .iter()
+        .map(|m| m["attempt"].clone())
+        .collect();
+    assert_eq!(attempts, [1, 2, 3, 4, 5, 6].map(|a| json!(a)));
+    let calls = e.gh_calls();
+    assert_eq!(calls.matches("pr checks 12 --watch").count(), 6, "{calls}");
+    assert!(!calls.contains("pr merge"), "{calls}");
+    assert!(lock_is_free(&e.root.join(".git/ns-merge.lock")));
+}
+
+#[test]
+fn a_main_unreadable_before_ci_counts_as_moved_once_it_can_be_read() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.ctl("edit", "git remote set-url origin /nonexistent");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    let remote = e.base.join("remote.git");
+    e.gh_file(
+        "hook.sh",
+        &format!(
+            "case \"$*\" in \"pr checks 12 --watch\") git remote set-url origin {remote:?} ;; esac\n"
+        ),
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let moves = base_moves(&e);
+    assert_eq!(moves.len(), 1, "{moves:?}");
+    assert_eq!(moves[0]["from"], Value::Null, "{moves:?}");
+    assert_eq!(moves[0]["to"], json!(remote_main(&e)), "{moves:?}");
+    assert_eq!(e.gh_calls().matches("pr checks 12 --watch").count(), 2);
+}
+
+#[test]
+fn a_pr_head_that_moves_after_ci_passed_needs_a_human_merge() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file(
+        "hook.sh",
+        &format!("case \"$*\" in \"pr checks 12 --watch\") echo {UPDATED_HEAD} > \"$d/pr-12.head\" ;; esac\n"),
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    let head = git(&e.worktree(UNIT), &["rev-parse", "HEAD"]);
+    assert_eq!(
+        (&v["outcome"], &v["needs_human"]),
+        (&json!("done"), &json!(true)),
+        "{v}"
+    );
+    assert_eq!(
+        v["reason"],
+        format!("PR #12 head moved from {head} to {UPDATED_HEAD} after CI passed on it; needs a human merge"),
+        "{v}"
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
+#[test]
+fn a_main_unreadable_under_the_lock_is_no_move_and_the_region_check_needs_a_human() {
+    let e = Env::new();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file("diff-12.txt", "work.txt\n");
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in \"pr checks 12 --watch\") git remote set-url origin /nonexistent ;; esac\n",
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("cannot check human-review regions: git fetch -q origin main failed"),
+        "{v}"
+    );
+    assert_eq!(base_moves(&e), Vec::<Value>::new());
+    assert!(!e.gh_calls().contains("pr merge"));
 }
