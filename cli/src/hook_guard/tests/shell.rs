@@ -147,7 +147,7 @@ fn shell_expansion_cannot_hide_a_bypass() {
         "git rebase \"$base\"",
         "git pull origin \"$b\"",
         "git cherry-pick \"$sha\"",
-        "\"$ROOT/scripts/check-git-dir-decoy.sh\"",
+        "\"$ROOT/scripts/check-private.sh\"",
     ] {
         assert!(!denied(c), "{c}");
     }

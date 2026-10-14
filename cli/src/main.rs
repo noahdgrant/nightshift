@@ -343,7 +343,16 @@ fn run(cli: Cli) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Remove every git location variable from ns's own environment. Call before any thread starts,
+/// so `remove_var` is sound.
+fn clear_git_location_vars() {
+    for v in git::LOCATION_VARS {
+        std::env::remove_var(v);
+    }
+}
+
 fn main() -> ExitCode {
+    clear_git_location_vars();
     let cli = Cli::parse();
     match run(cli) {
         Ok(code) => code,
@@ -365,5 +374,44 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod clear_git_location_tests {
+    const MARK: &str = "NS_TEST_CLEAR_GIT_LOCATION_PROBE";
+
+    #[test]
+    fn clear_probe() {
+        if std::env::var_os(MARK).is_none() {
+            return;
+        }
+        let vars = crate::git::LOCATION_VARS;
+        for (i, v) in vars.iter().enumerate() {
+            std::env::set_var(v, if i % 2 == 0 { "/decoy" } else { "" });
+        }
+        super::clear_git_location_vars();
+        let left: Vec<_> = vars
+            .iter()
+            .filter(|v| std::env::var_os(v).is_some())
+            .collect();
+        assert!(left.is_empty(), "still set: {left:?}");
+    }
+
+    #[test]
+    fn clear_git_location_vars_removes_set_and_empty_variables() {
+        let out = crate::proc::Proc::tool(std::env::current_exe().unwrap())
+            .args(["--exact", "clear_git_location_tests::clear_probe"])
+            .args(["--test-threads=1", "--nocapture"])
+            .env(MARK, "1")
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "{text}");
+        assert!(text.contains("1 passed"), "{text}");
     }
 }

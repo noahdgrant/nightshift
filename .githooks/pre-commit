@@ -1,3 +1,6 @@
 #!/bin/sh
 # Enable with: git config core.hooksPath .githooks
+# Checks this checkout, never a location git exported to the hook (#120).
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
 exec scripts/ci-local.sh --fast
