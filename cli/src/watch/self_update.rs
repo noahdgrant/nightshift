@@ -597,4 +597,33 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn extract_unpacks_the_cli_tree_of_a_ref_into_the_directory() {
+        let repo = tempfile::tempdir().unwrap();
+        let into = tempfile::tempdir().unwrap();
+        crate::testutil::g(repo.path(), &["init", "-q", "-b", "main"]);
+        fs::create_dir(repo.path().join("cli")).unwrap();
+        crate::testutil::commit_file(repo.path(), "cli/main.rs", "fn main() {}\n");
+        extract(repo.path(), "HEAD", into.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(into.path().join("cli/main.rs")).unwrap(),
+            "fn main() {}\n"
+        );
+    }
+
+    #[test]
+    fn extract_fails_naming_git_archive_and_the_ref_when_the_ref_is_missing() {
+        let repo = tempfile::tempdir().unwrap();
+        let into = tempfile::tempdir().unwrap();
+        crate::testutil::g(repo.path(), &["init", "-q", "-b", "main"]);
+        fs::create_dir(repo.path().join("cli")).unwrap();
+        crate::testutil::commit_file(repo.path(), "cli/main.rs", "x\n");
+        let e = extract(repo.path(), "no-such-ref", into.path()).unwrap_err();
+        assert!(
+            e.to_string().starts_with("git archive no-such-ref: "),
+            "{e}"
+        );
+        assert!(fs::read_dir(into.path()).unwrap().next().is_none());
+    }
 }

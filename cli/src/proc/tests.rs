@@ -547,6 +547,62 @@ fn a_spawned_subscription_harness_never_sees_the_api_billing_variables() {
     }
 }
 
+const SPAWN_MARK: &str = "NS_PROC_SPAWN_STDERR_PROBE";
+
+#[test]
+fn a_spawned_child_writes_its_stderr_to_the_parents() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "proc::tests::spawn_stderr_probe",
+            "--test-threads=1",
+        ])
+        .env(SPAWN_MARK, "1")
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{log}");
+    assert!(log.contains("1 passed"), "the probe did not run: {log}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("spawned-child-stderr\n"), "{err}");
+    assert!(!log.contains("spawned-child-stderr"), "{log}");
+}
+
+/// Run by the test above in a process whose stderr it reads.
+#[test]
+fn spawn_stderr_probe() {
+    if std::env::var_os(SPAWN_MARK).is_none() {
+        return;
+    }
+    let mut p = sh(Kind::Tool, "echo spawned-child-stderr >&2");
+    let mut child = p.spawn(tempfile::tempfile().unwrap()).unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_spawned_child_gets_sigterm_when_the_thread_that_started_it_ends() {
+    use std::os::unix::process::ExitStatusExt;
+    let out = tempfile::tempfile().unwrap();
+    let mut child =
+        std::thread::spawn(move || sh(Kind::Tool, "exec sleep 600").spawn(out).unwrap())
+            .join()
+            .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the child outlived the thread that started it");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status.signal(), Some(libc::SIGTERM));
+}
+
 #[test]
 fn polling_starts_at_a_millisecond_and_doubles_up_to_twenty() {
     let mut delay = FIRST_POLL;

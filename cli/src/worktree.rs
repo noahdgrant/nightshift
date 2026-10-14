@@ -567,6 +567,73 @@ mod tests {
         assert!(!dir.path().join("ran-after").exists());
     }
 
+    const OUTPUT_MARK: &str = "NS_WORKTREE_SETUP_OUTPUT_PROBE";
+
+    #[test]
+    fn setup_output_goes_to_stderr_and_never_to_stdout() {
+        let mut probe = std::process::Command::new(std::env::current_exe().unwrap());
+        probe
+            .args([
+                "--exact",
+                "worktree::tests::output_probe",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(OUTPUT_MARK, "1");
+        for v in crate::cpus::VARS {
+            probe.env_remove(v);
+        }
+        let out = probe.output().unwrap();
+        let (stdout, stderr) = (
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(out.status.success(), "{stdout}{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the probe did not run: {stdout}"
+        );
+        assert!(!stdout.contains("setup-says-out"), "{stdout}");
+        assert!(stderr.contains("setup-says-out\n"), "{stderr}");
+        assert!(stderr.contains("setup-says-err\n"), "{stderr}");
+    }
+
+    #[test]
+    fn a_setup_command_gets_the_unit_the_paths_and_the_cpu_settings() {
+        let mut probe = std::process::Command::new(std::env::current_exe().unwrap());
+        probe
+            .args([
+                "--exact",
+                "worktree::tests::output_probe",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(OUTPUT_MARK, "1");
+        for v in crate::cpus::VARS {
+            probe.env_remove(v);
+        }
+        let out = probe.output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("NS_UNIT=unit-x\n"), "{stderr}");
+        assert!(stderr.contains("NS_WORKTREE=/tmp\n"), "{stderr}");
+        assert!(stderr.contains("NS_MAIN_ROOT=/\n"), "{stderr}");
+        for v in crate::cpus::VARS {
+            assert!(stderr.contains(&format!("{v}=3\n")), "{v}: {stderr}");
+        }
+    }
+
+    /// Run by the tests above in a process whose stdout and stderr they read.
+    #[test]
+    fn output_probe() {
+        if std::env::var_os(OUTPUT_MARK).is_none() {
+            return;
+        }
+        crate::cpus::activate(3);
+        let commands = vec!["echo setup-says-out; echo setup-says-err >&2; env".to_string()];
+        let results = run_setup(&commands, "unit-x", Path::new("/tmp"), Path::new("/")).unwrap();
+        assert_eq!(results[0].exit, Some(0));
+    }
+
     #[test]
     fn a_timed_out_setup_command_aborts_setup_naming_the_command() {
         let timed_out = std::io::Error::new(ErrorKind::TimedOut, "`sh -c sleep 9` timed out");

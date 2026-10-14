@@ -28,7 +28,7 @@ fn glab(cwd: &Path, args: &[&str]) -> Result<String> {
         .current_dir(cwd)
         .until_stop()
         .output()
-        .context("cannot run glab; is it installed and on PATH?")?;
+        .map_err(glab_unrunnable)?;
     if !out.status.success() {
         let token = std::env::var(ForgeKind::Gitlab.token_var()).ok();
         return Err(SfError::general(format!(
@@ -42,6 +42,13 @@ fn glab(cwd: &Path, args: &[&str]) -> Result<String> {
         .into());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn glab_unrunnable(e: std::io::Error) -> anyhow::Error {
+    match e.kind() {
+        std::io::ErrorKind::Interrupted => e.into(),
+        _ => anyhow::Error::new(e).context("cannot run glab; is it installed and on PATH?"),
+    }
 }
 
 /// `text` with every copy of `token` hidden: a server may echo the credential it refused.
@@ -421,6 +428,17 @@ impl Forge for GitLab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_is_not_reported_as_a_missing_glab() {
+        let stopped = std::io::Error::new(std::io::ErrorKind::Interrupted, "`glab api` stopped");
+        assert_eq!(glab_unrunnable(stopped).to_string(), "`glab api` stopped");
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(
+            glab_unrunnable(missing).to_string(),
+            "cannot run glab; is it installed and on PATH?"
+        );
+    }
 
     #[test]
     fn to_merged_prs_reads_each_mrs_branch_and_merge_time_but_no_lines() {

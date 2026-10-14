@@ -397,6 +397,14 @@ fn cli(program: &OsStr, kind: ForgeKind, creds: Option<&Credentials>, limit: Dur
     cmd
 }
 
+/// Why `what` did not run: a stop says so, anything else names `what` as unrunnable.
+fn cannot_run(what: &str, e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::Interrupted => e.to_string(),
+        _ => format!("cannot run {what}: {e}"),
+    }
+}
+
 /// How a call past `limit` is reported, after the program it names.
 fn timed_out(limit: Duration) -> String {
     format!("timed out after {}s", limit.as_secs_f32())
@@ -442,7 +450,7 @@ fn can_read_within(
     };
     let out = cmd.output().map_err(|e| match e.kind() {
         std::io::ErrorKind::TimedOut => format!("{} {}", kind.cli(), timed_out(limit)),
-        _ => format!("cannot run {}: {e}", kind.cli()),
+        _ => cannot_run(kind.cli(), &e),
     })?;
     if out.status.success() {
         return Ok(());
@@ -493,7 +501,7 @@ fn fetch_within(kind: ForgeKind, source: &TokenSource, limit: Duration) -> Resul
                         std::io::ErrorKind::TimedOut => {
                             format!("token_command `{c}` {}", timed_out(limit))
                         }
-                        _ => format!("cannot run token_command `{c}`: {e}"),
+                        _ => cannot_run(&format!("token_command `{c}`"), &e),
                     };
                     SfError::usage(format!("forge {name}: {what}"), HINT)
                 })?;
@@ -562,6 +570,14 @@ mod tests {
         let e = can_read_fake("exec sleep 30", Duration::from_millis(300)).unwrap_err();
         assert_eq!(e, "gh timed out after 0.3s");
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_stop_is_not_reported_as_a_command_that_cannot_run() {
+        let stopped = std::io::Error::new(std::io::ErrorKind::Interrupted, "`gh api` stopped");
+        assert_eq!(cannot_run("gh", &stopped), "`gh api` stopped");
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert!(cannot_run("gh", &missing).starts_with("cannot run gh: "));
     }
 
     #[test]
