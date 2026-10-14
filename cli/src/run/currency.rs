@@ -11,16 +11,40 @@ use crate::factory::{artifact_of, PHASES};
 use crate::frontmatter;
 use crate::git::{self, same_sha};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Art {
     pub status: String,
     pub sha: Option<String>,
     pub pr: Option<String>,
     pub body: String,
+    /// What `ns artifact check` rejects in an `ns-artifact/2` file. An invalid artifact counts as
+    /// absent: its phase runs again.
+    pub invalid: Option<Vec<String>>,
 }
 
+/// The phase whose artifact `path` is, from its file name.
+fn phase_of_file(path: &Path) -> Option<&'static str> {
+    let name = path.file_name()?.to_str()?;
+    PHASES.iter().copied().find(|p| artifact_of(p) == name)
+}
+
+/// Read an artifact. An `ns-artifact/2` file is read through its typed fields, and its body is
+/// given the first line today's state table routes on (docs/design/factory-core/v1.md, step 3):
+/// `base moved: <reason>` for `cause: base_moved`, `<next>: <reason>` for a ship that names verify
+/// or review, else the reason. A `/1` file is read as before.
 pub(super) fn read_art(path: &Path) -> Option<Art> {
     let text = fs::read_to_string(path).ok()?;
+    if let Some(phase) = phase_of_file(path).and_then(crate::artifact::Phase::parse) {
+        if text.lines().any(|l| l.trim_start().starts_with("schema:")) {
+            return Some(match crate::artifact::read(&text, phase) {
+                Ok(t) => typed_art(&t, &text),
+                Err(errors) => Art {
+                    invalid: Some(errors),
+                    ..Art::default()
+                },
+            });
+        }
+    }
     let (status, sha, pr, body) = match (frontmatter::parse(&text), frontmatter::split(&text)) {
         (Ok(Some(_)), Some((yaml, body))) => (
             frontmatter::raw_field(yaml, "status").unwrap_or_default(),
@@ -35,7 +59,27 @@ pub(super) fn read_art(path: &Path) -> Option<Art> {
         sha,
         pr,
         body,
+        invalid: None,
     })
+}
+
+fn typed_art(t: &crate::artifact::Typed, text: &str) -> Art {
+    use crate::artifact::{Cause, Next, Phase};
+    let first = match (t.cause, t.phase, t.next) {
+        (Cause::BaseMoved, _, _) => format!("base moved: {}", t.reason),
+        (_, Phase::Ship, Next::Verify | Next::Review) => {
+            format!("{}: {}", t.next.as_str(), t.reason)
+        }
+        _ => t.reason.clone(),
+    };
+    let rest = frontmatter::split(text).map_or("", |(_, b)| b);
+    Art {
+        status: t.status.as_str().to_string(),
+        sha: t.sha.clone(),
+        pr: t.pr.clone(),
+        body: format!("{first}\n\n{rest}"),
+        invalid: None,
+    }
 }
 
 /// Move `file` into `<dir>/history/<stem>-<n>.md`, n one past the highest already there.
@@ -198,7 +242,7 @@ pub(super) fn read_state(
 ) -> State {
     let mut arts = BTreeMap::new();
     for p in PHASES {
-        if let Some(a) = read_art(&dir.join(artifact_of(p))) {
+        if let Some(a) = read_art(&dir.join(artifact_of(p))).filter(|a| a.invalid.is_none()) {
             arts.insert(*p, a);
         }
     }
@@ -392,6 +436,7 @@ mod tests {
             sha: Some(sha.into()),
             pr: None,
             body: format!("{status} body"),
+            invalid: None,
         }
     }
 
@@ -864,5 +909,61 @@ mod tests {
             },
         );
         assert_eq!(phase_of(&decide(&s)), "verify");
+    }
+
+    fn v2(dir: &Path, file: &str, phase: &str, status: &str, cause: &str, next: &str, extra: &str) {
+        fs::write(
+            dir.join(file),
+            format!(
+                "---\nschema: ns-artifact/2\nunit: 7-x\nphase: {phase}\nstatus: {status}\ncause: {cause}\nnext: {next}\nreason: \"the reason\"\nsha: abc1234\n{extra}updated: 2026-10-14T10:00:00Z\n---\n\n# Body\n\nreview this, then verify\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_v2_artifact_routes_on_its_cause_and_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        v2(
+            d,
+            "evidence.md",
+            "verify",
+            "fail",
+            "base_moved",
+            "build",
+            "",
+        );
+        let a = read_art(&d.join("evidence.md")).unwrap();
+        assert!(base_moved(&a.body), "{}", a.body);
+        v2(d, "pr.md", "ship", "fail", "criteria_failed", "verify", "");
+        let a = read_art(&d.join("pr.md")).unwrap();
+        assert_eq!(named_phase(&a.body), Some("verify"), "{}", a.body);
+        v2(
+            d,
+            "review.md",
+            "review",
+            "blocked",
+            "needs_human",
+            "human",
+            "",
+        );
+        let a = read_art(&d.join("review.md")).unwrap();
+        assert_eq!(first_line(&a.body), "the reason");
+        assert_eq!(
+            (a.status.as_str(), a.sha.as_deref()),
+            ("blocked", Some("abc1234"))
+        );
+    }
+
+    #[test]
+    fn an_invalid_v2_artifact_counts_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        v2(d, "evidence.md", "verify", "fail", "nonsense", "build", "");
+        let a = read_art(&d.join("evidence.md")).unwrap();
+        assert!(a.invalid.as_ref().is_some_and(|e| !e.is_empty()), "{a:?}");
+        let s = read_state(d, "abc1234".into(), true, None);
+        assert!(!s.arts.contains_key("verify"));
     }
 }

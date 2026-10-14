@@ -40,6 +40,8 @@ pub struct Admitted {
     pub follows_base: bool,
     /// A build that fixes a red gate another phase's commits caused: free, naming that phase.
     pub fault_of: Option<String>,
+    /// A run that rewrites an artifact `ns artifact check` rejected: free, once per phase.
+    pub rewrite: bool,
     before_credit: Option<String>,
 }
 
@@ -104,6 +106,12 @@ pub struct Ledger {
     fault_of: Option<String>,
     #[serde(default)]
     fault_credits: u32,
+    /// The next run of this phase rewrites an artifact `ns artifact check` rejected, and is free.
+    #[serde(default)]
+    rewrite: Option<String>,
+    /// Phases that have had their one free rewrite in this run.
+    #[serde(default)]
+    rewritten: BTreeSet<String>,
 }
 
 /// A phase run that moved HEAD from `from` to `to`.
@@ -262,6 +270,10 @@ impl Ledger {
             self.rerun(phase, 1);
             self.fault_credits += 1;
         }
+        let rewrite = self.rewrite.take_if(|p| p == phase).is_some();
+        if rewrite {
+            self.rerun(phase, 1);
+        }
         if attempt - self.reruns.get(phase).copied().unwrap_or(0) > max_attempts {
             let mut reason = format!("{phase} is out of attempts ({max_attempts})");
             if let Some(t) = self.last_failure.get(phase) {
@@ -281,6 +293,7 @@ impl Ledger {
             rebase,
             follows_base,
             fault_of,
+            rewrite,
             before_credit,
         })
     }
@@ -304,6 +317,10 @@ impl Ledger {
             self.rerun(a.phase, -1);
             self.fault_credits -= 1;
             self.fault_of = a.fault_of.clone();
+        }
+        if a.rewrite {
+            self.rerun(a.phase, -1);
+            self.rewrite = Some(a.phase.to_string());
         }
         self.force(run(a.phase, &a.feedback, a.why), kind);
     }
@@ -336,6 +353,22 @@ impl Ledger {
             self.passed.insert(a.phase.into());
             self.ship_follows_base |= a.phase == "ship" && a.rebase.is_some();
         }
+    }
+
+    /// `a` wrote an artifact `ns artifact check` rejects. The phase runs again with the errors as
+    /// feedback, free the first time in this run; a second invalid artifact is charged.
+    pub fn artifact_invalid(&mut self, a: &Admitted, file: &str, errors: &[String]) {
+        let mut feedback = format!(
+            "The {file} you wrote fails `ns artifact check {file} --phase {}`. Fix it and write it again:\n",
+            a.phase
+        );
+        for e in errors {
+            feedback.push_str(&format!("- {e}\n"));
+        }
+        if self.rewritten.insert(a.phase.to_string()) {
+            self.rewrite = Some(a.phase.to_string());
+        }
+        self.force(run(a.phase, &feedback, format!("{file} is invalid")), None);
     }
 
     /// `phase` moved HEAD from `from` to `to`.

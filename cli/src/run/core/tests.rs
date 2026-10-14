@@ -434,3 +434,34 @@ fn only_ship_moved_follows_the_chain_of_ship_runs() {
         "chain never reaches it"
     );
 }
+
+#[test]
+fn an_invalid_artifact_reruns_its_phase_free_once() {
+    let mut l = Ledger::new(None);
+    let a = admit(&mut l, "verify").unwrap();
+    ended(&mut l, &a, None);
+    l.artifact_invalid(&a, "evidence.md", &["`cause: x` is not one of none".into()]);
+    let (d, _) = l.next(&empty());
+    let Decision::Run {
+        phase,
+        feedback,
+        why,
+    } = d
+    else {
+        unreachable!()
+    };
+    assert_eq!((phase, why.as_str()), ("verify", "evidence.md is invalid"));
+    assert!(
+        feedback.contains("- `cause: x` is not one of none"),
+        "{feedback}"
+    );
+    let a = admit(&mut l, "verify").unwrap();
+    assert!(a.rewrite);
+    ended(&mut l, &a, None);
+    l.artifact_invalid(&a, "evidence.md", &["again".into()]);
+    l.next(&empty());
+    let a = admit(&mut l, "verify").expect("the second rewrite is charged, and fits max 2");
+    assert!(!a.rewrite);
+    ended(&mut l, &a, None);
+    assert!(admit(&mut l, "verify").is_err(), "4 runs, 1 free, max 2");
+}

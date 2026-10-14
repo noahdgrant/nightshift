@@ -366,10 +366,14 @@ fn drive_loop(
             return Ok(f);
         }
         let art = read_art(&art_path);
+        let invalid = art.as_ref().and_then(|a| a.invalid.clone());
         ledger.phase_ended(
             &adm,
             &PhaseResult {
-                status: art.as_ref().map(|a| a.status.clone()),
+                status: art
+                    .as_ref()
+                    .filter(|a| a.invalid.is_none())
+                    .map(|a| a.status.clone()),
                 timed_out: r.timed_out,
                 killed: r.killed.clone(),
                 timeout_text: gate::timed_out_after(timeout),
@@ -419,6 +423,20 @@ fn drive_loop(
 
         if let Some(f) = guards(ctx, &mut baseline, phase)? {
             return Ok(f);
+        }
+        if let (Some(errors), false) = (&invalid, args.triage_only) {
+            let file = artifact_of(phase);
+            let stem = format!("{}-invalid", file.trim_end_matches(".md"));
+            let archived = archive_as(&ctx.artifacts, file, &stem)?;
+            ctx.log(json!({
+                "event": "artifact_invalid",
+                "phase": phase,
+                "attempt": attempt,
+                "errors": errors,
+                "archived": archived.map(|p| p.to_string_lossy().into_owned()),
+            }));
+            ledger.artifact_invalid(&adm, file, errors);
+            continue;
         }
         if args.triage_only {
             return Ok(match (r.timed_out, r.killed, r.exit) {
