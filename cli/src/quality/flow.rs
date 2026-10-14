@@ -412,4 +412,27 @@ mod tests {
         assert_eq!(f.cycles_to_fix.median, Some(2.0));
         assert_eq!(f.cycles_to_fix.next_cycle, 1);
     }
+
+    #[test]
+    fn passes_four_and_five_are_buckets_and_six_is_later() {
+        let a = attempt(
+            Some(6),
+            "pass",
+            "### C1. a\n- Cycle: 4\n- Status: open\n### C2. b\n- Cycle: 5\n- Status: open\n### I1. c\n- Cycle: 5\n- Status: open\n### I2. d\n- Cycle: 6\n- Status: open\n",
+        );
+        let f = finding_flow(&[&unit(vec![a])]);
+        assert_eq!(
+            f.raised_per_pass,
+            BySeverity {
+                critical: Raised {
+                    passes: [0, 0, 0, 0, 1, 1],
+                    later: 0
+                },
+                important: Raised {
+                    passes: [0, 0, 0, 0, 0, 1],
+                    later: 1
+                },
+            }
+        );
+    }
 }

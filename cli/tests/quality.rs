@@ -532,6 +532,28 @@ fn since_filters_a_unit_by_its_last_attempt() {
 }
 
 #[test]
+fn since_limits_the_finding_flow_and_the_human_text_to_the_units_in_range() {
+    let f = fixture();
+    let since = ["--since", "2026-10-10T12:00:01Z"];
+    let v = quality(&f, &since);
+    assert_eq!(v["finding_flow"]["findings"], 0);
+    assert_eq!(v["finding_flow"]["without_cycle"], 3);
+    let out = ns()
+        .current_dir(&f.root)
+        .args(["quality", "--human"])
+        .args(since)
+        .output();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "Units: 1",
+        "Findings: 0 Critical and Important over every review attempt; 3 without a cycle left out",
+    ] {
+        assert!(text.contains(line), "missing {line:?} in:\n{text}");
+    }
+}
+
+#[test]
 fn since_a_date_does_not_depend_on_tz() {
     let f = fixture();
     late_unit(&f);
