@@ -259,7 +259,7 @@ fn settle(unit: &str, wait: Duration) -> String {
         if !SETTLING.contains(&state.as_str()) || Instant::now() >= deadline {
             return result;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::ZERO);
     }
 }
 
@@ -292,7 +292,7 @@ fn probe_cgroup(mb: u64) -> Result<(), String> {
             "-c",
             r#"cat "/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)/memory.max""#,
         ]);
-    let out = probe(c, "systemd-run")?;
+    let out = probe(c, "systemd-run", PROBE_TIMEOUT)?;
     let want = (mb * MIB).to_string();
     if out.trim() == want {
         Ok(())
@@ -308,12 +308,12 @@ fn probe_cgroup(mb: u64) -> Result<(), String> {
 fn probe_rlimit(mb: u64) -> Result<(), String> {
     let mut c = Proc::tool("prlimit");
     c.arg(format!("--as={}", mb * MIB)).args(["--", "true"]);
-    probe(c, "prlimit").map(|_| ())
+    probe(c, "prlimit", PROBE_TIMEOUT).map(|_| ())
 }
 
 /// Run a probe; its stdout, or why it failed.
-fn probe(mut c: Proc, name: &str) -> Result<String, String> {
-    match c.timeout(PROBE_TIMEOUT).output() {
+fn probe(mut c: Proc, name: &str, timeout: Duration) -> Result<String, String> {
+    match c.timeout(timeout).output() {
         Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
         Ok(out) => Err(format!("{name} failed ({})", out.status)),
         Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Err(format!("{name} timed out")),
@@ -332,13 +332,26 @@ mod tests {
         let sh = |script: &str| {
             let mut p = Proc::tool("sh");
             p.args(["-c", script]);
-            probe(p, "sh")
+            probe(p, "sh", PROBE_TIMEOUT)
         };
         assert_eq!(sh("echo 1024").unwrap(), "1024\n");
         let failed = sh("echo no >&2; exit 3").unwrap_err();
         assert!(failed.starts_with("sh failed (exit status: 3)"), "{failed}");
-        let missing = probe(Proc::tool("/nonexistent/ns-memcap-probe"), "probe").unwrap_err();
+        let missing = probe(
+            Proc::tool("/nonexistent/ns-memcap-probe"),
+            "probe",
+            PROBE_TIMEOUT,
+        )
+        .unwrap_err();
         assert!(missing.starts_with("probe: "), "{missing}");
+    }
+
+    #[test]
+    fn a_probe_that_outlives_its_timeout_says_it_timed_out() {
+        let mut p = Proc::tool("sh");
+        p.args(["-c", "exec sleep 600"]);
+        let err = probe(p, "sh", Duration::ZERO).unwrap_err();
+        assert_eq!(err, "sh timed out");
     }
 
     #[test]

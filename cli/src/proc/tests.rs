@@ -842,10 +842,23 @@ fn a_stop_asks_the_group_to_end_before_it_kills_it() {
     assert!(has_line(&marker), "the child never got SIGTERM");
 }
 
+/// The file whose line says the child of the SIGKILL test is ignoring SIGTERM.
+static IGNORING: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 #[test]
 fn a_stop_kills_a_group_that_ignores_sigterm_after_the_grace() {
-    let mut p = sh(Kind::Tool, "trap '' TERM; exec sleep 600");
-    p.stop_when(|| true).grace(Duration::ZERO);
+    let dir = tempfile::tempdir().unwrap();
+    let ignoring = dir.path().join("ignoring");
+    IGNORING.set(ignoring.clone()).unwrap();
+    let mut p = sh(
+        Kind::Tool,
+        &format!(
+            "trap '' TERM; echo up > {}; exec sleep 600",
+            ignoring.display()
+        ),
+    );
+    p.stop_when(|| IGNORING.get().is_some_and(|t| has_line(t)))
+        .grace(Duration::ZERO);
     assert_eq!(p.output().unwrap_err().kind(), ErrorKind::Interrupted);
 }
 
