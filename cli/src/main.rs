@@ -343,6 +343,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 fn main() -> ExitCode {
+    // Before any thread starts, so removing them is sound. proc still scrubs each child.
+    for v in git::LOCATION_VARS {
+        std::env::remove_var(v);
+    }
     let cli = Cli::parse();
     match run(cli) {
         Ok(code) => code,
