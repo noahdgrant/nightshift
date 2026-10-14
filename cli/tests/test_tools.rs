@@ -419,7 +419,7 @@ fn the_job_that_runs_cargo_test_installs_every_listed_tool_the_tests_name() {
     let jobs = Regex::new(r"(?m)^  [a-z][\w-]*:\s*$").unwrap();
     let job = jobs
         .split(&yml)
-        .find(|j| j.contains("- run: cargo test\n"))
+        .find(|j| j.contains("run: scripts/ci-affected.sh --cargo-test\n"))
         .expect("a job runs cargo test");
     let installed = installed_by(job);
     let listed = listed();
@@ -537,4 +537,40 @@ fn ci_installs_every_listed_tool_somewhere() {
     installed.extend(pack_tools().into_iter().flat_map(|(_, tools)| tools));
     let unused: Vec<_> = listed().difference(&installed).cloned().collect();
     assert!(unused.is_empty(), "no job installs these tools: {unused:?}");
+}
+
+#[test]
+fn on_a_pull_request_ci_runs_the_tests_for_the_changed_paths_inside_each_job() {
+    let yml = ci_workflow();
+    let on = &yml[yml.find("\non:").unwrap()..yml.find("\njobs:").unwrap()];
+    assert!(!on.contains("paths"), "ci.yml filters runs by path:\n{on}");
+    let pr_files = "        if: github.event_name == 'pull_request'\n";
+    for name in ["rust", "fixtures", "rule-packs"] {
+        let job = ci_job(name);
+        for want in ["fetch-depth: 0", "run: scripts/ci-pr-files.sh", pr_files] {
+            assert!(job.contains(want), "the {name} job has no {want:?}:\n{job}");
+        }
+    }
+    let rust = ci_job("rust");
+    assert!(
+        rust.contains("run: scripts/ci-affected.sh --cargo-test\n"),
+        "{rust}"
+    );
+    assert!(!rust.contains("run: cargo test"), "{rust}");
+    for (name, tests) in [
+        ("fixtures", &["run: pytest -q", "brief checker tests"][..]),
+        ("rule-packs", &["tests/run.sh\"", "Build ns"]),
+    ] {
+        let job = ci_job(name);
+        assert!(job.contains("scripts/ci-affected.sh --changed"), "{job}");
+        for test in tests {
+            let at = job.find(test).unwrap();
+            let step = &job[job[..at].rfind("      - ").unwrap()..];
+            let step = &step[..step[8..].find("      - ").map_or(step.len(), |e| e + 8)];
+            assert!(
+                step.contains("if: steps.changed.outputs."),
+                "the {name} job runs {test:?} whatever changed:\n{step}"
+            );
+        }
+    }
 }
