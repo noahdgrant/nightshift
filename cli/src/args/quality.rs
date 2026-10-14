@@ -11,6 +11,8 @@ Examples:
   ns quality --since 2026-10-09T21:04:00Z
   ns quality --since 2026-10-01 --until 2026-10-09
   ns quality --json | jq .first_pass
+  ns quality --human
+  ns quality --json | jq .finding_flow.fix_rate
   ns quality import /tmp/unit-artifacts --dry-run
   ns quality --bugs --weeks 4
   ns quality --bugs --since 2026-09-01 --json | jq .total
@@ -22,8 +24,12 @@ review/cycle-*.md and history/review* in its linked worktree. Also reads
 <git-common-dir>/ns/runs.jsonl. Changes nothing but the remote-tracking ref.
 `records` says how many records came from the branch and the outbox, and why a fetch failed.
 First-pass numbers come from a unit's oldest review artifact, the rest from its newest.
-Prints {units,findings,first_pass,cycles_to_clean,leftovers,escapes,leftover_findings,
-escape_findings,trend,run_log,gaps,per_unit,records}; per_unit[].source is record or worktree.
+Prints {units,findings,first_pass,cycles_to_clean,leftovers,escapes,finding_flow,
+leftover_findings,escape_findings,trend,run_log,gaps,per_unit,records}; per_unit[].source is
+record or worktree. finding_flow counts the Critical and Important findings of every review
+attempt, not only the newest: raised per pass, fix rate by attempt, cycles to fix, dismiss
+rate and late-finding rate; findings with no cycle are left out and counted. --human prints
+the headline numbers and finding_flow as text instead.
 --since and --until are inclusive and UTC, and so is their echo in the output: a bare date
 is 00:00:00 for --since and 23:59:59 for --until. trend and per_unit days are local (TZ).
 
@@ -52,6 +58,9 @@ pub(crate) struct Quality {
     /// Print JSON: the default for the review report, and for --bugs instead of its table
     #[arg(long)]
     pub json: bool,
+    /// Print the review report as text: the headline numbers and how findings arrive and get fixed
+    #[arg(long, conflicts_with_all = ["json", "bugs"])]
+    pub human: bool,
     /// Count the type:fix issues opened in each ISO week, by source and severity, with their rate per merged unit and per 1,000 changed lines, instead of the review report
     #[arg(long)]
     pub bugs: bool,

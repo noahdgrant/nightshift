@@ -1,7 +1,7 @@
 # Quality
 
 ```
-ns quality [--since YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--until YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--json]
+ns quality [--since YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--until YYYY-MM-DDTHH:MM:SSZ|YYYY-MM-DD] [--json|--human]
 ns quality import <dir> [--dry-run]
 ns quality --bugs [--since ...] [--until ...] [--weeks N] [--json]
 ```
@@ -14,6 +14,7 @@ ns quality --bugs [--since ...] [--until ...] [--weeks N] [--json]
 | Findings per 100 lines | Critical and Important findings in changed code from the first pass, per 100 changed lines, overall and per axis. A finding with two axes counts once in each | Falling |
 | Cycles to clean | Fix cycles a unit needed to end `pass` with no open Critical or Important in changed code (median, max). Units that never got there are `not_clean` | Falling |
 | Leftovers | Critical and Important findings in changed code still `open` when the fix loop stops, after the third cycle or the fix-only cycles that follow it | 0 |
+| Finding flow | How Critical and Important findings arrive and get fixed, over every review attempt: raised per pass, fix rate by attempt, cycles to fix, dismiss rate and late-finding rate (`finding_flow`, keys in `docs/cli/quality.md`) | Fewer raised late; most fixed on the first attempt |
 | Escapes | Findings with `Scope: pre-existing` (D29): defects in code the unit didn't change, so an earlier unit's review let them through. Each is blamed (`git blame` at the reviewed commit, the frontmatter's `sha:`, else `head:`, else `base:`) to the commit that introduced the line, and to the PR in its subject (`(#123)`) | Falling |
 
 An escape counts only as an escape: it never makes a unit's first pass dirty, never counts toward findings per 100 lines, and never blocks. A finding dismissed in review counts toward none of these: review judged it wrong. `trend` repeats the numbers for each local day (the newest artifact's `updated:`), `--since` keeps only units whose newest artifact was updated, and run-log events, at or after a UTC instant, and `--until` only those at or before one. A bare date means 00:00:00 UTC for `--since` and 23:59:59 UTC for `--until`, whatever `TZ` is, so `--until 2026-10-09` and `--since 2026-10-10` split units and events with no overlap and no gap. With either bound set, an undated unit or event is dropped. A malformed bound, or `--until` before `--since`, exits 2. The output echoes both as `since` and `until`, null when unset. `per_unit` has each unit's numbers, with `changed_lines`, which keeps the review cost of a large unit visible now that size never blocks one (D37), `reached_clean` (`clean`, `not_clean` or `unknown`) and its review runs, review cost and outcome from the run log. `run_log.units_without_artifacts` names units the log shows reviewed that have neither a record nor a worktree.
