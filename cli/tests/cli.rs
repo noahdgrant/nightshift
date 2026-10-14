@@ -2245,18 +2245,13 @@ fn factory_def(root: &Path, text: &str) {
     fs::write(root.join(".nightshift/nightshift.toml"), text).unwrap();
 }
 
-const SLOW_SETUP: &str =
-    "name = \"demo\"\n\n[worktree]\nsetup = [\"echo $$ > setup.pid; sleep 600 & echo $! > sleep.pid; wait\"]\n";
-
-fn read_pid(file: &Path) -> String {
-    let deadline = std::time::Instant::now() + common::TIMEOUT;
-    loop {
-        if let Some(pid) = fs::read_to_string(file).ok().filter(|p| p.ends_with('\n')) {
-            return pid;
-        }
-        assert!(std::time::Instant::now() < deadline, "setup never started");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+/// A setup command that writes its shell's pid and its `sleep`'s pid to the fifo `pids`, then
+/// waits on the sleep.
+fn slow_setup(pids: &Path) -> String {
+    format!(
+        "name = \"demo\"\n\n[worktree]\nsetup = [\"sleep 600 & echo $$ $! > {}; wait\"]\n",
+        pids.display()
+    )
 }
 
 /// Signal an `ns worktree` run whose setup command sleeps, and check that the shell and the
@@ -2264,14 +2259,20 @@ fn read_pid(file: &Path) -> String {
 fn a_signal_ends_the_setup_command(args: &[&str], sig: libc::c_int, prepare: impl Fn(&Path)) {
     let (_tmp, root) = repo();
     prepare(&root);
-    factory_def(&root, SLOW_SETUP);
-    let dir = root.parent().unwrap().join("myrepo.worktrees/u1");
+    let fifo = root.parent().unwrap().join("pids");
+    assert!(StdCommand::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    factory_def(&root, &slow_setup(&fifo));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(fs::read_to_string(fifo).unwrap()));
     let mut ns = ns();
     let mut g = ns.current_dir(&root).args(args).start();
-    let pids = [
-        read_pid(&dir.join("setup.pid")),
-        read_pid(&dir.join("sleep.pid")),
-    ];
+    let line = g.recv(&rx);
+    let pids: Vec<&str> = line.split_whitespace().collect();
+    assert_eq!(pids.len(), 2, "{line:?}");
     // SAFETY: kill(2) on the ns process this test started.
     assert_eq!(unsafe { libc::kill(g.id() as libc::pid_t, sig) }, 0);
     let status = g.wait();

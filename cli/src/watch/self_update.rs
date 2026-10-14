@@ -570,13 +570,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::stop::request(libc::SIGTERM);
         let mut slow = Proc::tool("sleep");
-        slow.arg("20");
-        let e = logged(&mut slow, Duration::from_secs(600), &dir.path().join("log"))
+        slow.arg("600");
+        let e = logged(&mut slow, CHECK_CEILING, &dir.path().join("log"))
             .unwrap()
             .output()
             .unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::Interrupted);
-        assert_eq!(e.to_string(), "`sleep 20` stopped by a signal");
+        assert_eq!(e.to_string(), "`sleep 600` stopped by a signal");
     }
 
     #[test]

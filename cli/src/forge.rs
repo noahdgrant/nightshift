@@ -593,14 +593,12 @@ mod tests {
             return;
         }
         crate::stop::request(libc::SIGTERM);
-        let started = Instant::now();
-        let e = can_read_fake("exec sleep 20", Duration::from_secs(600)).unwrap_err();
+        let e = can_read_fake("exec sleep 600", PROBE_TIMEOUT).unwrap_err();
         assert!(e.ends_with("stopped by a signal"), "{e}");
         assert!(!e.contains("cannot run"), "{e}");
-        let source = TokenSource::Command("sleep 20".into());
-        let e = fetch_within(ForgeKind::Github, &source, Duration::from_secs(600)).unwrap_err();
+        let source = TokenSource::Command("sleep 600".into());
+        let e = fetch_within(ForgeKind::Github, &source, PROBE_TIMEOUT).unwrap_err();
         assert!(e.to_string().contains("stopped by a signal"), "{e}");
-        assert!(started.elapsed() < Duration::from_secs(30));
     }
 
     #[test]
