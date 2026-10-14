@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
-use common::Ns;
+use common::{copy_dir, Ns};
 use predicates::prelude::*;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -66,18 +66,6 @@ fn git(dir: &Path, args: &[&str]) {
         .unwrap()
         .success();
     assert!(ok, "git {args:?}");
-}
-
-fn copy_dir(src: &Path, dst: &Path) {
-    fs::create_dir_all(dst).unwrap();
-    for e in fs::read_dir(src).unwrap().flatten() {
-        let to = dst.join(e.file_name());
-        if e.file_type().unwrap().is_dir() {
-            copy_dir(&e.path(), &to);
-        } else {
-            fs::copy(e.path(), &to).unwrap();
-        }
-    }
 }
 
 fn setup_with(output: &str) -> Env {

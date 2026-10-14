@@ -478,6 +478,19 @@ pub fn copy_exe(from: &Path, to: &Path) {
     );
 }
 
+/// Copy the tree `from` to `to`. It holds no executable: copy one with [`copy_exe`].
+pub fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap().flatten() {
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&src, &dst);
+        } else {
+            std::fs::copy(&src, &dst).unwrap_or_else(|e| panic!("{}: {e}", src.display()));
+        }
+    }
+}
+
 fn drain(mut r: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
