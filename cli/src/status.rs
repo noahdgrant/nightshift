@@ -510,6 +510,15 @@ queue unavailable
         fn is_closed(&self, _: u64) -> Result<bool> {
             Ok(false)
         }
+        fn issue_link(&self, _: u64) -> Result<crate::watch::forge::IssueLink> {
+            unreachable!("ns status only reads the queue")
+        }
+        fn pr(&self, _: u64) -> Result<crate::watch::forge::Pr> {
+            unreachable!("ns status only reads the queue")
+        }
+        fn commit_prs(&self, _: &str) -> Result<Vec<crate::watch::forge::CommitPr>> {
+            unreachable!("ns status only reads the queue")
+        }
         fn state(&self, _: u64) -> Result<IssueState> {
             unreachable!("ns status only reads the queue")
         }

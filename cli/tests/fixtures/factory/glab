@@ -4,7 +4,7 @@
 #   gl-issues.jsonl  one open issue per line: {"iid","title","labels","description","author"}
 #   gl-members.json  the project's members/all list
 #   gl-mrs.json, gl-mrs-merged.json  open and merged merge requests
-#   gl-state-<n>     an issue's state, default opened
+#   gl-state-<n>     an issue's state, default opened; a closed one is left out of open lists
 #   gl-issue-<n>.raw what reading issue <n> prints instead
 #   gl-search.json   what searching issue descriptions lists, default none
 #   gl-notes-<n>.json issue <n>'s notes, default none
@@ -13,6 +13,11 @@
 #   gl-repo.fail     reading the project by its path fails with the file's text
 #   gl-login         the account the token belongs to; unset, `api user` fails
 #   glab-tokens      the GITLAB_TOKEN of each call, one per line
+#   pr-<n>.state     MR <n>'s state as the fake gh writes it (OPEN, MERGED, CLOSED), default OPEN;
+#   pr-<n>.body, pr-<n>.head, pr-<n>.ref  its description, head commit and source branch, the last
+#   two defaulting to HEAD and the branch checked out where glab runs
+#   gl-mrs-<sha>.json the MRs GitLab links to commit <sha>, default none; gl-commit-mrs.fail makes
+#   that query fail
 #   gl-pipelines-green.json  the newest successful pipeline on main, default none
 #   a POST to projects/:id/issues files issue next-issue (default 100) by member 1; its
 #   description goes to created-<n>.body; gl-create.raw is what it prints instead
@@ -38,6 +43,7 @@ case "$1 $2" in
           [ -z "$line" ] && continue
           n=$(printf '%s' "$line" | sed -n 's/.*"iid": *\([0-9]*\).*/\1/p')
           touch "$d/labels-$n"
+          case "$path" in *state=opened*) [ "$(cat "$d/gl-state-$n" 2>/dev/null)" = closed ] && continue ;; esac
           [ -n "$want" ] && ! grep -qxF -- "$want" "$d/labels-$n" && continue
           ls=$(labels_of "$n"); ls=${ls//&/\\&}
           line=$(printf '%s' "$line" | sed "s/\"labels\":\[[^]]*\]/\"labels\":[$ls]/")
@@ -57,6 +63,20 @@ case "$1 $2" in
       "projects/:id") cat "$d/gl-project.json" 2>/dev/null || echo '{"default_branch":"main"}' ;;
       "projects/:id/repository/branches/"*)
         cat "$d/gl-branch.json" 2>/dev/null || printf '{"commit":{"id":"%s"}}\n' "$(git rev-parse HEAD)" ;;
+      "projects/:id/repository/commits/"*/merge_requests)
+        [ -f "$d/gl-commit-mrs.fail" ] && { echo "502 Bad Gateway" >&2; exit 1; }
+        sha=${path%/merge_requests}; sha=${sha##*/}
+        cat "$d/gl-mrs-$sha.json" 2>/dev/null || echo "[]"
+        ;;
+      "projects/:id/merge_requests/"*)
+        n=${path##*/}
+        st=$(cat "$d/pr-$n.state" 2>/dev/null || echo OPEN)
+        case "$st" in MERGED) st=merged ;; CLOSED) st=closed ;; *) st=opened ;; esac
+        hd=$(cat "$d/pr-$n.head" 2>/dev/null || git rev-parse HEAD 2>/dev/null)
+        ref=$(cat "$d/pr-$n.ref" 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null)
+        printf '{"iid":%s,"state":"%s","sha":"%s","source_branch":"%s","description":"%s"}\n' \
+          "$n" "$st" "$hd" "$ref" "$(cat "$d/pr-$n.body" 2>/dev/null)"
+        ;;
       "projects/:id/repository/commits/"*/statuses*) cat "$d/gl-statuses.json" 2>/dev/null || echo "[]" ;;
       "projects/:id/pipelines?"*) cat "$d/gl-pipelines-green.json" 2>/dev/null || echo "[]" ;;
       "projects/:id/jobs/"*/trace) echo "ERROR: Job failed: assert 1 == 2" ;;
