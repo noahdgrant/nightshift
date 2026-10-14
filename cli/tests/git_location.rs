@@ -194,3 +194,41 @@ fn the_unset_check_rejects_a_late_or_partial_unset() {
         assert!(err.contains(why), "{bad}: {err}");
     }
 }
+
+/// `Ok` when the first statement in the body of `fn main() -> ExitCode {` is the call to
+/// `clear_git_location_vars();`.
+fn main_clears_first(src: &str) -> Result<(), String> {
+    const HEAD: &str = "fn main() -> ExitCode {";
+    let start = src.find(HEAD).ok_or("no `fn main() -> ExitCode {`")? + HEAD.len();
+    let first = src[start..]
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with("//"))
+        .unwrap_or("");
+    if first == "clear_git_location_vars();" {
+        Ok(())
+    } else {
+        Err(format!("main's first statement is {first:?}"))
+    }
+}
+
+#[test]
+fn main_clears_the_git_location_variables_before_anything_else() {
+    let src = fs::read_to_string(repo_root().join("cli/src/main.rs")).unwrap();
+    assert_eq!(main_clears_first(&src), Ok(()));
+}
+
+#[test]
+fn the_main_check_rejects_a_late_or_missing_call() {
+    let ok =
+        "fn main() -> ExitCode {\n    clear_git_location_vars();\n    let cli = Cli::parse();\n}\n";
+    assert_eq!(main_clears_first(ok), Ok(()));
+    for bad in [
+        "fn main() -> ExitCode {\n    let cli = Cli::parse();\n    clear_git_location_vars();\n}\n",
+        "fn main() -> ExitCode {\n    let cli = Cli::parse();\n}\n",
+        "fn main() -> ExitCode {\n}\n",
+        "fn other() {}\n",
+    ] {
+        assert!(main_clears_first(bad).is_err(), "{bad}");
+    }
+}

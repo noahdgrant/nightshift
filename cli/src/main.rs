@@ -386,8 +386,9 @@ mod clear_git_location_tests {
             return;
         }
         let vars = crate::git::LOCATION_VARS;
-        std::env::set_var(vars[0], "/decoy");
-        std::env::set_var(vars[1], "");
+        for (i, v) in vars.iter().enumerate() {
+            std::env::set_var(v, if i % 2 == 0 { "/decoy" } else { "" });
+        }
         super::clear_git_location_vars();
         let left: Vec<_> = vars
             .iter()
