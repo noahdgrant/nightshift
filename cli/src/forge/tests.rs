@@ -556,7 +556,29 @@ fn creds_fit_host_compares_the_configured_host_with_the_origin_host() {
     ];
     for (forge, url, want) in cases {
         let o = origin_with(Some(url), forge.as_deref());
-        assert_eq!(o.creds_fit_host(ForgeKind::Github), want, "{forge:?} {url}");
+        assert_eq!(
+            o.creds_fit_env_host(ForgeKind::Github, None),
+            want,
+            "{forge:?} {url}"
+        );
     }
-    assert!(origin_with(None, Some(&unset)).creds_fit_host(ForgeKind::Github));
+    assert!(origin_with(None, Some(&unset)).creds_fit_env_host(ForgeKind::Github, None));
+}
+
+#[test]
+fn creds_fit_host_lets_the_environment_host_win_over_the_configured_one() {
+    let cfg = "token_env = \"T\"\nhost = \"ghe.example.com\"\n";
+    let on_env = |env: Option<&str>, url: &str| {
+        origin_with(Some(url), Some(cfg))
+            .creds_fit_env_host(ForgeKind::Github, env.map(String::from))
+    };
+    assert!(on_env(
+        Some("other.example.com"),
+        "https://other.example.com/o/r.git"
+    ));
+    assert!(!on_env(
+        Some("other.example.com"),
+        "https://ghe.example.com/o/r.git"
+    ));
+    assert!(on_env(Some(""), "https://ghe.example.com/o/r.git"));
 }

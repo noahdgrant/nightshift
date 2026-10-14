@@ -268,7 +268,8 @@ impl Env {
             .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
             .env_remove("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS")
             .env_remove("CLAUDE_CODE_DISABLE_AUTO_MEMORY")
-            .env_remove("GH_TOKEN");
+            .env_remove("GH_TOKEN")
+            .env_remove("GH_HOST");
         c
     }
 
@@ -6140,6 +6141,27 @@ fn factory_validate_applies_the_configured_token_to_an_origin_on_the_configured_
         e.gh_calls()
     );
     assert_eq!(e.tokens_seen(), ["default-tok"], "{}", e.gh_calls());
+}
+
+#[test]
+fn factory_validate_still_looks_up_the_owner_without_credentials_when_the_token_does_not_resolve() {
+    let e = github_owned_by(Some("User"));
+    e.config("[forge.github]\ntoken_env = \"UNSET_VAR\"\n");
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    let v = e.run(&["factory", "validate"], 0);
+    assert!(
+        e.gh_calls().contains("api repos/o/r --jq .owner.type"),
+        "{}",
+        e.gh_calls()
+    );
+    assert_eq!(e.tokens_seen(), [""], "{}", e.gh_calls());
+    let warnings = v["warnings"].as_array().unwrap();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("organisation-owned")),
+        "{v}"
+    );
 }
 
 #[test]
