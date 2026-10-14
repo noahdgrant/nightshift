@@ -589,21 +589,14 @@ fn git(dir: &Path, args: &[&str]) -> String {
 /// paths.
 const AFFECTED_ALWAYS: &[&str] = &["cargo test", "ns rules check --only ast-grep"];
 
-/// The cargo test step `scripts/ci-affected.sh` runs for paths that match `patterns` in
-/// `scripts/ci-affected.map`: the union of their entries' targets, in byte order.
-fn cargo_step(patterns: &[&str]) -> String {
-    let map = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci-affected.map");
-    let mut targets = std::collections::BTreeSet::new();
-    for line in fs::read_to_string(map).unwrap().lines() {
-        let words: Vec<_> = line.split_whitespace().collect();
-        if words.first().is_some_and(|p| patterns.contains(p)) {
-            targets.extend(words[1..].chunks(2).map(|c| c.join(" ")));
-        }
-    }
-    assert!(!targets.is_empty(), "no map entry for {patterns:?}");
-    let targets: Vec<_> = targets.into_iter().collect();
-    format!("cargo test {}", targets.join(" "))
-}
+/// The cargo test step `scripts/ci-affected.sh` runs for a change under `skills/`.
+const CARGO_SKILLS: &str = "cargo test --bin ns --test ci_local --test cli --test verify_sandbox";
+
+/// The cargo test step for a change under `rules/`, `docs/` or `evals/fixtures/py-inventory/`.
+const CARGO_RULES: &str = "cargo test --bin ns --test ci_local --test factory --test git_location --test rules_pack --test rules_pack_java --test test_tools";
+
+/// The cargo test step for a change under both `skills/` and `rules/`.
+const CARGO_SKILLS_RULES: &str = "cargo test --bin ns --test ci_local --test cli --test factory --test git_location --test rules_pack --test rules_pack_java --test test_tools --test verify_sandbox";
 
 /// `ci_affected_args` with no arguments.
 fn affected(repo: &Repo, files: Option<&str>, env: &[(&str, &str)]) -> Output {
@@ -635,8 +628,8 @@ fn ci_affected_runs_the_mapped_cargo_tests_and_the_tests_under_each_changed_path
         format!("{b_name} rule pack tests"),
     );
     let rules = AFFECTED_ALWAYS[1].to_owned();
-    let with = |patterns: &[&str], rest: &[&str]| -> Vec<String> {
-        [cargo_step(patterns), rules.clone()]
+    let with = |cargo: &str, rest: &[&str]| -> Vec<String> {
+        [cargo.to_owned(), rules.clone()]
             .into_iter()
             .chain(rest.iter().map(|s| s.to_string()))
             .collect()
@@ -649,26 +642,23 @@ fn ci_affected_runs_the_mapped_cargo_tests_and_the_tests_under_each_changed_path
         (Some(String::new()), vec![]),
         (
             Some("skills/ns-build/SKILL.md".to_owned()),
-            with(&["skills/*"], &[]),
+            with(CARGO_SKILLS, &[]),
         ),
         (
             Some(format!("rules/{a}x/y\nrules/{a}")),
-            with(&["rules/*"], &[]),
+            with(CARGO_RULES, &[]),
         ),
         (
             Some(format!(
                 "rules/{b}/src/a.ts\nrules/{a}/tests/test_x.py\ndocs/FACTORY.md"
             )),
-            with(&["rules/*", "docs/*"], &[&a_step, &b_step]),
+            with(CARGO_RULES, &[&a_step, &b_step]),
         ),
         (
             Some(format!(
                 "evals/fixtures/py-inventory/x.py\nrules/{b}/a.java"
             )),
-            with(
-                &["evals/fixtures/py-inventory/*", "rules/*"],
-                &[&b_step, "py-inventory fixture tests"],
-            ),
+            with(CARGO_RULES, &[&b_step, "py-inventory fixture tests"]),
         ),
         (
             Some("skills/ns-build/SKILL.md\ncli/src/main.rs".to_owned()),
@@ -749,7 +739,7 @@ fn ci_affected_cargo_test_runs_only_the_cargo_test_step() {
     for (files, want) in [
         (
             Some(format!("skills/x.md\nrules/{pack}/x")),
-            vec![cargo_step(&["skills/*", "rules/*"])],
+            vec![CARGO_SKILLS_RULES.to_owned()],
         ),
         (None, vec!["cargo test".to_owned()]),
         (Some("contrib/x".to_owned()), vec![]),
@@ -767,6 +757,9 @@ fn ci_affected_changed_says_whether_a_path_under_a_prefix_changed() {
     for (files, prefix, code) in [
         (Some("rules/rust/a.yml\ndocs/x.md"), "rules/rust/", 0),
         (Some("rules/rust/a.yml"), "rules/c/", 1),
+        (Some("docs/rules/c/x.md"), "rules/c/", 1),
+        (Some("rules/cx/a.yml"), "rules/c.", 1),
+        (Some("rules/c.x/a.yml"), "rules/c.", 0),
         (Some("rules/rust/a.yml\n../x"), "rules/c/", 0),
         (Some(""), "rules/c/", 1),
         (None, "rules/c/", 0),
@@ -809,10 +802,7 @@ fn ci_affected_stops_at_a_failing_step() {
     );
     assert_eq!(out.status.code(), Some(1));
     let step = format!("{a_name} rule pack tests");
-    assert_eq!(
-        steps(&out),
-        [&cargo_step(&["rules/*"]), AFFECTED_ALWAYS[1], &step]
-    );
+    assert_eq!(steps(&out), [CARGO_RULES, AFFECTED_ALWAYS[1], &step]);
     assert!(stderr(&out).contains(&format!("ci-affected: FAILED at step: {step}")));
 }
 
@@ -915,11 +905,7 @@ fn a_new_pack_needs_only_files_under_its_own_directory() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(
         steps(&out),
-        [
-            &cargo_step(&["rules/*"]),
-            AFFECTED_ALWAYS[1],
-            "Zed rule pack tests"
-        ]
+        [CARGO_RULES, AFFECTED_ALWAYS[1], "Zed rule pack tests"]
     );
     assert!(stderr(&out).contains("zz rule pack tests ran"));
 }
@@ -989,7 +975,7 @@ fn a_rules_directory_without_tests_run_sh_is_no_pack() {
     assert_eq!(steps(&out), fixed);
     let out = affected(&repo, Some("rules/x/y"), &[]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(steps(&out), [&cargo_step(&["rules/*"]), AFFECTED_ALWAYS[1]]);
+    assert_eq!(steps(&out), [CARGO_RULES, AFFECTED_ALWAYS[1]]);
     let out = affected(&repo, None, &[]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(

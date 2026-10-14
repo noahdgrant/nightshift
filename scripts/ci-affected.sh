@@ -42,7 +42,12 @@ while IFS= read -r f; do
 done <<<"$([ "$files" = all ] || printf '%s' "$files")"
 
 changed() {
-  [ "$files" = all ] || grep -q "^$1" <<<"$files"
+  [ "$files" = all ] && return 0
+  local f
+  while IFS= read -r f; do
+    [[ $f == "$1"* ]] && return 0
+  done <<<"$files"
+  return 1
 }
 
 if [ "$mode" = changed ]; then
