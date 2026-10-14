@@ -82,3 +82,34 @@ pub fn write_exe(path: &Path, contents: impl AsRef<[u8]>) {
     );
     fs::rename(&tmp, path).unwrap();
 }
+
+/// A command that re-runs the test `test` (a full path such as `stop::tests::probe`) alone in a
+/// process of its own, with `mark` set to `value`, so a probe that records a stop or replaces
+/// itself cannot disturb the other tests. The probe returns at once unless `mark` is set.
+pub fn probe_command(test: &str, mark: &str, value: &str) -> std::process::Command {
+    let mut probe = std::process::Command::new(std::env::current_exe().unwrap());
+    probe
+        .args(["--exact", test, "--test-threads=1", "--nocapture"])
+        .env(mark, value);
+    probe
+}
+
+/// Run `probe` and return its output, after asserting that it succeeded and ran the test.
+pub fn run_probe(mut probe: std::process::Command) -> std::process::Output {
+    let out = probe.output().unwrap();
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(out.status.success(), "{stdout}{stderr}");
+    assert!(
+        stdout.contains("1 passed"),
+        "the probe did not run: {stdout}"
+    );
+    out
+}
+
+/// [`probe_command`] run through [`run_probe`].
+pub fn probe(test: &str, mark: &str, value: &str) -> std::process::Output {
+    run_probe(probe_command(test, mark, value))
+}

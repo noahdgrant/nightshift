@@ -559,24 +559,13 @@ const SPAWN_MARK: &str = "NS_PROC_SPAWN_STDERR_PROBE";
 
 #[test]
 fn a_spawned_child_writes_its_stderr_to_the_parents() {
-    let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "proc::tests::spawn_stderr_probe",
-            "--test-threads=1",
-        ])
-        .env(SPAWN_MARK, "1")
-        .output()
-        .unwrap();
+    let out = crate::testutil::probe("proc::tests::spawn_stderr_probe", SPAWN_MARK, "1");
     let log = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "{log}");
-    assert!(log.contains("1 passed"), "the probe did not run: {log}");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("spawned-child-stderr\n"), "{err}");
     assert!(!log.contains("spawned-child-stderr"), "{log}");
 }
 
-/// Run by the test above in a process whose stderr it reads.
 #[test]
 fn spawn_stderr_probe() {
     if std::env::var_os(SPAWN_MARK).is_none() {
@@ -659,14 +648,7 @@ fn scrub_git_removes_every_git_location_variable() {
 const EXEC_MARK: &str = "NS_PROC_EXEC_PROBE";
 
 fn run_exec_probe(mode: &str, envs: &[(&str, &str)]) -> String {
-    let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "proc::tests::exec_probe",
-            "--test-threads=1",
-            "--nocapture",
-        ])
-        .env(EXEC_MARK, mode)
+    let out = crate::testutil::probe_command("proc::tests::exec_probe", EXEC_MARK, mode)
         .envs(envs.iter().copied())
         .output()
         .unwrap();
@@ -674,7 +656,6 @@ fn run_exec_probe(mode: &str, envs: &[(&str, &str)]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// Run by the exec tests below in a process of its own, since a successful exec replaces it.
 #[test]
 fn exec_probe() {
     let Ok(mode) = std::env::var(EXEC_MARK) else {

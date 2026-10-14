@@ -547,21 +547,9 @@ mod tests {
 
     #[test]
     fn a_stop_ends_a_logged_command_as_interrupted() {
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "watch::self_update::tests::stop_probe",
-                "--test-threads=1",
-            ])
-            .env(STOP_MARK, "1")
-            .output()
-            .unwrap();
-        let log = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "{log}");
-        assert!(log.contains("1 passed"), "the probe did not run: {log}");
+        crate::testutil::probe("watch::self_update::tests::stop_probe", STOP_MARK, "1");
     }
 
-    /// Run by the test above in a process of its own, since a stop request is never undone.
     #[test]
     fn stop_probe() {
         if std::env::var_os(STOP_MARK).is_none() {

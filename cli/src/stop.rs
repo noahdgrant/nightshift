@@ -226,23 +226,12 @@ mod tests {
     #[test]
     fn a_sigint_or_sigterm_inside_scoped_is_recorded_as_a_stop() {
         for (mode, sig) in [("int", libc::SIGINT), ("term", libc::SIGTERM)] {
-            let out = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "stop::tests::scoped_probe",
-                    "--test-threads=1",
-                    "--nocapture",
-                ])
-                .env(SCOPED_MARK, mode)
-                .output()
-                .unwrap();
+            let out = crate::testutil::probe("stop::tests::scoped_probe", SCOPED_MARK, mode);
             let log = String::from_utf8_lossy(&out.stdout);
-            assert!(out.status.success(), "{mode}: {log}");
             assert!(log.contains(&format!("requested={sig}\n")), "{mode}: {log}");
         }
     }
 
-    /// Run by the test above in a process of its own, since a stop request is never undone.
     #[test]
     fn scoped_probe() {
         let Ok(mode) = std::env::var(SCOPED_MARK) else {

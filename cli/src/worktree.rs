@@ -545,17 +545,9 @@ mod tests {
 
     #[test]
     fn a_stop_ends_setup_with_no_exit_code_and_skips_the_rest() {
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "worktree::tests::stop_probe", "--test-threads=1"])
-            .env(STOP_MARK, "1")
-            .output()
-            .unwrap();
-        let log = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "{log}");
-        assert!(log.contains("1 passed"), "the probe did not run: {log}");
+        crate::testutil::probe("worktree::tests::stop_probe", STOP_MARK, "1");
     }
 
-    /// Run by the test above in a process of its own, since a stop request is never undone.
     #[test]
     fn stop_probe() {
         if std::env::var_os(STOP_MARK).is_none() {
@@ -571,29 +563,21 @@ mod tests {
 
     const OUTPUT_MARK: &str = "NS_WORKTREE_SETUP_OUTPUT_PROBE";
 
-    #[test]
-    fn setup_output_goes_to_stderr_and_never_to_stdout() {
-        let mut probe = std::process::Command::new(std::env::current_exe().unwrap());
-        probe
-            .args([
-                "--exact",
-                "worktree::tests::output_probe",
-                "--test-threads=1",
-                "--nocapture",
-            ])
-            .env(OUTPUT_MARK, "1");
+    fn output_probe_run() -> std::process::Output {
+        let mut probe =
+            crate::testutil::probe_command("worktree::tests::output_probe", OUTPUT_MARK, "1");
         for v in crate::cpus::VARS {
             probe.env_remove(v);
         }
-        let out = probe.output().unwrap();
+        crate::testutil::run_probe(probe)
+    }
+
+    #[test]
+    fn setup_output_goes_to_stderr_and_never_to_stdout() {
+        let out = output_probe_run();
         let (stdout, stderr) = (
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr),
-        );
-        assert!(out.status.success(), "{stdout}{stderr}");
-        assert!(
-            stdout.contains("1 passed"),
-            "the probe did not run: {stdout}"
         );
         assert!(!stdout.contains("setup-says-out"), "{stdout}");
         assert!(stderr.contains("setup-says-out\n"), "{stderr}");
@@ -602,19 +586,7 @@ mod tests {
 
     #[test]
     fn a_setup_command_gets_the_unit_the_paths_and_the_cpu_settings() {
-        let mut probe = std::process::Command::new(std::env::current_exe().unwrap());
-        probe
-            .args([
-                "--exact",
-                "worktree::tests::output_probe",
-                "--test-threads=1",
-                "--nocapture",
-            ])
-            .env(OUTPUT_MARK, "1");
-        for v in crate::cpus::VARS {
-            probe.env_remove(v);
-        }
-        let out = probe.output().unwrap();
+        let out = output_probe_run();
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.contains("NS_UNIT=unit-x\n"), "{stderr}");
         assert!(stderr.contains("NS_WORKTREE=/tmp\n"), "{stderr}");
