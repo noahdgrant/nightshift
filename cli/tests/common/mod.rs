@@ -54,8 +54,39 @@ pub fn ns_path() -> PathBuf {
     assert_cmd::cargo::cargo_bin("ns")
 }
 
-/// Any program, run with the same bounds as [`ns`].
+/// The git location variables, `git::LOCATION_VARS` in the crate.
+pub const LOCATION_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+];
+
+/// Panic, naming each one set, when the test process holds a git location variable: a git
+/// child would act on the repo it names instead of the test's own (#120). A test that aims a
+/// child at one sets it on that child only.
+pub fn assert_no_git_location() {
+    let set: Vec<_> = LOCATION_VARS
+        .iter()
+        .filter(|v| std::env::var_os(v).is_some())
+        .collect();
+    assert!(
+        set.is_empty(),
+        "the test process has git location variables set: {set:?}; unset them before running the tests"
+    );
+}
+
+/// Any program, run with the same bounds as [`ns`]. Asserts [`assert_no_git_location`].
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the integration tests' bounded way to start a child; they cannot use crate::proc"
+)]
 pub fn command(program: impl AsRef<OsStr>) -> Ns {
+    assert_no_git_location();
     Ns {
         cmd: Command::new(program),
         stdin: Vec::new(),
@@ -86,6 +117,15 @@ impl Ns {
 
     pub fn env(&mut self, k: impl AsRef<OsStr>, v: impl AsRef<OsStr>) -> &mut Self {
         self.cmd.env(k, v);
+        self
+    }
+
+    pub fn envs<K, V>(&mut self, vars: impl IntoIterator<Item = (K, V)>) -> &mut Self
+    where
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        self.cmd.envs(vars);
         self
     }
 
@@ -321,6 +361,10 @@ struct Proc {
     pgid: u32,
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the integration tests' bounded way to start a child; they cannot use crate::proc"
+)]
 fn processes() -> Vec<Proc> {
     let ps = Command::new("ps")
         .args(["-A", "-o", "pid=,ppid=,pgid="])
@@ -446,6 +490,10 @@ pub fn exits(pid: &str) -> bool {
 /// fails with ETXTBSY ("Text file busy"). So `sh`, a process no test thread forks from, writes
 /// it under a temp name, which is renamed into place: a copy already running is replaced, not
 /// rewritten.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the integration tests' bounded way to start a child; they cannot use crate::proc"
+)]
 pub fn write_exe(path: &Path, contents: impl AsRef<[u8]>) {
     let dir = path.parent().unwrap();
     std::fs::create_dir_all(dir).unwrap();

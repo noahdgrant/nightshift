@@ -1,6 +1,11 @@
 //! The fakes `ns-supervise` eval cases run against (`evals/fakes/systemd/`), checked by their
 //! own `test.sh` so CI runs it.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
 use std::path::Path;
 use std::process::Command;
 

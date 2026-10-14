@@ -9,15 +9,20 @@ use anyhow::{Context, Result};
 
 use crate::billing;
 use crate::error::SfError;
-use crate::eval::trial::run_process;
 use crate::gate;
 use crate::memcap::{self, Cap};
+use crate::proc::Kind;
 
 /// A phase's timeout. `NS_PHASE_TIMEOUT_MS` overrides it: `<ms>` for every phase, or
 /// comma-separated `<phase>=<ms>` for the named phases only.
 pub(super) fn phase_timeout(phase: &str, minutes: u64) -> Duration {
     let var = std::env::var("NS_PHASE_TIMEOUT_MS").ok();
-    timeout_override(var.as_deref(), phase).unwrap_or_else(|| Duration::from_secs(minutes * 60))
+    timeout_or_minutes(var.as_deref(), phase, minutes)
+}
+
+/// The override for `phase` in `var`, else `minutes`.
+fn timeout_or_minutes(var: Option<&str>, phase: &str, minutes: u64) -> Duration {
+    timeout_override(var, phase).unwrap_or_else(|| Duration::from_secs(minutes * 60))
 }
 
 /// The override for `phase` in an `NS_PHASE_TIMEOUT_MS` value; a named entry beats a bare one.
@@ -90,29 +95,23 @@ pub(super) fn run_harness(
             return Err(not_found());
         }
     }
-    let (mut cmd, watch) = memcap::command(cap, &argv[0]);
-    crate::proc::scrub_git(&mut cmd);
+    let (mut cmd, watch) = memcap::command(cap, Kind::Harness { subscription }, &argv[0]);
     crate::cpus::apply(&mut cmd);
     cmd.args(&argv[1..])
         .current_dir(cwd)
-        .stdout(out)
-        .stderr(err);
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-    if subscription {
-        crate::proc::scrub_billing(&mut cmd, argv);
-    }
+        .output_to(out)
+        .stderr_to(err)
+        .envs(env.iter().map(|(k, v)| (k, v)));
     if billing::is_claude(argv) {
         billing::wait_for_bg_tasks(&mut cmd);
         billing::disable_auto_memory(&mut cmd);
     }
-    let (status, timed_out, wall_s) =
-        match run_process(cmd, Some(prompt.as_bytes().to_vec()), timeout) {
-            Ok(r) => r,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_found()),
-            Err(e) => return Err(e).with_context(|| format!("cannot start {}", argv[0])),
-        };
+    let ended = match cmd.stdin(prompt.as_bytes().to_vec()).timeout(timeout).run() {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_found()),
+        Err(e) => return Err(e).with_context(|| format!("cannot start {}", argv[0])),
+    };
+    let (status, timed_out) = (ended.status, ended.timed_out());
     let killed = watch
         .cut_short(status, timed_out, || {
             String::from_utf8_lossy(&gate::read_window(&stderr)).into_owned()
@@ -122,7 +121,7 @@ pub(super) fn run_harness(
         exit: status.and_then(|s| s.code()),
         timed_out,
         killed,
-        wall_s,
+        wall_s: ended.wall_s,
         stdout: fs::read_to_string(transcript).unwrap_or_default(),
     })
 }
@@ -266,5 +265,21 @@ mod tests {
         assert_eq!(ms(Some("build=1,5"), "build"), Some(1));
         assert_eq!(ms(Some("build=1,5"), "review"), Some(5));
         assert_eq!(ms(Some("build=abc,5"), "build"), Some(5));
+    }
+
+    #[test]
+    fn a_phase_timeout_without_an_override_is_its_minutes() {
+        assert_eq!(
+            timeout_or_minutes(None, "build", 2),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            timeout_or_minutes(Some("review=5"), "build", 2),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            timeout_or_minutes(Some("build=5"), "build", 2),
+            Duration::from_millis(5)
+        );
     }
 }

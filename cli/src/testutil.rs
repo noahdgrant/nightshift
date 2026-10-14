@@ -3,7 +3,22 @@ use std::path::{Path, PathBuf};
 
 use crate::git;
 
+/// Panic, naming each one set, when the test process holds a git location variable: a git
+/// child would act on the repo it names instead of the test's own (#120).
+pub fn assert_no_git_location() {
+    let set: Vec<_> = git::LOCATION_VARS
+        .iter()
+        .filter(|v| std::env::var_os(v).is_some())
+        .collect();
+    assert!(
+        set.is_empty(),
+        "the test process has git location variables set: {set:?}; unset them before running the tests"
+    );
+}
+
+/// `git` in `dir` as user `t`. Asserts [`assert_no_git_location`].
 pub fn g(dir: &Path, args: &[&str]) -> String {
+    assert_no_git_location();
     let mut a = vec!["-c", "user.name=t", "-c", "user.email=t@t"];
     a.extend_from_slice(args);
     git::run(dir, &a).unwrap()
@@ -57,28 +72,21 @@ pub fn rebased_unit() -> Rebased {
 /// it under a temp name, which is renamed into place. `tests/common` has the same helper for
 /// the integration tests.
 pub fn write_exe(path: &Path, contents: impl AsRef<[u8]>) {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
     let tmp = path.with_file_name(format!(
         ".{}.tmp",
         path.file_name().unwrap().to_string_lossy()
     ));
-    let mut sh = Command::new("sh")
+    let out = crate::proc::Proc::tool("sh")
         .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
         .arg(&tmp)
-        .stdin(Stdio::piped())
-        .spawn()
+        .stdin(contents.as_ref().to_vec())
+        .output()
         .unwrap();
-    sh.stdin
-        .take()
-        .unwrap()
-        .write_all(contents.as_ref())
-        .unwrap();
-    let status = sh.wait().unwrap();
     assert!(
-        status.success(),
-        "sh could not write {}: {status}",
-        tmp.display()
+        out.status.success(),
+        "sh could not write {}: {}",
+        tmp.display(),
+        String::from_utf8_lossy(&out.stderr)
     );
     fs::rename(&tmp, path).unwrap();
 }
@@ -86,6 +94,10 @@ pub fn write_exe(path: &Path, contents: impl AsRef<[u8]>) {
 /// A command that re-runs the test `test` (a full path such as `stop::tests::probe`) alone in a
 /// process of its own, with `mark` set to `value`, so a probe that records a stop or replaces
 /// itself cannot disturb the other tests. The probe returns at once unless `mark` is set.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a probe test spawns, signals and kills this process itself, which proc does not offer"
+)]
 pub fn probe_command(test: &str, mark: &str, value: &str) -> std::process::Command {
     let mut probe = std::process::Command::new(std::env::current_exe().unwrap());
     probe
@@ -124,4 +136,37 @@ pub fn fake_on_path(name: &str, body: &str) -> tempfile::TempDir {
     dirs.extend(std::env::split_paths(&path));
     std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
     dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MARK: &str = "NS_TEST_GIT_LOCATION_PROBE";
+
+    #[test]
+    fn g_probe() {
+        if std::env::var_os(MARK).is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        g(tmp.path(), &["init", "-q"]);
+    }
+
+    #[test]
+    fn g_panics_naming_each_git_location_variable_the_test_process_has() {
+        let mut probe = probe_command("testutil::tests::g_probe", MARK, "1");
+        probe.env("GIT_DIR", "/nonexistent").env("GIT_PREFIX", "");
+        let out = probe.output().unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!out.status.success(), "{text}");
+        assert!(
+            text.contains(r#"git location variables set: ["GIT_DIR", "GIT_PREFIX"]"#),
+            "{text}"
+        );
+    }
 }

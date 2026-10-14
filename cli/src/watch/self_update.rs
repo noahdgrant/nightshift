@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{triage, Tonight};
-use crate::eval::trial::run_process;
 use crate::gate::stderr_tail;
 use crate::git::{self, Repo};
 use crate::proc::Proc;
@@ -44,17 +43,18 @@ fn ceiling(default: Duration) -> Duration {
 /// Run `cmd` to its end with its output in `log`, or kill it and its process group when a stop
 /// is requested or `ceiling` passes (both errors). Files, not pipes, so a straggler in the group
 /// can't hold anything open. The exit status and the end of the log.
-fn run_bounded(mut cmd: Command, ceiling: Duration, log: &Path) -> Result<(ExitStatus, String)> {
+fn run_bounded(mut cmd: Proc, ceiling: Duration, log: &Path) -> Result<(ExitStatus, String)> {
     let out = File::create(log).with_context(|| format!("cannot create {}", log.display()))?;
-    cmd.stdout(out.try_clone()?).stderr(out);
-    match run_process(cmd, None, ceiling) {
+    match cmd.output_to(out).timeout(ceiling).run() {
         Err(e) if e.kind() == ErrorKind::Interrupted => bail!("stopped"),
         Err(e) => Err(e.into()),
-        Ok((Some(status), _, _)) => Ok((
-            status,
-            fs::read(log).map(|b| warning_tail(&b)).unwrap_or_default(),
-        )),
-        Ok((None, _, _)) => bail!("timed out after {}s", ceiling.as_secs_f32().round()),
+        Ok(ended) => match ended.status {
+            Some(status) => Ok((
+                status,
+                fs::read(log).map(|b| warning_tail(&b)).unwrap_or_default(),
+            )),
+            None => bail!("timed out after {}s", ceiling.as_secs_f32().round()),
+        },
     }
 }
 
@@ -370,7 +370,7 @@ impl SelfUpdate {
     /// `--version` names `to`, and `watch --dry-run` takes the arguments the exec will give it.
     fn check(&self, staged: &Path, to: &str, state: &Path) -> Result<()> {
         let log = staged.with_extension("log");
-        let mut version = Command::new(staged);
+        let mut version = Proc::tool(staged);
         version.arg("--version");
         let (status, said) = run_bounded(version, ceiling(CHECK_CEILING), &log)
             .with_context(|| format!("{} --version", staged.display()))?;
@@ -381,7 +381,7 @@ impl SelfUpdate {
         // can't read fails the check here, not after the exec.
         let probe = staged.with_extension("night.json");
         fs::copy(state, &probe).with_context(|| format!("cannot copy {}", state.display()))?;
-        let mut dry = Command::new(staged);
+        let mut dry = Proc::tool(staged);
         dry.args(args_for(self.args.iter().cloned(), &probe));
         if !self.args.iter().any(|a| a == "--dry-run") {
             dry.arg("--dry-run");
@@ -408,8 +408,9 @@ impl StateFile {
     }
 }
 
-/// Extract `cli/` at `to` and start `cargo build` on it in its own process group, its output in
-/// `<common>/ns/self-update/build.log`.
+/// Extract `cli/` at `to` and start `cargo build` on it in its own session and process group,
+/// its output in `<common>/ns/self-update/build.log`. The caller polls it and enforces the
+/// ceiling.
 fn spawn_build(repo: &Repo, to: &str) -> Result<(Child, PathBuf)> {
     let stage = repo.common_dir.join("ns/self-update");
     let src = stage.join("src");
@@ -418,22 +419,15 @@ fn spawn_build(repo: &Repo, to: &str) -> Result<(Child, PathBuf)> {
     extract(&repo.root, to, &src)?;
     let log = stage.join("build.log");
     let out = File::create(&log).with_context(|| format!("cannot create {}", log.display()))?;
-    let mut cargo = Command::new("cargo");
-    cargo
+    let child = Proc::tool("cargo")
         .args(["build", "--release", "--locked", "--manifest-path"])
         .arg(src.join("cli/Cargo.toml"))
         .arg("--target-dir")
         .arg(stage.join("target"))
         .env("NS_BUILD_COMMIT", to)
-        .stdin(Stdio::null())
-        .stdout(out.try_clone()?)
-        .stderr(out);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cargo.process_group(0);
-    }
-    let child = cargo.spawn().context("cannot run cargo build")?;
+        .stderr_to(out.try_clone()?)
+        .spawn(out)
+        .context("cannot run cargo build")?;
     Ok((child, log))
 }
 
@@ -718,7 +712,7 @@ mod tests {
     #[test]
     fn a_command_that_outlives_its_ceiling_is_killed() {
         let dir = tempfile::tempdir().unwrap();
-        let mut slow = Command::new("sh");
+        let mut slow = Proc::tool("sh");
         slow.args(["-c", "sleep 300"]);
         let start = std::time::Instant::now();
         let e = run_bounded(slow, Duration::from_millis(200), &dir.path().join("log")).unwrap_err();
@@ -729,7 +723,7 @@ mod tests {
     #[test]
     fn a_command_that_ends_is_not_held_by_a_straggler_in_its_group() {
         let dir = tempfile::tempdir().unwrap();
-        let mut quick = Command::new("sh");
+        let mut quick = Proc::tool("sh");
         quick.args(["-c", "echo out; echo err >&2; (sleep 300 &); exit 3"]);
         let start = std::time::Instant::now();
         let (status, said) =
@@ -740,30 +734,6 @@ mod tests {
             start.elapsed() < Duration::from_secs(120),
             "waited on a straggler"
         );
-    }
-
-    #[test]
-    fn exec_holds_a_stop_pending_through_to_the_new_program() {
-        use std::os::unix::process::CommandExt;
-        let mut cmd = Command::new("grep");
-        cmd.args(["-E", "^(SigBlk|SigPnd|ShdPnd)", "/proc/self/status"]);
-        // SAFETY: only pthread_sigmask(3) and kill(2) in the closure.
-        unsafe {
-            cmd.pre_exec(|| {
-                stop::block();
-                libc::kill(libc::getpid(), libc::SIGTERM);
-                Ok(())
-            });
-        }
-        let out = cmd.output().unwrap();
-        let text = String::from_utf8_lossy(&out.stdout);
-        let mask = |key: &str| {
-            let line = text.lines().find(|l| l.starts_with(key)).unwrap();
-            u64::from_str_radix(line.split_whitespace().nth(1).unwrap(), 16).unwrap()
-        };
-        let (int, term) = (1 << (libc::SIGINT - 1), 1 << (libc::SIGTERM - 1));
-        assert_eq!(mask("SigBlk") & (int | term), int | term, "{text}");
-        assert_eq!((mask("SigPnd") | mask("ShdPnd")) & term, term, "{text}");
     }
 
     fn sigpipe_ignored() -> bool {

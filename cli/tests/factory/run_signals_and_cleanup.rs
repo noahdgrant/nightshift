@@ -674,11 +674,12 @@ fn clean_keeps_a_unit_whose_run_starts_after_the_plan() {
     let a = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
     let b = unit_with_pr(&e, 4, "4-done", 40, "CLOSED", "MERGED");
     // Reading one unit's PR starts a run on the other: whichever is read second was planned
-    // with its lock free, and must find it taken when it is checked again.
+    // with its lock free, and must find it taken when it is checked again. The run starts in a
+    // session of its own, as a real one does, so it outlives gh's process group.
     let lock = |unit: &str| e.root.join(format!(".git/ns-run-{unit}.lock"));
     let start = |unit: &str| {
         format!(
-            "( flock {0} sleep 30 >/dev/null 2>&1 & ); until ! flock -n {0} true; do sleep 0.01; done",
+            "( setsid flock {0} sleep 30 >/dev/null 2>&1 & ); until ! flock -n {0} true; do sleep 0.01; done",
             lock(unit).display()
         )
     };

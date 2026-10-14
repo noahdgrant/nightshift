@@ -385,4 +385,40 @@ mod tests {
         let s = Scratch::add(&wt, &common, "9-x", &head).unwrap();
         assert!(s.path.join("f.c").is_file());
     }
+
+    /// Build triggers the gate on a pass or no artifact, and never otherwise; a later phase
+    /// triggers it by moving HEAD, except ship under `build-only`.
+    #[test]
+    fn gate_trigger_maps_each_phase_outcome() {
+        use gate::Trigger::*;
+        let art = |status: &str| Art {
+            status: status.into(),
+            ..Default::default()
+        };
+        let (pass, fail) = (art("pass"), art("fail"));
+        let every = LocalGate::EveryStep;
+        assert_eq!(
+            gate_trigger("build", Some(&pass), false, every),
+            Some(BuildPassed)
+        );
+        assert_eq!(gate_trigger("build", Some(&fail), false, every), None);
+        assert_eq!(gate_trigger("build", Some(&fail), true, every), None);
+        assert_eq!(
+            gate_trigger("build", None, false, every),
+            Some(BuildWroteNothing)
+        );
+        assert_eq!(
+            gate_trigger("verify", Some(&pass), true, every),
+            Some(PhaseMovedHead)
+        );
+        assert_eq!(gate_trigger("verify", Some(&pass), false, every), None);
+        assert_eq!(
+            gate_trigger("ship", Some(&pass), true, every),
+            Some(PhaseMovedHead)
+        );
+        assert_eq!(
+            gate_trigger("ship", Some(&pass), true, LocalGate::BuildOnly),
+            None
+        );
+    }
 }

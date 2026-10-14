@@ -1,6 +1,11 @@
 //! `scripts/ci-local.sh`, run in a temp repo against stub `cargo`, `ns`, `python3`, `python`
 //! and the tools `scripts/ci-tools.d/` pins, checked by the real `scripts/ci-tools.sh`.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
 #[path = "ci_local/affected_rules.rs"]
 mod affected_rules;
 #[path = "ci_local/cache.rs"]
@@ -20,7 +25,6 @@ const BEFORE_PACKS: &[&str] = &[
     "cargo fmt --check",
     "cargo clippy",
     "cargo test",
-    "cargo test under a decoy GIT_DIR",
     "build ns",
     "ns lint",
     "ns lint .agents/skills",
@@ -209,7 +213,6 @@ impl Repo {
             );
         }
         write_exe(&root.join("scripts/check-private.sh"), "#!/bin/sh\n");
-        write_exe(&root.join("scripts/check-git-dir-decoy.sh"), SCRIPT);
         write_exe(&root.join("scripts/check-verify-recipes.sh"), SCRIPT);
         write_exe(&root.join("cli/target/debug/ns"), NS);
         write_exe(&root.join("bin/cargo"), CARGO);
@@ -336,7 +339,8 @@ fn every_step_runs_in_order_and_the_run_passes() {
     assert!(!stderr(&out).contains("python ran in py-no-checker"));
     assert!(packs().len() >= 2, "{:?}", packs());
     for (pack, _) in packs() {
-        assert!(stderr(&out).contains(&format!("{pack} rule pack tests ran")));
+        let ran = format!("{pack} rule pack tests ran\n");
+        assert_eq!(stderr(&out).matches(&ran).count(), 1, "{}", stderr(&out));
     }
     assert!(stderr(&out).contains("ci-local: all checks passed"));
 }
@@ -345,7 +349,6 @@ fn every_step_runs_in_order_and_the_run_passes() {
 fn a_failing_step_stops_the_run() {
     let fixed = [
         ("cargo clippy", "cargo clippy"),
-        ("decoy", "cargo test under a decoy GIT_DIR"),
         ("pytest ran", "py-inventory fixture tests"),
         ("lint .agents/skills", "ns lint .agents/skills"),
         ("recipes", "verify-nightshift Launch and Doctor recipes"),
