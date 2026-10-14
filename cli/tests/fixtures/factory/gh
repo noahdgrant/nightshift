@@ -60,9 +60,12 @@ case "$1 $2" in
     [ "$c" -gt "$(cat "$d/register.after" 2>/dev/null || echo 0)" ] && echo 1 || echo 0
     ;;
   "api graphql")
-    # main-ci.json: the answer to ns watch's query for main's CI; unset, a head with no CI.
+    # main-ci.json: the answer to the query for main's CI; unset, a head with no CI.
+    # main-ci-<c>.json: the answer to the c-th query, when it exists.
     if [ -f "$d/main-ci.fail" ]; then cat "$d/main-ci.fail" >&2; exit 1; fi
-    cat "$d/main-ci.json" 2>/dev/null || printf '{"data":{"repository":{"defaultBranchRef":{"rules":{"nodes":[]},"target":{"oid":"%s","statusCheckRollup":null}}}}}\n' "$(git rev-parse HEAD 2>/dev/null)"
+    c=$(( $(cat "$d/main-ci.count" 2>/dev/null || echo 0) + 1 ))
+    echo $c > "$d/main-ci.count"
+    cat "$d/main-ci-$c.json" 2>/dev/null || cat "$d/main-ci.json" 2>/dev/null || printf '{"data":{"repository":{"defaultBranchRef":{"rules":{"nodes":[]},"target":{"oid":"%s","statusCheckRollup":null}}}}}\n' "$(git rev-parse HEAD 2>/dev/null)"
     ;;
   "api repos/"*/pulls)
     # pulls-<sha>.json: the PRs GitHub links to commit <sha>; pulls.fail makes the query fail.

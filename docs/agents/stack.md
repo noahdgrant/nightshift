@@ -48,9 +48,9 @@ Timings for `test (all)`, `ci-local` and `ci-affected` were measured on 2026-10-
 
 ## Unit size
 
-unit size: soft 400
+unit size: soft 400, split 1200
 
-See `ns-contract` (unit size).
+The split threshold comes from `.git/ns/runs.jsonl` and the merged PRs: 120 units through 2026-10-14, timed from the unit's start to its merge. Median lead time stays between 50 and 70 minutes up to 1,200 changed lines, and jumps to 318 minutes past it (#647). See `ns-contract` (unit size).
 
 ## Gotchas
 

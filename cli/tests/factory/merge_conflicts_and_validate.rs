@@ -177,6 +177,12 @@ const WORKFLOW_REFUSAL: &str = "GraphQL: refusing to allow an OAuth App to creat
 /// for the workflow scope.
 fn workflow_refused(land: &str, after: &str) -> (Env, Value, i32) {
     let e = Env::new();
+    // The build and every `land` change shared.txt, so the PR always overlaps main.
+    fs::write(e.root.join("shared.txt"), SHARED).unwrap();
+    git(&e.root, &["add", "shared.txt"]);
+    git(&e.root, &["commit", "-q", "-m", "shared"]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+    e.ctl("edit", EDIT_BOTH);
     e.factory(AUTO);
     e.ctl("pr", "12");
     e.queue("build", &["pass:commit", "pass:commit"]);
@@ -190,7 +196,7 @@ git push -q -f origin HEAD
 o="$FAKE_CTRL/other"
 if [ ! -d "$o" ]; then
   git clone -q "$(git remote get-url origin)" "$o"
-  (cd "$o" && {land} && git push -q origin main)
+  (cd "$o" && {land} && sed -i 6s/.*/main/ shared.txt && git add shared.txt && $c commit -qm shared && git push -q origin main)
 fi
 {after}"#
         ),

@@ -808,6 +808,20 @@ fn move_main_sh(e: &Env) -> String {
     )
 }
 
+/// Like [`move_main_sh`], but the new commit on main also sets `work.txt`, a file the fake
+/// build changes, so a PR behind it overlaps it.
+fn move_main_in_work_sh(e: &Env) -> String {
+    let r = e.base.join("remote.git");
+    format!(
+        "r={r:?}; i=$(mktemp -u); b=$(echo main | git --git-dir=\"$r\" hash-object -w --stdin) \
+         && GIT_INDEX_FILE=$i git --git-dir=\"$r\" read-tree main \
+         && GIT_INDEX_FILE=$i git --git-dir=\"$r\" update-index --add --cacheinfo \"100644,$b,work.txt\" \
+         && t=$(GIT_INDEX_FILE=$i git --git-dir=\"$r\" write-tree) && rm -f \"$i\" \
+         && c=$(git --git-dir=\"$r\" commit-tree \"$t\" -p main -m other) && git --git-dir=\"$r\" update-ref refs/heads/main \"$c\"",
+        r = r.display()
+    )
+}
+
 fn remote_main(e: &Env) -> String {
     git(&e.base.join("remote.git"), &["rev-parse", "main"])
 }

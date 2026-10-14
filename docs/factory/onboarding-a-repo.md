@@ -60,7 +60,7 @@ setup = ["git config core.hooksPath .githooks"]
 human_review = [".github/**", ".githooks/**", "scripts/ci-local.sh", ".nightshift/**"]
 ```
 
-`[worktree] setup` makes every unit worktree run the hook too. The file leaves `[gate] local` unset, which means `every-step`, with the local merge queue ([merge.md](merge.md#local-merge-queue)). Keep it that way on a repo owned by a personal account: `build-only` hands the merge to GitHub's merge queue, which only an organisation-owned repo has. `merge.policy` stays unset, which means `human`: every unit ends at an open PR for you to merge. Turn on `policy = "auto"` only after a few nights of PRs you would have merged as they were. [`docs/FACTORY.md`](../FACTORY.md) lists every other key and its default.
+`[worktree] setup` makes every unit worktree run the hook too. The file leaves `[gate] local` unset, which means `every-step`, with the local merge queue ([merge.md](merge.md#local-merge-queue)). Keep it that way on a repo owned by a personal account unless its CPU is short: `build-only` hands the merge test to GitHub, and with no GitHub merge queue, which only an organisation-owned repo has, the merge step tests the PR head and updates it only when the default branch changed one of its files ([merge.md](merge.md#github-merge-queue)). `merge.policy` stays unset, which means `human`: every unit ends at an open PR for you to merge. Turn on `policy = "auto"` only after a few nights of PRs you would have merged as they were. [`docs/FACTORY.md`](../FACTORY.md) lists every other key and its default.
 
 Commit `docs/agents/`, the hook, the rule pack and `.nightshift/` together and push them to the default branch. Each unit's worktree is cut from `origin`, so a phase sees only what you pushed.
 
