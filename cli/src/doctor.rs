@@ -305,13 +305,7 @@ fn keepalive_entry() -> (Value, Option<String>) {
 
 /// Whether `ssh -G` resolves a `ServerAliveInterval` above 0 for `t`. It reads the config only.
 fn ssh_config_keepalive(t: &forge::SshTarget) -> bool {
-    let mut cmd = Proc::tool("ssh");
-    cmd.arg("-G");
-    if let Some(p) = &t.port {
-        cmd.args(["-p", p]);
-    }
-    cmd.arg("--").arg(&t.dest);
-    let Ok(out) = cmd.timeout(forge::PROBE_TIMEOUT).until_stop().output() else {
+    let Ok(out) = ssh_config(t) else {
         return false;
     };
     out.status.success()
@@ -320,6 +314,16 @@ fn ssh_config_keepalive(t: &forge::SshTarget) -> bool {
                 .and_then(|v| v.trim().parse::<u64>().ok())
                 .is_some_and(|v| v > 0)
         })
+}
+
+fn ssh_config(t: &forge::SshTarget) -> std::io::Result<std::process::Output> {
+    let mut cmd = Proc::tool("ssh");
+    cmd.arg("-G");
+    if let Some(p) = &t.port {
+        cmd.args(["-p", p]);
+    }
+    cmd.arg("--").arg(&t.dest);
+    cmd.timeout(forge::PROBE_TIMEOUT).until_stop().output()
 }
 
 /// `[queue] source` from the current repo's factory file, when it has one that loads.
@@ -416,19 +420,27 @@ fn ssh_account(t: &forge::SshTarget) -> Option<String> {
 }
 
 fn ssh_account_within(program: &OsStr, t: &forge::SshTarget, limit: Duration) -> Option<String> {
-    let mut cmd = Proc::tool(program);
-    cmd.args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
-    if let Some(p) = &t.port {
-        cmd.args(["-p", p]);
-    }
-    cmd.arg("--").arg(&t.dest);
-    let out = cmd.timeout(limit).until_stop().output().ok()?;
+    let out = ssh_greeting(program, t, limit).ok()?;
     let text = format!(
         "{}\n{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
     greeted(&text)
+}
+
+fn ssh_greeting(
+    program: &OsStr,
+    t: &forge::SshTarget,
+    limit: Duration,
+) -> std::io::Result<std::process::Output> {
+    let mut cmd = Proc::tool(program);
+    cmd.args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
+    if let Some(p) = &t.port {
+        cmd.args(["-p", p]);
+    }
+    cmd.arg("--").arg(&t.dest);
+    cmd.timeout(limit).until_stop().output()
 }
 
 fn greeted(text: &str) -> Option<String> {
@@ -444,7 +456,9 @@ fn greeted(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{greeted, ssh_account, ssh_account_within, ssh_config_keepalive};
+    use super::{
+        greeted, ssh_account, ssh_account_within, ssh_config, ssh_config_keepalive, ssh_greeting,
+    };
     use crate::forge::SshTarget;
     use std::process::Command;
     use std::time::{Duration, Instant};
@@ -493,6 +507,10 @@ mod tests {
         crate::stop::request(libc::SIGTERM);
         assert!(!ssh_config_keepalive(&t));
         assert_eq!(ssh_account(&t), None);
+        let kind = |r: std::io::Result<std::process::Output>| r.unwrap_err().kind();
+        assert_eq!(kind(ssh_config(&t)), std::io::ErrorKind::Interrupted);
+        let greeting = ssh_greeting(std::ffi::OsStr::new("ssh"), &t, crate::forge::PROBE_TIMEOUT);
+        assert_eq!(kind(greeting), std::io::ErrorKind::Interrupted);
     }
 
     #[test]

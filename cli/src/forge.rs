@@ -412,12 +412,7 @@ fn timed_out(limit: Duration) -> String {
 
 /// The login of the account the token belongs to, from the forge's API.
 pub fn account(kind: ForgeKind, creds: Option<&Credentials>) -> Option<String> {
-    let mut cmd = cli(OsStr::new(kind.cli()), kind, creds, PROBE_TIMEOUT);
-    match kind {
-        ForgeKind::Github => cmd.args(["api", "user", "--jq", ".login"]),
-        ForgeKind::Gitlab => cmd.args(["api", "user"]),
-    };
-    let out = cmd.output().ok()?;
+    let out = account_output(kind, creds).ok()?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let login = match kind {
         ForgeKind::Github => text,
@@ -428,6 +423,18 @@ pub fn account(kind: ForgeKind, creds: Option<&Credentials>) -> Option<String> {
             .to_string(),
     };
     (out.status.success() && !login.is_empty()).then_some(login)
+}
+
+fn account_output(
+    kind: ForgeKind,
+    creds: Option<&Credentials>,
+) -> std::io::Result<std::process::Output> {
+    let mut cmd = cli(OsStr::new(kind.cli()), kind, creds, PROBE_TIMEOUT);
+    match kind {
+        ForgeKind::Github => cmd.args(["api", "user", "--jq", ".login"]),
+        ForgeKind::Gitlab => cmd.args(["api", "user"]),
+    };
+    cmd.output()
 }
 
 /// Whether the token can read `repo`: `gh api repos/<repo>` or `glab api projects/<repo>`. The
@@ -608,6 +615,8 @@ mod tests {
         let _gh = crate::testutil::fake_on_path("gh", "exec sleep 600");
         crate::stop::request(libc::SIGTERM);
         assert_eq!(account(ForgeKind::Github, None), None);
+        let e = account_output(ForgeKind::Github, None).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::Interrupted, "{e}");
     }
 
     #[test]
