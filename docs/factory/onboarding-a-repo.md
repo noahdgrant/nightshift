@@ -113,7 +113,7 @@ It worked when the run prints `"outcome": "done"` with a `pr`, and the PR's chec
 
 ## 7. Run a short `ns watch`
 
-Mark two or three small issues `status:ready-for-agent`, or run `ns-triage` on them and let it label them. Check the queue:
+Mark two or three small issues `status:ready-for-agent`, or run `ns-triage` on them in a session and let it label them (under `ns watch`, the triage pass labels them from its outcome). Check the queue:
 
 ```bash
 ns watch --dry-run

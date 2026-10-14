@@ -1,4 +1,4 @@
-description = "The bug from bug-ready-for-agent, triaged by `ns watch`'s triage pass: the prompt carries the `Triage only` line and ns-build is installed. Triage should mark it ready-for-agent, write brief.md, and stop without handing off to ns-build, so the source stays untouched (#98)."
+description = "The bug from bug-ready-for-agent, triaged by `ns watch`'s triage pass: the prompt carries the `Triage only` line and ns-build is installed. Triage should write brief.md with `next: build`, leave the issue's state for ns to set (the skill writes no status label under ns), and stop without handing off to ns-build, so the source stays untouched (#98)."
 fixture = "py-inventory"
 skills = ["ns-triage"]
 # ns-build and ns-tdd are installed on purpose: without the Triage only rule, gates: auto would
@@ -15,10 +15,17 @@ Triage only: `ns watch` is triaging this issue between units. Apply the outcome,
 """
 
 [[check]]
+# Under ns the skill writes no state: ns sets it from brief.md's next.
 type = "regex"
 path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
-pattern = '(?m)^\**Status:?\**:?\s*`?ready-for-agent`?\s*$'
+pattern = '(?m)^\**Status:?\**:?\s*`?needs-triage`?\s*$'
 present = true
+
+[[check]]
+type = "regex"
+path = ".scratch/reservations/issues/01-full-quantity-reservation-rejected.md"
+pattern = '(?m)^\**Status:?\**:?.*(ready-for-agent|ready-for-human|needs-define)'
+present = false
 
 [[check]]
 type = "regex"
@@ -36,10 +43,12 @@ roots = {os.getcwd()}
 out = subprocess.run(["git", "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
 roots.update(l.split(" ", 1)[1] for l in out.splitlines() if l.startswith("worktree "))
 roots.update(glob.glob(os.path.join("..", os.path.basename(os.getcwd()) + ".worktrees", "01-*")))
+import re
 briefs = [p for r in roots for p in glob.glob(os.path.join(r, ".ns", "01-*", "brief.md"))]
 builds = [p for r in roots for p in glob.glob(os.path.join(r, ".ns", "01-*", "build.md"))]
-print(f"briefs={briefs} builds={builds}")
-sys.exit(0 if briefs and not builds else 1)
+nexts = [re.findall(r"(?m)^next:[ \t]*['\"]?(\w+)", open(p, encoding="utf-8").read().split("\n---\n")[0]) for p in briefs]
+print(f"briefs={briefs} builds={builds} next={nexts}")
+sys.exit(0 if briefs and not builds and ["build"] in nexts else 1)
 PYEOF
 '''
 expect_exit = 0

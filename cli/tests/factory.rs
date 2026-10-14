@@ -7840,6 +7840,8 @@ fn split_parents(e: &Env) {
 fn watch_closes_split_parents_whose_children_are_done_and_sweeps_once() {
     let e = Env::new();
     split_parents(&e);
+    // The fake still lists closed #5, now with no state: its triage writes no brief.
+    e.queue("triage", &["none"]);
     let v = e.run(&["watch", "--once"], 0);
     let calls = e.gh_calls();
     assert!(
@@ -10177,7 +10179,8 @@ fn a_triage_run_that_errors_is_recorded_and_the_night_goes_on() {
 fn a_triage_only_run_triages_again_over_an_earlier_brief() {
     let e = Env::new();
     e.untriaged(5, "Escape", &["status:needs-triage"]);
-    e.queue("triage", &["pass", "none"]);
+    // A brief that routes nowhere leaves the issue untriaged.
+    e.queue("triage", &["fail", "none"]);
     e.run(&["watch"], 0);
     // The next night the issue is still untriaged, and its worktree holds the first brief.
     let v = e.run(&["watch"], 0);
@@ -12189,6 +12192,7 @@ fn no_refill_while_every_slot_is_busy_or_no_claim_may_start() {
         let e = Env::new();
         // A second ready issue: the night's first fill meets `--max-units`, before unit 2 builds.
         e.ready(3, "Fix b", &["type:fix"], "");
+        e.queue("triage.5-fix-e", &["none"]);
         let (in_a, go_a) = hold_phase(&e, A, "build");
         let w = a_long_unit_beside_the_backlog(&e, 100, args);
         w.entered(&in_a);
@@ -14259,6 +14263,7 @@ fn a_codex_night_drains_before_it_syncs_a_skill_change() {
     two_ready(&e);
     e.ready(4, "Fix c", &["type:fix"], "");
     e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
+    e.queue("triage.5-fix-e", &["none"]);
     let (in_a, go_a) = hold_phase(&e, A, "build");
     let (in_b, go_b) = hold_phase(&e, B, "build");
     let mut w =
@@ -15459,4 +15464,76 @@ fn a_ready_issue_that_overlaps_a_running_unit_waits_for_it_to_end() {
         (&json!(3), &json!(["2-fix-a"]))
     );
     assert!(events_named(&e, "overlap_forced").is_empty());
+}
+
+#[test]
+fn a_triage_only_split_moves_the_parent_to_split_and_closes_it_once_its_children_are_done() {
+    let e = Env::new();
+    e.untriaged(5, "Big", &["status:needs-triage", "type:feat"]);
+    e.gh_file("subs-5", "8\n9\n");
+    e.issue(8, "Child a", "OPEN");
+    e.issue(9, "Child b", "OPEN");
+    e.queue("triage", &["split:into #8 and #9."]);
+    let v = e.run(&["watch"], 0);
+    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
+    // ns, not the skill, moved the parent off the triage label to its own split label.
+    assert_eq!(e.labels(5), ["type:feat", "status:split"]);
+    assert_eq!(v["triaged"][0]["state"], json!(["status:split"]), "{v}");
+    assert!(units(&v).is_empty(), "{v}");
+    // Once both children close as completed, the next night closes the parent (#409).
+    e.issue(8, "Child a", "CLOSED");
+    e.issue(9, "Child b", "CLOSED");
+    // The fake still lists the closed parent, with no state: its triage writes no brief.
+    e.queue("triage", &["none"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert!(
+        e.gh_calls().contains("issue close 5 --reason completed"),
+        "{v}"
+    );
+    assert_eq!(e.labels(5), ["type:feat"]);
+}
+
+#[test]
+fn a_triage_brief_routes_by_its_next_and_its_status_and_ns_writes_the_label() {
+    for (front, status, want) in [
+        ("next: define\n", "pass", "status:needs-define"),
+        ("next: troubleshoot\n", "blocked", "status:needs-repro"),
+        ("next: human\n", "pass", "status:ready-for-human"),
+        ("next: info\n", "blocked", "status:needs-info"),
+        ("", "blocked", "status:needs-define"),
+    ] {
+        let e = Env::new();
+        e.untriaged(5, "Unclear", &["status:needs-triage", "type:fix"]);
+        e.ctl("triage.front", front);
+        e.queue("triage", &[status]);
+        let v = e.run(&["watch"], 0);
+        assert_eq!(e.labels(5), ["type:fix", want], "{front:?} {status}: {v}");
+        assert!(units(&v).is_empty(), "{v}");
+    }
+    // `pass` with no `next:` is ready: the queue starts it the same night.
+    let e = Env::new();
+    e.untriaged(5, "Clear", &["status:needs-triage", "type:fix"]);
+    e.queue("triage", &["pass", "pass"]);
+    let v = e.run(&["watch"], 0);
+    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
+    assert_eq!(by_issue(&units(&v)), each(&[5], "done"), "{v}");
+}
+
+#[test]
+fn a_triage_brief_that_routes_nowhere_leaves_the_labels_and_says_why() {
+    let e = Env::new();
+    e.untriaged(5, "Unclear", &["status:needs-triage"]);
+    e.ctl("triage.front", "next: ship\n");
+    let out = e.ns().args(["watch"]).assert().code(0).get_output().clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("ns watch: triage #5 left its labels: brief.md says next: ship"),
+        "{err}"
+    );
+    assert_eq!(
+        v["triaged"][0]["label_error"], "brief.md says next: ship",
+        "{v}"
+    );
+    assert_eq!(e.labels(5), ["status:needs-triage"]);
 }

@@ -21,10 +21,10 @@ use self::child::{signal, spawn, stop_signal, SIGTERM};
 use self::red::Gate;
 use super::self_update::{probe_state, Built, HandOff, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
+use super::transitions::{self, Event, State};
 use super::{
-    ended_cleanly, fix_main::Fix, fresh_base, open_findings, queue, set_status, skills_drain,
-    split, sync_skills, triage, Forge, Issue, Night, Post, Tonight, HARNESS_FAIL_LIMIT,
-    PAUSED_PAST_UNTIL,
+    ended_cleanly, fix_main::Fix, fresh_base, open_findings, queue, skills_drain, split,
+    sync_skills, triage, Forge, Issue, Night, Post, Tonight, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
 };
 use crate::clock;
 use crate::error::SfError;
@@ -338,7 +338,13 @@ impl<'a> Scheduler<'a> {
             let n = issue.number;
             if let Err(e) = self.start(issue, night, true) {
                 let q = &self.plan.loaded.fac.queue;
-                let _ = set_status(self.plan.forge, q, n, Some(&q.ready_label));
+                let _ = transitions::apply(
+                    self.plan.forge,
+                    q,
+                    n,
+                    State::InProgress,
+                    Event::StartFailed,
+                );
                 return Err(e.into());
             }
         }
@@ -419,12 +425,13 @@ impl<'a> Scheduler<'a> {
             };
             let q = &self.plan.loaded.fac.queue;
             let n = issue.number;
-            if let Err(e) = set_status(self.plan.forge, q, n, Some(&q.in_progress_label)) {
-                let _ = set_status(self.plan.forge, q, n, Some(&q.ready_label));
+            let forge = self.plan.forge;
+            if let Err(e) = transitions::apply(forge, q, n, State::Ready, Event::Claim) {
+                let _ = transitions::apply(forge, q, n, State::InProgress, Event::StartFailed);
                 return Err(e.into());
             }
             if let Err(e) = self.start(issue, night, false) {
-                let _ = set_status(self.plan.forge, q, n, Some(&q.ready_label));
+                let _ = transitions::apply(forge, q, n, State::InProgress, Event::StartFailed);
                 return Err(e.into());
             }
             self.started += 1;
@@ -714,8 +721,10 @@ impl<'a> Scheduler<'a> {
                 "exit": status.and_then(|s| s.code()),
             }),
         );
+        let num = issue.number;
+        let to = |event| transitions::apply(forge, q, num, State::InProgress, event);
         let Some(r) = r else {
-            let _ = set_status(forge, q, issue.number, Some(&q.ready_label));
+            let _ = to(Event::Interrupted);
             if let Some(s) = stop::requested() {
                 eprintln!("ns watch: #{} interrupted (worker {n})", issue.number);
                 tonight.units.push(json!({
@@ -750,7 +759,7 @@ impl<'a> Scheduler<'a> {
             "cost_usd": r.cost_usd,
         });
         if stop::requested().is_some() && !ended_cleanly(&r) {
-            set_status(forge, q, issue.number, Some(&q.ready_label))?;
+            to(Event::Interrupted)?;
             rec["outcome"] = json!("interrupted");
             eprintln!("ns watch: #{} interrupted (worker {n})", issue.number);
             tonight.units.push(rec);
@@ -771,7 +780,7 @@ impl<'a> Scheduler<'a> {
         }
         match r.outcome {
             Outcome::Merged => {
-                let status = set_status(forge, q, issue.number, None);
+                let status = to(Event::Merged);
                 // GitHub may not have closed it yet; an already-closed issue makes gh fail.
                 if let Err(e) = forge.close(issue.number) {
                     eprintln!("ns watch: #{} not closed: {e}", issue.number);
@@ -786,20 +795,20 @@ impl<'a> Scheduler<'a> {
                 }
                 status?;
             }
-            Outcome::Split => split::mark(forge, q, issue.number)?,
+            Outcome::Split => to(Event::Split)?,
             Outcome::Done if !r.needs_human => {
-                set_status(forge, q, issue.number, Some(&q.done_label))?;
+                to(Event::AwaitingHumanMerge)?;
                 flag_human_merge(forge, &q.human_merge_label, &r);
             }
             Outcome::Stuck if failing => {
-                set_status(forge, q, issue.number, Some(&q.ready_label))?;
+                to(Event::HarnessFailing)?;
                 rec["outcome"] = json!("harness_failing");
                 if night.harness_fails >= HARNESS_FAIL_LIMIT {
                     self.stop_all("harness failing");
                 }
             }
             Outcome::Done | Outcome::Stuck => {
-                let status = set_status(forge, q, issue.number, Some(&q.stuck_label));
+                let status = to(Event::NeedsHuman);
                 let posted = forge.comment(issue.number, &stuck_comment(&r));
                 if r.outcome == Outcome::Done {
                     flag_human_merge(forge, &q.human_merge_label, &r);
@@ -808,7 +817,7 @@ impl<'a> Scheduler<'a> {
                 posted?;
             }
             Outcome::Budget => {
-                set_status(forge, q, issue.number, Some(&q.ready_label))?;
+                to(Event::Budget)?;
                 // A runner lock wait cut short by `--until` ends the run as `budget` too.
                 let why = night
                     .over(self.plan.deadline, &self.plan.loaded.fac)
@@ -840,7 +849,14 @@ impl<'a> Scheduler<'a> {
     fn give_back_paused(&mut self, tonight: &mut Tonight) {
         let q = &self.plan.loaded.fac.queue;
         for issue in self.resume.drain(..) {
-            if let Err(e) = set_status(self.plan.forge, q, issue.number, Some(&q.ready_label)) {
+            let given_back = transitions::apply(
+                self.plan.forge,
+                q,
+                issue.number,
+                State::InProgress,
+                Event::PausedGivenBack,
+            );
+            if let Err(e) = given_back {
                 eprintln!(
                     "ns watch: #{} not returned to the queue: {e:#}",
                     issue.number
