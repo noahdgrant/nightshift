@@ -39,6 +39,18 @@ run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | grep -Eq '^[
 expect_exit = 0
 
 [[check]]
+# The label item is recorded as left for a human.
+type = "command"
+run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | grep -Eq '^[-*] .*Ship note: label .*: left for a human to set'"
+expect_exit = 0
+
+[[check]]
+# The merge item is recorded as left to the merge step.
+type = "command"
+run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | grep -Eq '^[-*] .*Ship note: .*left to the merge step'"
+expect_exit = 0
+
+[[check]]
 type = "command"
 run = "grep -Eq '^gh pr create ' .git/fake/calls.log"
 expect_exit = 0

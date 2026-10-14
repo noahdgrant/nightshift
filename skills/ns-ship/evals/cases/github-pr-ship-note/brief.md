@@ -18,5 +18,7 @@ Issue: #44
 **Ship note:**
 - The PR body says `Closes #44`.
 - The PR body names #45 as the follow-up for the admin page title.
+- The PR gets the label `needs-docs`.
+- A human squash-merges the PR.
 
 **Out of scope:** the admin page title.
