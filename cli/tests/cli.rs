@@ -2916,8 +2916,8 @@ esac"#,
 /// `<HEAD> <dir> <CARGO_TARGET_DIR>` and fails when the checkout holds `red` or the common git
 /// dir holds `red`, and a bare remote. When the common git dir holds `nested`, a run first runs
 /// the pre-push hook itself, once, on its HEAD, as CI's own tests do. When the common git dir holds `build`, each run also
-/// stands in for cargo: it marks the target dir busy, builds its HEAD into it, touches
-/// `started-<HEAD>`, waits for `release`, then tests what the target dir holds. A run that found
+/// stands in for cargo: it marks the target dir busy, builds its HEAD into it, writes its HEAD
+/// to `started`, waits for `release`, then tests what the target dir holds. A run that found
 /// the target dir busy, or tested another commit's build, appends to `clashes`. Returns the repo, the remote and the log of runs. Tests
 /// commit with `--no-verify` so the log holds only pre-push runs.
 fn hooked_repo() -> (TempDir, PathBuf, PathBuf, PathBuf) {
@@ -2938,7 +2938,7 @@ fn hooked_repo() -> (TempDir, PathBuf, PathBuf, PathBuf) {
             r#"cat >/dev/null
 common=$(git rev-parse --git-common-dir)
 echo "$(git rev-parse HEAD) $PWD $CARGO_TARGET_DIR" >> '{}'
-[ ! -e "$common/slow" ] || {{ touch "$common/started"; exec sleep 30; }}
+[ ! -e "$common/slow" ] || {{ echo up > "$common/started"; exec sleep 30; }}
 if [ -e "$common/nested" ] && [ -z "${{NESTED-}}" ]; then
   echo "HEAD $(git rev-parse HEAD) refs/heads/nested 0000000000000000000000000000000000000000" |
     NESTED=1 .githooks/pre-push origin nested || exit 1
@@ -2949,7 +2949,7 @@ if [ -e "$common/build" ]; then
   [ ! -e "$CARGO_TARGET_DIR/busy" ] || echo "busy $head" >> "$common/clashes"
   touch "$CARGO_TARGET_DIR/busy"
   echo "$head" > "$CARGO_TARGET_DIR/built"
-  touch "$common/started-$head"
+  echo "$head" > "$common/started"
   i=0
   while [ ! -e "$common/release" ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i + 1)); done
   [ "$(cat "$CARGO_TARGET_DIR/built")" = "$head" ] || echo "clobbered $head" >> "$common/clashes"
@@ -3127,6 +3127,29 @@ fn pre_push_from_a_linked_worktree_shares_the_main_repos_target_dir() {
     );
 }
 
+/// Make `path` a FIFO and return the lines written to it. The test holds a write end too, so a
+/// writer never blocks and the reader never sees EOF; a hook that dies before writing leaves
+/// the receiver empty, for `Group::recv` to fail at its hang guard.
+fn events(path: &Path) -> std::sync::mpsc::Receiver<String> {
+    let out = common::command("mkfifo").arg(path).output();
+    assert!(out.status.success(), "{out:?}");
+    let fifo = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(fifo).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
 /// Start `git push -q origin <spec>` from `dir` in the background, stderr piped.
 fn start_push(dir: &Path, spec: &str) -> common::Group {
     common::command("git")
@@ -3154,16 +3177,14 @@ fn concurrent_pre_push_runs_never_share_the_target_dir_and_each_tests_its_own_bu
     );
     let common = root.join(".git");
     fs::write(common.join("build"), "").unwrap();
+    let started = events(&common.join("started"));
 
     let mut first = start_push(&root, "HEAD:refs/heads/a");
-    let deadline = std::time::Instant::now() + common::TIMEOUT;
-    while !common.join(format!("started-{a}")).exists() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the first push never built"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    assert_eq!(
+        first.recv(&started),
+        a,
+        "the first push built another commit"
+    );
     let mut second = start_push(&linked, "HEAD:refs/heads/side");
     let (tx, rx) = std::sync::mpsc::channel();
     let err = std::io::BufReader::new(second.take_stderr());
@@ -3179,13 +3200,15 @@ fn concurrent_pre_push_runs_never_share_the_target_dir_and_each_tests_its_own_bu
             break;
         }
     }
-    assert!(
-        !common.join(format!("started-{b}")).exists(),
+    assert_eq!(
+        started.try_recv().ok(),
+        None,
         "the second push built while the first held the target dir"
     );
     fs::write(common.join("release"), "").unwrap();
     assert!(first.wait().success());
     assert!(second.wait().success());
+    assert_eq!(second.recv(&started), b);
 
     let clashes = fs::read_to_string(common.join("clashes")).unwrap_or_default();
     assert_eq!(clashes, "", "the runs shared the target dir");
@@ -3337,16 +3360,9 @@ fn pre_push_removes_its_worktree_when_interrupted() {
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
             .env_remove("CARGO_TARGET_DIR");
+        let started = events(&root.join(".git/started"));
         let mut hook = hook.start();
-        let started = root.join(".git/started");
-        let deadline = std::time::Instant::now() + common::TIMEOUT;
-        while !started.exists() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "ci-local.sh never ran"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        hook.recv(&started);
         // SAFETY: kill(2) on the hook's own process group, as a terminal's Ctrl-C would.
         unsafe {
             libc::kill(-(hook.id() as libc::pid_t), signal);
