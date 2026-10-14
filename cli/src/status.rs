@@ -246,7 +246,7 @@ fn part(out: &mut String, heading: &str, events: &[Event]) {
 mod tests {
     use super::*;
     use crate::log::PrBase;
-    use crate::watch::forge::{ClosingPrs, IssueState, PrState};
+    use crate::watch::forge::fake::FakeForge;
     use crate::watch::Issue;
 
     const SINCE: &str = "2026-10-09T00:00:00Z";
@@ -489,86 +489,6 @@ queue unavailable
         assert_eq!(summary("", 0, &[], None).0.to_json()["main"], json!([]));
     }
 
-    struct Fake(Vec<Issue>);
-
-    impl Forge for Fake {
-        fn open_issues(&self, label: Option<&str>) -> Result<Vec<Issue>> {
-            match label {
-                Some("broken") => anyhow::bail!("gh: not logged in"),
-                _ => Ok(self.0.clone()),
-            }
-        }
-        fn labelled_issues(&self, _: &str) -> Result<Vec<crate::watch::forge::Filed>> {
-            Ok(Vec::new())
-        }
-        fn closing_prs(&self, _: PrState) -> Result<ClosingPrs> {
-            Ok(ClosingPrs::new())
-        }
-        fn merged_prs(&self, _: Option<i64>) -> Result<crate::watch::forge::MergedPrs> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn is_closed(&self, _: u64) -> Result<bool> {
-            Ok(false)
-        }
-        fn issue_link(&self, _: u64) -> Result<crate::watch::forge::IssueLink> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn pr(&self, _: u64) -> Result<crate::watch::forge::Pr> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn commit_prs(&self, _: &str) -> Result<Vec<crate::watch::forge::CommitPr>> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn state(&self, _: u64) -> Result<IssueState> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn sub_issues(&self, _: u64) -> Result<Vec<u64>> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn team_comments(&self, _: u64) -> Result<Vec<String>> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn part_of(&self, _: u64) -> Result<Vec<Issue>> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn ensure_label(&self, _: &str, _: &str) -> Result<()> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn labels(&self, _: u64) -> Result<Vec<String>> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn edit_labels(&self, _: u64, _: &[String], _: Option<&str>) -> Result<()> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn comment(&self, _: u64, _: &crate::watch::forge::Post) -> Result<()> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn close(&self, _: u64) -> Result<()> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn add_pr_label(&self, _: u64, _: &str) -> Result<()> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn remove_pr_label(&self, _: u64, _: &str) -> Result<()> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn comment_pr(&self, _: u64, _: &crate::watch::forge::Post) -> Result<()> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn main_checks(&self) -> Result<crate::watch::ci::HeadChecks> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn create_issue(&self, _: &str, _: &crate::watch::forge::Post, _: &[&str]) -> Result<u64> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn check_log(&self, _: &str) -> Result<String> {
-            unreachable!("ns status only reads the queue")
-        }
-        fn last_green(&self, _: &str) -> Result<Option<String>> {
-            unreachable!("ns status only reads the queue")
-        }
-    }
-
     #[test]
     fn next_is_the_watch_queue_in_its_order() {
         let mut fac = Factory::default();
@@ -579,12 +499,16 @@ queue unavailable
             body: body.into(),
             team: true,
         };
-        let high = fac.queue.priority[0].clone();
-        let forge = Fake(vec![
-            issue(5, &[], ""),
-            issue(6, &[&high], ""),
-            issue(7, &[], "Blocked by: #1"),
-        ]);
+        let (high, ready) = (fac.queue.priority[0].clone(), fac.queue.ready_label.clone());
+        let forge = FakeForge {
+            issues: vec![
+                issue(5, &[&ready], ""),
+                issue(6, &[&ready, &high], ""),
+                issue(7, &[&ready], "Blocked by: #1"),
+            ],
+            broken_labels: ["broken"].into(),
+            ..FakeForge::default()
+        };
         let ready = next(&forge, &fac).unwrap();
         let ready: Vec<(u64, &str)> = ready.iter().map(|q| (q.number, q.title.as_str())).collect();
         assert_eq!(ready, [(6, "Fix 6"), (5, "Fix 5")]);

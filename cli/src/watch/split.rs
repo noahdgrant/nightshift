@@ -314,8 +314,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::super::forge::DISCLOSURE;
-    use super::super::tests::Fake;
     use super::*;
+    use crate::watch::forge::fake::FakeForge;
 
     const SPLIT: &str = "status:split";
 
@@ -334,13 +334,13 @@ mod tests {
     }
 
     /// A forge with split parent 1 whose sub-issues are 2 and 3.
-    fn forge(closed: &[u64], not_planned: &[u64]) -> Fake {
-        let f = Fake {
+    fn forge(closed: &[u64], not_planned: &[u64]) -> FakeForge {
+        let f = FakeForge {
             issues: vec![issue(1, &[SPLIT], "")],
             closed: closed.iter().copied().collect(),
             not_planned: not_planned.iter().copied().collect(),
             subs: BTreeMap::from([(1, vec![2, 3])]),
-            ..Fake::default()
+            ..FakeForge::default()
         };
         f.labels
             .borrow_mut()
@@ -348,7 +348,7 @@ mod tests {
         f
     }
 
-    fn run(f: &Fake, sweep: bool) -> Vec<Value> {
+    fn run(f: &FakeForge, sweep: bool) -> Vec<Value> {
         let q = QueueConfig::default();
         let parents = plan(f, &q, sweep).unwrap();
         apply(f, &q, &parents, &mut BTreeSet::new())
@@ -406,9 +406,9 @@ mod tests {
 
     #[test]
     fn a_parent_with_no_children_is_left_alone_and_reported_once() {
-        let f = Fake {
+        let f = FakeForge {
             issues: vec![issue(1, &[SPLIT], "")],
-            ..Fake::default()
+            ..FakeForge::default()
         };
         let q = QueueConfig::default();
         let parents = plan(&f, &q, false).unwrap();
@@ -429,11 +429,11 @@ mod tests {
         assert_eq!(listed("No list here: #4\n- #5\n"), Vec::<u64>::new());
         assert_eq!(listed("children:\n- #4\ntext\n- #5\n"), [4]);
 
-        let f = Fake {
+        let f = FakeForge {
             issues: vec![issue(1, &[SPLIT], "")],
             comments: BTreeMap::from([(1, vec!["Children:\n- #2\n".to_string()])]),
             closed: BTreeSet::from([2]),
-            ..Fake::default()
+            ..FakeForge::default()
         };
         run(&f, false);
         assert_eq!(*f.closes.borrow(), [1]);
@@ -482,10 +482,10 @@ mod tests {
 
     #[test]
     fn a_failed_issue_list_is_an_error_not_an_empty_plan() {
-        let f = Fake {
+        let f = FakeForge {
             issues: vec![issue(1, &[SPLIT], "")],
             fails: BTreeSet::from(["open_issues"]),
-            ..Fake::default()
+            ..FakeForge::default()
         };
         let q = QueueConfig::default();
         assert!(plan(&f, &q, false).is_err());
@@ -511,11 +511,11 @@ mod tests {
         assert_eq!(listed("Children:\n- #8\n- \n- [ ]\n\n"), [8]);
 
         // Child #8 is done; the item naming no issue must not let the parent close.
-        let f = Fake {
+        let f = FakeForge {
             issues: vec![issue(1, &[SPLIT], "")],
             comments: BTreeMap::from([(1, vec!["Children:\n- #8\n- Add widget\n".to_string()])]),
             closed: BTreeSet::from([8]),
-            ..Fake::default()
+            ..FakeForge::default()
         };
         assert!(run(&f, false).is_empty());
         assert!(f.closes.borrow().is_empty());
@@ -627,20 +627,20 @@ mod tests {
     fn a_swept_parent_is_read_from_sub_issues_and_notes_only() {
         let q = QueueConfig::default();
         let linked = BTreeMap::from([(1, vec![issue(2, &[], "Part of #1")])]);
-        let f = Fake {
+        let f = FakeForge {
             issues: vec![issue(1, &[OLD_LABEL], "")],
             linked: linked.clone(),
             closed: BTreeSet::from([2]),
-            ..Fake::default()
+            ..FakeForge::default()
         };
         assert!(plan(&f, &q, true).unwrap().is_empty());
         assert_eq!(f.searches.get(), 0);
 
-        let f = Fake {
+        let f = FakeForge {
             issues: vec![issue(1, &[SPLIT], "")],
             linked,
             closed: BTreeSet::from([2]),
-            ..Fake::default()
+            ..FakeForge::default()
         };
         assert_eq!(plan(&f, &q, true).unwrap()[0].children, [2]);
         assert_eq!(f.searches.get(), 1);
@@ -674,10 +674,10 @@ mod tests {
     #[test]
     fn a_body_lists_children_only_for_a_team_parent() {
         let mut parent = issue(1, &[SPLIT], "Children: #2");
-        let mut f = Fake {
+        let mut f = FakeForge {
             issues: vec![parent.clone()],
             closed: BTreeSet::from([2]),
-            ..Fake::default()
+            ..FakeForge::default()
         };
         let q = QueueConfig::default();
         assert_eq!(plan(&f, &q, false).unwrap()[0].children, [2]);
@@ -696,7 +696,7 @@ mod tests {
 
         let mut outsider = issue(4, &[], "Part of #1");
         outsider.team = false;
-        let f = Fake {
+        let f = FakeForge {
             issues: vec![issue(1, &[SPLIT], "")],
             linked: BTreeMap::from([(
                 1,
@@ -707,7 +707,7 @@ mod tests {
                 ],
             )]),
             closed: BTreeSet::from([2]),
-            ..Fake::default()
+            ..FakeForge::default()
         };
         let q = QueueConfig::default();
         assert_eq!(plan(&f, &q, false).unwrap()[0].children, [2]);
@@ -839,7 +839,7 @@ mod tests {
 
     #[test]
     fn mark_moves_the_issue_even_when_the_label_cannot_be_created() {
-        let mut f = Fake::default();
+        let mut f = FakeForge::default();
         f.fails.insert("ensure_label");
         transitions::apply(
             &f,
@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn mark_creates_the_split_label_and_moves_the_issue() {
-        let f = Fake::default();
+        let f = FakeForge::default();
         f.labels
             .borrow_mut()
             .insert(4, vec!["status:in-progress".into()]);
