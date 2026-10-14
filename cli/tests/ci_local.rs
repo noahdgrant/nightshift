@@ -816,6 +816,68 @@ fn ci_affected_stops_at_a_failing_step() {
     assert!(stderr(&out).contains(&format!("ci-affected: FAILED at step: {step}")));
 }
 
+/// `scripts/ci-pr-files.sh` run in `dir` from `base` to `head`, and what it wrote to
+/// `GITHUB_ENV`.
+fn pr_files(dir: &Path, base: &str, head: &str) -> (Output, String) {
+    let env = dir.join("github-env");
+    let out = common::command("bash")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci-pr-files.sh"))
+        .current_dir(dir)
+        .env("BASE", base)
+        .env("HEAD", head)
+        .env("GITHUB_ENV", &env)
+        .output();
+    (out, fs::read_to_string(&env).unwrap_or_default())
+}
+
+#[test]
+fn ci_pr_files_sets_the_paths_a_pull_request_changes_old_and_new_names_of_a_rename() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for f in ["cli/old.rs", "docs/gone.md", "skills/same.md"] {
+        fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+        fs::write(root.join(f), format!("{f}\n").repeat(20)).unwrap();
+    }
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    let base = git(root, &["rev-parse", "HEAD"]);
+    git(root, &["mv", "cli/old.rs", "docs/new.rs"]);
+    git(root, &["rm", "-q", "docs/gone.md"]);
+    fs::write(root.join("README"), "x\n").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "change"]);
+    let head = git(root, &["rev-parse", "HEAD"]);
+    let (out, env) = pr_files(root, &base, &head);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let lines: Vec<_> = env.lines().collect();
+    let [first, paths @ .., last] = &lines[..] else {
+        panic!("{env:?}");
+    };
+    let delim = first.strip_prefix("NS_GATE_FILES<<").unwrap();
+    assert_eq!(*last, delim);
+    assert_eq!(
+        paths,
+        ["README", "cli/old.rs", "docs/gone.md", "docs/new.rs"]
+    );
+
+    fs::remove_file(root.join("github-env")).unwrap();
+    let (out, env) = pr_files(root, &head, &head);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(env.lines().count(), 2, "{env:?}");
+
+    fs::remove_file(root.join("github-env")).unwrap();
+    let missing = "0123456789abcdef0123456789abcdef01234567";
+    let (out, env) = pr_files(root, missing, &head);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(env, "");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("::warning::ci-pr-files: git could not list"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
 /// The rule packs `scripts/rule-packs.sh` lists in `root`.
 fn listed_packs(root: &Path) -> Output {
     let mut cmd = common::command("bash");
