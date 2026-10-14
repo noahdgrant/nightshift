@@ -985,6 +985,15 @@ Open after at least 2 fix attempts: C1, I2, I4.
                 _ => Ok(self.closed.contains(&n)),
             }
         }
+        fn issue_link(&self, _: u64) -> Result<crate::watch::forge::IssueLink> {
+            unreachable!("ns watch reads no PR or issue link")
+        }
+        fn pr(&self, _: u64) -> Result<crate::watch::forge::Pr> {
+            unreachable!("ns watch reads no PR or issue link")
+        }
+        fn commit_prs(&self, _: &str) -> Result<Vec<crate::watch::forge::CommitPr>> {
+            unreachable!("ns watch reads no PR or issue link")
+        }
         fn state(&self, n: u64) -> Result<IssueState> {
             Ok(match self.is_closed(n)? {
                 false => IssueState::Open,

@@ -257,6 +257,12 @@ fn default_branch_guard_stops_a_push_to_main() {
 /// `land` on origin's main from a clone, GitHub links the new main commit to `pulls`, and the
 /// build rebases onto it.
 fn another_actor_lands(e: &Env, pre: &str, land: &str, pulls: &str) {
+    another_actor_lands_linked(e, pre, land, "pulls", pulls);
+}
+
+/// [`another_actor_lands`], the forge's list of the new main commit's PRs written to
+/// `<file>-<sha>.json` in the fake forge's directory.
+fn another_actor_lands_linked(e: &Env, pre: &str, land: &str, file: &str, pulls: &str) {
     e.ctl(
         "build.sh",
         &format!(
@@ -267,7 +273,7 @@ echo own >> work.txt && git add work.txt && $c commit -qm own
 o="$FAKE_CTRL/other"
 rm -rf "$o" && git clone -q "$(git remote get-url origin)" "$o"
 (cd "$o" && {land} && git push -q origin main &&
-  printf '%s' '{pulls}' > "$FAKE_GH_DIR/pulls-$(git rev-parse HEAD).json")
+  printf '%s' '{pulls}' > "$FAKE_GH_DIR/{file}-$(git rev-parse HEAD).json")
 git fetch -q origin && $c rebase -q origin/main"#
         ),
     );

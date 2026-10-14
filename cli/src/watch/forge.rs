@@ -25,6 +25,50 @@ pub enum PrState {
     Merged,
 }
 
+/// Where a PR stands, whichever forge it is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrStatus {
+    Open,
+    Merged,
+    /// Closed without merging.
+    Closed,
+}
+
+impl PrStatus {
+    pub fn name(self) -> &'static str {
+        match self {
+            PrStatus::Open => "OPEN",
+            PrStatus::Merged => "MERGED",
+            PrStatus::Closed => "CLOSED",
+        }
+    }
+}
+
+/// A PR as `ns run`'s guards and `ns clean` read it. `head_sha` is empty when the forge names
+/// none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pr {
+    pub status: PrStatus,
+    pub head_sha: String,
+    pub head_branch: String,
+    pub body: String,
+}
+
+/// A PR the forge links to a commit: its number, its head branch, and whether it merged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitPr {
+    pub number: u64,
+    pub head: String,
+    pub merged: bool,
+}
+
+/// An issue's title and the URL a human opens it at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssueLink {
+    pub title: String,
+    pub url: String,
+}
+
 /// Where an issue stands. A closed issue's reason is the forge's; one that names none is completed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IssueState {
@@ -94,6 +138,11 @@ pub trait Forge {
     /// can be missing from a week the oldest listed merge precedes.
     fn merged_prs(&self, since: Option<i64>) -> Result<MergedPrs>;
     fn is_closed(&self, n: u64) -> Result<bool>;
+    fn issue_link(&self, n: u64) -> Result<IssueLink>;
+    /// PR `n` (a GitLab merge request's iid).
+    fn pr(&self, n: u64) -> Result<Pr>;
+    /// The PRs that hold commit `sha`, in any state.
+    fn commit_prs(&self, sha: &str) -> Result<Vec<CommitPr>>;
     fn state(&self, n: u64) -> Result<IssueState>;
     /// The forge's sub-issues of `n`, in any state.
     fn sub_issues(&self, n: u64) -> Result<Vec<u64>>;
@@ -327,6 +376,45 @@ fn issue_state(v: &Value) -> IssueState {
     }
 }
 
+/// `gh issue view --json title,url`, or GitLab's issue with its `web_url`.
+fn parse_issue_link(v: &Value, url_key: &str) -> IssueLink {
+    IssueLink {
+        title: v["title"].as_str().unwrap_or("").to_string(),
+        url: v[url_key].as_str().unwrap_or("").to_string(),
+    }
+}
+
+/// `gh pr view --json state,headRefOid,headRefName,body`.
+fn parse_pr(v: &Value) -> Pr {
+    let text = |k: &str| v[k].as_str().unwrap_or("").to_string();
+    Pr {
+        status: match v["state"].as_str() {
+            Some("MERGED") => PrStatus::Merged,
+            Some("CLOSED") => PrStatus::Closed,
+            _ => PrStatus::Open,
+        },
+        head_sha: text("headRefOid"),
+        head_branch: text("headRefName"),
+        body: text("body"),
+    }
+}
+
+/// GitHub's `commits/<sha>/pulls` list. One with no number is left out.
+fn parse_commit_prs(pulls: &Value) -> Vec<CommitPr> {
+    pulls
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            Some(CommitPr {
+                number: p["number"].as_u64()?,
+                head: p["head"]["ref"].as_str().unwrap_or("").to_string(),
+                merged: p["merged_at"].as_str().is_some_and(|s| !s.is_empty()),
+            })
+        })
+        .collect()
+}
+
 /// The issue number at the end of the URL `gh issue create` prints.
 fn created_number(out: &str) -> Result<u64> {
     out.trim()
@@ -432,6 +520,33 @@ impl Forge for GitHub {
             &["issue", "view", &n.to_string(), "--json", "state"],
         )?;
         Ok(matches!(v["state"].as_str(), Some("CLOSED" | "MERGED")))
+    }
+
+    fn issue_link(&self, n: u64) -> Result<IssueLink> {
+        let v = gh_json(
+            &self.root,
+            &["issue", "view", &n.to_string(), "--json", "title,url"],
+        )?;
+        Ok(parse_issue_link(&v, "url"))
+    }
+
+    fn pr(&self, n: u64) -> Result<Pr> {
+        let v = gh_json(
+            &self.root,
+            &[
+                "pr",
+                "view",
+                &n.to_string(),
+                "--json",
+                "state,headRefOid,headRefName,body",
+            ],
+        )?;
+        Ok(parse_pr(&v))
+    }
+
+    fn commit_prs(&self, sha: &str) -> Result<Vec<CommitPr>> {
+        let path = format!("repos/{{owner}}/{{repo}}/commits/{}/pulls", head_sha(sha)?);
+        Ok(parse_commit_prs(&gh_json(&self.root, &["api", &path])?))
     }
 
     fn state(&self, n: u64) -> Result<IssueState> {

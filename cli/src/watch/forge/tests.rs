@@ -90,6 +90,62 @@ fn parse_merged_reads_each_prs_head_merge_time_and_changed_lines() {
 }
 
 #[test]
+fn parse_issue_link_reads_the_title_and_the_named_url() {
+    let v = serde_json::json!({"title": "Fix it", "url": "u1", "web_url": "u2"});
+    let link = |title: &str, url: &str| IssueLink {
+        title: title.into(),
+        url: url.into(),
+    };
+    assert_eq!(parse_issue_link(&v, "url"), link("Fix it", "u1"));
+    assert_eq!(parse_issue_link(&v, "web_url"), link("Fix it", "u2"));
+    assert_eq!(
+        parse_issue_link(&serde_json::json!({}), "url"),
+        link("", "")
+    );
+}
+
+#[test]
+fn parse_pr_maps_each_state_and_reads_its_head_and_body() {
+    let v = serde_json::json!({"state": "MERGED", "headRefOid": "abc",
+                               "headRefName": "ns/7-x", "body": "Closes #7"});
+    assert_eq!(
+        parse_pr(&v),
+        Pr {
+            status: PrStatus::Merged,
+            head_sha: "abc".into(),
+            head_branch: "ns/7-x".into(),
+            body: "Closes #7".into()
+        }
+    );
+    let status = |s: &str| parse_pr(&serde_json::json!({"state": s})).status;
+    assert_eq!(status("CLOSED"), PrStatus::Closed);
+    assert_eq!(status("OPEN"), PrStatus::Open);
+    let none = parse_pr(&serde_json::json!({"headRefOid": null}));
+    assert_eq!((none.status, none.head_sha.as_str()), (PrStatus::Open, ""));
+    assert_eq!(PrStatus::Closed.name(), "CLOSED");
+}
+
+#[test]
+fn parse_commit_prs_reads_each_prs_head_and_whether_it_merged() {
+    let pulls = serde_json::json!([
+        {"number": 3, "merged_at": "2026-10-10T01:00:00Z", "head": {"ref": "ns/3-b"}},
+        {"number": 4, "merged_at": null, "head": {"ref": "x"}},
+        {"number": 5, "merged_at": ""},
+        {"merged_at": "2026-10-10T01:00:00Z", "head": {"ref": "no-number"}},
+    ]);
+    let pr = |number, head: &str, merged| CommitPr {
+        number,
+        head: head.into(),
+        merged,
+    };
+    assert_eq!(
+        parse_commit_prs(&pulls),
+        [pr(3, "ns/3-b", true), pr(4, "x", false), pr(5, "", false)]
+    );
+    assert!(parse_commit_prs(&serde_json::json!({})).is_empty());
+}
+
+#[test]
 fn parse_filed_reads_when_each_issue_opened_and_how_it_closed() {
     let text = [
         r#"{"number": 7, "title": "fix: a", "labels": [{"name": "type:fix"}], "body": "b", "authorAssociation": "OWNER", "createdAt": "2026-10-05T10:00:00Z", "state": "closed", "stateReason": "duplicate"}"#,

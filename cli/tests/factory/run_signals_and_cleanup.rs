@@ -832,9 +832,10 @@ fn watch_cleans_a_unit_merged_while_another_unit_ran() {
 #[test]
 fn auto_merge_keeps_the_worktree_when_the_merged_head_cannot_be_read() {
     let e = auto_merge_env();
+    // Only once merged: the guard after ship reads the same fields while the PR is open.
     e.gh_file(
         "hook.sh",
-        "[ \"$*\" = \"pr view 12 --json headRefOid\" ] && { echo 'HTTP 502' >&2; exit 1; }\n",
+        "[ \"$*\" = \"pr view 12 --json state,headRefOid,headRefName,body\" ] && grep -q MERGED \"$d/pr-12.state\" 2>/dev/null && { echo 'HTTP 502' >&2; exit 1; }\n",
     );
     let v = e.run(&["run", "--issue", "7"], 0);
     assert_eq!(v["outcome"], "merged", "{v}");
