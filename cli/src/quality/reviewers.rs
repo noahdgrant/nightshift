@@ -7,8 +7,8 @@ use std::io::{self, Write};
 
 use serde::Serialize;
 
-use super::metrics::Unit;
-use crate::review_md::{Scope, Severity, Status, Worker, AXES};
+use super::metrics::{Attempt, Unit};
+use crate::review_md::{Finding, Scope, Severity, Status, Worker, AXES};
 use crate::stats::{median, round};
 
 /// One reviewer's numbers for one severity. Raised findings are Critical or Important ones in
@@ -82,6 +82,8 @@ pub struct Excluded {
     pub passes_without_panel: usize,
     /// Critical or Important escapes with no `missed_by`.
     pub escapes_unattributed: usize,
+    /// Workers and `missed_by` names that are none of the eight reviewers.
+    pub unknown_reviewer: usize,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -94,11 +96,16 @@ pub struct Report {
     pub excluded: Excluded,
 }
 
-fn counts<'a>(r: &'a mut BTreeMap<String, Reviewer>, name: &str, s: Severity) -> &'a mut Counts {
-    let rv = r.entry(name.to_string()).or_default();
-    match s {
-        Severity::Critical => &mut rv.critical,
-        _ => &mut rv.important,
+fn counts<'a>(
+    reviewers: &'a mut BTreeMap<String, Reviewer>,
+    name: &str,
+    severity: Severity,
+) -> Option<&'a mut Counts> {
+    let reviewer = reviewers.get_mut(name)?;
+    match severity {
+        Severity::Critical => Some(&mut reviewer.critical),
+        Severity::Important => Some(&mut reviewer.important),
+        Severity::Suggestion | Severity::Unknown => None,
     }
 }
 
@@ -154,92 +161,135 @@ fn finish(r: &mut BTreeMap<String, Reviewer>, workers: &BTreeMap<String, Vec<&Wo
     }
 }
 
-pub fn reviewers(units: &[&Unit]) -> Report {
-    let mut r: BTreeMap<String, Reviewer> = AXES
-        .iter()
-        .map(|a| (a.to_string(), Reviewer::default()))
-        .collect();
-    let mut x = Excluded::default();
-    let mut workers: BTreeMap<String, Vec<&Worker>> = BTreeMap::new();
-    let mut raised: Vec<Vec<&str>> = Vec::new();
-    let (mut attempts, mut measured_attempts) = (0, 0);
-    for a in units.iter().flat_map(|u| &u.attempts) {
-        attempts += 1;
-        let paneled = a.passes.iter().filter(|p| p.panel.is_some()).count();
-        x.passes_without_panel += a.passes.len() - paneled;
-        x.attempts_without_passes += usize::from(a.passes.is_empty());
-        let measured = paneled > 0;
-        measured_attempts += usize::from(measured);
-        for p in a.passes.iter().filter(|p| p.panel.is_some()) {
-            let ran: BTreeSet<&str> = p.workers.iter().map(|w| w.reviewer.as_str()).collect();
-            for name in ran {
-                r.entry(name.to_string()).or_default().reviews += 1;
-            }
-            for w in &p.workers {
-                workers.entry(w.reviewer.clone()).or_default().push(w);
+type Workers<'a> = BTreeMap<String, Vec<&'a Worker>>;
+
+fn tally_passes<'a>(
+    attempt: &'a Attempt,
+    reviewers: &mut BTreeMap<String, Reviewer>,
+    workers: &mut Workers<'a>,
+    excluded: &mut Excluded,
+) -> bool {
+    let paneled = attempt.passes.iter().filter(|p| p.panel.is_some()).count();
+    excluded.passes_without_panel += attempt.passes.len() - paneled;
+    excluded.attempts_without_passes += usize::from(attempt.passes.is_empty());
+    for pass in attempt.passes.iter().filter(|p| p.panel.is_some()) {
+        let ran: BTreeSet<&str> = pass.workers.iter().map(|w| w.reviewer.as_str()).collect();
+        for name in ran {
+            match reviewers.get_mut(name) {
+                Some(reviewer) => reviewer.reviews += 1,
+                None => excluded.unknown_reviewer += 1,
             }
         }
-        for f in &a.findings {
-            if !matches!(f.severity, Severity::Critical | Severity::Important) {
-                continue;
-            }
-            let by: Vec<&str> = AXES
-                .into_iter()
-                .filter(|a| f.axes.iter().any(|x| x == a))
-                .collect();
-            match f.scope {
-                Scope::PreExisting if f.status == Status::Dismissed => {}
-                Scope::PreExisting => match &f.missed_by {
-                    Some(m) => counts(&mut r, m, f.severity).escapes += 1,
-                    None => x.escapes_unattributed += 1,
-                },
-                Scope::Unknown => x.findings_without_scope += 1,
-                Scope::Changed if by.is_empty() => x.findings_without_axis += 1,
-                Scope::Changed => {
-                    let unique = by.len() == 1;
-                    let unique_fixed = usize::from(unique && f.status == Status::Fixed);
-                    for axis in &by {
-                        let c = counts(&mut r, axis, f.severity);
-                        c.raised += 1;
-                        c.unique += usize::from(unique);
-                        c.unique_fixed += unique_fixed;
-                        c.dismissed += usize::from(
-                            f.status == Status::Dismissed
-                                || f.dismissed_raises.iter().any(|d| d == axis),
-                        );
-                        if measured {
-                            c.raised_measured += 1;
-                            c.unique_fixed_measured += unique_fixed;
-                        }
-                    }
-                    raised.push(by);
-                }
+        for worker in &pass.workers {
+            if reviewers.contains_key(&worker.reviewer) {
+                workers
+                    .entry(worker.reviewer.clone())
+                    .or_default()
+                    .push(worker);
             }
         }
     }
-    finish(&mut r, &workers);
-    let names: Vec<&String> = r.keys().collect();
-    let by = |n: &str| r[n].critical.raised + r[n].important.raised;
+    paneled > 0
+}
+
+fn tally_finding(
+    finding: &Finding,
+    measured: bool,
+    reviewers: &mut BTreeMap<String, Reviewer>,
+    excluded: &mut Excluded,
+) -> Option<Vec<&'static str>> {
+    if !matches!(finding.severity, Severity::Critical | Severity::Important) {
+        return None;
+    }
+    let raisers: Vec<&'static str> = AXES
+        .into_iter()
+        .filter(|axis| finding.axes.iter().any(|named| named == axis))
+        .collect();
+    match finding.scope {
+        Scope::PreExisting if finding.status == Status::Dismissed => {}
+        Scope::PreExisting => match &finding.missed_by {
+            Some(name) => match counts(reviewers, name, finding.severity) {
+                Some(c) => c.escapes += 1,
+                None => excluded.unknown_reviewer += 1,
+            },
+            None => excluded.escapes_unattributed += 1,
+        },
+        Scope::Unknown => excluded.findings_without_scope += 1,
+        Scope::Changed if raisers.is_empty() => excluded.findings_without_axis += 1,
+        Scope::Changed => {
+            let unique = raisers.len() == 1;
+            let unique_fixed = usize::from(unique && finding.status == Status::Fixed);
+            for axis in &raisers {
+                let Some(c) = counts(reviewers, axis, finding.severity) else {
+                    continue;
+                };
+                c.raised += 1;
+                c.unique += usize::from(unique);
+                c.unique_fixed += unique_fixed;
+                c.dismissed += usize::from(
+                    finding.status == Status::Dismissed
+                        || finding.dismissed_raises.iter().any(|d| d == axis),
+                );
+                if measured {
+                    c.raised_measured += 1;
+                    c.unique_fixed_measured += unique_fixed;
+                }
+            }
+            return Some(raisers);
+        }
+    }
+    None
+}
+
+fn overlaps(reviewers: &BTreeMap<String, Reviewer>, raised: &[Vec<&str>]) -> Vec<Overlap> {
+    let names: Vec<&String> = reviewers.keys().collect();
+    let total = |n: &str| reviewers[n].critical.raised + reviewers[n].important.raised;
     let mut overlap = Vec::new();
-    for (i, a) in names.iter().enumerate() {
-        for b in &names[i + 1..] {
+    for (i, first) in names.iter().enumerate() {
+        for second in &names[i + 1..] {
             let shared = raised
                 .iter()
-                .filter(|by| by.contains(&a.as_str()) && by.contains(&b.as_str()))
+                .filter(|raisers| {
+                    raisers.contains(&first.as_str()) && raisers.contains(&second.as_str())
+                })
                 .count();
             overlap.push(Overlap {
-                reviewers: [(*a).clone(), (*b).clone()],
+                reviewers: [(*first).clone(), (*second).clone()],
                 shared,
-                jaccard: ratio(shared, (by(a) + by(b) - shared) as f64),
+                jaccard: ratio(shared, (total(first) + total(second) - shared) as f64),
             });
         }
     }
+    overlap
+}
+
+pub fn reviewers(units: &[&Unit]) -> Report {
+    let mut by_name: BTreeMap<String, Reviewer> = AXES
+        .iter()
+        .map(|axis| (axis.to_string(), Reviewer::default()))
+        .collect();
+    let mut excluded = Excluded::default();
+    let mut workers = Workers::new();
+    let mut raised: Vec<Vec<&str>> = Vec::new();
+    let (mut attempts, mut measured_attempts) = (0, 0);
+    for attempt in units.iter().flat_map(|u| &u.attempts) {
+        attempts += 1;
+        let measured = tally_passes(attempt, &mut by_name, &mut workers, &mut excluded);
+        measured_attempts += usize::from(measured);
+        raised.extend(
+            attempt
+                .findings
+                .iter()
+                .filter_map(|f| tally_finding(f, measured, &mut by_name, &mut excluded)),
+        );
+    }
+    finish(&mut by_name, &workers);
     Report {
         attempts,
         measured_attempts,
-        reviewers: r,
-        overlap,
-        excluded: x,
+        overlap: overlaps(&by_name, &raised),
+        reviewers: by_name,
+        excluded,
     }
 }
 
@@ -339,10 +389,11 @@ pub fn render(r: &Report, s: &mut impl Write) -> io::Result<()> {
     let e = &r.excluded;
     writeln!(s,
         "\nLeft out: {} findings without an axis, {} without a scope, {} unattributed escapes, \
-         {} passes without a panel; {} attempts without a Passes table count as raised, not per review.",
+         {} with an unknown reviewer, {} passes without a panel; {} attempts without a Passes table count as raised, not per review.",
         e.findings_without_axis,
         e.findings_without_scope,
         e.escapes_unattributed,
+        e.unknown_reviewer,
         e.passes_without_panel,
         e.attempts_without_passes
     )
@@ -562,6 +613,7 @@ mod tests {
                 attempts_without_passes: 1,
                 passes_without_panel: 0,
                 escapes_unattributed: 2,
+                unknown_reviewer: 0,
             }
         );
         let blank = "## Passes\n| Pass | Panel | Reviewer | Tokens |\n|---|---|---|---|\n| 0 | | tests | 500 |\n| 1 | cycle | tests | 100 |\n### I1. x\n- Axis: tests\n- Scope: changed\n- Status: fixed\n";
@@ -642,6 +694,69 @@ mod tests {
         assert_eq!((i.raised, i.unique, i.unique_fixed), (1, 1, 1));
         assert_eq!(r.excluded.findings_without_axis, 1);
         assert!(!r.reviewers.contains_key("lead"));
+    }
+
+    #[test]
+    fn a_critical_escape_counts_against_the_reviewer_that_missed_it() {
+        let u = unit(
+            "6-e",
+            vec![attempt(
+                "## Critical\n### C1. missed\n- Axis: security\n- Scope: pre-existing\n- Missed by: correctness\n- Status: deferred: #1\n### C2. nobody named\n- Axis: security\n- Scope: pre-existing\n- Status: deferred: #2\n",
+            )],
+        );
+        let r = reviewers(&[&u]);
+        let c = &r.reviewers["correctness"];
+        assert_eq!((c.critical.escapes, c.important.escapes), (1, 0));
+        assert_eq!(c.total.escapes, 1);
+        assert_eq!(r.excluded.escapes_unattributed, 1);
+    }
+
+    #[test]
+    fn a_dismissed_finding_with_several_axes_counts_against_each() {
+        let u = unit(
+            "7-d",
+            vec![attempt(
+                "## Critical\n### C1. x\n- Axis: correctness, tests\n- Scope: changed\n- Status: dismissed: not a defect\n## Important\n### I1. y\n- Axis: correctness, tests\n- Scope: changed\n- Status: dismissed: not a defect\n",
+            )],
+        );
+        let r = reviewers(&[&u]);
+        for name in ["correctness", "tests"] {
+            let rv = &r.reviewers[name];
+            assert_eq!(
+                (
+                    rv.critical.dismissed,
+                    rv.important.dismissed,
+                    rv.total.dismissed
+                ),
+                (1, 1, 2),
+                "{name}"
+            );
+            assert_eq!(rv.total.dismiss_rate, Some(1.0), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_reviewer_name_outside_the_eight_axes_is_counted_not_listed() {
+        let evil = "evil\u{1b}[2J";
+        let mut a = attempt(
+            "## Passes\n| Pass | Panel | Reviewer | Tokens |\n|---|---|---|---|\n| 0 | full | tests | 100 |\n| 0 | full | tests | 100 |\n## Important\n### I1. y\n- Axis: tests\n- Scope: pre-existing\n- Missed by: x\n- Status: deferred: #1\n",
+        );
+        a.passes[0].workers[1].reviewer = evil.into();
+        a.findings[0].missed_by = Some(evil.into());
+        let u = unit("8-u", vec![a]);
+        let r = reviewers(&[&u]);
+        assert_eq!(r.reviewers.len(), AXES.len());
+        assert!(!r.reviewers.contains_key(evil));
+        assert_eq!(r.overlap.len(), AXES.len() * (AXES.len() - 1) / 2);
+        assert_eq!(
+            r.excluded.unknown_reviewer, 2,
+            "the worker and the missed_by"
+        );
+        assert_eq!(r.reviewers["tests"].cost.workers, 1);
+        assert_eq!(r.reviewers["tests"].total.escapes, 0);
+        let t = table(&r);
+        assert!(!t.contains('\u{1b}'), "{t}");
+        assert!(t.contains("2 with an unknown reviewer"), "{t}");
     }
 
     #[test]
@@ -749,7 +864,7 @@ mod tests {
             ["tests", "critical", "3", "1", "0.333", "1", "1", "0.333", "0", "0", "0"]
         );
         assert!(t.contains("0.25 (1)"), "{t}");
-        assert!(t.contains("1 findings without an axis, 1 without a scope, 2 unattributed escapes, 0 passes without a panel; 1 attempts"), "{t}");
+        assert!(t.contains("1 findings without an axis, 1 without a scope, 2 unattributed escapes, 0 with an unknown reviewer, 0 passes without a panel; 1 attempts"), "{t}");
         let total = t
             .lines()
             .find(|l| l.starts_with("tests ") && l.contains("total"))

@@ -37,6 +37,7 @@ Reads the quality records on `origin`'s `nightshift/quality` branch (fetched fir
   - `attempts_without_passes`: attempts with no Passes table, such as records from before it. Their findings still count in `raised`.
   - `passes_without_panel`: passes with no panel. They are not counted in `reviews` or `cost`.
   - `escapes_unattributed`: Critical or Important escapes with no `missed_by`.
+  - `unknown_reviewer`: workers and `missed_by` names that are none of the eight reviewers. They get no row, overlap pair or count.
 
 `ns quality --bugs [--since <date>] [--until <date>] [--weeks N] [--json]` counts the `type:fix` issues opened in each ISO week (UTC), by source and severity, read from the `[queue] source` forge, with their rate per merged unit and per 1,000 changed lines and each rate's trend. It prints tables, or with `--json` one object:
 
