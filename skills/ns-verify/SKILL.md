@@ -152,9 +152,9 @@ Verify skill: <path> · Doctor: pass
 Set `status` from the first rule that holds:
 
 - `blocked`: a harness denied a command ([denied commands](#denied-commands)), whatever the verdicts.
-- `pass`: every criterion is PASS or `ship`.
+- `pass`: every criterion is PASS or `ship`, and at least one is PASS.
 - `fail`: any criterion is FAIL. `ns-build` picks the unit up from the Gaps section.
-- `blocked`: no FAIL, but at least one INCONCLUSIVE. Gaps names the blocker (a bench, credentials, a criterion the human must sharpen).
+- `blocked`: no FAIL, but at least one INCONCLUSIVE. Gaps names the blocker (a bench, credentials, a criterion the human must sharpen). Also `blocked` when no criterion is PASS and none is FAIL or INCONCLUSIVE (every one is `ship`): Gaps names "no checkable criterion".
 
 ## Gate
 
