@@ -2093,6 +2093,8 @@ fn every_subcommand_help_has_examples() {
         vec!["ask", "--help"],
         vec!["lint", "--help"],
         vec!["check-markers", "--help"],
+        vec!["artifact", "--help"],
+        vec!["artifact", "check", "--help"],
         vec!["install", "--help"],
         vec!["doctor", "--help"],
         vec!["quality", "--help"],
@@ -2114,6 +2116,7 @@ fn help_lists_public_subcommands_and_hides_guard_hooks() {
         "ask",
         "lint",
         "check-markers",
+        "artifact",
         "install",
         "eval",
         "factory",
@@ -3398,4 +3401,93 @@ fn doctor_reports_no_account_when_gh_api_user_fails_or_prints_nothing() {
         assert_eq!(v["forge"]["github"]["account"], Value::Null, "{login}");
         assert_eq!(v["forge"]["github"]["token_resolved"], true, "{login}");
     }
+}
+
+const VALID_EVIDENCE: &str = "---
+schema: ns-artifact/2
+unit: 142-uart-timeout
+phase: verify
+status: fail
+cause: criteria_failed
+next: build
+reason: \"AC2 fails: the timeout is still 5s\"
+sha: 0e05787
+updated: 2026-10-08T21:14:00Z
+---
+# Evidence: 142-uart-timeout
+";
+
+fn artifact_check(text: &str, extra: &[&str]) -> (Option<i32>, serde_json::Value) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("evidence.md");
+    fs::write(&file, text).unwrap();
+    let out = ns()
+        .args(["artifact", "check", file.to_str().unwrap()])
+        .args(extra)
+        .output();
+    (
+        out.status.code(),
+        serde_json::from_slice(&out.stdout).unwrap(),
+    )
+}
+
+#[test]
+fn artifact_check_prints_the_routing_fields_of_a_valid_artifact() {
+    let (code, v) = artifact_check(VALID_EVIDENCE, &["--phase", "verify"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["schema"], "ns-artifact/2");
+    assert_eq!(v["phase"], "verify");
+    assert_eq!(v["status"], "fail");
+    assert_eq!(v["cause"], "criteria_failed");
+    assert_eq!(v["next"], "build");
+    assert_eq!(v["errors"], serde_json::json!([]));
+}
+
+#[test]
+fn artifact_check_exits_1_with_each_error_and_the_values_as_written() {
+    let text = VALID_EVIDENCE.replace("cause: criteria_failed", "cause: flaky");
+    let (code, v) = artifact_check(&text, &["--phase", "review"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["cause"], "flaky");
+    assert_eq!(v["phase"], "verify");
+    assert_eq!(
+        v["errors"],
+        serde_json::json!([
+            "`phase: verify` but this artifact is checked as `review`",
+            "`cause: flaky` is not one of none, findings_open, criteria_failed, gate_red, base_moved, denied, needs_human, out_of_scope",
+        ])
+    );
+}
+
+#[test]
+fn artifact_check_rejects_a_v1_artifact() {
+    let (code, v) = artifact_check("---\nstatus: pass\nsha: abc1234\n---\nbody\n", &[]);
+    assert_eq!(code, Some(1));
+    assert_eq!(v["schema"], serde_json::Value::Null);
+    assert_eq!(
+        v["errors"][0],
+        "`schema` is missing: add `schema: ns-artifact/2` (an artifact with no schema reads as ns-artifact/1)"
+    );
+}
+
+#[test]
+fn artifact_check_usage_errors_exit_2() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.md");
+    ns().args(["artifact", "check", missing.to_str().unwrap()])
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(predicate::str::contains("cannot read"))
+        .stderr(predicate::str::contains("ns artifact check"));
+    let file = dir.path().join("evidence.md");
+    fs::write(&file, VALID_EVIDENCE).unwrap();
+    ns().args(["artifact", "check", file.to_str().unwrap(), "--phase", "qa"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "possible values: triage, build, verify, review, review-fix, ship",
+        ));
 }
