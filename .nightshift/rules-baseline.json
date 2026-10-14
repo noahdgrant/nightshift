@@ -704,13 +704,6 @@
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
-      "file": "cli/src/watch/scheduler.rs",
-      "message": "this function has too many lines (145/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
-      "snippet": "fn settle("
-    },
-    {
-      "tool": "clippy",
-      "rule": "clippy::too_many_lines",
       "file": "cli/tests/quality.rs",
       "message": "this function has too many lines (111/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn fixture() -> Fixture {"
