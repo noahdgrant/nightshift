@@ -710,3 +710,13 @@ fn exec_scrubs_the_api_billing_variables_for_a_subscription_harness() {
         assert!(!env.contains(&format!("{v}=")), "kept {v}");
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn spawn_fails_when_the_parent_it_was_started_for_is_gone() {
+    let not_me = std::process::id() as libc::pid_t + 1;
+    let e = sh(Kind::Tool, "exit 0")
+        .spawn_for(not_me, tempfile::tempfile().unwrap())
+        .unwrap_err();
+    assert_eq!(e.raw_os_error(), Some(libc::ESRCH), "{e}");
+}

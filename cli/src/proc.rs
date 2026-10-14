@@ -312,6 +312,12 @@ impl Proc {
     /// waits for it and ends it, so no timeout applies. On Linux it gets SIGTERM when the thread
     /// that started it ends, so it never outlives this process.
     pub fn spawn(&mut self, out: File) -> std::io::Result<Child> {
+        self.spawn_for(std::process::id() as libc::pid_t, out)
+    }
+
+    /// [`Proc::spawn`] for the child of process `parent`, which is the caller, so the child
+    /// gives up when that is not who started it.
+    fn spawn_for(&mut self, parent: libc::pid_t, out: File) -> std::io::Result<Child> {
         self.scrub_billing();
         self.cmd
             .stdin(Stdio::null())
@@ -321,7 +327,6 @@ impl Proc {
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::process::CommandExt;
-            let parent = std::process::id() as libc::pid_t;
             // SAFETY: prctl(2) and getppid(2) are async-signal-safe and touch only this child.
             // A parent that died before the prctl is seen by getppid, and the child gives up.
             unsafe {
@@ -330,12 +335,14 @@ impl Proc {
                         return Err(std::io::Error::last_os_error());
                     }
                     if libc::getppid() != parent {
-                        return Err(std::io::Error::other("the parent is gone"));
+                        return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
                     }
                     Ok(())
                 });
             }
         }
+        #[cfg(not(target_os = "linux"))]
+        let _ = parent;
         self.cmd.spawn()
     }
 
