@@ -357,3 +357,117 @@ impl Env {
 }
 
 pub const UNIT: &str = "7-fix-the-thing";
+
+/// A token the tests hand `ns`, to check where it reaches and that it never prints.
+pub const FAKE_TOKEN: &str = "fake-token-4f2a9c";
+
+pub const READY: &str = "status:ready-for-agent";
+
+/// A review with one fixed finding, as a unit that ended writes it.
+pub const FINDING: &str = "## Important\n### I1. Untested branch\n- Location: `work.txt:1`\n- Axis: tests\n- Scope: changed\n- Cycle: 0\n- Status: fixed (cycle 1, abc1234)\n";
+
+/// The numbers of the issues a `ns watch` report queued.
+pub fn queued(v: &Value) -> Vec<u64> {
+    v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["number"].as_u64().unwrap())
+        .collect()
+}
+
+/// The build phase commits to the unit, runs `pre` in the worktree, then another actor lands
+/// `land` on origin's main from a clone, the forge links the new main commit to `pulls`, written
+/// to `<file>-<sha>.json` in the fake forge's directory, and the build rebases onto it.
+pub fn another_actor_lands_linked(e: &Env, pre: &str, land: &str, file: &str, pulls: &str) {
+    e.ctl(
+        "build.sh",
+        &format!(
+            r#"set -e
+c="git -c user.name=f -c user.email=f@f"
+echo own >> work.txt && git add work.txt && $c commit -qm own
+{pre}
+o="$FAKE_CTRL/other"
+rm -rf "$o" && git clone -q "$(git remote get-url origin)" "$o"
+(cd "$o" && {land} && git push -q origin main &&
+  printf '%s' '{pulls}' > "$FAKE_GH_DIR/{file}-$(git rev-parse HEAD).json")
+git fetch -q origin && $c rebase -q origin/main"#
+        ),
+    );
+    e.queue("build", &["pass:script"]);
+}
+
+pub const SQUASH_B: &str = r#"echo b > b.txt && git add b.txt && $c commit -qm "Fix b (#3)""#;
+
+/// The run records `ns run` appended.
+pub fn run_log(e: &Env) -> String {
+    fs::read_to_string(e.root.join(".git/ns/runs.jsonl")).unwrap()
+}
+
+/// A unit worktree on `ns/<unit>` with one commit, a review and a `pr.md` naming PR `pr`,
+/// issue `n` in `issue_state`, and the PR in `pr_state` with a body that closes the issue.
+pub fn unit_with_pr(
+    e: &Env,
+    n: u64,
+    unit: &str,
+    pr: u64,
+    issue_state: &str,
+    pr_state: &str,
+) -> PathBuf {
+    let wt = e.worktree(unit);
+    git(
+        &e.root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            &format!("ns/{unit}"),
+            wt.to_str().unwrap(),
+            "main",
+        ],
+    );
+    fs::write(wt.join(format!("{unit}.txt")), "work\n").unwrap();
+    git(&wt, &["add", &format!("{unit}.txt")]);
+    git(&wt, &["commit", "-q", "-m", unit]);
+    let dir = wt.join(".ns").join(unit);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("pr.md"),
+        format!("---\nunit: {unit}\nphase: ship\nstatus: pass\npr: https://github.com/o/r/pull/{pr}\n---\n"),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("review.md"),
+        format!("---\nunit: {unit}\nphase: review\nstatus: pass\nupdated: 2026-10-08T00:00:00Z\n---\n{FINDING}"),
+    )
+    .unwrap();
+    e.issue(n, unit, issue_state);
+    e.gh_file(&format!("pr-{pr}.state"), pr_state);
+    e.gh_file(&format!("pr-{pr}.body"), &format!("Closes #{n}"));
+    wt
+}
+
+/// The units `ns clean` kept, each with its reason.
+pub fn reasons(v: &Value) -> std::collections::BTreeMap<String, String> {
+    v["kept"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| {
+            (
+                k["unit"].as_str().unwrap().to_string(),
+                k["reason"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// The unit names in a list of `ns clean` units.
+pub fn units_in(v: &Value) -> Vec<String> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["unit"].as_str().unwrap().to_string())
+        .collect()
+}

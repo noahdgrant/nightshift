@@ -19,7 +19,7 @@ use std::thread;
 use std::time::Duration;
 
 use common::{copy_exe, exits, write_exe, Group, Ns};
-use factory_env::{git, Env, NOW, UNIT};
+use factory_env::{git, Env, FAKE_TOKEN, NOW, UNIT};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -32,12 +32,9 @@ include!("run_locks_and_merge_order.rs");
 include!("run_setup_signals.rs");
 include!("run_runners_and_github_checks.rs");
 include!("merge_conflicts_and_validate.rs");
-include!("validate_owner_warning.rs");
 include!("watch_fix_main.rs");
 include!("watch_nights_and_splits.rs");
-include!("forge_tokens.rs");
-include!("forge_access_and_triage.rs");
-include!("gitlab_guards_and_cleanup.rs");
+include!("watch_splits_and_labels.rs");
 include!("triage_pass_and_memory_cap.rs");
 include!("run_signals_and_cleanup.rs");
 include!("cleanup_and_cpus.rs");
