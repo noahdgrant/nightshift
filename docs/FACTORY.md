@@ -165,7 +165,7 @@ See [ns watch](factory/watch.md): [Parallel units](factory/watch.md#parallel-uni
 
 ## Unit lifecycle
 
-See [Unit lifecycle](factory/unit-lifecycle.md): [Cleanup](factory/unit-lifecycle.md#cleanup).
+See [Unit lifecycle](factory/unit-lifecycle.md): [Gates at a glance](factory/unit-lifecycle.md#gates-at-a-glance), every check between the phases on one page, and [Cleanup](factory/unit-lifecycle.md#cleanup).
 
 ## Quality
 

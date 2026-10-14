@@ -10,6 +10,53 @@ A unit is one issue's work, from the issue to its merged change. It has the issu
 
 After cleanup, the run log and transcripts under the git common dir, the quality records on `nightshift/quality`, the PR and the issue remain. A unit whose issue is still open keeps its worktree, so the next run resumes it: a stuck unit, a paused or interrupted one, parked work, or a triage-only run that ended needs-info or needs-define.
 
+## Gates at a glance
+
+Every check between a unit's phases, for this repo's `[gate] local = "build-only"`. The rules live in ["Gate"](run.md#gate), ["Where the gate runs all of CI"](run.md#where-the-gate-runs-all-of-ci) and [Merge](merge.md); this section only maps them.
+
+```
+issue (ready_label)
+  │
+triage ─────── each commit: pre-commit hook
+  │            moved HEAD? ─► fast gate ── red ─► build
+build ──────── each commit: pre-commit hook
+  │            wrote pass ─► FULL GATE ── red ─► build
+verify ─────── each commit: pre-commit hook
+  │            moved HEAD? ─► fast gate ── red ─► build
+review ─────── each commit: pre-commit hook
+  │            moved HEAD? ─► fast gate ── red ─► build
+ship ───────── each commit: pre-commit hook; the push: pre-push hook
+  │            no local gate; GitHub checks run on the PR
+  │            merge.policy = "human" ─► STOP: done, a human merges
+merge step ─── DIRTY ─► ship
+  │            behind the base ─► update the PR; GitHub checks run again
+  │            wait for GitHub checks ── red ─► build
+  │            merge lock; base moved since this round began? ─► round again
+  │              after 5 moves: hold the merge lock through the whole round
+  │              11th move: stuck
+  │            human_review file or region ─► STOP: done, a human merges
+  │            squash-merge
+merged ─────── GitHub CI runs on the default branch
+  │
+cleanup
+```
+
+| Gate | Where it runs | Command | Skipped when | What red costs |
+|---|---|---|---|---|
+| pre-commit hook | every commit in any phase, on the working tree | `.githooks/pre-commit`: `scripts/ci-local.sh --fast` | never: `--fast` doesn't use the pass cache | the commit fails, and the phase fixes it in the same attempt |
+| pre-push hook | every push, in a temporary worktree at each commit pushed | `.githooks/pre-push`: `scripts/ci-local.sh --fast` (no `--fast` under `every-step`) | a commit already checked in the same push; under `every-step`, a cache hit by tree | the push is refused, and the phase fixes it in the same attempt |
+| full gate | `ns run`, in the worktree, after a build that wrote `pass` (or after a build that wrote nothing while the gate was red at another HEAD) | `[phases.build] gate`, else the `ci-local` row of `docs/agents/stack.md`; then `ns rules check` with a `rules` row, and `ns ratchet check` with ratchets | the full gate already went green at this HEAD in this invocation; `ci-local.sh` exits 0 at once on a cache hit by tree | a build attempt; no attempt when the red points at files another phase's commits changed (at most 6 per invocation) |
+| fast gate | `ns run`, in the worktree, after triage, verify or review | the base command with ` --fast`, then the `ci-affected` row, with `NS_GATE_FILES` | the phase didn't move HEAD; the full or fast gate already went green at this HEAD | as the full gate; the rebuild's gate is the full one |
+| GitHub checks | GitHub, on the PR head after the merge step updated it | `.github/workflows/ci.yml` | never; under `policy = "human"` nothing waits on them | a build attempt, with the failing checks as `{feedback}` |
+| CI on the default branch | GitHub, on the push to `main` the merge makes | `.github/workflows/ci.yml` | never | nothing automatic: the default branch is red until someone fixes it |
+
+`[gate] local = "every-step"` (the default) changes four things:
+
+- Every gate runs the full command. The fast gates become full gates, and ship that moved HEAD gets one too.
+- The pre-push hook runs `scripts/ci-local.sh` without `--fast`, so its pass cache applies.
+- The merge step runs the full gate before it waits for GitHub's checks. With `[merge] local_queue = true` (the default) it gates the merge of the PR head with the tip of `origin/<default>` in a scratch worktree, skipped when that pair already has a verdict; with `local_queue = false` it updates a `BEHIND` PR and gates the PR head, skipped when the gate already went green there. Red costs a build attempt. See ["Local merge queue"](merge.md#local-merge-queue).
+- `DIRTY` goes back to build, not ship.
+
 ## Cleanup
 
 ```
