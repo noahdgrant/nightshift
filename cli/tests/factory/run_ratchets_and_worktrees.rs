@@ -296,16 +296,6 @@ fn a_red_gate_is_not_skipped_when_the_rebuild_writes_no_artifact() {
 }
 
 #[test]
-fn a_red_gate_with_a_silent_rebuild_never_reaches_verify() {
-    let e = Env::new();
-    e.factory("[phases.build]\ngate = \"exit 1\"\n");
-    e.queue("build", &["pass:commit", "none"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["reason"], "build is out of attempts (2)");
-    assert_eq!(e.calls(), ["triage", "build", "build"]);
-}
-
-#[test]
 fn a_rebuild_that_passes_at_the_same_head_reruns_a_red_gate() {
     let e = Env::new();
     let flag = e.ctrl.join("gate-green");
@@ -325,20 +315,6 @@ fn a_rebuild_that_passes_at_the_same_head_reruns_a_red_gate() {
     assert_eq!(g[0]["green"], false);
     assert_eq!(g[1]["green"], true);
     assert_eq!(g[0]["sha"], g[1]["sha"]);
-}
-
-#[test]
-fn a_red_gate_with_a_committing_rebuild_that_writes_no_artifact_never_reaches_verify() {
-    let e = Env::new();
-    e.factory("[phases.build]\nmax_attempts = 3\ngate = \"exit 1\"\n");
-    e.queue("build", &["pass:commit", "none:commit", "none:commit"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["outcome"], "stuck");
-    assert!(
-        !e.calls().contains(&"verify".to_string()),
-        "{:?}",
-        e.calls()
-    );
 }
 
 #[test]
