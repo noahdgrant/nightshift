@@ -19,3 +19,9 @@ rule:
           field: index
           kind: string
           has: {kind: string_fragment, pattern: $PROP, regex: '^(?:innerHTML|outerHTML)$'}
+      - kind: subscript_expression
+        has:
+          field: index
+          kind: template_string
+          has: {kind: string_fragment, pattern: $PROP, regex: '^(?:innerHTML|outerHTML)$'}
+          not: {has: {kind: template_substitution}}

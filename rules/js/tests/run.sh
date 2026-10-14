@@ -309,6 +309,31 @@ grep -qF '**/index.js' "$entry_points" || fail "install.sh: a rerun dropped the 
 out=$(cd "$repo" && .nightshift/rules/js/check.sh eslint no-internal-modules 2>&1) || true
 [ -n "$(internal "$out")" ] || fail "install.sh: no-internal-modules is off after a rerun: $out"
 
+# Every declared glob is an entry point: with two, an import matching the second passes and one
+# matching neither fails.
+mkdir -p "$repo/multi/lib"
+printf 'export const index = 1;\n' >"$repo/multi/lib/index.js"
+printf 'export const pub = 1;\n' >"$repo/multi/lib/public.js"
+printf 'export const secret = 1;\n' >"$repo/multi/lib/secret.js"
+printf 'import { index } from "./lib/index.js";\nimport { pub } from "./lib/public.js";\nexport const used = [index, pub];\n' >"$repo/multi/first-second.js"
+printf 'import { secret } from "./lib/secret.js";\nexport const used = secret;\n' >"$repo/multi/neither.js"
+printf '["**/index.js", "**/public.js"]\n' >"$entry_points"
+out=$(cd "$repo" && .nightshift/rules/js/check.sh eslint multi 2>&1) || true
+jq -e 'select(.file == "multi/neither.js" and .rule == "import-x/no-internal-modules")' <<<"$out" >/dev/null ||
+  fail "no-internal-modules: an import matching neither of two globs gave no finding: $out"
+if jq -e 'select(.file == "multi/first-second.js" and .rule == "import-x/no-internal-modules")' <<<"$out" >/dev/null; then
+  fail "no-internal-modules: an import matching the second of two globs was flagged: $out"
+fi
+rm -r "$repo/multi"
+printf '["**/index.js"]\n' >"$entry_points"
+
+# A pack installed before entry-points.json existed is upgraded: a rerun adds the shipped
+# empty file back.
+rm "$entry_points"
+"$pack/install.sh" "$repo" >/dev/null 2>&1 || fail "install.sh: a rerun with no entry-points.json failed"
+[ "$(jq -c . "$entry_points" 2>/dev/null)" = "[]" ] || fail "install.sh: a rerun with no entry-points.json did not ship the empty one"
+printf '["**/index.js"]\n' >"$entry_points"
+
 # A rerun keeps the repo's data: the allowlist, the helper names and the duplicate-helper
 # ignores. It replaces the rules row rather than adding a second one.
 repo=$tmp/js
