@@ -436,6 +436,51 @@ fn the_baseline_is_sorted_by_key_whatever_order_the_tools_print() {
 }
 
 #[test]
+fn the_baseline_orders_by_tool_rule_file_snippet_then_message() {
+    let r = Repo::new();
+    fs::write(r.path("a.py"), "aa\nbb\n").unwrap();
+    fs::write(r.path("b.py"), "cc\n").unwrap();
+    let f = |rule: &str, file: &str, line: u32, message: &str| {
+        format!(
+            "{{\"rule\": \"{rule}\", \"file\": \"{file}\", \"line\": {line}, \"message\": \"{message}\"}}\n"
+        )
+    };
+    r.findings("lint-b", &f("R1", "b.py", 1, "m"));
+    r.findings(
+        "lint-a",
+        &[
+            f("R2", "a.py", 1, "m"),
+            f("R1", "b.py", 1, "m"),
+            f("R1", "a.py", 2, "a"),
+            f("R1", "a.py", 1, "z"),
+            f("R1", "a.py", 1, "a"),
+        ]
+        .concat(),
+    );
+    r.ns(&["baseline", "--allow-growth"]);
+    let written: Vec<[String; 5]> = r.baseline().unwrap()["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            ["tool", "rule", "file", "snippet", "message"].map(|k| e[k].as_str().unwrap().into())
+        })
+        .collect();
+    let row = |a: &str, b: &str, c: &str, d: &str, e: &str| [a, b, c, d, e].map(String::from);
+    assert_eq!(
+        written,
+        [
+            row("lint-a", "R1", "a.py", "aa", "a"),
+            row("lint-a", "R1", "a.py", "aa", "z"),
+            row("lint-a", "R1", "a.py", "bb", "a"),
+            row("lint-a", "R1", "b.py", "cc", "m"),
+            row("lint-a", "R2", "a.py", "aa", "m"),
+            row("lint-b", "R1", "b.py", "cc", "m"),
+        ]
+    );
+}
+
+#[test]
 fn findings_printed_only_on_stderr_are_read() {
     let r = Repo::with_stack("| rules | `echo 'src.py:2:5: eval is banned' >&2; exit 1` |\n");
     let (code, v, err) = r.ns(&["check"]);

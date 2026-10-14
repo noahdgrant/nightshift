@@ -45,8 +45,8 @@ struct Entry {
     tool: String,
     rule: String,
     file: String,
-    message: String,
     snippet: String,
+    message: String,
 }
 
 impl From<&Finding> for Entry {
