@@ -8,13 +8,13 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::eval::trial::tail;
 use crate::factory::{Factory, LocalGate};
 use crate::git::same_sha;
 use crate::memcap::{self, Cap, Cut};
 use crate::ratchet;
 use crate::shell::shell_quote;
 use crate::stack::rows;
+use crate::tail::tail;
 
 /// Lines of gate output kept for `{feedback}`.
 const TAIL_LINES: usize = 40;

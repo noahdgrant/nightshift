@@ -1,7 +1,7 @@
 //! One trial's sandbox: scratch repo, throwaway HOME, the harness process and its timeout.
 
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -276,23 +276,6 @@ impl ProcResult {
             (false, None) => "was killed by a signal".into(),
         }
     }
-}
-
-/// The last `n` bytes of `path`, from a line start unless the whole file fits or they hold no
-/// line break.
-pub fn tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
-    let mut f = File::open(path)?;
-    let len = f.metadata()?.len();
-    let start = len.saturating_sub(n);
-    f.seek(SeekFrom::Start(start))?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    if start > 0 {
-        if let Some(i) = buf.iter().position(|b| *b == b'\n') {
-            buf.drain(..=i);
-        }
-    }
-    Ok(buf)
 }
 
 fn tail_of(path: &Path, max: usize) -> String {
