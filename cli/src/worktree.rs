@@ -79,12 +79,7 @@ fn run_setup(
             .output_to(stderr_file()?)
             .until_stop()
             .output();
-        // A stop kills the command as a signal would, with no exit code.
-        let exit = match ran {
-            Ok(out) => out.status.code(),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => None,
-            Err(e) => return Err(e).with_context(|| format!("cannot run setup command {c:?}")),
-        };
+        let exit = setup_exit(ran, c)?;
         results.push(SetupResult {
             run: c.clone(),
             exit,
@@ -94,6 +89,16 @@ fn run_setup(
         }
     }
     Ok(results)
+}
+
+/// A setup command's exit code. A stop kills the command as a signal would, with no exit code;
+/// a command that cannot run, or runs out of time, aborts setup.
+fn setup_exit(ran: std::io::Result<std::process::Output>, command: &str) -> Result<Option<i32>> {
+    match ran {
+        Ok(out) => Ok(out.status.code()),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("cannot run setup command {command:?}")),
+    }
 }
 
 /// This process's stderr as a file a child can write to.
@@ -509,6 +514,72 @@ pub fn remove(unit: &str, dry_run: bool, force: bool, repo: Option<&Path>) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::ErrorKind;
+
+    fn setup(commands: &[&str], dir: &Path) -> Vec<SetupResult> {
+        let commands: Vec<String> = commands.iter().map(|c| c.to_string()).collect();
+        run_setup(&commands, "u", dir, dir).unwrap()
+    }
+
+    #[test]
+    fn a_failing_setup_command_records_its_exit_and_the_rest_do_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let results = setup(&["exit 3", "touch ran-after"], dir.path());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].run, "exit 3");
+        assert_eq!(results[0].exit, Some(3));
+        assert!(!dir.path().join("ran-after").exists());
+    }
+
+    #[test]
+    fn passing_setup_commands_all_run_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let results = setup(&["touch a", "test -e a"], dir.path());
+        let exits: Vec<_> = results.iter().map(|r| r.exit).collect();
+        assert_eq!(exits, [Some(0), Some(0)]);
+    }
+
+    const STOP_MARK: &str = "NS_WORKTREE_SETUP_STOP_PROBE";
+
+    #[test]
+    fn a_stop_ends_setup_with_no_exit_code_and_skips_the_rest() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "worktree::tests::stop_probe", "--test-threads=1"])
+            .env(STOP_MARK, "1")
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{log}");
+        assert!(log.contains("1 passed"), "the probe did not run: {log}");
+    }
+
+    /// Run by the test above in a process of its own, since a stop request is never undone.
+    #[test]
+    fn stop_probe() {
+        if std::env::var_os(STOP_MARK).is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        crate::stop::request(libc::SIGTERM);
+        let results = setup(&["sleep 600", "touch ran-after"], dir.path());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].exit, None);
+        assert!(!dir.path().join("ran-after").exists());
+    }
+
+    #[test]
+    fn a_timed_out_setup_command_aborts_setup_naming_the_command() {
+        let timed_out = std::io::Error::new(ErrorKind::TimedOut, "`sh -c sleep 9` timed out");
+        let e = setup_exit(Err(timed_out), "sleep 9").unwrap_err();
+        assert_eq!(e.to_string(), "cannot run setup command \"sleep 9\"");
+        assert!(format!("{e:#}").contains("timed out"), "{e:#}");
+    }
+
+    #[test]
+    fn an_interrupted_setup_command_has_no_exit_code() {
+        let stopped = std::io::Error::from(ErrorKind::Interrupted);
+        assert_eq!(setup_exit(Err(stopped), "x").unwrap(), None);
+    }
 
     #[test]
     fn the_exclude_list_gains_only_the_entries_it_lacks() {

@@ -346,6 +346,7 @@ impl Proc {
     #[cfg(unix)]
     pub fn exec(&mut self) -> std::io::Error {
         use std::os::unix::process::CommandExt;
+        self.scrub_billing();
         // SAFETY: the closure only does pthread_sigmask(3) and an atomic load.
         unsafe {
             self.cmd.pre_exec(|| {
@@ -419,6 +420,7 @@ fn wait_until(
     early: Early,
     stopped: Option<fn() -> bool>,
 ) -> std::io::Result<Waited> {
+    let mut delay = FIRST_POLL;
     loop {
         if let Some(s) = child.try_wait()? {
             return Ok(Waited::Exited(s));
@@ -435,8 +437,18 @@ fn wait_until(
             child.wait()?;
             return Ok(ended);
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(delay);
+        delay = next_poll(delay);
     }
+}
+
+const FIRST_POLL: Duration = Duration::from_millis(1);
+const LAST_POLL: Duration = Duration::from_millis(20);
+
+/// The wait before the poll after one that waited `delay`: doubling, so a quick child is seen
+/// within a millisecond or two and a long one is polled every 20 ms.
+fn next_poll(delay: Duration) -> Duration {
+    (delay * 2).min(LAST_POLL)
 }
 
 #[cfg(unix)]

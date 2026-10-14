@@ -546,3 +546,126 @@ fn a_spawned_subscription_harness_never_sees_the_api_billing_variables() {
         assert!(!env.contains(&format!("{v}=")), "got {v}");
     }
 }
+
+#[test]
+fn polling_starts_at_a_millisecond_and_doubles_up_to_twenty() {
+    let mut delay = FIRST_POLL;
+    let mut seen = vec![delay];
+    for _ in 0..7 {
+        delay = next_poll(delay);
+        seen.push(delay);
+    }
+    let ms: Vec<u128> = seen.iter().map(Duration::as_millis).collect();
+    assert_eq!(ms, [1, 2, 4, 8, 16, 20, 20, 20]);
+}
+
+#[test]
+fn scrub_billing_removes_every_codex_api_variable_and_no_anthropic_one() {
+    let argv = ["codex".to_string()];
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg("env");
+    for v in billing::CODEX_API_ENV.iter().chain(billing::API_ENV) {
+        cmd.env(v, "decoy");
+    }
+    scrub_billing(&mut cmd, &argv);
+    let env = String::from_utf8_lossy(&cmd.output().unwrap().stdout).into_owned();
+    for v in billing::CODEX_API_ENV {
+        assert!(!env.contains(&format!("{v}=")), "kept {v}");
+    }
+    for v in billing::API_ENV
+        .iter()
+        .filter(|v| v.starts_with("ANTHROPIC"))
+    {
+        assert!(env.contains(&format!("{v}=decoy")), "removed {v}");
+    }
+}
+
+#[test]
+fn scrub_git_removes_every_git_location_variable() {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg("env");
+    for v in git::LOCATION_VARS {
+        cmd.env(v, "/decoy");
+    }
+    cmd.env("GIT_AUTHOR_NAME", "kept");
+    scrub_git(&mut cmd);
+    let env = String::from_utf8_lossy(&cmd.output().unwrap().stdout).into_owned();
+    for v in git::LOCATION_VARS {
+        assert!(!env.contains(&format!("{v}=")), "kept {v}");
+    }
+    assert!(env.contains("GIT_AUTHOR_NAME=kept"), "{env}");
+}
+
+const EXEC_MARK: &str = "NS_PROC_EXEC_PROBE";
+
+fn run_exec_probe(mode: &str, envs: &[(&str, &str)]) -> String {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "proc::tests::exec_probe",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env(EXEC_MARK, mode)
+        .envs(envs.iter().copied())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Run by the exec tests below in a process of its own, since a successful exec replaces it.
+#[test]
+fn exec_probe() {
+    let Ok(mode) = std::env::var(EXEC_MARK) else {
+        return;
+    };
+    match mode.as_str() {
+        "stopped" => {
+            crate::stop::request(libc::SIGTERM);
+            let e = Proc::tool("true").exec();
+            println!("{:?}", e.kind());
+        }
+        "blocked" => {
+            let e = Proc::tool("grep")
+                .args(["-E", "^SigBlk", "/proc/self/status"])
+                .exec();
+            panic!("exec failed: {e}");
+        }
+        "billing" => {
+            let bin = std::env::var("NS_PROC_EXEC_BIN").unwrap();
+            let e = Proc::harness(bin, true).arg("-c").arg("env").exec();
+            panic!("exec failed: {e}");
+        }
+        other => panic!("unknown mode {other}"),
+    }
+}
+
+#[test]
+fn exec_fails_as_interrupted_when_a_stop_was_already_requested() {
+    let text = run_exec_probe("stopped", &[]);
+    assert!(text.contains("... Interrupted\n"), "{text}");
+}
+
+#[test]
+fn exec_runs_the_program_with_sigint_and_sigterm_blocked() {
+    let text = run_exec_probe("blocked", &[]);
+    let line = text.lines().find(|l| l.contains("SigBlk:")).unwrap();
+    let mask = u64::from_str_radix(line.split_whitespace().last().unwrap(), 16).unwrap();
+    let (int, term) = (1 << (libc::SIGINT - 1), 1 << (libc::SIGTERM - 1));
+    assert_eq!(mask & (int | term), int | term, "{text}");
+}
+
+#[test]
+fn exec_scrubs_the_api_billing_variables_for_a_subscription_harness() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("claude");
+    crate::testutil::write_exe(&bin, "#!/bin/sh\nexec sh \"$@\"\n");
+    let mut envs = vec![("NS_PROC_EXEC_BIN", bin.to_str().unwrap())];
+    envs.extend(billing::API_ENV.iter().map(|v| (*v, "decoy")));
+    let env = run_exec_probe("billing", &envs);
+    assert!(env.contains("PATH="), "{env}");
+    for v in billing::API_ENV {
+        assert!(!env.contains(&format!("{v}=")), "kept {v}");
+    }
+}
