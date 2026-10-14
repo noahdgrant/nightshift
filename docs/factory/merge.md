@@ -53,7 +53,7 @@ Outside the local merge queue (under `build-only`, with `local_queue = false`, o
 
 - No path in both lists: the step logs `merge_update_skipped` (`pr`, `base`, `pr_files`, `base_files`) and skips the update. The gate, if one runs here, and the CI wait both run on the PR head as it is, so CI that already passed there counts.
 - A path in both: the step logs `merge_update_needed` (`pr`, `overlap`) and updates as before.
-- Either list can't be read, such as when the PR head isn't in the worktree, the two share no history, or the fetched tip is already in the PR head even though GitHub reports it behind: the step logs `merge_update_needed` with `overlap: null` and the `error`, and updates as before.
+- Either list can't be read, such as when the PR head isn't in the worktree, or the two share no history: the step logs `merge_update_needed` with `overlap: null` and the `error`, and updates as before. A fetched tip already in the PR head, though GitHub reports it behind, is logged the same way with a `reason` in place of the `error`, and updates as before.
 
 The check runs again under the merge lock when the base moved during CI (step 5). A head GitHub made by `update-branch` isn't in the worktree, so after an update the check can't read the lists and the PR goes round as before.
 
@@ -63,7 +63,7 @@ Branch protection that requires PRs to be up to date makes GitHub refuse to merg
 
 ## Red main holds merges
 
-Outside the local merge queue, before it takes the merge lock (step 5, and before it holds the lock through CI past the fifth move), the step reads the CI on the default branch's head with the query `ns watch` uses for main's CI ([watch.md](watch.md#mains-ci)). Red, with a failed check, holds the merge: the step logs `merge_held_main_red` (`pr`, `sha`) once per red head and reads again with the backoff of step 4. A head that is still red after `ci_timeout_minutes` ends the unit `stuck` with "main's CI is red at <sha>; not merging until it is fixed". Checks still running, or none, don't count as red, and a query that fails holds nothing. The unit working the issue `ns watch` filed to fix main (titled `fix: main is red at ...`) is never held, since its merge is what turns main green. With the local merge queue on, the step doesn't read main's CI: the queue's gate on the merge with the base is the check there.
+Outside the local merge queue, before it takes the merge lock (step 5, and before it holds the lock through CI past the fifth move), the step reads the CI on the default branch's head with the query `ns watch` uses for main's CI ([watch.md](watch.md#mains-ci)). Red, with every check finished and one failed, holds the merge: the step logs `merge_held_main_red` (`pr`, `sha`) once per red head and reads again with the backoff of step 4. A head that is still red after `ci_timeout_minutes` ends the unit `stuck` with "main's CI is red at <sha>; not merging until it is fixed". Checks still running (even with another failed), or none, don't count as red, and a query that fails holds nothing. The unit working the issue `ns watch` filed to fix main (titled `fix: main is red at ...`) is never held, since its merge is what turns main green. With the local merge queue on, the step doesn't read main's CI: the queue's gate on the merge with the base is the check there.
 
 ## Marked regions
 

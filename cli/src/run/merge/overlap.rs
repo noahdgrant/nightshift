@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde_json::json;
 
 use super::super::Ctx;
@@ -25,14 +25,22 @@ fn changed_files(wt: &Path, from: &str, to: &str) -> Result<BTreeSet<String>> {
 pub(super) fn needs_update(ctx: &Ctx<'_>, n: u64, head: &str, tip: &str) -> bool {
     let wt = &ctx.worktree;
     let lists = git::run(wt, &["merge-base", head, tip]).and_then(|mb| {
-        // A tip already in the head shows nothing the PR lacks, though GitHub says it is behind.
         if same_sha(&mb, tip) {
-            return Err(anyhow!("{tip} is already in the PR head {head}"));
+            return Ok(None);
         }
-        Ok((changed_files(wt, &mb, head)?, changed_files(wt, &mb, tip)?))
+        Ok(Some((
+            changed_files(wt, &mb, head)?,
+            changed_files(wt, &mb, tip)?,
+        )))
     });
     match lists {
-        Ok((pr_files, base_files)) => {
+        Ok(None) => ctx.log(json!({
+            "event": "merge_update_needed",
+            "pr": n,
+            "overlap": null,
+            "reason": format!("{tip} is already in the PR head {head}"),
+        })),
+        Ok(Some((pr_files, base_files))) => {
             let overlap: Vec<&String> = pr_files.intersection(&base_files).collect();
             if overlap.is_empty() {
                 ctx.log(json!({

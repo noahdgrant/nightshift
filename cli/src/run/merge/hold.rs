@@ -18,7 +18,7 @@ fn fixes_main(unit: &str) -> bool {
 
 /// Wait while the default branch's CI is red, before the merge lock: `None` once it isn't, or
 /// can't be read, else how the merge step ends after `ci_timeout_minutes`. A head with no
-/// finished check is not red. The unit fixing main is never held.
+/// finished check, or with a check still running, is not red. The unit fixing main is never held.
 pub(super) fn hold_while_main_red(
     ctx: &Ctx<'_>,
     n: u64,
@@ -40,8 +40,12 @@ pub(super) fn hold_while_main_red(
         let Ok(head) = forge.main_checks() else {
             return Ok(None);
         };
+        let running = head
+            .checks
+            .iter()
+            .any(|c| c.outcome == ci::Outcome::Running);
         let main = ci::classify(head);
-        if main.state != ci::State::Red {
+        if main.state != ci::State::Red || running {
             return Ok(None);
         }
         let sha = main.sha.unwrap_or_default();

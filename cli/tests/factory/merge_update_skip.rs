@@ -232,6 +232,14 @@ fn a_main_still_red_after_the_ci_timeout_ends_the_unit_stuck() {
 fn a_main_with_ci_still_running_or_unreadable_holds_nothing() {
     for (file, text) in [
         ("main-ci.json", main_ci_at(MAIN_TIP, &[], &[("test", "IN_PROGRESS", "")])),
+        (
+            "main-ci.json",
+            main_ci_at(
+                MAIN_TIP,
+                &[],
+                &[("test", "COMPLETED", "FAILURE"), ("lint", "IN_PROGRESS", "")],
+            ),
+        ),
         ("main-ci.fail", "HTTP 502".to_string()),
     ] {
         let e = behind(&format!("{AUTO}{BUILD_ONLY}"), EDIT_WORK, LAND_DISJOINT);
@@ -272,4 +280,41 @@ fn with_the_local_queue_on_a_red_main_holds_nothing() {
     assert_eq!(v["outcome"], "merged", "{v}");
     assert!(events_named(&e, "merge_held_main_red").is_empty());
     assert!(!e.gh_calls().contains("api graphql"));
+}
+
+#[test]
+fn the_unit_fixing_main_merges_on_a_red_main_without_a_hold() {
+    let e = behind(&format!("{AUTO}{BUILD_ONLY}"), EDIT_WORK, LAND_DISJOINT);
+    e.issue(7, "fix: main is red at abcdef0: test", "OPEN");
+    e.gh_file("main-ci.json", &main_ci_test("FAILURE"));
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert!(events_named(&e, "merge_held_main_red").is_empty());
+    assert!(e.gh_calls().contains("pr merge"));
+}
+
+#[test]
+fn a_behind_pr_whose_head_holds_main_s_tip_updates_and_logs_why() {
+    let e = behind(&format!("{AUTO}{BUILD_ONLY}"), EDIT_WORK, "true");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert!(e.gh_calls().contains("pr update-branch 12"));
+    let needed = events_named(&e, "merge_update_needed");
+    assert_eq!(needed.len(), 1, "{needed:?}");
+    assert_eq!(needed[0]["overlap"], Value::Null, "{needed:?}");
+    assert!(needed[0].get("error").is_none(), "{needed:?}");
+    let reason = needed[0]["reason"].as_str().unwrap();
+    assert!(reason.contains("already in the PR head"), "{reason}");
+    assert!(events_named(&e, "merge_update_skipped").is_empty());
+}
+
+#[test]
+fn under_build_only_a_clean_pr_missing_a_disjoint_landing_skips_the_update() {
+    let e = behind(&format!("{AUTO}{BUILD_ONLY}"), EDIT_WORK, LAND_DISJOINT);
+    e.gh_file("pr-12.merge", "CLEAN");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert!(!e.gh_calls().contains("pr update-branch"));
+    assert_eq!(events_named(&e, "merge_update_skipped").len(), 1);
+    assert!(events_named(&e, "merge_update_needed").is_empty());
 }
