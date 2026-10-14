@@ -2248,6 +2248,71 @@ fn factory_def(root: &Path, text: &str) {
     fs::write(root.join(".nightshift/nightshift.toml"), text).unwrap();
 }
 
+/// A setup command that writes its shell's pid and its `sleep`'s pid to the fifo `pids`, then
+/// waits on the sleep.
+fn slow_setup(pids: &Path) -> String {
+    format!(
+        "name = \"demo\"\n\n[worktree]\nsetup = [\"sleep 600 & echo $$ $! > {}; wait\"]\n",
+        pids.display()
+    )
+}
+
+/// Signal an `ns worktree` run whose setup command sleeps, and check that the shell and the
+/// `sleep` it started both end, and that ns reports the stop as a failed setup command.
+fn a_signal_ends_the_setup_command(args: &[&str], sig: libc::c_int, prepare: impl Fn(&Path)) {
+    let (_tmp, root) = repo();
+    prepare(&root);
+    let fifo = root.parent().unwrap().join("pids");
+    assert!(StdCommand::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    factory_def(&root, &slow_setup(&fifo));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(fs::read_to_string(fifo).unwrap()));
+    let mut ns = ns();
+    let mut g = ns.current_dir(&root).args(args).start();
+    let line = g.recv(&rx);
+    let pids: Vec<&str> = line.split_whitespace().collect();
+    assert_eq!(pids.len(), 2, "{line:?}");
+    // SAFETY: kill(2) on the ns process this test started.
+    assert_eq!(unsafe { libc::kill(g.id() as libc::pid_t, sig) }, 0);
+    let status = g.wait();
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut g.take_stderr(), &mut stderr).unwrap();
+    assert_eq!(status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("exited with a signal") && stderr.contains("ns worktree setup u1"),
+        "{stderr}"
+    );
+    for pid in &pids {
+        assert!(common::exits(pid), "pid {pid} outlived ns");
+    }
+}
+
+#[test]
+fn a_sigint_to_worktree_new_ends_the_setup_command() {
+    a_signal_ends_the_setup_command(&["worktree", "new", "u1"], libc::SIGINT, |_| ());
+}
+
+#[test]
+fn a_sigterm_to_worktree_new_ends_the_setup_command() {
+    a_signal_ends_the_setup_command(&["worktree", "new", "u1"], libc::SIGTERM, |_| ());
+}
+
+#[test]
+fn a_sigint_or_sigterm_to_worktree_setup_ends_the_setup_command() {
+    for sig in [libc::SIGINT, libc::SIGTERM] {
+        a_signal_ends_the_setup_command(&["worktree", "setup", "u1"], sig, |root| {
+            ns().current_dir(root)
+                .args(["worktree", "new", "u1"])
+                .assert()
+                .success();
+        });
+    }
+}
+
 #[test]
 fn worktree_new_runs_setup_once() {
     let (_tmp, root) = repo();

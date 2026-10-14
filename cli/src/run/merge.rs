@@ -509,7 +509,7 @@ fn wait_for_ci(
 
     // Wait for CI, bounded.
     let mut cmd = Command::new("gh");
-    crate::git::scrub(&mut cmd);
+    crate::proc::scrub_git(&mut cmd);
     cmd.args(["pr", "checks", &ns, "--watch"])
         .current_dir(wt)
         .stdout(Stdio::null())

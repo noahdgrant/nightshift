@@ -3,11 +3,12 @@
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ExitStatus};
 
 use anyhow::{Context, Result};
 
 use crate::clock;
+use crate::proc::Proc;
 use crate::watch::{snapshot::Snapshot, unit_id, Issue};
 
 #[cfg(unix)]
@@ -37,7 +38,7 @@ pub(super) fn spawn(
     };
     let out =
         File::create(result).with_context(|| format!("cannot create {}", result.display()))?;
-    let mut cmd = Command::new(exe);
+    let mut cmd = Proc::tool(exe);
     // Naming the unit here spares `ns run` reading the title back through `gh`, which a GitLab
     // project has no answer for.
     cmd.args(["run", &unit_id(issue), "--issue", &issue.number.to_string()])
@@ -46,10 +47,7 @@ pub(super) fn spawn(
         .arg("--factory")
         .arg(snap.factory())
         .args(["--cpus", &cpus.to_string()])
-        .env("NS_CONFIG", snap.config())
-        .stdin(Stdio::null())
-        .stdout(out)
-        .stderr(Stdio::inherit());
+        .env("NS_CONFIG", snap.config());
     if let Some(b) = base {
         cmd.args(["--base", &b]);
     }
@@ -57,29 +55,7 @@ pub(super) fn spawn(
     if let Some(t) = clock.pinned_at() {
         cmd.env("NS_NOW", t.to_string());
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-        #[cfg(target_os = "linux")]
-        {
-            let watch = std::process::id() as libc::pid_t;
-            // SAFETY: prctl(2) and getppid(2) are async-signal-safe and touch only this child.
-            // A parent that died before the prctl is seen by getppid, and the child gives up.
-            unsafe {
-                cmd.pre_exec(move || {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if libc::getppid() != watch {
-                        return Err(std::io::Error::other("ns watch is gone"));
-                    }
-                    Ok(())
-                });
-            }
-        }
-    }
-    cmd.spawn()
+    cmd.spawn(out)
         .with_context(|| format!("cannot start ns run --issue {}", issue.number))
 }
 /// Signal a unit's process group: its `ns run` and what runs in that group, a setup command or

@@ -153,7 +153,7 @@ fn run_pack(root: &Path, cmds: &[String]) -> Result<Run> {
         let tool = tool_name(cmd);
         let log = tempfile::tempfile().context("cannot create a file for rule output")?;
         let mut c = Command::new("sh");
-        crate::git::scrub(&mut c);
+        crate::proc::scrub_git(&mut c);
         c.arg("-c")
             .arg(cmd)
             .current_dir(root)

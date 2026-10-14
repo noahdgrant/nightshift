@@ -91,7 +91,7 @@ pub(super) fn run_harness(
         }
     }
     let (mut cmd, watch) = memcap::command(cap, &argv[0]);
-    crate::git::scrub(&mut cmd);
+    crate::proc::scrub_git(&mut cmd);
     crate::cpus::apply(&mut cmd);
     cmd.args(&argv[1..])
         .current_dir(cwd)
@@ -101,7 +101,7 @@ pub(super) fn run_harness(
         cmd.env(k, v);
     }
     if subscription {
-        billing::scrub(&mut cmd, argv);
+        crate::proc::scrub_billing(&mut cmd, argv);
     }
     if billing::is_claude(argv) {
         billing::wait_for_bg_tasks(&mut cmd);
