@@ -517,13 +517,8 @@ pub(super) fn drive(
             }
             continue;
         }
-        let trigger = if cut_short {
-            head_moved.then_some(gate::Trigger::PhaseMovedHead)
-        } else {
-            gate_trigger(phase, art.as_ref(), head_moved)
-        };
-        if let Some((cmd, trigger)) =
-            trigger.and_then(|t| Some((ctx.gate.commands.for_trigger(t)?, t)))
+        if let Some((cmd, trigger)) = gate_trigger(phase, art.as_ref(), head_moved)
+            .and_then(|t| Some((ctx.gate.commands.for_trigger(t)?, t)))
         {
             let red = ctx.gate(&mut gate_state, trigger, cmd, phase, attempt);
             if let Some(sig) = red.as_ref().err().and(crate::stop::requested()) {
