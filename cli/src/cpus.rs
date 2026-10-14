@@ -3,7 +3,6 @@
 //! command it starts; a variable the operator already set is left as it is.
 
 use serde_json::{json, Map, Value};
-use std::process::Command;
 use std::sync::OnceLock;
 
 /// The variables `--cpus` sets: one stack-neutral, two that cargo and the Rust test runner read.
@@ -74,7 +73,7 @@ fn fill(cell: &'static OnceLock<Vec<Setting>>, n: u32) -> &'static [Setting] {
 }
 
 /// Give `cmd` each computed variable; an inherited one reaches it through the environment.
-pub fn apply(cmd: &mut Command) {
+pub fn apply(cmd: &mut crate::proc::Proc) {
     cmd.envs(vars());
 }
 

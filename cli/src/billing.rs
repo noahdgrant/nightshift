@@ -1,7 +1,6 @@
 //! Subscription billing guard for claude and codex runs, and usage-limit detection for claude.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -38,7 +37,7 @@ pub fn is_codex(argv: &[String]) -> bool {
 pub const BG_WAIT_ENV: &str = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS";
 
 /// Lift the ceiling so the phase timeout is the only bound, unless the user set one.
-pub fn wait_for_bg_tasks(cmd: &mut Command) {
+pub fn wait_for_bg_tasks(cmd: &mut crate::proc::Proc) {
     let set_here = cmd.get_envs().any(|(k, v)| k == BG_WAIT_ENV && v.is_some());
     if !set_here && std::env::var_os(BG_WAIT_ENV).is_none() {
         cmd.env(BG_WAIT_ENV, "0");
@@ -50,7 +49,7 @@ pub fn wait_for_bg_tasks(cmd: &mut Command) {
 pub const AUTO_MEMORY_ENV: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
 
 /// Always turn auto-memory off, overriding whatever the operator's environment says.
-pub fn disable_auto_memory(cmd: &mut Command) {
+pub fn disable_auto_memory(cmd: &mut crate::proc::Proc) {
     cmd.env(AUTO_MEMORY_ENV, "1");
 }
 
@@ -248,7 +247,7 @@ mod tests {
 
     #[test]
     fn a_bg_wait_ceiling_already_on_the_command_is_kept() {
-        let mut cmd = Command::new("claude");
+        let mut cmd = crate::proc::Proc::harness("claude", true);
         cmd.env(BG_WAIT_ENV, "5");
         wait_for_bg_tasks(&mut cmd);
         let got: Vec<_> = cmd.get_envs().filter(|(k, _)| *k == BG_WAIT_ENV).collect();

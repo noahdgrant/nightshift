@@ -1,13 +1,15 @@
 //! `ns ask --role <role>`: run the configured harness headless with the prompt on stdin.
 
-use std::io::{IsTerminal, Read, Write};
+use std::fs::File;
+use std::io::{IsTerminal, Read};
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use serde_json::json;
 
 use crate::error::{SfError, EXIT_HARNESS_MISSING, EXIT_NOT_CONFIGURED, EXIT_NO_WRITE_COMMAND};
+use crate::proc::Proc;
 use crate::which::which;
 use crate::{billing, config, factory, git};
 
@@ -88,7 +90,7 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
         )
         .into());
     }
-    plan.exec(&bin, &prompt, cwd, Stdio::inherit())?;
+    plan.exec(&bin, &prompt, cwd, Some(dup(std::io::stdout())?))?;
     Ok(())
 }
 
@@ -96,7 +98,7 @@ pub fn run(args: AskArgs<'_>) -> Result<()> {
 pub fn answer(role: &str, prompt: &str) -> Result<String> {
     let plan = plan(role, false)?;
     let bin = plan.bin()?;
-    let out = plan.exec(&bin, prompt.as_bytes(), None, Stdio::piped())?;
+    let out = plan.exec(&bin, prompt.as_bytes(), None, None)?;
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
@@ -226,40 +228,29 @@ impl Plan {
         })
     }
 
-    /// Run the harness with `prompt` on stdin. Returns its stdout when `stdout` is piped.
+    /// Run the harness with `prompt` on stdin and its stderr on ours. Returns its stdout, or
+    /// sends it to `stdout` as it writes and returns nothing.
     fn exec(
         &self,
         bin: &Path,
         prompt: &[u8],
         cwd: Option<&Path>,
-        stdout: Stdio,
+        stdout: Option<File>,
     ) -> Result<Vec<u8>> {
         let (resolved, command) = (&self.resolved, &self.command);
-        let mut cmd = Command::new(bin);
-        crate::proc::scrub_git(&mut cmd);
-        if subscription(cwd)? {
-            crate::proc::scrub_billing(&mut cmd, command);
-        }
+        let mut cmd = Proc::harness(bin, subscription(cwd)?);
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
-        let mut child = cmd
+        if let Some(out) = stdout {
+            cmd.output_to(out);
+        }
+        let out = cmd
             .args(&command[1..])
-            .stdin(Stdio::piped())
-            .stdout(stdout)
-            .stderr(Stdio::inherit())
-            .spawn()
-            .with_context(|| format!("cannot start {}", bin.display()))?;
-        let mut stdin = child.stdin.take().expect("stdin is piped");
-        // Write from a thread, so a harness that answers before reading all of a long prompt
-        // can't deadlock against a full stdout pipe. A harness may exit before reading
-        // everything; its exit status tells the story.
-        let prompt = prompt.to_vec();
-        let writer = std::thread::spawn(move || {
-            let _ = stdin.write_all(&prompt);
-        });
-        let out = child.wait_with_output().context("waiting for harness")?;
-        let _ = writer.join();
+            .stdin(prompt.to_vec())
+            .stderr_to(dup(std::io::stderr())?)
+            .output()
+            .with_context(|| format!("cannot run {}", bin.display()))?;
         if !out.status.success() {
             let code = out
                 .status
@@ -281,6 +272,15 @@ impl Plan {
         }
         Ok(out.stdout)
     }
+}
+
+/// A file on the same open file as `fd`, for a child to write to as this process would.
+fn dup(fd: impl AsFd) -> Result<File> {
+    Ok(File::from(
+        fd.as_fd()
+            .try_clone_to_owned()
+            .context("cannot duplicate a standard stream")?,
+    ))
 }
 
 /// The factory's billing mode for the repo holding `cwd` (default: the current directory).

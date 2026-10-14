@@ -2,7 +2,7 @@
 //! the environment scrub, a timeout that kills the whole process group, stdin closed unless
 //! the caller writes to it, and no credential prompts for network git (#556).
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -11,26 +11,34 @@ use std::time::{Duration, Instant};
 
 use crate::{billing, git};
 
+/// The one place a child's [`Command`] is made; clippy rejects `Command::new` anywhere else
+/// (`clippy.toml`).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "proc is the one way to start a child"
+)]
+fn command(program: impl AsRef<OsStr>) -> Command {
+    Command::new(program)
+}
+
 /// Remove inherited git location variables, so the command acts only on the repo it names.
-/// [`Proc`] does this itself; this is for the sites that still build a `Command` until #581
-/// moves them here.
-pub fn scrub_git(cmd: &mut Command) -> &mut Command {
+fn scrub_git(cmd: &mut Command) {
     for v in git::LOCATION_VARS {
         cmd.env_remove(v);
     }
-    cmd
 }
 
 /// Remove the variables that would make `argv`'s harness bill an API instead of the
-/// subscription. [`Proc`] does this for a subscription harness; this is for the sites that still
-/// build a `Command` until #581 moves them here.
-pub fn scrub_billing(cmd: &mut Command, argv: &[String]) {
+/// subscription.
+fn scrub_billing(cmd: &mut Command, argv: &[String]) {
     for k in billing::api_env(argv) {
         cmd.env_remove(k);
     }
 }
 
 const MINUTE: Duration = Duration::from_secs(60);
+/// How long a child's process group asked to end by a stop gets before it is killed.
+const STOP_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Kind {
@@ -63,11 +71,15 @@ impl Kind {
 pub struct Proc {
     kind: Kind,
     cmd: Command,
+    /// The program the kind's policy is for, which a launcher ([`Proc::launched`]) runs.
+    program: OsString,
     timeout: Duration,
     stdin: Option<Vec<u8>>,
     log: Option<File>,
+    err: Option<File>,
     /// Whether to end the child now, as a stop does ([`Proc::until_stop`]).
     stopped: Option<fn() -> bool>,
+    grace: Duration,
     #[cfg(test)]
     expire_when: Option<Box<dyn Fn() -> bool + Send>>,
 }
@@ -81,10 +93,6 @@ impl Proc {
         Self::new(Kind::GitNetwork, "git")
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "harness sites move here in #581")
-    )]
     pub fn harness(program: impl AsRef<OsStr>, subscription: bool) -> Self {
         Self::new(Kind::Harness { subscription }, program)
     }
@@ -100,7 +108,19 @@ impl Proc {
     /// The inherited git location variables are removed here, so one the caller sets with
     /// [`Proc::env`] still reaches the child (a scratch `GIT_INDEX_FILE`).
     fn new(kind: Kind, program: impl AsRef<OsStr>) -> Self {
-        Self::with(kind, Command::new(program))
+        Self::with(kind, command(&program), program)
+    }
+
+    /// `program` started through `launcher`, a command that runs the program named by its last
+    /// argument (`prlimit --as=<bytes> --`); with no launcher, `program` itself. The kind's
+    /// policy is for `program`: a subscription harness's billing scrub goes by its name.
+    pub fn launched(kind: Kind, launcher: &[String], program: impl AsRef<OsStr>) -> Self {
+        let Some((first, rest)) = launcher.split_first() else {
+            return Self::new(kind, program);
+        };
+        let mut cmd = command(first);
+        cmd.args(rest).arg(program.as_ref());
+        Self::with(kind, cmd, program)
     }
 
     /// As [`Proc::new`], for a parent whose environment also holds `vars`.
@@ -110,12 +130,12 @@ impl Proc {
         program: &str,
         vars: impl IntoIterator<Item = (&'a str, &'a str)>,
     ) -> Self {
-        let mut cmd = Command::new(program);
+        let mut cmd = command(program);
         cmd.envs(vars);
-        Self::with(kind, cmd)
+        Self::with(kind, cmd, program)
     }
 
-    fn with(kind: Kind, mut cmd: Command) -> Self {
+    fn with(kind: Kind, mut cmd: Command, program: impl AsRef<OsStr>) -> Self {
         scrub_git(&mut cmd);
         if kind == Kind::GitNetwork {
             cmd.env("GIT_TERMINAL_PROMPT", "0")
@@ -124,10 +144,13 @@ impl Proc {
         Proc {
             kind,
             cmd,
+            program: program.as_ref().to_owned(),
             timeout: kind.timeout(),
             stdin: None,
             log: None,
+            err: None,
             stopped: None,
+            grace: STOP_GRACE,
             #[cfg(test)]
             expire_when: None,
         }
@@ -190,10 +213,24 @@ impl Proc {
         self
     }
 
-    /// Kill the child's group as soon as a stop is requested ([`crate::stop`]), and fail with
-    /// [`std::io::ErrorKind::Interrupted`].
+    /// Send stderr to `err` instead, as the child writes it; [`Proc::output`] then returns it
+    /// empty. It also replaces the inherited stderr of [`Proc::spawn`].
+    pub fn stderr_to(&mut self, err: File) -> &mut Self {
+        self.err = Some(err);
+        self
+    }
+
+    /// End the child's group as soon as a stop is requested ([`crate::stop`]): SIGTERM, then
+    /// SIGKILL once the grace passes. Then fail with [`std::io::ErrorKind::Interrupted`].
     pub fn until_stop(&mut self) -> &mut Self {
         self.stopped = Some(|| crate::stop::requested().is_some());
+        self
+    }
+
+    /// Replace the time a stopped child's group gets between SIGTERM and SIGKILL.
+    #[cfg(test)]
+    fn grace(&mut self, grace: Duration) -> &mut Self {
+        self.grace = grace;
         self
     }
 
@@ -206,7 +243,6 @@ impl Proc {
     }
 
     /// The environment changes made so far, as [`Command::get_envs`] lists them.
-    #[cfg(test)]
     pub fn get_envs(&self) -> std::process::CommandEnvs<'_> {
         self.cmd.get_envs()
     }
@@ -217,6 +253,15 @@ impl Proc {
     fn expire_when(&mut self, expired: impl Fn() -> bool + Send + 'static) -> &mut Self {
         self.expire_when = Some(Box::new(expired));
         self
+    }
+
+    /// The program and its arguments.
+    #[cfg(test)]
+    pub fn argv(&self) -> Vec<String> {
+        std::iter::once(self.cmd.get_program())
+            .chain(self.cmd.get_args())
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect()
     }
 
     /// `program arg...`, for an error.
@@ -235,15 +280,24 @@ impl Proc {
     /// killed and fails with [`std::io::ErrorKind::TimedOut`].
     pub fn output(&mut self) -> std::io::Result<Output> {
         self.scrub_billing();
+        let err = self.err.take();
         let captured = match self.log.take() {
             Some(log) => {
-                self.cmd.stdout(log.try_clone()?).stderr(log);
+                let err = match err {
+                    Some(err) => err,
+                    None => log.try_clone()?,
+                };
+                self.cmd.stdout(log).stderr(err);
                 None
             }
             None => {
-                let (out, err) = (tempfile::tempfile()?, tempfile::tempfile()?);
-                self.cmd.stdout(out.try_clone()?).stderr(err.try_clone()?);
-                Some((out, err))
+                let (out, captured_err) = (tempfile::tempfile()?, tempfile::tempfile()?);
+                let err = match err {
+                    Some(err) => err,
+                    None => captured_err.try_clone()?,
+                };
+                self.cmd.stdout(out.try_clone()?).stderr(err);
+                Some((out, captured_err))
             }
         };
         self.cmd.stdin(if self.stdin.is_some() {
@@ -267,7 +321,7 @@ impl Proc {
         let early = self.expire_when.as_deref();
         #[cfg(not(test))]
         let early = ();
-        let waited = wait_until(&mut child, deadline, early, self.stopped);
+        let waited = wait_until(&mut child, deadline, early, self.stopped, self.grace);
         kill_group(child.id());
         let status = match waited? {
             Waited::Exited(status) => status,
@@ -305,8 +359,28 @@ impl Proc {
         })
     }
 
+    /// [`Proc::output`] for a child whose output goes to files ([`Proc::output_to`]), as a
+    /// phase, a gate or a check runs: how it ended, with a timeout as no status rather than an
+    /// error. Like [`Proc::until_stop`], it ends the child when a stop is requested.
+    pub fn run(&mut self) -> std::io::Result<Ended> {
+        if self.stopped.is_none() {
+            self.until_stop();
+        }
+        let started = Instant::now();
+        let status = match self.output() {
+            Ok(out) => Some(out.status),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => None,
+            Err(e) => return Err(e),
+        };
+        Ok(Ended {
+            status,
+            wall_s: started.elapsed().as_secs_f64(),
+        })
+    }
+
     /// Start the child to run alongside the caller (a unit's `ns run`), with stdout to `out`,
-    /// stderr inherited and stdin closed, in its own session and process group. The caller
+    /// stderr inherited unless [`Proc::stderr_to`] names a file, and stdin closed, in its own
+    /// session and process group. The caller
     /// waits for it and ends it, so no timeout applies. On Linux it gets SIGTERM when the thread
     /// that started it ends, so it never outlives this process.
     pub fn spawn(&mut self, out: File) -> std::io::Result<Child> {
@@ -317,10 +391,8 @@ impl Proc {
     /// gives up when that is not who started it.
     fn spawn_for(&mut self, parent: libc::pid_t, out: File) -> std::io::Result<Child> {
         self.scrub_billing();
-        self.cmd
-            .stdin(Stdio::null())
-            .stdout(out)
-            .stderr(Stdio::inherit());
+        let err = self.err.take().map_or_else(Stdio::inherit, Stdio::from);
+        self.cmd.stdin(Stdio::null()).stdout(out).stderr(err);
         new_session(&mut self.cmd);
         die_with(&mut self.cmd, parent);
         self.cmd.spawn()
@@ -350,9 +422,24 @@ impl Proc {
     /// A subscription harness never sees the API billing variables, even ones the caller set.
     fn scrub_billing(&mut self) {
         if let Kind::Harness { subscription: true } = self.kind {
-            let program = self.cmd.get_program().to_string_lossy().into_owned();
+            let program = self.program.to_string_lossy().into_owned();
             scrub_billing(&mut self.cmd, &[program]);
         }
+    }
+}
+
+/// How a child [`Proc::run`] waited for ended.
+#[derive(Debug, Clone, Copy)]
+pub struct Ended {
+    /// Its exit status; `None` when it timed out and its group was killed.
+    pub status: Option<ExitStatus>,
+    /// Seconds from its start to its end.
+    pub wall_s: f64,
+}
+
+impl Ended {
+    pub fn timed_out(&self) -> bool {
+        self.status.is_none()
     }
 }
 
@@ -425,29 +512,27 @@ enum Waited {
 }
 
 /// How the child ended: its exit, or its group killed once it is past `deadline` (or `early`
-/// holds), or once `stopped` holds.
+/// holds), or once `stopped` holds, after SIGTERM and `grace` to end by itself.
 fn wait_until(
     child: &mut Child,
     deadline: Instant,
     early: Early,
     stopped: Option<fn() -> bool>,
+    grace: Duration,
 ) -> std::io::Result<Waited> {
     let mut delay = FIRST_POLL;
     loop {
         if let Some(s) = child.try_wait()? {
             return Ok(Waited::Exited(s));
         }
-        let ended = if stopped.is_some_and(|f| f()) {
-            Some(Waited::Stopped)
-        } else if expired(deadline, early) {
-            Some(Waited::TimedOut)
-        } else {
-            None
-        };
-        if let Some(ended) = ended {
+        if stopped.is_some_and(|f| f()) {
+            end_group(child, grace)?;
+            return Ok(Waited::Stopped);
+        }
+        if expired(deadline, early) {
             kill_group(child.id());
             child.wait()?;
-            return Ok(ended);
+            return Ok(Waited::TimedOut);
         }
         std::thread::sleep(delay);
         delay = next_poll(delay);
@@ -463,17 +548,37 @@ fn next_poll(delay: Duration) -> Duration {
     (delay * 2).min(LAST_POLL)
 }
 
-#[cfg(unix)]
+/// SIGTERM to the child's group, then SIGKILL once `grace` passes without the child exiting.
+fn end_group(child: &mut Child, grace: Duration) -> std::io::Result<()> {
+    signal_group(child.id(), libc::SIGTERM);
+    let deadline = Instant::now() + grace;
+    let mut delay = FIRST_POLL;
+    while Instant::now() < deadline {
+        if child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        std::thread::sleep(delay);
+        delay = next_poll(delay);
+    }
+    kill_group(child.id());
+    child.wait().map(drop)
+}
+
 fn kill_group(pid: u32) {
+    signal_group(pid, libc::SIGKILL);
+}
+
+#[cfg(unix)]
+fn signal_group(pid: u32, sig: libc::c_int) {
     // SAFETY: kill(2) with a negative pid signals that process group; a group already gone
     // is not an error worth reporting.
     unsafe {
-        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        libc::kill(-(pid as libc::pid_t), sig);
     }
 }
 
 #[cfg(not(unix))]
-fn kill_group(_pid: u32) {}
+fn signal_group(_pid: u32, _sig: libc::c_int) {}
 
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,11 @@
 //! The Rust rule pack in `rules/rust/`: installed into a temp repo by its `install.sh`, then run
 //! by `ns rules check` over a small crate with one failing and one passing example per rule.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
 mod common;
 
 use std::fs;

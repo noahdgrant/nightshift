@@ -460,20 +460,13 @@ mod tests {
         greeted, ssh_account, ssh_account_within, ssh_config, ssh_config_keepalive, ssh_greeting,
     };
     use crate::forge::SshTarget;
-    use std::process::Command;
     use std::time::{Duration, Instant};
 
     #[test]
     fn ssh_account_gives_up_on_a_host_that_stalls() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("ssh");
-        let made = Command::new("sh")
-            .arg("-c")
-            .arg(r#"printf '%s\n' '#!/bin/sh' 'exec sleep 30' > "$0" && chmod 755 "$0""#)
-            .arg(&fake)
-            .status()
-            .unwrap();
-        assert!(made.success());
+        crate::testutil::write_exe(&fake, "#!/bin/sh\nexec sleep 30\n");
         let t = SshTarget {
             dest: "git@example".into(),
             port: None,

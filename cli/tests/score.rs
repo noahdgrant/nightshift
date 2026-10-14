@@ -1,5 +1,10 @@
 //! End-to-end tests for `ns score` with a fake judge harness and a fake `gh`.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
 mod common;
 
 use std::fs;

@@ -1,3 +1,8 @@
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
