@@ -49,9 +49,6 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      - name: cargo test under a decoy GIT_DIR
-        working-directory: .
-        run: scripts/check-git-dir-decoy.sh
 
   skills-and-evals:
     name: Skills lint and eval dry-run
@@ -177,8 +174,6 @@ jobs:
       - name: rules/<pack>/tests/run.sh
         run: |
           "rules/$PACK/tests/run.sh"
-      - name: rules/<pack>/tests/run.sh under a decoy GIT_DIR
-        run: scripts/check-git-dir-decoy.sh "rules/$PACK/tests/run.sh"
 
   private-refs:
     name: Private-reference guard

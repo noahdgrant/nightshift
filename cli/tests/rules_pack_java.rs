@@ -114,11 +114,13 @@ fn names(list: &Value) -> Vec<String> {
         .iter()
         .map(|f| {
             format!(
-                "{}/{} {}:{} {}",
+                "{}/{} {}{} {}",
                 f["tool"].as_str().unwrap(),
                 f["rule"].as_str().unwrap(),
                 f["file"].as_str().unwrap(),
-                f["line"],
+                f["line"]
+                    .as_u64()
+                    .map_or(String::new(), |n| format!(":{n}")),
                 f["snippet"].as_str().unwrap()
             )
         })
@@ -203,7 +205,7 @@ fn ns_rules_check_reads_the_java_pack_and_its_baseline_holds_only_todays_finding
     assert_eq!(
         names(&v["fixed"]),
         [format!(
-            "ast-grep/suppression-reason {bad}:11 int legacy; // NOPMD"
+            "ast-grep/suppression-reason {bad} int legacy; // NOPMD"
         )]
     );
     let (code, v, err) = r.rules(&["baseline"]);

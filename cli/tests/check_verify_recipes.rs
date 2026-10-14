@@ -42,11 +42,12 @@ fn script(name: &str) -> std::path::PathBuf {
 }
 
 /// Runs the check on `skill_md`, with every temporary path under a fresh `TMPDIR` that the test
-/// then expects empty: the sandbox, the evidence directory and the script's own files.
+/// then expects empty: the sandbox, the evidence directory and the script's own files. With a
+/// `decoy` repo, the script inherits `GIT_DIR` and `GIT_WORK_TREE` aimed at it.
 fn run_in(
     skill_md: &str,
     features: &[(&str, String)],
-    wrapper: Option<&str>,
+    decoy: Option<&Path>,
     stdin: &str,
 ) -> Output {
     let tmp = tempfile::tempdir().unwrap();
@@ -58,9 +59,6 @@ fn run_in(
         fs::write(skill_dir.path().join("features").join(name), text).unwrap();
     }
     let mut c = common::command("bash");
-    if let Some(w) = wrapper {
-        c.arg(script(w)).arg("bash");
-    }
     c.arg(script("check-verify-recipes.sh"))
         .arg(&path)
         .env("TMPDIR", tmp.path())
@@ -74,6 +72,9 @@ fn run_in(
         "GIT_COMMON_DIR",
     ] {
         c.env_remove(v);
+    }
+    if let Some(d) = decoy {
+        c.env("GIT_DIR", d.join(".git")).env("GIT_WORK_TREE", d);
     }
     let out = c.write_stdin(stdin).output();
     let left: Vec<_> = fs::read_dir(tmp.path())
@@ -278,13 +279,24 @@ fn the_recipes_never_see_an_inherited_git_dir() {
     let launch = format!(
         "{LAUNCH}\n[ -z \"${{GIT_DIR-}}\" ] && [ -z \"${{GIT_WORK_TREE-}}\" ]\ngit init -q \"$V/repo\"\ngit -C \"$V/repo\" config ns.touched 1"
     );
+    let decoy = tempfile::tempdir().unwrap();
+    let init = common::command("git")
+        .args(["init", "-q"])
+        .arg(decoy.path())
+        .output();
+    assert!(init.status.success());
+    let config = fs::read_to_string(decoy.path().join(".git/config")).unwrap();
     let out = run_in(
         &skill(&launch, DOCTOR_OK),
         &[("run.md", feature(RUN_OK))],
-        Some("check-git-dir-decoy.sh"),
+        Some(decoy.path()),
         "",
     );
     assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        fs::read_to_string(decoy.path().join(".git/config")).unwrap(),
+        config
+    );
 }
 
 #[test]

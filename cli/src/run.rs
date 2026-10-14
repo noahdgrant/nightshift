@@ -661,14 +661,14 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
     let mut issue_url = String::from("none");
     let mut unit = args.unit.clone();
     if let Some(n) = args.issue {
-        match gh_json(
-            &repo.root,
-            &["issue", "view", &n.to_string(), "--json", "title,url"],
-        ) {
-            Ok(v) => {
-                issue_url = v["url"].as_str().unwrap_or("").to_string();
+        let link = crate::watch::forge::open(&fac.queue, &repo.root)
+            .map_err(anyhow::Error::from)
+            .and_then(|f| f.issue_link(n));
+        match link {
+            Ok(l) => {
+                issue_url = l.url;
                 if unit.is_none() {
-                    unit = Some(unit_name(n, v["title"].as_str().unwrap_or("")));
+                    unit = Some(unit_name(n, &l.title));
                 }
             }
             Err(e) if unit.is_none() => {
@@ -810,7 +810,15 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
     // A merge needs a PR number, so a merged unit always has one.
     let cleanup = pr.filter(|_| result.outcome == Outcome::Merged).map(|pr| {
         let issue = ctx.issue.or_else(|| crate::quality::issue_of(&unit));
-        crate::clean::after_merge(&repo, &unit, &ctx.worktree, issue, pr, record_saved)
+        crate::clean::after_merge(
+            &repo,
+            &ctx.fac.queue,
+            &unit,
+            &ctx.worktree,
+            issue,
+            pr,
+            record_saved,
+        )
     });
     let cost: f64 = phases.iter().filter_map(|p| p["cost_usd"].as_f64()).sum();
     let json = json!({

@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::SfError;
-use crate::eval::trial::tail;
 use crate::factory::{Better, Ratchet};
+use crate::tail::tail;
 
 /// The recorded values, next to `nightshift.toml` in the factory directory.
 pub const FILE: &str = "ratchets.json";

@@ -377,6 +377,7 @@ include!("watch_fix_main.rs");
 include!("watch_nights_and_splits.rs");
 include!("forge_tokens.rs");
 include!("forge_access_and_triage.rs");
+include!("gitlab_guards_and_cleanup.rs");
 include!("triage_pass_and_memory_cap.rs");
 include!("run_signals_and_cleanup.rs");
 include!("cleanup_and_cpus.rs");

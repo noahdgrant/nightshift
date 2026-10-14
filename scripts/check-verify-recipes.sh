@@ -39,7 +39,7 @@ features=$(dirname "$skill")/features
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-# An inherited location (from a hook or a decoy) would send the recipes' git commands to it.
+# An inherited location (from a hook or a test) would send the recipes' git commands to it.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
   GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
 

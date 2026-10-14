@@ -23,7 +23,7 @@ Run from the repo root. Use the binary built from this worktree (`cli/target/deb
 | Task | Command | Takes |
 |---|---|---|
 | build | `cargo build --manifest-path cli/Cargo.toml` | 5 s incremental, 60 s clean |
-| test (all) | `cargo test --manifest-path cli/Cargo.toml` | 5 s |
+| test (all) | `cargo test --manifest-path cli/Cargo.toml`. Build runs it only inside the gate (`ci-local`), never on its own | 8 min |
 | test (one) | `cargo test --manifest-path cli/Cargo.toml <name>` | 2 s |
 | lint | `cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` | 10 s |
 | format | `cargo fmt --manifest-path cli/Cargo.toml` (check: `--check`) | 1 s |
@@ -32,14 +32,16 @@ Run from the repo root. Use the binary built from this worktree (`cli/target/deb
 | private refs | `scripts/check-private.sh` | 1 s |
 | verify recipes | `scripts/check-verify-recipes.sh` (fails naming the file and block of any `.agents/skills/verify-nightshift` recipe line that does not run through `"$V/sandbox"`, uses a glob, or names a `.ns/` path other than one unit's folder; then runs the skill's Launch, Doctor and Drive recipes and `features/run.md`'s in a throwaway sandbox with the fake `claude` and `gh`, and fails naming a stale block, a bad Doctor result, or an `ns run --issue 7` that does not end `done`; needs `jq`) | 15 s |
 | rules | `rules/rust/check.sh clippy cli`, `rules/rust/check.sh deny cli`, `rules/rust/check.sh ast-grep cli` (the Rust rule pack; needs `jq`, `ast-grep` and `cargo-deny`) | 10 s |
-| ci-local | `scripts/ci-local.sh` (all of CI, including `scripts/check-git-dir-decoy.sh`, which runs `cargo test` under a decoy `GIT_DIR`). It fails first on a tool not pinned in `scripts/ci-tools.d/` or at another version. Under `[gate] local = "build-only"` only the `ns run` gate after build runs all of it; the gates after verify and review run `--fast`, none runs after ship (GitHub checks decide in the merge step), and pre-commit and the `.githooks` pre-push hook (at each commit pushed, one push at a time) run its `--fast` subset, which includes the `rules` row's ast-grep commands (`ns rules check --only ast-grep`, about 0.8 s) | 1 min |
-| ci-affected | `scripts/ci-affected.sh` (the tests for the paths in `NS_GATE_FILES`: `cargo test` and the `rules` row's ast-grep commands (`ns rules check --only ast-grep`, about 0.5 s) on any change, and each rule pack's or fixture's tests when a path under it changed). The fast gate runs it after `ci-local.sh --fast` | 1 min |
+| ci-local | `scripts/ci-local.sh` (all of CI). It unsets git's location variables (`GIT_DIR` and the rest) first, so a run from a hook checks this checkout (ADR-638). It fails first on a tool not pinned in `scripts/ci-tools.d/` or at another version. Under `[gate] local = "build-only"` only the `ns run` gate after build runs all of it; the gates after verify and review run `--fast`, none runs after ship (GitHub checks decide in the merge step), and pre-commit and the `.githooks` pre-push hook (at each commit pushed, one push at a time) run its `--fast` subset, which includes the `rules` row's ast-grep commands (`ns rules check --only ast-grep`, about 0.8 s) | 13 min |
+| ci-affected | `scripts/ci-affected.sh` (the tests for the paths in `NS_GATE_FILES`: `cargo test` and the `rules` row's ast-grep commands (`ns rules check --only ast-grep`, about 0.5 s) on any change, and each rule pack's or fixture's tests when a path under it changed). The fast gate runs it after `ci-local.sh --fast` | 7 min |
+
+Timings for `test (all)`, `ci-local` and `ci-affected` were measured on 2026-10-14 on a 16-core machine with `scripts/stress.sh` not running, but with another unit's phase running alongside (load average 3 to 8): `ci-local --no-cache` took 754 s, its `cargo test` step 482 s with the test build, and `ci-affected` for a skills change 396 s with a warm build. On a busier machine expect up to twice that.
 
 ## Test seams
 
 | Seam | Command | Takes | Needs |
 |---|---|---|---|
-| host unit | `cargo test --manifest-path cli/Cargo.toml` | 5 s | nothing |
+| host unit | `cargo test --manifest-path cli/Cargo.toml` | 8 min | nothing |
 | CLI end to end | the integration tests in `cli/tests/` (fake harness, fake `gh`, temp git repos) | included above | nothing |
 | simulator/emulator | none | | |
 | hardware-in-the-loop | none | | |
