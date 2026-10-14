@@ -64,6 +64,8 @@ Units: 47, 115, 152, 409, 454.
 
 A test never sleeps, and never asserts on real elapsed time. It waits for an event: a child exiting, a file appearing, a message on a channel. Or it moves the fake clock forward: `NS_NOW` for a spawned `ns`, `clock::Clock::pinned` in a unit test. A real timeout in a test is only a hang guard: generous, and never the thing the test checks. A test timed by the wall clock passes on an idle machine and fails when units contend for the CPU, which is how the factory always runs.
 
+To reproduce a test that fails only under load, run it beside `scripts/stress.sh <seconds> <workers>`, which holds the CPU with that many busy workers and stops them when its time is up or it is interrupted (`AGENTS.md`, Tests). An inline busy loop is denied by the harness.
+
 The Rust rule pack's `wall-clock-in-test` rule (`rules/rust/ast-grep.yml`) flags a sleep, an `Instant::now()` or `.elapsed()` comparison, and a literal `Duration` in test code, with today's cases baselined.
 
 Bad: the test passes only if the child exits within a second.
