@@ -1,0 +1,11 @@
+# Deep modules: `export * from` re-exports a module's whole surface, so the importer can't see
+# what a module offers and every internal export leaks through the barrel. `export * as ns from`
+# names one namespace and is allowed.
+id: export-star
+language: tsx
+severity: error
+message: "`export * from` re-exports everything; export the names the module offers, or `export * as name from`"
+url: https://github.com/noahdgrant/nightshift/blob/main/skills/ns-principle-minimize-reader-load/SKILL.md
+rule:
+  kind: export_statement
+  has: {regex: '^\*$'}

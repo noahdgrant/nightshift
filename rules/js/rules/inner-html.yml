@@ -1,0 +1,21 @@
+# Security: assigning `innerHTML` or `outerHTML`, with `=` or `+=`, parses the string as HTML, so
+# untrusted text in it runs as script. Set `textContent`, or build the nodes.
+id: inner-html
+language: tsx
+severity: error
+message: "assigning `$PROP` parses the string as HTML and can run script; set textContent or build the nodes"
+url: https://github.com/noahdgrant/nightshift/blob/main/skills/ns-contract/references/quality-bar.md
+rule:
+  any:
+    - kind: assignment_expression
+    - kind: augmented_assignment_expression
+  has:
+    field: left
+    any:
+      - kind: member_expression
+        has: {field: property, pattern: $PROP, regex: '^(?:innerHTML|outerHTML)$'}
+      - kind: subscript_expression
+        has:
+          field: index
+          kind: string
+          has: {kind: string_fragment, pattern: $PROP, regex: '^(?:innerHTML|outerHTML)$'}

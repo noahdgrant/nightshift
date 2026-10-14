@@ -3,9 +3,9 @@
 # install its tools there with `npm ci`, and write the `rules` row of docs/agents/stack.md that
 # `ns rules check` runs. The repo's own package.json and lockfile are never touched. Safe to
 # rerun: the pack's own files are refreshed, and the repo's data (utils/allowed-package.yml,
-# utils/helper-name.yml and the `ignores` line of rules/duplicate-helper.yml) is kept. The
-# first install seeds the allowlist from the repo's package.json. Nothing is written until
-# every input has been checked.
+# utils/helper-name.yml, utils/entry-points.json and the `ignores` line of
+# rules/duplicate-helper.yml) is kept. The first install seeds the allowlist from the repo's
+# package.json. Nothing is written until every input has been checked.
 #
 #   install.sh <repo>
 set -eu
@@ -61,6 +61,7 @@ cp -R "$pack/check.sh" "$pack/eslint.config.mjs" "$pack/sgconfig.yml" "$pack/pac
   "$pack/package-lock.json" "$pack/.gitignore" "$pack/rules" "$pack/utils" "$new/"
 if [ -f "$old/utils/allowed-package.yml" ]; then
   cp "$old/utils/allowed-package.yml" "$old/utils/helper-name.yml" "$new/utils/"
+  [ ! -e "$old/utils/entry-points.json" ] || cp "$old/utils/entry-points.json" "$new/utils/"
   awk '/^ignores:/ { keep = 1; print; next } keep && /^[ \t]/ { print; next } { keep = 0 }' \
     "$old/rules/duplicate-helper.yml" >"$tmp/ignores"
   if [ -s "$tmp/ignores" ]; then

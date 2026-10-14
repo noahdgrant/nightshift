@@ -2,9 +2,10 @@
 # Check the JavaScript/TypeScript pack. install.sh installs it into a copy of each fixture repo in
 # tests/repos/ (plain JS, TypeScript, React), and the examples in tests/examples/<rule>/ go into
 # the repo their extension belongs to (.js, .jsx, .mjs, .cjs: js; .ts, .mts, .cts: ts; .tsx:
-# react). Each fail* example must give a finding for <rule> (the finding's rule, or its last
-# /-separated part), and each pass* example no finding at all. A rule directory with a make.sh
-# also has it write examples into a temp directory, for examples too long to commit.
+# react), or all into the repo a `repo` file in the rule directory names. Each fail* example must
+# give a finding for <rule> (the finding's rule, its last /-separated part, or the plugin before
+# its first /), and each pass* example no finding at all. A rule directory with a make.sh also
+# has it write examples into a temp directory, for examples too long to commit.
 #
 #   rules/js/tests/run.sh [--find-ns]
 set -euo pipefail
@@ -86,14 +87,19 @@ findings_for() {
   jq -c --arg f "$2" 'select(.file == $f)' "$tmp/$1.findings"
 }
 
-for kind in js ts react ts-include refs pnpm js-tsconfig ts-files; do
+for kind in js ts react ts-include refs pnpm js-tsconfig ts-files entry-points; do
   install_repo "$kind"
 done
+# The entry-points repo declares its entry points, which turns no-internal-modules on.
+entry_points=$tmp/entry-points/.nightshift/rules/js/utils/entry-points.json
+printf '["**/index.js"]\n' >"$entry_points"
 
 # Copy each example into its repo, under <rule>/.
 mkdir "$tmp/made"
 for dir in "$pack"/tests/examples/*/; do
   rule=$(basename "$dir")
+  repo_of=
+  [ ! -e "$dir/repo" ] || repo_of=$(<"$dir/repo")
   srcs=("$dir")
   if [ -e "$dir/make.sh" ]; then
     mkdir "$tmp/made/$rule"
@@ -108,6 +114,7 @@ for dir in "$pack"/tests/examples/*/; do
         *.tsx) kind=react ;;
         *) continue ;;
       esac
+      kind=${repo_of:-$kind}
       rel=${path#"${src%/}"/}
       mkdir -p "$(dirname "$tmp/$kind/$rule/$rel")"
       cp "$path" "$tmp/$kind/$rule/$rel"
@@ -138,7 +145,20 @@ printf 'console.log(1);\n' >"$tmp/js/dist/bundle.js"
 mkdir "$tmp/ts-include/tests"
 printf 'export const outside = 1 == 1;\n' >"$tmp/ts-include/tests/outside.test.ts"
 
-for kind in js ts react ts-include refs pnpm js-tsconfig ts-files; do
+# The React rules are on in the React repo for every extension, and off in a repo whose
+# package.json has no react. So is no-internal-modules off in a repo that declares no entry
+# points.
+hooks='import { useState } from "react";\n\nexport function Counter({ on }) {\n  if (!on) return null;\n  const [n] = useState(0);\n  return <img src={String(n)} />;\n}\n'
+for kind in react js; do
+  mkdir "$tmp/$kind/react-rules"
+  for ext in js jsx tsx; do
+    # shellcheck disable=SC2059 # the format is the file
+    printf "$hooks" >"$tmp/$kind/react-rules/hooks.$ext"
+  done
+done
+cp -R "$pack/tests/examples/no-internal-modules" "$tmp/js/internal-off"
+
+for kind in js ts react ts-include refs pnpm js-tsconfig ts-files entry-points; do
   run_row "$kind"
 done
 
@@ -146,14 +166,14 @@ checked=0
 for dir in "$pack"/tests/examples/*/; do
   rule=$(basename "$dir")
   nfail=0 npass=0
-  for kind in js ts react; do
+  for kind in js ts react entry-points; do
     for path in "$tmp/$kind/$rule"/**/*.*; do
       file=${path#"$tmp/$kind/"}
       out=$(findings_for "$kind" "$file")
       case $(basename "$file") in
         fail*)
           nfail=$((nfail + 1))
-          jq -e --arg r "$rule" 'select(.rule == $r or (.rule | endswith("/" + $r)))' <<<"$out" >/dev/null ||
+          jq -e --arg r "$rule" 'select(.rule == $r or (.rule | endswith("/" + $r)) or (.rule | startswith($r + "/")))' <<<"$out" >/dev/null ||
             fail "$rule: $kind/$file gave no $rule finding: $out"
           ;;
         pass*)
@@ -168,6 +188,17 @@ for dir in "$pack"/tests/examples/*/; do
   checked=$((checked + 1))
 done
 
+react_rule='select(.rule | test("^(?:react|react-hooks|jsx-a11y)/"))'
+for ext in js jsx tsx; do
+  for want in react-hooks/rules-of-hooks jsx-a11y/alt-text; do
+    jq -e --arg r "$want" 'select(.rule == $r)' <<<"$(findings_for react "react-rules/hooks.$ext")" >/dev/null ||
+      fail "react: no $want finding on react-rules/hooks.$ext"
+  done
+  ! jq -e "$react_rule" <<<"$(findings_for js "react-rules/hooks.$ext")" >/dev/null ||
+    fail "js: a React rule fired with no react in package.json: $(findings_for js "react-rules/hooks.$ext")"
+done
+! jq -e 'select(.rule | endswith("no-internal-modules"))' <<<"$(findings_for js internal-off/fail.js)" >/dev/null ||
+  fail "js: no-internal-modules fired with no entry points declared"
 [ -z "$(findings_for js untyped/floating.ts)" ] ||
   fail "a .ts file in a repo with no tsconfig.json got findings: $(findings_for js untyped/floating.ts)"
 [ -z "$(findings_for js dist/bundle.js)" ] ||
@@ -213,6 +244,60 @@ done
 for file in node_modules/dep/scan.js .git/hooks/scan.js .nightshift/rules/js/extra/scan.js; do
   [ -z "$(findings_for js "$file")" ] || fail "scan: $file was scanned: $(findings_for js "$file")"
 done
+
+# react counts in devDependencies and peerDependencies too. With no package.json, or one that is
+# not JSON, the React rules are off and ESLint still runs.
+check=$tmp/ts/.nightshift/rules/js/check.sh
+for case in devDependencies peerDependencies no-package-json bad-package-json; do
+  dir=$tmp/react-$case
+  mkdir "$dir"
+  # shellcheck disable=SC2059 # the format is the file
+  printf "$hooks" >"$dir/hooks.jsx"
+  case $case in
+    "no-package-json") ;;
+    "bad-package-json") printf '{"dependencies": \n' >"$dir/package.json" ;;
+    *) printf '{"%s": {"react": "^18.3.0"}}\n' "$case" >"$dir/package.json" ;;
+  esac
+  out=$("$check" eslint "$dir" 2>"$tmp/stderr") && rc=0 || rc=$?
+  hit=$(jq -c 'select(.rule == "react-hooks/rules-of-hooks")' <<<"$out")
+  case $case in
+    *Dependencies) [ -n "$hit" ] || fail "react in $case: no rules-of-hooks finding: $out $(<"$tmp/stderr")" ;;
+    *)
+      [ "$rc" -le 1 ] && [ -z "$hit" ] ||
+        fail "$case: exit $rc, the React rules ran or ESLint failed: $out $(<"$tmp/stderr")"
+      ;;
+  esac
+done
+
+# An empty or missing entry-points file leaves no-internal-modules off; a malformed one fails
+# ESLint with a message naming the file. A rerun of install.sh keeps the repo's entry points.
+repo=$tmp/entry-points
+internal() { jq -c 'select(.rule == "import-x/no-internal-modules")' <<<"$1"; }
+for case in empty missing not-json not-array not-strings; do
+  case $case in
+    "empty") : >"$entry_points" ;;
+    "missing") rm "$entry_points" ;;
+    "not-json") printf '["**/index.js"\n' >"$entry_points" ;;
+    "not-array") printf '{"allow": ["**/index.js"]}\n' >"$entry_points" ;;
+    "not-strings") printf '["**/index.js", 1]\n' >"$entry_points" ;;
+  esac
+  out=$(cd "$repo" && .nightshift/rules/js/check.sh eslint no-internal-modules 2>"$tmp/stderr") && rc=0 || rc=$?
+  case $case in
+    "empty" | "missing")
+      [ "$rc" -le 1 ] && [ -z "$(internal "$out")" ] ||
+        fail "entry-points $case: exit $rc, no-internal-modules ran or ESLint failed: $out $(<"$tmp/stderr")"
+      ;;
+    *)
+      [ "$rc" -eq 2 ] && [ -z "$out" ] && grep -qF "entry-points.json is not" "$tmp/stderr" ||
+        fail "entry-points $case: exit $rc, not a clear error: $out $(<"$tmp/stderr")"
+      ;;
+  esac
+done
+printf '["**/index.js"]\n' >"$entry_points"
+"$pack/install.sh" "$repo" >/dev/null 2>&1 || fail "install.sh: a rerun of the entry-points repo failed"
+grep -qF '**/index.js' "$entry_points" || fail "install.sh: a rerun dropped the entry points"
+out=$(cd "$repo" && .nightshift/rules/js/check.sh eslint no-internal-modules 2>&1) || true
+[ -n "$(internal "$out")" ] || fail "install.sh: no-internal-modules is off after a rerun: $out"
 
 # A rerun keeps the repo's data: the allowlist, the helper names and the duplicate-helper
 # ignores. It replaces the rules row rather than adding a second one.
@@ -308,7 +393,6 @@ done
 
 # check.sh refuses a bad tool or directory, and a tool that fails with no finding shows its
 # output on stderr: tsc on a tsconfig.json it can't read.
-check=$tmp/ts/.nightshift/rules/js/check.sh
 for args in "lint ." "eslint missing-dir" "eslint"; do
   # shellcheck disable=SC2086 # the words are the arguments
   (cd "$tmp/ts" && "$check" $args >/dev/null 2>&1) && rc=0 || rc=$?
