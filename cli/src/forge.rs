@@ -593,6 +593,25 @@ mod tests {
         assert!(e.to_string().contains("stopped by a signal"), "{e}");
     }
 
+    const ACCOUNT_MARK: &str = "NS_FORGE_ACCOUNT_STOP_PROBE";
+
+    #[test]
+    fn a_stop_ends_the_account_lookup_at_once_as_a_negative() {
+        crate::testutil::probe("forge::tests::account_stop_probe", ACCOUNT_MARK, "1");
+    }
+
+    #[test]
+    fn account_stop_probe() {
+        if std::env::var_os(ACCOUNT_MARK).is_none() {
+            return;
+        }
+        let _gh = crate::testutil::fake_on_path("gh", "exec sleep 600");
+        crate::stop::request(libc::SIGTERM);
+        let started = Instant::now();
+        assert_eq!(account(ForgeKind::Github, None), None);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
     #[test]
     fn a_stop_is_not_reported_as_a_command_that_cannot_run() {
         let stopped = std::io::Error::new(std::io::ErrorKind::Interrupted, "`gh api` stopped");

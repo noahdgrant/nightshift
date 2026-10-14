@@ -113,3 +113,15 @@ pub fn run_probe(mut probe: std::process::Command) -> std::process::Output {
 pub fn probe(test: &str, mark: &str, value: &str) -> std::process::Output {
     run_probe(probe_command(test, mark, value))
 }
+
+/// Put an executable `name` running `body` (a shell script's text) first on this process's
+/// PATH; the returned directory holds it.
+pub fn fake_on_path(name: &str, body: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    write_exe(&dir.path().join(name), format!("#!/bin/sh\n{body}\n"));
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![dir.path().to_path_buf()];
+    dirs.extend(std::env::split_paths(&path));
+    std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
+    dir
+}

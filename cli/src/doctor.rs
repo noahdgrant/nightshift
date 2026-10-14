@@ -444,7 +444,7 @@ fn greeted(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{greeted, ssh_account_within};
+    use super::{greeted, ssh_account, ssh_account_within, ssh_config_keepalive};
     use crate::forge::SshTarget;
     use std::process::Command;
     use std::time::{Duration, Instant};
@@ -471,6 +471,30 @@ mod tests {
         assert_eq!(got, None);
         assert!(elapsed >= limit, "{elapsed:?}");
         assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
+    }
+
+    const STOP_MARK: &str = "NS_DOCTOR_STOP_PROBE";
+
+    #[test]
+    fn a_stop_ends_the_ssh_probes_at_once_as_a_negative() {
+        crate::testutil::probe("doctor::tests::stop_probe", STOP_MARK, "1");
+    }
+
+    #[test]
+    fn stop_probe() {
+        if std::env::var_os(STOP_MARK).is_none() {
+            return;
+        }
+        let _ssh = crate::testutil::fake_on_path("ssh", "exec sleep 600");
+        let t = SshTarget {
+            dest: "git@example".into(),
+            port: None,
+        };
+        crate::stop::request(libc::SIGTERM);
+        let started = Instant::now();
+        assert!(!ssh_config_keepalive(&t));
+        assert_eq!(ssh_account(&t), None);
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

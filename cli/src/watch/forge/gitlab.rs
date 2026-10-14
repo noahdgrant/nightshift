@@ -452,12 +452,7 @@ mod tests {
         if std::env::var_os(STOP_MARK).is_none() {
             return;
         }
-        let dir = tempfile::tempdir().unwrap();
-        crate::testutil::write_exe(&dir.path().join("glab"), "#!/bin/sh\nexec sleep 20\n");
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        let mut dirs = vec![dir.path().to_path_buf()];
-        dirs.extend(std::env::split_paths(&path));
-        std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
+        let dir = crate::testutil::fake_on_path("glab", "exec sleep 20");
         crate::stop::request(libc::SIGTERM);
         let e = glab(dir.path(), &["api", "user"]).unwrap_err();
         let io = e.downcast_ref::<std::io::Error>().expect("an io error");
