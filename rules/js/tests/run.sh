@@ -148,13 +148,19 @@ printf 'export const outside = 1 == 1;\n' >"$tmp/ts-include/tests/outside.test.t
 # The React rules are on in the React repo for every extension, and off in a repo whose
 # package.json has no react. So is no-internal-modules off in a repo that declares no entry
 # points.
-hooks='import { useState } from "react";\n\nexport function Counter({ on }) {\n  if (!on) return null;\n  const [n] = useState(0);\n  return <img src={String(n)} />;\n}\n'
+hooks='import { useState } from "react";\n\nexport function Counter({ on }) {\n  if (!on) return null;\n  const [n] = useState(0);\n  return <img src={String(n)} dangerouslySetInnerHTML={{ __html: "x" }} />;\n}\n'
 for kind in react js; do
   mkdir "$tmp/$kind/react-rules"
   for ext in js jsx tsx; do
     # shellcheck disable=SC2059 # the format is the file
     printf "$hooks" >"$tmp/$kind/react-rules/hooks.$ext"
   done
+done
+# Hooks live in plain .ts files too, with no JSX.
+nojsx='import { useState } from "react";\n\nexport function useCounter(on: boolean) {\n  if (!on) return 0;\n  const [n] = useState(0);\n  return n;\n}\n'
+for kind in react js; do
+  # shellcheck disable=SC2059 # the format is the file
+  printf "$nojsx" >"$tmp/$kind/react-rules/hooks-nojsx.ts"
 done
 cp -R "$pack/tests/examples/no-internal-modules" "$tmp/js/internal-off"
 
@@ -190,13 +196,17 @@ done
 
 react_rule='select(.rule | test("^(?:react|react-hooks|jsx-a11y)/"))'
 for ext in js jsx tsx; do
-  for want in react-hooks/rules-of-hooks jsx-a11y/alt-text; do
+  for want in react-hooks/rules-of-hooks jsx-a11y/alt-text react/no-danger; do
     jq -e --arg r "$want" 'select(.rule == $r)' <<<"$(findings_for react "react-rules/hooks.$ext")" >/dev/null ||
       fail "react: no $want finding on react-rules/hooks.$ext"
   done
   ! jq -e "$react_rule" <<<"$(findings_for js "react-rules/hooks.$ext")" >/dev/null ||
     fail "js: a React rule fired with no react in package.json: $(findings_for js "react-rules/hooks.$ext")"
 done
+jq -e 'select(.rule == "react-hooks/rules-of-hooks")' <<<"$(findings_for react react-rules/hooks-nojsx.ts)" >/dev/null ||
+  fail "react: no react-hooks/rules-of-hooks finding on react-rules/hooks-nojsx.ts"
+! jq -e "$react_rule" <<<"$(findings_for js react-rules/hooks-nojsx.ts)" >/dev/null ||
+  fail "js: a React rule fired on a .ts file with no react in package.json"
 ! jq -e 'select(.rule | endswith("no-internal-modules"))' <<<"$(findings_for js internal-off/fail.js)" >/dev/null ||
   fail "js: no-internal-modules fired with no entry points declared"
 [ -z "$(findings_for js untyped/floating.ts)" ] ||
