@@ -1,2 +1,8 @@
 # Three or more bool parameters is a signature to replace with an enum or a struct (CODING_STANDARDS.md).
 max-fn-params-bools = 2
+
+# Every child process starts through proc, which applies its kind's policy: the environment
+# scrub, a timeout that kills the process group, stdin closed (#556, CODING_STANDARDS.md, "Checks").
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "start a child through crate::proc::Proc (Proc::git_local, Proc::forge, Proc::tool, ...), which applies its kind's policy" },
+]

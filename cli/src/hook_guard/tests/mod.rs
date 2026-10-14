@@ -137,9 +137,8 @@ fn hook_exit_code(ns: &Path) -> Option<i32> {
     let cmd = s["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap();
-    std::process::Command::new("sh")
+    crate::proc::Proc::tool("sh")
         .args(["-c", cmd])
-        .stdin(std::process::Stdio::null())
         .output()
         .unwrap()
         .status

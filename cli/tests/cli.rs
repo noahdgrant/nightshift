@@ -2,7 +2,6 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
 
 use common::Ns;
 use predicates::prelude::*;
@@ -16,7 +15,7 @@ fn ns() -> Ns {
 }
 
 fn git_output(dir: &Path, args: &[&str]) -> std::process::Output {
-    StdCommand::new("git")
+    common::command("git")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
@@ -30,7 +29,6 @@ fn git_output(dir: &Path, args: &[&str]) -> std::process::Output {
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@t")
         .output()
-        .unwrap()
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -2281,10 +2279,10 @@ fn a_signal_ends_the_setup_command(args: &[&str], sig: libc::c_int, prepare: imp
     let (_tmp, root) = repo();
     prepare(&root);
     let fifo = root.parent().unwrap().join("pids");
-    assert!(StdCommand::new("mkfifo")
+    assert!(common::command("mkfifo")
         .arg(&fifo)
-        .status()
-        .unwrap()
+        .output()
+        .status
         .success());
     factory_def(&root, &slow_setup(&fifo));
     let (tx, rx) = std::sync::mpsc::channel();
@@ -2978,7 +2976,7 @@ if [ -e red ] || [ -e "$common/red" ]; then echo red >&2; exit 1; fi"#,
 
 /// `git push -q origin <specs>` with no inherited cargo target directory.
 fn push(root: &Path, specs: &[&str]) -> std::process::Output {
-    StdCommand::new("git")
+    common::command("git")
         .current_dir(root)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -2987,7 +2985,6 @@ fn push(root: &Path, specs: &[&str]) -> std::process::Output {
         .args(["push", "-q", "origin"])
         .args(specs)
         .output()
-        .unwrap()
 }
 
 /// Each run logged, as `(commit, dir, cargo target dir)`.
@@ -3283,15 +3280,14 @@ fn pre_push_checks_the_commit_pushed_when_git_location_variables_are_set() {
     let old = git(&root, &["rev-parse", "HEAD"]);
     fs::write(root.join("README"), "next\n").unwrap();
     git(&root, &["commit", "-q", "--no-verify", "-am", "next"]);
-    let out = StdCommand::new("git")
+    let out = common::command("git")
         .current_dir(&root)
         .env_remove("CARGO_TARGET_DIR")
         .env("GIT_DIR", root.join(".git"))
         .env("GIT_WORK_TREE", &root)
         .env("GIT_INDEX_FILE", &index)
         .args(["push", "-q", "origin", &format!("{old}:refs/heads/a")])
-        .output()
-        .unwrap();
+        .output();
     assert!(out.status.success(), "{out:?}");
     assert_eq!(runs(&log).len(), 1);
     assert_eq!(runs(&log)[0].0, old);
@@ -3306,15 +3302,14 @@ fn pre_push_checks_the_commit_pushed_when_git_location_variables_are_set() {
 fn pre_push_keeps_a_cargo_target_dir_already_set() {
     let (tmp, root, _remote, log) = hooked_repo();
     let target = tmp.path().join("target");
-    let out = StdCommand::new("git")
+    let out = common::command("git")
         .current_dir(&root)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
         .env("CARGO_TARGET_DIR", &target)
         .args(["push", "-q", "origin", "HEAD:refs/heads/a"])
-        .output()
-        .unwrap();
+        .output();
     assert!(out.status.success(), "{out:?}");
     assert_eq!(runs(&log)[0].2, target.display().to_string());
 }
@@ -3369,7 +3364,7 @@ fn neither_hook_has_an_environment_variable_that_skips_it() {
     fs::write(root.join(".git/red"), "").unwrap();
     let head = git(&root, &["rev-parse", "HEAD"]);
     for hook in ["pre-commit", "pre-push"] {
-        let out = StdCommand::new("sh")
+        let out = common::command("sh")
             .arg("-c")
             .arg(format!(
                 "echo 'refs/heads/main {head} refs/heads/main {head}' | .githooks/{hook}"
@@ -3393,8 +3388,7 @@ fn neither_hook_has_an_environment_variable_that_skips_it() {
                 .map(|k| (k, "1")),
             )
             .env("HUSKY", "0")
-            .output()
-            .unwrap();
+            .output();
         assert!(!out.status.success(), "{hook} passed with skip variables");
         assert!(
             String::from_utf8_lossy(&out.stderr).contains("red"),

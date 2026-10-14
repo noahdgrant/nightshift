@@ -57,28 +57,21 @@ pub fn rebased_unit() -> Rebased {
 /// it under a temp name, which is renamed into place. `tests/common` has the same helper for
 /// the integration tests.
 pub fn write_exe(path: &Path, contents: impl AsRef<[u8]>) {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
     let tmp = path.with_file_name(format!(
         ".{}.tmp",
         path.file_name().unwrap().to_string_lossy()
     ));
-    let mut sh = Command::new("sh")
+    let out = crate::proc::Proc::tool("sh")
         .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
         .arg(&tmp)
-        .stdin(Stdio::piped())
-        .spawn()
+        .stdin(contents.as_ref().to_vec())
+        .output()
         .unwrap();
-    sh.stdin
-        .take()
-        .unwrap()
-        .write_all(contents.as_ref())
-        .unwrap();
-    let status = sh.wait().unwrap();
     assert!(
-        status.success(),
-        "sh could not write {}: {status}",
-        tmp.display()
+        out.status.success(),
+        "sh could not write {}: {}",
+        tmp.display(),
+        String::from_utf8_lossy(&out.stderr)
     );
     fs::rename(&tmp, path).unwrap();
 }
@@ -86,6 +79,10 @@ pub fn write_exe(path: &Path, contents: impl AsRef<[u8]>) {
 /// A command that re-runs the test `test` (a full path such as `stop::tests::probe`) alone in a
 /// process of its own, with `mark` set to `value`, so a probe that records a stop or replaces
 /// itself cannot disturb the other tests. The probe returns at once unless `mark` is set.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a probe test spawns, signals and kills this process itself, which proc does not offer"
+)]
 pub fn probe_command(test: &str, mark: &str, value: &str) -> std::process::Command {
     let mut probe = std::process::Command::new(std::env::current_exe().unwrap());
     probe

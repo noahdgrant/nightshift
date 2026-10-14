@@ -1,5 +1,10 @@
 //! `ns quality` end to end: a temp repo with unit worktrees holding fixture review artifacts.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
 mod common;
 
 use std::fs;
