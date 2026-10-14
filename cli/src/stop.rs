@@ -183,6 +183,85 @@ pub fn check() -> anyhow::Result<()> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    extern "C" fn other(_: libc::c_int) {}
+
+    fn action(sig: libc::c_int) -> (libc::sighandler_t, libc::c_int) {
+        // SAFETY: sigaction(2) with no new action only reads the current one.
+        let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::sigaction(sig, std::ptr::null(), &mut sa) },
+            0
+        );
+        (sa.sa_sigaction, sa.sa_flags)
+    }
+
+    fn set(sig: libc::c_int, handler: libc::sighandler_t) {
+        // SAFETY: sigaction(2) with a zeroed struct and an empty mask.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = handler;
+            libc::sigemptyset(&mut sa.sa_mask);
+            assert_eq!(libc::sigaction(sig, &sa, std::ptr::null_mut()), 0);
+        }
+    }
+
+    #[test]
+    fn scoped_puts_back_the_sigint_and_sigterm_handlers_it_found() {
+        let theirs = other as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        set(libc::SIGINT, theirs);
+        set(libc::SIGTERM, libc::SIG_IGN);
+        let before = (action(libc::SIGINT), action(libc::SIGTERM));
+        let inside = super::scoped(|| (action(libc::SIGINT), action(libc::SIGTERM))).unwrap();
+        let after = (action(libc::SIGINT), action(libc::SIGTERM));
+        set(libc::SIGINT, libc::SIG_DFL);
+        set(libc::SIGTERM, libc::SIG_DFL);
+        assert_ne!(inside, before, "scoped installed nothing");
+        assert_eq!(after, before);
+        assert_eq!(before.0 .0, theirs);
+        assert_eq!(before.1 .0, libc::SIG_IGN);
+    }
+
+    const SCOPED_MARK: &str = "NS_STOP_SCOPED_PROBE";
+
+    #[test]
+    fn a_sigint_or_sigterm_inside_scoped_is_recorded_as_a_stop() {
+        for (mode, sig) in [("int", libc::SIGINT), ("term", libc::SIGTERM)] {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "stop::tests::scoped_probe",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(SCOPED_MARK, mode)
+                .output()
+                .unwrap();
+            let log = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success(), "{mode}: {log}");
+            assert!(log.contains(&format!("requested={sig}\n")), "{mode}: {log}");
+        }
+    }
+
+    /// Run by the test above in a process of its own, since a stop request is never undone.
+    #[test]
+    fn scoped_probe() {
+        let Ok(mode) = std::env::var(SCOPED_MARK) else {
+            return;
+        };
+        let sig = if mode == "int" {
+            libc::SIGINT
+        } else {
+            libc::SIGTERM
+        };
+        assert_eq!(super::requested(), None);
+        super::scoped(|| {
+            // SAFETY: raise(3) delivers the signal to this thread, whose handler only stores.
+            assert_eq!(unsafe { libc::raise(sig) }, 0);
+        })
+        .unwrap();
+        println!("requested={}", super::requested().unwrap_or(0));
+    }
+
     #[test]
     fn name_knows_the_common_signals() {
         assert_eq!(super::name(libc::SIGKILL), "SIGKILL");

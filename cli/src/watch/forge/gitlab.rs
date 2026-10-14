@@ -440,6 +440,45 @@ mod tests {
         );
     }
 
+    const STOP_MARK: &str = "NS_GLAB_STOP_PROBE";
+
+    #[test]
+    fn a_stop_ends_glab_as_interrupted_not_as_a_missing_glab() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "watch::forge::gitlab::tests::stop_probe",
+                "--test-threads=1",
+            ])
+            .env(STOP_MARK, "1")
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{log}");
+        assert!(log.contains("1 passed"), "the probe did not run: {log}");
+    }
+
+    /// Run by the test above in a process of its own, since a stop request is never undone and
+    /// the fake `glab` goes on its PATH.
+    #[test]
+    fn stop_probe() {
+        if std::env::var_os(STOP_MARK).is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        crate::testutil::write_exe(&dir.path().join("glab"), "#!/bin/sh\nexec sleep 20\n");
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![dir.path().to_path_buf()];
+        dirs.extend(std::env::split_paths(&path));
+        std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
+        crate::stop::request(libc::SIGTERM);
+        let e = glab(dir.path(), &["api", "user"]).unwrap_err();
+        let io = e.downcast_ref::<std::io::Error>().expect("an io error");
+        assert_eq!(io.kind(), std::io::ErrorKind::Interrupted);
+        assert!(e.to_string().ends_with("stopped by a signal"), "{e}");
+        assert!(e.to_string().contains("glab api user"), "{e}");
+    }
+
     #[test]
     fn a_glab_past_its_limit_reports_the_timeout_naming_the_command() {
         let timed_out = std::io::Error::new(

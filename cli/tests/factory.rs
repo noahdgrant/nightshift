@@ -3814,6 +3814,45 @@ fn a_stop_during_setup_reruns_setup_on_the_next_run() {
     assert_eq!(setup_runs(&e), (2, 1));
 }
 
+#[test]
+fn a_sigint_to_a_plain_run_ends_the_setup_command() {
+    let e = Env::new();
+    let f = fifo(&e);
+    e.factory(&format!(
+        "[worktree]\nsetup = {:?}\n",
+        [
+            blocks(&f),
+            "echo done >> \"$NS_MAIN_ROOT/../setup.done\"".to_string()
+        ]
+    ));
+    let mut g = e.ns().args(["run", "--issue", "7"]).start_piped();
+    let stderr = read_all(g.take_stderr());
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(fs::read_to_string(&f));
+    });
+    let pids: Vec<String> = g
+        .recv(&rx)
+        .unwrap()
+        .split_whitespace()
+        .map(String::from)
+        .collect();
+    assert_eq!(pids.len(), 3, "{pids:?}");
+    // SAFETY: kill(2) on the ns process this test started.
+    assert_eq!(
+        unsafe { libc::kill(g.id() as libc::pid_t, libc::SIGINT) },
+        0
+    );
+    let code = g.wait().code();
+    let stderr = String::from_utf8_lossy(&g.recv(&stderr)).into_owned();
+    assert_eq!(code, Some(130), "{stderr}");
+    for pid in &pids[1..] {
+        assert!(common::exits(pid), "pid {pid} outlived ns: {stderr}");
+    }
+    assert!(!e.base.join("setup.done").exists());
+    assert!(e.calls().is_empty());
+}
+
 /// Run `ns watch --once` on ready issue 2 through to the merge step, with a `gh` that sends ns
 /// SIGTERM when it is called with `call`, then answers normally.
 fn stop_at_gh(e: &Env, call: &str) -> (std::process::Output, Value) {

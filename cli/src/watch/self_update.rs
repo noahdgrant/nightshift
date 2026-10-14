@@ -543,6 +543,42 @@ mod tests {
         assert!(e.to_string().contains("timed out"), "{e}");
     }
 
+    const STOP_MARK: &str = "NS_SELF_UPDATE_STOP_PROBE";
+
+    #[test]
+    fn a_stop_ends_a_logged_command_as_interrupted() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "watch::self_update::tests::stop_probe",
+                "--test-threads=1",
+            ])
+            .env(STOP_MARK, "1")
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{log}");
+        assert!(log.contains("1 passed"), "the probe did not run: {log}");
+    }
+
+    /// Run by the test above in a process of its own, since a stop request is never undone.
+    #[test]
+    fn stop_probe() {
+        if std::env::var_os(STOP_MARK).is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        crate::stop::request(libc::SIGTERM);
+        let mut slow = Proc::tool("sleep");
+        slow.arg("20");
+        let e = logged(&mut slow, Duration::from_secs(600), &dir.path().join("log"))
+            .unwrap()
+            .output()
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(e.to_string(), "`sleep 20` stopped by a signal");
+    }
+
     #[test]
     fn a_command_that_ends_is_not_held_by_a_straggler_in_its_group() {
         let dir = tempfile::tempdir().unwrap();

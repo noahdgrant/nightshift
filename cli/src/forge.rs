@@ -572,6 +572,37 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10));
     }
 
+    const STOP_MARK: &str = "NS_FORGE_STOP_PROBE";
+
+    #[test]
+    fn a_stop_ends_a_forge_cli_and_a_token_command_as_interrupted() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "forge::tests::stop_probe", "--test-threads=1"])
+            .env(STOP_MARK, "1")
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{log}");
+        assert!(log.contains("1 passed"), "the probe did not run: {log}");
+    }
+
+    /// Run by the test above in a process of its own, since a stop request is never undone.
+    #[test]
+    fn stop_probe() {
+        if std::env::var_os(STOP_MARK).is_none() {
+            return;
+        }
+        crate::stop::request(libc::SIGTERM);
+        let started = Instant::now();
+        let e = can_read_fake("exec sleep 20", Duration::from_secs(600)).unwrap_err();
+        assert!(e.ends_with("stopped by a signal"), "{e}");
+        assert!(!e.contains("cannot run"), "{e}");
+        let source = TokenSource::Command("sleep 20".into());
+        let e = fetch_within(ForgeKind::Github, &source, Duration::from_secs(600)).unwrap_err();
+        assert!(e.to_string().contains("stopped by a signal"), "{e}");
+        assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
     #[test]
     fn a_stop_is_not_reported_as_a_command_that_cannot_run() {
         let stopped = std::io::Error::new(std::io::ErrorKind::Interrupted, "`gh api` stopped");

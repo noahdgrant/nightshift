@@ -2245,37 +2245,68 @@ fn factory_def(root: &Path, text: &str) {
     fs::write(root.join(".nightshift/nightshift.toml"), text).unwrap();
 }
 
-#[test]
-fn a_sigint_to_worktree_new_ends_the_setup_command() {
-    let (_tmp, root) = repo();
-    factory_def(
-        &root,
-        "name = \"demo\"\n\n[worktree]\nsetup = [\"echo $$ > setup.pid; sleep 600\"]\n",
-    );
-    let pid_file = root.parent().unwrap().join("myrepo.worktrees/u1/setup.pid");
-    let mut ns = ns();
-    let mut g = ns
-        .current_dir(&root)
-        .args(["worktree", "new", "u1"])
-        .start();
+const SLOW_SETUP: &str =
+    "name = \"demo\"\n\n[worktree]\nsetup = [\"echo $$ > setup.pid; sleep 600 & echo $! > sleep.pid; wait\"]\n";
+
+fn read_pid(file: &Path) -> String {
     let deadline = std::time::Instant::now() + common::TIMEOUT;
-    let pid = loop {
-        if let Some(pid) = fs::read_to_string(&pid_file)
-            .ok()
-            .filter(|p| p.ends_with('\n'))
-        {
-            break pid;
+    loop {
+        if let Some(pid) = fs::read_to_string(file).ok().filter(|p| p.ends_with('\n')) {
+            return pid;
         }
         assert!(std::time::Instant::now() < deadline, "setup never started");
         std::thread::sleep(std::time::Duration::from_millis(10));
-    };
+    }
+}
+
+/// Signal an `ns worktree` run whose setup command sleeps, and check that the shell and the
+/// `sleep` it started both end, and that ns reports the stop as a failed setup command.
+fn a_signal_ends_the_setup_command(args: &[&str], sig: libc::c_int, prepare: impl Fn(&Path)) {
+    let (_tmp, root) = repo();
+    prepare(&root);
+    factory_def(&root, SLOW_SETUP);
+    let dir = root.parent().unwrap().join("myrepo.worktrees/u1");
+    let mut ns = ns();
+    let mut g = ns.current_dir(&root).args(args).start();
+    let pids = [
+        read_pid(&dir.join("setup.pid")),
+        read_pid(&dir.join("sleep.pid")),
+    ];
     // SAFETY: kill(2) on the ns process this test started.
-    assert_eq!(
-        unsafe { libc::kill(g.id() as libc::pid_t, libc::SIGINT) },
-        0
+    assert_eq!(unsafe { libc::kill(g.id() as libc::pid_t, sig) }, 0);
+    let status = g.wait();
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut g.take_stderr(), &mut stderr).unwrap();
+    assert_eq!(status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("exited with a signal") && stderr.contains("ns worktree setup u1"),
+        "{stderr}"
     );
-    assert!(!g.wait().success());
-    assert!(common::exits(&pid), "the setup command outlived ns");
+    for pid in &pids {
+        assert!(common::exits(pid), "pid {pid} outlived ns");
+    }
+}
+
+#[test]
+fn a_sigint_to_worktree_new_ends_the_setup_command() {
+    a_signal_ends_the_setup_command(&["worktree", "new", "u1"], libc::SIGINT, |_| ());
+}
+
+#[test]
+fn a_sigterm_to_worktree_new_ends_the_setup_command() {
+    a_signal_ends_the_setup_command(&["worktree", "new", "u1"], libc::SIGTERM, |_| ());
+}
+
+#[test]
+fn a_sigint_or_sigterm_to_worktree_setup_ends_the_setup_command() {
+    for sig in [libc::SIGINT, libc::SIGTERM] {
+        a_signal_ends_the_setup_command(&["worktree", "setup", "u1"], sig, |root| {
+            ns().current_dir(root)
+                .args(["worktree", "new", "u1"])
+                .assert()
+                .success();
+        });
+    }
 }
 
 #[test]
