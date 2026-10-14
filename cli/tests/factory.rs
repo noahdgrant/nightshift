@@ -6015,6 +6015,37 @@ fn factory_validate_warns_when_build_only_runs_on_a_personal_account_repo() {
 }
 
 #[test]
+fn factory_validate_with_factory_path_looks_up_the_owner_of_the_cwd_repo() {
+    let e = github_owned_by(Some("User"));
+    let other = e.base.join("other-checkout");
+    fs::create_dir_all(&other).unwrap();
+    git(&other, &["init", "-q"]);
+    git(
+        &other,
+        &["remote", "add", "origin", "https://github.com/x/y.git"],
+    );
+    fs::write(
+        other.join("nightshift.toml"),
+        "[gate]\nlocal = \"build-only\"\n",
+    )
+    .unwrap();
+    let v = e.run(
+        &["factory", "validate", "--factory", other.to_str().unwrap()],
+        0,
+    );
+    assert_eq!(v["ok"], true, "{v}");
+    let warnings = v["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{v}");
+    assert!(
+        warnings[0].as_str().unwrap().contains("organisation-owned"),
+        "{v}"
+    );
+    let calls = e.gh_calls();
+    assert!(calls.contains("api repos/o/r --jq .owner.type"), "{calls}");
+    assert!(!calls.contains("repos/x/y"), "{calls}");
+}
+
+#[test]
 fn factory_validate_owner_warning_joins_the_fast_warning() {
     let e = github_owned_by(Some("User"));
     fs::create_dir_all(e.root.join("docs/agents")).unwrap();
