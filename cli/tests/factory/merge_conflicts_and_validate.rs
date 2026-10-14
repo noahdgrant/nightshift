@@ -648,6 +648,51 @@ fn a_dry_run_on_a_rebased_unit_sees_its_reviewed_artifacts_as_current() {
     assert_eq!(v["decision"]["action"], "done", "{v}");
 }
 
+/// The unit's saved ledger, which a run that stops without finishing leaves.
+fn ledger(e: &Env) -> Vec<u8> {
+    fs::read(e.worktree(UNIT).join(".ns").join(UNIT).join("state.json")).expect("a saved ledger")
+}
+
+#[test]
+fn a_dry_run_replays_the_forced_build_a_resumed_run_runs() {
+    let e = Env::new();
+    e.factory("[limits]\nbudget_usd = 1.0\n[phases.build]\ngate = \"exit 1\"\n");
+    e.queue("build", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 3);
+    assert_eq!(v["outcome"], "budget", "{v}");
+    let saved = ledger(&e);
+    let dry = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+    assert_eq!(ledger(&e), saved, "a dry run writes no ledger");
+    e.factory("");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["phases"][0]["phase"], "build", "{v}");
+    assert_eq!(dry["decision"]["phase"], v["phases"][0]["phase"], "{dry}");
+}
+
+#[test]
+fn a_dry_run_carries_evidence_forward_as_a_resumed_run_does() {
+    let resolve = "git merge -q --no-ff --no-commit upstream\n\
+                   echo resolved >> work.txt && git add work.txt\n\
+                   git -c user.name=f -c user.email=f@f commit -q --no-edit\n\
+                   git update-ref refs/remotes/origin/main upstream\n\
+                   git rev-parse HEAD > \"$FAKE_GH_DIR/pr-12.head\"\n";
+    // Triage, build, verify, review and ship spend the budget; the delta review is next.
+    let (e, v, code) = main_moves_after_review(
+        &["pass:script", "pass"],
+        PRINT_HEAD_SHA_CMD,
+        resolve,
+        |e| e.factory(&format!("{AUTO}[limits]\nbudget_usd = 2.5\n")),
+    );
+    assert_eq!((code, &v["outcome"]), (3, &"budget".into()), "{v}");
+    let saved = ledger(&e);
+    let dry = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+    assert_eq!(ledger(&e), saved, "a dry run writes no ledger");
+    e.factory(AUTO);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["phases"][0]["phase"], "review", "{v}");
+    assert_eq!(dry["decision"]["phase"], v["phases"][0]["phase"], "{dry}");
+}
+
 #[test]
 fn a_pr_head_with_other_content_needs_a_human_merge() {
     let other = "echo other > other.txt; git add other.txt; \

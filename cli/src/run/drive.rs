@@ -511,7 +511,7 @@ fn drive_loop(
 
 /// Mark the verify and review artifacts that only a small base merge by ship made stale, so they
 /// carry forward (CORE-1): `state.carried`.
-fn carry_forward(ctx: &Ctx<'_>, ledger: &Ledger, state: &mut State) {
+pub(super) fn carry_forward(ctx: &Ctx<'_>, ledger: &Ledger, state: &mut State) {
     for phase in ["verify", "review"] {
         let Some(sha) = state.arts.get(phase).and_then(|a| a.sha.clone()) else {
             continue;
