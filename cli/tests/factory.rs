@@ -15452,3 +15452,32 @@ fn a_red_gate_on_an_unmoved_main_logs_merge_gate_failed() {
     assert!(!p.contains("combining it with main"), "{p}");
     assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
 }
+
+#[test]
+fn a_ready_issue_that_overlaps_a_running_unit_waits_for_it_to_end() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    brief_comment(&e, 2, "`cli/**`");
+    e.ready(3, "Fix b", &["type:fix"], "");
+    brief_comment(&e, 3, "`cli/src/run.rs`");
+    // #2 holds at its triage, so the pick reads its prediction from its issue.
+    let (in_a, go_a) = hold_phase(&e, A, "triage");
+    let mut w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
+    w.entered(&in_a);
+    w.line("ns watch: #3 waits: its touches overlap running 2-fix-a");
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+    // A free slot stayed free: #3 started only once #2 had ended.
+    let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
+    let started_3 = event_at(&e, |ev| ev["event"] == "worker_start" && ev["issue"] == 3);
+    assert!(ended_2 < started_3, "{:?}", run_events(&e));
+    let held = events_named(&e, "overlap_held");
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(
+        (&held[0]["issue"], &held[0]["overlaps"]),
+        (&json!(3), &json!(["2-fix-a"]))
+    );
+    assert!(events_named(&e, "overlap_forced").is_empty());
+}

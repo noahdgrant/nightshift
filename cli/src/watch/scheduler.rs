@@ -164,6 +164,8 @@ pub(super) struct Scheduler<'a> {
     sweep: bool,
     /// Split parents with no children found, reported once a night.
     childless: BTreeSet<u64>,
+    /// Ready issues held back tonight for overlapping a running unit.
+    holds: overlap::Holds,
 }
 
 impl<'a> Scheduler<'a> {
@@ -186,6 +188,7 @@ impl<'a> Scheduler<'a> {
             filed: BTreeSet::new(),
             shut_at: None,
             childless: BTreeSet::new(),
+            holds: overlap::Holds::default(),
         }
     }
 
@@ -373,7 +376,22 @@ impl<'a> Scheduler<'a> {
                 self.stopping = Some(why);
                 break;
             }
-            let issue = picker.take(&mut ready, || self.running_touches());
+            let mut events = Vec::new();
+            let (repo, running) = (self.plan.repo, &self.running);
+            let taken = picker.take(
+                &mut ready,
+                || running_touches(repo, forge, running),
+                night.shared.clock.now(),
+                &mut self.holds,
+                &mut events,
+            );
+            for ev in events {
+                run::log_event(&repo.common_dir, ev);
+            }
+            // Every issue left overlaps a running unit and has not waited long enough.
+            let Some(issue) = taken else {
+                break;
+            };
             let q = &self.plan.loaded.fac.queue;
             let n = issue.number;
             if let Err(e) = set_status(self.plan.forge, q, n, Some(&q.in_progress_label)) {
@@ -387,12 +405,6 @@ impl<'a> Scheduler<'a> {
             self.started += 1;
         }
         Ok(())
-    }
-
-    /// The running units that predict any `touches`, for the pick.
-    fn running_touches(&self) -> Vec<(String, Vec<String>)> {
-        let units = self.running.values().map(|w| (&w.issue, None));
-        overlap::running_units(self.plan.repo, self.plan.forge, units)
     }
 
     /// Close the split parents whose children are done, and on the clone's first pass sweep the
@@ -783,6 +795,16 @@ impl<'a> Scheduler<'a> {
             eprintln!("ns watch: {e:#}");
         }
     }
+}
+
+/// The running units that predict any `touches`, for the pick.
+fn running_touches(
+    repo: &Repo,
+    forge: &dyn Forge,
+    running: &BTreeMap<usize, Worker>,
+) -> Vec<(String, Vec<String>)> {
+    let units = running.values().map(|w| (&w.issue, None));
+    overlap::running_units(repo, forge, units)
 }
 
 impl Drop for Scheduler<'_> {
