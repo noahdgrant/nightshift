@@ -18,6 +18,11 @@ pub mod merge;
 pub mod route;
 pub mod step;
 
+#[cfg(test)]
+mod scenarios;
+#[cfg(test)]
+pub(crate) mod sim;
+
 /// The most times one `ns run` sends a passed ship back because its PR conflicts with the base.
 pub const RESHIP_CAP: u32 = 5;
 

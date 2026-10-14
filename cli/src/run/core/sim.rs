@@ -1,0 +1,263 @@
+//! An in-memory driver over [`step`], for routing scenarios: the same transition function
+//! `run/drive.rs` drives, with a fake unit in place of the worktree, the harness and the gate.
+//! It mirrors the fake harness of `cli/tests/fixtures/factory/claude`: each phase pops its next
+//! action from a queue, `status[:extra]`, where `status` is `pass`, `fail`, `blocked`, `none` (no
+//! artifact, exit 0) or `crash` (no artifact, exit 1), and `extra` is `+`-joined words:
+//! `commit` moves HEAD, `movemain` moves the default branch, `sleep` times the phase out, and
+//! any other text lands in the artifact's body (`base moved` as its first line).
+
+use std::collections::{BTreeMap, VecDeque};
+
+use serde_json::{json, Value};
+
+use super::route::{facts_wanted, to_archive, Art, Settings, State};
+use super::step::{step, Action, Event, GateRan, GateRed, GuardFacts, PhaseRan};
+use super::{Ledger, Rebase};
+use crate::factory::PHASES;
+use crate::run::Outcome;
+
+/// A fake unit and the scripts of its phases.
+pub struct Sim {
+    pub settings: Settings,
+    pub has_issue: bool,
+    /// The default branch's name and the number of times it moved, or `None` without an origin.
+    pub remote: Option<(String, u32)>,
+    /// Each gate's verdict in order, `Err` carrying a red gate's output; `None` sets no gate
+    /// command. An empty queue goes green.
+    pub gates: Option<VecDeque<Result<(), String>>>,
+    queues: BTreeMap<&'static str, VecDeque<String>>,
+    arts: BTreeMap<&'static str, Art>,
+    commits: u32,
+    red: Option<String>,
+}
+
+/// One phase run the core admitted.
+#[derive(Debug, Clone)]
+pub struct Run {
+    pub phase: &'static str,
+    pub attempt: u32,
+    /// The feedback its prompt carries.
+    pub feedback: String,
+    pub why: String,
+    pub rebase: Option<(Rebase, String, String)>,
+    pub follows_base: bool,
+}
+
+/// How a scenario ended, and what ran on the way.
+#[derive(Debug)]
+pub struct Report {
+    pub outcome: Outcome,
+    pub reason: String,
+    pub phase: Option<&'static str>,
+    pub runs: Vec<Run>,
+    /// The run-log events the core asked for, and those the shell writes from its actions.
+    pub logs: Vec<Value>,
+}
+
+impl Report {
+    /// The phases run, in order: the e2e tests' `calls()`.
+    pub fn calls(&self) -> Vec<&'static str> {
+        self.runs.iter().map(|r| r.phase).collect()
+    }
+
+    /// The runs that took in the base for free: the e2e tests' `rebase_after_base_moved` events.
+    pub fn rebases(&self) -> Vec<&Run> {
+        self.runs.iter().filter(|r| r.rebase.is_some()).collect()
+    }
+
+    pub fn logged(&self, event: &str) -> bool {
+        self.logs.iter().any(|l| l["event"] == event)
+    }
+}
+
+/// The most steps a scenario takes before the sim calls it a loop.
+const MAX_STEPS: usize = 1000;
+
+impl Sim {
+    /// A unit with an issue, an origin whose default branch is `main`, no gate, and the factory
+    /// defaults.
+    pub fn new() -> Self {
+        Self {
+            settings: Settings {
+                max_attempts: PHASES.iter().map(|p| (*p, 2)).collect(),
+                ..Settings::default()
+            },
+            has_issue: true,
+            remote: Some(("main".into(), 0)),
+            gates: None,
+            queues: BTreeMap::new(),
+            arts: BTreeMap::new(),
+            commits: 0,
+            red: None,
+        }
+    }
+
+    /// The fake harness's `e.queue(phase, actions)`.
+    pub fn queue(&mut self, phase: &'static str, actions: &[&str]) {
+        self.queues
+            .entry(phase)
+            .or_default()
+            .extend(actions.iter().map(|a| a.to_string()));
+    }
+
+    pub fn max_attempts(&mut self, phase: &'static str, n: u32) {
+        self.settings.max_attempts.insert(phase, n);
+    }
+
+    fn head(&self) -> String {
+        format!("c{:06}", self.commits)
+    }
+
+    fn remote_now(&self) -> Option<(String, String)> {
+        self.remote
+            .as_ref()
+            .map(|(b, n)| (b.clone(), format!("m{n:06}")))
+    }
+
+    fn state(&self, l: &Ledger) -> State {
+        let mut s = State {
+            arts: self.arts.clone(),
+            head: self.head(),
+            has_issue: self.has_issue,
+            settings: self.settings.clone(),
+            ..State::default()
+        };
+        for sha in facts_wanted(l, &s) {
+            s.facts.insert(sha, Default::default());
+        }
+        s
+    }
+
+    /// Drive the unit from a fresh ledger to an outcome.
+    pub fn run(&mut self) -> Report {
+        self.run_from(Ledger::new(None))
+    }
+
+    pub fn run_from(&mut self, mut ledger: Ledger) -> Report {
+        let (mut runs, mut logs) = (Vec::new(), Vec::new());
+        let mut state = self.state(&ledger);
+        let mut action = Action::Decide;
+        for _ in 0..MAX_STEPS {
+            let ev = match action {
+                Action::Decide => {
+                    state = self.state(&ledger);
+                    Event::Start
+                }
+                Action::ReadRemote => Event::Remote(self.remote_now()),
+                Action::RunPhase(a) => {
+                    if a.follows_base {
+                        logs.push(json!({"event": "ship_after_base_moved", "attempt": a.attempt}));
+                    }
+                    runs.push(Run {
+                        phase: a.phase,
+                        attempt: a.attempt,
+                        feedback: a.prompt_feedback(),
+                        why: a.why.clone(),
+                        rebase: a.rebase.clone(),
+                        follows_base: a.follows_base,
+                    });
+                    Event::PhaseRan(self.run_phase(a.phase, &state))
+                }
+                Action::CheckGuards => Event::GuardFacts(GuardFacts::default()),
+                Action::SetAside { phase, .. } => {
+                    self.arts.remove(phase);
+                    Event::Archived
+                }
+                Action::RunGate(call) => Event::GateRan(self.gate(call.rebased_onto)),
+                Action::Merge { .. } => panic!("sim: the merge step is not modelled yet"),
+                Action::Finish(e) => {
+                    logs.extend(e.log);
+                    return Report {
+                        outcome: e.outcome,
+                        reason: e.reason,
+                        phase: e.phase,
+                        runs,
+                        logs,
+                    };
+                }
+            };
+            action = step(&mut ledger, &state, ev);
+        }
+        panic!("sim: no outcome after {MAX_STEPS} steps; ran {runs:?}")
+    }
+
+    /// Run `phase` as the fake harness would, in the unit at `state`.
+    fn run_phase(&mut self, phase: &'static str, state: &State) -> PhaseRan {
+        let saved: Vec<(&'static str, Art)> = to_archive(phase, state)
+            .into_iter()
+            .filter_map(|p| Some((p, self.arts.remove(p)?)))
+            .collect();
+        let action = self
+            .queues
+            .get_mut(phase)
+            .and_then(VecDeque::pop_front)
+            .unwrap_or_else(|| "pass".into());
+        let (status, extra) = action.split_once(':').unwrap_or((&action, ""));
+        let words: Vec<&str> = extra.split('+').collect();
+        let head_before = self.head();
+        if words.contains(&"commit") {
+            self.commits += 1;
+        }
+        if words.contains(&"movemain") {
+            if let Some((_, n)) = self.remote.as_mut() {
+                *n += 1;
+            }
+        }
+        let timed_out = words.contains(&"sleep");
+        let written = !matches!(status, "none" | "crash") && !timed_out;
+        if written {
+            let body = if extra.starts_with("base moved") {
+                extra.to_string()
+            } else {
+                format!("{phase} said {status} {extra}")
+            };
+            let art = Art {
+                status: status.into(),
+                sha: Some(self.head()),
+                body,
+                ..Art::default()
+            };
+            self.arts.insert(phase, art);
+        } else {
+            for (p, a) in saved {
+                self.arts.entry(p).or_insert(a);
+            }
+        }
+        PhaseRan {
+            artifact: written.then(|| status.to_string()),
+            invalid: None,
+            present: self.arts.contains_key(phase),
+            timed_out,
+            killed: None,
+            timeout_text: "timed out after 1 s".into(),
+            exit: if status == "crash" { Some(1) } else { Some(0) },
+            head_before,
+            head_after: self.head(),
+            red_feedback: self.red.clone(),
+        }
+    }
+
+    fn gate(&mut self, rebased_onto: Option<(String, String)>) -> GateRan {
+        let Some(gates) = self.gates.as_mut() else {
+            return GateRan::NoCommand;
+        };
+        match gates.pop_front().unwrap_or(Ok(())) {
+            Ok(()) => {
+                self.red = None;
+                GateRan::Green
+            }
+            Err(output) => {
+                self.red = Some(output.clone());
+                let now = self.remote_now();
+                GateRan::Red(GateRed {
+                    feedback: output,
+                    reason: "the CI gate failed".into(),
+                    stuck_reason: None,
+                    moved_since: rebased_onto
+                        .is_some_and(|(_, onto)| now.is_some_and(|(_, sha)| sha != onto)),
+                    culprit: None,
+                })
+            }
+        }
+    }
+}
