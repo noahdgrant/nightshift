@@ -435,7 +435,11 @@ fn drive_loop(
                 Some("triage"),
             ));
         }
-        let head_moved = !same_sha(&state.head, &ctx.head());
+        let head_now = ctx.head();
+        let head_moved = !same_sha(&state.head, &head_now);
+        if head_moved {
+            ledger.head_moved(phase, &state.head, &head_now);
+        }
         if cut_short && phase == "build" {
             if let Some(fb) = gate_state.red_feedback() {
                 let how = r.killed.as_deref().unwrap_or("timed out");
@@ -466,10 +470,45 @@ fn drive_loop(
                     _ => false,
                 };
                 let stuck = red.stuck_reason();
-                ledger.gate_red(&adm, &red.feedback, red.reason, stuck, moved_since);
+                let culprit = culprit(ctx, &ledger, &red.feedback);
+                if let Some((who, paths)) = &culprit {
+                    ctx.log(json!({"event": "gate_fault", "phase": phase, "attempt": attempt, "culprit": who, "paths": paths}));
+                }
+                ledger.gate_red(
+                    &adm,
+                    &red.feedback,
+                    red.reason,
+                    stuck,
+                    moved_since,
+                    culprit.as_ref().map(|(who, _)| who.as_str()),
+                );
             }
         }
     }
+}
+
+/// The phase whose commits a red gate's output points at, with the paths it matched: the newest
+/// phase run that moved HEAD and changed a file the output names. `None` when the output names
+/// no file, or none any phase changed (the base, or the environment).
+fn culprit(ctx: &Ctx<'_>, ledger: &Ledger, output: &str) -> Option<(String, Vec<String>)> {
+    let failing = gate::failing_paths(output);
+    if failing.is_empty() {
+        return None;
+    }
+    for m in ledger.moves_newest_first() {
+        let Ok(changed) = git::run(&ctx.worktree, &["diff", "--name-only", &m.from, &m.to]) else {
+            continue;
+        };
+        let hit: Vec<String> = failing
+            .iter()
+            .filter(|f| changed.lines().any(|c| gate::same_file(c, f)))
+            .cloned()
+            .collect();
+        if !hit.is_empty() {
+            return Some((m.phase.clone(), hit));
+        }
+    }
+    None
 }
 
 /// Where the unit's ledger is kept between `ns run` invocations.

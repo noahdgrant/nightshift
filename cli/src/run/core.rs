@@ -13,6 +13,10 @@ use crate::factory::PHASES;
 /// The most times one `ns run` sends a passed ship back because its PR conflicts with the base.
 pub const RESHIP_CAP: u32 = 5;
 
+/// The most builds one `ns run` runs for free because another phase's commits turned the gate
+/// red (CORE-4 in docs/design/factory-core/v1.md). Past it, such a build is charged as usual.
+pub const FAULT_CREDIT_CAP: u32 = 6;
+
 /// Why a build or ship runs only to take in the newest default branch, which costs no attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Rebase {
@@ -34,6 +38,8 @@ pub struct Admitted {
     pub rebase: Option<(Rebase, String, String)>,
     /// The ship after a free ship's verify and review reruns: free too.
     pub follows_base: bool,
+    /// A build that fixes a red gate another phase's commits caused: free, naming that phase.
+    pub fault_of: Option<String>,
     before_credit: Option<String>,
 }
 
@@ -89,6 +95,23 @@ pub struct Ledger {
     /// it caused is free too.
     ship_follows_base: bool,
     pub merges: u32,
+    /// Each phase run that moved HEAD, oldest first, so a red gate can be charged to the phase
+    /// whose commits it points at.
+    #[serde(default)]
+    moved: Vec<Moved>,
+    /// The next build fixes a red gate this phase's commits caused, and is free.
+    #[serde(default)]
+    fault_of: Option<String>,
+    #[serde(default)]
+    fault_credits: u32,
+}
+
+/// A phase run that moved HEAD from `from` to `to`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Moved {
+    pub phase: String,
+    pub from: String,
+    pub to: String,
 }
 
 /// A decision that skips `decide` on the next step, in a serializable form.
@@ -228,6 +251,17 @@ impl Ledger {
         if follows_base {
             self.rerun(phase, 1);
         }
+        let fault_of = if phase == "build" {
+            self.fault_of
+                .take()
+                .filter(|_| self.fault_credits < FAULT_CREDIT_CAP)
+        } else {
+            None
+        };
+        if fault_of.is_some() {
+            self.rerun(phase, 1);
+            self.fault_credits += 1;
+        }
         if attempt - self.reruns.get(phase).copied().unwrap_or(0) > max_attempts {
             let mut reason = format!("{phase} is out of attempts ({max_attempts})");
             if let Some(t) = self.last_failure.get(phase) {
@@ -246,6 +280,7 @@ impl Ledger {
             why,
             rebase,
             follows_base,
+            fault_of,
             before_credit,
         })
     }
@@ -264,6 +299,11 @@ impl Ledger {
         if a.follows_base {
             self.rerun(a.phase, -1);
             self.ship_follows_base = true;
+        }
+        if a.fault_of.is_some() {
+            self.rerun(a.phase, -1);
+            self.fault_credits -= 1;
+            self.fault_of = a.fault_of.clone();
         }
         self.force(run(a.phase, &a.feedback, a.why), kind);
     }
@@ -289,10 +329,27 @@ impl Ledger {
         if (a.rebase.is_some() || a.follows_base) && !pass {
             self.rerun(a.phase, -1);
         }
+        if a.fault_of.is_some() && !pass {
+            self.rerun(a.phase, -1);
+        }
         if pass {
             self.passed.insert(a.phase.into());
             self.ship_follows_base |= a.phase == "ship" && a.rebase.is_some();
         }
+    }
+
+    /// `phase` moved HEAD from `from` to `to`.
+    pub fn head_moved(&mut self, phase: &str, from: &str, to: &str) {
+        self.moved.push(Moved {
+            phase: phase.into(),
+            from: from.into(),
+            to: to.into(),
+        });
+    }
+
+    /// The phase runs that moved HEAD, newest first: where a red gate looks for its cause.
+    pub fn moves_newest_first(&self) -> impl Iterator<Item = &Moved> {
+        self.moved.iter().rev()
     }
 
     /// A build cut short while the gate is still red runs again with the gate's feedback.
@@ -308,7 +365,9 @@ impl Ledger {
     }
 
     /// The gate after `a` went red. `moved_since` is true when `a` was a `BaseMoved` rebuild
-    /// and the default branch moved again since, which earns one more free rebase.
+    /// and the default branch moved again since, which earns one more free rebase. `culprit` is
+    /// the phase whose commits the failure points at, when the driver found one: a phase other
+    /// than build makes the build that fixes it free.
     pub fn gate_red(
         &mut self,
         a: &Admitted,
@@ -316,10 +375,12 @@ impl Ledger {
         reason: String,
         stuck_reason: Option<String>,
         moved_since: bool,
+        culprit: Option<&str>,
     ) {
         if let Some(k) = stuck_reason {
             self.last_failure.insert("build".into(), k);
         }
+        self.fault_of = culprit.filter(|p| *p != "build").map(str::to_string);
         if moved_since {
             if let Some((Rebase::BaseMoved, branch, _)) = &a.rebase {
                 self.force(

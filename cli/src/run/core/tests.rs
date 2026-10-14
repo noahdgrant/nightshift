@@ -287,7 +287,7 @@ fn a_red_gate_after_a_rebase_onto_a_base_that_moved_again_is_one_more_free_rebas
         )
         .unwrap();
     ended(&mut l, &a, Some("pass"));
-    l.gate_red(&a, "red", "the CI gate failed".into(), None, true);
+    l.gate_red(&a, "red", "the CI gate failed".into(), None, true, None);
     let (d, r) = l.next(&empty());
     assert_eq!(
         d,
@@ -298,7 +298,7 @@ fn a_red_gate_after_a_rebase_onto_a_base_that_moved_again_is_one_more_free_rebas
         )
     );
     assert_eq!(r, Some(Rebase::MovedSinceRebase));
-    l.gate_red(&a, "red", "the CI gate failed".into(), None, false);
+    l.gate_red(&a, "red", "the CI gate failed".into(), None, false, None);
     assert_eq!(
         l.next(&empty()),
         (run("build", "red", "the CI gate failed"), None)
@@ -337,4 +337,77 @@ fn a_ledger_survives_a_round_trip_through_json_mid_run() {
             Some(Rebase::BaseMoved)
         )
     );
+}
+
+#[test]
+fn a_red_gate_review_caused_makes_the_fixing_build_free() {
+    let mut l = Ledger::new(None);
+    for _ in 0..2 {
+        let a = admit(&mut l, "build").unwrap();
+        ended(&mut l, &a, Some("fail"));
+    }
+    let r = admit(&mut l, "review").unwrap();
+    ended(&mut l, &r, Some("pass"));
+    l.gate_red(
+        &r,
+        "red",
+        "the CI gate failed".into(),
+        None,
+        false,
+        Some("review"),
+    );
+    let (d, _) = l.next(&empty());
+    assert_eq!(d, run("build", "red", "the CI gate failed"));
+    let a = admit(&mut l, "build").expect("build's attempts are spent, but this one is review's");
+    assert_eq!(a.fault_of.as_deref(), Some("review"));
+    ended(&mut l, &a, Some("pass"));
+    l.gate_red(
+        &a,
+        "red",
+        "the CI gate failed".into(),
+        None,
+        false,
+        Some("build"),
+    );
+    assert!(
+        admit(&mut l, "build").is_err(),
+        "a red build caused is charged to build"
+    );
+}
+
+#[test]
+fn fault_credits_stop_at_the_cap() {
+    let mut l = Ledger::new(None);
+    let r = admit(&mut l, "review").unwrap();
+    for _ in 0..FAULT_CREDIT_CAP {
+        l.gate_red(&r, "red", "x".into(), None, false, Some("review"));
+        let a = l
+            .admit("build", String::new(), "x".into(), None, None, 0)
+            .expect("free");
+        ended(&mut l, &a, Some("pass"));
+    }
+    l.gate_red(&r, "red", "x".into(), None, false, Some("review"));
+    assert!(l
+        .admit("build", String::new(), "x".into(), None, None, 0)
+        .is_err());
+}
+
+#[test]
+fn a_free_fix_that_fails_is_charged_and_a_lock_give_up_keeps_the_credit() {
+    let mut l = Ledger::new(None);
+    let r = admit(&mut l, "review").unwrap();
+    l.gate_red(&r, "red", "x".into(), None, false, Some("review"));
+    let a = l
+        .admit("build", String::new(), "x".into(), None, None, 1)
+        .unwrap();
+    l.lock_gave_up(a, "waited");
+    l.next(&empty());
+    let a = l
+        .admit("build", String::new(), "x".into(), None, None, 1)
+        .unwrap();
+    assert_eq!(a.fault_of.as_deref(), Some("review"));
+    ended(&mut l, &a, Some("fail"));
+    assert!(l
+        .admit("build", String::new(), "x".into(), None, None, 1)
+        .is_err());
 }
