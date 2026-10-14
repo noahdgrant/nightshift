@@ -47,7 +47,7 @@ exec scripts/ci-local.sh --fast
 setup = ["git config core.hooksPath .githooks"]
 ```
 
-The `ci-local` row of `stack.md` names `scripts/ci-local.sh`. The `ns run` gate reads that row, and runs it plain after build. Under `[gate] local = "build-only"` it runs it with `--fast` after every other phase; under the default `every-step` it runs it plain each step.
+The `ci-local` row of `stack.md` names `scripts/ci-local.sh`. The `ns run` gate reads that row, and runs it plain after build. Under `[gate] local = "build-only"` it runs it with `--fast` after every phase that moves HEAD but build and ship, and after ship runs no local gate (the merge step waits for GitHub checks on the same head); under the default `every-step` it runs it plain each step.
 
 ### Gates
 

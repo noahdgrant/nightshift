@@ -82,6 +82,11 @@ for dir in "$src"/tests/examples/*/; do
   checked=$((checked + 1))
 done
 out=$(cd "$examples" && findings "$pack" .)
+# check.sh keeps PMD's log off the findings, so a rule PMD deprecated would go unseen until a
+# PMD bump removes it.
+deprecated=$("$pack/pmd/bin/pmd" check --no-cache --no-progress -R "$pack/ruleset.xml" -d "$examples" -f text 2>&1 |
+  grep -F 'scheduled for removal' || true)
+[ -z "$deprecated" ] || fail "ruleset.xml uses a rule PMD deprecated:" "$deprecated"
 if grep -q '^check.sh:' <<<"$out"; then
   fail "the examples could not be checked:" "$out"
 fi
