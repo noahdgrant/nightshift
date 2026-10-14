@@ -1,0 +1,26 @@
+# Checks validated by hand: the fixture plus a stack.md whose Gotchas names .claude/skills passes every check; a copy of the skill at .agents/skills, a stack.md with no Gotchas line, and one naming .claude/skills only outside Gotchas each fail one.
+description = "Set up a Python repo that tracks its own skill in .claude/skills: setup raises the conflict with ns run, does not move the skill without a yes, and records it in stack.md's Gotchas."
+fixture = "py-inventory"
+skills = ["ns-setup"]
+extra_skills = []
+requires = ["python"]
+timeout_minutes = 20
+prompt = """
+Set this repo up for the nightshift skills. gates: auto. Nobody is around to answer questions, so take the recommended answer for each one and carry on. This scratch copy has no nightshift checkout next to it, so if a rule pack's files cannot be copied, say so in your final message instead of inventing them. Don't commit.
+"""
+
+[setup]
+# files/ adds the repo's own skill, tracked at .claude/skills/inventory-release/.
+commands = ["rm -r docs/agents"]
+
+[[check]]
+# The move needs a yes, and nobody gave one.
+type = "command"
+run = '''git ls-files --error-unmatch .claude/skills/inventory-release/SKILL.md && test -f .claude/skills/inventory-release/SKILL.md && test ! -e .agents/skills/inventory-release'''
+expect_exit = 0
+
+[[check]]
+type = "regex"
+path = "docs/agents/stack.md"
+pattern = "(?s)## Gotchas.*\\.claude/skills"
+present = true

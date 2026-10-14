@@ -4643,6 +4643,47 @@ fn build_only_does_not_update_a_pr_head_that_holds_main() {
 }
 
 #[test]
+fn build_only_runs_no_local_gate_after_a_ship_that_moves_head() {
+    let e = Env::new();
+    let runs = remote_queue(&e, AUTO);
+    e.queue("ship", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\n");
+    assert_eq!(gate_where(&e), [("build".into(), "local_full".into())]);
+    assert!(e.gh_calls().contains("pr checks 12 --watch"));
+}
+
+#[test]
+fn build_only_runs_no_local_gate_after_a_cut_short_ship_that_moves_head() {
+    let e = Env::new();
+    let runs = remote_queue(&e, "");
+    e.queue("ship", &["pass:commit+sleep", "pass"]);
+    let v = run_with_timeouts(&e, "ship=1500", 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(fs::read_to_string(&runs).unwrap(), "full\n");
+    assert_eq!(gate_where(&e), [("build".into(), "local_full".into())]);
+}
+
+#[test]
+fn every_step_still_gates_after_a_ship_that_moves_head() {
+    let e = Env::new();
+    let runs = e.ctrl.join("ci-runs");
+    e.factory(&format!(
+        "{AUTO}[phases.build]\ngate = \"echo ran >> {}\"\n",
+        runs.display()
+    ));
+    e.ctl("pr", "12");
+    e.gh_file("checks-12.json", GREEN);
+    e.queue("build", &["pass:commit"]);
+    e.queue("ship", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let phases: Vec<Value> = gate_events(&e).iter().map(|g| g["phase"].clone()).collect();
+    assert!(phases.contains(&json!("ship")), "{phases:?}");
+}
+
+#[test]
 fn build_only_sends_red_github_checks_back_to_build_naming_the_check() {
     let e = Env::new();
     let runs = remote_queue(&e, AUTO);

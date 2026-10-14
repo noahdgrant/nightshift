@@ -27,32 +27,6 @@ pub fn run() -> Result<ExitCode> {
         Err(e) => (false, Some(format!("{e:#}")), None),
     };
 
-    let mut harnesses = Map::new();
-    for h in KNOWN_HARNESSES {
-        let p = which(h);
-        harnesses.insert(
-            h.to_string(),
-            json!({
-                "on_path": p.is_some(),
-                "path": p.map(|p| p.to_string_lossy().into_owned()),
-                "pinning": crate::pin::mode(h).as_str(),
-            }),
-        );
-    }
-
-    let mut skill_dirs = Map::new();
-    for h in install::Harness::ALL {
-        let dir = h.dir();
-        let ns_skills = install::skill_dirs(&dir).map_or(0, |s| s.len());
-        skill_dirs.insert(
-            h.to_possible_value()
-                .expect("no skipped variants")
-                .get_name()
-                .to_string(),
-            json!({ "path": dir.to_string_lossy(), "ns_skills": ns_skills }),
-        );
-    }
-
     let mut roles = Vec::new();
     let mut problems: Vec<String> = Vec::new();
     if let Some(cfg) = &cfg {
@@ -94,6 +68,7 @@ pub fn run() -> Result<ExitCode> {
     let (forge, mut warnings) = forges_entry(cfg.as_ref(), &mut problems);
     warnings.extend(no_keepalive);
     warnings.extend(default_branch_warnings());
+    tracked_skill_dirs(&mut problems, &mut warnings);
     let hooks = hooks_entry(&mut problems);
 
     let ok = parses && problems.is_empty();
@@ -110,8 +85,8 @@ pub fn run() -> Result<ExitCode> {
             .as_ref()
             .map(|c| c.roles.values().map(|r| r.harness.clone()).collect::<std::collections::BTreeSet<_>>())
             .unwrap_or_default(),
-        "harnesses": Value::Object(harnesses),
-        "skill_dirs": Value::Object(skill_dirs),
+        "harnesses": harnesses_entry(),
+        "skill_dirs": skill_dirs_entry(),
         "claude_phases": {
             "auto_memory": false,
             "env": format!("{}=1", crate::billing::AUTO_MEMORY_ENV),
@@ -124,6 +99,40 @@ pub fn run() -> Result<ExitCode> {
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(ExitCode::from(u8::from(!ok)))
+}
+
+/// Each known harness: whether it is on PATH, where, and its pinning mode.
+fn harnesses_entry() -> Value {
+    let mut harnesses = Map::new();
+    for h in KNOWN_HARNESSES {
+        let p = which(h);
+        harnesses.insert(
+            h.to_string(),
+            json!({
+                "on_path": p.is_some(),
+                "path": p.map(|p| p.to_string_lossy().into_owned()),
+                "pinning": crate::pin::mode(h).as_str(),
+            }),
+        );
+    }
+    Value::Object(harnesses)
+}
+
+/// Each install harness's skill dir and how many ns skills it holds.
+fn skill_dirs_entry() -> Value {
+    let mut skill_dirs = Map::new();
+    for h in install::Harness::ALL {
+        let dir = h.dir();
+        let ns_skills = install::skill_dirs(&dir).map_or(0, |s| s.len());
+        skill_dirs.insert(
+            h.to_possible_value()
+                .expect("no skipped variants")
+                .get_name()
+                .to_string(),
+            json!({ "path": dir.to_string_lossy(), "ns_skills": ns_skills }),
+        );
+    }
+    Value::Object(skill_dirs)
 }
 
 /// Whether the current repo's `core.hooksPath` points at its `.githooks/`. A repo without
@@ -220,6 +229,34 @@ fn default_branch_warnings() -> Vec<String> {
         eprintln!("ns: warning: {w}");
     }
     warnings
+}
+
+/// The skill dirs `ns run` links to a unit's snapshot (`pin::LINKS`) that the current repo
+/// tracks. A tracked `.claude/skills` stops `ns run`, so it is a problem; a tracked
+/// `.agents/skills` only makes it warn, so it is a warning, also printed to stderr. Nothing
+/// outside a repo, or when git fails.
+fn tracked_skill_dirs(problems: &mut Vec<String>, warnings: &mut Vec<String>) {
+    let Ok(repo) = git::Repo::discover(Path::new(".")) else {
+        return;
+    };
+    for link in crate::pin::LINKS {
+        let tracked = git::run(&repo.root, &["ls-files", "--", link]);
+        if !tracked.is_ok_and(|f| !f.is_empty()) {
+            continue;
+        }
+        let fix = format!("git rm -r --cached {link}");
+        if *link == crate::pin::CLAUDE_LINK {
+            problems.push(format!(
+                "{link} is tracked in this repo, so ns run stops before the first phase: claude would not run the pinned skills; fix: move its skills to .agents/skills (git mv), or untrack it: {fix}"
+            ));
+        } else {
+            let w = format!(
+                "{link} is tracked in this repo, so ns run warns and harnesses that read it run the live copy, not the unit's pinned snapshot; to pin it, untrack it: {fix}"
+            );
+            eprintln!("ns: warning: {w}");
+            warnings.push(w);
+        }
+    }
 }
 
 /// Whether pushes to an SSH `origin` send keepalives: `ServerAliveInterval` in

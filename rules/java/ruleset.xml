@@ -13,6 +13,10 @@
   <rule ref="category/java/errorprone.xml/EmptyCatchBlock"/>
   <rule ref="category/java/errorprone.xml/OverrideBothEqualsAndHashcode"/>
   <rule ref="category/java/errorprone.xml/CompareObjectsWithEquals"/>
-  <rule ref="category/java/errorprone.xml/AvoidCatchingThrowable"/>
+  <rule ref="category/java/errorprone.xml/AvoidCatchingGenericException">
+    <properties>
+      <property name="typesThatShouldNotBeCaught" value="java.lang.Throwable"/>
+    </properties>
+  </rule>
   <rule ref="category/java/errorprone.xml/ReturnFromFinallyBlock"/>
 </ruleset>
