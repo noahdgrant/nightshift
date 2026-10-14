@@ -58,7 +58,7 @@ impl Next {
         let Some((yaml, _)) = frontmatter::split(text) else {
             return Err("brief.md has no frontmatter".into());
         };
-        if let Some(next) = frontmatter::raw_field(yaml, "next") {
+        if let Some(next) = frontmatter::raw_field(yaml, "next").filter(|n| n != "none") {
             return Next::parse(&next).ok_or(format!("brief.md says next: {next}"));
         }
         match frontmatter::raw_field(yaml, "status").as_deref() {

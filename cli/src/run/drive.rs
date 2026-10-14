@@ -57,7 +57,13 @@ pub(super) fn drive(
     last_artifact: &mut Option<String>,
 ) -> Result<Finish> {
     let r = drive_loop(ctx, args, shared, commands, phases, last_artifact);
-    if r.is_ok() {
+    // A paused, out-of-budget or until-bound run is resumed later: its ledger stays.
+    if r.as_ref().is_ok_and(|f| {
+        matches!(
+            f.outcome,
+            Outcome::Done | Outcome::Merged | Outcome::Stuck | Outcome::Split
+        )
+    }) {
         let _ = fs::remove_file(ledger_path(&ctx.artifacts));
     }
     r
@@ -424,6 +430,11 @@ fn drive_loop(
         if let Some(f) = guards(ctx, &mut baseline, phase)? {
             return Ok(f);
         }
+        let head_now = ctx.head();
+        let head_moved = !same_sha(&state.head, &head_now);
+        if head_moved {
+            ledger.head_moved(phase, &state.head, &head_now);
+        }
         if let (Some(errors), false) = (&invalid, args.triage_only) {
             let file = artifact_of(phase);
             let stem = format!("{}-invalid", file.trim_end_matches(".md"));
@@ -456,11 +467,6 @@ fn drive_loop(
                 Some("triage"),
             ));
         }
-        let head_now = ctx.head();
-        let head_moved = !same_sha(&state.head, &head_now);
-        if head_moved {
-            ledger.head_moved(phase, &state.head, &head_now);
-        }
         if cut_short && phase == "build" {
             if let Some(fb) = gate_state.red_feedback() {
                 let how = r.killed.as_deref().unwrap_or("timed out");
@@ -492,8 +498,8 @@ fn drive_loop(
                 };
                 let stuck = red.stuck_reason();
                 let culprit = culprit(ctx, &ledger, &red.feedback);
-                if let Some((who, paths)) = &culprit {
-                    ctx.log(json!({"event": "gate_fault", "phase": phase, "attempt": attempt, "culprit": who, "paths": paths}));
+                if let Some((i, who, paths)) = &culprit {
+                    ctx.log(json!({"event": "gate_fault", "phase": phase, "attempt": attempt, "culprit": who, "move": i, "paths": paths}));
                 }
                 ledger.gate_red(
                     &adm,
@@ -501,8 +507,10 @@ fn drive_loop(
                     red.reason,
                     stuck,
                     moved_since,
-                    culprit.as_ref().map(|(who, _)| who.as_str()),
+                    culprit.as_ref().map(|(i, _, _)| *i),
                 );
+            } else {
+                ledger.gate_green();
             }
         }
     }
@@ -533,22 +541,31 @@ fn carry_forward(ctx: &Ctx<'_>, ledger: &Ledger, state: &mut State) {
 /// The phase whose commits a red gate's output points at, with the paths it matched: the newest
 /// phase run that moved HEAD and changed a file the output names. `None` when the output names
 /// no file, or none any phase changed (the base, or the environment).
-fn culprit(ctx: &Ctx<'_>, ledger: &Ledger, output: &str) -> Option<(String, Vec<String>)> {
+fn culprit(ctx: &Ctx<'_>, ledger: &Ledger, output: &str) -> Option<(usize, String, Vec<String>)> {
     let failing = gate::failing_paths(output);
     if failing.is_empty() {
         return None;
     }
-    for m in ledger.moves_newest_first() {
-        let Ok(changed) = git::run(&ctx.worktree, &["diff", "--name-only", &m.from, &m.to]) else {
-            continue;
+    for (i, m) in ledger.suspects() {
+        // Ship's move may merge the base in: only the files whose own lines it changed count.
+        let changed: Vec<String> = if m.phase == "ship" {
+            match git::interdiff_files(&ctx.worktree, &ctx.base, &m.from, &m.to) {
+                Some(f) => f,
+                None => continue,
+            }
+        } else {
+            match git::run(&ctx.worktree, &["diff", "--name-only", &m.from, &m.to]) {
+                Ok(t) => t.lines().map(str::to_string).collect(),
+                Err(_) => continue,
+            }
         };
         let hit: Vec<String> = failing
             .iter()
-            .filter(|f| changed.lines().any(|c| gate::same_file(c, f)))
+            .filter(|f| changed.iter().any(|c| gate::same_file(c, f)))
             .cloned()
             .collect();
         if !hit.is_empty() {
-            return Some((m.phase.clone(), hit));
+            return Some((i, m.phase.clone(), hit));
         }
     }
     None

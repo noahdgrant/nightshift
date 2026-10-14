@@ -214,6 +214,57 @@ pub fn took_in_base(cwd: &Path, base: &str, a: &str, b: &str) -> bool {
 /// dropped, counted as a multiset difference. 0 when the unit's changes are the same, as after a
 /// clean rebase. `None` when either diff can't be read.
 pub fn interdiff_lines(cwd: &Path, base: &str, a: &str, b: &str) -> Option<usize> {
+    let (x, y) = (unit_lines(cwd, base, a)?, unit_lines(cwd, base, b)?);
+    Some(multiset_diff(&x, &y).len())
+}
+
+/// The files whose own changed lines differ between `a` and `b`, as `git diff --name-only`
+/// would name them: what a phase that moved HEAD from `a` to `b` changed in the unit, without
+/// the files a merge of the base brought in.
+pub fn interdiff_files(cwd: &Path, base: &str, a: &str, b: &str) -> Option<Vec<String>> {
+    let (x, y) = (unit_lines(cwd, base, a)?, unit_lines(cwd, base, b)?);
+    let mut files: Vec<String> = multiset_diff(&x, &y)
+        .into_iter()
+        .filter_map(|l| {
+            let header = l.split('\0').next()?;
+            // `diff --git a/<path> b/<path>`: the b side, as --name-only names it.
+            header.rsplit_once(" b/").map(|(_, p)| p.to_string())
+        })
+        .collect();
+    files.sort();
+    files.dedup();
+    Some(files)
+}
+
+/// The lines in only one of the two sorted-or-not lists, counting repeats.
+fn multiset_diff(a: &[String], b: &[String]) -> Vec<String> {
+    let (mut x, mut y) = (a.to_vec(), b.to_vec());
+    x.sort();
+    y.sort();
+    let (mut i, mut j, mut out) = (0, 0, Vec::new());
+    while i < x.len() && j < y.len() {
+        match x[i].cmp(&y[j]) {
+            std::cmp::Ordering::Equal => {
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => {
+                out.push(x[i].clone());
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                out.push(y[j].clone());
+                j += 1;
+            }
+        }
+    }
+    out.extend(x[i..].iter().cloned());
+    out.extend(y[j..].iter().cloned());
+    out
+}
+
+/// The unit's own `+` and `-` lines at `sha`, each prefixed by its file's `diff --git` header.
+fn unit_lines(cwd: &Path, base: &str, sha: &str) -> Option<Vec<String>> {
     let lines = |sha: &str| -> Option<Vec<String>> {
         if sha.is_empty() || sha.starts_with('-') || base.starts_with('-') {
             return None;
@@ -233,27 +284,7 @@ pub fn interdiff_lines(cwd: &Path, base: &str, a: &str, b: &str) -> Option<usize
         }
         Some(v)
     };
-    let (mut x, mut y) = (lines(a)?, lines(b)?);
-    x.sort();
-    y.sort();
-    let (mut i, mut j, mut diff) = (0, 0, 0);
-    while i < x.len() && j < y.len() {
-        match x[i].cmp(&y[j]) {
-            std::cmp::Ordering::Equal => {
-                i += 1;
-                j += 1;
-            }
-            std::cmp::Ordering::Less => {
-                diff += 1;
-                i += 1;
-            }
-            std::cmp::Ordering::Greater => {
-                diff += 1;
-                j += 1;
-            }
-        }
-    }
-    Some(diff + (x.len() - i) + (y.len() - j))
+    lines(sha)
 }
 
 /// Where `sha`'s own changes start: the newest common ancestor of `sha` with `base` and with every

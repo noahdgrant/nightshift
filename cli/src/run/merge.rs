@@ -213,8 +213,13 @@ pub(super) fn human(reason: impl Into<String>) -> MergeStep {
 }
 
 /// How many times the default branch may move between a merge step's CI wait and its merge
-/// before the unit ends stuck.
+/// before the merge step holds the merge lock through the next update and CI wait, as it did
+/// before merges were optimistic, so no other unit's merge can move it again.
 pub(super) const BASE_MOVE_CAP: u32 = 5;
+
+/// How many moves end the unit stuck even with the lock held: only a merge from outside `ns`
+/// can move the default branch then.
+pub(super) const BASE_MOVE_HARD_CAP: u32 = 2 * BASE_MOVE_CAP;
 
 /// A PR the merge step got ready without the merge lock: CI passed at `head`, and `base` is the
 /// tip of `origin/<default>` read before the update and CI wait, `None` when it couldn't be read.
@@ -249,21 +254,37 @@ pub(super) fn merge_step(
         .unwrap_or_else(|| "main".into());
     let mut current = pr_head;
     let mut moves = 0;
+    let mut held = None;
+    let take = || {
+        take_merge_lock(&ctx.common, &ctx.unit, &shared.clock, shared.until, |ev| {
+            ctx.log(ev)
+        })
+    };
     loop {
+        if moves >= BASE_MOVE_CAP && held.is_none() {
+            // Past the cap: hold the lock through the update and CI wait, so no merge by another
+            // unit can move the base again.
+            held = match take()? {
+                Ok(lock) => Some(lock),
+                Err(f) => return Ok(MergeStep::Finish(f)),
+            };
+            ctx.log(json!({"event": "merge_lock_held_through_ci", "pr": n, "moves": moves}));
+        }
         let ready = match get_ready(ctx, n, &current, &default, shared, gate_state, run)? {
             Ok(r) => r,
             Err(step) => return Ok(step),
         };
         current.clone_from(&ready.head);
 
-        // One merge at a time per repo, held only for the final check and the merge.
-        let _merging =
-            match take_merge_lock(&ctx.common, &ctx.unit, &shared.clock, shared.until, |ev| {
-                ctx.log(ev)
-            })? {
-                Ok(lock) => lock,
+        // One merge at a time per repo, held only for the final check and the merge, unless
+        // the base kept moving.
+        let _merging = match &held {
+            Some(_) => None,
+            None => match take()? {
+                Ok(lock) => Some(lock),
                 Err(f) => return Ok(MergeStep::Finish(f)),
-            };
+            },
+        };
         let base_now = fetch_tip(wt, &default).ok();
         if base_now.is_some() && base_now != ready.base {
             moves += 1;
@@ -274,11 +295,12 @@ pub(super) fn merge_step(
                 "to": base_now,
                 "attempt": moves,
             }));
-            if moves > BASE_MOVE_CAP {
+            if moves > BASE_MOVE_HARD_CAP {
                 return Ok(MergeStep::Finish(finish(
                     Outcome::Stuck,
                     format!(
-                        "the default branch moved {BASE_MOVE_CAP} times during this PR's CI (cap {BASE_MOVE_CAP})"
+                        "the default branch moved {BASE_MOVE_HARD_CAP} times during this PR's CI, the last {} with the merge lock held (cap {BASE_MOVE_HARD_CAP})",
+                        BASE_MOVE_HARD_CAP - BASE_MOVE_CAP
                     ),
                     Some("merge"),
                 )));

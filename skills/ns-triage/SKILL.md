@@ -167,7 +167,7 @@ unit: 142-uart-timeout
 phase: triage
 status: pass
 cause: none
-next: build         # build | define | troubleshoot | human; none on a split. Under ns, ns turns it into the state label
+next: build         # build | define | troubleshoot | human | info | wontfix | split. Under ns, ns turns it into the state label
 reason: "Ready for an agent: one fix in cli/src/run.rs"
 base: develop       # computed, below
 touches:            # the brief's Touches globs, one per line

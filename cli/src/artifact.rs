@@ -533,8 +533,16 @@ pub fn from_v1(text: &str, phase: Phase) -> Typed {
 
 /// Read `phase`'s artifact under whichever schema it declares: `check` for one that names a
 /// `schema`, wherever the key sits, and `from_v1` for one that names none.
+/// Whether `text` claims `ns-artifact/2`: a `schema:` key in its frontmatter, or anywhere when it
+/// has no frontmatter (text above the fence), so a `/1` artifact quoting YAML in its body stays
+/// `/1` and a malformed `/2` one is still checked.
+pub fn is_v2(text: &str) -> bool {
+    let schema = |t: &str| t.lines().any(|l| l.trim_start().starts_with("schema:"));
+    frontmatter::split(text).map_or_else(|| schema(text), |(yaml, _)| schema(yaml))
+}
+
 pub fn read(text: &str, phase: Phase) -> Result<Typed, Vec<String>> {
-    if text.lines().any(|l| l.trim_start().starts_with("schema:")) {
+    if is_v2(text) {
         check(text, Some(phase.as_str()))
     } else {
         Ok(from_v1(text, phase))

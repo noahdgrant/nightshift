@@ -106,6 +106,9 @@ pub struct Ledger {
     fault_of: Option<String>,
     #[serde(default)]
     fault_credits: u32,
+    /// How many of `moved` came before the last green gate, which no later red can be charged to.
+    #[serde(default)]
+    green_at: usize,
     /// The next run of this phase rewrites an artifact `ns artifact check` rejected, and is free.
     #[serde(default)]
     rewrite: Option<String>,
@@ -120,6 +123,9 @@ pub struct Moved {
     pub phase: String,
     pub from: String,
     pub to: String,
+    /// A red gate was already charged to this move: it earns no second free build.
+    #[serde(default)]
+    pub blamed: bool,
 }
 
 /// A decision that skips `decide` on the next step, in a serializable form.
@@ -377,7 +383,24 @@ impl Ledger {
             phase: phase.into(),
             from: from.into(),
             to: to.into(),
+            blamed: false,
         });
+    }
+
+    /// The gate went green at HEAD: no later red can be charged to a move before now.
+    pub fn gate_green(&mut self) {
+        self.green_at = self.moved.len();
+    }
+
+    /// The phase runs a red gate may be charged to, newest first, with their index: those since
+    /// the last green gate that no red was charged to yet.
+    pub fn suspects(&self) -> impl Iterator<Item = (usize, &Moved)> {
+        self.moved
+            .iter()
+            .enumerate()
+            .skip(self.green_at)
+            .filter(|(_, m)| !m.blamed)
+            .rev()
     }
 
     /// Every phase run that moved HEAD from `from` up to `to` was ship's: the change between
@@ -399,11 +422,6 @@ impl Ledger {
             }
         }
         false
-    }
-
-    /// The phase runs that moved HEAD, newest first: where a red gate looks for its cause.
-    pub fn moves_newest_first(&self) -> impl Iterator<Item = &Moved> {
-        self.moved.iter().rev()
     }
 
     /// A build cut short while the gate is still red runs again with the gate's feedback.
@@ -429,12 +447,18 @@ impl Ledger {
         reason: String,
         stuck_reason: Option<String>,
         moved_since: bool,
-        culprit: Option<&str>,
+        culprit: Option<usize>,
     ) {
         if let Some(k) = stuck_reason {
             self.last_failure.insert("build".into(), k);
         }
-        self.fault_of = culprit.filter(|p| *p != "build").map(str::to_string);
+        self.fault_of = None;
+        if let Some(m) = culprit.and_then(|i| self.moved.get_mut(i)) {
+            m.blamed = true;
+            if m.phase != "build" {
+                self.fault_of = Some(m.phase.clone());
+            }
+        }
         if moved_since {
             if let Some((Rebase::BaseMoved, branch, _)) = &a.rebase {
                 self.force(

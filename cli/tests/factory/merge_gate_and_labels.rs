@@ -156,7 +156,7 @@ fn a_main_that_moves_during_ci_updates_the_pr_and_waits_for_ci_again_before_merg
 }
 
 #[test]
-fn a_main_that_moves_during_every_ci_wait_ends_stuck_at_the_cap() {
+fn a_main_that_keeps_moving_holds_the_lock_past_the_cap_and_ends_stuck_at_the_hard_cap() {
     let e = Env::new();
     e.factory(AUTO);
     e.ctl("pr", "12");
@@ -173,16 +173,23 @@ fn a_main_that_moves_during_every_ci_wait_ends_stuck_at_the_cap() {
     let v = e.run(&["run", "--issue", "7"], 1);
     assert_eq!(v["outcome"], "stuck", "{v}");
     assert_eq!(
-        v["reason"], "the default branch moved 5 times during this PR's CI (cap 5)",
+        v["reason"],
+        "the default branch moved 10 times during this PR's CI, the last 5 with the merge lock held (cap 10)",
         "{v}"
     );
     let attempts: Vec<Value> = base_moves(&e)
         .iter()
         .map(|m| m["attempt"].clone())
         .collect();
-    assert_eq!(attempts, [1, 2, 3, 4, 5, 6].map(|a| json!(a)));
+    assert_eq!(attempts, (1..=11).map(|a| json!(a)).collect::<Vec<_>>());
+    let held: Vec<Value> = run_events(&e)
+        .into_iter()
+        .filter(|ev| ev["event"] == "merge_lock_held_through_ci")
+        .collect();
+    assert_eq!(held.len(), 1, "the lock is taken once, at the cap, and kept: {held:?}");
+    assert_eq!(held[0]["moves"], 5);
     let calls = e.gh_calls();
-    assert_eq!(calls.matches("pr checks 12 --watch").count(), 6, "{calls}");
+    assert_eq!(calls.matches("pr checks 12 --watch").count(), 11, "{calls}");
     assert!(!calls.contains("pr merge"), "{calls}");
     assert!(lock_is_free(&e.root.join(".git/ns-merge.lock")));
 }
