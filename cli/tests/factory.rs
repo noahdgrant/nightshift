@@ -6054,6 +6054,37 @@ fn factory_validate_looks_up_the_owner_with_the_configured_token() {
 }
 
 #[test]
+fn factory_validate_keeps_the_configured_token_off_an_origin_on_another_host() {
+    let e = github_owned_by(Some("User"));
+    git(
+        &e.root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://other.example.com/o/r.git",
+        ],
+    );
+    e.config("[forge.github]\nhost = \"ghe.corp\"\ntoken_env = \"DEFAULT_TOKEN\"\n");
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    e.ns()
+        .env("DEFAULT_TOKEN", "default-tok")
+        .args(["factory", "validate"])
+        .assert()
+        .code(0);
+    assert!(
+        e.gh_calls().contains("--hostname other.example.com"),
+        "{}",
+        e.gh_calls()
+    );
+    assert!(
+        !e.tokens_seen().contains(&"default-tok".to_string()),
+        "{}",
+        e.gh_calls()
+    );
+}
+
+#[test]
 fn factory_validate_with_factory_path_looks_up_the_owner_of_the_cwd_repo() {
     let e = github_owned_by(Some("User"));
     let other = e.base.join("other-checkout");

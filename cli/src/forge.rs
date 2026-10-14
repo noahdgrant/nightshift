@@ -182,6 +182,25 @@ impl Origin {
         }
     }
 
+    /// Whether `kind`'s configured credentials are for the host `origin` is on: true when the
+    /// forge has no host set, else when `origin`'s host (github.com by default) is that host.
+    pub fn creds_fit_host(&self, kind: ForgeKind) -> bool {
+        let Some(want) = self
+            .forges
+            .get(kind)
+            .and_then(|f| effective_host(kind, Some(f)))
+        else {
+            return true;
+        };
+        let got = self
+            .url_for(kind)
+            .and_then(watch_forge::host)
+            .unwrap_or("github.com");
+        watch_forge::host(&want)
+            .unwrap_or(&want)
+            .eq_ignore_ascii_case(got)
+    }
+
     /// The warning that [`Origin::table_repo`] dropped a table that would have matched `origin`.
     pub fn scope_warning(&self, kind: ForgeKind) -> Option<String> {
         let f = self.forges.get(kind)?;

@@ -797,14 +797,18 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
                         cfg.as_ref(),
                     );
                     let owner = origin.repo_for(ForgeKind::Github).and_then(|repo| {
-                        let creds = origin.forges.get(ForgeKind::Github).and_then(|fg| {
-                            crate::forge::resolve(
-                                ForgeKind::Github,
-                                fg,
-                                origin.table_repo(ForgeKind::Github),
-                            )
-                            .ok()
-                        });
+                        let creds = origin
+                            .forges
+                            .get(ForgeKind::Github)
+                            .filter(|_| origin.creds_fit_host(ForgeKind::Github))
+                            .and_then(|fg| {
+                                crate::forge::resolve(
+                                    ForgeKind::Github,
+                                    fg,
+                                    origin.table_repo(ForgeKind::Github),
+                                )
+                                .ok()
+                            });
                         crate::forge::repo_owner_type(
                             repo,
                             origin.url_for(ForgeKind::Github),
