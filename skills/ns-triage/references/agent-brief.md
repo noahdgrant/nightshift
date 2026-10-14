@@ -54,7 +54,7 @@ Fill them from the code paths the change involves, found while exploring the cod
 
 A brief that fixes a defect carries **Instances**: the search run for every other place the same defect can occur, and each hit. That holds for a `bug`, and for an enhancement or `ready-for-human` brief that fixes a defect. Search for the defect's shape, not the reporter's wording: a `grep` or `ast-grep` pattern for the faulty construct, or the callers and copies you read. A search that finds only the reported place says so, with the search, so a reader can tell "searched" from "forgot".
 
-Each hit is covered by this brief, or names the issue it was filed under (`filed separately: #536`). Build fixes every covered hit and adds a guard for the class, and review flags a fix that leaves one out. When the hits are too many for one unit, split them per [triage](../SKILL.md) step 5, each child with its own Instances.
+Each hit is covered by this brief, or names the issue it was filed under (`filed separately: #536`). Build fixes every covered hit and adds a guard for the class, and review flags a fix that leaves one out. The hits of one mechanical fix stay one unit, or at most two, per [triage](../SKILL.md) step 5; each child of a split carries its own Instances.
 
 ### Route when the next phase isn't obvious
 
@@ -68,7 +68,7 @@ Write the line as backticked globs separated by commas, all on one line: `` **To
 
 ### Sized to one unit
 
-Record the size estimate in the brief; the soft limit and the split are in [triage](../SKILL.md) step 5.
+Record the size estimate in the brief; when to split, and the split threshold it reads, are in [triage](../SKILL.md) step 5.
 
 ## Template
 
