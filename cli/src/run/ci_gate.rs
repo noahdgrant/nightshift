@@ -44,7 +44,8 @@ impl Ctx<'_> {
                     .full_green()
                     .map(String::from)
                     .or_else(|| git::run(worktree, &["merge-base", &self.base, "HEAD"]).ok())?;
-                git::run(worktree, &["diff", "--name-only", &since]).ok()
+                // A rename lists both of its paths, so a fast gate checks the place a file left too.
+                git::run(worktree, &["diff", "--name-only", "--no-renames", &since]).ok()
             })
             .flatten();
         gate::Job {
@@ -346,6 +347,31 @@ mod tests {
         for name in hooks {
             assert!(!t.path().join(format!("ran-{name}")).exists(), "{name} ran");
         }
+    }
+
+    /// A fast gate gets a rename as both of its paths (#667): a file moved from `cli/` to
+    /// `contrib/` still makes the gate check `cli/`.
+    #[test]
+    fn a_fast_gate_lists_both_paths_of_a_rename() {
+        let (t, _origin, wt) = cloned();
+        fs::create_dir_all(wt.join("cli")).unwrap();
+        fs::write(wt.join("cli/x.rs"), "fn x() {}\n").unwrap();
+        commit_all(&wt, "add cli/x.rs");
+        git::run(&wt, &["switch", "-q", "-c", "ns/9-x"]).unwrap();
+        fs::create_dir_all(wt.join("contrib")).unwrap();
+        git::run(&wt, &["mv", "cli/x.rs", "contrib/x.rs"]).unwrap();
+        commit_all(&wt, "move x.rs");
+        let fac = crate::factory::Factory::default();
+        let mut ctx = super::super::post_phase::tests::ctx_in(&fac, &wt, t.path());
+        ctx.gate.commands = gate::Commands {
+            build: Some("full".into()),
+            rest: Some("fast".into()),
+        };
+        let gs = gate::Gate::default();
+        let job = ctx.gate_job(&gs, "fast", &wt, String::new(), "verify", 1);
+        let files = job.files.expect("a fast gate gets its files");
+        let files: Vec<&str> = files.lines().collect();
+        assert_eq!(files, ["cli/x.rs", "contrib/x.rs"]);
     }
 
     /// A killed run can leave the scratch path as a plain directory git doesn't know, or as a

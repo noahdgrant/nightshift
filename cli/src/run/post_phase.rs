@@ -216,4 +216,4 @@ fn other_merged_pr(pulls: &[CommitPr], own_pr: Option<u64>, own_branch: &str) ->
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

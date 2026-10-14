@@ -29,7 +29,11 @@ fn other_merged_pr_names_only_a_merged_pr_of_another_branch() {
     );
 }
 
-fn ctx_in<'a>(fac: &'a Factory, worktree: &std::path::Path, common: &std::path::Path) -> Ctx<'a> {
+pub(in crate::run) fn ctx_in<'a>(
+    fac: &'a Factory,
+    worktree: &std::path::Path,
+    common: &std::path::Path,
+) -> Ctx<'a> {
     Ctx {
         unit: "u".into(),
         worktree: worktree.to_path_buf(),
