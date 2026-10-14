@@ -117,7 +117,7 @@ pub fn finding_flow(units: &[&Unit]) -> FindingFlow {
             (Status::Fixed, Some(2)) => rate.fixed_second_attempt += 1,
             (Status::Fixed, Some(3..)) => rate.fixed_later_attempt += 1,
             (Status::Fixed, _) => rate.fixed_attempts_unknown += 1,
-            _ => {}
+            (Status::Deferred | Status::Unknown, _) => {}
         }
         if x.status == Status::Fixed {
             match x.fixed_cycle.and_then(|c| c.checked_sub(cycle)) {
@@ -143,6 +143,88 @@ pub fn finding_flow(units: &[&Unit]) -> FindingFlow {
     f.dismiss_rate = Share::of(dismissed, f.findings);
     f.late_finding_rate = Share::of(late, f.findings);
     f
+}
+
+const RAISED_LABEL: usize = 15;
+const RAISED_PASS: usize = 5;
+const RAISED_LATER: usize = 7;
+const FIX_LABEL: usize = 16;
+const FIX_COLUMNS: [(&str, usize); 5] = [
+    ("findings", 11),
+    ("attempt 1", 11),
+    ("attempt 2 (of the rest)", 25),
+    ("open", 6),
+    ("attempts unknown", 18),
+];
+
+/// A rate to 3 places, `n/a` when its denominator was zero.
+pub fn rate(r: Option<f64>) -> String {
+    r.map_or("n/a".into(), |r| format!("{r:.3}"))
+}
+
+pub fn render(f: &FindingFlow) -> String {
+    let mut t = format!(
+        "Findings: {} Critical and Important over every review attempt; {} without a cycle left out\n",
+        f.findings, f.without_cycle
+    );
+    t += &format!("{:<RAISED_LABEL$}", "Raised per pass");
+    for n in 0..PASS_BUCKETS {
+        t += &format!("{n:>RAISED_PASS$}");
+    }
+    t += &format!("{:>RAISED_LATER$}\n", "later");
+    for (sev, raised) in [
+        ("critical", &f.raised_per_pass.critical),
+        ("important", &f.raised_per_pass.important),
+    ] {
+        t += &format!("  {sev:<w$}", w = RAISED_LABEL - 2);
+        for n in raised.passes {
+            t += &format!("{n:>RAISED_PASS$}");
+        }
+        t += &format!("{:>RAISED_LATER$}\n", raised.later);
+    }
+    t += &format!("{:<FIX_LABEL$}", "Fix rate");
+    for (name, w) in FIX_COLUMNS {
+        t += &format!("{name:>w$}");
+    }
+    t.push('\n');
+    for (sev, x) in [
+        ("critical", &f.fix_rate.critical),
+        ("important", &f.fix_rate.important),
+    ] {
+        let cells = [
+            x.findings.to_string(),
+            rate(x.first_attempt_rate),
+            rate(x.second_attempt_rate),
+            rate(x.open_rate),
+            x.fixed_attempts_unknown.to_string(),
+        ];
+        t += &format!("  {sev:<w$}", w = FIX_LABEL - 2);
+        for (cell, (_, w)) in cells.iter().zip(FIX_COLUMNS) {
+            t += &format!("{cell:>w$}");
+        }
+        t.push('\n');
+    }
+    let fix = &f.cycles_to_fix;
+    let spread = match (fix.median, fix.max) {
+        (Some(median), Some(max)) => format!("median {median:?}, max {max}"),
+        _ => "n/a".to_string(),
+    };
+    t += &format!(
+        "Cycles to fix: {spread}, over {} fixed ({} in the next cycle; {} left out)\n",
+        fix.findings, fix.next_cycle, fix.left_out
+    );
+    for (label, s) in [
+        ("Dismiss rate", &f.dismiss_rate),
+        ("Late-finding rate", &f.late_finding_rate),
+    ] {
+        t += &format!(
+            "{label}: {} ({} of {})\n",
+            rate(s.rate),
+            s.count,
+            s.findings
+        );
+    }
+    t
 }
 
 #[cfg(test)]

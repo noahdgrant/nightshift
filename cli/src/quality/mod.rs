@@ -205,79 +205,29 @@ fn report(
     out
 }
 
-/// A rate to 3 places, `n/a` when its denominator was zero.
-fn rate(v: &Value) -> String {
-    v.as_f64().map_or("n/a".into(), |r| format!("{r:.3}"))
+fn optional<T: std::fmt::Debug>(v: Option<T>) -> String {
+    v.map_or("n/a".into(), |v| format!("{v:?}"))
 }
 
-fn text(r: &Value) -> String {
-    let fp = &r["first_pass"];
-    let ctc = &r["cycles_to_clean"];
-    let flow = &r["finding_flow"];
-    let mut t = format!(
+fn text(s: &metrics::Summary, flow: &flow::FindingFlow) -> String {
+    let (fp, ctc) = (&s.first_pass, &s.cycles_to_clean);
+    format!(
         "Units: {}\nFirst-pass yield: {} ({} clean, {} dirty, {} unknown)\n\
          Cycles to clean: median {}, max {} ({} not clean, {} unknown)\n\
-         Leftovers: {}. Escapes: {}.\n\n\
-         Findings: {} Critical and Important over every review attempt; {} without a cycle left out\n\
-         Raised per pass    0    1    2    3    4    5  later\n",
-        r["units"],
-        rate(&fp["yield"]),
-        fp["clean"],
-        fp["dirty"],
-        fp["unknown"],
-        ctc["median"],
-        ctc["max"],
-        ctc["not_clean"],
-        ctc["unknown"],
-        r["leftovers"],
-        r["escapes"],
-        flow["findings"],
-        flow["without_cycle"],
-    );
-    for sev in ["critical", "important"] {
-        let raised = &flow["raised_per_pass"][sev];
-        t += &format!("  {sev:<13}");
-        for n in raised["passes"].as_array().into_iter().flatten() {
-            t += &format!("{:>5}", n.to_string());
-        }
-        t += &format!("{:>7}\n", raised["later"].to_string());
-    }
-    t +=
-        "Fix rate           findings  attempt 1  attempt 2 (of the rest)  open  attempts unknown\n";
-    for sev in ["critical", "important"] {
-        let f = &flow["fix_rate"][sev];
-        t += &format!(
-            "  {sev:<14}{:>11}{:>11}{:>25}{:>6}{:>18}\n",
-            f["findings"].to_string(),
-            rate(&f["first_attempt_rate"]),
-            rate(&f["second_attempt_rate"]),
-            rate(&f["open_rate"]),
-            f["fixed_attempts_unknown"].to_string(),
-        );
-    }
-    let fix = &flow["cycles_to_fix"];
-    let spread = if fix["median"].is_null() {
-        "n/a".to_string()
-    } else {
-        format!("median {}, max {}", fix["median"], fix["max"])
-    };
-    t += &format!(
-        "Cycles to fix: {spread}, over {} fixed ({} in the next cycle; {} left out)\n",
-        fix["findings"], fix["next_cycle"], fix["left_out"]
-    );
-    for (label, key) in [
-        ("Dismiss rate", "dismiss_rate"),
-        ("Late-finding rate", "late_finding_rate"),
-    ] {
-        let s = &flow[key];
-        t += &format!(
-            "{label}: {} ({} of {})\n",
-            rate(&s["rate"]),
-            s["count"],
-            s["findings"]
-        );
-    }
-    t
+         Leftovers: {}. Escapes: {}.\n\n{}",
+        s.units,
+        flow::rate(fp.yield_),
+        fp.clean,
+        fp.dirty,
+        fp.unknown,
+        optional(ctc.median),
+        optional(ctc.max),
+        ctc.not_clean,
+        ctc.unknown,
+        s.leftovers,
+        s.escapes,
+        flow::render(flow),
+    )
 }
 
 pub fn cli(since: Option<String>, until: Option<String>, human: bool) -> Result<ExitCode> {
@@ -314,7 +264,10 @@ pub fn cli(since: Option<String>, until: Option<String>, human: bool) -> Result<
     let mut r = report(&kept, window, &repo.root, log, unparsed);
     r["records"] = records;
     if human {
-        print!("{}", text(&r));
+        print!(
+            "{}",
+            text(&metrics::summarize(&kept), &flow::finding_flow(&kept))
+        );
     } else {
         println!("{}", serde_json::to_string_pretty(&r)?);
     }

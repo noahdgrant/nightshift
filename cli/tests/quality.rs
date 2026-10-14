@@ -401,6 +401,9 @@ fn human_output_shows_each_finding_metric() {
     let text = String::from_utf8(out.stdout).unwrap();
     for line in [
         "Units: 2",
+        "First-pass yield: 0.000 (0 clean, 2 dirty, 0 unknown)",
+        "Cycles to clean: median 0.0, max 0 (1 not clean, 0 unknown)",
+        "Leftovers: 1. Escapes: 1.",
         "Findings: 3 Critical and Important over every review attempt; 3 without a cycle left out",
         "Raised per pass    0    1    2    3    4    5  later",
         "  critical         1    0    0    0    0    0      0",
@@ -686,6 +689,10 @@ fn a_repo_with_no_units_reports_zeroes() {
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("Dismiss rate: n/a (0 of 0)"), "{text}");
+    assert!(
+        text.contains("Cycles to clean: median n/a, max n/a (0 not clean, 0 unknown)"),
+        "{text}"
+    );
     assert!(text.contains("Cycles to fix: n/a, over 0 fixed"), "{text}");
 }
 
