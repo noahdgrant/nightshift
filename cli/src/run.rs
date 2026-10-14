@@ -29,10 +29,12 @@ pub(crate) mod currency;
 mod drive;
 mod locks;
 mod merge;
+mod phase_run;
 mod phases;
+mod post_phase;
 
-use currency::{known_pr, read_state, Decision, UnitDiff};
-use drive::{carry_forward, drive, start_ledger};
+use currency::known_pr;
+use drive::{drive, start_ledger};
 use locks::lock_dir;
 pub use locks::{holder_pid, run_lock, Lock, WORKTREE_LOCK};
 
@@ -872,10 +874,7 @@ fn dry_run(
         None => String::new(),
     };
     let base = resolve_base(repo, args).ok();
-    let unit_diff = existing
-        .clone()
-        .zip(base.clone())
-        .map(|(p, b)| UnitDiff::new(p, b, &head));
+    let diffs = existing.is_some() && base.is_some();
     let ctx = Ctx {
         unit: unit.to_string(),
         worktree: wt.clone(),
@@ -898,28 +897,16 @@ fn dry_run(
             tmp: PathBuf::new(),
         },
     };
-    // Decide as `drive` would at its first step, without its log or ledger writes.
+    // Decide as `drive` would at its first step, through the same `core::step`, without its log
+    // or ledger writes.
     let (mut ledger, _) = start_ledger(args, &ctx.artifacts, &head);
-    let mut state = read_state(&ctx.artifacts, head, args.issue.is_some(), unit_diff);
-    carry_forward(&ctx, &ledger, &mut state);
-    let (decision, _) = ledger.next(&state);
-    let (decision_json, prompt, command) = match &decision {
-        Decision::Run {
-            phase,
-            feedback,
-            why,
-        } => {
-            let p = fac.phase(phase);
-            (
-                json!({"action": "run", "phase": phase, "attempt": 1, "why": why}),
-                Some(ctx.prompt(&p, 1, feedback)?),
-                Some(commands[phase].clone()),
-            )
-        }
-        Decision::Done => (json!({"action": "done"}), None, None),
-        Decision::Stuck(r) => (json!({"action": "stuck", "reason": r}), None, None),
-        Decision::Split(r) => (json!({"action": "split", "reason": r}), None, None),
-    };
+    let state = drive::unit_state(&ctx, &ledger, head, diffs, drive::settings(fac, args));
+    let mut action = core::step::step(&mut ledger, &state, core::step::Event::Start);
+    if let core::step::Action::ReadRemote = action {
+        let remote = existing.as_deref().and_then(remote_default);
+        action = core::step::step(&mut ledger, &state, core::step::Event::Remote(remote));
+    }
+    let (decision_json, prompt, command) = dry_run_decision(&ctx, commands, action)?;
     let json = json!({
         "unit": unit,
         "dry_run": true,
@@ -945,6 +932,36 @@ fn dry_run(
         cost_usd: 0.0,
         ended_at: None,
         json,
+    })
+}
+
+/// What a dry run reports for the first action `core::step` returns: the decision, and the
+/// prompt and command of a phase it would run.
+fn dry_run_decision(
+    ctx: &Ctx<'_>,
+    commands: &BTreeMap<&'static str, Vec<String>>,
+    action: core::step::Action,
+) -> Result<(Value, Option<String>, Option<Vec<String>>)> {
+    use core::step::Action;
+    Ok(match action {
+        Action::RunPhase(a) => {
+            let p = ctx.fac.phase(a.phase);
+            (
+                json!({"action": "run", "phase": a.phase, "attempt": a.attempt, "why": a.why}),
+                Some(ctx.prompt(&p, a.attempt, &a.prompt_feedback())?),
+                Some(commands[a.phase].clone()),
+            )
+        }
+        Action::Merge { .. } => (json!({"action": "done"}), None, None),
+        Action::Finish(e) => {
+            let reason = (e.outcome != Outcome::Done).then_some(e.reason);
+            let mut v = json!({"action": e.outcome.label()});
+            if let Some(r) = reason {
+                v["reason"] = json!(r);
+            }
+            (v, None, None)
+        }
+        other => (json!({"action": format!("{other:?}")}), None, None),
     })
 }
 

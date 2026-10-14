@@ -1,14 +1,22 @@
 //! The unit's ledger: every attempt, credit and forced decision `ns run` keeps between phases,
 //! and the rules that change them. Pure: the driver does the I/O and reports what happened, and
 //! the ledger says what to do next (docs/design/factory-core/v1.md, "State and the transition
-//! function").
+//! function"). The submodules hold the rest of the pure core: [`route`] the state table, [`step`]
+//! the transition function the shell drives, and `gate`, `guard` and `merge` the decisions after
+//! a phase. `purity` checks that none of them does I/O.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::currency::{decide, rebases_for_base, run, Decision, State};
 use crate::factory::PHASES;
+use route::{decide, rebases_for_base, run, same_sha, Decision, State};
+
+pub mod gate;
+pub mod guard;
+pub mod merge;
+pub mod route;
+pub mod step;
 
 /// The most times one `ns run` sends a passed ship back because its PR conflicts with the base.
 pub const RESHIP_CAP: u32 = 5;
@@ -43,6 +51,27 @@ pub struct Admitted {
     /// A run that rewrites an artifact `ns artifact check` rejected: free, once per phase.
     pub rewrite: bool,
     before_credit: Option<String>,
+}
+
+impl Admitted {
+    /// The feedback the phase's prompt carries: the decision's, and how to take in the base when
+    /// this run is a free rebase. The phase takes in the default branch as it is now, not a
+    /// commit noted earlier, and ship merges the base in and never rebases (skills/ns-ship).
+    pub fn prompt_feedback(&self) -> String {
+        let mut f = self.feedback.clone();
+        if let Some((_, branch, sha)) = &self.rebase {
+            let how = if self.phase == "build" {
+                "rebase onto"
+            } else {
+                "merge in"
+            };
+            f.push_str(&format!(
+                "\n\nThe base moved: fetch origin and {how} the newest origin/{branch} ({sha}). This {} costs no attempt.\n",
+                self.phase
+            ));
+        }
+        f
+    }
 }
 
 /// A phase the ledger did not let run, because it is out of attempts.
@@ -118,6 +147,9 @@ pub struct Ledger {
     /// HEAD when the ledger was last saved, which a forced decision was made against.
     #[serde(default)]
     head: Option<String>,
+    /// Where [`step::step`] is in the current turn. Not saved: a restart decides afresh.
+    #[serde(skip)]
+    turn: Option<step::Turn>,
 }
 
 /// A phase run that moved HEAD from `from` to `to`.
@@ -162,10 +194,7 @@ impl Ledger {
     /// The ledger is resumed at `head`: a forced decision made at another HEAD, or at one not
     /// recorded, no longer fits the unit and is dropped. True when one was.
     pub fn resumed_at(&mut self, head: &str) -> bool {
-        let same = self
-            .head
-            .as_deref()
-            .is_some_and(|h| crate::git::same_sha(h, head));
+        let same = self.head.as_deref().is_some_and(|h| same_sha(h, head));
         if same || self.forced.is_none() {
             return false;
         }
@@ -435,7 +464,7 @@ impl Ledger {
     /// them is ship taking in the base. False when the chain from `from` to `to` is not all in
     /// the ledger.
     pub fn only_ship_moved(&self, from: &str, to: &str) -> bool {
-        let same = |a: &str, b: &str| crate::git::same_sha(a, b);
+        let same = |a: &str, b: &str| same_sha(a, b);
         let Some(i) = self.moved.iter().position(|m| same(&m.from, from)) else {
             return false;
         };
