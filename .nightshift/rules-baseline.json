@@ -132,7 +132,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 584,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let e = can_read_fake(\"exec sleep 30\", Duration::from_millis(300)).unwrap_err();"
@@ -140,7 +140,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 586,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "assert!(started.elapsed() < Duration::from_secs(10));"
@@ -148,7 +148,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 596,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "Duration::from_secs(5),"
@@ -156,7 +156,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 604,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let e = can_read_fake(\"exit 3\", Duration::from_secs(30)).unwrap_err();"
@@ -164,7 +164,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 611,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let e = can_read_fake(\"echo 'HTTP 404' >&2; exit 1\", Duration::from_secs(30)).unwrap_err();"
@@ -172,7 +172,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 848,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let e = output_within(cmd, Duration::from_millis(200)).unwrap_err();"
@@ -180,7 +180,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 850,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "assert!(started.elapsed() < Duration::from_secs(10));"
@@ -188,7 +188,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 857,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let out = output_within(cmd, Duration::from_secs(30)).unwrap();"
@@ -196,7 +196,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 868,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "let out = output_within(cmd, Duration::from_secs(30)).unwrap();"
@@ -204,7 +204,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 871,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "assert!(started.elapsed() < Duration::from_secs(20));"
@@ -212,7 +212,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 931,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "Duration::from_millis(200),"
@@ -220,7 +220,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 934,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "assert!(started.elapsed() < Duration::from_secs(10));"
@@ -228,7 +228,7 @@
     {
       "tool": "ast-grep",
       "rule": "wall-clock-in-test",
-      "file": "cli/src/forge.rs",
+      "file": "cli/src/forge/tests.rs",
       "line": 947,
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "Duration::from_secs(30),"
