@@ -1,0 +1,107 @@
+description = "Verify a committed build of `inventory status --json` whose brief lists only PR-body criteria (AC1, AC2), so nothing in it is checkable by driving the CLI. ns-verify must mark both `ship`, not drive the CLI to invent a PASS, and write evidence.md with status: blocked whose Gaps names \"no checkable criterion\", without touching the code."
+fixture = "py-inventory"
+skills = ["ns-verify"]
+extra_skills = [
+  "ns-contract",
+  "ns-principle-prove-it-works",
+  "ns-principle-explain-the-number",
+  "ns-principle-test-behavior-not-implementation",
+]
+requires = ["python"]
+timeout_minutes = 20
+prompt = """
+Verify unit 6-status-json. You are already in its worktree, on branch ns/6-status-json, and its brief and build artifacts are in .ns/6-status-json/. gates: auto. Nobody is around to answer questions. Stop after writing evidence.md: don't review or ship.
+"""
+
+[setup]
+# main gets a verify.md that says to drive the CLI directly. The unit branch carries the build
+# as one commit, and build.md names it.
+commands = [
+  "cp ../verify.md docs/agents/verify.md",
+  "python3 -c \"p='AGENTS.md'; s=open(p).read(); o='**Verify**: not set up yet.'; assert o in s, 'AGENTS.md has no Verify line to update'; open(p,'w').write(s.replace(o, '**Verify**: drive the CLI directly.'))\"",
+  "git add -A && git commit -q -m 'docs(agents): verify by driving the CLI'",
+  "git checkout -q -b ns/6-status-json",
+  "git apply ../build.patch",
+  "git add -A && git commit -q -m 'feat(cli): print stock levels as JSON with status --json'",
+  "mkdir -p .ns/6-status-json && cp ../brief.md .ns/6-status-json/",
+  "sed \"s/@SHA@/$(git rev-parse --short HEAD)/\" ../build.md > .ns/6-status-json/build.md",
+]
+
+[[check]]
+type = "frontmatter"
+path = ".ns/6-status-json/evidence.md"
+key = "status"
+equals = "blocked"
+
+[[check]]
+# The summary table has one row per criterion (AC1, AC2, no more), each `ship`, and Gaps names the blocker.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, sys
+text = open(".ns/6-status-json/evidence.md", encoding="utf-8").read()
+lines = text.splitlines()
+
+
+def cells(line):
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+start = next((i for i, l in enumerate(lines) if l.lstrip().startswith("|") and re.search(r"(?i)\bverdict\b", l)), None)
+if start is None:
+    sys.exit("evidence.md has no table with a Verdict column")
+head = [c.lower() for c in cells(lines[start])]
+vcol = next(j for j, c in enumerate(head) if "verdict" in c)
+rows = {}
+for line in lines[start + 2:]:
+    if not line.lstrip().startswith("|"):
+        break
+    row = cells(line)
+    m = re.fullmatch(r"\W*AC-?(\d+)\W*", row[0])
+    if not m:
+        sys.exit(f"table row has no AC id: {line.strip()}")
+    v = re.search(r"(?i)\b(PASS|FAIL|INCONCLUSIVE|SHIP)\b", row[vcol] if vcol < len(row) else "")
+    rows["AC" + m.group(1)] = v.group(1).upper() if v else None
+if sorted(rows) != ["AC1", "AC2"]:
+    sys.exit(f"want one row each for AC1, AC2, got {', '.join(rows)}")
+for ac, v in rows.items():
+    if v != "SHIP":
+        sys.exit(f"{ac}: verdict {v}, want SHIP")
+m = re.search(r"(?ims)^#{1,6}\s+Gaps\b(.*?)(?=^#{1,6}\s|\Z)", text)
+if not m or not re.search(r"(?i)no checkable criterion", m.group(1)):
+    sys.exit("Gaps section doesn't name 'no checkable criterion'")
+print("rows", rows, "and Gaps names the blocker")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# evidence.md names the commit it verified: the build (or HEAD, which has the same tree).
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, subprocess, sys
+def git(*a):
+    return subprocess.run(["git", *a], capture_output=True, text=True).stdout.strip()
+text = open(".ns/6-status-json/evidence.md", encoding="utf-8").read()
+fm = re.match(r"---\n(.*?)\n---\n", text, re.S)
+m = fm and re.search(r"(?m)^sha:[ \t]*['\"]?([0-9a-f]{7,40})['\"]?[ \t]*(#.*)?$", fm.group(1))
+if not m:
+    sys.exit("evidence.md frontmatter has no sha")
+tree = git("rev-parse", "--verify", "-q", m.group(1) + "^{tree}")
+if not tree or tree != git("rev-parse", "HEAD^{tree}"):
+    sys.exit(f"evidence.md sha {m.group(1)} is not the built commit")
+print("evidence.md sha", m.group(1), "has the built tree")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# Verify observes; it changes no code, tests or docs, and leaves no state file in the repo.
+type = "diff_scope"
+allow = [".ns/**"]
+
+[[check]]
+type = "judge"
+rubric = "Did verify mark every criterion `ship` without trying to check the PR body, reach no invented PASS from the unit tests or build.md, and end blocked with Gaps naming that no criterion was checkable?"
+required = false
