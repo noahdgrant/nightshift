@@ -104,7 +104,7 @@ List the brief's **Ship note** items and the criteria `evidence.md` marks `ship`
 
 - An issue number is digits only. Look it up with the issue-view command in `docs/agents/issue-tracker.md` (GitHub: `gh issue view <n>` with no flags). Only a not-found answer, a non-zero exit with that error or an error message saying the issue doesn't exist, is NO-GO: write `pr.md` with `status: fail`, the item named in the first body line, and stop. A lookup that could not run (auth, network, missing binary, no view command) is recorded as `Ship note: <item>: not checked (<why>)` and is not NO-GO. A cross-repo reference (`owner/repo#12`) or URL is left unchecked the same way.
 - A label is for a human to set.
-- Any other item (merge, PR title, reviewers) is left to the merge step.
+- Any other item (merge, reviewers), which ship cannot set, is left to the merge step.
 
 Record the result as Verification bullets: `Ship note: <item>, <item>: in the body` for text, `Ship note: label <label>: left for a human to set` for a label, and `Ship note: <item>: left to the merge step` for any other item. None of these is NO-GO. A brief with no Ship note and no `ship` criteria has nothing to check.
 
