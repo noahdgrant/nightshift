@@ -192,6 +192,50 @@ fn tally_passes<'a>(
     paneled > 0
 }
 
+fn tally_escape(
+    finding: &Finding,
+    reviewers: &mut BTreeMap<String, Reviewer>,
+    excluded: &mut Excluded,
+) {
+    if finding.status == Status::Dismissed {
+        return;
+    }
+    let Some(name) = &finding.missed_by else {
+        excluded.escapes_unattributed += 1;
+        return;
+    };
+    match counts(reviewers, name, finding.severity) {
+        Some(c) => c.escapes += 1,
+        None => excluded.unknown_reviewer += 1,
+    }
+}
+
+fn tally_raise(
+    finding: &Finding,
+    raisers: &[&'static str],
+    measured: bool,
+    reviewers: &mut BTreeMap<String, Reviewer>,
+) {
+    let unique = raisers.len() == 1;
+    let unique_fixed = usize::from(unique && finding.status == Status::Fixed);
+    for axis in raisers {
+        let Some(c) = counts(reviewers, axis, finding.severity) else {
+            continue;
+        };
+        c.raised += 1;
+        c.unique += usize::from(unique);
+        c.unique_fixed += unique_fixed;
+        c.dismissed += usize::from(
+            finding.status == Status::Dismissed
+                || finding.dismissed_raises.iter().any(|d| d == axis),
+        );
+        if measured {
+            c.raised_measured += 1;
+            c.unique_fixed_measured += unique_fixed;
+        }
+    }
+}
+
 fn tally_finding(
     finding: &Finding,
     measured: bool,
@@ -201,41 +245,20 @@ fn tally_finding(
     if !matches!(finding.severity, Severity::Critical | Severity::Important) {
         return None;
     }
-    let raisers: Vec<&'static str> = AXES
-        .into_iter()
-        .filter(|axis| finding.axes.iter().any(|named| named == axis))
-        .collect();
     match finding.scope {
-        Scope::PreExisting if finding.status == Status::Dismissed => {}
-        Scope::PreExisting => match &finding.missed_by {
-            Some(name) => match counts(reviewers, name, finding.severity) {
-                Some(c) => c.escapes += 1,
-                None => excluded.unknown_reviewer += 1,
-            },
-            None => excluded.escapes_unattributed += 1,
-        },
+        Scope::PreExisting => tally_escape(finding, reviewers, excluded),
         Scope::Unknown => excluded.findings_without_scope += 1,
-        Scope::Changed if raisers.is_empty() => excluded.findings_without_axis += 1,
         Scope::Changed => {
-            let unique = raisers.len() == 1;
-            let unique_fixed = usize::from(unique && finding.status == Status::Fixed);
-            for axis in &raisers {
-                let Some(c) = counts(reviewers, axis, finding.severity) else {
-                    continue;
-                };
-                c.raised += 1;
-                c.unique += usize::from(unique);
-                c.unique_fixed += unique_fixed;
-                c.dismissed += usize::from(
-                    finding.status == Status::Dismissed
-                        || finding.dismissed_raises.iter().any(|d| d == axis),
-                );
-                if measured {
-                    c.raised_measured += 1;
-                    c.unique_fixed_measured += unique_fixed;
-                }
+            let raisers: Vec<&'static str> = AXES
+                .into_iter()
+                .filter(|axis| finding.axes.iter().any(|named| named == axis))
+                .collect();
+            if raisers.is_empty() {
+                excluded.findings_without_axis += 1;
+            } else {
+                tally_raise(finding, &raisers, measured, reviewers);
+                return Some(raisers);
             }
-            return Some(raisers);
         }
     }
     None
