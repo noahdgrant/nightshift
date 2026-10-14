@@ -2,7 +2,7 @@
 
 A unit is one issue's work, from the issue to its merged change. It has the issue, a worktree `<repo>.worktrees/<unit>` on the branch `ns/<unit>`, its artifacts in the worktree's `.ns/<unit>/`, a PR, events in the run log, and quality records.
 
-1. **Queued.** Triage labels the issue `ready_label`. When `ns watch`'s triage pass does it, the triage-only run has already created the worktree and branch and written `brief.md` there.
+1. **Queued.** The issue gets `ready_label`: from a person, or, for `ns watch`'s triage pass, from `ns watch` itself, reading the outcome the triage-only run wrote to `brief.md` (see ["Status labels"](watch.md#status-labels)). That run has already created the worktree and branch and written `brief.md` there.
 2. **Started.** `ns watch` swaps the label for `in_progress_label` and runs `ns run --issue <n>`. That creates the worktree from `origin/<default>`, or reuses the one an earlier run left, and runs `[worktree] setup`.
 3. **Phases.** Triage, build, verify, review and ship run in the worktree, each writing its artifact to `.ns/<unit>/`. Ship pushes `ns/<unit>` and opens the PR, whose body closes the issue.
 4. **Ended.** The unit ends `merged` (the merge step merged it), `done` (a human merges), `stuck`, `split`, `paused` or `budget`. A `split` unit's issue waits under `split_label` until its children are done, and `ns watch` closes it then (see ["Split parents"](watch.md#split-parents)). On `merged`, `done` and `stuck`, `ns run` writes the unit's quality records.

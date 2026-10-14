@@ -11,16 +11,45 @@ use crate::factory::{artifact_of, PHASES};
 use crate::frontmatter;
 use crate::git::{self, same_sha};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Art {
     pub status: String,
     pub sha: Option<String>,
     pub pr: Option<String>,
     pub body: String,
+    /// What `ns artifact check` rejects in an `ns-artifact/2` file. An invalid artifact counts as
+    /// absent: its phase runs again.
+    pub invalid: Option<Vec<String>>,
+    /// An `ns-artifact/2` file's `next`, which routes it; `None` for `/1`.
+    pub next: Option<String>,
 }
 
+/// The phase whose artifact `path` is, from its file name.
+fn phase_of_file(path: &Path) -> Option<&'static str> {
+    let name = path.file_name()?.to_str()?;
+    PHASES.iter().copied().find(|p| artifact_of(p) == name)
+}
+
+/// Read an artifact. An `ns-artifact/2` file is read through its typed fields, and its body is
+/// given the first line today's state table routes on (docs/design/factory-core/v1.md, step 3):
+/// `base moved: <reason>` for `cause: base_moved`, `<next>: <reason>` for a ship that names verify
+/// or review, else the reason. A `/1` file is read as before.
 pub(super) fn read_art(path: &Path) -> Option<Art> {
     let text = fs::read_to_string(path).ok()?;
+    if let Some(phase) = phase_of_file(path).and_then(crate::artifact::Phase::parse) {
+        if crate::artifact::is_v2(&text) {
+            return Some(match crate::artifact::read(&text, phase) {
+                Ok(t) => typed_art(&t, &text),
+                Err(errors) => Art {
+                    invalid: Some(errors),
+                    // Kept so an invalid pr.md still names its PR and ship doesn't open another.
+                    pr: frontmatter::split(&text)
+                        .and_then(|(y, _)| frontmatter::raw_field(y, "pr")),
+                    ..Art::default()
+                },
+            });
+        }
+    }
     let (status, sha, pr, body) = match (frontmatter::parse(&text), frontmatter::split(&text)) {
         (Ok(Some(_)), Some((yaml, body))) => (
             frontmatter::raw_field(yaml, "status").unwrap_or_default(),
@@ -35,7 +64,26 @@ pub(super) fn read_art(path: &Path) -> Option<Art> {
         sha,
         pr,
         body,
+        invalid: None,
+        next: None,
     })
+}
+
+fn typed_art(t: &crate::artifact::Typed, text: &str) -> Art {
+    use crate::artifact::Cause;
+    let first = match t.cause {
+        Cause::BaseMoved => format!("base moved: {}", t.reason),
+        _ => t.reason.clone(),
+    };
+    let rest = frontmatter::split(text).map_or("", |(_, b)| b);
+    Art {
+        status: t.status.as_str().to_string(),
+        sha: t.sha.clone(),
+        pr: t.pr.clone(),
+        body: format!("{first}\n\n{rest}"),
+        invalid: None,
+        next: Some(t.next.as_str().to_string()),
+    }
 }
 
 /// Move `file` into `<dir>/history/<stem>-<n>.md`, n one past the highest already there.
@@ -118,7 +166,12 @@ pub fn known_pr(dir: &Path) -> Option<u64> {
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             let rest = name.strip_prefix("pr-")?.strip_suffix(".md")?;
-            let n = rest.strip_prefix("timeout-").unwrap_or(rest).parse().ok()?;
+            let n = rest
+                .strip_prefix("timeout-")
+                .or_else(|| rest.strip_prefix("invalid-"))
+                .unwrap_or(rest)
+                .parse()
+                .ok()?;
             let updated = fs::read_to_string(e.path())
                 .ok()
                 .and_then(|t| frontmatter::field(&t, "updated"));
@@ -138,7 +191,24 @@ pub struct State {
     pub has_issue: bool,
     /// The unit's diff at HEAD; `None` compares shas only.
     pub unit_diff: Option<UnitDiff>,
+    /// Verify and review artifacts that are not current, but only because ship took in the base
+    /// and that changed few of the unit's own lines (CORE-1): evidence carries forward, and
+    /// review runs over just that change.
+    pub carried: BTreeMap<&'static str, Carried>,
 }
+
+/// An artifact carried forward over a small change the base brought in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Carried {
+    /// The sha the artifact was written at.
+    pub from: String,
+    /// How many of the unit's own changed lines differ since (`git::interdiff_lines`).
+    pub lines: usize,
+}
+
+/// The most changed lines of the unit's own diff a base merge may bring in and still carry
+/// evidence forward with only a delta review (CORE-1 in docs/design/factory-core/v1.md).
+pub const DELTA_MAX_LINES: usize = 40;
 
 #[derive(Debug, Clone)]
 pub struct UnitDiff {
@@ -181,7 +251,7 @@ pub(super) fn read_state(
 ) -> State {
     let mut arts = BTreeMap::new();
     for p in PHASES {
-        if let Some(a) = read_art(&dir.join(artifact_of(p))) {
+        if let Some(a) = read_art(&dir.join(artifact_of(p))).filter(|a| a.invalid.is_none()) {
             arts.insert(*p, a);
         }
     }
@@ -190,6 +260,7 @@ pub(super) fn read_state(
         head,
         has_issue,
         unit_diff,
+        carried: BTreeMap::new(),
     }
 }
 
@@ -253,6 +324,20 @@ fn named_phase(body: &str) -> Option<&'static str> {
     }
 }
 
+/// What a delta review is told: review only what the base merge changed in the unit's diff.
+fn delta_feedback(c: &Carried, head: &str) -> String {
+    format!(
+        "Delta review. review.md passed at {from}. Since then only ship's merge of the base changed \
+         this unit's own diff, by {n} lines, so verify's evidence carries forward. Review only \
+         that change, not the whole unit: compare the unit's diff at {from} with its diff at \
+         {head}, for example with `git range-diff $(git merge-base {from} origin/HEAD)..{from} \
+         $(git merge-base {head} origin/HEAD)..{head}`. Keep the earlier review's findings for \
+         everything else, and add `delta_of: {from}` to review.md's frontmatter.",
+        from = c.from,
+        n = c.lines,
+    )
+}
+
 /// The state table in docs/factory/run.md.
 pub fn decide(s: &State) -> Decision {
     if let Some(brief) = s.arts.get("triage").filter(|a| a.status == "split") {
@@ -271,7 +356,9 @@ pub fn decide(s: &State) -> Decision {
     }
     let stale = |a: &Art| !s.current(a.sha.as_deref().unwrap_or(""));
     let passes = |p: &str| s.arts.get(p).is_some_and(|a| s.passes(a));
-    if passes("ship") && passes("verify") && passes("review") {
+    let verify_carried = s.carried.contains_key("verify")
+        && s.arts.get("verify").is_some_and(|a| a.status == "pass");
+    if passes("ship") && (passes("verify") || verify_carried) && passes("review") {
         return Decision::Done;
     }
     let Some(brief) = s.arts.get("triage") else {
@@ -281,6 +368,12 @@ pub fn decide(s: &State) -> Decision {
             Decision::Stuck("no brief: no brief.md and no issue to triage".into())
         };
     };
+    if let Some(n) = brief.next.as_deref().filter(|n| *n != "build") {
+        return Decision::Stuck(format!(
+            "triage routed the issue to {n}: {}",
+            first_line(&brief.body)
+        ));
+    }
     if brief.status != "pass" {
         return Decision::Stuck(format!(
             "triage decided a human or define is needed (brief.md status {:?})",
@@ -306,20 +399,65 @@ pub fn decide(s: &State) -> Decision {
         let Some(a) = s.arts.get(phase) else {
             return run(phase, "", format!("no {file}"));
         };
+        match s.carried.get(phase).filter(|_| a.status == "pass") {
+            Some(_) if phase == "verify" => continue,
+            Some(c) => {
+                return run(
+                    "review",
+                    &delta_feedback(c, &s.head),
+                    format!(
+                    "{file} sha {} is behind a {}-line change the base brought in: delta review",
+                    c.from, c.lines
+                ),
+                )
+            }
+            None => {}
+        }
         if stale(a) {
             return run(phase, "", stale_why(file, a));
         }
-        match a.status.as_str() {
-            "pass" => {}
-            "fail" => return run("build", &a.body, format!("{file} failed")),
-            other => return Decision::Stuck(format!("{file} has status {other:?}")),
+        match (a.status.as_str(), a.next.as_deref()) {
+            ("pass", _) => {}
+            ("fail", Some("human")) => {
+                return Decision::Stuck(format!(
+                    "{file} failed and needs a human: {}",
+                    first_line(&a.body)
+                ))
+            }
+            ("fail", _) => return run("build", &a.body, format!("{file} failed")),
+            (other, _) => return Decision::Stuck(format!("{file} has status {other:?}")),
         }
     }
     let Some(pr) = s.arts.get("ship") else {
         return run("ship", "", "no pr.md");
     };
+    decide_ship(pr, stale_why("pr.md", pr))
+}
+
+/// Where a `pr.md` sends the unit: by its `next` when it is `ns-artifact/2`, else by the `/1`
+/// rules (a `base moved` first line to build, a named verify or review to that phase). `stale`
+/// is why a passed one that isn't current reruns ship.
+fn decide_ship(pr: &Art, stale: String) -> Decision {
+    if pr.status == "fail" {
+        if let Some(n) = pr.next.as_deref() {
+            return match n {
+                "build" => run(
+                    "build",
+                    &pr.body,
+                    format!("pr.md failed and names build: {}", first_line(&pr.body)),
+                ),
+                "verify" | "review" => run(
+                    if n == "verify" { "verify" } else { "review" },
+                    &pr.body,
+                    format!("pr.md failed and names {n}"),
+                ),
+                "ship" => run("ship", &pr.body, "pr.md is not merge-ready yet"),
+                _ => Decision::Stuck(format!("ship failed: {}", first_line(&pr.body))),
+            };
+        }
+    }
     match pr.status.as_str() {
-        "pass" => run("ship", "", stale_why("pr.md", pr)),
+        "pass" => run("ship", "", stale),
         "fail" if base_moved(&pr.body) => run("build", &pr.body, "pr.md failed: base moved"),
         "fail" => match named_phase(&pr.body) {
             Some(p) => run(
@@ -334,427 +472,4 @@ pub fn decide(s: &State) -> Decision {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::testutil::{commit_file, g, rebased_unit, Rebased};
-
-    fn art(status: &str, sha: &str) -> Art {
-        Art {
-            status: status.into(),
-            sha: Some(sha.into()),
-            pr: None,
-            body: format!("{status} body"),
-        }
-    }
-
-    fn state(arts: &[(&'static str, Art)]) -> State {
-        State {
-            arts: arts.iter().cloned().collect(),
-            head: "abc1234".into(),
-            has_issue: true,
-            unit_diff: None,
-        }
-    }
-
-    fn phase_of(d: &Decision) -> &str {
-        match d {
-            Decision::Run { phase, .. } => phase,
-            Decision::Done => "done",
-            Decision::Stuck(_) => "stuck",
-            Decision::Split(_) => "split",
-        }
-    }
-
-    fn next(arts: &[(&'static str, Art)]) -> String {
-        phase_of(&decide(&state(arts))).to_string()
-    }
-
-    #[test]
-    fn stuck_reason_is_the_first_body_line() {
-        let blocked = |body: &str| {
-            let mut a = art("blocked", "abc1234");
-            a.body = body.into();
-            match decide(&state(&[("verify", a)])) {
-                Decision::Stuck(r) => r,
-                _ => panic!("not stuck"),
-            }
-        };
-        assert_eq!(
-            blocked("\n  Needs a board on the bench.  \nlater text\n"),
-            "evidence.md is blocked: Needs a board on the bench."
-        );
-        // A heading marker is dropped and its text kept: the first line is the blocker even
-        // when it is written as a heading, and later body text is never used.
-        assert_eq!(
-            blocked("## Needs hardware\n\nlater text\n"),
-            "evidence.md is blocked: Needs hardware"
-        );
-        let long = blocked(&"x".repeat(300));
-        assert_eq!(long, format!("evidence.md is blocked: {}", "x".repeat(200)));
-    }
-
-    #[test]
-    fn a_split_brief_ends_the_unit_with_its_first_line() {
-        let mut brief = art("split", "");
-        brief.body = "\nSplit into #8 and #9.\nIssue: https://github.com/o/r/issues/7\n".into();
-        assert_eq!(
-            decide(&state(&[("triage", brief.clone())])),
-            Decision::Split("brief.md is split: Split into #8 and #9.".into())
-        );
-        // The children replaced the unit, so an artifact a later phase left behind changes
-        // nothing.
-        let later = ("build", art("blocked", "abc1234"));
-        assert_eq!(next(&[("triage", brief), later]), "split");
-    }
-
-    #[test]
-    fn a_split_at_the_cap_is_blocked_and_stuck_on_its_reason() {
-        let mut brief = art("blocked", "");
-        brief.body =
-            "Six behaviours, over the split cap of 5: a human must split it.\nIssue: u\n".into();
-        assert_eq!(
-            decide(&state(&[("triage", brief)])),
-            Decision::Stuck(
-                "brief.md is blocked: Six behaviours, over the split cap of 5: a human must split it."
-                    .into()
-            )
-        );
-    }
-
-    #[test]
-    fn only_a_passed_build_sent_back_for_a_moved_base_rebases() {
-        let moved = |status: &str| {
-            let mut a = art(status, "abc1234");
-            a.body = "Base moved: rebase onto main\n".into();
-            a
-        };
-        let brief = ("triage", art("pass", ""));
-        let rebases = |arts: &[(&'static str, Art)]| {
-            let s = state(arts);
-            rebases_for_base(&s, &decide(&s))
-        };
-        let built = ("build", art("pass", "abc1234"));
-        assert!(rebases(&[
-            brief.clone(),
-            built.clone(),
-            ("verify", moved("fail"))
-        ]));
-        let reviewed = ("verify", art("pass", "abc1234"));
-        assert!(rebases(&[
-            brief.clone(),
-            built.clone(),
-            reviewed,
-            ("review", moved("fail"))
-        ]));
-        assert!(!rebases(&[
-            brief.clone(),
-            built.clone(),
-            ("verify", art("fail", "abc1234"))
-        ]));
-        // Build's own fail is a failed attempt, whatever it says.
-        assert!(!rebases(&[brief.clone(), ("build", moved("fail"))]));
-        // The line names the base moving only in its first line.
-        let mut later = art("fail", "abc1234");
-        later.body = "Tests fail\nbase moved too\n".into();
-        assert!(!rebases(&[brief.clone(), built.clone(), ("verify", later)]));
-        let mut mid = art("fail", "abc1234");
-        mid.body = "Tests fail; not because the base moved\n".into();
-        assert!(!rebases(&[brief, built, ("verify", mid)]));
-    }
-
-    #[test]
-    fn state_table() {
-        assert_eq!(next(&[]), "triage");
-        let mut s = state(&[]);
-        s.has_issue = false;
-        assert_eq!(phase_of(&decide(&s)), "stuck");
-        let brief = ("triage", art("pass", ""));
-        let build = ("build", art("pass", "abc1234"));
-        let ev = ("verify", art("pass", "abc12"));
-        let rv = ("review", art("pass", "abc1234"));
-        assert_eq!(next(std::slice::from_ref(&brief)), "build");
-        assert_eq!(next(&[brief.clone(), ("build", art("fail", ""))]), "build");
-        assert_eq!(next(&[brief.clone(), build.clone()]), "verify");
-        // A shorter sha prefix still matches HEAD.
-        assert_eq!(next(&[brief.clone(), build.clone(), ev.clone()]), "review");
-        let stale = ("verify", art("pass", "fff0000"));
-        assert_eq!(next(&[brief.clone(), build.clone(), stale]), "verify");
-        let d = decide(&state(&[
-            brief.clone(),
-            build.clone(),
-            ("verify", art("fail", "abc1234")),
-        ]));
-        assert!(
-            matches!(&d, Decision::Run { phase: "build", feedback, .. } if feedback == "fail body")
-        );
-        let d = decide(&state(&[
-            brief.clone(),
-            build.clone(),
-            ev.clone(),
-            ("review", art("fail", "abc1234")),
-        ]));
-        assert!(matches!(&d, Decision::Run { phase: "build", .. }));
-        let base = [brief.clone(), build.clone(), ev.clone(), rv.clone()];
-        assert_eq!(next(&base), "ship");
-        let with = |extra: (&'static str, Art)| {
-            let mut v = base.to_vec();
-            v.push(extra);
-            next(&v)
-        };
-        let mut sf = art("fail", "abc1234");
-        sf.body = "evidence is stale; ns-review must rerun".into();
-        assert_eq!(with(("ship", sf)), "review");
-        assert_eq!(with(("ship", art("fail", "abc1234"))), "stuck");
-        let mut moved = art("fail", "abc1234");
-        moved.body = "NO-GO: base moved, the branch conflicts with main\n".into();
-        assert_eq!(with(("ship", moved)), "build");
-        assert_eq!(with(("ship", art("pass", "abc1234"))), "done");
-        let old = [
-            brief.clone(),
-            build.clone(),
-            ("verify", art("pass", "0000000")),
-            ("review", art("pass", "0000000")),
-            ("ship", art("pass", "abc1234")),
-        ];
-        assert_eq!(next(&old), "verify");
-        // A pass at an older sha ships again once verify and review hold at HEAD.
-        assert_eq!(with(("ship", art("pass", "0000000"))), "ship");
-        assert_eq!(
-            next(&[
-                brief.clone(),
-                build.clone(),
-                ev.clone(),
-                ("review", art("blocked", "abc1234"))
-            ]),
-            "stuck"
-        );
-        assert_eq!(next(&[("triage", art("fail", ""))]), "stuck");
-    }
-
-    #[test]
-    fn archiving_keeps_only_current_downstream_passes() {
-        let dir = tempfile::tempdir().unwrap();
-        let d = dir.path();
-        let w = |f: &str, status: &str, sha: &str| {
-            fs::write(
-                d.join(f),
-                format!("---\nstatus: {status}\nsha: {sha}\npr: 12\n---\nbody\n"),
-            )
-            .unwrap()
-        };
-        w("build.md", "pass", "abc1234");
-        w("evidence.md", "pass", "abc1234");
-        w("review.md", "fail", "abc1234");
-        w("pr.md", "pass", "0000000");
-        let moves = archive_for(d, "build", &state(&[])).unwrap();
-        assert!(!d.join("build.md").exists());
-        assert!(d.join("evidence.md").exists());
-        assert!(!d.join("review.md").exists());
-        assert!(d.join("history/build-1.md").exists());
-        assert!(d.join("history/review-1.md").exists());
-        assert!(d.join("history/pr-1.md").exists());
-        assert_eq!(known_pr(d), Some(12));
-        restore(&moves);
-        assert!(d.join("build.md").exists() && d.join("pr.md").exists());
-        // A restored slot is free again; a second archive takes the next number.
-        archive_for(d, "build", &state(&[])).unwrap();
-        w("build.md", "pass", "abc1234");
-        archive_for(d, "build", &state(&[])).unwrap();
-        assert!(d.join("history/build-1.md").exists());
-        assert!(d.join("history/build-2.md").exists());
-    }
-
-    fn pr_art(dir: &Path, name: &str, pr: u64, updated: &str) {
-        fs::create_dir_all(dir.join("history")).unwrap();
-        fs::write(
-            dir.join(name),
-            format!(
-                "---\nunit: u\nphase: ship\nstatus: pass\nsha: abc1234\npr: https://github.com/o/r/pull/{pr}\nupdated: {updated}\n---\nbody\n"
-            ),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn known_pr_reads_timed_out_archives_newest_first() {
-        let t = tempfile::tempdir().unwrap();
-        let d = t.path();
-        assert_eq!(known_pr(d), None);
-        fs::create_dir_all(d.join("history")).unwrap();
-        assert_eq!(known_pr(d), None);
-        pr_art(d, "history/pr-timeout-1.md", 21, "2026-10-08T01:00:00Z");
-        assert_eq!(known_pr(d), Some(21));
-        pr_art(d, "history/pr-2.md", 22, "2026-10-08T02:00:00Z");
-        assert_eq!(known_pr(d), Some(22));
-        pr_art(d, "history/pr-timeout-3.md", 23, "2026-10-08T03:00:00Z");
-        assert_eq!(known_pr(d), Some(23));
-        pr_art(d, "pr.md", 24, "2026-10-08T04:00:00Z");
-        assert_eq!(known_pr(d), Some(24));
-    }
-
-    #[test]
-    fn known_pr_picks_the_latest_archive_of_either_kind() {
-        let t = tempfile::tempdir().unwrap();
-        let d = t.path();
-        pr_art(d, "history/pr-1.md", 21, "2026-10-08T01:00:00Z");
-        pr_art(d, "history/pr-2.md", 22, "2026-10-08T02:00:00Z");
-        pr_art(d, "history/pr-timeout-1.md", 23, "2026-10-08T03:00:00Z");
-        assert_eq!(known_pr(d), Some(23));
-        // The reverse: a later pr-<n> beats an earlier pr-timeout-<m> with m > n.
-        pr_art(d, "history/pr-timeout-5.md", 25, "2026-10-08T04:00:00Z");
-        pr_art(d, "history/pr-3.md", 26, "2026-10-08T05:00:00Z");
-        assert_eq!(known_pr(d), Some(26));
-    }
-
-    #[test]
-    fn known_pr_breaks_updated_ties_by_counter_and_ranks_undated_oldest() {
-        let t = tempfile::tempdir().unwrap();
-        let d = t.path();
-        let same = "2026-10-08T01:00:00Z";
-        pr_art(d, "history/pr-2.md", 22, same);
-        pr_art(d, "history/pr-timeout-1.md", 21, same);
-        assert_eq!(known_pr(d), Some(22));
-        pr_art(d, "history/pr-timeout-9.md", 29, "");
-        assert_eq!(known_pr(d), Some(22));
-    }
-
-    #[test]
-    fn known_pr_breaks_updated_and_counter_ties_by_file_name() {
-        let t = tempfile::tempdir().unwrap();
-        let d = t.path();
-        let same = "2026-10-08T01:00:00Z";
-        pr_art(d, "history/pr-1.md", 21, same);
-        pr_art(d, "history/pr-timeout-1.md", 23, same);
-        assert_eq!(known_pr(d), Some(23));
-    }
-
-    #[test]
-    fn known_pr_prefers_pr_md_over_a_newer_archive() {
-        let t = tempfile::tempdir().unwrap();
-        let d = t.path();
-        pr_art(d, "pr.md", 24, "2026-10-08T01:00:00Z");
-        pr_art(d, "history/pr-timeout-1.md", 21, "2026-10-08T05:00:00Z");
-        assert_eq!(known_pr(d), Some(24));
-    }
-
-    #[test]
-    fn known_pr_skips_an_archive_whose_pr_does_not_parse() {
-        let t = tempfile::tempdir().unwrap();
-        let d = t.path();
-        pr_art(d, "history/pr-1.md", 21, "2026-10-08T01:00:00Z");
-        fs::write(
-            d.join("history/pr-timeout-1.md"),
-            "---\nstatus: fail\npr: none\nupdated: 2026-10-08T02:00:00Z\n---\nbody\n",
-        )
-        .unwrap();
-        assert_eq!(known_pr(d), Some(21));
-    }
-
-    fn real_state(r: &Rebased) -> State {
-        State {
-            arts: BTreeMap::new(),
-            head: r.rebased.clone(),
-            has_issue: true,
-            unit_diff: Some(UnitDiff::new(r.dir.clone(), "main".into(), &r.rebased)),
-        }
-    }
-
-    #[test]
-    fn current_matches_head_a_rebased_diff_and_nothing_else() {
-        let r = rebased_unit();
-        let s = real_state(&r);
-        assert!(s.current(&r.rebased));
-        assert!(s.current(&r.rebased[..7]));
-        assert!(s.current(&r.reviewed));
-        assert!(!s.current("0000000"));
-        assert!(!s.current(""));
-        let first = g(&r.dir, &["rev-parse", "main"]);
-        assert!(!s.current(&first));
-        let mut no_base = real_state(&r);
-        no_base.unit_diff = None;
-        assert!(!no_base.current(&r.reviewed));
-    }
-
-    #[test]
-    fn decide_is_done_for_artifacts_at_the_pre_rebase_sha() {
-        let r = rebased_unit();
-        let mut s = real_state(&r);
-        for p in ["triage", "build", "verify", "review", "ship"] {
-            s.arts.insert(p, art("pass", &r.reviewed));
-        }
-        assert_eq!(decide(&s), Decision::Done);
-        s.unit_diff = None;
-        assert_ne!(decide(&s), Decision::Done);
-    }
-
-    #[test]
-    fn a_rebase_archives_nothing_downstream() {
-        let r = rebased_unit();
-        let dir = tempfile::tempdir().unwrap();
-        let d = dir.path();
-        for f in ["evidence.md", "review.md", "pr.md"] {
-            fs::write(
-                d.join(f),
-                format!("---\nstatus: pass\nsha: {}\npr: 12\n---\n", r.reviewed),
-            )
-            .unwrap();
-        }
-        let moves = archive_for(d, "verify", &real_state(&r)).unwrap();
-        assert_eq!(moves.len(), 1);
-        assert!(!d.join("evidence.md").exists());
-        assert!(d.join("review.md").exists() && d.join("pr.md").exists());
-        let moves = archive_for(d, "review", &real_state(&r)).unwrap();
-        assert_eq!(moves.len(), 1);
-        assert!(d.join("pr.md").exists());
-        fs::write(
-            d.join("review.md"),
-            format!("---\nstatus: pass\nsha: {}\n---\n", r.reviewed),
-        )
-        .unwrap();
-        commit_file(&r.dir, "work.txt", "two\n");
-        let head = g(&r.dir, &["rev-parse", "HEAD"]);
-        let mut changed = real_state(&r);
-        changed.unit_diff = Some(UnitDiff::new(r.dir.clone(), "main".into(), &head));
-        changed.head = head;
-        archive_for(d, "verify", &changed).unwrap();
-        assert!(!d.join("review.md").exists() && !d.join("pr.md").exists());
-    }
-
-    #[test]
-    fn archiving_drops_a_current_pr_behind_a_stale_review() {
-        let dir = tempfile::tempdir().unwrap();
-        let d = dir.path();
-        for (f, sha) in [
-            ("evidence.md", "0000000"),
-            ("review.md", "0000000"),
-            ("pr.md", "abc1234"),
-        ] {
-            fs::write(d.join(f), format!("---\nstatus: pass\nsha: {sha}\n---\n")).unwrap();
-        }
-        archive_for(d, "verify", &state(&[])).unwrap();
-        assert!(d.join("history/review-1.md").exists());
-        assert!(d.join("history/pr-1.md").exists());
-    }
-
-    #[test]
-    fn sha_and_pr_are_read_verbatim() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("evidence.md");
-        for (sha, want) in [
-            ("0e05787", "0e05787"),
-            ("1234567", "1234567"),
-            ("\"00ab12c\"", "00ab12c"),
-            ("3f9c2e1   # HEAD", "3f9c2e1"),
-        ] {
-            fs::write(
-                &p,
-                format!("---\nstatus: pass\nsha: {sha}\npr: 0012\n---\nbody\n"),
-            )
-            .unwrap();
-            let a = read_art(&p).unwrap();
-            assert_eq!(a.sha.as_deref(), Some(want));
-            assert_eq!(a.pr.as_deref(), Some("0012"));
-            assert_eq!(a.status, "pass");
-        }
-    }
-}
+mod tests;

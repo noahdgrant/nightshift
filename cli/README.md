@@ -33,6 +33,7 @@ One page per command, in [docs/cli/](../docs/cli/):
 - [`ns worktree`](../docs/cli/worktree.md)
 - [`ns ask`](../docs/cli/ask.md)
 - [`ns lint`](../docs/cli/lint.md)
+- [`ns artifact`](../docs/cli/artifact.md)
 - [`ns install`](../docs/cli/install.md)
 - [`ns eval`](../docs/cli/eval.md)
 - [`ns factory`](../docs/cli/factory.md)

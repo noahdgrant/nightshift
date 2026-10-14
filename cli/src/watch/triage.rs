@@ -3,10 +3,14 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::Result;
+use std::fs;
+use std::path::Path;
+
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::transitions::{self, Event, Next, State};
 use super::{
     is_status, queue, rank, skip, Forge, Issue, Listing, Night, HARNESS_FAIL_LIMIT,
     PAUSED_PAST_UNTIL,
@@ -207,6 +211,12 @@ pub(super) fn pass(
             night.triage.retry = Some(issue.number);
             return Ok(Some(Halt::Paused(reset)));
         }
+        if r.outcome == Outcome::Done {
+            if let Err(e) = route(forge, q, issue.number, r.artifact.as_deref()) {
+                eprintln!("ns watch: triage #{} left its labels: {e:#}", issue.number);
+                rec["label_error"] = json!(format!("{e:#}"));
+            }
+        }
         rec["state"] = json!(forge.labels(issue.number).ok().map(|ls| ls
             .into_iter()
             .filter(|l| is_status(q, l))
@@ -216,6 +226,18 @@ pub(super) fn pass(
             return Ok(Some(Halt::Stop("harness failing".into())));
         }
     }
+}
+
+/// Label issue `n` from the outcome its triage-only run wrote to `brief.md`, at `artifact`. A run
+/// that wrote no brief leaves the labels as they are.
+fn route(forge: &dyn Forge, q: &QueueConfig, n: u64, artifact: Option<&str>) -> Result<()> {
+    let Some(brief) = artifact.map(Path::new).filter(|a| a.ends_with("brief.md")) else {
+        return Ok(());
+    };
+    let text =
+        fs::read_to_string(brief).with_context(|| format!("cannot read {}", brief.display()))?;
+    let next = Next::from_brief(&text).map_err(anyhow::Error::msg)?;
+    transitions::apply(forge, q, n, State::Triage, Event::Triaged(next))
 }
 
 #[cfg(test)]
@@ -324,5 +346,35 @@ mod tests {
         // A custom triage label is a state, so starting a unit removes it like any other.
         assert!(is_status(&q, "triage-me"));
         assert!(!is_status(&q, "type:fix"));
+    }
+
+    #[test]
+    fn a_triage_brief_sets_the_label_and_a_run_with_no_brief_leaves_it() {
+        use crate::watch::tests::Fake;
+        let q = QueueConfig::default();
+        let dir = tempfile::tempdir().unwrap();
+        let brief = dir.path().join("brief.md");
+        let at = brief.to_str().unwrap();
+        let f = Fake::default();
+        f.labels
+            .borrow_mut()
+            .insert(5, vec!["status:needs-triage".into(), "type:fix".into()]);
+        // No brief, or another phase's artifact: nothing changes.
+        route(&f, &q, 5, None).unwrap();
+        route(&f, &q, 5, Some("/x/.ns/5-a/build.md")).unwrap();
+        assert_eq!(f.labels(5).unwrap(), ["status:needs-triage", "type:fix"]);
+        // A brief named but not there, or routing nowhere, is an error and changes nothing.
+        assert!(route(&f, &q, 5, Some(at)).is_err());
+        fs::write(&brief, "---\nnext: ship\n---\n").unwrap();
+        let e = route(&f, &q, 5, Some(at)).unwrap_err();
+        assert!(e.to_string().contains("next: ship"), "{e}");
+        assert_eq!(f.labels(5).unwrap(), ["status:needs-triage", "type:fix"]);
+        // A split brief moves the parent to the split label (#409).
+        fs::write(&brief, "---\nstatus: split\n---\nSplit into #8 and #9.\n").unwrap();
+        route(&f, &q, 5, Some(at)).unwrap();
+        assert_eq!(f.labels(5).unwrap(), ["type:fix", "status:split"]);
+        fs::write(&brief, "---\nstatus: blocked\nnext: troubleshoot\n---\n").unwrap();
+        route(&f, &q, 5, Some(at)).unwrap();
+        assert_eq!(f.labels(5).unwrap(), ["type:fix", "status:needs-repro"]);
     }
 }

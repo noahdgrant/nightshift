@@ -9,11 +9,10 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 use super::forge::IssueState;
-use super::{set_status, Forge, Issue, Post};
+use super::transitions::{self, Event, State};
+use super::{Forge, Issue, Post};
 use crate::factory::Queue as QueueConfig;
 
-/// The description `split_label` gets when `ns watch` creates it.
-const DESCRIPTION: &str = "Split into child issues; closes when they're done";
 /// Where a split parent waited before `split_label` had a label of its own (D35).
 const OLD_LABEL: &str = "status:needs-define";
 /// Under `<common>/ns/`: the sweep has run in this clone.
@@ -60,14 +59,6 @@ impl Parent {
             .extend(extra.as_object().unwrap().clone());
         v
     }
-}
-
-/// Move issue `n` to `split_label`, creating the label first when the repo lacks it.
-pub(super) fn mark(forge: &dyn Forge, q: &QueueConfig, n: u64) -> Result<()> {
-    if let Err(e) = forge.ensure_label(&q.split_label, DESCRIPTION) {
-        eprintln!("ns watch: cannot create label {}: {e:#}", q.split_label);
-    }
-    set_status(forge, q, n, Some(&q.split_label))
 }
 
 /// The `#n` children a team note lists: each list item under a `Children:` line, by the first
@@ -281,12 +272,12 @@ pub(super) fn apply(
                 if let Err(e) = forge.comment(n, &body) {
                     eprintln!("ns watch: #{n} closed without its comment: {e:#}");
                 }
-                if let Err(e) = set_status(forge, q, n, None) {
+                if let Err(e) = transitions::apply(forge, q, n, State::Split, Event::ChildrenDone) {
                     eprintln!("ns watch: #{n} closed but its {} label was not cleared: {e:#}", q.split_label);
                 }
             }),
             // Moved first: a comment posted on a parent still under `split_label` would repeat.
-            Action::Dropped(d) => set_status(forge, q, n, Some(&q.stuck_label)).map(|()| {
+            Action::Dropped(d) => transitions::apply(forge, q, n, State::Split, Event::ChildDropped).map(|()| {
                 let body = Post::new(&format!(
                     "A child of this split was closed as not planned: {}. The parent stays open for a human to decide what is left.",
                     list(d)
@@ -295,7 +286,7 @@ pub(super) fn apply(
                     eprintln!("ns watch: #{n} moved without its comment: {e:#}");
                 }
             }),
-            Action::Relabel(_) => mark(forge, q, n),
+            Action::Relabel(_) => transitions::apply(forge, q, n, State::OldSplit, Event::SplitSwept),
         };
         match changed {
             Ok(()) => done.push(p.to_json()),
@@ -850,7 +841,14 @@ mod tests {
     fn mark_moves_the_issue_even_when_the_label_cannot_be_created() {
         let mut f = Fake::default();
         f.fails.insert("ensure_label");
-        mark(&f, &QueueConfig::default(), 4).unwrap();
+        transitions::apply(
+            &f,
+            &QueueConfig::default(),
+            4,
+            State::InProgress,
+            Event::Split,
+        )
+        .unwrap();
         assert_eq!(f.labels(4).unwrap(), [SPLIT]);
     }
 
@@ -860,7 +858,14 @@ mod tests {
         f.labels
             .borrow_mut()
             .insert(4, vec!["status:in-progress".into()]);
-        mark(&f, &QueueConfig::default(), 4).unwrap();
+        transitions::apply(
+            &f,
+            &QueueConfig::default(),
+            4,
+            State::InProgress,
+            Event::Split,
+        )
+        .unwrap();
         assert_eq!(f.labels(4).unwrap(), [SPLIT]);
         assert_eq!(*f.created.borrow(), [SPLIT]);
     }

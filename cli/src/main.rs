@@ -1,6 +1,7 @@
 //! `ns`: the Nightshift CLI.
 
 mod args;
+mod artifact;
 mod ask;
 mod billing;
 #[cfg(test)]
@@ -57,9 +58,9 @@ use anyhow::Result;
 use clap::Parser;
 
 use args::{
-    Ask, CheckMarkers, Clean, Cli, Cmd, Eval, Factory, FactoryCmd, Install, Lint, Log, Quality,
-    QualityCmd, Ratchet, RatchetCmd, Rules, RulesCmd, Run, Score, Status, Transcripts,
-    TranscriptsCmd, Upstream, UpstreamCmd, Watch, Worktree, WorktreeCmd,
+    Artifact, ArtifactCmd, Ask, CheckMarkers, Clean, Cli, Cmd, Eval, Factory, FactoryCmd, Install,
+    Lint, Log, Quality, QualityCmd, Ratchet, RatchetCmd, Rules, RulesCmd, Run, Score, Status,
+    Transcripts, TranscriptsCmd, Upstream, UpstreamCmd, Watch, Worktree, WorktreeCmd,
 };
 use error::SfError;
 
@@ -123,6 +124,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
         }
         Cmd::CheckMarkers(CheckMarkers { path, human }) => return markers::cli(&path, human),
+        Cmd::Artifact(Artifact { command }) => match command {
+            ArtifactCmd::Check { file, phase } => return artifact::cli(&file, phase.as_deref()),
+        },
         Cmd::Install(Install {
             source,
             harness,
@@ -203,6 +207,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             factory,
             night,
             cpus,
+            fresh,
         }) => {
             return run::cli(run::RunArgs {
                 unit: unit_id,
@@ -215,6 +220,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 triage_only: false,
                 night,
                 cpus,
+                fresh,
             })
         }
         Cmd::Watch(Watch {

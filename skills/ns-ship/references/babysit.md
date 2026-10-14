@@ -75,8 +75,8 @@ After each push, wait on the forge instead of polling in a sleep loop: `gh pr ch
 
 ## Stop
 
-- **Merge-ready**: the gate holds. Set `pr.md` to `status: pass` and stop. Leave merging to the human, even if the forge would allow it.
-- **Blocked**: a conflict on a shared branch, an escalated finding, a human thread awaiting its owner, a missing bench. Set `status: blocked`, name each blocker, and stop.
+- **Merge-ready**: the gate holds. Set `pr.md` to `status: pass`, `cause: none` and `next: none`, and stop. Leave merging to the human, even if the forge would allow it.
+- **Blocked**: a conflict on a shared branch, an escalated finding, a human thread awaiting its owner, a missing bench. Set `status: blocked`, `next: human` and the blocker's `cause`, name each blocker in `reason`, and stop.
 - **No progress**: the same check fails after two fix waves, or a third bot pass raises new findings on code you already fixed. Stop as `blocked` and summarize what you tried. Don't churn code to quiet a bot.
 
 A required human approval is a wait, not a blocker to fix. Report it and stop at the gate.

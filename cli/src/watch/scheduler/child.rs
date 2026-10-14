@@ -16,7 +16,7 @@ pub(super) const SIGTERM: i32 = libc::SIGTERM;
 pub(super) const SIGTERM: i32 = 15;
 
 /// Start `ns run <unit> --issue <n> --cpus <cpus>` on the night's snapshot, its result written to
-/// `result`. It gets its own process group, so a terminal's Ctrl-C reaches only `ns watch`, which
+/// `result`, with `exe`, a newer `ns` a self-update built, else the binary this night runs. It gets its own process group, so a terminal's Ctrl-C reaches only `ns watch`, which
 /// passes it on once; and on Linux it gets SIGTERM if `ns watch` dies, so no unit outlives its
 /// night. The kernel sends that signal when the thread that spawned the child ends, so units must
 /// be started from the thread that runs the whole night, as the scheduler does.
@@ -27,12 +27,13 @@ pub(super) fn spawn(
     cpus: usize,
     clock: &clock::Clock,
     result: &Path,
+    exe: Option<&Path>,
 ) -> Result<Child> {
     // The binary this night runs, even if a newer one was installed over it since.
-    let exe = if cfg!(target_os = "linux") {
-        PathBuf::from("/proc/self/exe")
-    } else {
-        std::env::current_exe().context("cannot find the ns binary")?
+    let exe = match exe {
+        Some(e) => e.to_path_buf(),
+        None if cfg!(target_os = "linux") => PathBuf::from("/proc/self/exe"),
+        None => std::env::current_exe().context("cannot find the ns binary")?,
     };
     let out =
         File::create(result).with_context(|| format!("cannot create {}", result.display()))?;
