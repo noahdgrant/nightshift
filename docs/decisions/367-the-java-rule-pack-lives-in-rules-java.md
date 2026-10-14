@@ -3,6 +3,7 @@ id: ADR-367
 title: "The Java rule pack lives in rules/java/, on PMD 7 and ast-grep"
 issue: 367
 date: 2026-10-12
+amended_by: [ADR-433]
 ---
 
 # ADR-367: The Java rule pack lives in rules/java/, on PMD 7 and ast-grep
