@@ -121,6 +121,7 @@ Change size: 150 insertions, 50 deletions in 3 files.
 - Axis: correctness
 - Scope: changed
 - Cycle: 0
+- Attempts: 2
 - Status: fixed (cycle 1, abc1234)
 
 ## Important
@@ -335,7 +336,7 @@ fn reports_every_metric_from_fixture_artifacts() {
     assert_eq!(v["gaps"]["findings_axis_from_raised_by"], 1);
 }
 
-/// a's C1 (pass 0, fixed in cycle 1 with no attempt count), I1 (pass 0, deferred) and I2 (pass
+/// a's C1 (pass 0, fixed in cycle 1 on the second attempt), I1 (pass 0, deferred) and I2 (pass
 /// 2, open). b's first attempt predates `Cycle:`, so its three Importants are left out.
 fn fixture_finding_flow() -> Value {
     json!({
@@ -347,9 +348,9 @@ fn fixture_finding_flow() -> Value {
         },
         "fix_rate": {
             "critical": {
-                "findings": 0, "fixed_first_attempt": 0, "fixed_second_attempt": 0,
-                "fixed_later_attempt": 0, "open": 0, "fixed_attempts_unknown": 1,
-                "first_attempt_rate": null, "second_attempt_rate": null, "open_rate": null
+                "findings": 1, "fixed_first_attempt": 0, "fixed_second_attempt": 1,
+                "fixed_later_attempt": 0, "open": 0, "fixed_attempts_unknown": 0,
+                "first_attempt_rate": 0.0, "second_attempt_rate": 1.0, "open_rate": 0.0
             },
             "important": {
                 "findings": 1, "fixed_first_attempt": 0, "fixed_second_attempt": 0,
@@ -409,7 +410,7 @@ fn human_output_shows_each_finding_metric() {
         "  critical         1    0    0    0    0    0      0",
         "  important        1    0    1    0    0    0      0",
         "Fix rate           findings  attempt 1  attempt 2 (of the rest)  open  attempts unknown",
-        "  critical                0        n/a                      n/a   n/a                 1",
+        "  critical                1      0.000                    1.000 0.000                 0",
         "  important               1      0.000                    0.000 1.000                 0",
         "Cycles to fix: median 1.0, max 1, over 1 fixed (1 in the next cycle; 0 left out)",
         "Dismiss rate: 0.000 (0 of 3)",
@@ -938,6 +939,7 @@ fn imported_records_keep_the_numbers_after_the_worktrees_are_removed() {
         "units",
         "findings",
         "first_pass",
+        "finding_flow",
         "cycles_to_clean",
         "leftovers",
         "escapes",

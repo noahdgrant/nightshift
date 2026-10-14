@@ -377,6 +377,28 @@ mod tests {
     }
 
     #[test]
+    fn render_prints_each_count_under_its_own_column() {
+        let u = unit(vec![attempt(Some(5), "pass", FLOW)]);
+        let text = render(&finding_flow(&[&u]));
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "Findings: 8 Critical and Important over every review attempt; 1 without a cycle left out",
+                "Raised per pass    0    1    2    3    4    5  later",
+                "  critical         1    0    0    1    0    0      0",
+                "  important        2    2    1    0    0    0      1",
+                "Fix rate           findings  attempt 1  attempt 2 (of the rest)  open  attempts unknown",
+                "  critical                2      0.500                    1.000 0.000                 0",
+                "  important               2      0.500                    0.000 0.500                 2",
+                "Cycles to fix: median 1.0, max 2, over 3 fixed (2 in the next cycle; 2 left out)",
+                "Dismiss rate: 0.125 (1 of 8)",
+                "Late-finding rate: 0.625 (5 of 8)",
+            ]
+        );
+    }
+
+    #[test]
     fn a_finding_fixed_in_the_cycle_that_raised_it_counts_at_distance_zero() {
         let review = "\
 ### I1. same
