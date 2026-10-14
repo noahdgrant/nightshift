@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -316,19 +315,18 @@ fn judge(rubric: &str, ctx: &Ctx<'_>) -> Result<(bool, String)> {
     );
     let out_path = s.root().join("logs").join("judge.out");
     let out = fs::File::create(&out_path)?;
-    let mut cmd = Command::new(ctx.ns_exe);
-    crate::proc::scrub_git(&mut cmd);
-    cmd.args(["ask", "--role", "eval.judge", "--cwd"])
+    let ended = crate::proc::Proc::tool(ctx.ns_exe)
+        .args(["ask", "--role", "eval.judge", "--cwd"])
         .arg(&s.repo)
-        .stdout(out)
-        .stderr(Stdio::null());
-    for (k, v) in &s.env {
-        cmd.env(k, v);
-    }
-    let (status, timed_out, _) = trial::run_process(cmd, Some(prompt.into_bytes()), CHECK_TIMEOUT)
+        .output_to(out)
+        .stderr_to(fs::OpenOptions::new().write(true).open("/dev/null")?)
+        .envs(s.env.iter().map(|(k, v)| (k, v)))
+        .stdin(prompt.into_bytes())
+        .timeout(CHECK_TIMEOUT)
+        .run()
         .context("cannot run ns ask for the judge")?;
     let text = fs::read_to_string(&out_path).unwrap_or_default();
-    if timed_out || !status.is_some_and(|st| st.success()) {
+    if !ended.status.is_some_and(|st| st.success()) {
         return Ok((
             false,
             "judge did not answer: `ns ask --role eval.judge` failed; check with `ns ask --role eval.judge --dry-run`".into(),

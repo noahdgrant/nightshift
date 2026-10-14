@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::eval::trial::{run_process, tail};
+use crate::eval::trial::tail;
 use crate::factory::{Factory, LocalGate};
 use crate::git::same_sha;
 use crate::memcap::{self, Cap, Cut};
@@ -159,8 +159,7 @@ pub fn run(
         }
         _ => {}
     }
-    let (mut c, watch) = memcap::command(cap, "sh");
-    crate::proc::scrub_git(&mut c);
+    let (mut c, watch) = memcap::command(cap, crate::proc::Kind::Tool, "sh");
     crate::cpus::apply(&mut c);
     c.env(ratchet::FACTORY_VAR, std::path::absolute(ratchets.factory)?)
         .env(ratchet::REPORT_VAR, &report);
@@ -172,20 +171,18 @@ pub fn run(
         Some(f) => c.env(FILES_VAR, f),
         None => c.env_remove(FILES_VAR),
     };
-    c.arg("-c")
-        .arg(cmd)
-        .current_dir(cwd)
-        .stdout(out.try_clone()?)
-        .stderr(out);
-    let (status, timed_out, wall_s) =
-        run_process(c, None, timeout).with_context(|| format!("cannot run gate {cmd:?}"))?;
+    c.arg("-c").arg(cmd).current_dir(cwd).output_to(out);
+    let ended = c
+        .timeout(timeout)
+        .run()
+        .with_context(|| format!("cannot run gate {cmd:?}"))?;
     let output = output_tail(&read_window(log));
-    let cut = watch.cut_short(status, timed_out, || output.clone());
+    let cut = watch.cut_short(ended.status, ended.timed_out(), || output.clone());
     Ok(GateRun {
-        exit: status.and_then(|s| s.code()),
-        timed_out,
+        exit: ended.status.and_then(|s| s.code()),
+        timed_out: ended.timed_out(),
         cut,
-        wall_s,
+        wall_s: ended.wall_s,
         tail: output,
         ratchets: ratchet::failures(&report),
     })

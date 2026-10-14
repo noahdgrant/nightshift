@@ -7,7 +7,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::SfError;
-use crate::eval::trial::{run_process, tail};
+use crate::eval::trial::tail;
 use crate::factory::{Better, Ratchet};
 
 /// The recorded values, next to `nightshift.toml` in the factory directory.
@@ -61,8 +61,7 @@ fn measure(cmd: &str, root: &Path, timeout: Duration) -> Result<f64, String> {
     let out = tempfile::tempfile().map_err(|e| format!("cannot create a file for output: {e}"))?;
     let err = tempfile::NamedTempFile::new()
         .map_err(|e| format!("cannot create a file for output: {e}"))?;
-    let mut c = Command::new("sh");
-    crate::proc::scrub_git(&mut c);
+    let mut c = crate::proc::Proc::tool("sh");
     for v in VARS {
         c.env_remove(v);
     }
@@ -73,10 +72,13 @@ fn measure(cmd: &str, root: &Path, timeout: Duration) -> Result<f64, String> {
     c.arg("-c")
         .arg(cmd)
         .current_dir(root)
-        .stdout(pipe(&out)?)
-        .stderr(pipe(err.as_file())?);
-    let (status, timed_out, _) =
-        run_process(c, None, timeout).map_err(|e| format!("cannot run: {e}"))?;
+        .output_to(pipe(&out)?)
+        .stderr_to(pipe(err.as_file())?);
+    let ended = c
+        .timeout(timeout)
+        .run()
+        .map_err(|e| format!("cannot run: {e}"))?;
+    let (status, timed_out) = (ended.status, ended.timed_out());
     let stderr = tail(err.path(), STDERR_TAIL_BYTES).unwrap_or_default();
     let stderr = String::from_utf8_lossy(&stderr);
     let with_stderr = |how: String| match stderr.trim() {

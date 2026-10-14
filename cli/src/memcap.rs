@@ -3,13 +3,12 @@
 //! under `prlimit --as`.
 
 use std::ffi::OsStr;
-use std::fs;
-use std::process::{Command, ExitStatus};
+use std::process::ExitStatus;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::error::SfError;
-use crate::eval::trial::run_process;
+use crate::proc::{Kind, Proc};
 
 const MIB: u64 = 1024 * 1024;
 /// How long a probe may take before it counts as failed.
@@ -71,7 +70,7 @@ pub struct Scope {
 impl Drop for Scope {
     fn drop(&mut self) {
         settle(&self.unit, RELEASE);
-        let _ = Command::new("systemctl")
+        let _ = Proc::tool("systemctl")
             .args(["--user", "reset-failed", &self.unit])
             .output();
     }
@@ -128,26 +127,33 @@ pub fn detect(mb: u64) -> anyhow::Result<Cap> {
     }
 }
 
-/// A command that runs `program` under `cap`, and how to tell afterwards whether it hit the
-/// cap. The caller adds the program's arguments.
-pub fn command(cap: Option<&Cap>, program: impl AsRef<OsStr>) -> (Command, Watch) {
+/// A `kind` child that runs `program` under `cap`, and how to tell afterwards whether it hit
+/// the cap. The caller adds the program's arguments.
+pub fn command(cap: Option<&Cap>, kind: Kind, program: impl AsRef<OsStr>) -> (Proc, Watch) {
+    let (launcher, watch) = launcher(cap);
+    (Proc::launched(kind, &launcher, program), watch)
+}
+
+/// The command that starts a program under `cap`, empty without one.
+fn launcher(cap: Option<&Cap>) -> (Vec<String>, Watch) {
     let Some(cap) = cap else {
-        return (Command::new(program), Watch::None);
+        return (Vec::new(), Watch::None);
     };
     match cap.via {
         Via::Cgroup => {
             let unit = scope_name();
-            let mut c = Command::new("systemd-run");
-            c.args(scope_args(&unit, cap.mb)).arg(program);
+            let mut c = vec!["systemd-run".to_string()];
+            c.extend(scope_args(&unit, cap.mb));
             (c, Watch::Scope(Scope { unit, mb: cap.mb }))
         }
-        Via::Rlimit => {
-            let mut c = Command::new("prlimit");
-            c.arg(format!("--as={}", cap.mb * MIB))
-                .arg("--")
-                .arg(program);
-            (c, Watch::Rlimit { mb: cap.mb })
-        }
+        Via::Rlimit => (
+            vec![
+                "prlimit".to_string(),
+                format!("--as={}", cap.mb * MIB),
+                "--".to_string(),
+            ],
+            Watch::Rlimit { mb: cap.mb },
+        ),
     }
 }
 
@@ -258,7 +264,7 @@ fn settle(unit: &str, wait: Duration) -> String {
 }
 
 fn scope_state(unit: &str) -> (String, String) {
-    let out = Command::new("systemctl")
+    let out = Proc::tool("systemctl")
         .args(["--user", "show", unit, "--property=ActiveState,Result"])
         .output();
     let text = out
@@ -278,7 +284,7 @@ fn scope_state(unit: &str) -> (String, String) {
 /// one falls back here, not in every phase) gets `memory.max` set to the cap: the command
 /// reads its own cgroup's limit back.
 fn probe_cgroup(mb: u64) -> Result<(), String> {
-    let mut c = Command::new("systemd-run");
+    let mut c = Proc::tool("systemd-run");
     c.arg("--collect")
         .args(scope_args(&scope_name(), mb))
         .args([
@@ -300,25 +306,17 @@ fn probe_cgroup(mb: u64) -> Result<(), String> {
 
 /// Ok when `prlimit --as` can start a command.
 fn probe_rlimit(mb: u64) -> Result<(), String> {
-    let mut c = Command::new("prlimit");
+    let mut c = Proc::tool("prlimit");
     c.arg(format!("--as={}", mb * MIB)).args(["--", "true"]);
     probe(c, "prlimit").map(|_| ())
 }
 
 /// Run a probe; its stdout, or why it failed.
-fn probe(mut c: Command, name: &str) -> Result<String, String> {
-    let out = tempfile::NamedTempFile::new().map_err(|e| format!("{name}: {e}"))?;
-    let file = out.reopen().map_err(|e| format!("{name}: {e}"))?;
-    c.stdout(file).stderr(std::process::Stdio::null());
-    match run_process(c, None, PROBE_TIMEOUT) {
-        Ok((Some(st), false, _)) if st.success() => {
-            Ok(fs::read_to_string(out.path()).unwrap_or_default())
-        }
-        Ok((_, true, _)) => Err(format!("{name} timed out")),
-        Ok((st, _, _)) => Err(format!(
-            "{name} failed ({})",
-            st.map(|s| s.to_string()).unwrap_or_default()
-        )),
+fn probe(mut c: Proc, name: &str) -> Result<String, String> {
+    match c.timeout(PROBE_TIMEOUT).output() {
+        Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        Ok(out) => Err(format!("{name} failed ({})", out.status)),
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Err(format!("{name} timed out")),
         Err(e) => Err(format!("{name}: {e}")),
     }
 }
@@ -327,10 +325,26 @@ fn probe(mut c: Command, name: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    use std::fs;
+
+    #[test]
+    fn a_probe_returns_its_stdout_or_says_how_it_failed() {
+        let sh = |script: &str| {
+            let mut p = Proc::tool("sh");
+            p.args(["-c", script]);
+            probe(p, "sh")
+        };
+        assert_eq!(sh("echo 1024").unwrap(), "1024\n");
+        let failed = sh("echo no >&2; exit 3").unwrap_err();
+        assert!(failed.starts_with("sh failed (exit status: 3)"), "{failed}");
+        let missing = probe(Proc::tool("/nonexistent/ns-memcap-probe"), "probe").unwrap_err();
+        assert!(missing.starts_with("probe: "), "{missing}");
+    }
+
     #[test]
     fn no_cap_runs_the_program_itself() {
-        let (c, w) = command(None, "claude");
-        assert_eq!(c.get_program(), "claude");
+        let (c, w) = command(None, Kind::Tool, "claude");
+        assert_eq!(c.argv(), ["claude"]);
         assert!(matches!(w, Watch::None));
     }
 
@@ -342,16 +356,9 @@ mod tests {
         }
     }
 
-    fn argv(c: &Command) -> Vec<String> {
-        std::iter::once(c.get_program())
-            .chain(c.get_args())
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
-    }
-
     #[test]
     fn the_cgroup_runs_the_program_in_a_named_scope_with_memory_max() {
-        let (mut c, w) = command(Some(&cap(Via::Cgroup)), "claude");
+        let (mut c, w) = command(Some(&cap(Via::Cgroup)), Kind::Tool, "claude");
         c.arg("-p");
         let Watch::Scope(Scope { unit, mb }) = &w else {
             panic!("not a scope")
@@ -362,7 +369,7 @@ mod tests {
             "{unit}"
         );
         assert_eq!(
-            argv(&c),
+            c.argv(),
             [
                 "systemd-run",
                 "--user",
@@ -380,7 +387,7 @@ mod tests {
                 "-p"
             ]
         );
-        let (_, again) = command(Some(&cap(Via::Cgroup)), "claude");
+        let (_, again) = command(Some(&cap(Via::Cgroup)), Kind::Tool, "claude");
         let Watch::Scope(Scope { unit: other, .. }) = &again else {
             panic!()
         };
@@ -389,11 +396,11 @@ mod tests {
 
     #[test]
     fn the_rlimit_runs_the_program_under_prlimit_as() {
-        let (mut c, w) = command(Some(&cap(Via::Rlimit)), "sh");
+        let (mut c, w) = command(Some(&cap(Via::Rlimit)), Kind::Tool, "sh");
         c.args(["-c", "true"]);
         assert!(matches!(w, Watch::Rlimit { mb: 64 }));
         assert_eq!(
-            argv(&c),
+            c.argv(),
             ["prlimit", "--as=67108864", "--", "sh", "-c", "true"]
         );
     }
@@ -484,15 +491,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let log = tmp.path().join("out");
         let c = cap(via);
-        let (mut cmd, w) = command(Some(&c), "python3");
+        let (mut cmd, w) = command(Some(&c), Kind::Tool, "python3");
         cmd.args([
             "-c",
             &format!("b = b'x' * ({alloc_mb} << 20); print('survived')"),
         ])
-        .stdout(fs::File::create(&log).unwrap())
-        .stderr(fs::File::create(tmp.path().join("err")).unwrap());
-        let (st, timed_out, _) = run_process(cmd, None, Duration::from_secs(60)).unwrap();
-        assert!(!timed_out);
+        .output_to(fs::File::create(&log).unwrap())
+        .stderr_to(fs::File::create(tmp.path().join("err")).unwrap());
+        let ended = cmd.run().unwrap();
+        assert!(!ended.timed_out());
+        let st = ended.status;
         let err = tmp.path().join("err");
         (
             w.cut_short(st, false, || fs::read_to_string(&err).unwrap()),

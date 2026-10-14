@@ -180,7 +180,7 @@ const PROBE_MARK: &str = "NS_PROC_STDIN_PROBE";
 #[test]
 fn stdin_is_closed_unless_the_caller_writes_to_it() {
     let me = std::env::current_exe().unwrap();
-    let out = std::process::Command::new(me)
+    let out = command(me)
         .args(["--exact", "proc::tests::stdin_probe", "--test-threads=1"])
         .env(PROBE_MARK, "1")
         .stdin(Stdio::piped())
@@ -444,7 +444,7 @@ fn the_child_runs_in_the_directory_the_caller_names() {
 #[test]
 fn exec_holds_a_stop_pending_through_to_the_new_program() {
     use std::os::unix::process::CommandExt;
-    let mut cmd = Command::new("grep");
+    let mut cmd = command("grep");
     cmd.args(["-E", "^(SigBlk|SigPnd|ShdPnd)", "/proc/self/status"]);
     // SAFETY: only pthread_sigmask(3) and kill(2) in the closure.
     unsafe {
@@ -611,7 +611,7 @@ fn polling_starts_at_a_millisecond_and_doubles_up_to_twenty() {
 #[test]
 fn scrub_billing_removes_every_codex_api_variable_and_no_anthropic_one() {
     let argv = ["codex".to_string()];
-    let mut cmd = Command::new("sh");
+    let mut cmd = command("sh");
     cmd.arg("-c").arg("env");
     for v in billing::CODEX_API_ENV.iter().chain(billing::API_ENV) {
         cmd.env(v, "decoy");
@@ -631,7 +631,7 @@ fn scrub_billing_removes_every_codex_api_variable_and_no_anthropic_one() {
 
 #[test]
 fn scrub_git_removes_every_git_location_variable() {
-    let mut cmd = Command::new("sh");
+    let mut cmd = command("sh");
     cmd.arg("-c").arg("env");
     for v in git::LOCATION_VARS {
         cmd.env(v, "/decoy");
@@ -760,4 +760,143 @@ fn dies_with_parent_probe() {
     for mut p in [Proc::git_local(), Proc::git_network()] {
         let _ = p.output();
     }
+}
+
+#[test]
+fn stderr_to_sends_stderr_to_its_own_file_and_stdout_comes_back() {
+    let mut err = tempfile::tempfile().unwrap();
+    let mut p = sh(Kind::Tool, "echo out; echo err >&2");
+    let out = p.stderr_to(err.try_clone().unwrap()).output().unwrap();
+    assert_eq!(stdout(&out), "out\n");
+    assert!(out.stderr.is_empty());
+    assert_eq!(read_back(&mut err), "err\n");
+}
+
+#[test]
+fn output_to_with_stderr_to_splits_the_streams() {
+    let (mut log, mut err) = (tempfile::tempfile().unwrap(), tempfile::tempfile().unwrap());
+    let mut p = sh(Kind::Tool, "echo out; echo err >&2");
+    p.output_to(log.try_clone().unwrap())
+        .stderr_to(err.try_clone().unwrap());
+    p.output().unwrap();
+    assert_eq!(read_back(&mut log), "out\n");
+    assert_eq!(read_back(&mut err), "err\n");
+}
+
+#[test]
+fn a_spawned_child_writes_stderr_to_the_file_stderr_to_names() {
+    let (mut log, mut err) = (tempfile::tempfile().unwrap(), tempfile::tempfile().unwrap());
+    let mut p = sh(Kind::Tool, "echo out; echo err >&2");
+    p.stderr_to(err.try_clone().unwrap());
+    let mut child = p.spawn(log.try_clone().unwrap()).unwrap();
+    assert!(child.wait().unwrap().success());
+    assert_eq!(read_back(&mut log), "out\n");
+    assert_eq!(read_back(&mut err), "err\n");
+}
+
+#[test]
+fn a_launched_program_runs_under_its_launcher_with_its_kinds_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("claude");
+    crate::testutil::write_exe(&bin, "#!/bin/sh\nexec sh \"$@\"\n");
+    let launcher = ["env".to_string(), "LAUNCHED=1".to_string()];
+    let mut p = Proc::launched(Kind::Harness { subscription: true }, &launcher, &bin);
+    p.arg("-c")
+        .arg("env")
+        .env(billing::API_ENV[0], "set by the caller")
+        .env("GIT_DIR", "/decoy");
+    let env = stdout(&p.output().unwrap());
+    assert!(env.contains("LAUNCHED=1\n"), "{env}");
+    assert!(env.contains("GIT_DIR=/decoy\n"), "{env}");
+    for v in billing::API_ENV {
+        assert!(!env.contains(&format!("{v}=")), "got {v}");
+    }
+    assert_eq!(p.kind, Kind::Harness { subscription: true });
+}
+
+#[test]
+fn launched_with_no_launcher_runs_the_program_itself() {
+    let mut p = Proc::launched(Kind::Tool, &[], "sh");
+    p.arg("-c").arg("echo $0");
+    assert_eq!(stdout(&p.output().unwrap()), "sh\n");
+}
+
+/// The file whose line says the child of the SIGTERM test has set its trap.
+static TRAPPED: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+#[test]
+fn a_stop_asks_the_group_to_end_before_it_kills_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (marker, trapped) = (dir.path().join("termed"), dir.path().join("trapped"));
+    TRAPPED.set(trapped.clone()).unwrap();
+    let mut p = sh(
+        Kind::Tool,
+        &format!(
+            "trap 'echo term > {}; exit 0' TERM; echo up > {}; while :; do sleep 0.05; done",
+            marker.display(),
+            trapped.display()
+        ),
+    );
+    p.stop_when(|| TRAPPED.get().is_some_and(|t| has_line(t)));
+    assert_eq!(p.output().unwrap_err().kind(), ErrorKind::Interrupted);
+    assert!(has_line(&marker), "the child never got SIGTERM");
+}
+
+#[test]
+fn a_stop_kills_a_group_that_ignores_sigterm_after_the_grace() {
+    let mut p = sh(Kind::Tool, "trap '' TERM; exec sleep 600");
+    p.stop_when(|| true).grace(Duration::ZERO);
+    assert_eq!(p.output().unwrap_err().kind(), ErrorKind::Interrupted);
+}
+
+#[test]
+fn run_reports_the_status_and_how_long_the_child_ran() {
+    let ended = sh(Kind::Tool, "exit 3").run().unwrap();
+    assert_eq!(ended.status.and_then(|s| s.code()), Some(3));
+    assert!(!ended.timed_out());
+    assert!(ended.wall_s > 0.0);
+}
+
+#[test]
+fn run_reports_a_timeout_as_no_status() {
+    let mut p = sh(Kind::Tool, "exec sleep 600");
+    let ended = p.timeout(Duration::ZERO).run().unwrap();
+    assert!(ended.timed_out());
+    assert!(ended.status.is_none());
+}
+
+#[test]
+fn run_ends_the_child_when_a_stop_is_requested() {
+    let mut p = Proc::tool("sleep");
+    p.arg("600").stop_when(|| true);
+    assert_eq!(p.run().unwrap_err().kind(), ErrorKind::Interrupted);
+}
+
+#[test]
+fn run_fails_on_a_missing_binary_as_not_found() {
+    let e = Proc::tool("/nonexistent/ns-proc-test").run().unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::NotFound);
+}
+
+#[test]
+fn the_child_runs_in_its_own_session_and_group() {
+    let out = sh(Kind::Tool, "ps -o sid=,pgid= -p $$").output().unwrap();
+    let text = stdout(&out);
+    let got: Vec<i32> = text
+        .split_whitespace()
+        .map(|n| n.parse().unwrap())
+        .collect();
+    // SAFETY: getsid and getpgrp only read this process's ids.
+    let (sid, pgid) = unsafe { (libc::getsid(0), libc::getpgrp()) };
+    assert_eq!(got.len(), 2, "{text}");
+    assert_ne!(got[0], sid, "shares the caller's session");
+    assert_ne!(got[1], pgid, "shares the caller's process group");
+}
+
+#[test]
+fn run_watches_for_a_stop_request_unless_the_caller_set_its_own() {
+    let mut p = sh(Kind::Tool, "true");
+    assert!(p.stopped.is_none());
+    p.run().unwrap();
+    assert!(p.stopped.is_some(), "run left the child deaf to a stop");
 }
