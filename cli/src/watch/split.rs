@@ -6,8 +6,10 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::Value;
 
+use super::core::split::{action, closed_comment, dropped_comment};
+pub(super) use super::core::split::{sweep_finished, Action, Parent};
 use super::forge::IssueState;
 use super::transitions::{self, Event, State};
 use super::{Forge, Issue, Post};
@@ -17,49 +19,6 @@ use crate::factory::Queue as QueueConfig;
 const OLD_LABEL: &str = "status:needs-define";
 /// Under `<common>/ns/`: the sweep has run in this clone.
 const SWEPT: &str = "split-swept";
-
-#[derive(Debug, PartialEq)]
-pub(super) enum Action {
-    /// Every child is closed as completed: close the parent.
-    Close,
-    /// These children were closed as not planned: a human decides.
-    Dropped(Vec<u64>),
-    /// A swept parent with this many children open: move it to `split_label`.
-    Relabel(usize),
-    /// This many children are still open.
-    Wait(usize),
-    /// No children found: left alone.
-    NoChildren,
-}
-
-pub(super) struct Parent {
-    pub issue: Issue,
-    pub children: Vec<u64>,
-    pub action: Action,
-    pub swept: bool,
-}
-
-impl Parent {
-    pub fn to_json(&self) -> Value {
-        let (action, extra) = match &self.action {
-            Action::Close => ("close", json!({})),
-            Action::Dropped(d) => ("ready_for_human", json!({"dropped": d})),
-            Action::Relabel(open) => ("relabel", json!({"open": open})),
-            Action::Wait(open) => ("wait", json!({"open": open})),
-            Action::NoChildren => ("no_children", json!({})),
-        };
-        let mut v = json!({
-            "number": self.issue.number,
-            "title": self.issue.title,
-            "action": action,
-            "children": self.children,
-        });
-        v.as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        v
-    }
-}
 
 /// The `#n` children a team note lists: each list item under a `Children:` line, by the first
 /// `#n` in the item, and any `#n` on that line itself. An item with no `#n` is an error: the
@@ -148,29 +107,9 @@ fn children(forge: &dyn Forge, parent: &Issue, search: bool) -> Result<Vec<u64>>
     Ok(found.into_iter().collect())
 }
 
-/// What to do with `parent`, from the states of its `children`.
-fn action(forge: &dyn Forge, children: &[u64], swept: bool) -> Result<Action> {
-    if children.is_empty() {
-        return Ok(Action::NoChildren);
-    }
-    let mut open = 0;
-    let mut dropped = Vec::new();
-    for &c in children {
-        match forge.state(c)? {
-            IssueState::Open => open += 1,
-            IssueState::NotPlanned => dropped.push(c),
-            IssueState::Completed => {}
-        }
-    }
-    Ok(if !dropped.is_empty() {
-        Action::Dropped(dropped)
-    } else if open == 0 {
-        Action::Close
-    } else if swept {
-        Action::Relabel(open)
-    } else {
-        Action::Wait(open)
-    })
+/// The state of each of `children`, read before the action is decided.
+fn states(forge: &dyn Forge, children: &[u64]) -> Result<Vec<(u64, IssueState)>> {
+    children.iter().map(|&c| Ok((c, forge.state(c)?))).collect()
 }
 
 /// Every open issue under `split_label` and what to do with it, and with `sweep`, each one under
@@ -204,8 +143,9 @@ pub(super) fn plan_read(
     let mut parents = Vec::new();
     let mut all_read = true;
     for (issue, swept) in issues {
-        let read =
-            children(forge, &issue, !swept).and_then(|c| action(forge, &c, swept).map(|a| (c, a)));
+        let read = children(forge, &issue, !swept)
+            .and_then(|c| states(forge, &c).map(|s| (action(&s, swept), c)))
+            .map(|(a, c)| (c, a));
         match read {
             Ok((_, Action::NoChildren)) if swept => {}
             Ok((children, action)) => parents.push(Parent {
@@ -221,23 +161,6 @@ pub(super) fn plan_read(
         }
     }
     Ok((parents, all_read))
-}
-
-/// Whether the sweep is finished: every old-label parent was read (`all_read`) and `done` has
-/// each one `parents` planned a change for.
-pub(super) fn sweep_finished(all_read: bool, parents: &[Parent], done: &[Value]) -> bool {
-    all_read
-        && parents
-            .iter()
-            .filter(|p| p.swept && !matches!(p.action, Action::Wait(_) | Action::NoChildren))
-            .all(|p| done.iter().any(|d| d["number"] == p.issue.number))
-}
-
-fn list(ns: &[u64]) -> String {
-    ns.iter()
-        .map(|n| format!("#{n}"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// Do what `parents` plan, and say what was done, one record per parent changed. A change that
@@ -265,28 +188,29 @@ pub(super) fn apply(
             }
             // Closed first: an open parent stripped of its label would go back to triage.
             Action::Close => forge.close(n).map(|()| {
-                let body = Post::new(&format!(
-                    "Every child of this split is closed as completed: {}. Closing it.",
-                    list(&p.children)
-                ));
+                let body = Post::new(&closed_comment(&p.children));
                 if let Err(e) = forge.comment(n, &body) {
                     eprintln!("ns watch: #{n} closed without its comment: {e:#}");
                 }
                 if let Err(e) = transitions::apply(forge, q, n, State::Split, Event::ChildrenDone) {
-                    eprintln!("ns watch: #{n} closed but its {} label was not cleared: {e:#}", q.split_label);
+                    eprintln!(
+                        "ns watch: #{n} closed but its {} label was not cleared: {e:#}",
+                        q.split_label
+                    );
                 }
             }),
             // Moved first: a comment posted on a parent still under `split_label` would repeat.
-            Action::Dropped(d) => transitions::apply(forge, q, n, State::Split, Event::ChildDropped).map(|()| {
-                let body = Post::new(&format!(
-                    "A child of this split was closed as not planned: {}. The parent stays open for a human to decide what is left.",
-                    list(d)
-                ));
-                if let Err(e) = forge.comment(n, &body) {
-                    eprintln!("ns watch: #{n} moved without its comment: {e:#}");
-                }
-            }),
-            Action::Relabel(_) => transitions::apply(forge, q, n, State::OldSplit, Event::SplitSwept),
+            Action::Dropped(d) => {
+                transitions::apply(forge, q, n, State::Split, Event::ChildDropped).map(|()| {
+                    let body = Post::new(&dropped_comment(d));
+                    if let Err(e) = forge.comment(n, &body) {
+                        eprintln!("ns watch: #{n} moved without its comment: {e:#}");
+                    }
+                })
+            }
+            Action::Relabel(_) => {
+                transitions::apply(forge, q, n, State::OldSplit, Event::SplitSwept)
+            }
         };
         match changed {
             Ok(()) => done.push(p.to_json()),
@@ -312,6 +236,8 @@ pub(super) fn swept(common: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+
+    use serde_json::json;
 
     use super::super::forge::DISCLOSURE;
     use super::*;
