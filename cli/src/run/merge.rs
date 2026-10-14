@@ -18,6 +18,12 @@ use crate::git::{self, same_sha};
 use crate::markers;
 use crate::proc::Proc;
 
+mod hold;
+mod overlap;
+
+use hold::hold_while_main_red;
+use overlap::needs_update;
+
 /// Take the merge lock for `unit`, waiting while another unit merges, each wait logged by
 /// `log`. A wait that reaches `until` ends the run as `budget`.
 fn take_merge_lock(
@@ -254,10 +260,17 @@ pub(super) fn merge_step(
     let mut current = pr_head;
     let mut moves = 0;
     let mut held = None;
-    let take = || {
-        take_merge_lock(&ctx.common, &ctx.unit, &shared.clock, shared.until, |ev| {
+    // Outside the local merge queue, a red main holds the merge before the lock is taken.
+    let take = || -> Result<Result<Lock, MergeStep>> {
+        if !queued(ctx) {
+            if let Some(step) = hold_while_main_red(ctx, n, &shared.clock)? {
+                return Ok(Err(step));
+            }
+        }
+        let lock = take_merge_lock(&ctx.common, &ctx.unit, &shared.clock, shared.until, |ev| {
             ctx.log(ev)
-        })
+        })?;
+        Ok(lock.map_err(MergeStep::Finish))
     };
     loop {
         if moves >= BASE_MOVE_CAP && held.is_none() {
@@ -265,7 +278,7 @@ pub(super) fn merge_step(
             // unit can move the base again.
             held = match take()? {
                 Ok(lock) => Some(lock),
-                Err(f) => return Ok(MergeStep::Finish(f)),
+                Err(step) => return Ok(step),
             };
             ctx.log(json!({"event": "merge_lock_held_through_ci", "pr": n, "moves": moves}));
         }
@@ -281,17 +294,23 @@ pub(super) fn merge_step(
             Some(_) => None,
             None => match take()? {
                 Ok(lock) => Some(lock),
-                Err(f) => return Ok(MergeStep::Finish(f)),
+                Err(step) => return Ok(step),
             },
         };
         let base_now = fetch_tip(wt, &default).ok();
-        if base_now.is_some() && base_now != ready.base {
+        let moved = base_now
+            .as_deref()
+            .filter(|tip| Some(*tip) != ready.base.as_deref());
+        // A base that moved only in files the PR doesn't touch leaves CI on the PR head standing,
+        // unless the local merge queue gated the merge with the old base.
+        if let Some(tip) = moved.filter(|tip| queued(ctx) || needs_update(ctx, n, &ready.head, tip))
+        {
             moves += 1;
             ctx.log(json!({
                 "event": "merge_base_moved",
                 "pr": n,
                 "from": ready.base,
-                "to": base_now,
+                "to": tip,
                 "attempt": moves,
             }));
             if moves > BASE_MOVE_HARD_CAP {
@@ -341,7 +360,7 @@ fn get_ready(
     // unless the local merge queue gates the merge result instead. Under build-only GitHub's
     // checks on the PR head with the base merged in are the merge queue, and no local gate runs.
     let remote = ctx.fac.gate.local == LocalGate::BuildOnly;
-    let queued = !remote && ctx.fac.merge.local_queue && ctx.gate.commands.rest.is_some();
+    let queued = queued(ctx);
     let conflict = || conflicts(ctx, n, default);
     let register_minutes = ctx.fac.merge.ci_register_timeout;
     let mut merge_head = pr_head.to_string();
@@ -358,7 +377,12 @@ fn get_ready(
         },
         _ => false,
     };
-    if behind {
+    // Only commits that touch the PR's files call for the base merged in and CI again.
+    if behind
+        && base
+            .as_deref()
+            .is_none_or(|tip| needs_update(ctx, n, pr_head, tip))
+    {
         match update_branch(ctx, n, pr_head, default, &shared.clock, &conflict)? {
             Ok(h) => merge_head = h,
             Err(step) => return Ok(Err(step)),
@@ -383,6 +407,14 @@ fn get_ready(
         head: merge_head,
         base,
     }))
+}
+
+/// Whether the local merge queue gates the merge of the PR head with the default branch: on with a
+/// gate, never under `[gate] local = "build-only"`.
+fn queued(ctx: &Ctx<'_>) -> bool {
+    ctx.fac.gate.local != LocalGate::BuildOnly
+        && ctx.fac.merge.local_queue
+        && ctx.gate.commands.rest.is_some()
 }
 
 /// Under the merge lock: check for files and regions that need human review, then squash-merge

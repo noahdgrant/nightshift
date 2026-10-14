@@ -714,7 +714,7 @@ fn build_only_runs_one_full_gate_after_build_and_fast_ones_with_the_files_change
     e.gh_file("checks-12.json", GREEN);
     e.queue("build", &["pass:script"]);
     e.queue("review", &["pass:commit"]);
-    main_moves(&e, "from-main", "x\n");
+    main_moves(&e, "work.txt", "x\n");
     e.gh_file("pr-12.merge", "BEHIND");
     let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
     assert_eq!(d["gate"], format!("sh {}", e.ctrl.join("ci.sh").display()));

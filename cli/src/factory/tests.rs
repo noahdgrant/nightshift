@@ -438,7 +438,7 @@ fn build_only_warns_only_when_the_owner_is_a_personal_account() {
     let build_only = parse("[gate]\nlocal = \"build-only\"\n").unwrap();
     let w = build_only.owner_warning(Some("User")).expect("a warning");
     assert!(
-        w.contains("organisation") && w.contains("local = \"every-step\""),
+        w.contains("no GitHub merge queue") && w.contains("local = \"every-step\""),
         "{w}"
     );
     for owner in [Some("Organization"), Some(""), Some("user"), None] {

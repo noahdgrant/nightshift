@@ -35,7 +35,7 @@ fn merges_in_order(e: &Env, prs: &[u64]) {
             first = e.ctrl.join("first"),
             first_pr = e.ctrl.join("first-pr"),
             released = e.ctrl.join("released"),
-            move_main = move_main_sh(e),
+            move_main = move_main_in_work_sh(e),
             others = others.join(" "),
         ),
     );
