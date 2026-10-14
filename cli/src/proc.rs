@@ -232,7 +232,8 @@ impl Proc {
             .join(" ")
     }
 
-    /// Run the child to its end in its own session and process group, then kill whatever it
+    /// Run the child to its end in its own session and process group (on Linux it also gets
+    /// SIGTERM if this process dies first), then kill whatever it
     /// left running there. Its output goes to temp files read after it exits, so a descendant
     /// holding a pipe open can't delay or drop it. A child past its timeout has its group
     /// killed and fails with [`std::io::ErrorKind::TimedOut`].
@@ -255,6 +256,7 @@ impl Proc {
             Stdio::null()
         });
         new_session(&mut self.cmd);
+        die_with(&mut self.cmd, std::process::id() as libc::pid_t);
         let deadline = Instant::now() + self.timeout;
         let mut child = self.cmd.spawn()?;
         if let (Some(bytes), Some(mut pipe)) = (self.stdin.take(), child.stdin.take()) {
@@ -324,25 +326,7 @@ impl Proc {
             .stdout(out)
             .stderr(Stdio::inherit());
         new_session(&mut self.cmd);
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::process::CommandExt;
-            // SAFETY: prctl(2) and getppid(2) are async-signal-safe and touch only this child.
-            // A parent that died before the prctl is seen by getppid, and the child gives up.
-            unsafe {
-                self.cmd.pre_exec(move || {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if libc::getppid() != parent {
-                        return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
-                    }
-                    Ok(())
-                });
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        let _ = parent;
+        die_with(&mut self.cmd, parent);
         self.cmd.spawn()
     }
 
@@ -392,6 +376,31 @@ fn new_session(cmd: &mut Command) {
             });
         }
     }
+}
+
+/// On Linux the child gets SIGTERM when the thread that started it ends, so a `ns` that dies
+/// (a terminal Ctrl-C) takes its children with it even though they sit in sessions of their
+/// own. It fails with `ESRCH` when `parent` is not who started it: that parent is already gone.
+fn die_with(cmd: &mut Command, parent: libc::pid_t) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: prctl(2) and getppid(2) are async-signal-safe and touch only this child.
+        // A parent that died before the prctl is seen by getppid, and the child gives up.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() != parent {
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (cmd, parent);
 }
 
 /// The test-only way to end a wait before its deadline; nothing outside tests.

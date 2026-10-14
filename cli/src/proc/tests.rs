@@ -720,3 +720,44 @@ fn spawn_fails_when_the_parent_it_was_started_for_is_gone() {
         .unwrap_err();
     assert_eq!(e.raw_os_error(), Some(libc::ESRCH), "{e}");
 }
+
+const DIES_WITH_PARENT_MARK: &str = "NS_PROC_DIES_WITH_PARENT_PROBE";
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_git_child_of_a_process_killed_by_a_signal_does_not_outlive_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fifo, reader) = held_fifo(dir.path());
+    let mut probe = crate::testutil::probe_command(
+        "proc::tests::dies_with_parent_probe",
+        DIES_WITH_PARENT_MARK,
+        fifo.to_str().unwrap(),
+    );
+    let mut probe = probe.spawn().unwrap();
+    // Opening for read blocks until the git child opens the FIFO for write.
+    let mut ready = File::open(&fifo).unwrap();
+    let mut seen = [0u8; 1];
+    while seen[0] != b'\n' {
+        assert_eq!(ready.read(&mut seen).unwrap(), 1, "the git child never ran");
+    }
+    drop(ready);
+    probe.kill().unwrap();
+    probe.wait().unwrap();
+    wait_for_eof(reader);
+}
+
+/// Run by the test above: waits in `output()` on a fake `git` that holds the FIFO open.
+#[test]
+fn dies_with_parent_probe() {
+    let Some(fifo) = std::env::var_os(DIES_WITH_PARENT_MARK) else {
+        return;
+    };
+    let body = format!(
+        "exec 3>'{}'\necho ready >&3\nexec sleep 600",
+        fifo.to_string_lossy()
+    );
+    let _git = crate::testutil::fake_on_path("git", &body);
+    for mut p in [Proc::git_local(), Proc::git_network()] {
+        let _ = p.output();
+    }
+}
