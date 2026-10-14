@@ -1,10 +1,10 @@
 import pathlib
+import re
 import unittest
 
 import check_brief
 
 SAMPLES = pathlib.Path(__file__).parent / "samples"
-FIRST_LINE = "needs redesign: route ns-define, because stopping the lost update needs locking or a state file revision, and ADR-0001 rules out locks.\n"
 
 
 def good():
@@ -33,7 +33,7 @@ class CheckBriefTest(unittest.TestCase):
 
     def test_brief_routed_to_build_fails(self):
         failed = failures("bad-routes-build.md")
-        for check in ("status", "routes to ns-define", "first line says needs redesign"):
+        for check in ("status", "routes to ns-define", "next is define", "reason says needs redesign"):
             self.assertIn(check, failed)
 
     def test_repro_without_red_output_fails(self):
@@ -51,14 +51,17 @@ class CheckBriefTest(unittest.TestCase):
     def test_missing_base_fails(self):
         self.assertIn("base", check_brief.failures(good().replace("base: main\n", "")))
 
-    def test_first_line_below_issue_fails(self):
-        text = good().replace(FIRST_LINE, "")
-        text = text.replace("## Agent Brief", FIRST_LINE + "## Agent Brief")
-        self.assertIn("first line says needs redesign", check_brief.failures(text))
+    def test_redesign_in_the_body_not_the_reason_fails(self):
+        text = good().replace('reason: "needs redesign: ', 'reason: "')
+        text = text.replace("## Agent Brief", "needs redesign: route ns-define\n## Agent Brief")
+        self.assertIn("reason says needs redesign", check_brief.failures(text))
 
-    def test_empty_body_fails_the_first_line(self):
-        text = good()[: good().index(FIRST_LINE)]
-        self.assertIn("first line says needs redesign", check_brief.failures(text))
+    def test_missing_reason_fails(self):
+        text = re.sub(r"(?m)^reason:.*\n", "", good())
+        self.assertIn("reason says needs redesign", check_brief.failures(text))
+
+    def test_next_human_fails(self):
+        self.assertIn("next is define", check_brief.failures(good().replace("next: define", "next: human")))
 
     def test_brief_without_acceptance_criteria_fails(self):
         text = good().replace("- [ ]", "-")

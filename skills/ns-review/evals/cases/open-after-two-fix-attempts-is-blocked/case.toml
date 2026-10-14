@@ -1,5 +1,5 @@
-# Checks validated by hand against an expected review.md (blocked, cycles 4, first line naming I3: every check passes) and a wrong run (a fifth cycle that adds the test and passes: five checks fail).
-description = "I3 (no test that cancel_all raises UnknownItem), first raised in cycle 2, is still open after fix attempts in cycle 3 and fix-only cycle 4. No open finding has fewer than 2 attempts, so the loop stops: review.md must be blocked with cycles 4 and a first body line naming I3, and no code changes."
+# Checks validated by hand against an expected review.md (blocked, cycles 4, a reason naming I3: every check passes) and a wrong run (a fifth cycle that adds the test and passes: the status, cause, cycles and reason checks fail).
+description = "I3 (no test that cancel_all raises UnknownItem), first raised in cycle 2, is still open after fix attempts in cycle 3 and fix-only cycle 4. No open finding has fewer than 2 attempts, so the loop stops: review.md must be blocked with cycles 4, `cause: findings_open` and a `reason` naming I3, and no code changes."
 fixture = "py-inventory"
 skills = ["ns-review"]
 extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
@@ -27,13 +27,19 @@ equals = "blocked"
 [[check]]
 type = "frontmatter"
 path = ".ns/2-cancel-all/review.md"
+key = "cause"
+equals = "findings_open"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/review.md"
 key = "cycles"
 equals = "4"
 
 [[check]]
 type = "command"
 run = '''
-awk 'f==2 && NF {print; exit} /^---$/ {f++}' .ns/2-cancel-all/review.md | grep -E '^Open after at least 2 fix attempts.*I3'
+awk '/^---$/ {n++; next} n==1' .ns/2-cancel-all/review.md | grep -E '^reason: *["'"'"']?Open after at least 2 fix attempts.*I3'
 '''
 expect_exit = 0
 

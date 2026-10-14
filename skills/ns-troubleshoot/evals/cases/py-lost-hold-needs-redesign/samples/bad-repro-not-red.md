@@ -1,11 +1,14 @@
 ---
+schema: ns-artifact/2
 unit: 06-holds-lost-between-stations
 phase: troubleshoot
 status: blocked
+cause: needs_human
+next: define
+reason: "needs redesign: route ns-define, because stopping the lost update needs locking or a state file revision, and ADR-0001 rules out locks."
 base: main
 updated: 2026-10-10T06:00:00Z
 ---
-needs redesign: route ns-define, because stopping the lost update needs locking or a state file revision, and ADR-0001 rules out locks.
 Issue: .scratch/reservations/issues/06-holds-lost-between-stations.md
 
 ## Agent Brief

@@ -1,4 +1,4 @@
-description = "A unit whose ship wrote a NO-GO saying the base moved, after build already used both of its attempts in this invocation (one failed, one passed). Per the Pick the phase table the NO-GO sends the unit to build, and that build is free once per new origin/main sha, so ns-auto runs build instead of calling the unit stuck, with build rebased onto the newest origin/main."
+description = "A unit whose ship wrote a NO-GO with `cause: base_moved`, after build already used both of its attempts in this invocation (one failed, one passed). Per the Pick the phase table the NO-GO sends the unit to build, and that build is free once per new origin/main sha, so ns-auto runs build instead of calling the unit stuck, with build rebased onto the newest origin/main."
 fixture = "py-inventory"
 skills = ["ns-auto"]
 extra_skills = [
@@ -70,11 +70,11 @@ sha=$(git rev-parse --short HEAD)
 u=.ns/7-reserve-exact
 mkdir -p $u/auto
 cp ../brief.md $u/
-art() { printf -- '---\nunit: 7-reserve-exact\nphase: %s\nstatus: %s\nsha: %s\nupdated: 2026-10-12T00:00:00Z\n---\n%s\n' "$1" "$2" "$sha" "$3" > $u/$4.md; }
-art build pass "Fixed the comparison." build
-art verify pass "Reserving 5 of 5 works." evidence
-art review pass "No findings." review
-art ship fail "base moved: main moved past the base the unit was built on; rebase onto origin/main and build again." pr
+art() { printf -- '---\nschema: ns-artifact/2\nunit: 7-reserve-exact\nphase: %s\nstatus: %s\ncause: %s\nnext: %s\nreason: "%s"\nsha: %s\nupdated: 2026-10-12T00:00:00Z\n---\n%s\n' "$1" "$2" "$3" "$4" "$5" "$sha" "$5" > $u/$6.md; }
+art build pass none verify "Fixed the comparison." build
+art verify pass none review "Reserving 5 of 5 works." evidence
+art review pass none ship "No findings." review
+art ship fail base_moved build "main moved past the base the unit was built on; rebase onto origin/main and build again." pr
 printf '## run 2026-10-12T00:00:00Z\n- build attempt 1 fail %s: tests red\n- build attempt 2 pass %s: Fixed the comparison.\n- verify attempt 1 pass %s: ok\n- review attempt 1 pass %s: ok\n- ship attempt 1 fail %s: base moved\n' "$sha" "$sha" "$sha" "$sha" "$sha" > $u/auto/log.md
 ''',
 ]
@@ -114,5 +114,5 @@ expect_exit = 0
 
 [[check]]
 type = "judge"
-rubric = "Read the transcript and .ns/7-reserve-exact/auto/log.md. Pass only if ns-auto read pr.md's first line, saw that it starts with 'base moved', routed the unit to build rather than stuck even though build had two lines in this invocation, fetched origin before building, told build the newest origin/main sha, and did not push, open a PR or merge."
+rubric = "Read the transcript and .ns/7-reserve-exact/auto/log.md. Pass only if ns-auto read pr.md's frontmatter, saw `cause: base_moved`, routed the unit to build rather than stuck even though build had two lines in this invocation, fetched origin before building, told build the newest origin/main sha, and did not push, open a PR or merge."
 required = false

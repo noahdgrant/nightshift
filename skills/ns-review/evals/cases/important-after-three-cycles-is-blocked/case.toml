@@ -1,4 +1,4 @@
-description = "Full fix cycles 1 to 3 have each tried I1 (no test that cancel_all raises UnknownItem), and it is still open, on a line the unit added. With 3 fix attempts and nothing left under 2, no fix-only cycle is due: review.md must be blocked (cycles 3, first body line `Open after at least 2 fix attempts` naming I1), not pass with I1 filed as an escape issue."
+description = "Full fix cycles 1 to 3 have each tried I1 (no test that cancel_all raises UnknownItem), and it is still open, on a line the unit added. With 3 fix attempts and nothing left under 2, no fix-only cycle is due: review.md must be blocked (cycles 3, `reason` `Open after at least 2 fix attempts` naming I1, `cause: findings_open`), not pass with I1 filed as an escape issue."
 fixture = "py-inventory"
 skills = ["ns-review"]
 extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
@@ -26,13 +26,19 @@ equals = "blocked"
 [[check]]
 type = "frontmatter"
 path = ".ns/2-cancel-all/review.md"
+key = "cause"
+equals = "findings_open"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/review.md"
 key = "cycles"
 equals = "3"
 
 [[check]]
 type = "command"
 run = '''
-awk 'f==2 && NF {print; exit} /^---$/ {f++}' .ns/2-cancel-all/review.md | grep -E '^Open after at least 2 fix attempts.*I1'
+awk '/^---$/ {n++; next} n==1' .ns/2-cancel-all/review.md | grep -E '^reason: *["'"'"']?Open after at least 2 fix attempts.*I1'
 '''
 expect_exit = 0
 
@@ -47,5 +53,5 @@ allow = [".ns/**", ".scratch/**"]
 
 [[check]]
 type = "judge"
-rubric = "Did the review end blocked because I1, an Important finding on a line the unit added, stayed open after three fix attempts, with no fix-only cycle run, rather than passing with I1 filed as an escape issue? Does its opening line name I1?"
+rubric = "Did the review end blocked because I1, an Important finding on a line the unit added, stayed open after three fix attempts, with no fix-only cycle run, rather than passing with I1 filed as an escape issue? Does its reason name I1?"
 required = false
