@@ -382,7 +382,7 @@ fn safe_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-pub(crate) fn safe_host(host: &str) -> bool {
+fn safe_host(host: &str) -> bool {
     match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
         Some(v6) => !v6.is_empty() && v6.chars().all(|c| c.is_ascii_hexdigit() || c == ':'),
         None => safe_name(host) && !host.starts_with('-'),
@@ -447,6 +447,33 @@ pub fn account(kind: ForgeKind, creds: Option<&Credentials>) -> Option<String> {
             .to_string(),
     };
     (out.status.success() && !login.is_empty()).then_some(login)
+}
+
+/// `owner.type` of GitHub `repo` (`User` or `Organization`), with `creds` as the other probes
+/// get them. `origin_url`'s host is passed to gh as `--hostname` unless it is github.com, so the
+/// lookup asks the host `origin` is on even when no forge host is configured; `None` for a host
+/// that fails `safe_host`, or when gh is missing, fails or times out.
+pub fn repo_owner_type(
+    repo: &str,
+    origin_url: Option<&str>,
+    creds: Option<&Credentials>,
+) -> Option<String> {
+    let host = origin_url
+        .and_then(crate::watch::forge::host)
+        .filter(|h| !h.eq_ignore_ascii_case("github.com"));
+    if host.is_some_and(|h| !safe_host(h)) {
+        return None;
+    }
+    let kind = ForgeKind::Github;
+    let mut cmd = cli(OsStr::new(kind.cli()), kind, creds);
+    cmd.arg("api");
+    if let Some(h) = host {
+        cmd.args(["--hostname", h]);
+    }
+    cmd.args([&format!("repos/{repo}"), "--jq", ".owner.type"]);
+    let out = output_within(cmd, PROBE_TIMEOUT).ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    out.status.success().then_some(text)
 }
 
 /// Whether the token can read `repo`: `gh api repos/<repo>` or `glab api projects/<repo>`. The

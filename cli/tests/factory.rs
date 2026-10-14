@@ -6036,6 +6036,24 @@ fn factory_validate_looks_up_the_owner_on_the_origin_host() {
 }
 
 #[test]
+fn factory_validate_looks_up_the_owner_with_the_configured_token() {
+    let e = github_owned_by(Some("User"));
+    e.config("[forge.github]\ntoken_env = \"DEFAULT_TOKEN\"\n");
+    e.factory("[gate]\nlocal = \"build-only\"\n");
+    let out = e
+        .ns()
+        .env("DEFAULT_TOKEN", "default-tok")
+        .args(["factory", "validate"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["warnings"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(e.tokens_seen(), ["default-tok"], "{}", e.gh_calls());
+}
+
+#[test]
 fn factory_validate_with_factory_path_looks_up_the_owner_of_the_cwd_repo() {
     let e = github_owned_by(Some("User"));
     let other = e.base.join("other-checkout");

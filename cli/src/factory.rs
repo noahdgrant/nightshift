@@ -15,8 +15,6 @@ use crate::config::{self, ForgeKind};
 use crate::error::SfError;
 use crate::frontmatter;
 
-mod owner;
-
 pub const FILE: &str = "nightshift.toml";
 
 /// The phases `ns run` drives, in pipeline order.
@@ -799,7 +797,19 @@ pub fn validate(factory: Option<&Path>) -> Result<ExitCode> {
                         cfg.as_ref(),
                     );
                     let owner = origin.repo_for(ForgeKind::Github).and_then(|repo| {
-                        owner::github_owner_type(repo, origin.url_for(ForgeKind::Github))
+                        let creds = origin.forges.get(ForgeKind::Github).and_then(|fg| {
+                            crate::forge::resolve(
+                                ForgeKind::Github,
+                                fg,
+                                origin.table_repo(ForgeKind::Github),
+                            )
+                            .ok()
+                        });
+                        crate::forge::repo_owner_type(
+                            repo,
+                            origin.url_for(ForgeKind::Github),
+                            creds.as_ref(),
+                        )
                     });
                     warnings.extend(f.owner_warning(owner.as_deref()));
                 }
