@@ -8,6 +8,10 @@ mod build_stamp;
 use std::path::Path;
 use std::process::Command;
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the build script is a crate of its own and cannot use crate::proc"
+)]
 fn git(args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .args(args)

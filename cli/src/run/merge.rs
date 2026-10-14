@@ -2,7 +2,6 @@
 //! lock and squash-merge it if the base has not moved since (`merge.policy = "auto"`).
 
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -13,11 +12,11 @@ use super::currency::{known_pr, State};
 use super::locks::{Bound, MERGE_LOCK};
 use super::{finish, gh, gh_json, holder_pid, remote_default, Ctx, Finish, Lock, Outcome, Shared};
 use crate::clock::Clock;
-use crate::eval::trial::run_process;
 use crate::factory::LocalGate;
 use crate::gate;
 use crate::git::{self, same_sha};
 use crate::markers;
+use crate::proc::Proc;
 
 /// Take the merge lock for `unit`, waiting while another unit merges, each wait logged by
 /// `log`. A wait that reaches `until` ends the run as `budget`.
@@ -508,16 +507,14 @@ fn wait_for_ci(
     }
 
     // Wait for CI, bounded.
-    let mut cmd = Command::new("gh");
-    crate::proc::scrub_git(&mut cmd);
-    cmd.args(["pr", "checks", &ns, "--watch"])
-        .current_dir(wt)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
     let mins = ctx.fac.merge.ci_timeout_minutes;
-    let (_, timed_out, _) = run_process(cmd, None, Duration::from_secs(mins * 60))
+    let ended = Proc::forge("gh")
+        .args(["pr", "checks", &ns, "--watch"])
+        .current_dir(wt)
+        .timeout(Duration::from_secs(mins * 60))
+        .run()
         .context("cannot run gh pr checks")?;
-    if timed_out {
+    if ended.timed_out() {
         return Ok(Some(MergeStep::Finish(finish(
             Outcome::Stuck,
             format!("CI on PR #{n} did not finish within {mins} min"),

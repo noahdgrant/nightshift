@@ -1,5 +1,10 @@
 //! The subprocess guard: every `ns` a test starts is bounded, and its process tree is killed.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
 mod common;
 
 use std::fs;
@@ -295,4 +300,58 @@ fn output_kills_a_descendant_that_left_the_process_group_and_outlived_its_parent
         .success()
         .stdout("hi\n");
     assert!(job.died(), "the detached job outlived ns");
+}
+
+/// `clippy.toml` bans `Command::new`: clippy, with this crate's config, rejects a stray call in a
+/// scratch crate and names `proc` as the way to start a child.
+#[test]
+fn clippy_rejects_a_child_started_outside_proc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let krate = tmp.path().join("stray");
+    fs::create_dir_all(krate.join("src")).unwrap();
+    fs::write(
+        krate.join("Cargo.toml"),
+        "[package]\nname = \"stray\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[workspace]\n",
+    )
+    .unwrap();
+    fs::write(
+        krate.join("src/main.rs"),
+        "fn main() {\n    let _ = std::process::Command::new(\"true\");\n}\n",
+    )
+    .unwrap();
+    let out = common::command(env!("CARGO"))
+        .args(["clippy", "--quiet", "--offline", "--manifest-path"])
+        .arg(krate.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(tmp.path().join("target"))
+        .args(["--", "-D", "warnings"])
+        .env("CLIPPY_CONF_DIR", env!("CARGO_MANIFEST_DIR"))
+        .output();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "clippy passed a stray call: {stderr}"
+    );
+    assert!(stderr.contains("disallowed_methods"), "{stderr}");
+    assert!(stderr.contains("crate::proc::Proc"), "{stderr}");
+}
+
+/// Where `src` lifts the ban: `proc`, the one way to start a child, and the unit tests' probe
+/// helper, which hands its caller a process to spawn and kill (CODING_STANDARDS.md, "Checks").
+#[test]
+fn only_proc_and_the_probe_helper_lift_the_ban_in_src() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    rust_files_outside_common(&manifest.join("src"), &mut files);
+    let mut lifted: Vec<String> = files
+        .iter()
+        .filter(|p| {
+            fs::read_to_string(p)
+                .unwrap()
+                .contains(concat!("clippy::disallowed", "_methods"))
+        })
+        .map(|p| p.strip_prefix(manifest).unwrap().display().to_string())
+        .collect();
+    lifted.sort();
+    assert_eq!(lifted, ["src/proc.rs", "src/testutil.rs"]);
 }

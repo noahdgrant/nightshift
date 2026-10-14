@@ -1,15 +1,15 @@
 //! One trial's sandbox: scratch repo, throwaway HOME, the harness process and its timeout.
 
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
 use crate::error::{SfError, EXIT_HARNESS_MISSING};
 use crate::install::symlink;
+use crate::proc::Proc;
 
 use super::spec::Case;
 
@@ -304,110 +304,7 @@ fn tail_of(path: &Path, max: usize) -> String {
     String::from_utf8_lossy(&buf[start..]).trim().to_string()
 }
 
-/// Run `cmd` in its own session and process group, feeding `stdin`, killing the group at the
-/// timeout. A `kill 0` or group kill inside the process stays out of the caller's group.
-pub fn run_process(
-    mut cmd: Command,
-    stdin: Option<Vec<u8>>,
-    timeout: Duration,
-) -> std::io::Result<(Option<ExitStatus>, bool, f64)> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // SAFETY: setsid(2) is async-signal-safe; the child is not yet a group leader, so it
-        // gets a new session and a process group whose id is its pid.
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
-    cmd.stdin(if stdin.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    });
-    let started = Instant::now();
-    let mut child = cmd.spawn()?;
-    let writer = match (stdin, child.stdin.take()) {
-        (Some(bytes), Some(mut pipe)) => Some(std::thread::spawn(move || {
-            // A process may exit before reading everything; its exit status tells the story.
-            let _ = pipe.write_all(&bytes);
-        })),
-        _ => None,
-    };
-    let deadline = started + timeout;
-    let mut timed_out = false;
-    let mut stopped = false;
-    let status = loop {
-        if let Some(st) = child.try_wait()? {
-            break Some(st);
-        }
-        if crate::stop::requested().is_some() {
-            stopped = true;
-            end_group(&mut child);
-            break None;
-        }
-        if Instant::now() >= deadline {
-            timed_out = true;
-            kill_group(child.id());
-            let _ = child.wait();
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    // Reap anything the process left running in its group.
-    kill_group(child.id());
-    if let Some(w) = writer {
-        let _ = w.join();
-    }
-    if stopped {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Interrupted,
-            "stopped by a signal",
-        ));
-    }
-    Ok((status, timed_out, started.elapsed().as_secs_f64()))
-}
-
-/// How long a process group asked to end gets before it is killed.
-const STOP_GRACE: Duration = Duration::from_secs(5);
-
-/// End the child's process group: SIGTERM, then SIGKILL once [`STOP_GRACE`] passes.
-fn end_group(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    signal_group(child.id(), libc::SIGTERM);
-    let deadline = Instant::now() + STOP_GRACE;
-    while Instant::now() < deadline {
-        if !matches!(child.try_wait(), Ok(None)) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    kill_group(child.id());
-    let _ = child.wait();
-}
-
-#[cfg(unix)]
-fn signal_group(pid: u32, sig: libc::c_int) {
-    // SAFETY: kill(2) with a negative pid signals that process group; failures are ignored.
-    unsafe {
-        libc::kill(-(pid as libc::pid_t), sig);
-    }
-}
-
-#[cfg(unix)]
-fn kill_group(pid: u32) {
-    signal_group(pid, libc::SIGKILL);
-}
-
-#[cfg(not(unix))]
-fn kill_group(_pid: u32) {}
-
-fn sandbox_env(cmd: &mut Command, scratch: &Scratch) {
+fn sandbox_env(cmd: &mut Proc, scratch: &Scratch) {
     for k in SCRUBBED_ENV {
         cmd.env_remove(k);
     }
@@ -426,19 +323,14 @@ pub fn run_sh(
     log: &Path,
 ) -> Result<ProcResult> {
     let out = File::create(log).with_context(|| format!("cannot create {}", log.display()))?;
-    let mut cmd = Command::new("sh");
-    crate::proc::scrub_git(&mut cmd);
-    cmd.arg("-c")
-        .arg(script)
-        .current_dir(cwd)
-        .stdout(out.try_clone()?)
-        .stderr(out);
+    let mut cmd = Proc::tool("sh");
+    cmd.arg("-c").arg(script).current_dir(cwd).output_to(out);
     sandbox_env(&mut cmd, scratch);
-    let (status, timed_out, wall_s) = run_process(cmd, None, timeout).context("cannot run sh")?;
+    let ended = cmd.timeout(timeout).run().context("cannot run sh")?;
     Ok(ProcResult {
-        exit: status.and_then(|s| s.code()),
-        timed_out,
-        wall_s,
+        exit: ended.status.and_then(|s| s.code()),
+        timed_out: ended.timed_out(),
+        wall_s: ended.wall_s,
         tail: tail_of(log, 2000),
     })
 }
@@ -461,21 +353,17 @@ pub fn run_harness(
         .with_context(|| format!("cannot create {}", stdout_path.display()))?;
     let err = File::create(stderr_path)
         .with_context(|| format!("cannot create {}", stderr_path.display()))?;
-    let mut cmd = Command::new(bin);
-    crate::proc::scrub_git(&mut cmd);
+    let mut cmd = Proc::harness(bin, subscription);
     cmd.args(args)
         .current_dir(&scratch.repo)
-        .stdout(out)
-        .stderr(err);
+        .output_to(out)
+        .stderr_to(err);
     sandbox_env(&mut cmd, scratch);
-    if subscription {
-        crate::proc::scrub_billing(&mut cmd, argv);
-    }
     if crate::billing::is_claude(argv) {
         crate::billing::wait_for_bg_tasks(&mut cmd);
         crate::billing::disable_auto_memory(&mut cmd);
     }
-    let (status, timed_out, wall_s) = match run_process(cmd, Some(prompt.as_bytes().to_vec()), timeout) {
+    let ended = match cmd.stdin(prompt.as_bytes().to_vec()).timeout(timeout).run() {
         Ok(r) => r,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(SfError::new(
@@ -488,9 +376,9 @@ pub fn run_harness(
         Err(e) => return Err(e).with_context(|| format!("cannot start {bin}")),
     };
     Ok(ProcResult {
-        exit: status.and_then(|s| s.code()),
-        timed_out,
-        wall_s,
+        exit: ended.status.and_then(|s| s.code()),
+        timed_out: ended.timed_out(),
+        wall_s: ended.wall_s,
         tail: tail_of(stderr_path, 2000),
     })
 }
@@ -498,45 +386,6 @@ pub fn run_harness(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn timeout_kills_the_process_group() {
-        let tmp = tempfile::tempdir().unwrap();
-        let marker = tmp.path().join("survivor");
-        let mut cmd = Command::new("sh");
-        crate::proc::scrub_git(&mut cmd);
-        cmd.arg("-c")
-            .arg(format!("(sleep 1; touch {}) & sleep 30", marker.display()));
-        let (status, timed_out, wall) = run_process(cmd, None, Duration::from_millis(200)).unwrap();
-        assert!(timed_out);
-        assert!(status.is_none());
-        assert!(wall < 5.0);
-        std::thread::sleep(Duration::from_millis(1300));
-        assert!(!marker.exists(), "background child survived the kill");
-    }
-
-    #[test]
-    fn the_process_runs_in_its_own_session_and_group() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ids = tmp.path().join("ids");
-        let mut cmd = Command::new("sh");
-        crate::proc::scrub_git(&mut cmd);
-        cmd.arg("-c")
-            .arg("ps -o sid=,pgid= -p $$")
-            .stdout(File::create(&ids).unwrap());
-        let (status, _, _) = run_process(cmd, None, Duration::from_secs(30)).unwrap();
-        assert!(status.unwrap().success());
-        let text = std::fs::read_to_string(&ids).unwrap();
-        let got: Vec<i32> = text
-            .split_whitespace()
-            .map(|n| n.parse().unwrap())
-            .collect();
-        // SAFETY: getsid and getpgrp only read this process's ids.
-        let (sid, pgid) = unsafe { (libc::getsid(0), libc::getpgrp()) };
-        assert_eq!(got.len(), 2, "{text}");
-        assert_ne!(got[0], sid, "shares the caller's session");
-        assert_ne!(got[1], pgid, "shares the caller's process group");
-    }
 
     #[test]
     fn scratch_guard() {

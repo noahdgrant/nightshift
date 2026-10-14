@@ -1,6 +1,11 @@
 //! `scripts/ci-local.sh`, run in a temp repo against stub `cargo`, `ns`, `python3`, `python`
 //! and the tools `scripts/ci-tools.d/` pins, checked by the real `scripts/ci-tools.sh`.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
 #[path = "ci_local/affected_rules.rs"]
 mod affected_rules;
 #[path = "ci_local/cache.rs"]
