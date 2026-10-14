@@ -17,7 +17,12 @@ use crate::proc::Kind;
 /// comma-separated `<phase>=<ms>` for the named phases only.
 pub(super) fn phase_timeout(phase: &str, minutes: u64) -> Duration {
     let var = std::env::var("NS_PHASE_TIMEOUT_MS").ok();
-    timeout_override(var.as_deref(), phase).unwrap_or_else(|| Duration::from_secs(minutes * 60))
+    timeout_or_minutes(var.as_deref(), phase, minutes)
+}
+
+/// The override for `phase` in `var`, else `minutes`.
+fn timeout_or_minutes(var: Option<&str>, phase: &str, minutes: u64) -> Duration {
+    timeout_override(var, phase).unwrap_or_else(|| Duration::from_secs(minutes * 60))
 }
 
 /// The override for `phase` in an `NS_PHASE_TIMEOUT_MS` value; a named entry beats a bare one.
@@ -260,5 +265,21 @@ mod tests {
         assert_eq!(ms(Some("build=1,5"), "build"), Some(1));
         assert_eq!(ms(Some("build=1,5"), "review"), Some(5));
         assert_eq!(ms(Some("build=abc,5"), "build"), Some(5));
+    }
+
+    #[test]
+    fn a_phase_timeout_without_an_override_is_its_minutes() {
+        assert_eq!(
+            timeout_or_minutes(None, "build", 2),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            timeout_or_minutes(Some("review=5"), "build", 2),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            timeout_or_minutes(Some("build=5"), "build", 2),
+            Duration::from_millis(5)
+        );
     }
 }
