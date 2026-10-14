@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+use self::core::update::{self, InProgress};
 use crate::clock;
 use crate::error::SfError;
 use crate::factory::{self, Factory, Queue as QueueConfig};
@@ -214,40 +215,11 @@ fn is_status(q: &QueueConfig, label: &str) -> bool {
         .any(|o| *o == label)
 }
 
-/// Open issues carrying `in_progress_label`: those no live `ns run` holds, left so by a night
-/// that ended mid-unit, and those one does, each with its run lock's holder.
-struct InProgress {
-    stale: Vec<Issue>,
-    held: Vec<(Issue, Value)>,
-}
-
+/// Open issues carrying `in_progress_label`, sorted by whether a live `ns run` holds them.
 fn in_progress(repo: &Repo, forge: &dyn Forge, q: &QueueConfig) -> Result<InProgress> {
     let holders = run::Lock::run_holders(&repo.common_dir)?;
-    let mut found = InProgress {
-        stale: Vec::new(),
-        held: Vec::new(),
-    };
-    for i in forge.open_issues(Some(&q.in_progress_label))? {
-        if !i.labels.contains(&q.in_progress_label) {
-            continue;
-        }
-        match holders.iter().find(|h| holds(h, i.number)) {
-            Some(h) => found.held.push((i, h.clone())),
-            None => found.stale.push(i),
-        }
-    }
-    found.stale.sort_by_key(|i| i.number);
-    Ok(found)
-}
-
-/// Whether a run lock's `holder` is running issue `n`'s unit.
-fn holds(holder: &Value, n: u64) -> bool {
-    if holder["issue"].as_u64() == Some(n) {
-        return true;
-    }
-    holder["unit"]
-        .as_str()
-        .is_some_and(|u| u == n.to_string() || u.starts_with(&format!("{n}-")))
+    let issues = forge.open_issues(Some(&q.in_progress_label))?;
+    Ok(update::in_progress(issues, &q.in_progress_label, &holders))
 }
 
 /// Put each stale in-progress issue back to `ready_label`, keeping its worktree and artifacts so
@@ -292,9 +264,9 @@ fn fresh_base(root: &Path) -> Option<String> {
 /// Whether a phase of `fac` loads the installed skills, which a sync changes under it: a codex
 /// phase (docs/factory/run.md, "Pinned skills and phase settings").
 fn reads_installed_skills(fac: &Factory) -> bool {
-    factory::PHASES
-        .iter()
-        .any(|p| pin::mode(&fac.phase(p).harness) == pin::Mode::Partial)
+    update::drains_for_skills(
+        (factory::PHASES.iter()).map(|p| pin::mode(&fac.phase(p).harness) == pin::Mode::Partial),
+    )
 }
 
 /// The installed skills whose symlinks resolve into the main checkout.
@@ -306,10 +278,8 @@ fn installed_skills(repo: &Repo) -> skills_sync::Installed {
 /// The commit at `base` to drain for, when it has skill changes the main checkout lacks and is
 /// not in `tried`, announced on stderr and in the run log.
 fn skills_drain(repo: &Repo, base: &str, tried: &BTreeSet<String>) -> Option<String> {
-    let (from, to) = skills_sync::pending(&repo.root, base, &installed_skills(repo))?;
-    if tried.contains(&to) {
-        return None;
-    }
+    let pending = skills_sync::pending(&repo.root, base, &installed_skills(repo));
+    let (from, to) = update::skills_drain(pending, tried)?;
     eprintln!(
         "ns watch: {base} has skill changes the skills checkout lacks ({} -> {}); draining: no new unit until the running ones end",
         self_update::short(&from),
@@ -358,7 +328,7 @@ fn sync_skills(repo: &Repo, base: &str, issue: Option<u64>, warned: &mut Option<
             *warned = None;
         }
         Sync::Stale { reason } => {
-            if warned.as_deref() == Some(reason.as_str()) {
+            if !update::warns_stale(warned.as_deref(), &reason) {
                 return;
             }
             eprintln!(
@@ -742,7 +712,8 @@ impl Night {
     /// the base for the run's worktree.
     fn base(&mut self, repo: &Repo, issue: u64) -> Option<String> {
         let base = fresh_base(&repo.root);
-        if let Some(b) = base.as_deref().filter(|_| !self.skills_drain) {
+        let sync = update::syncs_before_unit(self.skills_drain);
+        if let Some(b) = base.as_deref().filter(|_| sync) {
             sync_skills(repo, b, Some(issue), &mut self.skills_warned);
         }
         base
@@ -894,29 +865,6 @@ Open after at least 2 fix attempts: C1, I2, I4.
                 "C1. One-line finding (security). Open."
             ]
         );
-    }
-
-    #[test]
-    fn a_run_lock_holder_holds_its_issue_or_its_unit_ids_issue() {
-        let h = json!({"pid": 1, "unit": "13-fix-uart", "issue": 13});
-        assert!(holds(&h, 13));
-        assert!(!holds(&h, 1));
-        assert!(!holds(&h, 130));
-        // A unit run without --issue names its issue only through the unit id.
-        let by_unit = json!({"pid": 1, "unit": "13-fix-uart", "issue": null});
-        assert!(holds(&by_unit, 13));
-        assert!(!holds(&by_unit, 1));
-        assert!(holds(&json!({"pid": 1, "unit": "13"}), 13));
-        assert!(!holds(&json!({"pid": 1, "unit": "130-x"}), 13));
-        // A holder that hasn't written its record yet is known by its lock's file name.
-        assert!(holds(
-            &json!({"pid": null, "unit": "99-x", "issue": null}),
-            99
-        ));
-        assert!(!holds(
-            &json!({"pid": null, "unit": "uart", "issue": null}),
-            99
-        ));
     }
 
     #[test]
