@@ -35,7 +35,7 @@ Done when you are in the worktree on branch `ns/<unit-id>` and `.ns/<unit-id>/` 
 
 Read `.ns/<unit-id>/brief.md`. If the worktree is new and the brief sits in the main checkout's `.ns/<unit-id>/`, copy it in. If you also read the issue, follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content).
 
-Stop with `status: blocked` in `build.md` when the brief is missing, or when its acceptance criteria can't each be turned into a test that goes red today. Name the gap, and point to the `ns-triage` skill (for a missing brief) or `ns-define` (for unclear intent).
+Stop with `status: blocked` and `next: human` in `build.md` when the brief is missing, or when its acceptance criteria can't each be turned into a test that goes red today. Name the gap, and point to the `ns-triage` skill (for a missing brief) or `ns-define` (for unclear intent).
 
 The brief's **Ship note**, and any criterion about the PR itself (its body, `Closes` line, labels or merge), belong to `ns-ship`. Build writes no test for them and never blocks on them.
 
@@ -93,7 +93,7 @@ Done when every bar item is marked, every listed branch has a test, and every mu
 
 `git fetch origin` and rebase onto `origin/<base>`, with the repo's hooks on ([git hooks](../ns-contract/SKILL.md#git-hooks)). Tidy the history now: small commits that each build and pass, ordered to tell the story, with bodies written using `ns-writing-for-humans`. This is the history that verify, review and ship will see; nothing rewrites it later.
 
-When the feedback says the base moved (a NO-GO whose first line starts `base moved`, a merge conflict, or `ns run`'s "The base moved" line), the rebase is the job. Run `git fetch origin` now and rebase onto the newest `origin/<base>`, never a commit an earlier artifact or the feedback noted. Resolve conflicts, then go on through this step as usual.
+When the feedback says the base moved (an artifact with `cause: base_moved`, an older one whose first line starts `base moved`, a merge conflict, or `ns run`'s "The base moved" line), the rebase is the job. Run `git fetch origin` now and rebase onto the newest `origin/<base>`, never a commit an earlier artifact or the feedback noted. Resolve conflicts, then go on through this step as usual.
 
 Then run the full test, lint and build commands from `docs/agents/stack.md`, once, on the final commit. Capture each command and the lines of output that prove its result.
 
@@ -107,9 +107,13 @@ Write `.ns/<unit-id>/build.md`:
 
 ```markdown
 ---
+schema: ns-artifact/2
 unit: <unit-id>
 phase: build
 status: pass        # pass | fail | blocked
+cause: none         # none on a pass; otherwise the gate's cause (step 7)
+next: verify        # verify on a pass; build to retry; human when blocked
+reason: "<one line: what passed, or what is missing or blocking>"
 sha: <git rev-parse --short HEAD>
 updated: <UTC timestamp>
 ---
@@ -148,9 +152,11 @@ Write `none` under the heading when there are no risks.
 
 If any step ran inline instead of through a fresh-context agent, say so here.
 
+Then run `ns artifact check .ns/$NS_UNIT/build.md --phase build` and fix every error it reports ([artifact schema](../ns-contract/SKILL.md#units-of-work-and-artifacts)).
+
 ## 7. Gate
 
-The gate passes when the self-check is done (step 4) and tests, lint and build are all green on the final commit. Set `status: pass`. A check that stays red is `fail`, with what is missing. A check you can't run (no toolchain, no credentials) is `blocked`, never `pass`.
+The gate passes when the self-check is done (step 4) and tests, lint and build are all green on the final commit. Set `status: pass`. A check that stays red is `fail` with `cause: gate_red` and `next: build`, and `reason` says what is missing. A check you can't run (no toolchain, no credentials) is `blocked` with `next: human`, never `pass`: `cause: out_of_scope` when the cause lies outside the unit, else `needs_human`.
 
 Next phase: `ns-verify`. Under `gates: stop` (the default), stop and report the path to `build.md`. Under `gates: auto`, load the `ns-verify` skill if `status: pass`, and stop otherwise.
 

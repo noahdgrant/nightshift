@@ -50,17 +50,39 @@ A shell command names the unit's directory as `.ns/$NS_UNIT/`, which `ns run` se
 
 A phase writes its artifact **once, at the end**, when it knows the gate result. Progress notes, interim findings and scratch files go in `.ns/<unit-id>/<phase>/` (e.g. `.ns/<unit>/review/notes.md`), never in the artifact. A phase can be killed at any moment (timeout, usage limit), and whatever artifact exists is read as its verdict.
 
-Every artifact opens with frontmatter recording the gate result:
+Every artifact opens with frontmatter recording the gate result, in the schema `ns-artifact/2`. `ns run` routes on `status`, `cause` and `next`, never on the body:
 
 ```yaml
 ---
+schema: ns-artifact/2
 unit: 142-uart-timeout
-phase: verify
-status: pass        # pass | fail | blocked, or split for brief.md
-sha: 3f9c2e1        # HEAD commit the artifact describes (build, verify, review, ship)
+phase: verify       # triage | build | verify | review | review-fix | ship
+status: fail        # pass | fail | blocked, or split for brief.md
+cause: criteria_failed  # none on a pass or a split; otherwise the cause below
+next: build         # none | build | verify | review | ship | define | troubleshoot | human
+reason: "AC2 fails: the read still times out after 5 s"
+sha: 3f9c2e1        # HEAD commit the artifact describes (every phase but triage)
 updated: 2026-10-08T21:14:00Z
 ---
 ```
+
+- `reason` is one line of at most 200 characters, the one sentence `ns watch` quotes. Every artifact but a pass needs one. Quote it: YAML rejects an unquoted value holding `: `, and cuts one at ` #`.
+- `next` names who picks the unit up: the phase that owns the fix, `define` or `troubleshoot` from triage, `human` when only a person can, or `none`. A `fail` or `blocked` artifact needs a `next` other than `none`, and a passed triage needs one too.
+- `cause` is `none` on a pass and a split. Otherwise it is the first that holds:
+
+| `cause` | When |
+|---|---|
+| `base_moved` | the only cause is that the default branch moved: the branch conflicts with it or needs a rebase onto it. `next: build`, and `ns run` sends build to rebase at no attempt's cost |
+| `denied` | a harness permission denied a command the phase needs |
+| `out_of_scope` | the cause lies outside the unit: a broken toolchain, a test already red on the base |
+| `findings_open` | review findings in changed code are still open; `findings` lists their IDs (`findings: [C1, I3]`) |
+| `criteria_failed` | an acceptance criterion fails, or the evidence or review a phase needs is missing or stale |
+| `gate_red` | a check (test, lint, build, hook) stays red |
+| `needs_human` | none of the above: hardware, credentials or a decision no agent can supply |
+
+Old artifacts with no `schema` key are `ns-artifact/1`. `ns` still reads them, by the old rules (the body's first line was the reason, and one starting `base moved` sent build to rebase), and new artifacts never use those rules. Unknown keys are ignored.
+
+**Check the artifact.** Before a phase finishes, it runs `ns artifact check .ns/$NS_UNIT/<artifact> --phase <phase>` and fixes every error the JSON lists, until `ok` is `true`. Without `ns`, check the keys against this section by hand.
 
 `brief.md` also records `base:`, the bare name of the branch the unit's worktree came from: the repo's default branch, or the integration branch given to `ns worktree new --base`. A phase may add its own keys (`ns-ship` adds `pr:`).
 
@@ -70,17 +92,17 @@ updated: 2026-10-08T21:14:00Z
 base=$(git symbolic-ref --short refs/remotes/origin/HEAD) && base=${base#origin/}
 ```
 
-When that fails too (`origin/HEAD` unset), write the phase's artifact with `status: blocked` and the first body line `no base: brief.md has no base: and origin/HEAD does not resolve`.
+When that fails too (`origin/HEAD` unset), write the phase's artifact with `status: blocked`, `cause: needs_human`, `next: human` and `reason: "no base: brief.md has no base: and origin/HEAD does not resolve"`.
 
 `brief.md` may record `touches:`, a list of path globs relative to the repo root for the files and directories the unit will probably change (`cli/src/run.rs`, `skills/ns-review/**`). It is a scheduling prediction: two units overlap when their globs match the same file, and overlapping units are better not run side by side. The brief comment carries the same list as one line, `` **Touches:** `cli/src/run.rs`, `skills/ns-review/**` ``. A brief with no `touches:`, or an empty or malformed one, makes no prediction. `ns-triage` writes it ([agent-brief.md](../ns-triage/references/agent-brief.md)).
 
 `ns-ship` requires `evidence.md` and `review.md` to have `sha` equal to HEAD. Review fixes that add commits therefore re-run `ns-verify` before the unit can ship.
 
 - `pass`: the gate condition holds, so the next phase can start.
-- `fail`: the gate condition doesn't hold. The body's first line says what is missing, in one sentence; `ns watch` quotes it. When the only cause is that the default branch moved (the branch conflicts with it or needs a rebase onto it), that line starts with `base moved:` (an optional `NO-GO:` before it is fine), and `ns run` sends build to rebase at no attempt's cost. A phase that can fix it itself retries first. Otherwise the phase that owns the fix picks it up, usually the previous one.
+- `fail`: the gate condition doesn't hold. `reason` says what is missing. A phase that can fix it itself retries first. Otherwise `next` names the phase that owns the fix, usually the previous one.
 - An `inconclusive` check with no failures gives `blocked` when a missing resource caused it, and `fail` otherwise.
-- `blocked`: progress needs something an agent can't get (hardware, credentials, a human decision). The body's first line names the blocker, in one sentence. After the review's last fix cycle, an open Critical or Important in code the unit changed is a blocker. A finding in pre-existing code never blocks, whatever its severity: it is an escape, filed as a prioritised issue. A Suggestion never blocks (see `ns-review`).
-- `split` (`brief.md` only): triage split the issue into child issues, which replace the unit. The body's first line names the children, in one sentence. Nothing waits on a human, so `ns run` ends the unit as `split`, not stuck.
+- `blocked`: progress needs something an agent can't get (hardware, credentials, a human decision). `reason` names the blocker, and `next` is usually `human`. After the review's last fix cycle, an open Critical or Important in code the unit changed is a blocker. A finding in pre-existing code never blocks, whatever its severity: it is an escape, filed as a prioritised issue. A Suggestion never blocks (see `ns-review`).
+- `split` (`brief.md` only): triage split the issue into child issues, which replace the unit. `reason` names the children, with `cause: none` and `next: none`. Nothing waits on a human, so `ns run` ends the unit as `split`, not stuck.
 
 A phase reads only its input artifact and the repo. It never relies on chat history, so every phase can start in a fresh context.
 
@@ -140,7 +162,7 @@ A repo's git hooks are part of its checks. A phase never skips them:
 - No weakening of the scripts the hooks call (`scripts/ci-local.sh` and what it runs) to make a hook pass: no skipped step, no loosened check, no deleted test.
 - A phase commits and pushes only with plain `git commit` and `git push` and the repo's hooks. It never changes a hook's file mode (`chmod -x`) or the environment git and the hook run in (`PATH`, `GIT_*`), and never commits through plumbing (`commit-tree`, `update-ref`) or another clone to dodge a hook.
 
-A hook that rejects a commit or push names a cause: a failing test, a lint, a format diff. Read its output, fix that cause, and commit or push again. When the cause lies outside the unit (a broken toolchain, a test already red on the base), stop with `status: blocked` and name it. It never justifies a bypass.
+A hook that rejects a commit or push names a cause: a failing test, a lint, a format diff. Read its output, fix that cause, and commit or push again. When the cause lies outside the unit (a broken toolchain, a test already red on the base), stop with `status: blocked` and `cause: out_of_scope`, and name it in `reason`. It never justifies a bypass.
 
 The `ns` CLI's own git plumbing skips hooks by design, at three call sites: the quality-records push, the skills fast-forward, and the update-branch merge and push of the default branch into a PR head. The first two write no unit's code. The merge does carry unit code, but the forge's CI checks the merge result, as long as the default branch requires CI before merge. Phases don't.
 

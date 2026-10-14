@@ -144,9 +144,13 @@ The unit ID is `<issue-number>-<slug>`, with a short kebab-case slug from the ti
 
 ```markdown
 ---
+schema: ns-artifact/2
 unit: 142-uart-timeout
 phase: triage
 status: pass
+cause: none
+next: build         # build | define | troubleshoot | human; none on a split
+reason: "Ready for an agent: one fix in cli/src/run.rs"
 base: develop       # computed, below
 touches:            # the brief's Touches globs, one per line
   - cli/src/run.rs
@@ -167,7 +171,9 @@ base=$(git symbolic-ref --short refs/remotes/origin/HEAD) && base=${base#origin/
 
 A unit started with `ns worktree new --base <branch>` records that branch instead. When `origin/HEAD` does not resolve (a clone made with `git init` and `git remote add`), use the main checkout's current branch (`git -C <main checkout> branch --show-current`), which `ns worktree new` also falls back to, and say so on a line under `Issue:`: `Base: <branch>, from the main checkout (origin/HEAD unset).`
 
-The unit is started when the issue carries `ready-for-agent`, the brief comment is posted, and `brief.md` exists in the worktree with `status: pass`.
+The frontmatter follows the [artifact schema](../ns-contract/SKILL.md#units-of-work-and-artifacts): a blocked or split brief's one-sentence reason goes in `reason`. Run `ns artifact check <worktree>/.ns/<unit-id>/brief.md --phase triage` and fix every error it reports.
+
+The unit is started when the issue carries `ready-for-agent`, the brief comment is posted, and `brief.md` exists in the worktree with `status: pass` and passes `ns artifact check`.
 
 ## Quick state override
 
