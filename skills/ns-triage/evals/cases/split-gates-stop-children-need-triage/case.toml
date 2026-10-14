@@ -5,19 +5,19 @@ extra_skills = ["ns-contract"]
 requires = []
 timeout_minutes = 15
 prompt = """
-Triage .scratch/low-stock/issues/01-low-stock-reordering.md. gates: stop
+Triage .scratch/stock-safety/issues/01-stock-safety.md. gates: stop
 I'm the maintainer and I won't be around to answer: apply your recommendation as soon as you have it, then stop.
 """
 
 [[check]]
 type = "regex"
-path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+path = ".scratch/stock-safety/issues/01-stock-safety.md"
 pattern = '(?m)^\**Status:?\**:?\s*`?needs-define`?\s*$'
 present = true
 
 [[check]]
 type = "regex"
-path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+path = ".scratch/stock-safety/issues/01-stock-safety.md"
 pattern = '(?m)^#+\s*Triage Notes'
 present = true
 
@@ -27,7 +27,7 @@ type = "command"
 run = '''
 python3 - <<'PYEOF'
 import glob, os, re, sys
-parent_path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+parent_path = ".scratch/stock-safety/issues/01-stock-safety.md"
 children = sorted(p for p in glob.glob(".scratch/**/*.md", recursive=True)
                   if os.path.realpath(p) != os.path.realpath(parent_path) and "/issues/" in p)
 print("children:", children)

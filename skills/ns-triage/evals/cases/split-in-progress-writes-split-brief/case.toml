@@ -5,31 +5,31 @@ extra_skills = ["ns-contract"]
 requires = []
 timeout_minutes = 15
 prompt = """
-Load the `ns-triage` skill and run it for unit `01-low-stock-reordering` (issue .scratch/low-stock/issues/01-low-stock-reordering.md). gates: auto.
-Phase: triage (attempt 1). End by writing the phase's artifact under .ns/01-low-stock-reordering/ with its frontmatter status.
+Load the `ns-triage` skill and run it for unit `01-stock-safety` (issue .scratch/stock-safety/issues/01-stock-safety.md). gates: auto.
+Phase: triage (attempt 1). End by writing the phase's artifact under .ns/01-stock-safety/ with its frontmatter status.
 """
 
 [[check]]
 type = "regex"
-path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+path = ".scratch/stock-safety/issues/01-stock-safety.md"
 pattern = '(?m)^\**Status:?\**:?\s*`?in-progress`?\s*$'
 present = true
 
 [[check]]
 type = "regex"
-path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+path = ".scratch/stock-safety/issues/01-stock-safety.md"
 pattern = '(?m)^\**Status:?\**:?.*(needs-define|ready-for-agent|needs-triage|ready-for-human|closed|wontfix)'
 present = false
 
 [[check]]
 type = "regex"
-path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+path = ".scratch/stock-safety/issues/01-stock-safety.md"
 pattern = '(?m)^\**Priority:?\**:?\s*`?priority:medium`?\s*$'
 present = true
 
 [[check]]
 type = "regex"
-path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+path = ".scratch/stock-safety/issues/01-stock-safety.md"
 pattern = '(?m)^#+\s*Triage Notes'
 present = true
 
@@ -39,7 +39,7 @@ type = "command"
 run = '''
 python3 - <<'PYEOF'
 import glob, os, re, subprocess, sys
-parent_path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+parent_path = ".scratch/stock-safety/issues/01-stock-safety.md"
 children = sorted(p for p in glob.glob(".scratch/**/*.md", recursive=True)
                   if os.path.realpath(p) != os.path.realpath(parent_path) and "/issues/" in p)
 print("children:", children)
@@ -99,7 +99,7 @@ type = "command"
 run = '''
 python3 - <<'PYEOF'
 import glob, os, re, sys
-parent = os.path.realpath(".scratch/low-stock/issues/01-low-stock-reordering.md")
+parent = os.path.realpath(".scratch/stock-safety/issues/01-stock-safety.md")
 stated = [p for p in glob.glob(".scratch/**/issues/*.md", recursive=True)
           if os.path.realpath(p) != parent
           and re.search(r"(?m)^\**Status:?\**:?\s*`?\S", open(p, encoding="utf-8").read())]
