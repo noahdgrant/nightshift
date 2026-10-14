@@ -4,6 +4,7 @@ title: "A unit's measured size never blocks it"
 issue: 212
 date: 2026-10-10
 amends: [D26]
+amended_by: [ADR-647]
 ---
 
 # D37: A unit's measured size never blocks it
