@@ -75,13 +75,13 @@ While building, apply these principles:
 
 **Size.** Build every acceptance criterion whatever the diff's size, past the soft limit too ([unit size](../ns-contract/SKILL.md#target-repo-configuration)). A large unit is review's prompt to suggest a split, never a reason to stop.
 
-**Commit each green slice** with a Conventional Commit, `type(scope): subject` (`feat(uart): time out reads after 50 ms`). One logical change per commit, each one building and passing on its own. The repo's hooks run on every commit and never get skipped ([git hooks](../ns-contract/SKILL.md#git-hooks)): when one fails, fix what it reports. Run single test files during the loop and the typecheck when the stack has one. Stop a test, gate or server you started per [killing processes](../ns-contract/SKILL.md#killing-processes), never by name or pattern.
+**Commit each green slice** with a Conventional Commit, `type(scope): subject` (`feat(uart): time out reads after 50 ms`). One logical change per commit, each one building and passing on its own. The repo's hooks run on every commit and never get skipped ([git hooks](../ns-contract/SKILL.md#git-hooks)): when one fails, fix what it reports. During the loop run targeted tests only: the `test (one)` row of `stack.md`, or the tests for the files you touched, plus the typecheck when the stack has one. The full suite runs once, as the gate in step 5. Stop a test, gate or server you started per [killing processes](../ns-contract/SKILL.md#killing-processes), never by name or pattern.
 
-Done when every acceptance criterion and every covered instance has a passing test and a commit, and the working tree is clean.
+Done when every acceptance criterion and every covered instance has a test that passes in its targeted run, and a commit, and the working tree is clean.
 
 ## 4. Self-check
 
-Review will check your diff against the [quality bar](../ns-contract/references/quality-bar.md). Meet it first. The base is `origin/<base>`, with `<base>` from `brief.md`'s `base:` as [base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts) says. Diff against it with `git diff "$(git merge-base origin/<base> HEAD)"` and work through three checks. Fix what each one finds test-first, with the `ns-tdd` skill, and commit.
+Review will check your diff against the [quality bar](../ns-contract/references/quality-bar.md). Meet it first. The base is `origin/<base>`, with `<base>` from `brief.md`'s `base:` as [base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts) says. Diff against it with `git diff "$(git merge-base origin/<base> HEAD)"` and work through three checks. Fix what each one finds test-first, with the `ns-tdd` skill, and commit. Run targeted tests here too, as in step 3.
 
 1. **The bar.** Mark every item of the quality bar against your diff: met, fixed (with the commit), or not applicable with a one-line reason.
 2. **Every branch tested.** List each branch and error path the diff adds: each `if` arm, early return, raised or returned error, loop that can run zero times. Every one needs a test that takes it, whether or not an acceptance criterion names it.
@@ -89,17 +89,19 @@ Review will check your diff against the [quality bar](../ns-contract/references/
 
 Done when every bar item is marked, every listed branch has a test, and every mutation is killed or recorded `inconclusive` with the reason.
 
-## 5. Rebase, tidy, and run the full checks
+## 5. Rebase, tidy, and run the gate
 
 `git fetch origin` and rebase onto `origin/<base>`, with the repo's hooks on ([git hooks](../ns-contract/SKILL.md#git-hooks)). Tidy the history now: small commits that each build and pass, ordered to tell the story, with bodies written using `ns-writing-for-humans`. This is the history that verify, review and ship will see; nothing rewrites it later.
 
 When the feedback says the base moved (an artifact with `cause: base_moved`, an older one whose first line starts `base moved`, a merge conflict, or `ns run`'s "The base moved" line), the rebase is the job. Run `git fetch origin` now and rebase onto the newest `origin/<base>`, never a commit an earlier artifact or the feedback noted. Resolve conflicts, then go on through this step as usual.
 
-Then run the full test, lint and build commands from `docs/agents/stack.md`, once, on the final commit. Capture each command and the lines of output that prove its result.
+Then run the **gate**, last, once, on the final commit: the one full check of the build. The gate command is the build phase's `gate` in `.nightshift/nightshift.toml` (`[phases.build] gate`), else the command in the `ci-local` row of `docs/agents/stack.md`. This is the command `ns run` runs after build, so a repo whose gate caches passes by tree skips that rerun. Run it, rather than the `test (all)` or `lint` rows on their own, which repeat its work and leave that cache empty. With no gate and no `ci-local` row, run the full test, lint and build commands from `stack.md` instead. Capture each command and the lines of output that prove its result.
 
-Firmware: the build check includes the size report. Record flash and RAM use against the budget in `stack.md`. On-target and HIL runs belong to `ns-verify`, not here.
+The gate run comes after the rebase, the tidy and the last commit. Nothing commits after it: a later commit or rebase changes the tree, and the gate must run again on the new final commit.
 
-A red check, or a rebase conflict you resolved, sends you back to step 3, then through step 4 again for the lines that changed. Done when all three are green on a clean tree, or you have stopped with `fail` or `blocked`.
+Firmware: the build check includes the size report. Record flash and RAM use against the budget in `stack.md`, from the same final run, with no commit after it. On-target and HIL runs belong to `ns-verify`, not here.
+
+A red gate, or a rebase conflict you resolved, sends you back to step 3, then through step 4 again for the lines that changed, then to the gate again on the new final commit. Done when the gate is green on the final commit and a clean tree, or you have stopped with `fail` or `blocked`.
 
 ## 6. Write the build artifact
 
@@ -156,7 +158,7 @@ Then run `ns artifact check .ns/$NS_UNIT/build.md --phase build` and fix every e
 
 ## 7. Gate
 
-The gate passes when the self-check is done (step 4) and tests, lint and build are all green on the final commit. Set `status: pass`. A check that stays red is `fail` with `cause: gate_red` and `next: build`, and `reason` says what is missing. A check you can't run (no toolchain, no credentials) is `blocked` with `next: human`, never `pass`: `cause: out_of_scope` when the cause lies outside the unit, else `needs_human`.
+The gate passes when the self-check is done (step 4) and step 5's gate command is green on the final commit (or, with no gate configured, the full test, lint and build commands). Set `status: pass`. A check that stays red is `fail` with `cause: gate_red` and `next: build`, and `reason` says what is missing. A check you can't run (no toolchain, no credentials) is `blocked` with `next: human`, never `pass`: `cause: out_of_scope` when the cause lies outside the unit, else `needs_human`.
 
 Next phase: `ns-verify`. Under `gates: stop` (the default), stop and report the path to `build.md`. Under `gates: auto`, load the `ns-verify` skill if `status: pass`, and stop otherwise.
 
