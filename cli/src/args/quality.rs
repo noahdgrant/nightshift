@@ -14,6 +14,8 @@ Examples:
   ns quality --human
   ns quality --json | jq .finding_flow.fix_rate
   ns quality import /tmp/unit-artifacts --dry-run
+  ns quality --reviewers --until 2026-10-11T13:30:00Z
+  ns quality --reviewers --json | jq .reviewers.tests.important
   ns quality --bugs --weeks 4
   ns quality --bugs --since 2026-09-01 --json | jq .total
 
@@ -32,6 +34,13 @@ rate and late-finding rate; findings with no cycle are left out and counted. --h
 the headline numbers and finding_flow as text instead.
 --since and --until are inclusive and UTC, and so is their echo in the output: a bare date
 is 00:00:00 for --since and 23:59:59 for --until. trend and per_unit days are local (TZ).
+
+--reviewers prints a table per reviewer and severity (Critical, Important) over the newest
+record of each review attempt: reviews run in (passes whose panel ran it), findings raised in
+changed code, unique (only it raised) and unique-and-fixed findings, dismiss rate, attributed
+escapes (missed_by), cost, and a pairwise overlap. A finding's reviewers are its axes that
+name one of the eight reviewers. --json prints {ok,repo,since,until,units,attempts,
+measured_attempts,reviewers,overlap,excluded,records} instead; excluded counts what it left out.
 
 --bugs reads the type:fix issues in any state and the merged PRs from the [queue] source
 forge (network) and prints a table per ISO week (UTC), then each week's fix issues per merged
@@ -55,12 +64,15 @@ pub(crate) struct Quality {
     /// Only units whose newest review artifact was updated, and run-log events, at or before this UTC time (YYYY-MM-DDTHH:MM:SSZ, or YYYY-MM-DD for 23:59:59 UTC)
     #[arg(long, value_name = "TIME")]
     pub until: Option<String>,
-    /// Print JSON: the default for the review report, and for --bugs instead of its table
+    /// Print JSON: the default for the review report, and for --bugs and --reviewers instead of their tables
     #[arg(long)]
     pub json: bool,
     /// Print the review report as text: the headline numbers and how findings arrive and get fixed
     #[arg(long, conflicts_with_all = ["json", "bugs"])]
     pub human: bool,
+    /// Report each reviewer's yield, dismiss rate, escapes, overlap and cost as a table, instead of the review report
+    #[arg(long, conflicts_with_all = ["human", "bugs"])]
+    pub reviewers: bool,
     /// Count the type:fix issues opened in each ISO week, by source and severity, with their rate per merged unit and per 1,000 changed lines, instead of the review report
     #[arg(long)]
     pub bugs: bool,

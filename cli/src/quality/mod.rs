@@ -8,11 +8,13 @@ pub mod bugs;
 mod flow;
 mod metrics;
 mod record;
+mod reviewers;
 mod runlog;
 mod store;
 mod sync;
 
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -258,7 +260,32 @@ fn health(r: &Value) -> String {
     t
 }
 
-pub fn cli(since: Option<String>, until: Option<String>, human: bool) -> Result<ExitCode> {
+/// What `ns quality` prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Report,
+    Text,
+    ReviewerTable,
+    ReviewerJson,
+}
+
+fn reviewer_json(units: &[&Unit], window: Window, root: &Path, records: Value) -> Value {
+    let mut r = json!({
+        "ok": true,
+        "repo": root.display().to_string(),
+        "since": window.since.map(clock::iso),
+        "until": window.until.map(clock::iso),
+        "units": units.len(),
+    });
+    let Value::Object(fields) = json!(reviewers::reviewers(units)) else {
+        unreachable!("a struct serialises to an object")
+    };
+    r.as_object_mut().unwrap().extend(fields);
+    r["records"] = records;
+    r
+}
+
+pub fn cli(since: Option<String>, until: Option<String>, view: View) -> Result<ExitCode> {
     let window = window(since, until)?;
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
     let mut unparsed = Vec::new();
@@ -289,16 +316,39 @@ pub fn cli(since: Option<String>, until: Option<String>, human: bool) -> Result<
         .iter()
         .filter(|u| window.contains(u.last().updated))
         .collect();
-    let mut r = report(&kept, window, &repo.root, log, unparsed);
-    r["records"] = records;
-    if human {
-        print!(
-            "{}{}",
-            text(&metrics::summarize(&kept), &flow::finding_flow(&kept)),
-            health(&r)
-        );
-    } else {
-        println!("{}", serde_json::to_string_pretty(&r)?);
+    match view {
+        View::ReviewerJson => {
+            let r = reviewer_json(&kept, window, &repo.root, records);
+            println!("{}", serde_json::to_string_pretty(&r)?);
+        }
+        View::ReviewerTable => {
+            if let Some(e) = records["fetch_error"].as_str() {
+                eprintln!("ns quality: read only local records: {e}");
+            }
+            let bound = |t: Option<i64>| t.map_or("-".to_string(), clock::iso);
+            let mut out = std::io::stdout().lock();
+            writeln!(
+                out,
+                "Units: {} (since {}, until {})",
+                kept.len(),
+                bound(window.since),
+                bound(window.until)
+            )?;
+            reviewers::render(&reviewers::reviewers(&kept), &mut out)?;
+        }
+        View::Report | View::Text => {
+            let mut r = report(&kept, window, &repo.root, log, unparsed);
+            r["records"] = records;
+            if view == View::Text {
+                print!(
+                    "{}{}",
+                    text(&metrics::summarize(&kept), &flow::finding_flow(&kept)),
+                    health(&r)
+                );
+            } else {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+            }
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
