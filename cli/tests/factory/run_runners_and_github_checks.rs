@@ -509,8 +509,9 @@ const UPDATED: &str = "00000000000000000000000000000000000000aa";
 fn build_only_merges_on_github_updating_the_pr_head_to_main_and_waiting_for_its_checks() {
     let e = Env::new();
     let runs = remote_queue(&e, AUTO);
-    // GitHub says CLEAN, as with no "up to date" rule, but the PR head lacks main's tip.
-    main_moves(&e, "from-main", "x\n");
+    // GitHub says CLEAN, as with no "up to date" rule, but the PR head lacks main's tip, which
+    // changes a file the PR changes.
+    main_moves(&e, "built.txt", "x\n");
     let v = e.run(&["run", "--issue", "7"], 0);
     assert_eq!(v["outcome"], "merged", "{v}");
     let calls = e.gh_calls();
@@ -619,7 +620,7 @@ fn build_only_sends_a_conflict_with_main_back_to_ship() {
     for (file, text) in [("pr-12.merge", "DIRTY"), ("update-12.fail", "")] {
         let e = Env::new();
         remote_queue(&e, AUTO);
-        let tip = main_moves(&e, "from-main", "x\n");
+        let tip = main_moves(&e, "built.txt", "x\n");
         e.gh_file(file, text);
         let v = e.run(&["run", "--issue", "7"], 1);
         assert_eq!(v["outcome"], "stuck", "{file}: {v}");

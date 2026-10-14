@@ -385,3 +385,4 @@ include!("cpus_and_self_update.rs");
 include!("self_update_and_drains.rs");
 include!("skills_sync_and_merge_gate.rs");
 include!("merge_gate_and_labels.rs");
+include!("merge_update_skip.rs");

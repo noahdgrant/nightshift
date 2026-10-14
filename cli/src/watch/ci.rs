@@ -99,7 +99,7 @@ pub fn read_or_warn(forge: &dyn Forge, fac: &Factory) -> Option<MainCi> {
 
 /// Red: a check failed while others still run, or every check finished and a required one
 /// failed. Green: every check finished and no required one failed.
-fn classify(head: HeadChecks) -> MainCi {
+pub fn classify(head: HeadChecks) -> MainCi {
     let running = head.checks.iter().any(|c| c.outcome == Outcome::Running);
     let failing: Vec<Check> = head
         .checks
