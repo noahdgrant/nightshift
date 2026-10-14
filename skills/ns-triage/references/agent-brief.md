@@ -33,6 +33,13 @@ The agent needs to know when it's done. Every Agent Brief has concrete, testable
 - **Good:** "Running `gh issue list --label needs-triage` returns issues that have been through initial classification"
 - **Bad:** "Triage should work correctly"
 
+### Ship note: PR text
+
+A criterion is verified before the PR exists, so anything only the PR can show stays out of **Acceptance criteria**: its `Closes #N` line, the issues its body names, its labels, its merge. Put each such item under **Ship note** instead. `ns-ship` checks the note against the PR body before it opens the PR. Omit the section when there is nothing to say; `ns-ship` writes `Closes #N` from the issue number either way.
+
+- **Good:** Ship note: "The PR body names #88 as the follow-up for the listing summary."
+- **Bad:** Acceptance criterion: "The PR body says `Closes #563` and names #536."
+
 ### Failure modes, edge cases and scope, from the code
 
 Every brief carries **Failure modes**, **Edge cases** and **Out of scope**. Where the brief is silent, build guesses, and review flags the guess. A section that does not apply says so in one line (`Edge cases: none; the command takes no input.`), so a reader can tell "considered" from "forgotten".
@@ -112,6 +119,9 @@ Describe what should happen after the agent's work is complete.
 - [ ] Specific, testable criterion 2
 - [ ] Specific, testable criterion 3
 
+**Ship note:** (optional: what the PR itself must carry, never an acceptance criterion)
+- PR text: issues the body names, labels it needs
+
 **Out of scope:** (required)
 - Thing that should NOT be changed or addressed in this issue
 - Adjacent feature that might seem related but is separate
@@ -173,6 +183,9 @@ the parser has already read, and a parse error keeps its current message.
 - [ ] The total length including "..." does not exceed 1024 chars
 - [ ] A pytest case covers each of the above
 - [ ] The `argument-hint` field truncates by the same rule
+
+**Ship note:**
+- The PR body names #88 as the follow-up for the listing summary
 
 **Out of scope:**
 - Changing the 1024 char limit itself

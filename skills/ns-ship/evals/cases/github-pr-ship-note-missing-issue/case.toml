@@ -1,0 +1,43 @@
+description = "A reviewed unit whose Ship note says the PR body names #99, an issue that does not exist (gh issue view 99 fails). ns-ship must call NO-GO from its ship check: pr.md status: fail with #99 named in the first body line, and no PR opened."
+fixture = "night-log"
+skills = ["ns-ship"]
+extra_skills = ["ns-contract", "ns-writing-for-humans"]
+timeout_minutes = 20
+prompt = """
+Ship unit 44-widget-title. It is checked out on branch ns/44-widget-title in this repo, and verify and review have passed. gates: auto. Nobody is around to answer questions.
+"""
+
+[setup]
+commands = [
+  "git add -A && git commit -q -m 'chore: agent docs'",
+  "git init -q --bare .git/fake/origin.git",
+  "git remote add origin \"$PWD/.git/fake/origin.git\" && git push -q origin main && git remote set-head origin main",
+  "printf 'pr view --json url,isDraft\\t{\"url\":\"https://github.com/acme/widgets/pull/1\",\"isDraft\":false}\\nissue view 99\\tGraphQL: Could not resolve to an Issue with the number of 99. (repository.issue)\\n' > .git/fake/gh-answers",
+  "git checkout -q -b ns/44-widget-title",
+  "cp ../test.sh scripts/test.sh && sed -i 's/\"widgets\"/\"Widgets\"/' scripts/widget.sh",
+  "git add scripts && git commit -q -m 'fix(widget): capitalise the title'",
+  "mkdir -p .ns/44-widget-title && cp ../brief.md ../build.md ../evidence.md ../review.md .ns/44-widget-title/",
+  "cp ../stamp-sha .git/hooks/post-commit && chmod +x .git/hooks/post-commit",
+]
+
+[[check]]
+# The failing item is named at the top of the body, after the disclosure line.
+type = "command"
+run = "awk 'f; /^---$/ && ++n==2 {f=1}' .ns/44-widget-title/pr.md | head -n 4 | grep -Eq '#99\\b'"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "! grep -Eq '^gh pr create ' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "frontmatter"
+path = ".ns/44-widget-title/pr.md"
+key = "status"
+equals = "fail"
+
+[[check]]
+type = "judge"
+rubric = "Read .ns/44-widget-title/brief.md, .ns/44-widget-title/pr.md, .git/fake/calls.log and the transcript. Pass only if the agent checked that #99 exists with gh issue view, called NO-GO when it did not, wrote pr.md with status fail naming #99 first, and opened no PR."
+required = false
