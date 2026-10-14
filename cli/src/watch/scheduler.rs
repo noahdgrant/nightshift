@@ -19,7 +19,7 @@ mod red;
 
 use self::child::{signal, spawn, stop_signal, SIGTERM};
 use self::red::Gate;
-use super::self_update::{HandOff, SelfUpdate};
+use super::self_update::{probe_state, Built, HandOff, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
 use super::{
     ended_cleanly, fix_main::Fix, fresh_base, open_findings, queue, set_status, skills_drain,
@@ -79,6 +79,8 @@ enum Wake {
     Stop,
     /// The refill interval passed with a slot free: fill again, without the cleanup and update check.
     Refill,
+    /// A self-update's build ended.
+    Built(Built),
 }
 
 /// What a fill failed on.
@@ -105,13 +107,11 @@ enum FillKind {
     Refill,
 }
 
-/// What the night drains for: no new unit starts until the running ones end.
-enum Drain {
-    /// A self-update to this commit.
-    Update(String),
-    /// A skills sync of the main checkout to `to` at `base`, for phases that read the installed
-    /// skills.
-    Skills { base: String, to: String },
+/// What the night drains for, no new unit starting until the running ones end: a skills sync of
+/// the main checkout to `to` at `base`, for phases that read the installed skills.
+struct Drain {
+    base: String,
+    to: String,
 }
 
 /// Why no new unit starts.
@@ -200,6 +200,11 @@ impl<'a> Scheduler<'a> {
             if let Some(sig) = stop::requested() {
                 self.pass_on(sig);
             }
+            // An adopted ns takes over before the fill, so no unit starts on the old one first.
+            if self.ready_to_hand_off() {
+                self.hand_off(night, tonight);
+                continue;
+            }
             if self.failed.is_none() && stop::requested().is_none() {
                 // A stop that cut the fill short is handled at the loop's top, not as a failure.
                 match self.fill(night, tonight, kind) {
@@ -221,6 +226,17 @@ impl<'a> Scheduler<'a> {
             }
             if self.running.is_empty() {
                 let Some(reset) = self.paused_until.filter(|_| self.may_resume()) else {
+                    // Nothing runs, but a build may yet give the night a newer ns to hand off to.
+                    if self.stopping.is_none()
+                        && self.plan.update.as_ref().is_some_and(|u| u.building())
+                    {
+                        match self.next(night) {
+                            Wake::Built(b) => self.built(b, night, tonight),
+                            Wake::Refill => next_fill = FillKind::Refill,
+                            Wake::Ended(..) | Wake::Reset | Wake::Stop => {}
+                        }
+                        continue;
+                    }
                     break;
                 };
                 // A stop ends the sleep early; the loop's top deals with it.
@@ -241,8 +257,17 @@ impl<'a> Scheduler<'a> {
                 }
                 Wake::Reset => self.lift_pause(),
                 Wake::Refill => next_fill = FillKind::Refill,
+                Wake::Built(b) => self.built(b, night, tonight),
                 Wake::Stop => {}
             }
+        }
+        if let Some(u) = self.plan.update.as_mut() {
+            let why = if stop::requested().is_some() {
+                "stopping"
+            } else {
+                "the night ended"
+            };
+            u.abandon(why);
         }
         self.give_back_paused(tonight);
         if let Some(e) = self.failed.take() {
@@ -327,7 +352,7 @@ impl<'a> Scheduler<'a> {
             return Ok(());
         }
         if kind == FillKind::Full && self.draining.is_none() {
-            self.draining = self.pending_drain(night);
+            self.draining = self.check_base(night);
         }
         if self.draining.is_some() {
             return Ok(());
@@ -440,56 +465,77 @@ impl<'a> Scheduler<'a> {
         }
     }
 
-    /// What to drain for: an update, when origin's default branch has `cli/` changes this `ns`
-    /// lacks, else a skills sync, when it has skill changes the checkout lacks and a phase reads
-    /// the installed skills.
-    fn pending_drain(&self, night: &Night) -> Option<Drain> {
+    /// Look at origin's default branch: start building a new `ns` when it has `cli/` changes the
+    /// binary new units run lacks, and return a skills sync to drain for when it has skill changes
+    /// the checkout lacks and a phase reads the installed skills.
+    fn check_base(&mut self, night: &Night) -> Option<Drain> {
         if self.plan.update.is_none() && !night.skills_drain {
             return None;
         }
         let repo = self.plan.repo;
         let base = fresh_base(&repo.root)?;
-        if let Some(to) = (self.plan.update.as_ref()).and_then(|u| u.pending(&repo.root, &base)) {
-            return Some(Drain::Update(to));
+        if let Some(u) = self.plan.update.as_mut() {
+            if let Some(to) = u.pending(&repo.root, &base) {
+                u.start(repo, to);
+            }
         }
         if !night.skills_drain {
             return None;
         }
         let to = skills_drain(repo, &base, &self.skills_tried)?;
-        Some(Drain::Skills { base, to })
+        Some(Drain { base, to })
     }
 
-    /// Draining, with nothing left running or paused, and no stop: time to update.
+    /// A build ended: check and adopt its binary for new units, or give it up.
+    fn built(&mut self, b: Built, night: &Night, tonight: &Tonight) {
+        let carried = night.carry(self.plan.deadline, self.started, tonight);
+        let repo = self.plan.repo;
+        let Some(u) = self.plan.update.as_mut() else {
+            return;
+        };
+        match b {
+            Built::Stopped(to) => {
+                eprintln!(
+                    "ns watch: self-update to {} abandoned: stopping",
+                    super::self_update::short(&to)
+                );
+            }
+            Built::Failed(to, e) => u.give_up(repo, to, e),
+            Built::Ok(to) => match probe_state(&repo.common_dir, &carried) {
+                Ok(state) => u.adopt(repo, to, state.path()),
+                Err(e) => u.give_up(repo, to, e),
+            },
+        }
+    }
+
+    /// A skills drain or an adopted `ns`, with nothing left running or paused, and no stop: time
+    /// to sync or hand off.
     fn ready_to_hand_off(&self) -> bool {
-        self.draining.is_some()
+        (self.draining.is_some() || self.plan.update.as_ref().is_some_and(|u| u.adopted()))
             && self.running.is_empty()
+            && self.resume.is_empty()
             && self.paused_until.is_none()
             && self.stopping.is_none()
     }
 
-    /// Sync the skills, or hand off to the commit being drained for. A hand-off returns when it
-    /// failed, which is logged and kept from being tried again, or when a stop came first and the
-    /// loop's top winds down.
+    /// Sync the skills drained for, else hand off to the adopted `ns`. A hand-off returns when
+    /// its exec failed, which is logged and kept from being tried again, or when a stop came
+    /// first and the loop's top winds down.
     fn hand_off(&mut self, night: &mut Night, tonight: &Tonight) {
-        let to = match self.draining.take() {
-            None => return,
-            Some(Drain::Update(to)) => to,
-            Some(Drain::Skills { base, to }) => {
-                if stop::requested().is_some() {
-                    return;
-                }
-                sync_skills(self.plan.repo, &base, None, &mut night.skills_warned);
-                self.skills_tried.insert(to);
+        if let Some(Drain { base, to }) = self.draining.take() {
+            if stop::requested().is_some() {
                 return;
             }
-        };
+            sync_skills(self.plan.repo, &base, None, &mut night.skills_warned);
+            self.skills_tried.insert(to);
+            return;
+        }
         let carried = night.carry(self.plan.deadline, self.started, tonight);
         let repo = self.plan.repo;
         let Some(update) = self.plan.update.as_mut() else {
             return;
         };
-        let to = update.at_drain_end(&repo.root, to);
-        if let HandOff::Failed(e) = update.hand_off(repo, &to, &carried) {
+        if let HandOff::Failed(to, e) = update.hand_off(repo, &carried) {
             update.give_up(repo, to, e);
         }
     }
@@ -530,14 +576,28 @@ impl<'a> Scheduler<'a> {
             .path()
             .join(format!("result-{}-{}.json", issue.number, self.results));
         let cpus = crate::cpus::share_here(self.plan.parallel);
-        let child = spawn(
+        let clock = &night.shared.clock;
+        let exe = self.plan.update.as_ref().and_then(|u| u.child_exe());
+        let child = match spawn(
             self.plan.snap,
             &issue,
-            base,
+            base.clone(),
             cpus,
-            &night.shared.clock,
+            clock,
             &result,
-        )?;
+            exe,
+        ) {
+            Ok(c) => c,
+            // A new ns that can't start a unit is given up; the unit starts on this one.
+            Err(e) if exe.is_some() => {
+                if let Some(u) = self.plan.update.as_mut() {
+                    let to = u.adopted_commit();
+                    u.give_up(self.plan.repo, to, e);
+                }
+                spawn(self.plan.snap, &issue, base, cpus, clock, &result, None)?
+            }
+            Err(e) => return Err(e),
+        };
         let again = if resumed { ", resumed" } else { "" };
         eprintln!(
             "ns watch: #{} {} (worker {n}{again})",
@@ -572,6 +632,9 @@ impl<'a> Scheduler<'a> {
         loop {
             if stop::requested().is_some() && !self.forwarded {
                 return Wake::Stop;
+            }
+            if let Some(b) = self.plan.update.as_mut().and_then(|u| u.poll()) {
+                return Wake::Built(b);
             }
             for (n, w) in self.running.iter_mut() {
                 match w.child.try_wait() {
