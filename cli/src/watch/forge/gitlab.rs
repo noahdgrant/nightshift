@@ -8,7 +8,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::{ClosingPrs, Filed, Forge, IssueState, MergedPr, MergedPrs, Post, PrState};
+use super::{
+    ClosingPrs, CommitPr, Filed, Forge, IssueLink, IssueState, MergedPr, MergedPrs, Post, Pr,
+    PrState, PrStatus,
+};
 use crate::config::ForgeKind;
 use crate::error::SfError;
 use crate::proc::{Kind, Proc};
@@ -164,6 +167,40 @@ fn to_merged(mr: &Value) -> Option<MergedPr> {
     })
 }
 
+/// An MR's state: `opened` (or `locked`, open but frozen), `merged` or `closed`.
+fn mr_status(mr: &Value) -> PrStatus {
+    match mr["state"].as_str() {
+        Some("merged") => PrStatus::Merged,
+        Some("closed") => PrStatus::Closed,
+        _ => PrStatus::Open,
+    }
+}
+
+/// One merge request, as `projects/:id/merge_requests/<iid>` gives it.
+fn to_pr(mr: &Value) -> Pr {
+    let text = |k: &str| mr[k].as_str().unwrap_or("").to_string();
+    Pr {
+        status: mr_status(mr),
+        head_sha: text("sha"),
+        head_branch: text("source_branch"),
+        body: text("description"),
+    }
+}
+
+/// The MRs `repository/commits/<sha>/merge_requests` links to a commit. One with no iid is left
+/// out.
+fn to_commit_prs(mrs: &[Value]) -> Vec<CommitPr> {
+    mrs.iter()
+        .filter_map(|mr| {
+            Some(CommitPr {
+                number: mr["iid"].as_u64()?,
+                head: mr["source_branch"].as_str().unwrap_or("").to_string(),
+                merged: mr_status(mr) == PrStatus::Merged,
+            })
+        })
+        .collect()
+}
+
 /// GitLab's `2026-10-05T10:00:00.123Z` in unix seconds, the fraction dropped.
 fn time(s: &str) -> Option<i64> {
     let whole = match (s.get(..19), s.get(19..).and_then(|r| r.strip_prefix('.'))) {
@@ -286,6 +323,24 @@ impl Forge for GitLab {
     /// `n` is always an issue iid: a merge request is `!n`, numbered apart, so it never blocks.
     fn is_closed(&self, n: u64) -> Result<bool> {
         Ok(self.issue(n)?["state"].as_str() == Some("closed"))
+    }
+
+    fn issue_link(&self, n: u64) -> Result<IssueLink> {
+        Ok(super::parse_issue_link(&self.issue(n)?, "web_url"))
+    }
+
+    fn pr(&self, n: u64) -> Result<Pr> {
+        Ok(to_pr(
+            &self.get(&format!("projects/:id/merge_requests/{n}"))?,
+        ))
+    }
+
+    fn commit_prs(&self, sha: &str) -> Result<Vec<CommitPr>> {
+        let path = format!(
+            "projects/:id/repository/commits/{}/merge_requests",
+            super::head_sha(sha)?
+        );
+        Ok(to_commit_prs(&self.list(&path)?))
     }
 
     /// GitLab records no close reason, so a closed issue counts as completed.
@@ -634,6 +689,48 @@ mod tests {
         for bad in bad.iter().chain(&wrong_shape) {
             assert!(statuses_path(bad, "main").is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn to_pr_maps_each_mr_state_and_reads_its_head_and_description() {
+        let mr = |state: &str| {
+            serde_json::json!({"iid": 12, "state": state, "sha": "abc", "source_branch": "ns/7-x",
+                               "description": "Closes #7"})
+        };
+        assert_eq!(
+            to_pr(&mr("merged")),
+            Pr {
+                status: PrStatus::Merged,
+                head_sha: "abc".into(),
+                head_branch: "ns/7-x".into(),
+                body: "Closes #7".into()
+            }
+        );
+        assert_eq!(to_pr(&mr("closed")).status, PrStatus::Closed);
+        assert_eq!(to_pr(&mr("opened")).status, PrStatus::Open);
+        assert_eq!(to_pr(&mr("locked")).status, PrStatus::Open);
+        let bare = to_pr(&serde_json::json!({}));
+        assert_eq!(bare.status, PrStatus::Open);
+        assert_eq!(bare.head_sha, "");
+    }
+
+    #[test]
+    fn to_commit_prs_reads_each_mrs_branch_and_whether_it_merged() {
+        let mrs = serde_json::json!([
+            {"iid": 3, "state": "merged", "source_branch": "ns/3-b"},
+            {"iid": 4, "state": "closed", "source_branch": "x"},
+            {"iid": 5, "state": "opened"},
+            {"state": "merged", "source_branch": "no-iid"},
+        ]);
+        let pr = |number, head: &str, merged| CommitPr {
+            number,
+            head: head.into(),
+            merged,
+        };
+        assert_eq!(
+            to_commit_prs(mrs.as_array().unwrap()),
+            [pr(3, "ns/3-b", true), pr(4, "x", false), pr(5, "", false)]
+        );
     }
 
     #[test]

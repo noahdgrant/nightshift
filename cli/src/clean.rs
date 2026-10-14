@@ -11,9 +11,11 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 use crate::clock::Clock;
+use crate::factory;
 use crate::git::{self, Repo};
 use crate::quality::{self, Meta};
-use crate::run::{self, currency::known_pr, gh_json, holder_pid, run_lock, Lock, WORKTREE_LOCK};
+use crate::run::{self, currency::known_pr, holder_pid, run_lock, Lock, WORKTREE_LOCK};
+use crate::watch::forge::{self, Forge, IssueState, Pr, PrStatus};
 use crate::worktree::{self, BRANCH_PREFIX};
 
 /// A unit worktree whose issue is closed and whose PR merged.
@@ -66,6 +68,9 @@ pub struct Plan {
 pub fn plan(repo: &Repo) -> Result<Plan> {
     let mut plan = Plan::default();
     let default = repo.default_base().ok();
+    let queue = factory::load(&factory::root(None, &repo.root))
+        .map(|f| f.queue)
+        .unwrap_or_default();
     for e in git::worktrees(&repo.root)? {
         let Some(branch) = e
             .branch
@@ -82,7 +87,7 @@ pub fn plan(repo: &Repo) -> Result<Plan> {
             },
             None => continue,
         };
-        match merged(repo, unit, &e.path, on_default) {
+        match merged(&queue, unit, &e.path, on_default) {
             Ok(m) => match held(repo, unit).or_else(|| local_reason(repo, &m)) {
                 None => plan.merged.push(m),
                 Some(r) => plan.kept.push(kept(unit, &e.path, r)),
@@ -101,7 +106,7 @@ fn unit_at<'a>(repo: &Repo, path: &'a Path) -> Option<&'a str> {
 
 /// The unit as [`Merged`], or why it is not.
 fn merged(
-    repo: &Repo,
+    queue: &factory::Queue,
     unit: &str,
     path: &Path,
     on_default: Option<String>,
@@ -109,29 +114,25 @@ fn merged(
     let Some(issue) = quality::issue_of(unit) else {
         return Err("the unit id names no issue".into());
     };
-    let v = gh_json(
-        &repo.root,
-        &["issue", "view", &issue.to_string(), "--json", "state"],
-    )
-    .map_err(|e| format!("cannot read issue #{issue}: {e:#}"))?;
-    if v["state"].as_str() != Some("CLOSED") {
+    let forge = open(queue, path)?;
+    let state = forge
+        .state(issue)
+        .map_err(|e| format!("cannot read issue #{issue}: {e:#}"))?;
+    if state == IssueState::Open {
         return Err(format!("issue #{issue} is open"));
     }
     let Some(pr) = known_pr(&path.join(".ns").join(unit)) else {
         return Err(format!("no PR in .ns/{unit}/pr.md"));
     };
-    let v = pr_view(path, pr, "state,headRefOid,headRefName,body")?;
-    if v["state"].as_str() != Some("MERGED") {
-        return Err(format!(
-            "PR #{pr} is {}",
-            v["state"].as_str().unwrap_or("unknown")
-        ));
+    let v = pr_view(forge.as_ref(), pr)?;
+    if v.status != PrStatus::Merged {
+        return Err(format!("PR #{pr} is {}", v.status.name()));
     }
-    if !crate::watch::closed_by(v["body"].as_str().unwrap_or("")).contains(&issue) {
+    if !crate::watch::closed_by(&v.body).contains(&issue) {
         return Err(format!("PR #{pr} does not close #{issue}"));
     }
     let branch = format!("{BRANCH_PREFIX}{unit}");
-    let head_ref = v["headRefName"].as_str().unwrap_or("");
+    let head_ref = v.head_branch;
     if head_ref != branch {
         return Err(format!(
             "PR #{pr} is from branch {head_ref:?}, not {branch}"
@@ -142,14 +143,19 @@ fn merged(
         path: path.to_path_buf(),
         issue: Some(issue),
         pr,
-        pr_head: v["headRefOid"].as_str().unwrap_or("").to_string(),
+        pr_head: v.head_sha,
         on_default,
     })
 }
 
-/// `gh pr view` from the unit's worktree, as the merge step runs it.
-fn pr_view(path: &Path, pr: u64, fields: &str) -> Result<Value, String> {
-    gh_json(path, &["pr", "view", &pr.to_string(), "--json", fields])
+/// The forge, run from the unit's worktree as the merge step runs it.
+fn open(queue: &factory::Queue, path: &Path) -> Result<Box<dyn Forge>, String> {
+    forge::open(queue, path).map_err(|e| format!("cannot open the forge: {e:#}"))
+}
+
+fn pr_view(forge: &dyn Forge, pr: u64) -> Result<Pr, String> {
+    forge
+        .pr(pr)
         .map_err(|e| format!("cannot read PR #{pr}: {e:#}"))
 }
 
@@ -362,6 +368,7 @@ fn log(repo: &Repo, by: &str, m: &Merged, o: &Outcome) {
 /// Returns the run-log event's body.
 pub fn after_merge(
     repo: &Repo,
+    queue: &factory::Queue,
     unit: &str,
     path: &Path,
     issue: Option<u64>,
@@ -380,10 +387,11 @@ pub fn after_merge(
         Outcome::Kept("its quality record is not saved".into())
     } else {
         // The merge step saw it MERGED; only its head is needed.
-        match pr_view(path, pr, "headRefOid") {
+        let read = open(queue, path).and_then(|f| pr_view(f.as_ref(), pr));
+        match read {
             Err(e) => Outcome::Kept(e),
             Ok(v) => {
-                m.pr_head = v["headRefOid"].as_str().unwrap_or("").to_string();
+                m.pr_head = v.head_sha;
                 checked_remove(repo, &m)
             }
         }
@@ -587,6 +595,20 @@ mod tests {
             local_reason(&repo, &m).as_deref(),
             Some("its HEAD is not on main")
         );
+    }
+
+    #[test]
+    fn a_malformed_factory_file_does_not_stop_the_plan() {
+        let (_tmp, repo, m) = left_on_main();
+        g(&m.path, &["checkout", "-q", "-b", "ns/3-done"]);
+        let dir = repo.root.join(".nightshift");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("nightshift.toml"), "[queue\nsource = ").unwrap();
+        assert!(factory::load(&dir).is_err());
+        let plan = plan(&repo).expect("a malformed factory file must not abort the plan");
+        assert!(plan.merged.is_empty());
+        assert_eq!(plan.kept.len(), 1, "{:?}", plan.kept);
+        assert!(plan.kept[0].to_string().contains("3-done"));
     }
 
     #[test]

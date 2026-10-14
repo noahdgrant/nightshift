@@ -16,13 +16,14 @@ use super::currency::{
 use super::locks::{Acquired, Bound, RunnerLocks};
 use super::merge::{merge_step, MergeStep};
 use super::phases::{phase_timeout, phase_tmpdir, run_harness};
-use super::{finish, gh_json, remote_default, remote_sha, Ctx, Finish, Outcome, RunArgs, Shared};
+use super::{finish, remote_default, remote_sha, Ctx, Finish, Outcome, RunArgs, Shared};
 use crate::billing;
 use crate::eval::parser::{ClaudeStreamJson, OutputParser};
 use crate::factory::{self, artifact_of, PHASES};
 use crate::gate;
 use crate::git::{self, same_sha};
 use crate::pin;
+use crate::watch::forge::{self, CommitPr, PrStatus};
 use crate::worktree;
 
 /// Why a spend of `spent` dollars is over `budget`, or `None` while it is under it.
@@ -660,11 +661,8 @@ fn guards(
         }
     }
     if let Some(n) = known_pr(&ctx.artifacts) {
-        let v = gh_json(
-            &ctx.worktree,
-            &["pr", "view", &n.to_string(), "--json", "state"],
-        )?;
-        if v["state"].as_str() == Some("MERGED") {
+        let forge = forge::open(&ctx.fac.queue, &ctx.worktree)?;
+        if forge.pr(n)?.status == PrStatus::Merged {
             ctx.log(
                 json!({"event": "breach", "rule": "PR merged by run", "phase": phase, "pr": n}),
             );
@@ -679,7 +677,7 @@ fn guards(
 }
 
 /// The most commits one move of the default branch is checked for, so a long push is still
-/// decided with a bounded number of GitHub queries.
+/// decided with a bounded number of forge queries.
 const MOVE_CHECK_MAX: usize = 50;
 
 /// The default branch moved from `from` to `now`, a commit the unit's HEAD holds. That is
@@ -706,16 +704,13 @@ fn merged_by_others(ctx: &Ctx<'_>, from: &str, now: &str) -> std::result::Result
     }
     let own_pr = known_pr(&ctx.artifacts);
     let own_branch = format!("{}{}", worktree::BRANCH_PREFIX, ctx.unit);
+    let forge = forge::open(&ctx.fac.queue, &ctx.worktree)
+        .map_err(|e| format!("cannot tell who made it: {e:#}"))?;
     let mut prs = vec![];
     for c in commits {
-        let pulls = gh_json(
-            &ctx.worktree,
-            &[
-                "api",
-                &format!("repos/{{owner}}/{{repo}}/commits/{c}/pulls"),
-            ],
-        )
-        .map_err(|e| format!("cannot tell who made {c}: {e:#}"))?;
+        let pulls = forge
+            .commit_prs(c)
+            .map_err(|e| format!("cannot tell who made {c}: {e:#}"))?;
         let n = other_merged_pr(&pulls, own_pr, &own_branch)
             .ok_or_else(|| format!("{c} is in no merged PR of another branch"))?;
         if !prs.contains(&n) {
@@ -725,21 +720,14 @@ fn merged_by_others(ctx: &Ctx<'_>, from: &str, now: &str) -> std::result::Result
     Ok(prs)
 }
 
-/// A merged PR in GitHub's `commits/<sha>/pulls` list, when the list names no PR that is
-/// `own_pr` or comes from `own_branch`.
-fn other_merged_pr(pulls: &Value, own_pr: Option<u64>, own_branch: &str) -> Option<u64> {
-    let pulls = pulls.as_array()?;
-    let own = |p: &Value| {
-        p["number"].as_u64().is_some_and(|n| Some(n) == own_pr)
-            || p["head"]["ref"].as_str() == Some(own_branch)
-    };
+/// A merged PR among the PRs that hold a commit, when none of them is `own_pr` or comes from
+/// `own_branch`.
+fn other_merged_pr(pulls: &[CommitPr], own_pr: Option<u64>, own_branch: &str) -> Option<u64> {
+    let own = |p: &CommitPr| Some(p.number) == own_pr || p.head == own_branch;
     if pulls.iter().any(own) {
         return None;
     }
-    pulls.iter().find_map(|p| {
-        let merged = p["merged_at"].as_str().is_some_and(|s| !s.is_empty());
-        p["number"].as_u64().filter(|_| merged)
-    })
+    pulls.iter().find(|p| p.merged).map(|p| p.number)
 }
 
 #[cfg(test)]
@@ -750,37 +738,26 @@ mod tests {
 
     #[test]
     fn other_merged_pr_names_only_a_merged_pr_of_another_branch() {
-        let pr = |n: u64, merged: Value, head: &str| json!({"number": n, "merged_at": merged, "head": {"ref": head}});
-        let when = json!("2026-10-10T01:00:00Z");
+        let pr = |number: u64, merged: bool, head: &str| CommitPr {
+            number,
+            head: head.into(),
+            merged,
+        };
         let mine = "ns/7-fix";
-        let check = |list: Vec<Value>, own: Option<u64>| other_merged_pr(&json!(list), own, mine);
-        assert_eq!(check(vec![pr(3, when.clone(), "ns/3-b")], None), Some(3));
-        assert_eq!(
-            check(vec![pr(3, when.clone(), "ns/3-b")], Some(12)),
-            Some(3)
-        );
+        let check = |list: Vec<CommitPr>, own: Option<u64>| other_merged_pr(&list, own, mine);
+        assert_eq!(check(vec![pr(3, true, "ns/3-b")], None), Some(3));
+        assert_eq!(check(vec![pr(3, true, "ns/3-b")], Some(12)), Some(3));
         assert_eq!(check(vec![], None), None);
-        assert_eq!(check(vec![pr(3, Value::Null, "ns/3-b")], None), None);
-        assert_eq!(check(vec![pr(3, json!(""), "ns/3-b")], None), None);
-        assert_eq!(check(vec![pr(12, when.clone(), "ns/3-b")], Some(12)), None);
-        assert_eq!(check(vec![pr(9, when.clone(), mine)], None), None);
+        assert_eq!(check(vec![pr(3, false, "ns/3-b")], None), None);
+        assert_eq!(check(vec![pr(12, true, "ns/3-b")], Some(12)), None);
+        assert_eq!(check(vec![pr(9, true, mine)], None), None);
         assert_eq!(
-            check(
-                vec![pr(3, when.clone(), "ns/3-b"), pr(12, Value::Null, "x")],
-                Some(12)
-            ),
+            check(vec![pr(3, true, "ns/3-b"), pr(12, false, "x")], Some(12)),
             None
         );
         assert_eq!(
-            check(
-                vec![pr(3, Value::Null, "a"), pr(4, when.clone(), "b")],
-                Some(12)
-            ),
+            check(vec![pr(3, false, "a"), pr(4, true, "b")], Some(12)),
             Some(4)
-        );
-        assert_eq!(
-            other_merged_pr(&json!({"message": "Not Found"}), None, mine),
-            None
         );
     }
 

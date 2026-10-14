@@ -152,7 +152,7 @@ fn current(root: &Path, runs: &Path, unit: Option<&str>) -> io::Result<Option<Pa
     if unit.is_some() {
         return newest(root, unit);
     }
-    let logged = match crate::eval::trial::tail(runs, RUNS_TAIL) {
+    let logged = match crate::tail::tail(runs, RUNS_TAIL) {
         Ok(b) => last_unit(&b),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => return Err(e),
