@@ -72,6 +72,39 @@ PYEOF
 expect_exit = 0
 
 [[check]]
+# The children's Touches lines are pairwise disjoint: no glob equals, contains or matches another's.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import fnmatch, glob, os, re, sys
+parent_path = ".scratch/stock-safety/issues/01-stock-safety.md"
+children = sorted(p for p in glob.glob(".scratch/**/*.md", recursive=True)
+                  if os.path.realpath(p) != os.path.realpath(parent_path) and "/issues/" in p)
+touches = {}
+for path in children:
+    m = re.search(r"(?mi)^\W*Touches:?[*_ \t]*(.*)$", open(path, encoding="utf-8").read())
+    globs = re.findall(r"`([^`]+)`", m.group(1)) if m else []
+    if not globs:
+        sys.exit(f"{path}: no backquoted Touches globs")
+    touches[path] = [g.rstrip("/") for g in globs]
+def base(g):
+    return re.sub(r"/?\*\*?$", "", g)
+def overlap(a, b):
+    ba, bb = base(a), base(b)
+    return a == b or fnmatch.fnmatch(a, b) or fnmatch.fnmatch(b, a) or ba == bb or ba.startswith(bb + "/") or bb.startswith(ba + "/")
+paths = list(touches)
+for i, p in enumerate(paths):
+    for q in paths[i + 1:]:
+        for a in touches[p]:
+            for b in touches[q]:
+                if overlap(a, b):
+                    sys.exit(f"{p} and {q} overlap: {a} vs {b}")
+print("ok: Touches are pairwise disjoint", touches)
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
 type = "command"
 run = '''
 ! ls .ns/*/brief.md ../"$(basename "$PWD")".worktrees/*/.ns/*/brief.md 2>/dev/null | grep -q . && ! git branch --list 'ns/*' | grep -q . && [ "$(git worktree list | wc -l)" -eq 1 ]

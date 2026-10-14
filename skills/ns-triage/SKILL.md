@@ -126,12 +126,19 @@ Show counts and a one-line summary per item. Let the maintainer pick.
 
 5. **Size it.** For work headed to `ready-for-agent`, estimate the change from the codebase: files and modules touched, new tests, rough changed lines. From the same exploration, list the paths the unit will probably change as `touches` globs: a file it edits (`cli/src/run.rs`), or a directory glob when it adds or edits several files there (`skills/ns-review/**`). Paths only, never line numbers. Every `ready-for-agent` brief carries them ([agent-brief.md](references/agent-brief.md)).
 
-   Then decide whether to split. Each unit carries a fixed cost (the gates, CI, each phase's start-up, a human merge), so a split pays only when at least one of these holds:
-   1. **The children can run in parallel**: no child's `touches` overlap another's.
+   Then decide whether to split. The default is one unit. Consider a split only when the request holds two or more distinct pieces of work, each a behaviour or change you could name and test alone. One behaviour is one unit, however many files it touches and however you could cut those files. Each unit carries a fixed cost (the gates, CI, each phase's start-up, a human merge), so keep two pieces apart only when at least one of these holds:
+   1. **The pieces can run in parallel**: their own `touches` don't overlap, and neither needs the other built first.
    2. **They are different behaviours** with a real seam between them, each worth shipping alone.
    3. **One unit would be too big**: the estimate passes the split threshold in `docs/agents/stack.md` ([unit size](../ns-contract/SKILL.md#target-repo-configuration)), or the build would likely outrun the build phase's timeout.
 
-   Merge back into one any children whose `touches` overlap, unless the merged unit would pass rule 3; split the rest only if rule 1 or 2 still holds for them. A repeated mechanical change (the same edit at many sites) stays one unit, or at most two, whatever its line count. Otherwise the outcome is one unit: an estimate past the soft limit alone is no reason to split, since the soft limit is review's hint. A split goes to step 6. The estimate plans the work and never caps it; a unit that grows past it during build keeps going, and review suggests where it could split.
+   Precedence:
+   - Pieces whose `touches` overlap merge back into one, even when rule 2 holds.
+   - Only rule 3 overrides an overlap: if the merged unit would be too big, keep them apart.
+   - When only some pieces overlap, merge those and split the rest if rule 1 or 2 still holds for them.
+   - A repeated mechanical change (the same edit at many sites) stays one unit, or at most two, whatever its line count.
+   - An estimate past the soft limit alone is no reason to split: the soft limit is review's hint.
+
+   If no piece stays apart, the outcome is one unit. If some do, go to step 6. The estimate plans the work and never caps it; a unit that grows past it during build keeps going, and review suggests where it could split.
 
 6. **Apply the outcome.** Set the category and priority labels, and the state as [who writes the state](#who-writes-the-state) says. An issue that already carries a priority keeps it unless the maintainer says otherwise. Then:
 
