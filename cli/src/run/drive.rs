@@ -539,6 +539,11 @@ fn culprit(ctx: &Ctx<'_>, ledger: &Ledger, output: &str) -> Option<(usize, Strin
     if failing.is_empty() {
         return None;
     }
+    let tracked: Vec<String> = git::run(&ctx.worktree, &["ls-files"])
+        .ok()?
+        .lines()
+        .map(str::to_string)
+        .collect();
     for (i, m) in ledger.suspects() {
         // Ship's move may merge the base in: only the files whose own lines it changed count.
         let changed: Vec<String> = if m.phase == "ship" {
@@ -554,7 +559,11 @@ fn culprit(ctx: &Ctx<'_>, ledger: &Ledger, output: &str) -> Option<(usize, Strin
         };
         let hit: Vec<String> = failing
             .iter()
-            .filter(|f| changed.iter().any(|c| gate::same_file(c, f)))
+            .filter(|f| {
+                changed
+                    .iter()
+                    .any(|c| gate::same_file(c, f, &ctx.worktree, &tracked))
+            })
             .cloned()
             .collect();
         if !hit.is_empty() {
