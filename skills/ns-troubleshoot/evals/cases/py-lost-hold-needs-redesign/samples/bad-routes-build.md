@@ -1,7 +1,11 @@
 ---
+schema: ns-artifact/2
 unit: 06-holds-lost-between-stations
 phase: troubleshoot
 status: pass
+cause: none
+next: build
+reason: "The unlocked load-change-save cycle loses a hold."
 base: main
 updated: 2026-10-10T06:00:00Z
 ---

@@ -1,4 +1,4 @@
-description = "Full fix cycles 1 to 3 have each tried C1 (cancel_all drops every SKU's reservations), and it is still open. With 3 fix attempts and nothing left under 2, no fix-only cycle is due: review.md must be blocked (cycles 3, first body line `Open after at least 2 fix attempts`), its first body line must name C1, and the body must offer fixing by hand, splitting the issue, or ns-define."
+description = "Full fix cycles 1 to 3 have each tried C1 (cancel_all drops every SKU's reservations), and it is still open. With 3 fix attempts and nothing left under 2, no fix-only cycle is due: review.md must be blocked (cycles 3, `reason` `Open after at least 2 fix attempts` naming C1, `cause: findings_open`), and the body must offer fixing by hand, splitting the issue, or ns-define."
 fixture = "py-inventory"
 skills = ["ns-review"]
 extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
@@ -26,13 +26,19 @@ equals = "blocked"
 [[check]]
 type = "frontmatter"
 path = ".ns/2-cancel-all/review.md"
+key = "cause"
+equals = "findings_open"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/review.md"
 key = "cycles"
 equals = "3"
 
 [[check]]
 type = "command"
 run = '''
-awk 'f==2 && NF {print; exit} /^---$/ {f++}' .ns/2-cancel-all/review.md | grep -E '^Open after at least 2 fix attempts.*C1'
+awk '/^---$/ {n++; next} n==1' .ns/2-cancel-all/review.md | grep -E '^reason: *["'"'"']?Open after at least 2 fix attempts.*C1'
 '''
 expect_exit = 0
 
@@ -57,5 +63,5 @@ allow = [".ns/**", ".scratch/**"]
 
 [[check]]
 type = "judge"
-rubric = "Did the review end blocked because C1 stayed open after three fix attempts, with no fix-only cycle run, rather than fail, and does its opening line say which Critical is open? Did it list fixing by hand, splitting the issue and routing to ns-define as the options?"
+rubric = "Did the review end blocked because C1 stayed open after three fix attempts, with no fix-only cycle run, rather than fail, and does its reason say which Critical is open? Did it list fixing by hand, splitting the issue and routing to ns-define as the options?"
 required = false

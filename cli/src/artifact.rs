@@ -49,6 +49,7 @@ names!(
     /// The phase that wrote the artifact.
     Phase {
         Triage = "triage",
+        Troubleshoot = "troubleshoot",
         Build = "build",
         Verify = "verify",
         Review = "review",
@@ -229,7 +230,7 @@ fn is_utc_timestamp(s: &str) -> bool {
 /// The phases whose artifact names the commit it describes.
 fn needs_sha(p: Phase) -> bool {
     match p {
-        Phase::Triage => false,
+        Phase::Triage | Phase::Troubleshoot => false,
         Phase::Build | Phase::Verify | Phase::Review | Phase::ReviewFix | Phase::Ship => true,
     }
 }
@@ -259,7 +260,8 @@ pub fn check(text: &str, expected_phase: Option<&str>) -> Result<Typed, Vec<Stri
     }
     let phase = enum_field(yaml, "phase", Phase::NAMES, Phase::parse, None, &mut errors);
     if let (Some(p), Some(want)) = (phase, expected_phase) {
-        if p.as_str() != want {
+        // brief.md is triage's, or troubleshoot's when a bug went through it.
+        if p.as_str() != want && !(p == Phase::Troubleshoot && want == "triage") {
             errors.push(format!(
                 "`phase: {}` but this artifact is checked as `{want}`",
                 p.as_str()
@@ -444,7 +446,7 @@ fn named_phase(body: &str) -> Option<Phase> {
 /// The phase after `p` once it passes.
 fn after(p: Phase) -> Next {
     match p {
-        Phase::Triage => Next::Build,
+        Phase::Triage | Phase::Troubleshoot => Next::Build,
         Phase::Build => Next::Verify,
         Phase::Verify => Next::Review,
         Phase::Review | Phase::ReviewFix => Next::Ship,
@@ -455,7 +457,7 @@ fn after(p: Phase) -> Next {
 /// A `/1` fail's cause and next, by `decide`'s rules in `run/currency.rs`.
 fn v1_fail(phase: Phase, body: &str) -> (Cause, Next) {
     match phase {
-        Phase::Triage => (Cause::NeedsHuman, Next::Human),
+        Phase::Triage | Phase::Troubleshoot => (Cause::NeedsHuman, Next::Human),
         Phase::Build => (Cause::GateRed, Next::Build),
         Phase::Verify | Phase::Review | Phase::ReviewFix | Phase::Ship if base_moved(body) => {
             (Cause::BaseMoved, Next::Build)

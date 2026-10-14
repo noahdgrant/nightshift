@@ -84,20 +84,10 @@ fn drive_loop(
 ) -> Result<Finish> {
     let fac = ctx.fac;
     let subscription = fac.subscription();
-    let from = args
-        .triage_only
-        .then_some("triage")
-        .or(args.from.as_deref());
-    let mut ledger = match (from, args.fresh) {
-        (None, false) => match load_ledger(&ctx.artifacts) {
-            Some(l) => {
-                ctx.log(json!({"event": "ledger_resumed", "path": ledger_path(&ctx.artifacts).to_string_lossy()}));
-                l
-            }
-            None => Ledger::new(None),
-        },
-        _ => Ledger::new(from),
-    };
+    let (mut ledger, events) = start_ledger(args, &ctx.artifacts, &ctx.head());
+    for ev in events {
+        ctx.log(ev);
+    }
     let mut baseline = remote_default(&ctx.worktree);
     let mut gate_state = gate::Gate::default();
     ctx.log(json!({
@@ -112,11 +102,13 @@ fn drive_loop(
         "cpus": shared.cpus,
     }));
     loop {
+        let head = ctx.head();
+        ledger.saved_at(&head);
         save_ledger(ctx, &ledger);
         crate::stop::check()?;
         let state = read_state(
             &ctx.artifacts,
-            ctx.head(),
+            head,
             ctx.issue.is_some(),
             Some(UnitDiff::new(
                 ctx.worktree.clone(),
@@ -519,7 +511,7 @@ fn drive_loop(
 
 /// Mark the verify and review artifacts that only a small base merge by ship made stale, so they
 /// carry forward (CORE-1): `state.carried`.
-fn carry_forward(ctx: &Ctx<'_>, ledger: &Ledger, state: &mut State) {
+pub(super) fn carry_forward(ctx: &Ctx<'_>, ledger: &Ledger, state: &mut State) {
     for phase in ["verify", "review"] {
         let Some(sha) = state.arts.get(phase).and_then(|a| a.sha.clone()) else {
             continue;
@@ -539,6 +531,18 @@ fn carry_forward(ctx: &Ctx<'_>, ledger: &Ledger, state: &mut State) {
     }
 }
 
+/// The files git tracks in the worktree. When `git ls-files` fails, logs it and returns none: a
+/// failing path then matches by equality or by suffix, with no other file to make it ambiguous.
+fn tracked_files(ctx: &Ctx<'_>) -> Vec<String> {
+    match git::run(&ctx.worktree, &["ls-files"]) {
+        Ok(t) => t.lines().map(str::to_string).collect(),
+        Err(e) => {
+            ctx.log(json!({"event": "ls_files_failed", "error": format!("{e:#}")}));
+            Vec::new()
+        }
+    }
+}
+
 /// The phase whose commits a red gate's output points at, with the paths it matched: the newest
 /// phase run that moved HEAD and changed a file the output names. `None` when the output names
 /// no file, or none any phase changed (the base, or the environment).
@@ -547,6 +551,7 @@ fn culprit(ctx: &Ctx<'_>, ledger: &Ledger, output: &str) -> Option<(usize, Strin
     if failing.is_empty() {
         return None;
     }
+    let tracked = tracked_files(ctx);
     for (i, m) in ledger.suspects() {
         // Ship's move may merge the base in: only the files whose own lines it changed count.
         let changed: Vec<String> = if m.phase == "ship" {
@@ -562,7 +567,11 @@ fn culprit(ctx: &Ctx<'_>, ledger: &Ledger, output: &str) -> Option<(usize, Strin
         };
         let hit: Vec<String> = failing
             .iter()
-            .filter(|f| changed.iter().any(|c| gate::same_file(c, f)))
+            .filter(|f| {
+                changed
+                    .iter()
+                    .any(|c| gate::same_file(c, f, &ctx.worktree, &tracked))
+            })
             .cloned()
             .collect();
         if !hit.is_empty() {
@@ -577,11 +586,45 @@ fn ledger_path(artifacts: &std::path::Path) -> PathBuf {
     artifacts.join("state.json")
 }
 
-/// The saved ledger, or `None` when there is none or it doesn't parse (a torn write, an older
-/// format): the run then starts a new one.
-fn load_ledger(artifacts: &std::path::Path) -> Option<Ledger> {
-    let text = fs::read_to_string(ledger_path(artifacts)).ok()?;
-    serde_json::from_str(&text).ok()
+/// The ledger a run starts from, with the events to log about it: a new one under `--from`,
+/// `--triage-only` or `--fresh`, else the saved one at `head`. A saved ledger that can't be read
+/// or doesn't parse (a torn write, an older format) is dropped, and the run re-derives its state
+/// from the artifacts.
+pub(super) fn start_ledger(
+    args: &RunArgs,
+    artifacts: &std::path::Path,
+    head: &str,
+) -> (Ledger, Vec<Value>) {
+    let from = args
+        .triage_only
+        .then_some("triage")
+        .or(args.from.as_deref());
+    if from.is_some() || args.fresh {
+        return (Ledger::new(from), vec![]);
+    }
+    let path = ledger_path(artifacts);
+    match load_ledger(artifacts) {
+        Ok(None) => (Ledger::new(None), vec![]),
+        Ok(Some(mut l)) => {
+            let dropped = l.resumed_at(head);
+            let ev = json!({"event": "ledger_resumed", "path": path.to_string_lossy(), "forced_dropped": dropped});
+            (l, vec![ev])
+        }
+        Err(e) => {
+            let ev = json!({"event": "state_rederived", "path": path.to_string_lossy(), "error": format!("{e:#}")});
+            (Ledger::new(None), vec![ev])
+        }
+    }
+}
+
+/// The saved ledger, `None` when there is none.
+fn load_ledger(artifacts: &std::path::Path) -> Result<Option<Ledger>> {
+    let text = match fs::read_to_string(ledger_path(artifacts)) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(Some(serde_json::from_str(&text)?))
 }
 
 /// Write the ledger through a temp file and a rename, so a crash leaves the old one or the new
@@ -731,86 +774,4 @@ fn other_merged_pr(pulls: &[CommitPr], own_pr: Option<u64>, own_branch: &str) ->
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::locks::tests::MIN;
-    use super::*;
-    use crate::clock::Clock;
-
-    #[test]
-    fn other_merged_pr_names_only_a_merged_pr_of_another_branch() {
-        let pr = |number: u64, merged: bool, head: &str| CommitPr {
-            number,
-            head: head.into(),
-            merged,
-        };
-        let mine = "ns/7-fix";
-        let check = |list: Vec<CommitPr>, own: Option<u64>| other_merged_pr(&list, own, mine);
-        assert_eq!(check(vec![pr(3, true, "ns/3-b")], None), Some(3));
-        assert_eq!(check(vec![pr(3, true, "ns/3-b")], Some(12)), Some(3));
-        assert_eq!(check(vec![], None), None);
-        assert_eq!(check(vec![pr(3, false, "ns/3-b")], None), None);
-        assert_eq!(check(vec![pr(12, true, "ns/3-b")], Some(12)), None);
-        assert_eq!(check(vec![pr(9, true, mine)], None), None);
-        assert_eq!(
-            check(vec![pr(3, true, "ns/3-b"), pr(12, false, "x")], Some(12)),
-            None
-        );
-        assert_eq!(
-            check(vec![pr(3, false, "a"), pr(4, true, "b")], Some(12)),
-            Some(4)
-        );
-    }
-
-    #[test]
-    fn a_budget_spent_during_a_lock_wait_stops_the_phase_and_frees_the_lock() {
-        let dir = tempfile::tempdir().unwrap();
-        let names = vec!["a".to_string()];
-        let acquire = || {
-            RunnerLocks::acquire(
-                dir.path(),
-                &names,
-                "u",
-                &Clock::pinned(1000),
-                MIN,
-                None,
-                |_, _| {},
-            )
-            .unwrap()
-            .held()
-        };
-        let held = recheck_budget(acquire(), Some(5.0), 4.0, "build");
-        drop(held.ok().expect("under budget"));
-        let Err(f) = recheck_budget(acquire(), Some(5.0), 5.0, "build") else {
-            panic!("a spent budget kept the locks")
-        };
-        assert!(matches!(f.outcome, Outcome::Budget));
-        assert_eq!(f.reason, "spent $5.00 of the $5.00 budget");
-        assert_eq!(f.phase.as_deref(), Some("build"));
-        acquire();
-    }
-
-    #[test]
-    fn a_saved_ledger_loads_and_a_torn_or_missing_one_does_not() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(load_ledger(dir.path()), None);
-        let ledger = Ledger::new(Some("review"));
-        fs::write(
-            ledger_path(dir.path()),
-            serde_json::to_vec(&ledger).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(load_ledger(dir.path()), Some(ledger));
-        fs::write(ledger_path(dir.path()), "{\"attempts\": {\"bui").unwrap();
-        assert_eq!(load_ledger(dir.path()), None);
-    }
-
-    #[test]
-    fn a_spent_budget_names_the_spend_and_the_limit() {
-        assert_eq!(budget_spent(None, 99.0), None);
-        assert_eq!(budget_spent(Some(5.0), 4.99), None);
-        assert_eq!(
-            budget_spent(Some(5.0), 5.0).as_deref(),
-            Some("spent $5.00 of the $5.00 budget")
-        );
-    }
-}
+mod tests;

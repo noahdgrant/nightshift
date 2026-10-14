@@ -227,7 +227,7 @@ fn enum_values_name_the_allowed_set() {
     );
     assert_eq!(
         errors(&with("phase", "phase: qa"), None),
-        ["`phase: qa` is not one of triage, build, verify, review, review-fix, ship"]
+        ["`phase: qa` is not one of triage, troubleshoot, build, verify, review, review-fix, ship"]
     );
     assert_eq!(
         errors(&with("next", "next: later"), None),
@@ -243,7 +243,7 @@ fn required_keys_are_named_when_missing() {
     );
     assert_eq!(
         errors(&with("phase", ""), None),
-        ["`phase` is missing: one of triage, build, verify, review, review-fix, ship"]
+        ["`phase` is missing: one of triage, troubleshoot, build, verify, review, review-fix, ship"]
     );
     assert_eq!(
         errors(&with("status", ""), None),
@@ -364,6 +364,38 @@ fn split_is_for_triage_only_and_triage_names_next() {
     assert_eq!(
         errors(&no_reason, None),
         ["`reason` is missing: `status: split` needs one line saying why"]
+    );
+}
+
+/// A troubleshoot brief.md under `status`, `cause` and `next`.
+fn troubleshoot(status: &str, cause: &str, next: &str) -> String {
+    format!(
+        "---\nschema: ns-artifact/2\nunit: 7-x\nphase: troubleshoot\nstatus: {status}\ncause: {cause}\nnext: {next}\nreason: \"needs redesign: route ns-define\"\nbase: main\nupdated: 2026-10-08T21:14:00Z\n---\nIssue: u\n"
+    )
+}
+
+#[test]
+fn a_troubleshoot_brief_checks_as_triages_brief() {
+    for (status, cause, next) in [
+        ("pass", "none", "build"),
+        ("blocked", "needs_human", "define"),
+        ("fail", "needs_human", "human"),
+    ] {
+        let text = troubleshoot(status, cause, next);
+        for want in [None, Some("troubleshoot"), Some("triage")] {
+            let t = check(&text, want).unwrap_or_else(|e| panic!("{status} as {want:?}: {e:?}"));
+            assert_eq!(t.phase, Phase::Troubleshoot);
+        }
+        assert_eq!(
+            errors(&text, Some("build")),
+            ["`phase: troubleshoot` but this artifact is checked as `build`"]
+        );
+    }
+    let t = read(&troubleshoot("pass", "none", "build"), Phase::Triage).unwrap();
+    assert_eq!((t.status, t.next), (Status::Pass, Next::Build));
+    assert_eq!(
+        errors(&troubleshoot("split", "none", "build"), None),
+        ["`status: split` is only for triage's brief.md, not `phase: troubleshoot`"]
     );
 }
 

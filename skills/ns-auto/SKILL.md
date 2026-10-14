@@ -80,12 +80,12 @@ Read the frontmatter of every artifact in `.ns/<unit-id>/`, skipping `history/`.
 | no `review.md`, or review not current | review |
 | review `fail` | build |
 | no `pr.md`, or pr `pass` and not current | ship |
-| pr `fail` whose first line starts with `base moved` (after an optional `NO-GO:`) | build |
-| pr `fail` | the phase its body names first (verify or review), else stuck |
+| pr `fail` with `cause: base_moved` | build |
+| pr `fail` | the phase its `next` names (build, verify or review), else stuck |
 
 Then two checks on P:
 
-- **Attempts.** Count P's lines in the run log after the last invocation marker, so each invocation gets fresh attempts. A verify or review line right after a P line that passed is free: HEAD moved under the pass, and the rerun failed nothing. A build line sent back by an evidence, review or pr `fail` whose first line starts with `base moved` (after an optional `NO-GO:`), after build passed, is free too, once per new `origin/<base>` sha: fetch it first and pass build its sha. Two attempts per run unless the contract says otherwise. A P that has used them is stuck.
+- **Attempts.** Count P's lines in the run log after the last invocation marker, so each invocation gets fresh attempts. A verify or review line right after a P line that passed is free: HEAD moved under the pass, and the rerun failed nothing. A build line sent back by an evidence, review or pr `fail` with `cause: base_moved`, after build passed, is free too, once per new `origin/<base>` sha: fetch it first and pass build its sha. Two attempts per run unless the contract says otherwise. A P that has used them is stuck.
 - **Push.** When P is ship and the contract grants no push, stop: an escape-hatch stop, reported as such.
 
 ### Archive and capture feedback
@@ -112,7 +112,7 @@ Read the result. If P wrote no artifact, the attempt failed with "no artifact wr
 
 Run the gate after a build that wrote `pass`, and after a review that moved HEAD. The command is the `ci-local` row of the Commands table in `docs/agents/stack.md`; with no such row, skip the gate. Run it in the worktree. A non-zero exit is red.
 
-On red, move the passing `build.md` to `history/` and write a new `build.md` with `status: fail`, whose body is the command, its exit and the last 40 lines of its output. The `build fail` row then sends the next turn to build with that body as the feedback.
+On red, move the passing `build.md` to `history/` and write a new `build.md` with `status: fail`, `cause: gate_red`, `next: build` and a `reason` naming the command and its exit, whose body is the command, its exit and the last 40 lines of its output. The `build fail` row then sends the next turn to build with that body as the feedback.
 
 A red gate costs one attempt, so the turn logs one line:
 
@@ -128,7 +128,7 @@ These are detected after the fact, not blocked. Two detectors, each stuck on a h
 
 ### Log and gate
 
-Append one line to the run log: `- <phase> attempt <n> <status> <sha>: <first line of the artifact body>`. Then apply the gate policy. Under `gates: stop`, stop here and report. Invoking `ns-auto` again resumes from the table. Under `gates: auto`, take the next turn, and check the escape hatch first.
+Append one line to the run log: `- <phase> attempt <n> <status> <sha>: <the artifact's reason>`. Then apply the gate policy. Under `gates: stop`, stop here and report. Invoking `ns-auto` again resumes from the table. Under `gates: auto`, take the next turn, and check the escape hatch first.
 
 When two attempts that share one premise fail the same gate, apply [attack the premise](../ns-principle-attack-the-premise/SKILL.md) before the next one. For any other call that is yours (a contract default, a retry, a send-back), read the [principles index](../ns-principles/SKILL.md) and apply the principles whose trigger fits. Name each one in the run log with the choice it changed.
 
@@ -143,5 +143,5 @@ Write the report with the `ns-writing-for-humans` skill:
 - the done condition, and whether it holds, with the artifact that proves it
 - the phases run, from the run log or `ns run`'s `phases`
 - the PR URL, if there is one
-- the artifact that stopped the run and its first body line, when it stopped short
+- the artifact that stopped the run and its `reason`, when it stopped short
 - what waits on a human: the merge, an approval, a `blocked` artifact's blocker

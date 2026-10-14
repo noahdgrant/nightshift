@@ -36,7 +36,6 @@ def failures(text):
     if not m:
         return ["frontmatter"]
     fm = {k: v.strip("'\"") for k, v in re.findall(r"(?m)^(\w+):[ \t]*(.*?)[ \t]*(?:#.*)?$", m.group(1))}
-    first_line = next((l for l in text[m.end() :].splitlines() if l.strip()), "")
     route = re.search(r"(?im)^\**Route:\**[ \t]*(\S+)", text)
     repro = section(text, "repro")
     cause = section(text, "root cause")
@@ -44,7 +43,8 @@ def failures(text):
         "phase": fm.get("phase") == "troubleshoot",
         "status": fm.get("status") == "blocked",
         "base": fm.get("base", "") != "",
-        "first line says needs redesign": re.match(r"(?i)\W*needs redesign", first_line) is not None,
+        "next is define": fm.get("next") == "define",
+        "reason says needs redesign": re.match(r"(?i)\W*needs redesign", fm.get("reason", "")) is not None,
         "agent brief": "Agent Brief" in text and "- [ ]" in text,
         "routes to ns-define": route is not None and route.group(1) == "ns-define",
         "repro holds a command": re.search(r"(?m)^\s*(\$ )?python3?\b", repro) is not None,

@@ -152,13 +152,17 @@ Required before writing the brief:
 
 ## Phase 7: Write the brief
 
-Write `.ns/<unit-id>/brief.md` as an Agent Brief with the fields `ns-triage`'s [agent-brief.md](../ns-triage/references/agent-brief.md) lists, under this frontmatter, plus two sections. Set `status` and Route from the Gate table.
+Write `.ns/<unit-id>/brief.md` as an Agent Brief with the fields `ns-triage`'s [agent-brief.md](../ns-triage/references/agent-brief.md) lists, under this frontmatter, plus two sections. Set `status`, `cause`, `next`, `reason` and Route from the Gate table.
 
 ```markdown
 ---
+schema: ns-artifact/2
 unit: <unit-id>
 phase: troubleshoot
 status: pass        # pass | fail | blocked
+cause: none         # from the Gate table
+next: build         # from the Gate table
+reason: "<the Gate table's reason, in one sentence>"
 base: <the branch the worktree came from>
 updated: <UTC timestamp>
 ---
@@ -184,13 +188,13 @@ Re-read the brief for secrets before posting it (see Redact). Then post it to th
 
 ## Gate
 
-The gate passes when the brief's repro command has been run and shown red and a root cause has survived a falsifying probe. The Route line is `ns-build`, `ns-define` or `none`, and the status follows the table. `ns run` reads only `status`, so a redesign is `blocked`: a `pass` would make unattended `ns run` build.
+The gate passes when the brief's repro command has been run and shown red and a root cause has survived a falsifying probe. The Route line is `ns-build`, `ns-define` or `none`, and the frontmatter follows the table. `ns run` routes on the frontmatter, never the body, so a redesign is `blocked`: a `pass` would make unattended `ns run` build.
 
-| status | when | Route | tracker state | sections kept | first line of the body, above `Issue:` |
-| --- | --- | --- | --- | --- | --- |
-| `pass` | gate passes, route `ns-build` | `ns-build` | `ready-for-agent` | Agent Brief, Repro, Root cause | none |
-| `blocked` | gate passes, route `ns-define` (redesign) | `ns-define` | `needs-define` | Agent Brief, Repro, Root cause | `needs redesign: route ns-define` plus the reason, in one sentence |
-| `blocked` | no red loop: a resource is missing, or only a HITL loop under `gates: auto` | none | unchanged, brief posted as a comment | Repro (what you tried) | the blocker and what would unblock it, in one sentence |
-| `fail` | a red loop, but no hypothesis survived | none | unchanged, brief posted as a comment | Repro, and the hypotheses falsified | why no hypothesis survived, in one sentence |
+| status | cause | next | when | Route | tracker state | sections kept | `reason` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `pass` | `none` | `build` | gate passes, route `ns-build` | `ns-build` | `ready-for-agent` | Agent Brief, Repro, Root cause | the root cause, in one sentence |
+| `blocked` | `needs_human` | `define` | gate passes, route `ns-define` (redesign) | `ns-define` | `needs-define` | Agent Brief, Repro, Root cause | `needs redesign: route ns-define` plus the reason |
+| `blocked` | `needs_human` | `human` | no red loop: a resource is missing, or only a HITL loop under `gates: auto` | none | unchanged, brief posted as a comment | Repro (what you tried) | the blocker and what would unblock it |
+| `fail` | `needs_human` | `human` | a red loop, but no hypothesis survived | none | unchanged, brief posted as a comment | Repro, and the hypotheses falsified | why no hypothesis survived |
 
 Under `gates: stop` (the default), stop and report the path to `brief.md`. Under `gates: auto`, load the skill named by **Route** if `status: pass`, and stop otherwise. If it isn't installed, report the routing and stop.

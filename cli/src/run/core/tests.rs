@@ -478,3 +478,121 @@ fn an_invalid_artifact_reruns_its_phase_free_once() {
     ended(&mut l, &a, None);
     assert!(admit(&mut l, "verify").is_err(), "4 runs, 1 free, max 2");
 }
+
+#[test]
+fn an_attempt_takes_one_credit_and_leaves_the_rest_for_the_next() {
+    let mut l = Ledger::new(None);
+    let a = admit(&mut l, "build").unwrap();
+    ended(&mut l, &a, Some("fail"));
+    let r = admit(&mut l, "review").unwrap();
+    l.head_moved("review", "a000001", "b000002");
+    l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "review"));
+    let both = |l: &mut Ledger, sha: &str| {
+        l.admit(
+            "build",
+            String::new(),
+            "x".into(),
+            Some(Rebase::BaseMoved),
+            Some(main_at(sha)),
+            1,
+        )
+    };
+    // The rebase goes first: it is tied to the base's sha, and the fault credit keeps.
+    let a = both(&mut l, "s1").expect("a free rebase");
+    assert!(a.rebase.is_some());
+    assert_eq!(a.fault_of, None, "one credit per attempt");
+    ended(&mut l, &a, Some("pass"));
+    let a = both(&mut l, "s1").expect("the fault credit, kept from the last attempt");
+    assert_eq!(
+        (a.rebase.is_some(), a.fault_of.as_deref()),
+        (false, Some("review"))
+    );
+    ended(&mut l, &a, Some("pass"));
+    assert!(
+        both(&mut l, "s1").is_err(),
+        "1 charged build and 2 credits, max 1"
+    );
+}
+
+#[test]
+fn a_ship_that_rebases_leaves_the_follows_base_credit() {
+    let mut l = Ledger::new(None);
+    let ship = |l: &mut Ledger, sha: &str| {
+        l.admit(
+            "ship",
+            String::new(),
+            "x".into(),
+            Some(Rebase::BaseMoved),
+            Some(main_at(sha)),
+            1,
+        )
+    };
+    let a = ship(&mut l, "s1").unwrap();
+    ended(&mut l, &a, Some("pass"));
+    let a = ship(&mut l, "s2").unwrap();
+    assert!(a.rebase.is_some());
+    assert!(!a.follows_base, "one credit per attempt");
+    ended(&mut l, &a, Some("fail"));
+    let a = ship(&mut l, "s2").expect("the follows-base credit, kept");
+    assert!(a.follows_base && a.rebase.is_none());
+}
+
+#[test]
+fn a_fault_credit_or_a_free_ship_leaves_the_rewrite_for_the_next_attempt() {
+    let mut l = Ledger::new(None);
+    let a = admit(&mut l, "build").unwrap();
+    ended(&mut l, &a, None);
+    l.artifact_invalid(&a, "build.md", &["x".into()]);
+    let r = admit(&mut l, "review").unwrap();
+    l.head_moved("review", "a000001", "b000002");
+    l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "review"));
+    let a = admit(&mut l, "build").unwrap();
+    assert_eq!((a.fault_of.as_deref(), a.rewrite), (Some("review"), false));
+    ended(&mut l, &a, Some("pass"));
+    assert!(admit(&mut l, "build").unwrap().rewrite);
+
+    let mut l = Ledger::new(None);
+    let a = l
+        .admit(
+            "ship",
+            String::new(),
+            "x".into(),
+            Some(Rebase::BaseMoved),
+            Some(main_at("s1")),
+            1,
+        )
+        .unwrap();
+    ended(&mut l, &a, Some("pass"));
+    l.artifact_invalid(&a, "pr.md", &["x".into()]);
+    let a = admit(&mut l, "ship").unwrap();
+    assert_eq!((a.follows_base, a.rewrite), (true, false));
+    ended(&mut l, &a, None);
+    assert!(admit(&mut l, "ship").unwrap().rewrite);
+}
+
+#[test]
+fn a_resumed_ledger_drops_a_forced_rebase_with_its_decision() {
+    let mut l = Ledger::new(None);
+    l.merge_back(MergeBack::Rebase {
+        feedback: String::new(),
+        why: "base moved".into(),
+    })
+    .unwrap();
+    l.saved_at("abc1234");
+    assert!(l.resumed_at("def5678"));
+    let (d, rebase) = l.next(&empty());
+    assert!(
+        rebase.is_none(),
+        "the dropped decision's rebase was replayed"
+    );
+    assert!(
+        matches!(
+            d,
+            Decision::Run {
+                phase: "triage",
+                ..
+            }
+        ),
+        "{d:?}"
+    );
+}

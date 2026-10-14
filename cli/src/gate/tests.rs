@@ -572,10 +572,69 @@ Finished `dev` profile in 1.2s
 }
 
 #[test]
-fn same_file_matches_on_a_path_boundary_either_way() {
-    assert!(same_file("cli/src/x.rs", "src/x.rs"));
-    assert!(same_file("cli/src/x.rs", "cli/src/x.rs"));
-    assert!(same_file("cli/src/x.rs", "/work/wt/cli/src/x.rs"));
-    assert!(!same_file("cli/src/x.rs", "rc/x.rs"));
-    assert!(!same_file("cli/src/x.rs", "src/y.rs"));
+fn failing_paths_skips_warnings() {
+    let out = "\
+warning: unused variable: `x`
+ --> src/a.rs:2:9
+  |
+2 |     let x = 1;
+  |         ^ help: prefix it with an underscore: `_x`
+
+thread 'x' (123) panicked at src/d.rs:4:5:
+src/b.c:4:1: warning: implicit declaration
+error[E0308]: mismatched types
+  --> src/c.rs:13:5
+";
+    assert_eq!(failing_paths(out), ["src/d.rs", "src/c.rs"]);
+    let no_blank = "warning: unused\n --> src/a.rs:2:9\nerror: mismatched\n --> src/c.rs:3:1\n";
+    assert_eq!(
+        failing_paths(no_blank),
+        ["src/c.rs"],
+        "an error header ends the warning"
+    );
+}
+
+#[test]
+fn same_file_matches_what_the_printed_path_pins_down() {
+    let root = Path::new("/work/wt");
+    let tracked: Vec<String> = [
+        "cli/src/x.rs",
+        "a/src/main.rs",
+        "b/src/main.rs",
+        "README.md",
+    ]
+    .map(String::from)
+    .into();
+    let same = |changed: &str, failing: &str| same_file(changed, failing, root, &tracked);
+    assert!(same("cli/src/x.rs", "src/x.rs"), "printed from cli/");
+    assert!(same("cli/src/x.rs", "cli/src/x.rs"));
+    assert!(same("cli/src/x.rs", "/work/wt/cli/src/x.rs"));
+    assert!(same("README.md", "README.md"));
+    assert!(!same("cli/src/x.rs", "rc/x.rs"));
+    assert!(!same("cli/src/x.rs", "src/y.rs"));
+    assert!(
+        !same("cli/src/x.rs", "x/cli/src/x.rs"),
+        "names another file"
+    );
+    assert!(
+        !same("cli/src/x.rs", "/elsewhere/cli/src/x.rs"),
+        "outside the worktree"
+    );
+    assert!(!same("cli/src/x.rs", "/work/wt/src/x.rs"));
+    assert!(
+        !same("b/src/main.rs", "src/main.rs"),
+        "a's src/main.rs is as likely"
+    );
+    assert!(same("b/src/main.rs", "b/src/main.rs"));
+}
+
+#[test]
+fn same_file_exact_match_wins_over_a_deeper_file_with_the_same_tail() {
+    let root = Path::new("/work/wt");
+    let tracked: Vec<String> = ["src/main.rs", "cli/src/main.rs"].map(String::from).into();
+    assert!(same_file("src/main.rs", "src/main.rs", root, &tracked));
+    assert!(
+        !same_file("cli/src/main.rs", "src/main.rs", root, &tracked),
+        "a root-relative print names the root file"
+    );
 }

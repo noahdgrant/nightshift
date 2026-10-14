@@ -31,8 +31,8 @@ mod locks;
 mod merge;
 mod phases;
 
-use currency::{decide, known_pr, read_state, run, Decision, UnitDiff};
-use drive::drive;
+use currency::{known_pr, read_state, Decision, UnitDiff};
+use drive::{carry_forward, drive, start_ledger};
 use locks::lock_dir;
 pub use locks::{holder_pid, run_lock, Lock, WORKTREE_LOCK};
 
@@ -876,24 +876,6 @@ fn dry_run(
         .clone()
         .zip(base.clone())
         .map(|(p, b)| UnitDiff::new(p, b, &head));
-    let state = read_state(
-        &wt.join(".ns").join(unit),
-        head,
-        args.issue.is_some(),
-        unit_diff,
-    );
-    let decision = match &args.from {
-        Some(f) => run(
-            PHASES
-                .iter()
-                .find(|p| **p == f.as_str())
-                .copied()
-                .unwrap_or("build"),
-            "",
-            "--from",
-        ),
-        None => decide(&state),
-    };
     let ctx = Ctx {
         unit: unit.to_string(),
         worktree: wt.clone(),
@@ -916,6 +898,11 @@ fn dry_run(
             tmp: PathBuf::new(),
         },
     };
+    // Decide as `drive` would at its first step, without its log or ledger writes.
+    let (mut ledger, _) = start_ledger(args, &ctx.artifacts, &head);
+    let mut state = read_state(&ctx.artifacts, head, args.issue.is_some(), unit_diff);
+    carry_forward(&ctx, &ledger, &mut state);
+    let (decision, _) = ledger.next(&state);
     let (decision_json, prompt, command) = match &decision {
         Decision::Run {
             phase,

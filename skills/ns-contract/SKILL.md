@@ -56,7 +56,7 @@ Every artifact opens with frontmatter recording the gate result, in the schema `
 ---
 schema: ns-artifact/2
 unit: 142-uart-timeout
-phase: verify       # triage | build | verify | review | review-fix | ship
+phase: verify       # triage | troubleshoot | build | verify | review | review-fix | ship
 status: fail        # pass | fail | blocked, or split for brief.md
 cause: criteria_failed  # none on a pass or a split; otherwise the cause below
 next: build         # none | build | verify | review | ship | define | troubleshoot | human; triage also split | info | wontfix

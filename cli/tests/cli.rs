@@ -3581,6 +3581,6 @@ fn artifact_check_usage_errors_exit_2() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
-            "possible values: triage, build, verify, review, review-fix, ship",
+            "possible values: triage, troubleshoot, build, verify, review, review-fix, ship",
         ));
 }

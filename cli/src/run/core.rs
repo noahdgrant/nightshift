@@ -115,6 +115,9 @@ pub struct Ledger {
     /// Phases that have had their one free rewrite in this run.
     #[serde(default)]
     rewritten: BTreeSet<String>,
+    /// HEAD when the ledger was last saved, which a forced decision was made against.
+    #[serde(default)]
+    head: Option<String>,
 }
 
 /// A phase run that moved HEAD from `from` to `to`.
@@ -149,6 +152,26 @@ impl Ledger {
             l.force(run(phase_named(f), "", "--from"), None);
         }
         l
+    }
+
+    /// The ledger is saved at `head`.
+    pub fn saved_at(&mut self, head: &str) {
+        self.head = Some(head.to_string());
+    }
+
+    /// The ledger is resumed at `head`: a forced decision made at another HEAD, or at one not
+    /// recorded, no longer fits the unit and is dropped. True when one was.
+    pub fn resumed_at(&mut self, head: &str) -> bool {
+        let same = self
+            .head
+            .as_deref()
+            .is_some_and(|h| crate::git::same_sha(h, head));
+        if same || self.forced.is_none() {
+            return false;
+        }
+        self.forced = None;
+        self.forced_rebase = None;
+        true
     }
 
     fn force(&mut self, d: Decision, rebase: Option<Rebase>) {
@@ -226,8 +249,10 @@ impl Ledger {
         *n = n.saturating_add_signed(by as i32);
     }
 
-    /// Charge `phase`'s next attempt and grant its credits. `remote` is the default branch and
-    /// its sha now, read only when `rebase` is `Some`.
+    /// Charge `phase`'s next attempt and grant it at most one credit: a free rebase, then a
+    /// free ship after a free ship's reruns, then a fault credit, then a rewrite. A credit not
+    /// taken stays for the next attempt. `remote` is the default branch and its sha now, read
+    /// only when `rebase` is `Some`.
     pub fn admit(
         &mut self,
         phase: &'static str,
@@ -254,9 +279,10 @@ impl Ledger {
             self.rerun(phase, 1);
             self.rebased_onto = Some(sha.clone());
         }
+        let mut credited = rebase.is_some();
         let follows_base = match phase {
             "verify" | "review" => false,
-            "ship" => std::mem::take(&mut self.ship_follows_base),
+            "ship" => !credited && std::mem::take(&mut self.ship_follows_base),
             _ => {
                 self.ship_follows_base = false;
                 false
@@ -265,7 +291,8 @@ impl Ledger {
         if follows_base {
             self.rerun(phase, 1);
         }
-        let fault_of = if phase == "build" {
+        credited |= follows_base;
+        let fault_of = if phase == "build" && !credited {
             self.fault_of
                 .take()
                 .filter(|_| self.fault_credits < FAULT_CREDIT_CAP)
@@ -276,7 +303,8 @@ impl Ledger {
             self.rerun(phase, 1);
             self.fault_credits += 1;
         }
-        let rewrite = self.rewrite.take_if(|p| p == phase).is_some();
+        credited |= fault_of.is_some();
+        let rewrite = !credited && self.rewrite.take_if(|p| p == phase).is_some();
         if rewrite {
             self.rerun(phase, 1);
         }
