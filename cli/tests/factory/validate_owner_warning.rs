@@ -23,7 +23,9 @@ fn factory_validate_warns_when_build_only_runs_on_a_personal_account_repo() {
     assert_eq!(warnings.len(), 1, "{v}");
     let w = warnings[0].as_str().unwrap();
     assert!(
-        w.contains("organisation-owned") && w.contains("local = \"every-step\""),
+        w.contains("no GitHub merge queue")
+            && w.contains("updates it only when the default branch changed one of its files")
+            && w.contains("local = \"every-step\""),
         "{w}"
     );
     assert!(e.gh_calls().contains("api repos/o/r --jq .owner.type"));
@@ -68,7 +70,7 @@ fn factory_validate_warns_once_for_a_personal_account_repo_on_another_host() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|w| w.as_str().unwrap().contains("organisation-owned"))
+        .filter(|w| w.as_str().unwrap().contains("no GitHub merge queue"))
         .count();
     assert_eq!(owner_warnings, 1, "{v}");
     assert_eq!(
@@ -292,7 +294,7 @@ fn factory_validate_still_looks_up_the_owner_without_credentials_when_the_token_
     assert!(
         warnings
             .iter()
-            .any(|w| w.as_str().unwrap().contains("organisation-owned")),
+            .any(|w| w.as_str().unwrap().contains("no GitHub merge queue")),
         "{v}"
     );
 }
@@ -320,7 +322,7 @@ fn factory_validate_with_factory_path_looks_up_the_owner_of_the_cwd_repo() {
     let warnings = v["warnings"].as_array().unwrap();
     assert_eq!(warnings.len(), 1, "{v}");
     assert!(
-        warnings[0].as_str().unwrap().contains("organisation-owned"),
+        warnings[0].as_str().unwrap().contains("no GitHub merge queue"),
         "{v}"
     );
     let calls = e.gh_calls();
@@ -341,7 +343,7 @@ fn factory_validate_owner_warning_joins_the_fast_warning() {
     let v = e.run(&["factory", "validate"], 0);
     let warnings = v["warnings"].to_string();
     assert!(warnings.contains("`make ci --fast`"), "{v}");
-    assert!(warnings.contains("organisation-owned"), "{v}");
+    assert!(warnings.contains("no GitHub merge queue"), "{v}");
 }
 
 #[test]
