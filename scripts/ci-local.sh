@@ -2,8 +2,9 @@
 # Run what .github/workflows/ci.yml runs, in order, stopping at the first failure.
 #
 # --fast runs only the quick steps: the pinned tools, fmt, clippy, the ns build, ns lint,
-# ns check-markers and the private guard. The .githooks pre-commit hook runs --fast on the
-# working tree; the pre-push hook runs the full suite at each commit pushed.
+# ns check-markers, the ast-grep rules (ns rules check --only ast-grep) and the private guard.
+# The .githooks pre-commit hook runs --fast on the working tree. The pre-push hook runs it at
+# each commit pushed under [gate] local = "build-only", and the full suite otherwise.
 #
 # Uses the ns this run builds: cli/target/debug/ns, or under $CARGO_TARGET_DIR when that
 # is set, as the pre-push hook sets it. The private guard reads
@@ -190,6 +191,8 @@ step "ns lint .agents/skills" "$ns" lint .agents/skills --human
 full_step "verify-nightshift Launch and Doctor recipes" scripts/check-verify-recipes.sh
 step "ns check-markers" "$ns" check-markers --human
 full_step "ns rules check" "$ns" rules check --human
+# The full step above covers it.
+[ "$fast" -eq 0 ] || step "ns rules check --only ast-grep" "$ns" rules check --only ast-grep --human
 full_step "ns ratchet check" "$ns" ratchet check --human
 full_step "ns eval --dry-run" eval_dry_run
 full_step "py-inventory fixture tests" fixture_tests
