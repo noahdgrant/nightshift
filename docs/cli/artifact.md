@@ -12,6 +12,7 @@ It checks:
 - `status: pass` has `cause: none`; `fail` and `blocked` have a cause other than `none`, a `next` other than `none`, and a `reason`; `split` has a `reason` and is triage's only
 - `reason` is one line of at most 200 characters
 - a passed triage names `next`; every phase but triage has a `sha`; a passed ship has a `pr`
+- `next: split`, `next: info` and `next: wontfix` appear only in triage's `brief.md`, which `ns watch` turns into the issue's state label
 - `sha` and `delta_of` are commit shas, `updated` is a UTC timestamp, `findings` and `touches` are lists of strings
 - `findings` holds finding ids (`I3`), only on review and review-fix artifacts, and is non-empty under `cause: findings_open`
 

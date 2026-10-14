@@ -231,7 +231,7 @@ fn enum_values_name_the_allowed_set() {
     );
     assert_eq!(
         errors(&with("next", "next: later"), None),
-        ["`next: later` is not one of none, build, verify, review, ship, define, troubleshoot, human"]
+        ["`next: later` is not one of none, build, verify, review, ship, define, troubleshoot, human, split, info, wontfix"]
     );
 }
 

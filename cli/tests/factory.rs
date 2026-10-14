@@ -7856,6 +7856,8 @@ fn split_parents(e: &Env) {
 fn watch_closes_split_parents_whose_children_are_done_and_sweeps_once() {
     let e = Env::new();
     split_parents(&e);
+    // The fake still lists closed #5, now with no state: its triage writes no brief.
+    e.queue("triage", &["none"]);
     let v = e.run(&["watch", "--once"], 0);
     let calls = e.gh_calls();
     assert!(
@@ -10193,7 +10195,8 @@ fn a_triage_run_that_errors_is_recorded_and_the_night_goes_on() {
 fn a_triage_only_run_triages_again_over_an_earlier_brief() {
     let e = Env::new();
     e.untriaged(5, "Escape", &["status:needs-triage"]);
-    e.queue("triage", &["pass", "none"]);
+    // A brief that routes nowhere leaves the issue untriaged.
+    e.queue("triage", &["fail", "none"]);
     e.run(&["watch"], 0);
     // The next night the issue is still untriaged, and its worktree holds the first brief.
     let v = e.run(&["watch"], 0);
@@ -12190,6 +12193,7 @@ fn no_refill_while_every_slot_is_busy_or_no_claim_may_start() {
         let e = Env::new();
         // A second ready issue: the night's first fill meets `--max-units`, before unit 2 builds.
         e.ready(3, "Fix b", &["type:fix"], "");
+        e.queue("triage.5-fix-e", &["none"]);
         let (in_a, go_a) = hold_phase(&e, A, "build");
         let w = a_long_unit_beside_the_backlog(&e, 100, args);
         w.entered(&in_a);
@@ -12971,58 +12975,74 @@ fn events_named(e: &Env, name: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Hold the fake cargo's build until [`release`] on the path returned.
+fn hold_cargo(e: &Env) -> PathBuf {
+    e.ctl("cargo-mode", "held");
+    let go = e.ctrl.join("cargo-go");
+    mkfifo(&go);
+    go
+}
+
+fn stub_runs(e: &Env) -> Vec<String> {
+    fs::read_to_string(e.ctrl.join("stub-runs"))
+        .unwrap_or_default()
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
 #[test]
-fn watch_hands_off_to_a_new_build_between_units_and_the_night_goes_on() {
+fn an_update_builds_while_units_run_and_new_units_start_on_it() {
     let e = Env::new();
     let from = nightshift_repo(&e);
     two_ready(&e);
-    e.ready(4, "Fix c", &["type:fix"], "");
+    let go_cargo = hold_cargo(&e);
     let (in_a, go_a) = hold_phase(&e, A, "build");
-    let w = Watching::start(watch_from(&e, &from).args([
+    let (in_b, go_b) = hold_phase(&e, B, "build");
+    let mut w = Watching::start(watch_from(&e, &from).env("NS_REFILL_MS", "100").args([
         "watch",
         "--until",
         "06:30",
-        "--max-units",
+        "--parallel",
         "2",
     ]));
     w.entered(&in_a);
+    w.entered(&in_b);
     let to = land(&e, "cli/x", "new\n");
+    release(&go_b);
+    w.line("#3 done");
+    // The build runs while unit 2 is still in its build: nothing drains.
+    w.line(&format!("self-update: building {}", &to[..12]));
+    assert!(!w.seen.join("\n").contains("draining"), "{:?}", w.seen);
+    release(&go_cargo);
+    w.line("new units start on");
+    // A unit that starts now, beside unit 2, starts on the new binary.
+    e.ready(4, "Fix c", &["type:fix"], "");
+    w.line("#4 done");
+    let runs = stub_runs(&e);
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert!(runs[0].starts_with("run 4-fix-c --issue 4 "), "{runs:?}");
     release(&go_a);
     let (code, v, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
-    // The night's state crossed the hand-off: both units are in one summary, with all the spend
-    // and the same deadline, and unit 2 counts toward --max-units.
-    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
-    assert_eq!(v["cost_usd"], 5.0, "{v}");
+    // Units 2 and 3 finished on the old binary; once none ran the night handed off, its state
+    // crossing into one summary with all the spend and the same deadline.
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3, 4], "done"), "{v}");
+    assert_eq!(v["cost_usd"], 7.5, "{v}");
     assert_eq!(v["until"], "2026-10-09T06:30:00+00:00", "{v}");
-    assert_eq!(v["stopped"], "max_units", "{v}");
-    // Built once, from the new commit, and exec'd with the same arguments and the state.
     assert_eq!(cargo_calls(&e), 1);
     assert_eq!(
         fs::read_to_string(e.ctrl.join("cargo-built")).unwrap(),
         "new\n"
     );
-    let args = fs::read_to_string(e.ctrl.join("handed-off")).unwrap();
-    assert!(
-        args.starts_with("watch --until 06:30 --max-units 2 --resume-night "),
-        "{args}"
-    );
-    let state = args.trim().rsplit(' ').next().unwrap();
-    assert!(!Path::new(state).exists(), "{state} left behind");
-    // The check ran the new binary's dry run with the hand-off's own arguments, on a copy of
-    // that state.
-    let dry = fs::read_to_string(e.ctrl.join("dry-run-args")).unwrap();
-    let dry = dry.trim();
-    assert!(
-        dry.starts_with("watch --until 06:30 --max-units 2 --resume-night ")
-            && dry.ends_with(" --dry-run"),
-        "{dry}"
-    );
-    let probe = dry.rsplit(' ').nth(1).unwrap();
-    assert!(probe != state, "{dry}");
-    // The build went to the staging directory, locked, and the exec'd binary is the staged copy
-    // named for the commit, not the running ns.
+    let built = events_named(&e, "self_update_built");
+    assert_eq!(built.len(), 1, "{built:?}");
     let stage = fs::canonicalize(e.root.join(".git/ns/self-update")).unwrap();
+    let staged = stage.join(format!("ns-{to}"));
+    assert_eq!(
+        (&built[0]["from"], &built[0]["to"], &built[0]["path"]),
+        (&json!(from), &json!(to), &json!(staged))
+    );
     let calls = fs::read_to_string(e.ctrl.join("cargo-calls")).unwrap();
     assert!(calls.starts_with("build --release --locked "), "{calls}");
     assert!(
@@ -13032,23 +13052,42 @@ fn watch_hands_off_to_a_new_build_between_units_and_the_night_goes_on() {
         "{calls} vs {}",
         stage.display()
     );
-    let staged = PathBuf::from(fs::read_to_string(e.ctrl.join("staged")).unwrap().trim());
-    assert_eq!(staged, stage.join(format!("ns-{to}")));
+    let args = fs::read_to_string(e.ctrl.join("handed-off")).unwrap();
+    assert!(
+        args.starts_with("watch --until 06:30 --parallel 2 --resume-night "),
+        "{args}"
+    );
+    let state = args.trim().rsplit(' ').next().unwrap();
+    assert!(!Path::new(state).exists(), "{state} left behind");
+    // The check ran the new binary's dry run with the night's own arguments, on a state copy.
+    let dry = fs::read_to_string(e.ctrl.join("dry-run-args")).unwrap();
+    let dry = dry.trim();
+    assert!(
+        dry.starts_with("watch --until 06:30 --parallel 2 --resume-night ")
+            && dry.ends_with(" --dry-run"),
+        "{dry}"
+    );
+    assert_eq!(
+        PathBuf::from(fs::read_to_string(e.ctrl.join("staged")).unwrap().trim()),
+        staged
+    );
     assert_ne!(staged, common::ns_path());
     let ev = events_named(&e, "self_update");
     assert_eq!(ev.len(), 1, "{ev:?}");
-    assert_eq!(
-        (&ev[0]["from"], &ev[0]["to"]),
-        (&serde_json::json!(from), &serde_json::json!(to))
-    );
+    assert_eq!((&ev[0]["from"], &ev[0]["to"]), (&json!(from), &json!(to)));
     assert!(
         err.contains(&format!("self-update {} -> {}", &from[..12], &to[..12])),
         "{err}"
     );
-    // Unit 3 started after the hand-off, from the new binary.
-    let updated = event_at(&e, |ev| ev["event"] == "self_update");
-    let started_3 = event_at(&e, |ev| ev["event"] == "worker_start" && ev["issue"] == 3);
-    assert!(updated < started_3, "{:?}", run_events(&e));
+    let started_4 = event_at(&e, |ev| ev["event"] == "worker_start" && ev["issue"] == 4);
+    let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
+    let handed = event_at(&e, |ev| ev["event"] == "self_update");
+    assert!(
+        started_4 < ended_2 && ended_2 < handed,
+        "{:?}",
+        run_events(&e)
+    );
+    assert_no_night_state(&e);
 }
 
 #[test]
@@ -13260,33 +13299,30 @@ fn a_build_past_its_ceiling_is_killed_and_the_night_goes_on() {
 }
 
 #[test]
-fn draining_runs_no_triage_to_fill_an_idle_slot() {
+fn a_build_holds_no_slot_and_no_triage_and_the_night_hands_off_once_it_ends() {
     let e = Env::new();
     let from = nightshift_repo(&e);
+    land(&e, "cli/x", "new\n");
     two_ready(&e);
     e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
-    let (in_a, go_a) = hold_phase(&e, A, "build");
-    let (in_b, go_b) = hold_phase(&e, B, "build");
-    let mut w = Watching::start(watch_from(&e, &from).env("NS_REFILL_MS", "100").args([
-        "watch",
-        "--parallel",
-        "2",
-    ]));
-    w.entered(&in_a);
-    w.entered(&in_b);
-    land(&e, "cli/x", "new\n");
-    release(&go_b);
-    w.line("draining");
-    // Many refill intervals pass with a slot free and #5 untriaged; draining fills nothing.
-    let calls = gh_calls_during(&e, Duration::from_millis(1000));
-    assert_eq!(calls, "");
-    assert_eq!(e.triage_only_runs(), 0, "{:?}", e.calls());
-    release(&go_a);
-    let (code, _, err) = w.finish();
+    e.queue("triage", &["pass", "pass", "none"]);
+    let go_cargo = hold_cargo(&e);
+    let mut w = Watching::start(watch_from(&e, &from).args(["watch"]));
+    w.line("self-update: building");
+    // While cargo builds, both units run on this ns and the triage pass runs too.
+    w.line("#2 done");
+    w.line("#3 done");
+    w.line("triage #5");
+    release(&go_cargo);
+    let (code, v, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
-    let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
+    assert!(stub_runs(&e).is_empty());
+    let ended_3 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 3);
+    let built = event_at(&e, |ev| ev["event"] == "self_update_built");
     let updated = event_at(&e, |ev| ev["event"] == "self_update");
-    assert!(ended_2 < updated, "{:?}", run_events(&e));
+    assert!(ended_3 < built && built < updated, "{:?}", run_events(&e));
 }
 
 #[test]
@@ -13318,109 +13354,49 @@ fn a_refill_does_not_check_for_an_update_so_a_new_ready_issue_still_starts() {
 }
 
 #[test]
-fn draining_starts_no_unit_and_waits_for_the_running_one() {
+fn a_cli_change_after_an_update_is_built_while_units_run_and_handed_off_to() {
     let e = Env::new();
     let from = nightshift_repo(&e);
     two_ready(&e);
-    e.ready(4, "Fix c", &["type:fix"], "");
     let (in_a, go_a) = hold_phase(&e, A, "build");
     let (in_b, go_b) = hold_phase(&e, B, "build");
-    let mut w = Watching::start(watch_from(&e, &from).args(["watch", "--parallel", "2"]));
+    let (in_c, go_c) = hold_phase(&e, "4-fix-c", "build");
+    let mut w = Watching::start(watch_from(&e, &from).env("NS_REFILL_MS", "100").args([
+        "watch",
+        "--parallel",
+        "2",
+    ]));
     w.entered(&in_a);
     w.entered(&in_b);
-    land(&e, "cli/x", "new\n");
+    let first = land(&e, "cli/x", "new\n");
     release(&go_b);
-    w.line("#3 done");
-    w.line("draining");
-    // Unit 2 is still in its build: nothing is built, and unit 4 waits for the update.
-    assert_eq!(cargo_calls(&e), 0);
-    assert!(events_named(&e, "self_update").is_empty());
+    w.line("new units start on");
+    let newer = land(&e, "cli/x", "newer\n");
+    e.ready(4, "Fix c", &["type:fix"], "");
+    w.entered(&in_c);
+    // Unit 2 ends beside unit 4: the fill builds the newer commit, counted from the first.
     release(&go_a);
+    w.line(&format!("({} -> {})", &first[..12], &newer[..12]));
+    w.line("new units start on");
+    release(&go_c);
     let (code, v, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(by_issue(&units(&v)), each(&[2, 3, 4], "done"), "{v}");
-    assert_eq!(cargo_calls(&e), 1);
-    assert_eq!(err.matches("draining").count(), 1, "{err}");
-    let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
-    let updated = event_at(&e, |ev| ev["event"] == "self_update");
-    let started_4 = event_at(&e, |ev| ev["event"] == "worker_start" && ev["issue"] == 4);
-    assert!(
-        ended_2 < updated && updated < started_4,
-        "{:?}",
-        run_events(&e)
-    );
-}
-
-/// A night with two units held in their builds, drained for a `cli/` change that lands once
-/// unit 3 ends; `between` runs while unit 2 is still building. The night's stderr and the commit
-/// the drain began for.
-fn drained_while_the_base_moves(e: &Env, from: &str, between: impl FnOnce()) -> (String, String) {
-    two_ready(e);
-    let (in_a, go_a) = hold_phase(e, A, "build");
-    let (in_b, go_b) = hold_phase(e, B, "build");
-    let mut w = Watching::start(watch_from(e, from).args(["watch", "--parallel", "2"]));
-    w.entered(&in_a);
-    w.entered(&in_b);
-    let noted = land(e, "cli/x", "new\n");
-    release(&go_b);
-    w.line("draining");
-    between();
-    release(&go_a);
-    let (code, _, err) = w.finish();
-    assert_eq!(code, Some(0), "{err}");
-    (err, noted)
-}
-
-fn assert_built(e: &Env, from: &str, to: &str, text: &str, err: &str) {
-    assert_eq!(cargo_calls(e), 1, "{err}");
+    assert_eq!(cargo_calls(&e), 2, "{err}");
     assert_eq!(
         fs::read_to_string(e.ctrl.join("cargo-built")).unwrap(),
-        text
+        "newer\n"
     );
-    let ev = events_named(e, "self_update");
-    assert_eq!(ev.len(), 1, "{err}");
-    assert_eq!((&ev[0]["from"], &ev[0]["to"]), (&json!(from), &json!(to)));
-    assert!(
-        err.contains(&format!("self-update: building {}", &to[..12])),
-        "{err}"
-    );
-    assert!(
-        err.contains(&format!("self-update {} -> {}", &from[..12], &to[..12])),
-        "{err}"
-    );
-}
-
-#[test]
-fn a_drain_hands_off_to_the_base_at_its_end_not_its_start() {
-    let e = Env::new();
-    let from = nightshift_repo(&e);
-    let mut newer = String::new();
-    let (err, _) = drained_while_the_base_moves(&e, &from, || {
-        newer = land(&e, "cli/x", "newer\n");
-    });
-    assert_built(&e, &from, &newer, "newer\n", &err);
-}
-
-#[test]
-fn a_failed_fetch_at_the_drain_end_hands_off_to_the_noted_commit() {
-    let e = Env::new();
-    let from = nightshift_repo(&e);
-    failing_fetch(&e);
-    let (err, noted) = drained_while_the_base_moves(&e, &from, || {
-        land(&e, "cli/x", "newer\n");
-        e.ctl("fetch-fails", "");
-    });
-    assert_built(&e, &from, &noted, "new\n", &err);
-}
-
-/// A `git` on PATH whose `fetch` fails once `$FAKE_CTRL/fetch-fails` exists.
-fn failing_fetch(e: &Env) {
-    write_exe(
-        &e.bin.join("git"),
-        format!(
-            "#!/bin/sh\ncase \" $* \" in *\" fetch \"*) [ -e \"$FAKE_CTRL/fetch-fails\" ] && {{ echo 'fatal: unreachable' >&2; exit 128; }} ;; esac\nexec {} \"$@\"\n",
-            real_git()
-        ),
+    let built: Vec<_> = events_named(&e, "self_update_built")
+        .iter()
+        .map(|b| b["to"].clone())
+        .collect();
+    assert_eq!(built, [json!(first), json!(newer)]);
+    let ev = events_named(&e, "self_update");
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert_eq!(
+        (&ev[0]["from"], &ev[0]["to"]),
+        (&json!(from), &json!(newer))
     );
 }
 
@@ -13589,7 +13565,7 @@ fn an_ns_with_no_build_commit_or_one_the_repo_lacks_never_updates() {
 }
 
 #[test]
-fn a_unit_paused_while_draining_resumes_and_finishes_before_the_update() {
+fn a_unit_paused_during_a_build_resumes_and_finishes_before_the_hand_off() {
     let e = Env::new();
     let from = nightshift_repo(&e);
     two_ready(&e);
@@ -13602,7 +13578,7 @@ fn a_unit_paused_while_draining_resumes_and_finishes_before_the_update() {
     w.entered(&in_b);
     land(&e, "cli/x", "new\n");
     release(&go_b);
-    w.line("draining");
+    w.line("self-update: building");
     release(&go_a);
     let (code, v, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
@@ -13619,7 +13595,7 @@ fn a_unit_paused_while_draining_resumes_and_finishes_before_the_update() {
 }
 
 #[test]
-fn the_budget_stop_while_draining_ends_the_night_without_an_update() {
+fn the_budget_stop_during_a_build_ends_the_night_without_a_hand_off() {
     let e = Env::new();
     let from = nightshift_repo(&e);
     // Unit 3 spends 2.5 and unit 2 reaches the budget at its review.
@@ -13632,17 +13608,17 @@ fn the_budget_stop_while_draining_ends_the_night_without_an_update() {
     w.entered(&in_b);
     land(&e, "cli/x", "new\n");
     release(&go_b);
-    w.line("draining");
+    w.line("self-update: building");
     release(&go_a);
     let (code, v, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(v["stopped"], "budget", "{v}");
-    assert_eq!(cargo_calls(&e), 0, "{err}");
-    assert!(events_named(&e, "self_update").is_empty());
+    assert!(events_named(&e, "self_update").is_empty(), "{err}");
+    assert!(!e.ctrl.join("handed-off").exists(), "{err}");
 }
 
 #[test]
-fn a_signal_while_draining_ends_the_night_without_an_update() {
+fn a_signal_during_a_build_ends_the_night_without_a_hand_off() {
     for sig in [libc::SIGTERM, libc::SIGINT] {
         let e = Env::new();
         let from = nightshift_repo(&e);
@@ -13654,7 +13630,7 @@ fn a_signal_while_draining_ends_the_night_without_an_update() {
         w.entered(&in_b);
         land(&e, "cli/x", "new\n");
         release(&go_b);
-        w.line("draining");
+        w.line("self-update: building");
         w.signal(sig, false);
         release(&go_a);
         let (code, v, err) = w.finish();
@@ -13665,7 +13641,6 @@ fn a_signal_while_draining_ends_the_night_without_an_update() {
         };
         assert_eq!(code, Some(128 + sig), "{err}");
         assert_eq!(v["stopped"], name, "{v}");
-        assert_eq!(cargo_calls(&e), 0, "{err}");
         assert!(events_named(&e, "self_update").is_empty(), "{err}");
         assert!(!e.ctrl.join("handed-off").exists(), "{err}");
     }
@@ -13675,16 +13650,23 @@ fn a_signal_while_draining_ends_the_night_without_an_update() {
 fn the_harness_breaker_and_finished_issues_survive_the_hand_off() {
     let e = Env::new();
     let from = nightshift_repo(&e);
-    for n in [2, 3, 4] {
-        e.ready(n, &format!("Fix {n}"), &["type:fix"], "");
-    }
+    e.ready(2, "Fix 2", &["type:fix"], "");
     // Each unit's triage phase fails instantly on both attempts.
     e.queue("triage", &["crash"; 4]);
+    // The new binary's check holds once the old night's last fill is done.
+    let (in_dry, go_dry) = (e.ctrl.join("dry-entered"), e.ctrl.join("dry-go"));
+    mkfifo(&in_dry);
+    mkfifo(&go_dry);
     let (in_2, go_2) = hold_phase(&e, "2-fix-2", "triage");
     let w = Watching::start(watch_from(&e, &from).args(["watch"]));
     w.entered(&in_2);
     land(&e, "cli/x", "new\n");
     release(&go_2);
+    w.entered(&in_dry);
+    for n in [3, 4] {
+        e.ready(n, &format!("Fix {n}"), &["type:fix"], "");
+    }
+    release(&go_dry);
     let (code, v, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(events_named(&e, "self_update").len(), 1, "{err}");
@@ -14282,6 +14264,7 @@ fn a_codex_night_drains_before_it_syncs_a_skill_change() {
     two_ready(&e);
     e.ready(4, "Fix c", &["type:fix"], "");
     e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
+    e.queue("triage.5-fix-e", &["none"]);
     let (in_a, go_a) = hold_phase(&e, A, "build");
     let (in_b, go_b) = hold_phase(&e, B, "build");
     let mut w =
@@ -14358,7 +14341,7 @@ fn a_night_with_one_codex_phase_drains_before_it_syncs_a_skill_change() {
 }
 
 #[test]
-fn a_codex_night_hands_off_to_a_new_build_before_it_syncs_skills() {
+fn a_codex_night_syncs_skills_and_hands_off_to_a_new_build_once_its_units_end() {
     let e = Env::new();
     codex_night(&e);
     let from = nightshift_repo(&e);
@@ -14376,9 +14359,10 @@ fn a_codex_night_hands_off_to_a_new_build_before_it_syncs_skills() {
     release(&go_a);
     let (code, _, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
-    let updated = event_at(&e, |ev| ev["event"] == "self_update");
+    let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
     let synced = event_at(&e, |ev| ev["event"] == "skills_synced");
-    assert!(updated < synced, "{:?}", run_events(&e));
+    let updated = event_at(&e, |ev| ev["event"] == "self_update");
+    assert!(ended_2 < synced && synced < updated, "{:?}", run_events(&e));
 }
 
 #[test]
@@ -15693,4 +15677,105 @@ fn a_main_unreadable_under_the_lock_is_no_move_and_the_region_check_needs_a_huma
     );
     assert_eq!(base_moves(&e), Vec::<Value>::new());
     assert!(!e.gh_calls().contains("pr merge"));
+}
+
+#[test]
+fn a_ready_issue_that_overlaps_a_running_unit_waits_for_it_to_end() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    brief_comment(&e, 2, "`cli/**`");
+    e.ready(3, "Fix b", &["type:fix"], "");
+    brief_comment(&e, 3, "`cli/src/run.rs`");
+    // #2 holds at its triage, so the pick reads its prediction from its issue.
+    let (in_a, go_a) = hold_phase(&e, A, "triage");
+    let mut w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
+    w.entered(&in_a);
+    w.line("ns watch: #3 waits: its touches overlap running 2-fix-a");
+    release(&go_a);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
+    // A free slot stayed free: #3 started only once #2 had ended.
+    let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
+    let started_3 = event_at(&e, |ev| ev["event"] == "worker_start" && ev["issue"] == 3);
+    assert!(ended_2 < started_3, "{:?}", run_events(&e));
+    let held = events_named(&e, "overlap_held");
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(
+        (&held[0]["issue"], &held[0]["overlaps"]),
+        (&json!(3), &json!(["2-fix-a"]))
+    );
+    assert!(events_named(&e, "overlap_forced").is_empty());
+}
+
+#[test]
+fn a_triage_only_split_moves_the_parent_to_split_and_closes_it_once_its_children_are_done() {
+    let e = Env::new();
+    e.untriaged(5, "Big", &["status:needs-triage", "type:feat"]);
+    e.gh_file("subs-5", "8\n9\n");
+    e.issue(8, "Child a", "OPEN");
+    e.issue(9, "Child b", "OPEN");
+    e.queue("triage", &["split:into #8 and #9."]);
+    let v = e.run(&["watch"], 0);
+    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
+    // ns, not the skill, moved the parent off the triage label to its own split label.
+    assert_eq!(e.labels(5), ["type:feat", "status:split"]);
+    assert_eq!(v["triaged"][0]["state"], json!(["status:split"]), "{v}");
+    assert!(units(&v).is_empty(), "{v}");
+    // Once both children close as completed, the next night closes the parent (#409).
+    e.issue(8, "Child a", "CLOSED");
+    e.issue(9, "Child b", "CLOSED");
+    // The fake still lists the closed parent, with no state: its triage writes no brief.
+    e.queue("triage", &["none"]);
+    let v = e.run(&["watch", "--once"], 0);
+    assert!(
+        e.gh_calls().contains("issue close 5 --reason completed"),
+        "{v}"
+    );
+    assert_eq!(e.labels(5), ["type:feat"]);
+}
+
+#[test]
+fn a_triage_brief_routes_by_its_next_and_its_status_and_ns_writes_the_label() {
+    for (front, status, want) in [
+        ("next: define\n", "pass", "status:needs-define"),
+        ("next: troubleshoot\n", "blocked", "status:needs-repro"),
+        ("next: human\n", "pass", "status:ready-for-human"),
+        ("next: info\n", "blocked", "status:needs-info"),
+        ("", "blocked", "status:needs-define"),
+    ] {
+        let e = Env::new();
+        e.untriaged(5, "Unclear", &["status:needs-triage", "type:fix"]);
+        e.ctl("triage.front", front);
+        e.queue("triage", &[status]);
+        let v = e.run(&["watch"], 0);
+        assert_eq!(e.labels(5), ["type:fix", want], "{front:?} {status}: {v}");
+        assert!(units(&v).is_empty(), "{v}");
+    }
+    // `pass` with no `next:` is ready: the queue starts it the same night.
+    let e = Env::new();
+    e.untriaged(5, "Clear", &["status:needs-triage", "type:fix"]);
+    e.queue("triage", &["pass", "pass"]);
+    let v = e.run(&["watch"], 0);
+    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
+    assert_eq!(by_issue(&units(&v)), each(&[5], "done"), "{v}");
+}
+
+#[test]
+fn a_triage_brief_that_routes_nowhere_leaves_the_labels_and_says_why() {
+    let e = Env::new();
+    e.untriaged(5, "Unclear", &["status:needs-triage"]);
+    e.ctl("triage.front", "next: ship\n");
+    let out = e.ns().args(["watch"]).assert().code(0).get_output().clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("ns watch: triage #5 left its labels: brief.md says next: ship"),
+        "{err}"
+    );
+    assert_eq!(
+        v["triaged"][0]["label_error"], "brief.md says next: ship",
+        "{v}"
+    );
+    assert_eq!(e.labels(5), ["status:needs-triage"]);
 }

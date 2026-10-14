@@ -59,7 +59,7 @@ unit: 142-uart-timeout
 phase: verify       # triage | build | verify | review | review-fix | ship
 status: fail        # pass | fail | blocked, or split for brief.md
 cause: criteria_failed  # none on a pass or a split; otherwise the cause below
-next: build         # none | build | verify | review | ship | define | troubleshoot | human
+next: build         # none | build | verify | review | ship | define | troubleshoot | human; triage also split | info | wontfix
 reason: "AC2 fails: the read still times out after 5 s"
 sha: 3f9c2e1        # HEAD commit the artifact describes (every phase but triage)
 updated: 2026-10-08T21:14:00Z

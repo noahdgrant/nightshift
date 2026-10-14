@@ -92,6 +92,9 @@ names!(
         Define = "define",
         Troubleshoot = "troubleshoot",
         Human = "human",
+        Split = "split",
+        Info = "info",
+        Wontfix = "wontfix",
     }
 );
 
@@ -373,6 +376,13 @@ fn check_consistency(
     if status != Status::Pass && t.reason.is_empty() {
         errors.push(format!(
             "`reason` is missing: `status: {s}` needs one line saying why"
+        ));
+    }
+    if phase != Phase::Triage && matches!(t.next, Next::Split | Next::Info | Next::Wontfix) {
+        errors.push(format!(
+            "`next: {}` is only for triage's brief.md, not `phase: {}`",
+            t.next.as_str(),
+            phase.as_str()
         ));
     }
     if phase == Phase::Triage && status == Status::Pass && t.next == Next::None {
