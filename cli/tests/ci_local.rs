@@ -75,6 +75,7 @@ const FAST_STEPS: &[&str] = &[
     "ns lint",
     "ns lint .agents/skills",
     "ns check-markers",
+    "ns rules check --only ast-grep",
     "private guard",
 ];
 
@@ -506,6 +507,7 @@ fn a_failing_step_stops_the_fast_run() {
         ("ns lint skills", "ns lint"),
         ("lint .agents/skills", "ns lint .agents/skills"),
         ("ns check-markers", "ns check-markers"),
+        ("ns rules check --only", "ns rules check --only ast-grep"),
     ] {
         let out = Repo::new().run(&["--fast"], &[("FAIL_ON", fail_on)]);
         assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));

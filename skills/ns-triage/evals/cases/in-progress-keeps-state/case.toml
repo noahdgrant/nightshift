@@ -1,4 +1,4 @@
-description = "The bug from bug-ready-for-agent, but `ns watch` already moved the issue to the run state in-progress before triage ran under `ns run`. Triage should keep Status: in-progress, set the category, append the Agent Brief and write brief.md, as #59 needed, without starting a new unit (no new worktree)."
+description = "The bug from bug-ready-for-agent, but `ns watch` already moved the issue to the run state in-progress before triage ran under `ns run`. Triage should keep Status: in-progress, set the category, append the Agent Brief and write brief.md with `next: build`, as #59 needed, without starting a new unit (no new worktree)."
 fixture = "py-inventory"
 skills = ["ns-triage"]
 extra_skills = ["ns-contract"]
@@ -51,11 +51,11 @@ for path in briefs:
     if not m:
         print(f"{path}: no frontmatter"); continue
     fm = {k: v.strip("'\"") for k, v in re.findall(r"(?m)^(\w+):[ \t]*(.*?)[ \t]*(?:#.*)?$", m.group(1))}
-    ok = fm.get("status") == "pass" and fm.get("base", "") != "" and "Agent Brief" in text and "- [ ]" in text
-    print(f"{path}: status={fm.get('status')!r} base={fm.get('base')!r} ok={ok}")
+    ok = fm.get("status") == "pass" and fm.get("next") == "build" and fm.get("base", "") != "" and "Agent Brief" in text and "- [ ]" in text
+    print(f"{path}: status={fm.get('status')!r} next={fm.get('next')!r} base={fm.get('base')!r} ok={ok}")
     if ok:
         sys.exit(0)
-sys.exit("no brief.md with status: pass, a base, and an Agent Brief with acceptance criteria")
+sys.exit("no brief.md with status: pass, next: build, a base, and an Agent Brief with acceptance criteria")
 PYEOF
 '''
 expect_exit = 0

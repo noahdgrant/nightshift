@@ -1,4 +1,4 @@
-description = "The broad request from broad-feature-split, but `ns watch` already moved the issue to the run state in-progress before triage ran under `ns run`. Triage should still split it: file two or more child issues and list them in the parent's Triage Notes, keep the parent's Status: in-progress and its priority, write brief.md with status: split, a first body line that names the split (not the issue URL), and the children's links, and start no new unit."
+description = "The broad request from broad-feature-split, but `ns watch` already moved the issue to the run state in-progress before triage ran under `ns run`. Triage should still split it: file two or more child issues and list them in the parent's Triage Notes, keep the parent's Status: in-progress and its priority, write brief.md with status: split, a first body line that names the split (not the issue URL), and the children's links, file the children with no state for ns's triage pass to set, and start no new unit."
 fixture = "py-inventory"
 skills = ["ns-triage"]
 extra_skills = ["ns-contract"]
@@ -92,3 +92,19 @@ expect_exit = 0
 [[check]]
 type = "diff_scope"
 allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]
+
+[[check]]
+# Under ns the skill writes no state label, on the parent or on a child.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import glob, os, re, sys
+parent = os.path.realpath(".scratch/low-stock/issues/01-low-stock-reordering.md")
+stated = [p for p in glob.glob(".scratch/**/issues/*.md", recursive=True)
+          if os.path.realpath(p) != parent
+          and re.search(r"(?m)^\**Status:?\**:?\s*`?\S", open(p, encoding="utf-8").read())]
+print("children with a state:", stated)
+sys.exit(1 if stated else 0)
+PYEOF
+'''
+expect_exit = 0

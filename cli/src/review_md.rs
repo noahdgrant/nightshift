@@ -10,7 +10,7 @@ use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 
 mod passes;
-pub use passes::{passes, Pass};
+pub use passes::{passes, Pass, Worker};
 
 pub const AXES: [&str; 8] = [
     "correctness",

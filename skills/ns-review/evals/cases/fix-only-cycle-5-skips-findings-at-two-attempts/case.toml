@@ -1,5 +1,5 @@
 # Checks not yet validated against a real run; cycle 5 is the last cycle, so the review ends blocked on I3 whatever happens to I4.
-description = "After full cycles 1 to 3 and fix-only cycle 4, I3 (raised in cycle 2) is open with 2 fix attempts and I4 (raised in cycle 3) is open with 1. Cycle 5 is due for I4 only: I3 must not be handed over again. After cycle 5, review.md must be blocked with cycles 5 and a first body line naming I3, and no cycle 6."
+description = "After full cycles 1 to 3 and fix-only cycle 4, I3 (raised in cycle 2) is open with 2 fix attempts and I4 (raised in cycle 3) is open with 1. Cycle 5 is due for I4 only: I3 must not be handed over again. After cycle 5, review.md must be blocked with cycles 5, cause findings_open and a reason and findings naming I3, and no cycle 6."
 fixture = "py-inventory"
 skills = ["ns-review"]
 extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
@@ -31,9 +31,24 @@ key = "cycles"
 equals = "5"
 
 [[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/review.md"
+key = "cause"
+equals = "findings_open"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/review.md"
+key = "next"
+equals = "human"
+
+[[check]]
+# `reason` names the findings left open, I3 among them, and `findings` lists it.
 type = "command"
 run = '''
-awk 'f==2 && NF {print; exit} /^---$/ {f++}' .ns/2-cancel-all/review.md | grep -E '^Open after at least 2 fix attempts.*I3'
+awk '/^---$/ {f++; next} f==1' .ns/2-cancel-all/review.md > fm.txt
+grep -E '^reason: *["'"'"']?Open after at least 2 fix attempts.*I3' fm.txt && grep -E '^findings:.*I3|^ *- *I3 *$' fm.txt
+s=$?; rm -f fm.txt; exit $s
 '''
 expect_exit = 0
 

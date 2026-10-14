@@ -530,5 +530,30 @@ fn run_logged(job: &Job<'_>, mut extra: Value, log: &dyn Fn(Value)) -> Result<Ga
     Ok(r)
 }
 
+/// The source files a red gate's output points at: compiler and clippy errors (`--> path:l:c`),
+/// test panics (`panicked at path:l:c`) and rule findings (`new: path:l: ...`). Anything shaped
+/// `path.ext:line` counts, so paths are as the tool printed them: relative to its directory, or
+/// absolute. Each path appears once, in the order first seen.
+pub fn failing_paths(output: &str) -> Vec<String> {
+    let re = regex::Regex::new(r"([A-Za-z0-9_./-]*[A-Za-z0-9_-]\.[A-Za-z0-9]{1,6}):[0-9]+")
+        .expect("valid regex");
+    let mut out: Vec<String> = Vec::new();
+    for c in re.captures_iter(output) {
+        let p = c[1].trim_start_matches("./").to_string();
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// `changed` (a repo-relative path from `git diff --name-only`) is the file `failing` names:
+/// equal, or one ends with the other on a path boundary, so `src/x.rs` printed from `cli/` and
+/// an absolute path both match `cli/src/x.rs`.
+pub fn same_file(changed: &str, failing: &str) -> bool {
+    let ends = |a: &str, b: &str| a == b || a.ends_with(&format!("/{b}"));
+    ends(changed, failing) || ends(failing, changed)
+}
+
 #[cfg(test)]
 mod tests;

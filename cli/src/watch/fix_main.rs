@@ -98,7 +98,8 @@ pub(super) fn find_or_file(
     let title = title(main);
     let body = Post::new(&body(repo, forge, main));
     let mut labels: Vec<&str> = LABELS.to_vec();
-    labels.push(&fac.queue.ready_label);
+    let q = &fac.queue;
+    labels.push(super::transitions::filed(q));
     let number = forge.create_issue(&title, &body, &labels)?;
     let issue = Issue {
         number,

@@ -46,7 +46,7 @@ Every issue also carries at least one area label.
 | `ready-for-human` | `status:ready-for-human` | Needs a human (a judgement call, credentials, a stuck run) | a person |
 | `wontfix` | `status:wontfix` | Will not be actioned; close as not planned | none |
 
-`ns watch` also uses three states that skills never set:
+`ns watch` also uses three states that skills never set, under `ns` or outside it:
 
 | Label | Meaning |
 |---|---|
@@ -55,3 +55,7 @@ Every issue also carries at least one area label.
 | `status:split` | Triage split the issue into child issues during a run (`[queue] split_label`). `ns watch` closes it once every child is closed as completed, and moves it to `status:ready-for-human` if one was closed as not planned |
 
 When a skill mentions a role (e.g. "apply the `ready-for-agent` label"), use the corresponding string from these tables.
+
+## Who writes the state
+
+Under `ns` (a phase that `ns run` or `ns watch` started), skills write no state label. `ns-triage` writes its outcome as `next:` in `brief.md` (`build`, `define`, `troubleshoot`, `human`, `split`, `info`, `wontfix`), and `ns watch` sets the state from one table (`docs/factory/watch.md`, "Status labels"). Category, priority and area labels stay the skill's to set. In a session nothing in `ns` started, the skill applies the state itself.

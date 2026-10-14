@@ -175,6 +175,94 @@ fn patch_id(cwd: &Path, base: &str, sha: &str, verbatim: bool) -> Option<String>
         .map(String::from)
 }
 
+/// Whether the unit took in a newer base between `a` and `b`: its own changes start somewhere else
+/// ([`unit_start`]), as after a merge of the base or a rebase onto it. False when either start
+/// can't be read.
+pub fn took_in_base(cwd: &Path, base: &str, a: &str, b: &str) -> bool {
+    match (unit_start(cwd, base, a), unit_start(cwd, base, b)) {
+        (Some(x), Some(y)) => x != y,
+        _ => false,
+    }
+}
+
+/// How many changed lines of the unit's own diff differ between `a` and `b`: the `+` and `-`
+/// lines of each one's diff from its [`unit_start`], per file, with context and line numbers
+/// dropped, counted as a multiset difference. 0 when the unit's changes are the same, as after a
+/// clean rebase. `None` when either diff can't be read.
+pub fn interdiff_lines(cwd: &Path, base: &str, a: &str, b: &str) -> Option<usize> {
+    let (x, y) = (unit_lines(cwd, base, a)?, unit_lines(cwd, base, b)?);
+    Some(multiset_diff(&x, &y).len())
+}
+
+/// The files whose own changed lines differ between `a` and `b`, as `git diff --name-only`
+/// would name them: what a phase that moved HEAD from `a` to `b` changed in the unit, without
+/// the files a merge of the base brought in.
+pub fn interdiff_files(cwd: &Path, base: &str, a: &str, b: &str) -> Option<Vec<String>> {
+    let (x, y) = (unit_lines(cwd, base, a)?, unit_lines(cwd, base, b)?);
+    let mut files: Vec<String> = multiset_diff(&x, &y)
+        .into_iter()
+        .filter_map(|l| {
+            let header = l.split('\0').next()?;
+            // `diff --git a/<path> b/<path>`: the b side, as --name-only names it.
+            header.rsplit_once(" b/").map(|(_, p)| p.to_string())
+        })
+        .collect();
+    files.sort();
+    files.dedup();
+    Some(files)
+}
+
+/// The lines in only one of the two sorted-or-not lists, counting repeats.
+fn multiset_diff(a: &[String], b: &[String]) -> Vec<String> {
+    let (mut x, mut y) = (a.to_vec(), b.to_vec());
+    x.sort();
+    y.sort();
+    let (mut i, mut j, mut out) = (0, 0, Vec::new());
+    while i < x.len() && j < y.len() {
+        match x[i].cmp(&y[j]) {
+            std::cmp::Ordering::Equal => {
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => {
+                out.push(x[i].clone());
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                out.push(y[j].clone());
+                j += 1;
+            }
+        }
+    }
+    out.extend(x[i..].iter().cloned());
+    out.extend(y[j..].iter().cloned());
+    out
+}
+
+/// The unit's own `+` and `-` lines at `sha`, each prefixed by its file's `diff --git` header.
+fn unit_lines(cwd: &Path, base: &str, sha: &str) -> Option<Vec<String>> {
+    let lines = |sha: &str| -> Option<Vec<String>> {
+        if sha.is_empty() || sha.starts_with('-') || base.starts_with('-') {
+            return None;
+        }
+        let start = unit_start(cwd, base, sha)?;
+        let out = run(cwd, &["diff-tree", "-p", "-U0", "--no-color", &start, sha]).ok()?;
+        let mut file = String::new();
+        let mut v = Vec::new();
+        for l in out.lines() {
+            if let Some(rest) = l.strip_prefix("diff --git ") {
+                file = rest.to_string();
+            } else if (l.starts_with('+') && !l.starts_with("+++"))
+                || (l.starts_with('-') && !l.starts_with("---"))
+            {
+                v.push(format!("{file}\0{l}"));
+            }
+        }
+        Some(v)
+    };
+    lines(sha)
+}
+
 /// Where `sha`'s own changes start: the newest common ancestor of `sha` with `base` and with every
 /// commit merged into `sha` since that is already in the base. A merge of the base brings in its
 /// newer commits even when the `base` ref is behind them, as after `git pull origin <base>`; a
@@ -751,5 +839,66 @@ mod tests {
         );
         g(&dir, &["checkout", "-q", "--detach"]);
         assert_eq!(repo.default_base().unwrap(), sha);
+    }
+
+    #[test]
+    fn interdiff_counts_only_lines_the_unit_itself_changed() {
+        let r = rebased_unit();
+        assert_eq!(
+            interdiff_lines(&r.dir, "main", &r.reviewed, &r.rebased),
+            Some(0),
+            "a clean rebase changes none of the unit's lines"
+        );
+        g(&r.dir, &["checkout", "-q", "unit"]);
+        let edited = commit_file(&r.dir, "work.txt", "one\ntwo\n");
+        assert_eq!(
+            interdiff_lines(&r.dir, "main", &r.rebased, &edited),
+            Some(1),
+            "one added line"
+        );
+        let swapped = commit_file(&r.dir, "work.txt", "uno\ntwo\n");
+        assert_eq!(
+            interdiff_lines(&r.dir, "main", &r.rebased, &swapped),
+            Some(3),
+            "one line removed and two added"
+        );
+        assert_eq!(interdiff_lines(&r.dir, "main", "nope", &swapped), None);
+    }
+
+    #[test]
+    fn took_in_base_sees_a_rebase_and_not_an_own_commit() {
+        let r = rebased_unit();
+        assert!(took_in_base(&r.dir, "main", &r.reviewed, &r.rebased));
+        g(&r.dir, &["checkout", "-q", "unit"]);
+        let own = commit_file(&r.dir, "work.txt", "one\ntwo\n");
+        assert!(!took_in_base(&r.dir, "main", &r.rebased, &own));
+    }
+
+    #[test]
+    fn took_in_base_sees_a_merge_of_the_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        g(&dir, &["init", "-q", "-b", "main"]);
+        commit_file(&dir, "README", "hi\n");
+        g(&dir, &["checkout", "-qb", "unit"]);
+        let reviewed = commit_file(&dir, "work.txt", "one\n");
+        g(&dir, &["checkout", "-q", "main"]);
+        commit_file(&dir, "UPSTREAM", "x\n");
+        g(&dir, &["checkout", "-q", "unit"]);
+        g(
+            &dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "merge",
+                "-q",
+                "--no-edit",
+                "main",
+            ],
+        );
+        let merged = g(&dir, &["rev-parse", "HEAD"]);
+        assert!(took_in_base(&dir, "main", &reviewed, &merged));
     }
 }

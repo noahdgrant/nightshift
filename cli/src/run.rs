@@ -24,6 +24,7 @@ use crate::watch::NightDir;
 use crate::worktree;
 
 mod ci_gate;
+mod core;
 pub(crate) mod currency;
 mod drive;
 mod locks;
@@ -65,6 +66,8 @@ pub struct RunArgs {
     pub base: Option<String>,
     /// Run the triage phase once and stop (`ns watch`'s triage pass), whatever `from` says.
     pub triage_only: bool,
+    /// Start a new ledger instead of resuming `.ns/<unit>/state.json` (`--fresh`).
+    pub fresh: bool,
     /// The night directory of the `ns watch` that started this run (`--night`).
     pub night: Option<PathBuf>,
     /// The CPU share every phase and gate gets (`--cpus`), or `None` to set nothing.

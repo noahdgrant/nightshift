@@ -1,6 +1,6 @@
 # `ns quality`
 
-## `ns quality [--since <date>] [--json|--human]`, `ns quality import <dir> [--dry-run]`
+## `ns quality [--since <date>] [--until <date>] [--json|--human|--reviewers]`, `ns quality import <dir> [--dry-run]`
 
 Reads the quality records on `origin`'s `nightshift/quality` branch (fetched first) and in the outbox. For a unit with no record, it reads the review artifacts in its linked worktree (`.ns/<unit>/review.md`, `review/cycle-*.md`, `history/review*`). It adds the run log and prints JSON: first-pass yield, first-pass Critical and Important findings per 100 changed lines (overall and by axis), cycles to clean, leftovers, escapes blamed to the commit and PR that introduced the line, and a trend by local day. `--since` keeps units whose newest review artifact was updated on or after that local date. `gaps` counts artifacts it couldn't parse and findings missing a field. It changes nothing but the remote-tracking ref. `ns run` writes a unit's records when it ends, and `ns quality import` writes them for archived worktrees. The metrics and their targets are in `docs/factory/quality.md`. `--human` prints the headline numbers and `finding_flow` as text instead, with `n/a` for a rate whose denominator is zero. It ends with a `Gaps:` line (unparsed artifacts, findings missing a field) and, when the fetch of the records branch failed, a `Records: fetch failed` line first, since the numbers then come from the records as last fetched.
 
@@ -12,6 +12,32 @@ Reads the quality records on `origin`'s `nightshift/quality` branch (fetched fir
 - `cycles_to_fix`: over fixed findings of both severities, the fix cycle minus the cycle that raised it. `{findings, median, max, next_cycle, left_out}`: `median` of an even count is the mean of the two middle values, `next_cycle` counts the findings fixed in the cycle after the one that raised them, and `left_out` the fixed findings with no fix cycle or one before the cycle that raised them.
 - `dismiss_rate`: `{count, findings, rate}`, the findings dismissed out of `findings`.
 - `late_finding_rate`: `{count, findings, rate}`, the findings first raised after pass 0 out of `findings`.
+
+`ns quality --reviewers [--since <date>] [--until <date>] [--json]` reports each reviewer instead of the review report, as a table, or as JSON with `--json`. It reads the same units and window, and the newest record of every review attempt of each unit, not only the newest attempt, since each attempt is a separate review. A finding is raised when it is Critical or Important with `Scope: changed`. Its reviewers are its axes that name one of the eight reviewers, and only those count. The table has a row per reviewer for `critical`, `important` and `total`, a cost table and an overlap matrix, and ends with what it left out. The JSON keys:
+
+- `ok`, `repo`, `since`, `until`, `records`: as for `ns quality`. `units` is how many units the window kept.
+- `attempts`: their review attempts. `measured_attempts`: attempts with at least one pass that names its panel.
+- `reviewers.<axis>`, for each of the eight axes:
+  - `reviews`: passes whose panel ran this reviewer, over every attempt. A worker rerun in the same pass counts once.
+  - `critical`, `important` and `total` (both severities), each with:
+    - `raised`: findings this reviewer raised.
+    - `unique` and `unique_fixed`: findings it alone raised, and those of them that ended `fixed`.
+    - `dismissed` and `dismiss_rate`: raises the lead dismissed (the whole finding, or this reviewer's version under `Dismissed raises`), and that over `raised`.
+    - `escapes`: escapes whose `missed_by` is this reviewer: findings with `Scope: pre-existing` that were not dismissed.
+    - `raised_measured` and `unique_fixed_measured`: `raised` and `unique_fixed` counted in measured attempts only.
+    - `per_review` and `unique_fixed_per_review`: those two over `reviews`.
+    - `unique_fixed_per_usd`: `unique_fixed_measured` over `cost.cost_usd.total`, null unless every worker reported a cost.
+
+    Rates are rounded to 3 places and null when their denominator is 0.
+  - `cost`: `workers`, the reviewer's workers in passes with a panel, over every attempt. `tokens`, `wall_s` and `cost_usd` each have `reported` (how many workers reported the value), `median` and `total`. A value no worker reported is never counted as 0; `median` and `total` are null when `reported` is 0.
+- `overlap`: one entry per pair of reviewers, `{reviewers: [a, b], shared, jaccard}`. `shared` counts raised findings both named. `jaccard` is `shared` over findings either raised, Critical and Important together, and null when neither raised any.
+- `excluded`, what the numbers leave out:
+  - `findings_without_axis`: raised findings that name no reviewer.
+  - `findings_without_scope`: Critical or Important findings with no `Scope`, so neither raised nor an escape.
+  - `attempts_without_passes`: attempts with no Passes table, such as records from before it. Their findings still count in `raised`.
+  - `passes_without_panel`: passes with no panel. They are not counted in `reviews` or `cost`.
+  - `escapes_unattributed`: Critical or Important escapes with no `missed_by`.
+  - `unknown_reviewer`: workers and `missed_by` names that are none of the eight reviewers. They get no row, overlap pair or count.
 
 `ns quality --bugs [--since <date>] [--until <date>] [--weeks N] [--json]` counts the `type:fix` issues opened in each ISO week (UTC), by source and severity, read from the `[queue] source` forge, with their rate per merged unit and per 1,000 changed lines and each rate's trend. It prints tables, or with `--json` one object:
 

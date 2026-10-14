@@ -1,20 +1,24 @@
 //! `ns watch` on the nightshift source updates its own binary (docs/factory/starting-a-night.md,
 //! "When the watched repo is nightshift"). When origin's default branch gains commits touching
-//! `cli/` after the commit this `ns` was built from, the night drains: no new unit starts, running
-//! ones finish. Then it builds that commit to a staging path, checks the new binary, and execs it
-//! with the night's state, so one summary covers the whole night.
+//! `cli/` after the commit new units run, it builds that commit in the background while units
+//! keep running, copies the binary to a path named for the commit and checks it. New units start
+//! on it, and running ones finish on theirs. Once no unit runs, the night execs it with the
+//! night's state, so one summary covers the whole night.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{triage, Tonight};
+use crate::eval::trial::run_process;
 use crate::gate::stderr_tail;
 use crate::git::{self, Repo};
 use crate::proc::Proc;
@@ -37,16 +41,21 @@ fn ceiling(default: Duration) -> Duration {
         .map_or(default, Duration::from_millis)
 }
 
-/// `cmd` bounded by `ceiling` and a stop, its output going to a new `log`. Files, not pipes,
-/// so a straggler in its group can't hold anything open.
-fn logged<'a>(cmd: &'a mut Proc, ceiling: Duration, log: &Path) -> Result<&'a mut Proc> {
+/// Run `cmd` to its end with its output in `log`, or kill it and its process group when a stop
+/// is requested or `ceiling` passes (both errors). Files, not pipes, so a straggler in the group
+/// can't hold anything open. The exit status and the end of the log.
+fn run_bounded(mut cmd: Command, ceiling: Duration, log: &Path) -> Result<(ExitStatus, String)> {
     let out = File::create(log).with_context(|| format!("cannot create {}", log.display()))?;
-    Ok(cmd.timeout(ceiling).until_stop().output_to(out))
-}
-
-/// The end of `log`, for an error.
-fn log_tail(log: &Path) -> String {
-    fs::read(log).map(|b| warning_tail(&b)).unwrap_or_default()
+    cmd.stdout(out.try_clone()?).stderr(out);
+    match run_process(cmd, None, ceiling) {
+        Err(e) if e.kind() == ErrorKind::Interrupted => bail!("stopped"),
+        Err(e) => Err(e.into()),
+        Ok((Some(status), _, _)) => Ok((
+            status,
+            fs::read(log).map(|b| warning_tail(&b)).unwrap_or_default(),
+        )),
+        Ok((None, _, _)) => bail!("timed out after {}s", ceiling.as_secs_f32().round()),
+    }
 }
 
 /// The commit this `ns` was built from: `NS_BUILD_COMMIT` in the environment, which tests set,
@@ -72,15 +81,24 @@ fn is_nightshift(root: &Path) -> bool {
 
 /// How a hand-off that returned ended. A successful one never returns: the process is replaced.
 pub(super) enum HandOff {
-    /// The build, the check or the exec failed; the night goes on with this `ns`.
-    Failed(anyhow::Error),
+    /// The exec failed; the night goes on with this `ns`, its units on the old binary too.
+    Failed(String, anyhow::Error),
     /// A stop was requested first; the night winds down and nothing is logged as a failure.
     Stopped,
 }
 
-/// The night's state file, removed when the hand-off ends without an exec. After an exec the
+/// How a build that ended in the background went, for the commit it built.
+pub(super) enum Built {
+    /// Cargo built it; the binary still needs its copy and check ([`SelfUpdate::adopt`]).
+    Ok(String),
+    Failed(String, anyhow::Error),
+    /// A stop came first and the build was killed.
+    Stopped(String),
+}
+
+/// The night's state file, removed when it goes out of scope without an exec. After an exec the
 /// guard never drops, and the new binary removes the file when it reads it.
-struct StateFile(PathBuf);
+pub(super) struct StateFile(PathBuf);
 
 impl Drop for StateFile {
     fn drop(&mut self) {
@@ -92,14 +110,55 @@ pub(super) fn short(sha: &str) -> &str {
     sha.get(..12).unwrap_or(sha)
 }
 
+/// A checked binary for `to`, which new units start on.
+struct Adopted {
+    to: String,
+    path: PathBuf,
+}
+
+/// `cargo build` of `to`, running in its own process group, its output in `log`.
+struct Build {
+    to: String,
+    child: Child,
+    deadline: Instant,
+    ceiling: Duration,
+    log: PathBuf,
+}
+
+impl Build {
+    fn kill(&mut self) {
+        // SAFETY: kill(2) on the process group of a child this process started and has not
+        // reaped: the child leads the group, so the group id is still its own.
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for Build {
+    /// A build the night leaves behind, on a panic or an exec, never outlives it.
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            self.kill();
+        }
+    }
+}
+
 pub(super) struct SelfUpdate {
     /// The commit this `ns` was built from.
     from: String,
-    /// Commits whose build or check failed tonight; none is tried again. A hand-off needs none
-    /// of them: the new binary's commit comes after every one.
+    /// Commits whose build or check failed tonight; none is tried again.
     failed: BTreeSet<String>,
     /// This `ns watch`'s own arguments, which the new binary runs with and its check too.
     args: Vec<OsString>,
+    /// The newest binary that passed its check: new units start on it, and the night hands off
+    /// to it once no unit runs.
+    adopted: Option<Adopted>,
+    /// The build running now, at most one.
+    building: Option<Build>,
 }
 
 impl SelfUpdate {
@@ -117,81 +176,182 @@ impl SelfUpdate {
             from,
             failed: BTreeSet::new(),
             args,
+            adopted: None,
+            building: None,
         })
     }
 
-    /// The commit at `base` (`origin/<default>`) to update to: one with `cli/` changes since
-    /// this `ns`'s commit that hasn't failed tonight, announced on stderr. A base or build commit
-    /// git can't read gives none.
+    /// The commit new units run: the adopted build's, else this `ns`'s.
+    fn current(&self) -> &str {
+        self.adopted.as_ref().map_or(&self.from, |a| &a.to)
+    }
+
+    /// The binary new units start on, when a build was adopted; else this `ns`.
+    pub fn child_exe(&self) -> Option<&Path> {
+        self.adopted.as_ref().map(|a| a.path.as_path())
+    }
+
+    /// Whether a checked binary waits for the night to hand off to it.
+    pub fn adopted(&self) -> bool {
+        self.adopted.is_some()
+    }
+
+    /// The adopted binary's commit, empty when none is.
+    pub fn adopted_commit(&self) -> String {
+        self.adopted
+            .as_ref()
+            .map(|a| a.to.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether a build is running.
+    pub fn building(&self) -> bool {
+        self.building.is_some()
+    }
+
+    /// The commit at `base` (`origin/<default>`) to build: one with `cli/` changes since the
+    /// commit new units run that hasn't failed tonight, announced on stderr. None while a build
+    /// runs; a base or build commit git can't read gives none too.
     pub fn pending(&self, root: &Path, base: &str) -> Option<String> {
+        if self.building.is_some() {
+            return None;
+        }
         let to = git::run(root, &["rev-parse", &format!("{base}^{{commit}}")]).ok()?;
         if self.failed.contains(&to) {
             return None;
         }
-        let range = format!("{}..{to}", self.from);
+        let range = format!("{}..{to}", self.current());
         let n = git::run(root, &["rev-list", "--count", &range, "--", "cli"]).ok()?;
         if n == "0" {
             return None;
         }
         eprintln!(
-            "ns watch: {base} has cli/ changes since this ns was built ({} -> {}); draining: no new unit until the running ones end",
-            short(&self.from),
+            "ns watch: {base} has cli/ changes since this ns was built ({} -> {}); building it while units run",
+            short(self.current()),
             short(&to)
         );
         Some(to)
     }
 
-    /// The commit to build when the drain begun for `noted` ends: `origin/<default>` fetched
-    /// again, as units merged during the drain, unless that commit failed tonight, else `noted`.
-    /// `pending` kept a failed commit from being noted, and none fails before a hand-off.
-    pub fn at_drain_end(&self, root: &Path, noted: String) -> String {
-        let tip = super::fresh_base(root)
-            .and_then(|base| git::run(root, &["rev-parse", &format!("{base}^{{commit}}")]).ok());
-        self.choose(tip, noted)
-    }
-
-    fn choose(&self, tip: Option<String>, noted: String) -> String {
-        tip.filter(|t| !self.failed.contains(t)).unwrap_or(noted)
-    }
-
-    /// Build `to`, check it and exec it with `night`. Returns only when that failed or a stop
-    /// came first.
-    pub fn hand_off(&self, repo: &Repo, to: &str, night: &Carried) -> HandOff {
-        eprintln!("ns watch: self-update: building {}", short(to));
-        let state = match night.save(&repo.common_dir) {
-            Ok(path) => StateFile(path),
-            Err(e) => return HandOff::Failed(e),
-        };
-        let abandoned = || {
-            eprintln!("ns watch: self-update to {} abandoned: stopping", short(to));
-            HandOff::Stopped
-        };
-        let built = self.build(repo, to, &state.0);
-        if stop::requested().is_some() {
-            return abandoned();
+    /// Start building `to` in the background. A build that can't start is given up at once.
+    pub fn start(&mut self, repo: &Repo, to: String) {
+        eprintln!("ns watch: self-update: building {}", short(&to));
+        match spawn_build(repo, &to) {
+            Ok((child, log)) => {
+                let ceiling = ceiling(BUILD_CEILING);
+                self.building = Some(Build {
+                    to,
+                    child,
+                    deadline: Instant::now() + ceiling,
+                    ceiling,
+                    log,
+                });
+            }
+            Err(e) => self.give_up(repo, to, e),
         }
-        let staged = match built {
-            Ok(staged) => staged,
-            Err(e) => return HandOff::Failed(e),
+    }
+
+    /// The running build's end, once it ended, a stop came, or its ceiling passed (killed).
+    pub fn poll(&mut self) -> Option<Built> {
+        let b = self.building.as_mut()?;
+        if crate::stop::requested().is_some() {
+            let mut b = self.building.take()?;
+            b.kill();
+            return Some(Built::Stopped(b.to.clone()));
+        }
+        let done = match b.child.try_wait() {
+            Ok(Some(status)) if status.success() => Ok(()),
+            Ok(Some(status)) => {
+                let said = fs::read(&b.log)
+                    .map(|t| warning_tail(&t))
+                    .unwrap_or_default();
+                Err(anyhow!("cargo build: {status}: {said}"))
+            }
+            Ok(None) if Instant::now() >= b.deadline => {
+                b.kill();
+                let s = b.ceiling.as_secs_f32().round();
+                Err(anyhow!("cargo build: timed out after {s}s"))
+            }
+            Ok(None) => return None,
+            Err(e) => Err(anyhow!("cargo build: {e}")),
         };
+        let b = self.building.take()?;
+        Some(match done {
+            Ok(()) => Built::Ok(b.to.clone()),
+            Err(e) => Built::Failed(b.to.clone(), e),
+        })
+    }
+
+    /// Kill a running build the night no longer needs, saying why.
+    pub fn abandon(&mut self, why: &str) {
+        if let Some(mut b) = self.building.take() {
+            b.kill();
+            eprintln!("ns watch: self-update to {} abandoned: {why}", short(&b.to));
+        }
+    }
+
+    /// Copy the binary cargo built for `to` to `<common>/ns/self-update/ns-<to>` and check it
+    /// against the night's `state`; once it passes, new units start on it. A failure is given
+    /// up: units keep this `ns`.
+    pub fn adopt(&mut self, repo: &Repo, to: String, state: &Path) {
+        let stage = repo.common_dir.join("ns/self-update");
+        let staged = stage.join(format!("ns-{to}"));
+        let ready = fs::copy(stage.join("target/release/ns"), &staged)
+            .with_context(|| format!("cannot copy the new ns to {}", staged.display()))
+            .and_then(|_| self.check(&staged, &to, state));
+        if let Err(e) = ready {
+            return self.give_up(repo, to, e);
+        }
+        eprintln!(
+            "ns watch: self-update: {} built; new units start on {}",
+            short(&to),
+            staged.display()
+        );
+        run::log_event(
+            &repo.common_dir,
+            json!({"event": "self_update_built", "from": self.from, "to": to, "path": staged}),
+        );
+        self.adopted = Some(Adopted { to, path: staged });
+    }
+
+    /// Exec the adopted binary with `night`. Returns only when that failed or a stop came first.
+    pub fn hand_off(&mut self, repo: &Repo, night: &Carried) -> HandOff {
+        let Some(Adopted { to, path }) = self.adopted.as_ref() else {
+            return HandOff::Stopped;
+        };
+        let (to, path) = (to.clone(), path.clone());
+        // A newer build is not carried across: the new binary looks for one itself.
+        self.abandon("handing off");
+        let state = match night.save(&repo.common_dir) {
+            Ok(p) => StateFile(p),
+            Err(e) => return HandOff::Failed(to, e),
+        };
+        if stop::requested().is_some() {
+            return HandOff::Stopped;
+        }
         eprintln!(
             "ns watch: self-update {} -> {}; handing off to {}",
             short(&self.from),
-            short(to),
-            staged.display()
+            short(&to),
+            path.display()
         );
         run::log_event(
             &repo.common_dir,
             json!({"event": "self_update", "from": self.from, "to": to}),
         );
-        let e = exec(&staged, args_for(self.args.iter().cloned(), &state.0));
+        let e = exec(&path, args_for(self.args.iter().cloned(), &state.0));
         if stop::requested().is_some() {
-            return abandoned();
+            eprintln!(
+                "ns watch: self-update to {} abandoned: stopping",
+                short(&to)
+            );
+            return HandOff::Stopped;
         }
-        HandOff::Failed(e)
+        HandOff::Failed(to, e)
     }
 
-    /// Keep this ns after a failed hand-off to `to`, and never try `to` again tonight.
+    /// Keep this ns, and its binary for new units, after `to` failed, and never try `to` again
+    /// tonight.
     pub fn give_up(&mut self, repo: &Repo, to: String, err: anyhow::Error) {
         eprintln!(
             "ns watch: warning: self-update to {} failed; keeping this ns: {err:#}",
@@ -201,49 +361,19 @@ impl SelfUpdate {
             &repo.common_dir,
             json!({"event": "self_update_failed", "from": self.from, "to": to, "error": format!("{err:#}")}),
         );
-        self.failed.insert(to);
-    }
-
-    /// Build `to` to `<common>/ns/self-update/ns-<to>` and check it: `--version` names `to` and
-    /// `watch --dry-run` exits 0 on a copy of the night's `state`. The new binary's path.
-    fn build(&self, repo: &Repo, to: &str, state: &Path) -> Result<PathBuf> {
-        let stage = repo.common_dir.join("ns/self-update");
-        let src = stage.join("src");
-        let _ = fs::remove_dir_all(&src);
-        fs::create_dir_all(&src).with_context(|| format!("cannot create {}", src.display()))?;
-        extract(&repo.root, to, &src)?;
-        let mut cargo = Proc::tool("cargo");
-        cargo
-            .args(["build", "--release", "--locked", "--manifest-path"])
-            .arg(src.join("cli/Cargo.toml"))
-            .arg("--target-dir")
-            .arg(stage.join("target"))
-            .env("NS_BUILD_COMMIT", to);
-        let log = stage.join("build.log");
-        let status = logged(&mut cargo, ceiling(BUILD_CEILING), &log)?
-            .output()
-            .context("cargo build")?
-            .status;
-        if !status.success() {
-            bail!("cargo build: {status}: {}", log_tail(&log));
+        if self.adopted.as_ref().is_some_and(|a| a.to == to) {
+            self.adopted = None;
         }
-        let staged = stage.join(format!("ns-{to}"));
-        fs::copy(stage.join("target/release/ns"), &staged)
-            .with_context(|| format!("cannot copy the new ns to {}", staged.display()))?;
-        self.check(&staged, to, state)?;
-        Ok(staged)
+        self.failed.insert(to);
     }
 
     /// `--version` names `to`, and `watch --dry-run` takes the arguments the exec will give it.
     fn check(&self, staged: &Path, to: &str, state: &Path) -> Result<()> {
         let log = staged.with_extension("log");
-        let mut version = Proc::tool(staged);
+        let mut version = Command::new(staged);
         version.arg("--version");
-        let status = logged(&mut version, ceiling(CHECK_CEILING), &log)?
-            .output()
-            .with_context(|| format!("{} --version", staged.display()))?
-            .status;
-        let said = log_tail(&log);
+        let (status, said) = run_bounded(version, ceiling(CHECK_CEILING), &log)
+            .with_context(|| format!("{} --version", staged.display()))?;
         if !status.success() || !said.contains(to) {
             bail!("the new ns --version said {:?}, not {to}", said.trim());
         }
@@ -251,22 +381,60 @@ impl SelfUpdate {
         // can't read fails the check here, not after the exec.
         let probe = staged.with_extension("night.json");
         fs::copy(state, &probe).with_context(|| format!("cannot copy {}", state.display()))?;
-        let mut dry = Proc::tool(staged);
+        let mut dry = Command::new(staged);
         dry.args(args_for(self.args.iter().cloned(), &probe));
         if !self.args.iter().any(|a| a == "--dry-run") {
             dry.arg("--dry-run");
         }
-        let result = logged(&mut dry, ceiling(CHECK_CEILING), &log).and_then(|d| {
-            d.output()
-                .with_context(|| format!("{} watch --dry-run", staged.display()))
-        });
+        let result = run_bounded(dry, ceiling(CHECK_CEILING), &log)
+            .with_context(|| format!("{} watch --dry-run", staged.display()));
         let _ = fs::remove_file(&probe);
-        let status = result?.status;
+        let (status, said) = result?;
         if !status.success() {
-            bail!("the new ns watch --dry-run: {status}: {}", log_tail(&log));
+            bail!("the new ns watch --dry-run: {status}: {said}");
         }
         Ok(())
     }
+}
+
+/// Write `night` to a state file for a check of the new binary; the file goes with the guard.
+pub(super) fn probe_state(common: &Path, night: &Carried) -> Result<StateFile> {
+    night.save(common).map(StateFile)
+}
+
+impl StateFile {
+    pub(super) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Extract `cli/` at `to` and start `cargo build` on it in its own process group, its output in
+/// `<common>/ns/self-update/build.log`.
+fn spawn_build(repo: &Repo, to: &str) -> Result<(Child, PathBuf)> {
+    let stage = repo.common_dir.join("ns/self-update");
+    let src = stage.join("src");
+    let _ = fs::remove_dir_all(&src);
+    fs::create_dir_all(&src).with_context(|| format!("cannot create {}", src.display()))?;
+    extract(&repo.root, to, &src)?;
+    let log = stage.join("build.log");
+    let out = File::create(&log).with_context(|| format!("cannot create {}", log.display()))?;
+    let mut cargo = Command::new("cargo");
+    cargo
+        .args(["build", "--release", "--locked", "--manifest-path"])
+        .arg(src.join("cli/Cargo.toml"))
+        .arg("--target-dir")
+        .arg(stage.join("target"))
+        .env("NS_BUILD_COMMIT", to)
+        .stdin(Stdio::null())
+        .stdout(out.try_clone()?)
+        .stderr(out);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cargo.process_group(0);
+    }
+    let child = cargo.spawn().context("cannot run cargo build")?;
+    Ok((child, log))
 }
 
 /// `git archive <to> cli | tar -x -C <into>`: the source to build, with no worktree to clean up.
@@ -400,7 +568,6 @@ fn exec(staged: &Path, args: Vec<OsString>) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proc::Kind;
 
     fn os(v: &[&str]) -> Vec<OsString> {
         v.iter().map(OsString::from).collect()
@@ -437,22 +604,40 @@ mod tests {
         }
     }
 
-    fn update(failed: &[&str]) -> SelfUpdate {
+    fn update() -> SelfUpdate {
         SelfUpdate {
             from: "a".into(),
-            failed: failed.iter().map(|c| c.to_string()).collect(),
+            failed: BTreeSet::new(),
             args: Vec::new(),
+            adopted: None,
+            building: None,
         }
     }
 
     #[test]
-    fn the_drain_end_builds_the_newest_commit_that_has_not_failed() {
-        let pick = |failed: &[&str], tip: Option<&str>| {
-            update(failed).choose(tip.map(String::from), "noted".into())
+    fn a_failed_adopted_binary_is_dropped_for_new_units_and_never_tried_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repo {
+            root: dir.path().into(),
+            common_dir: dir.path().join(".git"),
         };
-        assert_eq!(pick(&[], Some("tip")), "tip");
-        assert_eq!(pick(&[], None), "noted");
-        assert_eq!(pick(&["tip"], Some("tip")), "noted");
+        let mut u = update();
+        assert_eq!((u.current(), u.child_exe()), ("a", None));
+        u.adopted = Some(Adopted {
+            to: "b".into(),
+            path: "/x/ns-b".into(),
+        });
+        assert_eq!(u.current(), "b");
+        assert_eq!(u.child_exe(), Some(Path::new("/x/ns-b")));
+        // Another commit failing leaves the adopted binary in place.
+        u.give_up(&repo, "c".into(), anyhow!("no"));
+        assert_eq!(u.child_exe(), Some(Path::new("/x/ns-b")));
+        u.give_up(&repo, "b".into(), anyhow!("cannot exec"));
+        assert_eq!((u.current(), u.child_exe()), ("a", None));
+        assert!(u.failed.contains("b") && u.failed.contains("c"));
+        // With no build running, abandoning one says nothing and changes nothing.
+        u.abandon("stopping");
+        assert!(!u.building());
     }
 
     #[test]
@@ -533,58 +718,52 @@ mod tests {
     #[test]
     fn a_command_that_outlives_its_ceiling_is_killed() {
         let dir = tempfile::tempdir().unwrap();
-        let mut slow = Proc::tool("sh");
+        let mut slow = Command::new("sh");
         slow.args(["-c", "sleep 300"]);
-        let log = dir.path().join("log");
-        let e = logged(&mut slow, Duration::ZERO, &log)
-            .unwrap()
-            .output()
-            .unwrap_err();
+        let start = std::time::Instant::now();
+        let e = run_bounded(slow, Duration::from_millis(200), &dir.path().join("log")).unwrap_err();
         assert!(e.to_string().contains("timed out"), "{e}");
-    }
-
-    const STOP_MARK: &str = "NS_SELF_UPDATE_STOP_PROBE";
-
-    #[test]
-    fn a_stop_ends_a_logged_command_as_interrupted() {
-        crate::testutil::probe("watch::self_update::tests::stop_probe", STOP_MARK, "1");
-    }
-
-    #[test]
-    fn stop_probe() {
-        if std::env::var_os(STOP_MARK).is_none() {
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        crate::stop::request(libc::SIGTERM);
-        let mut slow = Proc::tool("sleep");
-        slow.arg("600");
-        let e = logged(&mut slow, CHECK_CEILING, &dir.path().join("log"))
-            .unwrap()
-            .output()
-            .unwrap_err();
-        assert_eq!(e.kind(), std::io::ErrorKind::Interrupted);
-        assert_eq!(e.to_string(), "`sleep 600` stopped by a signal");
+        assert!(start.elapsed() < Duration::from_secs(120));
     }
 
     #[test]
     fn a_command_that_ends_is_not_held_by_a_straggler_in_its_group() {
         let dir = tempfile::tempdir().unwrap();
-        let mut quick = Proc::tool("sh");
+        let mut quick = Command::new("sh");
         quick.args(["-c", "echo out; echo err >&2; (sleep 300 &); exit 3"]);
         let start = std::time::Instant::now();
-        let log = dir.path().join("log");
-        let out = logged(&mut quick, Kind::Tool.timeout(), &log)
-            .unwrap()
-            .output()
-            .unwrap();
-        let said = log_tail(&log);
-        assert_eq!(out.status.code(), Some(3));
+        let (status, said) =
+            run_bounded(quick, Duration::from_secs(600), &dir.path().join("log")).unwrap();
+        assert_eq!(status.code(), Some(3));
         assert!(said.contains("out") && said.contains("err"), "{said}");
         assert!(
             start.elapsed() < Duration::from_secs(120),
             "waited on a straggler"
         );
+    }
+
+    #[test]
+    fn exec_holds_a_stop_pending_through_to_the_new_program() {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = Command::new("grep");
+        cmd.args(["-E", "^(SigBlk|SigPnd|ShdPnd)", "/proc/self/status"]);
+        // SAFETY: only pthread_sigmask(3) and kill(2) in the closure.
+        unsafe {
+            cmd.pre_exec(|| {
+                stop::block();
+                libc::kill(libc::getpid(), libc::SIGTERM);
+                Ok(())
+            });
+        }
+        let out = cmd.output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mask = |key: &str| {
+            let line = text.lines().find(|l| l.starts_with(key)).unwrap();
+            u64::from_str_radix(line.split_whitespace().nth(1).unwrap(), 16).unwrap()
+        };
+        let (int, term) = (1 << (libc::SIGINT - 1), 1 << (libc::SIGTERM - 1));
+        assert_eq!(mask("SigBlk") & (int | term), int | term, "{text}");
+        assert_eq!((mask("SigPnd") | mask("ShdPnd")) & term, term, "{text}");
     }
 
     fn sigpipe_ignored() -> bool {
@@ -620,34 +799,5 @@ mod tests {
                 os(&["watch", "--parallel", "2", FLAG, "/s/night.json"])
             );
         }
-    }
-
-    #[test]
-    fn extract_unpacks_the_cli_tree_of_a_ref_into_the_directory() {
-        let repo = tempfile::tempdir().unwrap();
-        let into = tempfile::tempdir().unwrap();
-        crate::testutil::g(repo.path(), &["init", "-q", "-b", "main"]);
-        fs::create_dir(repo.path().join("cli")).unwrap();
-        crate::testutil::commit_file(repo.path(), "cli/main.rs", "fn main() {}\n");
-        extract(repo.path(), "HEAD", into.path()).unwrap();
-        assert_eq!(
-            fs::read_to_string(into.path().join("cli/main.rs")).unwrap(),
-            "fn main() {}\n"
-        );
-    }
-
-    #[test]
-    fn extract_fails_naming_git_archive_and_the_ref_when_the_ref_is_missing() {
-        let repo = tempfile::tempdir().unwrap();
-        let into = tempfile::tempdir().unwrap();
-        crate::testutil::g(repo.path(), &["init", "-q", "-b", "main"]);
-        fs::create_dir(repo.path().join("cli")).unwrap();
-        crate::testutil::commit_file(repo.path(), "cli/main.rs", "x\n");
-        let e = extract(repo.path(), "no-such-ref", into.path()).unwrap_err();
-        assert!(
-            e.to_string().starts_with("git archive no-such-ref: "),
-            "{e}"
-        );
-        assert!(fs::read_dir(into.path()).unwrap().next().is_none());
     }
 }

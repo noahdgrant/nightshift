@@ -25,7 +25,7 @@ pub struct Lock {
 const RUN_LOCK_PREFIX: &str = "ns-run-";
 /// The watch lock: one `ns watch` at a time per repo.
 const WATCH_LOCK: &str = "ns-watch.lock";
-/// The merge lock: one merge step's update, CI wait and merge at a time per repo.
+/// The merge lock: one merge step's final check and merge at a time per repo.
 pub(super) const MERGE_LOCK: &str = "ns-merge.lock";
 /// The worktree lock: one `ns worktree new` creating a worktree at a time per repo.
 pub const WORKTREE_LOCK: &str = "ns-worktree.lock";

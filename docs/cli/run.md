@@ -1,6 +1,6 @@
 # `ns run`
 
-## `ns run [<unit-id>] [--issue <n>] [--from <phase>] [--gates stop|auto] [--base <ref>] [--cpus <n>] [--dry-run] [--factory <dir>]`
+## `ns run [<unit-id>] [--issue <n>] [--from <phase>] [--gates stop|auto] [--base <ref>] [--cpus <n>] [--fresh] [--dry-run] [--factory <dir>]`
 
 Implements `ns run` in [docs/factory/run.md](../factory/run.md): creates or reuses the unit's worktree, reads `.ns/<unit>/*.md`, picks the next phase from the state table, runs the phase's harness headless in the worktree with the rendered prompt on stdin, and repeats until the unit is done, merged, split, stuck, paused or out of budget. With only `--issue`, the unit id is `<n>-<slug of the issue title>` (read with `gh issue view`).
 
@@ -12,4 +12,5 @@ Implements `ns run` in [docs/factory/run.md](../factory/run.md): creates or reus
 - **Cleanup.** After its merge step merges the PR and the unit's records are saved (pushed, or in the outbox), `ns run` removes the unit's worktree and local `ns/<unit>` branch. A worktree with uncommitted changes to tracked files, or a branch holding changes the merged PR head doesn't, stays. `cleanup` in the output says which, and why.
 - **Billing.** `[defaults] billing = "subscription"` (the default) removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY` from claude's environment and `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `CODEX_API_KEY` from codex's, drops `--bare`, and refuses to start (exit 2) without `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. A usage-limit error from claude ends the run as `paused` (exit 4) without using an attempt. `budget_usd` is a soft cap on the reported cost, unset by default on a subscription.
 - **CPU share.** `--cpus <n>` sets `NS_CPUS`, `RUST_TEST_THREADS` and `CARGO_BUILD_JOBS` to `<n>` for every phase and gate, leaving any of them already set in the environment as it is. The `start` event in the run log records each value and whether it was `computed` or `inherited`. Without `--cpus` none is set. `ns watch` passes `--cpus max(1, cores / --parallel)`. `--cpus 0` or a non-number exits 2. Details in `docs/factory/watch.md` ("Parallel units").
+- `--fresh` forgets the attempts and credits an unfinished run left in `.ns/<unit>/state.json`, for instance after fixing an artifact by hand. Without it, a run resumes them (see [Run](../factory/run.md)).
 - `--dry-run` prints the next decision, the rendered prompt and the command. It creates no worktree, takes no lock, and calls no harness.
