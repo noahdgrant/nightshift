@@ -316,7 +316,8 @@ fn export(origin: &Origin) -> Result<(), SfError> {
 
 /// The repo path in a remote URL, `owner/name` or `group/sub/name`, without `.git`: from
 /// `https://host/owner/name`, `ssh://git@host:22/owner/name` or scp-like `git@alias:owner/name`.
-/// `None` for a local path or `file://` URL.
+/// `None` for a local path or `file://` URL, and for a path with a `.` or `..` segment, a `?` or
+/// a `#`, since callers put it into forge API URLs sent with the token.
 pub fn repo_path(url: &str) -> Option<String> {
     if url
         .split_once("://")
@@ -328,7 +329,10 @@ pub fn repo_path(url: &str) -> Option<String> {
     let path = watch_forge::path(url)?.trim_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
     let segments: Vec<&str> = path.split('/').collect();
-    (segments.len() >= 2 && segments.iter().all(|s| !s.is_empty())).then(|| path.to_string())
+    (segments.len() >= 2
+        && segments.iter().all(|s| !matches!(*s, "" | "." | ".."))
+        && !path.contains(['?', '#']))
+    .then(|| path.to_string())
 }
 
 fn remote_scheme(scheme: &str) -> bool {

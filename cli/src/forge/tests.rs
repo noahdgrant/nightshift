@@ -159,6 +159,19 @@ fn repo_path_reads_https_ssh_and_alias_urls() {
         ("file:///tmp/a/remote.git", None),
         ("/tmp/a/remote.git", None),
         ("./dir:x/remote.git", None),
+        ("https://github.com/o/my.repo", Some("o/my.repo")),
+        ("https://github.com/o/..r", Some("o/..r")),
+        ("https://github.com/o/r.", Some("o/r.")),
+        ("https://github.com/o/../../user", None),
+        ("https://github.com/o/./r", None),
+        ("https://github.com/./r", None),
+        ("https://github.com/o/..", None),
+        ("https://github.com/o/...git", None),
+        ("https://github.com/o/r?x=1", None),
+        ("https://github.com/o/r#frag", None),
+        ("https://github.com/o/r.git?x=1", None),
+        ("git@alias:o/../r", None),
+        ("git@alias:o/r#x", None),
     ] {
         assert_eq!(repo_path(url).as_deref(), want, "{url}");
     }
