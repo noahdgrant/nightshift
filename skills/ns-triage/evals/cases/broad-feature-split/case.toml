@@ -1,43 +1,44 @@
-description = "Clear but broad feature request (reorder points, a low-stock status filter, a CSV reorder report). Under gates: auto, triage should size it, find more than one shippable behaviour, and split it: file two or more child issues with their own Agent Briefs and Blocked by lines, mark them ready-for-agent with the parent's priority, close nothing, move the parent to needs-define with Triage Notes listing the children, and start no unit."
+description = "Clear request holding two behaviours in disjoint files: a state-file backup (storage) and a cap on reservation TTL (warehouse). Neither needs the other, so the children can run in parallel. Under gates: auto, triage should size it and split it: file two or more child issues with their own Agent Briefs and no Blocked by line, mark them ready-for-agent with the parent's priority, close nothing, move the parent to needs-define with Triage Notes listing the children, and start no unit."
 fixture = "py-inventory"
 skills = ["ns-triage"]
 extra_skills = ["ns-contract"]
 requires = []
 timeout_minutes = 15
 prompt = """
-Triage .scratch/low-stock/issues/01-low-stock-reordering.md. gates: auto
+Triage .scratch/stock-safety/issues/01-stock-safety.md. gates: auto
 """
 
 [[check]]
 type = "regex"
-path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+path = ".scratch/stock-safety/issues/01-stock-safety.md"
 pattern = '(?m)^\**Status:?\**:?\s*`?needs-define`?\s*$'
 present = true
 
 [[check]]
 type = "regex"
-path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+path = ".scratch/stock-safety/issues/01-stock-safety.md"
 pattern = '(?m)^\**Status:?\**:?\s*`?(closed|wontfix|needs-triage|ready-for-agent)'
 present = false
 
 [[check]]
 type = "regex"
-path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+path = ".scratch/stock-safety/issues/01-stock-safety.md"
 pattern = '(?m)^#+\s*Triage Notes'
 present = true
 
 [[check]]
 type = "regex"
-path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+path = ".scratch/stock-safety/issues/01-stock-safety.md"
 pattern = '🤖 \*Posted by nightshift, an AI agent\.\*'
 present = true
 
 [[check]]
+# Two or more ready children, none blocked on another: they can run in parallel.
 type = "command"
 run = '''
 python3 - <<'PYEOF'
 import glob, os, re, sys
-parent_path = ".scratch/low-stock/issues/01-low-stock-reordering.md"
+parent_path = ".scratch/stock-safety/issues/01-stock-safety.md"
 parent = open(parent_path, encoding="utf-8").read()
 children = sorted(p for p in glob.glob(".scratch/**/*.md", recursive=True)
                   if os.path.realpath(p) != os.path.realpath(parent_path) and "/issues/" in p)
@@ -45,10 +46,6 @@ notes = parent.split("Triage Notes", 1)[-1]
 print("children:", children)
 if len(children) < 2:
     sys.exit("fewer than two child issues")
-blockers = {}
-numbers = {}
-header = re.compile(r"[*_]*[A-Z][\w-]*(?: [\w-]+)?[*_]*:")
-blocked_by = re.compile(r"(?i)\W*Blocked by:?\**:?\s*(.*)")
 for path in children:
     text = open(path, encoding="utf-8").read()
     stem = os.path.splitext(os.path.basename(path))[0]
@@ -56,45 +53,53 @@ for path in children:
     if not prefix:
         sys.exit(f"{path}: file name has no numeric prefix")
     num = prefix.group()
-    numbers[int(num)] = path
     checks = {
         "ready-for-agent": re.search(r"(?m)^\**Status:?\**:?\s*`?ready-for-agent`?\s*$", text),
         "priority:medium": re.search(r"(?m)^\**Priority:?\**:?\s*`?priority:medium`?\s*$", text),
         "Agent Brief": re.search(r"(?m)^#+\s*Agent Brief", text),
         "criteria": re.search(r"- \[ \] .+", text),
         "Size": re.search(r"(?mi)^\W*Size:", text),
+        "Touches": re.search(r"(?mi)^\W*Touches:", text),
+        "no Blocked by": not re.search(r"(?mi)^\W*Blocked by", text),
         "listed in parent's Triage Notes": stem in notes or re.search(rf"(?<!\d)(?:{num}|{int(num)})(?!\d)", notes),
     }
     missing = [k for k, v in checks.items() if not v]
     if missing:
         sys.exit(f"{path}: missing {missing}")
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    body = lines[1:] if lines and lines[0].startswith("#") else lines
-    body = body[1:] if body and body[0].startswith("🤖") else body
-    first = next((l for l in body if blocked_by.match(l) or not header.match(l)), "")
-    m = blocked_by.match(first)
-    blockers[path] = [int(n) for n in re.findall(r"#?(\d+)", m.group(1))] if m else []
-    if not m and re.search(r"(?mi)^\W*Blocked by", text):
-        sys.exit(f"{path}: Blocked by is not the first body line")
-roots = [p for p, n in blockers.items() if not n]
-if len(roots) != 1:
-    sys.exit(f"expected exactly one child without Blocked by, got {roots}")
-root = roots[0]
-first = open(root, encoding="utf-8").read().splitlines()[0]
-if not re.search(r"(?i)reorder[- _]?point", os.path.basename(root) + first):
-    sys.exit(f"the unblocked child is not the reorder-point child: {root}")
-def reaches_root(path, seen=()):
-    for n in blockers[path]:
-        dep = numbers.get(n)
-        if dep is None or dep in seen:
-            continue
-        if dep == root or reaches_root(dep, seen + (path,)):
-            return True
-    return False
-for path in blockers:
-    if path != root and not reaches_root(path):
-        sys.exit(f"{path}: blockers do not reach the reorder-point child {root}")
-print(f"ok: {len(children)} children, all dependents reach {root}")
+print(f"ok: {len(children)} parallel children")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# The children's Touches lines are pairwise disjoint: no glob equals, contains or matches another's.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import fnmatch, glob, os, re, sys
+parent_path = ".scratch/stock-safety/issues/01-stock-safety.md"
+children = sorted(p for p in glob.glob(".scratch/**/*.md", recursive=True)
+                  if os.path.realpath(p) != os.path.realpath(parent_path) and "/issues/" in p)
+touches = {}
+for path in children:
+    m = re.search(r"(?mi)^\W*Touches:?[*_ \t]*(.*)$", open(path, encoding="utf-8").read())
+    globs = re.findall(r"`([^`]+)`", m.group(1)) if m else []
+    if not globs:
+        sys.exit(f"{path}: no backquoted Touches globs")
+    touches[path] = [g.rstrip("/") for g in globs]
+def base(g):
+    return re.sub(r"/?\*\*?$", "", g)
+def overlap(a, b):
+    ba, bb = base(a), base(b)
+    return a == b or fnmatch.fnmatch(a, b) or fnmatch.fnmatch(b, a) or ba == bb or ba.startswith(bb + "/") or bb.startswith(ba + "/")
+paths = list(touches)
+for i, p in enumerate(paths):
+    for q in paths[i + 1:]:
+        for a in touches[p]:
+            for b in touches[q]:
+                if overlap(a, b):
+                    sys.exit(f"{p} and {q} overlap: {a} vs {b}")
+print("ok: Touches are pairwise disjoint", touches)
 PYEOF
 '''
 expect_exit = 0
@@ -112,5 +117,5 @@ allow = [".scratch/**", ".ns/**", "GLOSSARY.md", "docs/adr/**"]
 
 [[check]]
 type = "judge"
-rubric = "Read .scratch/low-stock/issues/. Pass only if: the triage records a size estimate (files or modules, new tests, rough lines); the request is split along shippable behaviours (reorder points first, then the low-stock status filter and the CSV reorder report, separately or the latter two together only with a stated reason); each child's Agent Brief has its own testable acceptance criteria; the Blocked by lines follow the real order (the filter and report wait on reorder points, not the reverse); and the parent's Triage Notes list every child."
+rubric = "Read .scratch/stock-safety/issues/. Pass only if: the triage records a size estimate (files or modules, new tests, rough lines); the request is split into one child for the state-file backup and one for the reservation TTL cap, with the reason that their files don't overlap or that they are separate behaviours, not that the work is large; each child's Touches name only its own side (storage for the backup, the warehouse for the cap); each child's Agent Brief has its own testable acceptance criteria; and the parent's Triage Notes list every child."
 required = false

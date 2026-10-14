@@ -4,7 +4,7 @@ title: "[gate] local = \"build-only\" runs all of local CI once per unit, after 
 issue: 466
 date: 2026-10-12
 amends: [ADR-452, D67, D66]
-amended_by: [ADR-611]
+amended_by: [ADR-611, ADR-648]
 ---
 
 # ADR-466: `[gate] local = "build-only"` runs all of local CI once per unit, after build
