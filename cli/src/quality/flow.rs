@@ -377,6 +377,25 @@ mod tests {
     }
 
     #[test]
+    fn a_finding_fixed_in_the_cycle_that_raised_it_counts_at_distance_zero() {
+        let review = "\
+### I1. same
+- Cycle: 2
+- Status: fixed (cycle 2, x)
+### I2. next
+- Cycle: 0
+- Status: fixed (cycle 1, x)
+### I3. far
+- Cycle: 0
+- Status: fixed (cycle 3, x)
+";
+        let f = finding_flow(&[&unit(vec![attempt(Some(1), "pass", review)])]);
+        let c = &f.cycles_to_fix;
+        assert_eq!((c.findings, c.left_out), (3, 0));
+        assert_eq!((c.median, c.max, c.next_cycle), (Some(1.0), Some(3), 1));
+    }
+
+    #[test]
     fn finding_flow_with_nothing_to_count_has_no_rates() {
         let f = finding_flow(&[]);
         assert_eq!((f.findings, f.without_cycle), (0, 0));

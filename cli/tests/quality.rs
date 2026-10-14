@@ -992,6 +992,30 @@ fn imported_records_keep_the_numbers_after_the_worktrees_are_removed() {
 }
 
 #[test]
+fn human_output_says_when_the_records_fetch_failed_and_what_the_gaps_are() {
+    let f = fixture();
+    let gone = f.root.with_file_name("gone-human.git");
+    git(
+        &f.root,
+        &["remote", "add", "origin", gone.to_str().unwrap()],
+    );
+    let out = ns()
+        .current_dir(&f.root)
+        .args(["quality", "--human"])
+        .output();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains("Records: fetch failed"),
+        "missing the fetch failure in:\n{text}"
+    );
+    assert!(
+        text.contains("Gaps: 2 unparsed artifacts, 4 findings missing a field"),
+        "{text}"
+    );
+}
+
+#[test]
 fn an_import_with_nothing_to_import_fails_and_says_what_it_expected() {
     let f = fixture();
     let remote = with_origin(&f);

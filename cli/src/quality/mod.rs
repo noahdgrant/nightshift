@@ -230,6 +230,34 @@ fn text(s: &metrics::Summary, flow: &flow::FindingFlow) -> String {
     )
 }
 
+fn health(r: &Value) -> String {
+    let records = &r["records"];
+    let mut t = String::new();
+    if records["fetched"] == false {
+        t += &format!(
+            "Records: fetch failed ({}); read as last fetched\n",
+            records["fetch_error"].as_str().unwrap_or("unknown error")
+        );
+    }
+    let gaps = &r["gaps"];
+    let missing: u64 = [
+        "findings_without_axis",
+        "findings_without_severity",
+        "findings_without_scope",
+        "findings_without_cycle",
+        "findings_without_location",
+        "findings_without_status",
+    ]
+    .iter()
+    .filter_map(|k| gaps[k].as_u64())
+    .sum();
+    t += &format!(
+        "Gaps: {} unparsed artifacts, {missing} findings missing a field\n",
+        gaps["unparsed"].as_array().map_or(0, Vec::len)
+    );
+    t
+}
+
 pub fn cli(since: Option<String>, until: Option<String>, human: bool) -> Result<ExitCode> {
     let window = window(since, until)?;
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
@@ -265,8 +293,9 @@ pub fn cli(since: Option<String>, until: Option<String>, human: bool) -> Result<
     r["records"] = records;
     if human {
         print!(
-            "{}",
-            text(&metrics::summarize(&kept), &flow::finding_flow(&kept))
+            "{}{}",
+            text(&metrics::summarize(&kept), &flow::finding_flow(&kept)),
+            health(&r)
         );
     } else {
         println!("{}", serde_json::to_string_pretty(&r)?);
