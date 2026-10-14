@@ -43,6 +43,7 @@ mod stack;
 mod stats;
 mod status;
 mod stop;
+mod tail;
 #[cfg(test)]
 mod testutil;
 mod touches;
