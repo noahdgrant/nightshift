@@ -1328,6 +1328,113 @@ fn doctor_warns_when_the_default_branch_is_not_in_the_main_checkout() {
 }
 
 #[test]
+fn doctor_reports_a_tracked_skill_dir_that_ns_run_cannot_pin() {
+    let (tmp, root) = repo();
+    let cfg = tmp.path().join("config.toml");
+    fs::write(
+        &cfg,
+        "[harness.echo]\ncommand = [\"cat\"]\n[roles.default]\nharness = \"echo\"\n",
+    )
+    .unwrap();
+    let doctor = |dir: &Path| {
+        let out = ns()
+            .current_dir(dir)
+            .env("NS_CONFIG", &cfg)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GH_TOKEN")
+            .env_remove("GITLAB_TOKEN")
+            .arg("doctor")
+            .assert()
+            .get_output()
+            .clone();
+        let v = doctor_report(&out);
+        let mentions = |key: &str| -> Vec<String> {
+            v[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| w.as_str().unwrap().to_string())
+                .filter(|w| w.contains("/skills is tracked"))
+                .collect()
+        };
+        let (problems, warnings) = (mentions("problems"), mentions("warnings"));
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(warnings.iter().all(|w| stderr.contains(w)), "{stderr}");
+        (v["ok"].clone(), problems, warnings)
+    };
+
+    // An untracked .claude/skills, or ns run's link to a unit's snapshot, is no problem.
+    fs::create_dir_all(root.join(".claude")).unwrap();
+    std::os::unix::fs::symlink("../.ns/u/skills", root.join(".claude/skills")).unwrap();
+    assert_eq!(doctor(&root), (Value::Bool(true), vec![], vec![]));
+    fs::remove_file(root.join(".claude/skills")).unwrap();
+    fs::create_dir_all(root.join(".claude/skills/mine")).unwrap();
+    fs::write(root.join(".claude/skills/mine/SKILL.md"), "x\n").unwrap();
+    assert_eq!(doctor(&root), (Value::Bool(true), vec![], vec![]));
+    // A tracked sibling that only shares the prefix is not the skill dir.
+    fs::create_dir_all(root.join(".claude/skills-old")).unwrap();
+    fs::write(root.join(".claude/skills-old/x"), "x\n").unwrap();
+    git(&root, &["add", ".claude/skills-old"]);
+    assert_eq!(doctor(&root), (Value::Bool(true), vec![], vec![]));
+
+    git(&root, &["add", ".claude/skills"]);
+    let (ok, problems, warnings) = doctor(&root.join(".claude"));
+    assert_eq!(ok, false);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].starts_with(".claude/skills is tracked"),
+        "{problems:?}"
+    );
+    assert!(problems[0].contains("fix: move its skills to .agents/skills"));
+    assert!(problems[0].contains("git rm -r --cached .claude/skills"));
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    git(&root, &["rm", "-rq", "--cached", ".claude/skills"]);
+    fs::create_dir_all(root.join(".agents/skills/mine")).unwrap();
+    fs::write(root.join(".agents/skills/mine/SKILL.md"), "x\n").unwrap();
+    git(&root, &["add", ".agents/skills"]);
+    let (ok, problems, warnings) = doctor(&root);
+    assert_eq!(ok, true, "{problems:?}");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with(".agents/skills is tracked"),
+        "{warnings:?}"
+    );
+    assert!(warnings[0].contains("git rm -r --cached .agents/skills"));
+
+    // A tracked symlink is tracked too: pin() rejects one that points elsewhere.
+    fs::remove_dir_all(root.join(".claude/skills")).unwrap();
+    std::os::unix::fs::symlink("../elsewhere", root.join(".claude/skills")).unwrap();
+    git(&root, &["add", ".claude/skills"]);
+    let (ok, problems, warnings) = doctor(&root);
+    assert_eq!(ok, false);
+    assert_eq!(
+        (problems.len(), warnings.len()),
+        (1, 1),
+        "{problems:?} {warnings:?}"
+    );
+
+    // When git ls-files fails, the check reports nothing.
+    fs::write(root.join(".git/index"), "not an index").unwrap();
+    let (_, problems, warnings) = doctor(&root);
+    assert_eq!((problems, warnings), (vec![], vec![]));
+}
+
+#[test]
+fn doctor_reports_no_tracked_skill_dir_outside_a_repo() {
+    let outside = tempfile::tempdir().unwrap();
+    let v = doctor_report(
+        ns().current_dir(outside.path())
+            .env("GIT_CEILING_DIRECTORIES", outside.path())
+            .arg("doctor")
+            .assert()
+            .get_output(),
+    );
+    assert!(!v.to_string().contains("/skills is tracked"), "{v}");
+}
+
+#[test]
 fn doctor_checks_hooks_path_from_a_subdirectory() {
     let (_tmp, root) = repo();
     fs::create_dir(root.join(".githooks")).unwrap();
