@@ -138,7 +138,24 @@ pub struct State {
     pub has_issue: bool,
     /// The unit's diff at HEAD; `None` compares shas only.
     pub unit_diff: Option<UnitDiff>,
+    /// Verify and review artifacts that are not current, but only because ship took in the base
+    /// and that changed few of the unit's own lines (CORE-1): evidence carries forward, and
+    /// review runs over just that change.
+    pub carried: BTreeMap<&'static str, Carried>,
 }
+
+/// An artifact carried forward over a small change the base brought in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Carried {
+    /// The sha the artifact was written at.
+    pub from: String,
+    /// How many of the unit's own changed lines differ since (`git::interdiff_lines`).
+    pub lines: usize,
+}
+
+/// The most changed lines of the unit's own diff a base merge may bring in and still carry
+/// evidence forward with only a delta review (CORE-1 in docs/design/factory-core/v1.md).
+pub const DELTA_MAX_LINES: usize = 40;
 
 #[derive(Debug, Clone)]
 pub struct UnitDiff {
@@ -190,6 +207,7 @@ pub(super) fn read_state(
         head,
         has_issue,
         unit_diff,
+        carried: BTreeMap::new(),
     }
 }
 
@@ -253,6 +271,20 @@ fn named_phase(body: &str) -> Option<&'static str> {
     }
 }
 
+/// What a delta review is told: review only what the base merge changed in the unit's diff.
+fn delta_feedback(c: &Carried, head: &str) -> String {
+    format!(
+        "Delta review. review.md passed at {from}. Since then only ship's merge of the base changed \
+         this unit's own diff, by {n} lines, so verify's evidence carries forward. Review only \
+         that change, not the whole unit: compare the unit's diff at {from} with its diff at \
+         {head}, for example with `git range-diff $(git merge-base {from} origin/HEAD)..{from} \
+         $(git merge-base {head} origin/HEAD)..{head}`. Keep the earlier review's findings for \
+         everything else, and add `delta_of: {from}` to review.md's frontmatter.",
+        from = c.from,
+        n = c.lines,
+    )
+}
+
 /// The state table in docs/factory/run.md.
 pub fn decide(s: &State) -> Decision {
     if let Some(brief) = s.arts.get("triage").filter(|a| a.status == "split") {
@@ -271,7 +303,9 @@ pub fn decide(s: &State) -> Decision {
     }
     let stale = |a: &Art| !s.current(a.sha.as_deref().unwrap_or(""));
     let passes = |p: &str| s.arts.get(p).is_some_and(|a| s.passes(a));
-    if passes("ship") && passes("verify") && passes("review") {
+    let verify_carried = s.carried.contains_key("verify")
+        && s.arts.get("verify").is_some_and(|a| a.status == "pass");
+    if passes("ship") && (passes("verify") || verify_carried) && passes("review") {
         return Decision::Done;
     }
     let Some(brief) = s.arts.get("triage") else {
@@ -306,6 +340,20 @@ pub fn decide(s: &State) -> Decision {
         let Some(a) = s.arts.get(phase) else {
             return run(phase, "", format!("no {file}"));
         };
+        match s.carried.get(phase).filter(|_| a.status == "pass") {
+            Some(_) if phase == "verify" => continue,
+            Some(c) => {
+                return run(
+                    "review",
+                    &delta_feedback(c, &s.head),
+                    format!(
+                    "{file} sha {} is behind a {}-line change the base brought in: delta review",
+                    c.from, c.lines
+                ),
+                )
+            }
+            None => {}
+        }
         if stale(a) {
             return run(phase, "", stale_why(file, a));
         }
@@ -353,6 +401,7 @@ mod tests {
             head: "abc1234".into(),
             has_issue: true,
             unit_diff: None,
+            carried: BTreeMap::new(),
         }
     }
 
@@ -656,6 +705,7 @@ mod tests {
             head: r.rebased.clone(),
             has_issue: true,
             unit_diff: Some(UnitDiff::new(r.dir.clone(), "main".into(), &r.rebased)),
+            carried: BTreeMap::new(),
         }
     }
 
@@ -756,5 +806,63 @@ mod tests {
             assert_eq!(a.pr.as_deref(), Some("0012"));
             assert_eq!(a.status, "pass");
         }
+    }
+
+    #[test]
+    fn carried_evidence_skips_verify_and_carried_review_runs_a_delta_review() {
+        let carried = |phases: &[&'static str]| {
+            let mut s = state(&[
+                ("triage", art("pass", "abc1234")),
+                ("build", art("pass", "abc1234")),
+                ("verify", art("pass", "old0001")),
+                ("review", art("pass", "old0001")),
+                ("ship", art("pass", "abc1234")),
+            ]);
+            for p in phases {
+                s.carried.insert(
+                    p,
+                    Carried {
+                        from: "old0001".into(),
+                        lines: 3,
+                    },
+                );
+            }
+            s
+        };
+        assert_eq!(phase_of(&decide(&carried(&[]))), "verify");
+        let d = decide(&carried(&["verify", "review"]));
+        assert_eq!(phase_of(&d), "review");
+        let Decision::Run { feedback, why, .. } = d else {
+            unreachable!()
+        };
+        assert!(
+            feedback.starts_with("Delta review. review.md passed at old0001."),
+            "{feedback}"
+        );
+        assert!(feedback.contains("delta_of: old0001"), "{feedback}");
+        assert_eq!(
+            why,
+            "review.md sha old0001 is behind a 3-line change the base brought in: delta review"
+        );
+        let mut s = carried(&["verify"]);
+        s.arts.insert("review", art("pass", "abc1234"));
+        assert_eq!(decide(&s), Decision::Done);
+    }
+
+    #[test]
+    fn a_failed_artifact_is_never_carried() {
+        let mut s = state(&[
+            ("triage", art("pass", "abc1234")),
+            ("build", art("pass", "abc1234")),
+            ("verify", art("fail", "old0001")),
+        ]);
+        s.carried.insert(
+            "verify",
+            Carried {
+                from: "old0001".into(),
+                lines: 1,
+            },
+        );
+        assert_eq!(phase_of(&decide(&s)), "verify");
     }
 }

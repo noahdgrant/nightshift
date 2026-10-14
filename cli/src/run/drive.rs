@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 use super::ci_gate::gate_trigger;
 use super::core::{Ledger, MergeBack, PhaseResult, Rebase};
 use super::currency::{
-    archive_as, archive_for, known_pr, read_art, read_state, restore, Decision, UnitDiff,
+    archive_as, archive_for, known_pr, read_art, read_state, restore, Carried, Decision, State,
+    UnitDiff, DELTA_MAX_LINES,
 };
 use super::locks::{Acquired, Bound, RunnerLocks};
 use super::merge::{merge_step, MergeStep};
@@ -116,6 +117,8 @@ fn drive_loop(
                 &ctx.head(),
             )),
         );
+        let mut state = state;
+        carry_forward(ctx, &ledger, &mut state);
         let (decision, rebase) = ledger.next(&state);
         let (phase, feedback, why) = match decision {
             Decision::Stuck(r) => {
@@ -483,6 +486,28 @@ fn drive_loop(
                     culprit.as_ref().map(|(who, _)| who.as_str()),
                 );
             }
+        }
+    }
+}
+
+/// Mark the verify and review artifacts that only a small base merge by ship made stale, so they
+/// carry forward (CORE-1): `state.carried`.
+fn carry_forward(ctx: &Ctx<'_>, ledger: &Ledger, state: &mut State) {
+    for phase in ["verify", "review"] {
+        let Some(sha) = state.arts.get(phase).and_then(|a| a.sha.clone()) else {
+            continue;
+        };
+        if state.current(&sha)
+            || !ledger.only_ship_moved(&sha, &state.head)
+            || !git::took_in_base(&ctx.worktree, &ctx.base, &sha, &state.head)
+        {
+            continue;
+        }
+        let Some(lines) = git::interdiff_lines(&ctx.worktree, &ctx.base, &sha, &state.head) else {
+            continue;
+        };
+        if lines <= DELTA_MAX_LINES {
+            state.carried.insert(phase, Carried { from: sha, lines });
         }
     }
 }

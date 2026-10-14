@@ -347,6 +347,27 @@ impl Ledger {
         });
     }
 
+    /// Every phase run that moved HEAD from `from` up to `to` was ship's: the change between
+    /// them is ship taking in the base. False when the chain from `from` to `to` is not all in
+    /// the ledger.
+    pub fn only_ship_moved(&self, from: &str, to: &str) -> bool {
+        let same = |a: &str, b: &str| crate::git::same_sha(a, b);
+        let Some(i) = self.moved.iter().position(|m| same(&m.from, from)) else {
+            return false;
+        };
+        let mut at = from.to_string();
+        for m in &self.moved[i..] {
+            if !same(&m.from, &at) || m.phase != "ship" {
+                return false;
+            }
+            at = m.to.clone();
+            if same(&at, to) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// The phase runs that moved HEAD, newest first: where a red gate looks for its cause.
     pub fn moves_newest_first(&self) -> impl Iterator<Item = &Moved> {
         self.moved.iter().rev()

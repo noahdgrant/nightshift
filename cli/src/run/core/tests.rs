@@ -6,6 +6,7 @@ fn empty() -> State {
         head: "abc1234".into(),
         has_issue: true,
         unit_diff: None,
+        carried: BTreeMap::new(),
     }
 }
 
@@ -410,4 +411,26 @@ fn a_free_fix_that_fails_is_charged_and_a_lock_give_up_keeps_the_credit() {
     assert!(l
         .admit("build", String::new(), "x".into(), None, None, 1)
         .is_err());
+}
+
+#[test]
+fn only_ship_moved_follows_the_chain_of_ship_runs() {
+    let mut l = Ledger::new(None);
+    l.head_moved("review", "a000001", "b000002");
+    l.head_moved("ship", "b000002", "c000003");
+    l.head_moved("ship", "c000003", "d000004");
+    assert!(l.only_ship_moved("b000002", "d000004"));
+    assert!(l.only_ship_moved("c000003", "d000004"));
+    assert!(
+        !l.only_ship_moved("a000001", "d000004"),
+        "review moved it first"
+    );
+    assert!(
+        !l.only_ship_moved("e000005", "d000004"),
+        "not in the ledger"
+    );
+    assert!(
+        !l.only_ship_moved("b000002", "f000006"),
+        "chain never reaches it"
+    );
 }

@@ -15452,3 +15452,34 @@ fn a_red_gate_on_an_unmoved_main_logs_merge_gate_failed() {
     assert!(!p.contains("combining it with main"), "{p}");
     assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
 }
+
+#[test]
+fn a_small_change_a_merge_of_main_brings_in_keeps_evidence_and_runs_a_delta_review() {
+    let resolve = "git merge -q --no-ff --no-commit upstream\n\
+                   echo resolved >> work.txt && git add work.txt\n\
+                   git -c user.name=f -c user.email=f@f commit -q --no-edit\n\
+                   git update-ref refs/remotes/origin/main upstream\n\
+                   git rev-parse HEAD > \"$FAKE_GH_DIR/pr-12.head\"\n";
+    let (e, v, code) = main_moves_after_review(
+        &["pass:script", "pass"],
+        PRINT_HEAD_SHA_CMD,
+        resolve,
+        |_| {},
+    );
+    assert_eq!((code, &v["outcome"]), (0, &"merged".into()), "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "ship", "review"],
+        "verify's evidence carried over the one-line merge resolution"
+    );
+    let review = run_events(&e)
+        .into_iter()
+        .rfind(|ev| ev["event"] == "phase" && ev["phase"] == "review")
+        .expect("a review phase event");
+    assert!(
+        review["decision"]
+            .as_str()
+            .is_some_and(|d| d.ends_with("change the base brought in: delta review")),
+        "{review}"
+    );
+}
