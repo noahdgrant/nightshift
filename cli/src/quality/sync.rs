@@ -16,22 +16,41 @@ use super::runlog;
 use super::store::{self, Sent};
 use crate::clock::Clock;
 use crate::error::SfError;
+use crate::factory;
 use crate::git::Repo;
 use crate::run::currency::known_pr;
 use crate::worktree;
 
-/// The records on origin's branch (fetched first) and in the outbox, and a summary of where
-/// they came from.
+/// `[quality] remote` from the repo's factory file, `None` for the outbox only. A factory file
+/// that doesn't load gives the default, `origin`.
+fn remote(repo: &Repo) -> Option<String> {
+    factory::load(&factory::root(None, &repo.root))
+        .unwrap_or_default()
+        .quality
+        .target()
+        .map(String::from)
+}
+
+/// The records on the remote's branch (fetched first) and in the outbox, and a summary of where
+/// they came from. With no remote, the outbox only.
 fn stored(repo: &Repo) -> (Vec<Record>, Value) {
-    let fetched = store::fetch(&repo.root);
-    let (mut records, bad_remote) = record::parse(&store::tracked(&repo.root).unwrap_or_default());
+    let remote = remote(repo);
+    let (fetched, text) = match remote.as_deref() {
+        Some(r) => (
+            Some(store::fetch(&repo.root, r)),
+            store::tracked(&repo.root, r).unwrap_or_default(),
+        ),
+        None => (None, String::new()),
+    };
+    let (mut records, bad_remote) = record::parse(&text);
     let on_branch = records.len();
     let outbox = fs::read_to_string(store::outbox(&repo.common_dir)).unwrap_or_default();
     let (waiting, bad_outbox) = record::parse(&outbox);
     let info = json!({
-        "branch": format!("origin/{}", store::BRANCH),
-        "fetched": fetched.is_ok(),
-        "fetch_error": fetched.err().map(|e| format!("{e:#}")),
+        "remote": remote.as_deref().unwrap_or("none"),
+        "branch": remote.as_ref().map(|r| format!("{r}/{}", store::BRANCH)),
+        "fetched": fetched.as_ref().map(Result::is_ok),
+        "fetch_error": fetched.and_then(Result::err).map(|e| format!("{e:#}")),
         "on_branch": on_branch,
         "in_outbox": waiting.len(),
         "bad_lines": bad_remote + bad_outbox,
@@ -107,7 +126,7 @@ pub fn record_unit(repo: &Repo, worktree: &Path, meta: &Meta) -> Value {
             Vec::new()
         }
     };
-    match store::publish(&repo.root, &repo.common_dir, &new) {
+    match store::publish(&repo.root, &repo.common_dir, remote(repo).as_deref(), &new) {
         Ok(sent) => {
             if let Sent::Outbox { reason, .. } = &sent {
                 eprintln!("ns: quality records kept in the outbox: {reason}");
@@ -151,7 +170,7 @@ pub fn record_units(repo: &Repo, units: &[(&Path, &Meta)]) -> (Value, Vec<Option
     if !unparsed.is_empty() {
         ev["unparsed"] = json!(unparsed);
     }
-    match store::publish(&repo.root, &repo.common_dir, &new) {
+    match store::publish(&repo.root, &repo.common_dir, remote(repo).as_deref(), &new) {
         Ok(sent) => {
             if let Sent::Outbox { reason, .. } = &sent {
                 eprintln!("ns: quality records kept in the outbox: {reason}");
@@ -179,8 +198,8 @@ pub fn record_units(repo: &Repo, units: &[(&Path, &Meta)]) -> (Value, Vec<Option
     (ev, unsaved)
 }
 
-/// `ns quality import <dir>`: records for each archived `<dir>/<unit>/.ns/<unit>/` that origin's
-/// branch doesn't hold yet, pushed in one commit.
+/// `ns quality import <dir>`: records for each archived `<dir>/<unit>/.ns/<unit>/` that the
+/// remote's branch (or the outbox) doesn't hold yet, pushed in one commit.
 pub fn import(dir: &Path, dry_run: bool) -> Result<ExitCode> {
     if !dir.is_dir() {
         return Err(SfError::usage(
@@ -276,21 +295,28 @@ pub fn import(dir: &Path, dry_run: bool) -> Result<ExitCode> {
         out["status"] = json!(status);
         ExitCode::SUCCESS
     } else {
-        let sent = store::publish(&repo.root, &repo.common_dir, &lines(&new)?)?;
+        let remote = remote(&repo);
+        let sent = store::publish(
+            &repo.root,
+            &repo.common_dir,
+            remote.as_deref(),
+            &lines(&new)?,
+        )?;
         out["push"] = sent_json(&sent);
         out["status"] = json!(match sent {
             Sent::Nothing => "already-done",
             Sent::Pushed { .. } => "pushed",
             Sent::Outbox { .. } => "outbox",
         });
-        if matches!(sent, Sent::Outbox { .. }) {
-            out["ok"] = json!(false);
-            eprintln!("error: the records are in the outbox, not on origin");
-            eprintln!("  check:  git remote get-url origin");
-            eprintln!("  then:   ns quality import {}", dir.display());
-            ExitCode::from(1)
-        } else {
-            ExitCode::SUCCESS
+        match (&sent, remote) {
+            (Sent::Outbox { .. }, Some(r)) => {
+                out["ok"] = json!(false);
+                eprintln!("error: the records are in the outbox, not on {r}");
+                eprintln!("  check:  git remote get-url {r}");
+                eprintln!("  then:   ns quality import {}", dir.display());
+                ExitCode::from(1)
+            }
+            _ => ExitCode::SUCCESS,
         }
     };
     println!("{}", serde_json::to_string_pretty(&out)?);

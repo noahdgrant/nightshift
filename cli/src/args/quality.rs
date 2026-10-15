@@ -19,12 +19,14 @@ Examples:
   ns quality --bugs --weeks 4
   ns quality --bugs --since 2026-09-01 --json | jq .total
 
-Spec: docs/factory/quality.md (Quality). Fetches origin's nightshift/quality branch (network) and reads
-its records.jsonl plus <git-common-dir>/ns/quality-outbox.jsonl: one record per review attempt,
+Spec: docs/factory/quality.md (Quality). Fetches nightshift/quality from [quality] remote (origin
+by default; network; none under remote = \"none\") and reads its records.jsonl plus
+<git-common-dir>/ns/quality-outbox.jsonl: one record per review attempt,
 written by ns run when a unit ends. A unit with no record is read from .ns/<unit>/review.md,
 review/cycle-*.md and history/review* in its linked worktree. Also reads
 <git-common-dir>/ns/runs.jsonl. Changes nothing but the remote-tracking ref.
-`records` says how many records came from the branch and the outbox, and why a fetch failed.
+`records` says which remote was read, how many records came from the branch and the outbox, and
+why a fetch failed.
 First-pass numbers come from a unit's oldest review artifact, the rest from its newest.
 Prints {units,findings,first_pass,cycles_to_clean,leftovers,escapes,finding_flow,
 leftover_findings,escape_findings,trend,run_log,gaps,per_unit,records}; per_unit[].source is
@@ -83,14 +85,14 @@ pub(crate) struct Quality {
 
 #[derive(Subcommand)]
 pub(crate) enum QualityCmd {
-    /// Turn archived unit worktrees into quality records and push them to origin's nightshift/quality
+    /// Turn archived unit worktrees into quality records and push them to the quality remote's branch
     #[command(after_help = "\
 Examples:
   ns quality import /tmp/unit-artifacts --dry-run
   ns quality import /tmp/unit-artifacts
 
 <DIR> holds one directory per unit, laid out as in its worktree: <DIR>/<unit>/.ns/<unit>/review.md.
-Units origin's branch (or the outbox) already has a record for are skipped, so a rerun is safe
+Units the remote's branch (or the outbox) already has a record for are skipped, so a rerun is safe
 and reports status already-done. Issue numbers come from the unit id, PRs from pr.md or the run
 log, outcomes from <git-common-dir>/ns/runs.jsonl. A missing change size is measured with git in
 this repo. --dry-run fetches the branch (network) to find what's recorded, and pushes nothing.
@@ -98,7 +100,8 @@ this repo. --dry-run fetches the branch (network) to find what's recorded, and p
 Prints {ok,status,units,records,imported,already_recorded,skipped,unparsed,branch,push}.
 Exit codes: 0 pushed, planned or already-done; 1 nothing-to-import (no unit in <DIR> has a
 review artifact), or outbox: the push failed and the records wait in the
-outbox (the next ns run or import pushes them); 2 usage error.")]
+outbox (the next ns run or import pushes them); 2 usage error. Under [quality] remote = \"none\"
+outbox is where the records live, and exits 0.")]
     Import {
         /// Directory holding <unit>/.ns/<unit>/ for each archived unit
         dir: PathBuf,

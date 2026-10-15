@@ -1132,6 +1132,126 @@ fn an_import_with_no_origin_waits_in_the_outbox_and_still_counts() {
     assert!(!f.root.join(".git/ns/quality-outbox.jsonl").exists());
 }
 
+fn set_quality_remote(f: &Fixture, remote: &str) {
+    write(
+        f.root.join(".nightshift/nightshift.toml"),
+        &format!("[quality]\nremote = {remote:?}\n"),
+    );
+}
+
+fn has_ref(dir: &Path, r: &str) -> bool {
+    StdCommand::new("git")
+        .current_dir(dir)
+        .args(["rev-parse", "--verify", "--quiet", r])
+        .env_remove("GIT_DIR")
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+#[test]
+fn a_named_quality_remote_carries_the_records_and_origin_is_left_alone() {
+    let f = fixture();
+    let origin = with_origin(&f);
+    let records = f.root.with_file_name("records.git");
+    git(
+        f.root.parent().unwrap(),
+        &["init", "-q", "--bare", records.to_str().unwrap()],
+    );
+    git(
+        &f.root,
+        &["remote", "add", "records", records.to_str().unwrap()],
+    );
+    set_quality_remote(&f, "records");
+    let wts = f.root.with_file_name("myrepo.worktrees");
+    let v = import(&f, &wts, &[], 0);
+    assert_eq!(v["status"], "pushed");
+    assert_eq!(v["branch"]["branch"], "records/nightshift/quality");
+    assert_eq!(branch_records(&records).len(), 3);
+    assert!(!has_ref(&origin, "refs/heads/nightshift/quality"));
+    let v = quality(&f, &[]);
+    assert_eq!(v["records"]["remote"], "records");
+    assert_eq!(v["records"]["branch"], "records/nightshift/quality");
+    assert_eq!(v["records"]["fetched"], true);
+    assert_eq!(v["records"]["on_branch"], 3);
+    assert!(has_ref(&f.root, "refs/remotes/records/nightshift/quality"));
+    assert!(!has_ref(&f.root, "refs/remotes/origin/nightshift/quality"));
+}
+
+#[test]
+fn an_import_to_a_missing_named_remote_waits_in_the_outbox_and_names_the_remote() {
+    let f = fixture();
+    with_origin(&f);
+    set_quality_remote(&f, "records");
+    let wts = f.root.with_file_name("myrepo.worktrees");
+    let out = ns()
+        .current_dir(&f.root)
+        .args(["quality", "import"])
+        .arg(&wts)
+        .output();
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("in the outbox, not on records"), "{err}");
+    assert!(err.contains("git remote get-url records"), "{err}");
+    assert!(!err.contains("origin"), "{err}");
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        v["push"]["reason"].as_str().unwrap().contains("records"),
+        "{v}"
+    );
+}
+
+#[test]
+fn a_quality_remote_of_none_keeps_the_records_local_and_never_touches_origin() {
+    let f = fixture();
+    let origin = with_origin(&f);
+    let wts = f.root.with_file_name("myrepo.worktrees");
+    assert_eq!(import(&f, &wts, &[], 0)["status"], "pushed");
+    git(
+        &f.root,
+        &["update-ref", "-d", "refs/remotes/origin/nightshift/quality"],
+    );
+    let before = git(&origin, &["rev-parse", "refs/heads/nightshift/quality"]);
+    set_quality_remote(&f, "none");
+
+    let v = quality(&f, &[]);
+    assert_eq!(v["records"]["remote"], "none");
+    assert_eq!(v["records"]["branch"], Value::Null);
+    assert_eq!(v["records"]["fetched"], Value::Null);
+    assert_eq!(v["records"]["fetch_error"], Value::Null);
+    assert_eq!(v["records"]["on_branch"], 0);
+    assert!(!has_ref(&f.root, "refs/remotes/origin/nightshift/quality"));
+
+    let v = import(&f, &wts, &[], 0);
+    assert_eq!(
+        (v["ok"].as_bool(), v["status"].as_str()),
+        (Some(true), Some("outbox"))
+    );
+    assert_eq!(v["push"]["records"], 3);
+    let v = quality(&f, &[]);
+    assert_eq!(v["records"]["in_outbox"], 3);
+    assert_eq!(sources(&v)[0].1, "record");
+    assert_eq!(
+        git(&origin, &["rev-parse", "refs/heads/nightshift/quality"]),
+        before
+    );
+    assert!(!has_ref(&f.root, "refs/remotes/origin/nightshift/quality"));
+
+    let gone = f.root.with_file_name("gone-none.git");
+    git(
+        &f.root,
+        &["remote", "set-url", "origin", gone.to_str().unwrap()],
+    );
+    let out = ns()
+        .current_dir(&f.root)
+        .args(["quality", "--human"])
+        .output();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(!text.contains("fetch failed"), "{text}");
+}
+
 #[test]
 fn an_import_without_a_git_identity_commits_as_nightshift() {
     let f = fixture();
