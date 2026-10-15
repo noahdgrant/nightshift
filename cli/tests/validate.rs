@@ -1,3 +1,21 @@
+//! `ns factory validate`'s warning for a build-only repo on a personal account: how it looks
+//! up the repo's owner on the forge, with which token and host.
+
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
+#[path = "common/mod.rs"]
+mod common;
+#[path = "common/factory_env.rs"]
+mod factory_env;
+
+use std::fs;
+
+use factory_env::*;
+use serde_json::Value;
+
 /// An env whose `origin` is the GitHub repo `o/r` and whose fake gh reports its owner as
 /// `owner_type`, or prints nothing when `None`.
 fn github_owned_by(owner_type: Option<&str>) -> Env {
@@ -322,7 +340,10 @@ fn factory_validate_with_factory_path_looks_up_the_owner_of_the_cwd_repo() {
     let warnings = v["warnings"].as_array().unwrap();
     assert_eq!(warnings.len(), 1, "{v}");
     assert!(
-        warnings[0].as_str().unwrap().contains("no GitHub merge queue"),
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .contains("no GitHub merge queue"),
         "{v}"
     );
     let calls = e.gh_calls();
