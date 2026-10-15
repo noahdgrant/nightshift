@@ -154,6 +154,10 @@ pub struct Ledger {
     /// HEAD when the ledger was last saved, which a forced decision was made against.
     #[serde(default)]
     head: Option<String>,
+    /// The gate-driven fix cycle the last decision ran, so a cut-short run can be retried as it.
+    /// Not saved: the retry is forced before the turn ends.
+    #[serde(skip)]
+    gate_fix_run: Option<Forced>,
     /// Where [`step::step`] is in the current turn. Not saved: a restart decides afresh.
     #[serde(skip)]
     turn: Option<step::Turn>,
@@ -238,8 +242,13 @@ impl Ledger {
     /// The decision to act on: a forced one, else the state table's, with the free rebase it
     /// makes.
     pub fn next(&mut self, s: &State) -> (Decision, Option<Rebase>) {
+        self.gate_fix_run = None;
         match self.forced.take() {
-            Some(f) if f.gate_fix => (gate_fix(s, &f.feedback, &f.why), None),
+            Some(f) if f.gate_fix => {
+                let d = gate_fix(s, &f.feedback, &f.why);
+                self.gate_fix_run = Some(f);
+                (d, None)
+            }
             Some(f) => (
                 run(phase_named(&f.phase), &f.feedback, f.why),
                 self.forced_rebase.take(),
@@ -517,6 +526,19 @@ impl Ledger {
             ),
             None,
         );
+    }
+
+    /// A gate-driven fix cycle cut short runs again as the same cycle, with the gate's feedback.
+    /// False when the run was not one.
+    pub fn cut_short_gate_fix(&mut self) -> bool {
+        match self.gate_fix_run.take() {
+            Some(f) => {
+                self.forced = Some(f);
+                self.forced_rebase = None;
+                true
+            }
+            None => false,
+        }
     }
 
     /// The gate after `a` went red. `moved_since` is true when `a` was a `BaseMoved` rebuild

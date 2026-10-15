@@ -272,6 +272,45 @@ fn a_red_gate_on_a_review_commit_runs_a_fix_cycle_then_a_review_pass() {
     );
 }
 
+/// A gate-driven fix cycle cut short is retried as the same cycle, with the gate's output.
+#[test]
+fn a_gate_driven_fix_cycle_cut_short_is_retried_with_the_gate_s_output() {
+    for cut in ["pass:sleep", "pass:kill"] {
+        let mut s = Sim::new();
+        s.gate(&[Ok(()), Err(ON_REVIEWS_FILE)]);
+        s.queue("build", &["pass:commit+touch=src/a.rs"]);
+        s.queue("review", &["pass:commit+touch=src/b.rs", "pass"]);
+        s.queue(
+            "review-fix",
+            &[cut, "pass:commit+touch=src/b.rs+next=review"],
+        );
+        let r = s.run();
+        assert_eq!(r.outcome, Outcome::Done, "{cut}: {r:?}");
+        assert_eq!(
+            r.calls(),
+            [
+                "triage",
+                "build",
+                "verify",
+                "review",
+                "review-fix",
+                "review-fix",
+                "verify",
+                "review",
+                "ship"
+            ],
+            "{cut}"
+        );
+        let retry = &r.runs[5];
+        assert!(
+            retry.feedback.contains(ON_REVIEWS_FILE),
+            "{}",
+            retry.feedback
+        );
+        assert!(retry.why.ends_with("fix cycle 1 (full)"), "{}", retry.why);
+    }
+}
+
 /// A gate that stays red on review's file runs fix cycles until the loop's limit, then stops the
 /// unit as a spent review loop does.
 #[test]
