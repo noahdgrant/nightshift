@@ -40,13 +40,13 @@ impl Finding {
 
 /// A finding as the baseline stores it: without its line, so a line shift leaves the file
 /// unchanged. A `line` in an older file is ignored.
-#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize)]
 struct Entry {
     tool: String,
     rule: String,
     file: String,
-    snippet: String,
     message: String,
+    snippet: String,
 }
 
 impl From<&Finding> for Entry {
@@ -442,8 +442,9 @@ pub fn baseline(allow_growth: bool, dry_run: bool, format: Format) -> Result<Exi
     } else if dry_run {
         "planned"
     } else {
-        let mut violations: Vec<Entry> = run.findings.iter().map(Entry::from).collect();
-        violations.sort();
+        // In `run.findings`' order (tool, rule, file, then line), so a dropped finding removes
+        // only its own entry from the file.
+        let violations: Vec<Entry> = run.findings.iter().map(Entry::from).collect();
         let text = serde_json::to_string_pretty(&Baseline {
             version: 1,
             violations,
