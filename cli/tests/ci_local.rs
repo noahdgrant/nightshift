@@ -602,10 +602,10 @@ const AST_GREP: &str = "ns rules check --only ast-grep";
 const CARGO_SKILLS: &str = "cargo test --bin ns --test ci_local --test cli --test verify_sandbox";
 
 /// The cargo test step for a change under `rules/`, `docs/` or `evals/fixtures/py-inventory/`.
-const CARGO_RULES: &str = "cargo test --bin ns --test ci_local --test factory --test git_location --test ratchet --test rules_pack --test rules_pack_java --test test_tools";
+const CARGO_RULES: &str = "cargo test --bin ns --test ci_local --test factory --test git_location --test ratchet --test rules_baseline --test rules_pack --test rules_pack_java --test test_tools";
 
 /// The cargo test step for a change under both `skills/` and `rules/`.
-const CARGO_SKILLS_RULES: &str = "cargo test --bin ns --test ci_local --test cli --test factory --test git_location --test ratchet --test rules_pack --test rules_pack_java --test test_tools --test verify_sandbox";
+const CARGO_SKILLS_RULES: &str = "cargo test --bin ns --test ci_local --test cli --test factory --test git_location --test ratchet --test rules_baseline --test rules_pack --test rules_pack_java --test test_tools --test verify_sandbox";
 
 /// `ci_affected_args` with no arguments.
 fn affected(repo: &Repo, files: Option<&str>, env: &[(&str, &str)]) -> Output {
