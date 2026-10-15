@@ -59,6 +59,19 @@ const RUN_CLAUDE: &[&str] = &[
     "--verbose",
 ];
 
+/// The built-in codex write command for `ns run`. `workspace-write` blocks the network and
+/// writes outside the worktree, which `git push`, `gh` and a commit in a linked worktree need;
+/// the phase's private `/tmp` and the tamper check stand in for the sandbox
+/// (docs/factory/run.md, "Codex phases").
+const RUN_CODEX: &[&str] = &[
+    "codex",
+    "exec",
+    "--sandbox",
+    "danger-full-access",
+    "-m",
+    "{model}",
+];
+
 #[derive(Debug, Clone, Default)]
 pub struct RunArgs {
     pub unit: Option<String>,
@@ -279,7 +292,8 @@ pub fn phase_command(
     let argv = match configured {
         Some(h) => h.command_write.clone(),
         None if p.harness == "claude" => Some(owned(RUN_CLAUDE)),
-        None => config::builtin_harness(&p.harness).and_then(|h| h.command_write),
+        None if p.harness == "codex" => Some(owned(RUN_CODEX)),
+        None => None,
     };
     let Some(argv) = argv.filter(|a| !a.is_empty()) else {
         return Err(SfError::usage(
@@ -1139,5 +1153,45 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(!c.contains(&"--settings".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn the_built_in_codex_phase_command_has_full_access_and_a_configured_one_is_kept() {
+        let f = factory::parse("[defaults]\nharness = \"codex\"\nmodel = \"m\"\n").unwrap();
+        let (wt, common) = (Path::new("/wt"), Path::new("/c"));
+        let c = phase_command(None, &f.phase("build"), true, common, wt, "u").unwrap();
+        assert_eq!(
+            c,
+            [
+                "codex",
+                "exec",
+                "--sandbox",
+                "danger-full-access",
+                "-m",
+                "m"
+            ]
+        );
+        let cfg = config::parse(
+            "[harness.codex]\ncommand = [\"codex\"]\ncommand_write = [\"codex\", \"exec\", \"--sandbox\", \"workspace-write\"]\n",
+        )
+        .unwrap();
+        let c = phase_command(Some(&cfg), &f.phase("build"), true, common, wt, "u").unwrap();
+        assert_eq!(c, ["codex", "exec", "--sandbox", "workspace-write"]);
+    }
+
+    #[test]
+    fn a_harness_neither_configured_nor_built_in_has_no_phase_command() {
+        let f = factory::parse("[defaults]\nharness = \"other\"\n").unwrap();
+        let err = phase_command(
+            None,
+            &f.phase("build"),
+            true,
+            Path::new("/c"),
+            Path::new("/wt"),
+            "u",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("has no command_write"), "{err}");
     }
 }
