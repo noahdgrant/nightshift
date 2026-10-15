@@ -374,11 +374,62 @@ fn a_long_unit_beside_the_backlog(e: &Env, refill_ms: u64, args: &[&str]) -> Wat
     )
 }
 
-/// The `gh` calls watch made while it sat for `wait` with only a held unit running.
-fn gh_calls_during(e: &Env, wait: Duration) -> String {
-    let before = e.gh_calls().len();
-    thread::sleep(wait);
-    e.gh_calls()[before..].to_string()
+/// A fifo at `path` and a thread that sends a message on the returned channel for each line
+/// written to it, so a hook can tell the test something happened without being held up.
+fn fifo_lines(path: &Path) -> mpsc::Receiver<()> {
+    mkfifo(path);
+    let path = path.to_path_buf();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || loop {
+        let Ok(text) = fs::read_to_string(&path) else {
+            return;
+        };
+        for _ in text.lines() {
+            if tx.send(()).is_err() {
+                return;
+            }
+        }
+    });
+    rx
+}
+
+/// Mark each `gh` call in the run log, among the night's own events, as a `test_gh` event whose
+/// `call` is `listing` (an issue listing), `view` (an issue or PR view) or `other`, and whose
+/// `pid` is the caller's. A message comes on the returned channel at each listing.
+fn mark_gh_calls(e: &Env) -> mpsc::Receiver<()> {
+    let listed = fifo_lines(&e.ghd.join("listed"));
+    e.gh_file(
+        "hook.sh",
+        "case \"$*\" in\n\
+               *issues?state=open*) k=listing ;;\n\
+               *\"issue view\"*|*\"pr view\"*) k=view ;;\n\
+               *) k=other ;;\n\
+             esac\n\
+             echo \"{\\\"event\\\":\\\"test_gh\\\",\\\"call\\\":\\\"$k\\\",\\\"pid\\\":$PPID}\" >> \"$(git rev-parse --git-common-dir)/ns/runs.jsonl\"\n\
+             if [ $k = listing ]; then echo x > \"$d/listed\"; fi\n",
+    );
+    listed
+}
+
+/// Each refill of the night: the night's clock when it began, and the `gh` calls `ns watch`
+/// made after it, marked by [`mark_gh_calls`], up to its next event.
+fn refills(e: &Env) -> Vec<(i64, Vec<String>)> {
+    let mut out: Vec<(i64, Vec<String>)> = Vec::new();
+    let mut open = None;
+    for ev in run_events(e) {
+        if ev["event"] == "refill" {
+            out.push((ev["at"].as_i64().unwrap(), Vec::new()));
+            open = Some(ev["pid"].clone());
+        } else if open.as_ref() == Some(&ev["pid"]) {
+            if ev["event"] == "test_gh" {
+                let calls = &mut out.last_mut().unwrap().1;
+                calls.push(ev["call"].as_str().unwrap().to_string());
+            } else {
+                open = None;
+            }
+        }
+    }
+    out
 }
 
 #[test]
@@ -404,17 +455,13 @@ fn an_idle_slot_triages_the_backlog_and_starts_it_while_a_unit_runs() {
     assert!(started_5 < ended_2, "{:?}", run_events(&e));
 }
 
-/// Poll until a refill has listed issues, then return the `gh` calls made from there for `wait`.
-fn refill_calls_during(e: &Env, wait: Duration) -> String {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let before = e.gh_calls().len();
-    while !e.gh_calls()[before..].contains("issues?state=open") {
-        assert!(Instant::now() < deadline, "no refill listed issues");
-        thread::sleep(Duration::from_millis(20));
+/// Wait for the refill that triages #5, then for `n` more listings, so for `n / 2` refills more.
+fn refills_after_the_triage(w: &mut Watching, listed: &mpsc::Receiver<()>, n: usize) {
+    w.line("ns watch: triage #5");
+    while listed.try_recv().is_ok() {}
+    for _ in 0..n {
+        w.g.recv(listed);
     }
-    let start = e.gh_calls().len();
-    thread::sleep(wait);
-    e.gh_calls()[start..].to_string()
 }
 
 #[test]
@@ -423,23 +470,27 @@ fn an_idle_slot_with_nothing_to_start_does_not_spin() {
     // #5's triage leaves it untriaged: nothing comes out ready.
     e.queue("triage.5-fix-e", &["none"]);
     let (in_a, go_a) = hold_phase(&e, A, "build");
-    let mut w = a_long_unit_beside_the_backlog(&e, 500, &["--parallel", "2"]);
+    let listed = mark_gh_calls(&e);
+    // A refill each 3 s of the night's clock, which the free slot's wait moves a second a poll.
+    let mut w = a_long_unit_beside_the_backlog(&e, 3000, &["--parallel", "2"]);
     w.entered(&in_a);
-    w.line("ns watch: triage #5");
-    let wait = Duration::from_millis(1500);
-    let calls = refill_calls_during(&e, wait);
-    let listings = calls.matches("issues?state=open").count();
-    // At most one fill each 500 ms, two listings each, and one fill under way at either end.
-    let most = 2 * (wait.as_millis() as usize / 500 + 2);
-    assert!(
-        listings <= most,
-        "{listings} listings in {wait:?}:\n{calls}"
-    );
+    refills_after_the_triage(&mut w, &listed, 7);
     release(&go_a);
     let (code, v, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(by_issue(&units(&v)), each(&[2], "done"), "{v}");
     assert_eq!(e.triage_only_runs(), 1);
+    // The first refill triages #5; the ones after it have nothing to do.
+    let idle = &refills(&e)[1..];
+    assert!(idle.len() >= 3, "{idle:?}");
+    for pair in idle.windows(2) {
+        assert_eq!(pair[1].0 - pair[0].0, 3, "{idle:?}");
+    }
+    // One candidate listing and one queue read each.
+    for (_, calls) in idle {
+        let listings = calls.iter().filter(|c| *c == "listing").count();
+        assert_eq!(listings, 2, "{idle:?}");
+    }
 }
 
 #[test]
@@ -447,16 +498,19 @@ fn an_idle_refill_skips_the_worktree_cleanup() {
     let e = Env::new();
     e.queue("triage.5-fix-e", &["none"]);
     let (in_a, go_a) = hold_phase(&e, A, "build");
+    let listed = mark_gh_calls(&e);
     let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
     w.entered(&in_a);
-    w.line("ns watch: triage #5");
-    let calls = refill_calls_during(&e, Duration::from_millis(1000));
-    for view in ["issue view", "pr view"] {
-        assert!(!calls.contains(view), "{view} on a refill:\n{calls}");
-    }
+    refills_after_the_triage(&mut w, &listed, 5);
     release(&go_a);
     let (code, _, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
+    let idle = &refills(&e)[1..];
+    assert!(idle.len() >= 2, "{idle:?}");
+    for (_, calls) in idle {
+        assert!(calls.iter().any(|c| c == "listing"), "{idle:?}");
+        assert!(!calls.iter().any(|c| c == "view"), "{idle:?}");
+    }
 }
 
 #[test]
@@ -488,10 +542,11 @@ fn a_claim_that_fails_on_a_refill_does_not_spend_a_max_units_claim() {
     let e = Env::new();
     e.triage_sets(&["status:ready-for-agent"]);
     e.queue("triage.5-fix-e", &["pass:script"]);
+    let failed = fifo_lines(&e.ghd.join("failed"));
     e.gh_file(
         "hook.sh",
         "case \"$*\" in *\"issue edit 5 \"*\"--add-label status:in-progress\"*)\n\
-           if [ -f \"$d/boom\" ]; then echo 'HTTP 502' >&2; echo x >> \"$d/failed\"; exit 1; fi ;;\n\
+           if [ -f \"$d/boom\" ]; then echo 'HTTP 502' >&2; echo x > \"$d/failed\"; exit 1; fi ;;\n\
          esac\n",
     );
     e.gh_file("boom", "");
@@ -499,10 +554,8 @@ fn a_claim_that_fails_on_a_refill_does_not_spend_a_max_units_claim() {
     let (in_e, go_e) = hold_phase(&e, "5-fix-e", "build");
     let w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2", "--max-units", "2"]);
     w.entered(&in_a);
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while fs::read_to_string(e.ghd.join("failed")).map_or(0, |s| s.lines().count()) < 3 {
-        assert!(Instant::now() < deadline, "the claim never failed 3 times");
-        thread::sleep(Duration::from_millis(20));
+    for _ in 0..3 {
+        w.g.recv(&failed);
     }
     fs::remove_file(e.ghd.join("boom")).unwrap();
     w.entered(&in_e);
@@ -518,9 +571,11 @@ fn a_claim_whose_verifying_read_fails_on_a_refill_is_put_back_to_ready() {
     let e = Env::new();
     e.triage_sets(&["status:ready-for-agent"]);
     e.queue("triage.5-fix-e", &["pass:script"]);
+    let put_back = fifo_lines(&e.ghd.join("put-back"));
     e.gh_file(
         "hook.sh",
         "case \"$*\" in\n\
+         \"issue edit 5 --remove-label status:in-progress --add-label status:ready-for-agent\"*) echo x > \"$d/put-back\" ;;\n\
          *\"issue edit 5 \"*\"--add-label status:in-progress\"*) touch \"$d/edited\" ;;\n\
          *\"issue view 5 --json labels\"*)\n\
            if [ -f \"$d/edited\" ] && [ ! -f \"$d/failed\" ]; then echo 'HTTP 502' >&2; touch \"$d/failed\"; exit 1; fi ;;\n\
@@ -530,17 +585,7 @@ fn a_claim_whose_verifying_read_fails_on_a_refill_is_put_back_to_ready() {
     let (in_e, go_e) = hold_phase(&e, "5-fix-e", "build");
     let w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
     w.entered(&in_a);
-    let put_back =
-        "issue edit 5 --remove-label status:in-progress --add-label status:ready-for-agent";
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while !e.gh_calls().contains(put_back) {
-        assert!(
-            Instant::now() < deadline,
-            "#5 was never put back:\n{}",
-            e.gh_calls()
-        );
-        thread::sleep(Duration::from_millis(20));
-    }
+    w.g.recv(&put_back);
     assert!(e.ghd.join("failed").exists());
     w.entered(&in_e);
     release(&go_a);
@@ -635,14 +680,14 @@ fn no_refill_while_every_slot_is_busy_or_no_claim_may_start() {
         e.ready(3, "Fix b", &["type:fix"], "");
         e.queue("triage.5-fix-e", &["none"]);
         let (in_a, go_a) = hold_phase(&e, A, "build");
+        // Refills would come every poll, while unit 2 is held and while its later phases run.
         let w = a_long_unit_beside_the_backlog(&e, 100, args);
         w.entered(&in_a);
-        let calls = gh_calls_during(&e, Duration::from_millis(1000));
-        assert_eq!(calls, "", "{args:?}");
         release(&go_a);
         let (code, v, err) = w.finish();
         assert_eq!(code, Some(0), "{err}");
         assert_eq!(by_issue(&units(&v)), each(done, "done"), "{v}");
+        assert_eq!(refills(&e), [], "{args:?}");
     }
 }
 
@@ -660,14 +705,18 @@ fn no_refill_while_a_usage_limit_pause_holds_a_free_slot() {
     w.entered(&in_a);
     release(&go_a);
     w.line("ns watch: #2 paused on a usage limit until");
-    // Unit 3's build stays held, so the pause lasts; a slot is free and #5 is untriaged.
-    let triaged = e.triage_only_runs();
-    let calls = gh_calls_during(&e, Duration::from_millis(1000));
-    assert_eq!(calls, "");
-    assert_eq!(e.triage_only_runs(), triaged, "{:?}", e.calls());
+    // Unit 3's build stays held, then its later phases run: the pause lasts until unit 3 ends,
+    // with a slot free and #5 untriaged. Refills would come every poll.
     release(&go_b);
     let (code, _, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
+    let paused = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
+    let lifted = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 3);
+    let during = run_events(&e)[paused..lifted]
+        .iter()
+        .filter(|ev| ev["event"] == "refill")
+        .count();
+    assert_eq!(during, 0, "{:?}", run_events(&e));
 }
 
 #[test]

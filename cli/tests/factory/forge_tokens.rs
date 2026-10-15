@@ -649,16 +649,20 @@ fn watch_skips_an_issue_a_merged_pr_closes() {
     assert_eq!(v["skipped"][0]["reason"], "merged PR #41 closes it");
 }
 
+/// The night is uncapped unless `--max-units` or `[limits] max_units` caps it; five units run to
+/// an empty queue in `scheduler::scenarios`, where a night of them costs no subprocesses.
 #[test]
-fn watch_has_no_unit_cap_by_default() {
+fn watch_passes_no_unit_cap_to_the_night_by_default() {
     let e = Env::new();
-    for n in [2, 3, 4, 5, 6] {
-        e.ready(n, &format!("Fix {n}"), &["type:fix"], "");
-    }
-    e.queue("build", &["pass:commit"; 5]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(v["units"].as_array().unwrap().len(), 5, "{v}");
-    assert_eq!(v["stopped"], "queue empty");
+    // The dry run of a carried night prints the cap the night would run under; it takes the file.
+    let max_units = || {
+        let night = e.root.join("night.json");
+        fs::write(&night, r#"{"version": 1}"#).unwrap();
+        e.run(&["watch", "--dry-run", "--resume-night", night.to_str().unwrap()], 0)["max_units"].clone()
+    };
+    assert_eq!(max_units(), Value::Null);
+    e.factory("[limits]\nmax_units = 4\n");
+    assert_eq!(max_units(), 4);
 }
 
 const FAKE_TOKEN: &str = "fake-token-4f2a9c";

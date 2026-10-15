@@ -369,6 +369,9 @@ fn assert_interrupted(e: &Env, r: &Interrupted, sig: &str, code: i32) {
     let (v, err) = (&r.json, &r.stderr);
     assert_eq!(r.code, Some(code), "{err}");
     assert_eq!(v["stopped"], sig, "{v}");
+    // Watch says it heard the signal; the unit's `ns run`, which heard it too, says nothing.
+    let heard = format!("ns watch: {sig}: stopping");
+    assert_eq!(err.matches(&heard).count(), 1, "{err}");
     assert_eq!(v["units"][0]["issue"], 2, "{v}");
     assert_eq!(v["units"][0]["outcome"], "interrupted", "{v}");
     for pid in &r.pids {
@@ -431,17 +434,6 @@ fn ctrl_c_kills_the_phase_and_returns_the_issue_to_the_queue() {
     assert_build_set_aside(&e, "phase", "SIGINT", "partial");
 }
 
-/// Whether `pid` has a handler installed for `sig`, from the `SigCgt` mask in its status.
-fn catches(pid: u32, sig: i32) -> bool {
-    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
-    let mask = status
-        .lines()
-        .find_map(|l| l.strip_prefix("SigCgt:"))
-        .map(|m| u64::from_str_radix(m.trim(), 16).unwrap())
-        .unwrap();
-    mask & (1 << (sig - 1)) != 0
-}
-
 #[test]
 fn a_second_signal_ends_watch_at_once() {
     use std::os::unix::process::ExitStatusExt;
@@ -456,33 +448,27 @@ fn a_second_signal_ends_watch_at_once() {
             f.display()
         ),
     );
-    let mut g = e.ns().args(["watch", "--once"]).start();
+    let mut w = Watching::start(e.ns().args(["watch", "--once"]));
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let _ = tx.send(fs::read_to_string(&f));
     });
-    g.recv(&rx).unwrap();
-    assert!(catches(g.id(), libc::SIGTERM));
-    // SAFETY: kill(2) on the ns process this test started.
-    assert_eq!(
-        unsafe { libc::kill(g.id() as libc::pid_t, libc::SIGTERM) },
-        0
-    );
-    // The handler has run once SIGTERM is no longer caught.
-    let deadline = std::time::Instant::now() + common::EXIT_WAIT;
-    while catches(g.id(), libc::SIGTERM) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "SIGTERM never handled"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-    // SAFETY: as above.
-    assert_eq!(
-        unsafe { libc::kill(g.id() as libc::pid_t, libc::SIGTERM) },
-        0
-    );
-    assert_eq!(g.wait().signal(), Some(libc::SIGTERM));
+    w.g.recv(&rx).unwrap();
+    w.signal(libc::SIGTERM, false);
+    // The handler has run, and put back the default action, once it says so.
+    w.line("SIGTERM: stopping");
+    w.signal(libc::SIGTERM, false);
+    assert_eq!(w.g.wait().signal(), Some(libc::SIGTERM));
+}
+
+#[test]
+fn a_signal_that_never_comes_says_nothing_of_one() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    let w = Watching::start(e.ns().args(["watch", "--once"]));
+    let (code, _, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!err.contains("stopping"), "{err}");
 }
 
 #[test]

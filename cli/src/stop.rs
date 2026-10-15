@@ -15,22 +15,51 @@ extern "C" fn record(sig: libc::c_int) {
     let _ = SIGNAL.compare_exchange(0, sig, Ordering::SeqCst, Ordering::SeqCst);
 }
 
-/// Record the first SIGINT and the first SIGTERM instead of dying on them. Each handler is
-/// one-shot, so a second signal of the same kind ends the process at once.
+/// The line [`install`]'s handler writes to stderr once it has run.
+#[cfg(unix)]
+fn heard(sig: libc::c_int) -> &'static [u8] {
+    if sig == libc::SIGINT {
+        b"ns watch: SIGINT: stopping; another SIGINT stops at once\n"
+    } else {
+        b"ns watch: SIGTERM: stopping; another SIGTERM stops at once\n"
+    }
+}
+
+/// As [`record`], then say on stderr that the signal was heard.
+#[cfg(unix)]
+extern "C" fn record_and_say(sig: libc::c_int) {
+    record(sig);
+    let line = heard(sig);
+    // SAFETY: write(2) is async-signal-safe, and `line` is static.
+    unsafe {
+        libc::write(2, line.as_ptr().cast(), line.len());
+    }
+}
+
+/// Record the first SIGINT and the first SIGTERM instead of dying on them, and say each on
+/// stderr. Each handler is one-shot, so a second signal of the same kind ends the process at
+/// once.
 pub fn install() -> std::io::Result<()> {
-    handle(true)
+    #[cfg(unix)]
+    return handle(record_and_say, true);
+    #[cfg(not(unix))]
+    Ok(())
 }
 
 /// As [`install`], for an `ns run` that `ns watch` started: every SIGINT and SIGTERM is only
 /// recorded, so a signal that reaches the run both from watch and from a service manager
 /// still lets it wind down. Watch dying sends the run SIGTERM (see `watch::scheduler`).
 pub fn install_for_watch() -> std::io::Result<()> {
-    handle(false)
+    #[cfg(unix)]
+    return handle(record, false);
+    #[cfg(not(unix))]
+    Ok(())
 }
 
-/// Run `f` with [`install`]'s handlers, then put back the ones that were set. For a command
-/// whose children are in sessions of their own, so a terminal's Ctrl-C reaches only this
-/// process and `f` has to end them itself, but whose later code does not poll for a stop.
+/// Run `f` with handlers that record the signal as [`install`]'s do but say nothing, then put
+/// back the ones that were set. For a command whose children are in sessions of their own, so
+/// a terminal's Ctrl-C reaches only this process and `f` has to end them itself, but whose
+/// later code does not poll for a stop.
 #[cfg(unix)]
 pub fn scoped<T>(f: impl FnOnce() -> T) -> std::io::Result<T> {
     // SAFETY: zeroed sigaction structs, filled in by sigaction(2) below.
@@ -75,14 +104,15 @@ pub fn request(sig: i32) {
 }
 
 #[cfg(unix)]
-fn handle(one_shot: bool) -> std::io::Result<()> {
+fn handle(handler: extern "C" fn(libc::c_int), one_shot: bool) -> std::io::Result<()> {
     for sig in [libc::SIGINT, libc::SIGTERM] {
         // SAFETY: sigaction(2) with a zeroed struct, an empty mask and a handler that only
-        // stores an atomic. SA_RESTART keeps interrupted reads and waits going; SA_RESETHAND,
+        // stores an atomic (`record`) or also writes a static line with write(2)
+        // (`record_and_say`). SA_RESTART keeps interrupted reads and waits going; SA_RESETHAND,
         // when one-shot, puts back the default action once the handler runs.
         unsafe {
             let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = record as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            sa.sa_sigaction = handler as libc::sighandler_t;
             sa.sa_flags = libc::SA_RESTART | if one_shot { libc::SA_RESETHAND } else { 0 };
             libc::sigemptyset(&mut sa.sa_mask);
             if libc::sigaction(sig, &sa, std::ptr::null_mut()) != 0 {
@@ -90,11 +120,6 @@ fn handle(one_shot: bool) -> std::io::Result<()> {
             }
         }
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn handle(_: bool) -> std::io::Result<()> {
     Ok(())
 }
 

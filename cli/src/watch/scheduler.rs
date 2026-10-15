@@ -29,6 +29,7 @@ use super::self_update::{Built, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
 use super::transitions::{self, Event, State};
 use super::{split, Forge, Issue, Night, Tonight, PAUSED_PAST_UNTIL};
+use crate::clock::Clock;
 use crate::git::Repo;
 use crate::run::{self, Loaded};
 use crate::stop;
@@ -42,11 +43,52 @@ const REFILL: Duration = Duration::from_secs(60);
 /// Tests set this (milliseconds) to shorten [`REFILL`].
 const REFILL_ENV: &str = "NS_REFILL_MS";
 
-fn refill_interval() -> Duration {
+fn refill_override() -> Option<Duration> {
     std::env::var(REFILL_ENV)
         .ok()
         .and_then(|v| v.parse().ok())
-        .map_or(REFILL, |ms| Duration::from_millis(ms).max(POLL))
+        .map(|ms| Duration::from_millis(ms).max(POLL))
+}
+
+/// When a free slot is filled again. On a real clock, once the interval has passed. On a pinned
+/// clock (`NS_NOW`) time passes only as the night moves it, so the free slot's wait moves it, a
+/// second each poll, and the refill comes once the interval, in whole seconds, has passed on it;
+/// that happens only with [`REFILL_ENV`] set, so a test that doesn't ask for refills gets none.
+enum Refill {
+    Real(Instant),
+    Pinned(Option<i64>),
+}
+
+impl Refill {
+    fn start(clock: &Clock) -> Refill {
+        Refill::after(clock, refill_override())
+    }
+
+    /// The refill `interval` from now, or [`REFILL`] on a real clock when it's `None`.
+    fn after(clock: &Clock, interval: Option<Duration>) -> Refill {
+        match clock.pinned_at() {
+            None => Refill::Real(Instant::now() + interval.unwrap_or(REFILL)),
+            Some(now) => {
+                Refill::Pinned(interval.map(|d| now + d.as_millis().div_ceil(1000) as i64))
+            }
+        }
+    }
+
+    /// Whether the refill is due, after this poll's share of a pinned clock's wait.
+    fn due(&self, clock: &Clock) -> bool {
+        match *self {
+            Refill::Real(at) => Instant::now() >= at,
+            Refill::Pinned(None) => false,
+            Refill::Pinned(Some(at)) => {
+                if clock.now() >= at {
+                    return true;
+                }
+                // A stop this reports is seen at the top of the next poll.
+                let _ = clock.sleep_until(clock.now() + 1);
+                false
+            }
+        }
+    }
 }
 
 /// What the night is set to do, fixed at start.
@@ -170,6 +212,10 @@ impl<'a> Scheduler<'a> {
                 continue;
             }
             if self.failed.is_none() && stop::requested().is_none() {
+                if kind == Kind::Refill {
+                    let ev = json!({"event": "refill", "at": night.shared.clock.now()});
+                    run::log_event(&self.plan.repo.common_dir, ev);
+                }
                 // A stop that cut the fill short is handled at the loop's top, not as a failure.
                 match self.fill(night, tonight, kind) {
                     Err(FillError::Fatal(e)) => self.fail(e),
@@ -350,9 +396,9 @@ impl<'a> Scheduler<'a> {
 
     /// Wait for a unit to end, the pause's reset to come, a stop to pass on, or a free slot's
     /// time to fill again. On a pinned clock (`NS_NOW`) time doesn't pass while units run, so a
-    /// pause lasts until every unit has ended; the refill counts real time either way.
+    /// pause lasts until every unit has ended; only a free slot's wait moves it ([`Refill`]).
     fn next(&mut self, night: &Night) -> Wake {
-        let refill_at = Instant::now() + refill_interval();
+        let refill = Refill::start(&night.shared.clock);
         loop {
             if stop::requested().is_some() && !self.forwarded {
                 return Wake::Stop;
@@ -378,7 +424,7 @@ impl<'a> Scheduler<'a> {
             {
                 return Wake::Reset;
             }
-            if self.may_refill() && Instant::now() >= refill_at {
+            if self.may_refill() && refill.due(clock) {
                 return Wake::Refill;
             }
             std::thread::sleep(POLL);
@@ -468,6 +514,39 @@ fn extend_pause(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// How many polls until `r` is due on `clock`, up to `most`.
+    fn polls_until_due(r: &Refill, clock: &Clock, most: u32) -> Option<u32> {
+        (0..most).find(|_| r.due(clock))
+    }
+
+    #[test]
+    fn a_pinned_refill_moves_the_clock_a_second_a_poll_until_the_interval_passes() {
+        let clock = Clock::pinned(1000);
+        let r = Refill::after(&clock, Some(POLL * 60));
+        assert_eq!(polls_until_due(&r, &clock, 10), Some(3));
+        assert_eq!(clock.now(), 1003);
+        // A part of a second is a whole one.
+        let r = Refill::after(&clock, Some(POLL * 2));
+        assert_eq!(polls_until_due(&r, &clock, 10), Some(1));
+        assert_eq!(clock.now(), 1004);
+    }
+
+    #[test]
+    fn a_pinned_clock_with_no_refill_interval_set_never_refills_or_moves() {
+        let clock = Clock::pinned(1000);
+        let r = Refill::after(&clock, None);
+        assert_eq!(polls_until_due(&r, &clock, 2000), None);
+        assert_eq!(clock.now(), 1000);
+    }
+
+    #[test]
+    fn a_real_refill_waits_for_the_interval() {
+        let clock = Clock::from_env();
+        assert_eq!(clock.pinned_at(), None);
+        assert!(!Refill::after(&clock, None).due(&clock));
+        assert!(Refill::after(&clock, Some(Duration::ZERO)).due(&clock));
+    }
 
     #[test]
     fn a_pause_whose_hold_cannot_be_written_is_not_applied() {
