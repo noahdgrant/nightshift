@@ -37,12 +37,7 @@ pub(super) struct Start<'a> {
 /// be started from the thread that runs the whole night, as the scheduler does.
 pub(super) fn spawn(s: &Start, base: Option<String>, exe: Option<&Path>) -> Result<Child> {
     let (snap, issue, result) = (s.snap, s.issue, s.result);
-    // The binary this night runs, even if a newer one was installed over it since.
-    let exe = match exe {
-        Some(e) => e.to_path_buf(),
-        None if cfg!(target_os = "linux") => PathBuf::from("/proc/self/exe"),
-        None => std::env::current_exe().context("cannot find the ns binary")?,
-    };
+    let exe = night_exe(exe)?;
     let out =
         File::create(result).with_context(|| format!("cannot create {}", result.display()))?;
     let mut cmd = command(s.slice, exe);
@@ -65,6 +60,19 @@ pub(super) fn spawn(s: &Start, base: Option<String>, exe: Option<&Path>) -> Resu
     cmd.spawn(out)
         .with_context(|| format!("cannot start ns run --issue {}", issue.number))
 }
+/// `exe`, else the binary this night runs, even if a newer one was installed over it since. On
+/// Linux that is `/proc/<pid>/exe` of `ns watch` itself, not `/proc/self/exe`: under a slice the
+/// unit is exec'd by `systemd-run`, where `/proc/self` names `systemd-run`.
+fn night_exe(exe: Option<&Path>) -> Result<PathBuf> {
+    Ok(match exe {
+        Some(e) => e.to_path_buf(),
+        None if cfg!(target_os = "linux") => {
+            PathBuf::from(format!("/proc/{}/exe", std::process::id()))
+        }
+        None => std::env::current_exe().context("cannot find the ns binary")?,
+    })
+}
+
 /// The command that runs `exe`: in a systemd scope in `slice`, which the run is told of, when
 /// there is one.
 fn command(slice: Option<&str>, exe: PathBuf) -> Proc {
@@ -141,6 +149,26 @@ mod tests {
             "{told:?}"
         );
         assert!(!plain.get_envs().any(|(k, _)| k == memory::SLICE_ENV));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_night_binary_is_this_one_when_another_process_execs_it() {
+        let exe = night_exe(None).unwrap();
+        let out = Proc::tool("sh")
+            .args(["-c", r#"exec "$0" --list"#])
+            .arg(&exe)
+            .output()
+            .unwrap();
+        let listed = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            listed.contains("the_night_binary_is_this_one_when_another_process_execs_it"),
+            "{} ran something else: {listed} {}",
+            exe.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let given = Path::new("/bin/ns");
+        assert_eq!(night_exe(Some(given)).unwrap(), given);
     }
 
     #[cfg(unix)]
