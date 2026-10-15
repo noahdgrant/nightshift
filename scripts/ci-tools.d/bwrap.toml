@@ -1,0 +1,5 @@
+version = "0.9.0"
+install = "apt"
+package = "bubblewrap"
+bin = "/usr/bin/bwrap"
+check = "bwrap --version"
