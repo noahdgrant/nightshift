@@ -21,6 +21,7 @@ mod forge;
 mod frontmatter;
 mod gate;
 mod git;
+mod harness;
 mod hook_guard;
 mod install;
 mod lint;

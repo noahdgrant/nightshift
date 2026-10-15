@@ -410,11 +410,15 @@ fn each_constructor_picks_its_kind() {
         (Proc::git_local().kind, Kind::GitLocal),
         (Proc::git_network().kind, Kind::GitNetwork),
         (
-            Proc::harness("claude", true).kind,
+            crate::harness::command("codex", &[], true, |_| {})
+                .unwrap()
+                .kind,
             Kind::Harness { subscription: true },
         ),
         (
-            Proc::harness("claude", false).kind,
+            crate::harness::command("codex", &[], false, |_| {})
+                .unwrap()
+                .kind,
             Kind::Harness {
                 subscription: false,
             },
@@ -675,7 +679,10 @@ fn exec_probe() {
         }
         "billing" => {
             let bin = std::env::var("NS_PROC_EXEC_BIN").unwrap();
-            let e = Proc::harness(bin, true).arg("-c").arg("env").exec();
+            let args = ["-c".to_string(), "env".to_string()];
+            let e = crate::harness::command(bin, &args, true, |_| {})
+                .unwrap()
+                .exec();
             panic!("exec failed: {e}");
         }
         other => panic!("unknown mode {other}"),
@@ -704,6 +711,7 @@ fn exec_scrubs_the_api_billing_variables_for_a_subscription_harness() {
     crate::testutil::write_exe(&bin, "#!/bin/sh\nexec sh \"$@\"\n");
     let mut envs = vec![("NS_PROC_EXEC_BIN", bin.to_str().unwrap())];
     envs.extend(billing::API_ENV.iter().map(|v| (*v, "decoy")));
+    envs.push(("CLAUDE_CODE_OAUTH_TOKEN", "login"));
     let env = run_exec_probe("billing", &envs);
     assert!(env.contains("PATH="), "{env}");
     for v in billing::API_ENV {
