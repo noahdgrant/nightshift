@@ -30,6 +30,7 @@ mod lint;
 mod log;
 mod markers;
 mod memcap;
+mod memory;
 mod phase_output;
 mod pin;
 mod proc;

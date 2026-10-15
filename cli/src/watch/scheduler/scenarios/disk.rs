@@ -98,3 +98,22 @@ fn watch_warns_once_of_a_free_space_it_cannot_read_and_starts_units() {
     };
     assert_eq!(sim.disk_said, [unread]);
 }
+
+#[test]
+fn a_disk_wait_holds_the_fill_before_memory_is_checked() {
+    let host = Rc::new(Cell::new(15));
+    let mut sim = night(&host);
+    sim.available_mb = Some(10);
+    sim.fill().unwrap();
+    assert!(sim.claimed.is_empty());
+    assert!(!sim.memory_low);
+    assert!(sim.said.is_empty(), "{:?}", sim.said);
+    // Space returns and memory holds the slot instead.
+    host.set(40);
+    sim.fill().unwrap();
+    assert!(sim.claimed.is_empty());
+    assert!(sim.memory_low);
+    sim.available_mb = Some(5000);
+    sim.fill().unwrap();
+    assert_eq!(sim.claimed, [2]);
+}

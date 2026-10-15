@@ -58,6 +58,16 @@ Each fill, after paused units resume and `--max-units`, `--until` and the budget
 
 A limit of 0 turns its check off. `ns factory validate` rejects `disk_stop_gb` above `disk_wait_gb`. `ns doctor` lists the same filesystems under `disk` (`wait_gb`, `stop_gb`, and per filesystem `path` with `free_gb` and `state`, `ok`, `wait` or `stop`, or `error`), against the current repo's limits, and warns of any under a limit. `ns watch` frees no space itself: remove finished units' worktrees with `ns clean`. `NS_FREE_GIB_FILE`, for tests, names a file holding the GiB every filesystem reports free, read at each check.
 
+## Memory
+
+On 2026-10-12 nine units swapped a WSL machine until it froze. `ns watch` caps what the units use together, and starts a unit only when the memory it is likely to need is free.
+
+**Shared memory cap.** `ns watch` starts each unit's `ns run` in a systemd user scope, in a slice of its own (`ns-<pid>x<n>.slice`) under `ns.slice`. At start it caps `ns.slice` at `MemoryMax` of the machine's total RAM less 4 GB, or `[limits] total_memory_mb`, with `MemorySwapMax=0`, through `systemctl --user set-property --runtime`, and prints `ns watch: units share a <mb> MB memory cap (ns.slice)`. The kernel kills inside the slice when all the units together pass the cap. A phase that `memory_mb` caps starts its own scope in the unit's slice, so it counts against the shared cap too. Where systemd user scopes don't work, or `/proc/meminfo` can't be read, the units start without the slice and `ns watch` says why once: `ns watch: units start without a shared memory cap: <why>`. `ns run` started by hand has no shared cap.
+
+**Memory peaks.** A unit started in a slice records the slice's memory high-water mark on its run log `end` event as `memory_peak_mb`: cgroup v2's `memory.peak`, else cgroup v1's `memory.max_usage_in_bytes`. Without either, the field is left out.
+
+**Memory start check.** Before it claims an issue for a free slot, a fill checks that `MemAvailable` in `/proc/meminfo` is at least what a unit needs: the p90 of the `memory_peak_mb` values in the run log, or 4 GB until 5 are recorded. Each claim in the fill takes that much off what is available for the next. With too little, the free slots wait and the next fill tries again, even with no unit running; the first fill of a wait prints `ns watch: free slots wait for memory: <available> MB available, a unit needs <need> MB` and logs a `memory_low` event (`available_mb`, `need_mb`). The check runs with or without the slice, and is skipped when `/proc/meminfo` can't be read. The disk check comes first, and a disk wait ends the fill before memory is read; red main's hold applies first too, so a fill with nothing to start checks no memory. The overlap hold comes after: a fill short of memory weighs no overlap. `ns doctor` shows the numbers under `memory`: `total_mb`, `cap_mb`, `p90_peak_mb` (null until 5 peaks), `peaks`, `unit_need_mb` and `units_fit`, how many units of that need fit under the cap.
+
 ## Triage pass
 
 Review files escapes and follow-ups as `needs-triage` issues, and only `ready_label` issues are queued, so before each unit `ns watch` triages what nobody has yet:

@@ -182,3 +182,21 @@ fn a_rerun_that_tampers_puts_back_the_artifact_it_replaced() {
     assert!(build.contains("status: fail"), "{build}");
     assert!(unit.join("history/build-tampered-1.md").is_file());
 }
+
+/// Every phase on the built-in `codex` command, run by the fake harness under that name.
+fn builtin_codex(e: &Env) {
+    copy_exe(&e.bin.join("claude"), &e.bin.join("codex"));
+    e.factory("[defaults]\nharness = \"codex\"\n");
+}
+
+#[test]
+fn a_codex_phase_with_full_access_that_changes_a_protected_path_is_failed_as_tampered() {
+    let e = tamper_env("printf 'exit 1\\n' > .githooks/pre-commit\n");
+    builtin_codex(&e);
+    let reason = run_tampered(&e);
+    assert!(reason.contains(".githooks/pre-commit"), "{reason}");
+    let args = fs::read_to_string(e.ctrl.join("args")).unwrap();
+    assert!(args.starts_with("exec --sandbox danger-full-access"), "{args}");
+    let hook = fs::read_to_string(e.worktree(UNIT).join(".githooks/pre-commit")).unwrap();
+    assert_eq!(hook, "#!/bin/sh\nexit 0\n");
+}

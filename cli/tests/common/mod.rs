@@ -41,10 +41,13 @@ pub fn ns() -> Ns {
         "NS_CPUS",
         "RUST_TEST_THREADS",
         "CARGO_BUILD_JOBS",
+        "NS_SLICE",
     ] {
         c.env_remove(v);
     }
     c.env("NS_FREE_GIB_FILE", default_free_gib_file());
+    // No test caps the user's real `ns.slice` or waits on the machine's memory.
+    c.env("NS_MEMINFO", "/nonexistent/ns-meminfo");
     c
 }
 

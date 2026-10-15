@@ -73,6 +73,7 @@ pub fn run() -> Result<ExitCode> {
     tracked_skill_dirs(&mut problems, &mut warnings);
     let hooks = hooks_entry(&mut problems);
     let disk = disk_entry(&mut warnings);
+    let private_tmp = crate::harness::private_tmp_works();
 
     let ok = parses && problems.is_empty();
     let out = json!({
@@ -88,16 +89,17 @@ pub fn run() -> Result<ExitCode> {
             .as_ref()
             .map(|c| c.roles.values().map(|r| r.harness.clone()).collect::<std::collections::BTreeSet<_>>())
             .unwrap_or_default(),
-        "harnesses": harnesses_entry(),
+        "harnesses": harnesses_entry(private_tmp.is_ok()),
         "skill_dirs": skill_dirs_entry(),
         "claude_phases": {
             "auto_memory": false,
             "env": format!("{}=1", crate::harness::AUTO_MEMORY_ENV),
         },
-        "private_tmp": private_tmp_entry(),
+        "private_tmp": private_tmp_entry(&private_tmp),
         "forge": forge,
         "hooks": hooks,
         "quality": factory().map(|f| json!({ "remote": f.quality.remote })),
+        "memory": memory_here(),
         "ssh_keepalive": keepalive,
         "disk": disk,
         "problems": problems,
@@ -108,17 +110,17 @@ pub fn run() -> Result<ExitCode> {
 }
 
 /// Whether `ns run` gives each phase its `TMPDIR` as a private `/tmp`, and why not when it can't.
-fn private_tmp_entry() -> Value {
-    let works = crate::harness::private_tmp_works();
+fn private_tmp_entry(works: &Result<(), String>) -> Value {
     json!({
         "isolated": works.is_ok(),
         "via": "bwrap",
-        "reason": works.err(),
+        "reason": works.as_ref().err(),
     })
 }
 
-/// Each known harness: whether it is on PATH, where, and its pinning mode.
-fn harnesses_entry() -> Value {
+/// Each known harness: whether it is on PATH, where, its pinning mode, the dirs pinning takes
+/// installed skills from, and whether its phases get a private `/tmp` (every harness's do).
+fn harnesses_entry(private_tmp: bool) -> Value {
     let mut harnesses = Map::new();
     for h in KNOWN_HARNESSES {
         let p = which(h);
@@ -128,6 +130,8 @@ fn harnesses_entry() -> Value {
                 "on_path": p.is_some(),
                 "path": p.map(|p| p.to_string_lossy().into_owned()),
                 "pinning": crate::pin::mode(h).as_str(),
+                "skills_from": crate::pin::installed_dirs(&[h]),
+                "private_tmp": private_tmp,
             }),
         );
     }
@@ -378,6 +382,42 @@ fn ssh_config(t: &forge::SshTarget) -> std::io::Result<std::process::Output> {
     cmd.timeout(forge::PROBE_TIMEOUT).until_stop().output()
 }
 
+/// What the units `ns watch` starts here share: [`memory_entry`] for this machine and repo.
+fn memory_here() -> Value {
+    let repo = crate::git::Repo::discover(Path::new(".")).ok();
+    let peaks = repo.map_or_else(Vec::new, |r| crate::memory::peaks(&r.run_log()));
+    let configured = factory().and_then(|f| f.limits.total_memory_mb);
+    memory_entry(crate::memory::meminfo(), configured, &peaks)
+}
+
+/// The machine's total memory, the units' shared cap (`configured`, else the total less 4 GB),
+/// the p90 of the units' recorded `peaks` (null until enough are recorded), the memory a new
+/// unit is taken to need, and how many such units fit under the cap. Unknown numbers are null.
+fn memory_entry(
+    info: Option<crate::memory::MemInfo>,
+    configured: Option<u64>,
+    peaks: &[u64],
+) -> Value {
+    use crate::watch::{need_mb, need_within, Memory, PEAKS_MIN};
+    let cap = configured.or(info.map(|m| crate::memory::cap_mb(m.total_mb, None)));
+    let need = need_within(&Memory {
+        peaks,
+        total_mb: info.map(|m| m.total_mb),
+        cap_mb: cap,
+        ..Memory::default()
+    });
+    let total = info.map_or(u64::MAX, |m| m.total_mb);
+    let real: Vec<u64> = peaks.iter().copied().filter(|p| *p <= total).collect();
+    json!({
+        "total_mb": info.map(|m| m.total_mb),
+        "cap_mb": cap,
+        "p90_peak_mb": (real.len() >= PEAKS_MIN).then(|| need_mb(&real)),
+        "peaks": peaks.len(),
+        "unit_need_mb": need,
+        "units_fit": cap.and_then(|c| c.checked_div(need)),
+    })
+}
+
 /// The current repo's factory file, when the directory is in a repo and the file loads.
 fn factory() -> Option<crate::factory::Factory> {
     let repo = crate::git::Repo::discover(Path::new(".")).ok()?;
@@ -506,9 +546,11 @@ fn greeted(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        greeted, ssh_account, ssh_account_within, ssh_config, ssh_config_keepalive, ssh_greeting,
+        greeted, memory_entry, ssh_account, ssh_account_within, ssh_config, ssh_config_keepalive,
+        ssh_greeting,
     };
     use crate::forge::SshTarget;
+    use serde_json::json;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -553,6 +595,44 @@ mod tests {
         assert_eq!(kind(ssh_config(&t)), std::io::ErrorKind::Interrupted);
         let greeting = ssh_greeting(std::ffi::OsStr::new("ssh"), &t, crate::forge::PROBE_TIMEOUT);
         assert_eq!(kind(greeting), std::io::ErrorKind::Interrupted);
+    }
+
+    #[test]
+    fn memory_shows_the_total_the_cap_the_p90_peak_and_the_units_that_fit() {
+        let info = crate::memory::MemInfo {
+            total_mb: 24576,
+            available_mb: 20000,
+        };
+        assert_eq!(
+            memory_entry(Some(info), None, &[]),
+            json!({"total_mb": 24576, "cap_mb": 20480, "p90_peak_mb": null, "peaks": 0,
+                   "unit_need_mb": 4096, "units_fit": 5})
+        );
+        let peaks = [3000, 1000, 2000, 2500, 1500];
+        assert_eq!(
+            memory_entry(Some(info), Some(9000), &peaks),
+            json!({"total_mb": 24576, "cap_mb": 9000, "p90_peak_mb": 3000, "peaks": 5,
+                   "unit_need_mb": 3000, "units_fit": 3})
+        );
+        // A p90 over the cap shows as recorded; the need that fits units is clamped to the cap.
+        assert_eq!(
+            memory_entry(Some(info), Some(20000), &[23000; 5]),
+            json!({"total_mb": 24576, "cap_mb": 20000, "p90_peak_mb": 23000, "peaks": 5,
+                   "unit_need_mb": 20000, "units_fit": 1})
+        );
+        // Forged peaks above MemTotal are not a p90: the default need stands.
+        assert_eq!(
+            memory_entry(Some(info), None, &[u64::MAX; 5]),
+            json!({"total_mb": 24576, "cap_mb": 20480, "p90_peak_mb": null, "peaks": 5,
+                   "unit_need_mb": 4096, "units_fit": 5})
+        );
+        // Peaks of zero never divide the cap by nothing.
+        assert_eq!(memory_entry(Some(info), None, &[0; 5])["units_fit"], 20480);
+        assert_eq!(
+            memory_entry(None, None, &peaks[..4]),
+            json!({"total_mb": null, "cap_mb": null, "p90_peak_mb": null, "peaks": 4,
+                   "unit_need_mb": 4096, "units_fit": null})
+        );
     }
 
     #[test]

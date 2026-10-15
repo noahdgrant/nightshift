@@ -425,6 +425,41 @@ fn a_skills_tree_without_ns_skills_falls_back_to_the_installed_ones() {
 }
 
 #[test]
+fn a_codex_unit_pins_the_ns_skills_installed_for_codex() {
+    let e = Env::new();
+    drop_repo_skills(&e);
+    copy_exe(&e.bin.join("claude"), &e.bin.join("codex"));
+    e.factory("[defaults]\nharness = \"codex\"\n");
+    let src = e.base.join("checkout/skills/ns-x");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("SKILL.md"), "for codex\n").unwrap();
+    fs::create_dir_all(e.home.join(".agents/skills")).unwrap();
+    std::os::unix::fs::symlink(&src, e.home.join(".agents/skills/ns-x")).unwrap();
+    e.run(&["run", "--issue", "7"], 0);
+    let skills = e.worktree(UNIT).join(".ns").join(UNIT).join("skills");
+    assert_eq!(
+        fs::read_to_string(skills.join("ns-x/SKILL.md")).unwrap(),
+        "for codex\n"
+    );
+    assert_eq!(events_named(&e, "skills_pinned")[0]["source"], "installed");
+}
+
+#[test]
+fn a_unit_with_no_installed_skills_names_each_dir_it_looked_in() {
+    let e = Env::new();
+    drop_repo_skills(&e);
+    e.factory("[defaults]\nharness = \"claude\"\n[phases.review]\nharness = \"codex\"\n");
+    copy_exe(&e.bin.join("claude"), &e.bin.join("codex"));
+    let err = run_failing(&e, &["run", "--issue", "7"]);
+    let claude = e.home.join(".claude/skills");
+    let agents = e.home.join(".agents/skills");
+    assert!(
+        err.contains(&format!("{} or {}", claude.display(), agents.display())),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_repo_with_no_ns_skills_to_pin_is_refused_and_leaves_no_snapshot() {
     let e = Env::new();
     drop_repo_skills(&e);

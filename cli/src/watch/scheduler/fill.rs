@@ -8,10 +8,12 @@ use serde_json::json;
 
 use super::{overlap, red::Gate, FillError, Scheduler};
 use crate::disk;
+use crate::memory;
 use crate::run;
 use crate::stop;
 use crate::watch::core::fill::{
-    disk_effect, open_fill, Claims, DiskAct, FillAct, FillInput, Kind, Open, OpenAct,
+    disk_effect, open_fill, waits_for_memory, Claims, DiskAct, FillAct, FillInput, Kind, Memory,
+    Open, OpenAct,
 };
 use crate::watch::transitions::{self, Event, State};
 use crate::watch::{queue, split, triage, Issue, Night, Tonight};
@@ -160,6 +162,9 @@ impl Scheduler<'_> {
             None => Gate::Open,
         };
         let now = night.shared.clock.now();
+        let peaks = memory::peaks(&repo.run_log());
+        let info = memory::meminfo();
+        let cap_mb = info.map(|m| memory::cap_mb(m.total_mb, fac.limits.total_memory_mb));
         let input = FillInput {
             ready: &ready,
             gate: &gate,
@@ -167,6 +172,13 @@ impl Scheduler<'_> {
             free: self.plan.parallel - self.running.len(),
             claims: self.claims(night),
             holds: &self.holds,
+            memory: Memory {
+                available_mb: info.map(|m| m.available_mb),
+                peaks: &peaks,
+                total_mb: info.map(|m| m.total_mb),
+                cap_mb,
+                waiting: self.memory_low,
+            },
         };
         let ignore = &loaded.fac.queue.overlap_ignore;
         let running = || {
@@ -174,6 +186,7 @@ impl Scheduler<'_> {
             overlap::running_units(repo, forge, units)
         };
         let acts = overlap::plan(forge, &input, now, running, || overlap::rule(repo, ignore));
+        self.memory_low = waits_for_memory(&acts);
         for act in acts {
             // A stop during the reads claims nothing more.
             if stop::requested().is_some() {
@@ -213,6 +226,23 @@ impl Scheduler<'_> {
                     "overlaps": overlaps,
                 });
                 run::log_event(common, ev);
+            }
+            FillAct::MemoryLow {
+                available_mb,
+                need_mb,
+                new,
+            } => {
+                if new {
+                    eprintln!(
+                        "ns watch: free slots wait for memory: {available_mb} MB available, a unit needs {need_mb} MB"
+                    );
+                    let ev = json!({
+                        "event": "memory_low",
+                        "available_mb": available_mb,
+                        "need_mb": need_mb,
+                    });
+                    run::log_event(common, ev);
+                }
             }
             FillAct::Claim(issue) => self.claim(issue, night)?,
             FillAct::Stop(why) => self.stopping = Some(why),
