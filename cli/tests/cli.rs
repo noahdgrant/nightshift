@@ -1610,6 +1610,75 @@ fn doctor_warns_when_the_default_branch_is_not_in_the_main_checkout() {
 }
 
 #[test]
+fn doctor_warns_when_a_gh_or_glab_tracker_doc_has_no_operations_section() {
+    let (tmp, root) = repo();
+    let doc = root.join("docs/agents/issue-tracker.md");
+    let doctor_in = |dir: &Path| {
+        let out = ns()
+            .current_dir(dir)
+            .env("GIT_CEILING_DIRECTORIES", tmp.path())
+            .arg("doctor")
+            .assert()
+            .get_output()
+            .clone();
+        let report = doctor_report(&out);
+        let w: Vec<String> = report["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap().to_string())
+            .filter(|w| w.contains("issue-tracker.md"))
+            .collect();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            w.iter()
+                .all(|w| stderr.contains(&format!("ns: warning: {w}"))),
+            "{stderr}"
+        );
+        (report["ok"].clone(), w)
+    };
+    let doctor = || doctor_in(&root);
+    let warning = format!(
+        "{} names gh or glab but has no ## Operations section, so skills find no tracker operation; fix: load the ns-setup skill to add it",
+        doc.display()
+    );
+
+    let (ok, w) = doctor();
+    assert!(w.is_empty(), "{w:?}");
+
+    fs::create_dir_all(doc.parent().unwrap()).unwrap();
+    for stale in [
+        "# Issue tracker: GitHub\n\nUse the `gh` CLI for all operations.\n",
+        "# Issue tracker: GitLab\n\n- **Read an issue**: `glab issue view <n>`\n",
+        "Use the `gh` CLI.\n\n```\n## Operations\n```\n",
+    ] {
+        fs::write(&doc, stale).unwrap();
+        assert_eq!(doctor(), (ok.clone(), vec![warning.clone()]), "{stale}");
+    }
+
+    for fine in [
+        "Use the `gh` CLI.\n\n## Operations\n\n### Read an issue\n\n`gh issue view <n>`\n",
+        "# Issue tracker: Local\n\nIssues live as files under `.scratch/`.\n",
+    ] {
+        fs::write(&doc, fine).unwrap();
+        assert_eq!(doctor(), (ok.clone(), vec![]), "{fine}");
+    }
+
+    // An unreadable file, and a stale file outside any repo, give no warning.
+    fs::remove_file(&doc).unwrap();
+    fs::create_dir(&doc).unwrap();
+    assert_eq!(doctor().1, Vec::<String>::new());
+    let bare = tmp.path().canonicalize().unwrap().join("bare");
+    fs::create_dir_all(bare.join("docs/agents")).unwrap();
+    fs::write(
+        bare.join("docs/agents/issue-tracker.md"),
+        "Use the `gh` CLI.\n",
+    )
+    .unwrap();
+    assert_eq!(doctor_in(&bare).1, Vec::<String>::new());
+}
+
+#[test]
 fn doctor_reports_a_tracked_skill_dir_that_ns_run_cannot_pin() {
     let (tmp, root) = repo();
     let cfg = tmp.path().join("config.toml");

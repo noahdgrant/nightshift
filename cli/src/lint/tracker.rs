@@ -60,6 +60,29 @@ fn operation_headings(text: &str) -> Vec<&str> {
     found
 }
 
+/// Whether `text`, an `issue-tracker.md`, names `gh` or `glab` (a code span or fenced line
+/// whose first word is one) and has no `## Operations` heading outside fenced code: a GitHub
+/// or GitLab tracker file written before the operations list.
+pub fn predates_operations(text: &str) -> bool {
+    let names_cli = super::classified_lines(text)
+        .into_iter()
+        .any(|(_, line, fenced)| {
+            let codes = if fenced {
+                vec![line]
+            } else {
+                code_spans(line).1
+            };
+            codes
+                .into_iter()
+                .any(|c| matches!(c.split_whitespace().next(), Some("gh" | "glab")))
+        });
+    let has_ops = super::prose_lines(text).into_iter().any(|l| {
+        l.strip_prefix("## ")
+            .is_some_and(|h| h.trim() == "Operations")
+    });
+    names_cli && !has_ops
+}
+
 /// Checks each template under `root` defines exactly the operations in `OPERATIONS`.
 /// A root without `ns-setup/` has no templates to check.
 pub(super) fn check_templates(root: &Path) -> Vec<LintError> {
@@ -227,6 +250,29 @@ mod tests {
     fn the_shipped_templates_define_every_operation() {
         let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../skills");
         assert!(messages(&skills).is_empty(), "{:?}", messages(&skills));
+    }
+
+    #[test]
+    fn predates_operations_cases() {
+        for yes in [
+            "Use the `gh` CLI for all operations.\n",
+            "- **Create**: `glab issue create`\n",
+            "```\ngh issue list\n```\n",
+            "Uses `gh`.\n\n```\n## Operations\n```\n",
+            "Uses `gh`.\n\n### Operations\n",
+        ] {
+            assert!(predates_operations(yes), "{yes}");
+        }
+        for no in [
+            "Uses `gh`.\n\n## Operations\n",
+            "Uses `glab`.\n\n## Operations \n\n### Read an issue\n",
+            "Issues live as files under `.scratch/`.\n",
+            "Run gh issue list.\n",
+            "`ns-gh pr` and `high`\n",
+            "",
+        ] {
+            assert!(!predates_operations(no), "{no}");
+        }
     }
 
     #[test]

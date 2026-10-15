@@ -70,6 +70,7 @@ pub fn run() -> Result<ExitCode> {
     let (forge, mut warnings) = forges_entry(cfg.as_ref(), &mut problems);
     warnings.extend(no_keepalive);
     warnings.extend(default_branch_warnings());
+    warnings.extend(tracker_doc_warning());
     tracked_skill_dirs(&mut problems, &mut warnings);
     let hooks = hooks_entry(&mut problems);
     let disk = disk_entry(&mut warnings);
@@ -286,6 +287,24 @@ fn default_branch_warnings() -> Vec<String> {
         eprintln!("ns: warning: {w}");
     }
     warnings
+}
+
+/// A warning, also printed to stderr, when the current repo's `docs/agents/issue-tracker.md`
+/// names `gh` or `glab` but has no `## Operations` section, so skills find no tracker
+/// operation in it. None outside a repo, or when the file is missing or unreadable.
+fn tracker_doc_warning() -> Option<String> {
+    let repo = git::Repo::discover(Path::new(".")).ok()?;
+    let path = repo.root.join("docs/agents/issue-tracker.md");
+    let text = std::fs::read_to_string(&path).ok()?;
+    if !crate::lint::predates_operations(&text) {
+        return None;
+    }
+    let w = format!(
+        "{} names gh or glab but has no ## Operations section, so skills find no tracker operation; fix: load the ns-setup skill to add it",
+        path.display()
+    );
+    eprintln!("ns: warning: {w}");
+    Some(w)
 }
 
 /// The skill dirs `ns run` links to a unit's snapshot (`pin::LINKS`) that the current repo
