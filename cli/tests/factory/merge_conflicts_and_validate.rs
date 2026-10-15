@@ -117,9 +117,13 @@ fn a_conflict_in_the_git_fallback_goes_back_to_build() {
     assert!(!e.gh_calls().contains("pr merge"));
 }
 
+/// Shell that makes origin unreachable by moving its repo away: the phase changes no git
+/// config, which the tamper check protects.
+const GONE: &str = "r=$(git remote get-url origin); if [ -d \"$r\" ]; then mv \"$r\" \"$r.gone\"; fi";
+
 #[test]
 fn a_failed_fetch_in_the_git_fallback_needs_a_human_merge() {
-    let (e, v, code) = workflow_refused(LAND_UP, "git remote set-url origin /nonexistent");
+    let (e, v, code) = workflow_refused(LAND_UP, GONE);
     assert_eq!((code, &v["outcome"]), (0, &"done".into()), "{v}");
     let reason = v["reason"].as_str().unwrap();
     assert!(reason.contains("`workflow` scope"), "{reason}");
@@ -313,6 +317,28 @@ fn a_behind_pr_merges_at_the_head_update_branch_returns() {
             .all(|p| p.contains(&format!("/commits/{UPDATED_HEAD}/"))),
         "{calls}"
     );
+}
+
+/// GitHub can find a conflict only once update-branch brings the base in: `DIRTY`, read while
+/// waiting for the new head, goes back to build as a conflict.
+#[test]
+fn a_pr_update_branch_leaves_dirty_goes_back_to_build_as_a_conflict() {
+    let (e, v, _) = rebased_after_review(&["pass:script"], PRINT_HEAD_SHA_CMD, |e| {
+        e.gh_file("pr-12.merge", "BEHIND");
+        e.gh_file("updated-12.merge", "DIRTY");
+        e.gh_file("updated-12.lag", "1000");
+    });
+    let calls = e.gh_calls();
+    assert!(calls.contains("pr update-branch 12"), "{calls}");
+    assert!(
+        calls.contains("pr view 12 --json headRefOid,mergeStateStatus"),
+        "{calls}"
+    );
+    assert!(
+        run_events(&e).iter().any(|ev| ev["event"] == "conflict"),
+        "{v}"
+    );
+    assert!(!calls.contains("pr merge"), "{calls}");
 }
 
 #[test]
@@ -601,7 +627,7 @@ fn a_failed_fetch_of_the_default_branch_needs_a_human_merge() {
     let e = Env::new();
     e.factory(AUTO);
     e.ctl("pr", "12");
-    e.ctl("edit", "git remote set-url origin /nonexistent");
+    e.ctl("edit", GONE);
     e.queue("build", &["pass:commit"]);
     e.gh_file("checks-12.json", GREEN);
     e.gh_file("diff-12.txt", "work.txt\n");

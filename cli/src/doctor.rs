@@ -94,6 +94,7 @@ pub fn run() -> Result<ExitCode> {
             "auto_memory": false,
             "env": format!("{}=1", crate::harness::AUTO_MEMORY_ENV),
         },
+        "private_tmp": private_tmp_entry(),
         "forge": forge,
         "hooks": hooks,
         "quality": factory().map(|f| json!({ "remote": f.quality.remote })),
@@ -105,6 +106,16 @@ pub fn run() -> Result<ExitCode> {
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(ExitCode::from(u8::from(!ok)))
+}
+
+/// Whether `ns run` gives each phase its `TMPDIR` as a private `/tmp`, and why not when it can't.
+fn private_tmp_entry() -> Value {
+    let works = crate::harness::private_tmp_works();
+    json!({
+        "isolated": works.is_ok(),
+        "via": "bwrap",
+        "reason": works.err(),
+    })
 }
 
 /// Each known harness: whether it is on PATH, where, and its pinning mode.

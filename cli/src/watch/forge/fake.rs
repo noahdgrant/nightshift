@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::Result;
 
 use super::{
-    ClosingPrs, CommitPr, Filed, Forge, IssueLink, IssueState, MergedPrs, Post, Pr, PrState,
+    ClosingPrs, CommitPr, Filed, Forge, IssueLink, IssueState, MergedPrs, Post, Pr, PrCheck,
+    PrOutcome, PrRead, PrState, PrView,
 };
 use crate::watch::ci::HeadChecks;
 use crate::watch::Issue;
@@ -237,5 +238,38 @@ impl Forge for FakeForge {
             anyhow::bail!("HTTP 502");
         }
         Ok(self.green.clone().filter(|g| g != red))
+    }
+    fn pr_ref(&self, _: u64) -> String {
+        unreachable!("ns watch fetches no PR head")
+    }
+    fn pr_outcome(&self, _: u64) -> Result<PrOutcome> {
+        unreachable!("ns watch scores no PR")
+    }
+    fn view_pr(&self, _: u64, _: PrRead) -> Result<PrView> {
+        unreachable!("ns watch runs no merge step")
+    }
+    fn update_branch(&self, _: u64) -> Result<()> {
+        unreachable!("ns watch runs no merge step")
+    }
+    fn check_counts(&self, _: &str) -> [Result<u64>; 2] {
+        unreachable!("ns watch runs no merge step")
+    }
+    fn watch_checks(&self, _: u64, _: std::time::Duration) -> Result<bool> {
+        unreachable!("ns watch runs no merge step")
+    }
+    fn pr_checks(&self, _: u64) -> Result<Vec<PrCheck>> {
+        unreachable!("ns watch runs no merge step")
+    }
+    fn run_log(&self, _: &str) -> Result<String> {
+        unreachable!("ns watch runs no merge step")
+    }
+    fn changed_files(&self, _: u64) -> Result<Vec<String>> {
+        unreachable!("ns watch runs no merge step")
+    }
+    fn squash_merge(&self, _: u64, _: &str) -> Result<()> {
+        unreachable!("ns watch runs no merge step")
+    }
+    fn delete_branch(&self, _: &str) -> Result<()> {
+        unreachable!("ns watch runs no merge step")
     }
 }

@@ -4,7 +4,8 @@ max-fn-params-bools = 2
 
 # Every child process starts through proc, which applies its kind's policy: the environment
 # scrub, a timeout that kills the process group, stdin closed (#556, CODING_STANDARDS.md, "Checks").
-# Every harness starts through crate::harness, which adds its kind's billing and setup (#657).
+# Every harness starts through crate::harness, which adds its kind's billing and setup (#657). The
+# ast-grep rule harness-kind-construction (rules/rust/README.md) catches a Kind::Harness built elsewhere.
 disallowed-methods = [
     { path = "std::process::Command::new", reason = "start a child through crate::proc::Proc (Proc::git_local, Proc::forge, Proc::tool, ...), which applies its kind's policy" },
     { path = "ns::proc::Proc::harness", reason = "start a harness through crate::harness::command, which applies the billing and phase setup for its kind" },

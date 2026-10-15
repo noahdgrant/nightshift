@@ -2,8 +2,10 @@
 //! all build theirs here, so the billing and setup each kind needs can't be skipped; clippy
 //! rejects `Proc::harness` anywhere else (`clippy.toml`).
 
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::process::ExitStatus;
 
 use crate::error::SfError;
 use crate::memcap::{self, Cap, Watch};
@@ -79,17 +81,104 @@ pub fn command(
     Ok(cmd)
 }
 
-/// As [`command`], under the memory `cap`, with how to tell afterwards whether it hit it.
+/// As [`command`], under the memory `cap` and in `tmp` when given, with how to tell afterwards
+/// whether it hit the cap.
 pub fn capped(
     cap: Option<&Cap>,
+    tmp: Option<&PrivateTmp>,
     program: impl AsRef<OsStr>,
     args: &[String],
     subscription: bool,
     caller: impl FnOnce(&mut Proc),
 ) -> anyhow::Result<(Proc, Watch)> {
+    let inner = tmp.map(PrivateTmp::launcher).unwrap_or_default();
     start(program.as_ref(), args, subscription, caller, |p| {
-        memcap::command(cap, Kind::Harness { subscription }, p)
+        memcap::wrapped(cap, Kind::Harness { subscription }, &inner, p)
     })
+}
+
+/// The program that gives a phase a private `/tmp`.
+const BWRAP: &str = "bwrap";
+
+/// Ok when bubblewrap can give a phase a private `/tmp` here, else why not.
+pub fn private_tmp_works() -> Result<(), String> {
+    if crate::which::which(BWRAP).is_none() {
+        return Err(format!("{BWRAP} is not on PATH"));
+    }
+    let mut c = Proc::tool(BWRAP);
+    c.args(["--dev-bind", "/", "/", "--bind"])
+        .arg(std::env::temp_dir())
+        .args(["/tmp", "--", "true"]);
+    memcap::probe(c, BWRAP, memcap::PROBE_TIMEOUT).map(|_| ())
+}
+
+/// A phase's private `/tmp`: bubblewrap mounts `dir` on `/tmp`, then binds back each host `/tmp`
+/// entry that holds a path in `keep`, so `TMPDIR`, the worktree and the ssh agent still resolve.
+/// Same user, same `/proc` and `/dev`; only `/tmp` differs.
+pub struct PrivateTmp {
+    dir: PathBuf,
+    keep: Vec<PathBuf>,
+}
+
+impl PrivateTmp {
+    /// `dir` on `/tmp`, keeping `dir`, `paths`, and what this process's `HOME`, `PATH` and
+    /// `SSH_AUTH_SOCK` name.
+    pub fn new(dir: &Path, paths: &[&Path]) -> PrivateTmp {
+        let mut keep: Vec<PathBuf> = paths.iter().map(|p| p.to_path_buf()).collect();
+        keep.push(dir.to_path_buf());
+        keep.extend(
+            ["HOME", "SSH_AUTH_SOCK"]
+                .iter()
+                .filter_map(std::env::var_os)
+                .map(PathBuf::from),
+        );
+        if let Some(path) = std::env::var_os("PATH") {
+            keep.extend(std::env::split_paths(&path));
+        }
+        PrivateTmp {
+            dir: dir.to_path_buf(),
+            keep,
+        }
+    }
+
+    /// The bubblewrap command the harness starts under.
+    fn launcher(&self) -> Vec<String> {
+        let mut c: Vec<String> = [BWRAP, "--dev-bind", "/", "/", "--die-with-parent", "--bind"]
+            .map(String::from)
+            .into();
+        c.push(self.dir.to_string_lossy().into_owned());
+        c.push("/tmp".to_string());
+        for entry in tmp_entries(&self.keep).into_iter().filter(|e| e.exists()) {
+            let entry = entry.to_string_lossy().into_owned();
+            c.extend(["--bind".to_string(), entry.clone(), entry]);
+        }
+        c.push("--".to_string());
+        c
+    }
+}
+
+/// The host `/tmp` entries that hold `paths`, each once. `launcher` binds only those that exist:
+/// bubblewrap refuses a missing source, which would fail every phase.
+fn tmp_entries(paths: &[PathBuf]) -> BTreeSet<PathBuf> {
+    paths
+        .iter()
+        .filter_map(
+            |p| match p.strip_prefix("/tmp").ok()?.components().next()? {
+                Component::Normal(first) => Some(Path::new("/tmp").join(first)),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+/// The status a program run under [`PrivateTmp`] ended with: bubblewrap exits 128 + n when the
+/// program was killed by signal n.
+pub fn unwrapped_status(status: ExitStatus) -> ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    match status.code() {
+        Some(c @ 129..=192) => ExitStatus::from_raw(c - 128),
+        _ => status,
+    }
 }
 
 fn start<T>(
@@ -178,13 +267,132 @@ mod tests {
         let cmd = command("claude", &[], false, set_off).unwrap();
         assert_eq!(env(&cmd, AUTO_MEMORY_ENV).as_deref(), Some("1"));
         assert_eq!(env(&cmd, BG_WAIT_ENV).as_deref(), Some("123"));
-        let (cmd, _) = capped(None, "claude", &[], false, set_off).unwrap();
+        let (cmd, _) = capped(None, None, "claude", &[], false, set_off).unwrap();
+        assert_eq!(env(&cmd, AUTO_MEMORY_ENV).as_deref(), Some("1"));
+    }
+
+    fn private(dir: &str, keep: &[&str]) -> PrivateTmp {
+        PrivateTmp {
+            dir: PathBuf::from(dir),
+            keep: keep.iter().map(PathBuf::from).collect(),
+        }
+    }
+
+    #[test]
+    fn a_private_tmp_mounts_the_phase_dir_and_binds_back_the_tmp_entries_it_keeps() {
+        let host = tempfile::Builder::new()
+            .prefix("ns-harness-host-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let top = host.path().to_str().unwrap();
+        std::fs::create_dir_all(host.path().join("ns-r-u/build-1")).unwrap();
+        std::fs::create_dir_all(host.path().join("ssh-x")).unwrap();
+        let phase = format!("{top}/ns-r-u/build-1");
+        let keep = [
+            phase.clone(),
+            format!("{top}/ssh-x/agent.1"),
+            format!("{top}/ssh-x/agent.2"),
+            "/srv/home".to_string(),
+            "/tmp".to_string(),
+            "/tmp/../etc".to_string(),
+            "/tmpfoo/bin".to_string(),
+        ];
+        let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
+        let (cmd, _) = capped(
+            None,
+            Some(&private(&phase, &keep)),
+            "claude",
+            &v(&["-p"]),
+            false,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            cmd.argv(),
+            [
+                "bwrap",
+                "--dev-bind",
+                "/",
+                "/",
+                "--die-with-parent",
+                "--bind",
+                &phase,
+                "/tmp",
+                "--bind",
+                top,
+                top,
+                "--",
+                "claude",
+                "-p",
+            ]
+        );
         assert_eq!(env(&cmd, AUTO_MEMORY_ENV).as_deref(), Some("1"));
     }
 
     #[test]
+    fn a_private_tmp_binds_back_only_the_tmp_entries_that_exist() {
+        let here = tempfile::Builder::new()
+            .prefix("ns-harness-keep-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let gone = "/tmp/ns-harness-no-such-entry/agent.1";
+        let keep_path = here.path().join("bin");
+        let (cmd, _) = capped(
+            None,
+            Some(&private(
+                "/tmp/ns-r-u/build-1",
+                &[gone, keep_path.to_str().unwrap()],
+            )),
+            "claude",
+            &v(&[]),
+            false,
+            |_| {},
+        )
+        .unwrap();
+        let argv = cmd.argv();
+        let here = here.path().to_str().unwrap();
+        assert!(argv.iter().any(|a| a == here), "{argv:?}");
+        assert!(
+            !argv.iter().any(|a| a.contains("no-such-entry")),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn a_private_tmp_keeps_the_paths_it_is_given_and_its_own_dir() {
+        let p = PrivateTmp::new(Path::new("/tmp/ns-r-u/build-1"), &[Path::new("/w")]);
+        assert_eq!(p.dir, Path::new("/tmp/ns-r-u/build-1"));
+        assert_eq!(p.keep[..2], [PathBuf::from("/w"), p.dir.clone()]);
+        let env: Vec<PathBuf> = ["HOME", "SSH_AUTH_SOCK"]
+            .iter()
+            .filter_map(std::env::var_os)
+            .map(PathBuf::from)
+            .chain(
+                std::env::var_os("PATH")
+                    .iter()
+                    .flat_map(std::env::split_paths),
+            )
+            .collect();
+        assert_eq!(p.keep[2..], env);
+    }
+
+    #[test]
+    fn bwraps_exit_for_a_signal_reads_as_that_signal() {
+        use std::os::unix::process::ExitStatusExt;
+        let exited = |c: i32| ExitStatus::from_raw(c << 8);
+        assert_eq!(unwrapped_status(exited(137)).signal(), Some(9));
+        assert_eq!(unwrapped_status(exited(129)).signal(), Some(1));
+        assert_eq!(unwrapped_status(exited(192)).signal(), Some(64));
+        for c in [0, 1, 128, 193] {
+            assert_eq!(unwrapped_status(exited(c)).code(), Some(c), "{c}");
+        }
+        let killed = ExitStatus::from_raw(9);
+        assert_eq!(unwrapped_status(killed), killed);
+    }
+
+    #[test]
     fn another_harness_keeps_its_args_and_environment() {
-        let (cmd, _) = capped(None, "codex", &v(&["exec", "--bare"]), true, |_| {}).unwrap();
+        let (cmd, _) = capped(None, None, "codex", &v(&["exec", "--bare"]), true, |_| {}).unwrap();
         assert_eq!(args(&cmd), ["exec", "--bare"]);
         assert_eq!(env(&cmd, AUTO_MEMORY_ENV), None);
         assert_eq!(env(&cmd, BG_WAIT_ENV), None);

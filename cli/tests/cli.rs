@@ -1283,6 +1283,33 @@ fn doctor_reports_the_memory_cap_the_p90_peak_and_the_units_that_fit() {
 }
 
 #[test]
+fn doctor_reports_whether_phases_get_a_private_tmp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let doctor = |bwrap: &str| {
+        common::write_exe(&bin.join("bwrap"), format!("#!/bin/sh\n{bwrap}\n"));
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+        doctor_report(
+            ns().current_dir(tmp.path())
+                .env("PATH", path)
+                .arg("doctor")
+                .assert()
+                .get_output(),
+        )["private_tmp"]
+            .clone()
+    };
+    assert_eq!(
+        doctor("exit 0"),
+        serde_json::json!({"isolated": true, "via": "bwrap", "reason": null})
+    );
+    let v = doctor("exit 1");
+    assert_eq!(v["isolated"], false, "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.starts_with("bwrap failed"), "{reason}");
+}
+
+#[test]
 fn doctor_reports_which_harness_skill_dirs_hold_the_ns_skills() {
     let skills = fixture_skills();
     let home = tempfile::tempdir().unwrap();
@@ -3647,35 +3674,6 @@ fn guard_hooks_denies_a_write_through_a_skills_link_by_relative_and_absolute_pat
         );
     }
     assert!(!guard(bash("rm -rf build".into())));
-}
-
-#[test]
-fn guard_hooks_resolves_the_phase_unit_and_asks_for_a_rewrite_of_an_unread_word() {
-    let guard = |unit: Option<&str>, command: &str| {
-        let mut c = ns();
-        c.env_remove("NS_UNIT").env_remove("NS_WORKTREE");
-        if let Some(unit) = unit {
-            c.env("NS_UNIT", unit);
-        }
-        let call = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": command}});
-        let out = c
-            .arg("guard-hooks")
-            .write_stdin(call.to_string())
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-        String::from_utf8(out).unwrap()
-    };
-    let write = "echo x > .ns/$NS_UNIT/review-$NS_UNIT.md";
-    assert_eq!(guard(Some("u1"), write), "");
-    let unread = guard(None, write);
-    assert!(unread.contains("\"deny\""), "{unread}");
-    assert!(unread.contains("Write tool"), "{unread}");
-    assert!(!unread.contains("blocked"), "{unread}");
-    let bypass = guard(Some("u1"), "rm -rf .ns/$NS_UNIT");
-    assert!(bypass.contains("ns: blocked: "), "{bypass}");
 }
 
 #[test]

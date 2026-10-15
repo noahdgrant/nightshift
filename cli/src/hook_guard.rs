@@ -1,66 +1,30 @@
 //! `ns guard-hooks`: the `PreToolUse` hook `ns run` gives every claude phase. It reads the
-//! tool call claude is about to make on stdin and denies one that would skip the repo's git
-//! hooks, naming the rule (`skills/ns-contract`, Git hooks). Every other call passes untouched.
+//! tool call claude is about to make on stdin and denies one that names a hook bypass
+//! literally, naming the rule (`skills/ns-contract`, Git hooks). Every other call passes
+//! untouched.
+//!
+//! The guard is best-effort: it fails a few literal forms early, with a helpful message. It
+//! follows no variable, alias or script. `ns run`'s tamper check (`run/tamper.rs`) puts back a
+//! changed protected path whatever wrote it, and the gates and CI decide what reaches the
+//! default branch (docs/decisions, "Hooks are a convenience").
 
-use std::collections::HashMap;
 use std::io::Read;
 
-use crate::pin;
 use serde_json::{json, Value};
 
 mod files;
 mod git;
-mod lexer;
 #[cfg(test)]
 mod tests;
-mod wrappers;
+mod words;
 
-use files::*;
-use git::*;
-use lexer::{tokens, Sep, Tok, Word};
-use wrappers::*;
+use files::{is_protected, writes_protected};
+use words::{segments, Segment};
 
 const RULE: &str = "The factory contract's Git hooks rule (skills/ns-contract/SKILL.md, \"Git hooks\") says a phase never skips the repo's hooks. Fix what the hook reports and commit or push again; when the cause lies outside the unit, stop with status: blocked.";
 
-/// What a denial says when only a word the guard couldn't read caused it.
-const UNREAD_RULE: &str = "The guard could not read a word a shell expansion builds, so it could not rule out a protected path or a flag that skips the hooks. Write the word out literally, or write the file with the Write tool, and carry on: this denial is no reason to stop the phase.";
-
-/// The phase's variables the guard reads from its own environment.
-const PHASE_VARS: [&str; 2] = ["NS_UNIT", "NS_WORKTREE"];
-
-/// What stands in for each expansion when the guard asks whether a denial came only from the
-/// words it couldn't read: a name no protected path or flag has.
-const FILLER: &str = "unread";
-
-/// Variables the guard knows the value of, by name.
-type Vars = HashMap<String, String>;
-
-/// The longest variable name the scan learns, and the longest value and the count it keeps:
-/// beyond them a variable stays unknown, which keeps the scan linear in the command.
-const MAX_NAME: usize = 64;
-const MAX_VALUE: usize = 4096;
-const MAX_VARS: usize = 1024;
-
-/// The most bytes of variable values the scan writes into one command's words.
-const MAX_RESOLVED: usize = 256 * 1024;
-
-#[cfg(test)]
-thread_local! {
-    static OPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-fn count_op(n: usize) {
-    #[cfg(test)]
-    OPS.with(|c| c.set(c.get() + n));
-    #[cfg(not(test))]
-    let _ = n;
-}
-
-/// How deep `eval`, `sh -c` and aliases may nest before the guard gives up and denies.
-const MAX_NESTING: usize = 8;
-
 /// What a protected path is called in a denial.
-const PROTECTED: &str = ".githooks/, .git/hooks, .git/config, .claude/settings*.json, .ns/<unit> or .ns/<unit>/skills, or a skills link into it";
+const PROTECTED: &str = ".githooks/, .git/hooks, .git/config, config.worktree, .claude/settings*.json, .ns/<unit>/skills, the phase settings, or a skills link into a snapshot";
 
 const BASH_TOOL: &str = "Bash";
 
@@ -75,12 +39,12 @@ pub fn run() -> anyhow::Result<()> {
     let Ok(call) = serde_json::from_str::<Value>(&input) else {
         return Ok(());
     };
-    if let Some(denial) = judge(&call, &phase_vars(|name| std::env::var(name).ok())) {
+    if let Some(why) = verdict(&call) {
         let out = json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": denial.reason(),
+                "permissionDecisionReason": format!("ns: blocked: {why}. {RULE}"),
             },
         });
         println!("{out}");
@@ -88,62 +52,13 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A call the guard denies.
-struct Denial {
-    why: String,
-    /// The call passes once each word the guard couldn't read is written out as a plain name:
-    /// rewriting the word, not stopping, is the fix.
-    unread: bool,
-}
-
-impl Denial {
-    fn reason(&self) -> String {
-        let why = &self.why;
-        if self.unread {
-            format!("ns: denied: {why}. {UNREAD_RULE}")
-        } else {
-            format!("ns: blocked: {why}. {RULE}")
-        }
-    }
-}
-
-/// The `PHASE_VARS` that `env` holds a literal value for.
-fn phase_vars(env: impl Fn(&str) -> Option<String>) -> Vars {
-    PHASE_VARS
-        .iter()
-        .filter_map(|name| Some((name.to_string(), env(name)?)))
-        .filter(|(_, value)| is_literal_value(value))
-        .collect()
-}
-
-/// Whether `call` would skip the git hooks, with `vars` known to hold their values.
-fn judge(call: &Value, vars: &Vars) -> Option<Denial> {
-    let why = verdict(call, vars, Unread::Keep)?;
-    let unread = verdict(call, vars, Unread::Fill).is_none();
-    Some(Denial { why, unread })
-}
-
-/// Why `call` would skip the git hooks, with `vars` known to hold their values and, under
-/// `Unread::Fill`, every other expansion read as `FILLER`.
-fn verdict(call: &Value, vars: &Vars, unread: Unread) -> Option<String> {
+/// Why `call` would skip the git hooks, when it says so literally.
+fn verdict(call: &Value) -> Option<String> {
     let input = &call["tool_input"];
     match call["tool_name"].as_str()? {
-        BASH_TOOL => {
-            let mut scan = Scan {
-                cwd: call["cwd"].as_str().map(Cwd::of).unwrap_or_default(),
-                vars: vars.clone(),
-                unread,
-                ..Scan::default()
-            };
-            let command = input["command"].as_str()?;
-            if command.contains(pin::SETTINGS_VAR) {
-                return Some(format!(
-                    "a command naming ${} in {PROTECTED}",
-                    pin::SETTINGS_VAR
-                ));
-            }
-            check_command(command, &mut scan)
-        }
+        BASH_TOOL => segments(input["command"].as_str()?)
+            .iter()
+            .find_map(check_segment),
         tool if FILE_TOOLS.contains(&tool) => ["file_path", "notebook_path"]
             .iter()
             .filter_map(|k| input[k].as_str())
@@ -153,607 +68,48 @@ fn verdict(call: &Value, vars: &Vars, unread: Unread) -> Option<String> {
     }
 }
 
-fn unreadable(what: &str) -> String {
-    format!("{what} takes a word built by a shell expansion that could be a flag that skips the hooks; write the word out literally")
-}
-
-#[derive(Default)]
-struct Scan {
-    /// An earlier `cd` or `pushd`, or this git's `-C`, went into a protected path: how many
-    /// directories below it the working directory is.
-    cwd: Cwd,
-    depth: usize,
-    /// `cwd` outside each subshell the scan is in.
-    outer_cwds: Vec<Cwd>,
-    /// The command's stdin is a heredoc or herestring, which a shell would run.
-    stdin_is_text: bool,
-    /// Variables whose value the top-level command is known to hold at this point.
-    vars: Vars,
-    /// A command ran that changes how a later assignment sets its variable, or runs code on
-    /// its own: no variable is learned from here on.
-    frozen: bool,
-    unread: Unread,
-    /// The tokens being checked are the top-level command, whose variables are followed.
-    following: bool,
-    /// The command has no loop or function, so an assignment can be followed in order.
-    learning: bool,
-    /// How many more bytes of values the scan may write into this command's words.
-    budget: usize,
-}
-
-/// What the scan makes of an expansion it has no value for.
-#[derive(Clone, Copy, Default, PartialEq)]
-enum Unread {
-    #[default]
-    Keep,
-    Fill,
-}
-
-impl Scan {
-    /// `w` with what the scan knows written in: at the top level of the command each variable
-    /// in `vars`, and under `Unread::Fill` every other expansion.
-    fn read(&mut self, w: Word, known: bool) -> Word {
-        count_op(1 + w.expansions.len());
-        let added = if self.following && known && !w.expansions.is_empty() {
-            self.added(&w).filter(|a| *a <= self.budget)
-        } else {
-            None
-        };
-        let w = if let Some(added) = added {
-            count_op(added + w.text.len());
-            self.budget -= added;
-            w.resolved(|e| Some(self.vars.get(e.name.as_ref()?)?.as_str()))
-        } else {
-            w
-        };
-        if self.unread == Unread::Fill {
-            w.resolved(|_| Some(FILLER))
-        } else {
-            w
-        }
-    }
-
-    /// The bytes writing in the known variables adds to `w`, if that leaves it no longer than
-    /// `MAX_VALUE`.
-    fn added(&self, w: &Word) -> Option<usize> {
-        let mut added = 0;
-        for e in &w.expansions {
-            added += e
-                .name
-                .as_ref()
-                .and_then(|n| self.vars.get(n))
-                .map_or(0, String::len);
-            if w.text.len() + added > MAX_VALUE {
-                return None;
-            }
-        }
-        Some(added)
-    }
-
-    /// After the top-level segment `words`, ended by `sep`, learn the variables it assigns a
-    /// literal value for certain and forget those it may change. `flow` says whether the
-    /// segment ran for certain, in this shell.
-    fn settle(&mut self, words: &[Word], sep: Sep, flow: &mut Flow) {
-        let command = words.iter().find(|w| assignment(w).is_none());
-        let command = command.map(|w| basename(&w.text));
-        if command.is_some_and(|c| COMPOUND_WORDS.contains(&c)) {
-            flow.compound = true;
-        }
-        let (mut freezes, mut rewrites) = (false, false);
-        let mut at_command = true;
-        for w in words {
-            freezes |= names_builtin(FREEZERS, at_command, w);
-            rewrites |= names_builtin(REWRITERS, at_command, w);
-            at_command &= before_command(w);
-        }
-        if freezes {
-            self.frozen = true;
-        }
-        let real = words.iter().find(|w| {
-            assignment(w).is_none()
-                && !PREFIXES.contains(&w.text.as_str())
-                && !(w.text.starts_with('-') && w.expansions.is_empty())
-        });
-        let harmless = match real {
-            None => true,
-            Some(w) if !w.expansions.is_empty() => {
-                self.frozen = true;
-                false
-            }
-            Some(w) => {
-                let c = basename(&w.text);
-                HARMLESS.contains(&c)
-                    || (c == "export" && words.iter().all(|w| w.expansions.is_empty()))
-            }
-        };
-        let may_set_any =
-            !harmless || rewrites || self.frozen || words.iter().any(|w| w.text == "=~");
-        if may_set_any {
-            self.vars.clear();
-        }
-        if words.iter().any(|w| may_set(&w.text, "IFS")) {
-            self.vars.clear();
-            flow.compound = true;
-        }
-        if self.learning
-            && flow.runs
-            && !flow.compound
-            && !self.frozen
-            && matches!(sep, Sep::Seq | Sep::And)
-        {
-            self.vars.extend(literal_assignments(words));
-            if self.vars.len() > MAX_VARS {
-                self.vars.clear();
-            }
-        }
-        flow.runs = sep == Sep::Seq;
-        flow.compound |= sep == Sep::Group;
-    }
-
-    /// Forget each variable the word `w` may set: it names it, or assigns it.
-    fn forget(&mut self, w: &Word) {
-        if self.vars.is_empty() {
-            return;
-        }
-        if w.text.starts_with('-') {
-            let ident = w
-                .text
-                .bytes()
-                .rev()
-                .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
-                .count()
-                .min(MAX_NAME);
-            let tail = &w.text[w.text.len() - ident..];
-            for start in 0..tail.len() {
-                count_op(tail.len() - start);
-                self.vars.remove(&tail[start..]);
-            }
-        } else {
-            count_op(1);
-            let end = w
-                .text
-                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .unwrap_or(w.text.len());
-            let (name, rest) = w.text.split_at(end);
-            if rest.is_empty() || rest.starts_with(['=', '+', '[']) {
-                self.vars.remove(name);
-            }
-        }
-    }
-
-    /// `path` is protected, or is relative to a working directory that is.
-    fn touches_hooks(&self, path: &str) -> bool {
-        let path = option_value(path);
-        if path.contains(UNREAD) {
-            let erased = path.replace(UNREAD, "");
-            return self.touches_hooks(&erased) || self.unread_under_ns(path);
-        }
-        is_protected(path)
-            || (!path.starts_with(['-', '/'])
-                && (self
-                    .cwd
-                    .hooks
-                    .is_some_and(|depth| stays_inside(depth, path))
-                    || self
-                        .cwd
-                        .ns
-                        .is_some_and(|depth| reaches_unit_file(depth, path))))
-    }
-
-    /// An expansion of unknown depth sits below a `.ns` part of `path`, or in a relative path
-    /// from a working directory below `.ns`, so it may reach a unit's directory or `skills`.
-    fn unread_under_ns(&self, path: &str) -> bool {
-        unread_below_protected(path, &[pin::NS_DIR], ['-', '/'], self.cwd)
-    }
-}
-
-fn check_command(s: &str, scan: &mut Scan) -> Option<String> {
-    if scan.depth >= MAX_NESTING {
-        return Some(format!(
-            "a command nested more than {MAX_NESTING} levels deep in eval, sh -c or aliases"
-        ));
-    }
-    scan.depth += 1;
-    let lexed = tokens(s);
-    let outer = scan.following;
-    scan.following = scan.depth == 1 && !lexed.assigns;
-    if scan.depth == 1 {
-        scan.learning = !repeats_or_defers(&lexed.main);
-        if !scan.learning {
-            scan.vars.clear();
-        }
-        scan.budget = MAX_RESOLVED;
-    }
-    let why = check_tokens(lexed.main, scan).or_else(|| {
-        scan.following = false;
-        lexed
-            .substitutions
-            .into_iter()
-            .find_map(|toks| check_tokens(toks, scan))
-    });
-    scan.following = outer;
-    scan.depth -= 1;
-    why
-}
-
-/// The command has a loop or defines a function, so a statement may run after one that
-/// follows it in the text.
-fn repeats_or_defers(toks: &[Tok]) -> bool {
-    const WORDS: &[&str] = &[
-        "while", "until", "for", "select", "function", "eval", "source",
-    ];
-    let mut at_command = true;
-    toks.iter().enumerate().any(|(i, t)| {
-        count_op(1);
-        let found = match t {
-            Tok::Word(w) if basename(&w.text) == "." => at_command,
-            Tok::Word(w) => WORDS.contains(&basename(&w.text)),
-            Tok::SubshellOpen => {
-                matches!(
-                    i.checked_sub(1).and_then(|j| toks.get(j)),
-                    Some(Tok::Word(_))
-                ) && matches!(toks.get(i + 1), Some(Tok::SubshellClose))
-            }
-            _ => false,
-        };
-        match t {
-            Tok::Word(w) => at_command &= before_command(w),
-            _ => at_command = true,
-        }
-        found
-    })
-}
-
-/// How far the top-level command so far is known to run, for `Scan::settle`.
-struct Flow {
-    /// The next segment runs for certain, in this shell, once the ones before it have.
-    runs: bool,
-    /// A compound command (a brace, a subshell, a function, a reserved word) began: what runs
-    /// after it is no longer followed.
-    compound: bool,
-}
-
-/// Check the tokens of one command. `scan.following` is set for the command the phase ran, not
-/// one nested in an `eval`, a `sh -c` or a substitution, and it has no arithmetic or
-/// `${name=value}` that could set a variable unseen: only there are its variables followed.
-fn check_tokens(toks: Vec<Tok>, scan: &mut Scan) -> Option<String> {
-    let top = scan.following;
-    let is_word = |t: &Tok| matches!(t, Tok::Word(_));
-    let mut words: Vec<Word> = Vec::new();
-    let mut rewrites = false;
-    let mut at_command = true;
-    let mut stdin_is_text = false;
-    let mut flow = Flow {
-        runs: true,
-        compound: false,
-    };
-    let mut toks = toks.into_iter().peekable();
-    while let Some(tok) = toks.next() {
-        let tok = match tok {
-            Tok::Word(w) => Tok::Word(scan.read(w, !rewrites)),
-            tok => tok,
-        };
-        match tok {
-            Tok::Word(w) => {
-                if top {
-                    scan.forget(&w);
-                }
-                rewrites |= names_builtin(REWRITERS, at_command, &w)
-                    || names_builtin(FREEZERS, at_command, &w);
-                at_command &= before_command(&w);
-                words.push(w);
-            }
-            Tok::Herestring => {
-                toks.next_if(is_word);
-                stdin_is_text = true;
-            }
-            Tok::Heredoc => stdin_is_text = true,
-            Tok::RedirectOut => {
-                if let Some(Tok::Word(f)) = toks.next_if(is_word) {
-                    let f = scan.read(f, true);
-                    if scan.touches_hooks(&path(&f)) {
-                        return Some(format!("write to {} in {PROTECTED}", f.text));
-                    }
-                }
-            }
-            Tok::RedirectIn => {
-                toks.next_if(is_word);
-            }
-            Tok::CommandEnd(_) | Tok::SubshellOpen | Tok::SubshellClose => {
-                if let Some(why) = check_fed_segment(&words, stdin_is_text, scan) {
-                    return Some(why);
-                }
-                if top {
-                    let sep = match tok {
-                        Tok::CommandEnd(sep) => sep,
-                        _ => Sep::Group,
-                    };
-                    scan.settle(&words, sep, &mut flow);
-                }
-                words.clear();
-                rewrites = false;
-                at_command = true;
-                stdin_is_text = false;
-                match tok {
-                    Tok::SubshellOpen => scan.outer_cwds.push(scan.cwd),
-                    Tok::SubshellClose => {
-                        if let Some(outer) = scan.outer_cwds.pop() {
-                            scan.cwd = outer;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    check_fed_segment(&words, stdin_is_text, scan)
-}
-
-/// `check_segment` for a command whose stdin may be a heredoc or herestring. A command it
-/// runs inherits that stdin, so the flag holds through `eval`, `sh -c` and wrappers.
-fn check_fed_segment(words: &[Word], stdin_is_text: bool, scan: &mut Scan) -> Option<String> {
-    let outer = scan.stdin_is_text;
-    scan.stdin_is_text |= stdin_is_text;
-    let why = check_segment(words, scan);
-    scan.stdin_is_text = outer;
-    why
-}
+/// Words that come before a simple command's program.
+const PREFIXES: &[&str] = &[
+    "{", "!", "time", "sudo", "env", "command", "exec", "nohup", "nice",
+];
 
 /// Why one simple command (no operators) would skip the git hooks.
-fn check_segment(words: &[Word], scan: &mut Scan) -> Option<String> {
-    let mut w = words;
-    loop {
-        let first = w.first()?;
-        if first.opaque {
-            return opaque_command(w);
-        }
+fn check_segment(seg: &Segment) -> Option<String> {
+    if let Some(t) = seg.redirects.iter().find(|t| is_protected(&t.text)) {
+        return Some(format!("write to {} in {PROTECTED}", t.text));
+    }
+    if seg
+        .words
+        .iter()
+        .any(|w| !w.quoted && w.text.starts_with("GIT_DIR="))
+    {
+        return Some("GIT_DIR= makes git use other hooks and config".into());
+    }
+    let mut w = seg.words.as_slice();
+    while let Some(first) = w.first() {
         let text = first.text.as_str();
-        if let Some((name, value)) = env_assignment(text) {
-            if let Some(why) = env_bypass(name, value) {
-                return Some(why);
-            }
+        if is_assignment(text) || PREFIXES.contains(&text) || text.starts_with('-') {
             w = &w[1..];
-            continue;
+        } else if text == "timeout" {
+            let options = w[1..].iter().take_while(|a| a.text.starts_with('-'));
+            w = w.get(2 + options.count()..).unwrap_or_default();
+        } else {
+            break;
         }
-        if RESERVED_WORDS.contains(&text) {
-            w = &w[1..];
-            continue;
-        }
-        let prog = basename(text);
-        if let Some(wrap) = WRAPPERS.iter().find(|x| x.name == prog) {
-            if prog == "env" {
-                if let Some(cmd) = env_split_string(&w[1..]) {
-                    return check_command(cmd, scan);
-                }
-            }
-            w = skip_options(&w[1..], wrap).get(wrap.positional..)?;
-            continue;
-        }
-        return match prog {
-            "cd" | "pushd" => change_directory(&w[1..], scan),
-            "popd" => {
-                scan.cwd = Cwd::default();
-                None
-            }
-            "eval" => check_words(&w[1..], scan),
-            "sh" | "bash" | "zsh" | "dash" | "ksh" | "ash" => match shell_dash_c_script(&w[1..]) {
-                Some(script) => check_words(std::slice::from_ref(script), scan),
-                None if scan.stdin_is_text => Some(format!(
-                    "{prog} reading a heredoc or herestring as its script; use {prog} -c"
-                )),
-                None => None,
-            },
-            "git" => git(&w[1..], scan),
-            prog => file_tool(prog, &w[1..], scan),
-        };
+    }
+    let (prog, args) = w.split_first()?;
+    match basename(&prog.text) {
+        "git" => git::check(args),
+        prog => writes_protected(prog, args),
     }
 }
 
-fn check_words(words: &[Word], scan: &mut Scan) -> Option<String> {
-    if words.iter().any(|w| w.opaque) {
-        return Some(unreadable("a shell run through eval or sh -c"));
-    }
-    let text: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
-    check_command(&text.join(" "), scan)
-}
-
-/// A command named by an expansion is unreadable; deny it when git or the hooks are near.
-fn opaque_command(words: &[Word]) -> Option<String> {
-    let names_git = words.first().is_some_and(|w| w.text.starts_with("git"));
-    let near_git = names_git
-        || words.iter().any(|w| {
-            w.text.split(['{', '}', ',']).any(|p| basename(p) == "git")
-                || is_guarded_subcommand(&w.text)
-                || is_protected(&w.text)
-        });
-    near_git.then(|| "a command named by a shell expansion next to git or .githooks".to_string())
-}
-
-fn change_directory(args: &[Word], scan: &mut Scan) -> Option<String> {
-    let dir = args
-        .iter()
-        .find(|a| a.text == "-" || !a.text.starts_with('-'));
-    if let Some(d) = dir {
-        if cd_loses_protected_cwd(d, scan.cwd) {
-            return Some(format!(
-                "cd {} into a directory of unknown depth in a protected path",
-                d.text
-            ));
-        }
-    }
-    scan.cwd = dir.map_or_else(Cwd::default, |d| cd_to(&dir_path(d), scan.cwd));
-    None
-}
-
-/// The working directory after `cd dir` (or `git -C dir`) from `from`.
-fn cd_to(dir: &str, from: Cwd) -> Cwd {
-    match dir {
-        d if is_protected_directory(d) => Cwd::of(d),
-        d if !d.starts_with(['/', '~']) => Cwd::relative(from, d),
-        d => Cwd::of(d),
-    }
-}
-
-/// Command words that begin or belong to a compound command.
-const COMPOUND_WORDS: &[&str] = &[
-    "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "select", "case",
-    "esac", "function", "!", "coproc",
-];
-
-/// Builtins that can change a variable in a way the scan does not follow, so it forgets all of
-/// them.
-const REWRITERS: &[&str] = &[
-    "eval", "source", ".", "declare", "typeset", "local", "let", "trap",
-];
-
-/// Builtins after which the scan learns no assignment: a variable's attributes or a trap can
-/// change what a later assignment, or any command, sets.
-const FREEZERS: &[&str] = &["declare", "typeset", "local", "readonly", "trap", "alias"];
-
-/// Words that come before a segment's command, or modify how it runs.
-const PREFIXES: &[&str] = &[
-    "time", "!", "if", "then", "else", "elif", "while", "until", "do", "builtin", "command",
-];
-
-/// Commands that set no variable the scan learns (see `SHELL_MANAGED`). A segment whose
-/// command is any other, however it is prefixed, clears every learned variable.
-const HARMLESS: &[&str] = &[
-    "rm", "cp", "mv", "git", "echo", "cat", "ls", "test", "cd", "true", "false", ":", "mkdir",
-    "touch",
-];
-
-/// Shell-managed variables the shell rewrites unseen: never learned from an assignment.
-const SHELL_MANAGED: &[&str] = &[
-    "_",
-    "REPLY",
-    "OPTARG",
-    "OPTIND",
-    "BASH_REMATCH",
-    "PWD",
-    "OLDPWD",
-    "RANDOM",
-    "SECONDS",
-    "LINENO",
-    "COPROC",
-    "IFS",
-    "BASH_COMMAND",
-    "BASHPID",
-    "EPOCHSECONDS",
-    "EPOCHREALTIME",
-    "SRANDOM",
-    "PIPESTATUS",
-    "PPID",
-    "SHLVL",
-    "UID",
-    "EUID",
-    "HISTCMD",
-    "FUNCNAME",
-    "MAPFILE",
-    "SHELLOPTS",
-    "BASHOPTS",
-    "BASH_VERSINFO",
-    "BASH_SOURCE",
-    "BASH_SUBSHELL",
-    "DIRSTACK",
-    "COLUMNS",
-    "LINES",
-    "HOSTNAME",
-    "BASH_CMDS",
-    "BASH_ALIASES",
-    "BASH_ARGV",
-    "BASH_ARGC",
-    "BASH_LINENO",
-    "GROUPS",
-    "BASH_VERSION",
-    "BASH_ARGV0",
-];
-
-/// `w` comes before a segment's command: an assignment or a prefix word.
-fn before_command(w: &Word) -> bool {
-    assignment(w).is_some() || PREFIXES.contains(&w.text.as_str())
-}
-
-/// `w` is a builtin in `list`. The source builtin `.` counts only where a command goes
-/// (`at_command`, every word before it in its segment being `before_command`): elsewhere it
-/// is a path.
-fn names_builtin(list: &[&str], at_command: bool, w: &Word) -> bool {
-    let name = basename(&w.text);
-    list.contains(&name) && (name != "." || at_command)
-}
-
-/// The word `text` names the variable `name`, assigns it, or ends with it as an option's
-/// value (`-vU`), so the command may set it.
-fn may_set(text: &str, name: &str) -> bool {
-    text.strip_prefix(name)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['=', '+', '[']))
-        || (text.starts_with('-') && text.ends_with(name))
-}
-
-/// A value a variable can be resolved to: the same text wherever it is expanded, quoted or
-/// not, so no blank, glob, quote or other character the shell reads.
-fn is_literal_value(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_./:@%+,=-".contains(c))
-}
-
-/// The variables a segment that only assigns (`U=lit`, `export U=lit`) sets to a literal
-/// value. Any other segment sets none: a prefix assignment (`U=lit cmd`) lasts only for its
-/// command.
-fn literal_assignments(words: &[Word]) -> Vec<(String, String)> {
-    let assignments = match words {
-        [first, rest @ ..] if first.text == "export" && first.expansions.is_empty() => rest,
-        _ => words,
-    };
-    let literal = |w: &Word| {
-        let (name, value) = assignment(w)?;
-        (w.expansions.is_empty()
-            && is_literal_value(value)
-            && value.len() <= MAX_VALUE
-            && name.len() <= MAX_NAME
-            && !SHELL_MANAGED.contains(&name))
-        .then(|| {
-            count_op(name.len() + value.len());
-            (name.to_string(), value.to_string())
-        })
-    };
-    assignments
-        .iter()
-        .map(literal)
-        .collect::<Option<Vec<_>>>()
-        .unwrap_or_default()
-}
-
-/// `w` assigns a variable: it has the shape `name=value`, and nothing quoted or expanded
-/// comes before the `=`, which would make it a command name.
-fn assignment(w: &Word) -> Option<(&str, &str)> {
-    w.assignable.then(|| env_assignment(&w.text)).flatten()
-}
-
-fn env_assignment(word: &str) -> Option<(&str, &str)> {
-    let (name, value) = word.split_once('=')?;
-    let ok = !name.is_empty()
-        && !name.starts_with(|c: char| c.is_ascii_digit())
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-    ok.then_some((name, value))
-}
-
-/// Variables that make git skip a hook, move `core.hooksPath` or read another config or repo. A command that sets one is
-/// denied whether or not it runs git: an `export` lasts past the call.
-fn env_bypass(name: &str, value: &str) -> Option<String> {
-    let hit = match name {
-        "HUSKY" => value == "0",
-        "SKIP"
-        | "GIT_CONFIG_COUNT"
-        | "GIT_CONFIG_PARAMETERS"
-        | "GIT_CONFIG_GLOBAL"
-        | "GIT_CONFIG_SYSTEM"
-        | "GIT_DIR" => true,
-        n => n.starts_with("GIT_CONFIG_KEY_") || n.starts_with("GIT_CONFIG_VALUE_"),
-    };
-    hit.then(|| {
-        format!("{name}= makes git hooks skip, or moves core.hooksPath or the config git reads")
+/// `word` has the shape `NAME=value`.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     })
 }
 

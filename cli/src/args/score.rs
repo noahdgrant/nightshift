@@ -12,8 +12,8 @@ Examples:
 
 Spec: docs/factory/scorers.md (Scoring). Builds a prompt per scorer from its rubric and labels, every
 *.md in .ns/<unit>/ (the unit's worktree, else the main checkout) and the PR outcome: the PR in
-pr.md read with gh (network, --dry-run too), whether a commit on the default branch reverts its
-merge commit, and its review count. Runs the scorer's role read-only through `ns ask` and takes
+pr.md read from the forge (gh or glab, network, --dry-run too), whether a commit on the default
+branch reverts its merge commit, and its review count (approvals on GitLab). Runs the scorer's role read-only through `ns ask` and takes
 the reply's last `label: <value>` line. Appends {unit,scorer,label,score,pass} per scorer to
 <common git dir>/ns/scores.jsonl only when every judge named a known label.
 

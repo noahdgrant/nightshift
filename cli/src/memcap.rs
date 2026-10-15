@@ -12,7 +12,7 @@ use crate::proc::{Kind, Proc};
 
 const MIB: u64 = 1024 * 1024;
 /// How long a probe may take before it counts as failed.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long to wait for systemd to settle a scope after its process exits.
 const SETTLE: Duration = Duration::from_secs(3);
 /// How long a dropped scope may take to stop before it is reset anyway.
@@ -130,7 +130,18 @@ pub fn detect(mb: u64) -> anyhow::Result<Cap> {
 /// A `kind` child that runs `program` under `cap`, and how to tell afterwards whether it hit
 /// the cap. The caller adds the program's arguments.
 pub fn command(cap: Option<&Cap>, kind: Kind, program: impl AsRef<OsStr>) -> (Proc, Watch) {
-    let (launcher, watch) = launcher(cap);
+    wrapped(cap, kind, &[], program)
+}
+
+/// As [`command`], with `program` started through `inner`, a launcher of its own, inside the cap.
+pub fn wrapped(
+    cap: Option<&Cap>,
+    kind: Kind,
+    inner: &[String],
+    program: impl AsRef<OsStr>,
+) -> (Proc, Watch) {
+    let (mut launcher, watch) = launcher(cap);
+    launcher.extend_from_slice(inner);
     (Proc::launched(kind, &launcher, program), watch)
 }
 
@@ -318,7 +329,7 @@ fn probe_rlimit(mb: u64) -> Result<(), String> {
 }
 
 /// Run a probe; its stdout, or why it failed.
-fn probe(mut c: Proc, name: &str, timeout: Duration) -> Result<String, String> {
+pub(crate) fn probe(mut c: Proc, name: &str, timeout: Duration) -> Result<String, String> {
     match c.timeout(timeout).output() {
         Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
         Ok(out) => Err(format!("{name} failed ({})", out.status)),

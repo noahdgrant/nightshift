@@ -14,6 +14,7 @@ cargo install --path cli
 - Nothing prompts. Every input is a flag, a positional argument, or stdin.
 - Commands are safe to re-run. Destructive commands take `--dry-run`.
 - `ns <command> --help` lists options and examples for that command.
+- Every forge call goes through the `Forge` trait in `src/watch/forge.rs`, with GitHub (`gh`) and GitLab (`glab`) implementations. Only those implementations and the credential checks in `src/forge.rs` start `gh` or `glab`; a test fails on a call anywhere else. A new forge operation is a new trait method with both implementations.
 
 | Exit | Meaning |
 |---|---|
