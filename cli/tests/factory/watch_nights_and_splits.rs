@@ -197,17 +197,6 @@ fn watch_queues_only_team_authored_issues() {
     ));
 }
 
-#[test]
-fn watch_never_runs_a_non_team_issue() {
-    let e = Env::new();
-    e.ready_by(2, "Stranger", &["type:fix"], "", Some("NONE"));
-    let v = e.run(&["watch"], 0);
-    assert_eq!(v["stopped"], "queue empty");
-    assert!(v["units"].as_array().unwrap().is_empty());
-    assert!(e.calls().is_empty());
-    assert!(!e.gh_calls().contains("issue edit"));
-}
-
 const HUMAN_MERGE: &str = "needs-human-merge";
 
 /// How every body nightshift posts to the forge opens (skills/ns-contract, Disclosure).

@@ -1,5 +1,6 @@
 //! Parallel units: claims into free slots, never twice, under `--max-units`, and a usage limit's
-//! pause across every unit. Moved from tests/factory/cleanup_and_cpus.rs.
+//! pause across every unit, and only team issues. Moved from tests/factory/cleanup_and_cpus.rs
+//! and tests/factory/watch_nights_and_splits.rs.
 
 use serde_json::json;
 
@@ -85,4 +86,16 @@ fn watch_parallel_gives_every_paused_unit_back_when_the_reset_is_past_until() {
     for n in [2, 3] {
         assert_eq!(sim.labels(n), ["type:fix", READY]);
     }
+}
+
+#[test]
+fn watch_never_runs_a_non_team_issue() {
+    let mut sim = Sim::new();
+    sim.ready(2, "Stranger", &["type:fix"]);
+    sim.forge.issues.last_mut().unwrap().team = false;
+    let stopped = sim.run(done).unwrap();
+    assert_eq!(stopped, "queue empty");
+    assert!(sim.units.is_empty(), "{:?}", sim.units);
+    assert!(sim.claimed.is_empty());
+    assert_eq!(sim.labels(2), ["type:fix", READY]);
 }
