@@ -1,5 +1,21 @@
-// `ns run`'s guards after each phase and `ns clean` on a GitLab project, with no `gh` to fall
-// back on.
+//! The GitLab adapter: `ns run`'s guards after each phase and `ns clean` on a GitLab project,
+//! read through `glab` with no `gh` to fall back on.
+
+#![allow(
+    clippy::disallowed_methods,
+    reason = "an integration test is a crate of its own and cannot use crate::proc"
+)]
+
+#[path = "common/mod.rs"]
+mod common;
+#[path = "common/factory_env.rs"]
+mod factory_env;
+
+use std::fs;
+
+use common::write_exe;
+use factory_env::*;
+use serde_json::Value;
 
 /// An env whose forge is GitLab, holding issue 7, with a `gh` that records each call and fails.
 fn gl_guard_env() -> Env {
@@ -37,7 +53,8 @@ fn gitlab_run_passes_the_guard_after_ship_reading_the_mr() {
         .prompt(1, "triage")
         .contains("https://gitlab.example/o/r/-/issues/7"));
     assert!(
-        e.glab_calls().contains("api projects/:id/merge_requests/12"),
+        e.glab_calls()
+            .contains("api projects/:id/merge_requests/12"),
         "{}",
         e.glab_calls()
     );
@@ -74,7 +91,10 @@ fn gitlab_run_names_glab_when_it_cannot_read_the_mr() {
     let out = e.ns().args(["run", "--issue", "7"]).output();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{err}");
-    assert!(err.contains("glab api projects/:id/merge_requests/12"), "{err}");
+    assert!(
+        err.contains("glab api projects/:id/merge_requests/12"),
+        "{err}"
+    );
     assert_no_gh(&e);
 }
 
@@ -174,7 +194,8 @@ fn gitlab_clean_removes_a_merged_unit_and_keeps_open_and_closed_unmerged_ones() 
     assert!(!e.worktree("3-done").exists());
     assert!(e.worktree("5-closed-mr").exists());
     assert!(
-        e.glab_calls().contains("api projects/:id/merge_requests/30"),
+        e.glab_calls()
+            .contains("api projects/:id/merge_requests/30"),
         "{}",
         e.glab_calls()
     );

@@ -18,18 +18,6 @@ fn a_phase_killed_by_a_signal_fails_its_attempt_naming_it() {
 }
 
 #[test]
-fn a_phase_killed_on_every_attempt_is_stuck_naming_the_signal() {
-    let e = Env::new();
-    e.factory("[phases.build]\nmax_attempts = 1\n");
-    e.queue("build", &["pass:commit+kill"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(
-        v["reason"],
-        "build is out of attempts (1): the last attempt was killed by SIGKILL"
-    );
-}
-
-#[test]
 fn a_gate_killed_by_a_signal_names_it() {
     let e = Env::new();
     e.factory("[phases.build]\ngate = \"kill -9 $$\"\n");
@@ -42,37 +30,6 @@ fn a_gate_killed_by_a_signal_names_it() {
     assert_eq!(g[0]["signal"], "SIGKILL");
     assert_eq!(g[0]["memory_exceeded"], false);
     assert!(e.prompt(3, "build").contains("was killed by SIGKILL"));
-}
-
-#[test]
-fn a_killed_rebuild_keeps_the_red_gate_feedback() {
-    let e = Env::new();
-    let flag = e.ctrl.join("gate-green");
-    e.factory(&format!(
-        "[phases.build]\nmax_attempts = 3\ngate = \"test -f {f} || {{ touch {f}; echo boom; exit 1; }}\"\n",
-        f = flag.display()
-    ));
-    e.queue("build", &["pass:commit", "pass:commit+kill", "pass:commit"]);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    assert_eq!(
-        build_event(&e, 3)["decision"],
-        "was killed by SIGKILL with the CI gate still red"
-    );
-    assert!(e.prompt(4, "build").contains("boom"));
-}
-
-#[test]
-fn a_gate_still_red_after_a_silent_build_still_names_the_signal() {
-    let e = Env::new();
-    e.factory("[phases.build]\ngate = \"kill -9 $$\"\n");
-    e.queue("build", &["pass:commit", "none"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(
-        v["reason"],
-        "build is out of attempts (2): the CI gate was killed by SIGKILL"
-    );
-    assert_eq!(gate_events(&e).len(), 1);
 }
 
 #[test]
@@ -320,72 +277,6 @@ fn a_merge_that_leaves_a_pr_head_not_here_keeps_the_worktree() {
         "{v}"
     );
     assert!(e.worktree(UNIT).exists());
-}
-
-/// A unit worktree on `ns/<unit>` with one commit, a review and a `pr.md` naming PR `pr`,
-/// issue `n` in `issue_state`, and the PR in `pr_state` with a body that closes the issue.
-fn unit_with_pr(
-    e: &Env,
-    n: u64,
-    unit: &str,
-    pr: u64,
-    issue_state: &str,
-    pr_state: &str,
-) -> PathBuf {
-    let wt = e.worktree(unit);
-    git(
-        &e.root,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "-b",
-            &format!("ns/{unit}"),
-            wt.to_str().unwrap(),
-            "main",
-        ],
-    );
-    fs::write(wt.join(format!("{unit}.txt")), "work\n").unwrap();
-    git(&wt, &["add", &format!("{unit}.txt")]);
-    git(&wt, &["commit", "-q", "-m", unit]);
-    let dir = wt.join(".ns").join(unit);
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(
-        dir.join("pr.md"),
-        format!("---\nunit: {unit}\nphase: ship\nstatus: pass\npr: https://github.com/o/r/pull/{pr}\n---\n"),
-    )
-    .unwrap();
-    fs::write(
-        dir.join("review.md"),
-        format!("---\nunit: {unit}\nphase: review\nstatus: pass\nupdated: 2026-10-08T00:00:00Z\n---\n{FINDING}"),
-    )
-    .unwrap();
-    e.issue(n, unit, issue_state);
-    e.gh_file(&format!("pr-{pr}.state"), pr_state);
-    e.gh_file(&format!("pr-{pr}.body"), &format!("Closes #{n}"));
-    wt
-}
-
-fn reasons(v: &Value) -> std::collections::BTreeMap<String, String> {
-    v["kept"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|k| {
-            (
-                k["unit"].as_str().unwrap().to_string(),
-                k["reason"].as_str().unwrap().to_string(),
-            )
-        })
-        .collect()
-}
-
-fn units_in(v: &Value) -> Vec<String> {
-    v.as_array()
-        .unwrap()
-        .iter()
-        .map(|u| u["unit"].as_str().unwrap().to_string())
-        .collect()
 }
 
 #[test]

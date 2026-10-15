@@ -82,7 +82,7 @@ fn a_red_gate_after_a_verify_commit_goes_back_to_build_before_review() {
     );
     assert!(r.runs[3].feedback.contains("test ! -f broken"));
     assert_eq!(
-        r.gates,
+        r.gated(),
         [("build", true), ("verify", false), ("build", true)]
     );
 }

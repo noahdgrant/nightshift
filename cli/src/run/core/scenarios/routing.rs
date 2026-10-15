@@ -1,5 +1,6 @@
-//! Which phase runs next, and what it costs: moved from `cli/tests/factory/run_phases_and_skills.rs`
-//! and `run_rebases_and_gates.rs`, where every assertion was a decision.
+//! Which phase runs next, and what it costs: moved from `cli/tests/factory/run_phases_and_skills.rs`,
+//! `run_rebases_and_gates.rs` and `run_ratchets_and_worktrees.rs`, where every assertion was a
+//! decision.
 
 use super::super::sim::Sim;
 use crate::run::Outcome;
@@ -180,4 +181,15 @@ fn review_commit_makes_evidence_stale_and_reverifies() {
         r.calls(),
         ["triage", "build", "verify", "review", "verify", "ship"]
     );
+}
+
+#[test]
+fn blocked_artifact_is_stuck() {
+    let mut s = Sim::new();
+    s.queue("build", &["pass:commit"]);
+    s.queue("verify", &["blocked:needs hardware"]);
+    let r = s.run();
+    assert_eq!(r.outcome, Outcome::Stuck);
+    assert!(r.reason.contains("evidence.md is blocked"), "{}", r.reason);
+    assert_eq!(r.artifact, Some("evidence.md"));
 }

@@ -429,6 +429,8 @@ fn with_the_local_queue_on_a_behind_pr_gates_the_merge_result_and_checks_no_over
     assert_eq!(r.asked(&Ask::UpdateBranch), 0);
     assert!(r.events("merge_update_skipped").is_empty());
     assert!(r.events("merge_update_needed").is_empty());
+    let gate = r.gates.last().unwrap();
+    assert_eq!((gate.phase, gate.attempt, gate.full), ("merge", 1, true));
 }
 
 const MAIN_TIP: &str = "abcdef0123456789abcdef0123456789abcdef01";

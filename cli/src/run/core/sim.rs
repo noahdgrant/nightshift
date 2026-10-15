@@ -6,32 +6,32 @@
 //! `crash` (no artifact, exit 1), and `extra` is `+`-joined words: `commit` moves HEAD,
 //! `next=<phase>` and `find=<id>,<id>` set the artifact's `next` and `findings` (a fix cycle's
 //! `fix.md` lists the ids it was handed, and the pass after it counts an attempt for each),
-//! `movemain` moves the default branch, `sleep` times the phase out, and any other text lands in
-//! the artifact's body (`base moved` as its first line). The guards' words: `pushmain` pushes
+//! `movemain` moves the default branch, `sleep` times the phase out, `kill` kills it with SIGKILL
+//! before it writes an artifact, and any other text lands in the artifact's body
+//! (`base moved` as its first line). The guards' words: `pushmain` pushes
 //! HEAD to the default branch, `landmain` lands [`Sim::land_pr`] there and rebases onto it,
 //! `merge` merges the unit's PR, `noorigin` loses the origin, and `touch=<path>` makes the
 //! phase's commit change `path`, for a red gate's culprit. The merge step's: `dirty` and `clean`
-//! set the PR's merge state on GitHub.
-
-use std::collections::{BTreeMap, VecDeque};
-use std::path::Path;
+//! set the PR's merge state on GitHub. The gate is `sim/gate.rs`.
 
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, VecDeque};
 
-use super::gate::{culprit, Suspect};
 use super::guard::{branch_moved, moved_by_others, pr_merged, Unread};
 use super::merge::Ask;
 use super::route::{
     facts_wanted, fix_cycle, review_run, to_archive, Art, ReviewLoop, Settings, State,
 };
-use super::step::{step, Action, Event, GateRan, GateRed, GuardFacts, Last, PhaseRan};
+use super::step::{step, Action, Event, GuardFacts, Last, PhaseRan};
 use super::{Ledger, Rebase};
 use crate::factory::{artifact_of, RUN_PHASES};
 use crate::run::Outcome;
 use crate::watch::forge::CommitPr;
 
+mod gate;
 mod merge;
 
+pub use gate::GateRun;
 pub use merge::{check, FakeMerge};
 
 /// A fake unit and the scripts of its phases.
@@ -40,8 +40,8 @@ pub struct Sim {
     pub has_issue: bool,
     /// The default branch's name and the number of times it moved, or `None` without an origin.
     pub remote: Option<(String, u32)>,
-    /// Each gate's verdict in order, `Err` carrying a red gate's output; `None` sets no gate
-    /// command. An empty queue goes green. The merge step's gate takes from it too.
+    /// Each gate's verdict in order, `Err` carrying a red gate's output (`sim/gate.rs`); `None`
+    /// sets no gate command. An empty queue goes green. The merge step's gate takes from it too.
     pub gates: Option<VecDeque<Result<(), String>>>,
     /// The unit's name, whose branch is `ns/<unit>`.
     pub unit: String,
@@ -54,7 +54,8 @@ pub struct Sim {
     queues: BTreeMap<&'static str, VecDeque<String>>,
     arts: BTreeMap<&'static str, Art>,
     commits: u32,
-    red: Option<String>,
+    /// The last gate's verdict, which `gate::Gate` keeps for one invocation: one [`Sim::run`].
+    verdict: gate::Verdict,
     /// The move of the default branch the unit's HEAD holds.
     held: u32,
     /// The PRs the forge links to each move's commit; a move with none came from no PR.
@@ -89,14 +90,15 @@ pub struct Report {
     pub outcome: Outcome,
     pub reason: String,
     pub phase: Option<&'static str>,
+    /// The artifact a human reads next.
+    pub artifact: Option<&'static str>,
     /// The merge step ended the unit for a human to merge.
     pub needs_human: bool,
     pub runs: Vec<Run>,
     /// The run-log events the core asked for, and those the shell writes from its actions.
     pub logs: Vec<Value>,
-    /// Each gate the core asked for: the phase it followed (`merge` for the merge step's) and
-    /// whether it went green.
-    pub gates: Vec<(&'static str, bool)>,
+    /// Each gate that ran; a verdict reused at the same HEAD runs none.
+    pub gates: Vec<GateRun>,
     /// What the merge step asked the shell for, in order.
     pub asks: Vec<Ask>,
 }
@@ -110,6 +112,11 @@ impl Report {
     /// The runs that took in the base for free: the e2e tests' `rebase_after_base_moved` events.
     pub fn rebases(&self) -> Vec<&Run> {
         self.runs.iter().filter(|r| r.rebase.is_some()).collect()
+    }
+
+    /// Each gate that ran: the phase it followed and whether it went green.
+    pub fn gated(&self) -> Vec<(&'static str, bool)> {
+        self.gates.iter().map(|g| (g.phase, g.green)).collect()
     }
 
     pub fn logged(&self, event: &str) -> bool {
@@ -150,7 +157,7 @@ const MAX_STEPS: usize = 1000;
 struct Trace {
     runs: Vec<Run>,
     logs: Vec<Value>,
-    gates: Vec<(&'static str, bool)>,
+    gates: Vec<GateRun>,
     asks: Vec<Ask>,
 }
 
@@ -177,7 +184,7 @@ impl Sim {
             queues: BTreeMap::new(),
             arts: BTreeMap::new(),
             commits: 0,
-            red: None,
+            verdict: gate::Verdict::None,
             held: 0,
             main_prs: BTreeMap::new(),
             touched: BTreeMap::new(),
@@ -286,18 +293,19 @@ impl Sim {
                     Event::Archived
                 }
                 Action::RunGate(call) => {
-                    let phase = t.runs.last().map_or("", |r| r.phase);
-                    let g = self.gate_after(call.rebased_onto, &ledger);
-                    t.gates.push((phase, !matches!(g, GateRan::Red(_))));
-                    Event::GateRan(g)
+                    let at = t.runs.last().map_or(("", 0), |r| (r.phase, r.attempt));
+                    Event::GateRan(self.gate_after(call, at, &ledger, &mut t))
                 }
-                Action::Merge { .. } => match self.merge_step(&state, &mut t) {
+                Action::Merge { run } => match self.merge_step(&state, &mut t, run) {
                     Ok(back) => Event::MergeEnded(back),
                     Err((outcome, reason, needs_human)) => {
-                        return t.report(outcome, reason, Some("merge"), needs_human)
+                        return t.report(outcome, reason, Some("merge"), None, needs_human)
                     }
                 },
                 Action::Finish(e) => {
+                    let artifact = e.artifact.as_ref().map(|a| match a {
+                        Last::File(f) | Last::Archived(f) | Last::Blocked(f, _) => *f,
+                    });
                     if let Some(Last::Blocked(f, reason)) = &e.artifact {
                         let p = RUN_PHASES.iter().find(|p| artifact_of(p) == *f).unwrap();
                         if let Some(a) = self.arts.get_mut(p) {
@@ -307,7 +315,7 @@ impl Sim {
                         }
                     }
                     t.logs.extend(e.log);
-                    return t.report(e.outcome, e.reason, e.phase, false);
+                    return t.report(e.outcome, e.reason, e.phase, artifact, false);
                 }
             };
             action = step(&mut ledger, &state, ev);
@@ -331,8 +339,9 @@ impl Sim {
         let head_before = self.head();
         self.act(&words);
         let timed_out = words.contains(&"sleep");
+        let killed = words.contains(&"kill");
         let invalid = words.contains(&"invalid");
-        let written = !matches!(status, "none" | "crash") && !timed_out;
+        let written = !matches!(status, "none" | "crash") && !timed_out && !killed;
         if written {
             let body = if extra.starts_with("base moved") {
                 extra.to_string()
@@ -374,12 +383,12 @@ impl Sim {
             invalid: invalid.then(|| vec!["sim: invalid".to_string()]),
             present: self.arts.contains_key(phase),
             timed_out,
-            killed: None,
+            killed: killed.then(|| "was killed by SIGKILL".into()),
             timeout_text: "timed out after 1 s".into(),
             exit: if status == "crash" { Some(1) } else { Some(0) },
             head_before,
             head_after: self.head(),
-            red_feedback: self.red.clone(),
+            red_feedback: self.red_feedback(),
         }
     }
 
@@ -461,51 +470,6 @@ impl Sim {
         }
         GuardFacts { breach }
     }
-
-    /// The gate after a phase: the next verdict, and on red the phase run its output blames.
-    fn gate_after(&mut self, rebased_onto: Option<(String, String)>, l: &Ledger) -> GateRan {
-        let Some(gates) = self.gates.as_mut() else {
-            return GateRan::NoCommand;
-        };
-        match gates.pop_front().unwrap_or(Ok(())) {
-            Ok(()) => {
-                self.red = None;
-                GateRan::Green
-            }
-            Err(output) => {
-                self.red = Some(output.clone());
-                let now = self.remote_now();
-                let failing = crate::gate::failing_paths(&output);
-                let suspects: Vec<Suspect> = l
-                    .suspects()
-                    .map(|(index, m)| Suspect {
-                        index,
-                        phase: m.phase.clone(),
-                        changed: Some(self.changed(&m.from, &m.to)),
-                    })
-                    .collect();
-                let tracked: Vec<String> = self.touched.values().flatten().cloned().collect();
-                let culprit = culprit(&failing, &suspects, Path::new("/sim"), &tracked);
-                GateRan::Red(GateRed {
-                    feedback: output,
-                    reason: "the CI gate failed".into(),
-                    stuck_reason: None,
-                    moved_since: rebased_onto
-                        .is_some_and(|(_, onto)| now.is_some_and(|(_, sha)| sha != onto)),
-                    culprit: culprit.map(|c| c.0),
-                })
-            }
-        }
-    }
-
-    /// The files the commits after `from` up to `to` change.
-    fn changed(&self, from: &str, to: &str) -> Vec<String> {
-        let num = |sha: &str| sha[1..].parse::<u32>().expect("a sim commit");
-        self.touched
-            .range(num(from) + 1..=num(to))
-            .flat_map(|(_, f)| f.clone())
-            .collect()
-    }
 }
 
 impl Trace {
@@ -514,12 +478,14 @@ impl Trace {
         outcome: Outcome,
         reason: String,
         phase: Option<&'static str>,
+        artifact: Option<&'static str>,
         needs_human: bool,
     ) -> Report {
         Report {
             outcome,
             reason,
             phase,
+            artifact,
             needs_human,
             runs: self.runs,
             logs: self.logs,

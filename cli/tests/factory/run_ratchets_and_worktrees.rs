@@ -210,20 +210,6 @@ fn repeated_timeouts_archive_each_artifact_separately() {
 }
 
 #[test]
-fn a_timed_out_review_that_moved_head_still_runs_the_gate() {
-    let e = Env::new();
-    e.factory("[phases.build]\ngate = \"true\"\n");
-    e.queue("build", &["pass:commit"]);
-    e.queue("review", &["blocked:commit+sleep", "pass"]);
-    let v = run_with_timeouts(&e, "review=1500", 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    let g = gate_events(&e);
-    assert_eq!(g.len(), 2, "{g:?}");
-    assert_eq!(g[1]["phase"], "review");
-    assert_eq!(g[1]["attempt"], 1);
-}
-
-#[test]
 fn a_timed_out_ship_keeps_its_pr_number_for_the_merged_guard() {
     let e = Env::new();
     e.factory(AUTO);
@@ -275,27 +261,6 @@ fn a_timed_out_build_does_not_run_the_gate() {
 }
 
 #[test]
-fn a_red_gate_is_not_skipped_when_the_rebuild_writes_no_artifact() {
-    let e = Env::new();
-    let flag = e.ctrl.join("gate-green");
-    e.factory(&format!(
-        "[phases.build]\nmax_attempts = 3\ngate = \"test -f {f} || {{ touch {f}; echo boom; exit 1; }}\"\n",
-        f = flag.display()
-    ));
-    e.queue("build", &["pass:commit", "none", "pass"]);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "build", "build", "verify", "review", "ship"]
-    );
-    assert!(e.prompt(4, "build").contains("boom"));
-    let g = gate_events(&e);
-    assert_eq!(g.len(), 2, "{g:?}");
-    assert_eq!(g[1]["green"], true);
-}
-
-#[test]
 fn a_rebuild_that_passes_at_the_same_head_reruns_a_red_gate() {
     let e = Env::new();
     let flag = e.ctrl.join("gate-green");
@@ -318,70 +283,10 @@ fn a_rebuild_that_passes_at_the_same_head_reruns_a_red_gate() {
 }
 
 #[test]
-fn a_review_that_fails_after_moving_head_still_runs_the_gate() {
-    let e = Env::new();
-    e.factory("[phases.build]\ngate = \"true\"\n");
-    e.queue("build", &["pass:commit"]);
-    e.queue("review", &["fail:commit"]);
-    e.run(&["run", "--issue", "7"], 0);
-    let g = gate_events(&e);
-    assert_eq!(g.len(), 2, "{g:?}");
-    assert_eq!(g[1]["phase"], "review");
-}
-
-#[test]
-fn a_verify_that_fails_after_moving_head_still_runs_the_gate() {
-    let e = Env::new();
-    e.factory("[phases.build]\ngate = \"true\"\n");
-    e.queue("build", &["pass:commit"]);
-    e.queue("verify", &["fail:commit"]);
-    e.run(&["run", "--issue", "7"], 0);
-    let g = gate_events(&e);
-    assert_eq!(g.len(), 2, "{g:?}");
-    assert_eq!(g[1]["phase"], "verify");
-}
-
-#[test]
-fn a_ship_that_fails_after_moving_head_still_runs_the_gate() {
-    let e = Env::new();
-    e.factory("[phases.build]\ngate = \"true\"\n");
-    e.queue("build", &["pass:commit"]);
-    e.queue("ship", &["fail:commit"]);
-    e.run(&["run", "--issue", "7"], 0);
-    let g = gate_events(&e);
-    assert_eq!(g.len(), 2, "{g:?}");
-    assert_eq!(g[1]["phase"], "ship");
-}
-
-#[test]
-fn a_build_that_did_not_pass_runs_no_gate() {
-    let e = Env::new();
-    e.factory("[phases.build]\nmax_attempts = 5\ngate = \"true\"\n");
-    e.queue("build", &["none", "fail", "blocked:no"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["outcome"], "stuck");
-    assert_eq!(e.calls(), ["triage", "build", "build", "build"]);
-    assert!(gate_events(&e).is_empty());
-}
-
-#[test]
 fn without_a_gate_none_runs() {
     let e = Env::new();
     e.run(&["run", "--issue", "7"], 0);
     assert!(gate_events(&e).is_empty());
-}
-
-#[test]
-fn blocked_artifact_is_stuck() {
-    let e = Env::new();
-    e.queue("build", &["pass:commit"]);
-    e.queue("verify", &["blocked:needs hardware"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert!(v["reason"]
-        .as_str()
-        .unwrap()
-        .contains("evidence.md is blocked"));
-    assert!(v["artifact"].as_str().unwrap().ends_with("evidence.md"));
 }
 
 const QUALITY_BRANCH: &str = "refs/heads/nightshift/quality";
@@ -409,8 +314,6 @@ fn quality_events(e: &Env) -> Vec<Value> {
         .filter(|v| v["event"] == "quality_record")
         .collect()
 }
-
-const FINDING: &str = "## Important\n### I1. Untested branch\n- Location: `work.txt:1`\n- Axis: tests\n- Scope: changed\n- Cycle: 0\n- Status: fixed (cycle 1, abc1234)\n";
 
 #[test]
 fn a_unit_that_ends_pushes_its_quality_record() {

@@ -260,33 +260,8 @@ fn another_actor_lands(e: &Env, pre: &str, land: &str, pulls: &str) {
     another_actor_lands_linked(e, pre, land, "pulls", pulls);
 }
 
-/// [`another_actor_lands`], the forge's list of the new main commit's PRs written to
-/// `<file>-<sha>.json` in the fake forge's directory.
-fn another_actor_lands_linked(e: &Env, pre: &str, land: &str, file: &str, pulls: &str) {
-    e.ctl(
-        "build.sh",
-        &format!(
-            r#"set -e
-c="git -c user.name=f -c user.email=f@f"
-echo own >> work.txt && git add work.txt && $c commit -qm own
-{pre}
-o="$FAKE_CTRL/other"
-rm -rf "$o" && git clone -q "$(git remote get-url origin)" "$o"
-(cd "$o" && {land} && git push -q origin main &&
-  printf '%s' '{pulls}' > "$FAKE_GH_DIR/{file}-$(git rev-parse HEAD).json")
-git fetch -q origin && $c rebase -q origin/main"#
-        ),
-    );
-    e.queue("build", &["pass:script"]);
-}
-
-const SQUASH_B: &str = r#"echo b > b.txt && git add b.txt && $c commit -qm "Fix b (#3)""#;
 const MERGED_B: &str =
     r#"[{"number":3,"merged_at":"2026-10-09T00:00:00Z","head":{"ref":"ns/3-fix-b"}}]"#;
-
-fn run_log(e: &Env) -> String {
-    fs::read_to_string(e.root.join(".git/ns/runs.jsonl")).unwrap()
-}
 
 #[test]
 fn another_units_merge_then_a_rebase_is_not_this_units_push() {
