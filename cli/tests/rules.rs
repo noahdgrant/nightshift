@@ -816,6 +816,8 @@ fn prune_lowers_a_shrunk_measured_value_and_reports_it() {
     r.findings("lint-a", &too_many_lines(221));
     r.ns(&["baseline", "--allow-growth"]);
     r.findings("lint-a", &too_many_lines(100));
+    let (_, v, err) = r.ns(&["check", "--prune", "--only", "lint-a"]);
+    assert_eq!(v["lowered"], 0, "{v} {err}");
     let (code, v, err) = r.ns(&["check", "--prune"]);
     assert_eq!(code, Some(0), "{v} {err}");
     assert_eq!(v["pruned"], 0, "{v}");

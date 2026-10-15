@@ -346,16 +346,6 @@ struct Matched {
     fixed: Vec<usize>,
 }
 
-/// Which commands a run checked. `Only` checked a subset, so an entry of a skipped command is not
-/// fixed, and nothing is pruned.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Scope {
-    All,
-    Only,
-}
-
-/// A baseline entry's measured value. The variants are ordered so an entry with no value sorts
-/// after every measured one.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Measure {
     Found(u64),
@@ -506,12 +496,8 @@ struct Prune {
     lowered: usize,
 }
 
-/// The prune `ns rules check --prune` would write, or `None` when it changes nothing or the scope
-/// is `Only`, whose skipped commands would read as fixed.
-fn plan(baseline: &[Finding], m: &Matched, current: &[Finding], scope: Scope) -> Option<Prune> {
-    if scope == Scope::Only {
-        return None;
-    }
+/// The prune `ns rules check --prune` would write, or `None` when it changes nothing.
+fn plan(baseline: &[Finding], m: &Matched, current: &[Finding]) -> Option<Prune> {
     let dropped = m.fixed.len();
     let lowered = m.lowered.len();
     if dropped == 0 && lowered == 0 {
@@ -707,17 +693,13 @@ pub fn check(only: Option<&str>, prune: bool, format: Format) -> Result<ExitCode
     let run = run_pack(&c.root, &c.commands)?;
     let baseline = load_baseline(&c.root.join(BASELINE))?.unwrap_or_default();
     let m = compare(&run.findings, &baseline);
-    let scope = if only.is_some() {
-        Scope::Only
+    let fixed: Vec<Finding> = if only.is_some() {
+        Vec::new()
     } else {
-        Scope::All
+        m.fixed.iter().map(|&i| baseline[i].clone()).collect()
     };
-    let fixed: Vec<Finding> = match scope {
-        Scope::All => m.fixed.iter().map(|&i| baseline[i].clone()).collect(),
-        Scope::Only => Vec::new(),
-    };
-    let planned = if prune && m.new.is_empty() {
-        plan(&baseline, &m, &run.findings, scope)
+    let planned = if prune && m.new.is_empty() && only.is_none() {
+        plan(&baseline, &m, &run.findings)
     } else {
         None
     };

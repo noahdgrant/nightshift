@@ -25,7 +25,9 @@ Each output line (stdout or stderr) that is a JSON object with \"file\" (and opt
 \"tool\", \"rule\", \"line\", \"message\", \"snippet\"), or reads file:line[:col]: message, is a
 finding {tool,rule,file,line,message,snippet}. tool defaults to the command's first word,
 snippet to the source line with whitespace collapsed. A finding matches a baseline entry in
-.nightshift/rules-baseline.json on (tool, rule, file, snippet), so a moved line still matches.
+.nightshift/rules-baseline.json on (tool, rule, file, snippet) and, for a rule whose message
+carries a measured value, that value: a value above the entry's is new, one at or below it
+still matches. A moved line still matches.
 A command that exits non-zero and prints no finding is an error, as is one that is killed,
 exits 126 or 127, runs over 300 s (NS_RULES_TIMEOUT_MS) or prints over 8 MiB
 (NS_RULES_MAX_OUTPUT_BYTES), whatever it printed first. No rules row: nothing runs.
@@ -34,13 +36,13 @@ exits 126 or 127, runs over 300 s (NS_RULES_TIMEOUT_MS) or prints over 8 MiB
 has commands but none contains it. Its fixed is always empty, since the entries of the commands
 it skipped would read as fixed.
 
---prune, when no violation is new, rewrites the baseline without its fixed entries, leaving
-every other entry as it was; it never adds one. With --only it writes nothing. The ns run gate
-after build runs it (docs/factory/run.md, Gate).
+--prune, when no violation is new, rewrites the baseline without its fixed entries and with
+each measured value that shrank lowered, leaving every other entry as it was; it never adds one.
+With --only it writes nothing. The ns run gate after build runs it (docs/factory/run.md, Gate).
 
-Prints {ok,command,baseline,commands,findings,baselined,new,fixed,pruned}; fixed lists
+Prints {ok,command,baseline,commands,findings,baselined,new,fixed,pruned,lowered}; fixed lists
 baseline entries nothing matched (drop them with ns rules baseline, or --prune), pruned how many
---prune dropped.
+--prune dropped, lowered how many values it lowered.
 Exit codes: 0 no new violations, 1 new violations or a command failed, 2 not in a git repo or
 --only matched no command.";
 
@@ -52,9 +54,10 @@ Examples:
 
 Runs the rule pack as ns rules check does (see its --help) and writes every current violation
 to .nightshift/rules-baseline.json, dropping entries that are gone. A violation the baseline
-lacks, including every one when there is no baseline yet, is growth: without --allow-growth
-it writes nothing and exits 1. A rerun with nothing added or dropped writes nothing. A command
-that fails, is killed, times out or prints too much is an error, as in ns rules check.
+lacks, or one whose measured value is above its entry's, including every one when there is no
+baseline yet, is growth: without --allow-growth it writes nothing and exits 1. A rerun with
+nothing added or dropped writes nothing. A command that fails, is killed, times out or prints
+too much is an error, as in ns rules check.
 
 Prints {ok,command,status,dry_run,baseline,commands,violations,added,dropped}; status is
 written, planned, already-done or refused.
@@ -71,7 +74,7 @@ pub(crate) enum RulesCmd {
         /// Run only the rules-row commands that contain this text
         #[arg(long, value_name = "TEXT")]
         only: Option<String>,
-        /// Drop the fixed entries from the baseline when no violation is new
+        /// Drop the fixed entries and lower shrunk values in the baseline when no violation is new
         #[arg(long)]
         prune: bool,
     },

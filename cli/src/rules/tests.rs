@@ -269,6 +269,19 @@ fn a_valued_finding_pairs_with_the_valued_entry_before_a_value_less_one() {
 }
 
 #[test]
+fn a_value_less_entry_is_taken_after_the_valued_one_under_its_key() {
+    let mut plain = sized(221, "a.rs", "fn a() {");
+    plain.message = "this function has too many lines (quality bar)".into();
+    let m = compare(
+        &[sized(221, "a.rs", "fn a() {"), plain.clone()],
+        &[sized(221, "a.rs", "fn a() {"), plain],
+    );
+    assert!(m.new.is_empty());
+    let pairs: Vec<(usize, usize)> = m.accepted.iter().map(|a| (a.finding, a.entry)).collect();
+    assert_eq!(pairs, [(0, 0), (1, 1)]);
+}
+
+#[test]
 fn removal_only_pairs_a_head_entry_with_the_entry_that_fits_it_in_any_order() {
     let base = text(&[
         sized(100, "a.rs", "fn a() {"),
@@ -340,23 +353,16 @@ fn kept_drops_fixed_entries_and_lowers_a_shrunk_value() {
 }
 
 #[test]
-fn planned_lowers_a_shrunk_value_and_refuses_to_write_with_only() {
+fn planned_lowers_a_shrunk_value_and_writes_nothing_when_unchanged() {
     let base = [sized(221, "a.rs", "fn a() {")];
     let current = [sized(100, "a.rs", "fn a() {")];
     let m = compare(&current, &base);
-    let prune = plan(&base, &m, &current, Scope::All).unwrap();
+    let prune = plan(&base, &m, &current).unwrap();
     assert_eq!((prune.dropped, prune.lowered), (0, 1));
     assert!(prune.entries[0].message.contains("(100/100)"));
-    assert!(plan(&base, &m, &current, Scope::Only).is_none());
 
     let unchanged = compare(&[sized(221, "a.rs", "fn a() {")], &base);
-    assert!(plan(
-        &base,
-        &unchanged,
-        &[sized(221, "a.rs", "fn a() {")],
-        Scope::All
-    )
-    .is_none());
+    assert!(plan(&base, &unchanged, &[sized(221, "a.rs", "fn a() {")]).is_none());
 }
 
 #[test]
