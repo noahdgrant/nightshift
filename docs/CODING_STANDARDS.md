@@ -1,6 +1,6 @@
 # Coding standards
 
-Rules for the `ns` CLI in `cli/`, and the checks that enforce them. Code that a check enforces cites the rule's section: `CODING_STANDARDS.md, "<heading>"`. `cli/tests/standards.rs` fails on a citation that names no heading here.
+Rules for the `ns` CLI in `cli/`, and the checks that enforce them. Code that a check enforces cites the rule's section: `CODING_STANDARDS.md, "<heading>"`. `ns lint` fails on a citation that names no heading here (Checks).
 
 ## One path per dependency
 
@@ -26,6 +26,7 @@ These checks enforce "One path per dependency" for child processes:
 These checks fail a change that leaves its ripples behind:
 
 - `ns lint` (`cli/src/lint/events.rs`) fails on a run-log event the CLI emits (a `"event": "<name>"` in `cli/src` outside unit tests) that no reader names: a code span in `skills/ns-supervise/` outside its evals, or a string literal in `cli/src/status.rs`. An event no reader needs goes on its `ALLOWED` list with the reason, and an entry for an event no longer emitted, or one a reader now names, fails too.
+- `ns lint` (`cli/src/lint/citations.rs`) fails on a citation in `cli/`, `docs/`, `rules/` or `skills/` of a section of this file or of `skills/ns-contract/references/quality-bar.md` (`<file>, "<heading>"`) that names none of the file's `## ` headings, and on a citation of this file that names no section.
 
 ## A test never waits on the clock
 
