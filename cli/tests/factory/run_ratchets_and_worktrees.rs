@@ -410,8 +410,6 @@ fn quality_events(e: &Env) -> Vec<Value> {
         .collect()
 }
 
-const FINDING: &str = "## Important\n### I1. Untested branch\n- Location: `work.txt:1`\n- Axis: tests\n- Scope: changed\n- Cycle: 0\n- Status: fixed (cycle 1, abc1234)\n";
-
 #[test]
 fn a_unit_that_ends_pushes_its_quality_record() {
     let e = Env::new();

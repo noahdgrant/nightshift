@@ -19,7 +19,10 @@ use std::thread;
 use std::time::Duration;
 
 use common::{copy_exe, exits, write_exe, Group, Ns};
-use factory_env::{git, Env, FAKE_TOKEN, NOW, UNIT};
+use factory_env::{
+    another_actor_lands_linked, git, queued, reasons, run_log, unit_with_pr, units_in, Env,
+    FAKE_TOKEN, FINDING, NOW, READY, SQUASH_B, UNIT,
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 

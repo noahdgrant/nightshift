@@ -470,8 +470,6 @@ fn a_failed_review_goes_back_to_build() {
     assert!(p.contains("review said fail"), "{p}");
 }
 
-const READY: &str = "status:ready-for-agent";
-
 fn labels_after_triage_adds(e: &Env, stray: &str, args: &[&str]) -> Vec<String> {
     e.ready(2, "Fix a", &["type:fix"], "");
     e.ctl(
