@@ -757,6 +757,38 @@ fn baselined_snippets(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// main holds f.c with the line count the rule pack reports, and a rules baseline whose one
+/// `clippy::too_many_lines` finding measures 221 lines; the build commit runs `edit`.
+fn measured_pack(edit: &str) -> Env {
+    let e = Env::new();
+    fs::write(e.root.join("f.c"), "221\n").unwrap();
+    write_exe(
+        &e.root.join("lint.sh"),
+        "#!/bin/sh\nn=$(cat f.c)\nprintf '{\"tool\":\"clippy\",\"rule\":\"clippy::too_many_lines\",\"file\":\"f.c\",\"line\":1,\"message\":\"this function has too many lines (%s/100) (quality bar)\",\"snippet\":\"fn a() {\"}\\n' \"$n\"\n",
+    );
+    fs::create_dir_all(e.root.join("docs/agents")).unwrap();
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        "| Task | Command |\n|---|---|\n| rules | `./lint.sh` | 1 s |\n",
+    )
+    .unwrap();
+    let entry = serde_json::json!({"tool": "clippy", "rule": "clippy::too_many_lines", "file": "f.c",
+        "message": "this function has too many lines (221/100) (quality bar)", "snippet": "fn a() {"});
+    let baseline = serde_json::json!({"version": 1, "violations": [entry]});
+    fs::create_dir_all(e.root.join(".nightshift")).unwrap();
+    fs::write(
+        e.root.join(".nightshift/rules-baseline.json"),
+        serde_json::to_string_pretty(&baseline).unwrap() + "\n",
+    )
+    .unwrap();
+    git(&e.root, &["add", "."]);
+    git(&e.root, &["commit", "-q", "-m", "rule pack"]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+    e.ctl("edit", &format!("{edit} && echo unit >> work.txt"));
+    e.queue("build", &["pass:commit"]);
+    e
+}
+
 #[test]
 fn the_gate_after_build_commits_the_baseline_without_its_fixed_entries() {
     let e = baselined_pack("sed -i '/bad one/d' f.c && git add f.c");
@@ -793,6 +825,43 @@ fn the_gate_after_build_commits_the_baseline_without_its_fixed_entries() {
     assert_eq!(pruned.len(), 1, "{log}");
     assert_eq!(pruned[0]["phase"], "build");
     assert_eq!(pruned[0]["to"].as_str(), Some(short.as_str()), "{log}");
+}
+
+/// #746: a baselined finding whose measured value grew is a new violation, so the gate reddens the
+/// way an added finding does.
+#[test]
+fn a_gate_reddens_when_a_baselined_value_grew() {
+    let e = measured_pack("echo 261 > f.c && git add f.c");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    let g = gate_events(&e);
+    assert!(g.iter().all(|g| g["green"] == false), "{g:?}");
+    // The gate runs `rules check --prune`, whose JSON report carries the grown finding in `new`
+    // with its current value; the human line naming both values is covered in cli/tests/rules.rs.
+    let log = fs::read_to_string(g[0]["log"].as_str().unwrap()).unwrap();
+    assert!(log.contains("\"ok\": false"), "{log}");
+    assert!(log.contains("\"baselined\": 0"), "{log}");
+    assert!(
+        log.contains("this function has too many lines (261/100)"),
+        "{log}"
+    );
+    let wt = e.worktree(UNIT);
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+    let head = git(&wt, &["show", "HEAD:.nightshift/rules-baseline.json"]);
+    assert!(head.contains("(221/100)"), "{head}");
+}
+
+/// #746: a baseline value that shrank is a refresh the gate after build lowers and commits.
+#[test]
+fn the_gate_after_build_commits_a_lowered_value() {
+    let e = measured_pack("echo 100 > f.c && git add f.c");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let wt = e.worktree(UNIT);
+    let head = git(&wt, &["show", "HEAD:.nightshift/rules-baseline.json"]);
+    assert!(head.contains("(100/100)") && !head.contains("(221/100)"), "{head}");
+    let log = fs::read_to_string(e.root.join(".git/ns/runs.jsonl")).unwrap();
+    assert!(log.contains("\"baseline_pruned\""), "{log}");
 }
 
 #[test]
