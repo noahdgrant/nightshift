@@ -30,7 +30,7 @@ Describe **what** the system should do, not **how** to implement it. The agent w
 
 The agent needs to know when it's done. Every Agent Brief has concrete, testable acceptance criteria. Each criterion is independently verifiable, ideally by a test or a command in `docs/agents/stack.md`.
 
-- **Good:** "Running `gh issue list --label needs-triage` returns issues that have been through initial classification"
+- **Good:** "Listing issues labelled `needs-triage` returns only issues that have been through initial classification"
 - **Bad:** "Triage should work correctly"
 
 ### Ship note: PR text

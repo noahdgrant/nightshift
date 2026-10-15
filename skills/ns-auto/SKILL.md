@@ -124,7 +124,7 @@ A red gate costs one attempt, so the turn logs one line:
 These are detected after the fact, not blocked. Two detectors, each stuck on a hit and reported as the first line of your report:
 
 - Push to the default branch: skip this detector when the repo has no `origin`. Otherwise run `git fetch origin <base>`. The run pushed if a commit in `<start HEAD>..HEAD` is reachable from `origin/<base>`. Stuck, "default branch moved".
-- Merge: `pr.md` names a PR and `gh pr view <n> --json state` says `MERGED`. Stuck, "PR merged by run".
+- Merge: `pr.md` names a PR and the tracker's **Read a PR's state** ([tracker operations](../ns-contract/SKILL.md#target-repo-configuration)) says it merged. Stuck, "PR merged by run".
 
 ### Log and gate
 

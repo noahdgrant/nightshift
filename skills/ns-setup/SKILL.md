@@ -51,7 +51,7 @@ Read whatever exists. Assume nothing:
 - **Verify**: a `verify-<project>` skill in the repo and a control CLI it drives.
 - **Tracked skill dirs**: `git ls-files -- .claude/skills .agents/skills`. `ns run` links both paths to each unit's pinned skill snapshot. A tracked `.claude/skills` (a directory or a symlink) stops `ns run` before its first phase, and a tracked `.agents/skills` makes it warn and leave the live copy in place. `ns doctor` reports both.
 - **Tracker**: `git remote -v`. GitHub or GitLab? A `.scratch/` directory means local markdown issues are already in use.
-- **Labels**: on GitHub, `gh label list`. On GitLab, `glab label list`.
+- **Labels**: the tracker's **List labels**, from the template for the tracker found above ([tracker operations](../ns-contract/SKILL.md#target-repo-configuration)).
 - **Domain docs**: `GLOSSARY.md`, `GLOSSARY-MAP.md`, `docs/adr/`, and any `*/docs/adr/`.
 - **Docs**: existing requirements and design docs (`docs/requirements/`, `docs/design/`, `requirements/`, `specs/`), the requirement ID keys they use, and any house template in `docs/agents/templates/`.
 - **Multi-context signals**: several independently built packages or apps with their own source tree (a uv or Cargo workspace, several firmware apps under one west manifest). Their absence means single-context, which is almost every repo.
@@ -130,7 +130,7 @@ If the worktree check found traps:
 - write the worktree-correct build and test commands into `stack.md`.
 - name any shared resource in `stack.md` under "Gotchas", so phases take turns.
 
-On GitHub or GitLab, create each configured label the tracker lacks (`gh label create` / `glab label create`), with the meaning from the table as its description.
+On GitHub or GitLab, create each configured label the tracker lacks with its **Create a label**, with the meaning from the table as its description.
 
 **Pick the instructions file:** edit `AGENTS.md` if it exists. Else edit `CLAUDE.md` if it exists. If neither exists, create `AGENTS.md`. Edit the file that is already there rather than creating its sibling. If an `## Agent skills` section already exists, update it in place and leave surrounding sections untouched.
 
