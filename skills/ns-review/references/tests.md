@@ -15,6 +15,7 @@ Do the tests prove the change works, and would they catch it breaking? Read the 
 - **Names** read like a specification: `test_gives_up_after_max_retries`, not `test_retry_2`.
 - **Snapshot tests** nobody reviews, and tests that can never fail. A test that never fails is as useless as one that always fails.
 - **Checks on the real thing**, not a proxy: the actual output artifact, not a log line or a self-report.
+- **Moved code**: code the diff moves or re-homes (a function extracted to a new module, a branch moved into a helper) is new to its tests. A test that pinned it in the old place may not reach it in the new one. Give it mutation spot checks as for added code: list each mutation, the test you expect to go red and its targeted command, as the [mutation check](correctness.md#mutation-check) says, and the lead runs them. A survivor is a missing test for a behaviour the diff changes.
 
 ```python
 def test_rejects_frame_longer_than_max_payload():

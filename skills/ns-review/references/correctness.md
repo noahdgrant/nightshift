@@ -21,7 +21,7 @@ Trace the execution path for every potential bug. Show the call chain that produ
 
 Tests that pass are not proof they would catch a regression. Answer by experiment.
 
-Pick up to five conditions or constants the diff adds or changes that the tests should pin down: drop a negation, swap `and` for `or`, change `>=` to `>`, return early, replace a constant. For each, name the test you expect to go red.
+Pick up to five conditions or constants the diff adds, changes or moves that the tests should pin down: drop a negation, swap `and` for `or`, change `>=` to `>`, return early, replace a constant. For each, name the test you expect to go red.
 
 - If you can write files and run commands, run each mutation yourself: copy the file, apply the mutation, run the covering tests under a timeout (below), restore the file from the copy, and confirm `git status` is unchanged.
 - If you are read-only, list the mutations, the expected red test and the targeted command. The lead runs them.
