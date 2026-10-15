@@ -247,6 +247,7 @@ impl Protected {
                 (_, Some(n)) => remove(p, n)?,
             }
         }
+        let mut kept_large = None;
         for p in paths {
             if by_key.contains(p) {
                 continue;
@@ -264,13 +265,18 @@ impl Protected {
                     replace(p, |t| std::os::unix::fs::symlink(target, t))?;
                 }
                 Some(Node::Large(len, ..)) => {
-                    return Err(std::io::Error::other(format!(
-                        "{} held {len} bytes, more than ns keeps to put back",
-                        p.display()
-                    )))
+                    kept_large.get_or_insert_with(|| {
+                        std::io::Error::other(format!(
+                            "{} held {len} bytes, more than ns keeps to put back",
+                            p.display()
+                        ))
+                    });
                 }
                 Some(Node::Unread) | None => {}
             }
+        }
+        if let Some(e) = kept_large {
+            return Err(e);
         }
         match outside {
             Some(p) => Err(std::io::Error::other(format!(

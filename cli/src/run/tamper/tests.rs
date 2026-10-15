@@ -1,5 +1,7 @@
 use super::*;
 
+mod large;
+
 fn root(path: &Path, kind: Kind, restore: bool) -> Root {
     Root {
         path: path.to_path_buf(),
