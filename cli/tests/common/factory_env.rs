@@ -95,7 +95,11 @@ impl Env {
         }
         let home = base.join("home");
         fs::create_dir_all(home.join(".claude")).unwrap();
-        fs::write(home.join(".claude/.credentials.json"), "{}").unwrap();
+        fs::write(
+            home.join(".claude/.credentials.json"),
+            common::CLAUDE_CREDENTIALS,
+        )
+        .unwrap();
         let ctrl = base.join("ctrl");
         let ghd = base.join("ghd");
         fs::create_dir(base.join("systmp")).unwrap();

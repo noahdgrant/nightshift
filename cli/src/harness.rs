@@ -43,20 +43,40 @@ fn credentials_path() -> PathBuf {
     crate::config::expand_tilde("~/.claude/.credentials.json")
 }
 
-/// A subscription claude refuses to start without a login: `~/.claude/.credentials.json` or
-/// `CLAUDE_CODE_OAUTH_TOKEN`. Other harnesses, and API billing, need none.
+/// Whether `path` holds claude's OAuth login: JSON with a non-empty `claudeAiOauth.accessToken`.
+fn holds_token(path: &Path) -> bool {
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .is_some_and(|v| {
+            v.pointer("/claudeAiOauth/accessToken")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|t| !t.is_empty())
+        })
+}
+
+/// A subscription claude refuses to start without a login: `CLAUDE_CODE_OAUTH_TOKEN`, or an
+/// OAuth token in `~/.claude/.credentials.json`. Other harnesses, and API billing, need none.
 pub fn check_login(program: impl AsRef<OsStr>, subscription: bool) -> anyhow::Result<()> {
     if !subscription_claude(program.as_ref(), subscription) {
         return Ok(());
     }
-    let token = std::env::var("CLAUDE_CODE_OAUTH_TOKEN").is_ok_and(|v| !v.is_empty());
-    if token || credentials_path().is_file() {
+    if std::env::var("CLAUDE_CODE_OAUTH_TOKEN").is_ok_and(|v| !v.is_empty()) {
         return Ok(());
     }
+    let path = credentials_path();
+    if holds_token(&path) {
+        return Ok(());
+    }
+    let state = if path.exists() {
+        "is empty or invalid (no claudeAiOauth.accessToken)"
+    } else {
+        "is missing"
+    };
     Err(SfError::usage(
         format!(
-            "billing = \"subscription\" but {} is missing, so claude would fall back to API credits",
-            credentials_path().display()
+            "billing = \"subscription\" but {} {state}, so claude would fall back to API credits",
+            path.display()
         ),
         "log in with your Claude subscription first:\n  claude /login\nor opt into API billing in .nightshift/nightshift.toml:\n  [defaults]\n  billing = \"api\"",
     )
@@ -233,6 +253,46 @@ mod tests {
     fn only_a_subscription_claude_needs_a_login() {
         assert!(check_login("codex", true).is_ok());
         assert!(check_login("claude", false).is_ok());
+    }
+
+    fn token_in(content: &[u8]) -> bool {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".credentials.json");
+        std::fs::write(&path, content).unwrap();
+        holds_token(&path)
+    }
+
+    #[test]
+    fn a_credentials_file_without_a_token_is_no_login() {
+        for bad in [
+            "",
+            "{}",
+            "not json",
+            "[]",
+            r#"{"claudeAiOauth":{}}"#,
+            r#"{"claudeAiOauth":{"accessToken":""}}"#,
+            r#"{"claudeAiOauth":{"accessToken":7}}"#,
+            r#"{"claudeAiOauth":"t"}"#,
+            r#"{"accessToken":"t"}"#,
+        ] {
+            assert!(!token_in(bad.as_bytes()), "{bad:?}");
+        }
+        assert!(!token_in(&[0xff, 0xfe]));
+    }
+
+    #[test]
+    fn a_missing_or_unreadable_credentials_file_is_no_login() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!holds_token(&dir.path().join("absent.json")));
+        assert!(!holds_token(dir.path()));
+    }
+
+    #[test]
+    fn a_credentials_file_with_a_token_is_a_login() {
+        assert!(token_in(br#"{"claudeAiOauth":{"accessToken":"t"}}"#));
+        assert!(token_in(
+            br#"{"other":1,"claudeAiOauth":{"accessToken":"t","refreshToken":"r"}}"#
+        ));
     }
 
     fn args(cmd: &Proc) -> Vec<String> {

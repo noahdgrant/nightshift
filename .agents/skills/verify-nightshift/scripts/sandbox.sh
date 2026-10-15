@@ -49,7 +49,7 @@ new() {
   chmod +x "$v/bin/ssh"
   ln -s "$ns" "$v/bin/ns"
   ln -s "$(readlink -f "${BASH_SOURCE[0]}")" "$v/sandbox"
-  echo '{}' > "$v/home/.claude/.credentials.json"
+  echo '{"claudeAiOauth":{"accessToken":"fake-token"}}' > "$v/home/.claude/.credentials.json"
   : > "$v/ghd/issues.jsonl"
   echo '[ "$1 $2" = "api user" ] && { echo octocat; exit 0; }' > "$v/ghd/hook.sh"
   printf '[roles.default]\nharness = "claude"\n[forge.github]\ntoken_command = "echo fake-token"\n' > "$v/config.toml"

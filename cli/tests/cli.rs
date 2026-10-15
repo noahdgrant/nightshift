@@ -944,7 +944,11 @@ fn ask_api_env_seen_from(start: &Path, repo: &Path, name: &str) -> Vec<String> {
     .unwrap();
     let home = repo.parent().unwrap().join("home");
     fs::create_dir_all(home.join(".claude")).unwrap();
-    fs::write(home.join(".claude/.credentials.json"), "{}").unwrap();
+    fs::write(
+        home.join(".claude/.credentials.json"),
+        common::CLAUDE_CREDENTIALS,
+    )
+    .unwrap();
     let mut c = ns();
     c.env("NS_CONFIG", &cfg)
         .env("HOME", &home)
@@ -1012,9 +1016,29 @@ fn ask_sets_claude_up_as_a_phase_does() {
     ask()
         .assert()
         .code(2)
+        .stderr(predicate::str::contains("missing"))
         .stderr(predicate::str::contains("claude /login"));
 
-    fs::write(home.join(".claude/.credentials.json"), "{}").unwrap();
+    // A credentials file with no OAuth token is no login.
+    let creds = home.join(".claude/.credentials.json");
+    for bad in ["", "{}", r#"{"claudeAiOauth":{"accessToken":""}}"#] {
+        fs::write(&creds, bad).unwrap();
+        ask()
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("empty or invalid"))
+            .stderr(predicate::str::contains("claude /login"));
+        // An empty token in the environment falls through to the file.
+        ask()
+            .env("CLAUDE_CODE_OAUTH_TOKEN", "")
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("claude /login"));
+        // A token in the environment is a login whatever the file holds.
+        ask().env("CLAUDE_CODE_OAUTH_TOKEN", "t").assert().success();
+    }
+
+    fs::write(&creds, common::CLAUDE_CREDENTIALS).unwrap();
     let out = ask().assert().success().get_output().stdout.clone();
     let out = String::from_utf8(out).unwrap();
     assert!(out.lines().any(|l| l == "args=-p"), "{out}");
