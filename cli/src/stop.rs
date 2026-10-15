@@ -56,9 +56,10 @@ pub fn install_for_watch() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Run `f` with handlers that record the signal as [`install`]'s do but say nothing, then put back the ones that were set. For a command
-/// whose children are in sessions of their own, so a terminal's Ctrl-C reaches only this
-/// process and `f` has to end them itself, but whose later code does not poll for a stop.
+/// Run `f` with handlers that record the signal as [`install`]'s do but say nothing, then put
+/// back the ones that were set. For a command whose children are in sessions of their own, so
+/// a terminal's Ctrl-C reaches only this process and `f` has to end them itself, but whose
+/// later code does not poll for a stop.
 #[cfg(unix)]
 pub fn scoped<T>(f: impl FnOnce() -> T) -> std::io::Result<T> {
     // SAFETY: zeroed sigaction structs, filled in by sigaction(2) below.
