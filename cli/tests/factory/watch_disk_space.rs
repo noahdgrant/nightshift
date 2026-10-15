@@ -105,3 +105,66 @@ fn watch_warns_once_of_free_space_it_cannot_read_and_runs_its_units() {
     let worktrees = format!("free space on {} can't be read", e.base.display());
     assert_eq!(err.matches(&worktrees).count(), 1, "{err}");
 }
+
+/// A file `NS_MEMINFO` names, the machine having `total_mb` MB and `available_mb` of it free.
+fn meminfo(e: &Env, total_mb: u64, available_mb: u64) -> PathBuf {
+    let f = e.base.join("meminfo");
+    let tmp = e.base.join("meminfo.tmp");
+    let text = format!(
+        "MemTotal: {} kB\nMemAvailable: {} kB\n",
+        total_mb * 1024,
+        available_mb * 1024
+    );
+    fs::write(&tmp, text).unwrap();
+    fs::rename(&tmp, &f).unwrap();
+    f
+}
+
+#[test]
+fn watch_with_nothing_running_waits_for_memory_and_starts_once_it_frees() {
+    let e = Env::new();
+    break_tool(&e, "systemctl");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    let mut w = Watching::start(
+        e.ns()
+            .env("NS_MEMINFO", meminfo(&e, 24576, 1000))
+            .env("NS_REFILL_MS", "100")
+            .args(["watch", "--once"]),
+    );
+    w.line("free slots wait for memory: 1000 MB available, a unit needs 4096 MB");
+    meminfo(&e, 24576, 20000);
+    let (code, v, err) = w.finish();
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(v["units"][0]["outcome"], "done", "{v}");
+    assert_eq!(err.matches("free slots wait for memory").count(), 1, "{err}");
+    let low = logged(&e, "memory_low");
+    assert_eq!(low.len(), 1, "{low:?}");
+    assert_eq!(low[0]["available_mb"], 1000);
+    assert_eq!(low[0]["need_mb"], 4096);
+}
+
+#[test]
+fn watch_without_systemd_user_scopes_starts_its_units_without_a_shared_memory_cap() {
+    let e = Env::new();
+    break_tool(&e, "systemctl");
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    let out = e
+        .ns()
+        .env("NS_MEMINFO", meminfo(&e, 24576, 20000))
+        .args(["watch", "--once"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["units"][0]["outcome"], "done", "{v}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("units start without a shared memory cap: systemctl --user set-property failed"),
+        "{err}"
+    );
+}

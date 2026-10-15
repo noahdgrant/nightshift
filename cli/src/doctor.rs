@@ -393,7 +393,7 @@ fn memory_entry(
         "p90_peak_mb": (peaks.len() >= PEAKS_MIN).then_some(need),
         "peaks": peaks.len(),
         "unit_need_mb": need,
-        "units_fit": cap.map(|c| c / need),
+        "units_fit": cap.and_then(|c| c.checked_div(need)),
     })
 }
 
@@ -593,6 +593,8 @@ mod tests {
             json!({"total_mb": 24576, "cap_mb": 9000, "p90_peak_mb": 3000, "peaks": 5,
                    "unit_need_mb": 3000, "units_fit": 3})
         );
+        // Peaks of zero never divide the cap by nothing.
+        assert_eq!(memory_entry(Some(info), None, &[0; 5])["units_fit"], 20480);
         assert_eq!(
             memory_entry(None, None, &peaks[..4]),
             json!({"total_mb": null, "cap_mb": null, "p90_peak_mb": null, "peaks": 4,

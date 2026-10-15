@@ -345,6 +345,8 @@ fn the_pick_asks_for_what_it_lacks_one_read_at_a_time() {
 #[test]
 fn a_unit_needs_the_p90_of_the_recorded_peaks_or_4_gb_until_5_exist() {
     assert_eq!(need_mb(&[]), NEED_DEFAULT_MB);
+    // Zero peaks never make a unit need nothing.
+    assert_eq!(need_mb(&[0; 5]), 1);
     assert_eq!(need_mb(&[100, 200, 300, 400]), 4096);
     assert_eq!(need_mb(&[500, 100, 300, 200, 400]), 500);
     let ten: Vec<u64> = (1..=10).rev().map(|n| n * 100).collect();

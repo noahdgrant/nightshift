@@ -32,7 +32,7 @@ pub fn need_mb(peaks: &[u64]) -> u64 {
     }
     let mut sorted = peaks.to_vec();
     sorted.sort_unstable();
-    sorted[(sorted.len() * 9).div_ceil(10) - 1]
+    sorted[(sorted.len() * 9).div_ceil(10) - 1].max(1)
 }
 
 /// What the shell has read of the machine's memory for the start check.
