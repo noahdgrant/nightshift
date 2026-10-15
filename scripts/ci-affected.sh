@@ -6,9 +6,10 @@
 # cargo test runs only the test binaries that read a changed path, as scripts/ci-affected.map
 # lists them: all of it takes minutes, and most changes outside cli/ are read by a few binaries
 # or none. A path the map sends to `all` (cli/, the scripts that run the tests) runs all of it.
-# The ast-grep commands of the rules row run on any change, against the committed baseline:
-# they take seconds, and a review fix that breaks one would otherwise first fail in GitHub CI.
-# Clippy and cargo-deny stay in the full gate. A rule pack's tests (each pack
+# The rules row runs on any change, against the committed baseline, so a review fix that breaks
+# a rule fails here rather than first in GitHub CI: every command (clippy and cargo-deny too)
+# when the map sends a path to `all`, and only the ast-grep ones, which take seconds, otherwise.
+# A rule pack's tests (each pack
 # scripts/rule-packs.sh lists) and the py-inventory fixture tests run when a path under them
 # changed. With NS_GATE_FILES unset, or holding a path that is not a plain repo path, every
 # step runs; set and empty, none does.
@@ -108,8 +109,13 @@ if [ "$mode" = cargo-test ]; then
   exit 0
 fi
 
-# ci-local.sh --fast, which runs first, built this ns.
-step "ns rules check --only ast-grep" "${CARGO_TARGET_DIR:-cli/target}/debug/ns" rules check --only ast-grep --human
+# ci-local.sh --fast, which runs first, built this ns and pinned the rules row's tools.
+ns=${CARGO_TARGET_DIR:-cli/target}/debug/ns
+if [ "$selected" = all ]; then
+  step "ns rules check" "$ns" rules check --human
+else
+  step "ns rules check --only ast-grep" "$ns" rules check --only ast-grep --human
+fi
 # On fd 3, so a pack's tests can't read the list from stdin.
 while IFS=$'\t' read -r -u 3 pack name; do
   if [ -n "$pack" ] && changed "rules/$pack/"; then

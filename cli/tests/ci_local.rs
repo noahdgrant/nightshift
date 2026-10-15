@@ -592,8 +592,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 /// The steps `scripts/ci-affected.sh` runs on a change to `cli/`, before the tests under changed
-/// paths.
-const AFFECTED_ALWAYS: &[&str] = &["cargo test", "ns rules check --only ast-grep"];
+/// paths: all of cargo test and every `rules` row command.
+const AFFECTED_ALL: &[&str] = &["cargo test", "ns rules check"];
+
+/// The rules step `scripts/ci-affected.sh` runs on a change no `all` entry of the map matches.
+const AST_GREP: &str = "ns rules check --only ast-grep";
 
 /// The cargo test step `scripts/ci-affected.sh` runs for a change under `skills/`.
 const CARGO_SKILLS: &str = "cargo test --bin ns --test ci_local --test cli --test verify_sandbox";
@@ -633,14 +636,14 @@ fn ci_affected_runs_the_mapped_cargo_tests_and_the_tests_under_each_changed_path
         format!("{a_name} rule pack tests"),
         format!("{b_name} rule pack tests"),
     );
-    let rules = AFFECTED_ALWAYS[1].to_owned();
+    let rules = AST_GREP.to_owned();
     let with = |cargo: &str, rest: &[&str]| -> Vec<String> {
         [cargo.to_owned(), rules.clone()]
             .into_iter()
             .chain(rest.iter().map(|s| s.to_string()))
             .collect()
     };
-    let mut all: Vec<String> = AFFECTED_ALWAYS.iter().map(|s| s.to_string()).collect();
+    let mut all: Vec<String> = AFFECTED_ALL.iter().map(|s| s.to_string()).collect();
     all.extend(packs.iter().map(|(_, n)| format!("{n} rule pack tests")));
     all.push("py-inventory fixture tests".to_owned());
     for (files, want) in [
@@ -668,7 +671,7 @@ fn ci_affected_runs_the_mapped_cargo_tests_and_the_tests_under_each_changed_path
         ),
         (
             Some("skills/ns-build/SKILL.md\ncli/src/main.rs".to_owned()),
-            AFFECTED_ALWAYS.iter().map(|s| s.to_string()).collect(),
+            AFFECTED_ALL.iter().map(|s| s.to_string()).collect(),
         ),
     ] {
         let out = affected(&repo, files.as_deref(), &[]);
@@ -680,7 +683,6 @@ fn ci_affected_runs_the_mapped_cargo_tests_and_the_tests_under_each_changed_path
 #[test]
 fn ci_affected_picks_cargo_test_binaries_from_the_changed_paths() {
     let repo = Repo::new();
-    let rules = AFFECTED_ALWAYS[1];
     for (files, cargo) in [
         (
             "docs/DESIGN.md\ndocs/decisions/1-x.md",
@@ -701,6 +703,11 @@ fn ci_affected_picks_cargo_test_binaries_from_the_changed_paths() {
     ] {
         let out = affected(&repo, Some(files), &[]);
         assert!(out.status.success(), "{files:?}: {}", stderr(&out));
+        let rules = if cargo == Some("cargo test") {
+            AFFECTED_ALL[1]
+        } else {
+            AST_GREP
+        };
         let want: Vec<&str> = cargo.into_iter().chain([rules]).collect();
         assert_eq!(steps(&out), want, "{files:?}");
         assert_eq!(
@@ -808,7 +815,7 @@ fn ci_affected_stops_at_a_failing_step() {
     );
     assert_eq!(out.status.code(), Some(1));
     let step = format!("{a_name} rule pack tests");
-    assert_eq!(steps(&out), [CARGO_RULES, AFFECTED_ALWAYS[1], &step]);
+    assert_eq!(steps(&out), [CARGO_RULES, AST_GREP, &step]);
     assert!(stderr(&out).contains(&format!("ci-affected: FAILED at step: {step}")));
 }
 
@@ -909,10 +916,7 @@ fn a_new_pack_needs_only_files_under_its_own_directory() {
 
     let out = affected(&repo, Some("rules/zz/tests/run.sh"), &[]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(
-        steps(&out),
-        [CARGO_RULES, AFFECTED_ALWAYS[1], "Zed rule pack tests"]
-    );
+    assert_eq!(steps(&out), [CARGO_RULES, AST_GREP, "Zed rule pack tests"]);
     assert!(stderr(&out).contains("zz rule pack tests ran"));
 }
 
@@ -981,11 +985,11 @@ fn a_rules_directory_without_tests_run_sh_is_no_pack() {
     assert_eq!(steps(&out), fixed);
     let out = affected(&repo, Some("rules/x/y"), &[]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(steps(&out), [CARGO_RULES, AFFECTED_ALWAYS[1]]);
+    assert_eq!(steps(&out), [CARGO_RULES, AST_GREP]);
     let out = affected(&repo, None, &[]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(
         steps(&out),
-        [AFFECTED_ALWAYS, &["py-inventory fixture tests"]].concat()
+        [AFFECTED_ALL, &["py-inventory fixture tests"]].concat()
     );
 }

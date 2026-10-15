@@ -1,6 +1,7 @@
 //! The ast-grep rules step of `scripts/ci-affected.sh` and of `scripts/ci-local.sh --fast`, run
 //! with the real `ns`, `ast-grep` and Rust rule pack against this checkout's `rules` row and a
-//! temp crate.
+//! temp crate, and the full rules step `scripts/ci-affected.sh` runs instead on a change to
+//! `cli/`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -88,16 +89,16 @@ fn a_new_wall_clock_wait_fails_the_step_and_a_baselined_one_passes() {
         &json!({"version": 1, "violations": v["new"]}).to_string(),
     );
 
-    let out = affected(&repo, Some("cli/tests/old.rs"), &[]);
+    let out = affected(&repo, Some("skills/x.md"), &[]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(steps(&out), ["cargo test", STEP]);
+    assert_eq!(steps(&out).last().unwrap(), STEP);
 
     let out = affected(&repo, Some(""), &[]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(steps(&out), Vec::<String>::new());
 
     commit(root, "cli/tests/new.rs", WAITS);
-    let out = affected(&repo, Some("cli/tests/new.rs"), &[]);
+    let out = affected(&repo, Some("skills/x.md"), &[]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     let err = stderr(&out);
     assert!(
@@ -110,21 +111,45 @@ fn a_new_wall_clock_wait_fails_the_step_and_a_baselined_one_passes() {
 }
 
 #[test]
-fn the_step_runs_the_ns_under_cargo_target_dir() {
+fn the_step_runs_the_ns_under_cargo_target_dir_every_rules_command_for_a_cli_change() {
     let repo = Repo::new();
     let target = repo.dir.path().join("target");
     write_exe(
         &target.join("debug/ns"),
         "#!/bin/sh\necho target ns ran: \"$*\" >&2\n",
     );
+    for (files, ran) in [
+        (Some("cli/src/lib.rs"), "rules check --human"),
+        (Some("skills/x.md\ncli/src/lib.rs"), "rules check --human"),
+        (None, "rules check --human"),
+        (Some("skills/x.md"), "rules check --only ast-grep --human"),
+    ] {
+        let out = affected(
+            &repo,
+            files,
+            &[("CARGO_TARGET_DIR", target.to_str().unwrap())],
+        );
+        assert!(out.status.success(), "{files:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains(&format!("target ns ran: {ran}\n")),
+            "{files:?}: {}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn a_red_full_rules_check_fails_the_step() {
+    let repo = Repo::new();
     let out = affected(
         &repo,
         Some("cli/src/lib.rs"),
-        &[("CARGO_TARGET_DIR", target.to_str().unwrap())],
+        &[("FAIL_ON", "ns rules check --human")],
     );
-    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(steps(&out), ["cargo test", "ns rules check"]);
     assert!(
-        stderr(&out).contains("target ns ran: rules check --only ast-grep --human"),
+        stderr(&out).contains("ci-affected: FAILED at step: ns rules check\n"),
         "{}",
         stderr(&out)
     );
