@@ -28,7 +28,56 @@ pub enum Level {
     Stop,
 }
 
+impl Level {
+    /// The word `ns doctor` reports for this level.
+    pub fn name(self) -> &'static str {
+        match self {
+            Level::Ok => "ok",
+            Level::Wait => "wait",
+            Level::Stop => "stop",
+        }
+    }
+}
+
 impl DiskLimits {
+    /// What the night says of a filesystem whose free space can't be read.
+    pub fn unread_said(&self, path: &Path, error: &str) -> String {
+        format!(
+            "free space on {} can't be read, so it holds nothing up: {error}",
+            path.display()
+        )
+    }
+
+    /// What the night says when `path` falls under the wait limit.
+    pub fn low_said(&self, path: &Path, free_gb: u64) -> String {
+        format!(
+            "{} has {free_gb} GiB free, under [limits] disk_wait_gb = {}; no unit starts until there is more",
+            path.display(),
+            self.wait_gb
+        )
+    }
+
+    /// What the night says when `path` falls under the stop limit.
+    pub fn critical_said(&self, path: &Path, free_gb: u64) -> String {
+        format!(
+            "{} has {free_gb} GiB free, under [limits] disk_stop_gb = {}; the night stops",
+            path.display(),
+            self.stop_gb
+        )
+    }
+
+    /// The warning for one filesystem's `free` space: none when it is above the wait limit.
+    pub fn warning(&self, path: &Path, free: &Result<u64, String>) -> Option<String> {
+        match free {
+            Err(error) => Some(self.unread_said(path, error)),
+            Ok(bytes) => match self.level(*bytes) {
+                Level::Ok => None,
+                Level::Wait => Some(self.low_said(path, bytes / GIB)),
+                Level::Stop => Some(self.critical_said(path, bytes / GIB)),
+            },
+        }
+    }
+
     pub fn level(&self, bytes: u64) -> Level {
         if bytes < self.stop_gb.saturating_mul(GIB) {
             Level::Stop
@@ -154,6 +203,30 @@ mod tests {
         );
         assert_eq!(with_host_drive(w.clone(), generic), vec![w.clone()]);
         assert_eq!(with_host_drive(w.clone(), ""), [w]);
+    }
+
+    #[test]
+    fn a_filesystem_is_warned_of_by_how_far_it_has_fallen() {
+        let limits = DiskLimits {
+            wait_gb: 20,
+            stop_gb: 10,
+        };
+        let w = Path::new("/w");
+        assert_eq!(limits.warning(w, &Ok(20 * GIB)), None);
+        assert_eq!(
+            limits.warning(w, &Ok(15 * GIB)).unwrap(),
+            "/w has 15 GiB free, under [limits] disk_wait_gb = 20; no unit starts until there is more"
+        );
+        assert_eq!(
+            limits.warning(w, &Ok(5 * GIB)).unwrap(),
+            "/w has 5 GiB free, under [limits] disk_stop_gb = 10; the night stops"
+        );
+        assert_eq!(
+            limits.warning(w, &Err("gone".into())).unwrap(),
+            "free space on /w can't be read, so it holds nothing up: gone"
+        );
+        let names = [Level::Ok, Level::Wait, Level::Stop].map(Level::name);
+        assert_eq!(names, ["ok", "wait", "stop"]);
     }
 
     #[test]

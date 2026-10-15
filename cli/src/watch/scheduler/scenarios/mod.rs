@@ -17,8 +17,8 @@ use crate::run::RunResult;
 use crate::touches::Overlap;
 use crate::watch::ci::{self, Check, HeadChecks, MainCi, Outcome as CheckOutcome};
 use crate::watch::core::fill::{
-    open_fill, Claims, Disk, DiskAct, FillAct, FillInput, Holds, Kind, Open, OpenAct, Stopping,
-    DISK_CRITICAL,
+    disk_effect, open_fill, Claims, Disk, DiskAct, FillAct, FillInput, Holds, Kind, Open, OpenAct,
+    Stopping,
 };
 use crate::watch::core::red::{self as core_red, Gate, Note, Red, MAIN_RED_UNFIXED};
 use crate::watch::core::settle::{self as core_settle, SettleAct, SettleFacts};
@@ -244,15 +244,13 @@ impl Sim {
     /// nothing.
     fn disk_ok(&mut self) -> bool {
         let limits = self.fac.limits.disk();
-        let mut ok = true;
-        for act in self.disk.check((self.free)(), limits) {
-            ok &= !act.holds();
-            if matches!(act, DiskAct::Critical { .. }) {
-                self.stop_all(DISK_CRITICAL);
-            }
-            self.disk_said.push(act);
+        let acts = self.disk.check((self.free)(), limits);
+        let effect = disk_effect(&acts);
+        self.disk_said.extend(acts);
+        if let Some(why) = effect.stop {
+            self.stop_all(why);
         }
-        ok
+        effect.ok
     }
 
     /// The triage pass, its runs given by [`Sim::triage`].

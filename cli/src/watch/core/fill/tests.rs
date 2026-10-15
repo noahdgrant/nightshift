@@ -204,6 +204,37 @@ fn every_disk_act_but_an_unread_one_holds_the_fill() {
 }
 
 #[test]
+fn a_disk_check_holds_the_fill_unless_it_only_found_unread_space_and_a_critical_one_stops() {
+    let path = PathBuf::from("/w");
+    let unread = DiskAct::Unread {
+        path: path.clone(),
+        error: "gone".into(),
+    };
+    let low = DiskAct::Low {
+        path: path.clone(),
+        free_gb: 1,
+    };
+    let critical = DiskAct::Critical { path, free_gb: 1 };
+    let go = DiskEffect {
+        ok: true,
+        stop: None,
+    };
+    let hold = DiskEffect {
+        ok: false,
+        stop: None,
+    };
+    let stop = DiskEffect {
+        ok: false,
+        stop: Some(DISK_CRITICAL),
+    };
+    assert_eq!(disk_effect(&[]), go);
+    assert_eq!(disk_effect(std::slice::from_ref(&unread)), go);
+    assert_eq!(disk_effect(&[unread.clone(), low.clone()]), hold);
+    assert_eq!(disk_effect(&[DiskAct::Wait]), hold);
+    assert_eq!(disk_effect(&[unread, critical]), stop);
+}
+
+#[test]
 fn zero_limits_never_wait_or_stop() {
     let off = DiskLimits {
         wait_gb: 0,

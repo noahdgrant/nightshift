@@ -169,22 +169,30 @@ impl DiskAct {
     /// What the night says of this act, `None` for a wait said already.
     pub fn said(&self, limits: DiskLimits) -> Option<String> {
         match self {
-            DiskAct::Unread { path, error } => Some(format!(
-                "free space on {} can't be read, so it holds nothing up: {error}",
-                path.display()
-            )),
-            DiskAct::Low { path, free_gb } => Some(format!(
-                "{} has {free_gb} GiB free, under [limits] disk_wait_gb = {}; no unit starts until there is more",
-                path.display(),
-                limits.wait_gb
-            )),
+            DiskAct::Unread { path, error } => Some(limits.unread_said(path, error)),
+            DiskAct::Low { path, free_gb } => Some(limits.low_said(path, *free_gb)),
             DiskAct::Wait => None,
-            DiskAct::Critical { path, free_gb } => Some(format!(
-                "{} has {free_gb} GiB free, under [limits] disk_stop_gb = {}; the night stops",
-                path.display(),
-                limits.stop_gb
-            )),
+            DiskAct::Critical { path, free_gb } => Some(limits.critical_said(path, *free_gb)),
         }
+    }
+}
+
+/// What a disk check does to the fill and the night.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiskEffect {
+    /// The fill goes on and starts units.
+    pub ok: bool,
+    /// Why the night stops, if it does.
+    pub stop: Option<&'static str>,
+}
+
+/// What `acts`, one disk check's findings, do: any but an unread one holds the fill, and a
+/// critical one stops the night.
+pub fn disk_effect(acts: &[DiskAct]) -> DiskEffect {
+    let critical = acts.iter().any(|a| matches!(a, DiskAct::Critical { .. }));
+    DiskEffect {
+        ok: !acts.iter().any(DiskAct::holds),
+        stop: critical.then_some(DISK_CRITICAL),
     }
 }
 

@@ -10,12 +10,11 @@ use clap::ValueEnum;
 use serde_json::{json, Map, Value};
 
 use crate::config::{self, Forge, ForgeKind};
-use crate::disk::{self, Level};
+use crate::disk;
 use crate::forge;
 use crate::git;
 use crate::install;
 use crate::proc::Proc;
-use crate::watch::DiskAct;
 use crate::which::which;
 
 pub const KNOWN_HARNESSES: &[&str] = &["claude", "codex", "cursor-agent", "gemini", "opencode"];
@@ -161,41 +160,15 @@ fn disk_entry(warnings: &mut Vec<String>) -> Value {
     };
     let mut filesystems = Vec::new();
     for (path, free) in disk::read(paths) {
-        let (entry, act) = match free {
+        let entry = match &free {
             Ok(bytes) => {
-                let free_gb = bytes / disk::GIB;
-                let (state, act) = match limits.level(bytes) {
-                    Level::Ok => ("ok", None),
-                    Level::Wait => (
-                        "wait",
-                        Some(DiskAct::Low {
-                            path: path.clone(),
-                            free_gb,
-                        }),
-                    ),
-                    Level::Stop => (
-                        "stop",
-                        Some(DiskAct::Critical {
-                            path: path.clone(),
-                            free_gb,
-                        }),
-                    ),
-                };
-                (
-                    json!({ "path": path, "free_gb": free_gb, "state": state }),
-                    act,
-                )
+                let state = limits.level(*bytes).name();
+                json!({ "path": path, "free_gb": bytes / disk::GIB, "state": state })
             }
-            Err(error) => (
-                json!({ "path": path, "error": error }),
-                Some(DiskAct::Unread {
-                    path: path.clone(),
-                    error,
-                }),
-            ),
+            Err(error) => json!({ "path": path, "error": error }),
         };
         filesystems.push(entry);
-        if let Some(w) = act.and_then(|a| a.said(limits)) {
+        if let Some(w) = limits.warning(&path, &free) {
             eprintln!("ns: warning: {w}");
             warnings.push(w);
         }

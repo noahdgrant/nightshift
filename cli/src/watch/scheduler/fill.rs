@@ -11,7 +11,7 @@ use crate::disk;
 use crate::run;
 use crate::stop;
 use crate::watch::core::fill::{
-    open_fill, Claims, DiskAct, FillAct, FillInput, Kind, Open, OpenAct, DISK_CRITICAL,
+    disk_effect, open_fill, Claims, DiskAct, FillAct, FillInput, Kind, Open, OpenAct,
 };
 use crate::watch::transitions::{self, Event, State};
 use crate::watch::{queue, split, triage, Issue, Night, Tonight};
@@ -71,13 +71,13 @@ impl Scheduler<'_> {
     fn disk_ok(&mut self) -> bool {
         let limits = self.plan.loaded.fac.limits.disk();
         let read = disk::read(disk::filesystems(self.plan.repo));
-        let mut ok = true;
-        for act in self.disk.check(read, limits) {
+        let acts = self.disk.check(read, limits);
+        let effect = disk_effect(&acts);
+        for act in acts {
             let said = act.said(limits);
             if let Some(s) = &said {
                 eprintln!("ns watch: {s}");
             }
-            ok &= !act.holds();
             let common = &self.plan.repo.common_dir;
             match act {
                 DiskAct::Unread { .. } | DiskAct::Wait => {}
@@ -98,11 +98,13 @@ impl Scheduler<'_> {
                         "stop_gb": limits.stop_gb,
                     });
                     run::log_event(common, ev);
-                    self.stop_all(DISK_CRITICAL);
                 }
             }
         }
-        ok
+        if let Some(why) = effect.stop {
+            self.stop_all(why);
+        }
+        effect.ok
     }
 
     /// Units merged since go, after their records are saved, and split parents move on. Units
