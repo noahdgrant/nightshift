@@ -26,7 +26,7 @@ Each item is checkable against the diff: met, or not met at a `file:line`, or no
 ## Spec
 
 - Every acceptance criterion in `brief.md` is implemented in full. *(Critical)*
-- The diff changes no behaviour callers can see beyond what the brief asked for: no new options, renamed public interfaces or drive-by fixes.
+- The diff changes no behaviour callers can see beyond what the brief asked for: no new options, renamed public interfaces or drive-by fixes. Fallout the diff causes and a small old bug fixed in a touched file are in scope ([keep scope tight](../../ns-principle-keep-scope-tight/SKILL.md)).
 - Internal tidy-ups the brief didn't ask for go in their own change. *(Suggestion)*
 
 ## Security
