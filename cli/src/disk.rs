@@ -18,6 +18,28 @@ pub struct DiskLimits {
     pub stop_gb: u64,
 }
 
+/// Where free space stands against [`DiskLimits`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Ok,
+    /// Under the wait limit: no unit starts.
+    Wait,
+    /// Under the stop limit: the night stops.
+    Stop,
+}
+
+impl DiskLimits {
+    pub fn level(&self, bytes: u64) -> Level {
+        if bytes < self.stop_gb.saturating_mul(GIB) {
+            Level::Stop
+        } else if bytes < self.wait_gb.saturating_mul(GIB) {
+            Level::Wait
+        } else {
+            Level::Ok
+        }
+    }
+}
+
 /// Tests set this to a file holding the GiB every filesystem reports free, read at each check;
 /// a file that can't be read, or doesn't hold a whole number, makes every read fail.
 pub const FREE_ENV: &str = "NS_FREE_GIB_FILE";
@@ -28,8 +50,12 @@ const WSL_HOST_DRIVE: &str = "/mnt/c";
 /// The filesystems a unit fills: the one holding `repo`'s worktrees, and under WSL the host's
 /// C: drive, whose free space the WSL disk image grows into.
 pub fn filesystems(repo: &Repo) -> Vec<PathBuf> {
-    let worktrees = crate::worktree::planned_path(repo, "unit");
-    let mut paths = vec![existing(&worktrees)];
+    with_host_drive(existing(&crate::worktree::planned_path(repo, "unit")))
+}
+
+/// `path`, and under WSL the host's C: drive after it.
+pub fn with_host_drive(path: PathBuf) -> Vec<PathBuf> {
+    let mut paths = vec![path];
     let version = std::fs::read_to_string("/proc/version").unwrap_or_default();
     if is_wsl(&version) {
         paths.push(PathBuf::from(WSL_HOST_DRIVE));

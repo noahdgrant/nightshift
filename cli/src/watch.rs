@@ -34,6 +34,7 @@ mod split;
 mod transitions;
 mod triage;
 
+pub use self::core::fill::DiskAct;
 use forge::{ClosingPrs, Forge, Post, PrState};
 pub use snapshot::NightDir;
 use transitions::{Event, State};

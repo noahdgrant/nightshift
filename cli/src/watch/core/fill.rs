@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-pub use crate::disk::{DiskLimits, Free, GIB};
+use crate::disk::{DiskLimits, Free, Level, GIB};
 use crate::touches::Overlap;
 use crate::watch::core::red::Gate;
 use crate::watch::{unit_id, Issue};
@@ -216,15 +216,17 @@ impl Disk {
             return acts;
         };
         let free_gb = bytes / GIB;
-        if bytes < limits.stop_gb.saturating_mul(GIB) {
-            acts.push(DiskAct::Critical { path, free_gb });
-        } else if bytes < limits.wait_gb.saturating_mul(GIB) {
-            self.low = true;
-            acts.push(if was_low {
-                DiskAct::Wait
-            } else {
-                DiskAct::Low { path, free_gb }
-            });
+        match limits.level(bytes) {
+            Level::Stop => acts.push(DiskAct::Critical { path, free_gb }),
+            Level::Wait => {
+                self.low = true;
+                acts.push(if was_low {
+                    DiskAct::Wait
+                } else {
+                    DiskAct::Low { path, free_gb }
+                });
+            }
+            Level::Ok => {}
         }
         acts
     }
