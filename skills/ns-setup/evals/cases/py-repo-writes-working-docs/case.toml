@@ -50,3 +50,9 @@ sh -c "$cmd" > "$log" 2>&1 || { tail -n 20 "$log"; exit 1; }
 grep -E '[0-9]+ passed' "$log"
 '''
 expect_exit = 0
+
+[[check]]
+# The Commands table names the build output, as a path or `none`.
+type = "command"
+run = "grep -E '^\\| *`?build-output`? *\\|' docs/agents/stack.md"
+expect_exit = 0

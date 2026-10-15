@@ -80,28 +80,9 @@ struct Baseline {
     violations: Vec<Entry>,
 }
 
-/// The commands in a table row `| rules | `<cmd>`, `<cmd>` | ... |`: every backticked span
-/// that opens the second cell, separated by commas or spaces (a span may contain `|`).
+/// The commands in the `rules` row of `stack_md`, as [`crate::stack::spans`] reads them.
 pub fn commands(stack_md: &str) -> Vec<String> {
-    crate::stack::rows(stack_md, "rules")
-        .map(|mut rest| {
-            let mut cmds = Vec::new();
-            while let Some(span) = rest
-                .trim_start_matches(|c: char| c == ',' || c.is_whitespace())
-                .strip_prefix('`')
-            {
-                let Some((cmd, after)) = span.split_once('`') else {
-                    break;
-                };
-                if !cmd.trim().is_empty() {
-                    cmds.push(cmd.trim().to_string());
-                }
-                rest = after;
-            }
-            cmds
-        })
-        .find(|cmds| !cmds.is_empty())
-        .unwrap_or_default()
+    crate::stack::spans(stack_md, "rules")
 }
 
 fn normalise(s: &str) -> String {

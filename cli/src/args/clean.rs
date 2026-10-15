@@ -16,8 +16,10 @@ with its reason in `kept`, while its issue is open, it has uncommitted changes t
 its HEAD is not on ns/<unit>, its branch holds changes the merged PR head does not (whitespace
 counts), its record could not be saved or a review artifact read, it is the current directory,
 or a live ns run or another cleanup holds the unit's run lock (nothing is recorded for it). A PR head missing
-locally is fetched from refs/pull/<n>/head (GitLab: refs/merge-requests/<n>/head). --dry-run
-writes nothing but may fetch.
+locally is fetched from refs/pull/<n>/head (GitLab: refs/merge-requests/<n>/head). Each worktree
+that stays, unless a live ns run holds it, loses the paths in its docs/agents/stack.md
+build-output row (`build_output` on its kept entry); a path that resolves outside the worktree
+is refused, as are .git, .ns, tracked paths and paths git does not ignore. --dry-run writes nothing but may fetch.
 ns run cleans its own unit after its merge step; ns watch cleans at start and between units.
 
 Prints {ok,command,dry_run,status,planned|removed,kept,records}; status is planned, cleaned or

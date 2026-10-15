@@ -350,14 +350,14 @@ fn held(repo: &Repo, unit: &str) -> Option<String> {
     Some(holder_reason(h))
 }
 
-/// Take the unit's run lock for cleanup `by`, without waiting: the lock, or why the unit stays.
-fn take_run_lock(repo: &Repo, m: &Merged, by: &str) -> Result<Lock, String> {
-    let me = json!({"pid": std::process::id(), "unit": m.unit, "issue": m.issue, "by": by});
+/// Take `unit`'s run lock for cleanup `by`, without waiting: the lock, or why the unit stays.
+fn take_run_lock(repo: &Repo, unit: &str, issue: Option<u64>, by: &str) -> Result<Lock, String> {
+    let me = json!({"pid": std::process::id(), "unit": unit, "issue": issue, "by": by});
     let clock = Clock::from_env();
     let now = clock.now();
     match Lock::wait(
         &repo.common_dir,
-        &run_lock(&m.unit),
+        &run_lock(unit),
         &me,
         Some((&clock, now)),
         |_| {},
@@ -448,7 +448,7 @@ fn sweep(repo: &Repo, by: &str, merged: &[Merged]) -> (Value, Vec<(Merged, Outco
     let mut locks = Vec::new();
     let mut ours = Vec::new();
     for m in merged {
-        match take_run_lock(repo, m, by) {
+        match take_run_lock(repo, &m.unit, m.issue, by) {
             Ok(lock) => {
                 locks.push(lock);
                 ours.push(m.clone());
@@ -527,6 +527,28 @@ pub fn between_units(
         .collect()
 }
 
+/// Delete the build output of each worktree in `kept`, under its unit's run lock, and add what
+/// went to its entry as `build_output`. A unit a live run holds keeps its build output.
+fn remove_build_output(repo: &Repo, kept: &mut [Value]) {
+    for k in kept {
+        let (Some(unit), Some(path)) = (k["unit"].as_str(), k["path"].as_str()) else {
+            continue;
+        };
+        let (unit, path) = (unit.to_string(), PathBuf::from(path));
+        let Ok(_lock) = take_run_lock(repo, &unit, quality::issue_of(&unit), "clean") else {
+            continue;
+        };
+        if let Some(removed) = crate::build_output::remove(repo, &path) {
+            k["build_output"] = removed.clone();
+            let mut ev = removed;
+            ev["event"] = json!("build_output_removed");
+            ev["unit"] = json!(unit);
+            ev["by"] = json!("clean");
+            run::log_event(&repo.common_dir, ev);
+        }
+    }
+}
+
 /// `ns clean [--dry-run]`.
 pub fn cli(dry_run: bool) -> Result<ExitCode> {
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
@@ -560,6 +582,7 @@ pub fn cli(dry_run: bool) -> Result<ExitCode> {
         });
         out["removed"] = json!(removed);
         out["records"] = records;
+        remove_build_output(&repo, &mut plan.kept);
     }
     if failed {
         out["ok"] = json!(false);

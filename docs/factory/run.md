@@ -66,7 +66,7 @@ Run log: append one JSON line per event to `.git/ns/runs.jsonl` in the common gi
 
 Quality records: when a unit ends `merged`, `done` or `stuck`, `ns run` writes one record per review attempt to the `nightshift/quality` branch on `origin` and logs a `quality_record` event (see ["Quality"](quality.md)). A unit with no review artifact adds no record. A push that fails, or a repo with no `origin`, leaves the records in the outbox and never changes the unit's outcome.
 
-Cleanup: when the merge step merged the unit's PR and its records are saved (pushed, or in the outbox), `ns run` removes the unit's worktree and its local `ns/<unit>` branch and logs a `cleanup` event. A worktree with uncommitted changes to tracked files, or a branch holding changes the merged PR head doesn't, stays. See ["Cleanup"](unit-lifecycle.md#cleanup).
+Cleanup: when the merge step merged the unit's PR and its records are saved (pushed, or in the outbox), `ns run` removes the unit's worktree and its local `ns/<unit>` branch and logs a `cleanup` event. A worktree with uncommitted changes to tracked files, or a branch holding changes the merged PR head doesn't, stays. See ["Cleanup"](unit-lifecycle.md#cleanup). A run that ends `done` or `stuck`, or `merged` with its worktree kept, deletes the worktree's build output and logs `build_output_removed`; see ["Build output"](unit-lifecycle.md#build-output).
 
 Budget: before each phase, if the cost reported so far (across the units of one `ns watch`) has reached `limits.budget_usd`, the run ends with `budget`. On a subscription the reported cost is an estimate, so the cap is notional and unset by default; `--until`, an optional `max_units`, and usage-limit pauses bound a night instead.
 
