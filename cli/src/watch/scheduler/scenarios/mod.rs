@@ -10,13 +10,15 @@ use serde_json::{json, Value};
 
 use super::overlap;
 use super::settle::forge_part;
+use crate::disk::Free;
 use crate::factory::Factory;
 use crate::git::Repo;
 use crate::run::RunResult;
 use crate::touches::Overlap;
 use crate::watch::ci::{self, Check, HeadChecks, MainCi, Outcome as CheckOutcome};
 use crate::watch::core::fill::{
-    open_fill, Claims, FillAct, FillInput, Holds, Kind, Open, OpenAct, Stopping,
+    disk_effect, open_fill, Claims, Disk, DiskAct, FillAct, FillInput, Holds, Kind, Open, OpenAct,
+    Stopping,
 };
 use crate::watch::core::red::{self as core_red, Gate, Note, Red, MAIN_RED_UNFIXED};
 use crate::watch::core::settle::{self as core_settle, SettleAct, SettleFacts};
@@ -24,6 +26,7 @@ use crate::watch::forge::fake::FakeForge;
 use crate::watch::transitions::{self, Event, State};
 use crate::watch::{fix_main, queue, triage, unit_id, Issue, Night, PAUSED_PAST_UNTIL};
 
+mod disk;
 mod fill;
 mod red;
 mod settle;
@@ -93,6 +96,11 @@ pub(super) struct Sim {
     pub triage: Option<TriageRun>,
     /// What happened, in order: `triage <n>`, `claim <n>` and `end <n>`.
     pub timeline: Vec<String>,
+    /// The free-space reader: each filesystem a unit fills, with its free bytes.
+    pub free: Box<dyn Fn() -> Vec<Free>>,
+    pub disk: Disk,
+    /// What the disk checks said, in order.
+    pub disk_said: Vec<DiskAct>,
 }
 
 impl Sim {
@@ -133,6 +141,9 @@ impl Sim {
             claimed: Vec::new(),
             triage: None,
             timeline: Vec::new(),
+            free: Box::new(|| vec![("/w".into(), Ok(u64::MAX))]),
+            disk: Disk::default(),
+            disk_said: Vec::new(),
         }
     }
 
@@ -211,6 +222,11 @@ impl Sim {
                     self.running.push(issue);
                 }
                 OpenAct::Stop(why) => self.stopping = Some(why),
+                OpenAct::CheckDisk => {
+                    if !self.disk_ok() {
+                        return Ok(());
+                    }
+                }
                 OpenAct::Triage => {
                     match self.triage_pass()? {
                         Some(triage::Halt::Stop(why)) => self.stop_all(&why),
@@ -222,6 +238,19 @@ impl Sim {
             }
         }
         Ok(())
+    }
+
+    /// The disk check as the scheduler runs it, on [`Sim::free`]: false when the fill starts
+    /// nothing.
+    fn disk_ok(&mut self) -> bool {
+        let limits = self.fac.limits.disk();
+        let acts = self.disk.check((self.free)(), limits);
+        let effect = disk_effect(&acts);
+        self.disk_said.extend(acts);
+        if let Some(why) = effect.stop {
+            self.stop_all(why);
+        }
+        effect.ok
     }
 
     /// The triage pass, its runs given by [`Sim::triage`].
