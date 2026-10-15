@@ -519,17 +519,16 @@ pub fn baseline(allow_growth: bool, dry_run: bool, format: Format) -> Result<Exi
     }
     let run = run_pack(&c.root, &c.commands)?;
     let path = c.root.join(BASELINE);
-    let old = load_baseline(&path)?;
-    let old_findings = old.as_deref().unwrap_or_default();
-    let (added, matched, dropped) = compare(&run.findings, old_findings);
-    let refreshed = refreshed(&run.findings, old_findings, matched);
+    let old = load_baseline(&path)?.unwrap_or_default();
+    let (added, matched, dropped) = compare(&run.findings, &old);
+    let refreshed = refreshed(&run.findings, &old, matched);
     // In `run.findings`' order (tool, rule, file, then line, then message), so a dropped finding
     // removes only its own entry from the file, and duplicates refresh the same way every run.
     let text = baseline_text(run.findings.iter().map(Entry::from).collect())?;
     let refused = !added.is_empty() && !allow_growth;
     let status = if refused {
         "refused"
-    } else if old.is_some() && fs::read_to_string(&path).ok().as_deref() == Some(text.as_str()) {
+    } else if fs::read_to_string(&path).ok().as_deref() == Some(text.as_str()) {
         "already-done"
     } else if dry_run {
         "planned"
@@ -751,6 +750,20 @@ mod tests {
         assert_eq!(settle(raw.clone(), tmp.path(), &mut src).snippet, "msg");
         raw.snippet = "given".into();
         assert_eq!(settle(raw, tmp.path(), &mut src).snippet, "given");
+    }
+
+    #[test]
+    fn refreshed_counts_matched_findings_no_entry_equals_in_full() {
+        let msg = |m: &str| Finding {
+            line: None,
+            message: m.into(),
+            ..f("a", 0, "x")
+        };
+        let base = [msg("a"), msg("b")];
+        assert_eq!(refreshed(&[msg("a"), msg("b")], &base, 2), 0);
+        assert_eq!(refreshed(&[msg("b"), msg("c")], &base, 2), 1);
+        assert_eq!(refreshed(&[msg("a"), msg("a")], &base, 2), 1);
+        assert_eq!(refreshed(&[msg("c")], &base, 1), 1);
     }
 
     #[test]
