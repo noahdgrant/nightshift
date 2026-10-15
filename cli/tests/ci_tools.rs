@@ -542,12 +542,14 @@ check = "host --version"
 [host-cov]
 version = "7.1.0"
 install = "pip"
+package = "host-cov-plugin"
 check = "host -VV"
 "#;
 
 #[test]
 fn a_pip_plugin_hints_at_installing_it_with_its_host() {
-    let fix = "install it with: uv tool install --force host-py==9.1.1 --with host-cov==7.1.0";
+    let fix =
+        "install it with: uv tool install --force host-py==9.1.1 --with host-cov-plugin==7.1.0";
     let out = Repo::new(PLUGIN).run(&["check", "host-cov"], &[]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert_eq!(
@@ -564,6 +566,17 @@ fn a_pip_plugin_hints_at_installing_it_with_its_host() {
         format!(
             "ci-tools: host-cov is not version 7.1.0 (`host -VV` printed: host 9.1.1); {fix}\n"
         )
+    );
+}
+
+#[test]
+fn a_non_pip_tool_whose_check_runs_another_executable_hints_its_own_method() {
+    let list = "[widget]\nversion = \"2.0\"\ninstall = \"apt\"\ncheck = \"other --version\"\n";
+    let out = Repo::new(list).run(&["check"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        "ci-tools: widget is not on PATH; install it with: sudo apt-get install widget\n"
     );
 }
 
