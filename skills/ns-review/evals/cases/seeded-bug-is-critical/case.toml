@@ -24,10 +24,18 @@ key = "cycles"
 equals = "0"
 
 [[check]]
-# An open Critical in changed code leaves the review short of pass.
-type = "regex"
+# An open Critical in changed code fails the pass for a fix cycle.
+type = "frontmatter"
 path = ".ns/3-purge-expired/review.md"
-pattern = '(?m)^status:\s*(fail|blocked)\b'
+key = "status"
+equals = "fail"
+
+[[check]]
+# The open finding goes to a fix cycle, which ns run starts.
+type = "frontmatter"
+path = ".ns/3-purge-expired/review.md"
+key = "next"
+equals = "review"
 
 [[check]]
 # A Critical whose heading names the inverted purge, scoped to changed code.

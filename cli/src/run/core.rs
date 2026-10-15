@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::factory::PHASES;
+use crate::factory::RUN_PHASES;
 use route::{decide, rebases_for_base, run, same_sha, Decision, State};
 
 pub mod gate;
@@ -178,9 +178,13 @@ struct Forced {
     why: String,
 }
 
-/// The `PHASES` entry named `p`, so a deserialized name becomes the `'static` phase again.
+/// The `RUN_PHASES` entry named `p`, so a deserialized name becomes the `'static` phase again.
 fn phase_named(p: &str) -> &'static str {
-    PHASES.iter().find(|x| **x == p).copied().unwrap_or("build")
+    RUN_PHASES
+        .iter()
+        .find(|x| **x == p)
+        .copied()
+        .unwrap_or("build")
 }
 
 impl Ledger {
@@ -301,7 +305,9 @@ impl Ledger {
         let attempt = self.attempts.get(phase).copied().unwrap_or(0) + 1;
         // The first run of a verify or review after it passed fails nothing: HEAD moved under
         // it. Ship moves HEAD, so its attempts still bound a ship that changes the diff each time.
-        if matches!(phase, "verify" | "review") && self.passed.remove(phase) {
+        // Nor does the review loop's next step: the pass after a fix cycle, or the fix cycle
+        // after a pass.
+        if matches!(phase, "verify" | "review" | "review-fix") && self.passed.remove(phase) {
             self.rerun(phase, 1);
         }
         // A build that only rebases because the base moved fails nothing either.
@@ -422,6 +428,13 @@ impl Ledger {
         if pass {
             self.passed.insert(a.phase.into());
             self.ship_follows_base |= a.phase == "ship" && a.rebase.is_some();
+        }
+        if r.status.is_some() {
+            match a.phase {
+                "review" => self.passed.insert("review-fix".into()),
+                "review-fix" => self.passed.insert("review".into()),
+                _ => false,
+            };
         }
     }
 

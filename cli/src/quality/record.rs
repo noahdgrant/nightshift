@@ -13,6 +13,7 @@ use super::blame::{self, Blame};
 use super::metrics::{self, Attempt, RunStats, Unit};
 use crate::clock;
 use crate::review_md::{CycleEntry, Finding, Pass, Scope, Severity, Status};
+use crate::review_runs::ReviewRun;
 
 /// The record format; bump it when a field changes meaning.
 pub const VERSION: u32 = 1;
@@ -83,6 +84,10 @@ pub struct Record {
     /// Absent from records written before reviewer metrics (#424).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub passes: Vec<Pass>,
+    /// `ns run`'s record of the review loop, with the times `ns` saw each pass and fix cycle
+    /// start and end (#446). Absent from records of loops the review agent drove.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_runs: Vec<ReviewRun>,
 }
 
 /// What `ns run` knows about a unit beyond its review artifacts.
@@ -219,6 +224,7 @@ pub fn build(
                     })
                     .collect(),
                 passes: a.passes.clone(),
+                review_runs: a.review_runs.clone(),
             };
             check_private(&serde_json::to_value(&r)?)?;
             Ok(r)
@@ -278,6 +284,7 @@ fn attempt(r: &Record) -> Attempt {
             })
             .collect(),
         passes: r.passes.clone(),
+        review_runs: r.review_runs.clone(),
     }
 }
 
@@ -444,6 +451,28 @@ mod tests {
         assert_eq!(v["findings"][1]["axes_from_raised_by"], true);
         assert_eq!(rs[0].first_pass_file[0].axes, ["performance"]);
         assert!(!v.to_string().contains("Drops the record"), "{v}");
+        assert!(v.get("review_runs").is_none(), "{v}");
+    }
+
+    #[test]
+    fn a_record_carries_ns_runs_review_times_and_reads_them_back() {
+        let mut a = attempts();
+        a[1].review_runs = vec![ReviewRun {
+            phase: "review-fix".into(),
+            cycle: 1,
+            kind: "full".into(),
+            started: "2026-10-09T02:10:00Z".into(),
+            ended: "2026-10-09T02:25:00Z".into(),
+            sha: "abc1234".into(),
+        }];
+        let rs = build(&meta(), &a, 0, Path::new("/nonexistent")).unwrap();
+        let line = serde_json::to_string(&rs[1]).unwrap();
+        let v: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["review_runs"][0]["started"], "2026-10-09T02:10:00Z");
+        assert_eq!(v["review_runs"][0]["ended"], "2026-10-09T02:25:00Z");
+        let (back, bad) = parse(&line);
+        assert_eq!(bad, 0);
+        assert_eq!(attempt(&back[0]).review_runs, a[1].review_runs);
     }
 
     #[test]

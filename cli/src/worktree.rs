@@ -396,7 +396,14 @@ pub fn setup(unit: &str, repo: Option<&Path>) -> Result<ExitCode> {
 }
 
 const PHASE_ORDER: &[&str] = &[
-    "brief", "define", "plan", "build", "verify", "review", "ship",
+    "brief",
+    "define",
+    "plan",
+    "build",
+    "verify",
+    "review",
+    "review-fix",
+    "ship",
 ];
 
 fn phase_rank(phase: &str) -> usize {

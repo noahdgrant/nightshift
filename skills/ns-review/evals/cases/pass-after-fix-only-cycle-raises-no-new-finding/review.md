@@ -1,13 +1,40 @@
 ---
-cycle: 3
-kind: full
-started: 2026-10-11T02:20:00Z
-ended: 2026-10-11T02:30:00Z
+schema: ns-artifact/2
+unit: 2-cancel-all
+phase: review
+status: fail
+cause: findings_open
+next: review
+reason: "Open in changed code: I3."
+findings: [I3]
+sha: HEADSHA
+updated: 2026-10-11T02:30:00Z
+base: main@BASESHA
+head: HEADSHA
+cycles: 3
+panel: full
+launch: subagents
 ---
 
-# Fix cycle 3: 2-cancel-all
+# Review: 2-cancel-all
+
+## Summary
+Open: 0 Critical, 1 Important, 0 Suggestion. Fixed: 2. Dismissed: 0. Escapes filed: 0.
+Change size: 30 lines in 2 files.
+Panel: full, because the first pass's diff was over 50 changed lines with its tests.
 
 ## Important
+### I1. Test never checks that other SKUs' reservations survive cancel_all
+- Location: `tests/test_warehouse.py:108`
+- Axis: tests, spec
+- Scope: changed
+- Cycle: 0
+- Attempts: 1
+- Raised by: tests, spec
+- Finding: acceptance criterion 2 says reservations of other SKUs are untouched, but the only cancel_all test reserves a single SKU.
+- Evidence: replacing the filter with `self._reservations.clear()` passes the suite.
+- Status: fixed (cycle 1, 1a2b3c4)
+
 ### I2. No test for cancel_all on a SKU with no reservations
 - Location: `src/inventory/warehouse.py:119`
 - Axis: tests

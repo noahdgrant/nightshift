@@ -12,6 +12,7 @@ use crate::clock;
 use crate::frontmatter;
 use crate::git::{self, Repo};
 use crate::review_md::{self, CycleEntry};
+use crate::review_runs;
 
 /// An artifact that couldn't be read, reported under `gaps` instead of dropped.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -116,11 +117,27 @@ fn read_attempt(
             None => (None, None),
         },
     };
+    // A record `ns` wrote but can't read is a gap, so its count and times aren't lost unseen.
+    let review_runs = match cycle_dir.map(|d| (d, review_runs::read_in(d))) {
+        Some((d, Err(e))) => {
+            let why = format!("unreadable review record: {}", e.root_cause());
+            gaps.push(unparsed(wt, &d.join("cycles.json"), why));
+            vec![]
+        }
+        Some((_, Ok(runs))) => runs,
+        None => vec![],
+    };
+    // `ns run`'s record counts the fix cycles when it drove the loop; the agent's `cycles:`
+    // otherwise.
+    let cycles = match review_runs.is_empty() {
+        true => field("cycles").and_then(|c| c.parse().ok()),
+        false => Some(review_runs::fixes(&review_runs)),
+    };
     Some(Attempt {
         path: path.strip_prefix(wt).unwrap_or(path).display().to_string(),
         status: field("status"),
         updated: field("updated").and_then(|u| clock::parse_iso(&u)),
-        cycles: field("cycles").and_then(|c| c.parse().ok()),
+        cycles,
         blame_at,
         changed_lines,
         changed_lines_source,
@@ -129,6 +146,7 @@ fn read_attempt(
         first_pass_file: first_pass_file(cycle_dir),
         introduced_by: Default::default(),
         passes: review_md::passes(body),
+        review_runs,
     })
 }
 
@@ -453,5 +471,89 @@ mod tests {
         let ns = commit_file(d, ".ns/c.txt", "y\nz\n");
         assert_eq!(shortstat(d, &only_add, &ns), Some(0));
         assert_eq!(shortstat(d, &base, "0000000"), None);
+    }
+
+    #[test]
+    fn ns_runs_record_gives_the_cycle_count_and_times_of_current_and_archived_attempts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path();
+        let dir = wt.join(".ns/u");
+        let run = |phase: &str, cycle: u32| review_runs::ReviewRun {
+            phase: phase.into(),
+            cycle,
+            kind: "full".into(),
+            started: "2026-10-14T01:00:00Z".into(),
+            ended: "2026-10-14T01:09:00Z".into(),
+            sha: "abc1234".into(),
+        };
+        fs::create_dir_all(dir.join("history/review-1")).unwrap();
+        fs::write(
+            dir.join("history/review-1.md"),
+            art(
+                "updated: 2026-10-09T01:00:00Z
+",
+                "",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("history/review-1/cycles.json"),
+            serde_json::to_string(&[run("review", 0)]).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("review.md"),
+            art(
+                "updated: 2026-10-14T02:00:00Z
+",
+                "",
+            ),
+        )
+        .unwrap();
+        for (p, c, fresh) in [
+            ("review", 0, true),
+            ("review-fix", 1, false),
+            ("review", 1, false),
+            ("review-fix", 2, false),
+        ] {
+            review_runs::append(&dir, run(p, c), fresh).unwrap();
+        }
+        let mut gaps = Vec::new();
+        let a = read_attempts(wt, &dir, wt, &mut gaps);
+        assert!(gaps.is_empty(), "{gaps:?}");
+        assert_eq!(a.len(), 2);
+        assert_eq!((a[0].cycles, a[0].review_runs.len()), (Some(0), 1));
+        assert_eq!((a[1].cycles, a[1].review_runs.len()), (Some(2), 4));
+        assert_eq!(
+            (
+                a[1].review_runs[1].started.as_str(),
+                a[1].review_runs[1].ended.as_str()
+            ),
+            ("2026-10-14T01:00:00Z", "2026-10-14T01:09:00Z")
+        );
+        fs::remove_file(dir.join(review_runs::FILE)).unwrap();
+        let a = read_attempts(wt, &dir, wt, &mut gaps);
+        assert_eq!(a[1].cycles, Some(1), "the agent's cycles: without a record");
+        assert!(gaps.is_empty(), "{gaps:?}");
+    }
+
+    #[test]
+    fn a_record_that_cannot_be_parsed_is_a_gap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".ns/u");
+        fs::create_dir_all(dir.join("review")).unwrap();
+        fs::write(dir.join("review.md"), "---\nstatus: blocked\n---\n").unwrap();
+        fs::write(dir.join(review_runs::FILE), "not json").unwrap();
+        let mut gaps = Vec::new();
+        let a = read_attempts(tmp.path(), &dir, tmp.path(), &mut gaps);
+        assert_eq!((a.len(), a[0].cycles), (1, None));
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert_eq!(gaps[0].path, ".ns/u/review/cycles.json");
+        assert!(
+            gaps[0]
+                .reason
+                .starts_with("unreadable review record: expected ident"),
+            "{gaps:?}"
+        );
     }
 }

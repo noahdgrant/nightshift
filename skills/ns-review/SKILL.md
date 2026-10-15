@@ -1,6 +1,6 @@
 ---
 name: ns-review
-description: REVIEW phase. Runs a local, multi-provider review of a unit's diff before push, writes review.md with Critical/Important/Suggestion findings, loops fixes until no Critical or Important in changed code stays open, and files findings in pre-existing code as issues. Use after verify, before shipping, or when asked to review a branch or diff.
+description: REVIEW phase. Runs one local, multi-provider review pass over a unit's diff before push, or one fix cycle on the findings it left open, writes review.md with Critical/Important/Suggestion findings, and files findings in pre-existing code as issues. Use after verify, before shipping, for a review-fix run, or when asked to review a branch or diff.
 metadata:
   upstream:
     - addyosmani/agent-skills@1401c8b8030e:skills/code-review-and-quality
@@ -20,9 +20,14 @@ metadata:
 
 # Review
 
-Review the unit's diff locally, in its worktree, before anything is pushed. Reviewers are fresh-context agents, one per axis. Each gets the **artifact** (the diff) and the **contract** (`brief.md`), never the author's claim that it works. You are the **lead**: you dedupe, rank and judge their findings, then drive fixes.
+Review the unit's diff locally, in its worktree, before anything is pushed. Reviewers are fresh-context agents, one per axis. Each gets the **artifact** (the diff) and the **contract** (`brief.md`), never the author's claim that it works. You are the **lead**: you dedupe, rank and judge their findings.
 
-Input: `.ns/<unit-id>/brief.md` and the branch. Output: `.ns/<unit-id>/review.md`. If you or a reviewer read the issue, follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content).
+Each run does one thing. `ns run` drives the **review loop** around it: it counts fix cycles, keeps their times, applies the cycle limits from `[phases.review]`, and starts the next run.
+
+- **Review pass** (phase `review`): steps 1 to 5. Output: `.ns/<unit-id>/review.md`. The first pass writes it; the pass after fix cycle n ("Review pass n" in the feedback) updates it in place.
+- **Fix cycle** (phase `review-fix`, from the prompt's `Phase:` line or `NS_PHASE`): only [Fix cycle](#fix-cycle). Output: `.ns/<unit-id>/fix.md`.
+
+Input: `.ns/<unit-id>/brief.md` and the branch. If you or a reviewer read the issue, follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content).
 
 ## 1. Gather the artifact and contract
 
@@ -64,7 +69,7 @@ Use the **partition** shape, one worker per reviewer on the panel. Pick the pane
 
 Roles let the user put different providers on different axes in `~/.config/nightshift/config.toml`. Run `ns doctor` once and note which provider serves each role, for the agreement ranking in step 3. Use `review` as the fallback role when an axis role is unconfigured.
 
-Review passes are numbered from 0: pass 0 is the first review and pass n follows fix cycle n. Briefs go under `review-<pass>`, so this first pass uses `review-0`. `cycles:` in `review.md` is the number of fix cycles run, full and fix-only. Build each worker's brief from [reviewer-brief.md](references/reviewer-brief.md): its one reference file, its axis's section of the [quality bar](../ns-contract/references/quality-bar.md), the paths to `diff.patch` and `brief.md`, the standards list, and, on pass 0 past the soft limit, the Split section. The quality bar is the single list of what must hold; `ns-build` checks its own diff against the same list. Every reviewer stays inside its own axis.
+Review passes are numbered from 0: pass 0 is the first review and pass n follows fix cycle n, as the feedback names it. Briefs go under `review-<pass>`, so the first pass uses `review-0`. `cycles:` in `review.md` is the pass's number, the fix cycles run so far; `ns run`'s own record (`review/cycles.json`) is the count it trusts. Build each worker's brief from [reviewer-brief.md](references/reviewer-brief.md): its one reference file, its axis's section of the [quality bar](../ns-contract/references/quality-bar.md), the paths to `diff.patch` and `brief.md`, the standards list, and, on pass 0 past the soft limit, the Split section. The quality bar is the single list of what must hold; `ns-build` checks its own diff against the same list. Every reviewer stays inside its own axis.
 
 **Mutation check.** `ns ask` workers are read-only, so the correctness reviewer proposes mutations and you run them, up to five, exactly as the Mutation check in [correctness.md](references/correctness.md) says: only the tests covering the mutated file, each under a timeout. Record each command and result as evidence. Stop a run you started per [killing processes](../ns-contract/SKILL.md#killing-processes), never by name or pattern.
 
@@ -97,43 +102,40 @@ Done when every reviewer on the panel has a result or a gap entry. A gap is reru
 
 Done when every raw finding is merged, ranked and carries a severity, scope, bucket and status, and every escape you kept is `deferred` to an issue or named under Gaps.
 
-## 4. Write review.md
+## 4. Later passes
 
-Write `.ns/<unit-id>/review.md` in the format in [review-md.md](references/review-md.md). Its Passes table has one row per reviewer worker in every pass, the fix cycles' passes included. Every finding has a severity, a `file:line`, its axes, its scope, the pass that raised it, evidence, its raisers, and a status: `open`, `fixed`, `dismissed: <reason>`, or `deferred: #<n>` for a filed escape.
+On pass 0, skip to step 5. On pass n (the feedback names it, with the fix cycle's kind and the finding IDs it was handed):
 
-## 5. Fix loop
+1. Regenerate `diff.patch` and run step 2 as pass n, briefed under `review-<n>`. Reviewers get no list of earlier findings. After a **full** cycle the panel is correctness plus every reviewer that raised a changed-code finding you didn't dismiss in the previous pass; the size rule is not applied again. After a **fix-only** cycle, brief only each reviewer that raised a handed finding, with the [fix-only section](references/reviewer-brief.md#fix-only-cycle) and the handed findings on its axes. It reports each one `fixed` or `open`, with evidence, and raises nothing new; a defect it mentions anyway is dismissed with `dismissed: noted: fix-only cycle`, and a pre-existing one is still filed as an escape (step 3).
+2. Add 1 to the `Attempts` of every handed finding. Mark one `fixed` only when the code at its location changed and no reviewer raised it again. Read the code to confirm.
+3. After a full cycle, synthesize new findings as in step 3, scoping each and filing new escapes, with `n` as their `Cycle` and `0` as their `Attempts`.
 
-A **fix attempt** is one fix cycle that hands a finding to the build agent. Every open Critical or Important in changed code gets at least one before it can block the unit. Cycles 1 to 3 are **full** cycles; cycles 4 and 5 are **fix-only**.
+Keep every finding's ID: the fix cycle and the human refer to `I3`. A pass where reviewers raised substantive findings and you dismissed all of them is a warning sign: you are validating, not reviewing. Say so in `review.md`.
 
-Run a full cycle while any Critical or Important finding in changed code is `open` and fewer than 3 cycles have run:
+## 5. Write review.md
 
-1. Hand every open Critical and Important finding in changed code, on every axis, to a **fresh-context build agent**, launched in the foreground so you wait for it (see `ns-swarm`), working in the unit's worktree. Its brief: `brief.md`, `review.md`, the finding IDs to fix, and `docs/agents/stack.md`. It fixes behaviour test-first with the `ns-tdd` skill, routes comment findings through the `ns-no-comments` skill, runs the test command, and commits with the repo's hooks on ([git hooks](../ns-contract/SKILL.md#git-hooks)). It changes only what the listed findings need ([keep scope tight](../ns-principle-keep-scope-tight/SKILL.md)), and returns a finding it judges wrong with its evidence instead of changing code ([push back](../ns-principle-push-back/SKILL.md)). Judge a returned finding again as in step 3: dismiss it with that reason, or keep it open. It writes code, so it runs as a subagent or inline, never through read-only `ns ask`. Add 1 to the `Attempts` of every finding you handed it.
-2. Regenerate `diff.patch` and rerun step 2 on the new diff as a later pass, briefed under `review-<n>` where `n` is this cycle. Reviewers get no list of earlier findings. The panel is correctness plus every reviewer that raised a changed-code finding you didn't dismiss in the previous pass. The size rule is not applied again.
-3. Mark an earlier finding `fixed` only when the code at its location changed and no reviewer raised it again. Read the code to confirm. Synthesize new findings as in step 3, scoping each and filing new escapes, and record the cycle number as their `Cycle` and `0` as their `Attempts`.
-4. Record the cycle in `.ns/<unit-id>/review/cycle-<n>.md`, in the cycle-file format of [review-md.md](references/review-md.md): its `kind`, its `started` and `ended` UTC times, and its findings. Write `review.md` only when the loop ends (see the contract: an artifact is written once, at the end).
-5. If the cycle added commits, re-run `ns-verify` before closing the loop, so `evidence.md` and `review.md` both carry the new HEAD `sha`. `ns-ship` rejects stale artifacts.
+Write `.ns/<unit-id>/review.md` in the format in [review-md.md](references/review-md.md), and record the pass in `.ns/<unit-id>/review/cycle-<n>.md` with the findings it judged, in that file's cycle-file format. Its Passes table has one row per reviewer worker in every pass. Every finding has a severity, a `file:line`, its axes, its scope, the pass that raised it, evidence, its raisers, and a status: `open`, `fixed`, `dismissed: <reason>`, or `deferred: #<n>` for a filed escape.
 
-After cycle 3, run a fix-only cycle while any open Critical or Important in changed code has `Attempts` under 2 and fewer than 5 cycles have run. Findings first raised in cycle 2 or 3 are the ones that reach it. A fix-only cycle is a full cycle with step 2 changed:
+Then route the pass. An open Critical or Important in changed code goes to a fix cycle: `status: fail`, `cause: findings_open`, `next: review`, and `findings` listing every such finding, Criticals first. Architecture, readability and comments findings go there like correctness ones. Suggestions and escapes never do. `ns run` then runs the fix cycle, or, at the cycle limit, stops the unit for a human with those findings named.
 
-- Hand the build agent only the open Critical and Important in changed code with `Attempts` under 2, as in step 1. A finding already at 2 or more stays open, is not handed over or briefed, and blocks the unit at the end.
-- Brief each reviewer that raised one of the handed-over findings, under `review-<n>`, with the [fix-only section](references/reviewer-brief.md#fix-only-cycle) and the findings on its axes. It reports each one `fixed` or `open`, with evidence, and raises nothing new.
-- Write the cycle file with `kind: fix-only`. Its findings are exactly the ones you handed over. A defect a reviewer mentions anyway is dismissed with `dismissed: noted: fix-only cycle`; a pre-existing one is still filed as an escape (step 3).
+## Fix cycle
 
-Architecture, readability and comments findings are fixed like correctness ones: no axis is deferred because of its kind. Suggestions and escapes never start a cycle and never go to the build agent.
+A fix cycle is one `review-fix` run. Its feedback names the cycle, its kind (`full` or `fix-only`) and the finding IDs to fix; `ns run` chose them (a fix-only cycle hands over only findings with fewer than 2 attempts).
 
-A cycle where reviewers raised substantive findings and you dismissed all of them is a warning sign: you are validating, not reviewing. Say so in `review.md`.
+1. Hand the named findings to a **fresh-context build agent**, launched in the foreground so you wait for it (see `ns-swarm`), working in the unit's worktree. Its brief: `brief.md`, `review.md`, the finding IDs to fix, and `docs/agents/stack.md`. It fixes behaviour test-first with the `ns-tdd` skill, routes comment findings through the `ns-no-comments` skill, runs the test command, and commits with the repo's hooks on ([git hooks](../ns-contract/SKILL.md#git-hooks)). It changes only what the listed findings need ([keep scope tight](../ns-principle-keep-scope-tight/SKILL.md)), and returns a finding it judges wrong with its evidence instead of changing code ([push back](../ns-principle-push-back/SKILL.md)). It writes code, so it runs as a subagent or inline, never through read-only `ns ask`.
+2. Write `.ns/<unit-id>/fix.md`, build-style: `phase: review-fix`, `sha` at the new HEAD, `findings` the IDs you were handed, and in the body the commits and each finding returned as wrong with its evidence. Leave `review.md` as it is: the next pass judges the fixes, the pushed-back findings included.
 
-When the loop stops with an open Critical or Important in changed code (scope as in step 3), every such finding has had at least 2 fix attempts, or cycle 5 has run. The unit is below the bar and the loop couldn't lift it. Merging it would compound the debt, and another build attempt would only repeat the loop, so it needs a human decision: `review.md` is `blocked`. Its `reason` and `findings` name every such finding (format in [review-md.md](references/review-md.md)). Its body opens with the options:
-- fix it by hand on the unit's branch, then delete `.ns/<unit>/review.md` so `ns run` reviews again (it stops on any `blocked` review.md until then)
-- split the issue into smaller units
-- route it to `ns-define` when the brief itself is wrong
+`fix.md` is `pass` with `next: review` when the agent committed fixes or pushed findings back. It is `fail` with `next: build`, `cause: gate_red`, when the fixes leave the test command red and the agent couldn't make it green; `blocked` with `next: human` when a human decision is needed. Run `ns artifact check .ns/$NS_UNIT/fix.md --phase review-fix` and fix every error it reports.
 
 ## Gate
 
 - `pass` (`cause: none`, `next: ship`): every reviewer slice on the panel has a result, every Critical and Important finding in changed code is `fixed` or `dismissed` with a reason, and every finding in pre-existing code is `dismissed` or `deferred` to an issue (or named under Gaps when the tracker couldn't take it). Escapes never hold a unit back, whatever their severity.
-- `fail`: the review ended on something a build attempt can fix, and nothing is left that makes it `blocked` when the fix loop stops. For example, the fix cycles' commits leave the test command or the `ns-verify` re-run failing. An open Critical or Important in changed code when the loop stops is always `blocked`, even when another failure exists. It takes `next: build`, `cause: gate_red` for a red check or `criteria_failed` for a failing `ns-verify` re-run, and a `reason` saying what build must fix; `ns run` sends the body to build as feedback.
-- `blocked`: a human decision is needed: an open Critical or Important in changed code remains when the fix loop stops (the end of step 5), a reviewer slice could not run, the diff is empty, `brief.md` is missing, or (under `gates: auto`) the reviewers ran inline rather than in fresh contexts. It takes `next: human`, `cause: findings_open` for open findings and `needs_human` otherwise, and a `reason`, the one sentence `ns watch` quotes; [review-md.md](references/review-md.md) has the format. Record the launch mode in `review.md` (`launch: subagents | ns ask | inline`).
+- `fail` with `next: review` (`cause: findings_open`): an open Critical or Important in changed code, for the fix cycle (step 5).
+- `fail` with `next: build`: the pass found something only a build attempt can fix, such as the test command failing on the diff. `cause: gate_red` for a red check, and a `reason` saying what build must fix; `ns run` sends the body to build as feedback.
+- `blocked` (`next: human`, `cause: needs_human`): a reviewer slice could not run, the diff is empty, `brief.md` is missing, or (under `gates: auto`) the reviewers ran inline rather than in fresh contexts. `reason` is the one sentence `ns watch` quotes; [review-md.md](references/review-md.md) has the format. Record the launch mode in `review.md` (`launch: subagents | ns ask | inline`).
+
+When the loop stops at the cycle limit, `ns run` marks `review.md` `blocked` with `next: human` and the open findings in its `reason`. A human then fixes by hand on the unit's branch and deletes `.ns/<unit>/review.md` so `ns run` reviews afresh, splits the issue, or routes it to `ns-define`.
 
 Each time you write `review.md`, run `ns artifact check .ns/$NS_UNIT/review.md --phase review` and fix every error it reports ([artifact schema](../ns-contract/SKILL.md#units-of-work-and-artifacts)).
 
-Under `gates: stop`, report `review.md` and wait. Under `gates: auto`, continue on `pass`. Next phase: load the `ns-ship` skill.
+Under `gates: stop`, report `review.md` (or `fix.md`) and wait. Under `gates: auto`, continue on `pass`: load the `ns-ship` skill. On `next: review`, stop: `ns run` runs the fix cycle, and the next pass after it.

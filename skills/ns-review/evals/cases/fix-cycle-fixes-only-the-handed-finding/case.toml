@@ -1,0 +1,91 @@
+# Checks not yet validated against a real run.
+description = "A review-fix run, as ns run starts it: fix-only cycle 4 is handed I3 (no test that cancel_all raises UnknownItem), open after pass 3. The run fixes I3 with a test, writes fix.md (phase review-fix, status pass, next review, findings [I3]) and leaves review.md as it was: the next pass judges the fix."
+fixture = "py-inventory"
+skills = ["ns-review"]
+extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Load the `ns-review` skill and run it for unit `2-cancel-all` (issue none).
+Work in this repo, on branch ns/2-cancel-all. gates: auto.
+Phase: review-fix (attempt 1). End by writing the phase's artifact under .ns/2-cancel-all/ with its frontmatter status.
+Never merge, never approve, and never push to the default branch. Nobody is around to answer questions. Skip verify.
+
+The artifact that sent this work back says:
+
+Fix cycle 4 (fix-only). Fix these findings from review.md: I3. Change no review.md; write fix.md (`phase: review-fix`, `next: review`) with `findings: [I3]`, the ids you were handed.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/2-cancel-all",
+  "mkdir -p .ns/2-cancel-all/review && cp ../brief.md .ns/2-cancel-all/",
+  "for n in 1 2 3; do cp ../cycle-$n.md .ns/2-cancel-all/review/; done",
+  "git apply ../cancel-all.patch",
+  "git add src tests && git commit -q -m 'feat(warehouse): add cancel_all'",
+  "sed -e \"s/HEADSHA/$(git rev-parse --short HEAD)/g\" -e \"s/BASESHA/$(git rev-parse --short HEAD~1)/\" ../review.md > .ns/2-cancel-all/review.md",
+  "cp .ns/2-cancel-all/review.md .git/review-before.md",
+]
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/fix.md"
+key = "phase"
+equals = "review-fix"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/fix.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/fix.md"
+key = "next"
+equals = "review"
+
+[[check]]
+type = "regex"
+path = ".ns/2-cancel-all/fix.md"
+pattern = '(?m)^findings:\s*\[\s*I3\s*\]'
+
+[[check]]
+# The fix run leaves review.md to the next pass.
+type = "command"
+run = "cmp -s .ns/2-cancel-all/review.md .git/review-before.md"
+expect_exit = 0
+
+[[check]]
+# I3 is fixed: deleting the unknown-SKU check in cancel_all now fails a test.
+type = "command"
+run = '''
+b=$(mktemp)
+cp src/inventory/warehouse.py "$b"
+python3 - <<'PY'
+import pathlib
+p = pathlib.Path("src/inventory/warehouse.py")
+s = p.read_text()
+m = s.replace("returning how many were dropped.\"\"\"\n        self.item(sku)\n", "returning how many were dropped.\"\"\"\n", 1)
+assert m != s, "cancel_all no longer starts with self.item(sku)"
+p.write_text(m)
+PY
+python3 -m pytest -q -p no:cacheprovider; s=$?
+cp "$b" src/inventory/warehouse.py && rm -f "$b"
+[ "$s" -ne 0 ]
+'''
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q -p no:cacheprovider"
+expect_exit = 0
+
+[[check]]
+type = "diff_scope"
+allow = [".ns/**", ".scratch/**", "tests/**"]
+
+[[check]]
+type = "judge"
+rubric = "Did the fix run hand only I3 to a fresh-context build agent, fix it test-first, and stop after writing fix.md, without running a review pass or another fix cycle itself?"
+required = false

@@ -35,14 +35,14 @@ unit: <unit-id>
 phase: review
 status: pass        # pass | fail | blocked
 cause: none         # none | findings_open | gate_red | criteria_failed | needs_human
-next: ship          # ship on a pass; build on a fail; human when blocked
-reason: "<one line: the outcome, or what build must fix, or the blocker>"
-findings: []        # when blocked on open findings: their IDs, Criticals first
+next: ship          # ship on a pass; review for a fix cycle, build for a red check; human when blocked
+reason: "<one line: the outcome, the open findings, what build must fix, or the blocker>"
+findings: []        # under findings_open: the open IDs in changed code, Criticals first
 sha: <git rev-parse --short HEAD>
 updated: <ISO-8601 UTC>
 base: <base branch>@<sha>
 head: <sha>
-cycles: <n>         # fix cycles run, full and fix-only, 0 to 5
+cycles: <n>         # this pass's number: the fix cycles run before it
 panel: full | reduced
 launch: subagents | ns ask | inline (sequential)
 ---
@@ -97,22 +97,18 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 - <escape the tracker couldn't take: its ID and why. It doesn't block.>
 ```
 
-Status, `cause` and `next` follow the Gate in `SKILL.md`. For any `blocked` status, `reason` is the one-sentence reason `ns watch` quotes. When the fix loop stops with findings open, `findings` lists the open Criticals and Importants in changed code, Criticals first, `reason` names them, and the options open the body, before the title:
+Status, `cause` and `next` follow the Gate in `SKILL.md`. For any `blocked` status, `reason` is the one-sentence reason `ns watch` quotes. A pass that leaves findings for a fix cycle lists the open Criticals and Importants in changed code under `findings`, Criticals first, and `reason` names them:
 
 ```markdown
 ---
 ...
-status: blocked
+status: fail
 cause: findings_open
-next: human
-reason: "Open after at least 2 fix attempts: C1, I2, I4."
+next: review
+reason: "Open in changed code: C1, I2, I4."
 findings: [C1, I2, I4]
 ...
 ---
-
-Options: fix by hand on the unit's branch then delete `.ns/<unit>/review.md` so `ns run` reviews again, split the issue, or route it to `ns-define`.
-
-# Review: <unit-id>
 ```
 
 Every finding, in `review.md` and in `review/cycle-<n>.md`, carries the fields in the template above, in that order; `ns watch` and `ns quality` parse them. Their values:
@@ -138,18 +134,16 @@ Number findings once and keep the numbers stable across cycles, so the build age
 
 ## Cycle files
 
-Each fix cycle's record, `review/cycle-<n>.md`, opens with frontmatter, then lists the cycle's findings in the format above:
+Each review pass's record, `review/cycle-<n>.md` (`n` the pass number, `0` for the first), opens with frontmatter, then lists the findings the pass judged in the format above. `ns run` records when each pass and fix cycle ran in `review/cycles.json`; the cycle file carries no times.
 
 ```markdown
 ---
 cycle: <n>
-kind: full | fix-only
-started: <ISO-8601 UTC, when the build agent was launched>
-ended: <ISO-8601 UTC, when the cycle's findings were judged>
+kind: first | full | fix-only
 ---
 
 ## Important
 ### I3. ...
 ```
 
-Cycle files from before fix-only cycles have no frontmatter and no `Attempts`; `ns quality` reads them without.
+Cycle files from before fix-only cycles have no frontmatter and no `Attempts`, and older ones carry `started` and `ended`; `ns quality` reads them either way.

@@ -28,9 +28,17 @@ key = "cycles"
 equals = "0"
 
 [[check]]
-type = "regex"
+type = "frontmatter"
 path = ".ns/4-expired-holds/review.md"
-pattern = '(?m)^status:\s*(fail|blocked)\b'
+key = "status"
+equals = "fail"
+
+[[check]]
+# The open finding goes to a fix cycle, which ns run starts.
+type = "frontmatter"
+path = ".ns/4-expired-holds/review.md"
+key = "next"
+equals = "review"
 
 [[check]]
 # A Critical or Important finding that names the unfixed low_stock.

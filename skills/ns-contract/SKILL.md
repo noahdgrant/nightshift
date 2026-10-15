@@ -40,7 +40,8 @@ Each unit gets one worktree and one artifact folder, created by `ns worktree new
   brief.md       written by ns-triage, ns-define or ns-troubleshoot, read by ns-build
   build.md       written by ns-build
   evidence.md    written by ns-verify
-  review.md      written by ns-review
+  review.md      written by ns-review's review passes
+  fix.md         written by ns-review's fix cycles (phase review-fix)
   pr.md          written by ns-ship (the PR body as sent)
 ```
 

@@ -14,7 +14,7 @@ use crate::billing;
 use crate::clock::{self, Clock};
 use crate::config::{self, Config};
 use crate::error::SfError;
-use crate::factory::{self, Factory, PhaseSettings, PHASES};
+use crate::factory::{self, Factory, PhaseSettings, PHASES, RUN_PHASES};
 use crate::forge;
 use crate::gate;
 use crate::git::{self, Repo};
@@ -695,7 +695,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         worktree::existing(&repo, &unit)?.unwrap_or_else(|| worktree::planned_path(&repo, &unit));
     let subscription = fac.subscription();
     let mut commands = BTreeMap::new();
-    for p in PHASES {
+    for p in RUN_PHASES {
         commands.insert(
             *p,
             phase_command(

@@ -33,6 +33,7 @@ mod proc;
 mod quality;
 mod ratchet;
 mod review_md;
+mod review_runs;
 mod rules;
 mod run;
 mod score;

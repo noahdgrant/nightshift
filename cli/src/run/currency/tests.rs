@@ -12,6 +12,7 @@ fn art(status: &str, sha: &str) -> Art {
         body: format!("{status} body"),
         invalid: None,
         next: None,
+        findings: vec![],
     }
 }
 
@@ -28,7 +29,7 @@ fn phase_of(d: &Decision) -> &str {
     match d {
         Decision::Run { phase, .. } => phase,
         Decision::Done => "done",
-        Decision::Stuck(_) => "stuck",
+        Decision::Stuck(_) | Decision::LoopSpent(_) => "stuck",
         Decision::Split(_) => "split",
     }
 }
@@ -380,11 +381,11 @@ fn a_rebase_archives_nothing_downstream() {
         .unwrap();
     }
     let moves = archive_for(d, "verify", &real_state(&r)).unwrap();
-    assert_eq!(moves.len(), 1);
+    assert_eq!(moves.moved.len(), 1);
     assert!(!d.join("evidence.md").exists());
     assert!(d.join("review.md").exists() && d.join("pr.md").exists());
     let moves = archive_for(d, "review", &real_state(&r)).unwrap();
-    assert_eq!(moves.len(), 1);
+    assert_eq!(moves.moved.len(), 1);
     assert!(d.join("pr.md").exists());
     fs::write(
         d.join("review.md"),
@@ -591,4 +592,278 @@ fn a_v2_artifacts_next_routes_it() {
         panic!("a brief routed to define was built")
     };
     assert!(r.starts_with("triage routed the issue to define"), "{r}");
+}
+
+/// A unit mid review loop at `abc1234`: review.md left I1 open with one fix attempt, fix cycle 1
+/// wrote fix.md, and `ns`'s record holds the first pass and the fix.
+fn mid_loop(d: &Path) {
+    v2(
+        d,
+        "review.md",
+        "review",
+        "fail",
+        "findings_open",
+        "review",
+        "findings: [I1]\n",
+    );
+    let body = "\n## Important\n### I1. t\n- Location: `a.rs:1`\n- Scope: changed\n- Cycle: 0\n- Attempts: 1\n- Status: open\n### I2. u\n- Location: `a.rs:2`\n- Scope: changed\n- Cycle: 0\n- Status: open\n";
+    let text = fs::read_to_string(d.join("review.md")).unwrap();
+    fs::write(d.join("review.md"), text + body).unwrap();
+    v2(
+        d,
+        "fix.md",
+        "review-fix",
+        "pass",
+        "none",
+        "review",
+        "findings: [I1]\n",
+    );
+    for (phase, cycle, fresh) in [("review", 0, true), ("review-fix", 1, false)] {
+        let run = crate::review_runs::ReviewRun {
+            phase: phase.into(),
+            cycle,
+            kind: if cycle == 0 { "first" } else { "full" }.into(),
+            started: "2026-10-14T10:00:00Z".into(),
+            ended: "2026-10-14T10:05:00Z".into(),
+            sha: "abc1234".into(),
+        };
+        crate::review_runs::append(d, run, fresh).unwrap();
+    }
+}
+
+#[test]
+fn the_state_reads_fix_md_and_the_review_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    let s = read_state(d, "abc1234".into(), true, None, Settings::default());
+    let fix = &s.arts["review-fix"];
+    assert_eq!(fix.findings, ["I1"]);
+    assert_eq!(s.arts["review"].next.as_deref(), Some("review"));
+    assert_eq!(s.review.fixes, 1);
+    assert_eq!(s.review.attempts.get("I1"), Some(&1));
+    assert_eq!(
+        s.review.attempts.get("I2"),
+        Some(&0),
+        "no Attempts: is none yet"
+    );
+}
+
+#[test]
+fn inside_a_review_loop_verify_and_the_next_pass_keep_review_md() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    let s = read_state(d, "def5678".into(), true, None, Settings::default());
+    archive_for(d, "verify", &s).unwrap();
+    assert!(d.join("review.md").exists() && d.join("fix.md").exists());
+    let s = read_state(d, "def5678".into(), true, None, Settings::default());
+    let moves = archive_for(d, "review", &s).unwrap();
+    assert!(d.join("review.md").exists() && d.join(crate::review_runs::FILE).exists());
+    assert!(!d.join("fix.md").exists() && d.join("history/fix-1.md").exists());
+    restore(&moves);
+    assert!(d.join("fix.md").exists());
+}
+
+#[test]
+fn a_first_pass_archives_review_md_with_its_record_and_a_restore_puts_both_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    fs::remove_file(d.join("fix.md")).unwrap();
+    v2(d, "review.md", "review", "pass", "none", "ship", "");
+    let s = read_state(d, "def5678".into(), true, None, Settings::default());
+    let moves = archive_for(d, "review", &s).unwrap();
+    assert!(!d.join("review.md").exists() && !d.join(crate::review_runs::FILE).exists());
+    assert!(d.join("history/review-1.md").exists());
+    assert_eq!(
+        crate::review_runs::read_in(&d.join("history/review-1"))
+            .unwrap()
+            .len(),
+        2
+    );
+    restore(&moves);
+    assert!(d.join("review.md").exists() && d.join(crate::review_runs::FILE).exists());
+    assert!(!d.join("history/review-1").exists());
+}
+
+#[test]
+fn a_build_ends_the_review_loop_and_archives_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    v2(d, "evidence.md", "verify", "pass", "none", "review", "");
+    let s = read_state(d, "def5678".into(), true, None, Settings::default());
+    archive_for(d, "build", &s).unwrap();
+    assert!(!d.join("review.md").exists() && !d.join("fix.md").exists());
+    assert!(d.join("history/review-1/cycles.json").is_file());
+    assert!(
+        !d.join("history/evidence-1").exists(),
+        "the record goes only with review.md"
+    );
+}
+
+#[test]
+fn review_run_numbers_each_pass_and_fix_cycle_of_the_loop() {
+    use crate::run::core::route::review_run;
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    let mut s = read_state(d, "abc1234".into(), true, None, Settings::default());
+    assert_eq!(review_run("review", &s), Some((1, "full", false)));
+    assert_eq!(review_run("build", &s), None);
+    s.arts.remove("review-fix");
+    assert_eq!(review_run("review-fix", &s), Some((2, "full", false)));
+    s.review.fixes = 3;
+    assert_eq!(review_run("review-fix", &s), Some((4, "fix-only", false)));
+    s.arts.remove("review");
+    assert_eq!(review_run("review", &s), Some((0, "first", true)));
+}
+
+#[test]
+fn a_loop_whose_record_is_missing_or_unreadable_stops_rather_than_count_from_0() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    let record = d.join(crate::review_runs::FILE);
+    let at = |d: &Path| {
+        let mut s = read_state(d, "abc1234".into(), true, None, Settings::default());
+        for p in ["triage", "build", "verify"] {
+            s.arts.insert(p, art("pass", "abc1234"));
+        }
+        s
+    };
+    let stuck = |d: &Path| {
+        let s = at(d);
+        assert_eq!(s.review.fixes, 0);
+        match decide(&s) {
+            Decision::Stuck(r) => r,
+            d => panic!("{d:?}"),
+        }
+    };
+    fs::write(&record, "not json").unwrap();
+    let r = stuck(d);
+    assert!(
+        r.starts_with("review.md has a review loop under way, but ns's record of it can't be used: cannot parse"),
+        "{r}"
+    );
+    fs::remove_file(&record).unwrap();
+    assert_eq!(
+        stuck(d),
+        "review.md has a review loop under way, but ns's record of it can't be used: review/cycles.json is missing"
+    );
+    let s = read_state(d, "abc1234".into(), true, None, Settings::default());
+    assert!(s.review.record_problem.is_some());
+    v2(d, "review.md", "review", "pass", "none", "ship", "");
+    assert!(
+        !matches!(decide(&at(d)), Decision::Stuck(_)),
+        "outside a loop the record is not needed"
+    );
+}
+
+#[test]
+fn a_pass_set_aside_inside_a_loop_puts_back_review_md_fix_md_and_the_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    let (review, record) = (d.join("review.md"), d.join(crate::review_runs::FILE));
+    let (review_was, record_was) = (fs::read(&review).unwrap(), fs::read(&record).unwrap());
+    let s = read_state(d, "abc1234".into(), true, None, Settings::default());
+    let moves = archive_for(d, "review", &s).unwrap();
+    fs::write(&review, "the pass rewrote it").unwrap();
+    let run = crate::review_runs::read(d).unwrap()[0].clone();
+    crate::review_runs::append(d, run, false).unwrap();
+    archive_as(d, "review.md", "review-interrupted").unwrap();
+    restore(&moves);
+    assert_eq!(fs::read(&review).unwrap(), review_was);
+    assert_eq!(fs::read(&record).unwrap(), record_was);
+    assert!(d.join("fix.md").exists());
+}
+
+#[test]
+fn a_fix_cycle_set_aside_takes_its_entry_out_of_the_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    fs::remove_file(d.join("fix.md")).unwrap();
+    let record = d.join(crate::review_runs::FILE);
+    let was = fs::read(&record).unwrap();
+    let s = read_state(d, "abc1234".into(), true, None, Settings::default());
+    let moves = archive_for(d, "review-fix", &s).unwrap();
+    assert_eq!(moves.kept.len(), 1, "fix.md isn't kept: review.md is");
+    let run = crate::review_runs::read(d).unwrap()[1].clone();
+    crate::review_runs::append(d, run, false).unwrap();
+    restore(&moves);
+    assert_eq!(fs::read(&record).unwrap(), was);
+    assert!(d.join("review.md").exists());
+}
+
+#[test]
+fn a_first_pass_set_aside_puts_back_the_old_record_over_its_new_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    fs::remove_file(d.join("fix.md")).unwrap();
+    v2(d, "review.md", "review", "pass", "none", "ship", "");
+    let record = d.join(crate::review_runs::FILE);
+    let was = fs::read(&record).unwrap();
+    let s = read_state(d, "def5678".into(), true, None, Settings::default());
+    let moves = archive_for(d, "review", &s).unwrap();
+    let run = crate::review_runs::ReviewRun {
+        cycle: 0,
+        ..crate::review_runs::read_in(&d.join("history/review-1")).unwrap()[0].clone()
+    };
+    crate::review_runs::append(d, run, true).unwrap();
+    v2(d, "review.md", "review", "pass", "none", "ship", "");
+    archive_as(d, "review.md", "review-interrupted").unwrap();
+    restore(&moves);
+    assert_eq!(fs::read(&record).unwrap(), was);
+    assert!(d.join("review.md").exists() && !d.join("history/review-1").exists());
+}
+
+#[test]
+fn mark_blocked_sets_status_next_cause_reason_and_updated_and_keeps_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    let path = d.join("review.md");
+    let before = fs::read_to_string(&path)
+        .unwrap()
+        .replace("cause: findings_open", "cause: none");
+    fs::write(&path, &before).unwrap();
+    mark_blocked(&path, "limit: I1 \"open\"", "2026-10-14T12:00:00Z").unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    let t = crate::artifact::check(&text, Some("review")).unwrap();
+    assert_eq!(t.status.as_str(), "blocked");
+    assert_eq!(t.next.as_str(), "human");
+    assert_eq!(t.cause, crate::artifact::Cause::FindingsOpen);
+    assert_eq!(t.reason, "limit: I1 \"open\"");
+    assert_eq!(t.findings, ["I1"]);
+    assert_eq!(
+        frontmatter::field(&text, "updated").as_deref(),
+        Some("2026-10-14T12:00:00Z")
+    );
+    assert_eq!(
+        frontmatter::split(&text).unwrap().1,
+        frontmatter::split(&before).unwrap().1
+    );
+    fs::write(&path, "no frontmatter").unwrap();
+    assert!(mark_blocked(&path, "r", "t").is_err());
+}
+
+#[test]
+fn cycle_limits_near_u32_max_do_not_overflow() {
+    use crate::run::core::route::fix_cycle;
+    let mut s = state(&[]);
+    s.settings.cycles = crate::factory::Cycles {
+        full: 4_000_000_000,
+        fix_only: 2_000_000_000,
+    };
+    s.review.fixes = 4_000_000_000;
+    let mut review = art("fail", "abc1234");
+    review.findings = vec!["I1".into()];
+    assert_eq!(
+        fix_cycle(&review, &s),
+        Ok((4_000_000_001, "fix-only", vec!["I1".to_string()]))
+    );
 }
