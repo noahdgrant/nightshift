@@ -3,7 +3,7 @@ id: D50
 title: "ns rules check runs the stack's rules commands against a baseline"
 issue: 215
 date: 2026-10-10
-amended_by: [ADR-564]
+amended_by: [ADR-564, ADR-746]
 ---
 
 # D50: ns rules check runs the stack's rules commands against a baseline
