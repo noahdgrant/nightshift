@@ -734,7 +734,18 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         crate::stop::scoped(ensure).context("cannot handle SIGINT and SIGTERM")??
     };
     same_worktree(&wt_path, Path::new(&wt.path))?;
-    let pinned = pin::pin(Path::new(&wt.path), &repo.common_dir, &unit, &base, ns)?;
+    let harnesses: Vec<String> = (factory::PHASES.iter())
+        .map(|p| fac.phase(p).harness)
+        .collect();
+    let harnesses: Vec<&str> = harnesses.iter().map(String::as_str).collect();
+    let pinned = pin::pin(
+        Path::new(&wt.path),
+        &repo.common_dir,
+        &unit,
+        &base,
+        ns,
+        &harnesses,
+    )?;
     let ctx = Ctx {
         unit: unit.clone(),
         worktree: PathBuf::from(&wt.path),
