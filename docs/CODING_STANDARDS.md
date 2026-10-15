@@ -1,6 +1,6 @@
 # Coding standards
 
-Rules for the `ns` CLI in `cli/`, and the checks that enforce them. Code that a check enforces cites the rule's section: `CODING_STANDARDS.md, "<heading>"`.
+Rules for the `ns` CLI in `cli/`, and the checks that enforce them. Code that a check enforces cites the rule's section: `CODING_STANDARDS.md, "<heading>"`. `cli/tests/standards.rs` fails on a citation that names no heading here.
 
 ## One path per dependency
 
