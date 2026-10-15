@@ -15,10 +15,26 @@ use crate::config::{self, ForgeKind};
 use crate::error::SfError;
 use crate::frontmatter;
 
+mod cycles;
+
+pub use cycles::Cycles;
+
 pub const FILE: &str = "nightshift.toml";
 
-/// The phases `ns run` drives, in pipeline order.
+/// The phases a factory definition configures, in pipeline order.
 pub const PHASES: &[&str] = &["triage", "build", "verify", "review", "ship"];
+
+/// The phases `ns run` runs, in pipeline order: [`PHASES`] and review's fix cycle, which runs
+/// with `[phases.review]`'s settings ([`config_phase`]).
+pub const RUN_PHASES: &[&str] = &["triage", "build", "verify", "review", "review-fix", "ship"];
+
+/// The phase whose `[phases.<name>]` settings a run of `phase` uses.
+pub fn config_phase(phase: &str) -> &str {
+    match phase {
+        "review-fix" => "review",
+        p => p,
+    }
+}
 
 /// The artifact each phase writes under `.ns/<unit>/`.
 pub fn artifact_of(phase: &str) -> &'static str {
@@ -27,6 +43,7 @@ pub fn artifact_of(phase: &str) -> &'static str {
         "build" => "build.md",
         "verify" => "evidence.md",
         "review" => "review.md",
+        "review-fix" => "fix.md",
         "ship" => "pr.md",
         _ => "unknown.md",
     }
@@ -258,6 +275,11 @@ pub struct Phase {
     pub runner: Option<String>,
     /// Build only: a shell command `ns run` runs in the worktree after build passes.
     pub gate: Option<String>,
+    /// Review only: the full fix cycles. Read leniently ([`Factory::cycles`]): a value that is
+    /// not a whole number from 0 up falls back to the default, with a warning.
+    pub full_cycles: Option<toml::Value>,
+    /// Review only: the fix-only cycles after the full ones, read like `full_cycles`.
+    pub fix_only_cycles: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -396,6 +418,7 @@ impl Factory {
             ),
             None => {}
         }
+        out.extend(self.cycle_warnings());
         if self.merge.auto() && self.merge.human_review.is_empty() {
             out.push(
                 "merge.policy = \"auto\" and merge.human_review is empty, so ns run merges every PR with no human, changes to CI config, hooks and .nightshift/** included (docs/factory/merge.md); list those paths in human_review".into(),
@@ -483,6 +506,7 @@ impl Factory {
                 }
                 _ => {}
             }
+            out.extend(self.cycle_problems(name));
             if let Some(r) = &p.runner {
                 if !self.runners.contains_key(r) {
                     out.push(format!(
@@ -686,7 +710,7 @@ pub fn render(template: &str, v: &PromptVars<'_>) -> String {
 
 /// The full prompt for a phase: the role's agent.md, else the built-in with feedback appended.
 pub fn prompt(root: &Path, v: &PromptVars<'_>) -> Result<String> {
-    match agent_template(root, v.phase)? {
+    match agent_template(root, config_phase(v.phase))? {
         Some(t) => Ok(render(&t, v)),
         None => {
             let mut s = render(BUILTIN_PROMPT, v);

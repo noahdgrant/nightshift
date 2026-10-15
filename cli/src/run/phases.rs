@@ -14,7 +14,8 @@ use crate::memcap::{self, Cap};
 use crate::proc::Kind;
 
 /// A phase's timeout. `NS_PHASE_TIMEOUT_MS` overrides it: `<ms>` for every phase, or
-/// comma-separated `<phase>=<ms>` for the named phases only.
+/// comma-separated `<phase>=<ms>` for the named phases only. A fix cycle takes review's when
+/// `review-fix` has none of its own.
 pub(super) fn phase_timeout(phase: &str, minutes: u64) -> Duration {
     let var = std::env::var("NS_PHASE_TIMEOUT_MS").ok();
     timeout_or_minutes(var.as_deref(), phase, minutes)
@@ -22,7 +23,9 @@ pub(super) fn phase_timeout(phase: &str, minutes: u64) -> Duration {
 
 /// The override for `phase` in `var`, else `minutes`.
 fn timeout_or_minutes(var: Option<&str>, phase: &str, minutes: u64) -> Duration {
-    timeout_override(var, phase).unwrap_or_else(|| Duration::from_secs(minutes * 60))
+    timeout_override(var, phase)
+        .or_else(|| timeout_override(var, crate::factory::config_phase(phase)))
+        .unwrap_or_else(|| Duration::from_secs(minutes * 60))
 }
 
 /// The override for `phase` in an `NS_PHASE_TIMEOUT_MS` value; a named entry beats a bare one.
@@ -281,5 +284,9 @@ mod tests {
             timeout_or_minutes(Some("build=5"), "build", 2),
             Duration::from_millis(5)
         );
+        let fix = |v| timeout_or_minutes(Some(v), "review-fix", 2).as_millis();
+        assert_eq!(fix("review=5"), 5);
+        assert_eq!(fix("review=5,review-fix=7"), 7);
+        assert_eq!(fix("build=5"), 120_000);
     }
 }

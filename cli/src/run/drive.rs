@@ -17,7 +17,7 @@ use super::merge::{merge_step, MergeStep};
 use super::phase_run::{run_phase, Ran, Undo};
 use super::post_phase::{guards, run_gate};
 use super::{finish, remote_default, Ctx, Finish, Outcome, RunArgs, Shared};
-use crate::factory::{artifact_of, Factory, PHASES};
+use crate::factory::{artifact_of, config_phase, Factory, RUN_PHASES};
 use crate::gate;
 
 /// What the driver's actions run with: the unit, the run's flags and shared state, and what the
@@ -71,13 +71,14 @@ pub(super) fn drive(
 /// The settings `core::step` decides with, from the factory and the run's flags.
 pub(super) fn settings(fac: &Factory, args: &RunArgs) -> Settings {
     Settings {
-        max_attempts: PHASES
+        max_attempts: RUN_PHASES
             .iter()
-            .map(|p| (*p, fac.phase(p).max_attempts))
+            .map(|p| (*p, fac.phase(config_phase(p)).max_attempts))
             .collect(),
         merge_auto: fac.merge.auto(),
         triage_only: args.triage_only,
         local_gate: fac.gate.local,
+        cycles: fac.cycles(),
     }
 }
 

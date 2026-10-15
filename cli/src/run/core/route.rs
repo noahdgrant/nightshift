@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use super::Ledger;
-use crate::factory::{artifact_of, LocalGate, PHASES};
+use crate::factory::{artifact_of, Cycles, LocalGate, RUN_PHASES};
 
 /// `a` and `b` name the same commit: one is a prefix of the other. The same rule as
 /// `git::same_sha`, kept here so the core needs no git module.
@@ -24,6 +24,9 @@ pub struct Art {
     pub invalid: Option<Vec<String>>,
     /// An `ns-artifact/2` file's `next`, which routes it; `None` for `/1`.
     pub next: Option<String>,
+    /// An `ns-artifact/2` review or fix artifact's `findings`: the open finding ids, or the ones a
+    /// fix cycle was handed.
+    pub findings: Vec<String>,
 }
 
 /// The factory settings a decision reads: plain data the shell copies from the factory definition
@@ -38,6 +41,8 @@ pub struct Settings {
     pub triage_only: bool,
     /// `[gate] local`.
     pub local_gate: LocalGate,
+    /// `[phases.review]`'s fix-cycle limits.
+    pub cycles: Cycles,
 }
 
 impl Settings {
@@ -63,7 +68,18 @@ pub struct State {
     /// and that changed few of the unit's own lines (CORE-1): evidence carries forward, and
     /// review runs over just that change. Filled by [`carry_forward`].
     pub carried: BTreeMap<&'static str, Carried>,
+    pub review: ReviewLoop,
     pub settings: Settings,
+}
+
+/// Where the unit's review loop stands, as the shell read it from `ns`'s record of the loop and
+/// from `review.md`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReviewLoop {
+    /// The fix cycles run since the loop's first review pass, from `review/cycles.json`.
+    pub fixes: u32,
+    /// The fix attempts each finding in `review.md` has had (its `Attempts:`); absent is 0.
+    pub attempts: BTreeMap<String, u32>,
 }
 
 /// The unit's diff ids (`git::diff_id`): HEAD's, and that of each sha an artifact names.
@@ -157,20 +173,110 @@ pub fn carry_forward(l: &Ledger, s: &State) -> BTreeMap<&'static str, Carried> {
 
 /// The phases whose artifacts are archived before `phase` runs: its own, and every downstream one
 /// that is not `pass` and current, or follows one that is archived. Whatever is left is current,
-/// so presence alone drives [`decide`].
+/// so presence alone drives [`decide`]. A review pass takes up `fix.md`, which is archived as it
+/// runs. Inside a review loop ([`in_review_loop`]) a pass updates `review.md` in place, so the
+/// pass and a verify between fix cycles keep it, and verify keeps `fix.md` for the pass after it.
 pub fn to_archive(phase: &str, s: &State) -> Vec<&'static str> {
-    let Some(i) = PHASES.iter().position(|p| *p == phase) else {
+    let Some(i) = RUN_PHASES.iter().position(|p| *p == phase) else {
         return vec![];
     };
-    let mut out = vec![PHASES[i]];
+    let in_loop = in_review_loop(s);
+    let held = |p: &str| match phase {
+        "review" => in_loop && p == "review",
+        "verify" => in_loop && matches!(p, "review" | "review-fix"),
+        _ => false,
+    };
+    let mut out = vec![];
     let mut cascading = true;
-    for p in &PHASES[i + 1..] {
+    for p in &RUN_PHASES[i..] {
+        if held(p) {
+            continue;
+        }
+        if *p == phase {
+            out.push(*p);
+            continue;
+        }
+        if *p == "review-fix" {
+            // Usually absent: only a pass's taking it up, or the cascade, archives it.
+            let taken_up = phase == "review" || !cascading;
+            if taken_up && s.arts.contains_key(p) {
+                out.push(*p);
+            }
+            continue;
+        }
         cascading = cascading && s.arts.get(p).is_some_and(|a| s.passes(a));
         if !cascading {
-            out.push(p);
+            out.push(*p);
         }
     }
     out
+}
+
+/// A review loop is under way: the last pass left findings for a fix cycle (`review.md` failed
+/// with `next: review`), whether that cycle has run (`fix.md`) or not. A cycle cut short after it
+/// committed leaves `review.md` stale, and the loop still holds.
+pub fn in_review_loop(s: &State) -> bool {
+    s.arts
+        .get("review")
+        .is_some_and(|a| a.status == "fail" && a.next.as_deref() == Some("review"))
+}
+
+/// The most fix attempts a finding gets: a fix-only cycle hands over only findings with fewer.
+pub const FIX_ATTEMPTS: u32 = 2;
+
+/// The kind of a fix cycle, and of the review pass after it; the first pass is `first`.
+fn cycle_kind(n: u32, c: Cycles) -> &'static str {
+    match n {
+        0 => "first",
+        n if n <= c.full => "full",
+        _ => "fix-only",
+    }
+}
+
+/// What a run of `phase` is in the review loop at `s`: its cycle number (a pass's is the fix
+/// cycle it follows), its kind, and whether it starts a new loop. `None` for other phases.
+pub fn review_run(phase: &str, s: &State) -> Option<(u32, &'static str, bool)> {
+    let c = s.settings.cycles;
+    match phase {
+        "review" if in_review_loop(s) => {
+            Some((s.review.fixes, cycle_kind(s.review.fixes, c), false))
+        }
+        "review" => Some((0, "first", true)),
+        "review-fix" => {
+            let n = s.review.fixes + 1;
+            Some((n, cycle_kind(n, c), false))
+        }
+        _ => None,
+    }
+}
+
+/// The fix cycle a review pass that left `review` open (`next: review`) gets: its number, kind
+/// and the finding ids it hands over. `Err` is the stuck reason when the cycle limit is reached.
+pub fn fix_cycle(review: &Art, s: &State) -> Result<(u32, &'static str, Vec<String>), String> {
+    let c = s.settings.cycles;
+    let n = s.review.fixes + 1;
+    let kind = cycle_kind(n, c);
+    let attempts = |id: &String| s.review.attempts.get(id).copied().unwrap_or(0);
+    let ids: Vec<String> = match kind {
+        "full" => review.findings.clone(),
+        _ if n <= c.full + c.fix_only => review
+            .findings
+            .iter()
+            .filter(|id| attempts(id) < FIX_ATTEMPTS)
+            .cloned()
+            .collect(),
+        _ => vec![],
+    };
+    if kind == "full" || !ids.is_empty() {
+        return Ok((n, kind, ids));
+    }
+    Err(format!(
+        "review.md has findings open after {} fix cycles (limit {} full, {} fix-only): {}",
+        s.review.fixes,
+        c.full,
+        c.fix_only,
+        review.findings.join(", ")
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -304,7 +410,7 @@ pub fn decide(s: &State) -> Decision {
 
 /// The first phase, in order, whose artifact is `blocked`.
 pub fn blocked(s: &State) -> Option<&'static str> {
-    PHASES
+    RUN_PHASES
         .iter()
         .copied()
         .find(|p| s.arts.get(p).is_some_and(|a| a.status == "blocked"))
@@ -338,6 +444,19 @@ fn decide_checks(s: &State) -> Option<Decision> {
             }
             None => {}
         }
+        if phase == "review" && in_review_loop(s) {
+            return Some(match s.arts.get("review-fix") {
+                Some(f) => after_fix(s, f),
+                None => match fix_cycle(a, s) {
+                    Ok((n, kind, ids)) => run(
+                        "review-fix",
+                        &fix_feedback(n, kind, &ids),
+                        format!("review.md has findings open: fix cycle {n} ({kind})"),
+                    ),
+                    Err(reason) => Decision::Stuck(reason),
+                },
+            });
+        }
         if !s.current(a.sha.as_deref().unwrap_or("")) {
             return Some(run(phase, "", stale_why(s, file, a)));
         }
@@ -354,6 +473,57 @@ fn decide_checks(s: &State) -> Option<Decision> {
         }
     }
     None
+}
+
+/// What follows a fix cycle's `fix.md`: the next review pass, or build or a human when it says so.
+fn after_fix(s: &State, f: &Art) -> Decision {
+    let n = s.review.fixes;
+    match f.next.as_deref() {
+        Some("build") => run(
+            "build",
+            &f.body,
+            format!("fix.md failed and names build: {}", first_line(&f.body)),
+        ),
+        Some("human") => Decision::Stuck(format!("fix.md needs a human: {}", first_line(&f.body))),
+        _ => run(
+            "review",
+            &pass_feedback(n, cycle_kind(n, s.settings.cycles), f),
+            format!("fix cycle {n} ran: review pass {n}"),
+        ),
+    }
+}
+
+/// What a fix cycle is told: which findings to fix, and what to write.
+fn fix_feedback(n: u32, kind: &str, ids: &[String]) -> String {
+    let which = if ids.is_empty() {
+        "the open Critical and Important findings in changed code".to_string()
+    } else {
+        ids.join(", ")
+    };
+    format!(
+        "Fix cycle {n} ({kind}). Fix these findings from review.md: {which}. Change no review.md; \
+         write fix.md (`phase: review-fix`, `next: review`) with `findings: [{}]`, the ids you were \
+         handed.",
+        ids.join(", ")
+    )
+}
+
+/// What the review pass after fix cycle `n` is told: update `review.md` in place, and how wide
+/// to look.
+fn pass_feedback(n: u32, kind: &str, f: &Art) -> String {
+    let scope = if kind == "fix-only" {
+        "This pass is fix-only: brief only the reviewers that raised a handed finding, with the \
+         fix-only section, and raise nothing new."
+    } else {
+        "Run the panel on the new diff, as a full pass."
+    };
+    format!(
+        "Review pass {n}, after fix cycle {n} ({kind}). Update review.md in place: add 1 to the \
+         Attempts of each finding the fix cycle was handed ({}), mark each one fixed or keep it \
+         open, and keep every finding's id. {scope}\nfix.md said: {}",
+        f.findings.join(", "),
+        first_line(&f.body)
+    )
 }
 
 /// Where a `pr.md` sends the unit: by its `next` when it is `ns-artifact/2`, else by the `/1`

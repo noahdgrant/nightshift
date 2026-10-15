@@ -12,6 +12,7 @@ fn art(status: &str, sha: &str) -> Art {
         body: format!("{status} body"),
         invalid: None,
         next: None,
+        findings: vec![],
     }
 }
 
@@ -591,4 +592,128 @@ fn a_v2_artifacts_next_routes_it() {
         panic!("a brief routed to define was built")
     };
     assert!(r.starts_with("triage routed the issue to define"), "{r}");
+}
+
+/// A unit mid review loop at `abc1234`: review.md left I1 open with one fix attempt, fix cycle 1
+/// wrote fix.md, and `ns`'s record holds the first pass and the fix.
+fn mid_loop(d: &Path) {
+    v2(
+        d,
+        "review.md",
+        "review",
+        "fail",
+        "findings_open",
+        "review",
+        "findings: [I1]\n",
+    );
+    let body = "\n## Important\n### I1. t\n- Location: `a.rs:1`\n- Scope: changed\n- Cycle: 0\n- Attempts: 1\n- Status: open\n### I2. u\n- Location: `a.rs:2`\n- Scope: changed\n- Cycle: 0\n- Status: open\n";
+    let text = fs::read_to_string(d.join("review.md")).unwrap();
+    fs::write(d.join("review.md"), text + body).unwrap();
+    v2(
+        d,
+        "fix.md",
+        "review-fix",
+        "pass",
+        "none",
+        "review",
+        "findings: [I1]\n",
+    );
+    for (phase, cycle, fresh) in [("review", 0, true), ("review-fix", 1, false)] {
+        let run = crate::review_runs::ReviewRun {
+            phase: phase.into(),
+            cycle,
+            kind: if cycle == 0 { "first" } else { "full" }.into(),
+            started: "2026-10-14T10:00:00Z".into(),
+            ended: "2026-10-14T10:05:00Z".into(),
+            sha: "abc1234".into(),
+        };
+        crate::review_runs::append(d, run, fresh).unwrap();
+    }
+}
+
+#[test]
+fn the_state_reads_fix_md_and_the_review_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    let s = read_state(d, "abc1234".into(), true, None, Settings::default());
+    let fix = &s.arts["review-fix"];
+    assert_eq!(fix.findings, ["I1"]);
+    assert_eq!(s.arts["review"].next.as_deref(), Some("review"));
+    assert_eq!(s.review.fixes, 1);
+    assert_eq!(s.review.attempts.get("I1"), Some(&1));
+    assert_eq!(
+        s.review.attempts.get("I2"),
+        Some(&0),
+        "no Attempts: is none yet"
+    );
+}
+
+#[test]
+fn inside_a_review_loop_verify_and_the_next_pass_keep_review_md() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    let s = read_state(d, "def5678".into(), true, None, Settings::default());
+    archive_for(d, "verify", &s).unwrap();
+    assert!(d.join("review.md").exists() && d.join("fix.md").exists());
+    let s = read_state(d, "def5678".into(), true, None, Settings::default());
+    let moves = archive_for(d, "review", &s).unwrap();
+    assert!(d.join("review.md").exists() && d.join(crate::review_runs::FILE).exists());
+    assert!(!d.join("fix.md").exists() && d.join("history/fix-1.md").exists());
+    restore(&moves);
+    assert!(d.join("fix.md").exists());
+}
+
+#[test]
+fn a_first_pass_archives_review_md_with_its_record_and_a_restore_puts_both_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    fs::remove_file(d.join("fix.md")).unwrap();
+    v2(d, "review.md", "review", "pass", "none", "ship", "");
+    let s = read_state(d, "def5678".into(), true, None, Settings::default());
+    let moves = archive_for(d, "review", &s).unwrap();
+    assert!(!d.join("review.md").exists() && !d.join(crate::review_runs::FILE).exists());
+    assert!(d.join("history/review-1.md").exists());
+    assert_eq!(
+        crate::review_runs::read_in(&d.join("history/review-1")).len(),
+        2
+    );
+    restore(&moves);
+    assert!(d.join("review.md").exists() && d.join(crate::review_runs::FILE).exists());
+    assert!(!d.join("history/review-1").exists());
+}
+
+#[test]
+fn a_build_ends_the_review_loop_and_archives_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    v2(d, "evidence.md", "verify", "pass", "none", "review", "");
+    let s = read_state(d, "def5678".into(), true, None, Settings::default());
+    archive_for(d, "build", &s).unwrap();
+    assert!(!d.join("review.md").exists() && !d.join("fix.md").exists());
+    assert!(d.join("history/review-1/cycles.json").is_file());
+    assert!(
+        !d.join("history/evidence-1").exists(),
+        "the record goes only with review.md"
+    );
+}
+
+#[test]
+fn review_run_numbers_each_pass_and_fix_cycle_of_the_loop() {
+    use crate::run::core::route::review_run;
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    mid_loop(d);
+    let mut s = read_state(d, "abc1234".into(), true, None, Settings::default());
+    assert_eq!(review_run("review", &s), Some((1, "full", false)));
+    assert_eq!(review_run("build", &s), None);
+    s.arts.remove("review-fix");
+    assert_eq!(review_run("review-fix", &s), Some((2, "full", false)));
+    s.review.fixes = 3;
+    assert_eq!(review_run("review-fix", &s), Some((4, "fix-only", false)));
+    s.arts.remove("review");
+    assert_eq!(review_run("review", &s), Some((0, "first", true)));
 }

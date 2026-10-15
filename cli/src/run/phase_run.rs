@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde_json::{json, Value};
 
+use super::core::route::review_run;
 use super::core::step::PhaseRan;
 use super::core::Admitted;
 use super::currency::{archive_as, archive_for, read_art, restore, State};
@@ -16,11 +17,13 @@ use super::locks::{Acquired, Bound, RunnerLocks};
 use super::phases::{phase_timeout, phase_tmpdir, run_harness};
 use super::{finish, Ctx, Finish, Outcome};
 use crate::billing;
+use crate::clock;
 use crate::eval::parser::{ClaudeStreamJson, OutputParser};
 use crate::factory::{self, artifact_of};
 use crate::gate;
 use crate::git;
 use crate::pin;
+use crate::review_runs::{self, ReviewRun};
 
 /// What came of an admitted phase.
 pub(super) enum Ran {
@@ -69,7 +72,8 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
     if adm.follows_base {
         ctx.log(json!({"event": "ship_after_base_moved", "attempt": attempt}));
     }
-    let p = ctx.fac.phase(phase);
+    let mut p = ctx.fac.phase(factory::config_phase(phase));
+    p.name = phase.to_string();
     let timeout = phase_timeout(phase, p.timeout_minutes);
     let held = match take_locks(io, adm, timeout)? {
         Ok(held) => held,
@@ -106,8 +110,9 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
     };
     env.push(("TMPDIR", tmp.to_string_lossy().into_owned()));
     pin::write_settings(&ctx.common, &ctx.unit, &ctx.env.ns)?;
+    let started = io.shared.clock.now();
     let r = run_harness(
-        &io.commands[phase],
+        &io.commands[factory::config_phase(phase)],
         &prompt,
         &ctx.worktree,
         &env,
@@ -133,6 +138,7 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
         transcript: &transcript,
         tmp: &tmp,
         timeout,
+        started,
     };
     record(io, state, adm, done, moves)
 }
@@ -253,6 +259,8 @@ struct Harnessed<'h> {
     transcript: &'h std::path::Path,
     tmp: &'h std::path::Path,
     timeout: std::time::Duration,
+    /// When the harness started, on the run's clock.
+    started: i64,
 }
 
 /// Account for a finished harness run: its spend, its artifact, its record in the run log.
@@ -305,6 +313,9 @@ fn record(
     let art_path = ctx.artifacts.join(artifact_of(phase));
     let art = read_art(&art_path);
     let written = art.is_some();
+    if art.as_ref().is_some_and(|a| a.invalid.is_none()) {
+        record_review_run(io, state, phase, h.started, &mut rec);
+    }
     if art.as_ref().is_some_and(|a| a.status == "pass") {
         // A failed phase's scratch files stay for a human to read, until `ns clean`. A pass
         // whose scratch dir will not go is logged, not failed: `ns clean` removes the leftover.
@@ -350,6 +361,29 @@ fn record(
         red_feedback: io.gate_state.red_feedback().map(String::from),
     };
     Ok(Ran::Phase(ran, Undo { moves, written }))
+}
+
+/// Add a review pass or fix cycle that wrote its artifact to `ns`'s record of the review loop,
+/// with the times `ns` saw, and name its cycle in the run log's `phase` event.
+fn record_review_run(io: &Io<'_, '_>, state: &State, phase: &str, started: i64, rec: &mut Value) {
+    let ctx = io.ctx;
+    let Some((cycle, kind, fresh)) = review_run(phase, state) else {
+        return;
+    };
+    let run = ReviewRun {
+        phase: phase.to_string(),
+        cycle,
+        kind: kind.to_string(),
+        started: clock::iso(started),
+        ended: clock::iso(io.shared.clock.now()),
+        sha: ctx.head(),
+    };
+    rec["review_cycle"] = json!({"cycle": cycle, "kind": kind});
+    if let Err(e) = review_runs::append(&ctx.artifacts, run, fresh) {
+        ctx.log(
+            json!({"event": "review_record_not_saved", "phase": phase, "error": format!("{e:#}")}),
+        );
+    }
 }
 
 /// A stop ended `phase`, or the gate run after it, before it was done: set aside what the phase

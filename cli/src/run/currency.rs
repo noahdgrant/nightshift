@@ -6,18 +6,18 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use super::core::route::{facts_wanted, to_archive, CarryFacts, Diffs, Settings};
+use super::core::route::{facts_wanted, to_archive, CarryFacts, Diffs, ReviewLoop, Settings};
 pub use super::core::route::{Art, State};
 use super::core::Ledger;
 use super::pr_number;
-use crate::factory::{artifact_of, PHASES};
+use crate::factory::{artifact_of, RUN_PHASES};
 use crate::frontmatter;
 use crate::git::{self, same_sha};
 
 /// The phase whose artifact `path` is, from its file name.
 fn phase_of_file(path: &Path) -> Option<&'static str> {
     let name = path.file_name()?.to_str()?;
-    PHASES.iter().copied().find(|p| artifact_of(p) == name)
+    RUN_PHASES.iter().copied().find(|p| artifact_of(p) == name)
 }
 
 /// Read an artifact. An `ns-artifact/2` file is read through its typed fields, and its body is
@@ -56,6 +56,7 @@ pub(super) fn read_art(path: &Path) -> Option<Art> {
         body,
         invalid: None,
         next: None,
+        findings: vec![],
     })
 }
 
@@ -73,13 +74,25 @@ fn typed_art(t: &crate::artifact::Typed, text: &str) -> Art {
         body: format!("{first}\n\n{rest}"),
         invalid: None,
         next: Some(t.next.as_str().to_string()),
+        findings: t.findings.clone(),
     }
 }
 
-/// Move `file` into `<dir>/history/<stem>-<n>.md`, n one past the highest already there.
+/// Move `file` into `<dir>/history/<stem>-<n>.md`, n one past the highest already there. An
+/// archived `review.md` takes `ns`'s record of its loop along, to `history/<stem>-<n>/`, where
+/// `ns quality` reads an archived attempt's cycle files.
 fn archive_file(dir: &Path, file: &str, moves: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
-    if let Some(dst) = archive_as(dir, file, file.trim_end_matches(".md"))? {
-        moves.push((dir.join(file), dst));
+    let Some(dst) = archive_as(dir, file, file.trim_end_matches(".md"))? else {
+        return Ok(());
+    };
+    moves.push((dir.join(file), dst.clone()));
+    let record = dir.join(crate::review_runs::FILE);
+    if file == artifact_of("review") && record.exists() {
+        let to = dst.with_extension("").join("cycles.json");
+        fs::create_dir_all(to.parent().unwrap_or(dir))?;
+        fs::rename(&record, &to)
+            .with_context(|| format!("cannot move {} to {}", record.display(), to.display()))?;
+        moves.push((record, to));
     }
     Ok(())
 }
@@ -116,6 +129,10 @@ pub(super) fn restore(moves: &[(PathBuf, PathBuf)]) {
     for (src, dst) in moves.iter().rev() {
         if !src.exists() {
             let _ = fs::rename(dst, src);
+            // The directory an archived review record went to holds nothing else.
+            if dst.file_name().is_some_and(|n| n == "cycles.json") {
+                let _ = dst.parent().map(fs::remove_dir);
+            }
         }
     }
 }
@@ -186,6 +203,7 @@ pub(super) fn read_state(
             head: git::diff_id(wt, base, &head),
             of: BTreeMap::new(),
         }),
+        review: review_loop(dir),
         head,
         settings,
         ..State::default()
@@ -199,10 +217,24 @@ pub(super) fn read_state(
     s
 }
 
+/// The unit's review loop: the fix cycles `ns`'s record holds, and each finding's fix attempts as
+/// `review.md` gives them.
+fn review_loop(dir: &Path) -> ReviewLoop {
+    let text = fs::read_to_string(dir.join(artifact_of("review"))).unwrap_or_default();
+    let body = frontmatter::split(&text).map_or(text.as_str(), |(_, b)| b);
+    ReviewLoop {
+        fixes: crate::review_runs::fixes(&crate::review_runs::read(dir)),
+        attempts: crate::review_md::parse(body)
+            .into_iter()
+            .map(|f| (f.id, f.fix_attempts.unwrap_or(0)))
+            .collect(),
+    }
+}
+
 /// The valid artifacts in `dir`, by phase.
 fn read_arts(dir: &Path) -> BTreeMap<&'static str, Art> {
     let mut arts = BTreeMap::new();
-    for p in PHASES {
+    for p in RUN_PHASES {
         if let Some(a) = read_art(&dir.join(artifact_of(p))).filter(|a| a.invalid.is_none()) {
             arts.insert(*p, a);
         }

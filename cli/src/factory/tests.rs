@@ -448,3 +448,60 @@ fn build_only_warns_only_when_the_owner_is_a_personal_account() {
     let every = parse("[gate]\nlocal = \"every-step\"\n").unwrap();
     assert_eq!(every.owner_warning(Some("User")), None);
 }
+
+#[test]
+fn review_cycles_come_from_phases_review_and_fall_back_to_three_full_and_two_fix_only() {
+    let d = Cycles {
+        full: 3,
+        fix_only: 2,
+    };
+    assert_eq!(parse("").unwrap().cycles(), d);
+    let set = parse("[phases.review]\nfull_cycles = 1\nfix_only_cycles = 0\n").unwrap();
+    assert_eq!(
+        set.cycles(),
+        Cycles {
+            full: 1,
+            fix_only: 0
+        }
+    );
+    assert!(set.warnings().is_empty(), "{:?}", set.warnings());
+    assert!(set.problems(None).is_empty(), "{:?}", set.problems(None));
+    let bad = parse("[phases.review]\nfull_cycles = -1\nfix_only_cycles = \"two\"\n").unwrap();
+    assert_eq!(bad.cycles(), d);
+    let w = bad.warnings();
+    assert_eq!(w.len(), 2, "{w:?}");
+    assert!(
+        w[0].contains("full_cycles = -1") && w[0].contains("default, 3"),
+        "{w:?}"
+    );
+    assert!(
+        w[1].contains("fix_only_cycles = \"two\"") && w[1].contains("default, 2"),
+        "{w:?}"
+    );
+    assert!(bad.problems(None).is_empty(), "{:?}", bad.problems(None));
+}
+
+#[test]
+fn cycle_limits_outside_phases_review_are_problems() {
+    let f = parse("[phases.build]\nfull_cycles = 2\n[phases.ship]\nfix_only_cycles = 1\n").unwrap();
+    let p = f.problems(None);
+    assert!(
+        p.iter()
+            .any(|x| x
+                == "phase build: full_cycles is only read for review; move it to [phases.review]"),
+        "{p:?}"
+    );
+    assert!(
+        p.iter().any(|x| x
+            == "phase ship: fix_only_cycles is only read for review; move it to [phases.review]"),
+        "{p:?}"
+    );
+}
+
+#[test]
+fn review_fix_runs_with_reviews_settings_and_writes_fix_md() {
+    assert_eq!(config_phase("review-fix"), "review");
+    assert_eq!(config_phase("build"), "build");
+    assert_eq!(artifact_of("review-fix"), "fix.md");
+    assert!(RUN_PHASES.iter().all(|p| PHASES.contains(&config_phase(p))));
+}
