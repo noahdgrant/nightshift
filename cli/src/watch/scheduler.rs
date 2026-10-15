@@ -22,7 +22,7 @@ mod settle;
 mod update;
 
 use self::child::{signal, spawn, SIGTERM};
-use super::core::fill::{Holds, Kind, Stopping};
+use super::core::fill::{Disk, Holds, Kind, Stopping};
 use super::core::red::Red;
 use super::core::settle::pause_until;
 use super::self_update::{Built, SelfUpdate};
@@ -175,6 +175,8 @@ pub(super) struct Scheduler<'a> {
     childless: BTreeSet<u64>,
     /// Ready issues held back tonight for overlapping a running unit.
     holds: Holds,
+    /// What the night remembers of free disk space.
+    disk: Disk,
 }
 
 impl<'a> Scheduler<'a> {
@@ -195,6 +197,7 @@ impl<'a> Scheduler<'a> {
             red: Red::default(),
             childless: BTreeSet::new(),
             holds: Holds::default(),
+            disk: Disk::default(),
         }
     }
 
@@ -236,10 +239,10 @@ impl<'a> Scheduler<'a> {
             }
             if self.running.is_empty() {
                 let Some(reset) = self.paused_until.filter(|_| self.may_resume()) else {
-                    // Nothing runs, but a build may yet give the night a newer ns to hand off to.
-                    if self.stopping.is_none()
-                        && self.plan.update.as_ref().is_some_and(|u| u.building())
-                    {
+                    // Nothing runs, but a build may yet give the night a newer ns to hand off to,
+                    // or a refill find the disk space a unit waits for.
+                    let building = self.plan.update.as_ref().is_some_and(|u| u.building());
+                    if self.stopping.is_none() && (building || self.disk.waiting()) {
                         match self.next(night) {
                             Wake::Built(b) => self.built(b, night, tonight),
                             Wake::Refill => next_fill = Kind::Refill,
