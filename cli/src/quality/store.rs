@@ -20,6 +20,23 @@ pub fn tracking(remote: &str) -> String {
 pub const RETRIES: u32 = 3;
 /// Why records stay in the outbox under `[quality] remote = "none"`.
 pub const NO_REMOTE: &str = "[quality] remote = \"none\" keeps the records in the outbox";
+
+/// Where [`publish`] sends records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dest<'a> {
+    /// Fetch and push this remote's branch.
+    Remote(&'a str),
+    /// Keep them in the outbox, and say why.
+    Outbox(String),
+}
+
+impl Dest<'_> {
+    /// `[quality] remote = "none"`.
+    pub fn none() -> Dest<'static> {
+        Dest::Outbox(NO_REMOTE.into())
+    }
+}
+
 pub fn outbox(common: &Path) -> PathBuf {
     common.join("ns").join("quality-outbox.jsonl")
 }
@@ -86,7 +103,11 @@ fn fallback_identity(c: &mut Proc, known: bool) {
 pub fn fetch(root: &Path, remote: &str) -> Result<Option<String>> {
     let head = format!("refs/heads/{BRANCH}");
     let track = tracking(remote);
-    let args = ["ls-remote", "--exit-code", remote, head.as_str()];
+    let known = git::run(root, &["remote"]).unwrap_or_default();
+    if !known.lines().any(|r| r == remote) {
+        bail!("no remote named {remote:?} in this repository (git remote get-url {remote})");
+    }
+    let args = ["ls-remote", "--exit-code", "--", remote, head.as_str()];
     let out = net(root, &args).output().context("failed to run git")?;
     if out.status.code() == Some(2) {
         let _ = git::run(root, &["update-ref", "-d", &track]);
@@ -102,7 +123,7 @@ pub fn fetch(root: &Path, remote: &str) -> Result<Option<String>> {
     let have = git::run(root, &["rev-parse", "--verify", "--quiet", &track]).ok();
     if have.as_deref() != Some(sha.as_str()) {
         let spec = format!("+{head}:{track}");
-        let args = ["fetch", "--quiet", "--no-tags", remote, spec.as_str()];
+        let args = ["fetch", "--quiet", "--no-tags", "--", remote, spec.as_str()];
         let out = net(root, &args).output().context("failed to run git")?;
         if !out.status.success() {
             return Err(fail(&args, &out.stderr));
@@ -183,7 +204,14 @@ fn behind(porcelain: &str) -> bool {
 
 fn push(root: &Path, remote: &str, commit: &str) -> Pushed {
     let spec = format!("{commit}:refs/heads/{BRANCH}");
-    let args = ["push", "--porcelain", "--no-verify", remote, spec.as_str()];
+    let args = [
+        "push",
+        "--porcelain",
+        "--no-verify",
+        "--",
+        remote,
+        spec.as_str(),
+    ];
     let out = match net(root, &args).output() {
         Ok(o) => o,
         Err(e) => return Pushed::Failed(anyhow::Error::new(e).context("failed to run git")),
@@ -243,15 +271,15 @@ fn write_outbox(p: &Path, lines: &[String]) -> Result<()> {
 /// race. When that still fails, any other push or fetch error, or no such remote, the lines
 /// wait in the outbox for the next call. With no remote (`[quality] remote = "none"`) they go
 /// to the outbox and nothing is fetched or pushed.
-pub fn publish(root: &Path, common: &Path, remote: Option<&str>, lines: &[String]) -> Result<Sent> {
-    publish_with(root, common, remote, lines, &mut |_| {})
+pub fn publish(root: &Path, common: &Path, dest: Dest<'_>, lines: &[String]) -> Result<Sent> {
+    publish_with(root, common, dest, lines, &mut |_| {})
 }
 
 /// [`publish`], calling `before_push` with the try number (1-based) between fetch and push.
 pub fn publish_with(
     root: &Path,
     common: &Path,
-    remote: Option<&str>,
+    dest: Dest<'_>,
     lines: &[String],
     before_push: &mut dyn FnMut(u32),
 ) -> Result<Sent> {
@@ -270,14 +298,17 @@ pub fn publish_with(
     if pending.is_empty() {
         return Ok(Sent::Nothing);
     }
-    let Some(remote) = remote else {
-        if !lines.is_empty() {
-            write_outbox(&ob, &pending)?;
+    let remote = match dest {
+        Dest::Remote(r) => r,
+        Dest::Outbox(reason) => {
+            if !lines.is_empty() {
+                write_outbox(&ob, &pending)?;
+            }
+            return Ok(Sent::Outbox {
+                records: pending.len(),
+                reason,
+            });
         }
-        return Ok(Sent::Outbox {
-            records: pending.len(),
-            reason: NO_REMOTE.into(),
-        });
     };
     let mut reason = String::new();
     for try_no in 1..=1 + RETRIES {
@@ -326,7 +357,7 @@ mod tests {
     use super::*;
     use crate::testutil::{commit_file, g, write_exe};
 
-    const O: Option<&str> = Some("origin");
+    const O: Dest<'static> = Dest::Remote("origin");
 
     struct Setup {
         _tmp: tempfile::TempDir,
@@ -681,7 +712,7 @@ mod tests {
             &["remote", "add", "records", records.to_str().unwrap()],
         );
         let c = common(&s.repo);
-        let sent = publish(&s.repo, &c, Some("records"), &lines(&["x"])).unwrap();
+        let sent = publish(&s.repo, &c, Dest::Remote("records"), &lines(&["x"])).unwrap();
         assert_eq!(
             sent,
             Sent::Pushed {
@@ -720,13 +751,34 @@ mod tests {
     fn a_missing_named_remote_waits_in_the_outbox_naming_it() {
         let s = setup();
         let c = common(&s.repo);
-        let sent = publish(&s.repo, &c, Some("records"), &lines(&["x"])).unwrap();
+        let sent = publish(&s.repo, &c, Dest::Remote("records"), &lines(&["x"])).unwrap();
         let Sent::Outbox { records, reason } = sent else {
             panic!("{sent:?}")
         };
         assert_eq!(records, 1);
         assert!(reason.contains("records"), "{reason}");
         assert_eq!(fs::read_to_string(outbox(&c)).unwrap(), "x\n");
+    }
+
+    #[test]
+    fn a_remote_name_git_would_read_as_an_option_creates_nothing_and_waits_in_the_outbox() {
+        let s = setup();
+        let c = common(&s.repo);
+        let evil = "--upload-pack=touch pwned";
+        let sent = publish(&s.repo, &c, Dest::Remote(evil), &lines(&["x"])).unwrap();
+        assert!(matches!(sent, Sent::Outbox { records: 1, .. }), "{sent:?}");
+        assert!(fetch(&s.repo, evil).is_err());
+        assert!(!s.repo.join("pwned").exists());
+        assert!(!Path::new("pwned").exists());
+        assert_eq!(fs::read_to_string(outbox(&c)).unwrap(), "x\n");
+    }
+
+    #[test]
+    fn a_url_is_not_a_remote_name() {
+        let s = setup();
+        let url = s.remote.to_str().unwrap();
+        let err = fetch(&s.repo, url).unwrap_err();
+        assert!(format!("{err:#}").contains("no remote named"), "{err:#}");
     }
 
     #[test]
@@ -740,8 +792,10 @@ mod tests {
             &["remote", "set-url", "origin", "/nonexistent/remote.git"],
         );
         let mut pushes = 0;
-        let sent =
-            publish_with(&s.repo, &c, None, &lines(&["a", "b"]), &mut |_| pushes += 1).unwrap();
+        let sent = publish_with(&s.repo, &c, Dest::none(), &lines(&["a", "b"]), &mut |_| {
+            pushes += 1
+        })
+        .unwrap();
         assert_eq!(pushes, 0);
         assert_eq!(
             sent,
@@ -751,7 +805,7 @@ mod tests {
             }
         );
         assert_eq!(fs::read_to_string(outbox(&c)).unwrap(), "a\nb\n");
-        let sent = publish(&s.repo, &c, None, &lines(&["c"])).unwrap();
+        let sent = publish(&s.repo, &c, Dest::none(), &lines(&["c"])).unwrap();
         assert!(matches!(sent, Sent::Outbox { records: 3, .. }), "{sent:?}");
         assert_eq!(fs::read_to_string(outbox(&c)).unwrap(), "a\nb\nc\n");
         assert!(!git::ok(
@@ -765,14 +819,17 @@ mod tests {
     fn no_remote_and_nothing_new_leaves_the_outbox_untouched() {
         let s = setup();
         let c = common(&s.repo);
-        assert_eq!(publish(&s.repo, &c, None, &[]).unwrap(), Sent::Nothing);
+        assert_eq!(
+            publish(&s.repo, &c, Dest::none(), &[]).unwrap(),
+            Sent::Nothing
+        );
         assert!(!outbox(&c).exists());
         fs::create_dir_all(c.join("ns")).unwrap();
         fs::write(outbox(&c), "a\n").unwrap();
         // A rewrite renames a new file over it, which changes the inode.
         let inode = || std::os::unix::fs::MetadataExt::ino(&fs::metadata(outbox(&c)).unwrap());
         let before = inode();
-        let sent = publish(&s.repo, &c, None, &[]).unwrap();
+        let sent = publish(&s.repo, &c, Dest::none(), &[]).unwrap();
         assert!(matches!(sent, Sent::Outbox { records: 1, .. }), "{sent:?}");
         assert_eq!(fs::read_to_string(outbox(&c)).unwrap(), "a\n");
         assert_eq!(inode(), before);

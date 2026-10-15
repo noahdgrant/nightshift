@@ -1203,16 +1203,51 @@ fn an_import_to_a_missing_named_remote_waits_in_the_outbox_and_names_the_remote(
 }
 
 #[test]
-fn a_factory_file_that_does_not_load_reads_the_records_from_origin() {
+fn a_factory_file_that_does_not_load_is_not_a_reason_to_read_or_push_origin() {
     let f = fixture();
-    with_origin(&f);
+    let origin = with_origin(&f);
     write(
         f.root.join(".nightshift/nightshift.toml"),
         "[quality]\nremote = \"none\"\nbroken = [\n",
     );
     let v = quality(&f, &[]);
-    assert_eq!(v["records"]["remote"], "origin");
-    assert_eq!(v["records"]["fetched"], true);
+    assert_eq!(v["records"]["remote"], "none");
+    assert_eq!(v["records"]["fetched"], Value::Null);
+    let why = v["records"]["remote_error"].as_str().unwrap();
+    assert!(why.contains("did not load"), "{why}");
+    let wts = f.root.with_file_name("myrepo.worktrees");
+    let out = ns()
+        .current_dir(&f.root)
+        .args(["quality", "import"])
+        .arg(&wts)
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("did not load"));
+    assert!(!has_ref(&origin, "refs/heads/nightshift/quality"));
+}
+
+#[test]
+fn a_remote_name_that_looks_like_a_git_option_runs_nothing() {
+    let f = fixture();
+    with_origin(&f);
+    set_quality_remote(&f, "--upload-pack=touch pwned");
+    let v = quality(&f, &[]);
+    assert_eq!(v["records"]["fetched"], Value::Null);
+    assert!(v["records"]["remote_error"].as_str().is_some(), "{v}");
+    assert!(!f.root.join("pwned").exists());
+    let wts = f.root.with_file_name("myrepo.worktrees");
+    let out = ns()
+        .current_dir(&f.root)
+        .args(["quality", "import"])
+        .arg(&wts)
+        .output();
+    assert_ne!(out.status.code(), Some(0));
+    assert!(!f.root.join("pwned").exists());
 }
 
 #[test]

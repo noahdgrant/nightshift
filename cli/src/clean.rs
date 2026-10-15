@@ -461,7 +461,11 @@ fn sweep(repo: &Repo, by: &str, merged: &[Merged]) -> (Value, Vec<(Merged, Outco
         .zip(&metas)
         .map(|(m, meta)| (m.path.as_path(), meta))
         .collect();
-    let (ev, unsaved) = quality::record_units(repo, &units);
+    let (ev, unsaved) = quality::record_units(
+        repo,
+        &quality::Where::of(&factory::root(None, &repo.root)),
+        &units,
+    );
     run::log_event(&repo.common_dir, ev.clone());
     for ((m, unsaved), lock) in merged.iter().zip(unsaved).zip(locks) {
         let o = match unsaved {
