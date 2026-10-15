@@ -185,25 +185,33 @@ fn cleanup_between_units_leaves_the_worktree_of_a_unit_still_running() {
     e.ready(2, "Fix a", &["type:fix"], "");
     let entered = e.ctrl.join("entered-setup");
     let go = e.ctrl.join("go-setup");
-    mkfifo(&entered);
-    mkfifo(&go);
+    let go_2 = e.ctrl.join("go-setup-2");
+    let looked = e.ctrl.join("looked");
+    for f in [&entered, &go, &go_2, &looked] {
+        mkfifo(f);
+    }
+    // Unit 2's setup waits for unit 3's, so unit 2 can only end, and cleanup only run after it,
+    // once unit 3's worktree looks merged.
     let setup = format!(
         "if [ \"$NS_UNIT\" = 3-done ]; then sed -i 's/OPEN/CLOSED/' \"$FAKE_GH_DIR/issue-3.json\"; \
-         echo MERGED > \"$FAKE_GH_DIR/pr-30.state\"; echo in > {entered:?}; cat {go:?} > /dev/null; fi"
+         echo MERGED > \"$FAKE_GH_DIR/pr-30.state\"; echo in > {entered:?}; cat {go:?} > /dev/null; \
+         else cat {go_2:?} > /dev/null; fi"
     );
     e.factory(&format!("[worktree]\nsetup = [{setup:?}]\n"));
-    let mut w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
-    // Unit 3 holds its run lock in setup while unit 2 runs to its end and cleanup runs after it.
-    w.entered(&entered);
-    w.line("ns watch: #2 done (worker");
-    let looked = e.ctrl.join("looked");
-    mkfifo(&looked);
+    // In place before watch starts, since cleanup may look the moment unit 2 ends. Only a look
+    // once the PR is merged counts, which is cleanup's after unit 2.
     e.gh_file(
         "hook.sh",
         &format!(
-            "[ \"$*\" = \"pr view 30 --json state,headRefOid,headRefName,body\" ] && echo x > {looked:?}\n"
+            "[ \"$*\" = \"pr view 30 --json state,headRefOid,headRefName,body\" ] && \
+             [ \"$(cat \"$FAKE_GH_DIR/pr-30.state\" 2>/dev/null)\" = MERGED ] && echo x > {looked:?}\n"
         ),
     );
+    let mut w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
+    // Unit 3 holds its run lock in setup while unit 2 runs to its end and cleanup runs after it.
+    w.entered(&entered);
+    release(&go_2);
+    w.line("ns watch: #2 done (worker");
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let _ = tx.send(fs::read_to_string(&looked));

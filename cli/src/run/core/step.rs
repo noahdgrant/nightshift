@@ -354,6 +354,10 @@ fn guarded(l: &mut Ledger, s: &State, a: Admitted, ran: &PhaseRan, g: GuardFacts
         }
         return Action::Decide;
     }
+    let wrote_no_fix = ran.cut_short() || ran.exit != Some(0) || ran.artifact.is_none();
+    if phase == "review-fix" && wrote_no_fix && l.cut_short_gate_fix() {
+        return Action::Decide;
+    }
     match gate_trigger(
         phase,
         ran.artifact.as_deref(),

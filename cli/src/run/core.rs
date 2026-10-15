@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::factory::RUN_PHASES;
-use route::{decide, rebases_for_base, run, same_sha, Decision, State};
+use route::{decide, gate_fix, rebases_for_base, run, same_sha, Decision, State};
 
 pub mod gate;
 pub mod guard;
@@ -154,6 +154,10 @@ pub struct Ledger {
     /// HEAD when the ledger was last saved, which a forced decision was made against.
     #[serde(default)]
     head: Option<String>,
+    /// The gate-driven fix cycle the last decision ran, so a run that wrote no valid fix.md can be retried as it.
+    /// Not saved: the retry is forced before the turn ends.
+    #[serde(skip)]
+    gate_fix_run: Option<Forced>,
     /// Where [`step::step`] is in the current turn. Not saved: a restart decides afresh.
     #[serde(skip)]
     turn: Option<step::Turn>,
@@ -176,6 +180,10 @@ struct Forced {
     phase: String,
     feedback: String,
     why: String,
+    /// A fix cycle for a red gate on review's commits, which the review loop's limits still bound
+    /// when it runs.
+    #[serde(default)]
+    gate_fix: bool,
 }
 
 /// The `RUN_PHASES` entry named `p`, so a deserialized name becomes the `'static` phase again.
@@ -225,6 +233,7 @@ impl Ledger {
                 phase: phase.to_string(),
                 feedback,
                 why,
+                gate_fix: false,
             });
             self.forced_rebase = rebase;
         }
@@ -233,7 +242,13 @@ impl Ledger {
     /// The decision to act on: a forced one, else the state table's, with the free rebase it
     /// makes.
     pub fn next(&mut self, s: &State) -> (Decision, Option<Rebase>) {
+        self.gate_fix_run = None;
         match self.forced.take() {
+            Some(f) if f.gate_fix => {
+                let d = gate_fix(s, &f.feedback, &f.why);
+                self.gate_fix_run = Some(f);
+                (d, None)
+            }
             Some(f) => (
                 run(phase_named(&f.phase), &f.feedback, f.why),
                 self.forced_rebase.take(),
@@ -451,6 +466,14 @@ impl Ledger {
         if self.rewritten.insert(a.phase.to_string()) {
             self.rewrite = Some(a.phase.to_string());
         }
+        if let Some(f) = self.gate_fix_run.take().filter(|_| a.phase == "review-fix") {
+            self.forced = Some(Forced {
+                feedback: format!("{}\n\n{feedback}", f.feedback),
+                ..f
+            });
+            self.forced_rebase = None;
+            return;
+        }
         self.force(run(a.phase, &feedback, format!("{file} is invalid")), None);
     }
 
@@ -513,10 +536,25 @@ impl Ledger {
         );
     }
 
+    /// A gate-driven fix cycle that wrote no fix.md (cut short, crashed or silent) runs again as the
+    /// same cycle, with the gate's feedback.
+    /// False when the run was not one.
+    pub fn cut_short_gate_fix(&mut self) -> bool {
+        match self.gate_fix_run.take() {
+            Some(f) => {
+                self.forced = Some(f);
+                self.forced_rebase = None;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The gate after `a` went red. `moved_since` is true when `a` was a `BaseMoved` rebuild
     /// and the default branch moved again since, which earns one more free rebase. `culprit` is
-    /// the phase whose commits the failure points at, when the driver found one: a phase other
-    /// than build makes the build that fixes it free.
+    /// the phase whose commits the failure points at, when the driver found one. Review's or a
+    /// fix cycle's commits go back to a review fix cycle; another phase's other than build make
+    /// the build that fixes it free.
     pub fn gate_red(
         &mut self,
         a: &Admitted,
@@ -530,10 +568,13 @@ impl Ledger {
             self.last_failure.insert("build".into(), k);
         }
         self.fault_of = None;
+        let mut review_caused = false;
         if let Some(m) = culprit.and_then(|i| self.moved.get_mut(i)) {
             m.blamed = true;
-            if m.phase != "build" {
-                self.fault_of = Some(m.phase.clone());
+            match m.phase.as_str() {
+                "build" => {}
+                "review" | "review-fix" => review_caused = true,
+                p => self.fault_of = Some(p.to_string()),
             }
         }
         if moved_since {
@@ -548,6 +589,16 @@ impl Ledger {
                 );
                 return;
             }
+        }
+        if review_caused {
+            self.forced = Some(Forced {
+                phase: "review-fix".into(),
+                feedback: feedback.into(),
+                why: reason,
+                gate_fix: true,
+            });
+            self.forced_rebase = None;
+            return;
         }
         self.force(run("build", feedback, reason), None);
     }
