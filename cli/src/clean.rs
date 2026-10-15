@@ -464,6 +464,9 @@ fn sweep(repo: &Repo, by: &str, merged: &[Merged]) -> (Value, Vec<(Merged, Outco
     if merged.is_empty() {
         return (Value::Null, done);
     }
+    // This write replaces the record `ns run` wrote when the unit ended, so it carries the
+    // same conflicts. Their events were logged then, and are not logged twice.
+    let base = repo.default_base().unwrap_or_else(|_| "main".into());
     let metas: Vec<Meta> = merged
         .iter()
         .map(|m| Meta {
@@ -471,6 +474,7 @@ fn sweep(repo: &Repo, by: &str, merged: &[Merged]) -> (Value, Vec<(Merged, Outco
             issue: m.issue,
             pr: Some(m.pr),
             outcome: Some("merged".into()),
+            conflicts: quality::conflicts::detect(&m.path, &base, "HEAD").conflicts,
         })
         .collect();
     let units: Vec<(&Path, &Meta)> = merged

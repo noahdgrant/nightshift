@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use super::artifacts::sha;
 use super::blame::{self, Blame};
+use super::conflicts::Conflict;
 use super::metrics::{self, Attempt, RunStats, Unit};
 use crate::clock;
 use crate::review_md::{CycleEntry, Finding, Pass, Scope, Severity, Status};
@@ -88,6 +89,10 @@ pub struct Record {
     /// start and end (#446). Absent from records of loops the review agent drove.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_runs: Vec<ReviewRun>,
+    /// The merge commits on the unit's branch whose parents conflicted, the same on each of a
+    /// write's records (#615). Absent when none did, and from records written before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<Conflict>,
 }
 
 /// What `ns run` knows about a unit beyond its review artifacts.
@@ -97,6 +102,7 @@ pub struct Meta {
     pub issue: Option<u64>,
     pub pr: Option<u64>,
     pub outcome: Option<String>,
+    pub conflicts: Vec<Conflict>,
 }
 
 /// The issue number a unit id starts with (`142-uart-timeout`), if any.
@@ -225,6 +231,7 @@ pub fn build(
                     .collect(),
                 passes: a.passes.clone(),
                 review_runs: a.review_runs.clone(),
+                conflicts: meta.conflicts.clone(),
             };
             check_private(&serde_json::to_value(&r)?)?;
             Ok(r)
@@ -405,6 +412,7 @@ mod tests {
             issue: Some(1),
             pr: Some(12),
             outcome: Some("merged".into()),
+            conflicts: Vec::new(),
         }
     }
 
@@ -452,6 +460,39 @@ mod tests {
         assert_eq!(rs[0].first_pass_file[0].axes, ["performance"]);
         assert!(!v.to_string().contains("Drops the record"), "{v}");
         assert!(v.get("review_runs").is_none(), "{v}");
+        assert!(v.get("conflicts").is_none(), "{v}");
+        let (back, bad) = parse(&v.to_string());
+        assert_eq!((back[0].clone(), bad), (rs[1].clone(), 0));
+    }
+
+    #[test]
+    fn each_record_carries_the_units_conflicts_and_reads_them_back() {
+        let mut m = meta();
+        m.conflicts = vec![Conflict {
+            merge: "abc1234".into(),
+            paths: vec!["src/a.rs".into(), "src/b.rs".into()],
+        }];
+        let rs = build(&m, &attempts(), 0, Path::new("/nonexistent")).unwrap();
+        for r in &rs {
+            let v = serde_json::to_value(r).unwrap();
+            assert_eq!(
+                v["conflicts"],
+                serde_json::json!([{"merge": "abc1234", "paths": ["src/a.rs", "src/b.rs"]}])
+            );
+            let (back, bad) = parse(&v.to_string());
+            assert_eq!((&back[0], bad), (r, 0));
+        }
+    }
+
+    #[test]
+    fn a_conflict_on_an_absolute_path_fails_the_record() {
+        let mut m = meta();
+        m.conflicts = vec![Conflict {
+            merge: "abc1234".into(),
+            paths: vec!["/srv/a.rs".into()],
+        }];
+        let e = build(&m, &attempts(), 0, Path::new("/nonexistent")).unwrap_err();
+        assert!(format!("{e}").contains("absolute path"), "{e}");
     }
 
     #[test]
@@ -768,6 +809,7 @@ mod tests {
         assert!(rs[0].findings[0].dismissed_raises.is_empty());
         assert_eq!(rs[0].findings[0].missed_by, None);
         assert!(rs[0].passes.is_empty());
+        assert!(rs[0].conflicts.is_empty());
         assert!(units(&rs)[0].last().passes.is_empty());
         assert_eq!(units(&rs)[0].last().findings[0].fix_attempts, None);
     }
