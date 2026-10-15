@@ -10,7 +10,7 @@ Prints `{ok,command,baseline,commands,findings,baselined,new,fixed,pruned}`; `fi
 
 ## `ns rules baseline [--allow-growth] [--dry-run] [--human]`
 
-Runs the rule pack as `ns rules check` does and writes every current violation to `.nightshift/rules-baseline.json`, dropping the entries that are gone. A violation the baseline lacks, every one when there is no baseline yet, is growth: without `--allow-growth` it writes nothing and exits 1. A rerun with nothing added or dropped writes nothing, and `--dry-run` prints what would change without writing. `--allow-growth` is a human accepting debt, never an agent.
+Runs the rule pack as `ns rules check` does and writes every current violation to `.nightshift/rules-baseline.json`, dropping the entries that are gone. A violation the baseline lacks, every one when there is no baseline yet, is growth: without `--allow-growth` it writes nothing and exits 1. A rerun that would leave the file byte for byte the same writes nothing, and `--dry-run` prints what would change without writing. `--allow-growth` is a human accepting debt, never an agent.
 
 Prints `{ok,command,status,dry_run,baseline,commands,violations,added,dropped}`; `status` is `written`, `planned`, `already-done` or `refused`. `--human` prints one readable line per added or dropped violation instead of JSON. Exits 0 on success, 1 when growth is refused or a command failed, and 2 when there is no `rules` row or it is not in a git repo.
 
