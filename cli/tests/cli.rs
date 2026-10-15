@@ -3817,3 +3817,105 @@ fn artifact_check_usage_errors_exit_2() {
             "possible values: triage, troubleshoot, build, verify, review, review-fix, ship",
         ));
 }
+
+/// A repo on branch `ns/u`, one commit past `main` that changes `src/a.py`, with
+/// `.ns/u/brief.md` naming `base: main` and `.ns/u/build.md` holding `risk` under Open risks.
+fn build_artifact_in_unit(risk: &str) -> (TempDir, PathBuf) {
+    let (tmp, root) = repo();
+    git(&root, &["checkout", "-q", "-b", "ns/u"]);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/a.py"), "x = 1\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "feat: a"]);
+    let dir = root.join(".ns/u");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brief.md"), "---\nbase: main\n---\nbrief\n").unwrap();
+    let build = dir.join("build.md");
+    fs::write(
+        &build,
+        format!(
+            "---\nschema: ns-artifact/2\nunit: u\nphase: build\nstatus: pass\ncause: none\nnext: verify\nsha: abc1234\nupdated: 2026-10-08T21:14:00Z\n---\n## Open risks\n{risk}\n"
+        ),
+    )
+    .unwrap();
+    (tmp, build)
+}
+
+#[test]
+fn artifact_check_build_rejects_an_untagged_file_line_on_a_touched_file() {
+    let check = |risk: &str| {
+        let (_tmp, build) = build_artifact_in_unit(risk);
+        let out = ns()
+            .args([
+                "artifact",
+                "check",
+                build.to_str().unwrap(),
+                "--phase",
+                "build",
+            ])
+            .output();
+        (out.status.code(), json(&out.stdout))
+    };
+    let (code, v) = check("- file: off by one: src/a.py:1, x is 1");
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        v["errors"],
+        serde_json::json!([
+            "a `file:` line names `src/a.py`, which this unit's diff touches: fix it in the unit, or tag the line `unrelated: <reason>` or `too-big: <lines>`"
+        ])
+    );
+    for ok in [
+        "- file: off by one: src/a.py:1, unrelated: the parser, not this feature",
+        "- file: off by one: src/a.py:1, too-big: 240",
+        "- file: stale intro: README:1",
+        "- note: src/a.py has an untested path",
+    ] {
+        let (code, v) = check(ok);
+        assert_eq!(code, Some(0), "{ok}: {v}");
+    }
+}
+
+#[test]
+fn artifact_check_build_finds_the_base_and_keeps_the_other_errors() {
+    let misfiled = "a `file:` line names `src/a.py`, which this unit's diff touches: fix it in the unit, or tag the line `unrelated: <reason>` or `too-big: <lines>`";
+    let (_tmp, build) = build_artifact_in_unit("- file: off by one: src/a.py:1");
+    // With no brief.md the base is the repo's default branch, origin's HEAD, and the written
+    // phase is enough.
+    fs::remove_file(build.with_file_name("brief.md")).unwrap();
+    let root = build.parent().unwrap().parent().unwrap().parent().unwrap();
+    git(root, &["update-ref", "refs/remotes/origin/main", "main"]);
+    git(
+        root,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+    let text = fs::read_to_string(&build).unwrap();
+    fs::write(&build, text.replace("cause: none", "cause: flaky")).unwrap();
+    let out = ns()
+        .args(["artifact", "check", build.to_str().unwrap()])
+        .output();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        json(&out.stdout)["errors"],
+        serde_json::json!([
+            "`cause: flaky` is not one of none, findings_open, criteria_failed, gate_red, base_moved, denied, needs_human, out_of_scope",
+            misfiled,
+        ])
+    );
+    // Outside a git repo there is no diff to hold the line against.
+    let dir = tempfile::tempdir().unwrap();
+    let alone = dir.path().join("build.md");
+    fs::write(&alone, text).unwrap();
+    ns().args([
+        "artifact",
+        "check",
+        alone.to_str().unwrap(),
+        "--phase",
+        "build",
+    ])
+    .assert()
+    .code(0);
+}

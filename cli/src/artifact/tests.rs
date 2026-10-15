@@ -604,3 +604,45 @@ fn names_round_trip() {
     );
     assert_eq!(serde_json::to_value(Schema::V2).unwrap(), "ns-artifact/2");
 }
+
+#[test]
+fn a_file_line_naming_a_touched_file_needs_a_tag() {
+    let touched = [
+        "src/inventory/warehouse.py".to_string(),
+        "README.md".to_string(),
+    ];
+    let errors = |body: &str| misfiled(body, &touched);
+    let want = |path: &str| {
+        vec![format!(
+            "a `file:` line names `{path}`, which this unit's diff touches: fix it in the unit, or tag the line `unrelated: <reason>` or `too-big: <lines>`"
+        )]
+    };
+    assert_eq!(
+        errors("## Open risks\n- file: stock_levels counts expired reservations: src/inventory/warehouse.py:40, status shows 2\n"),
+        want("src/inventory/warehouse.py")
+    );
+    assert_eq!(errors("file: stale intro: README.md.\n"), want("README.md"));
+    assert_eq!(errors("- file: x: `README.md`\n"), want("README.md"));
+    // Tagged lines pass.
+    assert!(
+        errors("- file: x: src/inventory/warehouse.py:40, unrelated: a different feature\n")
+            .is_empty()
+    );
+    assert!(errors("- file: x: src/inventory/warehouse.py:40, too-big: 300\n").is_empty());
+    // A tag needs its value.
+    assert_eq!(
+        errors("- file: x: README.md, unrelated:\n"),
+        want("README.md")
+    );
+    assert_eq!(
+        errors("- file: x: README.md, too-big: lots\n"),
+        want("README.md")
+    );
+    // Untouched files, longer names, other kinds of line and prose pass.
+    assert!(errors("- file: x: src/inventory/stock.py:9\n").is_empty());
+    assert!(errors("- file: x: src/inventory/warehouse.pyc and docs/README.md\n").is_empty());
+    assert!(errors("- note: src/inventory/warehouse.py has an untested path\n").is_empty());
+    assert!(errors("- filed: #12 src/inventory/warehouse.py\n").is_empty());
+    assert!(errors("A file: src/inventory/warehouse.py in prose\n").is_empty());
+    assert!(misfiled("- file: x: README.md\n", &[]).is_empty());
+}

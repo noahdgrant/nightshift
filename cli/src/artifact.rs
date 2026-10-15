@@ -13,6 +13,7 @@ use serde_yaml::Value;
 
 use crate::error::SfError;
 use crate::frontmatter;
+use crate::git;
 
 pub const SCHEMA_V2: &str = "ns-artifact/2";
 pub const SCHEMA_V1: &str = "ns-artifact/1";
@@ -413,6 +414,29 @@ fn check_consistency(
     }
 }
 
+/// One error per build `file:` line that names a file in `touched`, the unit's diff, without an
+/// `unrelated: <reason>` or `too-big: <lines>` tag: a pre-existing bug in a touched file is the
+/// unit's to fix.
+pub fn misfiled(body: &str, touched: &[String]) -> Vec<String> {
+    let tagged = Regex::new(r"\bunrelated:\s*\S|\btoo-big:\s*\d").expect("valid regex");
+    let names = |line: &str, path: &str| {
+        Regex::new(&format!(
+            r"(?:^|[^\w./-]){}(?:$|[^\w/.-]|\.(?:$|[^\w]))",
+            regex::escape(path)
+        ))
+        .expect("valid regex")
+        .is_match(line)
+    };
+    body.lines()
+        .map(|l| l.trim_start().trim_start_matches(['-', '*']).trim_start())
+        .filter(|l| l.starts_with("file:") && !tagged.is_match(l))
+        .filter_map(|l| touched.iter().find(|p| names(l, p)))
+        .map(|p| format!(
+            "a `file:` line names `{p}`, which this unit's diff touches: fix it in the unit, or tag the line `unrelated: <reason>` or `too-big: <lines>`"
+        ))
+        .collect()
+}
+
 /// The body's first non-empty line: `/1`'s one-sentence reason. A heading marker is dropped and
 /// its text kept.
 pub fn first_line(body: &str) -> String {
@@ -551,6 +575,22 @@ pub fn read(text: &str, phase: Phase) -> Result<Typed, Vec<String>> {
     }
 }
 
+/// The files the diff of the unit whose artifact is `file` touches: from its base, which is
+/// `base:` in the `brief.md` beside it, else the repo's default branch, to `HEAD`. Empty outside
+/// a git repo or when the base is not a commit there.
+fn touched(file: &Path) -> Vec<String> {
+    let dir = match file.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let base = fs::read_to_string(dir.join("brief.md"))
+        .ok()
+        .and_then(|b| frontmatter::field(&b, "base"))
+        .or_else(|| git::Repo::discover(dir).ok()?.default_base().ok());
+    base.and_then(|b| git::unit_files(dir, &b, "HEAD"))
+        .unwrap_or_default()
+}
+
 /// `ns artifact check`: print the result as JSON; exit 0 valid, 1 invalid, 2 unreadable file.
 pub fn cli(file: &Path, phase: Option<&str>) -> Result<ExitCode> {
     let text = fs::read_to_string(file).map_err(|e| {
@@ -559,8 +599,18 @@ pub fn cli(file: &Path, phase: Option<&str>) -> Result<ExitCode> {
             "ns artifact check .ns/$NS_UNIT/evidence.md --phase verify",
         )
     })?;
-    let result = check(&text, phase);
     let as_written = |k: &str| frontmatter::field(&text, k);
+    let mut result = check(&text, phase);
+    if phase.or(as_written("phase").as_deref()) == Some(Phase::Build.as_str()) {
+        let body = frontmatter::split(&text).map_or(text.as_str(), |(_, body)| body);
+        let misfiled = misfiled(body, &touched(file));
+        if !misfiled.is_empty() {
+            result = Err(match result {
+                Ok(_) => misfiled,
+                Err(errors) => errors.into_iter().chain(misfiled).collect(),
+            });
+        }
+    }
     let out = match &result {
         Ok(t) => serde_json::json!({
             "ok": true,

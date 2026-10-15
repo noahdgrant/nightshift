@@ -312,6 +312,13 @@ fn unit_lines(cwd: &Path, base: &str, sha: &str) -> Option<Vec<String>> {
     lines(sha)
 }
 
+/// The files `sha`'s own changes touch, from [`unit_start`], as `git diff --name-only` names them.
+pub fn unit_files(cwd: &Path, base: &str, sha: &str) -> Option<Vec<String>> {
+    let start = unit_start(cwd, base, sha)?;
+    let out = run(cwd, &["diff", "--name-only", &start, sha]).ok()?;
+    Some(out.lines().map(str::to_string).collect())
+}
+
 /// Where `sha`'s own changes start: the newest common ancestor of `sha` with `base` and with every
 /// commit merged into `sha` since that is already in the base. A merge of the base brings in its
 /// newer commits even when the `base` ref is behind them, as after `git pull origin <base>`; a
