@@ -864,6 +864,53 @@ fn the_gate_after_build_commits_a_lowered_value() {
     assert!(log.contains("\"baseline_pruned\""), "{log}");
 }
 
+/// main holds a.c and b.c, each reporting a baselined `clippy::too_many_lines` finding of 221
+/// lines; the build commit runs `edit`.
+fn two_finding_pack(edit: &str) -> Env {
+    let e = Env::new();
+    for f in ["a.c", "b.c"] {
+        fs::write(e.root.join(f), "221\n").unwrap();
+    }
+    write_exe(
+        &e.root.join("lint.sh"),
+        "#!/bin/sh\nfor f in a.c b.c; do [ -f \"$f\" ] || continue; printf '{\"tool\":\"clippy\",\"rule\":\"clippy::too_many_lines\",\"file\":\"%s\",\"line\":1,\"message\":\"this function has too many lines (%s/100) (quality bar)\",\"snippet\":\"fn x() {\"}\\n' \"$f\" \"$(cat \"$f\")\"; done\n",
+    );
+    fs::create_dir_all(e.root.join("docs/agents")).unwrap();
+    let row = "| Task | Command |\n|---|---|\n| rules | `./lint.sh` | 1 s |\n";
+    fs::write(e.root.join("docs/agents/stack.md"), row).unwrap();
+    let entry = |f: &str| {
+        serde_json::json!({"tool": "clippy", "rule": "clippy::too_many_lines", "file": f,
+            "message": "this function has too many lines (221/100) (quality bar)", "snippet": "fn x() {"})
+    };
+    let baseline = serde_json::json!({"version": 1, "violations": [entry("a.c"), entry("b.c")]});
+    fs::create_dir_all(e.root.join(".nightshift")).unwrap();
+    fs::write(
+        e.root.join(".nightshift/rules-baseline.json"),
+        serde_json::to_string_pretty(&baseline).unwrap() + "\n",
+    )
+    .unwrap();
+    git(&e.root, &["add", "."]);
+    git(&e.root, &["commit", "-q", "-m", "rule pack"]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+    e.ctl("edit", &format!("{edit} && echo unit >> work.txt"));
+    e.queue("build", &["pass:commit"]);
+    e
+}
+
+/// #746: one prune that both drops a fixed entry and lowers a shrunk value reports both.
+#[test]
+fn the_gate_after_build_reports_a_drop_and_a_lowering_together() {
+    let e = two_finding_pack("echo 100 > a.c && rm b.c && git add a.c b.c");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let g = gate_events(&e);
+    let log = fs::read_to_string(g[0]["log"].as_str().unwrap()).unwrap();
+    assert!(log.contains("\"pruned\": 1") && log.contains("\"lowered\": 1"), "{log}");
+    assert!(log.contains("dropped 1 fixed entries and lowered 1 values"), "{log}");
+    let head = git(&e.worktree(UNIT), &["show", "HEAD:.nightshift/rules-baseline.json"]);
+    assert!(head.contains("(100/100)") && !head.contains("b.c"), "{head}");
+}
+
 #[test]
 fn a_gate_with_nothing_fixed_commits_nothing() {
     let e = baselined_pack("true");
