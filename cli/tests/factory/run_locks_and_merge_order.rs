@@ -4,11 +4,7 @@
 /// main, reported as `UNKNOWN` for one view while GitHub works that out.
 fn merges_in_order(e: &Env, prs: &[u64]) {
     let go = e.ctrl.join("go");
-    assert!(StdCommand::new("mkfifo")
-        .arg(&go)
-        .status()
-        .unwrap()
-        .success());
+    mkfifo(&go);
     let others: Vec<String> = prs.iter().map(u64::to_string).collect();
     e.gh_file(
         "hook.sh",
@@ -307,11 +303,7 @@ struct Interrupted {
 /// A fifo under `ctrl` that [`blocks`] writes to.
 fn fifo(e: &Env) -> PathBuf {
     let f = e.ctrl.join("blocked.fifo");
-    assert!(StdCommand::new("mkfifo")
-        .arg(&f)
-        .status()
-        .unwrap()
-        .success());
+    mkfifo(&f);
     f
 }
 
@@ -830,7 +822,7 @@ impl Blocked {
         let entered = e.ctrl.join("entered");
         let go = e.ctrl.join("go");
         for f in [&entered, &go] {
-            assert!(StdCommand::new("mkfifo").arg(f).status().unwrap().success());
+            mkfifo(f);
         }
         e.queue("verify", &["pass:script"]);
         e.ctl(

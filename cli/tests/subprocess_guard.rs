@@ -35,7 +35,7 @@ impl Grandchild {
     fn new(dir: &Path) -> Grandchild {
         let (held, ready) = (dir.join("held"), dir.join("ready"));
         for f in [&held, &ready] {
-            assert!(StdCommand::new("mkfifo").arg(f).status().unwrap().success());
+            common::mkfifo(f);
         }
         let (tx, closed) = mpsc::channel();
         let f = held.clone();
@@ -354,4 +354,30 @@ fn only_proc_and_the_probe_helper_lift_the_ban_in_src() {
         .collect();
     lifted.sort();
     assert_eq!(lifted, ["src/proc.rs", "src/testutil.rs"]);
+}
+
+/// Every test makes its fifos with [`common::mkfifo`], which fails with `mkfifo`'s stderr.
+#[test]
+fn only_common_runs_mkfifo() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    rust_files_outside_common(&manifest.join("tests"), &mut files);
+    let call = concat!("(\"mk", "fifo\")");
+    let mut direct: Vec<String> = files
+        .iter()
+        .filter(|p| fs::read_to_string(p).unwrap().contains(call))
+        .map(|p| p.strip_prefix(manifest).unwrap().display().to_string())
+        .collect();
+    direct.sort();
+    assert!(direct.is_empty(), "use common::mkfifo in {direct:?}");
+}
+
+#[test]
+fn mkfifo_fails_with_its_stderr_on_an_existing_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("f");
+    common::mkfifo(&f);
+    let err = std::panic::catch_unwind(|| common::mkfifo(&f)).unwrap_err();
+    let msg = err.downcast_ref::<String>().unwrap();
+    assert!(msg.contains("File exists"), "{msg}");
 }

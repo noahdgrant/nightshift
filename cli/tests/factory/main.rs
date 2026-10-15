@@ -18,7 +18,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use common::{copy_exe, exits, write_exe, Group, Ns};
+use common::{copy_exe, exits, mkfifo, write_exe, Group, Ns};
 use factory_env::{
     another_actor_lands_linked, git, queued, reasons, run_log, unit_with_pr, units_in, Env,
     FAKE_TOKEN, FINDING, NOW, READY, SQUASH_B, UNIT,
