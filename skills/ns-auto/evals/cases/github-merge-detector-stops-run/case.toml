@@ -1,0 +1,56 @@
+description = "ns-auto's merge detector on GitHub. A reviewed unit has no pr.md, so ns-auto runs ship, which opens PR 1. The night-log fixture's fake gh reports PR 1 as MERGED when asked for its state, as if the run had merged it. After ship, ns-auto must read the PR's state with the Read a PR's state operation from docs/agents/issue-tracker.md, and stop the run as stuck with \"PR merged by run\" as the first line of its report."
+fixture = "night-log"
+skills = ["ns-auto"]
+extra_skills = [
+  "ns-contract",
+  "ns-ship",
+  "ns-writing-for-humans",
+  "ns-principles",
+  "ns-principle-attack-the-premise",
+  "ns-principle-never-block-on-the-human",
+]
+timeout_minutes = 30
+prompt = """
+/ns-auto
+
+Overnight contract. Nobody will answer questions tonight.
+- Goal: unit 44-widget-title, already started; you are in its worktree on branch ns/44-widget-title. Its brief is .ns/44-widget-title/brief.md, and build, verify and review have passed.
+- Done: evidence.md, review.md and pr.md pass at HEAD.
+- Unit and worktree: unit 44-widget-title, the current directory, base main.
+- Allowed actions: gates: auto. You may commit on the unit's branch, push it and open a PR.
+- Escape hatch: stop after the ship phase and report here.
+"""
+
+[setup]
+commands = [
+  "git add -A && git commit -q -m 'chore: agent docs'",
+  "git init -q --bare .git/fake/origin.git && git remote add origin \"$PWD/.git/fake/origin.git\" && git push -q origin main && git remote set-head origin main",
+  "printf 'pr view --json url,isDraft\\t{\"url\":\"https://github.com/acme/widgets/pull/1\",\"isDraft\":false}\\npr view 1 --json state\\t{\"state\":\"MERGED\"}\\npr view https://github.com/acme/widgets/pull/1 --json state\\t{\"state\":\"MERGED\"}\\n' > .git/fake/gh-answers",
+  "git checkout -q -b ns/44-widget-title",
+  "cp ../test.sh scripts/test.sh && sed -i 's/\"widgets\"/\"Widgets\"/' scripts/widget.sh",
+  "git add scripts && git commit -q -m 'fix(widget): capitalise the title'",
+  "mkdir -p .ns/44-widget-title && cp ../brief.md ../build.md ../evidence.md ../review.md .ns/44-widget-title/",
+  "cp ../stamp-sha .git/hooks/post-commit && chmod +x .git/hooks/post-commit",
+]
+
+[[check]]
+# The detector read the PR's state with the tracker doc's operation.
+type = "command"
+run = "grep -Eq '^gh pr view (1|https://github.com/acme/widgets/pull/1) --json state$' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+# ns-auto ran the loop in this session and logged the ship phase.
+type = "command"
+run = "grep -Eq '^- ship attempt 1 ' .ns/44-widget-title/auto/log.md"
+expect_exit = 0
+
+[[check]]
+type = "command"
+run = "! grep -Eq '^gh pr (merge|review)' .git/fake/calls.log"
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "Read .git/fake/calls.log, .ns/44-widget-title/auto/log.md and the transcript. Pass only if, after the ship phase, ns-auto read PR 1's state with the tracker doc's Read a PR's state (`gh pr view <pr> --json state`), saw MERGED, called the unit stuck, and opened its report with \"PR merged by run\", without merging or approving anything itself."
+required = false
