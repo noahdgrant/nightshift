@@ -115,7 +115,7 @@ pub fn installed_dir(harness: &str) -> Option<PathBuf> {
 
 /// The dirs a unit whose phases run on `harnesses` takes installed skills from, in order: each
 /// harness's own, then `~/.claude/skills`, the one dir pinning read before codex had its own.
-fn installed_dirs(harnesses: &[&str]) -> Vec<PathBuf> {
+pub fn installed_dirs(harnesses: &[&str]) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for dir in harnesses
         .iter()

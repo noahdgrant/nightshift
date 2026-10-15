@@ -1245,6 +1245,35 @@ fn doctor_reports_config() {
 }
 
 #[test]
+fn doctor_reports_where_pinning_looks_for_installed_skills_per_harness() {
+    let home = tempfile::tempdir().unwrap();
+    let v = doctor_report(
+        ns().current_dir(home.path())
+            .env("HOME", home.path())
+            .arg("doctor")
+            .assert()
+            .get_output(),
+    );
+    let dir = |d: &str| home.path().join(d).to_string_lossy().into_owned();
+    let (claude, agents) = (dir(".claude/skills"), dir(".agents/skills"));
+    assert_eq!(
+        v["harnesses"]["claude"]["skills_from"],
+        serde_json::json!([claude])
+    );
+    assert_eq!(
+        v["harnesses"]["codex"]["skills_from"],
+        serde_json::json!([agents, claude])
+    );
+    for h in ["cursor-agent", "gemini", "opencode"] {
+        assert_eq!(
+            v["harnesses"][h]["skills_from"],
+            serde_json::json!([claude]),
+            "{h}"
+        );
+    }
+}
+
+#[test]
 fn doctor_reports_whether_phases_get_a_private_tmp() {
     let tmp = tempfile::tempdir().unwrap();
     let bin = tmp.path().join("bin");
@@ -1252,14 +1281,20 @@ fn doctor_reports_whether_phases_get_a_private_tmp() {
     let doctor = |bwrap: &str| {
         common::write_exe(&bin.join("bwrap"), format!("#!/bin/sh\n{bwrap}\n"));
         let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-        doctor_report(
+        let v = doctor_report(
             ns().current_dir(tmp.path())
                 .env("PATH", path)
                 .arg("doctor")
                 .assert()
                 .get_output(),
-        )["private_tmp"]
-            .clone()
+        );
+        for h in ["claude", "codex", "cursor-agent", "gemini", "opencode"] {
+            assert_eq!(
+                v["harnesses"][h]["private_tmp"], v["private_tmp"]["isolated"],
+                "{h}"
+            );
+        }
+        v["private_tmp"].clone()
     };
     assert_eq!(
         doctor("exit 0"),
