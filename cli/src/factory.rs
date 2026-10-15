@@ -554,10 +554,8 @@ impl Factory {
             "queue.overlap_ignore",
             &self.queue.overlap_ignore,
         ));
-        if let Some(b) = self.limits.budget_usd {
-            if b < 0.0 {
-                out.push("limits.budget_usd must not be negative".into());
-            }
+        if self.limits.budget_usd.is_some_and(|b| b < 0.0) {
+            out.push("limits.budget_usd must not be negative".into());
         }
         if self.limits.memory_mb == Some(0) {
             out.push("limits.memory_mb must be at least 1; remove it for no cap".into());
