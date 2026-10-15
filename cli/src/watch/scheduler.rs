@@ -16,6 +16,8 @@ mod child;
 mod fill;
 pub(super) mod overlap;
 mod red;
+#[cfg(test)]
+mod scenarios;
 mod settle;
 mod update;
 

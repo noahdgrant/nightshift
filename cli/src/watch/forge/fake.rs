@@ -18,6 +18,10 @@ use crate::watch::Issue;
 /// and the labels it created, in order. A call named in `fails` fails, and so does listing the
 /// open issues under a label in `broken_labels`. One fake for every in-process test of `ns watch`
 /// and `ns status`.
+///
+/// With `live`, the fake lists what its edits made: an issue under the labels `labels` holds for
+/// it (else its own), none it closed, and each issue it filed, unless `unlisted_filed`. The PR
+/// labels added and removed (`(pr, label, added)`) and the PR comments are kept in order.
 #[derive(Default)]
 pub struct FakeForge {
     pub issues: Vec<Issue>,
@@ -39,6 +43,54 @@ pub struct FakeForge {
     pub green: Option<String>,
     pub green_fails: bool,
     pub filed: RefCell<Vec<(String, String, Vec<String>)>>,
+    pub live: bool,
+    pub unlisted_filed: bool,
+    pub pr_labels: RefCell<Vec<(u64, String, bool)>>,
+    pub pr_comments: RefCell<Vec<(u64, String)>>,
+}
+
+impl FakeForge {
+    /// Every issue the fake knows, as `open_issues` lists it: with `live`, under its labels now
+    /// and with the issues filed.
+    fn listed(&self) -> Vec<Issue> {
+        if !self.live {
+            return self.issues.clone();
+        }
+        let labels = self.labels.borrow();
+        let filed = self.filed.borrow();
+        let filed = filed
+            .iter()
+            .enumerate()
+            .map(|(k, (title, body, ls))| Issue {
+                number: 100 + k as u64,
+                title: title.clone(),
+                labels: ls.clone(),
+                body: body.clone(),
+                team: true,
+            });
+        let filed = filed.filter(|_| !self.unlisted_filed);
+        self.issues
+            .iter()
+            .cloned()
+            .chain(filed)
+            .filter(|i| {
+                !self.closes.borrow().contains(&i.number) && !self.closed.contains(&i.number)
+            })
+            .map(|mut i| {
+                if let Some(ls) = labels.get(&i.number) {
+                    i.labels = ls.clone();
+                }
+                i
+            })
+            .collect()
+    }
+
+    fn fail(&self, call: &str) -> Result<()> {
+        if self.fails.contains(call) {
+            anyhow::bail!("HTTP 502");
+        }
+        Ok(())
+    }
 }
 
 impl Forge for FakeForge {
@@ -50,10 +102,9 @@ impl Forge for FakeForge {
             anyhow::bail!("gh: not logged in");
         }
         Ok(self
-            .issues
-            .iter()
+            .listed()
+            .into_iter()
             .filter(|i| label.is_none_or(|l| i.labels.iter().any(|x| x == l)))
-            .cloned()
             .collect())
     }
     fn labelled_issues(&self, _: &str) -> Result<Vec<Filed>> {
@@ -68,7 +119,7 @@ impl Forge for FakeForge {
     fn is_closed(&self, n: u64) -> Result<bool> {
         match n {
             99 => anyhow::bail!("unreadable"),
-            _ => Ok(self.closed.contains(&n)),
+            _ => Ok(self.closed.contains(&n) || (self.live && self.closes.borrow().contains(&n))),
         }
     }
     fn issue_link(&self, _: u64) -> Result<IssueLink> {
@@ -135,23 +186,37 @@ impl Forge for FakeForge {
         self.closes.borrow_mut().push(n);
         Ok(())
     }
-    fn add_pr_label(&self, _: u64, _: &str) -> Result<()> {
+    fn add_pr_label(&self, pr: u64, label: &str) -> Result<()> {
+        self.fail("add_pr_label")?;
+        self.pr_labels.borrow_mut().push((pr, label.into(), true));
         Ok(())
     }
-    fn remove_pr_label(&self, _: u64, _: &str) -> Result<()> {
+    fn remove_pr_label(&self, pr: u64, label: &str) -> Result<()> {
+        self.fail("remove_pr_label")?;
+        self.pr_labels.borrow_mut().push((pr, label.into(), false));
         Ok(())
     }
-    fn comment_pr(&self, _: u64, _: &Post) -> Result<()> {
+    fn comment_pr(&self, pr: u64, body: &Post) -> Result<()> {
+        self.fail("comment_pr")?;
+        self.pr_comments
+            .borrow_mut()
+            .push((pr, body.as_str().into()));
         Ok(())
     }
     fn main_checks(&self) -> Result<HeadChecks> {
+        self.fail("main_checks")?;
         Ok(self.main.clone())
     }
     fn create_issue(&self, title: &str, body: &Post, labels: &[&str]) -> Result<u64> {
+        self.fail("create_issue")?;
         let mut filed = self.filed.borrow_mut();
-        let labels = labels.iter().map(|l| l.to_string()).collect();
+        let labels: Vec<String> = labels.iter().map(|l| l.to_string()).collect();
+        let number = 100 + filed.len() as u64;
+        if self.live {
+            self.labels.borrow_mut().insert(number, labels.clone());
+        }
         filed.push((title.into(), body.as_str().into(), labels));
-        Ok(100 + filed.len() as u64 - 1)
+        Ok(number)
     }
     fn check_log(&self, log: &str) -> Result<String> {
         match self.logs.get(log) {
