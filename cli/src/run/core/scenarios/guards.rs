@@ -87,9 +87,9 @@ fn a_red_gate_after_a_verify_commit_goes_back_to_build_before_review() {
     );
 }
 
-/// A red gate naming a file review's commit changed blames review: the build that fixes it is
-/// free, so a build with one attempt still runs it. Naming a file nobody changed blames no one,
-/// and build is out of attempts.
+/// A red gate naming a file review's commit changed blames review: a fix cycle fixes it, and
+/// build, with one attempt, never runs again. Naming a file nobody changed blames no one, and
+/// build is out of attempts.
 #[test]
 fn a_red_gate_naming_a_file_a_review_commit_changed_costs_build_no_attempt() {
     let run = |output: &str| {
@@ -98,13 +98,14 @@ fn a_red_gate_naming_a_file_a_review_commit_changed_costs_build_no_attempt() {
         s.gate(&[Ok(()), Err(output)]);
         s.queue("build", &["pass:commit+touch=src/a.rs", "pass:commit"]);
         s.queue("review", &["pass:commit+touch=src/b.rs", "pass"]);
+        s.queue("review-fix", &["pass:commit+next=review"]);
         s.run()
     };
     let r = run("error: src/b.rs:3:1: mismatched types");
     assert_eq!(r.outcome, Outcome::Done, "{r:?}");
     assert_eq!(
         &r.calls()[..5],
-        ["triage", "build", "verify", "review", "build"]
+        ["triage", "build", "verify", "review", "review-fix"]
     );
     let r = run("error: src/c.rs:3:1: mismatched types");
     assert_eq!(r.outcome, Outcome::Stuck, "{r:?}");

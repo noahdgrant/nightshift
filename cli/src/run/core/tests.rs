@@ -344,21 +344,21 @@ fn suspect(l: &Ledger, phase: &str) -> Option<usize> {
 }
 
 #[test]
-fn a_red_gate_review_caused_makes_the_fixing_build_free() {
+fn a_red_gate_ship_caused_makes_the_fixing_build_free() {
     let mut l = Ledger::new(None);
     for _ in 0..2 {
         let a = admit(&mut l, "build").unwrap();
         ended(&mut l, &a, Some("fail"));
     }
-    let r = admit(&mut l, "review").unwrap();
+    let r = admit(&mut l, "ship").unwrap();
     ended(&mut l, &r, Some("pass"));
-    l.head_moved("review", "a000001", "b000002");
-    let who = suspect(&l, "review");
+    l.head_moved("ship", "a000001", "b000002");
+    let who = suspect(&l, "ship");
     l.gate_red(&r, "red", "the CI gate failed".into(), None, false, who);
     let (d, _) = l.next(&empty());
     assert_eq!(d, run("build", "red", "the CI gate failed"));
-    let a = admit(&mut l, "build").expect("build's attempts are spent, but this one is review's");
-    assert_eq!(a.fault_of.as_deref(), Some("review"));
+    let a = admit(&mut l, "build").expect("build's attempts are spent, but this one is ship's");
+    assert_eq!(a.fault_of.as_deref(), Some("ship"));
     ended(&mut l, &a, Some("pass"));
     l.head_moved("build", "b000002", "c000003");
     let who = suspect(&l, "build");
@@ -367,6 +367,82 @@ fn a_red_gate_review_caused_makes_the_fixing_build_free() {
         admit(&mut l, "build").is_err(),
         "a red build caused is charged to build"
     );
+}
+
+/// A ledger whose last gate went red on a review commit, at HEAD `abc1234`.
+fn red_on_review(culprit: &str) -> Ledger {
+    let mut l = Ledger::new(None);
+    let r = admit(&mut l, "review").unwrap();
+    ended(&mut l, &r, Some("pass"));
+    l.head_moved(culprit, "a000001", "abc1234");
+    let who = suspect(&l, culprit);
+    l.gate_red(&r, "red", "the CI gate failed".into(), None, false, who);
+    l
+}
+
+#[test]
+fn a_red_gate_review_caused_runs_a_fix_cycle_and_frees_no_build() {
+    for culprit in ["review", "review-fix"] {
+        let mut l = red_on_review(culprit);
+        let (d, rebase) = l.next(&empty());
+        let Decision::Run {
+            phase,
+            feedback,
+            why,
+        } = d
+        else {
+            panic!("{d:?}")
+        };
+        assert_eq!(
+            (phase, why.as_str(), rebase),
+            ("review-fix", "the CI gate failed: fix cycle 1 (full)", None)
+        );
+        assert!(feedback.ends_with("\n\nred"), "{feedback}");
+        let a = admit(&mut l, "build").unwrap();
+        assert_eq!(a.fault_of, None, "no build is review's");
+    }
+}
+
+#[test]
+fn a_red_gate_review_caused_counts_the_loop_s_cycles() {
+    let mut s = empty();
+    s.settings.cycles = crate::factory::Cycles {
+        full: 1,
+        fix_only: 1,
+    };
+    s.review.fixes = 1;
+    let (d, _) = red_on_review("review").next(&s);
+    assert!(
+        matches!(&d, Decision::Run { why, .. } if why.ends_with("fix cycle 2 (fix-only)")),
+        "{d:?}"
+    );
+    s.review.fixes = 2;
+    assert_eq!(
+        red_on_review("review").next(&s).0,
+        Decision::LoopSpent(
+            "the CI gate failed, and the review loop has used its 2 fix cycles (limit 1 full, 1 \
+             fix-only)"
+                .into()
+        )
+    );
+    s.review.record_problem = Some("cycles.json is missing".into());
+    assert_eq!(
+        red_on_review("review").next(&s).0,
+        Decision::Stuck(
+            "the CI gate failed, but ns's record of the review loop can't be used: cycles.json \
+             is missing"
+                .into()
+        )
+    );
+}
+
+#[test]
+fn a_pending_fix_cycle_for_a_red_gate_survives_a_restart() {
+    let mut l = red_on_review("review");
+    l.saved_at("abc1234");
+    let mut back: Ledger = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+    assert!(!back.resumed_at("abc1234"));
+    assert_eq!(back.next(&empty()), l.next(&empty()));
 }
 
 #[test]
@@ -387,17 +463,17 @@ fn a_move_is_blamed_once_and_never_after_a_green_gate() {
 #[test]
 fn fault_credits_stop_at_the_cap() {
     let mut l = Ledger::new(None);
-    let r = admit(&mut l, "review").unwrap();
+    let r = admit(&mut l, "ship").unwrap();
     for n in 0..FAULT_CREDIT_CAP {
-        l.head_moved("review", &format!("{n:07x}"), &format!("{:07x}", n + 1));
-        l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "review"));
+        l.head_moved("ship", &format!("{n:07x}"), &format!("{:07x}", n + 1));
+        l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "ship"));
         let a = l
             .admit("build", String::new(), "x".into(), None, None, 0)
             .expect("free");
         ended(&mut l, &a, Some("pass"));
     }
-    l.head_moved("review", "fffffff", "eeeeeee");
-    l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "review"));
+    l.head_moved("ship", "fffffff", "eeeeeee");
+    l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "ship"));
     assert!(l
         .admit("build", String::new(), "x".into(), None, None, 0)
         .is_err());
@@ -406,9 +482,9 @@ fn fault_credits_stop_at_the_cap() {
 #[test]
 fn a_free_fix_that_fails_is_charged_and_a_lock_give_up_keeps_the_credit() {
     let mut l = Ledger::new(None);
-    let r = admit(&mut l, "review").unwrap();
-    l.head_moved("review", "a000001", "b000002");
-    l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "review"));
+    let r = admit(&mut l, "ship").unwrap();
+    l.head_moved("ship", "a000001", "b000002");
+    l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "ship"));
     let a = l
         .admit("build", String::new(), "x".into(), None, None, 1)
         .unwrap();
@@ -417,7 +493,7 @@ fn a_free_fix_that_fails_is_charged_and_a_lock_give_up_keeps_the_credit() {
     let a = l
         .admit("build", String::new(), "x".into(), None, None, 1)
         .unwrap();
-    assert_eq!(a.fault_of.as_deref(), Some("review"));
+    assert_eq!(a.fault_of.as_deref(), Some("ship"));
     ended(&mut l, &a, Some("fail"));
     assert!(l
         .admit("build", String::new(), "x".into(), None, None, 1)
@@ -482,9 +558,9 @@ fn an_attempt_takes_one_credit_and_leaves_the_rest_for_the_next() {
     let mut l = Ledger::new(None);
     let a = admit(&mut l, "build").unwrap();
     ended(&mut l, &a, Some("fail"));
-    let r = admit(&mut l, "review").unwrap();
-    l.head_moved("review", "a000001", "b000002");
-    l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "review"));
+    let r = admit(&mut l, "ship").unwrap();
+    l.head_moved("ship", "a000001", "b000002");
+    l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "ship"));
     let both = |l: &mut Ledger, sha: &str| {
         l.admit(
             "build",
@@ -503,7 +579,7 @@ fn an_attempt_takes_one_credit_and_leaves_the_rest_for_the_next() {
     let a = both(&mut l, "s1").expect("the fault credit, kept from the last attempt");
     assert_eq!(
         (a.rebase.is_some(), a.fault_of.as_deref()),
-        (false, Some("review"))
+        (false, Some("ship"))
     );
     ended(&mut l, &a, Some("pass"));
     assert!(
@@ -541,11 +617,11 @@ fn a_fault_credit_or_a_free_ship_leaves_the_rewrite_for_the_next_attempt() {
     let a = admit(&mut l, "build").unwrap();
     ended(&mut l, &a, None);
     l.artifact_invalid(&a, "build.md", &["x".into()]);
-    let r = admit(&mut l, "review").unwrap();
-    l.head_moved("review", "a000001", "b000002");
-    l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "review"));
+    let r = admit(&mut l, "ship").unwrap();
+    l.head_moved("ship", "a000001", "b000002");
+    l.gate_red(&r, "red", "x".into(), None, false, suspect(&l, "ship"));
     let a = admit(&mut l, "build").unwrap();
-    assert_eq!((a.fault_of.as_deref(), a.rewrite), (Some("review"), false));
+    assert_eq!((a.fault_of.as_deref(), a.rewrite), (Some("ship"), false));
     ended(&mut l, &a, Some("pass"));
     assert!(admit(&mut l, "build").unwrap().rewrite);
 

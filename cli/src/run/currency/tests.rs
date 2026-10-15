@@ -756,6 +756,11 @@ fn a_loop_whose_record_is_missing_or_unreadable_stops_rather_than_count_from_0()
     assert!(s.review.record_problem.is_some());
     v2(d, "review.md", "review", "pass", "none", "ship", "");
     assert!(
+        matches!(decide(&at(d)), Decision::Stuck(_)),
+        "a fix cycle for a red gate after a passed review is a loop too"
+    );
+    fs::remove_file(d.join("fix.md")).unwrap();
+    assert!(
         !matches!(decide(&at(d)), Decision::Stuck(_)),
         "outside a loop the record is not needed"
     );

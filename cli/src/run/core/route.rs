@@ -216,12 +216,17 @@ pub fn to_archive(phase: &str, s: &State) -> Vec<&'static str> {
 }
 
 /// A review loop is under way: the last pass left findings for a fix cycle (`review.md` failed
-/// with `next: review`), whether that cycle has run (`fix.md`) or not. A cycle cut short after it
-/// committed leaves `review.md` stale, and the loop still holds.
+/// with `next: review`), whether that cycle has run (`fix.md`) or not, or a passed review's
+/// commits turned the gate red and a fix cycle ran for it ([`gate_fix`]). A cycle cut short after
+/// it committed leaves `review.md` stale, and the loop still holds.
 pub fn in_review_loop(s: &State) -> bool {
     s.arts
         .get("review")
-        .is_some_and(|a| a.status == "fail" && a.next.as_deref() == Some("review"))
+        .is_some_and(|a| match a.status.as_str() {
+            "fail" => a.next.as_deref() == Some("review"),
+            "pass" => s.arts.contains_key("review-fix"),
+            _ => false,
+        })
 }
 
 /// The most fix attempts a finding gets: a fix-only cycle hands over only findings with fewer.
@@ -280,6 +285,35 @@ pub fn fix_cycle(review: &Art, s: &State) -> Result<(u32, &'static str, Vec<Stri
         c.fix_only,
         review.findings.join(", ")
     ))
+}
+
+/// The fix cycle a red gate on review's or a fix cycle's commits gets, with the gate's output
+/// `gate` as its feedback; `why` is the red gate's reason. Bound by the loop's cycle limit like
+/// any fix cycle.
+pub fn gate_fix(s: &State, gate: &str, why: &str) -> Decision {
+    if let Some(p) = &s.review.record_problem {
+        return Decision::Stuck(format!(
+            "{why}, but ns's record of the review loop can't be used: {p}"
+        ));
+    }
+    let c = s.settings.cycles;
+    let n = s.review.fixes + 1;
+    if n > c.full.saturating_add(c.fix_only) {
+        return Decision::LoopSpent(format!(
+            "{why}, and the review loop has used its {} fix cycles (limit {} full, {} fix-only)",
+            s.review.fixes, c.full, c.fix_only
+        ));
+    }
+    let kind = cycle_kind(n, c);
+    run(
+        "review-fix",
+        &format!(
+            "Fix cycle {n} ({kind}). The CI gate went red on files review's commits changed. Fix \
+             what its output below reports. Change no review.md; write fix.md (`phase: \
+             review-fix`, `next: review`) with `findings: []`.\n\n{gate}"
+        ),
+        format!("{why}: fix cycle {n} ({kind})"),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]
