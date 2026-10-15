@@ -246,8 +246,15 @@ fn verify_archives_a_non_empty_evidence_dir_and_a_restore_puts_it_back() {
     assert!(!d.join("history").exists());
     // Only verify archives it.
     fs::write(d.join("evidence/a.log"), "1").unwrap();
-    archive_for(d, "build", &state(&[])).unwrap();
-    assert_eq!(files("evidence"), 1);
+    for phase in crate::factory::RUN_PHASES
+        .iter()
+        .copied()
+        .chain(["review-fix"])
+        .filter(|p| *p != "verify")
+    {
+        archive_for(d, phase, &state(&[])).unwrap();
+        assert_eq!(files("evidence"), 1, "{phase} must leave evidence/ alone");
+    }
     let moves = archive_for(d, "verify", &state(&[])).unwrap();
     assert!(d.join("evidence").is_dir());
     assert_eq!(files("evidence"), 0);
