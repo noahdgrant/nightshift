@@ -92,6 +92,21 @@ fn memory_mb_is_off_by_default_and_must_be_positive() {
 }
 
 #[test]
+fn disk_limits_default_to_20_and_10_gib_and_stop_must_not_exceed_wait() {
+    let f = parse("").unwrap();
+    assert_eq!((f.limits.disk_wait_gb(), f.limits.disk_stop_gb()), (20, 10));
+    let f = parse("[limits]\ndisk_wait_gb = 50\ndisk_stop_gb = 50\n").unwrap();
+    assert_eq!((f.limits.disk_wait_gb(), f.limits.disk_stop_gb()), (50, 50));
+    assert!(f.problems(None).is_empty());
+    let f = parse("[limits]\ndisk_wait_gb = 5\n").unwrap();
+    assert_eq!(
+        f.problems(None),
+        ["limits.disk_stop_gb = 10 is above limits.disk_wait_gb = 5; the stop limit must not exceed the wait limit"]
+    );
+    assert!(parse("[limits]\ndisk_stop_gb = -1\n").is_err());
+}
+
+#[test]
 fn defaults_and_budget_by_billing() {
     let f = parse("").unwrap();
     assert_eq!(f.gates, "auto");
