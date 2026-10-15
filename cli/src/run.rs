@@ -806,7 +806,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
             outcome: Some(result.outcome.label().to_string()),
         };
         let ev = crate::quality::record_unit(&repo, &ctx.worktree, &meta);
-        record_saved = ev["error"].is_null() && ev["unparsed"].is_null();
+        record_saved = ev["error"].is_null();
         ctx.log(ev);
     }
     // A merge needs a PR number, so a merged unit always has one.
