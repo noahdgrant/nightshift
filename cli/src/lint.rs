@@ -18,6 +18,7 @@ mod events;
 mod rules_index;
 use rules_index::check_rules_index;
 mod tracker;
+pub use tracker::predates_operations;
 
 pub const MAX_DESCRIPTION: usize = 1024;
 
