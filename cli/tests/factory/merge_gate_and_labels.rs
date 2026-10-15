@@ -114,48 +114,6 @@ fn base_moves(e: &Env) -> Vec<Value> {
 }
 
 #[test]
-fn a_main_that_moves_during_ci_updates_the_pr_and_waits_for_ci_again_before_merging() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("checks-12.json", GREEN);
-    e.gh_file("updated-12.head", UPDATED_HEAD);
-    main_moves_during_ci(&e, true);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    let moves = base_moves(&e);
-    assert_eq!(moves.len(), 1, "{moves:?}");
-    let remote = e.base.join("remote.git");
-    let main_at = |rev: &str| json!(git(&remote, &["rev-parse", rev]));
-    let m = &moves[0];
-    assert_eq!(
-        (&m["pr"], &m["from"], &m["to"], &m["attempt"]),
-        (&json!(12), &main_at("main~1"), &main_at("main"), &json!(1)),
-        "{m}"
-    );
-    let steps: Vec<String> = e
-        .gh_calls()
-        .lines()
-        .filter(|c| {
-            c.starts_with("pr checks 12 --watch")
-                || c.starts_with("pr update-branch")
-                || c.starts_with("pr merge")
-        })
-        .map(String::from)
-        .collect();
-    assert_eq!(
-        steps,
-        [
-            "pr checks 12 --watch".to_string(),
-            "pr update-branch 12".into(),
-            "pr checks 12 --watch".into(),
-            format!("pr merge 12 --squash --match-head-commit {UPDATED_HEAD}"),
-        ]
-    );
-}
-
-#[test]
 fn a_main_that_keeps_moving_holds_the_lock_past_the_cap_and_ends_stuck_at_the_hard_cap() {
     let e = Env::new();
     e.factory(AUTO);
@@ -192,56 +150,6 @@ fn a_main_that_keeps_moving_holds_the_lock_past_the_cap_and_ends_stuck_at_the_ha
     assert_eq!(calls.matches("pr checks 12 --watch").count(), 11, "{calls}");
     assert!(!calls.contains("pr merge"), "{calls}");
     assert!(lock_is_free(&e.root.join(".git/ns-merge.lock")));
-}
-
-#[test]
-fn a_main_unreadable_before_ci_counts_as_moved_once_it_can_be_read() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.ctl("edit", "git remote set-url origin /nonexistent");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("checks-12.json", GREEN);
-    let remote = e.base.join("remote.git");
-    e.gh_file(
-        "hook.sh",
-        &format!(
-            "case \"$*\" in \"pr checks 12 --watch\") git remote set-url origin {remote:?} ;; esac\n"
-        ),
-    );
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    let moves = base_moves(&e);
-    assert_eq!(moves.len(), 1, "{moves:?}");
-    assert_eq!(moves[0]["from"], Value::Null, "{moves:?}");
-    assert_eq!(moves[0]["to"], json!(remote_main(&e)), "{moves:?}");
-    assert_eq!(e.gh_calls().matches("pr checks 12 --watch").count(), 2);
-}
-
-#[test]
-fn a_pr_head_that_moves_after_ci_passed_needs_a_human_merge() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("checks-12.json", GREEN);
-    e.gh_file(
-        "hook.sh",
-        &format!("case \"$*\" in \"pr checks 12 --watch\") echo {UPDATED_HEAD} > \"$d/pr-12.head\" ;; esac\n"),
-    );
-    let v = e.run(&["run", "--issue", "7"], 0);
-    let head = git(&e.worktree(UNIT), &["rev-parse", "HEAD"]);
-    assert_eq!(
-        (&v["outcome"], &v["needs_human"]),
-        (&json!("done"), &json!(true)),
-        "{v}"
-    );
-    assert_eq!(
-        v["reason"],
-        format!("PR #12 head moved from {head} to {UPDATED_HEAD} after CI passed on it; needs a human merge"),
-        "{v}"
-    );
-    assert!(!e.gh_calls().contains("pr merge"));
 }
 
 #[test]

@@ -1,20 +1,22 @@
 //! What follows a phase, gathered as facts for `core::step`: the hard rules (the default branch
 //! didn't move because of this run, no phase merged a PR), and the gate with the phase its
-//! failure points at. Phase 2 of #562 moves the decisions still made here (who moved the default
-//! branch, which move a red gate blames) into `core::guard` and `core::gate`.
+//! failure points at. `core::guard` and `core::gate` decide; this module reads git and the forge
+//! for them and logs what they return.
 
 use anyhow::Result;
 use serde_json::json;
 
+use super::core::gate::Suspect;
+use super::core::guard::{self, Unread};
 use super::core::step::{GateCall, GateRan, GateRed, GuardFacts};
-use super::core::Ledger;
+use super::core::{self, Ledger};
 use super::currency::known_pr;
 use super::drive::Io;
 use super::phase_run::{set_aside, Undo};
 use super::{remote_sha, Ctx};
 use crate::gate;
 use crate::git;
-use crate::watch::forge::{self, CommitPr, PrStatus};
+use crate::watch::forge::{self, PrStatus};
 use crate::worktree;
 
 /// Run the gate `call` names after `phase`'s attempt `attempt`, and report how it came out. A
@@ -72,9 +74,9 @@ fn tracked_files(ctx: &Ctx<'_>) -> Vec<String> {
     }
 }
 
-/// The phase whose commits a red gate's output points at, with the paths it matched: the newest
-/// phase run that moved HEAD and changed a file the output names. `None` when the output names
-/// no file, or none any phase changed (the base, or the environment).
+/// The phase whose commits a red gate's output points at, with the paths it matched, as
+/// `core::gate::culprit` decides over the files each suspect changed. `None` when the output
+/// names no file, or none any phase changed (the base, or the environment).
 pub(super) fn culprit(
     ctx: &Ctx<'_>,
     ledger: &Ledger,
@@ -85,37 +87,25 @@ pub(super) fn culprit(
         return None;
     }
     let tracked = tracked_files(ctx);
-    for (i, m) in ledger.suspects() {
-        // Ship's move may merge the base in: only the files whose own lines it changed count.
-        let changed: Vec<String> = if m.phase == "ship" {
-            match git::interdiff_files(&ctx.worktree, &ctx.base, &m.from, &m.to) {
-                Some(f) => f,
-                None => continue,
-            }
-        } else {
-            match git::run(&ctx.worktree, &["diff", "--name-only", &m.from, &m.to]) {
-                Ok(t) => t.lines().map(str::to_string).collect(),
-                Err(_) => continue,
-            }
-        };
-        let hit: Vec<String> = failing
-            .iter()
-            .filter(|f| {
-                changed
-                    .iter()
-                    .any(|c| gate::same_file(c, f, &ctx.worktree, &tracked))
-            })
-            .cloned()
-            .collect();
-        if !hit.is_empty() {
-            return Some((i, m.phase.clone(), hit));
-        }
-    }
-    None
+    let suspects: Vec<Suspect> = ledger
+        .suspects()
+        .map(|(index, m)| Suspect {
+            index,
+            phase: m.phase.clone(),
+            changed: if m.phase == "ship" {
+                git::interdiff_files(&ctx.worktree, &ctx.base, &m.from, &m.to)
+            } else {
+                git::run(&ctx.worktree, &["diff", "--name-only", &m.from, &m.to])
+                    .ok()
+                    .map(|t| t.lines().map(str::to_string).collect())
+            },
+        })
+        .collect();
+    core::gate::culprit(&failing, &suspects, &ctx.worktree, &tracked)
 }
 
 /// Hard rules after every phase: the default branch didn't move because of this run, and no PR
-/// was merged by a phase.
+/// was merged by a phase. Gathers what `core::guard` decides on, and logs what it returns.
 pub(super) fn guards(
     ctx: &Ctx<'_>,
     baseline: &mut Option<(String, String)>,
@@ -128,17 +118,12 @@ pub(super) fn guards(
                     &ctx.worktree,
                     &["merge-base", "--is-ancestor", &now, "HEAD"],
                 );
-                let mut prs = vec![];
-                if reachable {
-                    match merged_by_others(ctx, &sha, &now) {
-                        Ok(p) => prs = p,
-                        Err(why) => {
-                            ctx.log(json!({"event": "breach", "rule": "default branch moved", "phase": phase, "from": sha, "to": now, "why": why}));
-                            return Ok(breach(format!("default branch moved: {branch} went from {sha} to {now}, which this unit holds and may have pushed: {why}")));
-                        }
-                    }
+                let attributed = reachable.then(|| merged_by_others(ctx, &sha, &now));
+                let (ev, stop) = guard::branch_moved(phase, (&branch, &sha, &now), attributed);
+                ctx.log(ev);
+                if stop.is_some() {
+                    return Ok(GuardFacts { breach: stop });
                 }
-                ctx.log(json!({"event": "default_moved_by_other_actor", "phase": phase, "from": sha, "to": now, "prs": prs}));
                 *baseline = Some((branch, now));
             }
         }
@@ -146,74 +131,44 @@ pub(super) fn guards(
     if let Some(n) = known_pr(&ctx.artifacts) {
         let forge = forge::open(&ctx.fac.queue, &ctx.worktree)?;
         if forge.pr(n)?.status == PrStatus::Merged {
-            ctx.log(
-                json!({"event": "breach", "rule": "PR merged by run", "phase": phase, "pr": n}),
-            );
-            return Ok(breach(format!("PR merged by run: #{n} was merged during the {phase} phase, outside ns run's merge step")));
+            let (ev, reason) = guard::pr_merged(phase, n);
+            ctx.log(ev);
+            return Ok(GuardFacts {
+                breach: Some(reason),
+            });
         }
     }
     Ok(GuardFacts::default())
 }
 
-fn breach(reason: String) -> GuardFacts {
-    GuardFacts {
-        breach: Some(reason),
-    }
-}
-
-/// The most commits one move of the default branch is checked for, so a long push is still
-/// decided with a bounded number of forge queries.
-const MOVE_CHECK_MAX: usize = 50;
-
-/// The default branch moved from `from` to `now`, a commit the unit's HEAD holds. That is
-/// another actor's move only when every commit it added along the first-parent line came from
-/// a merged PR that isn't this unit's: the unit holds `now` because it rebased onto it. Returns
-/// those PRs, or why the move counts as this unit's.
+/// The PRs that made the default branch's move from `from` to `now`, a commit the unit's HEAD
+/// holds, or why the move counts as this unit's: the commits it added, read here, and the
+/// forge's PRs for each, read as `core::guard::moved_by_others` asks.
 fn merged_by_others(ctx: &Ctx<'_>, from: &str, now: &str) -> std::result::Result<Vec<u64>, String> {
-    let text = git::run(
+    let commits = git::run(
         &ctx.worktree,
         &[
             "rev-list",
             "--first-parent",
-            &format!("--max-count={}", MOVE_CHECK_MAX + 1),
+            &format!("--max-count={}", guard::MOVE_CHECK_MAX + 1),
             &format!("{from}..{now}"),
         ],
     )
-    .map_err(|e| format!("cannot list the commits it added: {e:#}"))?;
-    let commits: Vec<&str> = text.split_whitespace().collect();
-    if commits.is_empty() {
-        return Err("it added no commit".into());
-    }
-    if commits.len() > MOVE_CHECK_MAX {
-        return Err(format!("it added more than {MOVE_CHECK_MAX} commits"));
-    }
-    let own_pr = known_pr(&ctx.artifacts);
+    .map(|t| t.split_whitespace().map(String::from).collect())
+    .map_err(|e| format!("{e:#}"));
     let own_branch = format!("{}{}", worktree::BRANCH_PREFIX, ctx.unit);
-    let forge = forge::open(&ctx.fac.queue, &ctx.worktree)
-        .map_err(|e| format!("cannot tell who made it: {e:#}"))?;
-    let mut prs = vec![];
-    for c in commits {
-        let pulls = forge
-            .commit_prs(c)
-            .map_err(|e| format!("cannot tell who made {c}: {e:#}"))?;
-        let n = other_merged_pr(&pulls, own_pr, &own_branch)
-            .ok_or_else(|| format!("{c} is in no merged PR of another branch"))?;
-        if !prs.contains(&n) {
-            prs.push(n);
+    let mut forge = None;
+    guard::moved_by_others(commits, known_pr(&ctx.artifacts), &own_branch, |c| {
+        if forge.is_none() {
+            let f = forge::open(&ctx.fac.queue, &ctx.worktree)
+                .map_err(|e| Unread::NoForge(format!("{e:#}")))?;
+            forge = Some(f);
         }
-    }
-    Ok(prs)
-}
-
-/// A merged PR among the PRs that hold a commit, when none of them is `own_pr` or comes from
-/// `own_branch`.
-fn other_merged_pr(pulls: &[CommitPr], own_pr: Option<u64>, own_branch: &str) -> Option<u64> {
-    let own = |p: &CommitPr| Some(p.number) == own_pr || p.head == own_branch;
-    if pulls.iter().any(own) {
-        return None;
-    }
-    pulls.iter().find(|p| p.merged).map(|p| p.number)
+        let f = forge.as_ref().expect("opened above");
+        f.commit_prs(c)
+            .map_err(|e| Unread::Commit(format!("{e:#}")))
+    })
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

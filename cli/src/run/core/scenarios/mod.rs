@@ -3,4 +3,6 @@
 //! `git log -S<name>` finds the end-to-end version it replaced. One file per area.
 
 mod gates;
+mod guards;
+mod merge;
 mod routing;

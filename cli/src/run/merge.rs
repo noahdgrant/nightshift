@@ -1,5 +1,6 @@
-//! The merge step: bring the PR up to date with its base and wait for CI, then take the merge
-//! lock and squash-merge it if the base has not moved since (`merge.policy = "auto"`).
+//! The merge step's shell: `core::merge` decides, and this module performs what it asks (the
+//! `gh` and git calls, the gate, the merge lock and the sleeps) and reports what came back
+//! (`merge.policy = "auto"`).
 
 use std::path::Path;
 use std::time::Duration;
@@ -8,6 +9,9 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
 use super::ci_gate::{gate_before_merge, gate_merge_result};
+use super::core::merge::{
+    self as core_merge, Ask, Check, MergeConfig, MergeEnd, MergeFact, MergeState,
+};
 use super::currency::{known_pr, learn_sha, State};
 use super::locks::{Bound, MERGE_LOCK};
 use super::{finish, gh, gh_json, holder_pid, remote_default, Ctx, Finish, Lock, Outcome, Shared};
@@ -20,9 +24,6 @@ use crate::proc::Proc;
 
 mod hold;
 mod overlap;
-
-use hold::hold_while_main_red;
-use overlap::needs_update;
 
 /// Take the merge lock for `unit`, waiting while another unit merges, each wait logged by
 /// `log`. A wait that reaches `until` ends the run as `budget`.
@@ -61,15 +62,6 @@ fn take_merge_lock(
     }))
 }
 
-const REGISTER_BACKOFF_START: i64 = 5;
-const REGISTER_BACKOFF_MAX: i64 = 30;
-
-enum Registered {
-    Yes,
-    No,
-    QueryFailed(String),
-}
-
 fn check_count(wt: &Path, sha: &str, kind: &str) -> Result<u64> {
     let out = gh(
         wt,
@@ -85,99 +77,6 @@ fn check_count(wt: &Path, sha: &str, kind: &str) -> Result<u64> {
         .map_err(|_| anyhow!("unexpected output from the {kind} query: {out:?}"))
 }
 
-/// GitHub may not have registered any check run or status right after a push or update-branch.
-fn checks_registered(
-    wt: &Path,
-    sha: &str,
-    timeout_minutes: u64,
-    clock: &Clock,
-) -> Result<Registered> {
-    let deadline = clock.now() + (timeout_minutes * 60) as i64;
-    let mut wait = REGISTER_BACKOFF_START;
-    let mut polls = 0;
-    loop {
-        clock.check_polls(polls)?;
-        polls += 1;
-        let counts = ["check-runs", "status"].map(|kind| check_count(wt, sha, kind));
-        if counts.iter().any(|c| matches!(c, Ok(n) if *n > 0)) {
-            return Ok(Registered::Yes);
-        }
-        let now = clock.now();
-        if now >= deadline {
-            return Ok(match counts.into_iter().find_map(|c| c.err()) {
-                Some(e) => Registered::QueryFailed(e.to_string()),
-                None => Registered::No,
-            });
-        }
-        clock.sleep_until((now + wait).min(deadline))?;
-        wait = (wait * 2).min(REGISTER_BACKOFF_MAX);
-    }
-}
-
-/// The PR's merge state once GitHub has worked it out. Right after its base moves, as when the
-/// unit before it merged, GitHub reports `UNKNOWN` while it recomputes, so poll with the register
-/// backoff until it reports anything else, or `timeout_minutes` pass, and return the last read.
-fn merge_state(wt: &Path, pr: &str, timeout_minutes: u64, clock: &Clock) -> Result<Value> {
-    let deadline = clock.now() + (timeout_minutes * 60) as i64;
-    let mut wait = REGISTER_BACKOFF_START;
-    let mut polls = 0;
-    loop {
-        clock.check_polls(polls)?;
-        polls += 1;
-        let state = gh_json(wt, &["pr", "view", pr, "--json", "mergeStateStatus"])?
-            ["mergeStateStatus"]
-            .take();
-        let now = clock.now();
-        if state != "UNKNOWN" || now >= deadline {
-            return Ok(state);
-        }
-        clock.sleep_until((now + wait).min(deadline))?;
-        wait = (wait * 2).min(REGISTER_BACKOFF_MAX);
-    }
-}
-
-enum UpdatedHead {
-    Moved(String),
-    Dirty,
-    /// The head stayed put; carries the last merge state GitHub reported.
-    Unchanged(Value),
-}
-
-/// GitHub may still report the old head right after update-branch. A view with no head keeps the
-/// old one.
-fn head_after_update(
-    wt: &Path,
-    pr: &str,
-    old: &str,
-    timeout_minutes: u64,
-    clock: &Clock,
-) -> Result<UpdatedHead> {
-    let deadline = clock.now() + (timeout_minutes * 60) as i64;
-    let mut wait = REGISTER_BACKOFF_START;
-    let mut polls = 0;
-    loop {
-        clock.check_polls(polls)?;
-        polls += 1;
-        let v = gh_json(
-            wt,
-            &["pr", "view", pr, "--json", "headRefOid,mergeStateStatus"],
-        )?;
-        if v["mergeStateStatus"].as_str() == Some("DIRTY") {
-            return Ok(UpdatedHead::Dirty);
-        }
-        match v["headRefOid"].as_str() {
-            Some(h) if h == old => {}
-            h => return Ok(UpdatedHead::Moved(h.unwrap_or(old).to_string())),
-        }
-        let now = clock.now();
-        if now >= deadline {
-            return Ok(UpdatedHead::Unchanged(v["mergeStateStatus"].clone()));
-        }
-        clock.sleep_until((now + wait).min(deadline))?;
-        wait = (wait * 2).min(REGISTER_BACKOFF_MAX);
-    }
-}
-
 pub(super) enum MergeStep {
     Finish(Finish),
     Rebuild(gate::Red),
@@ -187,60 +86,22 @@ pub(super) enum MergeStep {
     Rebase(String, String),
 }
 
-/// Back to build with `feedback` because CI on the PR failed.
-fn ci_failed(feedback: String) -> MergeStep {
-    MergeStep::Rebuild(gate::Red {
-        feedback,
-        reason: "CI failed on the PR".into(),
-        killed: None,
-        ratchets: None,
-    })
-}
-
-/// Back to build to rebase PR #`n` onto `default`, which it conflicts with, or to ship under
-/// `[gate] local = "build-only"`.
-pub(super) fn conflicts(ctx: &Ctx<'_>, n: u64, default: &str) -> MergeStep {
-    ctx.log(json!({"event": "conflict", "pr": n}));
-    let feedback = format!(
-        "PR #{n} conflicts with {default}: rebase onto {default} and resolve conflicts, then force-push with --force-with-lease"
-    );
-    if ctx.fac.gate.local == LocalGate::BuildOnly {
-        MergeStep::Reship(feedback)
-    } else {
-        MergeStep::Rebase(feedback, format!("PR #{n} conflicts with {default}"))
-    }
-}
-
-pub(super) fn human(reason: impl Into<String>) -> MergeStep {
-    let mut f = finish(Outcome::Done, reason, Some("merge"));
-    f.needs_human = true;
-    MergeStep::Finish(f)
-}
-
-/// How many times the default branch may move between a merge step's CI wait and its merge
-/// before the merge step holds the merge lock through the next update and CI wait, as it did
-/// before merges were optimistic, so no other unit's merge can move it again.
-pub(super) const BASE_MOVE_CAP: u32 = 5;
-
-/// How many moves end the unit stuck even with the lock held: only a merge from outside `ns`
-/// can move the default branch then.
-pub(super) const BASE_MOVE_HARD_CAP: u32 = 2 * BASE_MOVE_CAP;
-
-/// A PR the merge step got ready without the merge lock: CI passed at `head`, and `base` is the
-/// tip of `origin/<default>` read before the update and CI wait, `None` when it couldn't be read.
-struct Ready {
-    head: String,
-    base: Option<String>,
+/// What the merge step's actions run with.
+struct Io<'a, 'c> {
+    ctx: &'a Ctx<'c>,
+    state: &'a State,
+    shared: &'a Shared,
+    gate_state: &'a mut gate::Gate,
+    run: u32,
+    /// The merge lock, while the step holds it.
+    lock: Option<Lock>,
 }
 
 /// `merge.policy = "auto"`: squash-merge this unit's PR when CI is green, review.md passed and is
 /// current at the PR head, the CI gate passed at that head, and no file or marked region that
 /// needs human review changed. The only place ns merges anything. `run` numbers this merge step
-/// in the invocation, for its gate log.
-///
-/// Optimistic: the update, gate and CI wait run without the merge lock, which is taken only for
-/// the final merge. A default branch that moved since CI started sends the PR round again, at
-/// most [`BASE_MOVE_CAP`] times.
+/// in the invocation, for its gate log. `core::merge` decides each step; this loop feeds it what
+/// each action found, with the time.
 pub(super) fn merge_step(
     ctx: &Ctx<'_>,
     state: &State,
@@ -248,453 +109,257 @@ pub(super) fn merge_step(
     gate_state: &mut gate::Gate,
     run: u32,
 ) -> Result<MergeStep> {
-    let (n, head, pr_head) = match open_pr(ctx, state)? {
-        Ok(pr) => pr,
-        Err(step) => return Ok(step),
+    let cfg = MergeConfig {
+        build_only: ctx.fac.gate.local == LocalGate::BuildOnly,
+        local_queue: ctx.fac.merge.local_queue,
+        gate: ctx.gate.commands.rest.is_some(),
+        register_minutes: ctx.fac.merge.ci_register_timeout,
+        ci_minutes: ctx.fac.merge.ci_timeout_minutes,
+        fixes_main: hold::fixes_main(&ctx.unit),
+        branch: format!("{}{}", crate::worktree::BRANCH_PREFIX, ctx.unit),
     };
-    let ns = n.to_string();
-    let wt = &ctx.worktree;
-    let default = remote_default(wt)
-        .map(|d| d.0)
-        .unwrap_or_else(|| "main".into());
-    let mut current = pr_head;
-    let mut moves = 0;
-    let mut held = None;
-    // Outside the local merge queue, a red main holds the merge before the lock is taken.
-    let take = || -> Result<Result<Lock, MergeStep>> {
-        if !queued(ctx) {
-            if let Some(step) = hold_while_main_red(ctx, n, &shared.clock)? {
-                return Ok(Err(step));
-            }
-        }
-        let lock = take_merge_lock(&ctx.common, &ctx.unit, &shared.clock, shared.until, |ev| {
-            ctx.log(ev)
-        })?;
-        Ok(lock.map_err(MergeStep::Finish))
+    let mut m = MergeState::new(cfg);
+    let mut io = Io {
+        ctx,
+        state,
+        shared,
+        gate_state,
+        run,
+        lock: None,
     };
+    let mut fact = MergeFact::Start;
     loop {
-        if moves >= BASE_MOVE_CAP && held.is_none() {
-            // Past the cap: hold the lock through the update and CI wait, so no merge by another
-            // unit can move the base again.
-            held = match take()? {
-                Ok(lock) => Some(lock),
-                Err(step) => return Ok(step),
-            };
-            ctx.log(json!({"event": "merge_lock_held_through_ci", "pr": n, "moves": moves}));
+        let act = core_merge::next(&mut m, fact, shared.clock.now());
+        for ev in act.log {
+            ctx.log(ev);
         }
-        let ready = match get_ready(ctx, n, &current, &default, shared, gate_state, run)? {
-            Ok(r) => r,
-            Err(step) => return Ok(step),
+        shared.clock.check_polls(act.poll)?;
+        fact = match act.ask {
+            Ask::End(end) => return Ok(ended(end)),
+            ask => io.perform(&m, ask)?,
         };
-        current.clone_from(&ready.head);
+    }
+}
 
-        // One merge at a time per repo, held only for the final check and the merge, unless
-        // the base kept moving.
-        let _merging = match &held {
-            Some(_) => None,
-            None => match take()? {
-                Ok(lock) => Some(lock),
-                Err(step) => return Ok(step),
+/// The merge step's end, as the driver takes it.
+fn ended(end: MergeEnd) -> MergeStep {
+    match end {
+        MergeEnd::Finish {
+            outcome,
+            reason,
+            needs_human,
+        } => {
+            let mut f = finish(outcome, reason, Some("merge"));
+            f.needs_human = needs_human;
+            MergeStep::Finish(f)
+        }
+        MergeEnd::Rebuild(r) => MergeStep::Rebuild(gate::Red {
+            feedback: r.feedback,
+            reason: r.reason,
+            killed: r.killed,
+            ratchets: r.ratchets,
+        }),
+        MergeEnd::Reship(feedback) => MergeStep::Reship(feedback),
+        MergeEnd::Rebase { feedback, why } => MergeStep::Rebase(feedback, why),
+    }
+}
+
+/// An error as the merge step's reasons quote it.
+fn says(e: &anyhow::Error) -> String {
+    format!("{e:#}")
+}
+
+impl Io<'_, '_> {
+    /// Perform `ask` for the step at `m`, and report what came of it.
+    fn perform(&mut self, m: &MergeState, ask: Ask) -> Result<MergeFact> {
+        let (ctx, wt) = (self.ctx, &self.ctx.worktree);
+        let ns = m.pr().to_string();
+        let default = m.default_branch();
+        Ok(match ask {
+            Ask::ReadPr => MergeFact::Pr {
+                ship: self.state.arts.contains_key("ship"),
+                number: known_pr(&ctx.artifacts),
             },
-        };
-        let base_now = fetch_tip(wt, &default).ok();
-        let moved = base_now
-            .as_deref()
-            .filter(|tip| Some(*tip) != ready.base.as_deref());
-        // A base that moved only in files the PR doesn't touch leaves CI on the PR head standing,
-        // unless the local merge queue gated the merge with the old base.
-        if let Some(tip) = moved.filter(|tip| queued(ctx) || needs_update(ctx, n, &ready.head, tip))
-        {
-            moves += 1;
-            ctx.log(json!({
-                "event": "merge_base_moved",
-                "pr": n,
-                "from": ready.base,
-                "to": tip,
-                "attempt": moves,
-            }));
-            if moves > BASE_MOVE_HARD_CAP {
-                return Ok(MergeStep::Finish(finish(
-                    Outcome::Stuck,
-                    format!(
-                        "the default branch moved {BASE_MOVE_HARD_CAP} times during this PR's CI, the last {} with the merge lock held (cap {BASE_MOVE_HARD_CAP})",
-                        BASE_MOVE_HARD_CAP - BASE_MOVE_CAP
-                    ),
-                    Some("merge"),
-                )));
+            Ask::ViewPr => {
+                let view = gh_json(wt, &["pr", "view", &ns, "--json", "state,headRefOid"])?;
+                MergeFact::View {
+                    state: view["state"].as_str().map(String::from),
+                    head: view["headRefOid"].as_str().unwrap_or("").to_string(),
+                }
             }
-            continue;
-        }
-        // A view that fails or names no head leaves the check to --match-head-commit.
-        let view = gh_json(wt, &["pr", "view", &ns, "--json", "headRefOid"]).unwrap_or_default();
-        if let Some(now) = view["headRefOid"].as_str() {
-            if !same_sha(now, &ready.head) {
-                return Ok(human(format!(
-                    "PR #{n} head moved from {} to {now} after CI passed on it; needs a human merge",
-                    ready.head
-                )));
+            Ask::Currency { pr_head } => {
+                let head = git::run(wt, &["rev-parse", "HEAD"]).unwrap_or_default();
+                let mut state = self.state.clone();
+                learn_sha(&mut state, wt, &ctx.base, &pr_head);
+                MergeFact::Currency {
+                    head,
+                    current: state.current(&pr_head),
+                    review_passes: state.arts.get("review").is_some_and(|r| state.passes(r)),
+                }
             }
-        }
-        return final_merge(ctx, n, &head, &ready.head, &default, shared);
-    }
-}
-
-/// Bring PR #`n`, at `pr_head`, up to date with `default` when it is behind, gate it when the
-/// config calls for a gate here, and wait for its CI, all without the merge lock: the head CI
-/// passed on and the base read first, or how the merge step ends.
-fn get_ready(
-    ctx: &Ctx<'_>,
-    n: u64,
-    pr_head: &str,
-    default: &str,
-    shared: &Shared,
-    gate_state: &mut gate::Gate,
-    run: u32,
-) -> Result<Result<Ready, MergeStep>> {
-    let ns = n.to_string();
-    let wt = &ctx.worktree;
-    // Read before the merge state, so a merge that lands during the update counts as a move.
-    let base = fetch_tip(wt, default).ok();
-
-    // Strict required checks: a PR behind its base gets the base merged in, then fresh checks,
-    // unless the local merge queue gates the merge result instead. Under build-only GitHub's
-    // checks on the PR head with the base merged in are the merge queue, and no local gate runs.
-    let remote = ctx.fac.gate.local == LocalGate::BuildOnly;
-    let queued = queued(ctx);
-    let conflict = || conflicts(ctx, n, default);
-    let register_minutes = ctx.fac.merge.ci_register_timeout;
-    let mut merge_head = pr_head.to_string();
-    let behind = match merge_state(wt, &ns, register_minutes, &shared.clock)?.as_str() {
-        Some("DIRTY") => return Ok(Err(conflict())),
-        Some("BEHIND") => !queued,
-        _ if remote => match fetch_tip(wt, default) {
-            Ok(tip) => !git::ok(wt, &["merge-base", "--is-ancestor", &tip, pr_head]),
-            Err(e) => {
-                return Ok(Err(human(format!(
-                    "cannot fetch {default} to update PR #{n}: {e:#}; needs a human merge"
-                ))))
+            Ask::ReadDefault => MergeFact::Default(remote_default(wt).map(|d| d.0)),
+            Ask::FetchTip => MergeFact::Tip(fetch_tip(wt, default).map_err(|e| says(&e))),
+            Ask::MergeState => {
+                let v = gh_json(wt, &["pr", "view", &ns, "--json", "mergeStateStatus"])?;
+                MergeFact::MergeState(v["mergeStateStatus"].as_str().map(String::from))
             }
-        },
-        _ => false,
-    };
-    // Only commits that touch the PR's files call for the base merged in and CI again.
-    if behind
-        && base
-            .as_deref()
-            .is_none_or(|tip| needs_update(ctx, n, pr_head, tip))
-    {
-        match update_branch(ctx, n, pr_head, default, &shared.clock, &conflict)? {
-            Ok(h) => merge_head = h,
-            Err(step) => return Ok(Err(step)),
-        }
+            Ask::IsAncestor { tip, head } => {
+                MergeFact::Ancestor(git::ok(wt, &["merge-base", "--is-ancestor", &tip, &head]))
+            }
+            Ask::Overlap { head, tip } => MergeFact::Overlap(overlap::read(wt, &head, &tip)),
+            Ask::UpdateBranch => MergeFact::Updated(
+                gh(wt, &["pr", "update-branch", &ns])
+                    .map(drop)
+                    .map_err(|e| says(&e)),
+            ),
+            Ask::MergeWithGit { pr_head } => MergeFact::GitMerged(
+                merge_default_with_git(wt, default, &pr_head).map_err(|e| says(&e)),
+            ),
+            Ask::ViewHead => {
+                let v = gh_json(
+                    wt,
+                    &["pr", "view", &ns, "--json", "headRefOid,mergeStateStatus"],
+                )?;
+                MergeFact::HeadView {
+                    head: v["headRefOid"].as_str().map(String::from),
+                    merge_state: v["mergeStateStatus"].clone(),
+                }
+            }
+            ask => return self.perform_ci(m, ask),
+        })
     }
 
-    if let Some(cmd) = ctx.gate.commands.rest.as_ref().filter(|_| !remote) {
-        let step = if queued {
-            gate_merge_result(ctx, gate_state, cmd, n, pr_head, default, run)?
-        } else {
-            gate_before_merge(ctx, gate_state, cmd, n, &merge_head, run)?
-        };
-        if let Some(step) = step {
-            return Ok(Err(step));
-        }
+    /// The gate, CI and lock actions.
+    fn perform_ci(&mut self, m: &MergeState, ask: Ask) -> Result<MergeFact> {
+        let (ctx, wt, clock) = (self.ctx, &self.ctx.worktree, &self.shared.clock);
+        let (n, ns) = (m.pr(), m.pr().to_string());
+        Ok(match ask {
+            Ask::Gate { queued, head } => {
+                let cmd = ctx.gate.commands.rest.as_deref().unwrap_or_default();
+                let (gs, run) = (&mut *self.gate_state, self.run);
+                MergeFact::Gated(if queued {
+                    gate_merge_result(ctx, gs, cmd, n, &head, m.default_branch(), run)?
+                } else {
+                    gate_before_merge(ctx, gs, cmd, n, &head, run)?
+                })
+            }
+            Ask::CountChecks { sha } => MergeFact::CheckCounts(
+                ["check-runs", "status"]
+                    .map(|kind| check_count(wt, &sha, kind).map_err(|e| e.to_string())),
+            ),
+            Ask::WatchChecks { minutes } => {
+                let ended = Proc::forge("gh")
+                    .args(["pr", "checks", &ns, "--watch"])
+                    .current_dir(wt)
+                    .timeout(Duration::from_secs(minutes * 60))
+                    .run()
+                    .context("cannot run gh pr checks")?;
+                MergeFact::Watched {
+                    timed_out: ended.timed_out(),
+                }
+            }
+            Ask::ReadChecks => MergeFact::Checks(read_checks(wt, &ns)),
+            Ask::FailedLogs(ids) => MergeFact::FailedLogs(
+                ids.iter()
+                    .map(|id| gh(wt, &["run", "view", id, "--log-failed"]).ok())
+                    .collect(),
+            ),
+            Ask::MainChecks => MergeFact::MainCi(hold::main_head(ctx)),
+            Ask::TakeLock => {
+                let (shared, log) = (self.shared, |ev| ctx.log(ev));
+                match take_merge_lock(&ctx.common, &ctx.unit, clock, shared.until, log)? {
+                    Ok(lock) => {
+                        self.lock = Some(lock);
+                        MergeFact::Locked(None)
+                    }
+                    Err(f) => MergeFact::Locked(Some(f.reason)),
+                }
+            }
+            Ask::Unlock => {
+                self.lock = None;
+                MergeFact::Done
+            }
+            Ask::Sleep(t) => {
+                clock.sleep_until(t)?;
+                MergeFact::Done
+            }
+            ask => return self.perform_merge(m, ask),
+        })
     }
 
-    if let Some(step) = wait_for_ci(ctx, n, &merge_head, &shared.clock)? {
-        return Ok(Err(step));
+    /// The actions under the lock: the last head check, the human-review checks, the merge.
+    fn perform_merge(&mut self, m: &MergeState, ask: Ask) -> Result<MergeFact> {
+        let (ctx, wt) = (self.ctx, &self.ctx.worktree);
+        let ns = m.pr().to_string();
+        Ok(match ask {
+            Ask::ViewHeadRef => {
+                // A view that fails or names no head leaves the check to --match-head-commit.
+                let view =
+                    gh_json(wt, &["pr", "view", &ns, "--json", "headRefOid"]).unwrap_or_default();
+                MergeFact::HeadRef(view["headRefOid"].as_str().map(String::from))
+            }
+            Ask::ReviewHits => {
+                let files: Vec<String> = gh(wt, &["pr", "diff", &ns, "--name-only"])?
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                MergeFact::ReviewHits(ctx.fac.merge.human_review_hits(&files))
+            }
+            Ask::Regions => {
+                MergeFact::Regions(marked_regions(wt, m.default_branch()).map_err(|e| says(&e)))
+            }
+            Ask::Merge { head } => {
+                // No --delete-branch: gh would check out the default branch in the unit's
+                // worktree first.
+                let merged = gh(
+                    wt,
+                    &["pr", "merge", &ns, "--squash", "--match-head-commit", &head],
+                );
+                let state = gh_json(wt, &["pr", "view", &ns, "--json", "state"])
+                    .ok()
+                    .and_then(|v| v["state"].as_str().map(String::from));
+                MergeFact::Merged {
+                    state,
+                    error: merged.err().map(|e| says(&e)),
+                    spent_usd: self.shared.spent(),
+                }
+            }
+            Ask::DeleteBranch => {
+                let branch = format!("{}{}", crate::worktree::BRANCH_PREFIX, ctx.unit);
+                let path = format!("repos/{{owner}}/{{repo}}/git/refs/heads/{branch}");
+                MergeFact::BranchDeleted(
+                    gh(wt, &["api", &path, "-X", "DELETE"])
+                        .map(drop)
+                        .map_err(|e| says(&e)),
+                )
+            }
+            ask => anyhow::bail!("ns run: the merge step asked for {ask:?} out of turn"),
+        })
     }
-    Ok(Ok(Ready {
-        head: merge_head,
-        base,
-    }))
 }
 
-/// Whether the local merge queue gates the merge of the PR head with the default branch: on with a
-/// gate, never under `[gate] local = "build-only"`.
-fn queued(ctx: &Ctx<'_>) -> bool {
-    ctx.fac.gate.local != LocalGate::BuildOnly
-        && ctx.fac.merge.local_queue
-        && ctx.gate.commands.rest.is_some()
-}
-
-/// Under the merge lock: check for files and regions that need human review, then squash-merge
-/// PR #`n` at `merge_head` and delete its branch. `head` is the worktree's HEAD, for the log.
-fn final_merge(
-    ctx: &Ctx<'_>,
-    n: u64,
-    head: &str,
-    merge_head: &str,
-    default: &str,
-    shared: &Shared,
-) -> Result<MergeStep> {
-    let ns = n.to_string();
-    let wt = &ctx.worktree;
-    if let Some(step) = human_review(ctx, n, default)? {
-        return Ok(step);
-    }
-    // No --delete-branch: gh would check out the default branch in the unit's worktree first.
-    let merged = gh(
-        wt,
-        &[
-            "pr",
-            "merge",
-            &ns,
-            "--squash",
-            "--match-head-commit",
-            merge_head,
-        ],
-    );
-    let state_now = gh_json(wt, &["pr", "view", &ns, "--json", "state"])
-        .ok()
-        .and_then(|v| v["state"].as_str().map(String::from));
-    if state_now.as_deref() == Some("MERGED") {
-        ctx.log(json!({"event": "merged", "pr": n, "sha": head, "spent_usd": shared.spent()}));
-        let branch = format!("{}{}", crate::worktree::BRANCH_PREFIX, ctx.unit);
-        let path = format!("repos/{{owner}}/{{repo}}/git/refs/heads/{branch}");
-        if let Err(e) = gh(wt, &["api", &path, "-X", "DELETE"]) {
-            ctx.log(json!({"event": "branch_not_deleted", "pr": n, "branch": branch, "error": format!("{e:#}")}));
-        }
-        return Ok(MergeStep::Finish(finish(
-            Outcome::Merged,
-            format!("squash-merged PR #{n}"),
-            Some("merge"),
-        )));
-    }
-    Ok(MergeStep::Finish(finish(
-        Outcome::Stuck,
-        format!(
-            "gh pr merge #{n} did not merge it: {}",
-            merged.err().map(|e| format!("{e:#}")).unwrap_or_default()
-        ),
-        Some("merge"),
-    )))
-}
-
-/// The open PR `pr.md` names, if the merge step may go on: its number, HEAD, and the PR head.
-fn open_pr(ctx: &Ctx<'_>, state: &State) -> Result<Result<(u64, String, String), MergeStep>> {
-    if !state.arts.contains_key("ship") {
-        return Ok(Err(human("no pr.md")));
-    }
-    let Some(n) = known_pr(&ctx.artifacts) else {
-        return Ok(Err(human("pr.md has no pr: number; needs a human merge")));
-    };
-    let ns = n.to_string();
-    let wt = &ctx.worktree;
-    let view = gh_json(wt, &["pr", "view", &ns, "--json", "state,headRefOid"])?;
-    match view["state"].as_str() {
-        Some("OPEN") => {}
-        Some("MERGED") => {
-            return Ok(Err(MergeStep::Finish(finish(
-                Outcome::Stuck,
-                format!("PR merged by run: #{n} was merged before ns run's merge step"),
-                Some("merge"),
-            ))))
-        }
-        other => {
-            return Ok(Err(MergeStep::Finish(finish(
-                Outcome::Stuck,
-                format!("PR #{n} is {}", other.unwrap_or("unknown")),
-                Some("merge"),
-            ))))
-        }
-    }
-    let head = git::run(wt, &["rev-parse", "HEAD"]).unwrap_or_default();
-    let pr_head = view["headRefOid"].as_str().unwrap_or("");
-    let mut state = state.clone();
-    learn_sha(&mut state, wt, &ctx.base, pr_head);
-    if !state.current(pr_head) {
-        return Ok(Err(human(format!(
-            "PR head {pr_head} is not current with HEAD {head}; needs a human merge"
-        ))));
-    }
-    if !state.arts.get("review").is_some_and(|r| state.passes(r)) {
-        return Ok(Err(human(
-            "review.md is not pass and current; needs a human merge",
-        )));
-    }
-    Ok(Ok((n, head, pr_head.to_string())))
-}
-
-/// Wait, bounded, for CI on the PR at `merge_head`: `None` when every check passed or skipped,
-/// else how the merge step ends.
-fn wait_for_ci(
-    ctx: &Ctx<'_>,
-    n: u64,
-    merge_head: &str,
-    clock: &Clock,
-) -> Result<Option<MergeStep>> {
-    let ns = n.to_string();
-    let wt = &ctx.worktree;
-    let register_minutes = ctx.fac.merge.ci_register_timeout;
-    match checks_registered(wt, merge_head, register_minutes, clock)? {
-        Registered::Yes => {}
-        Registered::No => {
-            return Ok(Some(human(format!(
-                "no CI checks registered within {register_minutes} min on PR #{n}; needs a human merge"
-            ))));
-        }
-        Registered::QueryFailed(err) => {
-            return Ok(Some(human(format!(
-                "could not query CI checks on PR #{n}: {err}; needs a human merge"
-            ))));
-        }
-    }
-
-    // Wait for CI, bounded.
-    let mins = ctx.fac.merge.ci_timeout_minutes;
-    let ended = Proc::forge("gh")
-        .args(["pr", "checks", &ns, "--watch"])
-        .current_dir(wt)
-        .timeout(Duration::from_secs(mins * 60))
-        .run()
-        .context("cannot run gh pr checks")?;
-    if ended.timed_out() {
-        return Ok(Some(MergeStep::Finish(finish(
-            Outcome::Stuck,
-            format!("CI on PR #{n} did not finish within {mins} min"),
-            Some("merge"),
-        ))));
-    }
+/// The PR's checks once CI ended: none when they can't be read.
+fn read_checks(wt: &Path, ns: &str) -> Vec<Check> {
     let checks = gh_json(
         wt,
-        &["pr", "checks", &ns, "--json", "name,state,bucket,link"],
+        &["pr", "checks", ns, "--json", "name,state,bucket,link"],
     )
     .unwrap_or(Value::Array(Vec::new()));
-    let checks = checks.as_array().cloned().unwrap_or_default();
-    if checks.is_empty() {
-        return Ok(Some(human(format!(
-            "no CI checks reported on PR #{n}; needs a human merge"
-        ))));
-    }
-    let failed: Vec<&Value> = checks
-        .iter()
-        .filter(|c| !matches!(c["bucket"].as_str(), Some("pass") | Some("skipping")))
-        .collect();
-    if !failed.is_empty() {
-        let names: Vec<String> = failed
-            .iter()
-            .map(|c| {
-                format!(
-                    "{} ({})",
-                    c["name"].as_str().unwrap_or("?"),
-                    c["bucket"].as_str().or(c["state"].as_str()).unwrap_or("?")
-                )
-            })
-            .collect();
-        let fb = ci_feedback(wt, n, &names, &failed);
-        ctx.log(json!({"event": "ci_failed", "pr": n, "checks": names, "where": "github"}));
-        return Ok(Some(ci_failed(fb)));
-    }
-    ctx.log(json!({"event": "ci_passed", "pr": n, "sha": merge_head, "where": "github"}));
-    Ok(None)
-}
-
-/// The `{feedback}` for `failed` checks: their `names` and the tail of each one's failed log.
-fn ci_feedback(wt: &Path, n: u64, names: &[String], failed: &[&Value]) -> String {
-    let mut fb = format!("CI failed on PR #{n}: {}\n", names.join(", "));
-    let run_re = regex::Regex::new(r"/actions/runs/(\d+)").unwrap();
-    for c in failed {
-        if let Some(id) = c["link"].as_str().and_then(|l| run_re.captures(l)) {
-            if let Ok(log) = gh(wt, &["run", "view", &id[1], "--log-failed"]) {
-                let start = log.len().saturating_sub(3000);
-                let start = (start..log.len())
-                    .find(|i| log.is_char_boundary(*i))
-                    .unwrap_or(0);
-                fb.push_str(&format!(
-                    "\nLog tail ({}):\n{}\n",
-                    c["name"].as_str().unwrap_or("?"),
-                    &log[start..]
-                ));
-            }
-        }
-    }
-    fb
-}
-
-/// Whether the PR changes a file or marked region that needs human review: `None` when it
-/// doesn't, else how the merge step ends.
-fn human_review(ctx: &Ctx<'_>, n: u64, default: &str) -> Result<Option<MergeStep>> {
-    let ns = n.to_string();
-    let wt = &ctx.worktree;
-    let files: Vec<String> = gh(wt, &["pr", "diff", &ns, "--name-only"])?
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    let hits = ctx.fac.merge.human_review_hits(&files);
-    if !hits.is_empty() {
-        ctx.log(json!({"event": "human_review", "pr": n, "paths": hits}));
-        return Ok(Some(human(format!(
-            "changes files that need human review; needs a human merge ({})",
-            hits.join(", ")
-        ))));
-    }
-    match marked_regions(wt, default) {
-        Ok(regions) if regions.is_empty() => {}
-        Ok(regions) => {
-            ctx.log(json!({"event": "human_review", "pr": n, "regions": regions}));
-            return Ok(Some(human(format!(
-                "changes code in a human-review region; needs a human merge ({})",
-                regions.join(", ")
-            ))));
-        }
-        Err(e) => {
-            return Ok(Some(human(format!(
-                "cannot check human-review regions: {e:#}; needs a human merge"
-            ))))
-        }
-    }
-    Ok(None)
-}
-
-/// `gh pr update-branch`, or a merge of `default` with git when GitHub refuses it for the
-/// `workflow` scope: the new PR head, or how the merge step ends.
-fn update_branch(
-    ctx: &Ctx<'_>,
-    n: u64,
-    pr_head: &str,
-    default: &str,
-    clock: &Clock,
-    conflict: &dyn Fn() -> MergeStep,
-) -> Result<Result<String, MergeStep>> {
-    let ns = n.to_string();
-    let wt = &ctx.worktree;
-    let register_minutes = ctx.fac.merge.ci_register_timeout;
-    let mut via = "api";
-    if let Err(e) = gh(wt, &["pr", "update-branch", &ns]) {
-        let error = format!("{e:#}");
-        let scope = workflow_refusal(&error);
-        let mut ev = json!({"event": "update_branch_failed", "pr": n, "error": error});
-        if scope {
-            ev["workflow_scope"] = json!(true);
-        }
-        ctx.log(ev);
-        if !scope {
-            return Ok(Err(conflict()));
-        }
-        match merge_default_with_git(wt, default, pr_head) {
-            Ok(true) => via = "git",
-            Ok(false) => return Ok(Err(conflict())),
-            Err(e) => {
-                return Ok(Err(human(format!(
-                        "PR #{n}: GitHub refused update-branch without the `workflow` scope, and merging {default} with git failed: {e:#}; needs a human merge"
-                    ))));
-            }
-        }
-    }
-    let head = match head_after_update(wt, &ns, pr_head, register_minutes, clock)? {
-        UpdatedHead::Moved(h) => h,
-        UpdatedHead::Dirty => return Ok(Err(conflict())),
-        UpdatedHead::Unchanged(merge_state) => {
-            let error = format!(
-                    "PR #{n} head {pr_head} did not change after update-branch within {register_minutes} min"
-                );
-            ctx.log(json!({"event": "update_branch_failed", "pr": n, "error": error, "merge_state": merge_state}));
-            return Ok(Err(human(format!("{error}; needs a human merge"))));
-        }
-    };
-    ctx.log(json!({"event": "update_branch", "pr": n, "via": via}));
-    Ok(Ok(head))
+    let field = |c: &Value, k: &str| c[k].as_str().map(String::from);
+    checks
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|c| Check {
+                    name: field(c, "name"),
+                    state: field(c, "state"),
+                    bucket: field(c, "bucket"),
+                    link: field(c, "link"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The tip of `origin/<branch>`, freshly fetched.
@@ -709,13 +374,6 @@ pub(super) fn fetch_tip(wt: &Path, branch: &str) -> Result<String> {
         ));
     }
     git::run(wt, &["rev-parse", "--verify", "FETCH_HEAD^{commit}"])
-}
-
-/// Whether a failed `gh pr update-branch` was GitHub refusing to write a workflow file: the
-/// token lacks the `workflow` scope (an OAuth or personal token) or the `workflows` permission
-/// (a GitHub App).
-fn workflow_refusal(error: &str) -> bool {
-    error.contains("refusing to allow") && error.contains("workflow")
 }
 
 /// Merge the fresh tip of `origin/<default>` into the worktree's branch and push it over
@@ -802,18 +460,6 @@ mod tests {
     use super::super::locks::tests::hold;
     use super::super::tests::{cloned, commit_all};
     use super::*;
-
-    #[test]
-    fn workflow_refusal_needs_both_the_refusal_and_a_workflow() {
-        assert!(workflow_refusal(
-            "gh pr update-branch 12 failed: GraphQL: refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope"
-        ));
-        assert!(workflow_refusal(
-            "refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission"
-        ));
-        assert!(!workflow_refusal("refusing to allow a merge: conflict"));
-        assert!(!workflow_refusal("workflow run failed: conflict"));
-    }
 
     #[test]
     fn marked_regions_errors_when_the_merge_base_is_unknown() {

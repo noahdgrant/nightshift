@@ -4,32 +4,11 @@ use std::path::PathBuf;
 use super::*;
 use crate::factory::Factory;
 
-#[test]
-fn other_merged_pr_names_only_a_merged_pr_of_another_branch() {
-    let pr = |number: u64, merged: bool, head: &str| CommitPr {
-        number,
-        head: head.into(),
-        merged,
-    };
-    let mine = "ns/7-fix";
-    let check = |list: Vec<CommitPr>, own: Option<u64>| other_merged_pr(&list, own, mine);
-    assert_eq!(check(vec![pr(3, true, "ns/3-b")], None), Some(3));
-    assert_eq!(check(vec![pr(3, true, "ns/3-b")], Some(12)), Some(3));
-    assert_eq!(check(vec![], None), None);
-    assert_eq!(check(vec![pr(3, false, "ns/3-b")], None), None);
-    assert_eq!(check(vec![pr(12, true, "ns/3-b")], Some(12)), None);
-    assert_eq!(check(vec![pr(9, true, mine)], None), None);
-    assert_eq!(
-        check(vec![pr(3, true, "ns/3-b"), pr(12, false, "x")], Some(12)),
-        None
-    );
-    assert_eq!(
-        check(vec![pr(3, false, "a"), pr(4, true, "b")], Some(12)),
-        Some(4)
-    );
-}
-
-fn ctx_in<'a>(fac: &'a Factory, worktree: &std::path::Path, common: &std::path::Path) -> Ctx<'a> {
+pub(in crate::run) fn ctx_in<'a>(
+    fac: &'a Factory,
+    worktree: &std::path::Path,
+    common: &std::path::Path,
+) -> Ctx<'a> {
     Ctx {
         unit: "u".into(),
         worktree: worktree.to_path_buf(),

@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
 
-use super::merge::{conflicts, fetch_tip, human, MergeStep};
+use super::core::merge::{Gated, Red};
+use super::merge::fetch_tip;
 use super::Ctx;
 use crate::gate;
 use crate::git::{self, same_sha};
@@ -44,7 +45,8 @@ impl Ctx<'_> {
                     .full_green()
                     .map(String::from)
                     .or_else(|| git::run(worktree, &["merge-base", &self.base, "HEAD"]).ok())?;
-                git::run(worktree, &["diff", "--name-only", &since]).ok()
+                // A rename lists both of its paths, so a fast gate checks the place a file left too.
+                git::run(worktree, &["diff", "--name-only", "--no-renames", &since]).ok()
             })
             .flatten();
         gate::Job {
@@ -68,7 +70,7 @@ impl Ctx<'_> {
 }
 
 /// Check out the PR head `merge_head` and run the gate `cmd` there, unless it already went green
-/// at that head: `None` to go on to the merge, else how the merge step ends.
+/// at that head, and report how it came out.
 pub(super) fn gate_before_merge(
     ctx: &Ctx<'_>,
     gate_state: &mut gate::Gate,
@@ -76,14 +78,14 @@ pub(super) fn gate_before_merge(
     n: u64,
     merge_head: &str,
     run: u32,
-) -> Result<Option<MergeStep>> {
+) -> Result<Gated> {
     if let Err(e) = check_out(&ctx.worktree, merge_head) {
-        return Ok(Some(human(format!(
+        return Ok(Gated::Human(format!(
             "cannot check out PR #{n} head {merge_head} for the CI gate: {e:#}; needs a human merge"
-        ))));
+        )));
     }
     let red = ctx.gate(gate_state, gate::Trigger::BeforeMerge, cmd, "merge", run);
-    Ok(merge_gate_stopped(ctx, red, run)?.map(MergeStep::Rebuild))
+    Ok(gated(merge_gate_stopped(ctx, red, run)?))
 }
 
 /// `red`, or the stop that interrupted the merge step's gate, logged.
@@ -106,7 +108,7 @@ fn merge_gate_stopped(
 
 /// The local merge queue: merge the PR head `pr_head` into the fresh tip of `origin/<default>`
 /// in a scratch worktree, no push, and run the gate `cmd` on the result, unless it already ran
-/// on that pair. `None` to go on to the merge, else how the merge step ends.
+/// on that pair, and report how it came out.
 pub(super) fn gate_merge_result(
     ctx: &Ctx<'_>,
     gate_state: &mut gate::Gate,
@@ -115,25 +117,25 @@ pub(super) fn gate_merge_result(
     pr_head: &str,
     default: &str,
     run: u32,
-) -> Result<Option<MergeStep>> {
+) -> Result<Gated> {
     let wt = &ctx.worktree;
     let base = match fetch_tip(wt, default) {
         Ok(b) => b,
         Err(e) => {
-            return Ok(Some(human(format!(
+            return Ok(Gated::Human(format!(
                 "cannot fetch {default} for the local merge queue: {e:#}; needs a human merge"
-            ))))
+            )))
         }
     };
     if let Err(e) = check_out(wt, pr_head) {
-        return Ok(Some(human(format!(
+        return Ok(Gated::Human(format!(
             "cannot check out PR #{n} head {pr_head} for the local merge queue: {e:#}; needs a human merge"
-        ))));
+        )));
     }
     // Merging a base the PR head already holds leaves the PR head: gate it as the head.
     if git::ok(wt, &["merge-base", "--is-ancestor", &base, pr_head]) {
         let step = gate_before_merge(ctx, gate_state, cmd, n, pr_head, run)?;
-        if matches!(step, Some(MergeStep::Rebuild(_))) {
+        if matches!(step, Gated::Red(_)) {
             log_merge_gate_failed(ctx, n, pr_head, &base, false);
         }
         return Ok(step);
@@ -147,18 +149,18 @@ pub(super) fn gate_merge_result(
             let scratch = match Scratch::add(wt, &ctx.common, &ctx.unit, pr_head) {
                 Ok(s) => s,
                 Err(e) => {
-                    return Ok(Some(human(format!(
+                    return Ok(Gated::Human(format!(
                     "cannot add a worktree for the local merge queue: {e:#}; needs a human merge"
-                ))))
+                )))
                 }
             };
             match merge_into(&scratch.path, &base) {
                 Ok(true) => {}
-                Ok(false) => return Ok(Some(conflicts(ctx, n, default))),
+                Ok(false) => return Ok(Gated::Conflict),
                 Err(e) => {
-                    return Ok(Some(human(format!(
+                    return Ok(Gated::Human(format!(
                         "cannot merge PR #{n} into {default} for the local merge queue: {e:#}; needs a human merge"
-                    ))))
+                    )))
                 }
             }
             let job = ctx.gate_job(
@@ -176,7 +178,20 @@ pub(super) fn gate_merge_result(
     if red.is_some() {
         log_merge_gate_failed(ctx, n, pr_head, &base, was_reused);
     }
-    Ok(red.map(MergeStep::Rebuild))
+    Ok(gated(red))
+}
+
+/// The merge step's gate verdict, as `core::merge` takes it.
+fn gated(red: Option<gate::Red>) -> Gated {
+    match red {
+        None => Gated::Green,
+        Some(r) => Gated::Red(Red {
+            feedback: r.feedback,
+            reason: r.reason,
+            killed: r.killed,
+            ratchets: r.ratchets,
+        }),
+    }
 }
 
 fn log_merge_gate_failed(ctx: &Ctx<'_>, n: u64, pr_head: &str, base: &str, reused: bool) {
@@ -346,6 +361,31 @@ mod tests {
         for name in hooks {
             assert!(!t.path().join(format!("ran-{name}")).exists(), "{name} ran");
         }
+    }
+
+    /// A fast gate gets a rename as both of its paths (#667): a file moved from `cli/` to
+    /// `contrib/` still makes the gate check `cli/`.
+    #[test]
+    fn a_fast_gate_lists_both_paths_of_a_rename() {
+        let (t, _origin, wt) = cloned();
+        fs::create_dir_all(wt.join("cli")).unwrap();
+        fs::write(wt.join("cli/x.rs"), "fn x() {}\n").unwrap();
+        commit_all(&wt, "add cli/x.rs");
+        git::run(&wt, &["switch", "-q", "-c", "ns/9-x"]).unwrap();
+        fs::create_dir_all(wt.join("contrib")).unwrap();
+        git::run(&wt, &["mv", "cli/x.rs", "contrib/x.rs"]).unwrap();
+        commit_all(&wt, "move x.rs");
+        let fac = crate::factory::Factory::default();
+        let mut ctx = super::super::post_phase::tests::ctx_in(&fac, &wt, t.path());
+        ctx.gate.commands = gate::Commands {
+            build: Some("full".into()),
+            rest: Some("fast".into()),
+        };
+        let gs = gate::Gate::default();
+        let job = ctx.gate_job(&gs, "fast", &wt, String::new(), "verify", 1);
+        let files = job.files.expect("a fast gate gets its files");
+        let files: Vec<&str> = files.lines().collect();
+        assert_eq!(files, ["cli/x.rs", "contrib/x.rs"]);
     }
 
     /// A killed run can leave the scratch path as a plain directory git doesn't know, or as a
