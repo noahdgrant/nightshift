@@ -7,6 +7,7 @@ use serde::Serialize;
 use super::blame::Blame;
 
 use crate::review_md::{CycleEntry, Finding, Pass, Scope, Severity, Status, AXES};
+use crate::review_runs::ReviewRun;
 use crate::stats::{median, round};
 
 /// Full fix cycles `ns-review` runs before it can stop with a finding open. Up to two fix-only
@@ -36,6 +37,9 @@ pub struct Attempt {
     pub introduced_by: BTreeMap<usize, Blame>,
     /// The `## Passes` table: each pass's panel and reviewer workers. Empty before the table.
     pub passes: Vec<Pass>,
+    /// `ns run`'s record of the attempt's review loop (`review/cycles.json`): each pass and fix
+    /// cycle with the times `ns` saw. Empty before `ns run` drove the loop.
+    pub review_runs: Vec<ReviewRun>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
