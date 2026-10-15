@@ -203,6 +203,57 @@ fn a_grown_finding_is_named_after_the_others_take_the_entries_they_fit() {
 }
 
 #[test]
+fn a_finding_no_entry_covers_does_not_take_the_entry_another_finding_fits() {
+    let base = [sized(2, "a.rs", "fn a() {")];
+    let current = [sized(10, "a.rs", "fn a() {"), sized(1, "a.rs", "fn a() {")];
+    let m = compare(&current, &base);
+    assert_eq!(m.accepted.len(), 1);
+    assert_eq!(m.accepted[0].finding, 1, "the 1 fits the 2");
+    assert_eq!(m.new.len(), 1);
+    assert_eq!(m.new[0].finding, sized(10, "a.rs", "fn a() {"));
+    assert_eq!(m.new[0].growth, None, "no entry was left to grow from");
+    assert!(m.fixed.is_empty());
+}
+
+#[test]
+fn a_grown_finding_grows_from_the_largest_entry_it_outgrew() {
+    let base = [
+        sized(100, "a.rs", "fn a() {"),
+        sized(300, "a.rs", "fn a() {"),
+    ];
+    let m = compare(&[sized(400, "a.rs", "fn a() {")], &base);
+    assert!(m.accepted.is_empty());
+    assert_eq!(m.new[0].growth, Some(Growth { was: 300, now: 400 }));
+    assert_eq!(m.fixed, [0], "the 100 entry is the one that is gone");
+}
+
+#[test]
+fn a_finding_takes_the_entry_of_its_own_size_whatever_the_baseline_order() {
+    let base = [
+        sized(261, "a.rs", "fn a() {"),
+        sized(50, "a.rs", "fn a() {"),
+    ];
+    let m = compare(&[sized(50, "a.rs", "fn a() {")], &base);
+    assert_eq!(m.accepted.len(), 1);
+    assert_eq!(m.accepted[0].entry, 1, "the 50 entry, not the 261 one");
+    assert_eq!(m.fixed, [0]);
+}
+
+#[test]
+fn a_value_less_finding_takes_the_last_entry_of_its_key_as_main_did() {
+    let mut first = f("a.py", 1, "x");
+    first.message = "first".into();
+    let mut second = f("a.py", 1, "x");
+    second.message = "second".into();
+    let mut now = f("a.py", 9, "x");
+    now.message = "second".into();
+    let m = compare(&[now], &[first, second]);
+    assert_eq!(m.accepted.len(), 1);
+    assert_eq!(m.accepted[0].entry, 1);
+    assert_eq!(m.fixed, [0]);
+}
+
+#[test]
 fn removal_only_pairs_a_head_entry_with_the_entry_that_fits_it_in_any_order() {
     let base = text(&[
         sized(100, "a.rs", "fn a() {"),
@@ -278,13 +329,19 @@ fn planned_lowers_a_shrunk_value_and_refuses_to_write_with_only() {
     let base = [sized(221, "a.rs", "fn a() {")];
     let current = [sized(100, "a.rs", "fn a() {")];
     let m = compare(&current, &base);
-    let prune = planned(&base, &m, &current, false).unwrap();
+    let prune = plan(&base, &m, &current, Scope::All).unwrap();
     assert_eq!((prune.dropped, prune.lowered), (0, 1));
     assert!(prune.entries[0].message.contains("(100/100)"));
-    assert!(planned(&base, &m, &current, true).is_none());
+    assert!(plan(&base, &m, &current, Scope::Only).is_none());
 
     let unchanged = compare(&[sized(221, "a.rs", "fn a() {")], &base);
-    assert!(planned(&base, &unchanged, &[sized(221, "a.rs", "fn a() {")], false).is_none());
+    assert!(plan(
+        &base,
+        &unchanged,
+        &[sized(221, "a.rs", "fn a() {")],
+        Scope::All
+    )
+    .is_none());
 }
 
 #[test]

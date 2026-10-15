@@ -319,6 +319,7 @@ impl New {
 }
 
 /// A finding the baseline accepts, and the baseline entry that accepts it.
+#[derive(Clone, Copy)]
 struct Accepted {
     finding: usize,
     entry: usize,
@@ -330,27 +331,42 @@ struct Matched {
     new: Vec<New>,
     /// Findings the baseline accepts, in the findings' order.
     accepted: Vec<Accepted>,
+    /// Accepted findings whose measured value is below their entry's, in the findings' order.
+    lowered: Vec<Accepted>,
     /// Baseline entries nothing matched, in the baseline's order.
     fixed: Vec<usize>,
 }
 
-/// Take from `left` (indices into `baseline`, smallest measured value first) the entry that best
-/// accepts `f`: the first whose measured value `f` does not outgrow, else the smallest left, which
-/// it did. `None` when none is left.
-fn take(left: &mut Vec<usize>, f: &Finding, baseline: &[Finding]) -> Option<usize> {
-    if left.is_empty() {
-        return None;
-    }
-    let at = left
-        .iter()
-        .position(|&i| !grew(f, &baseline[i]))
-        .unwrap_or(0);
+/// Which commands a run checked. `Only` checked a subset, so an entry of a skipped command is not
+/// fixed, and nothing is pruned.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    All,
+    Only,
+}
+
+/// Take from `left` (indices into `baseline`, smallest measured value first) the smallest entry
+/// that `f` does not outgrow. A value-less `f` takes the last entry of the group. `None` when no
+/// entry is left that accepts it.
+fn cover(left: &mut Vec<usize>, f: &Finding, baseline: &[Finding]) -> Option<usize> {
+    let at = match measured(f) {
+        Some(_) => left.iter().position(|&i| !grew(f, &baseline[i]))?,
+        None => left.len().checked_sub(1)?,
+    };
     Some(left.remove(at))
 }
 
-/// Pair each of `current` with the baseline entry that accepts it, or with none. The findings
-/// that measure the most are paired first, each with the smallest entry it fits, so a finding that
-/// needs a large entry is not left without one because a smaller finding took it.
+/// Take from `left` the largest entry that `f` outgrew, so `f` grows from the nearest one. `None`
+/// when `f` outgrew none that is left.
+fn grow(left: &mut Vec<usize>, f: &Finding, baseline: &[Finding]) -> Option<usize> {
+    let at = left.iter().rposition(|&i| grew(f, &baseline[i]))?;
+    Some(left.remove(at))
+}
+
+/// Pair each of `current` with the baseline entry it is matched to, or with none. Findings that
+/// measure the most are paired first. The first pass pairs each with the smallest entry that
+/// accepts it. The second pairs each finding left over with the entry it grew from, out of what
+/// the first pass left.
 fn pair(current: &[Finding], baseline: &[Finding]) -> Vec<Option<usize>> {
     let mut by_value: Vec<usize> = (0..baseline.len()).collect();
     by_value.sort_by_key(|&i| measured(&baseline[i]).unwrap_or(u64::MAX));
@@ -361,10 +377,17 @@ fn pair(current: &[Finding], baseline: &[Finding]) -> Vec<Option<usize>> {
     let mut order: Vec<usize> = (0..current.len()).collect();
     order.sort_by_key(|&i| Reverse(measured(&current[i])));
     let mut paired = vec![None; current.len()];
-    for i in order {
+    for &i in &order {
         paired[i] = left
             .get_mut(&current[i].key())
-            .and_then(|l| take(l, &current[i], baseline));
+            .and_then(|l| cover(l, &current[i], baseline));
+    }
+    for &i in &order {
+        if paired[i].is_none() {
+            paired[i] = left
+                .get_mut(&current[i].key())
+                .and_then(|l| grow(l, &current[i], baseline));
+        }
     }
     paired
 }
@@ -378,6 +401,7 @@ fn compare(current: &[Finding], baseline: &[Finding]) -> Matched {
     let mut m = Matched {
         new: Vec::new(),
         accepted: Vec::new(),
+        lowered: Vec::new(),
         fixed: Vec::new(),
     };
     for (i, f) in current.iter().enumerate() {
@@ -386,10 +410,16 @@ fn compare(current: &[Finding], baseline: &[Finding]) -> Matched {
                 finding: f.clone(),
                 growth: values(f, &baseline[bi]),
             }),
-            Some(bi) => m.accepted.push(Accepted {
-                finding: i,
-                entry: bi,
-            }),
+            Some(bi) => {
+                let a = Accepted {
+                    finding: i,
+                    entry: bi,
+                };
+                if shrank(f, &baseline[bi]) {
+                    m.lowered.push(a);
+                }
+                m.accepted.push(a);
+            }
             None => m.new.push(New {
                 finding: f.clone(),
                 growth: None,
@@ -412,12 +442,7 @@ fn kept(baseline: &[Finding], m: &Matched, current: &[Finding]) -> Vec<Entry> {
     for &i in &m.fixed {
         gone[i] = true;
     }
-    let mut lowered: HashMap<usize, usize> = HashMap::new();
-    for a in &m.accepted {
-        if shrank(&current[a.finding], &baseline[a.entry]) {
-            lowered.insert(a.entry, a.finding);
-        }
-    }
+    let lowered: HashMap<usize, usize> = m.lowered.iter().map(|a| (a.entry, a.finding)).collect();
     baseline
         .iter()
         .enumerate()
@@ -434,25 +459,14 @@ struct Prune {
     lowered: usize,
 }
 
-/// What a prune wrote: how many fixed entries it dropped and how many values it lowered.
-#[derive(Default)]
-struct Pruned {
-    dropped: usize,
-    lowered: usize,
-}
-
-/// The prune `ns rules check --prune` would write, or `None` when it changes nothing, or `--only`
-/// skipped commands whose entries would read as fixed.
-fn planned(baseline: &[Finding], m: &Matched, current: &[Finding], only: bool) -> Option<Prune> {
-    if only {
+/// The prune `ns rules check --prune` would write, or `None` when it changes nothing or the scope
+/// is `Only`, whose skipped commands would read as fixed.
+fn plan(baseline: &[Finding], m: &Matched, current: &[Finding], scope: Scope) -> Option<Prune> {
+    if scope == Scope::Only {
         return None;
     }
     let dropped = m.fixed.len();
-    let lowered = m
-        .accepted
-        .iter()
-        .filter(|a| shrank(&current[a.finding], &baseline[a.entry]))
-        .count();
+    let lowered = m.lowered.len();
     if dropped == 0 && lowered == 0 {
         return None;
     }
@@ -463,37 +477,16 @@ fn planned(baseline: &[Finding], m: &Matched, current: &[Finding], only: bool) -
     })
 }
 
-/// Write the pruned baseline when `check --prune` asks for it and nothing is new, and report on
-/// stderr what the run leaves: the fixed entries, and the values it lowered. Returns what it
-/// pruned, zero each when it wrote nothing.
-fn finish(
-    root: &Path,
-    prune: bool,
-    only: bool,
-    baseline: &[Finding],
-    m: &Matched,
-    current: &[Finding],
-    fixed: &[Finding],
-) -> Result<Pruned> {
-    let plan = if prune && m.new.is_empty() {
-        planned(baseline, m, current, only)
-    } else {
-        None
-    };
-    let pruned = match plan {
-        Some(p) => {
-            write_baseline(&root.join(BASELINE), &baseline_text(p.entries)?)?;
-            Pruned {
-                dropped: p.dropped,
-                lowered: p.lowered,
-            }
-        }
-        None => Pruned::default(),
-    };
-    match (pruned.dropped, pruned.lowered) {
-        (0, 0) if !fixed.is_empty() => eprintln!(
-            "ns rules: {} baselined violations are gone; drop them with:\n  ns rules baseline",
-            fixed.len()
+fn write(root: &Path, entries: Vec<Entry>) -> Result<()> {
+    write_baseline(&root.join(BASELINE), &baseline_text(entries)?)
+}
+
+/// Report on stderr what a run leaves: how many baselined entries are fixed, and what the prune
+/// dropped and lowered.
+fn report(fixed: usize, dropped: usize, lowered: usize) {
+    match (dropped, lowered) {
+        (0, 0) if fixed > 0 => eprintln!(
+            "ns rules: {fixed} baselined violations are gone; drop them with:\n  ns rules baseline"
         ),
         (0, 0) => {}
         (p, 0) => eprintln!("ns rules: dropped {p} fixed entries from {BASELINE}"),
@@ -502,7 +495,6 @@ fn finish(
             eprintln!("ns rules: dropped {p} fixed entries and lowered {l} values in {BASELINE}")
         }
     }
-    Ok(pruned)
 }
 
 /// Whether the baseline text `head` only removes entries from `base`: each of its entries is
@@ -668,19 +660,25 @@ pub fn check(only: Option<&str>, prune: bool, format: Format) -> Result<ExitCode
     let run = run_pack(&c.root, &c.commands)?;
     let baseline = load_baseline(&c.root.join(BASELINE))?.unwrap_or_default();
     let m = compare(&run.findings, &baseline);
-    let mut fixed: Vec<Finding> = m.fixed.iter().map(|&i| baseline[i].clone()).collect();
-    if only.is_some() {
-        fixed.clear();
+    let scope = if only.is_some() {
+        Scope::Only
+    } else {
+        Scope::All
+    };
+    let fixed: Vec<Finding> = match scope {
+        Scope::All => m.fixed.iter().map(|&i| baseline[i].clone()).collect(),
+        Scope::Only => Vec::new(),
+    };
+    let planned = if prune && m.new.is_empty() {
+        plan(&baseline, &m, &run.findings, scope)
+    } else {
+        None
+    };
+    let (dropped, lowered) = planned.as_ref().map_or((0, 0), |p| (p.dropped, p.lowered));
+    if let Some(p) = planned {
+        write(&c.root, p.entries)?;
     }
-    let pruned = finish(
-        &c.root,
-        prune,
-        only.is_some(),
-        &baseline,
-        &m,
-        &run.findings,
-        &fixed,
-    )?;
+    report(fixed.len(), dropped, lowered);
     let new: Vec<&Finding> = m.new.iter().map(|n| &n.finding).collect();
     let human = [
         ("new", m.new.iter().map(|n| n.line()).collect()),
@@ -695,8 +693,8 @@ pub fn check(only: Option<&str>, prune: bool, format: Format) -> Result<ExitCode
         "baselined": m.accepted.len(),
         "new": new,
         "fixed": fixed,
-        "pruned": pruned.dropped,
-        "lowered": pruned.lowered,
+        "pruned": dropped,
+        "lowered": lowered,
     });
     let summary = format!(
         "{} findings, {} baselined, {} new, {} fixed",
