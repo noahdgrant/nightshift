@@ -4,6 +4,7 @@ title: "A rules baseline that only shrinks merges without a human, and the gate 
 issue: 564
 date: 2026-10-15
 amends: [D50]
+amended_by: [ADR-746]
 ---
 
 # ADR-564: A rules baseline that only shrinks merges without a human, and the gate after build commits the prune

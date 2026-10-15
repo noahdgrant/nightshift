@@ -1,6 +1,7 @@
 //! `ns rules check` and `ns rules baseline`: run the repo's rule pack and ratchet its violations
 //! against a committed baseline (docs/factory/run.md, "Rules").
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -47,12 +48,6 @@ struct Entry {
     file: String,
     message: String,
     snippet: String,
-}
-
-impl Entry {
-    fn key(&self) -> (&str, &str, &str, &str) {
-        (&self.tool, &self.rule, &self.file, &self.snippet)
-    }
 }
 
 impl From<&Finding> for Entry {
@@ -254,80 +249,320 @@ fn read_capped(mut log: File, cmd: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Split `current` into new findings and baselined ones, and return the baseline entries
-/// nothing matched. Matching counts: two identical findings need two entries.
-fn compare(current: &[Finding], baseline: &[Finding]) -> (Vec<Finding>, usize, Vec<Finding>) {
-    let mut left: HashMap<_, Vec<&Finding>> = HashMap::new();
-    for b in baseline {
-        left.entry(b.key()).or_default().push(b);
-    }
-    let mut new = Vec::new();
-    let mut matched = 0;
-    for f in current {
-        match left.get_mut(&f.key()).and_then(Vec::pop) {
-            Some(_) => matched += 1,
-            None => new.push(f.clone()),
-        }
-    }
-    let mut fixed: Vec<Finding> = left.into_values().flatten().cloned().collect();
-    fixed.sort();
-    (new, matched, fixed)
+/// The text a rule's `message` puts around the number it measures.
+struct Shape {
+    before: &'static str,
+    after: &'static str,
 }
 
-/// `baseline` without one entry for each of `fixed`, in the baseline's order.
-fn without<'a>(baseline: &'a [Finding], fixed: &[Finding]) -> Vec<&'a Finding> {
-    let mut gone: HashMap<&Finding, usize> = HashMap::new();
-    for f in fixed {
-        *gone.entry(f).or_default() += 1;
+/// The rules whose `message` carries a number the finding measures. A rule this table lacks has no
+/// measured value and matches its baseline entry as it always did, which also keeps `ns` out of
+/// most tools' message prose (D50, ADR-746).
+fn shape(tool: &str, rule: &str) -> Option<Shape> {
+    match (tool, rule) {
+        ("clippy", "clippy::too_many_lines") => Some(Shape {
+            before: "this function has too many lines (",
+            after: "/",
+        }),
+        ("cargo-deny", "duplicate") => Some(Shape {
+            before: "found ",
+            after: " duplicate entries",
+        }),
+        _ => None,
     }
+}
+
+/// The number a rule's finding measures, read out of `message`. `None` when the rule has none
+/// (see [`shape`]) or the message is not its registered shape, so a message the tool reworded only
+/// stops the ratchet for that rule.
+fn measured(f: &Finding) -> Option<u64> {
+    let s = shape(&f.tool, &f.rule)?;
+    let rest = f.message.strip_prefix(s.before)?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() || !rest[digits.len()..].starts_with(s.after) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// A finding's measured value (`now`) beside the value its baseline entry recorded (`was`).
+#[derive(Debug, PartialEq, Eq)]
+struct Growth {
+    was: u64,
+    now: u64,
+}
+
+/// The measured values of a finding `f` and of a baseline entry `b`, when both have one.
+fn values(f: &Finding, b: &Finding) -> Option<Growth> {
+    Some(Growth {
+        was: measured(b)?,
+        now: measured(f)?,
+    })
+}
+
+/// Whether `f` measures more than the baseline entry `b` does.
+fn grew(f: &Finding, b: &Finding) -> bool {
+    values(f, b).is_some_and(|g| g.now > g.was)
+}
+
+/// Whether `f` measures less than the baseline entry `b` does.
+fn shrank(f: &Finding, b: &Finding) -> bool {
+    values(f, b).is_some_and(|g| g.now < g.was)
+}
+
+/// A finding the baseline does not accept: no entry shares its key, or one does and its measured
+/// value outgrew it, in which case `growth` holds both values for the report.
+struct New {
+    finding: Finding,
+    growth: Option<Growth>,
+}
+
+impl New {
+    /// The human line for the finding, naming the value it grew past.
+    fn line(&self) -> String {
+        match &self.growth {
+            Some(g) => format!("{} (grew from {} to {})", line(&self.finding), g.was, g.now),
+            None => line(&self.finding),
+        }
+    }
+}
+
+/// A finding the baseline accepts, and the baseline entry that accepts it.
+#[derive(Clone, Copy)]
+struct Accepted {
+    finding: usize,
+    entry: usize,
+}
+
+/// Matching a run's findings against the baseline.
+struct Matched {
+    /// Findings the baseline does not accept, in the findings' order.
+    new: Vec<New>,
+    /// Findings the baseline accepts, in the findings' order.
+    accepted: Vec<Accepted>,
+    /// Accepted findings whose measured value is below their entry's, in the findings' order.
+    lowered: Vec<Accepted>,
+    /// Baseline entries nothing matched, in the baseline's order.
+    fixed: Vec<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Measure {
+    Found(u64),
+    Unmeasured,
+}
+
+/// The baseline entries of one key, as indices into `baseline`, in the order `pair` takes them.
+type Group = Vec<usize>;
+
+/// The baseline entries of each key, in the order `pair` takes them.
+type Groups<'a> = HashMap<(&'a str, &'a str, &'a str, &'a str), Group>;
+
+/// Take from `left`, ordered by [`Measure`], the first entry that `f` does not outgrow. A value-less
+/// `f` takes the last one. `None` when no entry is left that accepts it.
+fn cover(left: &mut Group, f: &Finding, baseline: &[Finding]) -> Option<usize> {
+    let at = match measured(f) {
+        Some(_) => left.iter().position(|&i| !grew(f, &baseline[i]))?,
+        None => left.len().checked_sub(1)?,
+    };
+    Some(left.remove(at))
+}
+
+/// Take from `left` the largest entry that `f` outgrew, so `f` grows from the nearest one. `None`
+/// when `f` outgrew none that is left.
+fn grow(left: &mut Group, f: &Finding, baseline: &[Finding]) -> Option<usize> {
+    let at = left.iter().rposition(|&i| grew(f, &baseline[i]))?;
+    Some(left.remove(at))
+}
+
+/// Pair each of `current` with the baseline entry it is matched to, or with none. Findings that
+/// measure the most are paired first.
+fn pair(current: &[Finding], baseline: &[Finding]) -> Vec<Option<usize>> {
+    let mut by_value: Vec<usize> = (0..baseline.len()).collect();
+    by_value.sort_by_key(|&i| baseline_measure(&baseline[i]));
+    let mut left: Groups = HashMap::new();
+    for i in by_value {
+        left.entry(baseline[i].key()).or_default().push(i);
+    }
+    let mut order: Vec<usize> = (0..current.len()).collect();
+    order.sort_by_key(|&i| Reverse(measured(&current[i])));
+    let mut paired = vec![None; current.len()];
+    pair_exact(current, baseline, &order, &mut left, &mut paired);
+    pair_grown(current, baseline, &order, &mut left, &mut paired);
+    paired
+}
+
+fn baseline_measure(b: &Finding) -> Measure {
+    measured(b).map_or(Measure::Unmeasured, Measure::Found)
+}
+
+/// The first pass of [`pair`]: each finding takes the smallest entry that accepts it.
+fn pair_exact<'a>(
+    current: &'a [Finding],
+    baseline: &[Finding],
+    order: &[usize],
+    left: &mut Groups<'a>,
+    paired: &mut [Option<usize>],
+) {
+    for &i in order {
+        paired[i] = left
+            .get_mut(&current[i].key())
+            .and_then(|l| cover(l, &current[i], baseline));
+    }
+}
+
+/// The second pass of [`pair`]: each finding the first pass left over takes the entry it grew
+/// from, out of what the first pass left.
+fn pair_grown<'a>(
+    current: &'a [Finding],
+    baseline: &[Finding],
+    order: &[usize],
+    left: &mut Groups<'a>,
+    paired: &mut [Option<usize>],
+) {
+    for &i in order {
+        if paired[i].is_none() {
+            paired[i] = left
+                .get_mut(&current[i].key())
+                .and_then(|l| grow(l, &current[i], baseline));
+        }
+    }
+}
+
+/// Split `current` into the findings the baseline accepts and the ones it does not, and return the
+/// baseline entries nothing matched. A finding whose rule measures a value is accepted only when
+/// its value is no more than the matched entry's, so a baselined finding that grew reads as new.
+/// Matching counts: two identical findings need two entries.
+fn compare(current: &[Finding], baseline: &[Finding]) -> Matched {
+    let paired = pair(current, baseline);
+    let mut m = Matched {
+        new: Vec::new(),
+        accepted: Vec::new(),
+        lowered: Vec::new(),
+        fixed: Vec::new(),
+    };
+    for (i, f) in current.iter().enumerate() {
+        match paired[i] {
+            Some(bi) if grew(f, &baseline[bi]) => m.new.push(New {
+                finding: f.clone(),
+                growth: values(f, &baseline[bi]),
+            }),
+            Some(bi) => {
+                let a = Accepted {
+                    finding: i,
+                    entry: bi,
+                };
+                if shrank(f, &baseline[bi]) {
+                    m.lowered.push(a);
+                }
+                m.accepted.push(a);
+            }
+            None => m.new.push(New {
+                finding: f.clone(),
+                growth: None,
+            }),
+        }
+    }
+    let mut taken = vec![false; baseline.len()];
+    for &bi in paired.iter().flatten() {
+        taken[bi] = true;
+    }
+    m.fixed = (0..baseline.len()).filter(|&i| !taken[i]).collect();
+    m.fixed.sort_by_key(|&i| &baseline[i]);
+    m
+}
+
+/// The baseline's entries the run keeps, in order: the fixed ones dropped, and each entry whose
+/// measured value shrank rewritten from the finding that matched it.
+fn kept(baseline: &[Finding], m: &Matched, current: &[Finding]) -> Vec<Entry> {
+    let mut gone = vec![false; baseline.len()];
+    for &i in &m.fixed {
+        gone[i] = true;
+    }
+    let lowered: HashMap<usize, usize> = m.lowered.iter().map(|a| (a.entry, a.finding)).collect();
     baseline
         .iter()
-        .filter(|b| match gone.get_mut(b) {
-            Some(n) if *n > 0 => {
-                *n -= 1;
-                false
-            }
-            _ => true,
-        })
+        .enumerate()
+        .filter(|(i, _)| !gone[*i])
+        .map(|(i, b)| Entry::from(lowered.get(&i).map_or(b, |&ci| &current[ci])))
         .collect()
+}
+
+/// A prune `ns rules check --prune` would write: the kept entries, and how many fixed entries it
+/// drops and how many values it lowers.
+struct Prune {
+    entries: Vec<Entry>,
+    dropped: usize,
+    lowered: usize,
+}
+
+/// The prune `ns rules check --prune` would write, or `None` when it changes nothing.
+fn plan(baseline: &[Finding], m: &Matched, current: &[Finding]) -> Option<Prune> {
+    let dropped = m.fixed.len();
+    let lowered = m.lowered.len();
+    if dropped == 0 && lowered == 0 {
+        return None;
+    }
+    Some(Prune {
+        entries: kept(baseline, m, current),
+        dropped,
+        lowered,
+    })
+}
+
+fn write(root: &Path, entries: Vec<Entry>) -> Result<()> {
+    write_baseline(&root.join(BASELINE), &baseline_text(entries)?)
+}
+
+/// Report on stderr what a run leaves: how many baselined entries are fixed, and what the prune
+/// dropped and lowered.
+fn report(fixed: usize, dropped: usize, lowered: usize) {
+    match (dropped, lowered) {
+        (0, 0) if fixed > 0 => eprintln!(
+            "ns rules: {fixed} baselined violations are gone; drop them with:\n  ns rules baseline"
+        ),
+        (0, 0) => {}
+        (p, 0) => eprintln!("ns rules: dropped {p} fixed entries from {BASELINE}"),
+        (0, l) => eprintln!("ns rules: lowered {l} values in {BASELINE}"),
+        (p, l) => {
+            eprintln!("ns rules: dropped {p} fixed entries and lowered {l} values in {BASELINE}")
+        }
+    }
 }
 
 /// Whether the baseline text `head` only removes entries from `base`: each of its entries is
 /// matched by its own entry in `base`, counting duplicates, on the fields a finding matches on, so
-/// a reordered file is too, and so is one whose messages `ns rules baseline` refreshed. Either
-/// text not a baseline is an error naming it.
+/// a reordered file is too, and so is one whose messages `ns rules baseline` refreshed. A matched
+/// entry whose measured value grew is not removal-only (ADR-746), so it keeps its human-review
+/// hit. Either text not a baseline is an error naming it.
 pub fn removal_only(base: &str, head: &str) -> Result<bool, String> {
     let parse = |text: &str, which: &str| {
         serde_json::from_str::<Baseline>(text)
+            .map(|b| {
+                b.violations
+                    .into_iter()
+                    .map(Finding::from)
+                    .collect::<Vec<_>>()
+            })
             .map_err(|e| format!("the {which}'s baseline is not a rules baseline: {e}"))
     };
     let (base, head) = (parse(base, "base")?, parse(head, "PR")?);
-    let mut left: HashMap<_, usize> = HashMap::new();
-    for e in &base.violations {
-        *left.entry(e.key()).or_default() += 1;
-    }
     Ok(head
-        .violations
         .iter()
-        .all(|e| match left.get_mut(&e.key()) {
-            Some(n) if *n > 0 => {
-                *n -= 1;
-                true
-            }
-            _ => false,
-        }))
+        .zip(pair(&head, &base))
+        .all(|(f, bi)| bi.is_some_and(|bi| !grew(f, &base[bi]))))
 }
 
-/// How many of the `matched` findings carry a message their baseline entry lacks: those left
+/// How many of the `accepted` findings carry a message their baseline entry lacks: those left
 /// once each finding an entry equals in full is paired with it.
-fn refreshed(current: &[Finding], baseline: &[Finding], matched: usize) -> usize {
+fn refreshed(current: &[Finding], baseline: &[Finding], accepted: &[Accepted]) -> usize {
     let mut left: HashMap<Entry, usize> = HashMap::new();
     for b in baseline {
         *left.entry(Entry::from(b)).or_default() += 1;
     }
-    let same = current
+    let same = accepted
         .iter()
-        .filter(|f| match left.get_mut(&Entry::from(*f)) {
+        .filter(|a| match left.get_mut(&Entry::from(&current[a.finding])) {
             Some(n) if *n > 0 => {
                 *n -= 1;
                 true
@@ -335,7 +570,7 @@ fn refreshed(current: &[Finding], baseline: &[Finding], matched: usize) -> usize
             _ => false,
         })
         .count();
-    matched - same
+    accepted.len() - same
 }
 
 /// The baseline file's text for `violations`.
@@ -402,12 +637,12 @@ fn line(f: &Finding) -> String {
     format!("{}{at}: {who}: {}", f.file, f.message)
 }
 
-fn print(v: &Value, human: &[(&str, &[Finding])], summary: &str, format: Format) -> Result<()> {
+fn print(v: &Value, human: &[(&str, Vec<String>)], summary: &str, format: Format) -> Result<()> {
     match format {
         Format::Human => {
-            for (label, list) in human {
-                for f in *list {
-                    println!("{label}: {}", line(f));
+            for (label, lines) in human {
+                for l in lines {
+                    println!("{label}: {l}");
                 }
             }
             println!("{summary}");
@@ -417,8 +652,8 @@ fn print(v: &Value, human: &[(&str, &[Finding])], summary: &str, format: Format)
     Ok(())
 }
 
-/// `prune` drops the fixed entries from the baseline file when nothing is new and every command
-/// ran, so the file only shrinks.
+/// `prune` also drops the fixed entries from the baseline file, and lowers the value it stores for
+/// an entry that shrank, when nothing is new and every command ran, so the file only tightens.
 pub fn check(only: Option<&str>, prune: bool, format: Format) -> Result<ExitCode> {
     let mut c = ctx("ns rules check")?;
     if let Some(text) = only.filter(|_| !c.commands.is_empty()) {
@@ -457,51 +692,51 @@ pub fn check(only: Option<&str>, prune: bool, format: Format) -> Result<ExitCode
     }
     let run = run_pack(&c.root, &c.commands)?;
     let baseline = load_baseline(&c.root.join(BASELINE))?.unwrap_or_default();
-    let (new, baselined, mut fixed) = compare(&run.findings, &baseline);
-    if only.is_some() {
-        fixed.clear();
-    }
-    let ok = new.is_empty();
-    let pruned = if prune && ok && !fixed.is_empty() {
-        let kept = without(&baseline, &fixed);
-        write_baseline(
-            &c.root.join(BASELINE),
-            &baseline_text(kept.into_iter().map(Entry::from).collect())?,
-        )?;
-        fixed.len()
+    let m = compare(&run.findings, &baseline);
+    let fixed: Vec<Finding> = if only.is_some() {
+        Vec::new()
     } else {
-        0
+        m.fixed.iter().map(|&i| baseline[i].clone()).collect()
     };
+    let planned = if prune && m.new.is_empty() && only.is_none() {
+        plan(&baseline, &m, &run.findings)
+    } else {
+        None
+    };
+    let (dropped, lowered) = planned.as_ref().map_or((0, 0), |p| (p.dropped, p.lowered));
+    if let Some(p) = planned {
+        write(&c.root, p.entries)?;
+    }
+    report(fixed.len(), dropped, lowered);
+    let new: Vec<&Finding> = m.new.iter().map(|n| &n.finding).collect();
+    let human = [
+        ("new", m.new.iter().map(|n| n.line()).collect()),
+        ("fixed", fixed.iter().map(line).collect()),
+    ];
     let v = json!({
-        "ok": ok,
+        "ok": m.new.is_empty(),
         "command": "rules check",
         "baseline": BASELINE,
         "commands": run.commands,
         "findings": run.findings.len(),
-        "baselined": baselined,
+        "baselined": m.accepted.len(),
         "new": new,
         "fixed": fixed,
-        "pruned": pruned,
+        "pruned": dropped,
+        "lowered": lowered,
     });
     let summary = format!(
-        "{} findings, {baselined} baselined, {} new, {} fixed",
+        "{} findings, {} baselined, {} new, {} fixed",
         run.findings.len(),
-        new.len(),
+        m.accepted.len(),
+        m.new.len(),
         fixed.len()
     );
-    print(&v, &[("new", &new), ("fixed", &fixed)], &summary, format)?;
-    if pruned > 0 {
-        eprintln!("ns rules: dropped {pruned} fixed entries from {BASELINE}");
-    } else if !fixed.is_empty() {
-        eprintln!(
-            "ns rules: {} baselined violations are gone; drop them with:\n  ns rules baseline",
-            fixed.len()
-        );
-    }
-    if !ok {
+    print(&v, &human, &summary, format)?;
+    if !m.new.is_empty() {
         eprintln!(
             "ns rules: {} new violations; fix them, then rerun:\n  ns rules check",
-            new.len()
+            m.new.len()
         );
         return Ok(ExitCode::from(1));
     }
@@ -520,8 +755,10 @@ pub fn baseline(allow_growth: bool, dry_run: bool, format: Format) -> Result<Exi
     let run = run_pack(&c.root, &c.commands)?;
     let path = c.root.join(BASELINE);
     let old = load_baseline(&path)?.unwrap_or_default();
-    let (added, matched, dropped) = compare(&run.findings, &old);
-    let refreshed = refreshed(&run.findings, &old, matched);
+    let m = compare(&run.findings, &old);
+    let added: Vec<Finding> = m.new.iter().map(|n| n.finding.clone()).collect();
+    let dropped: Vec<Finding> = m.fixed.iter().map(|&i| old[i].clone()).collect();
+    let refreshed = refreshed(&run.findings, &old, &m.accepted);
     // In `run.findings`' order (tool, rule, file, then line, then message), so a dropped finding
     // removes only its own entry from the file, and duplicates refresh the same way every run.
     let text = baseline_text(run.findings.iter().map(Entry::from).collect())?;
@@ -559,7 +796,10 @@ pub fn baseline(allow_growth: bool, dry_run: bool, format: Format) -> Result<Exi
     }
     print(
         &v,
-        &[("added", &added), ("dropped", &dropped)],
+        &[
+            ("added", added.iter().map(line).collect()),
+            ("dropped", dropped.iter().map(line).collect()),
+        ],
         &summary,
         format,
     )?;
@@ -574,232 +814,4 @@ pub fn baseline(allow_growth: bool, dry_run: bool, format: Format) -> Result<Exi
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn file(entries: &[(&str, &str)]) -> String {
-        let violations: Vec<Value> = entries
-            .iter()
-            .map(|(snippet, message)| {
-                json!({"tool": "t", "rule": "r", "file": "a.py", "message": message, "snippet": snippet})
-            })
-            .collect();
-        json!({"version": 1, "violations": violations}).to_string()
-    }
-
-    #[test]
-    fn removal_only_holds_when_every_head_entry_has_its_own_base_entry() {
-        let base = file(&[("x", "m"), ("y", "m"), ("y", "m")]);
-        assert_eq!(removal_only(&base, &base), Ok(true));
-        assert_eq!(
-            removal_only(&base, &file(&[("y", "m"), ("x", "m")])),
-            Ok(true)
-        );
-        assert_eq!(removal_only(&base, &file(&[])), Ok(true));
-        assert_eq!(
-            removal_only(&base, &file(&[("y", "m"), ("y", "m"), ("x", "m")])),
-            Ok(true)
-        );
-        assert_eq!(
-            removal_only(&base, &file(&[("x", "m"), ("x", "m")])),
-            Ok(false)
-        );
-        assert_eq!(removal_only(&base, &file(&[("z", "m")])), Ok(false));
-        let older = r#"{"version": 1, "violations": [{"tool": "t", "rule": "r", "file": "a.py", "line": 3, "message": "m", "snippet": "x"}]}"#;
-        assert_eq!(removal_only(older, &file(&[("x", "m")])), Ok(true));
-    }
-
-    #[test]
-    fn removal_only_lets_a_message_change_through_but_not_a_new_entry() {
-        let base = file(&[("x", "m"), ("x", "n")]);
-        assert_eq!(removal_only(&base, &file(&[("x", "m2")])), Ok(true));
-        assert_eq!(
-            removal_only(&base, &file(&[("x", "m2"), ("x", "m3")])),
-            Ok(true)
-        );
-        assert_eq!(
-            removal_only(&base, &file(&[("x", "m"), ("x", "m"), ("x", "m")])),
-            Ok(false)
-        );
-        assert_eq!(
-            removal_only(&base, &file(&[("x", "m2"), ("z", "m")])),
-            Ok(false)
-        );
-    }
-
-    #[test]
-    fn removal_only_is_an_error_naming_the_side_that_is_not_a_baseline() {
-        let good = file(&[("x", "m")]);
-        let e = removal_only("{", &good).unwrap_err();
-        assert!(
-            e.starts_with("the base's baseline is not a rules baseline"),
-            "{e}"
-        );
-        let e = removal_only(&good, "{}").unwrap_err();
-        assert!(
-            e.starts_with("the PR's baseline is not a rules baseline"),
-            "{e}"
-        );
-    }
-
-    #[test]
-    fn without_drops_one_entry_per_fixed_finding_and_keeps_the_order() {
-        let mut m = f("a", 1, "x");
-        m.message = "other".into();
-        let base: Vec<Finding> = [f("a", 0, "y"), f("a", 0, "x"), m, f("a", 0, "x")]
-            .into_iter()
-            .map(|mut f| {
-                f.line = None;
-                f
-            })
-            .collect();
-        let kept = without(&base, &[base[1].clone()]);
-        assert_eq!(kept, [&base[0], &base[2], &base[3]]);
-        assert_eq!(without(&base, &[]).len(), 4);
-    }
-
-    fn f(file: &str, line: u64, snippet: &str) -> Finding {
-        Finding {
-            tool: "t".into(),
-            rule: "r".into(),
-            file: file.into(),
-            line: Some(line),
-            message: "m".into(),
-            snippet: snippet.into(),
-        }
-    }
-
-    #[test]
-    fn commands_reads_every_backticked_span_in_the_rules_row() {
-        assert_eq!(
-            commands("| rules | `ruff check .`, `lint-imports` `cargo deny check` | 5 s |"),
-            ["ruff check .", "lint-imports", "cargo deny check"]
-        );
-        assert_eq!(
-            commands("| `rules` | `a | jq -c .` | see `docs` |"),
-            ["a | jq -c ."]
-        );
-        assert_eq!(commands("| rules | `a`, then `b` |"), ["a"]);
-        assert_eq!(commands("| rules | none |\n| rules | `x` |"), ["x"]);
-        assert!(commands("| rules | `` |").is_empty());
-        assert!(commands("| rules | `open").is_empty());
-        assert!(commands("| ci-local | `make ci` |").is_empty());
-        assert!(commands("rules: `x`").is_empty());
-    }
-
-    #[test]
-    fn parse_line_reads_json_and_file_line_col_message() {
-        let j = parse_line(
-            "ast-grep",
-            r#"{"tool": "sg", "rule": "no-eval", "file": "a.py", "line": 4, "message": "m", "snippet": "  x =  1 "}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            (j.tool.as_str(), j.rule.as_str(), j.line, j.snippet.as_str()),
-            ("sg", "no-eval", Some(4), "x = 1")
-        );
-        let j = parse_line("ast-grep", r#"{"file": "a.py"}"#).unwrap();
-        assert_eq!(
-            (j.tool.as_str(), j.line, j.message.as_str()),
-            ("ast-grep", None, "")
-        );
-        assert_eq!(parse_line("x", r#"{"rule": "r"}"#), None);
-        assert_eq!(parse_line("x", "{not json"), None);
-
-        let p = parse_line("ruff", "a.py:3:8: F401 `os` imported but unused").unwrap();
-        assert_eq!(
-            (p.file.as_str(), p.line, p.message.as_str()),
-            ("a.py", Some(3), "F401 `os` imported but unused")
-        );
-        let p = parse_line("cc", "src/x.c:12: warning: unused: 7").unwrap();
-        assert_eq!(
-            (p.line, p.message.as_str()),
-            (Some(12), "warning: unused: 7")
-        );
-        assert_eq!(parse_line("x", "warning: unused variable"), None);
-        assert_eq!(parse_line("x", "a.py:x:1: m"), None);
-        assert_eq!(parse_line("x", "   Compiling foo v1: 2: x"), None);
-        assert_eq!(parse_line("x", ":3: m"), None);
-        assert_eq!(parse_line("x", "my file.py:3: m"), None);
-        assert_eq!(parse_line("x", "a.py:3"), None);
-    }
-
-    #[test]
-    fn tool_name_is_the_first_word_without_its_directory() {
-        assert_eq!(tool_name("./scripts/lint-x --strict"), "lint-x");
-        assert_eq!(tool_name("ruff check ."), "ruff");
-    }
-
-    #[test]
-    fn settle_makes_paths_relative_and_snippets_from_source() {
-        let tmp = tempfile::tempdir().unwrap();
-        fs::write(tmp.path().join("a.py"), "one\n  two   2\n").unwrap();
-        let mut src = HashMap::new();
-        let mut raw = f(&tmp.path().join("a.py").to_string_lossy(), 2, "");
-        raw.message = "msg".into();
-        let s = settle(raw.clone(), tmp.path(), &mut src);
-        assert_eq!((s.file.as_str(), s.snippet.as_str()), ("a.py", "two 2"));
-        raw.file = "./a.py".into();
-        raw.line = Some(9);
-        let s = settle(raw.clone(), tmp.path(), &mut src);
-        assert_eq!((s.file.as_str(), s.snippet.as_str()), ("a.py", "msg"));
-        raw.line = Some(0);
-        assert_eq!(settle(raw.clone(), tmp.path(), &mut src).snippet, "msg");
-        raw.line = None;
-        raw.file = "missing.py".into();
-        assert_eq!(settle(raw.clone(), tmp.path(), &mut src).snippet, "msg");
-        raw.snippet = "given".into();
-        assert_eq!(settle(raw, tmp.path(), &mut src).snippet, "given");
-    }
-
-    #[test]
-    fn refreshed_counts_matched_findings_no_entry_equals_in_full() {
-        let msg = |m: &str| Finding {
-            line: None,
-            message: m.into(),
-            ..f("a", 0, "x")
-        };
-        let base = [msg("a"), msg("b")];
-        assert_eq!(refreshed(&[msg("a"), msg("b")], &base, 2), 0);
-        assert_eq!(refreshed(&[msg("b"), msg("c")], &base, 2), 1);
-        assert_eq!(refreshed(&[msg("a"), msg("a")], &base, 2), 1);
-        assert_eq!(refreshed(&[msg("c")], &base, 1), 1);
-    }
-
-    #[test]
-    fn compare_matches_on_tool_rule_file_and_snippet_and_counts_duplicates() {
-        let base = [f("a", 1, "x"), f("a", 5, "y")];
-        let (new, matched, fixed) = compare(&[f("a", 9, "x"), f("a", 10, "x")], &base);
-        assert_eq!(new, [f("a", 10, "x")]);
-        assert_eq!(matched, 1);
-        assert_eq!(fixed, [f("a", 5, "y")]);
-        let mut other = f("a", 1, "x");
-        other.rule = "r2".into();
-        let (new, _, _) = compare(std::slice::from_ref(&other), &base);
-        assert_eq!(new, [other]);
-        let (new, matched, fixed) = compare(&[], &[]);
-        assert!(new.is_empty() && fixed.is_empty() && matched == 0);
-    }
-
-    #[test]
-    fn a_malformed_baseline_is_an_error_naming_the_fix() {
-        let tmp = tempfile::tempdir().unwrap();
-        let p = tmp.path().join("b.json");
-        assert!(load_baseline(&p).unwrap().is_none());
-        let e = load_baseline(tmp.path()).unwrap_err();
-        assert!(format!("{e:#}").contains("cannot read"), "{e:#}");
-        fs::write(&p, "{}").unwrap();
-        let e = load_baseline(&p).unwrap_err();
-        let e = e.downcast_ref::<SfError>().unwrap();
-        assert!(e.hint.as_deref().unwrap().contains("git checkout --"));
-    }
-
-    #[test]
-    fn human_lines_name_the_rule_when_there_is_one() {
-        assert_eq!(line(&f("a.py", 3, "")), "a.py:3: t/r: m");
-        let mut g = f("a.py", 3, "");
-        g.rule.clear();
-        g.line = None;
-        assert_eq!(line(&g), "a.py: t: m");
-    }
-}
+mod tests;

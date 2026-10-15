@@ -638,6 +638,67 @@ fn a_baseline_that_gains_an_entry_needs_a_human_merge() {
     assert!(!e.gh_calls().contains("pr merge"));
 }
 
+/// A rules baseline whose one entry is a `clippy::too_many_lines` finding measuring `lines`.
+fn measured_baseline(lines: u64) -> String {
+    serde_json::json!({
+        "version": 1,
+        "violations": [{"tool": "clippy", "rule": "clippy::too_many_lines", "file": "f.c",
+            "message": format!("this function has too many lines ({lines}/100) (quality bar)"),
+            "snippet": "fn a() {"}],
+    })
+    .to_string()
+}
+
+/// main holds a measured baseline of `was`; the build commit rewrites it to `now`, and the PR's
+/// diff lists it.
+fn measured_change(was: u64, now: u64) -> (Env, Value) {
+    let e = Env::new();
+    fs::create_dir_all(e.root.join(".nightshift")).unwrap();
+    fs::write(
+        e.root.join(".nightshift/rules-baseline.json"),
+        measured_baseline(was),
+    )
+    .unwrap();
+    git(&e.root, &["add", ".nightshift/rules-baseline.json"]);
+    git(&e.root, &["commit", "-q", "-m", "baseline"]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.ctl(
+        "edit",
+        &format!(
+            "printf '%s' '{}' > .nightshift/rules-baseline.json && git add .nightshift && echo unit >> work.txt",
+            measured_baseline(now)
+        ),
+    );
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file("diff-12.txt", ".nightshift/rules-baseline.json\n");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    (e, v)
+}
+
+/// #746: a baseline value that grew past what it recorded is growth, so it needs a human.
+#[test]
+fn a_baseline_value_that_grew_needs_a_human_merge() {
+    let (e, v) = measured_change(221, 261);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        v["reason"],
+        "changes files that need human review; needs a human merge (.nightshift/rules-baseline.json)"
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
+/// #746: a baseline value that shrank still only removes, so it merges on its own.
+#[test]
+fn a_baseline_value_that_shrank_merges_without_a_human() {
+    let (e, v) = measured_change(221, 100);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert!(e.gh_calls().contains("pr merge"));
+    assert!(run_log(&e).contains("\"baseline_shrinks\""), "{}", run_log(&e));
+}
+
 #[test]
 fn a_failed_fetch_of_the_default_branch_needs_a_human_merge() {
     let e = Env::new();

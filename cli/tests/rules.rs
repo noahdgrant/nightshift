@@ -775,6 +775,86 @@ fn a_non_numeric_timeout_falls_back_to_the_default() {
     assert_eq!(code, Some(0), "{err}");
 }
 
+/// A `clippy::too_many_lines` finding at `src.py:1`, as the Rust pack prints it.
+fn too_many_lines(lines: u64) -> String {
+    let message = format!("this function has too many lines ({lines}/100) (quality bar)");
+    format!(
+        "{{\"tool\":\"clippy\",\"rule\":\"clippy::too_many_lines\",\"file\":\"src.py\",\"line\":1,\"message\":\"{message}\",\"snippet\":\"fn execute() {{\"}}\n"
+    )
+}
+
+#[test]
+fn measured_values_ratchet_against_the_baseline() {
+    let r = Repo::new();
+    r.findings("lint-a", &too_many_lines(221));
+    r.ns(&["baseline", "--allow-growth"]);
+    for lines in [221, 100] {
+        r.findings("lint-a", &too_many_lines(lines));
+        let (code, v, err) = r.ns(&["check"]);
+        assert_eq!(code, Some(0), "{lines}: {v} {err}");
+        assert_eq!(v["baselined"], 1, "{lines}: {v}");
+        assert_eq!(v["new"], serde_json::json!([]), "{lines}: {v}");
+    }
+
+    r.findings("lint-a", &too_many_lines(261));
+    let (code, v, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(1), "{v} {err}");
+    assert_eq!(v["baselined"], 0, "{v}");
+    assert_eq!(v["new"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["fixed"], serde_json::json!([]), "{v}");
+    let out = common::ns()
+        .args(["rules", "check", "--human"])
+        .current_dir(&r.root)
+        .output();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("grew from 221 to 261"), "{stdout}");
+}
+
+#[test]
+fn prune_lowers_a_shrunk_measured_value_and_reports_it() {
+    let r = Repo::new();
+    r.findings("lint-a", &too_many_lines(221));
+    r.ns(&["baseline", "--allow-growth"]);
+    r.findings("lint-a", &too_many_lines(100));
+    let (_, v, err) = r.ns(&["check", "--prune", "--only", "lint-a"]);
+    assert_eq!(v["lowered"], 0, "{v} {err}");
+    let (code, v, err) = r.ns(&["check", "--prune"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["pruned"], 0, "{v}");
+    assert_eq!(v["lowered"], 1, "{v}");
+    assert!(err.contains("lowered 1 values"), "{err}");
+    let after = fs::read_to_string(r.path(BASELINE)).unwrap();
+    assert!(
+        after.contains("(100/100)") && !after.contains("(221/100)"),
+        "{after}"
+    );
+
+    let (code, v, _) = r.ns(&["check", "--prune"]);
+    assert_eq!(code, Some(0), "{v}");
+    assert_eq!(v["lowered"], 0, "{v}");
+}
+
+#[test]
+fn baseline_refuses_a_grown_measured_value_until_allow_growth() {
+    let r = Repo::new();
+    r.findings("lint-a", &too_many_lines(221));
+    r.ns(&["baseline", "--allow-growth"]);
+    let before = fs::read_to_string(r.path(BASELINE)).unwrap();
+    r.findings("lint-a", &too_many_lines(261));
+    let (code, v, err) = r.ns(&["baseline"]);
+    assert_eq!(code, Some(1), "{v} {err}");
+    assert_eq!(v["status"], "refused", "{v}");
+    assert_eq!(files_and_lines(&v["added"]), [("src.py".into(), 1)], "{v}");
+    assert_eq!(fs::read_to_string(r.path(BASELINE)).unwrap(), before);
+
+    let (code, v, err) = r.ns(&["baseline", "--allow-growth"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert!(r.baseline().unwrap()["violations"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("(261/100)"));
+}
+
 fn gate(r: &Repo, base: &str) -> (Option<i32>, String) {
     let ns = common::ns_path();
     let cmd = format!("({base}) && '{}' rules check", ns.display());
