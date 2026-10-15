@@ -40,6 +40,19 @@ pub(super) fn check_citations(repo: &Path) -> Vec<LintError> {
         let Ok(doc) = fs::read_to_string(repo.join(path)) else {
             continue;
         };
+        if !texts
+            .iter()
+            .any(|(_, text)| !citations(name, text).is_empty())
+        {
+            errors.push(LintError {
+                skill: "citations".into(),
+                file: path.into(),
+                message: format!(
+                    "no file under {} cites {name}; the citation scan reads nothing",
+                    ROOTS.join(", ")
+                ),
+            });
+        }
         for (file, text) in &texts {
             for (line, cited) in unresolved(name, &doc, text) {
                 if cited.is_none() && !bare {
@@ -77,9 +90,34 @@ fn all_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Each citation of `name` in `text`, with its 1-based line: the heading a `<name>, "<heading>"`
-/// names, or `None` for a `<name>)` that names none. Other mentions of the file are not
-/// citations, and neither is a `<placeholder>` heading.
+/// names, or `None` for a `<name>)` that names none. The rule packs' `quality bar, <heading>:
+/// <path to name>` also names a heading. Other mentions of the file are not citations, and
+/// neither is a `<placeholder>` heading.
 fn citations(name: &str, text: &str) -> Vec<(usize, Option<String>)> {
+    let mut found = quality_bar_messages(name, text);
+    found.extend(quoted_citations(name, text));
+    found.sort_by_key(|(line, _)| *line);
+    found
+}
+
+/// The headings of `quality bar, <heading>: <path>` messages, where the path ends in `name`.
+fn quality_bar_messages(name: &str, text: &str) -> Vec<(usize, Option<String>)> {
+    text.match_indices("quality bar, ")
+        .filter_map(|(at, m)| {
+            let rest = &text[at + m.len()..];
+            let (heading, after) = rest.split_once(": ")?;
+            let path = after.split([')', ' ', '\n', '"']).next()?;
+            (path.ends_with(name) && !heading.contains('\n')).then(|| {
+                (
+                    text[..at].matches('\n').count() + 1,
+                    Some(heading.to_owned()),
+                )
+            })
+        })
+        .collect()
+}
+
+fn quoted_citations(name: &str, text: &str) -> Vec<(usize, Option<String>)> {
     text.match_indices(name)
         .filter_map(|(at, m)| {
             let line = text[..at].matches('\n').count() + 1;
@@ -184,7 +222,7 @@ mod tests {
                 let file = e
                     .file
                     .strip_prefix(&*repo.to_string_lossy())
-                    .unwrap()
+                    .unwrap_or(&e.file)
                     .to_owned();
                 format!("{file}: {}", e.message)
             })
@@ -233,9 +271,43 @@ mod tests {
     }
 
     #[test]
+    fn the_quality_bar_message_form_is_a_citation() {
+        let msg = format!("x (quality bar, Size: skills/ns-contract/references/{BAR})");
+        assert_eq!(citations(BAR, &msg), [some(1, "Size"), (1, None)]);
+        assert_eq!(citations(BAR, "quality bar, Size: other.md"), []);
+        assert_eq!(
+            unresolved(BAR, "## Size\n", &msg),
+            [(1, None)],
+            "only the bare mention of the path is left, and the bar ignores it"
+        );
+        assert_eq!(
+            unresolved(BAR, "## Other\n", &msg),
+            [some(1, "Size"), (1, None)]
+        );
+    }
+
+    #[test]
+    fn a_doc_nothing_cites_fails_instead_of_passing_on_nothing() {
+        let tmp = repo();
+        assert_eq!(messages(tmp.path()).len(), 2);
+    }
+
+    #[test]
+    fn the_real_checkout_has_citations_and_no_broken_one() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        assert_eq!(messages(&repo), Vec::<String>::new());
+    }
+
+    #[test]
     fn build_output_and_a_repo_without_the_doc_are_not_checked() {
         let tmp = repo();
         let root = tmp.path();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(
+            root.join("docs/ok.md"),
+            format!("({STANDARDS}, \"Checks\") ({BAR}, \"Size\")\n"),
+        )
+        .unwrap();
         for dir in ["cli/target", "rules/js/node_modules"] {
             fs::create_dir_all(root.join(dir)).unwrap();
             fs::write(root.join(dir).join("x"), format!("({STANDARDS}, \"No\")\n")).unwrap();
