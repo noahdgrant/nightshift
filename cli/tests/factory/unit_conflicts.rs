@@ -67,14 +67,26 @@ fn a_unit_that_ends_merged_records_its_conflicts() {
 }
 
 #[test]
-fn a_unit_that_ends_stuck_logs_its_conflicts() {
+fn a_unit_that_ends_stuck_records_and_logs_its_conflicts() {
     let e = Env::new();
-    e.factory("[phases.build]\ngate = \"false\"\n");
-    build_merges_a_conflict(&e, &["pass:script", "pass:script"]);
+    let open = "schema: ns-artifact/2|cause: findings_open|next: review|reason: \"I1 is open\"|findings: [I1]";
+    let fixed = "schema: ns-artifact/2|cause: none|next: review|findings: [I1]";
+    e.factory("[phases.review]\nfull_cycles = 1\nfix_only_cycles = 0\n");
+    build_merges_a_conflict(&e, &["pass:script"]);
+    e.queue("review", &["fail", "fail"]);
+    e.ctl("review.fronts", &format!("{open}\n{open}\n"));
+    e.queue("review-fix", &["pass:commit"]);
+    e.ctl("review-fix.fronts", &format!("{fixed}\n"));
     let v = e.run(&["run", "--issue", "7"], 1);
     assert_eq!(v["outcome"], "stuck", "{v}");
-    assert_eq!(conflict_events(&e)[0]["paths"], json!(["README"]));
-    assert_eq!(conflict_events(&e).len(), 1);
+    let evs = conflict_events(&e);
+    assert_eq!(evs.len(), 1, "{evs:?}");
+    assert_eq!(evs[0]["paths"], json!(["README"]));
+    let records = quality_records(&e);
+    assert!(!records.is_empty());
+    for r in &records {
+        assert_eq!(r["conflicts"][0]["paths"], json!(["README"]), "{r}");
+    }
 }
 
 #[test]
