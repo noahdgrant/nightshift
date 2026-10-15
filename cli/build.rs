@@ -1,7 +1,9 @@
 //! Stamp the commit `ns` is built from into `NS_BUILD_COMMIT`, which `ns --version` shows and
 //! `ns watch`'s self-update compares against (docs/factory/starting-a-night.md, "When the
 //! watched repo is nightshift"). A `NS_BUILD_COMMIT` already set, as the self-update sets it
-//! for a source tree with no `.git`, wins; a tree that is neither gets `unknown`.
+//! for a source tree with no `.git`, wins; a tree that is neither gets `unknown`, and
+//! a build that found no commit or watched no HEAD reruns this script on every build, through a
+//! path that never exists, so a later build in a working git tree stamps the real commit.
 
 mod build_stamp;
 
@@ -29,15 +31,25 @@ fn git(args: &[&str]) -> Option<String> {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=NS_BUILD_COMMIT");
-    let commit = build_stamp::commit(std::env::var("NS_BUILD_COMMIT").ok(), || {
+    let (commit, rerun_always) = build_stamp::commit(std::env::var("NS_BUILD_COMMIT").ok(), || {
+        let mut watched = false;
         for p in ["HEAD", "logs/HEAD"] {
             if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", p]) {
                 if Path::new(&path).exists() {
                     println!("cargo:rerun-if-changed={path}");
+                    watched = true;
                 }
             }
         }
-        git(&["rev-parse", "HEAD"])
+        build_stamp::Head {
+            commit: git(&["rev-parse", "HEAD"]),
+            watched,
+        }
     });
+    if rerun_always {
+        let never =
+            Path::new(&std::env::var("OUT_DIR").unwrap()).join("ns-build-commit-unresolved");
+        println!("cargo:rerun-if-changed={}", never.display());
+    }
     println!("cargo:rustc-env=NS_BUILD_COMMIT={commit}");
 }
