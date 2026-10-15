@@ -310,7 +310,7 @@ fn record(
         return Ok(Ran::Finish(f));
     }
     let art_path = ctx.artifacts.join(artifact_of(phase));
-    let art = read_art(&art_path);
+    let art = read_art(&art_path).filter(|_| !moves.untouched(&art_path));
     let written = art.is_some();
     if art.as_ref().is_some_and(|a| a.invalid.is_none()) {
         if let Err(e) = record_review_run(io, state, phase, h, &mut rec) {

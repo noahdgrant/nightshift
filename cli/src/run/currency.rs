@@ -164,6 +164,16 @@ pub struct Moves {
     pub kept: Vec<(PathBuf, Option<Vec<u8>>)>,
 }
 
+impl Moves {
+    /// Whether `path` is a kept file the attempt left as it was: a pass that crashed or wrote
+    /// nothing leaves the loop's `review.md` in place, and that is no artifact written.
+    pub fn untouched(&self, path: &Path) -> bool {
+        self.kept
+            .iter()
+            .any(|(p, was)| p == path && fs::read(p).ok() == *was)
+    }
+}
+
 /// Undo `archive_for` after an attempt that wrote nothing, or one set aside, so the unit's state
 /// is as before: the kept files first, then the moved ones.
 pub(super) fn restore(moves: &Moves) {

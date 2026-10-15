@@ -117,7 +117,7 @@ fn a_fix_cycle_that_hangs_is_cut_off_at_its_own_timeout_and_the_loop_goes_on() {
     e.ctl("review-fix.fronts", &format!("{FIXED_I1}\n{FIXED_I1}\n"));
     let out = e
         .ns()
-        .env("NS_PHASE_TIMEOUT_MS", "review-fix=4000")
+        .env("NS_PHASE_TIMEOUT_MS", "review=4000")
         .args(["run", "--issue", "7"])
         .assert()
         .code(0)
@@ -183,6 +183,32 @@ fn an_invalid_pass_inside_the_loop_is_rerun_with_the_loop_as_it_was() {
     assert_eq!(got, want, "the rerun was pass 1 of the same loop");
     let wt = e.worktree(UNIT).join(format!(".ns/{UNIT}"));
     assert!(wt.join("history/review-invalid-1.md").is_file());
+}
+
+#[test]
+fn a_pass_inside_the_loop_that_crashes_or_writes_nothing_is_rerun_and_counts_as_no_pass() {
+    for status in ["crash", "none"] {
+        let e = Env::new();
+        e.queue("build", &["pass:commit"]);
+        e.queue("review", &["fail", status, "pass"]);
+        e.ctl("review.fronts", &format!("{OPEN_I1}\n"));
+        e.queue("review-fix", &["pass:commit"]);
+        e.ctl("review-fix.fronts", &format!("{FIXED_I1}\n"));
+        let v = e.run(&["run", "--issue", "7"], 0);
+        assert_eq!(v["outcome"], "done", "{status}: {v}");
+        assert_eq!(
+            e.calls(),
+            ["triage", "build", "verify", "review", "review-fix", "verify", "review", "review", "ship"],
+            "{status}"
+        );
+        let got: Vec<(String, u64)> = review_record(&e)
+            .iter()
+            .map(|r| (r["phase"].as_str().unwrap().to_string(), r["cycle"].as_u64().unwrap()))
+            .collect();
+        let want = [("review", 0), ("review-fix", 1), ("review", 1)];
+        let want: Vec<(String, u64)> = want.iter().map(|(p, c)| (p.to_string(), *c)).collect();
+        assert_eq!(got, want, "{status}");
+    }
 }
 
 #[test]
