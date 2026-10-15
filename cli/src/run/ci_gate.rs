@@ -45,7 +45,11 @@ impl Ctx<'_> {
             if after_build && matches!(red, Ok(None)) {
                 self.commit_pruned(gate_state, phase, &head)?;
             } else {
-                git::run(&self.worktree, &["checkout", "-q", "--", BASELINE])?;
+                if let Err(e) = git::run(&self.worktree, &["checkout", "-q", "--", BASELINE]) {
+                    self.log(
+                        json!({"event": "baseline_restore_failed", "error": format!("{e:#}")}),
+                    );
+                }
             }
         }
         red
@@ -518,6 +522,85 @@ mod tests {
         let files = job.files.expect("a fast gate gets its files");
         let files: Vec<&str> = files.lines().collect();
         assert_eq!(files, ["cli/x.rs", "contrib/x.rs"]);
+    }
+
+    fn gate_ctx<'a>(fac: &'a crate::factory::Factory, wt: &Path, common: &Path) -> Ctx<'a> {
+        let mut ctx = super::super::post_phase::tests::ctx_in(fac, wt, common);
+        ctx.gate.commands = gate::Commands {
+            build: Some("full".into()),
+            rest: None,
+        };
+        ctx
+    }
+
+    fn baselined_clone() -> (tempfile::TempDir, PathBuf) {
+        let (t, _origin, wt) = cloned();
+        let path = wt.join(BASELINE);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, baseline(&["x", "y"])).unwrap();
+        commit_all(&wt, "baseline");
+        (t, wt)
+    }
+
+    fn prune_cmd(then: &str) -> String {
+        let pruned = baseline(&["y"]).replace('\'', "");
+        format!("printf '%s' '{pruned}' > {BASELINE}; {then}")
+    }
+
+    #[test]
+    fn a_gate_that_errors_restores_the_baseline_it_left_pruned() {
+        let (t, wt) = baselined_clone();
+        fs::write(wt.join(BASELINE), baseline(&["y"])).unwrap();
+        fs::write(t.path().join("ns"), "a file where the log dir goes").unwrap();
+        let fac = crate::factory::Factory::default();
+        let ctx = gate_ctx(&fac, &wt, t.path());
+        let mut gs = gate::Gate::default();
+        let r = ctx.gate(&mut gs, gate::Trigger::BuildPassed, "full", "build", 1);
+        assert!(r.is_err());
+        assert_eq!(git::run(&wt, &["status", "--porcelain"]).unwrap(), "");
+        let kept = git::run(&wt, &["show", &format!("HEAD:{BASELINE}")]).unwrap();
+        assert_eq!(fs::read_to_string(wt.join(BASELINE)).unwrap(), kept);
+    }
+
+    #[test]
+    fn a_red_gate_stays_red_when_the_baseline_cannot_be_restored() {
+        let (t, wt) = baselined_clone();
+        let fac = crate::factory::Factory::default();
+        let mut ctx = gate_ctx(&fac, &wt, t.path());
+        let mut gs = gate::Gate::default();
+        let cmd = prune_cmd("touch .git/index.lock; exit 1");
+        ctx.gate.commands.build = Some(cmd.clone());
+        let red = ctx
+            .gate(&mut gs, gate::Trigger::BuildPassed, &cmd, "build", 1)
+            .unwrap();
+        assert!(red.is_some());
+    }
+
+    #[test]
+    fn a_silent_build_after_a_red_gate_commits_the_baseline_the_rerun_pruned() {
+        let (t, wt) = baselined_clone();
+        let fac = crate::factory::Factory::default();
+        let mut ctx = gate_ctx(&fac, &wt, t.path());
+        let mut gs = gate::Gate::default();
+        ctx.gate.commands.build = Some("exit 1".into());
+        let red = ctx
+            .gate(&mut gs, gate::Trigger::BuildPassed, "exit 1", "build", 1)
+            .unwrap();
+        assert!(red.is_some());
+        fs::write(wt.join("f.c"), "changed\n").unwrap();
+        git::run(&wt, &["add", "f.c"]).unwrap();
+        git::run(&wt, &["commit", "-q", "-m", "fix"]).unwrap();
+        let cmd = prune_cmd("exit 0");
+        ctx.gate.commands.build = Some(cmd.clone());
+        let red = ctx
+            .gate(&mut gs, gate::Trigger::BuildWroteNothing, &cmd, "build", 2)
+            .unwrap();
+        assert!(red.is_none());
+        assert_eq!(
+            git::run(&wt, &["log", "-1", "--format=%s"]).unwrap(),
+            PRUNE_SUBJECT
+        );
+        assert_eq!(git::run(&wt, &["status", "--porcelain"]).unwrap(), "");
     }
 
     /// A killed run can leave the scratch path as a plain directory git doesn't know, or as a

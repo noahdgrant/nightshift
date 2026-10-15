@@ -652,6 +652,29 @@ mod tests {
     }
 
     #[test]
+    fn a_baseline_check_errors_when_the_fetch_of_the_default_branch_fails() {
+        let (_t, wt, head) = baseline_pr(|wt| write_baseline(wt, &["y"]));
+        let origin = git::run(&wt, &["remote", "get-url", "origin"]).unwrap();
+        fs::remove_dir_all(origin).unwrap();
+        let err = baseline_shrinks(&wt, "main", "ns/9-x", &head).unwrap_err();
+        assert!(
+            format!("{err:#}").starts_with("git fetch -q origin main failed"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_baseline_check_errors_when_the_head_shares_no_history_with_the_tip() {
+        let (_t, wt, _) = baseline_pr(|wt| write_baseline(wt, &["y"]));
+        git::run(&wt, &["checkout", "-q", "--orphan", "unrelated"]).unwrap();
+        write_baseline(&wt, &[]);
+        commit_all(&wt, "unrelated");
+        let head = git::run(&wt, &["rev-parse", "HEAD"]).unwrap();
+        let err = baseline_shrinks(&wt, "main", "ns/9-x", &head).unwrap_err();
+        assert!(format!("{err:#}").contains("merge-base"), "{err:#}");
+    }
+
+    #[test]
     fn a_pr_head_that_is_not_a_sha_is_an_error_before_git_sees_it() {
         let (_t, wt, _) = baseline_pr(|wt| write_baseline(wt, &["y"]));
         for head in ["", "--upload-pack=touch x", "HEAD", "main"] {
