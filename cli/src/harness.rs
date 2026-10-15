@@ -148,7 +148,7 @@ impl PrivateTmp {
             .into();
         c.push(self.dir.to_string_lossy().into_owned());
         c.push("/tmp".to_string());
-        for entry in tmp_entries(&self.keep) {
+        for entry in tmp_entries(&self.keep).into_iter().filter(|e| e.exists()) {
             let entry = entry.to_string_lossy().into_owned();
             c.extend(["--bind".to_string(), entry.clone(), entry]);
         }
@@ -157,7 +157,8 @@ impl PrivateTmp {
     }
 }
 
-/// The host `/tmp` entries that hold `paths`, each once.
+/// The host `/tmp` entries that hold `paths`, each once. `launcher` binds only those that exist:
+/// bubblewrap refuses a missing source, which would fail every phase.
 fn tmp_entries(paths: &[PathBuf]) -> BTreeSet<PathBuf> {
     paths
         .iter()
@@ -279,18 +280,27 @@ mod tests {
 
     #[test]
     fn a_private_tmp_mounts_the_phase_dir_and_binds_back_the_tmp_entries_it_keeps() {
+        let host = tempfile::Builder::new()
+            .prefix("ns-harness-host-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let top = host.path().to_str().unwrap();
+        std::fs::create_dir_all(host.path().join("ns-r-u/build-1")).unwrap();
+        std::fs::create_dir_all(host.path().join("ssh-x")).unwrap();
+        let phase = format!("{top}/ns-r-u/build-1");
         let keep = [
-            "/tmp/ns-r-u/build-1",
-            "/tmp/ssh-x/agent.1",
-            "/tmp/ssh-x/agent.2",
-            "/srv/home",
-            "/tmp",
-            "/tmp/../etc",
-            "/tmpfoo/bin",
+            phase.clone(),
+            format!("{top}/ssh-x/agent.1"),
+            format!("{top}/ssh-x/agent.2"),
+            "/srv/home".to_string(),
+            "/tmp".to_string(),
+            "/tmp/../etc".to_string(),
+            "/tmpfoo/bin".to_string(),
         ];
+        let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
         let (cmd, _) = capped(
             None,
-            Some(&private("/tmp/ns-r-u/build-1", &keep)),
+            Some(&private(&phase, &keep)),
             "claude",
             &v(&["-p"]),
             false,
@@ -306,20 +316,46 @@ mod tests {
                 "/",
                 "--die-with-parent",
                 "--bind",
-                "/tmp/ns-r-u/build-1",
+                &phase,
                 "/tmp",
                 "--bind",
-                "/tmp/ns-r-u",
-                "/tmp/ns-r-u",
-                "--bind",
-                "/tmp/ssh-x",
-                "/tmp/ssh-x",
+                top,
+                top,
                 "--",
                 "claude",
                 "-p",
             ]
         );
         assert_eq!(env(&cmd, AUTO_MEMORY_ENV).as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn a_private_tmp_binds_back_only_the_tmp_entries_that_exist() {
+        let here = tempfile::Builder::new()
+            .prefix("ns-harness-keep-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let gone = "/tmp/ns-harness-no-such-entry/agent.1";
+        let keep_path = here.path().join("bin");
+        let (cmd, _) = capped(
+            None,
+            Some(&private(
+                "/tmp/ns-r-u/build-1",
+                &[gone, keep_path.to_str().unwrap()],
+            )),
+            "claude",
+            &v(&[]),
+            false,
+            |_| {},
+        )
+        .unwrap();
+        let argv = cmd.argv();
+        let here = here.path().to_str().unwrap();
+        assert!(argv.iter().any(|a| a == here), "{argv:?}");
+        assert!(
+            !argv.iter().any(|a| a.contains("no-such-entry")),
+            "{argv:?}"
+        );
     }
 
     #[test]

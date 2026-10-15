@@ -1,10 +1,17 @@
-/// Whether bubblewrap can give a process a private `/tmp` on this machine.
+/// Whether bubblewrap can start on this machine. Under CI or `NS_REQUIRE_BWRAP` a bwrap that
+/// cannot start fails the test instead of skipping it, so the isolation proof cannot go missing.
 fn bwrap_works() -> bool {
-    StdCommand::new("bwrap")
+    let works = StdCommand::new("bwrap")
         .args(["--dev-bind", "/", "/", "--", "true"])
         .stderr(std::process::Stdio::null())
         .status()
-        .is_ok_and(|s| s.success())
+        .is_ok_and(|s| s.success());
+    let required = std::env::var_os("CI").is_some() || std::env::var_os("NS_REQUIRE_BWRAP").is_some();
+    assert!(
+        works || !required,
+        "bwrap is missing or cannot start here, and CI or NS_REQUIRE_BWRAP requires it"
+    );
+    works
 }
 
 /// `ns`'s PATH for `e` with no `bwrap` on it: each directory holding one is replaced by a
@@ -178,4 +185,25 @@ fn a_missing_harness_under_bwrap_is_still_a_usage_error() {
         err.contains("harness binary `ns-no-such-harness` is not on PATH"),
         "{err}"
     );
+}
+
+#[test]
+fn a_phase_with_its_worktree_and_tmpdir_under_the_host_tmp_can_write_tmpdir_and_use_git() {
+    if !bwrap_works() {
+        eprintln!("skipped: bwrap is missing or cannot start here, so phases share /tmp");
+        return;
+    }
+    let e = Env::in_host_tmp();
+    e.ctl(
+        "build.sh",
+        r#"out="$FAKE_CTRL/saw-$NS_UNIT"
+if touch "$TMPDIR/scratch"; then echo "TMPDIR writable" >> "$out"; else echo "TMPDIR not writable" >> "$out"; fi
+if git worktree list >/dev/null 2>&1; then echo "git worktree ok" >> "$out"; else echo "git worktree failed" >> "$out"; fi
+"#,
+    );
+    e.queue("build", &["pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(saw(&e, UNIT), ["TMPDIR writable", "git worktree ok"]);
+    assert!(not_isolated_events(&e).is_empty());
 }
