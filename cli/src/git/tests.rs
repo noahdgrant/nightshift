@@ -144,6 +144,64 @@ fn a_network_command_runs_in_the_repo_it_names() {
     );
 }
 
+const SSH_PROBE: &str = "NS_TEST_NET_SSH_PROBE";
+const SSH_CONFIG: &str = "NS_TEST_NET_SSH_CONFIG";
+
+#[test]
+fn net_ssh_probe() {
+    let Some(want) = std::env::var_os(SSH_PROBE) else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    g(dir.path(), &["init", "-q"]);
+    if let Some(cmd) = std::env::var_os(SSH_CONFIG) {
+        g(
+            dir.path(),
+            &["config", "core.sshCommand", cmd.to_str().unwrap()],
+        );
+    }
+    let c = net(dir.path(), &["fetch"]);
+    let ssh = c
+        .get_envs()
+        .find(|(k, _)| *k == "GIT_SSH_COMMAND")
+        .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()));
+    let want = (want == "batch").then(|| SSH.to_string());
+    let case: Vec<_> = ["GIT_SSH_COMMAND", "GIT_SSH", SSH_CONFIG]
+        .map(|k| (k, std::env::var_os(k)))
+        .into();
+    assert_eq!(ssh, want, "{case:?}");
+}
+
+#[test]
+fn net_keeps_a_chosen_ssh_command_and_runs_batch_ssh_when_none_or_only_empty_ones_are_set() {
+    let cases: [(&str, &[(&str, &str)]); 8] = [
+        ("batch", &[]),
+        ("batch", &[("GIT_SSH_COMMAND", ""), ("GIT_SSH", "")]),
+        ("batch", &[(SSH_CONFIG, "")]),
+        ("chosen", &[("GIT_SSH_COMMAND", "ssh -i key")]),
+        ("chosen", &[("GIT_SSH", "/usr/bin/ssh")]),
+        ("chosen", &[(SSH_CONFIG, "ssh -i key")]),
+        (
+            "chosen",
+            &[("GIT_SSH_COMMAND", ""), (SSH_CONFIG, "ssh -i key")],
+        ),
+        (
+            "chosen",
+            &[("GIT_SSH", ""), ("GIT_SSH_COMMAND", "ssh -i key")],
+        ),
+    ];
+    for (want, env) in cases {
+        let mut p = crate::testutil::probe_command("git::tests::net_ssh_probe", SSH_PROBE, want);
+        p.env_remove("GIT_SSH_COMMAND")
+            .env_remove("GIT_SSH")
+            .env_remove(SSH_CONFIG)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .envs(env.iter().copied());
+        crate::testutil::run_probe(p);
+    }
+}
+
 #[test]
 fn parses_porcelain() {
     let text = "worktree /r\nHEAD abc\nbranch refs/heads/main\n\nworktree /w/x\nHEAD def\ndetached\n\nworktree /b\nbare\n";
