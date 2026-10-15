@@ -3,7 +3,7 @@
 //! a [`PhaseRan`]; the decision about what follows is `core::step`'s.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use super::core::route::review_run;
 use super::core::step::PhaseRan;
 use super::core::Admitted;
-use super::currency::{archive_as, archive_for, read_art, restore, State};
+use super::currency::{archive_as, archive_for, read_art, restore, Moves, State};
 use super::drive::Io;
 use super::locks::{Acquired, Bound, RunnerLocks};
 use super::phases::{phase_timeout, phase_tmpdir, run_harness};
@@ -37,7 +37,7 @@ pub(super) enum Ran {
 
 /// What a phase changed in the unit's artifacts, for a stop during its gate to set aside.
 pub(super) struct Undo {
-    pub moves: Vec<(PathBuf, PathBuf)>,
+    pub moves: Moves,
     pub written: bool,
 }
 
@@ -269,7 +269,7 @@ fn record(
     state: &State,
     adm: &Admitted,
     h: Harnessed<'_>,
-    moves: Vec<(PathBuf, PathBuf)>,
+    moves: Moves,
 ) -> Result<Ran> {
     let (ctx, phase, attempt, r) = (io.ctx, adm.phase, adm.attempt, h.r);
     let t = ClaudeStreamJson.parse(&r.stdout);
@@ -314,7 +314,9 @@ fn record(
     let art = read_art(&art_path);
     let written = art.is_some();
     if art.as_ref().is_some_and(|a| a.invalid.is_none()) {
-        record_review_run(io, state, phase, h.started, &mut rec);
+        if let Err(e) = record_review_run(io, state, phase, h.started, &mut rec) {
+            return unrecorded(io, phase, &moves, rec, &e);
+        }
     }
     if art.as_ref().is_some_and(|a| a.status == "pass") {
         // A failed phase's scratch files stay for a human to read, until `ns clean`. A pass
@@ -365,10 +367,16 @@ fn record(
 
 /// Add a review pass or fix cycle that wrote its artifact to `ns`'s record of the review loop,
 /// with the times `ns` saw, and name its cycle in the run log's `phase` event.
-fn record_review_run(io: &Io<'_, '_>, state: &State, phase: &str, started: i64, rec: &mut Value) {
+fn record_review_run(
+    io: &Io<'_, '_>,
+    state: &State,
+    phase: &str,
+    started: i64,
+    rec: &mut Value,
+) -> Result<()> {
     let ctx = io.ctx;
     let Some((cycle, kind, fresh)) = review_run(phase, state) else {
-        return;
+        return Ok(());
     };
     let run = ReviewRun {
         phase: phase.to_string(),
@@ -379,11 +387,30 @@ fn record_review_run(io: &Io<'_, '_>, state: &State, phase: &str, started: i64, 
         sha: ctx.head(),
     };
     rec["review_cycle"] = json!({"cycle": cycle, "kind": kind});
-    if let Err(e) = review_runs::append(&ctx.artifacts, run, fresh) {
-        ctx.log(
-            json!({"event": "review_record_not_saved", "phase": phase, "error": format!("{e:#}")}),
-        );
-    }
+    review_runs::append(&ctx.artifacts, run, fresh).map(|_| ())
+}
+
+/// A review run `ns` could not record ends the unit stuck, with what it wrote set aside and what
+/// it replaced put back: a run the record doesn't hold must not count as no cycle.
+fn unrecorded(
+    io: &mut Io<'_, '_>,
+    phase: &str,
+    moves: &Moves,
+    mut rec: Value,
+    e: &anyhow::Error,
+) -> Result<Ran> {
+    let ctx = io.ctx;
+    let file = artifact_of(phase);
+    let stem = format!("{}-unrecorded", file.trim_end_matches(".md"));
+    let archived = archive_as(&ctx.artifacts, file, &stem)?;
+    restore(moves);
+    let reason = format!("ns could not record the {phase} run in its review record: {e:#}");
+    rec["status"] = json!("unrecorded");
+    rec["reason"] = json!(reason);
+    rec["archived"] = json!(archived.map(|d| d.to_string_lossy().into_owned()));
+    ctx.log(merge_obj(json!({"event": "phase"}), &rec));
+    io.phases.push(rec);
+    Ok(Ran::Finish(finish(Outcome::Stuck, reason, Some(phase))))
 }
 
 /// A stop ended `phase`, or the gate run after it, before it was done: set aside what the phase
@@ -392,7 +419,7 @@ fn record_review_run(io: &Io<'_, '_>, state: &State, phase: &str, started: i64, 
 pub(super) fn set_aside(
     ctx: &Ctx<'_>,
     phase: &str,
-    moves: &[(PathBuf, PathBuf)],
+    moves: &Moves,
     sig: i32,
     mut ev: Value,
 ) -> Result<anyhow::Error> {

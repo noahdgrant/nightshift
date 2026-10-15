@@ -134,7 +134,7 @@ A fix cycle is one `review-fix` run. Its feedback names the cycle, its kind (`fu
 - `fail` with `next: build`: the pass found something only a build attempt can fix, such as the test command failing on the diff. `cause: gate_red` for a red check, and a `reason` saying what build must fix; `ns run` sends the body to build as feedback.
 - `blocked` (`next: human`, `cause: needs_human`): a reviewer slice could not run, the diff is empty, `brief.md` is missing, or (under `gates: auto`) the reviewers ran inline rather than in fresh contexts. `reason` is the one sentence `ns watch` quotes; [review-md.md](references/review-md.md) has the format. Record the launch mode in `review.md` (`launch: subagents | ns ask | inline`).
 
-When the loop stops at the cycle limit, the unit is stuck with `review.md` still `fail`. A human then fixes by hand on the unit's branch and deletes `.ns/<unit>/review.md` so `ns run` reviews afresh, splits the issue, or routes it to `ns-define`.
+When the loop stops at the cycle limit, `ns run` marks `review.md` `blocked` with `next: human` and the open findings in its `reason`. A human then fixes by hand on the unit's branch and deletes `.ns/<unit>/review.md` so `ns run` reviews afresh, splits the issue, or routes it to `ns-define`.
 
 Each time you write `review.md`, run `ns artifact check .ns/$NS_UNIT/review.md --phase review` and fix every error it reports ([artifact schema](../ns-contract/SKILL.md#units-of-work-and-artifacts)).
 

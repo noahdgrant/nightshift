@@ -69,7 +69,7 @@ fn ns_records_each_pass_and_fix_cycle_with_its_own_clock_and_the_quality_record_
 }
 
 #[test]
-fn the_cycle_limit_in_phases_review_stops_the_loop_stuck() {
+fn the_cycle_limit_in_phases_review_stops_the_loop_with_review_md_blocked_for_a_human() {
     let e = Env::new();
     e.factory("[phases.review]\nfull_cycles = 1\nfix_only_cycles = 0\n");
     e.queue("build", &["pass:commit"]);
@@ -87,6 +87,22 @@ fn the_cycle_limit_in_phases_review_stops_the_loop_stuck() {
         e.calls(),
         ["triage", "build", "verify", "review", "review-fix", "verify", "review"]
     );
+    let review = e.worktree(UNIT).join(format!(".ns/{UNIT}/review.md"));
+    let text = fs::read_to_string(&review).unwrap();
+    for line in ["status: blocked", "cause: findings_open", "next: human"] {
+        assert!(text.contains(&format!("\n{line}\n")), "{text}");
+    }
+    assert!(text.contains(&format!("reason: {}", v["reason"])), "{text}");
+    e.ns()
+        .args(["artifact", "check", review.to_str().unwrap(), "--phase", "review"])
+        .assert()
+        .success();
+    let records = quality_records(&e);
+    let last = records.last().unwrap();
+    assert_eq!((&last["status"], &last["cycles"]), (&json!("blocked"), &json!(1)), "{last}");
+    let again = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(again["outcome"], "stuck", "{again}");
+    assert_eq!(e.calls().len(), 7, "a rerun at the limit runs no phase");
 }
 
 #[test]
@@ -139,4 +155,52 @@ fn an_invalid_fix_md_is_rewritten_and_counts_as_no_cycle() {
         .collect();
     assert_eq!(fixes.len(), 1, "{fixes:?}");
     assert_eq!(fixes[0]["cycle"], 1);
+}
+
+#[test]
+fn an_invalid_pass_inside_the_loop_is_rerun_with_the_loop_as_it_was() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["fail", "pass", "pass"]);
+    let invalid = "schema: ns-artifact/2|cause: nonsense|next: review";
+    e.ctl("review.fronts", &format!("{OPEN_I1}\n{invalid}\n"));
+    e.queue("review-fix", &["pass:commit"]);
+    e.ctl("review-fix.fronts", &format!("{FIXED_I1}\n"));
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "review-fix", "verify", "review", "review", "ship"]
+    );
+    let got: Vec<(String, u64)> = review_record(&e)
+        .iter()
+        .map(|r| (r["phase"].as_str().unwrap().to_string(), r["cycle"].as_u64().unwrap()))
+        .collect();
+    let want = [("review", 0), ("review-fix", 1), ("review", 1)];
+    let want: Vec<(String, u64)> = want.iter().map(|(p, c)| (p.to_string(), *c)).collect();
+    assert_eq!(got, want, "the rerun was pass 1 of the same loop");
+    let wt = e.worktree(UNIT).join(format!(".ns/{UNIT}"));
+    assert!(wt.join("history/review-invalid-1.md").is_file());
+}
+
+#[test]
+fn a_fix_cycle_that_breaks_ns_record_ends_the_unit_stuck_and_counts_as_no_cycle() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["fail"]);
+    e.ctl("review.fronts", &format!("{OPEN_I1}\n"));
+    e.queue("review-fix", &["pass:script"]);
+    e.ctl("review-fix.fronts", &format!("{FIXED_I1}\n"));
+    e.ctl("review-fix.sh", "echo garbage > \".ns/$NS_UNIT/review/cycles.json\"\n");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("ns could not record the review-fix run in its review record: cannot parse"),
+        "{reason}"
+    );
+    let rec = review_record(&e);
+    assert_eq!(rec.len(), 1, "the record is put back as it was: {rec:?}");
+    let wt = e.worktree(UNIT).join(format!(".ns/{UNIT}"));
+    assert!(!wt.join("fix.md").exists() && wt.join("history/fix-unrecorded-1.md").is_file());
 }

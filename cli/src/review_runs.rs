@@ -29,16 +29,20 @@ pub struct ReviewRun {
 }
 
 /// The record in `cycles_dir` (`review/`, or an archived attempt's `history/<stem>/`). A missing
-/// or unreadable one is empty.
-pub fn read_in(cycles_dir: &Path) -> Vec<ReviewRun> {
-    fs::read_to_string(cycles_dir.join("cycles.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+/// one is empty; one that can't be read or parsed is an error, so a loop's count never starts
+/// again from nothing.
+pub fn read_in(cycles_dir: &Path) -> Result<Vec<ReviewRun>> {
+    let path = cycles_dir.join("cycles.json");
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    };
+    serde_json::from_str(&text).with_context(|| format!("cannot parse {}", path.display()))
 }
 
 /// The unit's current record, in its `.ns/<unit>/` directory.
-pub fn read(unit_dir: &Path) -> Vec<ReviewRun> {
+pub fn read(unit_dir: &Path) -> Result<Vec<ReviewRun>> {
     read_in(&unit_dir.join("review"))
 }
 
@@ -48,10 +52,16 @@ pub fn fixes(runs: &[ReviewRun]) -> u32 {
 }
 
 /// Add `run` to the unit's record, starting a new one when `fresh`, through a temp file and a
-/// rename.
+/// rename. A run that isn't `fresh` needs the record its loop started.
 pub fn append(unit_dir: &Path, run: ReviewRun, fresh: bool) -> Result<PathBuf> {
     let path = unit_dir.join(FILE);
-    let mut runs = if fresh { vec![] } else { read(unit_dir) };
+    if !fresh && !path.exists() {
+        anyhow::bail!(
+            "{} is missing: the loop's earlier runs are not recorded",
+            path.display()
+        );
+    }
+    let mut runs = if fresh { vec![] } else { read(unit_dir)? };
     runs.push(run);
     let dir = unit_dir.join("review");
     fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
@@ -80,23 +90,51 @@ mod tests {
     #[test]
     fn a_fresh_pass_starts_the_record_and_later_runs_add_to_it() {
         let d = tempfile::tempdir().unwrap();
-        assert!(read(d.path()).is_empty());
+        assert!(read(d.path()).unwrap().is_empty());
         append(d.path(), run("review", 0), true).unwrap();
         append(d.path(), run("review-fix", 1), false).unwrap();
         append(d.path(), run("review", 1), false).unwrap();
-        let r = read(d.path());
+        let r = read(d.path()).unwrap();
         assert_eq!(r.len(), 3);
         assert_eq!(fixes(&r), 1);
         append(d.path(), run("review", 0), true).unwrap();
-        assert_eq!(read(d.path()), vec![run("review", 0)]);
+        assert_eq!(read(d.path()).unwrap(), vec![run("review", 0)]);
         assert!(!d.path().join("review/cycles.json.tmp").exists());
     }
 
     #[test]
-    fn an_unreadable_record_is_empty() {
+    fn an_unparseable_record_is_an_error_and_takes_no_run() {
         let d = tempfile::tempdir().unwrap();
         fs::create_dir_all(d.path().join("review")).unwrap();
         fs::write(d.path().join(FILE), "not json").unwrap();
-        assert!(read(d.path()).is_empty());
+        let e = read(d.path()).unwrap_err();
+        assert!(format!("{e:#}").contains("cannot parse"), "{e:#}");
+        assert!(append(d.path(), run("review-fix", 1), false).is_err());
+        assert_eq!(fs::read_to_string(d.path().join(FILE)).unwrap(), "not json");
+    }
+
+    #[test]
+    fn an_unreadable_record_is_an_error() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join(FILE)).unwrap();
+        let e = read(d.path()).unwrap_err();
+        assert!(format!("{e:#}").contains("cannot read"), "{e:#}");
+    }
+
+    #[test]
+    fn a_run_inside_a_loop_needs_the_record_its_loop_started() {
+        let d = tempfile::tempdir().unwrap();
+        let e = append(d.path(), run("review-fix", 1), false).unwrap_err();
+        assert!(e.to_string().contains("is missing"), "{e}");
+        assert!(!d.path().join(FILE).exists());
+    }
+
+    #[test]
+    fn a_record_that_cannot_be_written_is_an_error() {
+        let d = tempfile::tempdir().unwrap();
+        append(d.path(), run("review", 0), true).unwrap();
+        fs::create_dir_all(d.path().join("review/cycles.json.tmp")).unwrap();
+        assert!(append(d.path(), run("review-fix", 1), false).is_err());
+        assert_eq!(read(d.path()).unwrap(), vec![run("review", 0)]);
     }
 }

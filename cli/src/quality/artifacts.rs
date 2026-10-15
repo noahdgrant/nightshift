@@ -117,7 +117,9 @@ fn read_attempt(
             None => (None, None),
         },
     };
-    let review_runs = cycle_dir.map(review_runs::read_in).unwrap_or_default();
+    let review_runs = cycle_dir
+        .and_then(|d| review_runs::read_in(d).ok())
+        .unwrap_or_default();
     // `ns run`'s record counts the fix cycles when it drove the loop; the agent's `cycles:`
     // otherwise.
     let cycles = match review_runs.is_empty() {

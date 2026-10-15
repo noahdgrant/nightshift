@@ -78,6 +78,9 @@ pub struct State {
 pub struct ReviewLoop {
     /// The fix cycles run since the loop's first review pass, from `review/cycles.json`.
     pub fixes: u32,
+    /// Why `review/cycles.json` can't give the count: it is missing or can't be read. A loop
+    /// under way stops on it rather than count from 0.
+    pub record_problem: Option<String>,
     /// The fix attempts each finding in `review.md` has had (its `Attempts:`); absent is 0.
     pub attempts: BTreeMap<String, u32>,
 }
@@ -259,7 +262,7 @@ pub fn fix_cycle(review: &Art, s: &State) -> Result<(u32, &'static str, Vec<Stri
     let attempts = |id: &String| s.review.attempts.get(id).copied().unwrap_or(0);
     let ids: Vec<String> = match kind {
         "full" => review.findings.clone(),
-        _ if n <= c.full + c.fix_only => review
+        _ if n <= c.full.saturating_add(c.fix_only) => review
             .findings
             .iter()
             .filter(|id| attempts(id) < FIX_ATTEMPTS)
@@ -288,6 +291,9 @@ pub enum Decision {
     },
     Done,
     Stuck(String),
+    /// The review loop used its cycles with findings still open: the unit ends stuck, with
+    /// `review.md` marked blocked for a human and this reason.
+    LoopSpent(String),
     /// Triage split the issue into child issues, which replace the unit.
     Split(String),
 }
@@ -445,6 +451,11 @@ fn decide_checks(s: &State) -> Option<Decision> {
             None => {}
         }
         if phase == "review" && in_review_loop(s) {
+            if let Some(p) = &s.review.record_problem {
+                return Some(Decision::Stuck(format!(
+                    "review.md has a review loop under way, but ns's record of it can't be used: {p}"
+                )));
+            }
             return Some(match s.arts.get("review-fix") {
                 Some(f) => after_fix(s, f),
                 None => match fix_cycle(a, s) {
@@ -453,7 +464,7 @@ fn decide_checks(s: &State) -> Option<Decision> {
                         &fix_feedback(n, kind, &ids),
                         format!("review.md has findings open: fix cycle {n} ({kind})"),
                     ),
-                    Err(reason) => Decision::Stuck(reason),
+                    Err(reason) => Decision::LoopSpent(reason),
                 },
             });
         }

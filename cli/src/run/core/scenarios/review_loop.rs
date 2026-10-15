@@ -227,10 +227,36 @@ fn a_rerun_at_the_cycle_limit_stays_stuck_without_running_a_phase() {
     };
     s.queue("review", &[&open("I1"), &open("I1")]);
     s.queue("review-fix", &["pass:commit+next=review"]);
-    assert_eq!(s.run().outcome, Outcome::Stuck);
+    let first = s.run();
+    assert_eq!(first.outcome, Outcome::Stuck);
+    let review = s.art("review").unwrap();
+    assert_eq!(
+        (review.status.as_str(), review.next.as_deref()),
+        ("blocked", Some("human"))
+    );
+    assert_eq!(review.body, first.reason);
     let r = s.run();
     assert_eq!(r.outcome, Outcome::Stuck);
+    assert_eq!(r.reason, format!("review.md is blocked: {}", first.reason));
     assert!(r.calls().is_empty(), "{:?}", r.calls());
+}
+
+#[test]
+fn an_invalid_pass_inside_the_loop_is_rerun_as_the_same_pass() {
+    let mut s = Sim::new();
+    let i1 = open("I1");
+    s.queue("review", &[&i1, "fail:invalid+next=review", &i1, "pass"]);
+    s.queue("review-fix", &["pass:next=review"; 2]);
+    let r = s.run();
+    assert_eq!(r.outcome, Outcome::Done, "{r:?}");
+    let passes: Vec<_> = r.runs.iter().filter(|x| x.phase == "review").collect();
+    assert_eq!(passes[1].why, "fix cycle 1 ran: review pass 1");
+    assert_eq!(passes[2].why, "review.md is invalid");
+    let fixes: Vec<_> = r.runs.iter().filter(|x| x.phase == "review-fix").collect();
+    assert_eq!(
+        fixes[1].why, "review.md has findings open: fix cycle 2 (full)",
+        "the count went on from the loop before the invalid pass"
+    );
 }
 
 #[test]

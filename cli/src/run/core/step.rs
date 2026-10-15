@@ -6,7 +6,7 @@
 use serde_json::{json, Value};
 
 use super::gate::gate_trigger;
-use super::route::{blocked, carry_forward, same_sha, Decision, State};
+use super::route::{blocked, carry_forward, in_review_loop, same_sha, Decision, State};
 use super::{Admitted, Ledger, MergeBack, PhaseResult, Rebase, RESHIP_CAP};
 use crate::factory::artifact_of;
 use crate::gate::Trigger;
@@ -109,10 +109,13 @@ pub enum Action {
     RunPhase(Admitted),
     /// Check the hard rules after the phase, and send [`Event::GuardFacts`].
     CheckGuards,
-    /// Archive the phase's invalid artifact, log why, and send [`Event::Archived`].
+    /// Archive the phase's invalid artifact, log why, and send [`Event::Archived`]. With `undo`,
+    /// also put back what the phase replaced: an invalid pass inside a review loop leaves the
+    /// loop as it was before the pass.
     SetAside {
         phase: &'static str,
         errors: Vec<String>,
+        undo: bool,
     },
     RunGate(GateCall),
     /// Run the merge step, numbered `run` in this invocation, and send [`Event::MergeEnded`].
@@ -141,6 +144,8 @@ pub enum Last {
     File(&'static str),
     /// This file, archived first.
     Archived(&'static str),
+    /// This file, its frontmatter rewritten `status: blocked`, `next: human` with this reason.
+    Blocked(&'static str, String),
 }
 
 fn end(outcome: Outcome, reason: impl Into<String>, phase: Option<&'static str>) -> Action {
@@ -228,6 +233,10 @@ fn decide_next(l: &mut Ledger, s: &State) -> Action {
     match decision {
         Decision::Stuck(r) => Action::Finish(Ending {
             artifact: blocked(s).map(|p| Last::File(artifact_of(p))),
+            ..ending(Outcome::Stuck, r, None)
+        }),
+        Decision::LoopSpent(r) => Action::Finish(Ending {
+            artifact: Some(Last::Blocked(artifact_of("review"), r.clone())),
             ..ending(Outcome::Stuck, r, None)
         }),
         Decision::Split(r) => Action::Finish(Ending {
@@ -320,6 +329,7 @@ fn guarded(l: &mut Ledger, s: &State, a: Admitted, ran: &PhaseRan, g: GuardFacts
         return Action::SetAside {
             phase,
             errors: errors.clone(),
+            undo: phase == "review" && in_review_loop(s),
         };
     }
     if triage_only {

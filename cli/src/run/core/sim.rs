@@ -24,9 +24,9 @@ use super::merge::Ask;
 use super::route::{
     facts_wanted, fix_cycle, review_run, to_archive, Art, ReviewLoop, Settings, State,
 };
-use super::step::{step, Action, Event, GateRan, GateRed, GuardFacts, PhaseRan};
+use super::step::{step, Action, Event, GateRan, GateRed, GuardFacts, Last, PhaseRan};
 use super::{Ledger, Rebase};
-use crate::factory::RUN_PHASES;
+use crate::factory::{artifact_of, RUN_PHASES};
 use crate::run::Outcome;
 use crate::watch::forge::CommitPr;
 
@@ -188,6 +188,11 @@ impl Sim {
         }
     }
 
+    /// The artifact `phase` holds now.
+    pub fn art(&self, phase: &str) -> Option<&Art> {
+        self.arts.get(phase)
+    }
+
     /// The fake harness's `e.queue(phase, actions)`.
     pub fn queue(&mut self, phase: &'static str, actions: &[&str]) {
         self.queues
@@ -271,8 +276,13 @@ impl Sim {
                     let phase = t.runs.last().map_or("", |r| r.phase);
                     Event::GuardFacts(self.guard(phase, &mut t.logs))
                 }
-                Action::SetAside { phase, .. } => {
+                Action::SetAside { phase, undo, .. } => {
                     self.arts.remove(phase);
+                    if undo {
+                        for (p, a) in &state.arts {
+                            self.arts.entry(p).or_insert_with(|| a.clone());
+                        }
+                    }
                     Event::Archived
                 }
                 Action::RunGate(call) => {
@@ -288,6 +298,14 @@ impl Sim {
                     }
                 },
                 Action::Finish(e) => {
+                    if let Some(Last::Blocked(f, reason)) = &e.artifact {
+                        let p = RUN_PHASES.iter().find(|p| artifact_of(p) == *f).unwrap();
+                        if let Some(a) = self.arts.get_mut(p) {
+                            a.status = "blocked".into();
+                            a.next = Some("human".into());
+                            a.body = reason.clone();
+                        }
+                    }
                     t.logs.extend(e.log);
                     return t.report(e.outcome, e.reason, e.phase, false);
                 }
@@ -313,6 +331,7 @@ impl Sim {
         let head_before = self.head();
         self.act(&words);
         let timed_out = words.contains(&"sleep");
+        let invalid = words.contains(&"invalid");
         let written = !matches!(status, "none" | "crash") && !timed_out;
         if written {
             let body = if extra.starts_with("base moved") {
@@ -324,7 +343,7 @@ impl Sim {
             let mut findings: Vec<String> = word("find=")
                 .map(|ids| ids.split(',').map(String::from).collect())
                 .unwrap_or_default();
-            match review_run(phase, state) {
+            match review_run(phase, state).filter(|_| !invalid) {
                 Some((_, _, true)) => self.review = ReviewLoop::default(),
                 Some(_) if phase == "review-fix" => {
                     let review = state.arts.get("review").cloned().unwrap_or_default();
@@ -352,7 +371,7 @@ impl Sim {
         }
         PhaseRan {
             artifact: written.then(|| status.to_string()),
-            invalid: None,
+            invalid: invalid.then(|| vec!["sim: invalid".to_string()]),
             present: self.arts.contains_key(phase),
             timed_out,
             killed: None,
