@@ -384,7 +384,7 @@ fn memory_entry(
     configured: Option<u64>,
     peaks: &[u64],
 ) -> Value {
-    use crate::watch::{need_within, Memory, PEAKS_MIN};
+    use crate::watch::{need_mb, need_within, Memory, PEAKS_MIN};
     let cap = configured.or(info.map(|m| crate::memory::cap_mb(m.total_mb, None)));
     let need = need_within(&Memory {
         peaks,
@@ -392,10 +392,12 @@ fn memory_entry(
         cap_mb: cap,
         ..Memory::default()
     });
+    let total = info.map_or(u64::MAX, |m| m.total_mb);
+    let real: Vec<u64> = peaks.iter().copied().filter(|p| *p <= total).collect();
     json!({
         "total_mb": info.map(|m| m.total_mb),
         "cap_mb": cap,
-        "p90_peak_mb": (peaks.len() >= PEAKS_MIN).then_some(need),
+        "p90_peak_mb": (real.len() >= PEAKS_MIN).then(|| need_mb(&real)),
         "peaks": peaks.len(),
         "unit_need_mb": need,
         "units_fit": cap.and_then(|c| c.checked_div(need)),
@@ -597,6 +599,18 @@ mod tests {
             memory_entry(Some(info), Some(9000), &peaks),
             json!({"total_mb": 24576, "cap_mb": 9000, "p90_peak_mb": 3000, "peaks": 5,
                    "unit_need_mb": 3000, "units_fit": 3})
+        );
+        // A p90 over the cap shows as recorded; the need that fits units is clamped to the cap.
+        assert_eq!(
+            memory_entry(Some(info), Some(20000), &[23000; 5]),
+            json!({"total_mb": 24576, "cap_mb": 20000, "p90_peak_mb": 23000, "peaks": 5,
+                   "unit_need_mb": 20000, "units_fit": 1})
+        );
+        // Forged peaks above MemTotal are not a p90: the default need stands.
+        assert_eq!(
+            memory_entry(Some(info), None, &[u64::MAX; 5]),
+            json!({"total_mb": 24576, "cap_mb": 20480, "p90_peak_mb": null, "peaks": 5,
+                   "unit_need_mb": 4096, "units_fit": 5})
         );
         // Peaks of zero never divide the cap by nothing.
         assert_eq!(memory_entry(Some(info), None, &[0; 5])["units_fit"], 20480);

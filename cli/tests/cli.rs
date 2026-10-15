@@ -1245,6 +1245,44 @@ fn doctor_reports_config() {
 }
 
 #[test]
+fn doctor_reports_the_memory_cap_the_p90_peak_and_the_units_that_fit() {
+    let (tmp, root) = repo();
+    let meminfo = tmp.path().join("meminfo");
+    fs::write(
+        &meminfo,
+        "MemTotal: 25165824 kB\nMemAvailable: 20480000 kB\n",
+    )
+    .unwrap();
+    fs::create_dir(root.join(".nightshift")).unwrap();
+    fs::write(
+        root.join(".nightshift/nightshift.toml"),
+        "[limits]\ntotal_memory_mb = 9000\n",
+    )
+    .unwrap();
+    let ends: String = [1000, 2000, 3000, 2500, 1500]
+        .iter()
+        .map(|mb| format!("{{\"event\":\"end\",\"outcome\":\"done\",\"memory_peak_mb\":{mb}}}\n"))
+        .collect();
+    fs::create_dir_all(root.join(".git/ns")).unwrap();
+    fs::write(root.join(".git/ns/runs.jsonl"), ends).unwrap();
+    let cfg = config(tmp.path());
+    let out = ns()
+        .current_dir(&root)
+        .env("NS_CONFIG", &cfg)
+        .env("NS_MEMINFO", &meminfo)
+        .arg("doctor")
+        .assert()
+        .get_output()
+        .clone();
+    let m = &json(&out.stdout)["memory"];
+    assert_eq!(m["total_mb"], 24576, "{m}");
+    assert_eq!(m["cap_mb"], 9000, "{m}");
+    assert_eq!(m["p90_peak_mb"], 3000, "{m}");
+    assert_eq!(m["peaks"], 5, "{m}");
+    assert_eq!(m["units_fit"], 3, "{m}");
+}
+
+#[test]
 fn doctor_reports_which_harness_skill_dirs_hold_the_ns_skills() {
     let skills = fixture_skills();
     let home = tempfile::tempdir().unwrap();
