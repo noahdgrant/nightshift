@@ -169,7 +169,7 @@ impl DiskAct {
     /// What the night says of this act, `None` for a wait said already.
     pub fn said(&self, limits: DiskLimits) -> Option<String> {
         match self {
-            DiskAct::Unread { path, error } => Some(limits.unread_said(path, error)),
+            DiskAct::Unread { path, error } => Some(DiskLimits::unread_said(path, error)),
             DiskAct::Low { path, free_gb } => Some(limits.low_said(path, *free_gb)),
             DiskAct::Wait => None,
             DiskAct::Critical { path, free_gb } => Some(limits.critical_said(path, *free_gb)),

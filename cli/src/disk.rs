@@ -41,7 +41,7 @@ impl Level {
 
 impl DiskLimits {
     /// What the night says of a filesystem whose free space can't be read.
-    pub fn unread_said(&self, path: &Path, error: &str) -> String {
+    pub fn unread_said(path: &Path, error: &str) -> String {
         format!(
             "free space on {} can't be read, so it holds nothing up: {error}",
             path.display()
@@ -69,7 +69,7 @@ impl DiskLimits {
     /// The warning for one filesystem's `free` space: none when it is above the wait limit.
     pub fn warning(&self, path: &Path, free: &Result<u64, String>) -> Option<String> {
         match free {
-            Err(error) => Some(self.unread_said(path, error)),
+            Err(error) => Some(Self::unread_said(path, error)),
             Ok(bytes) => match self.level(*bytes) {
                 Level::Ok => None,
                 Level::Wait => Some(self.low_said(path, bytes / GIB)),
