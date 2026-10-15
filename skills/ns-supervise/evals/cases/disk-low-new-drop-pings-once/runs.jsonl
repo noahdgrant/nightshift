@@ -1,0 +1,9 @@
+{"event":"worker_start","worker":1,"issue":42,"run_pid":1042,"resumed":false,"ts":"2026-10-10T12:05:00Z"}
+{"event":"start","unit":"42-fix-widget-sort","issue":42,"ts":"2026-10-10T12:05:30Z","pid":1042}
+{"event":"disk_low","path":"/mnt/c","free_gb":18.4,"wait_gb":20,"ts":"2026-10-10T12:30:00Z"}
+{"event":"end","unit":"42-fix-widget-sort","issue":42,"outcome":"merged","phase":"merge","reason":"merged","pr":142,"ts":"2026-10-10T12:45:00Z","pid":1042}
+{"event":"worker_end","worker":1,"issue":42,"unit":"42-fix-widget-sort","outcome":"merged","exit":0,"ts":"2026-10-10T12:45:01Z"}
+{"event":"worker_start","worker":1,"issue":43,"run_pid":1043,"resumed":false,"ts":"2026-10-10T13:00:00Z"}
+{"event":"start","unit":"43-feat-widget-colours","issue":43,"ts":"2026-10-10T13:00:30Z","pid":1043}
+{"event":"disk_low","path":"/mnt/c","free_gb":16.2,"wait_gb":20,"ts":"2026-10-10T13:20:00Z"}
+{"event":"disk_low","path":"/srv/ci","free_gb":19.7,"wait_gb":20,"ts":"2026-10-10T13:40:00Z"}

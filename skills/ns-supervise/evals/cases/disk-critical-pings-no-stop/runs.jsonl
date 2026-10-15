@@ -1,0 +1,5 @@
+{"event":"worker_start","worker":1,"issue":42,"run_pid":1042,"resumed":false,"ts":"2026-10-10T12:05:00Z"}
+{"event":"start","unit":"42-fix-widget-sort","issue":42,"ts":"2026-10-10T12:05:30Z","pid":1042}
+{"event":"disk_low","path":"/mnt/c","free_gb":18.4,"wait_gb":20,"ts":"2026-10-10T12:30:00Z"}
+{"event":"phase","unit":"42-fix-widget-sort","issue":42,"phase":"build","attempt":1,"status":"pass","wall_s":900.0,"ts":"2026-10-10T12:35:00Z","pid":1042}
+{"event":"disk_critical","path":"/mnt/c","free_gb":9.1,"stop_gb":10,"ts":"2026-10-10T12:50:00Z"}
