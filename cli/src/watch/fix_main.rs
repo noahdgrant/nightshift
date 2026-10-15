@@ -7,6 +7,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use super::ci::{Check, MainCi};
+pub(super) use super::core::red::Fix;
 use super::{Forge, Issue, Post};
 use crate::factory::Factory;
 use crate::git::{self, Repo};
@@ -35,35 +36,6 @@ const COMMITS: usize = 30;
 const REST_BYTES: usize = 1000;
 /// The end of a log that redaction reads; what lies before it can't reach the excerpt.
 const LOG_WINDOW: usize = 256 * 1024;
-
-/// The issue that fixes red `main`, and where it came from.
-pub(super) enum Fix {
-    /// Found open: the one used earlier tonight, or one the forge lists.
-    Listed(Issue),
-    /// Filed just now, which the forge may not list yet.
-    JustFiled(Issue),
-}
-
-impl Fix {
-    pub(super) fn issue(&self) -> &Issue {
-        match self {
-            Fix::Listed(i) | Fix::JustFiled(i) => i,
-        }
-    }
-
-    /// What to warn about when the queue will not start this fix issue: only one found open can
-    /// be in that state, since one filed now carries the ready label.
-    pub(super) fn warning(&self, startable: &dyn Fn(&Issue) -> bool) -> Option<String> {
-        match self {
-            Fix::Listed(i) if !startable(i) => Some(format!(
-                "ns watch: warning: fix issue #{} is open but the queue will not start it; \
-                 check its labels and blockers",
-                i.number
-            )),
-            _ => None,
-        }
-    }
-}
 
 /// The issue that fixes red `main`: `fix`, the one used earlier tonight, while it is open, since
 /// GitHub may not list it yet (one whose state can't be read counts as open: it was open when

@@ -5,8 +5,7 @@
 //! for a signal, passes the signal on and returns their issues to the queue.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
@@ -14,25 +13,25 @@ use anyhow::Result;
 use serde_json::json;
 
 mod child;
+mod fill;
 pub(super) mod overlap;
 mod red;
+#[cfg(test)]
+mod scenarios;
+mod settle;
 mod update;
 
-use self::child::{signal, spawn, stop_signal, SIGTERM};
-use self::red::Gate;
+use self::child::{signal, spawn, SIGTERM};
+use super::core::fill::{Holds, Kind, Stopping};
+use super::core::red::Red;
+use super::core::settle::pause_until;
 use super::self_update::{Built, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
 use super::transitions::{self, Event, State};
-use super::{
-    ended_cleanly, fix_main::Fix, open_findings, queue, split, triage, Forge, Issue, Night, Post,
-    Tonight, HARNESS_FAIL_LIMIT, PAUSED_PAST_UNTIL,
-};
-use crate::clock;
-use crate::error::SfError;
+use super::{split, Forge, Issue, Night, Tonight, PAUSED_PAST_UNTIL};
 use crate::git::Repo;
-use crate::run::{self, Loaded, Outcome, RunResult};
+use crate::run::{self, Loaded};
 use crate::stop;
-use crate::worktree::BRANCH_PREFIX;
 
 /// How often the scheduler looks for a unit that ended, a stop, or a reset that came.
 const POLL: Duration = Duration::from_millis(50);
@@ -99,37 +98,11 @@ impl From<anyhow::Error> for FillError {
     }
 }
 
-/// Which steps a fill runs.
-#[derive(Clone, Copy, PartialEq)]
-enum FillKind {
-    /// At start and when a unit ends: the worktree cleanup and the update check run too.
-    Full,
-    /// The refill interval passing with a slot free: neither runs.
-    Refill,
-}
-
 /// What the night drains for, no new unit starting until the running ones end: a skills sync of
 /// the main checkout to `to` at `base`, for phases that read the installed skills.
 struct Drain {
     base: String,
     to: String,
-}
-
-/// Why no new unit starts.
-enum Stopping {
-    /// No new claims, but a unit paused on a usage limit still resumes: `--max-units`.
-    Claims(String),
-    /// Nothing starts, and paused units go back to the queue: `--until`, the budget, the
-    /// harness breaker, a reset past `--until`, an error or a signal.
-    All(String),
-}
-
-impl Stopping {
-    fn reason(&self) -> &str {
-        match self {
-            Stopping::Claims(r) | Stopping::All(r) => r,
-        }
-    }
 }
 
 pub(super) struct Scheduler<'a> {
@@ -152,21 +125,14 @@ pub(super) struct Scheduler<'a> {
     skills_tried: BTreeSet<String>,
     started: u32,
     results: u64,
-    /// The head main was last found red at, until it is found not red.
-    red_at: Option<String>,
-    /// The fix issue this night used, kept while it stays open: GitHub may not list a new one yet.
-    fix: Option<Issue>,
-    /// The heads this night filed a fix issue for, so a fix issue closed with main still red there
-    /// is not filed again.
-    filed: BTreeSet<String>,
-    /// The head the night last warned it holds for, a closed fix issue and main still red.
-    shut_at: Option<String>,
+    /// What the night remembers of red main between fills.
+    red: Red,
     /// The split parents' pass still has the clone's one sweep of the old split label to run.
     sweep: bool,
     /// Split parents with no children found, reported once a night.
     childless: BTreeSet<u64>,
     /// Ready issues held back tonight for overlapping a running unit.
-    holds: overlap::Holds,
+    holds: Holds,
 }
 
 impl<'a> Scheduler<'a> {
@@ -184,20 +150,17 @@ impl<'a> Scheduler<'a> {
             draining: None,
             skills_tried: BTreeSet::new(),
             results: 0,
-            red_at: None,
-            fix: None,
-            filed: BTreeSet::new(),
-            shut_at: None,
+            red: Red::default(),
             childless: BTreeSet::new(),
-            holds: overlap::Holds::default(),
+            holds: Holds::default(),
         }
     }
 
     /// Run units until the night ends; why it ended.
     pub fn run(&mut self, night: &mut Night, tonight: &mut Tonight) -> Result<String> {
-        let mut next_fill = FillKind::Full;
+        let mut next_fill = Kind::Full;
         loop {
-            let kind = std::mem::replace(&mut next_fill, FillKind::Full);
+            let kind = std::mem::replace(&mut next_fill, Kind::Full);
             if let Some(sig) = stop::requested() {
                 self.pass_on(sig);
             }
@@ -211,7 +174,7 @@ impl<'a> Scheduler<'a> {
                 match self.fill(night, tonight, kind) {
                     Err(FillError::Fatal(e)) => self.fail(e),
                     Err(FillError::Transient(e)) if stop::requested().is_none() => {
-                        if kind == FillKind::Refill {
+                        if kind == Kind::Refill {
                             eprintln!("ns watch: refill failed: {e:#}");
                         } else {
                             self.fail(e);
@@ -233,7 +196,7 @@ impl<'a> Scheduler<'a> {
                     {
                         match self.next(night) {
                             Wake::Built(b) => self.built(b, night, tonight),
-                            Wake::Refill => next_fill = FillKind::Refill,
+                            Wake::Refill => next_fill = Kind::Refill,
                             Wake::Ended(..) | Wake::Reset | Wake::Stop => {}
                         }
                         continue;
@@ -257,7 +220,7 @@ impl<'a> Scheduler<'a> {
                     }
                 }
                 Wake::Reset => self.lift_pause(),
-                Wake::Refill => next_fill = FillKind::Refill,
+                Wake::Refill => next_fill = Kind::Refill,
                 Wake::Built(b) => self.built(b, night, tonight),
                 Wake::Stop => {}
             }
@@ -311,183 +274,6 @@ impl<'a> Scheduler<'a> {
         }
     }
 
-    /// Fill the free slots: paused units first, then, after the triage pass, ready issues
-    /// from one read of the queue. A [`FillKind::Refill`] skips the worktree cleanup and the
-    /// update check.
-    fn fill(
-        &mut self,
-        night: &mut Night,
-        tonight: &mut Tonight,
-        kind: FillKind,
-    ) -> Result<(), FillError> {
-        if self.paused_until.is_some() {
-            return Ok(());
-        }
-        if kind == FillKind::Full {
-            // Units merged since go, after their records are saved. Units running or paused
-            // are left alone, even one whose run hasn't taken its lock yet.
-            let busy: BTreeSet<u64> = (self.running.values().map(|w| w.issue.number))
-                .chain(self.resume.iter().map(|i| i.number))
-                .collect();
-            let removed =
-                crate::clean::between_units(self.plan.repo, &mut tonight.cleanup_tried, &busy);
-            tonight.cleaned.extend(removed);
-            self.split_parents(tonight);
-        }
-        while self.free() && self.may_resume() && !self.resume.is_empty() {
-            let issue = self.resume.remove(0);
-            let n = issue.number;
-            if let Err(e) = self.start(issue, night, true) {
-                let q = &self.plan.loaded.fac.queue;
-                let _ = transitions::apply(
-                    self.plan.forge,
-                    q,
-                    n,
-                    State::InProgress,
-                    Event::StartFailed,
-                );
-                return Err(e.into());
-            }
-        }
-        if !self.free() || self.stopping.is_some() {
-            return Ok(());
-        }
-        let (repo, forge, loaded) = (self.plan.repo, self.plan.forge, self.plan.loaded);
-        let fac = &loaded.fac;
-        if let Some(why) = self.over_claims(night) {
-            self.stopping = Some(why);
-            return Ok(());
-        }
-        if kind == FillKind::Full && self.draining.is_none() {
-            self.draining = self.check_base(night);
-        }
-        if self.draining.is_some() {
-            return Ok(());
-        }
-        // Red main holds triage too: the fix issue is the night's only work. The pass asks before
-        // each triage-only run, as the first of them can turn main red.
-        let held = || self.main_ci().is_some_and(|m| m.holds_queue());
-        match triage::pass(repo, forge, loaded, self.plan.deadline, night, &held)? {
-            Some(triage::Halt::Stop(why)) => {
-                self.stop_all(&why);
-                return Ok(());
-            }
-            Some(triage::Halt::Paused(reset)) => {
-                return self.pause(reset).map_err(FillError::Fatal);
-            }
-            None => {}
-        }
-        let mut taken: BTreeSet<u64> = night.finished.clone();
-        taken.extend(self.running.values().map(|w| w.issue.number));
-        taken.extend(self.resume.iter().map(|i| i.number));
-        let mut ready = queue(forge, fac, &taken)?.ready;
-        // Read after the listing and as late as possible: the units start from this read.
-        let main = self.main_ci();
-        let gate = match &main {
-            Some(m) => self.main_fix(m, &ready, &taken)?,
-            None => Gate::Open,
-        };
-        match gate {
-            // GitHub may not list an issue filed a moment ago.
-            Gate::Only(Fix::JustFiled(issue)) => ready = vec![issue],
-            Gate::Only(Fix::Listed(issue)) => ready.retain(|i| i.number == issue.number),
-            Gate::Shut => ready.clear(),
-            Gate::Open => {}
-        }
-        // A listing can name an issue twice.
-        ready.retain(|i| taken.insert(i.number));
-        let (repo, loaded) = (self.plan.repo, self.plan.loaded);
-        let ignore = &loaded.fac.queue.overlap_ignore;
-        let mut picker = overlap::Picker::new(forge, || overlap::rule(repo, ignore));
-        while !ready.is_empty() {
-            // A stop during the read claims nothing more.
-            if !self.free() || stop::requested().is_some() {
-                break;
-            }
-            if let Some(why) = self.over_claims(night) {
-                self.stopping = Some(why);
-                break;
-            }
-            // Every issue left overlaps a running unit and has not waited long enough.
-            let Some(issue) = self.pick(&mut picker, &mut ready, night) else {
-                break;
-            };
-            self.claim(issue, night)?;
-        }
-        Ok(())
-    }
-
-    /// The ready issue to start next, as the overlap pick chooses, its holds logged.
-    fn pick(
-        &mut self,
-        picker: &mut overlap::Picker<'_>,
-        ready: &mut Vec<Issue>,
-        night: &Night,
-    ) -> Option<Issue> {
-        let mut events = Vec::new();
-        let (repo, forge, running) = (self.plan.repo, self.plan.forge, &self.running);
-        let taken = picker.take(
-            ready,
-            || running_touches(repo, forge, running),
-            night.shared.clock.now(),
-            &mut self.holds,
-            &mut events,
-        );
-        for ev in events {
-            run::log_event(&repo.common_dir, ev);
-        }
-        taken
-    }
-
-    /// Claim `issue` and start its unit; a claim or start that fails puts it back to ready.
-    fn claim(&mut self, issue: Issue, night: &mut Night) -> Result<()> {
-        let (forge, q) = (self.plan.forge, &self.plan.loaded.fac.queue);
-        let n = issue.number;
-        if let Err(e) = transitions::apply(forge, q, n, State::Ready, Event::Claim) {
-            let _ = transitions::apply(forge, q, n, State::InProgress, Event::StartFailed);
-            return Err(e);
-        }
-        if let Err(e) = self.start(issue, night, false) {
-            let _ = transitions::apply(forge, q, n, State::InProgress, Event::StartFailed);
-            return Err(e);
-        }
-        self.started += 1;
-        Ok(())
-    }
-
-    /// Close the split parents whose children are done, and on the clone's first pass sweep the
-    /// old split label. A forge that fails here holds nothing up.
-    fn split_parents(&mut self, tonight: &mut Tonight) {
-        let (forge, common) = (self.plan.forge, &self.plan.repo.common_dir);
-        let q = &self.plan.loaded.fac.queue;
-        let (parents, all_read) = match split::plan_read(forge, q, self.sweep) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("ns watch: split parents not checked: {e:#}");
-                return;
-            }
-        };
-        let done = split::apply(forge, q, &parents, &mut self.childless);
-        for d in &done {
-            eprintln!(
-                "ns watch: split parent #{}: {}",
-                d["number"],
-                d["action"].as_str().unwrap_or("")
-            );
-            let mut ev = d.clone();
-            ev["event"] = json!("split_parent");
-            run::log_event(common, ev);
-        }
-        let finished = split::sweep_finished(all_read, &parents, &done);
-        tonight.split_parents.extend(done);
-        if self.sweep && finished {
-            self.sweep = false;
-            if let Err(e) = split::swept(common) {
-                eprintln!("ns watch: the split sweep may run again: {e:#}");
-            }
-        }
-    }
-
     /// A slot is free and a fill could start something: nothing stopping, draining or paused.
     fn may_refill(&self) -> bool {
         self.free()
@@ -498,16 +284,6 @@ impl<'a> Scheduler<'a> {
 
     fn free(&self) -> bool {
         self.running.len() < self.plan.parallel
-    }
-
-    /// Why no further issue may be claimed: `--max-units`, `--until` or the budget.
-    fn over_claims(&self, night: &Night) -> Option<Stopping> {
-        if self.plan.max_units.is_some_and(|m| self.started >= m) {
-            return Some(Stopping::Claims("max_units".into()));
-        }
-        night
-            .over(self.plan.deadline, &self.plan.loaded.fac)
-            .map(|why| Stopping::All(why.into()))
     }
 
     /// Start `issue`'s unit as a child `ns run` on the lowest free worker number.
@@ -611,8 +387,14 @@ impl<'a> Scheduler<'a> {
 
     /// Pause every unit until `reset`, or until the latest reset tonight when that's later.
     fn pause(&mut self, reset: i64) -> Result<()> {
-        let until = extend_pause(self.plan.snap.night(), &mut self.paused_until, reset)?;
-        if self.plan.deadline.is_some_and(|d| until >= d) {
+        let deadline = self.plan.deadline;
+        let past = extend_pause(
+            self.plan.snap.night(),
+            &mut self.paused_until,
+            reset,
+            deadline,
+        )?;
+        if past {
             self.stop_all(PAUSED_PAST_UNTIL);
         }
         Ok(())
@@ -624,166 +406,6 @@ impl<'a> Scheduler<'a> {
                 self.fail(e);
             }
         }
-    }
-
-    /// Record the unit worker `n` ran, which ended with `status`, and move its issue on.
-    fn settle(
-        &mut self,
-        n: usize,
-        status: Option<ExitStatus>,
-        night: &mut Night,
-        tonight: &mut Tonight,
-    ) -> Result<()> {
-        let w = self.running.remove(&n).expect("a running worker ended");
-        let issue = w.issue;
-        let text = fs::read_to_string(&w.result).unwrap_or_default();
-        let _ = fs::remove_file(&w.result);
-        let r = serde_json::from_str(&text)
-            .ok()
-            .and_then(RunResult::from_json);
-        let sig = status.as_ref().and_then(stop_signal);
-        // A signal that stopped a unit, from anyone but this watch, stops the night too.
-        if let Some(s) = sig.filter(|_| !self.forwarded) {
-            stop::request(s);
-        }
-        if let Some(t) = r.as_ref().and_then(|r| r.ended_at) {
-            night.shared.clock.catch_up(t);
-        }
-        let q = &self.plan.loaded.fac.queue;
-        let forge = self.plan.forge;
-        run::log_event(
-            &self.plan.repo.common_dir,
-            json!({
-                "event": "worker_end",
-                "worker": n,
-                "issue": issue.number,
-                "unit": r.as_ref().map(|r| &r.unit),
-                "outcome": r.as_ref().map(|r| r.outcome.label()),
-                "exit": status.and_then(|s| s.code()),
-            }),
-        );
-        let num = issue.number;
-        let to = |event| transitions::apply(forge, q, num, State::InProgress, event);
-        let Some(r) = r else {
-            let _ = to(Event::Interrupted);
-            if let Some(s) = stop::requested() {
-                eprintln!("ns watch: #{} interrupted (worker {n})", issue.number);
-                tonight.units.push(json!({
-                    "issue": issue.number,
-                    "worker": n,
-                    "outcome": "interrupted",
-                    "reason": format!("stopped by {}", stop::name(s)),
-                }));
-                return Ok(());
-            }
-            let how = status.map_or("an unknown status".into(), |s| match s.code() {
-                Some(c) => format!("exit {c}"),
-                None => s.to_string(),
-            });
-            let code = status.and_then(|s| s.code()).filter(|c| *c != 0);
-            return Err(SfError::new(
-                code.unwrap_or(1),
-                format!(
-                    "ns run --issue {} ended with {how} and no result; its error is above",
-                    issue.number
-                ),
-            )
-            .into());
-        };
-        let mut rec = json!({
-            "issue": issue.number,
-            "unit": r.unit,
-            "worker": n,
-            "outcome": r.outcome.label(),
-            "reason": r.reason,
-            "pr": r.json["pr"],
-            "cost_usd": r.cost_usd,
-        });
-        if stop::requested().is_some() && !ended_cleanly(&r) {
-            to(Event::Interrupted)?;
-            rec["outcome"] = json!("interrupted");
-            eprintln!("ns watch: #{} interrupted (worker {n})", issue.number);
-            tonight.units.push(rec);
-            return Ok(());
-        }
-        let failing = night.harness(&r);
-        let shown = if failing {
-            "harness_failing"
-        } else {
-            r.outcome.label()
-        };
-        eprintln!("ns watch: #{} {shown} (worker {n})", issue.number);
-        // A run cut short by `--until` ends `budget`; the night stops as `until`, not unfixed.
-        let cut_short = r.outcome == Outcome::Budget
-            && night.over(self.plan.deadline, &self.plan.loaded.fac) == Some("until");
-        if !failing && !cut_short {
-            self.stop_if_unfixed(issue.number, r.outcome);
-        }
-        match r.outcome {
-            Outcome::Merged => {
-                let status = to(Event::Merged);
-                // GitHub may not have closed it yet; an already-closed issue makes gh fail.
-                if let Err(e) = forge.close(issue.number) {
-                    eprintln!("ns watch: #{} not closed: {e}", issue.number);
-                }
-                if let Some(pr) = r.json["pr"].as_u64() {
-                    if let Err(e) = forge.remove_pr_label(pr, &q.human_merge_label) {
-                        eprintln!(
-                            "ns watch: PR #{pr} still labelled {}? {e:#}",
-                            q.human_merge_label
-                        );
-                    }
-                }
-                status?;
-            }
-            Outcome::Split => to(Event::Split)?,
-            Outcome::Done if !r.needs_human => {
-                to(Event::AwaitingHumanMerge)?;
-                flag_human_merge(forge, &q.human_merge_label, &r);
-            }
-            Outcome::Stuck if failing => {
-                to(Event::HarnessFailing)?;
-                rec["outcome"] = json!("harness_failing");
-                if night.harness_fails >= HARNESS_FAIL_LIMIT {
-                    self.stop_all("harness failing");
-                }
-            }
-            Outcome::Done | Outcome::Stuck => {
-                let status = to(Event::NeedsHuman);
-                let posted = forge.comment(issue.number, &stuck_comment(&r));
-                if r.outcome == Outcome::Done {
-                    flag_human_merge(forge, &q.human_merge_label, &r);
-                }
-                status?;
-                posted?;
-            }
-            Outcome::Budget => {
-                to(Event::Budget)?;
-                // A runner lock wait cut short by `--until` ends the run as `budget` too.
-                let why = night
-                    .over(self.plan.deadline, &self.plan.loaded.fac)
-                    .unwrap_or("budget");
-                self.stop_all(why);
-            }
-            Outcome::Paused => {
-                let reset = resume_at(&r, night);
-                rec["reset_at"] = json!(clock::local_iso(reset));
-                tonight.units.push(rec);
-                // Paused first, so a hold that can't be written still leaves it to give back.
-                let n = issue.number;
-                self.resume.push(issue);
-                self.pause(reset)?;
-                eprintln!(
-                    "ns watch: #{} paused on a usage limit until {}; every unit pauses at its next phase",
-                    n,
-                    clock::local_iso(self.paused_until.unwrap_or(reset))
-                );
-                return Ok(());
-            }
-        }
-        tonight.units.push(rec);
-        night.finished.insert(issue.number);
-        Ok(())
     }
 
     /// Return the units still paused to the queue: the night ended before their reset.
@@ -817,16 +439,6 @@ impl<'a> Scheduler<'a> {
     }
 }
 
-/// The running units that predict any `touches`, for the pick.
-fn running_touches(
-    repo: &Repo,
-    forge: &dyn Forge,
-    running: &BTreeMap<usize, Worker>,
-) -> Vec<(String, Vec<String>)> {
-    let units = running.values().map(|w| (&w.issue, None));
-    overlap::running_units(repo, forge, units)
-}
-
 impl Drop for Scheduler<'_> {
     /// Units still running when the scheduler goes, on a panic, are stopped and waited for,
     /// so none outlives the night directory it reads.
@@ -838,80 +450,19 @@ impl Drop for Scheduler<'_> {
     }
 }
 
-/// When a paused unit resumes: as [`Night::resume_at`], except that a unit the hold paused
-/// resumes at the hold's reset, at once when that came while the unit was ending.
-fn resume_at(r: &RunResult, night: &Night) -> i64 {
-    match r.reset_at.filter(|_| r.held) {
-        Some(t) => t.max(night.shared.clock.now()),
-        None => night.resume_at(r),
-    }
-}
-
-/// Label a `done` unit's PR, if it has one, with `label` and comment why it needs a human merge,
-/// so the PRs waiting on a human are one `gh pr list --label` away. A failure is reported, never
-/// fatal.
-fn flag_human_merge(forge: &dyn Forge, label: &str, r: &RunResult) {
-    let Some(pr) = r.json["pr"].as_u64() else {
-        return;
-    };
-    if let Err(e) = forge.add_pr_label(pr, label) {
-        eprintln!("ns watch: PR #{pr} not labelled {label}: {e:#}");
-    }
-    let why = if r.needs_human {
-        r.reason.as_str()
-    } else {
-        "merge.policy is \"human\", so ns never merges; needs a human merge"
-    };
-    let body = Post::new(&format!("nightshift unit `{}`: {why}", r.unit));
-    if let Err(e) = forge.comment_pr(pr, &body) {
-        eprintln!("ns watch: PR #{pr} not commented: {e:#}");
-    }
-}
-
-/// The comment on an issue whose unit got stuck or needs a human.
-fn stuck_comment(r: &RunResult) -> Post {
-    let what = if r.outcome == Outcome::Stuck {
-        "got stuck"
-    } else {
-        "needs a human"
-    };
-    let artifact = r
-        .artifact
-        .as_deref()
-        .and_then(|a| Path::new(a).file_name())
-        .map_or("none".to_string(), |f| {
-            format!(
-                "`.ns/{0}/{1}` on branch `{BRANCH_PREFIX}{0}`",
-                r.unit,
-                f.to_string_lossy()
-            )
-        });
-    let findings = r
-        .artifact
-        .as_deref()
-        .filter(|a| Path::new(a).file_name().is_some_and(|f| f == "review.md"))
-        .and_then(|a| fs::read_to_string(a).ok())
-        .map(|text| open_findings(&text))
-        .filter(|f| !f.is_empty())
-        .map_or(String::new(), |f| {
-            format!(
-                "\n\nOpen findings in `review.md`:\n```text\n{}\n```",
-                f.join("\n")
-            )
-        });
-    Post::new(&format!(
-        "nightshift {what} on unit `{}`: {}{findings}\n\nLast artifact: {artifact}",
-        r.unit, r.reason
-    ))
-}
-
-/// Hold every unit until `reset`, or until the latest reset in `paused` when that's later.
-/// The hold is written first, so a hold that can't be written leaves `paused` unchanged.
-fn extend_pause(night: &NightDir, paused: &mut Option<i64>, reset: i64) -> Result<i64> {
-    let until = paused.map_or(reset, |p| p.max(reset));
+/// Hold every unit until `reset`, or until the latest reset in `paused` when that's later
+/// (`core::settle::pause_until`); whether the hold lasts past `deadline`. The hold is written
+/// first, so a hold that can't be written leaves `paused` unchanged.
+fn extend_pause(
+    night: &NightDir,
+    paused: &mut Option<i64>,
+    reset: i64,
+    deadline: Option<i64>,
+) -> Result<bool> {
+    let (until, past) = pause_until(*paused, reset, deadline);
     night.hold(until)?;
     *paused = Some(until);
-    Ok(until)
+    Ok(past)
 }
 
 #[cfg(test)]
@@ -919,40 +470,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_unit_the_hold_paused_resumes_at_once_once_the_reset_came() {
-        let night = Night::new();
-        let now = night.shared.clock.now();
-        let paused = |reset: i64, held: bool| {
-            RunResult::from_json(serde_json::json!({
-                "unit": "2-a", "outcome": "paused", "reset_at": reset, "held": held,
-            }))
-            .unwrap()
-        };
-        // The hold's reset came while the unit ended: no new 30-minute wait.
-        assert_eq!(resume_at(&paused(now - 1, true), &night), now);
-        assert_eq!(resume_at(&paused(now + 60, true), &night), now + 60);
-        // A unit's own limit whose reset has passed, the same reset or not, waits as before:
-        // the provider is still refusing it.
-        for reset in [now - 1, now - 5] {
-            let own = paused(reset, false);
-            assert_eq!(resume_at(&own, &night), night.resume_at(&own));
-            assert!(resume_at(&own, &night) > now);
-        }
-    }
-
-    #[test]
     fn a_pause_whose_hold_cannot_be_written_is_not_applied() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("night.json"), r#"{"watch_pid": 1}"#).unwrap();
         let (night, _) = NightDir::open(tmp.path()).unwrap();
         let mut paused = Some(500);
-        assert_eq!(extend_pause(&night, &mut paused, 900).unwrap(), 900);
+        assert!(!extend_pause(&night, &mut paused, 900, None).unwrap());
         assert_eq!(paused, Some(900));
-        fs::create_dir(tmp.path().join("hold.tmp")).unwrap();
-        assert!(extend_pause(&night, &mut paused, 1200).is_err());
+        std::fs::create_dir(tmp.path().join("hold.tmp")).unwrap();
+        assert!(extend_pause(&night, &mut paused, 1200, None).is_err());
         assert_eq!(paused, Some(900));
         let mut none = None;
-        assert!(extend_pause(&night, &mut none, 1200).is_err());
+        assert!(extend_pause(&night, &mut none, 1200, None).is_err());
         assert_eq!(none, None);
     }
 }

@@ -610,45 +610,6 @@ fn no_refill_while_a_usage_limit_pause_holds_a_free_slot() {
 }
 
 #[test]
-fn watch_parallel_never_takes_an_issue_twice() {
-    let e = Env::new();
-    two_ready(&e);
-    // GitHub keeps listing a claimed issue as ready for a while.
-    e.gh_file("ready-sticks", "");
-    let reread = e.ctrl.join("reread");
-    mkfifo(&reread);
-    e.gh_file(
-        "hook.sh",
-        &format!(
-            "case \"$1 $2 $3\" in \"api --paginate \"*labels=status:ready-for-agent*)\n\
-               echo x >> \"$d/reads\"\n\
-               [ \"$(wc -l < \"$d/reads\")\" -eq 2 ] && echo reread > {reread:?} ;;\n\
-             esac\n"
-        ),
-    );
-    let (in_b, go_b) = hold_phase(&e, B, "build");
-    let w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
-    w.entered(&in_b);
-    // Unit 2 ended and its slot refills from a queue that still lists #3, mid build.
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = tx.send(fs::read_to_string(&reread));
-    });
-    w.g.recv(&rx).unwrap();
-    release(&go_b);
-    let (code, v, err) = w.finish();
-    assert_eq!(code, Some(0), "{err}");
-    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
-    let calls = e.gh_calls();
-    assert_eq!(
-        calls.matches("--add-label status:in-progress").count(),
-        2,
-        "{calls}"
-    );
-    assert_eq!(run_pids(&e).len(), 2, "{:?}", run_pids(&e));
-}
-
-#[test]
 fn watch_parallel_claims_an_issue_before_its_unit_starts() {
     let e = Env::new();
     two_ready(&e);
@@ -731,71 +692,6 @@ fn watch_parallel_pauses_every_unit_on_a_usage_limit_and_resumes_them_together()
         2,
         "{calls}"
     );
-}
-
-#[test]
-fn watch_parallel_resumes_at_the_later_of_two_resets() {
-    let e = Env::new();
-    two_ready(&e);
-    // The later reset comes first: a pause must not shrink to the earlier one that follows.
-    e.ctl("reset", &(NOW + 7200).to_string());
-    e.ctl(&format!("reset.{B}"), &(NOW + 3600).to_string());
-    e.queue(&format!("build.{A}"), &["limit", "pass:commit"]);
-    e.queue(&format!("build.{B}"), &["limit", "pass:commit"]);
-    let (in_a, go_a) = hold_phase(&e, A, "build");
-    let (in_b, go_b) = hold_phase(&e, B, "build");
-    let mut w = Watching::start(
-        e.ns()
-            .args(["watch", "--parallel", "2", "--until", "06:30"]),
-    );
-    // Unit 2's build hits its limit only once unit 3's build has begun.
-    w.entered(&in_b);
-    w.entered(&in_a);
-    release(&go_a);
-    w.line("ns watch: #2 paused on a usage limit until 2026-10-09T02:00:00+00:00");
-    release(&go_b);
-    let (code, v, err) = w.finish();
-    assert_eq!(code, Some(0), "{err}");
-    let us = units(&v);
-    assert_eq!(us[1]["issue"], 3, "{v}");
-    assert_eq!(us[1]["reset_at"], "2026-10-09T01:00:00+00:00", "{v}");
-    assert!(
-        err.contains("ns watch: #3 paused on a usage limit until 2026-10-09T02:00:00+00:00"),
-        "{err}"
-    );
-    assert_eq!(by_issue(&us[2..]), each(&[2, 3], "done"), "{v}");
-    assert!(
-        err.contains("usage limit, sleeping until 2026-10-09T02:00:00+00:00"),
-        "{err}"
-    );
-    assert!(!err.contains("sleeping until 2026-10-09T01:00:00"), "{err}");
-}
-
-#[test]
-fn watch_parallel_gives_every_paused_unit_back_when_the_reset_is_past_until() {
-    let e = Env::new();
-    two_ready(&e);
-    e.ctl("reset", &(NOW + 8 * 3600).to_string());
-    e.queue(&format!("build.{A}"), &["limit"]);
-    let (in_a, go_a) = hold_phase(&e, A, "build");
-    let (in_b, go_b) = hold_phase(&e, B, "build");
-    let mut w = Watching::start(
-        e.ns()
-            .args(["watch", "--parallel", "2", "--until", "06:30"]),
-    );
-    // Unit 2's build hits its limit only once unit 3's build has begun.
-    w.entered(&in_b);
-    w.entered(&in_a);
-    release(&go_a);
-    w.line("ns watch: #2 paused on a usage limit until");
-    release(&go_b);
-    let (code, v, err) = w.finish();
-    assert_eq!(code, Some(0), "{err}");
-    assert_eq!(v["stopped"], "usage limit resets after --until", "{v}");
-    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "paused"), "{v}");
-    for n in [2, 3] {
-        assert_eq!(e.labels(n), ["type:fix", "status:ready-for-agent"]);
-    }
 }
 
 #[test]
@@ -899,19 +795,6 @@ fn watch_parallel_must_be_at_least_one_and_the_flag_wins() {
         .assert()
         .code(2)
         .stderr(predicates::str::contains("parallel"));
-}
-
-#[test]
-fn watch_parallel_once_and_max_units_cap_the_units_started() {
-    let e = Env::new();
-    two_ready(&e);
-    e.ready(4, "Fix c", &["type:fix"], "");
-    let v = e.run(&["watch", "--parallel", "3", "--max-units", "2"], 0);
-    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
-    assert_eq!(v["stopped"], "max_units", "{v}");
-    assert!(!e.gh_calls().contains("issue edit 4"), "{}", e.gh_calls());
-    let v = e.run(&["watch", "--parallel", "3", "--once"], 0);
-    assert_eq!(by_issue(&units(&v)), each(&[4], "done"), "{v}");
 }
 
 /// A build that records its CPU variables to `seen` and commits, and a build gate that records

@@ -1,15 +1,12 @@
 //! Hold back a ready issue whose predicted `touches` overlap a running unit's (docs/factory/watch.md,
-//! "Parallel units"): one clear of every running unit starts first, and a held issue starts
-//! anyway once it has waited [`HOLD_LIMIT_S`].
+//! "Parallel units"): the reads behind `core::fill`'s overlap pick, which decides.
 
-use std::cell::LazyCell;
-use std::collections::BTreeMap;
 use std::fs;
-
-use serde_json::{json, Value};
 
 use crate::git::{self, Repo};
 use crate::touches::{touches, Overlap};
+pub(in crate::watch) use crate::watch::core::fill::overlapped;
+use crate::watch::core::fill::{plan_fill, FillAct, FillInput, Need, Overlaps};
 use crate::watch::{unit_id, Forge, Issue};
 use crate::worktree;
 
@@ -73,189 +70,43 @@ pub(in crate::watch) fn running_units<'a>(
         .collect()
 }
 
-/// The unit id of each running unit `mine` overlaps.
-pub(in crate::watch) fn overlapped<'a>(
-    rule: &Overlap,
-    mine: &[String],
-    running: &'a [(String, Vec<String>)],
-) -> Vec<&'a str> {
-    running
-        .iter()
-        .filter(|(_, theirs)| rule.overlaps(mine, theirs))
-        .map(|(unit, _)| unit.as_str())
-        .collect()
-}
-
-/// How long a ready issue that overlaps a running unit waits before it starts anyway.
-pub(in crate::watch) const HOLD_LIMIT_S: i64 = 2 * 60 * 60;
-
-/// The ready issues held back tonight for overlapping a running unit, each with when it was first
-/// held. An entry stays all night, so an issue is announced once and its wait counts from then.
-#[derive(Default)]
-pub(in crate::watch) struct Holds {
-    since: BTreeMap<u64, i64>,
-}
-
-impl Holds {
-    /// When `n` was first held, holding it from `now` if it wasn't yet: true for a new hold.
-    fn hold(&mut self, n: u64, now: i64) -> (i64, bool) {
-        match self.since.get(&n) {
-            Some(t) => (*t, false),
-            None => {
-                self.since.insert(n, now);
-                (now, true)
-            }
-        }
-    }
-}
-
-/// Picks, for one fill, which ready issue starts next. Each issue's prediction is read once and
-/// the overlap rule built once, when a running unit first predicts anything.
-pub(super) struct Picker<'a> {
-    forge: &'a dyn Forge,
-    rule: LazyCell<Overlap, Box<dyn FnOnce() -> Overlap + 'a>>,
-    predicted: BTreeMap<u64, Vec<String>>,
-    running: Option<Vec<(String, Vec<String>)>>,
-}
-
-/// One ready issue that overlaps a running unit: where it is in `ready`, and the units it hits.
-struct Blocked {
-    at: usize,
-    overlaps: Vec<String>,
-}
-
-impl<'a> Picker<'a> {
-    pub(super) fn new(forge: &'a dyn Forge, rule: impl FnOnce() -> Overlap + 'a) -> Self {
-        Picker {
-            forge,
-            rule: LazyCell::new(Box::new(rule)),
-            predicted: BTreeMap::new(),
-            running: None,
-        }
-    }
-
-    /// Remove from `ready` and return the issue to start next: the first, in queue order, whose
-    /// predicted `touches` overlap no running unit's, else the first held for [`HOLD_LIMIT_S`]
-    /// by `now`, which starts anyway. `None` holds every one. Each new hold and each forced
-    /// start goes on `events` for the run log. The running units are read through `running`
-    /// once a fill; the issues taken after join them from their cached predictions.
-    pub(super) fn take(
-        &mut self,
-        ready: &mut Vec<Issue>,
-        running: impl FnOnce() -> Vec<(String, Vec<String>)>,
-        now: i64,
-        holds: &mut Holds,
-        events: &mut Vec<Value>,
-    ) -> Option<Issue> {
-        if ready.is_empty() {
-            return None;
-        }
-        let forge = self.forge;
-        let running = self.running.get_or_insert_with(running);
-        let at = if running.is_empty() {
-            0
-        } else {
-            let (clear, blocked) = scan(forge, &self.rule, &mut self.predicted, ready, running);
-            hold_all(ready, &blocked, now, holds, events);
-            match clear {
-                Some(at) => at,
-                None => forced(ready, &blocked, now, holds, events)?,
-            }
-        };
-        let issue = ready.remove(at);
-        // The last one taken needs no prediction: no pick comes after it this fill.
-        if ready.is_empty() {
-            return Some(issue);
-        }
-        let mine = self
-            .predicted
-            .entry(issue.number)
-            .or_insert_with(|| predicted(forge, &issue));
-        if !mine.is_empty() {
-            running.push((unit_id(&issue), mine.clone()));
-        }
-        Some(issue)
-    }
-}
-
-/// The index in `ready` of the first issue clear of every `running` unit, if any, and each issue
-/// before it that overlaps one. The rule is only built when this runs, with a running unit
-/// predicting touches.
-fn scan(
+/// The issues `input` claims at `now` and the holds it says (`core::fill::plan_fill`), reading
+/// what it asks for: the running units' `touches` through `running`, the overlap rule through
+/// `rule` and each brief through `forge`, each at most once.
+pub(super) fn plan(
     forge: &dyn Forge,
-    rule: &LazyCell<Overlap, Box<dyn FnOnce() -> Overlap + '_>>,
-    cache: &mut BTreeMap<u64, Vec<String>>,
-    ready: &[Issue],
-    running: &[(String, Vec<String>)],
-) -> (Option<usize>, Vec<Blocked>) {
-    let rule = &**rule;
-    let mut blocked = Vec::new();
-    for (at, i) in ready.iter().enumerate() {
-        let mine = cache.entry(i.number).or_insert_with(|| predicted(forge, i));
-        let hit = overlapped(rule, mine, running);
-        if hit.is_empty() {
-            return (Some(at), blocked);
-        }
-        blocked.push(Blocked {
-            at,
-            overlaps: hit.into_iter().map(String::from).collect(),
-        });
-    }
-    (None, blocked)
-}
-
-/// Hold each `blocked` issue, logging `overlap_held` for one held for the first time tonight.
-fn hold_all(
-    ready: &[Issue],
-    blocked: &[Blocked],
+    input: &FillInput,
     now: i64,
-    holds: &mut Holds,
-    events: &mut Vec<Value>,
-) {
-    for b in blocked {
-        let n = ready[b.at].number;
-        if holds.hold(n, now).1 {
-            eprintln!(
-                "ns watch: #{n} waits: its touches overlap running {}",
-                b.overlaps.join(", ")
-            );
-            events.push(json!({"event": "overlap_held", "issue": n, "overlaps": b.overlaps}));
+    running: impl FnOnce() -> Vec<(String, Vec<String>)>,
+    rule: impl FnOnce() -> Overlap,
+) -> Vec<FillAct> {
+    let mut overlaps = Overlaps::default();
+    let (mut running, mut rule) = (Some(running), Some(rule));
+    loop {
+        match plan_fill(input, &overlaps, now) {
+            Ok(acts) => return acts,
+            Err(Need::Running) => {
+                overlaps.running = Some(running.take().expect("asked once")());
+            }
+            Err(Need::Rule) => overlaps.rule = Some(rule.take().expect("asked once")()),
+            Err(Need::Brief(n)) => {
+                // Red main may admit a fix issue filed too late to be listed.
+                let admitted = input.gate.admit(input.ready.to_vec());
+                let issue = admitted.iter().find(|i| i.number == n);
+                let brief = issue.map_or_else(Vec::new, |i| predicted(forge, i));
+                overlaps.briefs.insert(n, brief);
+            }
         }
     }
-}
-
-/// The first `blocked` issue held for [`HOLD_LIMIT_S`] by `now`, logged as `overlap_forced`.
-fn forced(
-    ready: &[Issue],
-    blocked: &[Blocked],
-    now: i64,
-    holds: &mut Holds,
-    events: &mut Vec<Value>,
-) -> Option<usize> {
-    let b = blocked.iter().find(|b| {
-        let (since, _) = holds.hold(ready[b.at].number, now);
-        now - since >= HOLD_LIMIT_S
-    })?;
-    let n = ready[b.at].number;
-    let waited = now - holds.hold(n, now).0;
-    eprintln!(
-        "ns watch: #{n} starts beside {} after waiting {waited}s",
-        b.overlaps.join(", ")
-    );
-    events.push(json!({
-        "event": "overlap_forced",
-        "issue": n,
-        "waited_s": waited,
-        "overlaps": b.overlaps,
-    }));
-    Some(b.at)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
+    use crate::watch::core::fill::{Claims, Holds, HOLD_LIMIT_S};
+    use crate::watch::core::red::Gate;
     use crate::watch::forge::fake::FakeForge;
 
     fn issue(number: u64, body: &str) -> Issue {
@@ -290,6 +141,38 @@ mod tests {
         )]
     }
 
+    /// The claims and holds a fill at `now` with `free` slots makes of `ready`, nothing taken
+    /// and main not red.
+    fn fill(
+        forge: &FakeForge,
+        ready: &[Issue],
+        free: usize,
+        now: i64,
+        holds: &Holds,
+        running: impl FnOnce() -> Vec<(String, Vec<String>)>,
+        make: impl FnOnce() -> Overlap,
+    ) -> Vec<FillAct> {
+        let taken = BTreeSet::new();
+        let input = FillInput {
+            ready,
+            gate: &Gate::Open,
+            taken: &taken,
+            free,
+            claims: Claims::default(),
+            holds,
+        };
+        plan(forge, &input, now, running, make)
+    }
+
+    fn claimed(acts: &[FillAct]) -> Vec<u64> {
+        acts.iter()
+            .filter_map(|a| match a {
+                FillAct::Claim(i) => Some(i.number),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The issue a fill on `ready` starts first at time 0, with no issue held before.
     fn pick(
         ready: &[Issue],
@@ -297,12 +180,16 @@ mod tests {
         make: impl FnOnce() -> Overlap,
         forge: &FakeForge,
     ) -> Option<u64> {
-        let mut ready = ready.to_vec();
-        let mut picker = Picker::new(forge, make);
-        let (mut holds, mut events) = (Holds::default(), Vec::new());
-        picker
-            .take(&mut ready, || running.to_vec(), 0, &mut holds, &mut events)
-            .map(|i| i.number)
+        let acts = fill(
+            forge,
+            ready,
+            1,
+            0,
+            &Holds::default(),
+            || running.to_vec(),
+            make,
+        );
+        claimed(&acts).first().copied()
     }
 
     /// Issues 2, 3 and 4 in queue order; issue n's brief comment predicts `briefs[n - 2]`.
@@ -402,89 +289,74 @@ mod tests {
             .overlaps(&globs(&["cli/*"]), &globs(&["cli/**"])));
     }
 
-    fn take_all(
-        forge: &FakeForge,
-        ready: &mut Vec<Issue>,
-        running: &[(String, Vec<String>)],
-    ) -> Vec<u64> {
-        let mut picker = Picker::new(forge, || rule(&[]));
-        let (mut holds, mut events) = (Holds::default(), Vec::new());
-        let mut order = Vec::new();
-        while let Some(i) = picker.take(ready, || running.to_vec(), 0, &mut holds, &mut events) {
-            order.push(i.number);
-        }
-        order
-    }
-
     #[test]
     fn no_running_unit_reads_no_rule_however_many_are_ready() {
-        let (forge, mut ready) = queued(["`cli/**`", "`cli/**`", "`docs/**`"]);
-        let mut picker = Picker::new(&forge, || panic!("rule read"));
-        let (mut holds, mut events) = (Holds::default(), Vec::new());
-        let first = picker.take(&mut ready, Vec::new, 0, &mut holds, &mut events);
-        assert_eq!(first.map(|i| i.number), Some(2));
-        assert!(events.is_empty());
+        let (forge, ready) = queued(["`cli/**`", "`cli/**`", "`docs/**`"]);
+        let acts = fill(&forge, &ready, 1, 0, &Holds::default(), Vec::new, || {
+            panic!("rule read")
+        });
+        assert_eq!(claimed(&acts), [2]);
+        assert_eq!(acts.len(), 1, "{acts:?}");
     }
 
     #[test]
     fn one_ready_issue_beside_no_running_unit_reads_no_comments() {
         let forge = FakeForge::default();
-        let mut ready = vec![issue(2, "")];
-        let mut picker = Picker::new(&forge, || panic!("rule read"));
-        let (mut holds, mut events) = (Holds::default(), Vec::new());
-        let at = picker.take(&mut ready, Vec::new, 0, &mut holds, &mut events);
-        assert_eq!(at.map(|i| i.number), Some(2));
+        let ready = [issue(2, "")];
+        let acts = fill(&forge, &ready, 1, 0, &Holds::default(), Vec::new, || {
+            panic!("rule read")
+        });
+        assert_eq!(claimed(&acts), [2]);
         assert!(forge.comment_reads.borrow().is_empty());
         // An empty queue reads nothing at all.
-        let none = picker.take(
-            &mut ready,
-            || panic!("running read"),
+        let none = fill(
+            &forge,
+            &[],
+            1,
             0,
-            &mut holds,
-            &mut events,
+            &Holds::default(),
+            || panic!("running read"),
+            || panic!("rule read"),
         );
-        assert!(none.is_none());
+        assert!(none.is_empty());
     }
 
     #[test]
     fn one_ready_issue_that_overlaps_a_running_unit_is_held() {
         let (forge, _) = queued(["`cli/**`", "", ""]);
-        let mut ready = vec![issue(2, "")];
-        let mut picker = Picker::new(&forge, || rule(&[]));
-        let (mut holds, mut events) = (Holds::default(), Vec::new());
-        let at = picker.take(
-            &mut ready,
-            || running(&["cli/**"]),
+        let ready = [issue(2, "")];
+        let acts = fill(
+            &forge,
+            &ready,
+            1,
             0,
-            &mut holds,
-            &mut events,
+            &Holds::default(),
+            || running(&["cli/**"]),
+            || rule(&[]),
         );
-        assert!(at.is_none());
-        assert_eq!(ready.len(), 1);
+        assert!(claimed(&acts).is_empty());
+        assert!(
+            matches!(acts[..], [FillAct::Held { issue: 2, .. }]),
+            "{acts:?}"
+        );
     }
 
     #[test]
     fn a_fill_reads_each_ready_issue_once_and_the_running_units_once() {
-        let (forge, mut ready) = queued(["`cli/**`", "`cli/**`", "`docs/**`"]);
+        let (forge, ready) = queued(["`cli/**`", "`cli/**`", "`docs/**`"]);
         let reads = std::cell::Cell::new(0);
-        let mut picker = Picker::new(&forge, || rule(&[]));
-        let (mut holds, mut events) = (Holds::default(), Vec::new());
-        let mut order = Vec::new();
         // Past the hold limit, each held issue starts in queue order once no clear one is left.
-        let late = HOLD_LIMIT_S;
+        let mut holds = Holds::default();
         holds.hold(2, 0);
         holds.hold(3, 0);
-        loop {
-            let running = || {
-                reads.set(reads.get() + 1);
-                running(&["cli/**"])
-            };
-            match picker.take(&mut ready, running, late, &mut holds, &mut events) {
-                Some(i) => order.push(i.number),
-                None => break,
-            }
-        }
-        assert_eq!(order, [4, 2, 3]);
+        let running = || {
+            reads.set(reads.get() + 1);
+            running(&["cli/**"])
+        };
+        let acts = fill(&forge, &ready, 3, HOLD_LIMIT_S, &holds, running, || {
+            rule(&[])
+        });
+        assert_eq!(claimed(&acts), [4, 2, 3]);
         assert_eq!(reads.get(), 1);
         let mut seen = forge.comment_reads.borrow().clone();
         seen.sort();
@@ -493,53 +365,67 @@ mod tests {
 
     #[test]
     fn an_issue_a_fill_started_counts_as_running_for_the_next_pick() {
-        let (forge, mut ready) = queued(["`docs/**`", "`docs/DESIGN.md`", "`cli/src/run.rs`"]);
-        let order = take_all(&forge, &mut ready, &running(&["cli/src/watch.rs"]));
-        assert_eq!(order, [2, 4]);
-        assert_eq!(ready[0].number, 3);
+        let (forge, ready) = queued(["`docs/**`", "`docs/DESIGN.md`", "`cli/src/run.rs`"]);
+        let run = || running(&["cli/src/watch.rs"]);
+        let acts = fill(&forge, &ready, 3, 0, &Holds::default(), run, || rule(&[]));
+        assert_eq!(claimed(&acts), [2, 4]);
+        assert!(
+            matches!(acts[1], FillAct::Held { issue: 3, .. }),
+            "{acts:?}"
+        );
         assert_eq!(forge.comment_reads.borrow().len(), 3);
     }
 
-    /// One fill at `now` on `ready` beside a unit `1-fix-1` touching `cli/**`, with tonight's
-    /// `holds`: the issue it starts, and the events it logs.
+    /// One fill at `now` with one free slot on `ready` beside a unit `1-fix-1` touching `cli/**`,
+    /// with tonight's `holds`, which take the fill's new holds as the scheduler does: the issue
+    /// it starts, and what else it says.
     fn fill_at(
         forge: &FakeForge,
         ready: &[Issue],
         now: i64,
         holds: &mut Holds,
-    ) -> (Option<u64>, Vec<Value>) {
-        let mut ready = ready.to_vec();
-        let mut events = Vec::new();
-        let mut picker = Picker::new(forge, || rule(&[]));
+    ) -> (Option<u64>, Vec<FillAct>) {
         let run = || running(&["cli/**"]);
-        let at = picker.take(&mut ready, run, now, holds, &mut events);
-        (at.map(|i| i.number), events)
+        let acts = fill(forge, ready, 1, now, holds, run, || rule(&[]));
+        let mut said = Vec::new();
+        let mut at = None;
+        for a in acts {
+            match a {
+                FillAct::Claim(i) => at = Some(i.number),
+                FillAct::Held { issue, .. } => {
+                    holds.hold(issue, now);
+                    said.push(a);
+                }
+                _ => said.push(a),
+            }
+        }
+        (at, said)
     }
 
     #[test]
     fn a_held_issue_is_logged_once_and_starts_anyway_after_two_hours() {
         let (forge, ready) = queued(["`cli/src/run.rs`", "`cli/**`", "`cli/src/watch.rs`"]);
         let mut holds = Holds::default();
-        let (at, events) = fill_at(&forge, &ready, 1000, &mut holds);
+        let (at, acts) = fill_at(&forge, &ready, 1000, &mut holds);
         assert_eq!(at, None);
-        let held: Vec<_> = events.iter().map(|e| (&e["event"], &e["issue"])).collect();
-        assert_eq!(held.len(), 3, "{events:?}");
-        assert!(held.iter().all(|(e, _)| *e == "overlap_held"));
-        assert_eq!(events[0]["overlaps"], json!(["1-fix-1"]));
+        let held = |n| FillAct::Held {
+            issue: n,
+            overlaps: vec!["1-fix-1".into()],
+        };
+        assert_eq!(acts, [held(2), held(3), held(4)]);
         // A later fill short of the limit holds them again, silently.
-        let (at, events) = fill_at(&forge, &ready, 1000 + HOLD_LIMIT_S - 1, &mut holds);
-        assert_eq!((at, events.len()), (None, 0));
+        let (at, acts) = fill_at(&forge, &ready, 1000 + HOLD_LIMIT_S - 1, &mut holds);
+        assert_eq!((at, acts.len()), (None, 0));
         // At the limit the first starts, its wait counted from when it was first held.
-        let (at, events) = fill_at(&forge, &ready, 1000 + HOLD_LIMIT_S, &mut holds);
+        let (at, acts) = fill_at(&forge, &ready, 1000 + HOLD_LIMIT_S, &mut holds);
         assert_eq!(at, Some(2));
         assert_eq!(
-            events,
-            [json!({
-                "event": "overlap_forced",
-                "issue": 2,
-                "waited_s": HOLD_LIMIT_S,
-                "overlaps": ["1-fix-1"],
-            })]
+            acts,
+            [FillAct::Forced {
+                issue: 2,
+                waited: HOLD_LIMIT_S,
+                overlaps: vec!["1-fix-1".into()],
+            }]
         );
     }
 
@@ -548,14 +434,17 @@ mod tests {
         let (forge, ready) = queued(["`cli/**`", "`docs/**`", "`cli/**`"]);
         let mut holds = Holds::default();
         holds.hold(2, 0);
-        let (at, events) = fill_at(&forge, &ready, HOLD_LIMIT_S, &mut holds);
+        let (at, acts) = fill_at(&forge, &ready, HOLD_LIMIT_S, &mut holds);
         assert_eq!(at, Some(3));
         // #2 was held already; nothing new is said of it.
-        assert!(events.is_empty(), "{events:?}");
+        assert!(acts.is_empty(), "{acts:?}");
         // A newly held issue's wait starts now, so it is not forced.
-        let (at, events) = fill_at(&forge, &[issue(4, "")], HOLD_LIMIT_S, &mut holds);
+        let (at, acts) = fill_at(&forge, &[issue(4, "")], HOLD_LIMIT_S, &mut holds);
         assert_eq!(at, None);
-        assert_eq!(events[0]["event"], "overlap_held");
+        assert!(
+            matches!(acts[..], [FillAct::Held { issue: 4, .. }]),
+            "{acts:?}"
+        );
     }
 
     #[test]

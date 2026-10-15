@@ -18,7 +18,7 @@ use super::{
 use crate::clock;
 use crate::factory::{Factory, Queue as QueueConfig};
 use crate::git::Repo;
-use crate::run::{self, Loaded, Outcome, RunArgs};
+use crate::run::{self, Loaded, Outcome, RunArgs, RunResult};
 
 /// The night's triage-only runs.
 #[derive(Default, Clone, Serialize, Deserialize)]
@@ -121,39 +121,58 @@ fn next(
     }
 }
 
-/// Triage-only runs: every candidate filed since the last pass, then the backlog until the queue
-/// has a ready issue, so a big backlog never holds up the next unit. `held` is asked before each
-/// triage-only run: when it says yes the pass ends, as main's CI is red. Returns why the pass
-/// halted, when it did.
-pub(super) fn pass(
+/// One triage-only run of an issue: the run's result, or why it failed to start.
+pub(super) type Run<'a> = dyn FnMut(u64, &mut Night) -> Result<RunResult> + 'a;
+
+/// A triage-only `ns run` of issue `n` on `repo`'s fresh base, in this process.
+pub(super) fn run_here(
     repo: &Repo,
-    forge: &dyn Forge,
     loaded: &Loaded,
+    n: u64,
+    night: &mut Night,
+) -> Result<RunResult> {
+    let rargs = RunArgs {
+        issue: Some(n),
+        base: night.base(repo, n),
+        triage_only: true,
+        ..RunArgs::default()
+    };
+    run::execute(&rargs, &mut night.shared, loaded)
+}
+
+/// Triage-only runs, each through `run`: every candidate filed since the last pass, then the
+/// backlog until the queue has a ready issue, so a big backlog never holds up the next unit.
+/// `held` is asked before each triage-only run: when it says yes the pass ends, as main's CI is
+/// red. Returns why the pass halted, when it did.
+pub(super) fn pass(
+    forge: &dyn Forge,
+    fac: &Factory,
     deadline: Option<i64>,
     night: &mut Night,
     held: &dyn Fn() -> bool,
+    run: &mut Run,
 ) -> Result<Option<Halt>> {
-    let q = &loaded.fac.queue;
-    if !on(&loaded.fac) {
+    let q = &fac.queue;
+    if !on(fac) {
         return Ok(None);
     }
     let before = night.triage.seen.clone();
     loop {
         crate::stop::check()?;
-        if let Some(stop) = night.over(deadline, &loaded.fac) {
+        if let Some(stop) = night.over(deadline, fac) {
             return Ok(Some(Halt::Stop(stop.into())));
         }
         if night.triage.off || held() {
             return Ok(None);
         }
         let done = night.triage.tried.union(&night.finished).copied().collect();
-        let found = candidates(forge, &loaded.fac, &done)?.issues;
+        let found = candidates(forge, fac, &done)?.issues;
         night
             .triage
             .seen
             .get_or_insert_with(BTreeSet::new)
             .extend(found.iter().map(|(i, _)| i.number));
-        let ready = || Ok(!queue(forge, &loaded.fac, &night.finished)?.ready.is_empty());
+        let ready = || Ok(!queue(forge, fac, &night.finished)?.ready.is_empty());
         let retry = night.triage.retry.take();
         let again = found.iter().find(|(i, _)| Some(i.number) == retry);
         let picked = match again {
@@ -165,13 +184,7 @@ pub(super) fn pass(
         };
         night.triage.tried.insert(issue.number);
         eprintln!("ns watch: triage #{} {}", issue.number, issue.title);
-        let rargs = RunArgs {
-            issue: Some(issue.number),
-            base: night.base(repo, issue.number),
-            triage_only: true,
-            ..RunArgs::default()
-        };
-        let r = match run::execute(&rargs, &mut night.shared, loaded) {
+        let r = match run(issue.number, night) {
             Ok(r) => r,
             Err(e) if crate::stop::requested().is_some() => return Err(e),
             Err(e) => {
