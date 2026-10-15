@@ -104,6 +104,31 @@ pub fn mode(harness: &str) -> Mode {
     }
 }
 
+/// Where `ns install` puts the skills the built-in harness `harness` reads; none for another.
+pub fn installed_dir(harness: &str) -> Option<PathBuf> {
+    match harness {
+        "claude" => Some(install::Harness::Claude.dir()),
+        "codex" => Some(install::Harness::Codex.dir()),
+        _ => None,
+    }
+}
+
+/// The dirs a unit whose phases run on `harnesses` takes installed skills from, in order: each
+/// harness's own, then `~/.claude/skills`, the one dir pinning read before codex had its own.
+pub fn installed_dirs(harnesses: &[&str]) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for dir in harnesses
+        .iter()
+        .filter_map(|h| installed_dir(h))
+        .chain([install::Harness::Claude.dir()])
+    {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
 /// The flags a claude phase's command must not carry itself: `ns run` owns them.
 const OWNED_FLAGS: &[&str] = &["--settings", "--setting-sources"];
 
@@ -162,7 +187,8 @@ pub fn write_settings(common_dir: &Path, unit: &str, ns: &Path) -> Result<()> {
 }
 
 /// Pin `unit`'s skills and settings in `worktree`: write the snapshot of `base`'s skills unless
-/// a good one exists, write the settings (under `common_dir`) for the `ns` binary at `ns`, and
+/// a good one exists (taking installed skills from the dirs of `harnesses`, the unit's phase
+/// harnesses, when `base` has none), write the settings (under `common_dir`) for the `ns` binary at `ns`, and
 /// link the snapshot. A `.claude/skills` that is not ours is an error, since claude reads it and
 /// would run unpinned. Returns the run-log events: `skills_pinned` when it wrote a snapshot,
 /// and `skills_unpinned` for each other link path it left alone.
@@ -172,6 +198,7 @@ pub fn pin(
     unit: &str,
     base: &str,
     ns: &Path,
+    harnesses: &[&str],
 ) -> Result<Vec<Value>> {
     let skills = skills_path(worktree, unit);
     let mut events = Vec::new();
@@ -180,7 +207,12 @@ pub fn pin(
             fs::remove_dir_all(&skills)
                 .with_context(|| format!("cannot remove {}", skills.display()))?;
         }
-        events.push(snapshot(worktree, base, &skills)?);
+        events.push(snapshot(
+            worktree,
+            base,
+            &skills,
+            &installed_dirs(harnesses),
+        )?);
     }
     write_settings(common_dir, unit, ns)?;
     let target = Path::new("..").join(NS_DIR).join(unit).join(SKILLS_DIR);
@@ -210,12 +242,12 @@ fn count_skills(dir: &Path) -> usize {
 }
 
 /// Write the skills of the commit `worktree` forked from `base` into `into`, as real files.
-/// With no `skills/` tree there (a repo other than nightshift), the installed `ns-*` skills are
-/// copied instead.
-fn snapshot(worktree: &Path, base: &str, into: &Path) -> Result<Value> {
+/// With no `skills/` tree there (a repo other than nightshift), the `ns-*` skills installed in
+/// the first of `installed` that holds any are copied instead.
+fn snapshot(worktree: &Path, base: &str, into: &Path, installed: &[PathBuf]) -> Result<Value> {
     let sha = git::run(worktree, &["merge-base", "--", base, "HEAD"])?;
     let tmp = into.with_extension("tmp");
-    let built = build_snapshot(worktree, base, &sha, &tmp);
+    let built = build_snapshot(worktree, base, &sha, &tmp, installed);
     if built.is_err() {
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -236,6 +268,7 @@ fn build_snapshot(
     base: &str,
     sha: &str,
     tmp: &Path,
+    installed: &[PathBuf],
 ) -> Result<(&'static str, usize)> {
     if tmp.exists() {
         fs::remove_dir_all(tmp).with_context(|| format!("cannot remove {}", tmp.display()))?;
@@ -245,25 +278,29 @@ fn build_snapshot(
     let mut source = "base";
     if !has_ns_skills(tmp) {
         source = "installed";
-        copy_installed_skills(tmp)?;
+        copy_installed_skills(installed, tmp)?;
     }
     checkout_tree(worktree, &format!("{sha}:.agents/skills"), tmp)?;
     if !has_ns_skills(tmp) {
         anyhow::bail!(
             "no ns-* skills to pin for {base}: its skills/ tree has none and none are installed in {}; run `ns install`",
-            install::Harness::Claude.dir().display()
+            installed
+                .iter()
+                .map(|d| d.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" or ")
         );
     }
     Ok((source, count_skills(tmp)))
 }
 
-/// Copy the installed `ns-*` skills into `into`; none installed copies nothing.
-fn copy_installed_skills(into: &Path) -> Result<()> {
-    let installed = install::Harness::Claude.dir();
-    if !installed.is_dir() {
+/// Copy the `ns-*` skills installed in the first of `installed` that holds any into `into`;
+/// none installed copies nothing.
+fn copy_installed_skills(installed: &[PathBuf], into: &Path) -> Result<()> {
+    let Some(installed) = installed.iter().find(|d| has_ns_skills(d)) else {
         return Ok(());
-    }
-    let dirs = install::skill_dirs(&installed).with_context(|| {
+    };
+    let dirs = install::skill_dirs(installed).with_context(|| {
         format!(
             "cannot read the installed skills in {}",
             installed.display()
@@ -386,6 +423,44 @@ mod tests {
         assert_eq!(mode("cursor-agent"), Mode::None);
         assert_eq!(mode("gemini"), Mode::None);
         assert_eq!(mode("opencode"), Mode::None);
+    }
+
+    #[test]
+    fn installed_skills_come_from_each_harness_dir_then_claude_s() {
+        let (claude, agents) = (
+            install::Harness::Claude.dir(),
+            install::Harness::Codex.dir(),
+        );
+        assert_eq!(
+            installed_dirs(&["codex", "claude", "codex"]),
+            [agents.clone(), claude.clone()]
+        );
+        assert_eq!(
+            installed_dirs(&["claude", "codex"]),
+            [claude.clone(), agents]
+        );
+        assert_eq!(installed_dirs(&["other"]), std::slice::from_ref(&claude));
+        assert_eq!(installed_dir("other"), None);
+        assert_eq!(installed_dir("claude"), Some(claude));
+    }
+
+    #[test]
+    fn installed_skills_come_from_the_first_dir_that_holds_any() {
+        let dir = tempfile::tempdir().unwrap();
+        let (empty, held, into) = (
+            dir.path().join("empty"),
+            dir.path().join("held"),
+            dir.path().join("into"),
+        );
+        fs::create_dir_all(&empty).unwrap();
+        fs::create_dir_all(held.join("ns-x")).unwrap();
+        fs::write(held.join("ns-x/SKILL.md"), "x\n").unwrap();
+        fs::create_dir_all(&into).unwrap();
+        copy_installed_skills(&[dir.path().join("gone"), empty, held], &into).unwrap();
+        assert_eq!(
+            fs::read_to_string(into.join("ns-x/SKILL.md")).unwrap(),
+            "x\n"
+        );
     }
 
     #[test]

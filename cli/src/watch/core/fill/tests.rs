@@ -253,6 +253,7 @@ fn plan(ready: &[Issue], gate: &Gate, taken: &[u64], free: usize, claims: Claims
         free,
         claims,
         holds: &Holds::default(),
+        memory: Memory::default(),
     };
     let overlaps = Overlaps {
         running: Some(Vec::new()),
@@ -322,6 +323,7 @@ fn the_pick_asks_for_what_it_lacks_one_read_at_a_time() {
         free: 2,
         claims: Claims::default(),
         holds: &Holds::default(),
+        memory: Memory::default(),
     };
     let mut overlaps = Overlaps::default();
     assert_eq!(plan_fill(&input, &overlaps, 0), Err(Need::Running));
@@ -338,4 +340,166 @@ fn the_pick_asks_for_what_it_lacks_one_read_at_a_time() {
         overlaps: vec!["1-a".into()],
     };
     assert_eq!(acts, [held, FillAct::Claim(issue(3))]);
+}
+
+#[test]
+fn a_unit_needs_the_p90_of_the_recorded_peaks_or_4_gb_until_5_exist() {
+    assert_eq!(need_mb(&[]), NEED_DEFAULT_MB);
+    // Zero peaks never make a unit need nothing.
+    assert_eq!(need_mb(&[0; 5]), 1);
+    assert_eq!(need_mb(&[100, 200, 300, 400]), 4096);
+    assert_eq!(need_mb(&[500, 100, 300, 200, 400]), 500);
+    let ten: Vec<u64> = (1..=10).rev().map(|n| n * 100).collect();
+    assert_eq!(need_mb(&ten), 900);
+    let eleven: Vec<u64> = (1..=11).map(|n| n * 100).collect();
+    assert_eq!(need_mb(&eleven), 1000);
+}
+
+/// What a fill with `free` slots plans on `ready` beside `running` units, when `memory`
+/// is what it read of the machine. Overlap is checked against `running`'s `cli/**`.
+fn plan_memory(ready: &[Issue], gate: &Gate, running: bool, memory: Memory) -> Vec<FillAct> {
+    let taken = BTreeSet::new();
+    let input = FillInput {
+        ready,
+        gate,
+        taken: &taken,
+        free: 3,
+        claims: Claims::default(),
+        holds: &Holds::default(),
+        memory,
+    };
+    let mut overlaps = Overlaps {
+        running: Some(Vec::new()),
+        rule: Some(Overlap::new(vec!["cli/a.rs".into()], &[])),
+        briefs: ready.iter().map(|i| (i.number, Vec::new())).collect(),
+    };
+    if running {
+        overlaps.running = Some(vec![("1-a".into(), vec!["cli/**".into()])]);
+        overlaps.briefs.insert(2, vec!["cli/a.rs".into()]);
+    }
+    plan_fill(&input, &overlaps, 0).unwrap()
+}
+
+fn memory(available_mb: u64, peaks: &[u64]) -> Memory<'_> {
+    Memory {
+        available_mb: Some(available_mb),
+        peaks,
+        waiting: false,
+        ..Memory::default()
+    }
+}
+
+fn low(available_mb: u64, need_mb: u64, new: bool) -> FillAct {
+    FillAct::MemoryLow {
+        available_mb,
+        need_mb,
+        new,
+    }
+}
+
+#[test]
+fn enough_memory_claims_and_each_claim_takes_its_share() {
+    let ready = [issue(2), issue(3), issue(4)];
+    let acts = plan_memory(&ready, &Gate::Open, false, memory(9000, &[]));
+    assert_eq!(
+        acts,
+        [
+            FillAct::Claim(issue(2)),
+            FillAct::Claim(issue(3)),
+            low(808, 4096, true)
+        ]
+    );
+    // Exactly enough is enough.
+    let acts = plan_memory(&ready, &Gate::Open, false, memory(4096, &[]));
+    assert_eq!(acts, [FillAct::Claim(issue(2)), low(0, 4096, true)]);
+    // Unread memory checks nothing.
+    let acts = plan_memory(&ready, &Gate::Open, false, Memory::default());
+    assert_eq!(claimed(&acts), [2, 3, 4]);
+}
+
+#[test]
+fn too_little_memory_waits_and_says_so_once_a_wait() {
+    let ready = [issue(2)];
+    let acts = plan_memory(&ready, &Gate::Open, false, memory(4095, &[]));
+    assert_eq!(acts, [low(4095, 4096, true)]);
+    let waiting = Memory {
+        waiting: true,
+        ..memory(4095, &[])
+    };
+    assert_eq!(
+        plan_memory(&ready, &Gate::Open, false, waiting),
+        [low(4095, 4096, false)]
+    );
+    let waiting = Memory {
+        waiting: true,
+        ..memory(4096, &[])
+    };
+    assert_eq!(
+        plan_memory(&ready, &Gate::Open, false, waiting),
+        [FillAct::Claim(issue(2))]
+    );
+}
+
+#[test]
+fn five_peaks_replace_the_4_gb_guess() {
+    let ready = [issue(2)];
+    let peaks = [1000, 1000, 1000, 1000];
+    let acts = plan_memory(&ready, &Gate::Open, false, memory(2000, &peaks));
+    assert_eq!(acts, [low(2000, 4096, true)]);
+    let peaks = [1000, 1000, 1000, 1000, 1500];
+    let acts = plan_memory(&ready, &Gate::Open, false, memory(2000, &peaks));
+    assert_eq!(acts, [FillAct::Claim(issue(2))]);
+    let acts = plan_memory(&ready, &Gate::Open, false, memory(1499, &peaks));
+    assert_eq!(acts, [low(1499, 1500, true)]);
+}
+
+#[test]
+fn the_memory_check_composes_with_red_main_and_overlap() {
+    let ready = [issue(2), issue(3)];
+    // Red main admitting nothing asks nothing of memory.
+    assert!(plan_memory(&ready, &Gate::Shut, false, memory(0, &[])).is_empty());
+    let fix = Gate::Only(Fix::Listed(issue(3)));
+    assert_eq!(
+        plan_memory(&ready, &fix, false, memory(0, &[])),
+        [low(0, 4096, true)]
+    );
+    assert_eq!(
+        plan_memory(&ready, &fix, false, memory(4096, &[])),
+        [FillAct::Claim(issue(3))]
+    );
+    // Overlap holds #2 and memory lets one start.
+    let held = FillAct::Held {
+        issue: 2,
+        overlaps: vec!["1-a".into()],
+    };
+    assert_eq!(
+        plan_memory(&ready, &Gate::Open, true, memory(5000, &[])),
+        [held.clone(), FillAct::Claim(issue(3)), low(904, 4096, true)]
+    );
+    // Too little memory waits before any overlap is weighed.
+    assert_eq!(
+        plan_memory(&ready, &Gate::Open, true, memory(10, &[])),
+        [low(10, 4096, true)]
+    );
+}
+
+#[test]
+fn a_peak_above_the_machine_is_ignored_and_the_need_stays_under_the_cap() {
+    let huge = [u64::MAX; 5];
+    let m = |peaks, total_mb, cap_mb| Memory {
+        peaks,
+        total_mb,
+        cap_mb,
+        ..Memory::default()
+    };
+    // Peaks over MemTotal can't be real: too few are left, so the default stands.
+    assert_eq!(need_within(&m(&huge, Some(24000), None)), NEED_DEFAULT_MB);
+    // Peaks that fit in MemTotal but not the cap are cut to the cap.
+    assert_eq!(
+        need_within(&m(&[23000; 5], Some(24000), Some(20000))),
+        20000
+    );
+    // Without MemTotal only the cap bounds the need.
+    assert_eq!(need_within(&m(&huge, None, Some(20000))), 20000);
+    assert_eq!(need_within(&m(&[0; 5], None, None)), 1);
 }

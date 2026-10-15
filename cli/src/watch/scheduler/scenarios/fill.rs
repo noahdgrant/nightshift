@@ -4,7 +4,7 @@
 
 use serde_json::json;
 
-use super::{by_issue, each, Sim, READY};
+use super::{by_issue, each, Said, Sim, READY};
 use crate::watch::Issue;
 
 /// A night with #2 and #3 ready, `parallel` units at once.
@@ -109,4 +109,61 @@ fn watch_never_runs_a_non_team_issue() {
     assert!(sim.units.is_empty(), "{:?}", sim.units);
     assert!(sim.claimed.is_empty());
     assert_eq!(sim.labels(2), ["type:fix", READY]);
+}
+
+#[test]
+fn watch_waits_for_memory_says_so_once_and_starts_when_it_frees() {
+    let mut sim = two_ready(2);
+    sim.available_mb = Some(3000);
+    sim.fill().unwrap();
+    sim.fill().unwrap();
+    let low = Said::MemoryLow {
+        available_mb: 3000,
+        need_mb: 4096,
+    };
+    assert_eq!(sim.said, std::slice::from_ref(&low));
+    assert!(sim.claimed.is_empty());
+    // Five units' peaks of 1 GB make room for both.
+    sim.peaks = vec![1000; 5];
+    sim.fill().unwrap();
+    assert_eq!(sim.claimed, [2, 3]);
+    assert!(!sim.memory_low);
+    // A later wait is said again.
+    sim.ready(4, "Fix c", &["type:fix"]);
+    sim.end(2, json!({"outcome": "done"})).unwrap();
+    sim.available_mb = Some(10);
+    sim.fill().unwrap();
+    let again = Said::MemoryLow {
+        available_mb: 10,
+        need_mb: 1000,
+    };
+    assert_eq!(sim.said, [low, again]);
+}
+
+#[test]
+fn watch_starts_its_units_when_the_recorded_peaks_are_forged_huge() {
+    // A hand-edited run log: peaks far over the machine are ignored.
+    let mut sim = two_ready(2);
+    sim.available_mb = Some(21000);
+    sim.total_mb = Some(24000);
+    sim.cap_mb = Some(20000);
+    sim.peaks = vec![u64::MAX; 5];
+    sim.fill().unwrap();
+    assert_eq!(sim.claimed, [2, 3]);
+    assert!(!sim.memory_low);
+    // Peaks that fit the machine but not the cap need the cap, which one unit can have.
+    let mut sim = two_ready(2);
+    sim.available_mb = Some(21000);
+    sim.total_mb = Some(24000);
+    sim.cap_mb = Some(20000);
+    sim.peaks = vec![23000; 5];
+    sim.fill().unwrap();
+    assert_eq!(sim.claimed, [2]);
+    assert_eq!(
+        sim.said,
+        [Said::MemoryLow {
+            available_mb: 1000,
+            need_mb: 20000
+        }]
+    );
 }

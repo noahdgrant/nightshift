@@ -17,6 +17,7 @@ scripts/ci-tools.d/* all
 .githooks/* --test ci_local --test cli --test factory --test git_location --bin ns
 .github/workflows/ci.yml --test ci_matrix --test test_tools
 .github/workflows/release-please.yml --test release_please
+.gitignore --test factory
 .nightshift/nightshift.toml --test cli
 .nightshift/rules-baseline.json --test factory
 README.md --bin ns

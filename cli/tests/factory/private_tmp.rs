@@ -207,3 +207,28 @@ if git worktree list >/dev/null 2>&1; then echo "git worktree ok" >> "$out"; els
     assert_eq!(saw(&e, UNIT), ["TMPDIR writable", "git worktree ok"]);
     assert!(not_isolated_events(&e).is_empty());
 }
+
+#[test]
+fn a_codex_phase_writes_tmp_into_its_own_tmpdir_and_sees_no_host_tmp() {
+    if !bwrap_works() {
+        eprintln!("skipped: bwrap is missing or cannot start here, so phases share /tmp");
+        return;
+    }
+    let e = Env::new();
+    builtin_codex(&e);
+    let probe = tempfile::Builder::new()
+        .prefix("ns-host-probe-")
+        .tempfile_in("/tmp")
+        .unwrap();
+    record_private_tmp(&e, probe.path());
+    e.queue("build", &["pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let args = fs::read_to_string(e.ctrl.join("args")).unwrap();
+    assert!(args.starts_with("exec --sandbox danger-full-access"), "{args}");
+    assert_eq!(
+        saw(&e, UNIT),
+        ["no note", "no host file", "note in TMPDIR", "mktemp in TMPDIR"]
+    );
+    assert!(not_isolated_events(&e).is_empty());
+}

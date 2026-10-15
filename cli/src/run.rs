@@ -59,6 +59,19 @@ const RUN_CLAUDE: &[&str] = &[
     "--verbose",
 ];
 
+/// The built-in codex write command for `ns run`. `workspace-write` blocks the network and
+/// writes outside the worktree, which `git push`, `gh` and a commit in a linked worktree need;
+/// the phase's private `/tmp` and the tamper check stand in for the sandbox
+/// (docs/factory/run.md, "Codex phases").
+const RUN_CODEX: &[&str] = &[
+    "codex",
+    "exec",
+    "--sandbox",
+    "danger-full-access",
+    "-m",
+    "{model}",
+];
+
 #[derive(Debug, Clone, Default)]
 pub struct RunArgs {
     pub unit: Option<String>,
@@ -279,7 +292,8 @@ pub fn phase_command(
     let argv = match configured {
         Some(h) => h.command_write.clone(),
         None if p.harness == "claude" => Some(owned(RUN_CLAUDE)),
-        None => config::builtin_harness(&p.harness).and_then(|h| h.command_write),
+        None if p.harness == "codex" => Some(owned(RUN_CODEX)),
+        None => None,
     };
     let Some(argv) = argv.filter(|a| !a.is_empty()) else {
         return Err(SfError::usage(
@@ -720,7 +734,18 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         crate::stop::scoped(ensure).context("cannot handle SIGINT and SIGTERM")??
     };
     same_worktree(&wt_path, Path::new(&wt.path))?;
-    let pinned = pin::pin(Path::new(&wt.path), &repo.common_dir, &unit, &base, ns)?;
+    let harnesses: Vec<String> = (factory::PHASES.iter())
+        .map(|p| fac.phase(p).harness)
+        .collect();
+    let harnesses: Vec<&str> = harnesses.iter().map(String::as_str).collect();
+    let pinned = pin::pin(
+        Path::new(&wt.path),
+        &repo.common_dir,
+        &unit,
+        &base,
+        ns,
+        &harnesses,
+    )?;
     let ctx = Ctx {
         unit: unit.clone(),
         worktree: PathBuf::from(&wt.path),
@@ -780,14 +805,15 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         driven?
     };
     let pr = known_pr(&ctx.artifacts);
-    ctx.log(json!({
+    let end = json!({
         "event": "end",
         "outcome": result.outcome.label(),
         "reason": result.reason,
         "phase": result.phase,
         "pr": pr,
         "cost_usd": shared.spent(),
-    }));
+    });
+    ctx.log(with_peak(end, crate::memory::peak_mb()));
     let mut record_saved = false;
     if matches!(
         result.outcome,
@@ -821,6 +847,17 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
             record_saved,
         )
     });
+    let kept = match result.outcome {
+        Outcome::Done | Outcome::Stuck => true,
+        Outcome::Merged => cleanup.as_ref().is_some_and(|c| c["removed"] != true),
+        Outcome::Budget | Outcome::Paused | Outcome::Split => false,
+    };
+    if kept {
+        if let Some(mut ev) = crate::build_output::remove(&repo, &ctx.worktree) {
+            ev["event"] = json!("build_output_removed");
+            ctx.log(ev);
+        }
+    }
     let cost: f64 = phases.iter().filter_map(|p| p["cost_usd"].as_f64()).sum();
     let json = json!({
         "unit": unit,
@@ -850,6 +887,14 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         ended_at: Some(shared.clock.now()),
         json,
     })
+}
+
+/// `end` with this unit's peak memory, in MB, when its cgroup recorded one.
+fn with_peak(mut end: Value, peak: Option<u64>) -> Value {
+    if let Some(mb) = peak {
+        end["memory_peak_mb"] = json!(mb);
+    }
+    end
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -969,6 +1014,16 @@ fn dry_run_decision(
 pub(crate) mod tests {
     use super::merge::marked_regions;
     use super::*;
+
+    #[test]
+    fn an_end_event_carries_the_memory_peak_only_when_there_is_one() {
+        let end = json!({"event": "end", "outcome": "done"});
+        assert_eq!(
+            with_peak(end.clone(), Some(812)),
+            json!({"event": "end", "outcome": "done", "memory_peak_mb": 812})
+        );
+        assert_eq!(with_peak(end.clone(), None), end);
+    }
 
     /// A repo cloned from a bare `origin` whose `main` holds plain `f.c` and `g.c`.
     pub(crate) fn cloned() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -1139,5 +1194,45 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(!c.contains(&"--settings".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn the_built_in_codex_phase_command_has_full_access_and_a_configured_one_is_kept() {
+        let f = factory::parse("[defaults]\nharness = \"codex\"\nmodel = \"m\"\n").unwrap();
+        let (wt, common) = (Path::new("/wt"), Path::new("/c"));
+        let c = phase_command(None, &f.phase("build"), true, common, wt, "u").unwrap();
+        assert_eq!(
+            c,
+            [
+                "codex",
+                "exec",
+                "--sandbox",
+                "danger-full-access",
+                "-m",
+                "m"
+            ]
+        );
+        let cfg = config::parse(
+            "[harness.codex]\ncommand = [\"codex\"]\ncommand_write = [\"codex\", \"exec\", \"--sandbox\", \"workspace-write\"]\n",
+        )
+        .unwrap();
+        let c = phase_command(Some(&cfg), &f.phase("build"), true, common, wt, "u").unwrap();
+        assert_eq!(c, ["codex", "exec", "--sandbox", "workspace-write"]);
+    }
+
+    #[test]
+    fn a_harness_neither_configured_nor_built_in_has_no_phase_command() {
+        let f = factory::parse("[defaults]\nharness = \"other\"\n").unwrap();
+        let err = phase_command(
+            None,
+            &f.phase("build"),
+            true,
+            Path::new("/c"),
+            Path::new("/wt"),
+            "u",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("has no command_write"), "{err}");
     }
 }

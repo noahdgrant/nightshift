@@ -4,6 +4,7 @@ mod args;
 mod artifact;
 mod ask;
 mod billing;
+mod build_output;
 #[cfg(test)]
 #[path = "../build_stamp.rs"]
 mod build_stamp;
@@ -29,6 +30,7 @@ mod lint;
 mod log;
 mod markers;
 mod memcap;
+mod memory;
 mod phase_output;
 mod pin;
 mod proc;
