@@ -2,7 +2,6 @@
 //! artifacts it replaces, the harness, and the record of what it did. Reports what it observed as
 //! a [`PhaseRan`]; the decision about what follows is `core::step`'s.
 
-use std::fs;
 use std::path::Path;
 
 use anyhow::Result;
@@ -339,7 +338,7 @@ fn record(
     if art.as_ref().is_some_and(|a| a.status == "pass") {
         // A failed phase's scratch files stay for a human to read, until `ns clean`. A pass
         // whose scratch dir will not go is logged, not failed: `ns clean` removes the leftover.
-        if let Err(e) = fs::remove_dir_all(h.tmp) {
+        if let Err(e) = crate::tree::remove(h.tmp) {
             ctx.log(json!({
                 "event": "tmpdir_not_removed",
                 "phase": phase,

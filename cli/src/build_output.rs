@@ -128,7 +128,7 @@ fn size(path: &Path) -> u64 {
 
 fn delete(path: &Path) -> io::Result<()> {
     if fs::symlink_metadata(path)?.is_dir() {
-        fs::remove_dir_all(path)
+        crate::tree::remove(path)
     } else {
         fs::remove_file(path)
     }
@@ -137,12 +137,13 @@ fn delete(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::{chmod, reads_any_mode, temp_tree, TempTree};
     use std::os::unix::fs::symlink;
 
     /// A worktree whose stack.md has the `build-output` row `row`, and `cli/target` with two
     /// files of 3 and 4 bytes.
-    fn worktree(row: &str) -> (tempfile::TempDir, PathBuf) {
-        let tmp = tempfile::tempdir().unwrap();
+    fn worktree(row: &str) -> (TempTree, PathBuf) {
+        let tmp = temp_tree();
         let wt = tmp.path().canonicalize().unwrap().join("wt");
         fs::create_dir_all(wt.join("docs/agents")).unwrap();
         fs::create_dir_all(wt.join("cli/target/debug")).unwrap();
@@ -388,22 +389,28 @@ mod tests {
     }
 
     #[test]
-    fn a_path_that_cannot_be_deleted_is_reported_as_failed() {
-        use std::os::unix::fs::PermissionsExt;
-        struct Restore(PathBuf);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700));
-            }
-        }
+    fn build_output_holding_read_only_directories_is_deleted() {
         let (_tmp, wt) = worktree("| build-output | `cli/target` | |");
-        let debug = wt.join("cli/target/debug");
-        let _restore = Restore(debug.clone());
-        fs::set_permissions(&debug, fs::Permissions::from_mode(0o500)).unwrap();
-        if fs::write(debug.join("probe"), "").is_ok() {
+        fs::create_dir(wt.join("cli/target/debug/inner")).unwrap();
+        fs::write(wt.join("cli/target/debug/inner/c"), "hi").unwrap();
+        chmod(&wt.join("cli/target/debug/inner"), 0o500);
+        chmod(&wt.join("cli/target/debug"), 0o500);
+        let v = remove(&main(), &wt).unwrap();
+        assert_eq!(v["paths"], json!(["cli/target"]), "{v}");
+        assert_eq!(v["failed"], json!([]), "{v}");
+        assert!(!wt.join("cli/target").exists());
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_deleted_is_reported_as_failed() {
+        let (tmp, wt) = worktree("| build-output | `cli/target` | |");
+        if reads_any_mode(tmp.path()) {
             return;
         }
+        // The parent is outside the tree, so it stays read-only and the unlink fails.
+        chmod(&wt.join("cli"), 0o500);
         let v = remove(&main(), &wt).unwrap();
+        chmod(&wt.join("cli"), 0o700);
         assert_eq!(
             (v["paths"].clone(), v["bytes"].clone()),
             (json!([]), json!(0))

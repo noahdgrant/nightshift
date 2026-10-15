@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The Rust pack's tests that run outside cargo test: ratchet-binary-size.sh on a small crate,
-# ratchet.toml under `ns ratchet check`, and the harness-kind-construction rule's file scope. cli/tests/rules_pack.rs tests the rest of the pack.
+# ratchet.toml under `ns ratchet check`, and the file scopes of the harness-kind-construction and
+# tree-removal-skips-modes rules. cli/tests/rules_pack.rs tests the rest of the pack.
 #
 #   rules/rust/tests/run.sh
 set -euo pipefail
@@ -151,6 +152,45 @@ jq -e -s 'map(select(.rule == "harness-kind-construction")) | length > 0 and all
   failed=1
 }
 
+# tree-removal-skips-modes flags remove_dir_all in the cleanup files outside test code, and nowhere
+# else.
+cat >"$tmp/rm.rs" <<'EOF_RM'
+fn f(p: &Path) {
+    let _ = fs::remove_dir_all(p); // flagged
+    let _ = std::fs::remove_dir_all(p); // flagged
+    let _ = crate::tree::remove(p);
+}
+
+#[cfg(test)]
+mod tests {
+    fn g(p: &Path) {
+        let _ = fs::remove_dir_all(p);
+    }
+}
+EOF_RM
+flagged=()
+n=0
+while IFS= read -r l; do
+  n=$((n + 1))
+  [[ $l != *'// flagged'* ]] || flagged+=("$n")
+done <"$tmp/rm.rs"
+rms="$tmp/rms"
+for f in clean.rs build_output.rs run/phase_run.rs other.rs run/tamper.rs; do
+  mkdir -p "$(dirname "$rms/cli/src/$f")"
+  cp "$tmp/rm.rs" "$rms/cli/src/$f"
+done
+out=$(cd "$rms" && "$pack/check.sh" ast-grep cli 2>"$tmp/stderr") || true
+got=$(jq -rs 'map(select(.rule == "tree-removal-skips-modes")) | sort_by(.file, .line)
+  | map("\(.file) \(.line)") | join(" ")' <<<"$out" 2>/dev/null) || true
+want=
+for f in build_output.rs clean.rs run/phase_run.rs; do
+  for l in "${flagged[@]}"; do want+="${want:+ }cli/src/$f $l"; done
+done
+[ "$got" = "$want" ] || {
+  printf 'FAIL tree-removal-skips-modes: findings %q, want %q, stderr:\n%s\n' "$got" "$want" "$(<"$tmp/stderr")" >&2
+  failed=1
+}
+
 if [ -x "$ns" ]; then
   # ratchet.toml, filled in and with the script where the install puts it, is a ratchet
   # `ns ratchet check` runs.
@@ -173,4 +213,4 @@ else
 fi
 
 [ "$failed" -eq 0 ] || exit 1
-echo "rules/rust: ratchet-binary-size.sh, ratchet.toml and harness-kind-construction pass"
+echo "rules/rust: ratchet-binary-size.sh, ratchet.toml, harness-kind-construction and tree-removal-skips-modes pass"

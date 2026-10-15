@@ -53,6 +53,7 @@ mod tail;
 mod testutil;
 mod touches;
 mod transcripts;
+mod tree;
 mod upstream;
 mod watch;
 mod which;
