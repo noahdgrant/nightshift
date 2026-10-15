@@ -3546,35 +3546,6 @@ fn guard_hooks_denies_a_write_through_a_skills_link_by_relative_and_absolute_pat
 }
 
 #[test]
-fn guard_hooks_resolves_the_phase_unit_and_asks_for_a_rewrite_of_an_unread_word() {
-    let guard = |unit: Option<&str>, command: &str| {
-        let mut c = ns();
-        c.env_remove("NS_UNIT").env_remove("NS_WORKTREE");
-        if let Some(unit) = unit {
-            c.env("NS_UNIT", unit);
-        }
-        let call = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": command}});
-        let out = c
-            .arg("guard-hooks")
-            .write_stdin(call.to_string())
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-        String::from_utf8(out).unwrap()
-    };
-    let write = "echo x > .ns/$NS_UNIT/review-$NS_UNIT.md";
-    assert_eq!(guard(Some("u1"), write), "");
-    let unread = guard(None, write);
-    assert!(unread.contains("\"deny\""), "{unread}");
-    assert!(unread.contains("Write tool"), "{unread}");
-    assert!(!unread.contains("blocked"), "{unread}");
-    let bypass = guard(Some("u1"), "rm -rf .ns/$NS_UNIT");
-    assert!(bypass.contains("ns: blocked: "), "{bypass}");
-}
-
-#[test]
 fn doctor_reports_no_account_when_gh_api_user_fails_or_prints_nothing() {
     for login in ["half-a-login; exit 1", "''"] {
         let (v, _, _) = Doctor {

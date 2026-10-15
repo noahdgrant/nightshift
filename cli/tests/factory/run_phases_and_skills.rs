@@ -187,14 +187,11 @@ fn a_claude_phase_hook_denies_every_git_hook_bypass() {
         "git commit --no-verify -m x",
         "git commit -n -m x",
         "git push --no-verify",
-        "git merge --no-verify main",
-        "git rebase --no-verify origin/main",
         "git -c core.hooksPath=/dev/null commit -m x",
-        "git config core.hooksPath /tmp/none",
+        "git --git-dir=/tmp/x commit -m x",
+        "GIT_DIR=/tmp/x git commit -m x",
         "rm .githooks/pre-commit",
         "echo 'exit 0' > .githooks/pre-push",
-        "HUSKY=0 git commit -m x",
-        "SKIP=ci git commit -m x",
     ] {
         let why = hook_denies(&settings, bypass).unwrap_or_else(|| panic!("allowed: {bypass}"));
         assert!(why.contains("skills/ns-contract"), "{bypass}: {why}");

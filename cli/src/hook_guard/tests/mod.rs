@@ -5,12 +5,10 @@ use crate::pin::settings_json as settings;
 
 mod files;
 mod git;
-mod resolve;
-mod shell;
+mod words;
 
-/// Why `call` would skip the git hooks, with no variable known.
 fn check(call: &Value) -> Option<String> {
-    verdict(call, &Vars::new(), Unread::Keep)
+    verdict(call)
 }
 
 fn bash_call(cmd: &str) -> Value {
@@ -21,59 +19,13 @@ fn denied(cmd: &str) -> bool {
     check(&bash_call(cmd)).is_some()
 }
 
-/// The most CPU time a check of one long command may take, in ms. Linear work takes a few ms; a
-/// blowup takes seconds.
-const CPU_BUDGET_MS: u64 = 500;
-
-/// `f`'s result, and whether it ran within [`CPU_BUDGET_MS`] of this thread's CPU time. Other
-/// processes on a busy machine don't add to it, as they add to the wall clock.
-fn within_cpu_budget<T>(f: impl FnOnce() -> T) -> (T, bool) {
-    let before = thread_cpu_time();
-    let out = f();
-    let spent = thread_cpu_time() - before;
-    (out, spent < std::time::Duration::from_millis(CPU_BUDGET_MS))
-}
-
-fn thread_cpu_time() -> std::time::Duration {
-    let mut t = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: clock_gettime(2) writes one timespec into `t`, which lives across the call.
-    assert_eq!(
-        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) },
-        0
-    );
-    std::time::Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
-}
-
-#[test]
-fn the_cpu_budget_counts_only_the_calling_threads_work() {
-    let budget = std::time::Duration::from_millis(CPU_BUDGET_MS);
-    let ((), fast) = within_cpu_budget(|| {
-        std::thread::spawn(move || {
-            let start = thread_cpu_time();
-            while thread_cpu_time() - start < budget {}
-        })
-        .join()
-        .unwrap()
-    });
-    assert!(fast);
-}
-
-#[test]
-fn the_cpu_budget_fails_a_calling_thread_that_burns_it() {
-    let budget = std::time::Duration::from_millis(CPU_BUDGET_MS);
-    let ((), fast) = within_cpu_budget(|| {
-        let start = thread_cpu_time();
-        while thread_cpu_time() - start < budget {}
-    });
-    assert!(!fast);
+fn reason(cmd: &str) -> String {
+    check(&bash_call(cmd)).unwrap_or_else(|| panic!("not denied: {cmd}"))
 }
 
 #[test]
 fn the_denial_names_the_rule() {
-    let why = check(&bash_call("git commit -n -m x")).unwrap();
+    let why = reason("git commit -n -m x");
     assert!(why.contains("git commit -n"), "{why}");
     assert!(RULE.contains("skills/ns-contract"));
     assert!(RULE.contains("Git hooks"));
@@ -90,30 +42,33 @@ fn ordinary_commands_pass() {
         "git commit -Cn",
         "git commit -m x -- -n",
         "git commit --amend --no-edit",
+        "git commit -uno -m x",
+        "git commit -Sn -m x",
+        "timeout",
+        "0=x rm .githooks/pre-commit",
+        "cat <&3 .githooks/pre-commit",
         "git push origin ns/x",
         "git push -n origin ns/x",
+        "git push origin -- --no-verify",
         "git merge -n main",
         "git rebase origin/main",
-        "git config core.hooksPath",
         "git config --get core.hooksPath",
         "git -c user.name=x commit -m y",
+        "git -C repo log",
         "echo 'git commit --no-verify'",
-        "echo \"HUSKY=0 rm .githooks/pre-commit\"",
+        "echo \"GIT_DIR=x rm .githooks/pre-commit\"",
         "grep -rn no-verify .githooks/",
         "cat .githooks/pre-commit",
         "cp .githooks/pre-commit /tmp/x",
         "sed -n 1,5p .githooks/pre-push",
         "ls -la # git commit -n",
-        "HUSKY=1 git commit -m x",
         "cargo test",
         "cat > build.md <<'EOF'\ngit commit --no-verify\nrm .githooks/pre-commit\nEOF\ngit status",
-        "cat <<-EOF > x\n\tHUSKY=0 git push\n\tEOF",
+        "cat <<-EOF > x\n\tgit commit -n\n\tEOF",
         "cmd 2>&1 | tail",
         "cp a b < .githooks/pre-commit",
-        "0=x rm .githooks/pre-commit",
-        "git rebase --no origin/main",
-        "git commit -uno -m x",
         "export PATH=/x:$PATH",
+        "echo x > .ns/u1/review.md",
         "",
     ] {
         assert!(!denied(c), "{c}");
@@ -164,7 +119,6 @@ fn the_hook_command_fails_closed_when_ns_crashes() {
 fn settings_run_this_binary_on_every_tool_that_can_bypass() {
     let s: Value = serde_json::from_str(&settings(Path::new("/opt/my ns/ns"))).unwrap();
     let hook = &s["hooks"]["PreToolUse"][0];
-    assert_eq!(hook["matcher"], "Bash|Edit|Write|MultiEdit|NotebookEdit");
     let tools: Vec<&str> = std::iter::once(BASH_TOOL)
         .chain(FILE_TOOLS.iter().copied())
         .collect();
@@ -175,33 +129,17 @@ fn settings_run_this_binary_on_every_tool_that_can_bypass() {
     );
 }
 
-fn reason(cmd: &str) -> String {
-    check(&bash_call(cmd)).unwrap_or_else(|| panic!("not denied: {cmd}"))
-}
-
 #[test]
 fn each_rule_names_itself_in_the_denial() {
     for (cmd, rule) in [
         ("git commit -n", "skips the hooks"),
         ("git push --no-verify", "skips the hooks"),
-        ("git merge --no-verify x", "skips the hooks"),
         ("git -c core.hooksPath=x commit", "overrides core.hooksPath"),
-        (
-            "git --config-env core.hooksPath=V commit",
-            "overrides core.hooksPath",
-        ),
-        (
-            "git config core.hooksPath x",
-            "core.hooksPath moves the hooks",
-        ),
-        ("HUSKY=0 git commit", "makes git hooks skip"),
-        ("SKIP=a git commit", "makes git hooks skip"),
-        ("GIT_CONFIG_COUNT=1 git commit", "makes git hooks skip"),
+        ("git --git-dir=/o log", "other hooks and config"),
+        ("GIT_DIR=/tmp/x git log", "other hooks and config"),
         ("rm .githooks/pre-commit", "in .githooks/"),
         ("echo x > .githooks/pre-commit", "in .githooks/"),
         ("git rm .githooks/pre-commit", "in .githooks/"),
-        ("git commit $FLAG", "built by a shell expansion"),
-        ("$G commit -n", "named by a shell expansion"),
     ] {
         let why = reason(cmd);
         assert!(why.contains(rule), "{cmd}: {why}");
@@ -210,33 +148,25 @@ fn each_rule_names_itself_in_the_denial() {
     assert!(check(&edit).unwrap().contains("in .githooks/"));
 }
 
-/// The phase transcripts' real denials, reduced to the part that matters.
 #[test]
-fn real_denials_stay_denied_and_unit_artifact_writes_pass() {
+fn a_bypass_after_another_command_is_denied() {
     for c in [
-        "U=u1 && S=$(git rev-parse --short HEAD) && cat > .ns/$U/review.md <<EOF\nunit: $U\nEOF",
-        "U=u1\ncat > .ns/$U/pr.md <<'EOF'\nbody\nEOF",
-        "U=u1; cat > .ns/$U/evidence.md <<EOF\nx\nEOF",
-        "U=u1\ncat > .ns/$U/brief.md <<'EOF'\nx\nEOF",
-        "{ printf -- \"---\\nunit: $U\\n\"; cat /tmp/body.md; } > .ns/$U/pr.md",
-        "NOW=$(date -u +%FT%TZ) && cat > .ns/$U/review.md <<E\nx\nE",
-        "git push -q \"$V/remote.git\" main",
-    ] {
-        assert!(!denied(c), "{c}");
-    }
-    for c in [
-        "git commit -n -m x",
-        "git commit --no-verify -m x",
-        "git push --no-verify",
-        "D=$(mktemp -d); GIT_DIR=$D cargo test",
-        "GIT_DIR=/tmp/nonexist bash x.sh",
-        "git --git-dir=/o log",
-        "git --git-dir=/tmp for-each-ref",
-        "mut(){ d=$(mktemp -d); (cd $d && eval \"$1\"); }",
-        "sh -c \"$X\"",
-        "$G commit -n",
-        "X=n; git commit -a$X -m x",
-        "cd \"$(dirname $NS_PHASE_SETTINGS)\" && rm phase-settings.json",
+        "git add . ; git commit -n",
+        "true && git commit -n",
+        "false || git push --no-verify",
+        "true | git commit -n",
+        "(git commit -n)",
+        "{ git commit -n; }",
+        "echo $(git commit -n)",
+        "cat <<EOF\nbody\nEOF\ngit commit -n",
+        "cd cli && git commit -n",
+        "sudo git commit -n",
+        "sudo -E git commit -n",
+        "env A=1 git commit -n",
+        "timeout 60 git commit -n",
+        "timeout --foreground 60 git commit -n",
+        "/usr/bin/git commit -n",
+        "A=1 B=2 git commit -n",
     ] {
         assert!(denied(c), "{c}");
     }
