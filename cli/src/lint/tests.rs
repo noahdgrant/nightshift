@@ -605,3 +605,31 @@ fn feature_files_are_not_checked_for_tracker_commands() {
     .unwrap();
     assert!(messages(&tmp).is_empty(), "{:?}", messages(&tmp));
 }
+
+#[test]
+fn tracker_templates_may_hold_commands_and_need_every_operation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../skills/ns-setup");
+    let dir = tmp.path().join("ns-setup");
+    fs::create_dir_all(dir.join("references")).unwrap();
+    fs::copy(skills.join("SKILL.md"), dir.join("SKILL.md")).unwrap();
+    for f in tracker::TEMPLATES {
+        let from = skills.join(f.trim_start_matches("ns-setup/"));
+        fs::copy(from, tmp.path().join(f)).unwrap();
+    }
+    let commands: Vec<String> = messages(&tmp)
+        .into_iter()
+        .filter(|m| m.contains("tracker command"))
+        .collect();
+    assert!(commands.is_empty(), "{commands:?}");
+    let github = tmp.path().join(tracker::TEMPLATES[0]);
+    let text = fs::read_to_string(&github).unwrap();
+    fs::write(&github, text.replace("### Create an issue\n", "")).unwrap();
+    assert!(
+        messages(&tmp).contains(
+            &"tracker operation \"Create an issue\" has no ### heading under ## Operations".into()
+        ),
+        "{:?}",
+        messages(&tmp)
+    );
+}
