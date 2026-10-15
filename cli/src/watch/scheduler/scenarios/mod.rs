@@ -24,6 +24,7 @@ use crate::watch::forge::fake::FakeForge;
 use crate::watch::transitions::{self, Event, State};
 use crate::watch::{fix_main, queue, triage, unit_id, Issue, Night, PAUSED_PAST_UNTIL};
 
+mod fill;
 mod red;
 mod settle;
 mod triage_pass;
@@ -81,6 +82,8 @@ pub(super) struct Sim {
     pub holds: Holds,
     /// Each unit's record: its issue and outcome.
     pub units: Vec<(u64, String)>,
+    /// Each paused unit's record: its issue and when it resumes.
+    pub resets: Vec<(u64, i64)>,
     pub said: Vec<Said>,
     /// What the night warned of on stderr about the fix issue.
     pub warnings: Vec<String>,
@@ -124,6 +127,7 @@ impl Sim {
             red: Red::default(),
             holds: Holds::default(),
             units: Vec::new(),
+            resets: Vec::new(),
             said: Vec::new(),
             warnings: Vec::new(),
             claimed: Vec::new(),
@@ -243,9 +247,9 @@ impl Sim {
 
     /// Pause every unit until `reset`, or the latest reset tonight; past `--until`, stop.
     fn pause(&mut self, reset: i64) {
-        let until = self.paused_until.map_or(reset, |p| p.max(reset));
+        let (until, past) = core_settle::pause_until(self.paused_until, reset, self.deadline);
         self.paused_until = Some(until);
-        if self.deadline.is_some_and(|d| until >= d) {
+        if past {
             self.stop_all(PAUSED_PAST_UNTIL);
         }
     }
@@ -396,9 +400,12 @@ impl Sim {
                     self.pause(reset);
                 }
                 SettleAct::Record {
-                    outcome, finished, ..
+                    outcome,
+                    finished,
+                    reset_at,
                 } => {
                     self.units.push((n, outcome.into()));
+                    self.resets.extend(reset_at.map(|t| (n, t)));
                     if finished {
                         self.night.finished.insert(n);
                     }
@@ -436,6 +443,12 @@ impl Sim {
             };
             let fields = result(&issue, self);
             self.end(issue.number, fields)?;
+        }
+        // The night ended before the reset: the units still paused go back to the queue.
+        for issue in std::mem::take(&mut self.resume) {
+            let n = issue.number;
+            let q = &self.fac.queue;
+            transitions::apply(&self.forge, q, n, State::InProgress, Event::PausedGivenBack)?;
         }
         Ok(self
             .stopping
