@@ -488,10 +488,10 @@ fn build_only_runs_no_local_gate_after_a_ship_that_moves_head() {
 #[test]
 fn build_only_runs_no_local_gate_after_a_cut_short_ship_that_moves_head() {
     let e = Env::new();
-    let runs = remote_queue(&e, "");
-    e.queue("ship", &["pass:commit+sleep", "pass"]);
-    let v = run_with_timeouts(&e, "ship=1500", 0);
-    assert_eq!(v["outcome"], "done", "{v}");
+    let runs = remote_queue(&e, "[phases.ship]\nmax_attempts = 1\n");
+    e.queue("ship", &["pass:commit+sleep"]);
+    let v = run_with_timeouts(&e, "ship=1500", 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
     assert_eq!(fs::read_to_string(&runs).unwrap(), "full\n");
     assert_eq!(gate_where(&e), [("build".into(), "local_full".into())]);
 }
