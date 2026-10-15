@@ -143,27 +143,25 @@ fn build_event(e: &Env, attempt: u64) -> Value {
 #[test]
 fn a_timed_out_phase_ignores_its_artifact_and_retries() {
     let e = Env::new();
-    e.queue("build", &["blocked:sleep", "pass:commit"]);
-    let v = run_with_phase_timeout(&e, 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "build", "verify", "review", "ship"]
-    );
+    e.factory("[phases.build]\nmax_attempts = 2\n");
+    // The retry times out too: an attempt meant to pass would race the 1.5 s cap.
+    e.queue("build", &["blocked:sleep", "blocked:sleep"]);
+    let v = run_with_phase_timeout(&e, 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(e.calls(), ["triage", "build", "build"]);
     let dir = e.worktree(UNIT).join(".ns").join(UNIT);
     let archived = dir.join("history/build-timeout-1.md");
     assert!(fs::read_to_string(&archived)
         .unwrap()
         .contains("status: blocked"));
-    assert!(fs::read_to_string(dir.join("build.md"))
-        .unwrap()
-        .contains("status: pass"));
+    assert!(!dir.join("build.md").exists());
     let p = build_event(&e, 1);
     assert_eq!(p["timed_out"], true);
     assert_eq!(p["written"], false);
     assert_eq!(p["reason"], "timed out after 1.5 s");
     assert_eq!(p["archived"], archived.to_str().unwrap());
     assert!(e.prompt(3, "build").contains("attempt 2"));
+    assert_eq!(build_event(&e, 2)["reason"], "timed out after 1.5 s");
 }
 
 #[test]
@@ -234,30 +232,39 @@ fn a_timed_out_build_does_not_run_the_gate() {
     let e = Env::new();
     let runs = e.ctrl.join("gate-runs");
     let flag = e.ctrl.join("gate-green");
-    e.factory(&format!(
-        "[phases.build]\nmax_attempts = 3\ngate = \"echo ran >> {r}; test -f {f} || {{ touch {f}; exit 1; }}\"\n",
+    let factory = format!(
+        "[phases.build]\nmax_attempts = 3\ngate = \"echo ran >> {r}; test -f {f}\"\n",
         r = runs.display(),
         f = flag.display()
-    ));
-    e.queue("build", &["pass:commit", "blocked:sleep", "pass:commit"]);
-    let v = run_with_phase_timeout(&e, 0);
-    assert_eq!(v["outcome"], "done", "{v}");
+    );
+    e.queue("build", &["pass:commit", "blocked:sleep", "blocked:sleep"]);
+    e.queue("verify", &["pass:commit"]);
+    // Build 1 passes with no cap, in a run its two calls' $1.00 stops before verify. In the
+    // capped run verify's commit turns the gate red, and only builds that time out run under
+    // the 1.5 s: one meant to pass would race it.
+    e.factory(&format!("{factory}[limits]\nbudget_usd = 1.0\n"));
+    fs::write(&flag, "").unwrap();
+    assert_eq!(e.run(&["run", "--issue", "7"], 3)["outcome"], "budget");
+    e.factory(&factory);
+    fs::remove_file(&flag).unwrap();
+    let v = run_with_phase_timeout(&e, 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
     assert_eq!(
         e.calls(),
-        ["triage", "build", "build", "build", "verify", "review", "ship"]
+        ["triage", "build", "verify", "build", "build"]
     );
     assert_eq!(fs::read_to_string(&runs).unwrap().lines().count(), 2);
-    let attempts: Vec<_> = gate_events(&e)
+    let gated: Vec<_> = gate_events(&e)
         .iter()
-        .map(|g| g["attempt"].clone())
+        .map(|g| (g["phase"].clone(), g["attempt"].clone()))
         .collect();
-    assert_eq!(attempts, [1, 3]);
+    assert_eq!(gated, [(json!("build"), json!(1)), (json!("verify"), json!(1))]);
     assert_eq!(build_event(&e, 2)["reason"], "timed out after 1.5 s");
     assert_eq!(
         build_event(&e, 3)["decision"],
         "timed out with the CI gate still red"
     );
-    assert!(e.prompt(4, "build").contains("attempt 3"));
+    assert!(e.prompt(5, "build").contains("attempt 3"));
 }
 
 #[test]
