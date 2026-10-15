@@ -51,3 +51,4 @@ include!("merge_update_skip.rs");
 include!("run_review_loop.rs");
 include!("quality_remote.rs");
 include!("run_tamper_check.rs");
+include!("build_output.rs");

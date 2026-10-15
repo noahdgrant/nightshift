@@ -821,6 +821,17 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
             record_saved,
         )
     });
+    let kept = match result.outcome {
+        Outcome::Done | Outcome::Stuck => true,
+        Outcome::Merged => cleanup.as_ref().is_some_and(|c| c["removed"] != true),
+        Outcome::Budget | Outcome::Paused | Outcome::Split => false,
+    };
+    if kept {
+        if let Some(mut ev) = crate::build_output::remove(&repo, &ctx.worktree) {
+            ev["event"] = json!("build_output_removed");
+            ctx.log(ev);
+        }
+    }
     let cost: f64 = phases.iter().filter_map(|p| p["cost_usd"].as_f64()).sum();
     let json = json!({
         "unit": unit,
