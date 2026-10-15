@@ -162,3 +162,56 @@ fn clean_logs_a_conflict_check_it_cannot_run_and_still_records_the_unit() {
         .iter()
         .any(|v| v["event"] == "conflict_check_failed"));
 }
+
+#[test]
+fn clean_detects_up_to_the_merged_pr_head_not_the_worktree_head() {
+    let e = Env::new();
+    let (wt, merge) = human_merged_unit(&e);
+    e.gh_file("pr-30.head", &merge);
+    git(&wt, &["reset", "-q", "--hard", "main"]);
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert_eq!(
+        quality_records(&e)[0]["conflicts"],
+        json!([{"merge": merge, "paths": ["README"]}])
+    );
+}
+
+#[test]
+fn clean_of_a_worktree_on_main_with_an_unknown_pr_head_logs_it_and_records_no_conflicts() {
+    let e = Env::new();
+    let wt = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    e.gh_file("pr-30.ref", "ns/3-done");
+    e.gh_file("pr-30.head", "none");
+    git(&e.root, &["checkout", "-qb", "elsewhere"]);
+    git(&wt, &["checkout", "-q", "main"]);
+    git(&wt, &["branch", "-q", "-D", "ns/3-done"]);
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert!(quality_records(&e)[0].get("conflicts").is_none());
+    let failed: Vec<_> = run_events(&e)
+        .into_iter()
+        .filter(|v| v["event"] == "conflict_check_failed")
+        .collect();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0]["unit"], "3-done");
+    git(&e.root, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn clean_never_lets_a_briefs_base_act_as_a_git_option() {
+    let e = Env::new();
+    let (wt, _) = human_merged_unit(&e);
+    brief_with_base(&wt, &format!("--output={}", e.root.join("pwned").display()));
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    let written: Vec<_> = fs::read_dir(&e.root)
+        .unwrap()
+        .map(|d| d.unwrap().file_name())
+        .filter(|n| n.to_string_lossy().starts_with("pwned"))
+        .collect();
+    assert!(written.is_empty(), "git wrote {written:?}");
+    assert!(run_events(&e)
+        .iter()
+        .any(|v| v["event"] == "conflict_check_failed"));
+}

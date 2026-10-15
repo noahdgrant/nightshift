@@ -32,7 +32,14 @@ pub fn detect(dir: &Path, base: &str, head: &str) -> Detected {
     let range = format!("{base}..{head}");
     let merges = match git::run(
         dir,
-        &["rev-list", "--merges", "--reverse", "--parents", &range],
+        &[
+            "rev-list",
+            "--merges",
+            "--reverse",
+            "--parents",
+            "--end-of-options",
+            &range,
+        ],
     ) {
         Ok(m) => m,
         Err(e) => {

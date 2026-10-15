@@ -450,7 +450,8 @@ fn conflicts_of(repo: &Repo, m: &Merged, default: &str) -> Vec<quality::conflict
         .and_then(|t| crate::frontmatter::field(&t, "base"))
         .unwrap_or_else(|| default.to_string());
     let sha = &m.pr_head.sha;
-    let known = !sha.is_empty() && git::run(&m.path, &["cat-file", "-e", sha]).is_ok();
+    let known =
+        !sha.is_empty() && git::run(&m.path, &["cat-file", "-e", "--end-of-options", sha]).is_ok();
     let head = if known { sha.as_str() } else { "HEAD" };
     if m.on_default.is_some() && !known {
         run::log_event(
