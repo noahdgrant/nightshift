@@ -279,9 +279,10 @@ impl Protected {
                 continue;
             }
             match (self.nodes.get(p), now.nodes.get(p)) {
-                (Some(Node::Dir(_)), Some(Node::Dir(_))) | (_, None) => {}
-                (Some(Node::File(..)), Some(Node::File(..)))
-                | (Some(Node::Link(_)), Some(Node::Link(_))) => {}
+                (Some(Node::Dir(_)), Some(Node::Dir(_)))
+                | (Some(Node::File(..)), Some(Node::File(..)))
+                | (Some(Node::Link(_)), Some(Node::Link(_)))
+                | (_, None) => {}
                 (_, Some(n)) => remove(p, n)?,
             }
         }
