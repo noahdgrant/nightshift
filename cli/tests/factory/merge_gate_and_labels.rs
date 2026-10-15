@@ -132,7 +132,7 @@ fn a_main_that_keeps_moving_holds_the_lock_past_the_cap_and_ends_stuck_at_the_ha
     assert_eq!(v["outcome"], "stuck", "{v}");
     assert_eq!(
         v["reason"],
-        "the default branch moved 10 times during this PR's CI, the last 5 with the merge lock held (cap 10)",
+        "the default branch moved 11 times during this PR's CI, the last 6 with the merge lock held (cap 10)",
         "{v}"
     );
     let attempts: Vec<Value> = base_moves(&e)

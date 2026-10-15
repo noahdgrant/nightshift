@@ -48,7 +48,7 @@ Prefer a judge who is not the author. If this context also ran `ns-build`, hand 
 
 ## 3. Drive each criterion on its matching surface
 
-Map each criterion to the feature-map entry that covers it, then drive that entry through the verify skill and control CLI. Pass `--out .ns/$NS_UNIT/evidence/` so artifacts land with the unit. Match the check to the change:
+Map each criterion to the feature-map entry that covers it, then drive that entry through the verify skill and control CLI. Pass `--out .ns/$NS_UNIT/evidence/` so artifacts land with the unit. `evidence/` starts empty for each attempt: `ns run` moves an earlier attempt's files to `history/` first. Never delete files in `evidence/`. Match the check to the change:
 
 - A CLI change runs the real command.
 - A service change sends the real request and reads the result back through a second view.

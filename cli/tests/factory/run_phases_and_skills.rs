@@ -888,3 +888,25 @@ fn a_verify_no_go_for_base_movement_rebases_onto_the_newest_main_at_no_attempts_
     assert_eq!(r[0]["cause"], "evidence.md failed");
 }
 
+
+#[test]
+fn each_verify_attempt_starts_with_an_empty_evidence_dir() {
+    let e = Env::new();
+    e.queue("verify", &["fail:script", "pass:script"]);
+    e.ctl(
+        "verify.sh",
+        "d=.ns/$NS_UNIT/evidence\n\
+         ls -A \"$d\" 2>/dev/null | tr '\\n' ' ' >> \"$FAKE_CTRL/seen\"; echo >> \"$FAKE_CTRL/seen\"\n\
+         mkdir -p \"$d\" && echo 1 > \"$d/out-$(wc -l < \"$FAKE_CTRL/seen\" | tr -d ' ').log\"\n",
+    );
+    e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "build", "verify", "review", "ship"]
+    );
+    let seen = fs::read_to_string(e.ctrl.join("seen")).unwrap();
+    assert_eq!(seen, "\n\n", "verify saw an earlier attempt's files");
+    let unit = e.worktree(UNIT).join(".ns").join(UNIT);
+    assert!(unit.join("history/evidence-files-1/out-1.log").is_file());
+    assert!(unit.join("evidence/out-2.log").is_file());
+}

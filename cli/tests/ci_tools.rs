@@ -531,3 +531,86 @@ fn a_missing_download_tool_hints_at_ci_tools_install() {
         "ci-tools: thing is not on PATH; install it with: scripts/ci-tools.sh install thing\n"
     );
 }
+
+const PLUGIN: &str = r#"
+[host]
+version = "9.1.1"
+install = "pip"
+package = "host-py"
+check = "host --version"
+
+[host-cov]
+version = "7.1.0"
+install = "pip"
+package = "host-cov-plugin"
+check = "host -VV"
+"#;
+
+#[test]
+fn a_pip_plugin_hints_at_installing_it_with_its_host() {
+    let fix =
+        "install it with: uv tool install --force host-py==9.1.1 --with host-cov-plugin==7.1.0";
+    let out = Repo::new(PLUGIN).run(&["check", "host-cov"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!("ci-tools: host-cov is not on PATH; {fix}\n")
+    );
+
+    let out = Repo::new(PLUGIN)
+        .tool("host", "9.1.1", 0)
+        .run(&["check", "host-cov"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "ci-tools: host-cov is not version 7.1.0 (`host -VV` printed: host 9.1.1); {fix}\n"
+        )
+    );
+}
+
+#[test]
+fn a_non_pip_tool_whose_check_runs_another_executable_hints_its_own_method() {
+    let list = "[widget]\nversion = \"2.0\"\ninstall = \"apt\"\ncheck = \"other --version\"\n";
+    let out = Repo::new(list).run(&["check"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        "ci-tools: widget is not on PATH; install it with: sudo apt-get install widget\n"
+    );
+}
+
+#[test]
+fn a_pip_plugin_whose_host_has_no_pin_hints_at_the_unpinned_host() {
+    let list = "[host-cov]\nversion = \"7.1.0\"\ninstall = \"pip\"\ncheck = \"host -VV\"\n";
+    let out = Repo::new(list).run(&["check"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        "ci-tools: host-cov is not on PATH; install it with: uv tool install --force host --with host-cov==7.1.0\n"
+    );
+}
+
+#[test]
+fn the_real_pytest_cov_pin_hints_at_installing_it_into_pytest() {
+    let pins = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci-tools.d");
+    let pin = |tool: &str| -> toml::Table {
+        toml::from_str(&fs::read_to_string(pins.join(format!("{tool}.toml"))).unwrap()).unwrap()
+    };
+    let (pytest, cov) = (pin("pytest"), pin("pytest-cov"));
+    let list = toml::to_string(&toml::Table::from_iter([
+        ("pytest".to_string(), toml::Value::Table(pytest.clone())),
+        ("pytest-cov".to_string(), toml::Value::Table(cov.clone())),
+    ]))
+    .unwrap();
+    let out = Repo::new(&list).run(&["check", "pytest-cov"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "ci-tools: pytest-cov is not on PATH; install it with: uv tool install --force pytest=={} --with pytest-cov=={}\n",
+            pytest["version"].as_str().unwrap(),
+            cov["version"].as_str().unwrap(),
+        )
+    );
+}

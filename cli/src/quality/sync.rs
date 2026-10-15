@@ -296,6 +296,7 @@ pub fn import(dir: &Path, dry_run: bool) -> Result<ExitCode> {
             pr: known_pr(&art).or(logged.and_then(|s| s.pr)),
             outcome: logged.and_then(|s| s.outcome.clone()),
             unit: name.clone(),
+            conflicts: Vec::new(),
         };
         match record::build(&meta, &attempts, now, &repo.root) {
             Ok(rs) => {

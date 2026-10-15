@@ -523,14 +523,14 @@
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/quality/sync.rs",
-      "message": "this function has too many lines (123/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "message": "this function has too many lines (124/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn import(dir: &Path, dry_run: bool) -> Result<ExitCode> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/run.rs",
-      "message": "this function has too many lines (261/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "message": "this function has too many lines (266/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<RunResult> {"
     },
     {

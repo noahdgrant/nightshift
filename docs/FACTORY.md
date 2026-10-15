@@ -162,7 +162,7 @@ See [Merge](factory/merge.md): [Local merge queue](factory/merge.md#local-merge-
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY` are removed from every claude child process.
 - `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `CODEX_API_KEY` are removed from every codex child process, phases and eval trials alike.
 - `--bare`, which forces API-key auth, is dropped from the command.
-- `ns run` refuses to start (exit 2) when `~/.claude/.credentials.json` is missing and `CLAUDE_CODE_OAUTH_TOKEN` is unset.
+- `ns run` refuses to start (exit 2) when `CLAUDE_CODE_OAUTH_TOKEN` is unset and `~/.claude/.credentials.json` is missing or holds no `claudeAiOauth.accessToken`.
 
 `billing = "api"` turns all three off. The user config's `[eval] billing` does the same for `ns eval`.
 

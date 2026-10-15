@@ -325,6 +325,16 @@ fn missing_subscription_login_refuses_to_start() {
         .stderr(predicates::str::contains("subscription"));
     assert!(e.calls().is_empty());
     assert!(!e.worktree(UNIT).exists(), "refused before the worktree");
+    // A credentials file with no OAuth token is refused the same way.
+    fs::write(e.home.join(".claude/.credentials.json"), "{}").unwrap();
+    e.ns()
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("empty or invalid"))
+        .stderr(predicates::str::contains("claude /login"));
+    assert!(e.calls().is_empty());
+    assert!(!e.worktree(UNIT).exists(), "refused before the worktree");
     // A dry run starts no harness, so it needs no login.
     e.run(&["run", "--issue", "7", "--dry-run"], 0);
     // billing = "api" disables the guard.

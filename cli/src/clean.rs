@@ -4,6 +4,7 @@
 //! `ns clean` on demand.
 
 use std::collections::BTreeSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -431,6 +432,40 @@ fn report(repo: &Repo, by: &str, m: &Merged, o: &Outcome) {
     log(repo, by, m, o);
 }
 
+/// The conflicts `ns run` recorded for the unit, found again: against the base its brief names
+/// and up to the merged PR's head, which stays the unit's tip when the worktree sits on the
+/// default branch. Only a failed check is logged here, as the record cannot carry it.
+fn conflicts_of(repo: &Repo, m: &Merged, default: &str) -> Vec<quality::conflicts::Conflict> {
+    let brief = m.path.join(".ns").join(&m.unit).join("brief.md");
+    let base = fs::read_to_string(brief)
+        .ok()
+        .and_then(|t| crate::frontmatter::field(&t, "base"))
+        .unwrap_or_else(|| default.to_string());
+    let sha = &m.pr_head.sha;
+    let known =
+        !sha.is_empty() && git::run(&m.path, &["cat-file", "-e", "--end-of-options", sha]).is_ok();
+    let head = if known { sha.as_str() } else { "HEAD" };
+    if m.on_default.is_some() && !known {
+        run::log_event(
+            &repo.common_dir,
+            json!({
+                "event": "conflict_check_failed",
+                "unit": m.unit,
+                "error": "the merged PR's head is not here and HEAD is the default branch",
+            }),
+        );
+        return Vec::new();
+    }
+    let found = quality::conflicts::detect(&m.path, &base, head);
+    for mut ev in found.events {
+        if ev["event"] == "conflict_check_failed" {
+            ev["unit"] = json!(m.unit);
+            run::log_event(&repo.common_dir, ev);
+        }
+    }
+    found.conflicts
+}
+
 /// Save the records of every merged unit in one write, then remove each whose record is saved.
 /// Returns each unit's result.
 fn sweep(repo: &Repo, by: &str, merged: &[Merged]) -> (Value, Vec<(Merged, Outcome)>) {
@@ -456,6 +491,7 @@ fn sweep(repo: &Repo, by: &str, merged: &[Merged]) -> (Value, Vec<(Merged, Outco
     if merged.is_empty() {
         return (Value::Null, done);
     }
+    let default = repo.default_base().unwrap_or_else(|_| "main".into());
     let metas: Vec<Meta> = merged
         .iter()
         .map(|m| Meta {
@@ -463,6 +499,7 @@ fn sweep(repo: &Repo, by: &str, merged: &[Merged]) -> (Value, Vec<(Merged, Outco
             issue: m.issue,
             pr: Some(m.pr),
             outcome: Some("merged".into()),
+            conflicts: conflicts_of(repo, m, &default),
         })
         .collect();
     let units: Vec<(&Path, &Meta)> = merged

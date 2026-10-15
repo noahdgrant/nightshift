@@ -18,6 +18,9 @@ use std::time::{Duration, Instant};
 
 use assert_cmd::assert::Assert;
 
+/// A `~/.claude/.credentials.json` that holds a subscription login, for a fake claude.
+pub const CLAUDE_CREDENTIALS: &str = r#"{"claudeAiOauth":{"accessToken":"fake-token"}}"#;
+
 /// How long one `ns` run may take before the test fails.
 pub const TIMEOUT: Duration = Duration::from_secs(60);
 

@@ -674,8 +674,9 @@ fn moved_on(s: &mut MergeState, mut o: Out, tip: &str, now: i64) -> MergeAct {
             s,
             Outcome::Stuck,
             format!(
-                "the default branch moved {BASE_MOVE_HARD_CAP} times during this PR's CI, the last {} with the merge lock held (cap {BASE_MOVE_HARD_CAP})",
-                BASE_MOVE_HARD_CAP - BASE_MOVE_CAP
+                "the default branch moved {} times during this PR's CI, the last {} with the merge lock held (cap {BASE_MOVE_HARD_CAP})",
+                s.moves,
+                s.moves - BASE_MOVE_CAP
             ),
         );
     }

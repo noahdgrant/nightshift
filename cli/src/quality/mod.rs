@@ -5,6 +5,7 @@
 mod artifacts;
 mod blame;
 pub mod bugs;
+pub mod conflicts;
 mod flow;
 mod metrics;
 mod record;

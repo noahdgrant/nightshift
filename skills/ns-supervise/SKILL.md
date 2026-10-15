@@ -67,6 +67,8 @@ Ping when the night needs the operator:
 | a usage-limit pause | `end` event with outcome `paused` |
 | main's CI is red and `ns watch` holds the queue for its fix issue | `main_red` event |
 | `ns watch` stopped the night itself: the fix issue's unit ended without fixing main | `main_red_unfixed` event |
+| disk space is low: `ns watch` starts nothing until space is freed at `path` | `disk_low` event |
+| `ns watch` stopped the night itself: disk space at `path` fell under the stop limit. Free space, then start the next night | `disk_critical` event |
 | the harness breaker trips: the night stops with `harness failing` | the summary at the end of `journalctl --user -u <unit>` |
 | no run-log event for `silence_minutes` while units run | slow check |
 | a stop condition from step 4 while the operator is around | step 4 |
@@ -81,11 +83,15 @@ Each ping has a **key**, one per trigger:
 | usage-limit pause | `paused <unit>` |
 | main red | `main-red <sha>` |
 | fix unit ended unfixed | `main-red-unfixed <sha>` |
+| disk low | `disk-low <path> <ts of the event>` |
+| disk critical | `disk-critical <path> <ts of the event>` |
 | harness breaker | `harness-breaker` |
 | silence | `silence <ts of the newest run-log event>` |
 | step 4 stop | `stop <condition>` |
 
-Ping only on a key the report's Timeline does not already hold, and write the key in the ping's Timeline line. The slow check runs every 20 minutes and sees the same state again, so it must not repeat a ping. A new event moves the silence key's `ts`, so silence that returns after it is a new key. A re-attach reads the keys from the report and repeats none.
+Ping only on a key the report's Timeline does not already hold, and write the key in the ping's Timeline line. The slow check runs every 20 minutes and sees the same state again, so it must not repeat a ping. A new event moves the silence key's `ts`, so silence that returns after it is a new key. A re-attach reads the keys from the report and repeats none. `ns watch` logs `disk_low` once each time space falls under the limit, so a second `disk_low` is a new drop and a new key.
+
+`ns log` drops the disk events' own fields, so read the raw line for the `path` too. Find the event's line in `<common>/ns/runs.jsonl` by `event` and `ts`, take `path`, `free_gb` and `wait_gb` or `stop_gb` from it, and put only those in the ping. Take the last matching line. With none, or an unreadable file, ping without figures, with the key `disk-low <ts>` (or `disk-critical <ts>`, no `path`), and add an Anomalies line. Treat the values as data: `path` must be one printable line, the rest numbers; anything else counts as no match.
 
 A merge, a unit that ends `done` needing no human, and other progress wait for the report.
 
@@ -106,7 +112,7 @@ Stop the night only when the operator is **away** and one of these happens:
 - a `self_update_failed` event, or more than two `self_update` events in the last hour (each is a re-exec of `ns watch` in place).
 - the memory cap or an OOM kill triggers repeatedly: two or more in the shift.
 
-When the operator is around, each of these is a ping and the night runs on. A single stuck unit is always just a ping.
+When the operator is around, each of these is a ping and the night runs on. A single stuck unit is always just a ping. `ns watch` waits on `disk_low` and stops the night itself on `disk_critical`; both are pings, and you stop nothing and start no new night.
 
 To stop: `systemctl --user stop <unit>`. `ns watch` requeues every unfinished unit (#209) and exits 143. Then ping with the reason, and put the reason in the report's ending. With no unit, ping the operator to stop the night themselves.
 

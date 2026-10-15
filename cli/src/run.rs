@@ -819,11 +819,16 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         result.outcome,
         Outcome::Done | Outcome::Merged | Outcome::Stuck
     ) {
+        let found = crate::quality::conflicts::detect(&ctx.worktree, &ctx.base, "HEAD");
+        for ev in found.events {
+            ctx.log(ev);
+        }
         let meta = crate::quality::Meta {
             unit: unit.clone(),
             issue: ctx.issue.or_else(|| crate::quality::issue_of(&unit)),
             pr,
             outcome: Some(result.outcome.label().to_string()),
+            conflicts: found.conflicts,
         };
         let ev = crate::quality::record_unit(
             &repo,

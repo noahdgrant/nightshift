@@ -315,6 +315,8 @@ mod tests {
         fs::write(hist.join("review-blocked-1.md"), art("", "")).unwrap();
         fs::write(hist.join("review-2/cycle-1.md"), "- I7 a\n").unwrap();
         fs::write(hist.join("evidence-1.md"), art("", "")).unwrap();
+        fs::create_dir_all(hist.join("evidence-files-1")).unwrap();
+        fs::write(hist.join("evidence-files-1/run.log"), "ok\n").unwrap();
         fs::write(dir.join("review/cycle-0.md"), "- I9 b\n").unwrap();
         let mut gaps = Vec::new();
         let a = read_attempts(wt, &dir, wt, &mut gaps);

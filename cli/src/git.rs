@@ -145,22 +145,18 @@ pub fn net(root: &Path, args: &[&str]) -> Proc {
         .args(args)
         .env("GIT_HTTP_LOW_SPEED_LIMIT", LOW_SPEED_BYTES)
         .env("GIT_HTTP_LOW_SPEED_TIME", LOW_SPEED_SECS);
-    let chosen = ["GIT_SSH_COMMAND", "GIT_SSH"]
-        .iter()
-        .any(|v| std::env::var_os(v).is_some())
-        || ok(root, &["config", "core.sshCommand"]);
-    if !chosen {
+    if !ssh_command_set(root) {
         c.env("GIT_SSH_COMMAND", SSH);
     }
     c
 }
 
-/// Run git and report only whether it succeeded.
 /// Short shas may differ in length: compare by prefix.
 pub fn same_sha(a: &str, b: &str) -> bool {
     !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
 }
 
+/// Run git and report only whether it succeeded.
 pub fn ok(cwd: &Path, args: &[&str]) -> bool {
     command()
         .arg("-C")

@@ -8,14 +8,14 @@ Write the Timeline as events happen. Fill the other sections when the shift ends
 # nightshift-<YYYY-MM-DD>
 
 ## How it ended
-<ended at --until | queue empty | budget | main_red_unfixed: fix issue #<n> ended <outcome> | stopped by the supervisor: <reason> | died early: <cause>>,
+<ended at --until | queue empty | budget | main_red_unfixed: fix issue #<n> ended <outcome> | disk_critical: <path> had <free_gb> GiB free, under <stop_gb> | stopped by the supervisor: <reason> | died early: <cause>>,
 at <local time>. Operator <around | away> (<switches, if any>). Unit: <unit or "terminal">.
 
 ## Merged
 - #<issue> <title>: <PR link>
 
 ## Needs you
-Ranked: a stopped night first, then red `main`, then PRs waiting on a human merge, then stuck units, then `ready-for-human` issues.
+Ranked: a stopped night first (by the supervisor, `main_red_unfixed` or `disk_critical`), then red `main`, then PRs waiting on a human merge, then stuck units, then `ready-for-human` issues.
 1. <what to do>: <reason>. <link>
 
 ## Stuck units
