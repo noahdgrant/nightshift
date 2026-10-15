@@ -966,12 +966,12 @@ fn dry_run_decision(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::merge::marked_regions;
     use super::*;
 
     /// A repo cloned from a bare `origin` whose `main` holds plain `f.c` and `g.c`.
-    pub(super) fn cloned() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    pub(crate) fn cloned() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let t = tempfile::tempdir().unwrap();
         let (origin, wt) = (t.path().join("origin.git"), t.path().join("wt"));
         let g = crate::testutil::git_any;

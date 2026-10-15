@@ -781,6 +781,20 @@ pub(crate) mod tests {
     use forge::fake::FakeForge;
 
     #[test]
+    fn fresh_base_fetches_origin_and_names_its_default_branch() {
+        let (t, origin, wt) = crate::run::tests::cloned();
+        let other = t.path().join("other");
+        crate::testutil::git_any(
+            t.path(),
+            &["clone", "-q", origin.to_str().unwrap(), "other"],
+        );
+        let tip = crate::testutil::commit_file(&other, "new.c", "n\n");
+        crate::testutil::git_any(&other, &["push", "-q", "origin", "HEAD:main"]);
+        assert_eq!(fresh_base(&wt).as_deref(), Some("origin/main"));
+        assert_eq!(git::run(&wt, &["rev-parse", "origin/main"]).unwrap(), tip);
+    }
+
+    #[test]
     fn parses_blockers_and_closers() {
         assert_eq!(blockers("Blocked by: #3, #12\nmore"), [3, 12]);
         assert_eq!(blockers("\nblocked by: #4"), [4]);

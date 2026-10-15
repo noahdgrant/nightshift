@@ -78,22 +78,24 @@ pub fn run_net(root: &Path, args: &[&str]) -> Result<String> {
     stdout(net(root, args), args)
 }
 
+/// Global git options that take their value as the next argument.
+const VALUE_OPTIONS: [&str; 7] = [
+    "-c",
+    "-C",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--config-env",
+    "--attr-source",
+];
+
 /// The subcommand of `args` that talks to a remote (`fetch`, `push`, `pull`, `clone`,
 /// `ls-remote`, `remote update`), past any global options before it (`-c k=v`, `--no-pager`).
 pub fn network_subcommand<'a>(args: &[&'a str]) -> Option<&'a str> {
     let mut rest = args.iter().copied();
     let sub = loop {
         let a = rest.next()?;
-        if [
-            "-c",
-            "-C",
-            "--git-dir",
-            "--work-tree",
-            "--namespace",
-            "--config-env",
-        ]
-        .contains(&a)
-        {
+        if VALUE_OPTIONS.contains(&a) {
             rest.next();
         } else if !a.starts_with('-') {
             break a;

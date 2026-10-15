@@ -3,7 +3,7 @@
 //! a [`PhaseRan`]; the decision about what follows is `core::step`'s.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -58,6 +58,11 @@ pub(super) fn recheck_budget(
     }
 }
 
+/// Fetch `branch` from origin into the worktree's remote-tracking ref.
+fn fetch_branch(worktree: &Path, branch: &str) -> Result<String> {
+    git::run_net(worktree, &["fetch", "-q", "origin", branch])
+}
+
 /// Run `adm` in the unit at `state`.
 pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> Result<Ran> {
     let (ctx, phase, attempt) = (io.ctx, adm.phase, adm.attempt);
@@ -72,7 +77,7 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
     };
     let moves = archive_for(&ctx.artifacts, phase, state)?;
     if let Some((_, branch, sha)) = &adm.rebase {
-        let _ = git::run_net(&ctx.worktree, &["fetch", "-q", "origin", branch]);
+        let _ = fetch_branch(&ctx.worktree, branch);
         ctx.log(json!({
             "event": "rebase_after_base_moved",
             "phase": phase,
