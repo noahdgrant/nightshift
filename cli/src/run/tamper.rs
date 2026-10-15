@@ -5,8 +5,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
 
 use crate::git;
 use crate::pin;
@@ -18,8 +21,9 @@ const FREE_CONFIG_PREFIX: &str = "branch.";
 /// The most changed paths a reason names.
 const SHOWN: usize = 3;
 
-/// The largest file the check holds to put back: a larger one is compared by its size and mode,
-/// so a phase can't make `ns` read a file of any size into memory.
+/// The largest file the check holds to put back: a larger one is compared by its size, mode and a
+/// digest of its content, read in a stream, so memory stays small however big the file is. A
+/// change to it is reported and not put back, as there is no copy to put back from.
 const MAX_FILE: u64 = 16 * 1024 * 1024;
 
 /// One path as it was read.
@@ -28,8 +32,8 @@ enum Node {
     Dir(u32),
     File(Vec<u8>, u32),
     Link(PathBuf),
-    /// A file larger than [`MAX_FILE`]: its size and mode.
-    Large(u64, u32),
+    /// A file larger than [`MAX_FILE`]: its size, mode and SHA-256.
+    Large(u64, u32, [u8; 32]),
     /// It exists but could not be read. Unread before the phase, it and what is under it are
     /// never compared; unread after, it changed.
     Unread,
@@ -55,29 +59,12 @@ enum Kind {
     Config,
 }
 
-/// What one root's read may hold: past any of these the root is not read whole.
-#[derive(Debug, Clone, Copy)]
-struct Limits {
-    entries: usize,
-    bytes: u64,
-    depth: usize,
-}
-
-const LIMITS: Limits = Limits {
-    entries: 20_000,
-    bytes: 64 * 1024 * 1024,
-    depth: 32,
-};
-
 /// The protected paths as a phase found them.
 pub(super) struct Protected {
     roots: Vec<Root>,
-    limits: Limits,
     nodes: BTreeMap<PathBuf, Node>,
     /// A config file's entries, `key\nvalue` each, without the `branch.*` ones.
     views: BTreeMap<PathBuf, Vec<String>>,
-    /// The roots whose read went past a cap. Their nodes are one [`Node::Unread`].
-    over: BTreeSet<PathBuf>,
 }
 
 /// What a phase changed among the protected paths.
@@ -156,19 +143,11 @@ pub(super) fn protected_paths(
 
 impl Protected {
     fn read(roots: Vec<Root>) -> Protected {
-        Protected::read_with(roots, LIMITS)
-    }
-
-    fn read_with(roots: Vec<Root>, limits: Limits) -> Protected {
         let mut nodes = BTreeMap::new();
         let mut views = BTreeMap::new();
-        let mut over = BTreeSet::new();
         for root in &roots {
-            if !walk(&root.path, limits, &mut nodes) {
-                nodes.retain(|p, _| !p.starts_with(&root.path));
-                nodes.insert(root.path.clone(), Node::Unread);
-                over.insert(root.path.clone());
-            } else if root.kind == Kind::Config {
+            walk(&root.path, &mut nodes);
+            if root.kind == Kind::Config {
                 if let Some(Node::File(..)) = nodes.get(&root.path) {
                     if let Some(v) = config_view(&root.path) {
                         views.insert(root.path.clone(), v);
@@ -178,38 +157,19 @@ impl Protected {
         }
         Protected {
             roots,
-            limits,
             nodes,
             views,
-            over,
         }
     }
 
     /// Read the paths again and put back each one that changed. `None` when none did.
     pub fn check(&self) -> Option<Tampered> {
-        let now = Protected::read_with(self.roots.clone(), self.limits);
-        let grown: Vec<&PathBuf> = now.over.difference(&self.over).collect();
-        let mut paths: Vec<PathBuf> = self
-            .changed(&now)
-            .into_iter()
-            .filter(|p| !grown.iter().any(|g| p.starts_with(g)))
-            .collect();
+        let now = Protected::read(self.roots.clone());
+        let mut paths = self.changed(&now);
         self.drop_committed(&mut paths);
         let mut restore_error = None;
         if !paths.is_empty() {
             restore_error = self.put_back(&now, &paths).err().map(|e| e.to_string());
-        }
-        for g in &grown {
-            paths.push((*g).clone());
-            restore_error.get_or_insert_with(|| {
-                format!(
-                    "{} grew to more than ns reads ({} entries, {} bytes, {} levels deep), so it was not put back",
-                    g.display(),
-                    self.limits.entries,
-                    self.limits.bytes,
-                    self.limits.depth
-                )
-            });
         }
         if paths.is_empty() {
             return None;
@@ -281,6 +241,7 @@ impl Protected {
             match (self.nodes.get(p), now.nodes.get(p)) {
                 (Some(Node::Dir(_)), Some(Node::Dir(_)))
                 | (Some(Node::File(..)), Some(Node::File(..)))
+                | (Some(Node::Large(..)), Some(Node::Large(..)))
                 | (Some(Node::Link(_)), Some(Node::Link(_)))
                 | (_, None) => {}
                 (_, Some(n)) => remove(p, n)?,
@@ -302,7 +263,7 @@ impl Protected {
                 Some(Node::Link(target)) => {
                     replace(p, |t| std::os::unix::fs::symlink(target, t))?;
                 }
-                Some(Node::Large(len, _)) => {
+                Some(Node::Large(len, ..)) => {
                     return Err(std::io::Error::other(format!(
                         "{} held {len} bytes, more than ns keeps to put back",
                         p.display()
@@ -395,15 +356,10 @@ fn remove(path: &Path, node: &Node) -> std::io::Result<()> {
 }
 
 /// Read `path` and everything under it into `nodes`, without recursion. A path that does not
-/// exist adds nothing. False when the read went past one of `limits`, which stops it.
-fn walk(path: &Path, limits: Limits, nodes: &mut BTreeMap<PathBuf, Node>) -> bool {
-    let (mut entries, mut bytes) = (0usize, 0u64);
-    let mut todo = vec![(path.to_path_buf(), 0usize)];
-    while let Some((path, depth)) = todo.pop() {
-        entries += 1;
-        if entries > limits.entries || depth > limits.depth {
-            return false;
-        }
+/// exist adds nothing.
+fn walk(path: &Path, nodes: &mut BTreeMap<PathBuf, Node>) {
+    let mut todo = vec![path.to_path_buf()];
+    while let Some(path) = todo.pop() {
         let meta = match fs::symlink_metadata(&path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -413,16 +369,10 @@ fn walk(path: &Path, limits: Limits, nodes: &mut BTreeMap<PathBuf, Node>) -> boo
             }
         };
         let mode = meta.permissions().mode() & 0o7777;
-        if meta.is_file() && meta.len() <= MAX_FILE {
-            bytes += meta.len();
-            if bytes > limits.bytes {
-                return false;
-            }
-        }
         let node = if meta.is_symlink() {
             fs::read_link(&path).map_or(Node::Unread, Node::Link)
         } else if meta.is_file() && meta.len() > MAX_FILE {
-            Node::Large(meta.len(), mode)
+            digest(&path).map_or(Node::Unread, |d| Node::Large(meta.len(), mode, d))
         } else if meta.is_file() {
             fs::read(&path).map_or(Node::Unread, |b| Node::File(b, mode))
         } else if meta.is_dir() {
@@ -436,13 +386,26 @@ fn walk(path: &Path, limits: Limits, nodes: &mut BTreeMap<PathBuf, Node>) -> boo
             continue;
         }
         match fs::read_dir(&path) {
-            Ok(read) => todo.extend(read.flatten().map(|e| (e.path(), depth + 1))),
+            Ok(read) => todo.extend(read.flatten().map(|e| e.path())),
             Err(_) => {
                 nodes.insert(path, Node::Unread);
             }
         }
     }
-    true
+}
+
+/// The SHA-256 of the file at `path`, read in a stream.
+fn digest(path: &Path) -> std::io::Result<[u8; 32]> {
+    let mut file = fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            return Ok(hash.finalize().into());
+        }
+        hash.update(&buf[..n]);
+    }
 }
 
 /// The paths under `dir`, a tracked directory of a worktree, that differ from HEAD, or are not in
@@ -462,9 +425,7 @@ fn dirty_under(dir: &Path) -> Option<Vec<PathBuf>> {
         head.insert(top.join(rel), (mode.to_string(), sha.to_string()));
     }
     let mut nodes = BTreeMap::new();
-    if !walk(dir, LIMITS, &mut nodes) {
-        return None;
-    }
+    walk(dir, &mut nodes);
     let mut dirty = Vec::new();
     let mut files = Vec::new();
     for (path, node) in &nodes {
@@ -477,7 +438,7 @@ fn dirty_under(dir: &Path) -> Option<Vec<PathBuf>> {
                 }
                 continue;
             }
-            Node::File(_, m) | Node::Large(_, m) if m & 0o100 != 0 => "100755",
+            Node::File(_, m) | Node::Large(_, m, _) if m & 0o100 != 0 => "100755",
             Node::File(..) | Node::Large(..) => "100644",
             Node::Unread => {
                 dirty.push(path.clone());

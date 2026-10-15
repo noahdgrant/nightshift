@@ -378,37 +378,6 @@ fn a_path_made_unreadable_during_the_phase_is_put_back() {
     assert!(p.check().is_none());
 }
 
-#[test]
-fn a_file_too_large_to_hold_is_compared_by_size_and_removed_when_added() {
-    let d = tempfile::tempdir().unwrap();
-    let h = hooks(d.path());
-    fs::write(h.join("edge"), vec![b'x'; MAX_FILE as usize]).unwrap();
-    let edge = Protected::read(vec![tree(&h)]);
-    assert!(matches!(
-        edge.nodes.get(&h.join("edge")),
-        Some(Node::File(..))
-    ));
-    fs::remove_file(h.join("edge")).unwrap();
-    let big = vec![b'x'; MAX_FILE as usize + 1];
-    let p = Protected::read(vec![tree(&h)]);
-    fs::write(h.join("big"), &big).unwrap();
-    assert_eq!(p.nodes.get(&h.join("big")), None);
-    let t = p.check().unwrap();
-    assert!(t.restore_error.is_none(), "{t:?}");
-    assert!(!h.join("big").exists());
-
-    fs::write(h.join("big"), &big).unwrap();
-    let p = Protected::read(vec![tree(&h)]);
-    assert_eq!(
-        p.nodes.get(&h.join("big")),
-        Some(&Node::Large(MAX_FILE + 1, mode(&h.join("big"))))
-    );
-    assert!(p.check().is_none());
-    fs::write(h.join("big"), "small\n").unwrap();
-    let e = p.check().unwrap().restore_error.unwrap();
-    assert!(e.contains("more than ns keeps to put back"), "{e}");
-}
-
 fn repo_with_hook(d: &Path) -> (PathBuf, PathBuf) {
     let wt = d.join("wt");
     git::run(d, &["init", "-q", wt.to_str().unwrap()]).unwrap();
@@ -538,56 +507,70 @@ fn a_restore_leaves_no_temporary_file_behind() {
     assert_eq!(mode(&h.join("pre-commit")), 0o750);
 }
 
-fn tight(entries: usize, bytes: u64, depth: usize) -> Limits {
-    Limits {
-        entries,
-        bytes,
-        depth,
-    }
+#[test]
+fn a_file_over_the_hold_size_is_compared_by_content_and_removed_when_added() {
+    let d = tempfile::tempdir().unwrap();
+    let h = hooks(d.path());
+    fs::write(h.join("edge"), vec![b'x'; MAX_FILE as usize]).unwrap();
+    let edge = Protected::read(vec![tree(&h)]);
+    assert!(matches!(
+        edge.nodes.get(&h.join("edge")),
+        Some(Node::File(..))
+    ));
+    fs::remove_file(h.join("edge")).unwrap();
+    let big = vec![b'x'; MAX_FILE as usize + 1];
+    let p = Protected::read(vec![tree(&h)]);
+    fs::write(h.join("big"), &big).unwrap();
+    let t = p.check().unwrap();
+    assert!(t.restore_error.is_none(), "{t:?}");
+    assert!(!h.join("big").exists());
+
+    fs::write(h.join("big"), &big).unwrap();
+    let p = Protected::read(vec![tree(&h)]);
+    assert!(matches!(p.nodes.get(&h.join("big")), Some(Node::Large(..))));
+    assert!(p.check().is_none());
+    fs::write(h.join("big"), "small\n").unwrap();
+    let e = p.check().unwrap().restore_error.unwrap();
+    assert!(e.contains("more than ns keeps to put back"), "{e}");
 }
 
 #[test]
-fn a_tree_over_a_cap_before_the_phase_is_never_compared() {
+fn a_same_size_content_swap_in_a_large_file_is_tampering_and_the_file_stays() {
     let d = tempfile::tempdir().unwrap();
     let h = hooks(d.path());
-    for limits in [
-        tight(2, u64::MAX, 9),
-        tight(99, 3, 9),
-        tight(99, u64::MAX, 0),
-    ] {
-        let p = Protected::read_with(vec![tree(&h)], limits);
-        assert_eq!(p.nodes.get(&h), Some(&Node::Unread), "{limits:?}");
-        fs::write(h.join("pre-commit"), "changed\n").unwrap();
-        assert!(p.check().is_none(), "{limits:?}");
-        fs::write(h.join("pre-commit"), "exit 0\n").unwrap();
-    }
+    let mut big = vec![b'x'; MAX_FILE as usize + 1];
+    fs::write(h.join("big"), &big).unwrap();
+    let p = Protected::read(vec![tree(&h)]);
+    *big.last_mut().unwrap() = b'y';
+    fs::write(h.join("big"), &big).unwrap();
+    let t = p.check().unwrap();
+    assert_eq!(t.paths, [h.join("big")]);
+    assert!(t.restore_error.is_some());
+    assert_eq!(fs::read(h.join("big")).unwrap(), big);
 }
 
 #[test]
-fn a_tree_that_grows_past_a_cap_during_the_phase_is_tampering() {
+fn a_tree_past_the_old_caps_is_still_compared() {
     let d = tempfile::tempdir().unwrap();
     let h = hooks(d.path());
-    let cases: [(Limits, &str); 3] = [
-        (tight(4, u64::MAX, 9), "entries"),
-        (tight(99, 20, 9), "bytes"),
-        (tight(99, u64::MAX, 2), "deep"),
-    ];
-    for (limits, what) in cases {
-        let p = Protected::read_with(vec![tree(&h)], limits);
-        assert!(p.over.is_empty(), "{what}");
-        match what {
-            "entries" => fs::write(h.join("more"), "x").unwrap(),
-            "bytes" => fs::write(h.join("big"), "x".repeat(64)).unwrap(),
-            _ => fs::create_dir_all(h.join("a/b/c")).unwrap(),
-        }
-        let t = p.check().unwrap();
-        assert_eq!(t.paths, std::slice::from_ref(&h), "{what}");
-        let e = t.restore_error.as_deref().unwrap();
-        assert!(e.contains("more than ns reads"), "{what}: {e}");
-        let _ = fs::remove_file(h.join("more"));
-        let _ = fs::remove_file(h.join("big"));
-        let _ = fs::remove_dir_all(h.join("a"));
+    for i in 0..20_100 {
+        fs::write(h.join(format!("f{i}")), "").unwrap();
     }
+    let mut deep = h.join("deep");
+    for _ in 0..40 {
+        deep.push("d");
+    }
+    fs::create_dir_all(&deep).unwrap();
+    let p = Protected::read(vec![tree(&h)]);
+    fs::write(h.join("pre-commit"), "changed\n").unwrap();
+    fs::write(deep.join("late"), "x").unwrap();
+    let t = p.check().unwrap();
+    assert!(t.restore_error.is_none(), "{t:?}");
+    assert_eq!(
+        fs::read_to_string(h.join("pre-commit")).unwrap(),
+        "exit 0\n"
+    );
+    assert!(!deep.join("late").exists());
 }
 
 #[test]
@@ -598,10 +581,7 @@ fn a_deep_tree_is_read_without_recursion() {
         deep.push("d");
     }
     fs::create_dir_all(&deep).unwrap();
-    let p = Protected::read_with(
-        vec![tree(&d.path().join("deep"))],
-        tight(10_000, 1 << 20, 500),
-    );
+    let p = Protected::read(vec![tree(&d.path().join("deep"))]);
     assert_eq!(p.nodes.len(), 201);
     assert!(p.check().is_none());
 }
@@ -876,32 +856,6 @@ fn a_worktree_git_cannot_name_adds_no_config_worktree_root() {
 }
 
 #[test]
-fn the_production_limits_hold_a_representative_tree() {
-    let d = tempfile::tempdir().unwrap();
-    let h = hooks(d.path());
-    let p = Protected::read(vec![tree(&h)]);
-    assert!(p.over.is_empty());
-    assert!(p.nodes.contains_key(&h.join("sub/x")));
-    assert_eq!(
-        (LIMITS.entries, LIMITS.bytes, LIMITS.depth),
-        (20_000, 64 * 1024 * 1024, 32)
-    );
-}
-
-#[test]
-fn the_byte_cap_is_inclusive() {
-    let d = tempfile::tempdir().unwrap();
-    let dir = d.path().join("t");
-    fs::create_dir(&dir).unwrap();
-    fs::write(dir.join("a"), [0u8; 10]).unwrap();
-    assert!(Protected::read_with(vec![tree(&dir)], tight(10, 10, 4))
-        .over
-        .is_empty());
-    let over = Protected::read_with(vec![tree(&dir)], tight(10, 9, 4)).over;
-    assert!(over.contains(&dir));
-}
-
-#[test]
 fn a_planted_filter_fires_under_plain_git() {
     let d = tempfile::tempdir().unwrap();
     let (wt, hooks) = repo_with_hook(d.path());
@@ -965,7 +919,7 @@ fn a_retargeted_link_is_dirty_even_when_its_new_target_holds_the_old_link_text()
 }
 
 #[test]
-fn a_large_committed_file_is_clean_until_its_size_or_mode_changes() {
+fn a_large_committed_file_is_clean_until_its_size_mode_or_content_changes() {
     let d = tempfile::tempdir().unwrap();
     let (wt, hooks) = repo_with_hook(d.path());
     let big = hooks.join("big");
@@ -974,6 +928,9 @@ fn a_large_committed_file_is_clean_until_its_size_or_mode_changes() {
     git_ok(&wt, &["commit", "-q", "-m", "big"]);
     assert_eq!(dirty_under(&hooks).unwrap(), Vec::<PathBuf>::new());
     chmod(&big, 0o750);
+    assert!(dirty_under(&hooks).unwrap().contains(&big));
+    chmod(&big, 0o644);
+    fs::write(&big, vec![b'b'; (MAX_FILE + 1) as usize]).unwrap();
     assert!(dirty_under(&hooks).unwrap().contains(&big));
 }
 
