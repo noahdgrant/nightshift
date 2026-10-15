@@ -806,6 +806,11 @@ fn a_refill_does_not_check_for_an_update_so_a_new_ready_issue_still_starts() {
     let started_4 = event_at(&e, |ev| ev["event"] == "worker_start" && ev["issue"] == 4);
     let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
     assert!(started_4 < ended_2, "{:?}", run_events(&e));
+    // Had the refill that started unit 4 checked for an update, the build it starts would hold no
+    // slot and would land before unit 4 starts. Only a full fill, after a unit ends, checks the
+    // base, so the first build comes past unit 4's start.
+    let built = event_at(&e, |ev| ev["event"] == "self_update_built");
+    assert!(started_4 < built, "{:?}", run_events(&e));
 }
 
 #[test]
