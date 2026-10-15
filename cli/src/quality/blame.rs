@@ -16,39 +16,49 @@ pub struct Blame {
 }
 
 /// The commit that last changed the finding's line in the reviewed code (`at`), and the PR
-/// named in its subject.
+/// named in its subject. Tries each `path:line` in the location in order, so a time
+/// (`3:14`) or a `host:port` before the real path doesn't stop the search.
 pub fn blame(wt: &Path, at: Option<&str>, location: Option<&str>) -> Result<Blame, String> {
     let at = at.ok_or("no sha, head or base in the review frontmatter")?;
-    let (path, line) = location
-        .and_then(path_line)
-        .ok_or("location has no path:line")?;
-    let range = format!("{line},{line}");
-    let out = git::run(wt, &["blame", "-L", &range, "--porcelain", at, "--", &path])
-        .map_err(|e| e.to_string())?;
-    let commit = out
+    let mut first_err = None;
+    for (path, line) in location.map(path_lines).unwrap_or_default() {
+        let range = format!("{line},{line}");
+        match git::run(wt, &["blame", "-L", &range, "--porcelain", at, "--", &path]) {
+            Ok(out) => return Ok(parse(&out)),
+            Err(e) => {
+                first_err.get_or_insert(e.to_string());
+            }
+        }
+    }
+    Err(first_err.unwrap_or_else(|| "location has no path:line".into()))
+}
+
+fn parse(porcelain: &str) -> Blame {
+    let commit = porcelain
         .split_whitespace()
         .next()
         .unwrap_or_default()
         .to_string();
-    let summary = out
+    let summary = porcelain
         .lines()
         .find_map(|l| l.strip_prefix("summary "))
         .unwrap_or_default()
         .to_string();
-    Ok(Blame {
+    Blame {
         commit,
         pr: pr_in(&summary),
         summary,
-    })
+    }
 }
 
-/// The first `path:line` in a location such as `` `a.py:42`, `b.py` ``.
-fn path_line(location: &str) -> Option<(String, u32)> {
+/// Every `path:line` in a location such as `` `a.py:42`, `b.py` ``, in order. A line number
+/// too large for `u32` skips that match.
+fn path_lines(location: &str) -> Vec<(String, u32)> {
     static R: OnceLock<Regex> = OnceLock::new();
-    let c = R
-        .get_or_init(|| Regex::new(r"([^\s:`,;()]+):(\d+)").unwrap())
-        .captures(location)?;
-    Some((c[1].to_string(), c[2].parse().ok()?))
+    R.get_or_init(|| Regex::new(r"([^\s:`,;()]+):(\d+)").unwrap())
+        .captures_iter(location)
+        .filter_map(|c| Some((c[1].to_string(), c[2].parse().ok()?)))
+        .collect()
 }
 
 /// The PR a squash-merge subject names: the last `(#<n>)`, so a revert names the revert's PR.
@@ -66,13 +76,14 @@ mod tests {
     use crate::testutil::{commit_file, g};
 
     #[test]
-    fn path_line_takes_the_first_located_path() {
+    fn path_lines_takes_every_located_path_in_order() {
         assert_eq!(
-            path_line("`cli/src/a.rs:42`, `b.rs:7`"),
-            Some(("cli/src/a.rs".into(), 42))
+            path_lines("`cli/src/a.rs:42`, `b.rs:7`"),
+            [("cli/src/a.rs".into(), 42), ("b.rs".into(), 7)]
         );
-        assert_eq!(path_line("cli/src/a.rs (gate)"), None);
-        assert_eq!(path_line("README.md:27-30"), Some(("README.md".into(), 27)));
+        assert_eq!(path_lines("cli/src/a.rs (gate)"), []);
+        assert_eq!(path_lines("README.md:27-30"), [("README.md".into(), 27)]);
+        assert_eq!(path_lines("a.rs:99999999999 b.rs:3"), [("b.rs".into(), 3)]);
     }
 
     #[test]
@@ -114,5 +125,35 @@ mod tests {
         assert!(blame(d, Some(&base), Some("gone.txt:1"))
             .unwrap_err()
             .contains("git blame"));
+    }
+
+    #[test]
+    fn blame_tries_each_path_line_until_one_blames() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        g(d, &["init", "-q", "-b", "main"]);
+        commit_file(d, "a.txt", "one\n");
+        std::fs::write(d.join("a.txt"), "one\ntwo\n").unwrap();
+        g(d, &["commit", "-qam", "feat: add two (#41)"]);
+        let base = g(d, &["rev-parse", "HEAD"]);
+        for location in [
+            "Took 3:14, see a.txt:2",
+            "localhost:8080 a.txt:2",
+            "a.txt:0 then a.txt:2",
+            "a.txt:99999999999 then a.txt:2",
+        ] {
+            let b = blame(d, Some(&base), Some(location)).unwrap();
+            assert_eq!(
+                (b.commit.as_str(), b.pr),
+                (base.as_str(), Some(41)),
+                "{location}"
+            );
+        }
+        let err = blame(d, Some(&base), Some("Took 3:14, see a.txt:9")).unwrap_err();
+        assert!(err.contains("git blame -L 14,14"), "{err}");
+        assert_eq!(
+            blame(d, Some(&base), Some("a.txt:99999999999")).unwrap_err(),
+            "location has no path:line"
+        );
     }
 }
