@@ -1,11 +1,12 @@
-//! Where a gate verdict sends the unit: moved from `cli/tests/factory/run_rebases_and_gates.rs`
-//! and `run_ratchets_and_worktrees.rs`, where every assertion was a decision. The sim pops one
-//! verdict for each gate the core asks for and reuses none, so a test whose e2e version relies
-//! on the shell reusing a verdict at the same HEAD stays end to end.
+//! Which gates run and where their verdicts send the unit: moved from
+//! `cli/tests/factory/run_rebases_and_gates.rs` and `run_ratchets_and_worktrees.rs`, where every
+//! assertion was a decision. The sim pops one verdict for each gate it runs, and reuses a verdict
+//! at the same HEAD as `gate::Gate::after` does.
 
 use std::collections::VecDeque;
 
 use super::super::sim::Sim;
+use crate::factory::LocalGate;
 use crate::run::Outcome;
 
 /// How many verdicts [`gates`] queues; the ones past those given are green.
@@ -151,5 +152,155 @@ fn a_red_gate_with_a_committing_rebuild_that_writes_no_artifact_never_reaches_ve
         gates_run(&s),
         3,
         "a commit since the red verdict runs the gate again"
+    );
+}
+
+#[test]
+fn a_rebuild_that_leaves_head_alone_skips_a_green_gate() {
+    let mut s = Sim::new();
+    s.gate(&[]);
+    s.queue("build", &["pass:commit", "pass"]);
+    s.queue("verify", &["fail", "pass"]);
+    let r = s.run();
+    assert_eq!(&r.calls()[..4], ["triage", "build", "verify", "build"]);
+    assert_eq!(r.gates.len(), 1, "{:?}", r.gates);
+}
+
+#[test]
+fn a_red_gate_is_not_skipped_when_the_rebuild_writes_no_artifact() {
+    let mut s = Sim::new();
+    s.max_attempts("build", 3);
+    s.gate(&[Err("boom")]);
+    s.queue("build", &["pass:commit", "none", "pass"]);
+    let r = s.run();
+    assert_eq!(r.outcome, Outcome::Done);
+    assert_eq!(
+        r.calls(),
+        ["triage", "build", "build", "build", "verify", "review", "ship"]
+    );
+    assert!(
+        r.runs[3].feedback.contains("boom"),
+        "{}",
+        r.runs[3].feedback
+    );
+    assert_eq!(r.runs[2].why, "the CI gate failed after build");
+    assert_eq!(r.runs[3].why, "the CI gate is still red");
+    assert_eq!(r.gated(), [("build", false), ("build", true)]);
+}
+
+#[test]
+fn a_build_that_did_not_pass_runs_no_gate() {
+    let mut s = Sim::new();
+    s.max_attempts("build", 5);
+    s.gate(&[]);
+    s.queue("build", &["none", "fail", "blocked:no"]);
+    let r = s.run();
+    assert_eq!(r.outcome, Outcome::Stuck);
+    assert_eq!(r.calls(), ["triage", "build", "build", "build"]);
+    assert!(r.gates.is_empty(), "{:?}", r.gates);
+}
+
+#[test]
+fn a_review_that_commits_runs_the_gate_again() {
+    let mut s = Sim::new();
+    s.gate(&[]);
+    s.queue("build", &["pass:commit"]);
+    s.queue("review", &["pass:commit"]);
+    let r = s.run();
+    assert_eq!(r.outcome, Outcome::Done);
+    assert_eq!(
+        r.calls(),
+        ["triage", "build", "verify", "review", "verify", "ship"]
+    );
+    assert_eq!(r.gated(), [("build", true), ("review", true)]);
+    assert!(r.gates.iter().all(|g| g.full), "{:?}", r.gates);
+}
+
+/// Under `build-only` a review commit runs the fast gate, and its green does not cover the full
+/// gate a rebuild at the same HEAD runs.
+#[test]
+fn under_build_only_the_fast_gate_after_a_review_commit_leaves_the_full_one_to_run() {
+    let mut s = Sim::new();
+    s.settings.local_gate = LocalGate::BuildOnly;
+    s.gate(&[]);
+    s.queue("build", &["pass:commit", "pass"]);
+    s.queue("review", &["pass:commit", "pass"]);
+    s.queue("verify", &["pass", "fail", "pass"]);
+    let r = s.run();
+    assert_eq!(r.outcome, Outcome::Done, "{r:?}");
+    let g: Vec<_> = r.gates.iter().map(|g| (g.phase, g.full)).collect();
+    assert_eq!(g, [("build", true), ("review", false), ("build", true)]);
+}
+
+#[test]
+fn a_red_gate_after_a_review_commit_goes_back_to_build() {
+    let mut s = Sim::new();
+    s.gate(&[Ok(()), Err("test ! -f broken")]);
+    s.queue("build", &["pass:commit", "pass:commit"]);
+    s.queue("review", &["pass:commit", "pass"]);
+    let r = s.run();
+    assert_eq!(r.outcome, Outcome::Done, "{r:?}");
+    assert_eq!(
+        r.calls(),
+        ["triage", "build", "verify", "review", "build", "verify", "review", "ship"]
+    );
+    assert!(r.runs[4].feedback.contains("test ! -f broken"));
+    assert_eq!(
+        r.gated(),
+        [("build", true), ("review", false), ("build", true)]
+    );
+}
+
+#[test]
+fn a_timed_out_review_that_moved_head_still_runs_the_gate() {
+    let mut s = Sim::new();
+    s.gate(&[]);
+    s.queue("build", &["pass:commit"]);
+    s.queue("review", &["blocked:commit+sleep", "pass"]);
+    let r = s.run();
+    assert_eq!(r.outcome, Outcome::Done, "{r:?}");
+    assert_eq!(r.gates.len(), 2, "{:?}", r.gates);
+    assert_eq!((r.gates[1].phase, r.gates[1].attempt), ("review", 1));
+}
+
+/// A `phase` that fails after a commit still runs the gate after it.
+fn fails_after_moving_head(phase: &'static str) {
+    let mut s = Sim::new();
+    s.gate(&[]);
+    s.queue("build", &["pass:commit"]);
+    s.queue(phase, &["fail:commit"]);
+    let r = s.run();
+    assert_eq!(r.gates.len(), 2, "{:?}", r.gates);
+    assert_eq!(r.gates[1].phase, phase);
+}
+
+#[test]
+fn a_review_that_fails_after_moving_head_still_runs_the_gate() {
+    fails_after_moving_head("review");
+}
+
+#[test]
+fn a_verify_that_fails_after_moving_head_still_runs_the_gate() {
+    fails_after_moving_head("verify");
+}
+
+#[test]
+fn a_ship_that_fails_after_moving_head_still_runs_the_gate() {
+    fails_after_moving_head("ship");
+}
+
+/// A gate that fails its ratchets on every attempt leaves them as the reason.
+#[test]
+fn a_gate_red_on_its_ratchets_until_attempts_run_out_names_them() {
+    let mut s = Sim::new();
+    s.gates = Some(always_red("ratchets: flash 104 > 100"));
+    let r = s.run();
+    assert_eq!(
+        r.reason,
+        "build is out of attempts (2): the CI gate failed on flash 104 > 100"
+    );
+    assert_eq!(
+        r.runs[2].why,
+        "the CI gate failed on flash 104 > 100 after build"
     );
 }
