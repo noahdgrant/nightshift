@@ -52,6 +52,14 @@ pub struct Env {
     pub ghd: PathBuf,
 }
 
+/// A test that leaves a read-only directory, or panics before putting it back, still has its
+/// temp dir deleted.
+impl Drop for Env {
+    fn drop(&mut self) {
+        common::make_writable(&self.base);
+    }
+}
+
 impl Env {
     pub fn new() -> Env {
         Env::with_repo("main", |root| {

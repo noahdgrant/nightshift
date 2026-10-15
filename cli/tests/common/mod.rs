@@ -575,3 +575,24 @@ fn drain(mut r: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
     });
     rx
 }
+
+/// Give the owner read, write and search on `root` and every directory under it, symlinks not
+/// followed, so a temp dir a test left read-only can be deleted.
+pub fn make_writable(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut todo = vec![root.to_path_buf()];
+    while let Some(dir) = todo.pop() {
+        let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+            continue;
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+        let mode = meta.permissions().mode() | 0o700;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode));
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        todo.extend(entries.flatten().map(|e| e.path()));
+    }
+}
