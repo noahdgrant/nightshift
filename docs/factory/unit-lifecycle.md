@@ -69,7 +69,7 @@ A unit's worktree goes when its change merged. For `ns run`, that is its own mer
 - `pr.md` (or its newest archived copy) names a PR, and `gh pr view` reports it `MERGED`.
 - The PR's body closes the issue (`Closes #n`, or fixes or resolves), and its head branch is `ns/<unit>`.
 
-Its quality records are saved first, with outcome `merged`, all of the sweep's units in one push. A record that lands in the outbox counts as saved: the outbox keeps it until the next push. A record that can't be saved at all keeps the worktree, and so does a review artifact that can't be read (no frontmatter, say), since no record holds it.
+Its quality records are saved first, with outcome `merged`, all of the sweep's units in one push. A record that lands in the outbox counts as saved: the outbox keeps it until the next push. A record that can't be saved at all keeps the worktree. A review artifact that can't be read (no frontmatter, say) is left out of the record, which is then partial: the `quality_record` event lists it under `unparsed` with its unit, path and reason, `ns` warns on stderr, and the worktree is removed (ADR-639).
 
 Cleanup never removes:
 

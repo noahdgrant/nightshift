@@ -1,39 +1,100 @@
 #[test]
-fn auto_merge_keeps_a_worktree_with_a_review_artifact_no_record_holds() {
+fn auto_merge_removes_a_worktree_with_an_unreadable_review_artifact() {
     let e = auto_merge_env();
     e.queue("ship", &["pass:script"]);
     e.ctl(
         "ship.sh",
         "mkdir -p .ns/$NS_UNIT/history && echo notes > .ns/$NS_UNIT/history/review-1.md\n",
     );
-    let v = e.run(&["run", "--issue", "7"], 0);
+    let out = e
+        .ns()
+        .args(["run", "--issue", "7"])
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["outcome"], "merged", "{v}");
-    assert_eq!(
-        v["cleanup"]["reason"], "its quality record is not saved",
-        "{v}"
+    assert_eq!(v["cleanup"]["removed"], true, "{v}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(&format!(
+            "quality record of {UNIT} is partial: cannot read .ns/{UNIT}/history/review-1.md: no frontmatter"
+        )),
+        "{err}"
     );
+    assert!(!e.worktree(UNIT).exists());
     assert_eq!(
         quality_events(&e)[0]["unparsed"][0]["reason"],
         "no frontmatter"
     );
-    assert!(e
-        .worktree(UNIT)
-        .join(format!(".ns/{UNIT}/history/review-1.md"))
-        .is_file());
+    assert_eq!(quality_records(&e).len(), 1);
 }
 
 #[test]
-fn clean_keeps_a_unit_with_a_review_artifact_no_record_holds() {
+fn clean_removes_a_unit_with_an_unreadable_review_artifact_and_saves_the_rest() {
+    let e = Env::new();
+    let wt = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    fs::create_dir_all(wt.join(".ns/3-done/history")).unwrap();
+    fs::write(wt.join(".ns/3-done/history/review-1.md"), "notes, no frontmatter\n").unwrap();
+    let out = e.ns().args(["clean"]).assert().code(0).get_output().clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert!(!wt.exists());
+    let records = quality_records(&e);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["artifact"], ".ns/3-done/review.md");
+    assert_eq!(
+        quality_events(&e)[0]["unparsed"],
+        json!([{"unit": "3-done", "path": ".ns/3-done/history/review-1.md", "reason": "no frontmatter"}])
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("3-done") && err.contains(".ns/3-done/history/review-1.md: no frontmatter"),
+        "{err}"
+    );
+}
+
+#[test]
+fn clean_removes_a_unit_whose_only_review_artifact_is_unreadable() {
     let e = Env::new();
     let wt = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
     fs::write(wt.join(".ns/3-done/review.md"), "notes, no frontmatter\n").unwrap();
+    fs::create_dir_all(wt.join(".ns/3-done/history/review-1")).unwrap();
+    fs::write(wt.join(".ns/3-done/history/review-1/cycle-1.md"), "x\n").unwrap();
     let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert!(quality_records(&e).is_empty());
+    let evs = quality_events(&e);
+    let unparsed: Vec<&str> = evs[0]["unparsed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["path"].as_str().unwrap())
+        .collect();
     assert_eq!(
-        reasons(&v)["3-done"],
-        "its quality record is not saved: cannot read .ns/3-done/review.md: no frontmatter",
-        "{v}"
+        unparsed,
+        [".ns/3-done/history/review-1", ".ns/3-done/review.md"]
     );
-    assert!(wt.join(".ns/3-done/review.md").is_file());
+}
+
+#[test]
+fn clean_names_the_unit_of_each_unreadable_artifact() {
+    let e = Env::new();
+    let a = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+    let b = unit_with_pr(&e, 4, "4-done", 40, "CLOSED", "MERGED");
+    fs::write(a.join(".ns/3-done/review.md"), "a\n").unwrap();
+    fs::write(b.join(".ns/4-done/review.md"), "b\n").unwrap();
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done", "4-done"], "{v}");
+    let evs = quality_events(&e);
+    let units: Vec<&str> = evs[0]["unparsed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["unit"].as_str().unwrap())
+        .collect();
+    assert_eq!(units, ["3-done", "4-done"]);
 }
 
 #[test]
