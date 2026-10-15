@@ -641,6 +641,40 @@ mod tests {
         );
     }
 
+    /// Every fetch keeps its own pack and, under the `gc` strategy on any git version, a second
+    /// pack starts gc, so the deepening fetch runs one. Detached, it is still repacking when
+    /// `status` returns.
+    #[test]
+    fn a_fetch_finishes_its_auto_gc_before_the_next_fetch_into_the_cache() {
+        let w = World::new();
+        let work = w.upstream("acme/skills");
+        let recorded = commit_file(&work, "a.md", "a\n");
+        for i in 0..3 {
+            commit_file(&work, "b.md", &format!("{i}\n"));
+        }
+        w.push(&work, "acme/skills");
+        w.skill("ns-a", &format!(" acme/skills@{}:a.md", short(&recorded)));
+        let mut cache = w.cache();
+        let dir = cache.dir("acme/skills");
+        fs::create_dir_all(&dir).unwrap();
+        g(&dir, &["init", "-q", "--bare"]);
+        for (k, v) in [
+            ("maintenance.strategy", "gc"),
+            ("gc.auto", "1"),
+            ("gc.autoPackLimit", "1"),
+            ("fetch.unpackLimit", "1"),
+        ] {
+            g(&dir, &["config", k, v]);
+        }
+        let r = status(&w.skills(), &mut cache).unwrap();
+        assert!(r.ok, "{r:?}");
+        let counts = g(&dir, &["count-objects", "-v"]);
+        assert!(
+            counts.lines().any(|l| l == "packs: 1"),
+            "the deepening fetch left its gc running: {counts}"
+        );
+    }
+
     #[test]
     fn two_entries_on_one_unreachable_repo_both_error_after_one_failed_fetch() {
         let w = World::new();
