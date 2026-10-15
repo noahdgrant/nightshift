@@ -736,8 +736,7 @@ fn plant_marker_commands(wt: &Path, marker: &Path) {
     let cmd = format!("touch {}", marker.display());
     git_ok(wt, &["config", "core.fsmonitor", &cmd]);
     let hook = wt.join(".git/hooks/post-index-change");
-    fs::write(&hook, format!("#!/bin/sh\n{cmd}\n")).unwrap();
-    chmod(&hook, 0o755);
+    crate::testutil::write_exe(&hook, format!("#!/bin/sh\n{cmd}\n"));
 }
 
 #[test]
@@ -790,7 +789,7 @@ fn a_planted_filemode_exclude_or_index_flag_does_not_hide_a_change() {
     let was = mode(&hooks.join("pre-commit"));
     let p = Protected::read(vec![tracked(&hooks)]);
     git_ok(&wt, &["config", "core.fileMode", "false"]);
-    chmod(&hooks.join("pre-commit"), 0o755);
+    chmod(&hooks.join("pre-commit"), 0o744);
     let t = p.check().unwrap();
     assert_eq!(t.paths, [hooks.join("pre-commit")]);
     assert_eq!(mode(&hooks.join("pre-commit")), was);
