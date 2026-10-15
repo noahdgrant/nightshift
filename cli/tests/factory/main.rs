@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::{copy_exe, exits, write_exe, Group, Ns};
 use serde_json::{json, Value};

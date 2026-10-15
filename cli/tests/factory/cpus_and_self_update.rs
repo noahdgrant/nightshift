@@ -768,6 +768,7 @@ fn a_refill_does_not_check_for_an_update_so_a_new_ready_issue_still_starts() {
     e.ready(2, "Fix a", &["type:fix"], "");
     let (in_a, go_a) = hold_phase(&e, A, "build");
     let (in_c, go_c) = hold_phase(&e, "4-fix-c", "build");
+    let listed = mark_gh_calls(&e, "");
     let w = Watching::start(watch_from(&e, &from).env("NS_REFILL_MS", "100").args([
         "watch",
         "--parallel",
@@ -775,8 +776,11 @@ fn a_refill_does_not_check_for_an_update_so_a_new_ready_issue_still_starts() {
     ]));
     w.entered(&in_a);
     land(&e, "cli/x", "new\n");
-    // Several refill intervals pass with a slot free and a new commit on origin.
-    thread::sleep(Duration::from_millis(1000));
+    // Refills come with a slot free and a new commit on origin: two after the landing.
+    while listed.try_recv().is_ok() {}
+    for _ in 0..6 {
+        w.g.recv(&listed);
+    }
     e.ready(4, "Fix c", &["type:fix"], "");
     w.entered(&in_c);
     release(&go_c);

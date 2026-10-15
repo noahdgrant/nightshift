@@ -4,6 +4,7 @@ title: "A free parallel slot is refilled every 60 seconds"
 issue: 275
 date: 2026-10-10
 amends: [D46]
+amended_by: [ADR-641]
 ---
 
 # D57: A free parallel slot is refilled every 60 seconds
