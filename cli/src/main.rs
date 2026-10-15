@@ -306,7 +306,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
             } => return ratchet::update(factory.as_deref(), allow_loosen, dry_run, format(human)),
         },
         Cmd::Rules(Rules { command }) => match command {
-            RulesCmd::Check { human, only } => return rules::check(only.as_deref(), format(human)),
+            RulesCmd::Check { human, only, prune } => {
+                return rules::check(only.as_deref(), prune, format(human))
+            }
             RulesCmd::Baseline {
                 allow_growth,
                 dry_run,

@@ -22,7 +22,7 @@ const MAX_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
 
 /// One violation. `snippet` is the offending source line with whitespace collapsed; with
 /// `tool`, `rule` and `file` it is what matches a baseline entry, so the line number may move.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Finding {
     pub tool: String,
     pub rule: String,
@@ -40,7 +40,7 @@ impl Finding {
 
 /// A finding as the baseline stores it: without its line, so a line shift leaves the file
 /// unchanged. A `line` in an older file is ignored.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Hash)]
 struct Entry {
     tool: String,
     rule: String,
@@ -287,6 +287,61 @@ fn compare(current: &[Finding], baseline: &[Finding]) -> (Vec<Finding>, usize, V
     (new, matched, fixed)
 }
 
+/// `baseline` without one entry for each of `fixed`, in the baseline's order.
+fn without<'a>(baseline: &'a [Finding], fixed: &[Finding]) -> Vec<&'a Finding> {
+    let mut gone: HashMap<&Finding, usize> = HashMap::new();
+    for f in fixed {
+        *gone.entry(f).or_default() += 1;
+    }
+    baseline
+        .iter()
+        .filter(|b| match gone.get_mut(b) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                false
+            }
+            _ => true,
+        })
+        .collect()
+}
+
+/// Whether the baseline text `head` only removes entries from `base`: each of its entries is
+/// matched by its own equal entry in `base`, counting duplicates and every field but the line, so
+/// a reordered file is too. Either text not a baseline is an error naming it.
+pub fn removal_only(base: &str, head: &str) -> Result<bool, String> {
+    let parse = |text: &str, which: &str| {
+        serde_json::from_str::<Baseline>(text)
+            .map_err(|e| format!("the {which}'s baseline is not a rules baseline: {e}"))
+    };
+    let (base, head) = (parse(base, "base")?, parse(head, "PR")?);
+    let mut left: HashMap<&Entry, usize> = HashMap::new();
+    for e in &base.violations {
+        *left.entry(e).or_default() += 1;
+    }
+    Ok(head.violations.iter().all(|e| match left.get_mut(e) {
+        Some(n) if *n > 0 => {
+            *n -= 1;
+            true
+        }
+        _ => false,
+    }))
+}
+
+/// Write `violations` to the baseline at `path`, through a temporary file.
+fn write_baseline(path: &Path, violations: Vec<Entry>) -> Result<()> {
+    let text = serde_json::to_string_pretty(&Baseline {
+        version: 1,
+        violations,
+    })?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)
+            .with_context(|| format!("cannot create the directory for {}", path.display()))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, text + "\n").with_context(|| format!("cannot write {}", tmp.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("cannot write {}", path.display()))
+}
+
 fn load_baseline(path: &Path) -> Result<Option<Vec<Finding>>> {
     let text = match fs::read_to_string(path) {
         Ok(t) => t,
@@ -346,7 +401,9 @@ fn print(v: &Value, human: &[(&str, &[Finding])], summary: &str, format: Format)
     Ok(())
 }
 
-pub fn check(only: Option<&str>, format: Format) -> Result<ExitCode> {
+/// `prune` drops the fixed entries from the baseline file when nothing is new and every command
+/// ran, so the file only shrinks.
+pub fn check(only: Option<&str>, prune: bool, format: Format) -> Result<ExitCode> {
     let mut c = ctx("ns rules check")?;
     if let Some(text) = only.filter(|_| !c.commands.is_empty()) {
         let all = std::mem::take(&mut c.commands);
@@ -377,6 +434,7 @@ pub fn check(only: Option<&str>, format: Format) -> Result<ExitCode> {
             "baselined": 0,
             "new": [],
             "fixed": [],
+            "pruned": 0,
         });
         print(&v, &[], "0 findings, 0 baselined, 0 new, 0 fixed", format)?;
         return Ok(ExitCode::SUCCESS);
@@ -388,6 +446,16 @@ pub fn check(only: Option<&str>, format: Format) -> Result<ExitCode> {
         fixed.clear();
     }
     let ok = new.is_empty();
+    let pruned = if prune && ok && !fixed.is_empty() {
+        let kept = without(&baseline, &fixed);
+        write_baseline(
+            &c.root.join(BASELINE),
+            kept.into_iter().map(Entry::from).collect(),
+        )?;
+        fixed.len()
+    } else {
+        0
+    };
     let v = json!({
         "ok": ok,
         "command": "rules check",
@@ -397,6 +465,7 @@ pub fn check(only: Option<&str>, format: Format) -> Result<ExitCode> {
         "baselined": baselined,
         "new": new,
         "fixed": fixed,
+        "pruned": pruned,
     });
     let summary = format!(
         "{} findings, {baselined} baselined, {} new, {} fixed",
@@ -405,7 +474,9 @@ pub fn check(only: Option<&str>, format: Format) -> Result<ExitCode> {
         fixed.len()
     );
     print(&v, &[("new", &new), ("fixed", &fixed)], &summary, format)?;
-    if !fixed.is_empty() {
+    if pruned > 0 {
+        eprintln!("ns rules: dropped {pruned} fixed entries from {BASELINE}");
+    } else if !fixed.is_empty() {
         eprintln!(
             "ns rules: {} baselined violations are gone; drop them with:\n  ns rules baseline",
             fixed.len()
@@ -444,16 +515,7 @@ pub fn baseline(allow_growth: bool, dry_run: bool, format: Format) -> Result<Exi
     } else {
         // In `run.findings`' order (tool, rule, file, then line), so a dropped finding removes
         // only its own entry from the file.
-        let violations: Vec<Entry> = run.findings.iter().map(Entry::from).collect();
-        let text = serde_json::to_string_pretty(&Baseline {
-            version: 1,
-            violations,
-        })?;
-        fs::create_dir_all(path.parent().unwrap_or(&c.root))
-            .with_context(|| format!("cannot create the directory for {}", path.display()))?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, text + "\n").with_context(|| format!("cannot write {}", tmp.display()))?;
-        fs::rename(&tmp, &path).with_context(|| format!("cannot write {}", path.display()))?;
+        write_baseline(&path, run.findings.iter().map(Entry::from).collect())?;
         "written"
     };
     let v = json!({
@@ -492,6 +554,70 @@ pub fn baseline(allow_growth: bool, dry_run: bool, format: Format) -> Result<Exi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn file(entries: &[(&str, &str)]) -> String {
+        let violations: Vec<Value> = entries
+            .iter()
+            .map(|(snippet, message)| {
+                json!({"tool": "t", "rule": "r", "file": "a.py", "message": message, "snippet": snippet})
+            })
+            .collect();
+        json!({"version": 1, "violations": violations}).to_string()
+    }
+
+    #[test]
+    fn removal_only_holds_when_every_head_entry_has_its_own_base_entry() {
+        let base = file(&[("x", "m"), ("y", "m"), ("y", "m")]);
+        assert_eq!(removal_only(&base, &base), Ok(true));
+        assert_eq!(
+            removal_only(&base, &file(&[("y", "m"), ("x", "m")])),
+            Ok(true)
+        );
+        assert_eq!(removal_only(&base, &file(&[])), Ok(true));
+        assert_eq!(
+            removal_only(&base, &file(&[("y", "m"), ("y", "m"), ("x", "m")])),
+            Ok(true)
+        );
+        assert_eq!(
+            removal_only(&base, &file(&[("x", "m"), ("x", "m")])),
+            Ok(false)
+        );
+        assert_eq!(removal_only(&base, &file(&[("z", "m")])), Ok(false));
+        assert_eq!(removal_only(&base, &file(&[("x", "m2")])), Ok(false));
+        let older = r#"{"version": 1, "violations": [{"tool": "t", "rule": "r", "file": "a.py", "line": 3, "message": "m", "snippet": "x"}]}"#;
+        assert_eq!(removal_only(older, &file(&[("x", "m")])), Ok(true));
+    }
+
+    #[test]
+    fn removal_only_is_an_error_naming_the_side_that_is_not_a_baseline() {
+        let good = file(&[("x", "m")]);
+        let e = removal_only("{", &good).unwrap_err();
+        assert!(
+            e.starts_with("the base's baseline is not a rules baseline"),
+            "{e}"
+        );
+        let e = removal_only(&good, "{}").unwrap_err();
+        assert!(
+            e.starts_with("the PR's baseline is not a rules baseline"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn without_drops_one_entry_per_fixed_finding_and_keeps_the_order() {
+        let mut m = f("a", 1, "x");
+        m.message = "other".into();
+        let base: Vec<Finding> = [f("a", 0, "y"), f("a", 0, "x"), m, f("a", 0, "x")]
+            .into_iter()
+            .map(|mut f| {
+                f.line = None;
+                f
+            })
+            .collect();
+        let kept = without(&base, &[base[1].clone()]);
+        assert_eq!(kept, [&base[0], &base[2], &base[3]]);
+        assert_eq!(without(&base, &[]).len(), 4);
+    }
 
     fn f(file: &str, line: u64, snippet: &str) -> Finding {
         Finding {

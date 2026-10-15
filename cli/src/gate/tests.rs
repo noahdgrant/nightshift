@@ -58,17 +58,17 @@ fn a_rules_row_adds_ns_rules_check_after_the_gate_or_alone() {
     let none = parse("").unwrap();
     assert_eq!(
         command(&none, tmp.path(), Path::new(NS_EXE)).as_deref(),
-        Some("(scripts/ci-local.sh) && '/opt/ns bin/ns' rules check")
+        Some("(scripts/ci-local.sh) && '/opt/ns bin/ns' rules check --prune")
     );
     let set = parse("[phases.build]\ngate = \"make ci\"\n").unwrap();
     assert_eq!(
         command(&set, tmp.path(), Path::new(NS_EXE)).as_deref(),
-        Some("(make ci) && '/opt/ns bin/ns' rules check")
+        Some("(make ci) && '/opt/ns bin/ns' rules check --prune")
     );
     fs::write(&stack, "| rules | `ruff check .` |\n").unwrap();
     assert_eq!(
         command(&none, tmp.path(), Path::new(NS_EXE)).as_deref(),
-        Some("'/opt/ns bin/ns' rules check")
+        Some("'/opt/ns bin/ns' rules check --prune")
     );
     fs::write(&stack, "| rules | none yet |\n").unwrap();
     assert_eq!(command(&none, tmp.path(), Path::new(NS_EXE)), None);
@@ -83,7 +83,7 @@ fn a_ratchet_adds_ns_ratchet_check_last_or_alone() {
     fs::write(&stack, format!("{STACK}| rules | `ruff check .` |\n")).unwrap();
     assert_eq!(
         command(&fac, tmp.path(), Path::new(NS_EXE)).as_deref(),
-        Some("(scripts/ci-local.sh) && '/opt/ns bin/ns' rules check && '/opt/ns bin/ns' ratchet check --human")
+        Some("(scripts/ci-local.sh) && '/opt/ns bin/ns' rules check --prune && '/opt/ns bin/ns' ratchet check --human")
     );
     fs::write(&stack, STACK).unwrap();
     assert_eq!(
@@ -129,7 +129,7 @@ fn build_only_runs_the_fast_command_and_affected_tests_after_any_step_but_build(
     let c = read(&format!(
         "{STACK}| ci-affected | `scripts/affected.sh` |\n| rules | `ruff check .` |\n"
     ));
-    let full = "(scripts/ci-local.sh) && '/opt/ns bin/ns' rules check";
+    let full = "(scripts/ci-local.sh) && '/opt/ns bin/ns' rules check --prune";
     let fast = "(scripts/ci-local.sh --fast) && (scripts/affected.sh)";
     assert_eq!(c.build.as_deref(), Some(full));
     assert_eq!(c.rest.as_deref(), Some(fast));
@@ -160,7 +160,10 @@ fn build_only_runs_the_fast_command_and_affected_tests_after_any_step_but_build(
 fn this_repos_gate_is_ci_local_sh_then_the_rule_pack() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let cmd = command(&parse("").unwrap(), repo, Path::new(NS_EXE)).unwrap();
-    assert_eq!(cmd, "(scripts/ci-local.sh) && '/opt/ns bin/ns' rules check");
+    assert_eq!(
+        cmd,
+        "(scripts/ci-local.sh) && '/opt/ns bin/ns' rules check --prune"
+    );
     assert!(repo.join("scripts/ci-local.sh").is_file());
 }
 
@@ -637,4 +640,33 @@ fn same_file_exact_match_wins_over_a_deeper_file_with_the_same_tail() {
         !same_file("cli/src/main.rs", "src/main.rs", root, &tracked),
         "a root-relative print names the root file"
     );
+}
+
+#[test]
+fn carry_green_moves_a_green_verdict_only_from_its_own_head() {
+    let green = |sha: &str| Gate {
+        verdict: Some(Verdict::Green {
+            sha: sha.into(),
+            full: true,
+        }),
+        merged: None,
+        full_green: Some(sha.into()),
+    };
+    let at = |g: &Gate| match &g.verdict {
+        Some(Verdict::Green { sha, .. }) => (sha.clone(), g.full_green.clone()),
+        _ => panic!("not green"),
+    };
+    let mut g = green("aaa1111");
+    g.carry_green("bbb2222", "ccc3333");
+    assert_eq!(at(&g), ("aaa1111".into(), Some("aaa1111".into())));
+    g.carry_green("aaa1111f00", "ddd4444");
+    assert_eq!(at(&g), ("ddd4444".into(), Some("ddd4444".into())));
+
+    let mut red = Gate {
+        verdict: None,
+        merged: None,
+        full_green: None,
+    };
+    red.carry_green("aaa1111", "ddd4444");
+    assert!(red.verdict.is_none() && red.full_green.is_none());
 }

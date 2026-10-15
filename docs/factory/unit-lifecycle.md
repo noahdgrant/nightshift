@@ -21,6 +21,7 @@ triage ─────── each commit: pre-commit hook
   │            moved HEAD? ─► fast gate ── red ─► build
 build ──────── each commit: pre-commit hook
   │            wrote pass ─► FULL GATE ── red ─► build
+  │              green, rules baseline pruned ─► commit it
 verify ─────── each commit: pre-commit hook
   │            moved HEAD? ─► fast gate ── red ─► build
 review ─────── each commit: pre-commit hook
@@ -35,6 +36,7 @@ merge step ─── DIRTY ─► ship
   │              after 5 moves: hold the merge lock through the whole round
   │              11th move: stuck
   │            human_review file or region ─► STOP: done, a human merges
+  │              (not a rules baseline that only lost entries)
   │            squash-merge
 merged ─────── GitHub CI runs on the default branch
   │
@@ -45,7 +47,7 @@ cleanup
 |---|---|---|---|---|
 | pre-commit hook | every commit in any phase, on the working tree | `.githooks/pre-commit`: `scripts/ci-local.sh --fast` | never: `--fast` doesn't use the pass cache | the commit fails, and the phase fixes it in the same attempt |
 | pre-push hook | every push, in a temporary worktree at each commit pushed | `.githooks/pre-push`: `scripts/ci-local.sh --fast` (no `--fast` under `every-step`) | a commit already checked in the same push; under `every-step`, a cache hit by tree | the push is refused, and the phase fixes it in the same attempt |
-| full gate | `ns run`, in the worktree, after a build that wrote `pass` (or after a build that wrote nothing while the gate was red at another HEAD) | `[phases.build] gate`, else the `ci-local` row of `docs/agents/stack.md`; then `ns rules check` with a `rules` row, and `ns ratchet check` with ratchets | the full gate already went green at this HEAD in this invocation; `ci-local.sh` exits 0 at once on a cache hit by tree | a build attempt; no attempt when the red points at files another phase's commits changed (at most 6 per invocation) |
+| full gate | `ns run`, in the worktree, after a build that wrote `pass` (or after a build that wrote nothing while the gate was red at another HEAD) | `[phases.build] gate`, else the `ci-local` row of `docs/agents/stack.md`; then `ns rules check --prune` with a `rules` row, and `ns ratchet check` with ratchets; green with fixed entries dropped from the rules baseline, `ns run` commits the baseline | the full gate already went green at this HEAD in this invocation; `ci-local.sh` exits 0 at once on a cache hit by tree | a build attempt; no attempt when the red points at files another phase's commits changed (at most 6 per invocation) |
 | fast gate | `ns run`, in the worktree, after triage, verify or review | the base command with ` --fast`, then the `ci-affected` row, with `NS_GATE_FILES` | the phase didn't move HEAD; the full or fast gate already went green at this HEAD | as the full gate; the rebuild's gate is the full one |
 | GitHub checks | GitHub, on the PR head after the merge step updated it | `.github/workflows/ci.yml` | never; under `policy = "human"` nothing waits on them | a build attempt, with the failing checks as `{feedback}` |
 | CI on the default branch | GitHub, on the push to `main` the merge makes | `.github/workflows/ci.yml` | never | nothing automatic: the default branch is red until someone fixes it |

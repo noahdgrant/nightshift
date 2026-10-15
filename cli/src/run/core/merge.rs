@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 
 use super::route::same_sha;
+use crate::rules::BASELINE;
 use crate::run::Outcome;
 
 mod ready;
@@ -115,6 +116,9 @@ pub enum MergeFact {
     HeadRef(Option<String>),
     /// The PR's changed files that match a `human_review` glob.
     ReviewHits(Vec<String>),
+    /// Whether the PR's rules baseline only removes entries from the base's, or why that could
+    /// not be told.
+    BaselineShrinks(Result<bool, String>),
     /// The human-review regions HEAD's changes touch, or why they could not be read.
     Regions(Result<Vec<String>, String>),
     /// `gh pr merge` ran: the PR's state after it, the merge's error, and the run's spend.
@@ -234,6 +238,10 @@ pub enum Ask {
     Unlock,
     ViewHeadRef,
     ReviewHits,
+    /// Compare the rules baseline at this PR head with the base's.
+    BaselineShrinks {
+        head: String,
+    },
     Regions,
     /// Squash-merge the PR, matching this head.
     Merge {
@@ -327,6 +335,8 @@ enum Wait {
     Unlock,
     HeadRef,
     Hits,
+    /// The human-review hits other than the rules baseline, while its comparison runs.
+    Baseline(Vec<String>),
     Regions,
     Merge,
     Delete,
@@ -525,9 +535,15 @@ pub fn next(s: &mut MergeState, fact: MergeFact, now: i64) -> MergeAct {
                 o.ask(s, Wait::HeadRef, Ask::ViewHeadRef)
             }
         }
-        (Wait::HeadRef | Wait::Hits | Wait::Regions | Wait::Merge | Wait::Delete, f) => {
-            merging(s, o, f)
-        }
+        (
+            Wait::HeadRef
+            | Wait::Hits
+            | Wait::Baseline(_)
+            | Wait::Regions
+            | Wait::Merge
+            | Wait::Delete,
+            f,
+        ) => merging(s, o, f),
         (_, f) => ready::step(s, o, f, now),
     }
 }
@@ -669,6 +685,31 @@ fn moved_on(s: &mut MergeState, mut o: Out, tip: &str, now: i64) -> MergeAct {
     round(s, o, now)
 }
 
+/// The human-review files the PR changes, with the rules baseline as `baseline` says when it
+/// counts: none goes on to the regions check, any needs a human.
+fn review_hits(
+    s: &mut MergeState,
+    mut o: Out,
+    mut hits: Vec<String>,
+    baseline: Option<String>,
+) -> MergeAct {
+    if hits.is_empty() && baseline.is_none() {
+        return o.ask(s, Wait::Regions, Ask::Regions);
+    }
+    let mut paths = hits.clone();
+    if let Some(why) = baseline {
+        paths.push(BASELINE.to_string());
+        hits.push(why);
+    }
+    o.log
+        .push(json!({"event": "human_review", "pr": s.pr, "paths": paths}));
+    let r = format!(
+        "changes files that need human review; needs a human merge ({})",
+        hits.join(", ")
+    );
+    o.human(s, r)
+}
+
 /// Under the lock, with the base unmoved: the head check, the human-review checks, the merge.
 fn merging(s: &mut MergeState, mut o: Out, fact: MergeFact) -> MergeAct {
     let n = s.pr;
@@ -683,16 +724,24 @@ fn merging(s: &mut MergeState, mut o: Out, fact: MergeFact) -> MergeAct {
             }
             _ => o.ask(s, Wait::Hits, Ask::ReviewHits),
         },
-        (Wait::Hits, MergeFact::ReviewHits(hits)) if !hits.is_empty() => {
-            o.log
-                .push(json!({"event": "human_review", "pr": n, "paths": hits}));
-            let r = format!(
-                "changes files that need human review; needs a human merge ({})",
-                hits.join(", ")
-            );
-            o.human(s, r)
+        (Wait::Hits, MergeFact::ReviewHits(hits)) if hits.iter().any(|h| h == BASELINE) => {
+            let rest = hits.into_iter().filter(|h| h != BASELINE).collect();
+            let head = s.merge_head.clone();
+            o.ask(s, Wait::Baseline(rest), Ask::BaselineShrinks { head })
         }
-        (Wait::Hits, MergeFact::ReviewHits(_)) => o.ask(s, Wait::Regions, Ask::Regions),
+        (Wait::Hits, MergeFact::ReviewHits(hits)) => review_hits(s, o, hits, None),
+        (Wait::Baseline(rest), MergeFact::BaselineShrinks(Ok(true))) => {
+            o.log
+                .push(json!({"event": "baseline_shrinks", "pr": n, "path": BASELINE}));
+            review_hits(s, o, rest, None)
+        }
+        (Wait::Baseline(rest), MergeFact::BaselineShrinks(Ok(false))) => {
+            review_hits(s, o, rest, Some(BASELINE.to_string()))
+        }
+        (Wait::Baseline(rest), MergeFact::BaselineShrinks(Err(e))) => {
+            let why = format!("{BASELINE}: cannot tell whether it only removes entries: {e}");
+            review_hits(s, o, rest, Some(why))
+        }
         (Wait::Regions, MergeFact::Regions(Ok(regions))) if regions.is_empty() => {
             let head = s.merge_head.clone();
             o.ask(s, Wait::Merge, Ask::Merge { head })

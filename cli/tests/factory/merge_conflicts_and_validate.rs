@@ -537,6 +537,65 @@ fn an_edit_outside_a_human_review_region_merges() {
     assert_eq!(v["outcome"], "merged", "{v}");
 }
 
+/// A rules baseline of `snippets`, as a one-line JSON file.
+fn rules_baseline(snippets: &[&str]) -> String {
+    let violations: Vec<Value> = snippets
+        .iter()
+        .map(|s| serde_json::json!({"tool": "t", "rule": "r", "file": "f.c", "message": "m", "snippet": s}))
+        .collect();
+    serde_json::json!({"version": 1, "violations": violations}).to_string()
+}
+
+/// main holds a rules baseline of `x` and `y`; the build commit rewrites it to `now`, and the
+/// PR's diff lists it.
+fn baseline_change(now: &[&str]) -> (Env, Value) {
+    let e = Env::new();
+    fs::create_dir_all(e.root.join(".nightshift")).unwrap();
+    fs::write(
+        e.root.join(".nightshift/rules-baseline.json"),
+        rules_baseline(&["x", "y"]),
+    )
+    .unwrap();
+    git(&e.root, &["add", ".nightshift/rules-baseline.json"]);
+    git(&e.root, &["commit", "-q", "-m", "baseline"]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.ctl(
+        "edit",
+        &format!(
+            "printf '%s' '{}' > .nightshift/rules-baseline.json && git add .nightshift && echo unit >> work.txt",
+            rules_baseline(now)
+        ),
+    );
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.gh_file("diff-12.txt", ".nightshift/rules-baseline.json\n");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    (e, v)
+}
+
+/// #539: a unit that fixed a baselined violation and dropped its stale entry.
+#[test]
+fn a_baseline_that_only_loses_entries_merges_without_a_human() {
+    let (e, v) = baseline_change(&["y"]);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert!(e.gh_calls().contains("pr merge"));
+    assert!(run_log(&e).contains("\"baseline_shrinks\""), "{}", run_log(&e));
+    assert_eq!(v["phases"][1]["status"], "pass", "{v}");
+}
+
+#[test]
+fn a_baseline_that_gains_an_entry_needs_a_human_merge() {
+    let (e, v) = baseline_change(&["y", "z"]);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(
+        v["reason"],
+        "changes files that need human review; needs a human merge (.nightshift/rules-baseline.json)"
+    );
+    assert!(!e.gh_calls().contains("pr merge"));
+}
+
 #[test]
 fn a_failed_fetch_of_the_default_branch_needs_a_human_merge() {
     let e = Env::new();
