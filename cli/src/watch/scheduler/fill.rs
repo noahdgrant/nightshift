@@ -89,7 +89,9 @@ impl Scheduler<'_> {
         // Red main holds triage too: the fix issue is the night's only work. The pass asks before
         // each triage-only run, as the first of them can turn main red.
         let held = || self.main_ci().is_some_and(|m| m.holds_queue());
-        match triage::pass(repo, forge, loaded, self.plan.deadline, night, &held)? {
+        let mut run = |n, night: &mut Night| triage::run_here(repo, loaded, n, night);
+        let fac = &loaded.fac;
+        match triage::pass(forge, fac, self.plan.deadline, night, &held, &mut run)? {
             Some(triage::Halt::Stop(why)) => {
                 self.stop_all(&why);
                 return Ok(());
