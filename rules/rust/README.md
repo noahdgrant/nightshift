@@ -21,3 +21,7 @@ check.sh:   ./bad/src/lib.rs:1: error: this file contains an unclosed delimiter
 ```
 
 `ns rules check` then fails as broken, and `ns rules baseline` records nothing, as with the C pack (D56). Fix the errors and rerun. Lints, clippy's and rustc's (`dead_code`), stay findings.
+
+## Binary size ratchet
+
+`ratchet-binary-size.sh <bin> [<crate-dir>]` is an example ratchet (`docs/factory/run.md`, "Ratchets"): it builds the binary with the release profile and prints its size in bytes as the one line on stdout, so `ns ratchet check` fails a unit that grows it. It reads the executable's path from cargo's JSON messages, so a workspace or a `CARGO_TARGET_DIR` finds the right file. A failed build, an unknown binary or a missing `cargo` or `jq` makes it exit 1 with a message and print nothing. `install.sh` copies it, and `ratchet.toml` is its `[ratchets.binary-size]` table, which `ns-setup` offers to add to `.nightshift/nightshift.toml` with `{bin}` and `{crate}` filled in. `tests/run.sh` builds a small workspace and checks the script and the table; CI and `scripts/ci-local.sh` run it.

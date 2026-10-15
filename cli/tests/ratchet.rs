@@ -818,3 +818,21 @@ fn an_unknown_key_or_a_missing_command_is_a_usage_error_naming_it() {
     assert_eq!(code, Some(2), "{err}");
     assert!(err.contains("command"), "{err}");
 }
+
+#[test]
+fn every_rule_pack_test_that_runs_ns_ratchet_check_clears_the_gates_ratchet_variables() {
+    let rules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../rules");
+    let unset = "\nunset NS_RATCHET_FACTORY NS_RATCHET_STEADY NS_RATCHET_REPORT\n";
+    let mut checked = 0;
+    for pack in fs::read_dir(&rules).unwrap() {
+        let script = pack.unwrap().path().join("tests/run.sh");
+        let Ok(text) = fs::read_to_string(&script) else {
+            continue;
+        };
+        if text.contains("ratchet check") {
+            checked += 1;
+            assert!(text.contains(unset), "{} lacks{unset}", script.display());
+        }
+    }
+    assert!(checked >= 2, "{checked}");
+}
