@@ -701,3 +701,121 @@ fn a_ratchet_makes_the_gate_run_ns_ratchet_check() {
     assert_eq!(g.len(), 1, "{g:?}");
     assert_eq!(g[0]["green"], true);
 }
+
+/// main holds f.c with two lines the rule pack in stack.md flags, both in the rules baseline;
+/// the build commit runs `edit`.
+fn baselined_pack(edit: &str) -> Env {
+    let e = Env::new();
+    fs::write(e.root.join("f.c"), "bad one\nbad two\n").unwrap();
+    write_exe(
+        &e.root.join("lint.sh"),
+        "#!/bin/sh\ngrep -n bad f.c | sed 's/^\\([0-9]*\\):.*/f.c:\\1: bad/'\n",
+    );
+    fs::create_dir_all(e.root.join("docs/agents")).unwrap();
+    fs::write(
+        e.root.join("docs/agents/stack.md"),
+        "| Task | Command |\n|---|---|\n| rules | `./lint.sh` | 1 s |\n",
+    )
+    .unwrap();
+    let entry = |s: &str| {
+        serde_json::json!({"tool": "lint.sh", "rule": "", "file": "f.c", "message": "bad", "snippet": s})
+    };
+    let baseline = serde_json::json!({"version": 1, "violations": [entry("bad one"), entry("bad two")]});
+    fs::create_dir_all(e.root.join(".nightshift")).unwrap();
+    fs::write(
+        e.root.join(".nightshift/rules-baseline.json"),
+        serde_json::to_string_pretty(&baseline).unwrap() + "\n",
+    )
+    .unwrap();
+    git(&e.root, &["add", "."]);
+    git(&e.root, &["commit", "-q", "-m", "rule pack"]);
+    git(&e.root, &["push", "-q", "origin", "main"]);
+    e.ctl("edit", &format!("{edit} && echo unit >> work.txt"));
+    e.queue("build", &["pass:commit"]);
+    e
+}
+
+fn baselined_snippets(text: &str) -> Vec<String> {
+    let v: Value = serde_json::from_str(text).unwrap();
+    v["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["snippet"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn the_gate_after_build_commits_the_baseline_without_its_fixed_entries() {
+    let e = baselined_pack("sed -i '/bad one/d' f.c && git add f.c");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(e.calls(), ["triage", "build", "verify", "review", "ship"]);
+    let wt = e.worktree(UNIT);
+    assert_eq!(
+        git(&wt, &["log", "-1", "--format=%s"]),
+        "chore(rules): drop fixed entries from the rules baseline"
+    );
+    assert_eq!(
+        git(&wt, &["show", "--format=", "--name-only", "HEAD"]),
+        ".nightshift/rules-baseline.json"
+    );
+    let head = git(&wt, &["show", "HEAD:.nightshift/rules-baseline.json"]);
+    assert_eq!(baselined_snippets(&head), ["bad two"]);
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+    let build = fs::read_to_string(wt.join(".ns").join(UNIT).join("build.md")).unwrap();
+    let short = git(&wt, &["rev-parse", "--short", "HEAD"]);
+    assert!(build.contains(&format!("\nsha: {short}\n")), "{build}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 1, "{g:?}");
+    assert!(
+        g[0]["command"].as_str().unwrap().ends_with(" rules check --prune"),
+        "{g:?}"
+    );
+    let log = fs::read_to_string(e.root.join(".git/ns/runs.jsonl")).unwrap();
+    let pruned: Vec<Value> = log
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["event"] == "baseline_pruned")
+        .collect();
+    assert_eq!(pruned.len(), 1, "{log}");
+    assert_eq!(pruned[0]["phase"], "build");
+    assert_eq!(pruned[0]["to"].as_str(), Some(short.as_str()), "{log}");
+}
+
+#[test]
+fn a_gate_with_nothing_fixed_commits_nothing() {
+    let e = baselined_pack("true");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let wt = e.worktree(UNIT);
+    let subject = git(&wt, &["log", "-1", "--format=%s"]);
+    assert!(subject.starts_with("build "), "{subject}");
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn a_red_gate_leaves_the_baseline_as_the_branch_has_it() {
+    let e = baselined_pack("sed -i '/bad one/d' f.c && git add f.c");
+    e.factory(&format!(
+        "[ratchets.flash]\ncommand = \"cat {}\"\nbetter = \"lower\"\n",
+        e.ctrl.join("flash").display()
+    ));
+    fs::write(
+        e.root.join(".nightshift/ratchets.json"),
+        r#"{"version": 1, "values": {"flash": 100}}"#,
+    )
+    .unwrap();
+    e.ctl("flash", "120\n");
+    e.queue("build", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    let g = gate_events(&e);
+    assert!(g.iter().all(|g| g["green"] == false), "{g:?}");
+    let log = fs::read_to_string(g[0]["log"].as_str().unwrap()).unwrap();
+    assert!(log.contains("dropped 1 fixed entries"), "{log}");
+    let wt = e.worktree(UNIT);
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+    let head = git(&wt, &["show", "HEAD:.nightshift/rules-baseline.json"]);
+    assert_eq!(baselined_snippets(&head), ["bad one", "bad two"]);
+}

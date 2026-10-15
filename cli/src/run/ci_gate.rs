@@ -7,10 +7,14 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::json;
 
 use super::core::merge::{Gated, Red};
+use super::currency::set_fields;
 use super::merge::fetch_tip;
 use super::Ctx;
+use crate::factory::artifact_of;
+use crate::frontmatter;
 use crate::gate;
 use crate::git::{self, same_sha};
+use crate::rules::BASELINE;
 
 impl Ctx<'_> {
     /// Run the gate `cmd` at HEAD after `phase` when `trigger` calls for it. A stop during the
@@ -23,8 +27,60 @@ impl Ctx<'_> {
         phase: &str,
         attempt: u32,
     ) -> Result<Option<gate::Red>> {
-        let job = self.gate_job(gate_state, cmd, &self.worktree, self.head(), phase, attempt);
-        gate_state.after(trigger, &job, &|ev| self.log(ev))
+        let head = self.head();
+        let job = self.gate_job(
+            gate_state,
+            cmd,
+            &self.worktree,
+            head.clone(),
+            phase,
+            attempt,
+        );
+        let red = gate_state.after(trigger, &job, &|ev| self.log(ev));
+        let after_build = matches!(
+            trigger,
+            gate::Trigger::BuildPassed | gate::Trigger::BuildWroteNothing
+        );
+        if pruned(&self.worktree) {
+            if after_build && matches!(red, Ok(None)) {
+                self.commit_pruned(gate_state, phase, &head)?;
+            } else {
+                git::run(&self.worktree, &["checkout", "-q", "--", BASELINE])?;
+            }
+        }
+        red
+    }
+
+    /// Commit the rules baseline the green gate after `phase` at `head` pruned, so the PR carries
+    /// it, and move `phase`'s artifact from `head` to the commit. The commit only drops entries
+    /// the gate's own `ns rules check` matched to nothing, so the gate's verdict and the artifact
+    /// hold at it. It skips the hooks, as the full gate just checked the rest of the tree.
+    fn commit_pruned(&self, gate_state: &mut gate::Gate, phase: &str, head: &str) -> Result<()> {
+        let wt = &self.worktree;
+        git::run(
+            wt,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "-q",
+                "-m",
+                PRUNE_SUBJECT,
+                "--",
+                BASELINE,
+            ],
+        )?;
+        let to = self.head();
+        gate_state.carry_green(head, &to);
+        let art = self.artifacts.join(artifact_of(phase));
+        let written_at = fs::read_to_string(&art)
+            .ok()
+            .and_then(|t| frontmatter::field(&t, "sha"));
+        if written_at.is_some_and(|sha| same_sha(&sha, head)) {
+            set_fields(&art, &[("sha", to.clone())])?;
+        }
+        self.log(json!({"event": "baseline_pruned", "phase": phase, "from": head, "to": to}));
+        Ok(())
     }
 
     /// The gate `cmd` run in `worktree`, which holds `head`. A fast gate gets the paths that
@@ -66,6 +122,24 @@ impl Ctx<'_> {
                 night: self.gate.night.as_deref(),
             },
         }
+    }
+}
+
+/// The subject of the commit that drops fixed entries from the rules baseline.
+const PRUNE_SUBJECT: &str = "chore(rules): drop fixed entries from the rules baseline";
+
+/// Whether the rules baseline in `wt` differs from HEAD's only by entries `ns rules check
+/// --prune` dropped, as opposed to an edit a phase left behind.
+fn pruned(wt: &Path) -> bool {
+    let dirty = git::run(wt, &["status", "--porcelain", "--", BASELINE]);
+    if dirty.map_or(true, |d| d.is_empty()) {
+        return false;
+    }
+    let was = git::run(wt, &["show", &format!("HEAD:{BASELINE}")]);
+    let now = fs::read_to_string(wt.join(BASELINE));
+    match (was, now) {
+        (Ok(was), Ok(now)) => crate::rules::removal_only(&was, &now) == Ok(true),
+        _ => false,
     }
 }
 
@@ -308,6 +382,39 @@ fn check_out(wt: &Path, sha: &str) -> Result<()> {
 mod tests {
     use super::super::tests::{cloned, commit_all};
     use super::*;
+
+    fn baseline(snippets: &[&str]) -> String {
+        let v: Vec<serde_json::Value> = snippets
+            .iter()
+            .map(|s| json!({"tool": "t", "rule": "r", "file": "f.c", "message": "m", "snippet": s}))
+            .collect();
+        json!({"version": 1, "violations": v}).to_string()
+    }
+
+    /// Only a baseline that lost entries since HEAD reads as pruned: never a clean one, one a
+    /// phase grew or broke, or one HEAD doesn't track.
+    #[test]
+    fn pruned_is_a_tracked_baseline_that_only_lost_entries() {
+        let (_t, _origin, wt) = cloned();
+        assert!(!pruned(&wt));
+        let path = wt.join(BASELINE);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, baseline(&["x"])).unwrap();
+        assert!(!pruned(&wt), "untracked");
+        commit_all(&wt, "baseline");
+        assert!(!pruned(&wt), "clean");
+        for (text, want) in [
+            (baseline(&[]), true),
+            (baseline(&["x", "y"]), false),
+            (baseline(&["y"]), false),
+            ("{".to_string(), false),
+        ] {
+            fs::write(&path, &text).unwrap();
+            assert_eq!(pruned(&wt), want, "{text}");
+        }
+        fs::remove_file(&path).unwrap();
+        assert!(!pruned(&wt), "deleted");
+    }
 
     /// The local merge queue's scratch worktree is `ns` plumbing that commits nothing: its
     /// checkout and its merge run no hook, and the merge needs no identity of the user's. One a killed run left behind is replaced, and a drop

@@ -757,7 +757,7 @@ fn py_inventory_reaches_done(branch: &str) {
     assert_eq!(g[0]["green"], true, "{g:?}");
     let cmd = g[0]["command"].as_str().unwrap();
     assert!(
-        cmd.starts_with("(pytest -q) && ") && cmd.ends_with(" rules check"),
+        cmd.starts_with("(pytest -q) && ") && cmd.ends_with(" rules check --prune"),
         "{cmd}"
     );
     let log = fs::read_to_string(g[0]["log"].as_str().unwrap()).unwrap();

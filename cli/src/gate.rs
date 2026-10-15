@@ -24,13 +24,14 @@ const TAIL_BYTES: usize = 3000;
 const WINDOW_BYTES: u64 = 16 * 1024;
 
 /// `[phases.build] gate`, else the `ci-local` row of `<repo>/docs/agents/stack.md`, then
-/// `<ns> rules check` when that file has a `rules` row, then `<ns> ratchet check --human` when
+/// `<ns> rules check --prune` when that file has a `rules` row, then `<ns> ratchet check --human` when
 /// the factory defines a ratchet; none when there is none of them.
 pub fn command(fac: &Factory, repo_root: &Path, ns: &Path) -> Option<String> {
     let stack = fs::read_to_string(repo_root.join("docs/agents/stack.md")).unwrap_or_default();
     let base = fac.phase("build").gate.or_else(|| ci_local(&stack));
     let ns = shell_quote(&ns.to_string_lossy());
-    let rules = (!crate::rules::commands(&stack).is_empty()).then(|| format!("{ns} rules check"));
+    let rules =
+        (!crate::rules::commands(&stack).is_empty()).then(|| format!("{ns} rules check --prune"));
     let ratchet = (!fac.ratchets.is_empty()).then(|| format!("{ns} ratchet check --human"));
     let checks: Vec<String> = [rules, ratchet].into_iter().flatten().collect();
     match base {
@@ -365,6 +366,23 @@ impl Gate {
                 self.run_at_head(job, log)
             }
             Trigger::BuildWroteNothing => self.after_silent_build(job, log),
+        }
+    }
+
+    /// `ns run` moved HEAD from `from` to `to` with a commit that changes nothing the gate
+    /// checks: a green verdict at `from` holds at `to`.
+    pub fn carry_green(&mut self, from: &str, to: &str) {
+        if let Some(Verdict::Green { sha, .. }) = &mut self.verdict {
+            if same_sha(sha, from) {
+                *sha = to.to_string();
+            }
+        }
+        if self
+            .full_green
+            .as_deref()
+            .is_some_and(|g| same_sha(g, from))
+        {
+            self.full_green = Some(to.to_string());
         }
     }
 
