@@ -453,7 +453,7 @@ fn a_main_that_keeps_moving_takes_the_lock_once_at_the_cap_and_stops_past_the_ha
     assert_eq!(r.outcome, Outcome::Stuck, "{r:?}");
     assert_eq!(
         r.reason,
-        "the default branch moved 10 times during this PR's CI, the last 5 with the merge lock held (cap 10)"
+        "the default branch moved 11 times during this PR's CI, the last 6 with the merge lock held (cap 10)"
     );
     let attempts: Vec<&Value> = r
         .events("merge_base_moved")
