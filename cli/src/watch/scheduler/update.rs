@@ -3,6 +3,7 @@
 
 use super::{Drain, Scheduler};
 use crate::stop;
+use crate::watch::core::update::{self as core, HandOffStep, Idle};
 use crate::watch::self_update::{probe_state, short, Built, HandOff};
 use crate::watch::{fresh_base, skills_drain, sync_skills, Night, Tonight};
 
@@ -11,7 +12,7 @@ impl Scheduler<'_> {
     /// binary new units run lacks, and return a skills sync to drain for when it has skill changes
     /// the checkout lacks and a phase reads the installed skills.
     pub(super) fn check_base(&mut self, night: &Night) -> Option<Drain> {
-        if self.plan.update.is_none() && !night.skills_drain {
+        if !core::checks_base(self.plan.update.is_some(), night.skills_drain) {
             return None;
         }
         let repo = self.plan.repo;
@@ -53,32 +54,44 @@ impl Scheduler<'_> {
     /// A skills drain or an adopted `ns`, with nothing left running or paused, and no stop: time
     /// to sync or hand off.
     pub(super) fn ready_to_hand_off(&self) -> bool {
-        (self.draining.is_some() || self.plan.update.as_ref().is_some_and(|u| u.adopted()))
-            && self.running.is_empty()
-            && self.resume.is_empty()
-            && self.paused_until.is_none()
-            && self.stopping.is_none()
+        core::ready_to_hand_off(&self.idle())
+    }
+
+    fn idle(&self) -> Idle {
+        Idle {
+            draining: self.draining.is_some(),
+            adopted: self.plan.update.as_ref().is_some_and(|u| u.adopted()),
+            running: self.running.len(),
+            resuming: self.resume.len(),
+            paused: self.paused_until.is_some(),
+            stopping: self.stopping.is_some(),
+        }
     }
 
     /// Sync the skills drained for, else hand off to the adopted `ns`. A hand-off returns when
     /// its exec failed, which is logged and kept from being tried again, or when a stop came
     /// first and the loop's top winds down.
     pub(super) fn hand_off(&mut self, night: &mut Night, tonight: &Tonight) {
-        if let Some(Drain { base, to }) = self.draining.take() {
-            if stop::requested().is_some() {
-                return;
+        let stop = stop::requested().is_some();
+        match core::hand_off_step(&self.idle(), stop) {
+            HandOffStep::Nothing => {}
+            HandOffStep::DropDrain => self.draining = None,
+            HandOffStep::Sync => {
+                if let Some(Drain { base, to }) = self.draining.take() {
+                    sync_skills(self.plan.repo, &base, None, &mut night.skills_warned);
+                    self.skills_tried.insert(to);
+                }
             }
-            sync_skills(self.plan.repo, &base, None, &mut night.skills_warned);
-            self.skills_tried.insert(to);
-            return;
-        }
-        let carried = night.carry(self.plan.deadline, self.started, tonight);
-        let repo = self.plan.repo;
-        let Some(update) = self.plan.update.as_mut() else {
-            return;
-        };
-        if let HandOff::Failed(to, e) = update.hand_off(repo, &carried) {
-            update.give_up(repo, to, e);
+            HandOffStep::Exec => {
+                let carried = night.carry(self.plan.deadline, self.started, tonight);
+                let repo = self.plan.repo;
+                let Some(update) = self.plan.update.as_mut() else {
+                    return;
+                };
+                if let HandOff::Failed(to, e) = update.hand_off(repo, &carried) {
+                    update.give_up(repo, to, e);
+                }
+            }
         }
     }
 }

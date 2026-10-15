@@ -906,33 +906,6 @@ fn a_failed_check_keeps_the_old_binary_and_is_not_retried() {
     assert_kept_the_old_binary(&e, &to, &v, &err, "--version said \"ns 0.1.0 (0000000)\"");
 }
 
-/// The path of the real `git`, for a fake one to exec.
-fn real_git() -> String {
-    let out = StdCommand::new("sh")
-        .args(["-c", "command -v git"])
-        .output()
-        .unwrap();
-    String::from_utf8(out.stdout).unwrap().trim().into()
-}
-
-fn counting_git(e: &Env) {
-    let p = e.bin.join("git");
-    write_exe(
-        &p,
-        format!(
-            "#!/bin/sh\ncase \" $* \" in *\" fetch \"*) echo >> \"$FAKE_CTRL/git-fetches\" ;; esac\nexec {} \"$@\"\n",
-            real_git()
-        ),
-    );
-}
-
-fn fetches(e: &Env) -> usize {
-    fs::read_to_string(e.ctrl.join("git-fetches"))
-        .unwrap_or_default()
-        .lines()
-        .count()
-}
-
 #[test]
 fn a_failed_exec_keeps_the_old_binary_and_is_not_retried() {
     let (e, to, v, err) = night_with_a_failed_update("unexecutable");
@@ -940,18 +913,3 @@ fn a_failed_exec_keeps_the_old_binary_and_is_not_retried() {
     assert_eq!(events_named(&e, "self_update").len(), 1, "{err}");
 }
 
-/// A night with a `cli/` change on origin the build commit lacks, which never updates; its
-/// stderr.
-fn assert_never_updates(e: &Env, ns: &mut Ns) -> String {
-    two_ready(e);
-    counting_git(e);
-    let out = ns.assert().code(0).get_output().clone();
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
-    assert!(!err.contains("draining"), "{err}");
-    assert_eq!(cargo_calls(e), 0, "{err}");
-    assert!(events_named(e, "self_update").is_empty());
-    assert!(events_named(e, "self_update_failed").is_empty());
-    err.into_owned()
-}

@@ -17,6 +17,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::core::update::{self as core, BuildStep, Enabled, Exit};
 use super::{triage, Tonight};
 use crate::gate::stderr_tail;
 use crate::git::{self, Repo};
@@ -26,18 +27,19 @@ use crate::stop;
 
 const FLAG: &str = "--resume-night";
 
-/// The ceiling on the cargo build.
-const BUILD_CEILING: Duration = Duration::from_secs(30 * 60);
-/// The ceiling on each check of the staged binary.
-const CHECK_CEILING: Duration = Duration::from_secs(60);
+/// The ceiling on the cargo build, in milliseconds.
+const BUILD_CEILING_MS: i64 = 30 * 60 * 1000;
+/// The ceiling on each check of the staged binary, in milliseconds.
+const CHECK_CEILING_MS: i64 = 60 * 1000;
 /// Tests set this (milliseconds) to shorten both ceilings.
 const CEILING_ENV: &str = "NS_SELF_UPDATE_TIMEOUT_MS";
 
-fn ceiling(default: Duration) -> Duration {
-    std::env::var(CEILING_ENV)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .map_or(default, Duration::from_millis)
+fn ceiling_ms(default_ms: i64) -> i64 {
+    core::ceiling_ms(std::env::var(CEILING_ENV).ok().as_deref(), default_ms)
+}
+
+fn ceiling(default_ms: i64) -> Duration {
+    Duration::from_millis(u64::try_from(ceiling_ms(default_ms)).unwrap_or(0))
 }
 
 /// Run `cmd` to its end with its output in `log`, or kill it and its process group when a stop
@@ -58,12 +60,10 @@ fn run_bounded(mut cmd: Proc, ceiling: Duration, log: &Path) -> Result<(ExitStat
     }
 }
 
-/// The commit this `ns` was built from: `NS_BUILD_COMMIT` in the environment, which tests set,
-/// else the one `build.rs` stamped. `None` for a build from outside a git checkout, or an empty
-/// `NS_BUILD_COMMIT`.
-fn built_from() -> Option<String> {
-    let c = std::env::var("NS_BUILD_COMMIT").unwrap_or_else(|_| env!("NS_BUILD_COMMIT").into());
-    (!c.is_empty() && c != "unknown").then_some(c)
+/// The commit stamp of this `ns`: `NS_BUILD_COMMIT` in the environment, which tests set, else
+/// the one `build.rs` stamped.
+fn build_stamp() -> String {
+    std::env::var("NS_BUILD_COMMIT").unwrap_or_else(|_| env!("NS_BUILD_COMMIT").into())
 }
 
 /// Whether `root` is the nightshift source: its `cli/Cargo.toml` names the package `nightshift`.
@@ -120,7 +120,8 @@ struct Adopted {
 struct Build {
     to: String,
     child: Child,
-    deadline: Instant,
+    /// When its ceiling passes, in milliseconds of [`SelfUpdate::now`].
+    deadline: i64,
     ceiling: Duration,
     log: PathBuf,
 }
@@ -159,26 +160,41 @@ pub(super) struct SelfUpdate {
     adopted: Option<Adopted>,
     /// The build running now, at most one.
     building: Option<Build>,
+    /// What [`SelfUpdate::now`] counts from.
+    epoch: Instant,
 }
 
 impl SelfUpdate {
     /// Self-update for `repo`, or `None` when it is off: `off` (`--no-self-update`), another repo,
     /// or an `ns` with no build commit.
     pub fn new(repo: &Repo, off: bool, args: Vec<OsString>) -> Option<SelfUpdate> {
-        if off || !is_nightshift(&repo.root) {
-            return None;
-        }
-        let Some(from) = built_from() else {
-            eprintln!("ns watch: self-update off: this ns has no build commit");
-            return None;
+        let stamp = build_stamp();
+        let from = match core::enabled(off, !off && is_nightshift(&repo.root), &stamp) {
+            Enabled::Off => return None,
+            Enabled::NoBuildCommit => {
+                eprintln!("ns watch: self-update off: this ns has no build commit");
+                return None;
+            }
+            Enabled::From(from) => from.to_string(),
         };
-        Some(SelfUpdate {
+        Some(SelfUpdate::starting_from(from, args))
+    }
+
+    fn starting_from(from: String, args: Vec<OsString>) -> SelfUpdate {
+        SelfUpdate {
             from,
             failed: BTreeSet::new(),
             args,
             adopted: None,
             building: None,
-        })
+            epoch: Instant::now(),
+        }
+    }
+
+    /// Milliseconds since this self-update began, the clock its build ceiling counts on. Real
+    /// time even on a pinned night clock: a build takes real time.
+    fn now(&self) -> i64 {
+        i64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(i64::MAX)
     }
 
     /// The commit new units run: the adopted build's, else this `ns`'s.
@@ -213,18 +229,20 @@ impl SelfUpdate {
     /// commit new units run that hasn't failed tonight, announced on stderr. None while a build
     /// runs; a base or build commit git can't read gives none too.
     pub fn pending(&self, root: &Path, base: &str) -> Option<String> {
-        if self.building.is_some() {
-            return None;
-        }
-        let to = git::run(root, &["rev-parse", &format!("{base}^{{commit}}")]).ok()?;
-        if self.failed.contains(&to) {
-            return None;
-        }
-        let range = format!("{}..{to}", self.current());
-        let n = git::run(root, &["rev-list", "--count", &range, "--", "cli"]).ok()?;
-        if n == "0" {
-            return None;
-        }
+        let building = self.building.is_some();
+        let to = (!building)
+            .then(|| git::run(root, &["rev-parse", &format!("{base}^{{commit}}")]).ok())
+            .flatten();
+        let touched = to.as_deref().and_then(|to| {
+            let range = format!("{}..{to}", self.current());
+            let paths = git::run(
+                root,
+                &["log", "--no-renames", "--format=", "--name-only", &range],
+            )
+            .ok()?;
+            Some(paths.lines().map(str::to_string).collect::<Vec<_>>())
+        });
+        let to = core::to_build(building, &self.failed, to.as_deref(), touched.as_deref())?;
         eprintln!(
             "ns watch: {base} has cli/ changes since this ns was built ({} -> {}); building it while units run",
             short(self.current()),
@@ -238,12 +256,12 @@ impl SelfUpdate {
         eprintln!("ns watch: self-update: building {}", short(&to));
         match spawn_build(repo, &to) {
             Ok((child, log)) => {
-                let ceiling = ceiling(BUILD_CEILING);
+                let ms = ceiling_ms(BUILD_CEILING_MS);
                 self.building = Some(Build {
                     to,
                     child,
-                    deadline: Instant::now() + ceiling,
-                    ceiling,
+                    deadline: self.now().saturating_add(ms),
+                    ceiling: ceiling(BUILD_CEILING_MS),
                     log,
                 });
             }
@@ -253,27 +271,46 @@ impl SelfUpdate {
 
     /// The running build's end, once it ended, a stop came, or its ceiling passed (killed).
     pub fn poll(&mut self) -> Option<Built> {
+        let now = self.now();
         let b = self.building.as_mut()?;
-        if crate::stop::requested().is_some() {
-            let mut b = self.building.take()?;
-            b.kill();
-            return Some(Built::Stopped(b.to.clone()));
-        }
-        let done = match b.child.try_wait() {
-            Ok(Some(status)) if status.success() => Ok(()),
-            Ok(Some(status)) => {
+        // On a stop the build is killed unpolled: its group id is its own until it is reaped.
+        let stop = crate::stop::requested().is_some();
+        let waited = if stop { Ok(None) } else { b.child.try_wait() };
+        let exit = match &waited {
+            Ok(Some(status)) => Exit::Ended {
+                success: status.success(),
+            },
+            Ok(None) => Exit::Running,
+            Err(_) => Exit::Unreadable,
+        };
+        let done = match core::build_step(stop, exit, now, b.deadline) {
+            BuildStep::Wait => return None,
+            BuildStep::Stop => {
+                let mut b = self.building.take()?;
+                b.kill();
+                return Some(Built::Stopped(b.to.clone()));
+            }
+            BuildStep::Built => Ok(()),
+            BuildStep::Failed => {
                 let said = fs::read(&b.log)
                     .map(|t| warning_tail(&t))
                     .unwrap_or_default();
+                let status = waited
+                    .ok()
+                    .flatten()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
                 Err(anyhow!("cargo build: {status}: {said}"))
             }
-            Ok(None) if Instant::now() >= b.deadline => {
+            BuildStep::TimedOut => {
                 b.kill();
                 let s = b.ceiling.as_secs_f32().round();
                 Err(anyhow!("cargo build: timed out after {s}s"))
             }
-            Ok(None) => return None,
-            Err(e) => Err(anyhow!("cargo build: {e}")),
+            BuildStep::Unreadable => Err(anyhow!(
+                "cargo build: {}",
+                waited.err().map(|e| e.to_string()).unwrap_or_default()
+            )),
         };
         let b = self.building.take()?;
         Some(match done {
@@ -372,7 +409,7 @@ impl SelfUpdate {
         let log = staged.with_extension("log");
         let mut version = Proc::tool(staged);
         version.arg("--version");
-        let (status, said) = run_bounded(version, ceiling(CHECK_CEILING), &log)
+        let (status, said) = run_bounded(version, ceiling(CHECK_CEILING_MS), &log)
             .with_context(|| format!("{} --version", staged.display()))?;
         if !status.success() || !said.contains(to) {
             bail!("the new ns --version said {:?}, not {to}", said.trim());
@@ -386,7 +423,7 @@ impl SelfUpdate {
         if !self.args.iter().any(|a| a == "--dry-run") {
             dry.arg("--dry-run");
         }
-        let result = run_bounded(dry, ceiling(CHECK_CEILING), &log)
+        let result = run_bounded(dry, ceiling(CHECK_CEILING_MS), &log)
             .with_context(|| format!("{} watch --dry-run", staged.display()));
         let _ = fs::remove_file(&probe);
         let (status, said) = result?;
@@ -599,13 +636,7 @@ mod tests {
     }
 
     fn update() -> SelfUpdate {
-        SelfUpdate {
-            from: "a".into(),
-            failed: BTreeSet::new(),
-            args: Vec::new(),
-            adopted: None,
-            building: None,
-        }
+        SelfUpdate::starting_from("a".into(), Vec::new())
     }
 
     #[test]
@@ -632,6 +663,21 @@ mod tests {
         // With no build running, abandoning one says nothing and changes nothing.
         u.abandon("stopping");
         assert!(!u.building());
+    }
+
+    #[test]
+    fn only_a_cli_package_named_nightshift_is_the_nightshift_source() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_nightshift(dir.path()));
+        fs::create_dir(dir.path().join("cli")).unwrap();
+        for (toml, is) in [
+            ("[package]\nname = \"nightshift\"\n", true),
+            ("[package]\nname = \"other\"\n", false),
+            ("not toml [", false),
+        ] {
+            fs::write(dir.path().join("cli/Cargo.toml"), toml).unwrap();
+            assert_eq!(is_nightshift(dir.path()), is, "{toml}");
+        }
     }
 
     #[test]

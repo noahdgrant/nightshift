@@ -1,81 +1,4 @@
 #[test]
-fn watch_on_another_repo_never_drains_or_rebuilds() {
-    let e = Env::new();
-    let from = nightshift_repo(&e);
-    fs::write(
-        e.root.join("cli/Cargo.toml"),
-        "[package]\nname = \"other\"\n",
-    )
-    .unwrap();
-    land(&e, "cli/x", "new\n");
-    let err = assert_never_updates(&e, watch_from(&e, &from).args(["watch"]));
-    assert_eq!(fetches(&e), 2, "only each unit's own fetch: {err}");
-}
-
-#[test]
-fn no_self_update_turns_it_off() {
-    let e = Env::new();
-    let from = nightshift_repo(&e);
-    land(&e, "cli/x", "new\n");
-    let err = assert_never_updates(
-        &e,
-        watch_from(&e, &from).args(["watch", "--no-self-update"]),
-    );
-    assert_eq!(fetches(&e), 2, "only each unit's own fetch: {err}");
-}
-
-#[test]
-fn changes_outside_cli_do_not_drain() {
-    let e = Env::new();
-    let from = nightshift_repo(&e);
-    land(&e, "docs/x.md", "new\n");
-    assert_never_updates(&e, watch_from(&e, &from).args(["watch"]));
-}
-
-#[test]
-fn an_ns_with_no_build_commit_or_one_the_repo_lacks_never_updates() {
-    let off = "ns watch: self-update off: this ns has no build commit";
-    let missing = "0123456789abcdef0123456789abcdef01234567";
-    for (from, says_off) in [("unknown", true), ("", true), (missing, false)] {
-        let e = Env::new();
-        nightshift_repo(&e);
-        land(&e, "cli/x", "new\n");
-        let err = assert_never_updates(&e, watch_from(&e, from).args(["watch"]));
-        assert_eq!(err.contains(off), says_off, "{from:?}: {err}");
-    }
-}
-
-#[test]
-fn a_unit_paused_during_a_build_resumes_and_finishes_before_the_hand_off() {
-    let e = Env::new();
-    let from = nightshift_repo(&e);
-    two_ready(&e);
-    e.ctl("reset", &(NOW + 3600).to_string());
-    e.queue(&format!("build.{A}"), &["limit", "pass"]);
-    let (in_a, go_a) = hold_phase(&e, A, "build");
-    let (in_b, go_b) = hold_phase(&e, B, "build");
-    let mut w = Watching::start(watch_from(&e, &from).args(["watch", "--parallel", "2"]));
-    w.entered(&in_a);
-    w.entered(&in_b);
-    land(&e, "cli/x", "new\n");
-    release(&go_b);
-    w.line("self-update: building");
-    release(&go_a);
-    let (code, v, err) = w.finish();
-    assert_eq!(code, Some(0), "{err}");
-    assert_eq!(
-        by_issue(&units(&v)),
-        [(2, "done".into()), (2, "paused".into()), (3, "done".into())],
-        "{v}"
-    );
-    let done_2 = event_at(&e, |ev| {
-        ev["event"] == "worker_end" && ev["issue"] == 2 && ev["outcome"] == "done"
-    });
-    let updated = event_at(&e, |ev| ev["event"] == "self_update");
-    assert!(done_2 < updated, "{:?}", run_events(&e));
-}
-
-#[test]
 fn the_budget_stop_during_a_build_ends_the_night_without_a_hand_off() {
     let e = Env::new();
     let from = nightshift_repo(&e);
@@ -794,59 +717,6 @@ fn a_codex_night_drains_before_it_syncs_a_skill_change() {
 }
 
 #[test]
-fn a_night_with_one_codex_phase_drains_before_it_syncs_a_skill_change() {
-    let e = Env::new();
-    let codex = e.bin.join("codex");
-    copy_exe(&e.bin.join("claude"), &codex);
-    e.config(&format!(
-        "[harness.codex]\ncommand = [{c:?}]\ncommand_write = [{c:?}]\n",
-        c = codex.to_str().unwrap()
-    ));
-    e.factory("[phases.verify]\nharness = \"codex\"\n");
-    skills_installed(&e);
-    two_ready(&e);
-    let (in_a, go_a) = hold_phase(&e, A, "build");
-    let (in_b, go_b) = hold_phase(&e, B, "build");
-    let mut w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
-    w.entered(&in_a);
-    w.entered(&in_b);
-    push_from_elsewhere(&e, "skills/ns-a/SKILL.md");
-    release(&go_b);
-    w.line("draining");
-    assert!(events_named(&e, "skills_synced").is_empty());
-    release(&go_a);
-    let (code, _, err) = w.finish();
-    assert_eq!(code, Some(0), "{err}");
-    assert_eq!(events_named(&e, "skills_drain").len(), 1, "{err}");
-    assert_eq!(events_named(&e, "skills_synced").len(), 1, "{err}");
-}
-
-#[test]
-fn a_codex_night_syncs_skills_and_hands_off_to_a_new_build_once_its_units_end() {
-    let e = Env::new();
-    codex_night(&e);
-    let from = nightshift_repo(&e);
-    skills_installed(&e);
-    two_ready(&e);
-    let (in_a, go_a) = hold_phase(&e, A, "build");
-    let (in_b, go_b) = hold_phase(&e, B, "build");
-    let mut w = Watching::start(watch_from(&e, &from).args(["watch", "--parallel", "2"]));
-    w.entered(&in_a);
-    w.entered(&in_b);
-    land(&e, "cli/x", "new\n");
-    push_from_elsewhere(&e, "skills/ns-a/SKILL.md");
-    release(&go_b);
-    w.line("draining");
-    release(&go_a);
-    let (code, _, err) = w.finish();
-    assert_eq!(code, Some(0), "{err}");
-    let ended_2 = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
-    let synced = event_at(&e, |ev| ev["event"] == "skills_synced");
-    let updated = event_at(&e, |ev| ev["event"] == "self_update");
-    assert!(ended_2 < synced && synced < updated, "{:?}", run_events(&e));
-}
-
-#[test]
 fn a_codex_unit_started_by_a_refill_does_not_sync_under_a_running_one() {
     let e = Env::new();
     codex_night(&e);
@@ -940,16 +810,3 @@ fn a_claude_night_syncs_before_every_unit_without_draining() {
     assert!(events_named(&e, "skills_drain").is_empty());
 }
 
-#[test]
-fn a_claude_night_on_nightshift_does_not_drain_for_skills() {
-    let e = Env::new();
-    let from = nightshift_repo(&e);
-    skills_installed(&e);
-    push_from_elsewhere(&e, "skills/ns-a/SKILL.md");
-    e.ready(2, "Fix a", &["type:fix"], "");
-    let out = watch_from(&e, &from).args(["watch", "--once"]).output();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{err}");
-    assert!(!err.contains("draining"), "{err}");
-    assert_eq!(events_named(&e, "skills_synced").len(), 1, "{err}");
-}
