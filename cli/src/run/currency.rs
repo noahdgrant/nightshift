@@ -141,6 +141,14 @@ pub(super) fn archive_as(dir: &Path, file: &str, stem: &str) -> Result<Option<Pa
     if !src.exists() {
         return Ok(None);
     }
+    let dst = next_in_history(dir, stem, ".md")?;
+    fs::rename(&src, &dst)
+        .with_context(|| format!("cannot move {} to {}", src.display(), dst.display()))?;
+    Ok(Some(dst))
+}
+
+/// `<dir>/history/<stem>-<n><ext>`, n one past the highest already there; creates `history/`.
+fn next_in_history(dir: &Path, stem: &str, ext: &str) -> Result<PathBuf> {
     let hist = dir.join("history");
     fs::create_dir_all(&hist).with_context(|| format!("cannot create {}", hist.display()))?;
     let prefix = format!("{stem}-");
@@ -149,17 +157,28 @@ pub(super) fn archive_as(dir: &Path, file: &str, stem: &str) -> Result<Option<Pa
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             name.strip_prefix(&prefix)?
-                .strip_suffix(".md")?
+                .strip_suffix(ext)?
                 .parse::<u32>()
                 .ok()
         })
         .max()
         .unwrap_or(0)
         + 1;
-    let dst = hist.join(format!("{stem}-{next}.md"));
+    Ok(hist.join(format!("{stem}-{next}{ext}")))
+}
+
+/// Move a non-empty `evidence/` to `history/evidence-files-<n>/` and leave an empty one, so each
+/// verify attempt starts with none of an earlier attempt's files.
+fn archive_evidence(dir: &Path, moves: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
+    let src = dir.join("evidence");
+    if fs::read_dir(&src).map_or(true, |mut es| es.next().is_none()) {
+        return Ok(());
+    }
+    let dst = next_in_history(dir, "evidence-files", "")?;
     fs::rename(&src, &dst)
         .with_context(|| format!("cannot move {} to {}", src.display(), dst.display()))?;
-    Ok(Some(dst))
+    moves.push((src.clone(), dst));
+    fs::create_dir(&src).with_context(|| format!("cannot create {}", src.display()))
 }
 
 /// What [`archive_for`] changed before a phase, for [`restore`] to undo.
@@ -192,7 +211,8 @@ pub(super) fn restore(moves: &Moves) {
         };
     }
     for (src, dst) in moves.moved.iter().rev() {
-        if !src.exists() {
+        // An archived directory goes back over an empty one the attempt left.
+        if !src.exists() || fs::remove_dir(src).is_ok() {
             let _ = fs::rename(dst, src);
             // The directory an archived review record went to holds nothing else.
             if dst.file_name().is_some_and(|n| n == "cycles.json") {
@@ -212,6 +232,9 @@ pub fn archive_for(dir: &Path, phase: &str, s: &State) -> Result<Moves> {
     };
     for p in to_archive(phase, &now) {
         archive_file(dir, artifact_of(p), &mut moves.moved)?;
+    }
+    if phase == "verify" {
+        archive_evidence(dir, &mut moves.moved)?;
     }
     if matches!(phase, "review" | "review-fix") {
         let mut keep = vec![dir.join(crate::review_runs::FILE)];

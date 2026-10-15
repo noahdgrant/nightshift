@@ -40,7 +40,8 @@ python=$(python3 -I -c 'import sys; print("%d.%d" % sys.version_info[:2]); sys.e
 }
 
 # One tab-separated line per tool: name, version, install method, package (a download's url),
-# check command, bin and sha256. bin and sha256 come last, as tabs between empty fields collapse.
+# check command, the command a contributor runs to install it locally, bin and sha256. bin and
+# sha256 come last, as tabs between empty fields collapse.
 tools=$(python3 -I - "$pins" "$@" <<'PY'
 import pathlib, sys, tomllib
 pins = pathlib.Path(sys.argv[1])
@@ -63,27 +64,27 @@ for n in names:
         sys.exit(2)
     package = t.get("url", t.get("package", n)).replace("{version}", t["version"])
     bin = t.get("bin", "/usr/bin/" + package if t["install"] == "apt" else "").replace("{version}", t["version"])
-    print("\t".join([n, t["version"], t["install"], package, t["check"], bin, t.get("sha256", "")]))
+    host = t["check"].split()[0]
+    if t["install"] == "pip" and host != n:
+        # A plugin: its check runs its host, so it installs into the host's tool environment, at
+        # the host's pinned version when the host has a pin.
+        h = tools.get(host)
+        host = f"{h.get('package', host)}=={h['version']}" if h else host
+        fix = f"uv tool install --force {host} --with {package}=={t['version']}"
+    elif t["install"] == "pip":
+        fix = f"uv tool install {package}=={t['version']}"
+    elif t["install"] == "apt" and bin == f"/usr/bin/{n}":
+        fix = f"sudo apt-get install {package}"
+    elif t["install"] == "apt":
+        fix = f"sudo apt-get install {package} && sudo ln -sf {bin} /usr/local/bin/{n}"
+    elif t["install"] == "install-action":
+        fix = f"cargo install --locked {n}@{t['version']}"
+    else:
+        fix = f"scripts/ci-tools.sh install {n}"
+    print("\t".join([n, t["version"], t["install"], package, t["check"], fix, bin, t.get("sha256", "")]))
 PY
 )
 [ -n "$tools" ] || exit 0
-
-# The command a contributor runs to install a tool locally.
-local_install() {
-  local name=$1 version=$2 method=$3 package=$4 bin=$5
-  case $method in
-    pip) echo "uv tool install $package==$version" ;;
-    apt)
-      if [ "$bin" = "/usr/bin/$name" ]; then
-        echo "sudo apt-get install $package"
-      else
-        echo "sudo apt-get install $package && sudo ln -sf $bin /usr/local/bin/$name"
-      fi
-      ;;
-    install-action) echo "cargo install --locked $name@$version" ;;
-    download) echo "scripts/ci-tools.sh install $name" ;;
-  esac
-}
 
 # Fetch a download tool's zip unless the cache has it, check it against the pinned sha256, unpack
 # it, and link its bin into ~/.local/bin.
@@ -117,8 +118,8 @@ download() {
 
 if [ "$mode" = check ]; then
   failed=0
-  while IFS=$'\t' read -r name version method package cmd bin _; do
-    fix="install it with: $(local_install "$name" "$version" "$method" "$package" "$bin")"
+  while IFS=$'\t' read -r name version _ _ cmd fix _; do
+    fix="install it with: $fix"
     if ! command -v "${cmd%% *}" >/dev/null; then
       echo "ci-tools: $name is not on PATH; $fix" >&2
       failed=1
@@ -140,7 +141,7 @@ if [ "$mode" = check ]; then
 fi
 
 pip=() apt=() links=() action=() downloads=()
-while IFS=$'\t' read -r name version method package _ bin sha; do
+while IFS=$'\t' read -r name version method package _ fix bin sha; do
   case $method in
     pip) pip+=("$package==$version") ;;
     apt)
@@ -152,7 +153,7 @@ while IFS=$'\t' read -r name version method package _ bin sha; do
     download) downloads+=("$name"$'\t'"$version"$'\t'"$package"$'\t'"$bin"$'\t'"$sha") ;;
     install-action)
       [ -n "${GITHUB_OUTPUT:-}" ] || {
-        echo "ci-tools: $name installs with taiki-e/install-action, which runs only in GitHub Actions; locally: $(local_install "$name" "$version" "$method" "$package" "$bin")" >&2
+        echo "ci-tools: $name installs with taiki-e/install-action, which runs only in GitHub Actions; locally: $fix" >&2
         exit 1
       }
       action+=("$name@$version")
