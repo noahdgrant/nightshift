@@ -22,6 +22,7 @@ use crate::eval::parser::{ClaudeStreamJson, OutputParser};
 use crate::factory::{self, artifact_of};
 use crate::gate;
 use crate::git;
+use crate::harness;
 use crate::pin;
 use crate::review_runs::{self, ReviewRun};
 
@@ -108,6 +109,11 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
         }
     };
     env.push(("TMPDIR", tmp.to_string_lossy().into_owned()));
+    let private = ctx
+        .env
+        .private_tmp
+        .is_ok()
+        .then(|| harness::PrivateTmp::new(&tmp, &[&ctx.worktree, &ctx.common, &ctx.env.ns]));
     pin::write_settings(&ctx.common, &ctx.unit, &ctx.env.ns)?;
     let started = io.shared.clock.now();
     let r = run_harness(
@@ -119,6 +125,7 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
         &transcript,
         ctx.fac.subscription(),
         ctx.env.cap,
+        private.as_ref(),
     );
     drop(held);
     if let Some(sig) = r.as_ref().err().and(crate::stop::requested()) {

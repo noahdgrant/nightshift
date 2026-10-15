@@ -29,6 +29,7 @@ pub(in crate::run) fn ctx_in<'a>(
             cap: None,
             ns: PathBuf::from("ns"),
             tmp: common.to_path_buf(),
+            private_tmp: Ok(()),
         },
     }
 }

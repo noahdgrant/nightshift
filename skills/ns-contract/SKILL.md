@@ -181,7 +181,7 @@ Never kill by name or pattern (`pkill`, `killall`, `pgrep ... | xargs kill`): th
 
 ## Scratch files
 
-A phase never writes a fixed `/tmp/<name>` path: another unit running in parallel writes the same file. Make a unique one with `mktemp` (`f=$(mktemp)`, `d=$(mktemp -d)`), or use a name under `$TMPDIR`. `ns run` gives each phase its own `TMPDIR` and removes it when the phase passes, and `mktemp` uses it. A snippet in a skill follows the same rule, and `ns lint` fails a skill that names a fixed `/tmp/<name>` path.
+A phase never writes a fixed `/tmp/<name>` path: another unit running in parallel writes the same file. Make a unique one with `mktemp` (`f=$(mktemp)`, `d=$(mktemp -d)`), or use a name under `$TMPDIR`. `ns run` gives each phase its own `TMPDIR` and removes it when the phase passes, and `mktemp` uses it. Where bubblewrap (`bwrap`) runs, that `TMPDIR` is also the phase's `/tmp`, so a stray `/tmp/<name>` lands there and the host's `/tmp` files are hidden. Without it the phase shares the host's `/tmp`, and `ns run` logs `tmp_not_isolated`, so the rule still holds. A snippet in a skill follows the same rule, and `ns lint` fails a skill that names a fixed `/tmp/<name>` path.
 
 ## Evidence
 

@@ -1,4 +1,5 @@
-//! Running one phase: its harness command under a timeout and memory cap, in a private `TMPDIR`.
+//! Running one phase: its harness command under a timeout and memory cap, in a private `TMPDIR`
+//! that is also its `/tmp` where bubblewrap runs.
 
 use std::fs::{self, File};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
@@ -70,6 +71,7 @@ pub(super) fn run_harness(
     transcript: &Path,
     subscription: bool,
     cap: Option<&Cap>,
+    tmp: Option<&harness::PrivateTmp>,
 ) -> Result<PhaseRun> {
     if let Some(d) = transcript.parent() {
         fs::create_dir_all(d).with_context(|| format!("cannot create {}", d.display()))?;
@@ -85,9 +87,9 @@ pub(super) fn run_harness(
         )
         .into()
     };
-    // Under a cap the spawned program is systemd-run or prlimit, so a missing harness would
-    // be a failed attempt rather than the usage error: look for it first.
-    if cap.is_some() {
+    // Under a cap or bwrap the spawned program is a launcher, so a missing harness would be a
+    // failed attempt rather than the usage error: look for it first.
+    if cap.is_some() || tmp.is_some() {
         let found = if argv[0].contains(std::path::MAIN_SEPARATOR) {
             crate::which::which(&cwd.join(&argv[0]).to_string_lossy())
         } else {
@@ -97,7 +99,7 @@ pub(super) fn run_harness(
             return Err(not_found());
         }
     }
-    let (mut cmd, watch) = harness::capped(cap, &argv[0], &argv[1..], subscription, |c| {
+    let (mut cmd, watch) = harness::capped(cap, tmp, &argv[0], &argv[1..], subscription, |c| {
         c.envs(env.iter().map(|(k, v)| (k, v)));
     })?;
     crate::cpus::apply(&mut cmd);
@@ -107,7 +109,14 @@ pub(super) fn run_harness(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_found()),
         Err(e) => return Err(e).with_context(|| format!("cannot start {}", argv[0])),
     };
-    let (status, timed_out) = (ended.status, ended.timed_out());
+    let status = ended.status.map(|s| {
+        if tmp.is_some() {
+            harness::unwrapped_status(s)
+        } else {
+            s
+        }
+    });
+    let timed_out = ended.timed_out();
     let killed = watch
         .cut_short(status, timed_out, || {
             String::from_utf8_lossy(&gate::read_window(&stderr)).into_owned()
