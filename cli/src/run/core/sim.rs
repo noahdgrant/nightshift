@@ -7,8 +7,7 @@
 //! `next=<phase>` and `find=<id>,<id>` set the artifact's `next` and `findings` (a fix cycle's
 //! `fix.md` lists the ids it was handed, and the pass after it counts an attempt for each),
 //! `movemain` moves the default branch, `sleep` times the phase out, `kill` kills it with SIGKILL
-//! after it wrote its artifact, and any other text lands in
-//! the artifact's body (`base moved` as its first line). The guards' words: `pushmain` pushes
+//! before it writes an artifact, and any other text lands in the artifact's body (`base moved` as its first line). The guards' words: `pushmain` pushes
 //! HEAD to the default branch, `landmain` lands [`Sim::land_pr`] there and rebases onto it,
 //! `merge` merges the unit's PR, `noorigin` loses the origin, and `touch=<path>` makes the
 //! phase's commit change `path`, for a red gate's culprit. The merge step's: `dirty` and `clean`
