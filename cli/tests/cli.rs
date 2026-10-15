@@ -1550,6 +1550,31 @@ fn doctor_skips_the_hooks_check_without_a_githooks_dir() {
     }
 }
 
+#[test]
+fn doctor_shows_the_quality_remote() {
+    let (_tmp, root) = repo();
+    let outside = tempfile::tempdir().unwrap();
+    let quality = |dir: &Path| {
+        doctor_report(
+            ns().current_dir(dir)
+                .env("GIT_CEILING_DIRECTORIES", outside.path())
+                .arg("doctor")
+                .assert()
+                .get_output(),
+        )["quality"]
+            .clone()
+    };
+    assert_eq!(quality(&root), serde_json::json!({"remote": "origin"}));
+    fs::create_dir(root.join(".nightshift")).unwrap();
+    fs::write(
+        root.join(".nightshift/nightshift.toml"),
+        "[quality]\nremote = \"none\"\n",
+    )
+    .unwrap();
+    assert_eq!(quality(&root), serde_json::json!({"remote": "none"}));
+    assert_eq!(quality(outside.path()), Value::Null);
+}
+
 fn executable(path: &Path, body: &str) {
     common::write_exe(path, format!("#!/bin/sh\n{body}\n"));
 }

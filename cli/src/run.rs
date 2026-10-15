@@ -805,7 +805,12 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
             pr,
             outcome: Some(result.outcome.label().to_string()),
         };
-        let ev = crate::quality::record_unit(&repo, &ctx.worktree, &meta);
+        let ev = crate::quality::record_unit(
+            &repo,
+            &crate::quality::Where::loaded(&ctx.fac.quality),
+            &ctx.worktree,
+            &meta,
+        );
         record_saved = ev["error"].is_null();
         ctx.log(ev);
     }

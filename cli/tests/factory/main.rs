@@ -47,3 +47,4 @@ include!("skills_sync_and_merge_gate.rs");
 include!("merge_gate_and_labels.rs");
 include!("merge_update_skip.rs");
 include!("run_review_loop.rs");
+include!("quality_remote.rs");
