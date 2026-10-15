@@ -147,6 +147,9 @@ fn drive_loop(io: &mut Io<'_, '_>) -> Result<Finish> {
         })),
         "cpus": io.shared.cpus,
     }));
+    if let Err(why) = &ctx.env.private_tmp {
+        ctx.log(json!({"event": "tmp_not_isolated", "reason": why}));
+    }
     let settings = settings(ctx.fac, io.args);
     let mut state = State::default();
     let mut current: Option<Current> = None;
