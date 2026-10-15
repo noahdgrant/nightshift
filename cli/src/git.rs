@@ -308,11 +308,31 @@ fn unit_lines(cwd: &Path, base: &str, sha: &str) -> Option<Vec<String>> {
     lines(sha)
 }
 
+/// The files `sha`'s own changes touch, from [`unit_start`]: each path as it is, unquoted, and
+/// both ends of a rename.
+pub fn unit_files(cwd: &Path, base: &str, sha: &str) -> Option<Vec<String>> {
+    let start = unit_start(cwd, base, sha)?;
+    let out = run(
+        cwd,
+        &["diff", "--name-only", "-z", "--no-renames", &start, sha],
+    )
+    .ok()?;
+    Some(
+        out.split('\0')
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
 /// Where `sha`'s own changes start: the newest common ancestor of `sha` with `base` and with every
 /// commit merged into `sha` since that is already in the base. A merge of the base brings in its
 /// newer commits even when the `base` ref is behind them, as after `git pull origin <base>`; a
 /// merged-in parent that is not an ancestor of the base is the unit's own work.
 fn unit_start(cwd: &Path, base: &str, sha: &str) -> Option<String> {
+    if sha.is_empty() || sha.starts_with('-') || base.starts_with('-') {
+        return None;
+    }
     let base = freshest(cwd, base);
     let not_base = format!("^{base}");
     let merges = run(

@@ -61,17 +61,24 @@ While building, apply these principles:
 - [Minimize reader load](../ns-principle-minimize-reader-load/SKILL.md) before each commit: collapse one-caller wrappers, shrink mutable state.
 - [Contract first](../ns-principle-contract-first/SKILL.md) when a slice adds or changes an interface (a public API, a schema, a wire format, CLI flags or JSON output): write the contract and its test before the code.
 - [Hyrum's law](../ns-principle-hyrums-law/SKILL.md) when a slice changes anything a caller can observe: keep the old fields and behaviour, and break only deliberately, with a version and a line in `build.md`.
-- [Keep scope tight](../ns-principle-keep-scope-tight/SKILL.md) on every diff: work outside the brief goes in `build.md` as a `file:` line (Open risks, below).
+- [Keep scope tight](../ns-principle-keep-scope-tight/SKILL.md) on every diff: fix the diff's fallout and small old bugs in the files it touches, and file the rest as `file:` lines (Open risks, below).
 - [Push back](../ns-principle-push-back/SKILL.md) when the brief asks for something the code or a test shows is wrong.
 
-**Fix the class.** When the brief lists Instances, fix every one it covers, each with its own red test. Leave an instance marked filed separately to its issue. Then add a **guard** for the class where one is practical: a lint or `ast-grep` rule that flags the faulty construct, a test that checks every instance at once, or a type or shared helper that makes the defect unwritable. Record the guard, or why none is practical, under Class guard in `build.md`. An instance you find that the brief missed is a `file:` line.
+**Fix the class.** When the brief lists Instances, fix every one it covers, each with its own red test. Leave an instance marked filed separately to its issue. Then add a **guard** for the class where one is practical: a lint or `ast-grep` rule that flags the faulty construct, a test that checks every instance at once, or a type or shared helper that makes the defect unwritable. Record the guard, or why none is practical, under Class guard in `build.md`. An instance of the class that the brief missed is the unit's to fix too, with its own red test. It becomes a `file:` line only when fixing it would add more than about 150 changed lines, tagged `too-big: <lines>`.
 
-**Open risks** come in two kinds, and each line in `build.md` starts with its kind:
+**Findings outside the brief** come in three kinds. Sort each one as you find it:
 
-- `file:` a concrete defect or missing work outside the unit's scope, with its location and the evidence you saw. `ns-ship` files it as a `needs-triage` issue when it opens the PR, and writes the issue number back.
+- **Fallout** is caused by this diff: consumers of a new event, config key or format; docs and citations it makes stale; baseline entries; helper copies it adds; a file or function it pushes over the size bar; a form of a new ban it leaves out. Fix every one before the gate, and record it as a `fallout:` line naming its commit. Build never leaves a `fallout:` line open.
+- **An old bug in a touched file** is pre-existing, in a file the diff already changes. Fix it in the unit, with its own commit and red test, when that takes about 30 changed lines or fewer. A larger one is a `file:` line tagged `too-big: <lines>`.
+- **The rest** is pre-existing and outside the diff's files, or larger than these bounds: a `file:` line tagged `unrelated: <reason>`, or `too-big: <lines>` when it is past a bound.
+
+**Open risks** lines in `build.md` start with their kind:
+
+- `fallout:` fallout this unit fixed: what the diff caused, where, and the commit that fixed it.
+- `file:` a concrete defect or missing work outside the unit's scope, with its location and the evidence you saw. It ends with one tag: `unrelated: <reason>` for a pre-existing defect the diff has nothing to do with, or `too-big: <lines>` for one past a bound above. On a file the diff touches, `unrelated:` holds only when the defect lies outside that file's code (in another file the line names, say), and `ns artifact check` rejects a line on a touched file that has neither tag. `ns-ship` files it as a `needs-triage` issue when it opens the PR, and writes the issue number back.
 - `note:` a note about this unit only: an untested path, a seam not reached ("verify covers it"), a docs conflict.
 
-`ns-ship`, not build, later rewrites a `file:` line to `filed: #<n>` or `unfiled: <reason>`. Build writes only `file:` and `note:`.
+`ns-ship`, not build, later rewrites a `file:` line to `filed: #<n>` or `unfiled: <reason>`. Build writes only `fallout:`, `file:` and `note:`.
 
 **Size.** Build every acceptance criterion whatever the diff's size, past the soft limit too ([unit size](../ns-contract/SKILL.md#target-repo-configuration)). A large unit is review's prompt to suggest a split, never a reason to stop.
 
@@ -144,7 +151,8 @@ Branches: <n> listed, all tested. One line per branch: <file:line> <branch>: <te
 <what changed and why>, or "none"
 
 ## Open risks
-- file: <defect or missing work outside the scope>: <location, evidence>
+- fallout: <what the diff caused>: <location>, fixed in <commit>
+- file: <defect or missing work outside the scope>: <location, evidence>[, unrelated: <reason> | , too-big: <lines>]
 - note: <untested path, seam not reached, anything else about this unit>
 - filed: #<n> (written by ns-ship in place of a file: line, never by build)
 - unfiled: <reason> (written by ns-ship when the tracker was unreachable, never by build)

@@ -84,6 +84,9 @@ Panel: <full | reduced>, because <the size rule that chose it; for reduced, whet
 ## Suggestion
 ### S1. ...
 
+## Fallout
+- fallout: <Suggestion ID>: `path/to/file.py:42`: <what is left>
+
 ## Mutation check
 | Mutation | Location | Command | Result |
 |---|---|---|---|

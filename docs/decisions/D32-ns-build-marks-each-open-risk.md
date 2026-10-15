@@ -3,6 +3,7 @@ id: D32
 title: "ns-build marks each open risk as file: or note:"
 issue: 168
 date: 2026-10-10
+amended_by: [ADR-747]
 ---
 
 # D32: ns-build marks each open risk as file: or note:

@@ -1,0 +1,109 @@
+description = "Fix brief for Warehouse.stock_levels counting expired reservations (seeded defect (b)) whose Instances section lists only stock_levels. Setup commits Warehouse.low_stock with the same unfiltered sum (low-stock.patch, defect (g)), which the brief's narrow search misses. ns-build must fix the missed sibling too, with its own test, keep the suite green, and mention low_stock in build.md without filing it."
+fixture = "py-inventory"
+skills = ["ns-build"]
+extra_skills = [
+  "ns-contract",
+  "ns-tdd",
+  "ns-review",
+  "ns-principle-test-behavior-not-implementation",
+  "ns-principle-sequence-verifiable-units",
+  "ns-principle-subtract-before-you-add",
+  "ns-principle-laziness-protocol",
+  "ns-principle-fix-root-causes",
+  "ns-principle-attack-the-premise",
+  "ns-principle-minimize-reader-load",
+  "ns-principle-keep-scope-tight",
+  "ns-principle-contract-first",
+  "ns-principle-hyrums-law",
+  "ns-principle-guard-the-context-window",
+]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Build unit 6-expired-holds. You are already in its worktree, on branch ns/6-expired-holds, and the brief is .ns/6-expired-holds/brief.md. The repo has no remote, so skip the fetch and rebase. gates: auto. Nobody is around to answer questions. Stop after writing build.md: don't verify, review or ship.
+"""
+
+[setup]
+commands = [
+  "git apply ../low-stock.patch",
+  "git add src tests && git commit -q -m 'feat(warehouse): list items low on stock'",
+  "git checkout -q -b ns/6-expired-holds",
+  "mkdir -p .ns/6-expired-holds && cp ../brief.md .ns/6-expired-holds/",
+]
+
+[[check]]
+type = "command"
+run = "python3 -m pytest -q"
+expect_exit = 0
+
+[[check]]
+type = "fails_on_base"
+run = "python3 -m pytest -q {changed_tests}"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/6-expired-holds/build.md"
+key = "status"
+equals = "pass"
+
+[[check]]
+type = "diff_scope"
+allow = ["src/**", "tests/**", ".ns/**"]
+
+[[check]]
+# Lenient: build.md names low_stock somewhere, and no Open risks line files it.
+type = "command"
+run = '''
+python3 - <<'PYEOF'
+import re, sys
+text = open(".ns/6-expired-holds/build.md", encoding="utf-8").read()
+if "low_stock" not in text:
+    sys.exit("build.md never mentions low_stock")
+m = re.search(r"(?ms)^## Open risks\s*$(.*?)(?=^## |\Z)", text)
+risks = m.group(1) if m else ""
+for block in re.split(r"(?m)^(?=\s{0,3}[-*]\s)", risks):
+    if re.match(r"(?i)^\s*[-*]?\s*`?file:", block) and "low_stock" in block:
+        sys.exit("low_stock is filed, not fixed: " + " ".join(block.split()))
+print("low_stock recorded and not filed")
+PYEOF
+'''
+expect_exit = 0
+
+[[check]]
+# Hidden acceptance test, outside the repo: both reports leave out an expired reservation.
+type = "command"
+run = '''
+T=$(mktemp -d) && cat > "$T/test_expired_holds_acceptance.py" <<'PYEOF'
+from datetime import datetime, timedelta
+
+from inventory import Warehouse
+
+T0 = datetime(2026, 4, 1, 10, 0)
+
+
+def make():
+    w = Warehouse()
+    w.add_item("PIN-4", "4 mm dowel pin")
+    w.receive("PIN-4", 10)
+    w.reserve("PIN-4", 8, now=T0, ttl=timedelta(minutes=10))
+    return w
+
+
+def test_stock_levels_leave_out_expired_holds():
+    (level,) = make().stock_levels(T0 + timedelta(minutes=10))
+    assert (level.reserved, level.available) == (0, 10)
+
+
+def test_low_stock_leaves_out_expired_holds():
+    w = make()
+    assert w.low_stock(T0, threshold=3) == ["PIN-4"]
+    assert w.low_stock(T0 + timedelta(minutes=10), threshold=3) == []
+PYEOF
+PYTHONPATH="$PWD/src" python3 -m pytest -q -p no:cacheprovider --rootdir "$T" "$T/test_expired_holds_acceptance.py"; s=$?; rm -rf "$T"; exit $s
+'''
+expect_exit = 0
+
+[[check]]
+type = "judge"
+rubric = "The brief lists only Warehouse.stock_levels, but Warehouse.low_stock has the same unfiltered sum over expired reservations. Did build find low_stock, fix it in this unit through the same active-reservation path as stock_levels (not a second copy of the expiry filter), test it after a reservation expires, and say in build.md that it fixed an instance the brief missed, rather than filing it or leaving it?"
+required = false
