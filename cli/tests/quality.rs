@@ -1203,6 +1203,19 @@ fn an_import_to_a_missing_named_remote_waits_in_the_outbox_and_names_the_remote(
 }
 
 #[test]
+fn a_factory_file_that_does_not_load_reads_the_records_from_origin() {
+    let f = fixture();
+    with_origin(&f);
+    write(
+        f.root.join(".nightshift/nightshift.toml"),
+        "[quality]\nremote = \"none\"\nbroken = [\n",
+    );
+    let v = quality(&f, &[]);
+    assert_eq!(v["records"]["remote"], "origin");
+    assert_eq!(v["records"]["fetched"], true);
+}
+
+#[test]
 fn a_quality_remote_of_none_keeps_the_records_local_and_never_touches_origin() {
     let f = fixture();
     let origin = with_origin(&f);

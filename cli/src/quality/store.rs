@@ -706,9 +706,14 @@ mod tests {
         ));
         assert_eq!(tracked(&s.repo, "records").unwrap(), "x\n");
         assert_eq!(tracked(&s.repo, "origin").unwrap(), "");
-        let other = clone(&s.base, &records, "other");
-        let tip = fetch(&other, "origin").unwrap().unwrap();
-        assert_eq!(g(&other, &["rev-parse", &tracking("origin")]), tip);
+        let other = clone(&s.base, &s.remote, "other");
+        g(
+            &other,
+            &["remote", "add", "records", records.to_str().unwrap()],
+        );
+        let tip = fetch(&other, "records").unwrap().unwrap();
+        assert_eq!(g(&other, &["rev-parse", &tracking("records")]), tip);
+        assert_eq!(tracked(&other, "records").unwrap(), "x\n");
     }
 
     #[test]
