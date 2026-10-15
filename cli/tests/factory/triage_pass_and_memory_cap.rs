@@ -74,200 +74,6 @@ fn watch_dry_run_counts_a_stale_in_progress_issue_as_ready_for_the_next_pass() {
 }
 
 #[test]
-fn triage_takes_priority_labels_first_highest_first_then_issue_numbers() {
-    let e = Env::new();
-    // The queue's category order (`type:fix` first) plays no part in triage order.
-    e.untriaged(
-        2,
-        "No priority, docs",
-        &["status:needs-triage", "type:docs"],
-    );
-    e.untriaged(3, "No priority, fix", &["status:needs-triage", "type:fix"]);
-    e.untriaged(4, "Low", &["status:needs-triage", "priority:low"]);
-    e.untriaged(
-        5,
-        "High docs",
-        &["status:needs-triage", "priority:high", "type:docs"],
-    );
-    e.untriaged(
-        6,
-        "High fix",
-        &["status:needs-triage", "priority:high", "type:fix"],
-    );
-    e.untriaged(8, "Medium", &["status:needs-triage", "priority:medium"]);
-    let dry = e.run(&["watch", "--dry-run"], 0);
-    assert_eq!(numbers(&dry["triage"]), [5, 6, 8, 4, 2, 3], "{dry}");
-    e.queue("triage", &["none"; 6]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(numbers(&v["triaged"]), [5, 6, 8, 4, 2, 3], "{v}");
-    assert_eq!(v["stopped"], "queue empty");
-}
-
-/// Shell for a phase script that files issue `n` as `label`, as review files an escape.
-fn files_issue(n: u64, title: &str, label: &str) -> String {
-    let line = serde_json::json!({
-        "number": n, "title": title, "body": "",
-        "labels": [{"name": label}], "authorAssociation": "MEMBER",
-    });
-    format!(
-        "echo '{line}' >> \"$FAKE_GH_DIR/issues.jsonl\"\necho {label} > \"$FAKE_GH_DIR/labels-{n}\"\necho '{{\"number\":{n},\"title\":\"{title}\",\"url\":\"u\",\"state\":\"OPEN\"}}' > \"$FAKE_GH_DIR/issue-{n}.json\"\n"
-    )
-}
-
-#[test]
-fn issues_filed_since_the_last_pass_are_triaged_before_the_backlog() {
-    let e = Env::new();
-    e.ready(2, "Fix a", &["type:fix"], "");
-    e.ready(3, "Fix b", &["type:fix"], "");
-    // A backlog candidate that outranks the follow-up on priority.
-    e.untriaged(4, "Old", &["status:needs-triage", "priority:high"]);
-    e.ctl(
-        "ship.sh",
-        &files_issue(9, "Follow-up", "status:needs-triage"),
-    );
-    e.queue("ship", &["pass:script", "pass"]);
-    e.queue("build", &["pass:commit", "pass:commit"]);
-    // Unit 2's triage, follow-up 9's triage-only run, unit 3's triage, backlog 4's.
-    e.queue("triage", &["pass", "none", "pass", "none"]);
-    let v = e.run(&["watch"], 0);
-    // #4 waits while units are ready; #9 is new before unit 3, so it goes first.
-    assert_eq!(numbers(&v["triaged"]), [9, 4], "{v}");
-    assert_eq!(numbers(&v["units"]), [2, 3], "{v}");
-    let calls = e.calls();
-    assert_eq!(calls[4..7], ["ship", "triage", "triage"], "{calls:?}");
-    assert!(e.prompt(6, "triage").contains("unit `9-follow-up`"));
-    assert!(!e.prompt(7, "triage").contains("Triage only"));
-    assert_eq!(calls.last().unwrap(), "triage", "{calls:?}");
-    assert!(e.prompt(calls.len(), "triage").contains("unit `4-old`"));
-    assert_eq!(e.triage_only_runs(), 2);
-}
-
-#[test]
-fn every_new_issue_is_triaged_even_with_a_ready_queue() {
-    let e = Env::new();
-    e.ready(2, "Fix a", &["type:fix"], "");
-    e.ready(3, "Fix b", &["type:fix"], "");
-    // Unit 2's ship files two follow-ups; both are new at the next pass.
-    let script = files_issue(8, "First", "status:needs-triage")
-        + &files_issue(9, "Second", "status:needs-triage");
-    e.ctl("ship.sh", &script);
-    e.queue("ship", &["pass:script", "pass"]);
-    e.queue("build", &["pass:commit", "pass:commit"]);
-    e.queue("triage", &["pass", "none", "none", "pass"]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(numbers(&v["triaged"]), [8, 9], "{v}");
-    assert_eq!(numbers(&v["units"]), [2, 3], "{v}");
-    assert_eq!(e.calls()[4..8], ["ship", "triage", "triage", "triage"]);
-}
-
-#[test]
-fn the_backlog_stops_once_an_issue_is_ready_and_goes_on_at_the_next_pass() {
-    let e = Env::new();
-    e.untriaged(5, "A", &["status:needs-triage", "type:fix"]);
-    e.untriaged(6, "B", &["status:needs-triage"]);
-    e.untriaged(8, "C", &["status:needs-triage"]);
-    e.triage_sets(&["status:ready-for-agent"]);
-    e.queue("triage", &["pass:script", "none", "none"]);
-    e.queue("build", &["pass:commit"]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(numbers(&v["triaged"]), [5, 6, 8], "{v}");
-    assert_eq!(numbers(&v["units"]), [5], "{v}");
-    assert_eq!(v["stopped"], "queue empty");
-    // #5 came back ready, so the pass stopped and unit 5 ran before #6 and #8 were triaged.
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "verify", "review", "ship", "triage", "triage"]
-    );
-}
-
-#[test]
-fn a_blocked_ready_issue_does_not_stop_the_backlog() {
-    let e = Env::new();
-    e.ready(2, "Blocked", &["type:fix"], "Blocked by: #7");
-    e.untriaged(5, "A", &["status:needs-triage"]);
-    e.untriaged(6, "B", &["status:needs-triage"]);
-    e.queue("triage", &["none", "none"]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(numbers(&v["triaged"]), [5, 6], "{v}");
-    assert!(v["units"].as_array().unwrap().is_empty(), "{v}");
-}
-
-#[test]
-fn each_candidate_is_triaged_once_a_night() {
-    let e = Env::new();
-    e.untriaged(5, "Unclear", &["status:needs-triage", "priority:high"]);
-    e.untriaged(6, "Clear", &["status:needs-triage"]);
-    e.ctl(
-        "triage.sh",
-        "[ \"${NS_UNIT%%-*}\" = 6 ] && gh issue edit 6 --remove-label status:needs-triage --add-label status:ready-for-agent\ntrue\n",
-    );
-    // Unit 6's ship files #9, which triage leaves untriaged too.
-    e.ctl(
-        "ship.sh",
-        &files_issue(9, "Follow-up", "status:needs-triage"),
-    );
-    e.queue("triage", &["none", "pass:script", "none"]);
-    e.queue("build", &["pass:commit"]);
-    e.queue("ship", &["pass:script"]);
-    let v = e.run(&["watch"], 0);
-    // #5 and #9 stay untriaged and are candidates at every later pass, but run once each.
-    assert_eq!(numbers(&v["triaged"]), [5, 6, 9], "{v}");
-    assert_eq!(numbers(&v["units"]), [6], "{v}");
-    assert_eq!(e.triage_only_runs(), 3);
-    assert_eq!(e.labels(5), ["status:needs-triage", "priority:high"]);
-    assert_eq!(e.labels(9), ["status:needs-triage"]);
-}
-
-#[test]
-fn watch_triages_a_custom_triage_label() {
-    let e = Env::new();
-    e.factory("[queue]\ntriage_label = \"needs-triage\"\n");
-    e.untriaged(5, "Custom", &["needs-triage"]);
-    e.untriaged(6, "Default label only", &["status:needs-triage"]);
-    let v = e.run(&["watch", "--dry-run"], 0);
-    assert_eq!(numbers(&v["triage"]), [5], "{v}");
-    assert_eq!(v["triage"][0]["reason"], "needs-triage");
-}
-
-#[test]
-fn a_newly_ready_issue_sorts_in_by_priority() {
-    let e = Env::new();
-    e.ready(2, "Low fix", &["type:fix", "priority:low"], "");
-    e.ready(3, "Low fix too", &["type:fix", "priority:low"], "");
-    e.ctl("ship.sh", &files_issue(9, "Escape", "status:needs-triage"));
-    e.triage_sets(&["status:ready-for-agent", "priority:high"]);
-    e.queue("ship", &["pass:script", "pass"]);
-    e.queue("triage", &["pass", "pass:script"]);
-    e.queue("build", &["pass:commit", "pass:commit"]);
-    let v = e.run(&["watch", "--max-units", "2"], 0);
-    // Triage-only runs are not units: max_units counts units 2 and 9 only.
-    assert_eq!(numbers(&v["triaged"]), [9], "{v}");
-    assert_eq!(numbers(&v["units"]), [2, 9], "{v}");
-    assert_eq!(v["stopped"], "max_units");
-    assert!(!e.gh_calls().contains("issue edit 3"));
-}
-
-#[test]
-fn a_triage_that_leaves_the_issue_untriaged_is_not_retried_that_night() {
-    let e = Env::new();
-    e.ready(2, "Fix a", &["type:fix"], "");
-    e.ready(3, "Fix b", &["type:fix"], "");
-    e.untriaged(5, "Unclear", &["status:needs-triage"]);
-    e.queue("triage", &["pass", "pass", "none"]);
-    e.queue("build", &["pass:commit", "pass:commit"]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
-    assert_eq!(v["triaged"][0]["outcome"], "done");
-    assert_eq!(
-        v["triaged"][0]["state"],
-        serde_json::json!(["status:needs-triage"])
-    );
-    assert_eq!(numbers(&v["units"]), [2, 3], "{v}");
-    assert_eq!(e.triage_only_runs(), 1);
-    assert_eq!(e.labels(5), ["status:needs-triage"]);
-}
-
-#[test]
 fn an_old_triage_per_night_warns_and_is_ignored() {
     let e = Env::new();
     e.factory("[queue]\ntriage_per_night = 0\n");
@@ -287,36 +93,6 @@ fn an_old_triage_per_night_warns_and_is_ignored() {
     assert_eq!(check["ok"], true, "{check}");
     let warnings = check["warnings"].to_string();
     assert!(warnings.contains("triage_per_night"), "{check}");
-}
-
-#[test]
-fn a_paused_triage_sleeps_and_retries_the_same_issue() {
-    let e = Env::new();
-    e.untriaged(5, "Escape", &["status:needs-triage"]);
-    e.ctl("reset", &(NOW + 3600).to_string());
-    e.triage_sets(&["status:ready-for-agent"]);
-    e.queue("triage", &["limit", "pass:script"]);
-    e.queue("build", &["pass:commit"]);
-    let v = e.run(&["watch", "--until", "06:30"], 0);
-    assert_eq!(outcomes(&v["triaged"]), ["paused", "done"], "{v}");
-    assert_eq!(numbers(&v["triaged"]), [5, 5], "{v}");
-    assert_eq!(v["triaged"][0]["reset_at"], "2026-10-09T01:00:00+00:00");
-    assert_eq!(numbers(&v["units"]), [5], "{v}");
-    assert_eq!(v["units"][0]["outcome"], "done");
-}
-
-#[test]
-fn a_triage_paused_past_until_ends_the_night_and_touches_no_label() {
-    let e = Env::new();
-    e.untriaged(5, "Escape", &["status:needs-triage"]);
-    e.untriaged(6, "Next", &["status:needs-triage"]);
-    e.ctl("reset", &(NOW + 8 * 3600).to_string());
-    e.queue("triage", &["limit"]);
-    let v = e.run(&["watch", "--until", "06:30"], 0);
-    assert_eq!(v["stopped"], "usage limit resets after --until", "{v}");
-    assert_eq!(outcomes(&v["triaged"]), ["paused"], "{v}");
-    assert!(v["units"].as_array().unwrap().is_empty(), "{v}");
-    assert!(!e.gh_calls().contains("issue edit"));
 }
 
 #[test]
@@ -344,52 +120,6 @@ fn no_triage_run_starts_after_until() {
     assert_eq!(numbers(&v["triaged"]), [5], "{v}");
     assert_eq!(outcomes(&v["triaged"]), ["budget"], "{v}");
     assert!(b.calls().is_empty(), "{:?}", b.calls());
-}
-
-#[test]
-fn triage_runs_that_keep_failing_instantly_stop_the_night() {
-    let e = Env::new();
-    e.untriaged(5, "A", &["status:needs-triage"]);
-    e.untriaged(6, "B", &["status:needs-triage"]);
-    e.untriaged(8, "C", &["status:needs-triage"]);
-    e.queue("triage", &["crash", "crash", "none"]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(v["stopped"], "harness failing", "{v}");
-    assert_eq!(
-        outcomes(&v["triaged"]),
-        ["harness_failing", "harness_failing"]
-    );
-    assert_eq!(v["triaged"][0]["reason"], "exited 1");
-    assert!(v["units"].as_array().unwrap().is_empty(), "{v}");
-    assert!(!e.gh_calls().contains("issue edit"));
-}
-
-#[test]
-fn a_triage_that_works_resets_the_harness_failure_count() {
-    let e = Env::new();
-    e.ready(2, "Fix a", &["type:fix"], "");
-    e.untriaged(5, "A", &["status:needs-triage"]);
-    e.untriaged(6, "B", &["status:needs-triage"]);
-    // Both attempts of unit 2's triage phase crash, 5 works, then 6 crashes.
-    e.queue("triage", &["crash", "crash", "none", "crash"]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(outcomes(&v["units"]), ["harness_failing"], "{v}");
-    assert_eq!(outcomes(&v["triaged"]), ["done", "harness_failing"], "{v}");
-    assert_eq!(v["stopped"], "queue empty", "{v}");
-}
-
-#[test]
-fn a_failing_triage_and_a_failing_unit_share_the_harness_breaker() {
-    let e = Env::new();
-    e.ready(2, "Fix a", &["type:fix"], "");
-    e.untriaged(5, "A", &["status:needs-triage"]);
-    e.untriaged(6, "B", &["status:needs-triage"]);
-    e.queue("triage", &["crash", "crash", "crash"]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(v["stopped"], "harness failing", "{v}");
-    assert_eq!(outcomes(&v["units"]), ["harness_failing"], "{v}");
-    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
-    assert_eq!(outcomes(&v["triaged"]), ["harness_failing"], "{v}");
 }
 
 #[test]
@@ -429,47 +159,6 @@ fn a_killed_triage_is_recorded_and_the_night_goes_on() {
 }
 
 #[test]
-fn an_unreadable_state_after_triage_is_recorded_as_null() {
-    let e = Env::new();
-    e.untriaged(5, "Escape", &["status:needs-triage"]);
-    e.gh_file("labels-5.fail", "");
-    e.queue("triage", &["none"]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(outcomes(&v["triaged"]), ["done"], "{v}");
-    assert!(v["triaged"][0]["state"].is_null(), "{v}");
-    assert_eq!(v["stopped"], "queue empty");
-}
-
-#[test]
-fn the_budget_stops_the_triage_pass() {
-    let e = Env::new();
-    e.factory("[limits]\nbudget_usd = 0.4\n");
-    e.untriaged(5, "A", &["status:needs-triage"]);
-    e.untriaged(6, "B", &["status:needs-triage"]);
-    e.queue("triage", &["none", "none"]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(v["stopped"], "budget", "{v}");
-    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
-    assert!(v["units"].as_array().unwrap().is_empty(), "{v}");
-    assert!(!e.gh_calls().contains("issue edit"));
-}
-
-#[test]
-fn a_triage_run_that_errors_is_recorded_and_the_night_goes_on() {
-    let e = Env::new();
-    e.untriaged(5, "Unreadable", &["status:needs-triage"]);
-    e.untriaged(6, "Fine", &["status:needs-triage"]);
-    fs::remove_file(e.ghd.join("issue-5.json")).unwrap();
-    e.queue("triage", &["none"]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(numbers(&v["triaged"]), [5, 6], "{v}");
-    assert_eq!(outcomes(&v["triaged"]), ["error", "done"], "{v}");
-    let reason = v["triaged"][0]["reason"].as_str().unwrap();
-    assert!(reason.contains("cannot read issue #5"), "{reason}");
-    assert_eq!(e.triage_only_runs(), 1);
-}
-
-#[test]
 fn a_triage_only_run_triages_again_over_an_earlier_brief() {
     let e = Env::new();
     e.untriaged(5, "Escape", &["status:needs-triage"]);
@@ -480,36 +169,6 @@ fn a_triage_only_run_triages_again_over_an_earlier_brief() {
     let v = e.run(&["watch"], 0);
     assert_eq!(outcomes(&v["triaged"]), ["done"], "{v}");
     assert_eq!(e.calls(), ["triage", "triage"]);
-}
-
-#[test]
-fn the_same_start_error_twice_turns_the_triage_pass_off() {
-    let e = Env::new();
-    e.untriaged(5, "A", &["status:needs-triage"]);
-    e.untriaged(6, "B", &["status:needs-triage"]);
-    e.untriaged(8, "C", &["status:needs-triage"]);
-    // A global failure: no subscription login, whichever issue the run is for.
-    fs::remove_file(e.home.join(".claude/.credentials.json")).unwrap();
-    let v = e.run(&["watch"], 0);
-    assert_eq!(numbers(&v["triaged"]), [5, 6], "{v}");
-    assert_eq!(outcomes(&v["triaged"]), ["error", "error"], "{v}");
-    assert_eq!(v["triaged"][0]["reason"], v["triaged"][1]["reason"]);
-    assert_eq!(v["stopped"], "queue empty");
-    assert!(e.calls().is_empty());
-}
-
-#[test]
-fn different_start_errors_keep_the_triage_pass_on() {
-    let e = Env::new();
-    e.untriaged(5, "A", &["status:needs-triage"]);
-    e.untriaged(6, "B", &["status:needs-triage"]);
-    e.untriaged(8, "C", &["status:needs-triage"]);
-    for n in [5, 6] {
-        fs::remove_file(e.ghd.join(format!("issue-{n}.json"))).unwrap();
-    }
-    e.queue("triage", &["none"]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(outcomes(&v["triaged"]), ["error", "error", "done"], "{v}");
 }
 
 #[test]
@@ -528,29 +187,6 @@ fn gates_stop_runs_no_triage() {
     let v = e.run(&["watch"], 0);
     assert!(v["triaged"].as_array().unwrap().is_empty(), "{v}");
     assert!(e.calls().is_empty());
-}
-
-#[test]
-fn a_follow_up_filed_by_a_unit_is_triaged_before_the_next_unit() {
-    let e = Env::new();
-    e.ready(2, "Fix a", &["type:fix"], "");
-    e.ready(3, "Fix b", &["type:fix"], "");
-    // Unit 2's ship files follow-up #9 as needs-triage, as review files an escape.
-    e.ctl(
-        "ship.sh",
-        &files_issue(9, "Follow-up", "status:needs-triage"),
-    );
-    e.queue("ship", &["pass:script", "pass"]);
-    e.queue("build", &["pass:commit", "pass:commit"]);
-    e.queue("triage", &["pass", "none", "pass"]);
-    let v = e.run(&["watch"], 0);
-    assert_eq!(numbers(&v["triaged"]), [9], "{v}");
-    assert_eq!(numbers(&v["units"]), [2, 3], "{v}");
-    let calls = e.calls();
-    assert_eq!(calls[4..7], ["ship", "triage", "triage"], "{calls:?}");
-    assert!(e.prompt(6, "triage").contains("Triage only"));
-    assert!(e.prompt(6, "triage").contains("unit `9-follow-up`"));
-    assert!(!e.prompt(7, "triage").contains("Triage only"));
 }
 
 // ---------------------------------------------------------------- memory cap

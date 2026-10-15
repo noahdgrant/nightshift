@@ -22,10 +22,11 @@ use crate::watch::core::red::{self as core_red, Gate, Note, Red, MAIN_RED_UNFIXE
 use crate::watch::core::settle::{self as core_settle, SettleAct, SettleFacts};
 use crate::watch::forge::fake::FakeForge;
 use crate::watch::transitions::{self, Event, State};
-use crate::watch::{fix_main, queue, unit_id, Issue, Night, PAUSED_PAST_UNTIL};
+use crate::watch::{fix_main, queue, triage, unit_id, Issue, Night, PAUSED_PAST_UNTIL};
 
 mod red;
 mod settle;
+mod triage_pass;
 
 /// The ready label of the default queue.
 pub(super) const READY: &str = "status:ready-for-agent";
@@ -50,6 +51,10 @@ pub(super) enum Said {
     /// The warning that the fix issue for this head is closed and the queue stays held.
     Shut,
 }
+
+/// A triage-only run of an issue, given the forge to edit as the run's phase would: the fields
+/// of its result, or why it failed to start.
+pub(super) type TriageRun = Box<dyn FnMut(u64, &FakeForge) -> Result<Value>>;
 
 /// One night of `ns watch`, run serially in process.
 pub(super) struct Sim {
@@ -81,6 +86,10 @@ pub(super) struct Sim {
     pub warnings: Vec<String>,
     /// The issues claimed, in order.
     pub claimed: Vec<u64>,
+    /// The night's triage-only runs; `None` runs no triage pass.
+    pub triage: Option<TriageRun>,
+    /// What happened, in order: `triage <n>`, `claim <n>` and `end <n>`.
+    pub timeline: Vec<String>,
 }
 
 impl Sim {
@@ -91,7 +100,9 @@ impl Sim {
             root: dir.path().to_path_buf(),
             common_dir: dir.path().join(".git"),
         };
+        let night = Night::new();
         Sim {
+            now: night.shared.clock.now(),
             forge: FakeForge {
                 live: true,
                 ..FakeForge::default()
@@ -99,13 +110,12 @@ impl Sim {
             fac: Factory::default(),
             _dir: dir,
             repo,
-            night: Night::new(),
+            night,
             parallel: 1,
             max_units: None,
             over: None,
             deadline: None,
             signal: false,
-            now: 1_000_000,
             running: Vec::new(),
             resume: Vec::new(),
             stopping: None,
@@ -117,6 +127,8 @@ impl Sim {
             said: Vec::new(),
             warnings: Vec::new(),
             claimed: Vec::new(),
+            triage: None,
+            timeline: Vec::new(),
         }
     }
 
@@ -132,6 +144,27 @@ impl Sim {
             body: String::new(),
             team: true,
         });
+    }
+
+    /// A team issue `n` under `labels` alone, none of them the ready label.
+    pub fn untriaged(&mut self, n: u64, title: &str, labels: &[&str]) {
+        let ls: Vec<String> = labels.iter().map(|l| l.to_string()).collect();
+        self.forge.labels.borrow_mut().insert(n, ls.clone());
+        self.forge.issues.push(Issue {
+            number: n,
+            title: title.into(),
+            labels: ls,
+            body: String::new(),
+            team: true,
+        });
+    }
+
+    /// The issue and outcome of each triage-only run, in order.
+    pub fn triaged(&self) -> Vec<(u64, String)> {
+        let recs = &self.night.triage.records;
+        let num = |r: &Value| r["issue"].as_u64().unwrap();
+        let out = |r: &Value| r["outcome"].as_str().unwrap().to_string();
+        recs.iter().map(|r| (num(r), out(r))).collect()
     }
 
     /// Issue `n`'s labels now.
@@ -174,10 +207,47 @@ impl Sim {
                     self.running.push(issue);
                 }
                 OpenAct::Stop(why) => self.stopping = Some(why),
-                OpenAct::Triage => return self.claim_ready(),
+                OpenAct::Triage => {
+                    match self.triage_pass()? {
+                        Some(triage::Halt::Stop(why)) => self.stop_all(&why),
+                        Some(triage::Halt::Paused(reset)) => self.pause(reset),
+                        None => return self.claim_ready(),
+                    }
+                    return Ok(());
+                }
             }
         }
         Ok(())
+    }
+
+    /// The triage pass, its runs given by [`Sim::triage`].
+    fn triage_pass(&mut self) -> Result<Option<triage::Halt>> {
+        let Some(given) = self.triage.as_mut() else {
+            return Ok(None);
+        };
+        let (forge, fac, timeline) = (&self.forge, &self.fac, &mut self.timeline);
+        let held = || ci::read(forge, fac).is_ok_and(|m| m.holds_queue());
+        let mut run = |n: u64, night: &mut Night| -> Result<RunResult> {
+            timeline.push(format!("triage {n}"));
+            let mut v = json!({"unit": format!("{n}-triage"), "reason": "why"});
+            let fields = given(n, forge)?;
+            v.as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            let r = RunResult::from_json(v).expect("a run result");
+            night.shared.add_spend(&r.unit, r.cost_usd)?;
+            Ok(r)
+        };
+        triage::pass(forge, fac, self.deadline, &mut self.night, &held, &mut run)
+    }
+
+    /// Pause every unit until `reset`, or the latest reset tonight; past `--until`, stop.
+    fn pause(&mut self, reset: i64) {
+        let until = self.paused_until.map_or(reset, |p| p.max(reset));
+        self.paused_until = Some(until);
+        if self.deadline.is_some_and(|d| until >= d) {
+            self.stop_all(PAUSED_PAST_UNTIL);
+        }
     }
 
     fn claims(&self) -> Claims {
@@ -270,6 +340,7 @@ impl Sim {
             return Err(e);
         }
         self.claimed.push(n);
+        self.timeline.push(format!("claim {n}"));
         self.running.push(issue);
         self.started += 1;
         Ok(())
@@ -284,6 +355,7 @@ impl Sim {
             .position(|i| i.number == n)
             .expect("running");
         let issue = self.running.remove(at);
+        self.timeline.push(format!("end {n}"));
         let mut v = json!({"unit": unit_id(&issue), "reason": "why"});
         v.as_object_mut()
             .unwrap()
@@ -321,11 +393,7 @@ impl Sim {
                 SettleAct::StopAll(why) => self.stop_all(&why),
                 SettleAct::Pause(reset) => {
                     self.resume.push(issue.clone());
-                    let until = self.paused_until.map_or(reset, |p| p.max(reset));
-                    self.paused_until = Some(until);
-                    if self.deadline.is_some_and(|d| until >= d) {
-                        self.stop_all(PAUSED_PAST_UNTIL);
-                    }
+                    self.pause(reset);
                 }
                 SettleAct::Record {
                     outcome, finished, ..

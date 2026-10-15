@@ -355,42 +355,6 @@ fn watch_with_main_red_files_one_fix_issue_and_starts_only_it() {
 }
 
 #[test]
-fn watch_with_main_red_runs_no_triage_only_run() {
-    let e = Env::new();
-    e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
-    main_red(&e);
-    let v = e.run(&["watch", "--max-units", "3"], 0);
-    assert_eq!(e.triage_only_runs(), 0);
-    assert!(v["triaged"].as_array().unwrap().is_empty(), "{v}");
-    assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
-}
-
-#[test]
-fn watch_stops_triaging_when_main_turns_red_after_a_triage_only_run() {
-    let e = Env::new();
-    e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
-    e.untriaged(6, "Fix f", &["status:needs-triage", "type:fix"]);
-    main_ci(&e, &[], &[("test", "COMPLETED", "SUCCESS")]);
-    e.gh_file(
-        "main-ci.red",
-        &main_ci_at(MAIN_SHA, &[], &[("test", "COMPLETED", "FAILURE")]),
-    );
-    // #5's triage-only run edits its issue, and main is red from then on.
-    e.gh_file(
-        "hook.sh",
-        "case \"$*\" in *\"issue edit 5 \"*) cp \"$d/main-ci.red\" \"$d/main-ci.json\" ;; esac\n",
-    );
-    e.triage_sets(&["status:needs-info"]);
-    e.queue("triage.5-fix-e", &["pass:script"]);
-    e.queue("triage.6-fix-f", &["none"]);
-    let v = e.run(&["watch", "--max-units", "3"], 0);
-    assert_eq!(e.triage_only_runs(), 1, "{:?}", e.calls());
-    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
-    assert_eq!(by_issue(&units(&v)), each(&[100], "done"), "{v}");
-    assert_eq!(e.gh_calls().matches("issue create").count(), 1);
-}
-
-#[test]
 fn a_resumed_night_holds_at_its_first_fill_when_main_is_red() {
     let e = Env::new();
     e.ready(2, "Fix a", &["type:fix"], "");

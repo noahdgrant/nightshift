@@ -22,6 +22,8 @@ use crate::watch::Issue;
 /// With `live`, the fake lists what its edits made: an issue under the labels `labels` holds for
 /// it (else its own), none it closed, and each issue it filed, unless `unlisted_filed`. The PR
 /// labels added and removed (`(pr, label, added)`) and the PR comments are kept in order.
+/// `moved_main`, once set, is main's head from then on, for a test that moves main mid-call; a
+/// call named `labels` in `fails` fails too.
 #[derive(Default)]
 pub struct FakeForge {
     pub issues: Vec<Issue>,
@@ -47,6 +49,7 @@ pub struct FakeForge {
     pub unlisted_filed: bool,
     pub pr_labels: RefCell<Vec<(u64, String, bool)>>,
     pub pr_comments: RefCell<Vec<(u64, String)>>,
+    pub moved_main: RefCell<Option<HeadChecks>>,
 }
 
 impl FakeForge {
@@ -160,6 +163,7 @@ impl Forge for FakeForge {
         Ok(())
     }
     fn labels(&self, n: u64) -> Result<Vec<String>> {
+        self.fail("labels")?;
         Ok(self.labels.borrow().get(&n).cloned().unwrap_or_default())
     }
     fn edit_labels(&self, n: u64, remove: &[String], add: Option<&str>) -> Result<()> {
@@ -205,7 +209,11 @@ impl Forge for FakeForge {
     }
     fn main_checks(&self) -> Result<HeadChecks> {
         self.fail("main_checks")?;
-        Ok(self.main.clone())
+        Ok(self
+            .moved_main
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| self.main.clone()))
     }
     fn create_issue(&self, title: &str, body: &Post, labels: &[&str]) -> Result<u64> {
         self.fail("create_issue")?;
