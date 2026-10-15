@@ -371,11 +371,14 @@ pub struct PhaseSettings {
 }
 
 impl Factory {
+    /// The settings a run of phase `name` uses: those of `[phases.<config_phase(name)>]`, under
+    /// `name`.
     pub fn phase(&self, name: &str) -> PhaseSettings {
-        let p = self.phases.get(name).cloned().unwrap_or_default();
+        let key = config_phase(name);
+        let p = self.phases.get(key).cloned().unwrap_or_default();
         PhaseSettings {
             name: name.to_string(),
-            skill: p.skill.unwrap_or_else(|| format!("ns-{name}")),
+            skill: p.skill.unwrap_or_else(|| format!("ns-{key}")),
             harness: p.harness.unwrap_or_else(|| self.defaults.harness.clone()),
             model: p.model.or_else(|| self.defaults.model.clone()),
             timeout_minutes: p.timeout_minutes.unwrap_or(self.defaults.timeout_minutes),

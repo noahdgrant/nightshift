@@ -505,3 +505,12 @@ fn review_fix_runs_with_reviews_settings_and_writes_fix_md() {
     assert_eq!(artifact_of("review-fix"), "fix.md");
     assert!(RUN_PHASES.iter().all(|p| PHASES.contains(&config_phase(p))));
 }
+
+#[test]
+fn a_fix_cycle_takes_reviews_settings_under_its_own_name() {
+    let f = parse("[phases.review]\nrunner = \"bench\"\nmax_attempts = 7\n").unwrap();
+    let p = f.phase("review-fix");
+    assert_eq!(p.name, "review-fix");
+    assert_eq!(p.skill, "ns-review");
+    assert_eq!((p.runner.as_deref(), p.max_attempts), (Some("bench"), 7));
+}

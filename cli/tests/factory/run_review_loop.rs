@@ -204,3 +204,48 @@ fn a_fix_cycle_that_breaks_ns_record_ends_the_unit_stuck_and_counts_as_no_cycle(
     let wt = e.worktree(UNIT).join(format!(".ns/{UNIT}"));
     assert!(!wt.join("fix.md").exists() && wt.join("history/fix-unrecorded-1.md").is_file());
 }
+
+#[test]
+fn a_fix_cycle_holds_the_locks_of_reviews_runner() {
+    let e = Env::new();
+    let locks = e.base.join("locks");
+    e.factory("[phases.review]\nrunner = \"bench\"\n");
+    e.runner("bench", "kind = \"bench\"\nlocks = [\"bench-1\"]\n");
+    e.config(&format!("[runners]\nlock_dir = {:?}\n", locks.to_str().unwrap()));
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["fail", "pass"]);
+    e.ctl("review.fronts", &format!("{OPEN_I1}\n"));
+    e.queue("review-fix", &["pass:script"]);
+    e.ctl("review-fix.fronts", &format!("{FIXED_I1}\n"));
+    let seen = e.ctrl.join("seen");
+    e.ctl(
+        "review-fix.sh",
+        &format!(
+            "flock -n {l:?} true && echo free > {seen:?} || echo held > {seen:?}\n",
+            l = locks.join("bench-1.lock"),
+        ),
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(fs::read_to_string(&seen).unwrap(), "held\n");
+    assert!(lock_is_free(&locks.join("bench-1.lock")));
+}
+
+#[test]
+fn a_dry_run_on_a_unit_waiting_for_a_fix_cycle_shows_the_fix_cycle() {
+    let e = Env::new();
+    // Four phases at $0.50 each spend the budget before the fix cycle.
+    e.factory("[limits]\nbudget_usd = 2.0\n");
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["fail"]);
+    e.ctl("review.fronts", &format!("{OPEN_I1}\n"));
+    let v = e.run(&["run", "--issue", "7"], 3);
+    assert_eq!(v["outcome"], "budget", "{v}");
+    e.factory("");
+    let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+    assert_eq!(d["decision"]["action"], "run", "{d}");
+    assert_eq!(d["decision"]["phase"], "review-fix", "{d}");
+    let prompt = d["prompt"].as_str().unwrap();
+    assert!(prompt.contains("Phase: review-fix") && prompt.contains("Fix cycle 1 (full)"), "{prompt}");
+    assert!(d["command"].as_array().is_some_and(|c| !c.is_empty()), "{d}");
+}

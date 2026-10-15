@@ -72,8 +72,7 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
     if adm.follows_base {
         ctx.log(json!({"event": "ship_after_base_moved", "attempt": attempt}));
     }
-    let mut p = ctx.fac.phase(factory::config_phase(phase));
-    p.name = phase.to_string();
+    let p = ctx.fac.phase(phase);
     let timeout = phase_timeout(phase, p.timeout_minutes);
     let held = match take_locks(io, adm, timeout)? {
         Ok(held) => held,
@@ -112,7 +111,7 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
     pin::write_settings(&ctx.common, &ctx.unit, &ctx.env.ns)?;
     let started = io.shared.clock.now();
     let r = run_harness(
-        &io.commands[factory::config_phase(phase)],
+        &io.commands[phase],
         &prompt,
         &ctx.worktree,
         &env,
