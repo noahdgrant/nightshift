@@ -19,6 +19,33 @@ use crate::watch::{unit_id, Issue};
 /// How long a ready issue that overlaps a running unit waits before it starts anyway.
 pub const HOLD_LIMIT_S: i64 = 2 * 60 * 60;
 
+/// The memory a unit is taken to need until [`PEAKS_MIN`] peaks are recorded.
+pub const NEED_DEFAULT_MB: u64 = 4096;
+/// How many recorded unit peaks the p90 needs before it replaces [`NEED_DEFAULT_MB`].
+pub const PEAKS_MIN: usize = 5;
+
+/// The memory a new unit needs: the p90 of the recorded unit `peaks`, or [`NEED_DEFAULT_MB`]
+/// with fewer than [`PEAKS_MIN`] of them.
+pub fn need_mb(peaks: &[u64]) -> u64 {
+    if peaks.len() < PEAKS_MIN {
+        return NEED_DEFAULT_MB;
+    }
+    let mut sorted = peaks.to_vec();
+    sorted.sort_unstable();
+    sorted[(sorted.len() * 9).div_ceil(10) - 1]
+}
+
+/// What the shell has read of the machine's memory for the start check.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Memory<'a> {
+    /// `MemAvailable`; `None` when it can't be read, which skips the check.
+    pub available_mb: Option<u64>,
+    /// The memory peaks recorded by the units that ended, in MB.
+    pub peaks: &'a [u64],
+    /// The last fill already waited for memory.
+    pub waiting: bool,
+}
+
 /// Why no new unit starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stopping {
@@ -292,6 +319,7 @@ pub struct FillInput<'a> {
     pub free: usize,
     pub claims: Claims,
     pub holds: &'a Holds,
+    pub memory: Memory<'a>,
 }
 
 /// What a fill does once it has read the queue, in order.
@@ -307,14 +335,26 @@ pub enum FillAct {
     },
     /// Claim the issue and start its unit.
     Claim(Issue),
+    /// The free slots wait for memory: `available_mb` is less than a unit's `need_mb`. `new`
+    /// when the last fill didn't wait, so the wait is said once.
+    MemoryLow {
+        available_mb: u64,
+        need_mb: u64,
+        new: bool,
+    },
     /// Start nothing new from here on.
     Stop(Stopping),
+}
+
+/// Whether a fill that made `acts` leaves the slots waiting for memory.
+pub fn waits_for_memory(acts: &[FillAct]) -> bool {
+    acts.iter().any(|a| matches!(a, FillAct::MemoryLow { .. }))
 }
 
 /// Acts are equal when they do the same: a claim, of the same issue number.
 impl PartialEq for FillAct {
     fn eq(&self, other: &Self) -> bool {
-        use FillAct::{Claim, Forced, Held, Stop};
+        use FillAct::{Claim, Forced, Held, MemoryLow, Stop};
         match (self, other) {
             (Claim(a), Claim(b)) => a.number == b.number,
             (
@@ -339,6 +379,18 @@ impl PartialEq for FillAct {
                     overlaps: y,
                 },
             ) => a == b && w == v && x == y,
+            (
+                MemoryLow {
+                    available_mb: a,
+                    need_mb: n,
+                    new: x,
+                },
+                MemoryLow {
+                    available_mb: b,
+                    need_mb: m,
+                    new: y,
+                },
+            ) => a == b && n == m && x == y,
             (Stop(a), Stop(b)) => a == b,
             _ => false,
         }
@@ -349,8 +401,9 @@ impl PartialEq for FillAct {
 /// listing can name an issue twice), until the slots or the claims run out: in queue order the
 /// first whose predicted `touches` overlap no running unit's, else the first held for
 /// [`HOLD_LIMIT_S`], which starts anyway. An issue claimed joins the running units for the next
-/// pick. `overlaps` is what the shell has read for the pick; `Err` names what it must read
-/// first.
+/// pick. Each claim needs [`need_mb`] of the memory available, which the claim then takes; with
+/// less, the slots wait for a later fill. `overlaps` is what the shell has read for the pick;
+/// `Err` names what it must read first.
 pub fn plan_fill(input: &FillInput, overlaps: &Overlaps, now: i64) -> Result<Vec<FillAct>, Need> {
     let mut taken = input.taken.clone();
     let mut ready = input.gate.admit(input.ready.to_vec());
@@ -361,10 +414,20 @@ pub fn plan_fill(input: &FillInput, overlaps: &Overlaps, now: i64) -> Result<Vec
         running: None,
     };
     let (mut claims, mut free) = (input.claims, input.free);
+    let need = need_mb(input.memory.peaks);
+    let mut available = input.memory.available_mb;
     let mut acts = Vec::new();
     while !ready.is_empty() && free > 0 {
         if let Some(why) = claims.stop() {
             acts.push(FillAct::Stop(why));
+            break;
+        }
+        if let Some(a) = available.filter(|a| *a < need) {
+            acts.push(FillAct::MemoryLow {
+                available_mb: a,
+                need_mb: need,
+                new: !input.memory.waiting,
+            });
             break;
         }
         // Every issue left overlaps a running unit and has not waited long enough.
@@ -374,6 +437,7 @@ pub fn plan_fill(input: &FillInput, overlaps: &Overlaps, now: i64) -> Result<Vec
         acts.push(FillAct::Claim(issue));
         claims.started += 1;
         free -= 1;
+        available = available.map(|a| a - need);
     }
     Ok(acts)
 }

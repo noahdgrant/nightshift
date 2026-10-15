@@ -786,14 +786,18 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         driven?
     };
     let pr = known_pr(&ctx.artifacts);
-    ctx.log(json!({
+    let mut end = json!({
         "event": "end",
         "outcome": result.outcome.label(),
         "reason": result.reason,
         "phase": result.phase,
         "pr": pr,
         "cost_usd": shared.spent(),
-    }));
+    });
+    if let Some(mb) = crate::memory::peak_mb() {
+        end["memory_peak_mb"] = json!(mb);
+    }
+    ctx.log(end);
     let mut record_saved = false;
     if matches!(
         result.outcome,

@@ -105,7 +105,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
-    use crate::watch::core::fill::{Claims, Holds, HOLD_LIMIT_S};
+    use crate::watch::core::fill::{Claims, Holds, Memory, HOLD_LIMIT_S};
     use crate::watch::core::red::Gate;
     use crate::watch::forge::fake::FakeForge;
 
@@ -160,6 +160,7 @@ mod tests {
             free,
             claims: Claims::default(),
             holds,
+            memory: Memory::default(),
         };
         plan(forge, &input, now, running, make)
     }

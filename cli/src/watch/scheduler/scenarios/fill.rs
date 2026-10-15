@@ -4,7 +4,7 @@
 
 use serde_json::json;
 
-use super::{by_issue, each, Sim, READY};
+use super::{by_issue, each, Said, Sim, READY};
 use crate::watch::Issue;
 
 /// A night with #2 and #3 ready, `parallel` units at once.
@@ -109,4 +109,33 @@ fn watch_never_runs_a_non_team_issue() {
     assert!(sim.units.is_empty(), "{:?}", sim.units);
     assert!(sim.claimed.is_empty());
     assert_eq!(sim.labels(2), ["type:fix", READY]);
+}
+
+#[test]
+fn watch_waits_for_memory_says_so_once_and_starts_when_it_frees() {
+    let mut sim = two_ready(2);
+    sim.available_mb = Some(3000);
+    sim.fill().unwrap();
+    sim.fill().unwrap();
+    let low = Said::MemoryLow {
+        available_mb: 3000,
+        need_mb: 4096,
+    };
+    assert_eq!(sim.said, std::slice::from_ref(&low));
+    assert!(sim.claimed.is_empty());
+    // Five units' peaks of 1 GB make room for both.
+    sim.peaks = vec![1000; 5];
+    sim.fill().unwrap();
+    assert_eq!(sim.claimed, [2, 3]);
+    assert!(!sim.memory_low);
+    // A later wait is said again.
+    sim.ready(4, "Fix c", &["type:fix"]);
+    sim.end(2, json!({"outcome": "done"})).unwrap();
+    sim.available_mb = Some(10);
+    sim.fill().unwrap();
+    let again = Said::MemoryLow {
+        available_mb: 10,
+        need_mb: 1000,
+    };
+    assert_eq!(sim.said, [low, again]);
 }

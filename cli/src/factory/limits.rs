@@ -11,6 +11,9 @@ pub struct Limits {
     pub budget_usd: Option<f64>,
     /// Unset: no cap. Set: each phase and the gate run under this many MiB (`crate::memcap`).
     pub memory_mb: Option<u64>,
+    /// Unset: the machine's total less 4 GB. The memory all the units `ns watch` runs share, in
+    /// MiB (`crate::memory`).
+    pub total_memory_mb: Option<u64>,
     /// Units `ns watch` runs at once; `--parallel` wins. Unset: 1.
     pub parallel: Option<u32>,
     /// GiB free under which `ns watch` starts no unit until space returns. Unset: 20.
@@ -37,6 +40,16 @@ impl Limits {
         }
         if self.memory_mb == Some(0) {
             out.push("limits.memory_mb must be at least 1; remove it for no cap".into());
+        }
+        match (self.total_memory_mb, self.memory_mb) {
+            (Some(0), _) => out.push(
+                "limits.total_memory_mb must be at least 1; remove it for the machine's total less 4 GB"
+                    .into(),
+            ),
+            (Some(total), Some(unit)) if total < unit => out.push(format!(
+                "limits.total_memory_mb = {total} is under limits.memory_mb = {unit}, the cap of one unit"
+            )),
+            _ => {}
         }
         let (wait, stop) = (self.disk_wait_gb(), self.disk_stop_gb());
         if wait > 0 && stop > wait {

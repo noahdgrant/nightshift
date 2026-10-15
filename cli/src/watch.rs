@@ -24,6 +24,7 @@ use crate::worktree::BRANCH_PREFIX;
 pub mod ci;
 mod core;
 mod fix_main;
+pub(crate) use core::fill::{need_mb, PEAKS_MIN};
 pub(crate) use fix_main::TITLE_PREFIX as FIX_MAIN_TITLE;
 pub mod forge;
 mod scheduler;
@@ -550,6 +551,19 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         args.no_self_update,
         std::env::args_os().skip(1).collect(),
     );
+    let slice = match crate::memory::shared_cap(fac.limits.total_memory_mb) {
+        Ok(mb) => {
+            eprintln!(
+                "ns watch: units share a {mb} MB memory cap ({})",
+                crate::memory::SLICE
+            );
+            true
+        }
+        Err(why) => {
+            eprintln!("ns watch: units start without a shared memory cap: {why}");
+            false
+        }
+    };
     let plan = scheduler::Plan {
         repo: &repo,
         forge,
@@ -560,6 +574,7 @@ pub fn run(args: WatchArgs) -> Result<ExitCode> {
         parallel: parallel as usize,
         started,
         update,
+        slice,
     };
     let mut failed = None;
     let stopped = match requeue_stale(&repo, forge, &q, &mut tonight.requeued)
