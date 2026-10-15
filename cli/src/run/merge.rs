@@ -1,5 +1,5 @@
 //! The merge step's shell: `core::merge` decides, and this module performs what it asks (the
-//! `gh` and git calls, the gate, the merge lock and the sleeps) and reports what came back
+//! forge and git calls, the gate, the merge lock and the sleeps) and reports what came back
 //! (`merge.policy = "auto"`).
 
 use std::path::Path;
@@ -14,14 +14,14 @@ use super::core::merge::{
 };
 use super::currency::{known_pr, learn_sha, State};
 use super::locks::{Bound, MERGE_LOCK};
-use super::{finish, gh, gh_json, holder_pid, remote_default, Ctx, Finish, Lock, Outcome, Shared};
+use super::{finish, holder_pid, remote_default, Ctx, Finish, Lock, Outcome, Shared};
 use crate::clock::Clock;
 use crate::factory::LocalGate;
 use crate::gate;
 use crate::git::{self, same_sha};
 use crate::markers;
-use crate::proc::Proc;
 use crate::rules::BASELINE;
+use crate::watch::forge::{self, Forge, PrRead};
 
 mod hold;
 mod overlap;
@@ -63,21 +63,6 @@ fn take_merge_lock(
     }))
 }
 
-fn check_count(wt: &Path, sha: &str, kind: &str) -> Result<u64> {
-    let out = gh(
-        wt,
-        &[
-            "api",
-            &format!("repos/{{owner}}/{{repo}}/commits/{sha}/{kind}"),
-            "--jq",
-            ".total_count",
-        ],
-    )?;
-    let out = out.trim();
-    out.parse()
-        .map_err(|_| anyhow!("unexpected output from the {kind} query: {out:?}"))
-}
-
 pub(super) enum MergeStep {
     Finish(Finish),
     Rebuild(gate::Red),
@@ -96,6 +81,7 @@ struct Io<'a, 'c> {
     run: u32,
     /// The merge lock, while the step holds it.
     lock: Option<Lock>,
+    forge: Box<dyn Forge>,
 }
 
 /// `merge.policy = "auto"`: squash-merge this unit's PR when CI is green, review.md passed and is
@@ -127,6 +113,7 @@ pub(super) fn merge_step(
         gate_state,
         run,
         lock: None,
+        forge: forge::open(&ctx.fac.queue, &ctx.worktree)?,
     };
     let mut fact = MergeFact::Start;
     loop {
@@ -173,8 +160,7 @@ fn says(e: &anyhow::Error) -> String {
 impl Io<'_, '_> {
     /// Perform `ask` for the step at `m`, and report what came of it.
     fn perform(&mut self, m: &MergeState, ask: Ask) -> Result<MergeFact> {
-        let (ctx, wt) = (self.ctx, &self.ctx.worktree);
-        let ns = m.pr().to_string();
+        let (ctx, wt, n) = (self.ctx, &self.ctx.worktree, m.pr());
         let default = m.default_branch();
         Ok(match ask {
             Ask::ReadPr => MergeFact::Pr {
@@ -182,10 +168,10 @@ impl Io<'_, '_> {
                 number: known_pr(&ctx.artifacts),
             },
             Ask::ViewPr => {
-                let view = gh_json(wt, &["pr", "view", &ns, "--json", "state,headRefOid"])?;
+                let view = self.forge.view_pr(n, PrRead::StateAndHead)?;
                 MergeFact::View {
-                    state: view["state"].as_str().map(String::from),
-                    head: view["headRefOid"].as_str().unwrap_or("").to_string(),
+                    state: view.state,
+                    head: view.head.unwrap_or_default(),
                 }
             }
             Ask::Currency { pr_head } => {
@@ -201,29 +187,23 @@ impl Io<'_, '_> {
             Ask::ReadDefault => MergeFact::Default(remote_default(wt).map(|d| d.0)),
             Ask::FetchTip => MergeFact::Tip(fetch_tip(wt, default).map_err(|e| says(&e))),
             Ask::MergeState => {
-                let v = gh_json(wt, &["pr", "view", &ns, "--json", "mergeStateStatus"])?;
-                MergeFact::MergeState(v["mergeStateStatus"].as_str().map(String::from))
+                MergeFact::MergeState(self.forge.view_pr(n, PrRead::MergeState)?.merge_state)
             }
             Ask::IsAncestor { tip, head } => {
                 MergeFact::Ancestor(git::ok(wt, &["merge-base", "--is-ancestor", &tip, &head]))
             }
             Ask::Overlap { head, tip } => MergeFact::Overlap(overlap::read(wt, &head, &tip)),
-            Ask::UpdateBranch => MergeFact::Updated(
-                gh(wt, &["pr", "update-branch", &ns])
-                    .map(drop)
-                    .map_err(|e| says(&e)),
-            ),
+            Ask::UpdateBranch => {
+                MergeFact::Updated(self.forge.update_branch(n).map_err(|e| says(&e)))
+            }
             Ask::MergeWithGit { pr_head } => MergeFact::GitMerged(
                 merge_default_with_git(wt, default, &pr_head).map_err(|e| says(&e)),
             ),
             Ask::ViewHead => {
-                let v = gh_json(
-                    wt,
-                    &["pr", "view", &ns, "--json", "headRefOid,mergeStateStatus"],
-                )?;
+                let v = self.forge.view_pr(n, PrRead::HeadAndMergeState)?;
                 MergeFact::HeadView {
-                    head: v["headRefOid"].as_str().map(String::from),
-                    merge_state: v["mergeStateStatus"].clone(),
+                    head: v.head,
+                    merge_state: json!(v.merge_state),
                 }
             }
             ask => return self.perform_ci(m, ask),
@@ -232,8 +212,7 @@ impl Io<'_, '_> {
 
     /// The gate, CI and lock actions.
     fn perform_ci(&mut self, m: &MergeState, ask: Ask) -> Result<MergeFact> {
-        let (ctx, wt, clock) = (self.ctx, &self.ctx.worktree, &self.shared.clock);
-        let (n, ns) = (m.pr(), m.pr().to_string());
+        let (ctx, clock, n) = (self.ctx, &self.shared.clock, m.pr());
         Ok(match ask {
             Ask::Gate { queued, head } => {
                 let cmd = ctx.gate.commands.rest.as_deref().unwrap_or_default();
@@ -245,26 +224,19 @@ impl Io<'_, '_> {
                 })
             }
             Ask::CountChecks { sha } => MergeFact::CheckCounts(
-                ["check-runs", "status"]
-                    .map(|kind| check_count(wt, &sha, kind).map_err(|e| e.to_string())),
+                self.forge
+                    .check_counts(&sha)
+                    .map(|r| r.map_err(|e| e.to_string())),
             ),
-            Ask::WatchChecks { minutes } => {
-                let ended = Proc::forge("gh")
-                    .args(["pr", "checks", &ns, "--watch"])
-                    .current_dir(wt)
-                    .timeout(Duration::from_secs(minutes * 60))
-                    .run()
-                    .context("cannot run gh pr checks")?;
-                MergeFact::Watched {
-                    timed_out: ended.timed_out(),
-                }
+            Ask::WatchChecks { minutes } => MergeFact::Watched {
+                timed_out: self
+                    .forge
+                    .watch_checks(n, Duration::from_secs(minutes * 60))?,
+            },
+            Ask::ReadChecks => MergeFact::Checks(read_checks(self.forge.as_ref(), n)),
+            Ask::FailedLogs(ids) => {
+                MergeFact::FailedLogs(ids.iter().map(|id| self.forge.run_log(id).ok()).collect())
             }
-            Ask::ReadChecks => MergeFact::Checks(read_checks(wt, &ns)),
-            Ask::FailedLogs(ids) => MergeFact::FailedLogs(
-                ids.iter()
-                    .map(|id| gh(wt, &["run", "view", id, "--log-failed"]).ok())
-                    .collect(),
-            ),
             Ask::MainChecks => MergeFact::MainCi(hold::main_head(ctx)),
             Ask::TakeLock => {
                 let (shared, log) = (self.shared, |ev| ctx.log(ev));
@@ -290,21 +262,15 @@ impl Io<'_, '_> {
 
     /// The actions under the lock: the last head check, the human-review checks, the merge.
     fn perform_merge(&mut self, m: &MergeState, ask: Ask) -> Result<MergeFact> {
-        let (ctx, wt) = (self.ctx, &self.ctx.worktree);
-        let ns = m.pr().to_string();
+        let (ctx, wt, n) = (self.ctx, &self.ctx.worktree, m.pr());
         Ok(match ask {
             Ask::ViewHeadRef => {
-                // A view that fails or names no head leaves the check to --match-head-commit.
-                let view =
-                    gh_json(wt, &["pr", "view", &ns, "--json", "headRefOid"]).unwrap_or_default();
-                MergeFact::HeadRef(view["headRefOid"].as_str().map(String::from))
+                // A view that fails or names no head leaves the check to the merge's head match.
+                let view = self.forge.view_pr(n, PrRead::Head).unwrap_or_default();
+                MergeFact::HeadRef(view.head)
             }
             Ask::ReviewHits => {
-                let files: Vec<String> = gh(wt, &["pr", "diff", &ns, "--name-only"])?
-                    .lines()
-                    .map(|l| l.trim().to_string())
-                    .filter(|l| !l.is_empty())
-                    .collect();
+                let files = self.forge.changed_files(n)?;
                 MergeFact::ReviewHits(ctx.fac.merge.human_review_hits(&files))
             }
             Ask::BaselineShrinks { head } => {
@@ -317,15 +283,12 @@ impl Io<'_, '_> {
                 MergeFact::Regions(marked_regions(wt, m.default_branch()).map_err(|e| says(&e)))
             }
             Ask::Merge { head } => {
-                // No --delete-branch: gh would check out the default branch in the unit's
-                // worktree first.
-                let merged = gh(
-                    wt,
-                    &["pr", "merge", &ns, "--squash", "--match-head-commit", &head],
-                );
-                let state = gh_json(wt, &["pr", "view", &ns, "--json", "state"])
+                let merged = self.forge.squash_merge(n, &head);
+                let state = self
+                    .forge
+                    .view_pr(n, PrRead::State)
                     .ok()
-                    .and_then(|v| v["state"].as_str().map(String::from));
+                    .and_then(|v| v.state);
                 MergeFact::Merged {
                     state,
                     error: merged.err().map(|e| says(&e)),
@@ -334,12 +297,7 @@ impl Io<'_, '_> {
             }
             Ask::DeleteBranch => {
                 let branch = format!("{}{}", crate::worktree::BRANCH_PREFIX, ctx.unit);
-                let path = format!("repos/{{owner}}/{{repo}}/git/refs/heads/{branch}");
-                MergeFact::BranchDeleted(
-                    gh(wt, &["api", &path, "-X", "DELETE"])
-                        .map(drop)
-                        .map_err(|e| says(&e)),
-                )
+                MergeFact::BranchDeleted(self.forge.delete_branch(&branch).map_err(|e| says(&e)))
             }
             ask => anyhow::bail!("ns run: the merge step asked for {ask:?} out of turn"),
         })
@@ -347,26 +305,17 @@ impl Io<'_, '_> {
 }
 
 /// The PR's checks once CI ended: none when they can't be read.
-fn read_checks(wt: &Path, ns: &str) -> Vec<Check> {
-    let checks = gh_json(
-        wt,
-        &["pr", "checks", ns, "--json", "name,state,bucket,link"],
-    )
-    .unwrap_or(Value::Array(Vec::new()));
-    let field = |c: &Value, k: &str| c[k].as_str().map(String::from);
+fn read_checks(forge: &dyn Forge, n: u64) -> Vec<Check> {
+    let checks = forge.pr_checks(n).unwrap_or_default();
     checks
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|c| Check {
-                    name: field(c, "name"),
-                    state: field(c, "state"),
-                    bucket: field(c, "bucket"),
-                    link: field(c, "link"),
-                })
-                .collect()
+        .into_iter()
+        .map(|c| Check {
+            name: c.name,
+            state: c.state,
+            bucket: c.bucket,
+            link: c.link,
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// The tip of `origin/<branch>`, freshly fetched.

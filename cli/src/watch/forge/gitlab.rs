@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use super::{
     add_closing, ClosingPrs, CommitPr, Filed, Forge, IssueLink, IssueState, MergedPr, MergedPrs,
-    Post, Pr, PrState, PrStatus,
+    Post, Pr, PrCheck, PrOutcome, PrRead, PrState, PrStatus, PrView,
 };
 use crate::config::ForgeKind;
 use crate::error::SfError;
@@ -200,6 +200,22 @@ fn to_pr(mr: &Value) -> Pr {
         head_branch: text("source_branch"),
         body: text("description"),
     }
+}
+
+/// A merge request as `ns score` grades it, with its `approvals`: GitLab's reviews. A squash
+/// merge with no merge commit names its squash commit.
+fn to_outcome(mr: &Value, approvals: &Value) -> PrOutcome {
+    let sha = |k: &str| mr[k].as_str().filter(|s| !s.is_empty()).map(String::from);
+    PrOutcome {
+        status: mr_status(mr),
+        merge_commit: sha("merge_commit_sha").or_else(|| sha("squash_commit_sha")),
+        reviews: approvals["approved_by"].as_array().map_or(0, Vec::len),
+    }
+}
+
+/// What every merge-step call says until GitLab has a merge step.
+fn no_merge_step() -> anyhow::Error {
+    anyhow::anyhow!("ns run's merge step is not supported on GitLab yet (#323)")
 }
 
 /// The MRs `repository/commits/<sha>/merge_requests` links to a commit. One with no iid is left
@@ -493,6 +509,52 @@ impl Forge for GitLab {
         let v = self.get(&path)?;
         Ok(super::first_other(&v, "sha", red))
     }
+
+    fn pr_ref(&self, n: u64) -> String {
+        format!("refs/merge-requests/{n}/head")
+    }
+
+    fn pr_outcome(&self, n: u64) -> Result<PrOutcome> {
+        let path = format!("projects/:id/merge_requests/{n}");
+        let approvals = self.get(&format!("{path}/approvals"))?;
+        Ok(to_outcome(&self.get(&path)?, &approvals))
+    }
+
+    fn view_pr(&self, _: u64, _: PrRead) -> Result<PrView> {
+        Err(no_merge_step())
+    }
+
+    fn update_branch(&self, _: u64) -> Result<()> {
+        Err(no_merge_step())
+    }
+
+    fn check_counts(&self, _: &str) -> [Result<u64>; 2] {
+        [Err(no_merge_step()), Err(no_merge_step())]
+    }
+
+    fn watch_checks(&self, _: u64, _: Duration) -> Result<bool> {
+        Err(no_merge_step())
+    }
+
+    fn pr_checks(&self, _: u64) -> Result<Vec<PrCheck>> {
+        Err(no_merge_step())
+    }
+
+    fn run_log(&self, _: &str) -> Result<String> {
+        Err(no_merge_step())
+    }
+
+    fn changed_files(&self, _: u64) -> Result<Vec<String>> {
+        Err(no_merge_step())
+    }
+
+    fn squash_merge(&self, _: u64, _: &str) -> Result<()> {
+        Err(no_merge_step())
+    }
+
+    fn delete_branch(&self, _: &str) -> Result<()> {
+        Err(no_merge_step())
+    }
 }
 
 #[cfg(test)]
@@ -770,5 +832,64 @@ mod tests {
         assert_eq!(v.len(), 3);
         assert!(items("").unwrap().is_empty());
         assert!(items("{\"message\":\"404\"}").is_err());
+    }
+
+    #[test]
+    fn to_outcome_reads_the_merge_or_squash_commit_and_counts_approvals() {
+        let approvals = serde_json::json!({"approved_by": [{"user": {}}, {"user": {}}]});
+        let mr = serde_json::json!({"state": "merged", "merge_commit_sha": "abc1234", "squash_commit_sha": "def5678"});
+        let o = to_outcome(&mr, &approvals);
+        assert_eq!(o.status, PrStatus::Merged);
+        assert_eq!(o.merge_commit.as_deref(), Some("abc1234"));
+        assert_eq!(o.reviews, 2);
+        for merge in [Value::Null, "".into()] {
+            let mr = serde_json::json!({"state": "merged", "merge_commit_sha": merge, "squash_commit_sha": "def5678"});
+            let o = to_outcome(&mr, &approvals);
+            assert_eq!(o.merge_commit.as_deref(), Some("def5678"));
+        }
+        let open = serde_json::json!({"state": "opened", "merge_commit_sha": null});
+        let o = to_outcome(&open, &serde_json::json!({}));
+        assert_eq!(
+            (o.status, o.merge_commit, o.reviews),
+            (PrStatus::Open, None, 0)
+        );
+    }
+
+    #[test]
+    fn an_mr_head_is_fetched_from_its_merge_request_ref() {
+        let gitlab = GitLab {
+            root: std::env::temp_dir(),
+        };
+        assert_eq!(gitlab.pr_ref(5), "refs/merge-requests/5/head");
+    }
+
+    #[test]
+    fn every_merge_step_call_says_gitlab_has_no_merge_step_yet() {
+        let gitlab = GitLab {
+            root: std::env::temp_dir(),
+        };
+        let mut errors = vec![
+            gitlab.view_pr(1, PrRead::State).unwrap_err(),
+            gitlab.update_branch(1).unwrap_err(),
+            gitlab.watch_checks(1, Duration::ZERO).unwrap_err(),
+            gitlab.pr_checks(1).unwrap_err(),
+            gitlab.run_log("1").unwrap_err(),
+            gitlab.changed_files(1).unwrap_err(),
+            gitlab.squash_merge(1, "abc").unwrap_err(),
+            gitlab.delete_branch("ns/1-x").unwrap_err(),
+        ];
+        errors.extend(
+            gitlab
+                .check_counts("abc")
+                .into_iter()
+                .map(|r| r.unwrap_err()),
+        );
+        assert_eq!(errors.len(), 10);
+        for e in errors {
+            assert_eq!(
+                e.to_string(),
+                "ns run's merge step is not supported on GitLab yet (#323)"
+            );
+        }
     }
 }
