@@ -174,9 +174,17 @@ fn gitlab_a_merge_glab_cannot_attribute_is_stuck_naming_glab() {
 }
 
 /// [`unit_with_pr`] on GitLab: issue `n` in `issue_state` (`opened` or `closed`).
-fn gl_unit_with_pr(e: &Env, n: u64, unit: &str, pr: u64, issue_state: &str, pr_state: &str) {
-    unit_with_pr(e, n, unit, pr, "OPEN", pr_state);
+fn gl_unit_with_pr(
+    e: &Env,
+    n: u64,
+    unit: &str,
+    pr: u64,
+    issue_state: &str,
+    pr_state: &str,
+) -> std::path::PathBuf {
+    let wt = unit_with_pr(e, n, unit, pr, "OPEN", pr_state);
     e.gh_file(&format!("gl-state-{n}"), issue_state);
+    wt
 }
 
 #[test]
@@ -199,5 +207,50 @@ fn gitlab_clean_removes_a_merged_unit_and_keeps_open_and_closed_unmerged_ones() 
         "{}",
         e.glab_calls()
     );
+    assert_no_gh(&e);
+}
+
+/// The merged MR's head was made on GitLab (a merge of main into the branch), so it isn't here
+/// until clean fetches it from the MR's own ref.
+#[test]
+fn gitlab_clean_fetches_a_merged_head_missing_here_from_its_merge_request_ref() {
+    let e = gl_guard_env();
+    let wt = gl_unit_with_pr(&e, 3, "3-done", 30, "closed", "MERGED");
+    git(&wt, &["commit", "-q", "--allow-empty", "-m", "merge main"]);
+    let head = git(&wt, &["rev-parse", "HEAD"]);
+    git(
+        &wt,
+        &["push", "-q", "origin", "HEAD:refs/merge-requests/30/head"],
+    );
+    git(&wt, &["reset", "-q", "--hard", "HEAD~1"]);
+    git(&e.root, &["reflog", "expire", "--expire=now", "--all"]);
+    git(&e.root, &["gc", "-q", "--prune=now"]);
+    let commit = format!("{head}^{{commit}}");
+    let here = std::process::Command::new("git")
+        .args(["-C", wt.to_str().unwrap(), "cat-file", "-e", &commit])
+        .env_remove("GIT_DIR")
+        .status()
+        .unwrap();
+    assert!(!here.success(), "the MR head is still here");
+    e.gh_file("pr-30.head", &head);
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert_no_gh(&e);
+}
+
+#[test]
+fn gitlab_merge_step_stops_naming_its_issue_and_runs_no_gh() {
+    let e = gl_guard_env();
+    e.factory("[queue]\nsource = \"gitlab\"\n\n[merge]\npolicy = \"auto\"\n");
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    let out = e.ns().args(["run", "--issue", "7"]).output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(
+        err.contains("ns run's merge step is not supported on GitLab yet (#323)"),
+        "{err}"
+    );
+    assert!(!e.glab_calls().contains("merge_requests/12/merge"));
     assert_no_gh(&e);
 }

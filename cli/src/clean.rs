@@ -25,8 +25,8 @@ pub struct Merged {
     pub path: PathBuf,
     pub issue: Option<u64>,
     pub pr: u64,
-    /// The merged PR's head commit, which must hold everything on the local branch.
-    pub pr_head: String,
+    /// The merged PR's head, which must hold everything on the local branch.
+    pub pr_head: PrHead,
     /// The default branch, when the worktree was found on it rather than on its own branch.
     pub on_default: Option<String>,
 }
@@ -49,6 +49,14 @@ impl Merged {
         }
         v
     }
+}
+
+/// A merged PR's head commit, empty when unknown, and the remote ref it is fetched from when it
+/// isn't here. One value, so the forge that names the commit names the ref too.
+#[derive(Debug, Clone, Default)]
+pub struct PrHead {
+    pub sha: String,
+    pub fetch_ref: String,
 }
 
 fn kept(unit: &str, path: &Path, reason: impl Into<String>) -> Value {
@@ -143,7 +151,10 @@ fn merged(
         path: path.to_path_buf(),
         issue: Some(issue),
         pr,
-        pr_head: v.head_sha,
+        pr_head: PrHead {
+            sha: v.head_sha,
+            fetch_ref: forge.pr_ref(pr),
+        },
         on_default,
     })
 }
@@ -190,11 +201,11 @@ fn local_reason(repo: &Repo, m: &Merged) -> Option<String> {
         _ => return Some(format!("its HEAD is not on {}", m.branch())),
     };
     let base = repo.default_base().unwrap_or_else(|_| "main".into());
-    if !holds(&m.path, &base, &tip, &m.pr_head, m.pr) {
-        let head = if m.pr_head.is_empty() {
+    if !holds(&m.path, &base, &tip, &m.pr_head) {
+        let head = if m.pr_head.sha.is_empty() {
             "unknown"
         } else {
-            &m.pr_head
+            &m.pr_head.sha
         };
         return Some(format!(
             "{} at {tip} has changes merged PR #{} (head {head}) does not hold",
@@ -209,16 +220,17 @@ fn is_commit(dir: &Path, sha: &str) -> bool {
     !sha.starts_with('-') && git::ok(dir, &["cat-file", "-e", &format!("{sha}^{{commit}}")])
 }
 
-/// Whether the merged PR head `pr_head` holds everything at `tip`: it is `tip`, descends from it
+/// Whether the merged PR head holds everything at `tip`: it is `tip`, descends from it
 /// (`update-branch` merged the base in), or carries the same change against `base`, whitespace
-/// included (a rebase). A head missing here is fetched from `refs/pull/<pr>/head` first.
-fn holds(dir: &Path, base: &str, tip: &str, pr_head: &str, pr: u64) -> bool {
+/// included (a rebase). A head missing here is fetched from its ref first.
+fn holds(dir: &Path, base: &str, tip: &str, head: &PrHead) -> bool {
+    let pr_head = head.sha.as_str();
     if pr_head.is_empty() {
         return false;
     }
     if !is_commit(dir, pr_head) {
-        let pull = format!("refs/pull/{pr}/head");
-        let _ = git::net(dir, &["fetch", "--quiet", "--no-tags", "origin", &pull]).output();
+        let fetch = ["fetch", "--quiet", "--no-tags", "origin", &head.fetch_ref];
+        let _ = git::net(dir, &fetch).output();
         if !is_commit(dir, pr_head) {
             return false;
         }
@@ -380,18 +392,23 @@ pub fn after_merge(
         path: path.to_path_buf(),
         issue,
         pr,
-        pr_head: String::new(),
+        pr_head: PrHead::default(),
         on_default: None,
     };
     let o = if !record_saved {
         Outcome::Kept("its quality record is not saved".into())
     } else {
         // The merge step saw it MERGED; only its head is needed.
-        let read = open(queue, path).and_then(|f| pr_view(f.as_ref(), pr));
+        let read = open(queue, path).and_then(|f| {
+            Ok(PrHead {
+                sha: pr_view(f.as_ref(), pr)?.head_sha,
+                fetch_ref: f.pr_ref(pr),
+            })
+        });
         match read {
             Err(e) => Outcome::Kept(e),
-            Ok(v) => {
-                m.pr_head = v.head_sha;
+            Ok(head) => {
+                m.pr_head = head;
                 checked_remove(repo, &m)
             }
         }
@@ -565,6 +582,14 @@ mod tests {
     use super::*;
     use crate::testutil::{commit_file, g, rebased_unit};
 
+    /// Head `sha` of PR #1, fetched from its GitHub ref.
+    fn at(sha: &str) -> PrHead {
+        PrHead {
+            sha: sha.into(),
+            fetch_ref: "refs/pull/1/head".into(),
+        }
+    }
+
     /// A repo whose main checkout is on `other`, and unit `3-done`'s worktree left on `main`.
     fn left_on_main() -> (tempfile::TempDir, Repo, Merged) {
         let tmp = tempfile::tempdir().unwrap();
@@ -584,7 +609,7 @@ mod tests {
             path,
             issue: Some(3),
             pr: 30,
-            pr_head: String::new(),
+            pr_head: PrHead::default(),
             on_default: Some("main".into()),
         };
         (tmp, repo, m)
@@ -631,27 +656,27 @@ mod tests {
         let r = rebased_unit();
         let d = &r.dir;
         // Same commit.
-        assert!(holds(d, "main", &r.rebased, &r.rebased, 1));
+        assert!(holds(d, "main", &r.rebased, &at(&r.rebased)));
         // A rebase: the same change against main.
-        assert!(holds(d, "main", &r.rebased, &r.reviewed, 1));
-        assert!(holds(d, "main", &r.reviewed, &r.rebased, 1));
+        assert!(holds(d, "main", &r.rebased, &at(&r.reviewed)));
+        assert!(holds(d, "main", &r.reviewed, &at(&r.rebased)));
         // A descendant: update-branch merged main into the PR.
         g(d, &["checkout", "-qb", "pr", &r.rebased]);
         let later = commit_file(d, "MERGE", "m\n");
-        assert!(holds(d, "main", &r.rebased, &later, 1));
+        assert!(holds(d, "main", &r.rebased, &at(&later)));
         // The tip has a change the PR doesn't.
         g(d, &["checkout", "-q", "unit"]);
         let extra = commit_file(d, "extra.txt", "more\n");
-        assert!(!holds(d, "main", &extra, &r.rebased, 1));
-        assert!(!holds(d, "main", &extra, &later, 1));
+        assert!(!holds(d, "main", &extra, &at(&r.rebased)));
+        assert!(!holds(d, "main", &extra, &at(&later)));
         // Two commits with no change against main to compare share no change.
         g(d, &["checkout", "-q", "--orphan", "lone"]);
         let lone = commit_file(d, "lone.txt", "x\n");
         let on_main = g(d, &["rev-parse", "main"]);
-        assert!(!holds(d, "main", &lone, &on_main, 1));
+        assert!(!holds(d, "main", &lone, &at(&on_main)));
         // Nothing known.
-        assert!(!holds(d, "main", &extra, "", 1));
-        assert!(!holds(d, "main", "", &extra, 1));
+        assert!(!holds(d, "main", &extra, &at("")));
+        assert!(!holds(d, "main", "", &at(&extra)));
     }
 
     #[test]
@@ -667,15 +692,15 @@ mod tests {
             git::diff_id(d, "main", &local),
             git::diff_id(d, "main", &merged)
         );
-        assert!(!holds(d, "main", &local, &merged, 1));
+        assert!(!holds(d, "main", &local, &at(&merged)));
     }
 
     #[test]
     fn a_pr_head_that_is_not_here_and_cannot_be_fetched_holds_nothing() {
         let r = rebased_unit();
         let missing = "0123456789abcdef0123456789abcdef01234567";
-        assert!(!holds(&r.dir, "main", &r.rebased, missing, 1));
-        assert!(!holds(&r.dir, "main", &r.rebased, "--all", 1));
+        assert!(!holds(&r.dir, "main", &r.rebased, &at(missing)));
+        assert!(!holds(&r.dir, "main", &r.rebased, &at("--all")));
     }
 
     #[test]
@@ -707,6 +732,64 @@ mod tests {
             &r.dir,
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
-        assert!(holds(&r.dir, "main", &r.rebased, &merged_in, 5));
+        let head = PrHead {
+            sha: merged_in,
+            fetch_ref: "refs/pull/5/head".into(),
+        };
+        assert!(holds(&r.dir, "main", &r.rebased, &head));
+    }
+
+    const AFTER_MERGE_MARK: &str = "NS_TEST_AFTER_MERGE_FETCH_PROBE";
+
+    /// The cleanup after ns run's merge fetches a merged head made on the forge from the ref the
+    /// forge names for it.
+    #[test]
+    fn the_cleanup_after_a_merge_fetches_a_head_missing_here_from_the_forges_ref() {
+        crate::testutil::probe(
+            "clean::tests::after_merge_fetch_probe",
+            AFTER_MERGE_MARK,
+            "1",
+        );
+    }
+
+    #[test]
+    fn after_merge_fetch_probe() {
+        if std::env::var_os(AFTER_MERGE_MARK).is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (root, remote) = (base.join("r"), base.join("remote.git"));
+        std::fs::create_dir(&root).unwrap();
+        g(&root, &["init", "-q", "-b", "main"]);
+        commit_file(&root, "README", "hi\n");
+        g(&base, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+        g(
+            &root,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        let repo = Repo::discover(&root).unwrap();
+        let path = worktree::planned_path(&repo, "3-done");
+        let wt = path.to_str().unwrap();
+        g(
+            &root,
+            &["worktree", "add", "-q", "-b", "ns/3-done", wt, "main"],
+        );
+        commit_file(&path, "work.txt", "one\n");
+        // The forge merged main into the PR: a head on the remote's PR ref only.
+        let merged = commit_file(&path, "MERGE", "m\n");
+        g(&path, &["push", "-q", "origin", "HEAD:refs/pull/30/head"]);
+        g(&path, &["reset", "-q", "--hard", "HEAD~1"]);
+        g(&root, &["reflog", "expire", "--expire=now", "--all"]);
+        g(&root, &["gc", "-q", "--prune=now"]);
+        assert!(!is_commit(&root, &merged));
+        let pr = format!(
+            r#"{{"state":"MERGED","headRefOid":"{merged}","headRefName":"ns/3-done","body":"Closes #3"}}"#
+        );
+        let _gh = crate::testutil::fake_on_path("gh", &format!("echo '{pr}'"));
+        let queue = factory::Queue::default();
+        let v = after_merge(&repo, &queue, "3-done", &path, Some(3), 30, true);
+        assert_eq!(v["removed"], true, "{v}");
+        assert!(!path.exists());
     }
 }
