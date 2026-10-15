@@ -557,3 +557,51 @@ fn reference_linked_from_another_reference_passes() {
     );
     assert!(messages(&tmp).is_empty(), "{:?}", messages(&tmp));
 }
+
+#[test]
+fn a_tracker_command_fails_inline_and_fenced() {
+    let tmp = skill(
+        "Run `gh pr view 1 --json state`.\n```bash\nglab mr view -F json\nx=$(gh pr list)\n```\n[r](references/r.md)\n",
+        &[("r.md", "Then `glab api projects/:id` once.\n")],
+    );
+    assert_eq!(
+        messages(&tmp),
+        [
+            "line 5: tracker command `gh pr view 1 --json state`; name the operation from docs/agents/issue-tracker.md instead",
+            "line 7: tracker command `glab mr view -F json`; name the operation from docs/agents/issue-tracker.md instead",
+            "line 8: tracker command `x=$(gh pr list)`; name the operation from docs/agents/issue-tracker.md instead",
+            "line 1: tracker command `glab api projects/:id`; name the operation from docs/agents/issue-tracker.md instead",
+        ]
+    );
+}
+
+#[test]
+fn tool_names_auth_and_prose_are_not_tracker_commands() {
+    let tmp = skill(
+        "Use the `gh` CLI, or `glab`. Check `gh auth status` first.\n```bash\nglab auth login\nns-gh pr view\n```\n`high pr` and gh pr view in plain prose.\n",
+        &[],
+    );
+    assert!(messages(&tmp).is_empty(), "{:?}", messages(&tmp));
+}
+
+#[test]
+fn eval_fixture_tracker_docs_may_hold_commands() {
+    let tmp = skill("x\n", &[]);
+    let docs = tmp.path().join("ns-a/evals/cases/c/files/docs/agents");
+    fs::create_dir_all(&docs).unwrap();
+    fs::write(docs.join("issue-tracker.md"), "`gh issue view <n>`\n").unwrap();
+    assert!(messages(&tmp).is_empty(), "{:?}", messages(&tmp));
+}
+
+#[test]
+fn feature_files_are_not_checked_for_tracker_commands() {
+    let tmp = skill("x\n", &[]);
+    let features = tmp.path().join("ns-a/features");
+    fs::create_dir_all(&features).unwrap();
+    fs::write(
+        features.join("f.md"),
+        "## Sub-features\n## How to get to it (user POV)\n`gh api user`\n## Driving it with gh\n## Gotchas\n",
+    )
+    .unwrap();
+    assert!(messages(&tmp).is_empty(), "{:?}", messages(&tmp));
+}
