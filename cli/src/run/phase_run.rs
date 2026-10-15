@@ -15,6 +15,7 @@ use super::currency::{archive_as, archive_for, read_art, restore, Moves, State};
 use super::drive::Io;
 use super::locks::{Acquired, Bound, RunnerLocks};
 use super::phases::{phase_timeout, phase_tmpdir, run_harness};
+use super::tamper::{protected_paths, Tampered};
 use super::{finish, Ctx, Finish, Outcome};
 use crate::billing;
 use crate::clock;
@@ -115,6 +116,7 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
         .is_ok()
         .then(|| harness::PrivateTmp::new(&tmp, &[&ctx.worktree, &ctx.common, &ctx.env.ns]));
     pin::write_settings(&ctx.common, &ctx.unit, &ctx.env.ns)?;
+    let protected = protected_paths(&ctx.worktree, &ctx.common, &ctx.artifacts, &ctx.unit);
     let started = io.shared.clock.now();
     let r = run_harness(
         &io.commands[phase],
@@ -128,14 +130,18 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
         private.as_ref(),
     );
     drop(held);
+    let tampered = protected.check();
     if let Some(sig) = r.as_ref().err().and(crate::stop::requested()) {
-        let ev = json!({
+        let mut ev = json!({
             "event": "phase",
             "phase": phase,
             "attempt": attempt,
             "decision": adm.why,
             "transcript": transcript.to_string_lossy(),
         });
+        if let Some(t) = &tampered {
+            ev["tampered"] = json!(tamper_reason(ctx, phase, t));
+        }
         return Err(set_aside(ctx, phase, &moves, sig, ev)?);
     }
     let r = r?;
@@ -145,6 +151,7 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
         tmp: &tmp,
         timeout,
         started,
+        tampered: tampered.as_ref(),
     };
     record(io, state, adm, done, moves)
 }
@@ -267,6 +274,8 @@ struct Harnessed<'h> {
     timeout: std::time::Duration,
     /// When the harness started, on the run's clock.
     started: i64,
+    /// What it changed among the protected paths, which `ns` put back.
+    tampered: Option<&'h Tampered>,
 }
 
 /// Account for a finished harness run: its spend, its artifact, its record in the run log.
@@ -293,6 +302,9 @@ fn record(
         "output_tokens": t.output_tokens,
         "transcript": h.transcript.to_string_lossy(),
     });
+    if let Some(t) = h.tampered {
+        return tampered(io, phase, &moves, rec, t);
+    }
     // A phase cut short wrote nothing, whatever it left behind.
     if r.timed_out || r.killed.is_some() {
         let file = artifact_of(phase);
@@ -418,6 +430,43 @@ fn unrecorded(
     ctx.log(merge_obj(json!({"event": "phase"}), &rec));
     io.phases.push(rec);
     Ok(Ran::Finish(finish(Outcome::Stuck, reason, Some(phase))))
+}
+
+/// A phase that changed a protected path fails, whatever it wrote and however it ended: the
+/// unit ends stuck with what it wrote set aside and what it replaced put back.
+fn tampered(
+    io: &mut Io<'_, '_>,
+    phase: &str,
+    moves: &Moves,
+    mut rec: Value,
+    t: &Tampered,
+) -> Result<Ran> {
+    let ctx = io.ctx;
+    let file = artifact_of(phase);
+    let stem = format!("{}-tampered", file.trim_end_matches(".md"));
+    let archived = archive_as(&ctx.artifacts, file, &stem)?;
+    restore(moves);
+    let reason = tamper_reason(ctx, phase, t);
+    rec["status"] = json!("tampered");
+    rec["reason"] = json!(reason);
+    rec["paths"] = json!(t.paths);
+    rec["archived"] = json!(archived.map(|d| d.to_string_lossy().into_owned()));
+    ctx.log(merge_obj(json!({"event": "phase"}), &rec));
+    io.phases.push(rec);
+    Ok(Ran::Finish(finish(Outcome::Stuck, reason, Some(phase))))
+}
+
+/// Why `phase` fails as tampered, naming each path from the worktree, or from the main checkout
+/// for one in the common git dir.
+fn tamper_reason(ctx: &Ctx<'_>, phase: &str, t: &Tampered) -> String {
+    let main = ctx.common.parent().unwrap_or(&ctx.common);
+    t.reason(phase, |p| {
+        p.strip_prefix(&ctx.worktree)
+            .or_else(|_| p.strip_prefix(main))
+            .unwrap_or(p)
+            .display()
+            .to_string()
+    })
 }
 
 /// A stop ended `phase`, or the gate run after it, before it was done: set aside what the phase

@@ -661,10 +661,7 @@ fn a_failed_fetch_of_main_for_the_local_queue_needs_a_human_merge() {
     local_queue(&e, "gate = \"true\"\n");
     e.queue("build", &["pass:commit"]);
     e.queue("ship", &["pass:script"]);
-    e.ctl(
-        "ship.sh",
-        "git remote set-url origin \"$FAKE_CTRL/gone.git\"",
-    );
+    e.ctl("ship.sh", GONE);
     let v = e.run(&["run", "--issue", "7"], 0);
     assert_eq!(v["needs_human"], true, "{v}");
     let reason = v["reason"].as_str().unwrap();
