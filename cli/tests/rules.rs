@@ -786,3 +786,64 @@ fn only_with_no_rules_row_checks_nothing() {
     assert_eq!(code, Some(0), "{v} {err}");
     assert_eq!(v["commands"], serde_json::json!([]));
 }
+
+#[test]
+fn prune_drops_only_the_fixed_entries_and_keeps_the_rest_verbatim() {
+    let r = Repo::new();
+    r.findings(
+        "lint-a",
+        "src.py:2:5: eval is banned\nsrc.py:3:5: eval is banned\n",
+    );
+    r.ns(&["baseline", "--allow-growth"]);
+    // The kept finding's message drifted: it still matches, and its entry stays as it was.
+    r.findings("lint-a", "src.py:3:5: eval is still banned\n");
+
+    let (code, v, err) = r.ns(&["check", "--prune"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["pruned"], 1, "{v}");
+    assert_eq!(v["fixed"][0]["snippet"], "x = eval(s)", "{v}");
+    assert!(
+        err.contains("dropped 1 fixed entries from .nightshift/rules-baseline.json"),
+        "{err}"
+    );
+    assert_eq!(baselined(&r), [("src.py".into(), "y = eval(s)".into())]);
+    assert_eq!(
+        r.baseline().unwrap()["violations"][0]["message"],
+        "eval is banned"
+    );
+
+    let (code, v, err) = r.ns(&["check", "--prune"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["pruned"], 0, "{v}");
+    assert_eq!(v["fixed"], serde_json::json!([]));
+}
+
+#[test]
+fn prune_writes_nothing_when_a_violation_is_new_or_with_only() {
+    let r = Repo::new();
+    r.findings("lint-a", "src.py:2:5: eval is banned\n");
+    r.findings("lint-b", "src.py:3:5: eval is banned\n");
+    r.ns(&["baseline", "--allow-growth"]);
+    let before = fs::read(r.path(BASELINE)).unwrap();
+
+    r.findings("lint-a", "src.py:1:1: os is unused\n");
+    let (code, v, err) = r.ns(&["check", "--prune"]);
+    assert_eq!(code, Some(1), "{v} {err}");
+    assert_eq!(v["pruned"], 0, "{v}");
+    assert_eq!(fs::read(r.path(BASELINE)).unwrap(), before);
+
+    r.findings("lint-a", "");
+    let (code, v, err) = r.ns(&["check", "--prune", "--only", "lint-a"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["pruned"], 0, "{v}");
+    assert_eq!(fs::read(r.path(BASELINE)).unwrap(), before);
+}
+
+#[test]
+fn prune_with_no_baseline_writes_none() {
+    let r = Repo::new();
+    let (code, v, err) = r.ns(&["check", "--prune"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["pruned"], 0, "{v}");
+    assert!(r.baseline().is_none());
+}

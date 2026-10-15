@@ -649,6 +649,7 @@ fn judge_env_seen(e: &Env, billing: &str) -> String {
     for k in API_ENV {
         c.env(k, "x");
     }
+    c.env("CLAUDE_CODE_OAUTH_TOKEN", "login");
     c.args(["score", UNIT]).assert().code(0);
     fs::read_to_string(e.base.join("judge-env")).unwrap()
 }

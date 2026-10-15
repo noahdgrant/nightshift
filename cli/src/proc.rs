@@ -243,8 +243,15 @@ impl Proc {
     }
 
     /// The environment changes made so far, as [`Command::get_envs`] lists them.
+    #[cfg(test)]
     pub fn get_envs(&self) -> std::process::CommandEnvs<'_> {
         self.cmd.get_envs()
+    }
+
+    /// The arguments added so far, as [`Command::get_args`] lists them.
+    #[cfg(test)]
+    pub fn get_args(&self) -> std::process::CommandArgs<'_> {
+        self.cmd.get_args()
     }
 
     /// Also time out as soon as `expired` holds, so a test can end a child after an event; the

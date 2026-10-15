@@ -314,6 +314,34 @@ fn setup_claude() -> Env {
     e
 }
 
+/// A subscription claude needs a login before any trial starts, and runs without `--bare`; a
+/// dry run starts none, so it needs no login.
+#[test]
+fn claude_trials_on_a_subscription_need_a_login_and_drop_bare() {
+    let e = setup_claude();
+    let cfg = fs::read_to_string(&e.cfg).unwrap();
+    fs::write(
+        &e.cfg,
+        cfg.replace(
+            "claude\", \"{model}\"]",
+            "claude\", \"--bare\", \"{model}\"]",
+        ),
+    )
+    .unwrap();
+    assert_ne!(fs::read_to_string(&e.cfg).unwrap(), cfg);
+    let v = e.eval(&["ns-demo", "--case", "fix-add", "--dry-run"]);
+    let command = v["harness"]["command"].as_array().unwrap();
+    assert!(command.iter().all(|a| a != "--bare"), "{command:?}");
+    e.ns()
+        .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
+        .args(["ns-demo", "--case", "fix-add", "--no-write-results"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("claude /login"));
+    assert!(e.calls().is_empty());
+    assert!(!e.tmp.path().join("transcripts").join("runs").exists());
+}
+
 #[test]
 fn claude_trials_wait_for_background_tasks() {
     let e = setup_claude();

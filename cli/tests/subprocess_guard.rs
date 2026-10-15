@@ -302,21 +302,22 @@ fn output_kills_a_descendant_that_left_the_process_group_and_outlived_its_parent
     assert!(job.died(), "the detached job outlived ns");
 }
 
-/// `clippy.toml` bans `Command::new`: clippy, with this crate's config, rejects a stray call in a
-/// scratch crate and names `proc` as the way to start a child.
+/// `clippy.toml` bans `Command::new` and `Proc::harness`: clippy, with this crate's config,
+/// rejects a stray call of each in a scratch crate named `ns`, with a `proc::Proc::harness` of its
+/// own, and names the way to start each.
 #[test]
-fn clippy_rejects_a_child_started_outside_proc() {
+fn clippy_rejects_a_child_started_outside_proc_or_harness() {
     let tmp = tempfile::tempdir().unwrap();
-    let krate = tmp.path().join("stray");
+    let krate = tmp.path().join("ns");
     fs::create_dir_all(krate.join("src")).unwrap();
     fs::write(
         krate.join("Cargo.toml"),
-        "[package]\nname = \"stray\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[workspace]\n",
+        "[package]\nname = \"ns\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[workspace]\n",
     )
     .unwrap();
     fs::write(
         krate.join("src/main.rs"),
-        "fn main() {\n    let _ = std::process::Command::new(\"true\");\n}\n",
+        "mod proc {\n    pub struct Proc;\n    impl Proc {\n        pub fn harness() {}\n    }\n}\n\nfn main() {\n    let _ = std::process::Command::new(\"true\");\n    proc::Proc::harness();\n}\n",
     )
     .unwrap();
     let out = common::command(env!("CARGO"))
@@ -334,12 +335,15 @@ fn clippy_rejects_a_child_started_outside_proc() {
     );
     assert!(stderr.contains("disallowed_methods"), "{stderr}");
     assert!(stderr.contains("crate::proc::Proc"), "{stderr}");
+    assert!(stderr.contains("ns::proc::Proc::harness"), "{stderr}");
+    assert!(stderr.contains("crate::harness::command"), "{stderr}");
 }
 
-/// Where `src` lifts the ban: `proc`, the one way to start a child, and the unit tests' probe
-/// helper, which hands its caller a process to spawn and kill (CODING_STANDARDS.md, "Checks").
+/// Where `src` lifts the ban: `proc`, the one way to start a child, `harness`, the one way to
+/// start a harness, and the unit tests' probe helper, which hands its caller a process to spawn
+/// and kill (CODING_STANDARDS.md, "Checks").
 #[test]
-fn only_proc_and_the_probe_helper_lift_the_ban_in_src() {
+fn only_proc_harness_and_the_probe_helper_lift_the_ban_in_src() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     rust_files_outside_common(&manifest.join("src"), &mut files);
@@ -353,7 +357,7 @@ fn only_proc_and_the_probe_helper_lift_the_ban_in_src() {
         .map(|p| p.strip_prefix(manifest).unwrap().display().to_string())
         .collect();
     lifted.sort();
-    assert_eq!(lifted, ["src/proc.rs", "src/testutil.rs"]);
+    assert_eq!(lifted, ["src/harness.rs", "src/proc.rs", "src/testutil.rs"]);
 }
 
 /// Every test makes its fifos with [`common::mkfifo`], which fails with `mkfifo`'s stderr.

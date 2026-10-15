@@ -313,6 +313,86 @@ fn human_review_files_need_a_human_merge() {
     assert!(r.merged_at().is_empty());
 }
 
+const BASELINE: &str = ".nightshift/rules-baseline.json";
+
+#[test]
+fn a_baseline_that_only_shrinks_merges_without_a_human() {
+    let mut s = auto();
+    s.merge.review_hits = vec![BASELINE.into()];
+    s.merge.baseline_shrinks = Ok(true);
+    let r = s.run();
+    assert_eq!(r.outcome, Outcome::Merged, "{r:?}");
+    assert_eq!(r.merged_at().len(), 1);
+    let heads: Vec<&str> = r
+        .asks
+        .iter()
+        .filter_map(|a| match a {
+            Ask::BaselineShrinks { head } => Some(head.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(heads, r.merged_at(), "{:?}", r.asks);
+    let ev = r.events("baseline_shrinks");
+    assert_eq!(
+        ev,
+        [&json!({"event": "baseline_shrinks", "pr": 12, "path": BASELINE})]
+    );
+    assert!(r.events("human_review").is_empty(), "{r:?}");
+}
+
+#[test]
+fn a_baseline_that_grows_or_cannot_be_compared_needs_a_human() {
+    for (shrinks, says) in [
+        (Ok(false), "(.nightshift/rules-baseline.json)"),
+        (
+            Err("the base's baseline is not a rules baseline: EOF".to_string()),
+            "(.nightshift/rules-baseline.json: cannot tell whether it only removes entries: the base's baseline is not a rules baseline: EOF)",
+        ),
+    ] {
+        let mut s = auto();
+        s.merge.review_hits = vec![BASELINE.into()];
+        s.merge.baseline_shrinks = shrinks;
+        let r = s.run();
+        assert_eq!(r.outcome, Outcome::Done, "{r:?}");
+        assert_eq!(
+            r.reason,
+            format!("changes files that need human review; needs a human merge {says}")
+        );
+        assert!(r.merged_at().is_empty());
+    }
+}
+
+#[test]
+fn a_shrinking_baseline_beside_another_human_review_file_still_needs_a_human() {
+    let mut s = auto();
+    s.merge.review_hits = vec![".nightshift/nightshift.toml".into(), BASELINE.into()];
+    s.merge.baseline_shrinks = Ok(true);
+    let r = s.run();
+    assert_eq!(r.outcome, Outcome::Done, "{r:?}");
+    assert_eq!(
+        r.reason,
+        "changes files that need human review; needs a human merge (.nightshift/nightshift.toml)"
+    );
+    assert!(r.merged_at().is_empty());
+    let ev = r.events("human_review");
+    assert_eq!(ev[0]["paths"], json!([".nightshift/nightshift.toml"]));
+}
+
+#[test]
+fn other_human_review_files_never_ask_about_the_baseline() {
+    let mut s = auto();
+    s.merge.review_hits = vec![".nightshift/ratchets.json".into()];
+    s.merge.baseline_shrinks = Ok(true);
+    let r = s.run();
+    assert_eq!(r.outcome, Outcome::Done, "{r:?}");
+    assert_eq!(
+        r.asked(&Ask::BaselineShrinks {
+            head: String::new()
+        }),
+        0
+    );
+}
+
 #[test]
 fn human_policy_never_merges() {
     let mut s = Sim::new();

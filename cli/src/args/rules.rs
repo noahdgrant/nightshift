@@ -16,6 +16,7 @@ Examples:
   ns rules check --human
   ns rules check | jq .new
   ns rules check --only ast-grep
+  ns rules check --prune
 
 Spec: docs/factory/run.md (Rules). Runs each command in the `rules` row of docs/agents/stack.md
 with sh -c at the top of the git checkout, e.g.
@@ -33,8 +34,13 @@ exits 126 or 127, runs over 300 s (NS_RULES_TIMEOUT_MS) or prints over 8 MiB
 has commands but none contains it. Its fixed is always empty, since the entries of the commands
 it skipped would read as fixed.
 
-Prints {ok,command,baseline,commands,findings,baselined,new,fixed}; fixed lists baseline
-entries nothing matched (drop them with ns rules baseline).
+--prune, when no violation is new, rewrites the baseline without its fixed entries, leaving
+every other entry as it was; it never adds one. With --only it writes nothing. The ns run gate
+after build runs it (docs/factory/run.md, Gate).
+
+Prints {ok,command,baseline,commands,findings,baselined,new,fixed,pruned}; fixed lists
+baseline entries nothing matched (drop them with ns rules baseline, or --prune), pruned how many
+--prune dropped.
 Exit codes: 0 no new violations, 1 new violations or a command failed, 2 not in a git repo or
 --only matched no command.";
 
@@ -65,6 +71,9 @@ pub(crate) enum RulesCmd {
         /// Run only the rules-row commands that contain this text
         #[arg(long, value_name = "TEXT")]
         only: Option<String>,
+        /// Drop the fixed entries from the baseline when no violation is new
+        #[arg(long)]
+        prune: bool,
     },
     /// Rewrite the baseline from the current violations; it may only shrink
     #[command(after_help = RULES_BASELINE_HELP)]
