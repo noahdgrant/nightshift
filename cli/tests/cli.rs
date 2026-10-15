@@ -942,8 +942,13 @@ fn ask_api_env_seen_from(start: &Path, repo: &Path, name: &str) -> Vec<String> {
         ),
     )
     .unwrap();
+    let home = repo.parent().unwrap().join("home");
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    fs::write(home.join(".claude/.credentials.json"), "{}").unwrap();
     let mut c = ns();
-    c.env("NS_CONFIG", &cfg).current_dir(start);
+    c.env("NS_CONFIG", &cfg)
+        .env("HOME", &home)
+        .current_dir(start);
     for k in ASK_API_ENV {
         c.env(k, "x");
     }
@@ -969,6 +974,72 @@ fn ask_api_env_seen_from(start: &Path, repo: &Path, name: &str) -> Vec<String> {
 fn write_factory(repo: &Path, toml: &str) {
     fs::create_dir_all(repo.join(".nightshift")).unwrap();
     fs::write(repo.join(".nightshift/nightshift.toml"), toml).unwrap();
+}
+
+/// `ns ask` sets claude up as a phase does: under subscription billing it needs a login and
+/// drops `--bare`; auto-memory is off and background tasks run to the end either way.
+#[test]
+fn ask_sets_claude_up_as_a_phase_does() {
+    let (_tmp, root) = repo();
+    let base = root.parent().unwrap();
+    let bin = base.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("claude");
+    common::write_exe(&fake, "#!/bin/sh\ncat >/dev/null\necho \"args=$*\"\nenv\n");
+    let cfg = base.join("config.toml");
+    fs::write(
+        &cfg,
+        format!(
+            "[harness.claude]\ncommand = [{:?}, \"--bare\", \"-p\"]\n[roles.default]\nharness = \"claude\"\n",
+            fake.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let home = base.join("home");
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    let ask = || {
+        let mut c = ns();
+        c.env("NS_CONFIG", &cfg)
+            .env("HOME", &home)
+            .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
+            .env_remove("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS")
+            .env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0")
+            .current_dir(&root)
+            .args(["ask", "--role", "review"])
+            .write_stdin("p\n");
+        c
+    };
+    ask()
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("claude /login"));
+
+    fs::write(home.join(".claude/.credentials.json"), "{}").unwrap();
+    let out = ask().assert().success().get_output().stdout.clone();
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.lines().any(|l| l == "args=-p"), "{out}");
+    assert!(
+        out.lines()
+            .any(|l| l == "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"),
+        "{out}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l == "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0"),
+        "{out}"
+    );
+
+    // API billing needs no login and keeps --bare.
+    fs::remove_file(home.join(".claude/.credentials.json")).unwrap();
+    write_factory(&root, "[defaults]\nbilling = \"api\"\n");
+    let out = ask().assert().success().get_output().stdout.clone();
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.lines().any(|l| l == "args=--bare -p"), "{out}");
+    assert!(
+        out.lines()
+            .any(|l| l == "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -1477,6 +1548,31 @@ fn doctor_skips_the_hooks_check_without_a_githooks_dir() {
         assert_eq!(v["hooks"]["fix"], Value::Null);
         assert!(!v["problems"].to_string().contains("hooksPath"));
     }
+}
+
+#[test]
+fn doctor_shows_the_quality_remote() {
+    let (_tmp, root) = repo();
+    let outside = tempfile::tempdir().unwrap();
+    let quality = |dir: &Path| {
+        doctor_report(
+            ns().current_dir(dir)
+                .env("GIT_CEILING_DIRECTORIES", outside.path())
+                .arg("doctor")
+                .assert()
+                .get_output(),
+        )["quality"]
+            .clone()
+    };
+    assert_eq!(quality(&root), serde_json::json!({"remote": "origin"}));
+    fs::create_dir(root.join(".nightshift")).unwrap();
+    fs::write(
+        root.join(".nightshift/nightshift.toml"),
+        "[quality]\nremote = \"none\"\n",
+    )
+    .unwrap();
+    assert_eq!(quality(&root), serde_json::json!({"remote": "none"}));
+    assert_eq!(quality(outside.path()), Value::Null);
 }
 
 fn executable(path: &Path, body: &str) {

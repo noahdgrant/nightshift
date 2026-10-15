@@ -90,10 +90,11 @@ pub fn run() -> Result<ExitCode> {
         "skill_dirs": skill_dirs_entry(),
         "claude_phases": {
             "auto_memory": false,
-            "env": format!("{}=1", crate::billing::AUTO_MEMORY_ENV),
+            "env": format!("{}=1", crate::harness::AUTO_MEMORY_ENV),
         },
         "forge": forge,
         "hooks": hooks,
+        "quality": factory().map(|f| json!({ "remote": f.quality.remote })),
         "ssh_keepalive": keepalive,
         "problems": problems,
         "warnings": warnings,
@@ -326,18 +327,15 @@ fn ssh_config(t: &forge::SshTarget) -> std::io::Result<std::process::Output> {
     cmd.timeout(forge::PROBE_TIMEOUT).until_stop().output()
 }
 
-/// `[queue] source` from the current repo's factory file, when it has one that loads.
-fn queue_source() -> Option<String> {
+/// The current repo's factory file, when the directory is in a repo and the file loads.
+fn factory() -> Option<crate::factory::Factory> {
     let repo = crate::git::Repo::discover(Path::new(".")).ok()?;
-    crate::factory::load(&crate::factory::root(None, &repo.root))
-        .ok()?
-        .queue
-        .source
+    crate::factory::load(&crate::factory::root(None, &repo.root)).ok()
 }
 
 /// Each forge's entry, and the warnings they raise, also printed to stderr.
 fn forges_entry(cfg: Option<&config::Config>, problems: &mut Vec<String>) -> (Value, Vec<String>) {
-    let source = queue_source();
+    let source = factory().and_then(|f| f.queue.source);
     let origin = forge::Origin::read(Path::new("."), source.as_deref(), cfg);
     let mut warnings: Vec<String> = Vec::new();
     let mut forge = Map::new();

@@ -16,8 +16,10 @@ use crate::error::SfError;
 use crate::frontmatter;
 
 mod cycles;
+mod quality;
 
 pub use cycles::Cycles;
+pub use quality::Quality;
 
 pub const FILE: &str = "nightshift.toml";
 
@@ -86,6 +88,8 @@ pub struct Factory {
     /// Read by the `ns-supervise` skill through `ns factory validate`, not by `ns run` or `ns watch`.
     #[serde(default)]
     pub supervise: Supervise,
+    #[serde(default)]
+    pub quality: Quality,
     /// `[ratchets.<name>]`: measured values `ns ratchet check` holds to `ratchets.json`.
     #[serde(default)]
     pub ratchets: BTreeMap<String, Ratchet>,
@@ -554,15 +558,14 @@ impl Factory {
             "queue.overlap_ignore",
             &self.queue.overlap_ignore,
         ));
-        if let Some(b) = self.limits.budget_usd {
-            if b < 0.0 {
-                out.push("limits.budget_usd must not be negative".into());
-            }
+        if self.limits.budget_usd.is_some_and(|b| b < 0.0) {
+            out.push("limits.budget_usd must not be negative".into());
         }
         if self.limits.memory_mb == Some(0) {
             out.push("limits.memory_mb must be at least 1; remove it for no cap".into());
         }
         out.extend(self.supervise.problems());
+        out.extend(self.quality.problems());
         out
     }
 }
