@@ -31,6 +31,8 @@ Skills run under any harness that reads `SKILL.md` (Claude Code, Codex, Cursor, 
 
 Units, worktrees, artifacts, gates, evidence and the `docs/agents/` files are defined in [`skills/ns-contract/SKILL.md`](../skills/ns-contract/SKILL.md). It ships with the skills, so installed skills can read it. From a skill, link it as `../ns-contract/SKILL.md`. Never link to `docs/` from a skill: `docs/` isn't installed.
 
+A skill names a tracker operation (**Read a PR's state**) and never spells out a `gh` or `glab` command: the target repo's `docs/agents/issue-tracker.md` holds the commands (`ns-contract`, Tracker operations; ADR-659). A new operation goes in `OPERATIONS` in `cli/src/lint/tracker.rs` and in both tracker templates in `skills/ns-setup/references/`, and `ns lint` checks both.
+
 ## Prose
 
 - Short, plain sentences. No em dashes.

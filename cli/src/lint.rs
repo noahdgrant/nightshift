@@ -15,6 +15,7 @@ use crate::frontmatter;
 
 mod rules_index;
 use rules_index::check_rules_index;
+mod tracker;
 
 pub const MAX_DESCRIPTION: usize = 1024;
 
@@ -145,9 +146,19 @@ fn has_scheme(target: &str) -> bool {
 
 /// The lines of `text` outside fenced code blocks, fence lines dropped.
 fn prose_lines(text: &str) -> Vec<&str> {
+    classified_lines(text)
+        .into_iter()
+        .filter(|(_, _, fenced)| !fenced)
+        .map(|(_, line, _)| line)
+        .collect()
+}
+
+/// Each line of `text` with its 1-based number and whether it sits inside a fenced
+/// code block. Fence lines themselves are dropped.
+fn classified_lines(text: &str) -> Vec<(usize, &str, bool)> {
     let mut lines = Vec::new();
     let mut fence: Option<&str> = None;
-    for line in text.lines() {
+    for (i, line) in text.lines().enumerate() {
         let t = line.trim_start();
         let marker = if t.starts_with("```") {
             Some("```")
@@ -162,8 +173,8 @@ fn prose_lines(text: &str) -> Vec<&str> {
                 Some(open) if open == m => fence = None,
                 Some(_) => {}
             }
-        } else if fence.is_none() {
-            lines.push(line);
+        } else {
+            lines.push((i + 1, line, fence.is_some()));
         }
     }
     lines
@@ -198,10 +209,17 @@ fn check_feature(text: &str) -> Option<String> {
     })
 }
 
-/// `line` with its inline code spans removed. A backtick run opens a span that the next
-/// run of the same length closes; a run with no closer is literal text.
+/// `line` with its inline code spans removed.
 fn strip_code_spans(line: &str) -> String {
+    code_spans(line).0
+}
+
+/// `line` split into its text outside inline code spans and the spans' contents. A
+/// backtick run opens a span that the next run of the same length closes; a run with no
+/// closer is literal text.
+fn code_spans(line: &str) -> (String, Vec<&str>) {
     let mut out = String::new();
+    let mut spans = Vec::new();
     let mut rest = line;
     while let Some(i) = rest.find('`') {
         out.push_str(&rest[..i]);
@@ -221,7 +239,10 @@ fn strip_code_spans(line: &str) -> String {
             search = start + m;
         };
         match close {
-            Some(end) => rest = &after[end..],
+            Some(end) => {
+                spans.push(&after[..end - n]);
+                rest = &after[end..];
+            }
             None => {
                 out.push_str(&tick[..n]);
                 rest = after;
@@ -229,7 +250,7 @@ fn strip_code_spans(line: &str) -> String {
         }
     }
     out.push_str(rest);
-    out
+    (out, spans)
 }
 
 /// Relative link targets (`x`, `./x`, `../x`) outside code blocks and code spans, anchors stripped.
@@ -341,6 +362,21 @@ fn feature_files(skill_dir: &Path) -> Vec<PathBuf> {
     features
 }
 
+/// The checks on the skills root as a whole: the tracker templates, and the decisions and
+/// rules index of the repo that holds it.
+fn root_checks(root: &Path) -> Result<Vec<LintError>> {
+    let mut errors = tracker::check_templates(root);
+    if let Some(repo) = fs::canonicalize(root)?.parent() {
+        if repo.join("docs/decisions").is_dir() {
+            errors.extend(decisions::check(repo));
+        }
+        if repo.join("rules").is_dir() {
+            errors.extend(check_rules_index(&repo.join("rules")));
+        }
+    }
+    Ok(errors)
+}
+
 pub fn lint_dir(root: &Path) -> Result<Report> {
     if !root.is_dir() {
         return Err(SfError::usage(
@@ -394,6 +430,9 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
                     push(&mut errors, file, m);
                 }
             }
+            for m in tracker::command_errors(root, dir, file, &body) {
+                push(&mut errors, file, m);
+            }
             let base = file.parent().unwrap_or(dir);
             for link in relative_links(&body) {
                 match fs::canonicalize(base.join(&link)) {
@@ -428,14 +467,7 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
             }
         }
     }
-    if let Some(repo) = fs::canonicalize(root)?.parent() {
-        if repo.join("docs/decisions").is_dir() {
-            errors.extend(decisions::check(repo));
-        }
-        if repo.join("rules").is_dir() {
-            errors.extend(check_rules_index(&repo.join("rules")));
-        }
-    }
+    errors.extend(root_checks(root)?);
     Ok(Report {
         ok: errors.is_empty(),
         skills,
