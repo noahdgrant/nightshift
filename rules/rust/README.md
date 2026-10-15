@@ -10,6 +10,18 @@ It flags them only in test code: any file under a `tests/` directory or named `t
 
 A literal `Duration` that only builds a fake-clock value, or a generous hang guard, is flagged too. Baseline it with `ns rules baseline --allow-growth`, which takes a human's yes.
 
+## Harness processes built outside crate::harness
+
+The ast-grep rule `harness-kind-construction` (#716) closes the gap the clippy ban on `Proc::harness` (`cli/clippy.toml`) leaves. A `Proc` of kind `Kind::Harness` can also be built through `memcap::command`, `memcap::wrapped` or `Proc::launched`, which skip the billing and phase setup `crate::harness::command` adds (#657). The rule flags any `Kind::Harness { .. }` built as a value, with or without a path before `Kind` (`proc::Kind::Harness { subscription }`), in every file except the three allowed to build one: `cli/src/harness.rs`, `cli/src/proc.rs` (`Proc::harness`, behind the clippy ban) and `cli/src/proc/tests.rs`. Its `ignores:` globs name those paths from the repo root, where `ns rules check` runs `check.sh`. A pattern that matches the variant (a `match` arm, `if let Kind::Harness { .. } = k`) is not flagged.
+
+It misses three cases, each rare enough to leave to review:
+
+- Inside a macro, ast-grep sees tokens rather than an expression, and can't tell a value from a pattern (`matches!(k, Kind::Harness { .. })`), so the rule flags neither. Build the value outside the macro in production code.
+- A name other than `Kind::Harness` for the variant, from `use Kind::*`, `use proc::Kind as K` or `Self::Harness` inside `impl Kind`.
+- A `Kind` copied or passed in from elsewhere, which builds no new value.
+
+`rules/rust/tests/run.sh` checks the flagged and unflagged forms and each allowed file.
+
 ## Compile errors
 
 A compile error is not a finding, so it can't be baselined. Cargo can't check a crate whose dependency didn't compile, so a baselined error would hide every finding behind it. When clippy reports a compiler error, an error with no code or an `E` code such as `E0308`, `check.sh clippy` exits 2 with no findings. It prints the errors, and the findings from the members it did lint (it runs with `--keep-going`), as `check.sh:` lines on stderr:
