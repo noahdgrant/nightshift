@@ -1245,6 +1245,33 @@ fn doctor_reports_config() {
 }
 
 #[test]
+fn doctor_reports_whether_phases_get_a_private_tmp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let doctor = |bwrap: &str| {
+        common::write_exe(&bin.join("bwrap"), format!("#!/bin/sh\n{bwrap}\n"));
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+        doctor_report(
+            ns().current_dir(tmp.path())
+                .env("PATH", path)
+                .arg("doctor")
+                .assert()
+                .get_output(),
+        )["private_tmp"]
+            .clone()
+    };
+    assert_eq!(
+        doctor("exit 0"),
+        serde_json::json!({"isolated": true, "via": "bwrap", "reason": null})
+    );
+    let v = doctor("exit 1");
+    assert_eq!(v["isolated"], false, "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.starts_with("bwrap failed"), "{reason}");
+}
+
+#[test]
 fn doctor_reports_which_harness_skill_dirs_hold_the_ns_skills() {
     let skills = fixture_skills();
     let home = tempfile::tempdir().unwrap();

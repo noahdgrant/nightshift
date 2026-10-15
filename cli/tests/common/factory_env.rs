@@ -62,7 +62,21 @@ impl Env {
     /// An env whose repo holds what `fill` writes and a demo skill, committed on `branch`,
     /// which is also `origin`'s default branch.
     pub fn with_repo(branch: &str, fill: impl FnOnce(&Path)) -> Env {
-        let tmp = tempfile::tempdir().unwrap();
+        // Off the host /tmp, which a phase's private /tmp hides: one under it is bound back into
+        // the phase's TMPDIR, and is not removable while a phase process still holds it.
+        Env::with_repo_in(env!("CARGO_TARGET_TMPDIR"), branch, fill)
+    }
+
+    /// As `new`, with the repo, worktrees and `TMPDIR` under the host `/tmp`, the production
+    /// default that a phase's private `/tmp` must bind back.
+    pub fn in_host_tmp() -> Env {
+        Env::with_repo_in("/tmp", "main", |root| {
+            fs::write(root.join("README"), "hi\n").unwrap();
+        })
+    }
+
+    fn with_repo_in(parent: &str, branch: &str, fill: impl FnOnce(&Path)) -> Env {
+        let tmp = tempfile::tempdir_in(parent).unwrap();
         let base = tmp.path().canonicalize().unwrap();
         let root = base.join("myrepo");
         fs::create_dir(&root).unwrap();

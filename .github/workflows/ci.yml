@@ -46,10 +46,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install the pinned tools cli/tests run (rules_pack*.rs run the rule packs, factory.rs the py-inventory fixture; jq ships with the runner)
+      - name: Install the pinned tools cli/tests run (rules_pack*.rs run the rule packs, factory.rs the py-inventory fixture and bwrap for private /tmp; jq ships with the runner)
         id: tools
         working-directory: .
-        run: scripts/ci-tools.sh install pytest ruff ast-grep cargo-deny java pmd
+        run: scripts/ci-tools.sh install pytest ruff ast-grep cargo-deny java pmd bwrap
+      - name: Let bwrap create user namespaces (ubuntu 24.04 restricts them through AppArmor)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: taiki-e/install-action@v2
         with:
           tool: ${{ steps.tools.outputs.install-action }}

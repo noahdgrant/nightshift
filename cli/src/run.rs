@@ -464,6 +464,8 @@ struct PhaseEnv<'a> {
     ns: PathBuf,
     /// The directory of this unit's phase `TMPDIR`s, `Repo::unit_tmp`.
     tmp: PathBuf,
+    /// Ok when each phase gets its `TMPDIR` as a private `/tmp`, else why it shares the host's.
+    private_tmp: Result<(), String>,
 }
 
 impl Ctx<'_> {
@@ -533,6 +535,8 @@ pub struct Loaded {
     pub cap: Option<Cap>,
     /// The running `ns` binary, which the phase hook guard and the gate run by path.
     pub ns: PathBuf,
+    /// Ok when phases get a private `/tmp`, else why not, probed once at start.
+    pub private_tmp: Result<(), String>,
 }
 
 impl Loaded {
@@ -572,6 +576,15 @@ impl Loaded {
             }
             None => None,
         };
+        let private_tmp = if dry_run {
+            Err("a dry run starts no phase".to_string())
+        } else {
+            let works = crate::harness::private_tmp_works();
+            if let Err(why) = &works {
+                eprintln!("ns: warning: phases share the host /tmp: {why}");
+            }
+            works
+        };
         Ok(Loaded {
             root,
             fac,
@@ -580,6 +593,7 @@ impl Loaded {
             files,
             cap,
             ns,
+            private_tmp,
         })
     }
 }
@@ -602,6 +616,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         gate,
         cap,
         ns,
+        private_tmp,
         ..
     } = loaded;
     let problems = fac.problems(cfg.as_ref());
@@ -726,6 +741,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
             cap: cap.as_ref(),
             ns: ns.clone(),
             tmp: repo.unit_tmp(&unit),
+            private_tmp: private_tmp.clone(),
         },
     };
     for ev in pinned {
@@ -878,6 +894,7 @@ fn dry_run(
             cap: None,
             ns: PathBuf::new(),
             tmp: PathBuf::new(),
+            private_tmp: Err("a dry run starts no phase".to_string()),
         },
     };
     // Decide as `drive` would at its first step, through the same `core::step`, without its log
