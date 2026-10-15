@@ -768,7 +768,7 @@ fn a_refill_does_not_check_for_an_update_so_a_new_ready_issue_still_starts() {
     e.ready(2, "Fix a", &["type:fix"], "");
     let (in_a, go_a) = hold_phase(&e, A, "build");
     let (in_c, go_c) = hold_phase(&e, "4-fix-c", "build");
-    let listed = mark_gh_calls(&e, "");
+    let listed = mark_gh_calls(&e);
     let w = Watching::start(watch_from(&e, &from).env("NS_REFILL_MS", "100").args([
         "watch",
         "--parallel",

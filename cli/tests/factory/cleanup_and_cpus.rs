@@ -334,22 +334,18 @@ fn fifo_lines(path: &Path) -> mpsc::Receiver<()> {
 
 /// Mark each `gh` call in the run log, among the night's own events, as a `test_gh` event whose
 /// `call` is `listing` (an issue listing), `view` (an issue or PR view) or `other`, and whose
-/// `pid` is the caller's, then run `hook`. A message comes on the returned channel at each
-/// listing.
-fn mark_gh_calls(e: &Env, hook: &str) -> mpsc::Receiver<()> {
+/// `pid` is the caller's. A message comes on the returned channel at each listing.
+fn mark_gh_calls(e: &Env) -> mpsc::Receiver<()> {
     let listed = fifo_lines(&e.ghd.join("listed"));
     e.gh_file(
         "hook.sh",
-        &format!(
-            "case \"$*\" in\n\
+        "case \"$*\" in\n\
                *issues?state=open*) k=listing ;;\n\
                *\"issue view\"*|*\"pr view\"*) k=view ;;\n\
                *) k=other ;;\n\
              esac\n\
-             echo \"{{\\\"event\\\":\\\"test_gh\\\",\\\"call\\\":\\\"$k\\\",\\\"pid\\\":$PPID}}\" >> \"$(git rev-parse --git-common-dir)/ns/runs.jsonl\"\n\
-             if [ $k = listing ]; then echo x > \"$d/listed\"; fi\n\
-             {hook}"
-        ),
+             echo \"{\\\"event\\\":\\\"test_gh\\\",\\\"call\\\":\\\"$k\\\",\\\"pid\\\":$PPID}\" >> \"$(git rev-parse --git-common-dir)/ns/runs.jsonl\"\n\
+             if [ $k = listing ]; then echo x > \"$d/listed\"; fi\n",
     );
     listed
 }
@@ -413,7 +409,7 @@ fn an_idle_slot_with_nothing_to_start_does_not_spin() {
     // #5's triage leaves it untriaged: nothing comes out ready.
     e.queue("triage.5-fix-e", &["none"]);
     let (in_a, go_a) = hold_phase(&e, A, "build");
-    let listed = mark_gh_calls(&e, "");
+    let listed = mark_gh_calls(&e);
     // A refill each 3 s of the night's clock, which the free slot's wait moves a second a poll.
     let mut w = a_long_unit_beside_the_backlog(&e, 3000, &["--parallel", "2"]);
     w.entered(&in_a);
@@ -441,7 +437,7 @@ fn an_idle_refill_skips_the_worktree_cleanup() {
     let e = Env::new();
     e.queue("triage.5-fix-e", &["none"]);
     let (in_a, go_a) = hold_phase(&e, A, "build");
-    let listed = mark_gh_calls(&e, "");
+    let listed = mark_gh_calls(&e);
     let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "2"]);
     w.entered(&in_a);
     refills_after_the_triage(&mut w, &listed, 5);

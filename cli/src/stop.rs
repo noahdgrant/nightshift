@@ -56,7 +56,7 @@ pub fn install_for_watch() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Run `f` with [`install`]'s handlers, then put back the ones that were set. For a command
+/// Run `f` with handlers that record the signal as [`install`]'s do but say nothing, then put back the ones that were set. For a command
 /// whose children are in sessions of their own, so a terminal's Ctrl-C reaches only this
 /// process and `f` has to end them itself, but whose later code does not poll for a stop.
 #[cfg(unix)]
@@ -106,7 +106,8 @@ pub fn request(sig: i32) {
 fn handle(handler: extern "C" fn(libc::c_int), one_shot: bool) -> std::io::Result<()> {
     for sig in [libc::SIGINT, libc::SIGTERM] {
         // SAFETY: sigaction(2) with a zeroed struct, an empty mask and a handler that only
-        // stores an atomic and writes a static line with write(2). SA_RESTART keeps interrupted reads and waits going; SA_RESETHAND,
+        // stores an atomic (`record`) or also writes a static line with write(2)
+        // (`record_and_say`). SA_RESTART keeps interrupted reads and waits going; SA_RESETHAND,
         // when one-shot, puts back the default action once the handler runs.
         unsafe {
             let mut sa: libc::sigaction = std::mem::zeroed();
