@@ -361,9 +361,9 @@ impl Sim {
         let issue = self.running.remove(at);
         self.timeline.push(format!("end {n}"));
         let mut v = json!({"unit": unit_id(&issue), "reason": "why"});
-        v.as_object_mut()
-            .unwrap()
-            .extend(fields.as_object().unwrap().clone());
+        if let (Some(v), Value::Object(fields)) = (v.as_object_mut(), fields) {
+            v.extend(fields);
+        }
         let r = RunResult::from_json(v).expect("a run result");
         let review = core_settle::review_path(&r).and_then(|a| std::fs::read_to_string(a).ok());
         let mut facts = SettleFacts {
