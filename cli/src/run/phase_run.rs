@@ -313,7 +313,7 @@ fn record(
     let art = read_art(&art_path);
     let written = art.is_some();
     if art.as_ref().is_some_and(|a| a.invalid.is_none()) {
-        if let Err(e) = record_review_run(io, state, phase, h.started, &mut rec) {
+        if let Err(e) = record_review_run(io, state, phase, h, &mut rec) {
             return unrecorded(io, phase, &moves, rec, &e);
         }
     }
@@ -365,12 +365,13 @@ fn record(
 }
 
 /// Add a review pass or fix cycle that wrote its artifact to `ns`'s record of the review loop,
-/// with the times `ns` saw, and name its cycle in the run log's `phase` event.
+/// with the times `ns` saw, and name its cycle in the run log's `phase` event. It ended its
+/// harness's wall time after it started, which a pinned clock, standing still, would not show.
 fn record_review_run(
     io: &Io<'_, '_>,
     state: &State,
     phase: &str,
-    started: i64,
+    h: Harnessed<'_>,
     rec: &mut Value,
 ) -> Result<()> {
     let ctx = io.ctx;
@@ -381,8 +382,8 @@ fn record_review_run(
         phase: phase.to_string(),
         cycle,
         kind: kind.to_string(),
-        started: clock::iso(started),
-        ended: clock::iso(io.shared.clock.now()),
+        started: clock::iso(h.started),
+        ended: clock::iso(h.started + h.r.wall_s.round() as i64),
         sha: ctx.head(),
     };
     rec["review_cycle"] = json!({"cycle": cycle, "kind": kind});

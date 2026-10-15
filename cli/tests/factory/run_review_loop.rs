@@ -50,7 +50,9 @@ fn ns_records_each_pass_and_fix_cycle_with_its_own_clock_and_the_quality_record_
     let got: Vec<(&str, u64, &str)> = rec
         .iter()
         .map(|r| {
-            assert_eq!((r["started"].as_str(), r["ended"].as_str()), (Some(at), Some(at)), "{r}");
+            // Each ends its harness's wall time on, a second or so here.
+            assert_eq!(r["started"].as_str(), Some(at), "{r}");
+            assert!(r["ended"].as_str().is_some_and(|t| (at.."2026-10-09T00:01:00Z").contains(&t)), "{r}");
             (r["phase"].as_str().unwrap(), r["cycle"].as_u64().unwrap(), r["kind"].as_str().unwrap())
         })
         .collect();
@@ -248,4 +250,19 @@ fn a_dry_run_on_a_unit_waiting_for_a_fix_cycle_shows_the_fix_cycle() {
     let prompt = d["prompt"].as_str().unwrap();
     assert!(prompt.contains("Phase: review-fix") && prompt.contains("Fix cycle 1 (full)"), "{prompt}");
     assert!(d["command"].as_array().is_some_and(|c| !c.is_empty()), "{d}");
+}
+
+#[test]
+fn ns_records_a_run_as_ending_when_its_harness_did() {
+    let e = Env::new();
+    e.queue("build", &["pass:commit"]);
+    e.queue("review", &["pass:script"]);
+    e.ctl("review.sh", "sleep 2\n");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let rec = review_record(&e);
+    let (started, ended) = (rec[0]["started"].as_str().unwrap(), rec[0]["ended"].as_str().unwrap());
+    assert_eq!(started, "2026-10-09T00:00:00Z", "{rec:?}");
+    // The same format sorts by time: the 2s harness ended 2s to a minute after it started.
+    assert!(("2026-10-09T00:00:02Z".."2026-10-09T00:01:00Z").contains(&ended), "{rec:?}");
 }
