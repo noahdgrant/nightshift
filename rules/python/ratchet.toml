@@ -1,0 +1,7 @@
+# The coverage ratchet (docs/factory/run.md, "Ratchets"): ns-setup adds this table to
+# .nightshift/nightshift.toml. Append pytest arguments to the command, `--cov=<package>` to
+# measure only the repo's own code.
+[ratchets.coverage]
+command = ".nightshift/rules/python/ratchet-coverage.sh"
+better = "higher"
+tolerance = 0.5

@@ -1,0 +1,5 @@
+# The pytest plugin rules/python/ratchet-coverage.sh runs; it installs into pytest's own Python.
+# Locally, beside a uv tool pytest: uv tool install --force pytest==9.1.1 --with pytest-cov==7.1.0
+version = "7.1.0"
+install = "pip"
+check = "pytest -VV"

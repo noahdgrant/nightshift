@@ -205,6 +205,7 @@ fn install_copies_the_pack_and_writes_one_rules_row_and_the_check_passes() {
         "deny.toml",
         "ast-grep.yml",
         "clippy-lints.txt",
+        "ratchet-binary-size.sh",
         "roads.txt",
     ] {
         assert!(

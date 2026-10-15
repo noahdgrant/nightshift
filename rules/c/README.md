@@ -28,6 +28,10 @@ x = legacy(); // NOLINT(bugprone-branch-clone): both arms read different registe
 
 The pack reports `-Wall -Wextra` warnings through clang-tidy. The build should also fail on them: in Zephyr, set `CONFIG_COMPILER_WARNINGS_AS_ERRORS=y` in `prj.conf`; in plain CMake, `target_compile_options(<target> PRIVATE -Wall -Wextra -Werror)`. Turning them on in an existing tree is a separate change from installing the pack, since it may need fixes first.
 
+## Flash and RAM ratchets
+
+`ratchet-memory.sh flash|ram <elf>` is an example ratchet (`docs/factory/run.md`, "Ratchets"): it reads the image's berkeley size report (`size -B`) and prints flash (text + data) or RAM (data + bss) in bytes as the one line on stdout, so `ns ratchet check` fails a unit that grows either. `SIZE` names the size tool, `size` by default; a cross build sets its toolchain's (`SIZE=arm-zephyr-eabi-size`). A missing tool or image, a failing tool or a report that is not one berkeley line makes it exit 1 with a message and print nothing. `ratchet.toml` holds its `[ratchets.flash]` and `[ratchets.ram]` tables, which build the image first; `ns-setup` offers to add them to `.nightshift/nightshift.toml` with `{build}` and `{elf}` filled in. `tests/test_ratchet_memory.py` tests both.
+
 ## Install
 
 Needs `python3` (3.9 or later), `ast-grep` (`pip install ast-grep-cli`, `cargo install ast-grep` or `npm i -g @ast-grep/cli`) and `clang-tidy` 18 (`apt install clang-tidy-18`, then put it on `PATH` as `clang-tidy`), each on `PATH`. The tests assert exact check names and aliases from clang-tidy 18, and CI pins that version in `scripts/ci-tools.d/clang-tidy.toml`. The `ns-setup` skill does these steps:
