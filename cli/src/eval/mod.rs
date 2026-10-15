@@ -217,7 +217,7 @@ fn resolve(args: &Args) -> Result<Env> {
         ))
         .into());
     }
-    let mut argv = config::expand(&harness.command, cfg.model.as_deref());
+    let argv = config::expand(&harness.command, cfg.model.as_deref());
     if !["subscription", "api"].contains(&cfg.billing.as_str()) {
         return Err(SfError::new(
             EXIT_NOT_CONFIGURED,
@@ -228,12 +228,7 @@ fn resolve(args: &Args) -> Result<Env> {
         )
         .into());
     }
-    if cfg.billing == "subscription" && crate::billing::is_claude(&argv) {
-        argv = crate::billing::strip_bare(argv);
-        if !args.dry_run {
-            crate::billing::check_login()?;
-        }
-    }
+    let argv = crate::harness::argv(argv, cfg.billing == "subscription");
     if argv.is_empty() {
         return Err(SfError::new(
             EXIT_NOT_CONFIGURED,

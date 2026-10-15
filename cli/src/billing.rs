@@ -1,10 +1,8 @@
 //! Subscription billing guard for claude and codex runs, and usage-limit detection for claude.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::Value;
-
-use crate::error::SfError;
 
 /// Variables that make claude bill an API key or a cloud provider instead of the subscription.
 pub const API_ENV: &[&str] = &[
@@ -33,31 +31,6 @@ pub fn is_codex(argv: &[String]) -> bool {
     runs(argv, "codex")
 }
 
-/// Headless claude kills background tasks this long after its last turn (default 10 minutes).
-pub const BG_WAIT_ENV: &str = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS";
-
-/// Lift the ceiling so the phase timeout is the only bound, unless the user set one.
-pub fn wait_for_bg_tasks(cmd: &mut crate::proc::Proc) {
-    let set_here = cmd.get_envs().any(|(k, v)| k == BG_WAIT_ENV && v.is_some());
-    if !set_here && std::env::var_os(BG_WAIT_ENV).is_none() {
-        cmd.env(BG_WAIT_ENV, "0");
-    }
-}
-
-/// Turns off Claude Code auto-memory, so a phase or trial can't write into the operator's
-/// `~/.claude/projects/` memory: https://code.claude.com/docs/en/memory
-pub const AUTO_MEMORY_ENV: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
-
-/// Always turn auto-memory off, overriding whatever the operator's environment says.
-pub fn disable_auto_memory(cmd: &mut crate::proc::Proc) {
-    cmd.env(AUTO_MEMORY_ENV, "1");
-}
-
-/// Drop `--bare`, which forces API-key auth.
-pub fn strip_bare(argv: Vec<String>) -> Vec<String> {
-    argv.into_iter().filter(|a| a != "--bare").collect()
-}
-
 /// The variables that would make `argv`'s harness bill an API instead of the subscription.
 pub fn api_env(argv: &[String]) -> &'static [&'static str] {
     if is_claude(argv) {
@@ -67,26 +40,6 @@ pub fn api_env(argv: &[String]) -> &'static [&'static str] {
     } else {
         &[]
     }
-}
-
-fn credentials_path() -> PathBuf {
-    crate::config::expand_tilde("~/.claude/.credentials.json")
-}
-
-/// Refuse to start without a subscription login: `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`.
-pub fn check_login() -> anyhow::Result<()> {
-    let token = std::env::var("CLAUDE_CODE_OAUTH_TOKEN").is_ok_and(|v| !v.is_empty());
-    if token || credentials_path().is_file() {
-        return Ok(());
-    }
-    Err(SfError::usage(
-        format!(
-            "billing = \"subscription\" but {} is missing, so claude would fall back to API credits",
-            credentials_path().display()
-        ),
-        "log in with your Claude subscription first:\n  claude /login\nor opt into API billing in .nightshift/nightshift.toml:\n  [defaults]\n  billing = \"api\"",
-    )
-    .into())
 }
 
 /// A usage-limit stop found in a claude stream-json transcript.
@@ -223,12 +176,8 @@ mod tests {
     }
 
     #[test]
-    fn strips_bare_and_spots_claude() {
+    fn spots_claude_and_codex() {
         let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(
-            strip_bare(v(&["claude", "--bare", "-p"])),
-            v(&["claude", "-p"])
-        );
         assert!(is_claude(&v(&["/usr/bin/claude"])));
         assert!(!is_claude(&v(&["codex"])));
         assert!(is_codex(&v(&["/usr/bin/codex", "exec"])));
@@ -243,14 +192,5 @@ mod tests {
         assert_eq!(api_env(&v(&["claude", "-p"])), API_ENV);
         assert_eq!(api_env(&v(&["codex", "exec"])), CODEX_API_ENV);
         assert!(api_env(&v(&["sh", "-c", "true"])).is_empty());
-    }
-
-    #[test]
-    fn a_bg_wait_ceiling_already_on_the_command_is_kept() {
-        let mut cmd = crate::proc::Proc::harness("claude", true);
-        cmd.env(BG_WAIT_ENV, "5");
-        wait_for_bg_tasks(&mut cmd);
-        let got: Vec<_> = cmd.get_envs().filter(|(k, _)| *k == BG_WAIT_ENV).collect();
-        assert_eq!(got, [(BG_WAIT_ENV.as_ref(), Some("5".as_ref()))]);
     }
 }

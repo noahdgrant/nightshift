@@ -7,11 +7,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::billing;
 use crate::error::SfError;
 use crate::gate;
+use crate::harness;
 use crate::memcap::{self, Cap};
-use crate::proc::Kind;
 
 /// A phase's timeout. `NS_PHASE_TIMEOUT_MS` overrides it: `<ms>` for every phase, or
 /// comma-separated `<phase>=<ms>` for the named phases only. A fix cycle takes review's when
@@ -98,17 +97,12 @@ pub(super) fn run_harness(
             return Err(not_found());
         }
     }
-    let (mut cmd, watch) = memcap::command(cap, Kind::Harness { subscription }, &argv[0]);
+    let (mut cmd, watch) = harness::capped(cap, &argv[0], &argv[1..], subscription)?;
     crate::cpus::apply(&mut cmd);
-    cmd.args(&argv[1..])
-        .current_dir(cwd)
+    cmd.current_dir(cwd)
         .output_to(out)
         .stderr_to(err)
         .envs(env.iter().map(|(k, v)| (k, v)));
-    if billing::is_claude(argv) {
-        billing::wait_for_bg_tasks(&mut cmd);
-        billing::disable_auto_memory(&mut cmd);
-    }
     let ended = match cmd.stdin(prompt.as_bytes().to_vec()).timeout(timeout).run() {
         Ok(r) => r,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_found()),

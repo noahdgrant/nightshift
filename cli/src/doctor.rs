@@ -90,7 +90,7 @@ pub fn run() -> Result<ExitCode> {
         "skill_dirs": skill_dirs_entry(),
         "claude_phases": {
             "auto_memory": false,
-            "env": format!("{}=1", crate::billing::AUTO_MEMORY_ENV),
+            "env": format!("{}=1", crate::harness::AUTO_MEMORY_ENV),
         },
         "forge": forge,
         "hooks": hooks,

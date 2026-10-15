@@ -342,16 +342,9 @@ pub fn run_harness(
         .with_context(|| format!("cannot create {}", stdout_path.display()))?;
     let err = File::create(stderr_path)
         .with_context(|| format!("cannot create {}", stderr_path.display()))?;
-    let mut cmd = Proc::harness(bin, subscription);
-    cmd.args(args)
-        .current_dir(&scratch.repo)
-        .output_to(out)
-        .stderr_to(err);
+    let mut cmd = crate::harness::command(bin, args, subscription)?;
+    cmd.current_dir(&scratch.repo).output_to(out).stderr_to(err);
     sandbox_env(&mut cmd, scratch);
-    if crate::billing::is_claude(argv) {
-        crate::billing::wait_for_bg_tasks(&mut cmd);
-        crate::billing::disable_auto_memory(&mut cmd);
-    }
     let ended = match cmd.stdin(prompt.as_bytes().to_vec()).timeout(timeout).run() {
         Ok(r) => r,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

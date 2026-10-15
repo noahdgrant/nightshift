@@ -410,11 +410,11 @@ fn each_constructor_picks_its_kind() {
         (Proc::git_local().kind, Kind::GitLocal),
         (Proc::git_network().kind, Kind::GitNetwork),
         (
-            Proc::harness("claude", true).kind,
+            crate::harness::command("codex", &[], true).unwrap().kind,
             Kind::Harness { subscription: true },
         ),
         (
-            Proc::harness("claude", false).kind,
+            crate::harness::command("codex", &[], false).unwrap().kind,
             Kind::Harness {
                 subscription: false,
             },
@@ -675,7 +675,8 @@ fn exec_probe() {
         }
         "billing" => {
             let bin = std::env::var("NS_PROC_EXEC_BIN").unwrap();
-            let e = Proc::harness(bin, true).arg("-c").arg("env").exec();
+            let args = ["-c".to_string(), "env".to_string()];
+            let e = crate::harness::command(bin, &args, true).unwrap().exec();
             panic!("exec failed: {e}");
         }
         other => panic!("unknown mode {other}"),
