@@ -7,6 +7,8 @@ set -euo pipefail
 
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
   GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
+# The gate under `ns run` sets these for its own ratchets; the test repos have their own.
+unset NS_RATCHET_FACTORY NS_RATCHET_STEADY NS_RATCHET_REPORT
 
 pack=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 target=${CARGO_TARGET_DIR:-cli/target}
