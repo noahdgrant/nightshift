@@ -49,7 +49,8 @@ pub fn remove(repo: &Repo, worktree: &Path) -> Option<Value> {
 }
 
 /// Where `rel` resolves under `root` (canonical), `None` when nothing is there, or why it is
-/// refused: absolute, climbing out, the worktree itself, or a symlink that leads out.
+/// refused: absolute, climbing out, the worktree itself, `.git` or `.ns`, tracked by git, or a
+/// symlink that leads out.
 fn inside(root: &Path, rel: &str) -> Result<Option<PathBuf>, String> {
     let p = Path::new(rel);
     if p.is_absolute() {
@@ -75,6 +76,21 @@ fn inside(root: &Path, rel: &str) -> Result<Option<PathBuf>, String> {
             "resolves outside the worktree, to {}",
             real.display()
         ));
+    }
+    let inner = real.strip_prefix(root).unwrap_or(&real);
+    if matches!(
+        inner.components().next(),
+        Some(Component::Normal(c)) if c == ".git" || c == ".ns"
+    ) {
+        return Err("git or nightshift state".into());
+    }
+    for candidate in [p, inner] {
+        let spec = format!(":(literal){}", candidate.display());
+        match crate::git::run(root, &["ls-files", "--", &spec]) {
+            Ok(tracked) if tracked.is_empty() => {}
+            Ok(_) => return Err("tracked by git".into()),
+            Err(e) => return Err(format!("cannot check whether git tracks it: {e}")),
+        }
     }
     Ok(Some(real))
 }
@@ -118,6 +134,7 @@ mod tests {
         fs::write(wt.join("cli/target/a"), "abc").unwrap();
         fs::write(wt.join("cli/target/debug/b"), "defg").unwrap();
         fs::write(wt.join("cli/keep.rs"), "x").unwrap();
+        crate::git::run(&wt, &["init", "-q"]).unwrap();
         let stack = format!("| Task | Command | Takes |\n|---|---|---|\n{row}\n");
         fs::write(wt.join("docs/agents/stack.md"), stack).unwrap();
         (tmp, wt)
@@ -247,17 +264,68 @@ mod tests {
     }
 
     #[test]
+    fn git_and_ns_state_and_tracked_paths_are_refused_and_left() {
+        let (_tmp, wt) = worktree("| build-output | `.git`, `.git/config`, `.ns`, `.ns/u`, `cli/keep.rs`, `cli`, `docs`, `via-git`, `via-tracked` | |");
+        fs::create_dir_all(wt.join(".ns/u")).unwrap();
+        fs::write(wt.join(".ns/u/brief.md"), "b").unwrap();
+        symlink(wt.join(".git"), wt.join("via-git")).unwrap();
+        symlink(wt.join("cli/keep.rs"), wt.join("via-tracked")).unwrap();
+        crate::git::run(&wt, &["add", "cli/keep.rs", "docs", "via-tracked"]).unwrap();
+        let v = remove(&main(), &wt).unwrap();
+        let refused: Vec<&str> = v["refused"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            refused,
+            [
+                ".git",
+                ".git/config",
+                ".ns",
+                ".ns/u",
+                "cli/keep.rs",
+                "cli",
+                "docs",
+                "via-git",
+                "via-tracked"
+            ]
+        );
+        assert_eq!(v["paths"], json!([]));
+        assert!(wt.join(".git/config").exists());
+        assert!(wt.join(".ns/u/brief.md").exists());
+        assert!(wt.join("cli/keep.rs").exists());
+        assert!(wt.join("docs/agents/stack.md").exists());
+        assert!(fs::symlink_metadata(wt.join("via-tracked")).is_ok());
+    }
+
+    #[test]
+    fn an_untracked_path_beside_tracked_ones_still_goes() {
+        let (_tmp, wt) = worktree("| build-output | `cli/target` | |");
+        crate::git::run(&wt, &["add", "cli/keep.rs"]).unwrap();
+        let v = remove(&main(), &wt).unwrap();
+        assert_eq!(v["paths"], json!(["cli/target"]));
+        assert_eq!(v["refused"], json!([]));
+    }
+
+    #[test]
     fn a_path_that_cannot_be_deleted_is_reported_as_failed() {
+        use std::os::unix::fs::PermissionsExt;
+        struct Restore(PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700));
+            }
+        }
         let (_tmp, wt) = worktree("| build-output | `cli/target` | |");
         let debug = wt.join("cli/target/debug");
-        let mode = |m| {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&debug, fs::Permissions::from_mode(m)).unwrap()
-        };
-        mode(0o500);
-        let v = remove(&main(), &wt);
-        mode(0o700);
-        let v = v.unwrap();
+        let _restore = Restore(debug.clone());
+        fs::set_permissions(&debug, fs::Permissions::from_mode(0o500)).unwrap();
+        if fs::write(debug.join("probe"), "").is_ok() {
+            return;
+        }
+        let v = remove(&main(), &wt).unwrap();
         assert_eq!(
             (v["paths"].clone(), v["bytes"].clone()),
             (json!([]), json!(0))

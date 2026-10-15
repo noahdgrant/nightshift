@@ -95,6 +95,110 @@ fn open_unit_with_build_output(e: &Env) -> PathBuf {
 }
 
 #[test]
+fn a_budget_run_keeps_its_build_output_for_the_resume() {
+    let e = build_output_env();
+    e.factory("[limits]\nbudget_usd = 1.0\n[phases.build]\ngate = \"exit 1\"\n");
+    e.queue("build", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 3);
+    assert_eq!(v["outcome"], "budget", "{v}");
+    assert!(e.worktree(UNIT).join("target/out").is_file());
+    assert!(build_output_events(&e).is_empty());
+}
+
+#[test]
+fn a_split_run_keeps_its_build_output() {
+    let e = build_output_env();
+    e.factory("[worktree]\nsetup = [\"mkdir -p target && echo built > target/out\"]\n");
+    e.queue(
+        "triage",
+        &["split:into #8 and #9.", "split:into #8 and #9."],
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "split", "{v}");
+    assert!(e.worktree(UNIT).join("target/out").is_file());
+    assert!(build_output_events(&e).is_empty());
+}
+
+#[test]
+fn a_merged_run_that_removes_its_worktree_reports_no_build_output() {
+    let e = build_output_env();
+    e.factory(AUTO);
+    e.ctl("pr", "12");
+    e.queue("build", &["pass:commit"]);
+    e.gh_file("checks-12.json", GREEN);
+    e.ctl("review.body", FINDING);
+    e.queue("ship", &["pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(v["cleanup"]["removed"], true, "{v}");
+    assert!(!e.worktree(UNIT).exists());
+    assert!(build_output_events(&e).is_empty());
+}
+
+/// A worktree whose `build-output` row names `target`, `../x` and a symlink out, with the file
+/// each would reach outside the worktree.
+fn plant_refusals(wt: &Path) -> PathBuf {
+    let outside = wt.parent().unwrap().join("x");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("f"), "keep").unwrap();
+    std::os::unix::fs::symlink(&outside, wt.join("link")).unwrap();
+    fs::create_dir_all(wt.join("target")).unwrap();
+    fs::write(wt.join("target/out"), "built\n").unwrap();
+    outside.join("f")
+}
+
+fn assert_refused(v: &Value, outside_file: &Path) {
+    let refused: Vec<(&str, &str)> = v["refused"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["path"].as_str().unwrap(), r["reason"].as_str().unwrap()))
+        .collect();
+    assert_eq!(refused.len(), 2, "{v}");
+    assert_eq!(refused[0], ("../x", "climbs out with .."), "{v}");
+    assert_eq!(refused[1].0, "link", "{v}");
+    assert!(refused[1].1.starts_with("resolves outside the worktree"), "{v}");
+    assert_eq!(v["paths"], json!(["target"]), "{v}");
+    assert_eq!(fs::read_to_string(outside_file).unwrap(), "keep");
+}
+
+const REFUSING_ROW: &str =
+    "| Task | Command | Takes |\n|---|---|---|\n| build-output | `target`, `../x`, `link` | |\n";
+
+#[test]
+fn a_run_reports_the_build_output_paths_it_refuses() {
+    let e = build_output_env();
+    e.ctl(
+        "edit",
+        "sed -i 's#.*build-output.*#| build-output | `target`, `../x`, `link` | |#' docs/agents/stack.md\n\
+             ln -s \"$(cd .. && pwd)/x\" link\n\
+             mkdir -p ../x target && echo keep > ../x/f && echo built > target/out && echo w >> work.txt\n",
+    );
+    e.queue("build", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let evs = build_output_events(&e);
+    assert_eq!(evs.len(), 1, "{evs:?}");
+    let outside = e.worktree(UNIT).parent().unwrap().join("x/f");
+    assert_eq!(fs::read_to_string(&outside).unwrap().trim(), "keep");
+    assert_eq!(evs[0]["refused"].as_array().unwrap().len(), 2, "{evs:?}");
+    assert_eq!(evs[0]["paths"], json!(["target"]), "{evs:?}");
+}
+
+#[test]
+fn clean_reports_the_build_output_paths_it_refuses() {
+    let e = build_output_env();
+    let wt = open_unit_with_build_output(&e);
+    fs::write(wt.join("docs/agents/stack.md"), REFUSING_ROW).unwrap();
+    let outside = plant_refusals(&wt);
+    let v = e.run(&["clean"], 0);
+    assert_refused(&v["kept"][0]["build_output"], &outside);
+    assert!(!wt.join("target").exists());
+    assert!(fs::symlink_metadata(wt.join("link")).is_ok());
+    assert_eq!(build_output_events(&e)[0]["refused"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn clean_deletes_the_build_output_of_each_worktree_it_keeps() {
     let e = build_output_env();
     let wt = open_unit_with_build_output(&e);
