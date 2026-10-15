@@ -711,6 +711,7 @@ fn exec_scrubs_the_api_billing_variables_for_a_subscription_harness() {
     crate::testutil::write_exe(&bin, "#!/bin/sh\nexec sh \"$@\"\n");
     let mut envs = vec![("NS_PROC_EXEC_BIN", bin.to_str().unwrap())];
     envs.extend(billing::API_ENV.iter().map(|v| (*v, "decoy")));
+    envs.push(("CLAUDE_CODE_OAUTH_TOKEN", "login"));
     let env = run_exec_probe("billing", &envs);
     assert!(env.contains("PATH="), "{env}");
     for v in billing::API_ENV {
