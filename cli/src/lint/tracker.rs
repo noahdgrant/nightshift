@@ -260,6 +260,7 @@ mod tests {
             "```\ngh issue list\n```\n",
             "Uses `gh`.\n\n```\n## Operations\n```\n",
             "Uses `gh`.\n\n### Operations\n",
+            "Uses `gh`.\n\n## Operations extra\n",
         ] {
             assert!(predates_operations(yes), "{yes}");
         }
