@@ -13,6 +13,7 @@ use crate::decisions;
 use crate::error::SfError;
 use crate::frontmatter;
 
+mod events;
 mod rules_index;
 use rules_index::check_rules_index;
 mod tracker;
@@ -362,8 +363,8 @@ fn feature_files(skill_dir: &Path) -> Vec<PathBuf> {
     features
 }
 
-/// The checks on the skills root as a whole: the tracker templates, and the decisions and
-/// rules index of the repo that holds it.
+/// The checks on the skills root as a whole: the tracker templates, and the decisions, rules
+/// index and run-log event readers of the repo that holds it.
 fn root_checks(root: &Path) -> Result<Vec<LintError>> {
     let mut errors = tracker::check_templates(root);
     if let Some(repo) = fs::canonicalize(root)?.parent() {
@@ -373,6 +374,7 @@ fn root_checks(root: &Path) -> Result<Vec<LintError>> {
         if repo.join("rules").is_dir() {
             errors.extend(check_rules_index(&repo.join("rules")));
         }
+        errors.extend(events::check_event_consumers(repo));
     }
     Ok(errors)
 }

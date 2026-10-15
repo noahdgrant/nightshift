@@ -23,6 +23,10 @@ These checks enforce "One path per dependency" for child processes:
 - Clippy's `disallowed-methods` in `cli/clippy.toml` rejects `std::process::Command::new`, so every child process starts through `crate::proc::Proc`, which applies its kind's policy: the environment scrub, a timeout that kills the process group, stdin closed (#556). It also rejects `Proc::harness`, so every harness starts through `harness::command` (#657).
 - `cli/tests/subprocess_guard.rs` (`only_proc_harness_and_the_probe_helper_lift_the_ban_in_src`) fails when a file in `cli/src` other than `proc.rs`, `harness.rs` and the unit tests' probe helper `testutil.rs` allows `clippy::disallowed_methods`.
 
+These checks fail a change that leaves its ripples behind:
+
+- `ns lint` (`cli/src/lint/events.rs`) fails on a run-log event the CLI emits (a `"event": "<name>"` in `cli/src` outside unit tests) that no reader names: a code span in `skills/ns-supervise/` outside its evals, or a string literal in `cli/src/status.rs`. An event no reader needs goes on its `ALLOWED` list with the reason, and an entry for an event no longer emitted, or one a reader now names, fails too.
+
 ## A test never waits on the clock
 
 A test waits for an event, never for time to pass: no `sleep`, no timing itself against `Instant::now()` or `.elapsed()`, no literal `Duration` timeout. Code under test that sleeps or reads the time takes `crate::clock::Clock`, which `NS_NOW` pins in a test, so its sleeps advance the pinned clock instead of blocking. A wait that has to bound a hang uses `common::TIMEOUT`.
