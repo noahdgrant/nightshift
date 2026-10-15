@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -43,7 +44,23 @@ pub fn ns() -> Ns {
     ] {
         c.env_remove(v);
     }
+    c.env("NS_FREE_GIB_FILE", default_free_gib_file());
     c
+}
+
+/// A file `NS_FREE_GIB_FILE` can name that reports plenty of free disk, so a test that doesn't
+/// test the disk check never reads the host's real free space.
+pub fn default_free_gib_file() -> &'static Path {
+    static FILE: OnceLock<PathBuf> = OnceLock::new();
+    FILE.get_or_init(|| {
+        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = dir.join(format!("free-gib-{}.tmp", std::process::id()));
+        std::fs::write(&tmp, "500").unwrap();
+        let file = dir.join("default-free-gib");
+        std::fs::rename(&tmp, &file).unwrap();
+        file
+    })
 }
 
 /// Where `ns` built from this crate is, for a script that a bounded `ns` runs to exec it.
