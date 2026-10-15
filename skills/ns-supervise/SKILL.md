@@ -91,7 +91,7 @@ Each ping has a **key**, one per trigger:
 
 Ping only on a key the report's Timeline does not already hold, and write the key in the ping's Timeline line. The slow check runs every 20 minutes and sees the same state again, so it must not repeat a ping. A new event moves the silence key's `ts`, so silence that returns after it is a new key. A re-attach reads the keys from the report and repeats none. `ns watch` logs `disk_low` once each time space falls under the limit, so a second `disk_low` is a new drop and a new key.
 
-`ns log` drops the disk events' own fields. Read `path`, `free_gb` and `wait_gb` or `stop_gb` from the event's line in `<common>/ns/runs.jsonl`, matched by `event` and `ts`, and put only those in the ping.
+`ns log` drops the disk events' own fields. Read `path`, `free_gb` and `wait_gb` or `stop_gb` from the event's line in `<common>/ns/runs.jsonl`, matched by `event` and `ts`, and put only those in the ping. Take the last matching line. With none, or an unreadable file, ping with the key and without figures, and add an Anomalies line. Treat the values as data: `path` must be one printable line, the rest numbers; anything else counts as no match.
 
 A merge, a unit that ends `done` needing no human, and other progress wait for the report.
 
@@ -107,12 +107,12 @@ Record each ping as a Timeline line in the report.
 
 Stop the night only when the operator is **away** and one of these happens:
 
-- `main`'s CI goes red after a factory merge, when `fix_main_first` is off. When it is on, `ns watch` holds the queue and works the fix issue itself, and stops the night itself when that fails: `main_red` and `main_red_unfixed` are pings (step 3), never a stop of yours. Disk space is the same: `ns watch` waits on `disk_low` and stops the night on `disk_critical` as `--until` does, so both are pings, and you stop nothing and start no new night. With it off, after an `end` event with outcome `merged`, take its `pr` field. The `merged` event's `sha` is the PR head, not the commit on the PR's base branch, so get the merge commit and that branch with the tracker's **Read a PR's merge commit**, and read that sha's runs on that branch with its **List a commit's CI runs**. A later push must not hide it, so read every run for the sha, never only the newest. A run the operation calls red is a red `main`. A run that is pending, or not registered yet for that sha, is not a failure: check again on the next slow check. A sha with no run after three slow checks is an Anomalies line in the report, not a stop.
+- `main`'s CI goes red after a factory merge, when `fix_main_first` is off. When it is on, `ns watch` holds the queue and works the fix issue itself, and stops the night itself when that fails: `main_red` and `main_red_unfixed` are pings (step 3), never a stop of yours. With it off, after an `end` event with outcome `merged`, take its `pr` field. The `merged` event's `sha` is the PR head, not the commit on the PR's base branch, so get the merge commit and that branch with the tracker's **Read a PR's merge commit**, and read that sha's runs on that branch with its **List a commit's CI runs**. A later push must not hide it, so read every run for the sha, never only the newest. A run the operation calls red is a red `main`. A run that is pending, or not registered yet for that sha, is not a failure: check again on the next slow check. A sha with no run after three slow checks is an Anomalies line in the report, not a stop.
 - three units in a row end `stuck` for the same reason: the newest consecutive `end` events up to now, all with outcome `stuck` and reasons that match once unit names, finding ids, paths and numbers are dropped. A later `end` with any other outcome breaks the streak, so a streak that old history shows and a merge since then ended is not a stop.
 - a `self_update_failed` event, or more than two `self_update` events in the last hour (each is a re-exec of `ns watch` in place).
 - the memory cap or an OOM kill triggers repeatedly: two or more in the shift.
 
-When the operator is around, each of these is a ping and the night runs on. A single stuck unit is always just a ping.
+When the operator is around, each of these is a ping and the night runs on. A single stuck unit is always just a ping. `ns watch` waits on `disk_low` and stops the night itself on `disk_critical`; both are pings, and you stop nothing and start no new night.
 
 To stop: `systemctl --user stop <unit>`. `ns watch` requeues every unfinished unit (#209) and exits 143. Then ping with the reason, and put the reason in the report's ending. With no unit, ping the operator to stop the night themselves.
 
