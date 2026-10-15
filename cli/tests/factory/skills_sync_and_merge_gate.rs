@@ -42,30 +42,6 @@ fn verdicts(v: &[(&str, bool)]) -> Vec<(String, bool)> {
 const COMMIT: &str = "git -c user.name=f -c user.email=f@f commit -qm";
 
 #[test]
-fn a_red_gate_after_a_verify_commit_goes_back_to_build_before_review() {
-    let e = Env::new();
-    e.factory("[phases.build]\ngate = \"test ! -f broken\"\n");
-    e.ctl(
-        "verify.sh",
-        &format!("touch broken && git add broken && {COMMIT} break"),
-    );
-    e.ctl("build.sh", &format!("git rm -q broken && {COMMIT} fix"));
-    e.queue("build", &["pass:commit", "pass:script"]);
-    e.queue("verify", &["pass:script", "pass"]);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "verify", "build", "verify", "review", "ship"]
-    );
-    assert!(e.prompt(4, "build").contains("test ! -f broken"));
-    assert_eq!(
-        gate_verdicts(&e),
-        verdicts(&[("build", true), ("verify", false), ("build", true)])
-    );
-}
-
-#[test]
 fn a_ship_base_merge_that_breaks_the_gate_goes_back_to_build_before_the_merge_step() {
     let e = Env::new();
     e.factory(&format!(

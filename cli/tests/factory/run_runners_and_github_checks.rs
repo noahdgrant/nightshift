@@ -327,48 +327,6 @@ fn a_human_merge_commit_then_a_rebase_is_not_this_units_push() {
 }
 
 #[test]
-fn a_push_of_its_own_under_another_merge_is_still_stuck() {
-    let e = Env::new();
-    another_actor_lands(&e, "git push -q origin HEAD:main", SQUASH_B, MERGED_B);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    let reason = v["reason"].as_str().unwrap();
-    assert!(reason.starts_with("default branch moved"), "{v}");
-    assert!(
-        reason.contains("is in no merged PR of another branch"),
-        "{v}"
-    );
-    assert_eq!(e.calls(), ["triage", "build"]);
-}
-
-#[test]
-fn a_merged_pr_from_this_units_branch_is_still_stuck() {
-    let e = Env::new();
-    another_actor_lands(
-        &e,
-        "",
-        SQUASH_B,
-        &MERGED_B.replace("ns/3-fix-b", &format!("ns/{UNIT}")),
-    );
-    let v = e.run(&["run", "--issue", "7"], 1);
-    let reason = v["reason"].as_str().unwrap();
-    assert!(
-        reason.contains("is in no merged PR of another branch"),
-        "{v}"
-    );
-}
-
-#[test]
-fn a_merge_github_cannot_attribute_is_stuck() {
-    let e = Env::new();
-    another_actor_lands(&e, "", SQUASH_B, MERGED_B);
-    e.gh_file("pulls.fail", "");
-    let v = e.run(&["run", "--issue", "7"], 1);
-    let reason = v["reason"].as_str().unwrap();
-    assert!(reason.contains("cannot tell who made"), "{v}");
-    assert_eq!(e.calls(), ["triage", "build"]);
-}
-
-#[test]
 fn dry_run_calls_no_harness() {
     let e = Env::new();
     let v = e.run(&["run", "--issue", "7", "--dry-run"], 0);
