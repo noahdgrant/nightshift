@@ -197,7 +197,7 @@ fn default_branch_warnings() -> Vec<String> {
     if !git::ok(&repo.root, &["rev-parse", "--verify", "--quiet", &want]) {
         return Vec::new();
     }
-    let Ok(list) = git::worktrees(&repo.root) else {
+    let Ok(list) = crate::worktree::entries(&repo) else {
         return Vec::new();
     };
     let Some((main, linked)) = list.split_first() else {

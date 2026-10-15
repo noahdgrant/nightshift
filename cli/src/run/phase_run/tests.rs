@@ -39,3 +39,20 @@ fn a_spent_budget_names_the_spend_and_the_limit() {
         Some("spent $5.00 of the $5.00 budget")
     );
 }
+
+#[test]
+fn fetch_branch_moves_the_remote_tracking_ref() {
+    let (_t, origin, wt) = crate::run::tests::cloned();
+    let before = git::run(&wt, &["rev-parse", "origin/main"]).unwrap();
+    let other = _t.path().join("other");
+    crate::testutil::git_any(
+        _t.path(),
+        &["clone", "-q", origin.to_str().unwrap(), "other"],
+    );
+    let tip = crate::testutil::commit_file(&other, "new.c", "n\n");
+    crate::testutil::git_any(&other, &["push", "-q", "origin", "HEAD:main"]);
+    fetch_branch(&wt, "main").unwrap();
+    let after = git::run(&wt, &["rev-parse", "origin/main"]).unwrap();
+    assert_ne!(before, after);
+    assert_eq!(after, tip);
+}

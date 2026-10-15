@@ -3,7 +3,7 @@ id: D25
 title: "ns-review writes blocked when a changed-code Critical stays open"
 issue: 110
 date: 2026-10-09
-amended_by: [D60]
+amended_by: [D60, ADR-560]
 ---
 
 # D25: ns-review writes blocked when a changed-code Critical stays open

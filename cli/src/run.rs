@@ -14,7 +14,7 @@ use crate::billing;
 use crate::clock::{self, Clock};
 use crate::config::{self, Config};
 use crate::error::SfError;
-use crate::factory::{self, Factory, PhaseSettings, PHASES};
+use crate::factory::{self, Factory, PhaseSettings, PHASES, RUN_PHASES};
 use crate::forge;
 use crate::gate;
 use crate::git::{self, Repo};
@@ -377,7 +377,7 @@ pub fn log_event(common: &Path, mut ev: Value) {
 /// isn't [`ref_safe`].
 pub fn remote_default(dir: &Path) -> Option<(String, String)> {
     git::run(dir, &["remote", "get-url", "origin"]).ok()?;
-    let text = git::run(dir, &["ls-remote", "--symref", "origin", "HEAD"]).ok()?;
+    let text = git::run_net(dir, &["ls-remote", "--symref", "origin", "HEAD"]).ok()?;
     let mut branch = None;
     let mut sha = None;
     for line in text.lines() {
@@ -400,7 +400,7 @@ fn ref_safe(name: &str) -> bool {
 }
 
 fn remote_sha(dir: &Path, branch: &str) -> Option<String> {
-    let text = git::run(
+    let text = git::run_net(
         dir,
         &["ls-remote", "origin", &format!("refs/heads/{branch}")],
     )
@@ -695,7 +695,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         worktree::existing(&repo, &unit)?.unwrap_or_else(|| worktree::planned_path(&repo, &unit));
     let subscription = fac.subscription();
     let mut commands = BTreeMap::new();
-    for p in PHASES {
+    for p in RUN_PHASES {
         commands.insert(
             *p,
             phase_command(
@@ -806,7 +806,7 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
             outcome: Some(result.outcome.label().to_string()),
         };
         let ev = crate::quality::record_unit(&repo, &ctx.worktree, &meta);
-        record_saved = ev["error"].is_null() && ev["unparsed"].is_null();
+        record_saved = ev["error"].is_null();
         ctx.log(ev);
     }
     // A merge needs a PR number, so a merged unit always has one.
@@ -966,15 +966,15 @@ fn dry_run_decision(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::merge::marked_regions;
     use super::*;
 
     /// A repo cloned from a bare `origin` whose `main` holds plain `f.c` and `g.c`.
-    pub(super) fn cloned() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    pub(crate) fn cloned() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let t = tempfile::tempdir().unwrap();
         let (origin, wt) = (t.path().join("origin.git"), t.path().join("wt"));
-        let g = |dir: &Path, args: &[&str]| git::run(dir, args).unwrap();
+        let g = crate::testutil::git_any;
         g(
             t.path(),
             &["init", "-q", "--bare", "-b", "main", "origin.git"],

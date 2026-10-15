@@ -12,12 +12,12 @@ use serde_json::{json, Value};
 use super::core::route::{Settings, State};
 use super::core::step::{self, Action, Ending, Event, Last};
 use super::core::{Ledger, MergeBack};
-use super::currency::{archive_as, gather_facts, read_state};
+use super::currency::{archive_as, gather_facts, mark_blocked, read_state, restore};
 use super::merge::{merge_step, MergeStep};
 use super::phase_run::{run_phase, Ran, Undo};
 use super::post_phase::{guards, run_gate};
 use super::{finish, remote_default, Ctx, Finish, Outcome, RunArgs, Shared};
-use crate::factory::{artifact_of, Factory, PHASES};
+use crate::factory::{artifact_of, Factory, RUN_PHASES};
 use crate::gate;
 
 /// What the driver's actions run with: the unit, the run's flags and shared state, and what the
@@ -71,13 +71,14 @@ pub(super) fn drive(
 /// The settings `core::step` decides with, from the factory and the run's flags.
 pub(super) fn settings(fac: &Factory, args: &RunArgs) -> Settings {
     Settings {
-        max_attempts: PHASES
+        max_attempts: RUN_PHASES
             .iter()
             .map(|p| (*p, fac.phase(p).max_attempts))
             .collect(),
         merge_auto: fac.merge.auto(),
         triage_only: args.triage_only,
         local_gate: fac.gate.local,
+        cycles: fac.cycles(),
     }
 }
 
@@ -101,6 +102,31 @@ pub(super) fn unit_state(
 struct Current {
     adm: super::core::Admitted,
     undo: Option<Undo>,
+}
+
+/// Archive `phase`'s invalid artifact and log why; with `undo`, also put back what the phase
+/// replaced.
+fn set_aside_invalid(
+    ctx: &Ctx<'_>,
+    phase: &str,
+    errors: &[String],
+    undo: bool,
+    current: Option<&Current>,
+) -> Result<Event> {
+    let file = artifact_of(phase);
+    let stem = format!("{}-invalid", file.trim_end_matches(".md"));
+    let archived = archive_as(&ctx.artifacts, file, &stem)?;
+    if let Some(u) = current.and_then(|c| c.undo.as_ref()).filter(|_| undo) {
+        restore(&u.moves);
+    }
+    ctx.log(json!({
+        "event": "artifact_invalid",
+        "phase": phase,
+        "attempt": current.map(|c| c.adm.attempt),
+        "errors": errors,
+        "archived": archived.map(|p| p.to_string_lossy().into_owned()),
+    }));
+    Ok(Event::Archived)
 }
 
 fn drive_loop(io: &mut Io<'_, '_>) -> Result<Finish> {
@@ -154,19 +180,11 @@ fn drive_loop(io: &mut Io<'_, '_>) -> Result<Finish> {
                 let phase = current.as_ref().map_or("", |c| c.adm.phase);
                 Event::GuardFacts(guards(ctx, &mut io.baseline, phase)?)
             }
-            Action::SetAside { phase, errors } => {
-                let file = artifact_of(phase);
-                let stem = format!("{}-invalid", file.trim_end_matches(".md"));
-                let archived = archive_as(&ctx.artifacts, file, &stem)?;
-                ctx.log(json!({
-                    "event": "artifact_invalid",
-                    "phase": phase,
-                    "attempt": current.as_ref().map(|c| c.adm.attempt),
-                    "errors": errors,
-                    "archived": archived.map(|p| p.to_string_lossy().into_owned()),
-                }));
-                Event::Archived
-            }
+            Action::SetAside {
+                phase,
+                errors,
+                undo,
+            } => set_aside_invalid(ctx, phase, &errors, undo, current.as_ref())?,
             Action::RunGate(call) => {
                 let Some(Current {
                     adm,
@@ -191,14 +209,22 @@ fn drive_loop(io: &mut Io<'_, '_>) -> Result<Finish> {
                 };
                 Event::MergeEnded(back)
             }
-            Action::Finish(e) => return ended(ctx, io.last_artifact, e),
+            Action::Finish(e) => {
+                let now = crate::clock::iso(io.shared.clock.now());
+                return ended(ctx, io.last_artifact, e, &now);
+            }
         };
         action = step::step(&mut ledger, &state, ev);
     }
 }
 
 /// Carry out how `core::step` ended the run: its log line and the artifact a human reads next.
-fn ended(ctx: &Ctx<'_>, last_artifact: &mut Option<String>, e: Ending) -> Result<Finish> {
+fn ended(
+    ctx: &Ctx<'_>,
+    last_artifact: &mut Option<String>,
+    e: Ending,
+    now: &str,
+) -> Result<Finish> {
     if let Some(ev) = e.log {
         ctx.log(ev);
     }
@@ -209,6 +235,11 @@ fn ended(ctx: &Ctx<'_>, last_artifact: &mut Option<String>, e: Ending) -> Result
         Some(Last::Archived(f)) => {
             let kept = archive_as(&ctx.artifacts, f, f.trim_end_matches(".md"))?;
             *last_artifact = kept.map(|p| p.to_string_lossy().into_owned());
+        }
+        Some(Last::Blocked(f, reason)) => {
+            let path = ctx.artifacts.join(f);
+            mark_blocked(&path, &reason, now)?;
+            *last_artifact = Some(path.to_string_lossy().into_owned());
         }
         _ => {}
     }

@@ -405,7 +405,7 @@ fn a_clean_repo_gets_an_empty_baseline_without_allow_growth() {
 }
 
 #[test]
-fn the_baseline_is_sorted_by_key_whatever_order_the_tools_print() {
+fn the_baseline_is_sorted_by_tool_then_line_whatever_order_the_tools_print() {
     let r = Repo::new();
     fs::write(r.path("src.py"), "import os\ny = eval(s)\nx = eval(s)\n").unwrap();
     r.findings("lint-b", "src.py:2:5: eval is banned\n");
@@ -428,17 +428,17 @@ fn the_baseline_is_sorted_by_key_whatever_order_the_tools_print() {
     assert_eq!(
         tools_and_snippets,
         [
-            ("lint-a".into(), "x = eval(s)".into()),
             ("lint-a".into(), "y = eval(s)".into()),
+            ("lint-a".into(), "x = eval(s)".into()),
             ("lint-b".into(), "y = eval(s)".into())
         ]
     );
 }
 
 #[test]
-fn the_baseline_orders_by_tool_rule_file_snippet_then_message() {
+fn the_baseline_orders_by_tool_rule_file_then_line_then_message() {
     let r = Repo::new();
-    fs::write(r.path("a.py"), "aa\nbb\n").unwrap();
+    fs::write(r.path("a.py"), "bb\naa\n").unwrap();
     fs::write(r.path("b.py"), "cc\n").unwrap();
     let f = |rule: &str, file: &str, line: u32, message: &str| {
         format!(
@@ -470,14 +470,69 @@ fn the_baseline_orders_by_tool_rule_file_snippet_then_message() {
     assert_eq!(
         written,
         [
-            row("lint-a", "R1", "a.py", "aa", "a"),
-            row("lint-a", "R1", "a.py", "aa", "z"),
             row("lint-a", "R1", "a.py", "bb", "a"),
+            row("lint-a", "R1", "a.py", "bb", "z"),
+            row("lint-a", "R1", "a.py", "aa", "a"),
             row("lint-a", "R1", "b.py", "cc", "m"),
-            row("lint-a", "R2", "a.py", "aa", "m"),
+            row("lint-a", "R2", "a.py", "bb", "m"),
             row("lint-b", "R1", "b.py", "cc", "m"),
         ]
     );
+}
+
+#[test]
+fn dropping_one_violation_removes_only_its_entry_from_the_file() {
+    let r = Repo::new();
+    fs::write(r.path("src.py"), "zz\naa\nmm\n").unwrap();
+    r.findings(
+        "lint-a",
+        "src.py:3:1: banned\nsrc.py:1:1: banned\nsrc.py:2:1: banned\n",
+    );
+    r.ns(&["baseline", "--allow-growth"]);
+    let before = fs::read_to_string(r.path(BASELINE)).unwrap();
+    for e in r.baseline().unwrap()["violations"].as_array().unwrap() {
+        let keys: Vec<&String> = e.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            ["tool", "rule", "file", "message", "snippet"],
+            "{before}"
+        );
+    }
+    assert_eq!(
+        baselined(&r),
+        [
+            ("src.py".into(), "zz".into()),
+            ("src.py".into(), "aa".into()),
+            ("src.py".into(), "mm".into())
+        ]
+    );
+
+    r.findings("lint-a", "src.py:1:1: banned\nsrc.py:3:1: banned\n");
+    let (code, v, err) = r.ns(&["baseline"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["status"], "written");
+    let entry = "    {\n      \"tool\": \"lint-a\",\n      \"rule\": \"\",\n      \"file\": \"src.py\",\n      \"message\": \"banned\",\n      \"snippet\": \"aa\"\n    },\n";
+    assert!(before.contains(entry), "{before}");
+    assert_eq!(
+        fs::read_to_string(r.path(BASELINE)).unwrap(),
+        before.replacen(entry, "", 1)
+    );
+}
+
+#[test]
+fn a_baseline_with_snippet_before_message_still_loads() {
+    let r = Repo::new();
+    fs::create_dir_all(r.path(".nightshift")).unwrap();
+    fs::write(
+        r.path(BASELINE),
+        r#"{"version": 1, "violations": [{"tool": "lint-a", "rule": "", "file": "src.py", "snippet": "x = eval(s)", "message": "eval is banned"}]}"#,
+    )
+    .unwrap();
+    r.findings("lint-a", "src.py:2:5: eval is banned\n");
+    let (code, v, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["baselined"], 1);
+    assert_eq!(v["new"], serde_json::json!([]));
 }
 
 #[test]

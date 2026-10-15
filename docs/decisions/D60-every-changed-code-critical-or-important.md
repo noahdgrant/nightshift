@@ -4,6 +4,7 @@ title: "Every changed-code Critical or Important gets a fix attempt before it bl
 issue: 268
 date: 2026-10-11
 amends: [D24, D25, D27, D29, D30]
+amended_by: [ADR-560]
 ---
 
 # D60: Every changed-code Critical or Important gets a fix attempt before it blocks

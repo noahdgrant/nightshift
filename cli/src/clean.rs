@@ -71,7 +71,7 @@ pub fn plan(repo: &Repo) -> Result<Plan> {
     let queue = factory::load(&factory::root(None, &repo.root))
         .map(|f| f.queue)
         .unwrap_or_default();
-    for e in git::worktrees(&repo.root)? {
+    for e in worktree::entries(repo)? {
         let Some(branch) = e
             .branch
             .as_deref()

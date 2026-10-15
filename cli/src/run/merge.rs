@@ -385,24 +385,13 @@ pub(super) fn fetch_tip(wt: &Path, branch: &str) -> Result<String> {
 /// uses `--no-verify`, as `pre-push` is the only hook it runs. Both skip the checkout's hooks
 /// because the forge's CI checks the merge result; the merge does carry unit code.
 fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<bool> {
-    let net = |args: &[&str]| -> Result<()> {
-        let out = git::net(wt, args).output().context("failed to run git")?;
-        if !out.status.success() {
-            return Err(anyhow!(
-                "git {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        Ok(())
-    };
     let start = git::run(wt, &["rev-parse", "HEAD"])?;
     if !same_sha(&start, pr_head) {
         return Err(anyhow!(
             "HEAD {start} is not the PR head {pr_head}, so a merge of {default} would replace it"
         ));
     }
-    net(&["fetch", "-q", "origin", default])?;
+    git::run_net(wt, &["fetch", "-q", "origin", default])?;
     let branch = git::run(wt, &["symbolic-ref", "--short", "HEAD"])?;
     let theirs = format!("origin/{default}");
     let merge = git::command()
@@ -435,7 +424,7 @@ fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<boo
     }
     let lease = format!("--force-with-lease=refs/heads/{branch}:{pr_head}");
     let spec = format!("HEAD:refs/heads/{branch}");
-    if let Err(e) = net(&["push", "-q", "--no-verify", &lease, "origin", &spec]) {
+    if let Err(e) = git::run_net(wt, &["push", "-q", "--no-verify", &lease, "origin", &spec]) {
         return Err(match git::run(wt, &["reset", "-q", "--keep", &start]) {
             Ok(_) => e,
             Err(reset) => anyhow!("{e:#}; resetting to {start} failed too: {reset:#}"),
@@ -447,7 +436,7 @@ fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<boo
 /// Human-review regions that HEAD's changes since its merge base with `default` touch, counting
 /// fences at the freshly fetched tip of `default`. A failed fetch is an error, never a stale tip.
 pub(super) fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
-    git::run(wt, &["fetch", "-q", "origin", default])?;
+    git::run_net(wt, &["fetch", "-q", "origin", default])?;
     let tip = git::run(wt, &["rev-parse", "--verify", "FETCH_HEAD^{commit}"])?;
     let base = git::run(wt, &["merge-base", "HEAD", &tip])?;
     markers::touched_between(wt, &base, "HEAD", Some(&tip))
@@ -475,7 +464,7 @@ mod tests {
     #[test]
     fn merging_the_default_branch_runs_none_of_the_checkouts_hooks() {
         let (t, _origin, wt) = cloned();
-        let g = |dir: &Path, args: &[&str]| git::run(dir, args).unwrap();
+        let g = crate::testutil::git_any;
         g(&wt, &["switch", "-q", "-c", "ns/9-x"]);
         fs::write(wt.join("f.c"), "a\nx = 2\nb\n").unwrap();
         commit_all(&wt, "unit");
@@ -520,7 +509,7 @@ mod tests {
         commit_all(&wt, "fence f.c");
         // With no fetch refspec origin/main stays at the branch point; only FETCH_HEAD sees the fence.
         git::run(&wt, &["config", "--unset", "remote.origin.fetch"]).unwrap();
-        git::run(&wt, &["push", "-q", "origin", "fence:main"]).unwrap();
+        git::run_net(&wt, &["push", "-q", "origin", "fence:main"]).unwrap();
         git::run(&wt, &["checkout", "-q", "pr"]).unwrap();
         assert_eq!(marked_regions(&wt, "main").unwrap(), ["f.c:1-5"]);
         fs::write(wt.join("f.c"), "a\nx = 1\nb\n").unwrap();
@@ -544,7 +533,7 @@ mod tests {
         .unwrap();
         commit_all(&wt, "fence f.c");
         git::run(&wt, &["config", "--unset", "remote.origin.fetch"]).unwrap();
-        git::run(&wt, &["push", "-q", "origin", "fence:main"]).unwrap();
+        git::run_net(&wt, &["push", "-q", "origin", "fence:main"]).unwrap();
         git::run(&wt, &["checkout", "-q", "pr"]).unwrap();
         git::run(&wt, &["merge", "-q", "--no-edit", "fence"]).unwrap();
         assert!(marked_regions(&wt, "main").unwrap().is_empty());

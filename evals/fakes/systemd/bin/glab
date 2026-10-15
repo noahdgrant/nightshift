@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fake glab for ns eval: records the call. mr create opens merge request 1, which then
-# reads merge-ready with a green pipeline and no threads. Merging and approving are refused.
+# reads merge-ready with a green pipeline and no threads. A case that creates fake/mr-1-merged
+# gets it reported merged instead. Merging and approving are refused.
 fake=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/fake
 [ "$fake" = /fake ] && fake=$HOME/fake
 mkdir -p "$fake"
@@ -13,12 +14,14 @@ case "$1 $2" in
   "mr view")
     [ -e "$fake/mr-1" ] || { echo "no open merge request available for the current branch" >&2; exit 1; }
     sha=$(git rev-parse HEAD 2>/dev/null)
+    state=opened
+    [ -e "$fake/mr-1-merged" ] && state=merged
     if [[ " $* " =~ \ (-F|--output)[\ =]json\  ]]; then
       cat <<JSON
-{"iid": 1, "state": "opened", "draft": false, "web_url": "$url", "sha": "$sha", "has_conflicts": false, "detailed_merge_status": "mergeable", "blocking_discussions_resolved": true, "head_pipeline": {"id": 1, "status": "success", "sha": "$sha"}}
+{"iid": 1, "state": "$state", "draft": false, "web_url": "$url", "sha": "$sha", "has_conflicts": false, "detailed_merge_status": "mergeable", "blocking_discussions_resolved": true, "head_pipeline": {"id": 1, "status": "success", "sha": "$sha"}}
 JSON
     else
-      printf 'title:\tmerge request 1\nstate:\topened\ndraft:\tfalse\nurl:\t%s\n' "$url"
+      printf 'title:\tmerge request 1\nstate:\t%s\ndraft:\tfalse\nurl:\t%s\n' "$state" "$url"
     fi ;;
   "ci status")
     echo "(success) • pipeline 1" ;;

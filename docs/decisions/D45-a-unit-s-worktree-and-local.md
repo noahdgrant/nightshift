@@ -3,6 +3,7 @@ id: D45
 title: "A unit's worktree and local ns/<unit> branch are removed once its change merged and its quality records are saved"
 issue: 211
 date: 2026-10-10
+amended_by: [ADR-639]
 ---
 
 # D45: A unit's worktree and local ns/<unit> branch are removed once its change merged and its quality records are saved

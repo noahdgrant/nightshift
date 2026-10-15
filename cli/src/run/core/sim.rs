@@ -4,6 +4,8 @@
 //! `cli/tests/fixtures/factory/claude`: each phase pops its next action from a queue,
 //! `status[:extra]`, where `status` is `pass`, `fail`, `blocked`, `none` (no artifact, exit 0) or
 //! `crash` (no artifact, exit 1), and `extra` is `+`-joined words: `commit` moves HEAD,
+//! `next=<phase>` and `find=<id>,<id>` set the artifact's `next` and `findings` (a fix cycle's
+//! `fix.md` lists the ids it was handed, and the pass after it counts an attempt for each),
 //! `movemain` moves the default branch, `sleep` times the phase out, and any other text lands in
 //! the artifact's body (`base moved` as its first line). The guards' words: `pushmain` pushes
 //! HEAD to the default branch, `landmain` lands [`Sim::land_pr`] there and rebases onto it,
@@ -19,10 +21,12 @@ use serde_json::{json, Value};
 use super::gate::{culprit, Suspect};
 use super::guard::{branch_moved, moved_by_others, pr_merged, Unread};
 use super::merge::Ask;
-use super::route::{facts_wanted, to_archive, Art, Settings, State};
-use super::step::{step, Action, Event, GateRan, GateRed, GuardFacts, PhaseRan};
+use super::route::{
+    facts_wanted, fix_cycle, review_run, to_archive, Art, ReviewLoop, Settings, State,
+};
+use super::step::{step, Action, Event, GateRan, GateRed, GuardFacts, Last, PhaseRan};
 use super::{Ledger, Rebase};
-use crate::factory::PHASES;
+use crate::factory::{artifact_of, RUN_PHASES};
 use crate::run::Outcome;
 use crate::watch::forge::CommitPr;
 
@@ -63,6 +67,8 @@ pub struct Sim {
     now: i64,
     /// A phase merged the unit's PR.
     pr_merged: bool,
+    /// The review loop as `ns`'s record and `review.md` would give it.
+    review: ReviewLoop,
 }
 
 /// One phase run the core admitted.
@@ -154,7 +160,7 @@ impl Sim {
     pub fn new() -> Self {
         Self {
             settings: Settings {
-                max_attempts: PHASES.iter().map(|p| (*p, 2)).collect(),
+                max_attempts: RUN_PHASES.iter().map(|p| (*p, 2)).collect(),
                 ..Settings::default()
             },
             has_issue: true,
@@ -178,7 +184,13 @@ impl Sim {
             baseline: 0,
             now: 1_000,
             pr_merged: false,
+            review: ReviewLoop::default(),
         }
+    }
+
+    /// The artifact `phase` holds now.
+    pub fn art(&self, phase: &str) -> Option<&Art> {
+        self.arts.get(phase)
     }
 
     /// The fake harness's `e.queue(phase, actions)`.
@@ -219,6 +231,7 @@ impl Sim {
             head: self.head(),
             has_issue: self.has_issue,
             settings: self.settings.clone(),
+            review: self.review.clone(),
             ..State::default()
         };
         for sha in facts_wanted(l, &s) {
@@ -263,8 +276,13 @@ impl Sim {
                     let phase = t.runs.last().map_or("", |r| r.phase);
                     Event::GuardFacts(self.guard(phase, &mut t.logs))
                 }
-                Action::SetAside { phase, .. } => {
+                Action::SetAside { phase, undo, .. } => {
                     self.arts.remove(phase);
+                    if undo {
+                        for (p, a) in &state.arts {
+                            self.arts.entry(p).or_insert_with(|| a.clone());
+                        }
+                    }
                     Event::Archived
                 }
                 Action::RunGate(call) => {
@@ -280,6 +298,14 @@ impl Sim {
                     }
                 },
                 Action::Finish(e) => {
+                    if let Some(Last::Blocked(f, reason)) = &e.artifact {
+                        let p = RUN_PHASES.iter().find(|p| artifact_of(p) == *f).unwrap();
+                        if let Some(a) = self.arts.get_mut(p) {
+                            a.status = "blocked".into();
+                            a.next = Some("human".into());
+                            a.body = reason.clone();
+                        }
+                    }
                     t.logs.extend(e.log);
                     return t.report(e.outcome, e.reason, e.phase, false);
                 }
@@ -305,6 +331,7 @@ impl Sim {
         let head_before = self.head();
         self.act(&words);
         let timed_out = words.contains(&"sleep");
+        let invalid = words.contains(&"invalid");
         let written = !matches!(status, "none" | "crash") && !timed_out;
         if written {
             let body = if extra.starts_with("base moved") {
@@ -312,10 +339,28 @@ impl Sim {
             } else {
                 format!("{phase} said {status} {extra}")
             };
+            let word = |k: &str| words.iter().find_map(|w| w.strip_prefix(k));
+            let mut findings: Vec<String> = word("find=")
+                .map(|ids| ids.split(',').map(String::from).collect())
+                .unwrap_or_default();
+            match review_run(phase, state).filter(|_| !invalid) {
+                Some((_, _, true)) => self.review = ReviewLoop::default(),
+                Some(_) if phase == "review-fix" => {
+                    let review = state.arts.get("review").cloned().unwrap_or_default();
+                    findings = fix_cycle(&review, state).map(|c| c.2).unwrap_or_default();
+                    for id in &findings {
+                        *self.review.attempts.entry(id.clone()).or_default() += 1;
+                    }
+                    self.review.fixes += 1;
+                }
+                _ => {}
+            }
             let art = Art {
                 status: status.into(),
                 sha: Some(self.head()),
                 body,
+                next: word("next=").map(String::from),
+                findings,
                 ..Art::default()
             };
             self.arts.insert(phase, art);
@@ -326,7 +371,7 @@ impl Sim {
         }
         PhaseRan {
             artifact: written.then(|| status.to_string()),
-            invalid: None,
+            invalid: invalid.then(|| vec!["sim: invalid".to_string()]),
             present: self.arts.contains_key(phase),
             timed_out,
             killed: None,

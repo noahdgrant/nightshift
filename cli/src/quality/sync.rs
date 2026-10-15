@@ -81,11 +81,22 @@ fn unit_lines(
     (attempts.len(), lines, gaps)
 }
 
+/// Warn that `unit`'s record leaves out each review artifact in `gaps`.
+fn warn_partial(unit: &str, gaps: &[Unparsed]) {
+    for g in gaps {
+        eprintln!(
+            "ns: warning: quality record of {unit} is partial: cannot read {}: {}",
+            g.path, g.reason
+        );
+    }
+}
+
 /// Write the quality records of a unit that ended, and flush the outbox. Never fails: the
 /// result is returned as a run-log event, and anything unpushed waits in the outbox.
 pub fn record_unit(repo: &Repo, worktree: &Path, meta: &Meta) -> Value {
     let (attempts, built, gaps) = unit_lines(worktree, meta, Clock::from_env().now());
     let mut ev = json!({"event": "quality_record", "attempts": attempts});
+    warn_partial(&meta.unit, &gaps);
     if !gaps.is_empty() {
         ev["unparsed"] = json!(gaps);
     }
@@ -116,23 +127,30 @@ pub fn record_unit(repo: &Repo, worktree: &Path, meta: &Meta) -> Value {
 /// Write the quality records of several units in one push, and flush the outbox: before their
 /// worktrees are removed. Never fails. Returns the run-log event and, for each unit in order,
 /// why its records are not saved, or `None` when they are: pushed, waiting in the outbox, or
-/// none to write. A review artifact that can't be read is not saved: no record holds it.
+/// none to write. A review artifact that can't be read is left out of the record, listed in
+/// the event's `unparsed` with its unit, and warned about.
 pub fn record_units(repo: &Repo, units: &[(&Path, &Meta)]) -> (Value, Vec<Option<String>>) {
     let now = Clock::from_env().now();
     let mut unsaved = vec![None; units.len()];
     let mut new = Vec::new();
+    let mut unparsed = Vec::new();
     for (i, (worktree, meta)) in units.iter().enumerate() {
         let (_, built, gaps) = unit_lines(worktree, meta, now);
         match built {
             Ok(l) => new.extend(l),
             Err(e) => unsaved[i] = Some(format!("{e:#}")),
         }
-        if let Some(g) = gaps.first().filter(|_| unsaved[i].is_none()) {
-            unsaved[i] = Some(format!("cannot read {}: {}", g.path, g.reason));
-        }
+        warn_partial(&meta.unit, &gaps);
+        unparsed.extend(
+            gaps.into_iter()
+                .map(|g| json!({"unit": meta.unit, "path": g.path, "reason": g.reason})),
+        );
     }
     let names: Vec<&str> = units.iter().map(|(_, m)| m.unit.as_str()).collect();
     let mut ev = json!({"event": "quality_record", "units": names});
+    if !unparsed.is_empty() {
+        ev["unparsed"] = json!(unparsed);
+    }
     match store::publish(&repo.root, &repo.common_dir, &new) {
         Ok(sent) => {
             if let Sent::Outbox { reason, .. } = &sent {

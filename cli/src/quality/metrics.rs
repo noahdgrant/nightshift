@@ -7,10 +7,12 @@ use serde::Serialize;
 use super::blame::Blame;
 
 use crate::review_md::{CycleEntry, Finding, Pass, Scope, Severity, Status, AXES};
+use crate::review_runs::ReviewRun;
 use crate::stats::{median, round};
 
-/// Full fix cycles `ns-review` runs before it can stop with a finding open. Up to two fix-only
-/// cycles may follow (skills/ns-review/SKILL.md, docs/decisions/ D60).
+/// Full fix cycles `ns-review` ran before it could stop with a finding open, when the agent drove
+/// the loop (docs/decisions/ D60). Read only for an attempt with no `ns run` record: since ADR-560
+/// the limit is `[phases.review] full_cycles`, and `ns run` marks `review.md` blocked at it.
 pub const FULL_CYCLES: u32 = 3;
 
 /// One review artifact: `review.md`, or an archived `history/review*.md`.
@@ -36,6 +38,9 @@ pub struct Attempt {
     pub introduced_by: BTreeMap<usize, Blame>,
     /// The `## Passes` table: each pass's panel and reviewer workers. Empty before the table.
     pub passes: Vec<Pass>,
+    /// `ns run`'s record of the attempt's review loop (`review/cycles.json`): each pass and fix
+    /// cycle with the times `ns` saw. Empty before `ns run` drove the loop.
+    pub review_runs: Vec<ReviewRun>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -203,7 +208,11 @@ pub fn cycles_to_clean(a: &Attempt) -> Cycles {
 /// Critical or Important findings still open when the fix loop stopped: after the full cycles,
 /// or after the fix-only cycles that followed them.
 pub fn leftovers(a: &Attempt) -> Vec<&Finding> {
-    if a.cycles.is_none_or(|c| c < FULL_CYCLES) {
+    let stopped = match a.review_runs.is_empty() {
+        true => a.cycles.is_some_and(|c| c >= FULL_CYCLES),
+        false => a.status.as_deref() == Some("blocked"),
+    };
+    if !stopped {
         return Vec::new();
     }
     a.findings
@@ -575,6 +584,31 @@ mod tests {
         assert_eq!(ids(&attempt(Some(5), "blocked", review)), ["C1", "I2"]);
         assert!(ids(&attempt(Some(2), "fail", review)).is_empty());
         assert!(ids(&attempt(None, "fail", review)).is_empty());
+    }
+
+    #[test]
+    fn a_loop_ns_run_drove_left_findings_when_it_marked_review_md_blocked_at_any_limit() {
+        let review = "### I1. b\n- Status: open\n";
+        let ids = |status: &str| {
+            let mut a = attempt(Some(1), status, review);
+            a.review_runs = ["review", "review-fix", "review"]
+                .iter()
+                .map(|p| ReviewRun {
+                    phase: p.to_string(),
+                    cycle: 0,
+                    kind: "full".into(),
+                    started: String::new(),
+                    ended: String::new(),
+                    sha: String::new(),
+                })
+                .collect();
+            leftovers(&a)
+                .iter()
+                .map(|f| f.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("blocked"), ["I1"], "full_cycles = 1 stopped it");
+        assert!(ids("fail").is_empty(), "the loop is still under way");
     }
 
     #[test]

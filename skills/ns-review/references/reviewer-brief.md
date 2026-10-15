@@ -33,7 +33,7 @@ The diff is {CHANGED_LINES} changed lines, past the unit's soft limit of {SOFT_L
 
 ## Fix-only cycle
 
-Only in a fix-only cycle (cycles 4 and 5); otherwise leave this section out. It replaces the bar, your axis's search for new defects, and the Report below.
+Only in the pass after a fix-only cycle; otherwise leave this section out. It replaces the bar, your axis's search for new defects, and the Report below.
 
 These findings were raised earlier and handed to a fix: {FINDINGS}. For each one, read the code at its location in the current tree and check whether the defect is gone. Report nothing else: this pass checks fixes and raises no new findings.
 

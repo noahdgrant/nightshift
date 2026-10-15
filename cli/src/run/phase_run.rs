@@ -3,24 +3,27 @@
 //! a [`PhaseRan`]; the decision about what follows is `core::step`'s.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 
 use anyhow::Result;
 use serde_json::{json, Value};
 
+use super::core::route::review_run;
 use super::core::step::PhaseRan;
 use super::core::Admitted;
-use super::currency::{archive_as, archive_for, read_art, restore, State};
+use super::currency::{archive_as, archive_for, read_art, restore, Moves, State};
 use super::drive::Io;
 use super::locks::{Acquired, Bound, RunnerLocks};
 use super::phases::{phase_timeout, phase_tmpdir, run_harness};
 use super::{finish, Ctx, Finish, Outcome};
 use crate::billing;
+use crate::clock;
 use crate::eval::parser::{ClaudeStreamJson, OutputParser};
 use crate::factory::{self, artifact_of};
 use crate::gate;
 use crate::git;
 use crate::pin;
+use crate::review_runs::{self, ReviewRun};
 
 /// What came of an admitted phase.
 pub(super) enum Ran {
@@ -34,7 +37,7 @@ pub(super) enum Ran {
 
 /// What a phase changed in the unit's artifacts, for a stop during its gate to set aside.
 pub(super) struct Undo {
-    pub moves: Vec<(PathBuf, PathBuf)>,
+    pub moves: Moves,
     pub written: bool,
 }
 
@@ -58,6 +61,11 @@ pub(super) fn recheck_budget(
     }
 }
 
+/// Fetch `branch` from origin into the worktree's remote-tracking ref.
+fn fetch_branch(worktree: &Path, branch: &str) -> Result<String> {
+    git::run_net(worktree, &["fetch", "-q", "origin", branch])
+}
+
 /// Run `adm` in the unit at `state`.
 pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> Result<Ran> {
     let (ctx, phase, attempt) = (io.ctx, adm.phase, adm.attempt);
@@ -72,7 +80,7 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
     };
     let moves = archive_for(&ctx.artifacts, phase, state)?;
     if let Some((_, branch, sha)) = &adm.rebase {
-        let _ = git::run(&ctx.worktree, &["fetch", "-q", "origin", branch]);
+        let _ = fetch_branch(&ctx.worktree, branch);
         ctx.log(json!({
             "event": "rebase_after_base_moved",
             "phase": phase,
@@ -101,6 +109,7 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
     };
     env.push(("TMPDIR", tmp.to_string_lossy().into_owned()));
     pin::write_settings(&ctx.common, &ctx.unit, &ctx.env.ns)?;
+    let started = io.shared.clock.now();
     let r = run_harness(
         &io.commands[phase],
         &prompt,
@@ -128,6 +137,7 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
         transcript: &transcript,
         tmp: &tmp,
         timeout,
+        started,
     };
     record(io, state, adm, done, moves)
 }
@@ -248,6 +258,8 @@ struct Harnessed<'h> {
     transcript: &'h std::path::Path,
     tmp: &'h std::path::Path,
     timeout: std::time::Duration,
+    /// When the harness started, on the run's clock.
+    started: i64,
 }
 
 /// Account for a finished harness run: its spend, its artifact, its record in the run log.
@@ -256,7 +268,7 @@ fn record(
     state: &State,
     adm: &Admitted,
     h: Harnessed<'_>,
-    moves: Vec<(PathBuf, PathBuf)>,
+    moves: Moves,
 ) -> Result<Ran> {
     let (ctx, phase, attempt, r) = (io.ctx, adm.phase, adm.attempt, h.r);
     let t = ClaudeStreamJson.parse(&r.stdout);
@@ -298,8 +310,13 @@ fn record(
         return Ok(Ran::Finish(f));
     }
     let art_path = ctx.artifacts.join(artifact_of(phase));
-    let art = read_art(&art_path);
+    let art = read_art(&art_path).filter(|_| !moves.untouched(&art_path));
     let written = art.is_some();
+    if art.as_ref().is_some_and(|a| a.invalid.is_none()) {
+        if let Err(e) = record_review_run(io, state, phase, h, &mut rec) {
+            return unrecorded(io, phase, &moves, rec, &e);
+        }
+    }
     if art.as_ref().is_some_and(|a| a.status == "pass") {
         // A failed phase's scratch files stay for a human to read, until `ns clean`. A pass
         // whose scratch dir will not go is logged, not failed: `ns clean` removes the leftover.
@@ -347,13 +364,62 @@ fn record(
     Ok(Ran::Phase(ran, Undo { moves, written }))
 }
 
+/// Add a review pass or fix cycle that wrote its artifact to `ns`'s record of the review loop,
+/// with the times `ns` saw, and name its cycle in the run log's `phase` event. It ended its
+/// harness's wall time after it started, which a pinned clock, standing still, would not show.
+fn record_review_run(
+    io: &Io<'_, '_>,
+    state: &State,
+    phase: &str,
+    h: Harnessed<'_>,
+    rec: &mut Value,
+) -> Result<()> {
+    let ctx = io.ctx;
+    let Some((cycle, kind, fresh)) = review_run(phase, state) else {
+        return Ok(());
+    };
+    let run = ReviewRun {
+        phase: phase.to_string(),
+        cycle,
+        kind: kind.to_string(),
+        started: clock::iso(h.started),
+        ended: clock::iso(h.started + h.r.wall_s.round() as i64),
+        sha: ctx.head(),
+    };
+    rec["review_cycle"] = json!({"cycle": cycle, "kind": kind});
+    review_runs::append(&ctx.artifacts, run, fresh).map(|_| ())
+}
+
+/// A review run `ns` could not record ends the unit stuck, with what it wrote set aside and what
+/// it replaced put back: a run the record doesn't hold must not count as no cycle.
+fn unrecorded(
+    io: &mut Io<'_, '_>,
+    phase: &str,
+    moves: &Moves,
+    mut rec: Value,
+    e: &anyhow::Error,
+) -> Result<Ran> {
+    let ctx = io.ctx;
+    let file = artifact_of(phase);
+    let stem = format!("{}-unrecorded", file.trim_end_matches(".md"));
+    let archived = archive_as(&ctx.artifacts, file, &stem)?;
+    restore(moves);
+    let reason = format!("ns could not record the {phase} run in its review record: {e:#}");
+    rec["status"] = json!("unrecorded");
+    rec["reason"] = json!(reason);
+    rec["archived"] = json!(archived.map(|d| d.to_string_lossy().into_owned()));
+    ctx.log(merge_obj(json!({"event": "phase"}), &rec));
+    io.phases.push(rec);
+    Ok(Ran::Finish(finish(Outcome::Stuck, reason, Some(phase))))
+}
+
 /// A stop ended `phase`, or the gate run after it, before it was done: set aside what the phase
 /// wrote and put back what it replaced, so the next run decides from the state before the
 /// phase, and log `ev` with what happened. Returns the stop's error.
 pub(super) fn set_aside(
     ctx: &Ctx<'_>,
     phase: &str,
-    moves: &[(PathBuf, PathBuf)],
+    moves: &Moves,
     sig: i32,
     mut ev: Value,
 ) -> Result<anyhow::Error> {

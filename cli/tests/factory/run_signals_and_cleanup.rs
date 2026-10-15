@@ -418,6 +418,7 @@ fn clean_removes_a_merged_unit_after_saving_its_record_and_keeps_open_ones() {
             < event_at(&e, |v| v["event"] == "cleanup" && v["unit"] == "3-done")
     );
     assert_eq!(cleanup_events(&e)[0]["by"], "clean");
+    assert!(quality_events(&e)[0]["unparsed"].is_null());
 
     // A rerun has nothing to do.
     let v = e.run(&["clean"], 0);

@@ -10,6 +10,8 @@
 #   <extra>+kill (e.g. commit+kill) does the extra, writes the artifact, then SIGKILLs itself
 #   $FAKE_CTRL/<phase>.body, when it exists, is appended to the artifact body
 #   $FAKE_CTRL/<phase>.front, when it exists, is appended to the artifact frontmatter
+#   $FAKE_CTRL/<phase>.fronts, when it has lines, pops its first: that line's `|`-separated
+#   keys are appended to the artifact frontmatter too (review's `next: review`, say)
 #   ship's pr.md names PR $FAKE_CTRL/pr-$NS_UNIT, else $FAKE_CTRL/pr, else none
 #   sleep writes the artifact last, then execs sleep so a short timeout kills it with no orphan
 #   the usage limit's reset time is $FAKE_CTRL/reset.<unit>, else $FAKE_CTRL/reset
@@ -18,7 +20,7 @@
 set -e
 ctrl="$FAKE_CTRL"
 prompt=$(cat)
-phase=$(printf '%s\n' "$prompt" | sed -n 's/^Phase: \([a-z]*\).*/\1/p' | head -1)
+phase=$(printf '%s\n' "$prompt" | sed -n 's/^Phase: \([a-z-]*\).*/\1/p' | head -1)
 # Under a lock, so units running together never both read one call number.
 n=$(flock "$ctrl/calls" sh -c 'echo "$1" >> "$2/calls"; wc -l < "$2/calls"' _ "$phase" "$ctrl" | tr -d ' ')
 printf '%s' "$prompt" > "$ctrl/prompt-$n-$phase.txt"
@@ -65,7 +67,7 @@ if [ "$status" = limit ]; then
   exit 1
 fi
 case $phase in
-  triage) art=brief ;; build) art=build ;; verify) art=evidence ;; review) art=review ;; ship) art=pr ;;
+  triage) art=brief ;; build) art=build ;; verify) art=evidence ;; review) art=review ;; review-fix) art=fix ;; ship) art=pr ;;
 esac
 sleepy=0
 case "$extra" in *+sleep) sleepy=1; extra=${extra%+sleep} ;; esac
@@ -86,6 +88,11 @@ esac
 echo '{"type":"result","is_error":false,"result":"ok","total_cost_usd":0.5,"usage":{"input_tokens":10,"output_tokens":5}}'
 [ "$status" = none ] && exit 0
 sha=$(git rev-parse --short HEAD)
+front=""
+if [ -s "$ctrl/$phase.fronts" ]; then
+  front=$(head -1 "$ctrl/$phase.fronts" | tr '|' '\n')
+  sed -i 1d "$ctrl/$phase.fronts"
+fi
 {
   echo ---
   echo "unit: $NS_UNIT"
@@ -96,6 +103,7 @@ sha=$(git rev-parse --short HEAD)
   if [ "$art" = pr ] && [ -s "$prf" ]; then echo "pr: https://github.com/o/r/pull/$(cat "$prf")"; fi
   echo "updated: 2026-10-08T00:00:00Z"
   [ -f "$ctrl/$phase.front" ] && cat "$ctrl/$phase.front"
+  [ -n "$front" ] && printf '%s\n' "$front"
   echo ---
   case "$extra" in "base moved"*) echo "$extra";; *) echo "$phase said $status $extra";; esac
   [ -f "$ctrl/$phase.body" ] && cat "$ctrl/$phase.body"
