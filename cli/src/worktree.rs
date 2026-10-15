@@ -241,9 +241,32 @@ pub fn planned_path(repo: &Repo, unit: &str) -> PathBuf {
     parent.join(format!("{}.worktrees", repo.name())).join(unit)
 }
 
+/// Every worktree of `repo`, as `git worktree list` gives them. It reads under the worktree
+/// lock: git fails on an entry a concurrent `ns worktree new` is still writing.
+pub fn entries(repo: &Repo) -> Result<Vec<WorktreeEntry>> {
+    let me = json!({"pid": std::process::id()});
+    let Ok(reading) = Lock::wait(&repo.common_dir, WORKTREE_LOCK, &me, None, |by| {
+        eprintln!(
+            "ns: waits for the worktree lock to list worktrees (held by pid {}, unit {})",
+            holder_pid(by),
+            by["unit"].as_str().unwrap_or("?")
+        )
+    })?
+    else {
+        unreachable!("a lock wait with no deadline never gives up");
+    };
+    listed(&reading, repo)
+}
+
+/// `git worktree list`, read under the worktree lock the caller holds.
+fn listed(_held: &Lock, repo: &Repo) -> Result<Vec<WorktreeEntry>> {
+    let text = git::run(&repo.root, &["worktree", "list", "--porcelain"])?;
+    Ok(git::parse_worktree_list(&text))
+}
+
 /// The existing worktree for `unit`, if any.
 pub fn existing(repo: &Repo, unit: &str) -> Result<Option<PathBuf>> {
-    let list = git::worktrees(&repo.root)?;
+    let list = entries(repo)?;
     Ok(find_unit(&list, unit).map(|e| e.path.clone()))
 }
 
@@ -264,7 +287,7 @@ pub fn ensure(repo: &Repo, unit: &str, base: Option<&str>, setup: &[String]) -> 
     else {
         unreachable!("a lock wait with no deadline never gives up");
     };
-    let list = git::worktrees(&repo.root)?;
+    let list = listed(&creating, repo)?;
 
     let path: PathBuf = if let Some(existing) = find_unit(&list, unit) {
         existing.path.clone()
@@ -351,7 +374,7 @@ pub fn setup(unit: &str, repo: Option<&Path>) -> Result<ExitCode> {
     check_unit_id(unit, "ns worktree setup 142-uart-timeout")?;
     let repo = repo_from(repo)?;
     let commands = load_setup(&repo.root)?;
-    let list = git::worktrees(&repo.root)?;
+    let list = entries(&repo)?;
     let Some(entry) = find_unit(&list, unit) else {
         return Err(SfError::general(format!("no worktree for unit {unit}"))
             .hint(format!("create it first:\n  ns worktree new {unit}"))
@@ -435,7 +458,7 @@ pub fn latest_status(artifacts: &Path) -> Option<ArtifactStatus> {
 pub fn list(repo: Option<&Path>) -> Result<()> {
     let repo = repo_from(repo)?;
     let mut out: Vec<Value> = Vec::new();
-    for e in git::worktrees(&repo.root)? {
+    for e in entries(&repo)? {
         let Some(branch) = e
             .branch
             .as_deref()
@@ -462,7 +485,7 @@ pub fn list(repo: Option<&Path>) -> Result<()> {
 pub fn remove(unit: &str, dry_run: bool, force: bool, repo: Option<&Path>) -> Result<()> {
     check_unit_id(unit, "ns worktree remove 142-uart-timeout --dry-run")?;
     let repo = repo_from(repo)?;
-    let list = git::worktrees(&repo.root)?;
+    let list = entries(&repo)?;
     let branch = format!("{BRANCH_PREFIX}{unit}");
     let Some(entry) = find_unit(&list, unit) else {
         println!(
@@ -595,6 +618,91 @@ mod tests {
             let e = e.downcast_ref::<SfError>().expect("a stop error");
             assert_eq!(e.code, 128 + libc::SIGTERM);
         }
+    }
+
+    const HALF_MARK: &str = "NS_WORKTREE_HALF_WRITTEN_PROBE";
+
+    #[test]
+    fn existing_waits_for_a_worktree_another_ns_is_still_writing() {
+        use std::io::{BufRead, BufReader};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap().join("repo");
+        fs::create_dir(&root).unwrap();
+        crate::testutil::g(&root, &["init", "-q", "-b", "main"]);
+        crate::testutil::commit_file(&root, "README", "hi\n");
+        let repo = Repo::discover(&root).unwrap();
+        let me = json!({"pid": std::process::id(), "unit": "u-new"});
+        let creating = Lock::wait(&repo.common_dir, WORKTREE_LOCK, &me, None, |_| {})
+            .unwrap()
+            .unwrap();
+        // What `git worktree add` leaves before it writes `commondir`.
+        let half = repo.common_dir.join("worktrees/u-new");
+        fs::create_dir_all(&half).unwrap();
+        fs::write(
+            half.join("gitdir"),
+            tmp.path().join("u-new/.git").to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        fs::write(half.join("commondir"), "").unwrap();
+
+        let mut probe = crate::testutil::probe_command(
+            "worktree::tests::half_written_probe",
+            HALF_MARK,
+            root.to_str().unwrap(),
+        );
+        let mut child = probe
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let waits = BufReader::new(child.stderr.take().unwrap())
+            .lines()
+            .map_while(Result::ok)
+            .find(|l| l.contains("waits for the worktree lock"));
+        assert_eq!(
+            waits.as_deref(),
+            Some(
+                format!(
+                    "ns: waits for the worktree lock to list worktrees (held by pid {}, unit u-new)",
+                    std::process::id()
+                )
+                .as_str()
+            )
+        );
+        fs::remove_dir_all(&half).unwrap();
+        let path = planned_path(&repo, "u-new");
+        crate::testutil::g(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "ns/u-new",
+                path.to_str().unwrap(),
+            ],
+        );
+        drop(creating);
+        let out = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{stdout}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the probe did not run: {stdout}"
+        );
+    }
+
+    /// Run by the test above while it holds the worktree lock over a half-written worktree.
+    #[test]
+    fn half_written_probe() {
+        let Some(root) = std::env::var_os(HALF_MARK) else {
+            return;
+        };
+        let repo = Repo::discover(Path::new(&root)).unwrap();
+        assert_eq!(
+            existing(&repo, "u-new").unwrap(),
+            Some(planned_path(&repo, "u-new"))
+        );
     }
 
     const OUTPUT_MARK: &str = "NS_WORKTREE_SETUP_OUTPUT_PROBE";
