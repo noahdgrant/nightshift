@@ -132,10 +132,6 @@ fn two_ready(e: &Env) {
     e.ready(3, "Fix b", &["type:fix"], "");
 }
 
-fn mkfifo(p: &Path) {
-    assert!(StdCommand::new("mkfifo").arg(p).status().unwrap().success());
-}
-
 /// Hold `unit`'s next `phase` at its start: the fake harness writes its pid to the first fifo
 /// returned, then waits for a line on the second.
 fn hold_phase(e: &Env, unit: &str, phase: &str) -> (PathBuf, PathBuf) {

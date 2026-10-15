@@ -2375,11 +2375,7 @@ fn a_signal_ends_the_setup_command(args: &[&str], sig: libc::c_int, prepare: imp
     let (_tmp, root) = repo();
     prepare(&root);
     let fifo = root.parent().unwrap().join("pids");
-    assert!(common::command("mkfifo")
-        .arg(&fifo)
-        .output()
-        .status
-        .success());
+    common::mkfifo(&fifo);
     factory_def(&root, &slow_setup(&fifo));
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || tx.send(fs::read_to_string(fifo).unwrap()));
@@ -3227,8 +3223,7 @@ fn pre_push_from_a_linked_worktree_shares_the_main_repos_target_dir() {
 /// writer never blocks and the reader never sees EOF; a hook that dies before writing leaves
 /// the receiver empty, for `Group::recv` to fail at its hang guard.
 fn events(path: &Path) -> std::sync::mpsc::Receiver<String> {
-    let out = common::command("mkfifo").arg(path).output();
-    assert!(out.status.success(), "{out:?}");
+    common::mkfifo(path);
     let fifo = fs::OpenOptions::new()
         .read(true)
         .write(true)

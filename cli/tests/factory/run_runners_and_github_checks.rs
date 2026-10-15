@@ -572,7 +572,7 @@ fn build_only_a_credited_ship_that_gives_up_on_a_lock_is_credited_again_on_its_r
     let ready = e.ctrl.join("ready");
     let go = e.ctrl.join("go");
     for f in [&ready, &go] {
-        assert!(StdCommand::new("mkfifo").arg(f).status().unwrap().success());
+        mkfifo(f);
     }
     e.ctl(
         "review.sh",
