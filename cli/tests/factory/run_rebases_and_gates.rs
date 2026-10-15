@@ -208,23 +208,35 @@ fn a_phase_that_times_out_keeps_its_tmpdir() {
 }
 
 #[test]
-fn a_passing_phase_whose_tmpdir_will_not_go_is_logged_not_failed() {
-    use std::os::unix::fs::PermissionsExt;
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    if unsafe { libc::geteuid() } == 0 {
-        return;
-    }
+fn a_passing_phase_removes_a_tmpdir_holding_read_only_directories() {
     let e = Env::new();
     e.ctl(
         "build.sh",
-        r#"mkdir "$TMPDIR/locked" && touch "$TMPDIR/locked/f" && chmod 500 "$TMPDIR/locked""#,
+        r#"mkdir -p "$TMPDIR/locked/inner" && touch "$TMPDIR/locked/f" "$TMPDIR/locked/inner/g"
+chmod 500 "$TMPDIR/locked/inner" "$TMPDIR/locked" && chmod 500 "$TMPDIR""#,
     );
     e.queue("build", &["pass:script"]);
     let v = e.run(&["run", "--issue", "7"], 0);
-    let dir = unit_tmp(&e, UNIT).join("build-1");
-    fs::set_permissions(dir.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(v["outcome"], "done", "{v}");
-    assert!(dir.join("locked/f").is_file());
+    assert!(!unit_tmp(&e, UNIT).join("build-1").exists());
+    assert!(
+        !run_events(&e)
+            .iter()
+            .any(|ev| ev["event"] == "tmpdir_not_removed"),
+        "{v}"
+    );
+}
+
+#[test]
+fn a_passing_phase_whose_tmpdir_will_not_go_is_logged_not_failed() {
+    let e = Env::new();
+    // A file where the directory was: removing a directory tree fails on it.
+    e.ctl("build.sh", r#"rm -r "$TMPDIR" && echo x > "$TMPDIR""#);
+    e.queue("build", &["pass:script"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    let dir = unit_tmp(&e, UNIT).join("build-1");
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert!(dir.is_file());
     let ev = run_events(&e)
         .into_iter()
         .find(|ev| ev["event"] == "tmpdir_not_removed")
