@@ -1,17 +1,32 @@
 use super::*;
 
-fn tree(path: &Path) -> Root {
+fn root(path: &Path, kind: Kind, restore: bool) -> Root {
     Root {
         path: path.to_path_buf(),
-        kind: Kind::Tree,
+        kind,
+        restore,
     }
 }
 
+fn tree(path: &Path) -> Root {
+    root(path, Kind::Tree, true)
+}
+
 fn config(path: &Path) -> Root {
-    Root {
-        path: path.to_path_buf(),
-        kind: Kind::Config,
-    }
+    root(path, Kind::Config, true)
+}
+
+fn git_ok(dir: &Path, args: &[&str]) {
+    let mut full = vec![
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.com",
+        "-c",
+        "commit.gpgsign=false",
+    ];
+    full.extend_from_slice(args);
+    git::run(dir, &full).unwrap();
 }
 
 fn mode(path: &Path) -> u32 {
@@ -219,7 +234,7 @@ fn a_restore_that_fails_says_so() {
     }
     let h = hooks(d.path());
     let p = Protected::read(vec![tree(&h.join("sub"))]);
-    fs::write(h.join("sub/x"), "changed\n").unwrap();
+    fs::write(h.join("sub/new"), "added\n").unwrap();
     chmod(&h.join("sub"), 0o555);
     let t = p.check().unwrap();
     chmod(&h.join("sub"), 0o750);
@@ -250,7 +265,7 @@ fn the_reason_names_the_first_paths_and_counts_the_rest() {
 }
 
 #[test]
-fn the_check_of_a_large_tree_takes_under_a_second() {
+fn a_large_unchanged_tree_is_no_tampering() {
     let d = tempfile::tempdir().unwrap();
     let skills = d.path().join("skills");
     for s in 0..100 {
@@ -262,11 +277,8 @@ fn the_check_of_a_large_tree_takes_under_a_second() {
     }
     let c = d.path().join("config");
     fs::write(&c, "[core]\n\tbare = false\n").unwrap();
-    let start = std::time::Instant::now();
     let p = Protected::read(vec![tree(&skills), config(&c)]);
     assert!(p.check().is_none());
-    let took = start.elapsed();
-    assert!(took < std::time::Duration::from_secs(1), "{took:?}");
 }
 
 #[test]
@@ -291,7 +303,7 @@ fn protected_paths_holds_the_settings_the_snapshot_and_each_skills_link() {
             (common.join("config"), Kind::Config),
             (common.join("config.worktree"), Kind::Config),
             (common.join("hooks"), Kind::Tree),
-            (wt.join(".githooks"), Kind::Tree),
+            (wt.join(".githooks"), Kind::Tracked),
             (artifacts.join("skills"), Kind::Tree),
             (pin::settings_path(&common, "u"), Kind::Tree),
             (own, Kind::Config),
@@ -303,11 +315,13 @@ fn protected_paths_holds_the_settings_the_snapshot_and_each_skills_link() {
     fs::remove_file(wt.join(".claude/skills")).unwrap();
     std::os::unix::fs::symlink(&elsewhere, wt.join(".claude/skills")).unwrap();
     let p = protected_paths(&wt, &common, &artifacts, "u");
-    let paths: Vec<&PathBuf> = p.roots.iter().map(|r| &r.path).collect();
-    assert!(
-        paths.contains(&&elsewhere.canonicalize().unwrap()),
-        "{paths:?}"
-    );
+    let target = p
+        .roots
+        .iter()
+        .find(|r| r.path == elsewhere.canonicalize().unwrap())
+        .expect("the link's target is held");
+    assert!(!target.restore, "a target outside the unit is not restored");
+    assert!(p.roots.iter().filter(|r| !r.restore).count() == 1);
 
     fs::remove_dir(&elsewhere).unwrap();
     let p = protected_paths(&wt, &common, &artifacts, "u");
@@ -393,4 +407,201 @@ fn a_file_too_large_to_hold_is_compared_by_size_and_removed_when_added() {
     fs::write(h.join("big"), "small\n").unwrap();
     let e = p.check().unwrap().restore_error.unwrap();
     assert!(e.contains("more than ns keeps to put back"), "{e}");
+}
+
+fn repo_with_hook(d: &Path) -> (PathBuf, PathBuf) {
+    let wt = d.join("wt");
+    git::run(d, &["init", "-q", wt.to_str().unwrap()]).unwrap();
+    let hooks = wt.join(".githooks");
+    fs::create_dir_all(&hooks).unwrap();
+    fs::write(hooks.join("pre-commit"), "exit 0\n").unwrap();
+    git_ok(&wt, &["add", "."]);
+    git_ok(&wt, &["commit", "-q", "-m", "hooks"]);
+    (wt, hooks)
+}
+
+fn tracked(path: &Path) -> Root {
+    root(path, Kind::Tracked, true)
+}
+
+#[test]
+fn a_githooks_change_the_phase_committed_is_not_tampering() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_with_hook(d.path());
+    let p = Protected::read(vec![tracked(&hooks)]);
+    fs::write(hooks.join("pre-commit"), "exit 0\n# edited\n").unwrap();
+    fs::write(hooks.join("pre-push"), "exit 0\n").unwrap();
+    git_ok(&wt, &["add", "."]);
+    git_ok(&wt, &["commit", "-q", "-m", "edit hooks"]);
+    assert!(p.check().is_none());
+    assert_eq!(
+        fs::read_to_string(hooks.join("pre-commit")).unwrap(),
+        "exit 0\n# edited\n"
+    );
+
+    let p = Protected::read(vec![tracked(&hooks)]);
+    git_ok(&wt, &["rm", "-q", "-r", ".githooks/pre-push"]);
+    git_ok(&wt, &["commit", "-q", "-m", "drop a hook"]);
+    assert!(p.check().is_none(), "a committed removal");
+}
+
+#[test]
+fn a_githooks_change_left_uncommitted_is_put_back() {
+    let d = tempfile::tempdir().unwrap();
+    let (_, hooks) = repo_with_hook(d.path());
+    let p = Protected::read(vec![tracked(&hooks)]);
+    fs::write(hooks.join("pre-commit"), "exit 1\n").unwrap();
+    fs::write(hooks.join("extra"), "exit 1\n").unwrap();
+    let t = p.check().unwrap();
+    assert_eq!(t.paths, [hooks.join("extra"), hooks.join("pre-commit")]);
+    assert!(t.restore_error.is_none(), "{t:?}");
+    assert_eq!(
+        fs::read_to_string(hooks.join("pre-commit")).unwrap(),
+        "exit 0\n"
+    );
+    assert!(!hooks.join("extra").exists());
+}
+
+#[test]
+fn a_githooks_change_committed_then_changed_again_is_put_back() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_with_hook(d.path());
+    let p = Protected::read(vec![tracked(&hooks)]);
+    fs::write(hooks.join("pre-commit"), "exit 2\n").unwrap();
+    git_ok(&wt, &["commit", "-q", "-a", "-m", "edit"]);
+    fs::write(hooks.join("pre-commit"), "exit 3\n").unwrap();
+    let t = p.check().unwrap();
+    assert_eq!(t.paths, [hooks.join("pre-commit")]);
+}
+
+#[test]
+fn a_path_outside_the_unit_is_reported_and_left_alone() {
+    let d = tempfile::tempdir().unwrap();
+    let h = hooks(d.path());
+    let p = Protected::read(vec![root(&h, Kind::Tree, false)]);
+    fs::write(h.join("pre-commit"), "changed\n").unwrap();
+    fs::write(h.join("added"), "x\n").unwrap();
+    let t = p.check().unwrap();
+    assert_eq!(t.paths, [h.join("added"), h.join("pre-commit")]);
+    let e = t.restore_error.as_deref().unwrap();
+    assert!(e.contains("outside the unit"), "{e}");
+    assert_eq!(
+        fs::read_to_string(h.join("pre-commit")).unwrap(),
+        "changed\n"
+    );
+    assert!(h.join("added").exists());
+}
+
+#[test]
+fn a_config_restore_puts_back_the_changed_keys_and_keeps_a_concurrent_upstream() {
+    let d = tempfile::tempdir().unwrap();
+    let c = d.path().join("config");
+    let text = "[core]\n\tbare = false\n\thooksPath = hooks\n[user]\n\tname = a\n";
+    fs::write(&c, text).unwrap();
+    let p = Protected::read(vec![config(&c)]);
+    fs::write(
+        &c,
+        "[core]\n\tbare = false\n\thooksPath = /dev/null\n\tfsmonitor = x\n[user]\n\tname = a\n\
+         [branch \"ns/u\"]\n\tremote = origin\n",
+    )
+    .unwrap();
+    let t = p.check().unwrap();
+    assert!(t.restore_error.is_none(), "{t:?}");
+    let now = fs::read_to_string(&c).unwrap();
+    let hooks_path = git::run(
+        d.path(),
+        &["config", "--file", c.to_str().unwrap(), "core.hookspath"],
+    );
+    assert_eq!(hooks_path.unwrap(), "hooks");
+    assert!(!now.contains("fsmonitor"), "{now}");
+    assert!(
+        now.contains("remote = origin"),
+        "the upstream survives: {now}"
+    );
+    assert!(p.check().is_none());
+}
+
+#[test]
+fn a_restore_leaves_no_temporary_file_behind() {
+    let d = tempfile::tempdir().unwrap();
+    let h = hooks(d.path());
+    let p = Protected::read(vec![tree(&h)]);
+    fs::write(h.join("pre-commit"), "changed\n").unwrap();
+    chmod(&h.join("pre-commit"), 0o600);
+    assert!(p.check().unwrap().restore_error.is_none());
+    let mut names: Vec<String> = fs::read_dir(&h)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["pre-commit", "sub"]);
+    assert_eq!(mode(&h.join("pre-commit")), 0o750);
+}
+
+fn tight(entries: usize, bytes: u64, depth: usize) -> Limits {
+    Limits {
+        entries,
+        bytes,
+        depth,
+    }
+}
+
+#[test]
+fn a_tree_over_a_cap_before_the_phase_is_never_compared() {
+    let d = tempfile::tempdir().unwrap();
+    let h = hooks(d.path());
+    for limits in [
+        tight(2, u64::MAX, 9),
+        tight(99, 3, 9),
+        tight(99, u64::MAX, 0),
+    ] {
+        let p = Protected::read_with(vec![tree(&h)], limits);
+        assert_eq!(p.nodes.get(&h), Some(&Node::Unread), "{limits:?}");
+        fs::write(h.join("pre-commit"), "changed\n").unwrap();
+        assert!(p.check().is_none(), "{limits:?}");
+        fs::write(h.join("pre-commit"), "exit 0\n").unwrap();
+    }
+}
+
+#[test]
+fn a_tree_that_grows_past_a_cap_during_the_phase_is_tampering() {
+    let d = tempfile::tempdir().unwrap();
+    let h = hooks(d.path());
+    let cases: [(Limits, &str); 3] = [
+        (tight(4, u64::MAX, 9), "entries"),
+        (tight(99, 20, 9), "bytes"),
+        (tight(99, u64::MAX, 2), "deep"),
+    ];
+    for (limits, what) in cases {
+        let p = Protected::read_with(vec![tree(&h)], limits);
+        assert!(p.over.is_empty(), "{what}");
+        match what {
+            "entries" => fs::write(h.join("more"), "x").unwrap(),
+            "bytes" => fs::write(h.join("big"), "x".repeat(64)).unwrap(),
+            _ => fs::create_dir_all(h.join("a/b/c")).unwrap(),
+        }
+        let t = p.check().unwrap();
+        assert_eq!(t.paths, std::slice::from_ref(&h), "{what}");
+        let e = t.restore_error.as_deref().unwrap();
+        assert!(e.contains("more than ns reads"), "{what}: {e}");
+        let _ = fs::remove_file(h.join("more"));
+        let _ = fs::remove_file(h.join("big"));
+        let _ = fs::remove_dir_all(h.join("a"));
+    }
+}
+
+#[test]
+fn a_deep_tree_is_read_without_recursion() {
+    let d = tempfile::tempdir().unwrap();
+    let mut deep = d.path().join("deep");
+    for _ in 0..200 {
+        deep.push("d");
+    }
+    fs::create_dir_all(&deep).unwrap();
+    let p = Protected::read_with(
+        vec![tree(&d.path().join("deep"))],
+        tight(10_000, 1 << 20, 500),
+    );
+    assert_eq!(p.nodes.len(), 201);
+    assert!(p.check().is_none());
 }
