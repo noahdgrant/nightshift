@@ -579,10 +579,7 @@ pub fn read(text: &str, phase: Phase) -> Result<Typed, Vec<String>> {
 /// `base:` in the `brief.md` beside it, else the repo's default branch, to `HEAD`. Empty outside
 /// a git repo or when the base is not a commit there.
 fn touched(file: &Path) -> Vec<String> {
-    let dir = match file.parent() {
-        Some(d) if !d.as_os_str().is_empty() => d,
-        _ => Path::new("."),
-    };
+    let dir = file.parent().unwrap_or(Path::new("."));
     let base = fs::read_to_string(dir.join("brief.md"))
         .ok()
         .and_then(|b| frontmatter::field(&b, "base"))

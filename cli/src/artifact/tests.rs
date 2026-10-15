@@ -641,6 +641,7 @@ fn a_file_line_naming_a_touched_file_needs_a_tag() {
     // Untouched files, longer names, other kinds of line and prose pass.
     assert!(errors("- file: x: src/inventory/stock.py:9\n").is_empty());
     assert!(errors("- file: x: src/inventory/warehouse.pyc and docs/README.md\n").is_empty());
+    assert!(errors("- file: x: src/inventory/warehouse.py.bak\n").is_empty());
     assert!(errors("- note: src/inventory/warehouse.py has an untested path\n").is_empty());
     assert!(errors("- filed: #12 src/inventory/warehouse.py\n").is_empty());
     assert!(errors("A file: src/inventory/warehouse.py in prose\n").is_empty());

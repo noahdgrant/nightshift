@@ -3864,6 +3864,12 @@ fn artifact_check_build_rejects_an_untagged_file_line_on_a_touched_file() {
             "a `file:` line names `src/a.py`, which this unit's diff touches: fix it in the unit, or tag the line `unrelated: <reason>` or `too-big: <lines>`"
         ])
     );
+    // A path relative to the artifact's own directory finds brief.md and the repo there.
+    let (_tmp, build) = build_artifact_in_unit("- file: off by one: src/a.py:1");
+    ns().current_dir(build.parent().unwrap())
+        .args(["artifact", "check", "build.md", "--phase", "build"])
+        .assert()
+        .code(1);
     for ok in [
         "- file: off by one: src/a.py:1, unrelated: the parser, not this feature",
         "- file: off by one: src/a.py:1, too-big: 240",
