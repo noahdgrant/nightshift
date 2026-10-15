@@ -21,8 +21,17 @@ const WORKFLOW_REFUSAL: &str = "GraphQL: refusing to allow an OAuth App to creat
 
 /// Ship pushes the unit's branch, then another actor lands `land` on origin's main from a clone,
 /// and `after` runs in the worktree. GitHub reports the PR `BEHIND` and refuses `update-branch`
-/// for the workflow scope.
+/// for the workflow scope. Its exit code and summary.
 fn workflow_refused(land: &str, after: &str) -> (Env, Value, i32) {
+    let (e, w, go_ship) = workflow_refused_at_ship(land, after);
+    release(&go_ship);
+    let (code, v, _) = w.finish();
+    (e, v, code.unwrap())
+}
+
+/// [`workflow_refused`]'s `ns run`, held at the start of its first ship, and the path that
+/// releases it: the wait for its end then spans at most one build cycle.
+fn workflow_refused_at_ship(land: &str, after: &str) -> (Env, Watching, PathBuf) {
     let e = Env::new();
     // The build and every `land` change shared.txt, so the PR always overlaps main.
     fs::write(e.root.join("shared.txt"), SHARED).unwrap();
@@ -51,9 +60,10 @@ fi
     e.gh_file("pr-12.merge", "BEHIND");
     e.gh_file("update-12.fail", WORKFLOW_REFUSAL);
     e.gh_file("checks-12.json", GREEN);
-    let out = e.ns().args(["run", "--issue", "7"]).output();
-    let v = serde_json::from_slice(&out.stdout).unwrap();
-    (e, v, out.status.code().unwrap())
+    let (in_ship, go_ship) = hold_phase(&e, UNIT, "ship");
+    let w = Watching::start(e.ns().args(["run", "--issue", "7"]));
+    w.entered(&in_ship);
+    (e, w, go_ship)
 }
 
 const LAND_UP: &str = r#"echo up > UP && git add UP && $c commit -qm up"#;
@@ -100,11 +110,17 @@ fn a_workflow_refusal_merges_main_with_git_and_pushes() {
 
 #[test]
 fn a_conflict_in_the_git_fallback_goes_back_to_build() {
-    let (e, v, code) = workflow_refused(
+    let (e, w, go_ship) = workflow_refused_at_ship(
         r#"echo theirs > work.txt && git add work.txt && $c commit -qm theirs"#,
         "",
     );
-    assert_eq!((code, &v["outcome"]), (1, &"stuck".into()), "{v}");
+    // The conflict sends the unit back to build: wait there, between its two build cycles.
+    let (in_build, go_build) = hold_phase(&e, UNIT, "build");
+    release(&go_ship);
+    w.entered(&in_build);
+    release(&go_build);
+    let (code, v, _) = w.finish();
+    assert_eq!((code, &v["outcome"]), (Some(1), &"stuck".into()), "{v}");
     let p = e.prompt(6, "build");
     assert!(p.contains("conflicts with main"), "{p}");
     assert_eq!(update_failures(&e)[0]["workflow_scope"], true);

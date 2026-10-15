@@ -105,7 +105,8 @@ fn watch_tries_a_unit_that_stays_once_a_night() {
     e.ready(2, "Fix a", &["type:fix"], "");
     e.ready(4, "Fix b", &["type:fix"], "");
     e.queue("build", &["pass:commit", "pass:commit"]);
-    let v = e.run(&["watch"], 0);
+    let (code, v, err) = one_unit_at_a_time(&e, e.ns().arg("watch"), &[A, "4-fix-b"]);
+    assert_eq!(code, Some(0), "{err}");
     assert_eq!(numbers(&v["units"]), [2, 4], "{v}");
     assert_eq!(v["cleaned"], serde_json::json!([]), "{v}");
     let tries: Vec<Value> = cleanup_events(&e)
@@ -210,6 +211,30 @@ impl Watching {
         });
         (code, v, err)
     }
+}
+
+/// Run the night `ns` starts, waiting for each of `units` in turn to reach its build, so no wait
+/// spans more than one unit's run: each costs hundreds of processes, slow under load. Its exit
+/// code, summary and stderr.
+fn one_unit_at_a_time(e: &Env, ns: &mut Ns, units: &[&str]) -> (Option<i32>, Value, String) {
+    let held: Vec<_> = units.iter().map(|u| hold_phase(e, u, "build")).collect();
+    let w = Watching::start(ns);
+    for (entered, go) in &held {
+        w.entered(entered);
+        release(go);
+    }
+    w.finish()
+}
+
+#[test]
+#[should_panic(expected = "one wait spanned the builds of [\"2-fix-a\", \"3-fix-b\"]")]
+fn a_night_that_builds_two_units_under_one_wait_fails_its_test() {
+    let e = Env::new();
+    e.factory("[defaults]\nmax_attempts = 1\n");
+    two_ready(&e);
+    // Each build fails at once and its unit ends there, so the night stays cheap.
+    e.queue("build", &["blocked", "blocked"]);
+    e.run(&["watch"], 0);
 }
 
 /// Each unit record's issue and outcome, sorted by issue.
@@ -676,10 +701,15 @@ fn no_refill_while_every_slot_is_busy_or_no_claim_may_start() {
         e.ready(3, "Fix b", &["type:fix"], "");
         e.queue("triage.5-fix-e", &["none"]);
         let (in_a, go_a) = hold_phase(&e, A, "build");
+        let (in_b, go_b) = hold_phase(&e, B, "build");
         // Refills would come every poll, while unit 2 is held and while its later phases run.
         let w = a_long_unit_beside_the_backlog(&e, 100, args);
         w.entered(&in_a);
         release(&go_a);
+        if done.contains(&3) {
+            w.entered(&in_b);
+            release(&go_b);
+        }
         let (code, v, err) = w.finish();
         assert_eq!(code, Some(0), "{err}");
         assert_eq!(by_issue(&units(&v)), each(done, "done"), "{v}");
@@ -696,6 +726,7 @@ fn no_refill_while_a_usage_limit_pause_holds_a_free_slot() {
     e.queue("triage.5-fix-e", &["none"]);
     let (in_a, go_a) = hold_phase(&e, A, "build");
     let (in_b, go_b) = hold_phase(&e, B, "build");
+    let (in_resumed, go_resumed) = hold_phase(&e, A, "verify");
     let mut w = a_long_unit_beside_the_backlog(&e, 100, &["--parallel", "3", "--until", "06:30"]);
     w.entered(&in_b);
     w.entered(&in_a);
@@ -704,6 +735,9 @@ fn no_refill_while_a_usage_limit_pause_holds_a_free_slot() {
     // Unit 3's build stays held, then its later phases run: the pause lasts until unit 3 ends,
     // with a slot free and #5 untriaged. Refills would come every poll.
     release(&go_b);
+    // Unit 2 resumes once unit 3 ends, and builds again.
+    w.entered(&in_resumed);
+    release(&go_resumed);
     let (code, _, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
     let paused = event_at(&e, |ev| ev["event"] == "worker_end" && ev["issue"] == 2);
@@ -733,7 +767,8 @@ fn watch_parallel_claims_an_issue_before_its_unit_starts() {
            echo \"{\\\"event\\\":\\\"test_claim\\\",\\\"issue\\\":$3}\" >> \"$(git rev-parse --git-common-dir)/ns/runs.jsonl\" ;;\n\
          esac\n",
     );
-    let v = e.run(&["watch", "--parallel", "2"], 0);
+    let (code, v, err) = one_unit_at_a_time(&e, e.ns().args(["watch", "--parallel", "2"]), &[A, B]);
+    assert_eq!(code, Some(0), "{err}");
     assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
     for n in [2, 3] {
         let claimed = event_at(&e, |v| v["event"] == "test_claim" && v["issue"] == n);
@@ -866,7 +901,8 @@ fn watch_runs_one_unit_at_a_time_unless_told_otherwise() {
         let e = Env::new();
         e.factory(factory);
         two_ready(&e);
-        let v = e.run(&args, 0);
+        let (code, v, err) = one_unit_at_a_time(&e, e.ns().args(&args), &[A, B]);
+        assert_eq!(code, Some(0), "{err}");
         assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
         let calls = e.gh_calls();
         let last_of_2 = calls.rfind("issue edit 2 ").unwrap();

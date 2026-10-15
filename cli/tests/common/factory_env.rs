@@ -292,7 +292,12 @@ impl Env {
         c
     }
 
+    /// Run `ns` to the end under one bounded wait, expecting `code`; its summary. Panics when a
+    /// `watch` night built more than one unit meanwhile: a unit spawns hundreds of processes,
+    /// so under load two of them back to back outgrow the hang guard. Such a night waits on
+    /// each unit in turn instead (`one_unit_at_a_time` in the factory tests).
     pub fn run(&self, args: &[&str], code: i32) -> Value {
+        let before = self.run_log_lines().len();
         let out = self
             .ns()
             .args(args)
@@ -300,6 +305,20 @@ impl Env {
             .code(code)
             .get_output()
             .clone();
+        if args.first() == Some(&"watch") {
+            let mut built: Vec<String> = self.run_log_lines()[before..]
+                .iter()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .filter(|v| v["event"] == "phase" && v["phase"] == "build")
+                .map(|v| v["unit"].as_str().unwrap_or_default().to_string())
+                .collect();
+            built.sort();
+            built.dedup();
+            assert!(
+                built.len() <= 1,
+                "one wait spanned the builds of {built:?}; wait on each unit in turn"
+            );
+        }
         serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
             panic!(
                 "{e}: stdout={} stderr={}",
@@ -307,6 +326,14 @@ impl Env {
                 String::from_utf8_lossy(&out.stderr)
             )
         })
+    }
+
+    fn run_log_lines(&self) -> Vec<String> {
+        fs::read_to_string(self.root.join(".git/ns/runs.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(String::from)
+            .collect()
     }
 
     pub fn calls(&self) -> Vec<String> {
