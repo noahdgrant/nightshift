@@ -8,6 +8,7 @@ use super::super::merge::{
 };
 use super::super::route::State;
 use super::super::MergeBack;
+use super::gate::{stuck_reason, GateRun};
 use super::{Sim, Trace};
 use crate::factory::LocalGate;
 use crate::run::Outcome;
@@ -139,7 +140,12 @@ pub type Ended = (Outcome, String, bool);
 
 impl Sim {
     /// Run the merge step at `state` to its end: back to a phase, or the unit's end.
-    pub(super) fn merge_step(&mut self, state: &State, t: &mut Trace) -> Result<MergeBack, Ended> {
+    pub(super) fn merge_step(
+        &mut self,
+        state: &State,
+        t: &mut Trace,
+        run: u32,
+    ) -> Result<MergeBack, Ended> {
         let cfg = MergeConfig {
             build_only: self.settings.local_gate == LocalGate::BuildOnly,
             local_queue: self.merge.local_queue,
@@ -170,7 +176,12 @@ impl Sim {
                 }
                 Ask::Gate { .. } => {
                     let g = self.merge_gate();
-                    t.gates.push(("merge", !matches!(g, Gated::Red(_))));
+                    t.gates.push(GateRun {
+                        phase: "merge",
+                        attempt: run,
+                        full: self.settings.local_gate == LocalGate::EveryStep,
+                        green: !matches!(g, Gated::Red(_)),
+                    });
                     MergeFact::Gated(g)
                 }
                 ask => self.answer(ask, state, &mut pr_head),
@@ -340,9 +351,7 @@ fn ended(end: MergeEnd) -> Result<MergeBack, Ended> {
             needs_human,
         } => Err((outcome, reason, needs_human)),
         MergeEnd::Rebuild(red) => Ok(MergeBack::Rebuild {
-            stuck_reason: red
-                .killed
-                .or_else(|| red.ratchets.map(|r| format!("the CI gate failed on {r}"))),
+            stuck_reason: stuck_reason(&red),
             feedback: red.feedback,
             reason: red.reason,
         }),

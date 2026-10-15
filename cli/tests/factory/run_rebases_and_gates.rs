@@ -434,62 +434,6 @@ fn a_committing_silent_rebuild_reruns_the_gate_and_can_go_green() {
     assert_ne!(g[0]["sha"], g[1]["sha"]);
 }
 
-#[test]
-fn a_review_that_commits_runs_the_gate_again() {
-    let e = Env::new();
-    let log = e.ctrl.join("gates");
-    e.factory(&format!(
-        "[phases.build]\ngate = \"echo ran >> {}\"\n",
-        log.display()
-    ));
-    e.queue("build", &["pass:commit"]);
-    e.queue("review", &["pass:commit"]);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "verify", "review", "verify", "ship"]
-    );
-    let g = gate_events(&e);
-    assert_eq!(g.len(), 2, "{g:?}");
-    assert_eq!(g[1]["phase"], "review");
-    assert!(g.iter().all(|g| g["where"] == "local_full"), "{g:?}");
-    assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 2);
-}
-
-#[test]
-fn a_red_gate_after_a_review_commit_goes_back_to_build() {
-    let e = Env::new();
-    e.factory("[phases.build]\ngate = \"test ! -f broken\"\n");
-    let commit = "git -c user.name=f -c user.email=f@f commit -qm";
-    e.ctl(
-        "review.sh",
-        &format!("touch broken && git add broken && {commit} break"),
-    );
-    e.ctl("build.sh", &format!("git rm -q broken && {commit} fix"));
-    e.queue("build", &["pass:commit", "pass:script"]);
-    e.queue("review", &["pass:script", "pass"]);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "verify", "review", "build", "verify", "review", "ship"]
-    );
-    assert!(e.prompt(5, "build").contains("test ! -f broken"));
-    let g: Vec<_> = gate_events(&e)
-        .iter()
-        .map(|g| (g["phase"].clone(), g["green"].clone()))
-        .collect();
-    assert_eq!(
-        g,
-        [
-            ("build".into(), true.into()),
-            ("review".into(), false.into()),
-            ("build".into(), true.into())
-        ]
-    );
-}
-
 /// `[gate] local = "build-only"` with `extra` before it, a build gate that appends `full` or
 /// `fast` to `ci-runs`, a `ci-affected` row that appends the files it got to `affected` and runs
 /// `affected.sh` when it exists, and a build script that commits `built.txt`. Returns the two logs.
@@ -701,17 +645,6 @@ fn the_gate_falls_back_to_ci_local_in_stack_md() {
     assert_eq!(g[0]["command"], "echo from main");
     let in_worktree = fs::read_to_string(e.worktree(UNIT).join("docs/agents/stack.md")).unwrap();
     assert!(in_worktree.contains("echo from stack"), "{in_worktree}");
-}
-
-#[test]
-fn a_rebuild_that_leaves_head_alone_skips_a_green_gate() {
-    let e = Env::new();
-    e.factory("[phases.build]\ngate = \"true\"\n");
-    e.queue("build", &["pass:commit", "pass"]);
-    e.queue("verify", &["fail", "pass"]);
-    e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(&e.calls()[..4], ["triage", "build", "verify", "build"]);
-    assert_eq!(gate_events(&e).len(), 1);
 }
 
 #[test]

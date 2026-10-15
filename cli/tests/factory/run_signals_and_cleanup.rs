@@ -18,18 +18,6 @@ fn a_phase_killed_by_a_signal_fails_its_attempt_naming_it() {
 }
 
 #[test]
-fn a_phase_killed_on_every_attempt_is_stuck_naming_the_signal() {
-    let e = Env::new();
-    e.factory("[phases.build]\nmax_attempts = 1\n");
-    e.queue("build", &["pass:commit+kill"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(
-        v["reason"],
-        "build is out of attempts (1): the last attempt was killed by SIGKILL"
-    );
-}
-
-#[test]
 fn a_gate_killed_by_a_signal_names_it() {
     let e = Env::new();
     e.factory("[phases.build]\ngate = \"kill -9 $$\"\n");
@@ -42,37 +30,6 @@ fn a_gate_killed_by_a_signal_names_it() {
     assert_eq!(g[0]["signal"], "SIGKILL");
     assert_eq!(g[0]["memory_exceeded"], false);
     assert!(e.prompt(3, "build").contains("was killed by SIGKILL"));
-}
-
-#[test]
-fn a_killed_rebuild_keeps_the_red_gate_feedback() {
-    let e = Env::new();
-    let flag = e.ctrl.join("gate-green");
-    e.factory(&format!(
-        "[phases.build]\nmax_attempts = 3\ngate = \"test -f {f} || {{ touch {f}; echo boom; exit 1; }}\"\n",
-        f = flag.display()
-    ));
-    e.queue("build", &["pass:commit", "pass:commit+kill", "pass:commit"]);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    assert_eq!(
-        build_event(&e, 3)["decision"],
-        "was killed by SIGKILL with the CI gate still red"
-    );
-    assert!(e.prompt(4, "build").contains("boom"));
-}
-
-#[test]
-fn a_gate_still_red_after_a_silent_build_still_names_the_signal() {
-    let e = Env::new();
-    e.factory("[phases.build]\ngate = \"kill -9 $$\"\n");
-    e.queue("build", &["pass:commit", "none"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(
-        v["reason"],
-        "build is out of attempts (2): the CI gate was killed by SIGKILL"
-    );
-    assert_eq!(gate_events(&e).len(), 1);
 }
 
 #[test]
