@@ -49,6 +49,12 @@ struct Entry {
     snippet: String,
 }
 
+impl Entry {
+    fn key(&self) -> (&str, &str, &str, &str) {
+        (&self.tool, &self.rule, &self.file, &self.snippet)
+    }
+}
+
 impl From<&Finding> for Entry {
     fn from(f: &Finding) -> Entry {
         Entry {
@@ -287,39 +293,68 @@ fn without<'a>(baseline: &'a [Finding], fixed: &[Finding]) -> Vec<&'a Finding> {
 }
 
 /// Whether the baseline text `head` only removes entries from `base`: each of its entries is
-/// matched by its own equal entry in `base`, counting duplicates and every field but the line, so
-/// a reordered file is too. Either text not a baseline is an error naming it.
+/// matched by its own entry in `base`, counting duplicates, on the fields a finding matches on, so
+/// a reordered file is too, and so is one whose messages `ns rules baseline` refreshed. Either
+/// text not a baseline is an error naming it.
 pub fn removal_only(base: &str, head: &str) -> Result<bool, String> {
     let parse = |text: &str, which: &str| {
         serde_json::from_str::<Baseline>(text)
             .map_err(|e| format!("the {which}'s baseline is not a rules baseline: {e}"))
     };
     let (base, head) = (parse(base, "base")?, parse(head, "PR")?);
-    let mut left: HashMap<&Entry, usize> = HashMap::new();
+    let mut left: HashMap<_, usize> = HashMap::new();
     for e in &base.violations {
-        *left.entry(e).or_default() += 1;
+        *left.entry(e.key()).or_default() += 1;
     }
-    Ok(head.violations.iter().all(|e| match left.get_mut(e) {
-        Some(n) if *n > 0 => {
-            *n -= 1;
-            true
-        }
-        _ => false,
-    }))
+    Ok(head
+        .violations
+        .iter()
+        .all(|e| match left.get_mut(&e.key()) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                true
+            }
+            _ => false,
+        }))
 }
 
-/// Write `violations` to the baseline at `path`, through a temporary file.
-fn write_baseline(path: &Path, violations: Vec<Entry>) -> Result<()> {
+/// How many of the `matched` findings carry a message their baseline entry lacks: those left
+/// once each finding an entry equals in full is paired with it.
+fn refreshed(current: &[Finding], baseline: &[Finding], matched: usize) -> usize {
+    let mut left: HashMap<Entry, usize> = HashMap::new();
+    for b in baseline {
+        *left.entry(Entry::from(b)).or_default() += 1;
+    }
+    let same = current
+        .iter()
+        .filter(|f| match left.get_mut(&Entry::from(*f)) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                true
+            }
+            _ => false,
+        })
+        .count();
+    matched - same
+}
+
+/// The baseline file's text for `violations`.
+fn baseline_text(violations: Vec<Entry>) -> Result<String> {
     let text = serde_json::to_string_pretty(&Baseline {
         version: 1,
         violations,
     })?;
+    Ok(text + "\n")
+}
+
+/// Write `text` to the baseline at `path`, through a temporary file.
+fn write_baseline(path: &Path, text: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)
             .with_context(|| format!("cannot create the directory for {}", path.display()))?;
     }
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, text + "\n").with_context(|| format!("cannot write {}", tmp.display()))?;
+    fs::write(&tmp, text).with_context(|| format!("cannot write {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| format!("cannot write {}", path.display()))
 }
 
@@ -431,7 +466,7 @@ pub fn check(only: Option<&str>, prune: bool, format: Format) -> Result<ExitCode
         let kept = without(&baseline, &fixed);
         write_baseline(
             &c.root.join(BASELINE),
-            kept.into_iter().map(Entry::from).collect(),
+            &baseline_text(kept.into_iter().map(Entry::from).collect())?,
         )?;
         fixed.len()
     } else {
@@ -485,18 +520,21 @@ pub fn baseline(allow_growth: bool, dry_run: bool, format: Format) -> Result<Exi
     let run = run_pack(&c.root, &c.commands)?;
     let path = c.root.join(BASELINE);
     let old = load_baseline(&path)?;
-    let (added, _, dropped) = compare(&run.findings, old.as_deref().unwrap_or_default());
+    let old_findings = old.as_deref().unwrap_or_default();
+    let (added, matched, dropped) = compare(&run.findings, old_findings);
+    let refreshed = refreshed(&run.findings, old_findings, matched);
+    // In `run.findings`' order (tool, rule, file, then line, then message), so a dropped finding
+    // removes only its own entry from the file, and duplicates refresh the same way every run.
+    let text = baseline_text(run.findings.iter().map(Entry::from).collect())?;
     let refused = !added.is_empty() && !allow_growth;
     let status = if refused {
         "refused"
-    } else if added.is_empty() && dropped.is_empty() && old.is_some() {
+    } else if old.is_some() && fs::read_to_string(&path).ok().as_deref() == Some(text.as_str()) {
         "already-done"
     } else if dry_run {
         "planned"
     } else {
-        // In `run.findings`' order (tool, rule, file, then line), so a dropped finding removes
-        // only its own entry from the file.
-        write_baseline(&path, run.findings.iter().map(Entry::from).collect())?;
+        write_baseline(&path, &text)?;
         "written"
     };
     let v = json!({
@@ -509,13 +547,17 @@ pub fn baseline(allow_growth: bool, dry_run: bool, format: Format) -> Result<Exi
         "violations": run.findings.len(),
         "added": added,
         "dropped": dropped,
+        "refreshed": refreshed,
     });
-    let summary = format!(
+    let mut summary = format!(
         "{status}: {} violations, {} added, {} dropped",
         run.findings.len(),
         added.len(),
         dropped.len()
     );
+    if refreshed > 0 {
+        summary += &format!(", {refreshed} refreshed");
+    }
     print(
         &v,
         &[("added", &added), ("dropped", &dropped)],
@@ -564,9 +606,26 @@ mod tests {
             Ok(false)
         );
         assert_eq!(removal_only(&base, &file(&[("z", "m")])), Ok(false));
-        assert_eq!(removal_only(&base, &file(&[("x", "m2")])), Ok(false));
         let older = r#"{"version": 1, "violations": [{"tool": "t", "rule": "r", "file": "a.py", "line": 3, "message": "m", "snippet": "x"}]}"#;
         assert_eq!(removal_only(older, &file(&[("x", "m")])), Ok(true));
+    }
+
+    #[test]
+    fn removal_only_lets_a_message_change_through_but_not_a_new_entry() {
+        let base = file(&[("x", "m"), ("x", "n")]);
+        assert_eq!(removal_only(&base, &file(&[("x", "m2")])), Ok(true));
+        assert_eq!(
+            removal_only(&base, &file(&[("x", "m2"), ("x", "m3")])),
+            Ok(true)
+        );
+        assert_eq!(
+            removal_only(&base, &file(&[("x", "m"), ("x", "m"), ("x", "m")])),
+            Ok(false)
+        );
+        assert_eq!(
+            removal_only(&base, &file(&[("x", "m2"), ("z", "m")])),
+            Ok(false)
+        );
     }
 
     #[test]
