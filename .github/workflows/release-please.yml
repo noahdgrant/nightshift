@@ -23,4 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # A PR opened with the default GITHUB_TOKEN starts no workflows, so
+      # ci.yml never ran on release PRs (#585). The repo secret
+      # RELEASE_PLEASE_TOKEN holds a fine-grained PAT that does start them
+      # (setup steps in #585). If release-please fails on auth, that PAT has
+      # expired: renew it. Without the secret this falls back to
+      # github.token, and release PRs get no CI. #682 tracks replacing the
+      # PAT with a GitHub App.
       - uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
