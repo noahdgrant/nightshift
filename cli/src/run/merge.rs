@@ -443,8 +443,11 @@ fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<boo
 /// Whether the rules baseline at the PR head `head` only removes entries from the one at its
 /// merge base with the freshly fetched tip of `default`. No baseline at the merge base makes any
 /// at `head` growth. A head the worktree lacks is fetched from `branch`. A baseline missing at
-/// `head`, or that is not one at either end, is an error.
+/// `head`, or that is not one at either end, is an error, as is a `head` that is not a sha.
 fn baseline_shrinks(wt: &Path, default: &str, branch: &str, head: &str) -> Result<bool> {
+    if head.is_empty() || !head.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(anyhow!("PR head {head:?} is not a commit sha"));
+    }
     git::run_net(wt, &["fetch", "-q", "origin", default])?;
     let tip = git::run(wt, &["rev-parse", "--verify", "FETCH_HEAD^{commit}"])?;
     if !git::ok(wt, &["cat-file", "-e", &format!("{head}^{{commit}}")]) {
@@ -646,6 +649,18 @@ mod tests {
             format!("{e:#}").starts_with("the PR's baseline is not a rules baseline"),
             "{e:#}"
         );
+    }
+
+    #[test]
+    fn a_pr_head_that_is_not_a_sha_is_an_error_before_git_sees_it() {
+        let (_t, wt, _) = baseline_pr(|wt| write_baseline(wt, &["y"]));
+        for head in ["", "--upload-pack=touch x", "HEAD", "main"] {
+            let e = baseline_shrinks(&wt, "main", "ns/9-x", head).unwrap_err();
+            assert_eq!(
+                format!("{e:#}"),
+                format!("PR head {head:?} is not a commit sha")
+            );
+        }
     }
 
     /// The PR head may be a commit only the forge has, such as update-branch's merge.

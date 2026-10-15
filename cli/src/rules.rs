@@ -22,7 +22,7 @@ const MAX_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
 
 /// One violation. `snippet` is the offending source line with whitespace collapsed; with
 /// `tool`, `rule` and `file` it is what matches a baseline entry, so the line number may move.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Finding {
     pub tool: String,
     pub rule: String,
@@ -289,15 +289,18 @@ fn compare(current: &[Finding], baseline: &[Finding]) -> (Vec<Finding>, usize, V
 
 /// `baseline` without one entry for each of `fixed`, in the baseline's order.
 fn without<'a>(baseline: &'a [Finding], fixed: &[Finding]) -> Vec<&'a Finding> {
-    let mut gone: Vec<&Finding> = fixed.iter().collect();
+    let mut gone: HashMap<&Finding, usize> = HashMap::new();
+    for f in fixed {
+        *gone.entry(f).or_default() += 1;
+    }
     baseline
         .iter()
-        .filter(|b| match gone.iter().position(|g| g == b) {
-            Some(i) => {
-                gone.swap_remove(i);
+        .filter(|b| match gone.get_mut(b) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
                 false
             }
-            None => true,
+            _ => true,
         })
         .collect()
 }
