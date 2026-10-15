@@ -112,9 +112,31 @@ fn runs_tracker_cli(code: &str) -> bool {
     })
 }
 
+/// One error per tracker command in `file`, a file of the skill at `skill_dir` under
+/// `root`. Only `SKILL.md` and `references/` are checked, the templates excepted.
+pub(super) fn command_errors(
+    root: &Path,
+    skill_dir: &Path,
+    file: &Path,
+    body: &str,
+) -> Vec<String> {
+    let rel = file.strip_prefix(root).unwrap_or(file);
+    let prose =
+        file == skill_dir.join("SKILL.md") || file.starts_with(skill_dir.join("references"));
+    if !prose || TEMPLATES.iter().any(|t| rel == Path::new(t)) {
+        return Vec::new();
+    }
+    tracker_commands(body)
+        .into_iter()
+        .map(|(n, code)| {
+            format!("line {n}: tracker command `{code}`; name the operation from docs/agents/issue-tracker.md instead")
+        })
+        .collect()
+}
+
 /// The 1-based lines of `text` whose code (a fenced line or an inline span) runs a
 /// tracker command, with that code.
-pub(super) fn tracker_commands(text: &str) -> Vec<(usize, String)> {
+fn tracker_commands(text: &str) -> Vec<(usize, String)> {
     let mut found = Vec::new();
     for (n, line, fenced) in super::classified_lines(text) {
         let codes = if fenced {

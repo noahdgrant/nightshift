@@ -362,6 +362,21 @@ fn feature_files(skill_dir: &Path) -> Vec<PathBuf> {
     features
 }
 
+/// The checks on the skills root as a whole: the tracker templates, and the decisions and
+/// rules index of the repo that holds it.
+fn root_checks(root: &Path) -> Result<Vec<LintError>> {
+    let mut errors = tracker::check_templates(root);
+    if let Some(repo) = fs::canonicalize(root)?.parent() {
+        if repo.join("docs/decisions").is_dir() {
+            errors.extend(decisions::check(repo));
+        }
+        if repo.join("rules").is_dir() {
+            errors.extend(check_rules_index(&repo.join("rules")));
+        }
+    }
+    Ok(errors)
+}
+
 pub fn lint_dir(root: &Path) -> Result<Report> {
     if !root.is_dir() {
         return Err(SfError::usage(
@@ -415,13 +430,8 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
                     push(&mut errors, file, m);
                 }
             }
-            let rel = file.strip_prefix(root).unwrap_or(file);
-            let prose = file == &skill_md || file.starts_with(dir.join("references"));
-            if prose && !tracker::TEMPLATES.iter().any(|t| rel == Path::new(t)) {
-                for (n, code) in tracker::tracker_commands(&body) {
-                    let m = format!("line {n}: tracker command `{code}`; name the operation from docs/agents/issue-tracker.md instead");
-                    push(&mut errors, file, m);
-                }
+            for m in tracker::command_errors(root, dir, file, &body) {
+                push(&mut errors, file, m);
             }
             let base = file.parent().unwrap_or(dir);
             for link in relative_links(&body) {
@@ -457,15 +467,7 @@ pub fn lint_dir(root: &Path) -> Result<Report> {
             }
         }
     }
-    errors.extend(tracker::check_templates(root));
-    if let Some(repo) = fs::canonicalize(root)?.parent() {
-        if repo.join("docs/decisions").is_dir() {
-            errors.extend(decisions::check(repo));
-        }
-        if repo.join("rules").is_dir() {
-            errors.extend(check_rules_index(&repo.join("rules")));
-        }
-    }
+    errors.extend(root_checks(root)?);
     Ok(Report {
         ok: errors.is_empty(),
         skills,
