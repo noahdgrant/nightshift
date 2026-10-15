@@ -437,6 +437,28 @@ fn a_red_gate_review_caused_counts_the_loop_s_cycles() {
 }
 
 #[test]
+fn a_red_gate_review_caused_after_a_rebase_with_main_moved_since_rebases_first() {
+    let mut l = Ledger::new(None);
+    l.head_moved("review", "a000001", "b000002");
+    let a = l
+        .admit(
+            "build",
+            String::new(),
+            "base moved".into(),
+            Some(Rebase::BaseMoved),
+            Some(main_at("s1")),
+            2,
+        )
+        .unwrap();
+    ended(&mut l, &a, Some("pass"));
+    let who = suspect(&l, "review");
+    l.gate_red(&a, "red", "the CI gate failed".into(), None, true, who);
+    let (d, r) = l.next(&empty());
+    assert!(matches!(d, Decision::Run { phase: "build", .. }), "{d:?}");
+    assert_eq!(r, Some(Rebase::MovedSinceRebase));
+}
+
+#[test]
 fn a_pending_fix_cycle_for_a_red_gate_survives_a_restart() {
     let mut l = red_on_review("review");
     l.saved_at("abc1234");
@@ -669,4 +691,23 @@ fn a_resumed_ledger_drops_a_forced_rebase_with_its_decision() {
         ),
         "{d:?}"
     );
+}
+
+#[test]
+fn a_fix_md_makes_a_loop_only_beside_a_review_md_that_passed_or_left_findings_open() {
+    let at = |status: &str, next: Option<&str>| {
+        let mut s = empty();
+        let review = route::Art {
+            status: status.into(),
+            next: next.map(String::from),
+            ..route::Art::default()
+        };
+        s.arts.insert("review", review);
+        s.arts.insert("review-fix", route::Art::default());
+        route::in_review_loop(&s)
+    };
+    assert!(at("pass", None));
+    assert!(at("fail", Some("review")));
+    assert!(!at("fail", Some("build")));
+    assert!(!at("blocked", Some("human")));
 }
