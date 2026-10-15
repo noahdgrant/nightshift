@@ -311,6 +311,68 @@ fn a_gate_driven_fix_cycle_cut_short_is_retried_with_the_gate_s_output() {
     }
 }
 
+fn gate_fix_sim(fix: &[&str]) -> Sim {
+    let mut s = Sim::new();
+    s.gate(&[Ok(()), Err(ON_REVIEWS_FILE)]);
+    s.queue("build", &["pass:commit+touch=src/a.rs"]);
+    s.queue("review", &["pass:commit+touch=src/b.rs", "pass"]);
+    s.queue("review-fix", fix);
+    s
+}
+
+/// A gate-driven fix cycle that is cut short after it committed, that crashes, that exits
+/// without a fix.md, or whose fix.md is invalid, is retried as the same cycle with the gate's
+/// output.
+#[test]
+fn a_gate_driven_fix_cycle_that_wrote_no_valid_fix_md_is_retried() {
+    for bad in [
+        "pass:commit+sleep",
+        "pass:commit+kill",
+        "crash",
+        "none",
+        "pass:invalid",
+    ] {
+        let mut s = gate_fix_sim(&[bad, "pass:commit+touch=src/b.rs+next=review"]);
+        let r = s.run();
+        assert_eq!(r.outcome, Outcome::Done, "{bad}: {r:?}");
+        let fixes: Vec<_> = r.runs.iter().filter(|x| x.phase == "review-fix").collect();
+        assert_eq!(fixes.len(), 2, "{bad}: {:?}", r.calls());
+        assert!(fixes[1].feedback.contains(ON_REVIEWS_FILE), "{bad}");
+        assert!(fixes[1].why.ends_with("fix cycle 1 (full)"), "{bad}");
+        assert_eq!(r.calls().last(), Some(&"ship"), "{bad}");
+    }
+}
+
+/// A gate-driven fix cycle that wrote a valid fix.md ending the loop is not retried: `next:
+/// build` goes to build, a blocked or human one stops the unit.
+#[test]
+fn a_gate_driven_fix_cycle_that_fails_or_blocks_or_names_build_is_not_retried() {
+    for (fix, goes_to_build) in [
+        ("fail:next=build", true),
+        ("pass:next=build", true),
+        ("blocked", false),
+        ("fail:next=human", false),
+    ] {
+        let mut s = gate_fix_sim(&[fix, "pass"]);
+        let r = s.run();
+        let calls = r.calls();
+        assert_eq!(
+            calls.iter().filter(|c| **c == "review-fix").count(),
+            1,
+            "{fix}"
+        );
+        let at = calls.iter().position(|c| *c == "review-fix").unwrap();
+        assert_eq!(
+            calls[at + 1..].contains(&"build"),
+            goes_to_build,
+            "{fix}: {calls:?}"
+        );
+        if !goes_to_build {
+            assert_eq!(r.outcome, Outcome::Stuck, "{fix}: {r:?}");
+        }
+    }
+}
+
 /// A gate that stays red on review's file runs fix cycles until the loop's limit, then stops the
 /// unit as a spent review loop does.
 #[test]

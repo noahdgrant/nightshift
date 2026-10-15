@@ -468,6 +468,37 @@ fn a_pending_fix_cycle_for_a_red_gate_survives_a_restart() {
 }
 
 #[test]
+fn a_later_plain_fix_cycle_cut_short_does_not_replay_the_gate_s_feedback() {
+    let mut l = red_on_review("review");
+    l.next(&empty());
+    l.next(&empty());
+    assert!(!l.cut_short_gate_fix());
+}
+
+#[test]
+fn an_invalid_fix_md_from_a_gate_driven_cycle_is_rewritten_as_that_cycle() {
+    let mut l = red_on_review("review");
+    l.next(&empty());
+    let a = admit(&mut l, "review-fix").unwrap();
+    ended(&mut l, &a, None);
+    l.artifact_invalid(&a, "fix.md", &["`next` is missing".into()]);
+    let (d, _) = l.next(&empty());
+    let Decision::Run {
+        phase,
+        feedback,
+        why,
+    } = d
+    else {
+        panic!("{d:?}")
+    };
+    assert_eq!(phase, "review-fix");
+    assert!(why.ends_with("fix cycle 1 (full)"), "{why}");
+    assert!(feedback.contains("red"), "{feedback}");
+    assert!(feedback.contains("- `next` is missing"), "{feedback}");
+    assert!(l.cut_short_gate_fix(), "still a gate-driven cycle");
+}
+
+#[test]
 fn a_move_is_blamed_once_and_never_after_a_green_gate() {
     let mut l = Ledger::new(None);
     let r = admit(&mut l, "review").unwrap();

@@ -154,7 +154,7 @@ pub struct Ledger {
     /// HEAD when the ledger was last saved, which a forced decision was made against.
     #[serde(default)]
     head: Option<String>,
-    /// The gate-driven fix cycle the last decision ran, so a cut-short run can be retried as it.
+    /// The gate-driven fix cycle the last decision ran, so a run that wrote no valid fix.md can be retried as it.
     /// Not saved: the retry is forced before the turn ends.
     #[serde(skip)]
     gate_fix_run: Option<Forced>,
@@ -466,6 +466,14 @@ impl Ledger {
         if self.rewritten.insert(a.phase.to_string()) {
             self.rewrite = Some(a.phase.to_string());
         }
+        if let Some(f) = self.gate_fix_run.take().filter(|_| a.phase == "review-fix") {
+            self.forced = Some(Forced {
+                feedback: format!("{}\n\n{feedback}", f.feedback),
+                ..f
+            });
+            self.forced_rebase = None;
+            return;
+        }
         self.force(run(a.phase, &feedback, format!("{file} is invalid")), None);
     }
 
@@ -528,7 +536,8 @@ impl Ledger {
         );
     }
 
-    /// A gate-driven fix cycle cut short runs again as the same cycle, with the gate's feedback.
+    /// A gate-driven fix cycle that wrote no fix.md (cut short, crashed or silent) runs again as the
+    /// same cycle, with the gate's feedback.
     /// False when the run was not one.
     pub fn cut_short_gate_fix(&mut self) -> bool {
         match self.gate_fix_run.take() {
