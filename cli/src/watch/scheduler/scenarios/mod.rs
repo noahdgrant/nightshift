@@ -107,6 +107,10 @@ pub(super) struct Sim {
     pub available_mb: Option<u64>,
     /// The units' recorded memory peaks.
     pub peaks: Vec<u64>,
+    /// `MemTotal`; `None` ignores no peak.
+    pub total_mb: Option<u64>,
+    /// The shared cap; `None` clamps no need.
+    pub cap_mb: Option<u64>,
     /// The last fill waited for memory.
     pub memory_low: bool,
 }
@@ -154,6 +158,8 @@ impl Sim {
             disk_said: Vec::new(),
             available_mb: None,
             peaks: Vec::new(),
+            total_mb: None,
+            cap_mb: None,
             memory_low: false,
         }
     }
@@ -322,6 +328,8 @@ impl Sim {
             memory: Memory {
                 available_mb: self.available_mb,
                 peaks: &self.peaks,
+                total_mb: self.total_mb,
+                cap_mb: self.cap_mb,
                 waiting: self.memory_low,
             },
         };

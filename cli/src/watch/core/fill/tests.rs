@@ -385,6 +385,7 @@ fn memory(available_mb: u64, peaks: &[u64]) -> Memory<'_> {
         available_mb: Some(available_mb),
         peaks,
         waiting: false,
+        ..Memory::default()
     }
 }
 
@@ -480,4 +481,25 @@ fn the_memory_check_composes_with_red_main_and_overlap() {
         plan_memory(&ready, &Gate::Open, true, memory(10, &[])),
         [low(10, 4096, true)]
     );
+}
+
+#[test]
+fn a_peak_above_the_machine_is_ignored_and_the_need_stays_under_the_cap() {
+    let huge = [u64::MAX; 5];
+    let m = |peaks, total_mb, cap_mb| Memory {
+        peaks,
+        total_mb,
+        cap_mb,
+        ..Memory::default()
+    };
+    // Peaks over MemTotal can't be real: too few are left, so the default stands.
+    assert_eq!(need_within(&m(&huge, Some(24000), None)), NEED_DEFAULT_MB);
+    // Peaks that fit in MemTotal but not the cap are cut to the cap.
+    assert_eq!(
+        need_within(&m(&[23000; 5], Some(24000), Some(20000))),
+        20000
+    );
+    // Without MemTotal only the cap bounds the need.
+    assert_eq!(need_within(&m(&huge, None, Some(20000))), 20000);
+    assert_eq!(need_within(&m(&[0; 5], None, None)), 1);
 }

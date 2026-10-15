@@ -139,3 +139,31 @@ fn watch_waits_for_memory_says_so_once_and_starts_when_it_frees() {
     };
     assert_eq!(sim.said, [low, again]);
 }
+
+#[test]
+fn watch_starts_its_units_when_the_recorded_peaks_are_forged_huge() {
+    // A hand-edited run log: peaks far over the machine are ignored.
+    let mut sim = two_ready(2);
+    sim.available_mb = Some(21000);
+    sim.total_mb = Some(24000);
+    sim.cap_mb = Some(20000);
+    sim.peaks = vec![u64::MAX; 5];
+    sim.fill().unwrap();
+    assert_eq!(sim.claimed, [2, 3]);
+    assert!(!sim.memory_low);
+    // Peaks that fit the machine but not the cap need the cap, which one unit can have.
+    let mut sim = two_ready(2);
+    sim.available_mb = Some(21000);
+    sim.total_mb = Some(24000);
+    sim.cap_mb = Some(20000);
+    sim.peaks = vec![23000; 5];
+    sim.fill().unwrap();
+    assert_eq!(sim.claimed, [2]);
+    assert_eq!(
+        sim.said,
+        [Said::MemoryLow {
+            available_mb: 1000,
+            need_mb: 20000
+        }]
+    );
+}

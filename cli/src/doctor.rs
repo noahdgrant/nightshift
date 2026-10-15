@@ -384,9 +384,14 @@ fn memory_entry(
     configured: Option<u64>,
     peaks: &[u64],
 ) -> Value {
-    use crate::watch::{need_mb, PEAKS_MIN};
+    use crate::watch::{need_within, Memory, PEAKS_MIN};
     let cap = configured.or(info.map(|m| crate::memory::cap_mb(m.total_mb, None)));
-    let need = need_mb(peaks);
+    let need = need_within(&Memory {
+        peaks,
+        total_mb: info.map(|m| m.total_mb),
+        cap_mb: cap,
+        ..Memory::default()
+    });
     json!({
         "total_mb": info.map(|m| m.total_mb),
         "cap_mb": cap,

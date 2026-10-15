@@ -24,7 +24,7 @@ use crate::worktree::BRANCH_PREFIX;
 pub mod ci;
 mod core;
 mod fix_main;
-pub(crate) use core::fill::{need_mb, PEAKS_MIN};
+pub(crate) use core::fill::{need_within, Memory, PEAKS_MIN};
 pub(crate) use fix_main::TITLE_PREFIX as FIX_MAIN_TITLE;
 pub mod forge;
 mod scheduler;

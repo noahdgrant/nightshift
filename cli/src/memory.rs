@@ -17,6 +17,9 @@ pub const SLICE: &str = "ns.slice";
 /// The unit's own slice, which `ns watch` starts its `ns run` in. The run reads its peak there,
 /// and a phase under `[limits] memory_mb` starts its scope there.
 pub const SLICE_ENV: &str = "NS_SLICE";
+/// Tests set this to a directory holding `proc-cgroup`, read in place of `/proc/self/cgroup`,
+/// and `root`, the tree read in place of `/sys/fs/cgroup`.
+const CGROUP_ENV: &str = "NS_CGROUP_DIR";
 /// Tests set this to the file read in place of `/proc/meminfo`.
 const MEMINFO_ENV: &str = "NS_MEMINFO";
 /// How long a systemd call may take before it counts as failed.
@@ -144,8 +147,16 @@ fn run(mut c: Proc, name: &str) -> Result<(), String> {
 /// this process runs in it and its cgroup records one.
 pub fn peak_mb() -> Option<u64> {
     let slice = std::env::var(SLICE_ENV).ok()?;
-    let cgroup = fs::read_to_string("/proc/self/cgroup").ok()?;
-    peak_in(Path::new("/sys/fs/cgroup"), &cgroup, &slice)
+    match std::env::var_os(CGROUP_ENV).map(PathBuf::from) {
+        Some(dir) => {
+            let cgroup = fs::read_to_string(dir.join("proc-cgroup")).ok()?;
+            peak_in(&dir.join("root"), &cgroup, &slice)
+        }
+        None => {
+            let cgroup = fs::read_to_string("/proc/self/cgroup").ok()?;
+            peak_in(Path::new("/sys/fs/cgroup"), &cgroup, &slice)
+        }
+    }
 }
 
 /// The peak, in MB, of the cgroup named `slice` that the process `cgroup` (the text of

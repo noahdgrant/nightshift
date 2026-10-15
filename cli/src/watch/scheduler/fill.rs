@@ -163,6 +163,8 @@ impl Scheduler<'_> {
         };
         let now = night.shared.clock.now();
         let peaks = memory::peaks(&repo.run_log());
+        let info = memory::meminfo();
+        let cap_mb = info.map(|m| memory::cap_mb(m.total_mb, fac.limits.total_memory_mb));
         let input = FillInput {
             ready: &ready,
             gate: &gate,
@@ -171,8 +173,10 @@ impl Scheduler<'_> {
             claims: self.claims(night),
             holds: &self.holds,
             memory: Memory {
-                available_mb: memory::meminfo().map(|m| m.available_mb),
+                available_mb: info.map(|m| m.available_mb),
                 peaks: &peaks,
+                total_mb: info.map(|m| m.total_mb),
+                cap_mb,
                 waiting: self.memory_low,
             },
         };

@@ -35,6 +35,14 @@ pub fn need_mb(peaks: &[u64]) -> u64 {
     sorted[(sorted.len() * 9).div_ceil(10) - 1].max(1)
 }
 
+/// The memory a new unit needs given what the shell read: [`need_mb`] of the peaks that fit in
+/// `MemTotal`, at most the shared cap, so a forged or huge peak can't hold every unit back.
+pub fn need_within(m: &Memory) -> u64 {
+    let ceiling = m.total_mb.unwrap_or(u64::MAX);
+    let real: Vec<u64> = m.peaks.iter().copied().filter(|p| *p <= ceiling).collect();
+    need_mb(&real).min(m.cap_mb.unwrap_or(u64::MAX)).max(1)
+}
+
 /// What the shell has read of the machine's memory for the start check.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Memory<'a> {
@@ -42,6 +50,10 @@ pub struct Memory<'a> {
     pub available_mb: Option<u64>,
     /// The memory peaks recorded by the units that ended, in MB.
     pub peaks: &'a [u64],
+    /// `MemTotal`; a peak above it can't be real and is ignored. `None` ignores none.
+    pub total_mb: Option<u64>,
+    /// The units' shared cap, which a unit's need never exceeds. `None` clamps nothing.
+    pub cap_mb: Option<u64>,
     /// The last fill already waited for memory.
     pub waiting: bool,
 }
@@ -414,7 +426,7 @@ pub fn plan_fill(input: &FillInput, overlaps: &Overlaps, now: i64) -> Result<Vec
         running: None,
     };
     let (mut claims, mut free) = (input.claims, input.free);
-    let need = need_mb(input.memory.peaks);
+    let need = need_within(&input.memory);
     let mut available = input.memory.available_mb;
     let mut acts = Vec::new();
     while !ready.is_empty() && free > 0 {
