@@ -91,6 +91,18 @@ out=$(cd "$tmp" && PATH="$bare" "$script" app ws/app 2>"$tmp/stderr") && rc=0 ||
 err=$(<"$tmp/stderr")
 check_error "no executable" "ratchet-binary-size.sh: cargo built no executable named app in ws/app"
 
+nojq="$tmp/no-jq-path"
+mkdir -p "$nojq"
+for t in sh mktemp rm; do ln -s "$(command -v "$t")" "$nojq/$t"; done
+cp "$bare/cargo" "$nojq/cargo"
+out=$(cd "$tmp" && PATH="$nojq" "$script" app ws/app 2>"$tmp/stderr") && rc=0 || rc=$?
+err=$(<"$tmp/stderr")
+check_error "no jq" "ratchet-binary-size.sh: jq is not on PATH"
+[ "$err" = "ratchet-binary-size.sh: jq is not on PATH" ] || {
+  printf 'FAIL ratchet-binary-size: no jq: stderr not exact:\n%s\n' "$err" >&2
+  failed=1
+}
+
 if [ -x "$ns" ]; then
   # ratchet.toml, filled in and with the script where the install puts it, is a ratchet
   # `ns ratchet check` runs.
