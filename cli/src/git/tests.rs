@@ -154,6 +154,10 @@ fn parses_porcelain() {
     assert!(e[2].bare);
 }
 
+fn listed(cwd: &Path) -> Vec<WorktreeEntry> {
+    parse_worktree_list(&run(cwd, &["worktree", "list", "--porcelain"]).unwrap())
+}
+
 #[test]
 fn discover_ignores_a_worktree_another_git_is_still_writing() {
     let tmp = tempfile::tempdir().unwrap();
@@ -215,7 +219,7 @@ fn discover_finds_the_main_worktree_git_lists_first() {
         main.join("sm"),
     ] {
         let repo = Repo::discover(&start).unwrap();
-        let listed = &worktrees(&start).unwrap()[0];
+        let listed = &listed(&start)[0];
         assert_eq!(repo.root, listed.path, "from {}", start.display());
         assert_eq!(
             repo.common_dir.to_string_lossy(),
@@ -241,7 +245,7 @@ fn discover_refuses_a_bare_repo_and_its_worktrees() {
     let unset = dir.join("unset.git");
     g(&unset, &["config", "--unset", "core.bare"]);
     for start in [bare, dir.join("bwt"), unset] {
-        assert!(worktrees(&start).unwrap()[0].bare, "{}", start.display());
+        assert!(listed(&start)[0].bare, "{}", start.display());
         let err = Repo::discover(&start).err().unwrap().to_string();
         assert!(
             err.contains("bare repositories"),
