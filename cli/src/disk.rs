@@ -1,0 +1,139 @@
+//! Free disk space on the filesystems a unit fills, read for `ns watch`'s disk check and for
+//! `ns doctor` (docs/factory/watch.md, "Disk space").
+
+use std::path::{Path, PathBuf};
+
+use crate::git::Repo;
+
+/// A GiB, the unit of `[limits] disk_wait_gb` and `disk_stop_gb`: free space as `df -h` shows it.
+pub const GIB: u64 = 1 << 30;
+
+/// One filesystem's free bytes as they were read, or why they couldn't be.
+pub type Free = (PathBuf, Result<u64, String>);
+
+/// `[limits] disk_wait_gb` and `disk_stop_gb`.
+#[derive(Clone, Copy, Debug)]
+pub struct DiskLimits {
+    pub wait_gb: u64,
+    pub stop_gb: u64,
+}
+
+/// Tests set this to a file holding the GiB every filesystem reports free, read at each check;
+/// a file that can't be read, or doesn't hold a whole number, makes every read fail.
+pub const FREE_ENV: &str = "NS_FREE_GIB_FILE";
+
+/// Where Windows' C: drive is mounted under WSL.
+const WSL_HOST_DRIVE: &str = "/mnt/c";
+
+/// The filesystems a unit fills: the one holding `repo`'s worktrees, and under WSL the host's
+/// C: drive, whose free space the WSL disk image grows into.
+pub fn filesystems(repo: &Repo) -> Vec<PathBuf> {
+    let worktrees = crate::worktree::planned_path(repo, "unit");
+    let mut paths = vec![existing(&worktrees)];
+    let version = std::fs::read_to_string("/proc/version").unwrap_or_default();
+    if is_wsl(&version) {
+        paths.push(PathBuf::from(WSL_HOST_DRIVE));
+    }
+    paths
+}
+
+/// Each of `paths` with its free bytes, or why they can't be read.
+pub fn read(paths: Vec<PathBuf>) -> Vec<Free> {
+    paths
+        .into_iter()
+        .map(|p| {
+            let free = free_bytes(&p);
+            (p, free)
+        })
+        .collect()
+}
+
+/// `/proc/version` names a WSL kernel.
+fn is_wsl(version: &str) -> bool {
+    version.to_ascii_lowercase().contains("microsoft")
+}
+
+/// `path`, or its nearest ancestor that exists: the worktrees directory comes with the first unit.
+fn existing(path: &Path) -> PathBuf {
+    path.ancestors()
+        .find(|p| p.exists())
+        .unwrap_or(path)
+        .to_path_buf()
+}
+
+/// The bytes an unprivileged user may still write on the filesystem holding `path`.
+fn free_bytes(path: &Path) -> Result<u64, String> {
+    match std::env::var_os(FREE_ENV) {
+        Some(f) => forced(Path::new(&f)),
+        None => statvfs(path),
+    }
+}
+
+fn forced(file: &Path) -> Result<u64, String> {
+    let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let v = text.trim();
+    v.parse::<u64>()
+        .map(|g| g.saturating_mul(GIB))
+        .map_err(|_| format!("{}: {v:?} is not a whole number of GiB", file.display()))
+}
+
+#[cfg(unix)]
+fn statvfs(path: &Path) -> Result<u64, String> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    // SAFETY: statvfs writes into the zeroed struct we own, and `c` outlives the call.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok((st.f_bavail as u64).saturating_mul(st.f_frsize as u64))
+}
+
+#[cfg(not(unix))]
+fn statvfs(_: &Path) -> Result<u64, String> {
+    Err("free space is read only on unix".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_microsoft_kernel_is_wsl() {
+        let wsl = "Linux version 6.6.114.1-microsoft-standard-WSL2 (root@machine) (gcc) #1 SMP";
+        assert!(is_wsl(wsl));
+        assert!(is_wsl("Linux version 4.4.0-19041-Microsoft"));
+        assert!(!is_wsl(
+            "Linux version 6.8.0-45-generic (buildd@lcy02-amd64-075)"
+        ));
+        assert!(!is_wsl(""));
+    }
+
+    #[test]
+    fn a_missing_worktrees_dir_reads_its_nearest_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path().join("repo.worktrees/unit");
+        assert_eq!(existing(&wt), tmp.path());
+        std::fs::create_dir_all(&wt).unwrap();
+        assert_eq!(existing(&wt), wt);
+    }
+
+    #[test]
+    fn statvfs_reads_free_space_and_fails_on_a_missing_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(statvfs(tmp.path()).unwrap() > 0);
+        assert!(statvfs(&tmp.path().join("gone")).is_err());
+    }
+
+    #[test]
+    fn the_test_override_gives_whole_gib_or_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("free");
+        assert!(forced(&f).is_err());
+        std::fs::write(&f, "15\n").unwrap();
+        assert_eq!(forced(&f), Ok(15 * GIB));
+        std::fs::write(&f, "lots").unwrap();
+        let want = format!("{}: \"lots\" is not a whole number of GiB", f.display());
+        assert_eq!(forced(&f), Err(want));
+    }
+}

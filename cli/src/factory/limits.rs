@@ -44,4 +44,11 @@ impl Limits {
         }
         out
     }
+
+    pub fn disk(&self) -> crate::disk::DiskLimits {
+        crate::disk::DiskLimits {
+            wait_gb: self.disk_wait_gb(),
+            stop_gb: self.disk_stop_gb(),
+        }
+    }
 }

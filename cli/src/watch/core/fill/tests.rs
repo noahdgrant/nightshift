@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use super::*;
 use crate::watch::core::red::Fix;
 
@@ -35,13 +37,16 @@ fn a_pause_starts_nothing_and_skips_the_housekeeping() {
 
 #[test]
 fn a_full_fill_housekeeps_checks_the_base_and_triages_and_a_refill_only_triages() {
-    use OpenAct::{CheckBase, Housekeep, Triage};
-    assert_eq!(open_fill(&open(1)), [Housekeep, CheckBase, Triage]);
+    use OpenAct::{CheckBase, CheckDisk, Housekeep, Triage};
+    assert_eq!(
+        open_fill(&open(1)),
+        [Housekeep, CheckDisk, CheckBase, Triage]
+    );
     let refill = Open {
         kind: Kind::Refill,
         ..open(1)
     };
-    assert_eq!(open_fill(&refill), [Triage]);
+    assert_eq!(open_fill(&refill), [CheckDisk, Triage]);
     // A drain under way starts nothing new and checks nothing again.
     let draining = Open {
         draining: true,
@@ -52,7 +57,7 @@ fn a_full_fill_housekeeps_checks_the_base_and_triages_and_a_refill_only_triages(
 
 #[test]
 fn paused_units_resume_into_the_free_slots_first() {
-    use OpenAct::{CheckBase, Housekeep, Resume, Triage};
+    use OpenAct::{CheckBase, CheckDisk, Housekeep, Resume, Triage};
     let o = Open {
         resume: 3,
         ..open(2)
@@ -62,7 +67,10 @@ fn paused_units_resume_into_the_free_slots_first() {
         resume: 1,
         ..open(2)
     };
-    assert_eq!(open_fill(&o), [Housekeep, Resume, CheckBase, Triage]);
+    assert_eq!(
+        open_fill(&o),
+        [Housekeep, Resume, CheckDisk, CheckBase, Triage]
+    );
     // --max-units stops claims, not resumes; a stop of everything stops both.
     let claims = Stopping::Claims("max_units".into());
     let o = Open {
@@ -103,6 +111,105 @@ fn no_claims_left_stops_the_fill_before_the_triage_pass() {
     assert_eq!(open_fill(&until), [OpenAct::Housekeep, stop]);
     // No slot free: nothing is asked.
     assert_eq!(open_fill(&Open { ..open(0) }), [OpenAct::Housekeep]);
+}
+
+const LIMITS: DiskLimits = DiskLimits {
+    wait_gb: 20,
+    stop_gb: 10,
+};
+
+/// `path` with `gib` GiB free.
+fn free(path: &str, gib: u64) -> Free {
+    (PathBuf::from(path), Ok(gib * GIB))
+}
+
+#[test]
+fn space_above_the_wait_limit_holds_nothing() {
+    let mut disk = Disk::default();
+    assert_eq!(
+        disk.check(vec![free("/w", 20), free("/mnt/c", 500)], LIMITS),
+        []
+    );
+    assert!(!disk.waiting());
+}
+
+#[test]
+fn space_between_the_limits_waits_said_once_until_it_returns() {
+    let mut disk = Disk::default();
+    let low = DiskAct::Low {
+        path: "/mnt/c".into(),
+        free_gb: 19,
+    };
+    // The least free of the filesystems decides; 19.5 GiB is under 20.
+    let read = || vec![free("/w", 300), ("/mnt/c".into(), Ok(39 * GIB / 2))];
+    assert_eq!(disk.check(read(), LIMITS), std::slice::from_ref(&low));
+    assert!(disk.waiting());
+    assert_eq!(disk.check(read(), LIMITS), [DiskAct::Wait]);
+    assert_eq!(
+        disk.check(vec![free("/w", 300), free("/mnt/c", 20)], LIMITS),
+        []
+    );
+    assert!(!disk.waiting());
+    // Low again later is said again.
+    assert_eq!(disk.check(read(), LIMITS), [low]);
+}
+
+#[test]
+fn space_under_the_stop_limit_stops_the_night() {
+    let mut disk = Disk::default();
+    let read = vec![free("/w", 15), ("/mnt/c".into(), Ok(10 * GIB - 1))];
+    let critical = DiskAct::Critical {
+        path: "/mnt/c".into(),
+        free_gb: 9,
+    };
+    assert_eq!(disk.check(read, LIMITS), [critical]);
+    // At exactly the stop limit the night only waits.
+    assert!(matches!(
+        disk.check(vec![free("/w", 10)], LIMITS)[..],
+        [DiskAct::Low { .. }]
+    ));
+}
+
+#[test]
+fn a_filesystem_that_cannot_be_read_is_warned_of_once_and_holds_nothing() {
+    let mut disk = Disk::default();
+    let read = || vec![free("/w", 100), ("/mnt/c".into(), Err("gone".to_string()))];
+    let unread = DiskAct::Unread {
+        path: "/mnt/c".into(),
+        error: "gone".into(),
+    };
+    assert_eq!(disk.check(read(), LIMITS), [unread]);
+    assert_eq!(disk.check(read(), LIMITS), []);
+    // The ones read still decide.
+    let low = vec![free("/w", 12), ("/mnt/c".into(), Err("gone".to_string()))];
+    assert!(matches!(disk.check(low, LIMITS)[..], [DiskAct::Low { .. }]));
+}
+
+#[test]
+fn every_disk_act_but_an_unread_one_holds_the_fill() {
+    let path = PathBuf::from("/w");
+    let unread = DiskAct::Unread {
+        path: path.clone(),
+        error: "gone".into(),
+    };
+    assert!(!unread.holds());
+    let low = DiskAct::Low {
+        path: path.clone(),
+        free_gb: 1,
+    };
+    let critical = DiskAct::Critical { path, free_gb: 1 };
+    for act in [low, DiskAct::Wait, critical] {
+        assert!(act.holds(), "{act:?}");
+    }
+}
+
+#[test]
+fn zero_limits_never_wait_or_stop() {
+    let off = DiskLimits {
+        wait_gb: 0,
+        stop_gb: 0,
+    };
+    assert_eq!(Disk::default().check(vec![free("/w", 0)], off), []);
 }
 
 /// What a fill with `free` slots plans on `ready`, nothing running, with everything it needs read.

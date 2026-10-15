@@ -12,6 +12,7 @@ mod clock;
 mod config;
 mod cpus;
 mod decisions;
+mod disk;
 mod doctor;
 mod error;
 mod eval;
