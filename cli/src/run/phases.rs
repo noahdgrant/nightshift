@@ -97,12 +97,11 @@ pub(super) fn run_harness(
             return Err(not_found());
         }
     }
-    let (mut cmd, watch) = harness::capped(cap, &argv[0], &argv[1..], subscription)?;
+    let (mut cmd, watch) = harness::capped(cap, &argv[0], &argv[1..], subscription, |c| {
+        c.envs(env.iter().map(|(k, v)| (k, v)));
+    })?;
     crate::cpus::apply(&mut cmd);
-    cmd.current_dir(cwd)
-        .output_to(out)
-        .stderr_to(err)
-        .envs(env.iter().map(|(k, v)| (k, v)));
+    cmd.current_dir(cwd).output_to(out).stderr_to(err);
     let ended = match cmd.stdin(prompt.as_bytes().to_vec()).timeout(timeout).run() {
         Ok(r) => r,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_found()),

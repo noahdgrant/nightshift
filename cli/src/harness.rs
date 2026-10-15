@@ -71,8 +71,9 @@ pub fn command(
     program: impl AsRef<OsStr>,
     args: &[String],
     subscription: bool,
+    caller: impl FnOnce(&mut Proc),
 ) -> anyhow::Result<Proc> {
-    let (cmd, ()) = start(program.as_ref(), args, subscription, |p| {
+    let (cmd, ()) = start(program.as_ref(), args, subscription, caller, |p| {
         (Proc::harness(p, subscription), ())
     })?;
     Ok(cmd)
@@ -84,8 +85,9 @@ pub fn capped(
     program: impl AsRef<OsStr>,
     args: &[String],
     subscription: bool,
+    caller: impl FnOnce(&mut Proc),
 ) -> anyhow::Result<(Proc, Watch)> {
-    start(program.as_ref(), args, subscription, |p| {
+    start(program.as_ref(), args, subscription, caller, |p| {
         memcap::command(cap, Kind::Harness { subscription }, p)
     })
 }
@@ -94,18 +96,23 @@ fn start<T>(
     program: &OsStr,
     args: &[String],
     subscription: bool,
+    caller: impl FnOnce(&mut Proc),
     new: impl FnOnce(&OsStr) -> (Proc, T),
 ) -> anyhow::Result<(Proc, T)> {
     check_login(program, subscription)?;
     let (mut cmd, extra) = new(program);
     let drop_bare = subscription_claude(program, subscription);
     cmd.args(args.iter().filter(|a| !drop_bare || *a != "--bare"));
-    if is_claude(program) {
+    let claude = is_claude(program);
+    if claude {
         // Lift the ceiling so the caller's timeout is the only bound, unless the user set one.
         if std::env::var_os(BG_WAIT_ENV).is_none() {
             cmd.env(BG_WAIT_ENV, "0");
         }
-        // Always, overriding whatever the operator's environment says.
+    }
+    caller(&mut cmd);
+    if claude {
+        // Last, so no caller's environment (a phase's, a fixture's) can turn it back on.
         cmd.env(AUTO_MEMORY_ENV, "1");
     }
     Ok((cmd, extra))
@@ -155,7 +162,7 @@ mod tests {
 
     #[test]
     fn claude_gets_auto_memory_off_and_the_bg_wait_lifted() {
-        let cmd = command("claude", &v(&["--bare", "-p"]), false).unwrap();
+        let cmd = command("claude", &v(&["--bare", "-p"]), false, |_| {}).unwrap();
         assert_eq!(args(&cmd), ["--bare", "-p"]);
         assert_eq!(env(&cmd, AUTO_MEMORY_ENV).as_deref(), Some("1"));
         let lifted = std::env::var_os(BG_WAIT_ENV).is_none();
@@ -163,8 +170,21 @@ mod tests {
     }
 
     #[test]
+    fn a_caller_cannot_turn_auto_memory_back_on() {
+        let set_off = |c: &mut Proc| {
+            c.env(AUTO_MEMORY_ENV, "0");
+            c.env(BG_WAIT_ENV, "123");
+        };
+        let cmd = command("claude", &[], false, set_off).unwrap();
+        assert_eq!(env(&cmd, AUTO_MEMORY_ENV).as_deref(), Some("1"));
+        assert_eq!(env(&cmd, BG_WAIT_ENV).as_deref(), Some("123"));
+        let (cmd, _) = capped(None, "claude", &[], false, set_off).unwrap();
+        assert_eq!(env(&cmd, AUTO_MEMORY_ENV).as_deref(), Some("1"));
+    }
+
+    #[test]
     fn another_harness_keeps_its_args_and_environment() {
-        let (cmd, _) = capped(None, "codex", &v(&["exec", "--bare"]), true).unwrap();
+        let (cmd, _) = capped(None, "codex", &v(&["exec", "--bare"]), true, |_| {}).unwrap();
         assert_eq!(args(&cmd), ["exec", "--bare"]);
         assert_eq!(env(&cmd, AUTO_MEMORY_ENV), None);
         assert_eq!(env(&cmd, BG_WAIT_ENV), None);

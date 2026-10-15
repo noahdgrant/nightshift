@@ -237,7 +237,7 @@ impl Plan {
         stdout: Option<File>,
     ) -> Result<Vec<u8>> {
         let (resolved, command) = (&self.resolved, &self.command);
-        let mut cmd = harness::command(bin, &command[1..], subscription(cwd)?)?;
+        let mut cmd = harness::command(bin, &command[1..], subscription(cwd)?, |_| {})?;
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
