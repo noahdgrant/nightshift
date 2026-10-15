@@ -157,11 +157,32 @@ fn host_reads_url_and_scp_forms_and_no_host_from_a_path() {
 /// Where a forge's CLI may run: the forges here, the credential checks, and `Proc` itself.
 const FORGE_CALLERS: &[&str] = &["watch/forge/", "forge.rs", "forge/", "proc.rs", "proc/"];
 
+/// The line up to a `//` that is not inside a string literal.
+fn outside_comment(line: &str) -> &str {
+    let (mut in_string, mut escaped, mut prev) = (false, false, '\0');
+    for (i, c) in line.char_indices() {
+        if in_string {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+        } else if c == '"' {
+            in_string = true;
+        } else if c == '/' && prev == '/' {
+            return &line[..i - 1];
+        }
+        prev = c;
+    }
+    line
+}
+
 /// What starts `gh` or `glab`, or calls `gh()` or `gh_json()`.
 fn calls_a_forge(line: &str) -> bool {
-    let code = line.split("//").next().unwrap_or_default();
-    let spawns =
-        code.contains("Proc::") && ["(\"gh\"", "(\"glab\""].iter().any(|p| code.contains(p));
+    let code = outside_comment(line);
+    let spawns = ["Proc::", "Command::new"].iter().any(|s| code.contains(s))
+        && ["(\"gh\"", "(\"glab\""].iter().any(|p| code.contains(p));
     static HELPER: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r#"(^|[^\w."])gh(_json)?\("#).unwrap());
     spawns || code.contains("Proc::forge(") || HELPER.is_match(code)
@@ -175,6 +196,10 @@ fn calls_a_forge_finds_each_way_to_reach_one() {
         "let v = gh_json(wt, &[\"pr\"])?;",
         "    gh(&self.root, &args)",
         "Proc::forge(program)",
+        "std::process::Command::new(\"gh\").args(x)",
+        "Command::new(\"glab\")",
+        "let u = \"https://x\"; gh(wt, &a);",
+        "let u = \"a\\\"//\"; Command::new(\"gh\")",
     ] {
         assert!(calls_a_forge(yes), "{yes}");
     }
@@ -185,13 +210,15 @@ fn calls_a_forge_finds_each_way_to_reach_one() {
         "let ghost = 1;",
         "\"gh\" => 1,",
         "    \"gh(\",",
+        "Command::new(\"git\") // gh(wt)",
+        "let u = \"https://x\"; // Command::new(\"gh\")",
     ] {
         assert!(!calls_a_forge(no), "{no}");
     }
 }
 
 /// Every forge call goes through [`Forge`]: no file outside [`FORGE_CALLERS`] starts `gh` or
-/// `glab`, tests included.
+/// `glab`, in the unit tests under `src/` too. Integration tests in `tests/` are not scanned.
 #[test]
 fn no_forge_cli_runs_outside_the_forge_modules() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
