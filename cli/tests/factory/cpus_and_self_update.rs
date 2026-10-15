@@ -668,7 +668,10 @@ fn state_the_new_binary_cannot_read_starts_a_fresh_night() {
 
 /// A night held in a build, with an update on origin, whose fake cargo runs in `mode`.
 fn watching_an_update(mode: &str) -> (Env, Watching) {
-    let e = Env::new();
+    watching_an_update_in(Env::new(), mode)
+}
+
+fn watching_an_update_in(e: Env, mode: &str) -> (Env, Watching) {
     let from = nightshift_repo(&e);
     two_ready(&e);
     e.ctl("cargo-mode", mode);
@@ -692,23 +695,17 @@ fn assert_stopped_without_a_hand_off(e: &Env, v: &Value, code: Option<i32>, err:
 
 #[test]
 fn a_stop_during_the_build_kills_it_and_ends_the_night() {
-    let (e, w) = watching_an_update("slow");
-    let give_up = Instant::now() + Duration::from_secs(60);
-    while !e.ctrl.join("cargo-started").exists() {
-        assert!(
-            Instant::now() < give_up,
-            "the build never started, so there was nothing to stop"
-        );
-        thread::sleep(Duration::from_millis(20));
-    }
-    let start = Instant::now();
+    let e = Env::new();
+    // The fake cargo writes a line here once the build starts.
+    let started = e.ctrl.join("cargo-entered");
+    mkfifo(&started);
+    let (e, mut w) = watching_an_update_in(e, "slow");
+    w.entered(&started);
     w.signal(libc::SIGTERM, false);
+    w.line("SIGTERM: stopping");
+    // A build left running holds the night past the hang guard.
     let (code, v, err) = w.finish();
     assert_stopped_without_a_hand_off(&e, &v, code, &err);
-    assert!(
-        start.elapsed() < Duration::from_secs(30),
-        "build not killed"
-    );
 }
 
 #[test]

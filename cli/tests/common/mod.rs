@@ -23,9 +23,6 @@ pub const TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a finished `ns` may take to close its output pipes before its stragglers are killed.
 const POST_EXIT_GRACE: Duration = Duration::from_millis(500);
 
-/// How long a test polls for a signal handler to run.
-pub const EXIT_WAIT: Duration = Duration::from_secs(5);
-
 const TREE_VAR: &str = "NS_TEST_TREE";
 
 static NEXT_TREE: AtomicU32 = AtomicU32::new(0);

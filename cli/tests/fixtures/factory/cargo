@@ -8,7 +8,8 @@
 # --no-self-update: a new ns that does not read the deadline again.
 #   $FAKE_CTRL/cargo-mode: fail (the build fails), badcheck (the stub's dry run exits 1) or
 #   badversion (the stub's version names another commit), versionfails (it exits 1), slow (the
-#   build writes $FAKE_CTRL/cargo-started and hangs), stopped (the build sends ns SIGTERM and
+#   build writes a line to the fifo $FAKE_CTRL/cargo-entered when there is one, and hangs),
+#   stopped (the build sends ns SIGTERM and
 #   succeeds) or unexecutable (the stub's dry run passes, then it makes itself unexecutable, so
 #   the exec fails) or held (the build writes $FAKE_CTRL/cargo-started, then waits for a line on
 #   the fifo $FAKE_CTRL/cargo-go before it builds). When the fifo $FAKE_CTRL/dry-entered exists,
@@ -21,8 +22,8 @@ if [ "$mode" = fail ]; then
   exit 101
 fi
 if [ "$mode" = slow ]; then
-  touch "$ctrl/cargo-started"
-  sleep 60
+  [ -p "$ctrl/cargo-entered" ] && echo in > "$ctrl/cargo-entered"
+  sleep 600
   exit 0
 fi
 [ "$mode" = stopped ] && kill -TERM "$PPID"

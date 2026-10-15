@@ -356,13 +356,6 @@
       "rule": "wall-clock-in-test",
       "file": "cli/tests/common/mod.rs",
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "pub const EXIT_WAIT: Duration = Duration::from_secs(5);"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/common/mod.rs",
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "thread::sleep(Duration::from_millis(10));"
     },
     {
@@ -482,49 +475,7 @@
       "rule": "wall-clock-in-test",
       "file": "cli/tests/factory/cpus_and_self_update.rs",
       "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "let give_up = Instant::now() + Duration::from_secs(60);"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/factory/cpus_and_self_update.rs",
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "assert!("
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/factory/cpus_and_self_update.rs",
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "thread::sleep(Duration::from_millis(20));"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/factory/cpus_and_self_update.rs",
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "assert!("
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/factory/cpus_and_self_update.rs",
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
       "snippet": "thread::sleep(Duration::from_millis(1000));"
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/factory/run_locks_and_merge_order.rs",
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "assert!("
-    },
-    {
-      "tool": "ast-grep",
-      "rule": "wall-clock-in-test",
-      "file": "cli/tests/factory/run_locks_and_merge_order.rs",
-      "message": "a test sleeps, times itself, or sets a literal timeout; wait for an event or use the fake clock instead (CODING_STANDARDS.md, \"A test never waits on the clock\")",
-      "snippet": "thread::sleep(Duration::from_millis(10));"
     },
     {
       "tool": "ast-grep",
