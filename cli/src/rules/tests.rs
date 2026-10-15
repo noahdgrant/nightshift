@@ -102,6 +102,11 @@ fn measured_reads_the_value_from_the_registered_shapes_and_nothing_else() {
     assert_eq!(measured(&reworded), None);
     reworded.message = "this function has too many lines (261 lines)".into();
     assert_eq!(measured(&reworded), None);
+    // No digits before the suffix, or a number too large to read, measure nothing.
+    reworded.message = "this function has too many lines (/100)".into();
+    assert_eq!(measured(&reworded), None);
+    reworded.message = "this function has too many lines (99999999999999999999/100)".into();
+    assert_eq!(measured(&reworded), None);
     d.message = "found two duplicate entries for crate 'syn'".into();
     assert_eq!(measured(&d), None);
 }
