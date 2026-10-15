@@ -109,6 +109,8 @@ fn measured_reads_the_value_from_the_registered_shapes_and_nothing_else() {
     assert_eq!(measured(&reworded), None);
     d.message = "found two duplicate entries for crate 'syn'".into();
     assert_eq!(measured(&d), None);
+    d.message = "found 2 duplicates for crate 'syn'".into();
+    assert_eq!(measured(&d), None);
 }
 
 #[test]
@@ -251,6 +253,19 @@ fn a_value_less_finding_takes_the_last_entry_of_its_key_as_main_did() {
     assert_eq!(m.accepted.len(), 1);
     assert_eq!(m.accepted[0].entry, 1);
     assert_eq!(m.fixed, [0]);
+}
+
+#[test]
+fn a_valued_finding_pairs_with_the_valued_entry_before_a_value_less_one() {
+    let mut plain = sized(221, "a.rs", "fn a() {");
+    plain.message = "this function has too many lines (quality bar)".into();
+    let m = compare(
+        &[sized(100, "a.rs", "fn a() {"), plain.clone()],
+        &[plain, sized(221, "a.rs", "fn a() {")],
+    );
+    assert!(m.new.is_empty());
+    let pairs: Vec<(usize, usize)> = m.accepted.iter().map(|a| (a.finding, a.entry)).collect();
+    assert_eq!(pairs, [(0, 1), (1, 0)]);
 }
 
 #[test]

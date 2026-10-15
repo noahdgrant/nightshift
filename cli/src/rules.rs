@@ -249,16 +249,25 @@ fn read_capped(mut log: File, cmd: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// The rules whose `message` carries a number the finding measures, and the text around it. A rule
-/// this table lacks has no measured value and matches its baseline entry as it always did, which
-/// also keeps `ns` out of most tools' message prose (D50, ADR-746).
-fn shape(tool: &str, rule: &str) -> Option<(&'static str, &'static str)> {
+/// The text a rule's `message` puts around the number it measures.
+struct Shape {
+    before: &'static str,
+    after: &'static str,
+}
+
+/// The rules whose `message` carries a number the finding measures. A rule this table lacks has no
+/// measured value and matches its baseline entry as it always did, which also keeps `ns` out of
+/// most tools' message prose (D50, ADR-746).
+fn shape(tool: &str, rule: &str) -> Option<Shape> {
     match (tool, rule) {
-        // "this function has too many lines (261/100) (quality bar, ...)": the limit is not the
-        // value.
-        ("clippy", "clippy::too_many_lines") => Some(("this function has too many lines (", "/")),
-        // "found 2 duplicate entries for crate 'syn' (one road per job: ...)".
-        ("cargo-deny", "duplicate") => Some(("found ", " duplicate entries")),
+        ("clippy", "clippy::too_many_lines") => Some(Shape {
+            before: "this function has too many lines (",
+            after: "/",
+        }),
+        ("cargo-deny", "duplicate") => Some(Shape {
+            before: "found ",
+            after: " duplicate entries",
+        }),
         _ => None,
     }
 }
@@ -267,10 +276,10 @@ fn shape(tool: &str, rule: &str) -> Option<(&'static str, &'static str)> {
 /// (see [`shape`]) or the message is not its registered shape, so a message the tool reworded only
 /// stops the ratchet for that rule.
 fn measured(f: &Finding) -> Option<u64> {
-    let (prefix, suffix) = shape(&f.tool, &f.rule)?;
-    let rest = f.message.strip_prefix(prefix)?;
+    let s = shape(&f.tool, &f.rule)?;
+    let rest = f.message.strip_prefix(s.before)?;
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    if digits.is_empty() || !rest[digits.len()..].starts_with(suffix) {
+    if digits.is_empty() || !rest[digits.len()..].starts_with(s.after) {
         return None;
     }
     digits.parse().ok()
@@ -345,10 +354,23 @@ enum Scope {
     Only,
 }
 
-/// Take from `left` (indices into `baseline`, smallest measured value first) the smallest entry
-/// that `f` does not outgrow. A value-less `f` takes the last entry of the group. `None` when no
-/// entry is left that accepts it.
-fn cover(left: &mut Vec<usize>, f: &Finding, baseline: &[Finding]) -> Option<usize> {
+/// A baseline entry's measured value. The variants are ordered so an entry with no value sorts
+/// after every measured one.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Measure {
+    Found(u64),
+    Unmeasured,
+}
+
+/// The baseline entries of one key, as indices into `baseline`, in the order `pair` takes them.
+type Group = Vec<usize>;
+
+/// The baseline entries of each key, in the order `pair` takes them.
+type Groups<'a> = HashMap<(&'a str, &'a str, &'a str, &'a str), Group>;
+
+/// Take from `left`, ordered by [`Measure`], the first entry that `f` does not outgrow. A value-less
+/// `f` takes the last one. `None` when no entry is left that accepts it.
+fn cover(left: &mut Group, f: &Finding, baseline: &[Finding]) -> Option<usize> {
     let at = match measured(f) {
         Some(_) => left.iter().position(|&i| !grew(f, &baseline[i]))?,
         None => left.len().checked_sub(1)?,
@@ -358,38 +380,63 @@ fn cover(left: &mut Vec<usize>, f: &Finding, baseline: &[Finding]) -> Option<usi
 
 /// Take from `left` the largest entry that `f` outgrew, so `f` grows from the nearest one. `None`
 /// when `f` outgrew none that is left.
-fn grow(left: &mut Vec<usize>, f: &Finding, baseline: &[Finding]) -> Option<usize> {
+fn grow(left: &mut Group, f: &Finding, baseline: &[Finding]) -> Option<usize> {
     let at = left.iter().rposition(|&i| grew(f, &baseline[i]))?;
     Some(left.remove(at))
 }
 
 /// Pair each of `current` with the baseline entry it is matched to, or with none. Findings that
-/// measure the most are paired first. The first pass pairs each with the smallest entry that
-/// accepts it. The second pairs each finding left over with the entry it grew from, out of what
-/// the first pass left.
+/// measure the most are paired first.
 fn pair(current: &[Finding], baseline: &[Finding]) -> Vec<Option<usize>> {
     let mut by_value: Vec<usize> = (0..baseline.len()).collect();
-    by_value.sort_by_key(|&i| measured(&baseline[i]).unwrap_or(u64::MAX));
-    let mut left: HashMap<(&str, &str, &str, &str), Vec<usize>> = HashMap::new();
+    by_value.sort_by_key(|&i| baseline_measure(&baseline[i]));
+    let mut left: Groups = HashMap::new();
     for i in by_value {
         left.entry(baseline[i].key()).or_default().push(i);
     }
     let mut order: Vec<usize> = (0..current.len()).collect();
     order.sort_by_key(|&i| Reverse(measured(&current[i])));
     let mut paired = vec![None; current.len()];
-    for &i in &order {
+    pair_exact(current, baseline, &order, &mut left, &mut paired);
+    pair_grown(current, baseline, &order, &mut left, &mut paired);
+    paired
+}
+
+fn baseline_measure(b: &Finding) -> Measure {
+    measured(b).map_or(Measure::Unmeasured, Measure::Found)
+}
+
+/// The first pass of [`pair`]: each finding takes the smallest entry that accepts it.
+fn pair_exact<'a>(
+    current: &'a [Finding],
+    baseline: &[Finding],
+    order: &[usize],
+    left: &mut Groups<'a>,
+    paired: &mut [Option<usize>],
+) {
+    for &i in order {
         paired[i] = left
             .get_mut(&current[i].key())
             .and_then(|l| cover(l, &current[i], baseline));
     }
-    for &i in &order {
+}
+
+/// The second pass of [`pair`]: each finding the first pass left over takes the entry it grew
+/// from, out of what the first pass left.
+fn pair_grown<'a>(
+    current: &'a [Finding],
+    baseline: &[Finding],
+    order: &[usize],
+    left: &mut Groups<'a>,
+    paired: &mut [Option<usize>],
+) {
+    for &i in order {
         if paired[i].is_none() {
             paired[i] = left
                 .get_mut(&current[i].key())
                 .and_then(|l| grow(l, &current[i], baseline));
         }
     }
-    paired
 }
 
 /// Split `current` into the findings the baseline accepts and the ones it does not, and return the
