@@ -471,6 +471,7 @@ pub fn cli(
     let factory_prs: BTreeSet<u64> = forge
         .closing_prs(PrState::Merged)?
         .into_values()
+        .flatten()
         .filter(|(_, head)| head.starts_with(BRANCH_PREFIX))
         .map(|(pr, _)| pr)
         .collect();

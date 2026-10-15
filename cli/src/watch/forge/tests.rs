@@ -37,6 +37,26 @@ fn a_closed_issue_is_not_planned_only_when_its_reason_says_other_than_completed(
 }
 
 #[test]
+fn parse_closing_keeps_every_pr_that_closes_an_issue() {
+    let prs = serde_json::json!([
+        {"number": 12, "body": "Closes #5", "headRefName": "other", "isCrossRepository": false},
+        {"number": 10, "body": "Closes #5. Fixes #6", "headRefName": "ns/5-x", "isCrossRepository": false},
+        {"number": 10, "body": "Closes #5", "headRefName": "ns/5-x", "isCrossRepository": false},
+        {"number": 9, "body": "Fixes #6", "headRefName": "fork", "isCrossRepository": true},
+        {"number": 8, "body": "no reference", "headRefName": "x", "isCrossRepository": false},
+    ]);
+    let by_issue = parse_closing(&prs);
+    assert_eq!(
+        by_issue,
+        ClosingPrs::from([
+            (5, vec![(12, "other".into()), (10, "ns/5-x".into())]),
+            (6, vec![(10, "ns/5-x".into()), (9, String::new())]),
+        ])
+    );
+    assert!(parse_closing(&serde_json::json!({})).is_empty());
+}
+
+#[test]
 fn parse_merged_reads_each_prs_head_merge_time_and_changed_lines() {
     let prs = serde_json::json!([
         {"number": 41, "headRefName": "ns/9-b", "isCrossRepository": false,
