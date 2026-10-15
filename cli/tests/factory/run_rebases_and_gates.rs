@@ -819,3 +819,32 @@ fn a_red_gate_leaves_the_baseline_as_the_branch_has_it() {
     let head = git(&wt, &["show", "HEAD:.nightshift/rules-baseline.json"]);
     assert_eq!(baselined_snippets(&head), ["bad one", "bad two"]);
 }
+
+/// Under `every-step` the gate after review runs the full command too; a prune there is
+/// restored, never committed.
+#[test]
+fn a_gate_after_another_phase_restores_the_pruned_baseline() {
+    let e = baselined_pack("true");
+    let marker = e.ctrl.join("built");
+    e.ctl(
+        "edit",
+        &format!(
+            "if [ -f {m} ]; then sed -i '/bad one/d' f.c && git add f.c; fi; touch {m}; echo unit >> work.txt",
+            m = marker.display()
+        ),
+    );
+    e.queue("review", &["pass:commit"]);
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "done", "{v}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 2, "{g:?}");
+    assert_eq!(g[1]["phase"], "review", "{g:?}");
+    let log = fs::read_to_string(g[1]["log"].as_str().unwrap()).unwrap();
+    assert!(log.contains("dropped 1 fixed entries"), "{log}");
+    let wt = e.worktree(UNIT);
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+    let head = git(&wt, &["show", "HEAD:.nightshift/rules-baseline.json"]);
+    assert_eq!(baselined_snippets(&head), ["bad one", "bad two"]);
+    let runs = fs::read_to_string(e.root.join(".git/ns/runs.jsonl")).unwrap();
+    assert!(!runs.contains("baseline_pruned"), "{runs}");
+}

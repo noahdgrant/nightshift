@@ -72,13 +72,7 @@ impl Ctx<'_> {
         )?;
         let to = self.head();
         gate_state.carry_green(head, &to);
-        let art = self.artifacts.join(artifact_of(phase));
-        let written_at = fs::read_to_string(&art)
-            .ok()
-            .and_then(|t| frontmatter::field(&t, "sha"));
-        if written_at.is_some_and(|sha| same_sha(&sha, head)) {
-            set_fields(&art, &[("sha", to.clone())])?;
-        }
+        move_artifact(&self.artifacts.join(artifact_of(phase)), head, &to)?;
         self.log(json!({"event": "baseline_pruned", "phase": phase, "from": head, "to": to}));
         Ok(())
     }
@@ -127,6 +121,18 @@ impl Ctx<'_> {
 
 /// The subject of the commit that drops fixed entries from the rules baseline.
 const PRUNE_SUBJECT: &str = "chore(rules): drop fixed entries from the rules baseline";
+
+/// Move the artifact at `path` from `from` to `to` when it was written at `from`; leave a stale
+/// one, or none, as it is.
+fn move_artifact(path: &Path, from: &str, to: &str) -> Result<()> {
+    let written_at = fs::read_to_string(path)
+        .ok()
+        .and_then(|t| frontmatter::field(&t, "sha"));
+    if written_at.is_some_and(|sha| same_sha(&sha, from)) {
+        set_fields(path, &[("sha", to.to_string())])?;
+    }
+    Ok(())
+}
 
 /// Whether the rules baseline in `wt` differs from HEAD's only by entries `ns rules check
 /// --prune` dropped, as opposed to an edit a phase left behind.
@@ -389,6 +395,25 @@ mod tests {
             .map(|s| json!({"tool": "t", "rule": "r", "file": "f.c", "message": "m", "snippet": s}))
             .collect();
         json!({"version": 1, "violations": v}).to_string()
+    }
+
+    #[test]
+    fn move_artifact_moves_only_one_written_at_the_old_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("build.md");
+        let text = |sha: &str| format!("---\nphase: build\nsha: {sha}\nstatus: pass\n---\nbody\n");
+        fs::write(&p, text("abc1234")).unwrap();
+        move_artifact(&p, "abc1234", "def5678").unwrap();
+        let moved = fs::read_to_string(&p).unwrap();
+        assert!(
+            moved.contains("\nsha: def5678\n") && moved.ends_with("---\nbody\n"),
+            "{moved}"
+        );
+        fs::write(&p, text("0001111")).unwrap();
+        move_artifact(&p, "abc1234", "def5678").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), text("0001111"));
+        move_artifact(&dir.path().join("none.md"), "abc1234", "def5678").unwrap();
+        assert!(!dir.path().join("none.md").exists());
     }
 
     /// Only a baseline that lost entries since HEAD reads as pruned: never a clean one, one a
