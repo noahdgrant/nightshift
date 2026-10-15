@@ -675,6 +675,27 @@ fn factory_validate_reports_problems() {
 }
 
 #[test]
+fn factory_validate_accepts_the_disk_limits_and_rejects_stop_above_wait() {
+    let e = Env::new();
+    e.factory("[limits]\ndisk_wait_gb = 30\ndisk_stop_gb = 15\n");
+    e.ns().args(["factory", "validate"]).assert().success();
+    e.factory("[limits]\ndisk_wait_gb = 15\ndisk_stop_gb = 30\n");
+    let out = e
+        .ns()
+        .args(["factory", "validate"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        v["errors"],
+        json!(["limits.disk_stop_gb = 30 is above limits.disk_wait_gb = 15; the stop limit must not exceed the wait limit"])
+    );
+}
+
+#[test]
 fn factory_validate_warns_when_build_only_has_no_fast_ci_local() {
     let e = Env::new();
     fs::create_dir_all(e.root.join("docs/agents")).unwrap();

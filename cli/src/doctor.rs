@@ -10,6 +10,7 @@ use clap::ValueEnum;
 use serde_json::{json, Map, Value};
 
 use crate::config::{self, Forge, ForgeKind};
+use crate::disk;
 use crate::forge;
 use crate::git;
 use crate::install;
@@ -71,6 +72,7 @@ pub fn run() -> Result<ExitCode> {
     warnings.extend(default_branch_warnings());
     tracked_skill_dirs(&mut problems, &mut warnings);
     let hooks = hooks_entry(&mut problems);
+    let disk = disk_entry(&mut warnings);
 
     let ok = parses && problems.is_empty();
     let out = json!({
@@ -96,6 +98,7 @@ pub fn run() -> Result<ExitCode> {
         "hooks": hooks,
         "quality": factory().map(|f| json!({ "remote": f.quality.remote })),
         "ssh_keepalive": keepalive,
+        "disk": disk,
         "problems": problems,
         "warnings": warnings,
     });
@@ -135,6 +138,43 @@ fn skill_dirs_entry() -> Value {
         );
     }
     Value::Object(skill_dirs)
+}
+
+/// Free space on each filesystem `ns watch` checks before it starts a unit, against the current
+/// repo's `[limits] disk_wait_gb` and `disk_stop_gb`. Outside a repo, the current directory's
+/// filesystem against the default limits. Space under a limit, or a filesystem that can't be
+/// read, is a warning, also printed to stderr.
+fn disk_entry(warnings: &mut Vec<String>) -> Value {
+    let repo = git::Repo::discover(Path::new(".")).ok();
+    let limits = repo
+        .as_ref()
+        .and_then(|r| crate::factory::load(&crate::factory::root(None, &r.root)).ok())
+        .unwrap_or_default()
+        .limits
+        .disk();
+    let paths = match &repo {
+        Some(r) => disk::filesystems(r),
+        None => disk::with_host_drive(
+            std::env::current_dir().unwrap_or_else(|_| ".".into()),
+            &disk::proc_version(),
+        ),
+    };
+    let mut filesystems = Vec::new();
+    for (path, free) in disk::read(paths) {
+        let entry = match &free {
+            Ok(bytes) => {
+                let state = limits.level(*bytes).name();
+                json!({ "path": path, "free_gb": bytes / disk::GIB, "state": state })
+            }
+            Err(error) => json!({ "path": path, "error": error }),
+        };
+        filesystems.push(entry);
+        if let Some(w) = limits.warning(&path, &free) {
+            eprintln!("ns: warning: {w}");
+            warnings.push(w);
+        }
+    }
+    json!({ "wait_gb": limits.wait_gb, "stop_gb": limits.stop_gb, "filesystems": filesystems })
 }
 
 /// Whether the current repo's `core.hooksPath` points at its `.githooks/`. A repo without

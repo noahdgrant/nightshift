@@ -1279,6 +1279,72 @@ fn doctor_reports_which_harness_skill_dirs_hold_the_ns_skills() {
 }
 
 #[test]
+fn doctor_reports_free_disk_space_against_the_factory_limits() {
+    let (tmp, root) = repo();
+    fs::create_dir(root.join(".nightshift")).unwrap();
+    fs::write(
+        root.join(".nightshift/nightshift.toml"),
+        "[limits]\ndisk_wait_gb = 30\ndisk_stop_gb = 12\n",
+    )
+    .unwrap();
+    let free = tmp.path().join("free-gib");
+    let doctor = |dir: &Path, gib: &str| {
+        fs::write(&free, gib).unwrap();
+        doctor_report(
+            ns().current_dir(dir)
+                .env("NS_CONFIG", tmp.path().join("missing.toml"))
+                .env_remove("GH_TOKEN")
+                .env_remove("GITLAB_TOKEN")
+                .env("NS_FREE_GIB_FILE", &free)
+                .env("GIT_CEILING_DIRECTORIES", tmp.path())
+                .arg("doctor")
+                .assert()
+                .get_output(),
+        )
+    };
+    // The worktrees directory doesn't exist yet: its parent's filesystem is the one read.
+    let worktrees = root.parent().unwrap().to_string_lossy().into_owned();
+    let v = doctor(&root, "100");
+    assert_eq!(v["disk"]["wait_gb"], 30, "{v}");
+    assert_eq!(v["disk"]["stop_gb"], 12, "{v}");
+    let first = &v["disk"]["filesystems"][0];
+    assert_eq!(first["path"], worktrees.as_str(), "{v}");
+    assert_eq!(first["free_gb"], 100, "{v}");
+    assert_eq!(first["state"], "ok", "{v}");
+    assert!(!v["warnings"].to_string().contains("disk_"), "{v}");
+
+    let v = doctor(&root, "20");
+    assert_eq!(v["disk"]["filesystems"][0]["state"], "wait", "{v}");
+    let want = format!("{worktrees} has 20 GiB free, under [limits] disk_wait_gb = 30");
+    assert!(v["warnings"].to_string().contains(&want), "{v}");
+
+    let v = doctor(&root, "11");
+    assert_eq!(v["disk"]["filesystems"][0]["state"], "stop", "{v}");
+    let want = format!("{worktrees} has 11 GiB free, under [limits] disk_stop_gb = 12");
+    assert!(v["warnings"].to_string().contains(&want), "{v}");
+
+    let v = doctor(&root, "lots");
+    let err = v["disk"]["filesystems"][0]["error"].as_str().unwrap();
+    assert!(
+        err.ends_with("\"lots\" is not a whole number of GiB"),
+        "{v}"
+    );
+    assert!(v["warnings"].to_string().contains("can't be read"), "{v}");
+
+    // A factory file that doesn't load gives the default limits.
+    fs::write(root.join(".nightshift/nightshift.toml"), "[limits\n").unwrap();
+    let v = doctor(&root, "100");
+    assert_eq!(v["disk"]["wait_gb"], 20, "{v}");
+
+    // Outside a repo: the current directory's filesystem, under the default limits.
+    let v = doctor(tmp.path(), "100");
+    assert_eq!(v["disk"]["wait_gb"], 20, "{v}");
+    assert_eq!(v["disk"]["stop_gb"], 10, "{v}");
+    let here = tmp.path().to_string_lossy().into_owned();
+    assert_eq!(v["disk"]["filesystems"][0]["path"], here.as_str(), "{v}");
+}
+
+#[test]
 fn doctor_reports_whether_core_hooks_path_points_at_githooks() {
     let (_tmp, root) = repo();
     fs::create_dir(root.join(".githooks")).unwrap();
