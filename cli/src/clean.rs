@@ -465,8 +465,9 @@ fn conflicts_of(repo: &Repo, m: &Merged, default: &str) -> Vec<quality::conflict
         return Vec::new();
     }
     let found = quality::conflicts::detect(&m.path, &base, head);
-    for ev in found.events {
+    for mut ev in found.events {
         if ev["event"] == "conflict_check_failed" {
+            ev["unit"] = json!(m.unit);
             run::log_event(&repo.common_dir, ev);
         }
     }

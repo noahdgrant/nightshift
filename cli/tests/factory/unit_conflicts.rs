@@ -158,9 +158,12 @@ fn clean_logs_a_conflict_check_it_cannot_run_and_still_records_the_unit() {
     let v = e.run(&["clean"], 0);
     assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
     assert!(!quality_records(&e).is_empty());
-    assert!(run_events(&e)
-        .iter()
-        .any(|v| v["event"] == "conflict_check_failed"));
+    let failed: Vec<_> = run_events(&e)
+        .into_iter()
+        .filter(|v| v["event"] == "conflict_check_failed")
+        .collect();
+    assert!(!failed.is_empty());
+    assert!(failed.iter().all(|v| v["unit"] == "3-done"), "{failed:?}");
 }
 
 #[test]
@@ -195,6 +198,27 @@ fn clean_of_a_worktree_on_main_with_an_unknown_pr_head_logs_it_and_records_no_co
         .collect();
     assert_eq!(failed.len(), 1, "{failed:?}");
     assert_eq!(failed[0]["unit"], "3-done");
+    git(&e.root, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn clean_of_a_worktree_on_main_with_a_known_pr_head_records_its_conflicts() {
+    let e = Env::new();
+    let (wt, merge) = human_merged_unit(&e);
+    e.gh_file("pr-30.ref", "ns/3-done");
+    e.gh_file("pr-30.head", &merge);
+    git(&e.root, &["checkout", "-qb", "elsewhere"]);
+    git(&wt, &["checkout", "-q", "main"]);
+    git(&wt, &["branch", "-q", "-D", "ns/3-done"]);
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert_eq!(
+        quality_records(&e)[0]["conflicts"],
+        json!([{"merge": merge, "paths": ["README"]}])
+    );
+    assert!(run_events(&e)
+        .iter()
+        .all(|v| v["event"] != "conflict_check_failed"));
     git(&e.root, &["checkout", "-q", "main"]);
 }
 
