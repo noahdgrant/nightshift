@@ -103,10 +103,9 @@ fn a_unit_with_no_merges_records_no_conflicts() {
         .all(|v| !v["event"].as_str().unwrap_or("").starts_with("conflict_")));
 }
 
-#[test]
-fn clean_records_the_conflicts_of_a_unit_a_human_merged() {
-    let e = Env::new();
-    let wt = unit_with_pr(&e, 3, "3-done", 30, "CLOSED", "MERGED");
+/// A merged unit's worktree whose branch merged a side branch that conflicted on README.
+fn human_merged_unit(e: &Env) -> (PathBuf, String) {
+    let wt = unit_with_pr(e, 3, "3-done", 30, "CLOSED", "MERGED");
     git(&wt, &["branch", "side", "main"]);
     fs::write(wt.join("README"), "unit\n").unwrap();
     git(&wt, &["commit", "-qam", "unit"]);
@@ -116,6 +115,19 @@ fn clean_records_the_conflicts_of_a_unit_a_human_merged() {
     git(&wt, &["checkout", "-q", "ns/3-done"]);
     git(&wt, &["merge", "-q", "-s", "ours", "-m", "merge side", "side"]);
     let merge = git(&wt, &["rev-parse", "HEAD"]);
+    (wt, merge)
+}
+
+fn brief_with_base(wt: &Path, base: &str) {
+    let dir = wt.join(".ns/3-done");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brief.md"), format!("---\nunit: 3-done\nbase: {base}\n---\n")).unwrap();
+}
+
+#[test]
+fn clean_records_the_conflicts_of_a_unit_a_human_merged() {
+    let e = Env::new();
+    let (_wt, merge) = human_merged_unit(&e);
     let v = e.run(&["clean"], 0);
     assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
     assert_eq!(
@@ -125,4 +137,28 @@ fn clean_records_the_conflicts_of_a_unit_a_human_merged() {
     assert!(run_events(&e)
         .iter()
         .all(|v| v["event"] != "conflict_resolved"));
+}
+
+#[test]
+fn clean_detects_against_the_base_the_units_brief_names() {
+    let e = Env::new();
+    let (wt, _) = human_merged_unit(&e);
+    git(&wt, &["branch", "develop", "HEAD"]);
+    brief_with_base(&wt, "develop");
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert!(quality_records(&e)[0].get("conflicts").is_none());
+}
+
+#[test]
+fn clean_logs_a_conflict_check_it_cannot_run_and_still_records_the_unit() {
+    let e = Env::new();
+    let (wt, _) = human_merged_unit(&e);
+    brief_with_base(&wt, "no-such-base");
+    let v = e.run(&["clean"], 0);
+    assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
+    assert!(!quality_records(&e).is_empty());
+    assert!(run_events(&e)
+        .iter()
+        .any(|v| v["event"] == "conflict_check_failed"));
 }

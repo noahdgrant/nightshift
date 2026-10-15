@@ -440,15 +440,36 @@ fn report(repo: &Repo, by: &str, m: &Merged, o: &Outcome) {
     log(repo, by, m, o);
 }
 
-/// The `base:` the unit's brief names, when it has one.
-fn brief_base(worktree: &Path, unit: &str) -> Option<String> {
-    let text = fs::read_to_string(worktree.join(".ns").join(unit).join("brief.md")).ok()?;
-    text.lines()
-        .skip(1)
-        .take_while(|l| l.trim_end() != "---")
-        .find_map(|l| l.strip_prefix("base:"))
-        .map(|b| b.trim().trim_matches('"').to_string())
-        .filter(|b| !b.is_empty())
+/// The conflicts `ns run` recorded for the unit, found again: against the base its brief names
+/// and up to the merged PR's head, which stays the unit's tip when the worktree sits on the
+/// default branch. Only a failed check is logged here, as the record cannot carry it.
+fn conflicts_of(repo: &Repo, m: &Merged, default: &str) -> Vec<quality::conflicts::Conflict> {
+    let brief = m.path.join(".ns").join(&m.unit).join("brief.md");
+    let base = fs::read_to_string(brief)
+        .ok()
+        .and_then(|t| crate::frontmatter::field(&t, "base"))
+        .unwrap_or_else(|| default.to_string());
+    let sha = &m.pr_head.sha;
+    let known = !sha.is_empty() && git::run(&m.path, &["cat-file", "-e", sha]).is_ok();
+    let head = if known { sha.as_str() } else { "HEAD" };
+    if m.on_default.is_some() && !known {
+        run::log_event(
+            &repo.common_dir,
+            json!({
+                "event": "conflict_check_failed",
+                "unit": m.unit,
+                "error": "the merged PR's head is not here and HEAD is the default branch",
+            }),
+        );
+        return Vec::new();
+    }
+    let found = quality::conflicts::detect(&m.path, &base, head);
+    for ev in found.events {
+        if ev["event"] == "conflict_check_failed" {
+            run::log_event(&repo.common_dir, ev);
+        }
+    }
+    found.conflicts
 }
 
 /// Save the records of every merged unit in one write, then remove each whose record is saved.
@@ -476,27 +497,15 @@ fn sweep(repo: &Repo, by: &str, merged: &[Merged]) -> (Value, Vec<(Merged, Outco
     if merged.is_empty() {
         return (Value::Null, done);
     }
-    // This write replaces the record `ns run` wrote when the unit ended, so it detects against
-    // the base the unit's brief names, as `ns run` did. The conflicts' events were logged then;
-    // only a failed check is logged here, which the record cannot carry.
     let default = repo.default_base().unwrap_or_else(|_| "main".into());
     let metas: Vec<Meta> = merged
         .iter()
-        .map(|m| {
-            let base = brief_base(&m.path, &m.unit).unwrap_or_else(|| default.clone());
-            let found = quality::conflicts::detect(&m.path, &base, "HEAD");
-            for ev in found.events {
-                if ev["event"] == "conflict_check_failed" {
-                    run::log_event(&repo.common_dir, ev);
-                }
-            }
-            Meta {
-                unit: m.unit.clone(),
-                issue: m.issue,
-                pr: Some(m.pr),
-                outcome: Some("merged".into()),
-                conflicts: found.conflicts,
-            }
+        .map(|m| Meta {
+            unit: m.unit.clone(),
+            issue: m.issue,
+            pr: Some(m.pr),
+            outcome: Some("merged".into()),
+            conflicts: conflicts_of(repo, m, &default),
         })
         .collect();
     let units: Vec<(&Path, &Meta)> = merged
@@ -630,22 +639,6 @@ pub fn cli(dry_run: bool) -> Result<ExitCode> {
 mod tests {
     use super::*;
     use crate::testutil::{commit_file, g, rebased_unit};
-
-    #[test]
-    fn a_briefs_base_is_read_from_its_frontmatter() {
-        let t = tempfile::tempdir().unwrap();
-        let dir = t.path().join(".ns").join("u");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(
-            dir.join("brief.md"),
-            "---\nunit: u\nbase: develop\n---\nbase: no\n",
-        )
-        .unwrap();
-        assert_eq!(brief_base(t.path(), "u").as_deref(), Some("develop"));
-        fs::write(dir.join("brief.md"), "---\nunit: u\n---\n").unwrap();
-        assert_eq!(brief_base(t.path(), "u"), None);
-        assert_eq!(brief_base(t.path(), "missing"), None);
-    }
 
     /// Head `sha` of PR #1, fetched from its GitHub ref.
     fn at(sha: &str) -> PrHead {
