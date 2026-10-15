@@ -68,6 +68,8 @@ pub struct FakeMerge {
     /// The PR head after CI passed, when another push moved it.
     pub head_after_ci: Option<String>,
     pub review_hits: Vec<String>,
+    /// What the rules baseline comparison finds.
+    pub baseline_shrinks: Result<bool, String>,
     pub regions: Result<Vec<String>, String>,
     /// `gh pr merge` fails with this, and leaves the PR open.
     pub merge_error: Option<String>,
@@ -112,6 +114,7 @@ impl Default for FakeMerge {
             lock_gives_up: None,
             head_after_ci: None,
             review_hits: vec![],
+            baseline_shrinks: Ok(false),
             regions: Ok(vec![]),
             merge_error: None,
             queue_conflicts: false,
@@ -299,6 +302,7 @@ impl Sim {
             }
             Ask::ViewHeadRef => MergeFact::HeadRef(Some(pr_head.clone())),
             Ask::ReviewHits => MergeFact::ReviewHits(f.review_hits.clone()),
+            Ask::BaselineShrinks { .. } => MergeFact::BaselineShrinks(f.baseline_shrinks.clone()),
             Ask::Regions => MergeFact::Regions(f.regions.clone()),
             Ask::Merge { .. } => MergeFact::Merged {
                 state: Some(

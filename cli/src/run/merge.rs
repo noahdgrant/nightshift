@@ -21,6 +21,7 @@ use crate::gate;
 use crate::git::{self, same_sha};
 use crate::markers;
 use crate::proc::Proc;
+use crate::rules::BASELINE;
 
 mod hold;
 mod overlap;
@@ -306,6 +307,12 @@ impl Io<'_, '_> {
                     .collect();
                 MergeFact::ReviewHits(ctx.fac.merge.human_review_hits(&files))
             }
+            Ask::BaselineShrinks { head } => {
+                let branch = format!("{}{}", crate::worktree::BRANCH_PREFIX, ctx.unit);
+                MergeFact::BaselineShrinks(
+                    baseline_shrinks(wt, m.default_branch(), &branch, &head).map_err(|e| says(&e)),
+                )
+            }
             Ask::Regions => {
                 MergeFact::Regions(marked_regions(wt, m.default_branch()).map_err(|e| says(&e)))
             }
@@ -433,6 +440,28 @@ fn merge_default_with_git(wt: &Path, default: &str, pr_head: &str) -> Result<boo
     Ok(true)
 }
 
+/// Whether the rules baseline at the PR head `head` only removes entries from the one at its
+/// merge base with the freshly fetched tip of `default`. No baseline at the merge base makes any
+/// at `head` growth. A head the worktree lacks is fetched from `branch`. A baseline missing at
+/// `head`, or that is not one at either end, is an error.
+fn baseline_shrinks(wt: &Path, default: &str, branch: &str, head: &str) -> Result<bool> {
+    git::run_net(wt, &["fetch", "-q", "origin", default])?;
+    let tip = git::run(wt, &["rev-parse", "--verify", "FETCH_HEAD^{commit}"])?;
+    if !git::ok(wt, &["cat-file", "-e", &format!("{head}^{{commit}}")]) {
+        git::run_net(wt, &["fetch", "-q", "origin", branch])?;
+    }
+    let base = git::run(wt, &["merge-base", head, &tip])?;
+    let at = |rev: &str| format!("{rev}:{BASELINE}");
+    if !git::ok(wt, &["cat-file", "-e", &at(&base)]) {
+        return Ok(false);
+    }
+    let (was, now) = (
+        git::run(wt, &["show", &at(&base)])?,
+        git::run(wt, &["show", &at(head)])?,
+    );
+    crate::rules::removal_only(&was, &now).map_err(|e| anyhow!(e))
+}
+
 /// Human-review regions that HEAD's changes since its merge base with `default` touch, counting
 /// fences at the freshly fetched tip of `default`. A failed fetch is an error, never a stale tip.
 pub(super) fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
@@ -445,6 +474,7 @@ pub(super) fn marked_regions(wt: &Path, default: &str) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
     use super::super::locks::tests::hold;
     use super::super::tests::{cloned, commit_all};
@@ -557,6 +587,86 @@ mod tests {
         git::run(&wt, &["checkout", "-q", "--orphan", "unrelated"]).unwrap();
         commit_all(&wt, "unrelated");
         assert!(marked_regions(&wt, "main").is_err());
+    }
+
+    fn write_baseline(wt: &Path, snippets: &[&str]) {
+        let violations: Vec<Value> = snippets
+            .iter()
+            .map(|s| json!({"tool": "t", "rule": "r", "file": "f.c", "message": "m", "snippet": s}))
+            .collect();
+        fs::create_dir_all(wt.join(".nightshift")).unwrap();
+        let text = json!({"version": 1, "violations": violations}).to_string();
+        fs::write(wt.join(BASELINE), text).unwrap();
+    }
+
+    /// A clone whose main holds a baseline of `x` and `y`, on a branch `ns/9-x` pushed after
+    /// `edit` changed its worktree; returns the branch's head.
+    fn baseline_pr(edit: impl FnOnce(&Path)) -> (tempfile::TempDir, PathBuf, String) {
+        let (t, _origin, wt) = cloned();
+        let g = crate::testutil::git_any;
+        write_baseline(&wt, &["x", "y"]);
+        commit_all(&wt, "baseline");
+        g(&wt, &["push", "-q", "origin", "HEAD:main"]);
+        g(&wt, &["switch", "-q", "-c", "ns/9-x"]);
+        edit(&wt);
+        commit_all(&wt, "unit");
+        g(&wt, &["push", "-q", "origin", "ns/9-x"]);
+        let head = g(&wt, &["rev-parse", "HEAD"]);
+        (t, wt, head)
+    }
+
+    #[test]
+    fn a_baseline_that_only_loses_entries_shrinks() {
+        let (_t, wt, head) = baseline_pr(|wt| write_baseline(wt, &["y"]));
+        assert!(baseline_shrinks(&wt, "main", "ns/9-x", &head).unwrap());
+        let (_t, wt, head) = baseline_pr(|wt| write_baseline(wt, &["y", "x"]));
+        assert!(baseline_shrinks(&wt, "main", "ns/9-x", &head).unwrap());
+    }
+
+    #[test]
+    fn a_baseline_that_gains_an_entry_or_is_new_does_not_shrink() {
+        let (_t, wt, head) = baseline_pr(|wt| write_baseline(wt, &["x", "z"]));
+        assert!(!baseline_shrinks(&wt, "main", "ns/9-x", &head).unwrap());
+
+        let (_t, _origin, wt) = cloned();
+        crate::testutil::git_any(&wt, &["switch", "-q", "-c", "ns/9-x"]);
+        write_baseline(&wt, &[]);
+        commit_all(&wt, "unit");
+        let head = git::run(&wt, &["rev-parse", "HEAD"]).unwrap();
+        assert!(!baseline_shrinks(&wt, "main", "ns/9-x", &head).unwrap());
+    }
+
+    #[test]
+    fn a_baseline_deleted_or_malformed_at_the_head_is_an_error() {
+        let (_t, wt, head) = baseline_pr(|wt| fs::remove_file(wt.join(BASELINE)).unwrap());
+        assert!(baseline_shrinks(&wt, "main", "ns/9-x", &head).is_err());
+        let (_t, wt, head) = baseline_pr(|wt| fs::write(wt.join(BASELINE), "{").unwrap());
+        let e = baseline_shrinks(&wt, "main", "ns/9-x", &head).unwrap_err();
+        assert!(
+            format!("{e:#}").starts_with("the PR's baseline is not a rules baseline"),
+            "{e:#}"
+        );
+    }
+
+    /// The PR head may be a commit only the forge has, such as update-branch's merge.
+    #[test]
+    fn a_pr_head_the_worktree_lacks_is_fetched_from_the_branch() {
+        let (t, wt, _) = baseline_pr(|wt| write_baseline(wt, &["y"]));
+        let g = crate::testutil::git_any;
+        let other = t.path().join("other");
+        g(
+            t.path(),
+            &["clone", "-q", "-b", "ns/9-x", "origin.git", "other"],
+        );
+        g(&other, &["config", "user.email", "t@example.com"]);
+        g(&other, &["config", "user.name", "t"]);
+        g(&other, &["config", "commit.gpgsign", "false"]);
+        write_baseline(&other, &[]);
+        commit_all(&other, "drop y");
+        g(&other, &["push", "-q", "origin", "ns/9-x"]);
+        let head = g(&other, &["rev-parse", "HEAD"]);
+        assert!(!git::ok(&wt, &["cat-file", "-e", &head]));
+        assert!(baseline_shrinks(&wt, "main", "ns/9-x", &head).unwrap());
     }
 
     #[test]
