@@ -778,7 +778,9 @@ fn agent_problems(root: &Path) -> Vec<String> {
 
 /// The owner type (`User` or `Organization`) of the GitHub repo `origin`
 /// names, looked up on the origin's own host. `None` when origin is not on
-/// GitHub or the lookup fails.
+/// GitHub or the lookup fails. GitHub-only, so not on `Forge`: it feeds the warning that a
+/// personal account has no GitHub merge queue, and a GitLab repo has no such warning. It reads
+/// through `crate::forge`'s credential probes, which run validate's other forge checks too.
 fn github_owner_type(
     main_root: &Path,
     f: &Factory,

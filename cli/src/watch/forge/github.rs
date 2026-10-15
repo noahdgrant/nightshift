@@ -1,16 +1,19 @@
-//! GitHub through `gh`.
+//! GitHub through `gh`, which runs nowhere else.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 
 use super::main_checks::{parse_main_checks, MAIN_CHECKS_QUERY};
 use super::{
     add_closing, first_other, head_sha, parse_issue_link, ClosingPrs, CommitPr, Filed, Forge,
-    IssueLink, IssueState, MergedPr, MergedPrs, Post, Pr, PrState, PrStatus,
+    IssueLink, IssueState, MergedPr, MergedPrs, Post, Pr, PrCheck, PrOutcome, PrRead, PrState,
+    PrStatus, PrView,
 };
-use crate::run::{gh, gh_json};
+use crate::error::SfError;
+use crate::proc::Proc;
 use crate::watch::ci::HeadChecks;
 use crate::watch::Issue;
 
@@ -21,6 +24,29 @@ const PR_LIMIT: usize = 200;
 const LABEL_COLOR: &str = "d73a4a";
 const PR_LABEL_DESCRIPTION: &str = "nightshift left this PR for a human to merge";
 const ISSUE_LABEL_DESCRIPTION: &str = "nightshift files main's fix issue with this label";
+
+fn gh(cwd: &Path, args: &[&str]) -> Result<String> {
+    let out = Proc::forge("gh")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .context("cannot run gh; is it installed and on PATH?")?;
+    if !out.status.success() {
+        return Err(SfError::general(format!(
+            "gh {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn gh_json(cwd: &Path, args: &[&str]) -> Result<Value> {
+    let text = gh(cwd, args)?;
+    serde_json::from_str(text.trim())
+        .with_context(|| format!("gh {} gave bad JSON", args.join(" ")))
+}
 
 /// GitHub through `gh`.
 pub struct GitHub {
@@ -127,19 +153,64 @@ fn issue_state(v: &Value) -> IssueState {
     }
 }
 
+fn pr_status(v: &Value) -> PrStatus {
+    match v["state"].as_str() {
+        Some("MERGED") => PrStatus::Merged,
+        Some("CLOSED") => PrStatus::Closed,
+        _ => PrStatus::Open,
+    }
+}
+
 /// `gh pr view --json state,headRefOid,headRefName,body`.
 fn parse_pr(v: &Value) -> Pr {
     let text = |k: &str| v[k].as_str().unwrap_or("").to_string();
     Pr {
-        status: match v["state"].as_str() {
-            Some("MERGED") => PrStatus::Merged,
-            Some("CLOSED") => PrStatus::Closed,
-            _ => PrStatus::Open,
-        },
+        status: pr_status(v),
         head_sha: text("headRefOid"),
         head_branch: text("headRefName"),
         body: text("body"),
     }
+}
+
+/// `gh pr view --json` with the fields of a [`PrRead`].
+fn parse_view(v: &Value) -> PrView {
+    let text = |k: &str| v[k].as_str().map(String::from);
+    PrView {
+        state: text("state"),
+        head: text("headRefOid"),
+        merge_state: text("mergeStateStatus"),
+    }
+}
+
+/// `gh pr view --json state,mergeCommit,reviews`.
+fn parse_outcome(v: &Value) -> PrOutcome {
+    PrOutcome {
+        status: pr_status(v),
+        merge_commit: v["mergeCommit"]["oid"].as_str().map(String::from),
+        reviews: v["reviews"].as_array().map_or(0, Vec::len),
+    }
+}
+
+/// `gh pr checks --json name,state,bucket,link`.
+fn parse_pr_checks(v: &Value) -> Vec<PrCheck> {
+    let field = |c: &Value, k: &str| c[k].as_str().map(String::from);
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| PrCheck {
+            name: field(c, "name"),
+            state: field(c, "state"),
+            bucket: field(c, "bucket"),
+            link: field(c, "link"),
+        })
+        .collect()
+}
+
+/// The `.total_count` a `commits/<sha>/<kind>` query printed.
+fn parse_count(out: &str, kind: &str) -> Result<u64> {
+    let out = out.trim();
+    out.parse()
+        .map_err(|_| anyhow!("unexpected output from the {kind} query: {out:?}"))
 }
 
 /// GitHub's `commits/<sha>/pulls` list. One with no number is left out.
@@ -480,6 +551,100 @@ impl Forge for GitHub {
             ],
         )?;
         Ok(first_other(&v, "headSha", red))
+    }
+
+    fn pr_ref(&self, n: u64) -> String {
+        format!("refs/pull/{n}/head")
+    }
+
+    fn pr_outcome(&self, n: u64) -> Result<PrOutcome> {
+        Ok(parse_outcome(&gh_json(
+            &self.root,
+            &[
+                "pr",
+                "view",
+                &n.to_string(),
+                "--json",
+                "state,mergeCommit,reviews",
+            ],
+        )?))
+    }
+
+    fn view_pr(&self, n: u64, read: PrRead) -> Result<PrView> {
+        let fields = match read {
+            PrRead::State => "state",
+            PrRead::Head => "headRefOid",
+            PrRead::StateAndHead => "state,headRefOid",
+            PrRead::MergeState => "mergeStateStatus",
+            PrRead::HeadAndMergeState => "headRefOid,mergeStateStatus",
+        };
+        let v = gh_json(
+            &self.root,
+            &["pr", "view", &n.to_string(), "--json", fields],
+        )?;
+        Ok(parse_view(&v))
+    }
+
+    fn update_branch(&self, n: u64) -> Result<()> {
+        gh(&self.root, &["pr", "update-branch", &n.to_string()]).map(drop)
+    }
+
+    fn check_counts(&self, sha: &str) -> [Result<u64>; 2] {
+        ["check-runs", "status"].map(|kind| {
+            let path = format!("repos/{{owner}}/{{repo}}/commits/{sha}/{kind}");
+            let out = gh(&self.root, &["api", &path, "--jq", ".total_count"])?;
+            parse_count(&out, kind)
+        })
+    }
+
+    fn watch_checks(&self, n: u64, limit: Duration) -> Result<bool> {
+        let ended = Proc::forge("gh")
+            .args(["pr", "checks", &n.to_string(), "--watch"])
+            .current_dir(&self.root)
+            .timeout(limit)
+            .run()
+            .context("cannot run gh pr checks")?;
+        Ok(ended.timed_out())
+    }
+
+    fn pr_checks(&self, n: u64) -> Result<Vec<PrCheck>> {
+        let v = gh_json(
+            &self.root,
+            &[
+                "pr",
+                "checks",
+                &n.to_string(),
+                "--json",
+                "name,state,bucket,link",
+            ],
+        )?;
+        Ok(parse_pr_checks(&v))
+    }
+
+    fn run_log(&self, id: &str) -> Result<String> {
+        gh(&self.root, &["run", "view", id, "--log-failed"])
+    }
+
+    fn changed_files(&self, n: u64) -> Result<Vec<String>> {
+        Ok(
+            gh(&self.root, &["pr", "diff", &n.to_string(), "--name-only"])?
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect(),
+        )
+    }
+
+    /// No `--delete-branch`: gh would check out the default branch where it runs first.
+    fn squash_merge(&self, n: u64, head: &str) -> Result<()> {
+        let ns = n.to_string();
+        let args = ["pr", "merge", &ns, "--squash", "--match-head-commit", head];
+        gh(&self.root, &args).map(drop)
+    }
+
+    fn delete_branch(&self, branch: &str) -> Result<()> {
+        let path = format!("repos/{{owner}}/{{repo}}/git/refs/heads/{branch}");
+        gh(&self.root, &["api", &path, "-X", "DELETE"]).map(drop)
     }
 }
 

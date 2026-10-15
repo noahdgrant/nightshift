@@ -262,6 +262,7 @@ fn a_merge_commit_that_is_not_a_sha_is_not_looked_up() {
     let p = v["prompts"][0]["prompt"].as_str().unwrap();
     assert!(p.contains("\"reverted\":false"), "{p}");
     assert!(p.contains("\"review_rounds\":0"), "{p}");
+    assert!(p.contains("\"state\":\"OPEN\""), "{p}");
     git(
         &e.root,
         &[
@@ -674,4 +675,49 @@ fn the_judge_keeps_api_keys_under_api_billing() {
     for k in API_ENV {
         assert!(has_var(&env, k), "{k}");
     }
+}
+
+/// On GitLab the outcome is the merge request's: its squash commit when it has no merge commit,
+/// and its approvals as its reviews, read with `glab`, never `gh`.
+#[test]
+fn on_gitlab_the_outcome_is_read_from_the_merge_request_and_its_approvals() {
+    let e = Env::new("pass");
+    fs::write(
+        e.root.join(".nightshift/nightshift.toml"),
+        "[queue]\nsource = \"gitlab\"\n",
+    )
+    .unwrap();
+    script(
+        &e.bin.join("glab"),
+        "echo \"$@\" >> \"$FAKE_DIR/glab-calls\"\n\
+         case \"$2\" in\n\
+           */approvals) echo '{\"approved_by\":[{},{},{}]}' ;;\n\
+           *) echo '{\"state\":\"merged\",\"merge_commit_sha\":null,\"squash_commit_sha\":\"abc1234\"}' ;;\n\
+         esac",
+    );
+    git(
+        &e.root,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "Revert \"feat: x (!12)\"\n\nThis reverts commit abc1234.",
+        ],
+    );
+    let (v, _) = e.run(&["score", UNIT, "--dry-run"], 0);
+    let p = v["prompts"][0]["prompt"].as_str().unwrap();
+    for want in [
+        "\"state\":\"MERGED\"",
+        "\"review_rounds\":3",
+        "\"reverted\":true",
+    ] {
+        assert!(p.contains(want), "{want:?} not in prompt:\n{p}");
+    }
+    let calls = fs::read_to_string(e.base.join("glab-calls")).unwrap();
+    assert!(
+        calls.contains("api projects/:id/merge_requests/12"),
+        "{calls}"
+    );
+    assert!(!e.base.join("gh-calls").exists());
 }

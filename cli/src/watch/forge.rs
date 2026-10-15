@@ -1,5 +1,8 @@
 //! The forge `ns watch` reads its queue from and keeps issue state on, chosen by `[queue] source`
 //! (docs/FACTORY.md). Credentials are `crate::forge`'s job, not this module's.
+//!
+//! Every forge call outside the credential checks goes through [`Forge`]: `gh` and `glab` run only
+//! here, so a new caller can't reach one forge's CLI and break on the other.
 
 #[cfg(test)]
 pub(crate) mod fake;
@@ -9,6 +12,7 @@ mod main_checks;
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::Value;
@@ -119,6 +123,44 @@ fn add_closing(by_issue: &mut ClosingPrs, body: &str, pr: u64, head: &str) {
     }
 }
 
+/// What the merge step reads of a PR. Each read asks the forge for only its fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrRead {
+    State,
+    Head,
+    StateAndHead,
+    MergeState,
+    HeadAndMergeState,
+}
+
+/// A PR as the merge step reads it, in GitHub's terms: `state` is `OPEN`, `MERGED` or `CLOSED`,
+/// and `merge_state` is GitHub's `mergeStateStatus` (`CLEAN`, `BEHIND`, `DIRTY`, ...). A field the
+/// [`PrRead`] didn't ask for, or the forge named none for, is `None`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrView {
+    pub state: Option<String>,
+    pub head: Option<String>,
+    pub merge_state: Option<String>,
+}
+
+/// One CI check on a PR, in GitHub's terms (`gh pr checks`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrCheck {
+    pub name: Option<String>,
+    pub state: Option<String>,
+    pub bucket: Option<String>,
+    pub link: Option<String>,
+}
+
+/// A PR as `ns score` grades it: where it stands, its merge commit when the forge names one, and
+/// how many reviews it got.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrOutcome {
+    pub status: PrStatus,
+    pub merge_commit: Option<String>,
+    pub reviews: usize,
+}
+
 /// The line every body nightshift posts to a forge opens with (skills/ns-contract, Disclosure).
 pub const DISCLOSURE: &str = "🤖 *Posted by nightshift, an AI agent.*";
 
@@ -182,6 +224,28 @@ pub trait Forge {
     /// forge knows one. A passing run on `red` itself (another workflow's) says nothing of when
     /// main broke.
     fn last_green(&self, red: &str) -> Result<Option<String>>;
+    /// The remote ref PR `n`'s head lives under, to fetch a head that isn't here.
+    fn pr_ref(&self, n: u64) -> String;
+    /// PR `n` as `ns score` grades it.
+    fn pr_outcome(&self, n: u64) -> Result<PrOutcome>;
+
+    // The merge step's calls (docs/factory/merge.md). GitLab has none of them yet (#323).
+
+    fn view_pr(&self, n: u64, read: PrRead) -> Result<PrView>;
+    /// Bring the default branch into PR `n`'s branch on the forge.
+    fn update_branch(&self, n: u64) -> Result<()>;
+    /// How many check runs, then how many commit statuses, commit `sha` has.
+    fn check_counts(&self, sha: &str) -> [Result<u64>; 2];
+    /// Wait for PR `n`'s checks to end, at most `limit`; whether the wait was cut off.
+    fn watch_checks(&self, n: u64, limit: Duration) -> Result<bool>;
+    fn pr_checks(&self, n: u64) -> Result<Vec<PrCheck>>;
+    /// The failed jobs' log of CI run `id`, as [`PrCheck::link`] names it.
+    fn run_log(&self, id: &str) -> Result<String>;
+    /// The paths PR `n` changes.
+    fn changed_files(&self, n: u64) -> Result<Vec<String>>;
+    /// Squash-merge PR `n` if its head is still `head`. Its branch stays.
+    fn squash_merge(&self, n: u64, head: &str) -> Result<()>;
+    fn delete_branch(&self, branch: &str) -> Result<()>;
 }
 
 const HINT: &str = "set the forge in .nightshift/nightshift.toml:\n  [queue]\n  source = \"github\"\n\nsee docs/FACTORY.md";
@@ -217,6 +281,15 @@ fn check(
             let problem = factory::source_problem(s).unwrap_or_default();
             SfError::usage(problem, HINT)
         }),
+    }
+}
+
+/// The web address of PR `n` in the repo at `web`: a pull request's on GitHub, a merge request's
+/// on GitLab.
+pub fn pr_url(kind: ForgeKind, web: &str, n: u64) -> String {
+    match kind {
+        ForgeKind::Gitlab => format!("{web}/-/merge_requests/{n}"),
+        ForgeKind::Github => format!("{web}/pull/{n}"),
     }
 }
 

@@ -12,8 +12,9 @@ use serde_json::{json, Value};
 
 use crate::error::{SfError, EXIT_NOT_CONFIGURED};
 use crate::git::{self, Repo};
-use crate::run::{currency::known_pr, gh_json};
+use crate::run::currency::known_pr;
 use crate::scorer::Scorer;
+use crate::watch::forge;
 use crate::{ask, config, factory, scorer, worktree};
 
 const EXAMPLE: &str = "ns score 142-uart-timeout --dry-run";
@@ -36,9 +37,11 @@ pub fn cli(
 ) -> Result<ExitCode> {
     worktree::check_unit_id(unit, EXAMPLE)?;
     let repo = Repo::discover(&std::env::current_dir()?)?;
-    let scorers = scorers(&factory::root(factory, &repo.root), only)?;
+    let root = factory::root(factory, &repo.root);
+    let scorers = scorers(&root, only)?;
     let dir = unit_dir(&repo, unit)?;
-    let outcome = outcome(&repo, &dir)?;
+    let queue = factory::load(&root).map(|f| f.queue).unwrap_or_default();
+    let outcome = outcome(&repo, &queue, &dir)?;
     let artifacts = artifacts(&dir)?;
     let prompts: Vec<(&Scorer, String)> = scorers
         .iter()
@@ -126,21 +129,12 @@ fn unit_dir(repo: &Repo, unit: &str) -> Result<PathBuf> {
 
 /// The unit's PR outcome: its state, whether a commit on the default branch reverts its merge
 /// commit, and how many reviews it got. `{"pr": null}` without a PR in `pr.md`.
-fn outcome(repo: &Repo, dir: &Path) -> Result<Value> {
+fn outcome(repo: &Repo, queue: &factory::Queue, dir: &Path) -> Result<Value> {
     let Some(pr) = known_pr(dir) else {
         return Ok(json!({"pr": null}));
     };
-    let v = gh_json(
-        &repo.root,
-        &[
-            "pr",
-            "view",
-            &pr.to_string(),
-            "--json",
-            "state,mergeCommit,reviews",
-        ],
-    )?;
-    let reverted = match v["mergeCommit"]["oid"].as_str().filter(|o| is_sha(o)) {
+    let v = forge::open(queue, &repo.root)?.pr_outcome(pr)?;
+    let reverted = match v.merge_commit.as_deref().filter(|o| is_sha(o)) {
         Some(oid) => {
             let base = repo.default_base()?;
             let grep = format!("--grep=This reverts commit {oid}");
@@ -150,9 +144,9 @@ fn outcome(repo: &Repo, dir: &Path) -> Result<Value> {
     };
     Ok(json!({
         "pr": pr,
-        "state": v["state"],
+        "state": v.status.name(),
         "reverted": reverted,
-        "review_rounds": v["reviews"].as_array().map_or(0, Vec::len),
+        "review_rounds": v.reviews,
     }))
 }
 
