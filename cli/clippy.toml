@@ -1,4 +1,5 @@
-# Three or more bool parameters is a signature to replace with an enum or a struct (CODING_STANDARDS.md).
+# Three or more bool parameters is a signature to replace with an enum or a struct
+# (CODING_STANDARDS.md, "Lints from review findings").
 max-fn-params-bools = 2
 
 # Every child process starts through proc, which applies its kind's policy: the environment
