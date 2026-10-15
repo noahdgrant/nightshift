@@ -329,30 +329,7 @@ fn same_worktree(predicted: &Path, actual: &Path) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------- gh and git helpers
-
-pub fn gh(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = crate::proc::Proc::forge("gh")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .context("cannot run gh; is it installed and on PATH?")?;
-    if !out.status.success() {
-        return Err(SfError::general(format!(
-            "gh {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))
-        .into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-pub fn gh_json(cwd: &Path, args: &[&str]) -> Result<Value> {
-    let text = gh(cwd, args)?;
-    serde_json::from_str(text.trim())
-        .with_context(|| format!("gh {} gave bad JSON", args.join(" ")))
-}
+// ---------------------------------------------------------------- git and log helpers
 
 /// Append one event to `<common>/ns/runs.jsonl`, stamped with `ts` and `pid`.
 pub fn log_event(common: &Path, mut ev: Value) {

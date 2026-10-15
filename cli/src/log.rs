@@ -232,10 +232,7 @@ impl PrBase {
     }
 
     fn link(&self, n: u64) -> String {
-        match self.kind {
-            ForgeKind::Gitlab => format!("{}/-/merge_requests/{n}", self.web),
-            ForgeKind::Github => format!("{}/pull/{n}", self.web),
-        }
+        watch_forge::pr_url(self.kind, &self.web, n)
     }
 }
 

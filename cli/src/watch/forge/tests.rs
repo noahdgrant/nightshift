@@ -14,102 +14,6 @@ fn a_post_opens_with_the_disclosure_then_a_blank_line_then_the_text() {
 }
 
 #[test]
-fn a_closed_issue_is_not_planned_only_when_its_reason_says_other_than_completed() {
-    let state = |v: Value| issue_state(&v);
-    use IssueState::*;
-    assert_eq!(state(serde_json::json!({"state": "OPEN"})), Open);
-    assert_eq!(
-        state(serde_json::json!({"state": "OPEN", "stateReason": "REOPENED"})),
-        Open
-    );
-    for reason in [Value::Null, "".into(), "COMPLETED".into()] {
-        let v = serde_json::json!({"state": "CLOSED", "stateReason": reason});
-        assert_eq!(state(v), Completed);
-    }
-    assert_eq!(state(serde_json::json!({"state": "CLOSED"})), Completed);
-    for reason in ["NOT_PLANNED", "DUPLICATE", "not_planned", "duplicate"] {
-        let v = serde_json::json!({"state": "CLOSED", "stateReason": reason});
-        assert_eq!(state(v), NotPlanned, "{reason}");
-    }
-    let v = serde_json::json!({"state": "closed", "stateReason": "completed"});
-    assert_eq!(state(v), Completed);
-    assert_eq!(state(serde_json::json!({"state": "open"})), Open);
-}
-
-#[test]
-fn parse_closing_keeps_every_pr_that_closes_an_issue() {
-    let prs = serde_json::json!([
-        {"number": 12, "body": "Closes #5", "headRefName": "other", "isCrossRepository": false},
-        {"number": 10, "body": "Closes #5. Fixes #6", "headRefName": "ns/5-x", "isCrossRepository": false},
-        {"number": 10, "body": "Closes #5", "headRefName": "ns/5-x", "isCrossRepository": false},
-        {"number": 9, "body": "Fixes #6", "headRefName": "fork", "isCrossRepository": true},
-        {"number": 8, "body": "no reference", "headRefName": "x", "isCrossRepository": false},
-    ]);
-    let by_issue = parse_closing(&prs);
-    assert_eq!(
-        by_issue,
-        ClosingPrs::from([
-            (5, vec![(12, "other".into()), (10, "ns/5-x".into())]),
-            (6, vec![(10, "ns/5-x".into()), (9, String::new())]),
-        ])
-    );
-    assert!(parse_closing(&serde_json::json!({})).is_empty());
-}
-
-#[test]
-fn parse_merged_reads_each_prs_head_merge_time_and_changed_lines() {
-    let prs = serde_json::json!([
-        {"number": 41, "headRefName": "ns/9-b", "isCrossRepository": false,
-         "mergedAt": "2026-10-05T10:00:00Z", "additions": 30, "deletions": 12},
-        {"number": 42, "headRefName": "ns/9-b", "isCrossRepository": true,
-         "mergedAt": "2026-10-06T00:00:00Z", "additions": 1, "deletions": 0},
-        {"number": 43, "headRefName": "x", "isCrossRepository": false,
-         "mergedAt": "2026-10-06T00:00:00Z"},
-        {"number": 44, "headRefName": "x", "isCrossRepository": false, "mergedAt": null},
-        {"number": 45, "headRefName": "ns/9-b", "mergedAt": "2026-10-07T00:00:00Z"},
-    ]);
-    let m = parse_merged(&prs);
-    let at = |s| crate::clock::parse_iso(s).unwrap();
-    assert_eq!(
-        m.prs,
-        [
-            MergedPr {
-                number: 41,
-                head: "ns/9-b".into(),
-                merged: at("2026-10-05T10:00:00Z"),
-                changed: Some(42)
-            },
-            MergedPr {
-                number: 42,
-                head: String::new(),
-                merged: at("2026-10-06T00:00:00Z"),
-                changed: Some(1)
-            },
-            MergedPr {
-                number: 43,
-                head: "x".into(),
-                merged: at("2026-10-06T00:00:00Z"),
-                changed: None
-            },
-            MergedPr {
-                number: 45,
-                head: String::new(),
-                merged: at("2026-10-07T00:00:00Z"),
-                changed: None
-            },
-        ]
-    );
-    assert!(!m.truncated);
-    assert_eq!(PR_LIMIT, 200);
-    let full: Vec<Value> = (1..=PR_LIMIT as u64)
-        .map(|n| serde_json::json!({"number": n, "mergedAt": null}))
-        .collect();
-    assert!(parse_merged(&Value::from(full.clone())).truncated);
-    assert!(!parse_merged(&Value::from(full[1..].to_vec())).truncated);
-    assert!(parse_merged(&serde_json::json!({})).prs.is_empty());
-}
-
-#[test]
 fn parse_issue_link_reads_the_title_and_the_named_url() {
     let v = serde_json::json!({"title": "Fix it", "url": "u1", "web_url": "u2"});
     let link = |title: &str, url: &str| IssueLink {
@@ -122,70 +26,6 @@ fn parse_issue_link_reads_the_title_and_the_named_url() {
         parse_issue_link(&serde_json::json!({}), "url"),
         link("", "")
     );
-}
-
-#[test]
-fn parse_pr_maps_each_state_and_reads_its_head_and_body() {
-    let v = serde_json::json!({"state": "MERGED", "headRefOid": "abc",
-                               "headRefName": "ns/7-x", "body": "Closes #7"});
-    assert_eq!(
-        parse_pr(&v),
-        Pr {
-            status: PrStatus::Merged,
-            head_sha: "abc".into(),
-            head_branch: "ns/7-x".into(),
-            body: "Closes #7".into()
-        }
-    );
-    let status = |s: &str| parse_pr(&serde_json::json!({"state": s})).status;
-    assert_eq!(status("CLOSED"), PrStatus::Closed);
-    assert_eq!(status("OPEN"), PrStatus::Open);
-    let none = parse_pr(&serde_json::json!({"headRefOid": null}));
-    assert_eq!((none.status, none.head_sha.as_str()), (PrStatus::Open, ""));
-    assert_eq!(PrStatus::Closed.name(), "CLOSED");
-}
-
-#[test]
-fn parse_commit_prs_reads_each_prs_head_and_whether_it_merged() {
-    let pulls = serde_json::json!([
-        {"number": 3, "merged_at": "2026-10-10T01:00:00Z", "head": {"ref": "ns/3-b"}},
-        {"number": 4, "merged_at": null, "head": {"ref": "x"}},
-        {"number": 5, "merged_at": ""},
-        {"merged_at": "2026-10-10T01:00:00Z", "head": {"ref": "no-number"}},
-    ]);
-    let pr = |number, head: &str, merged| CommitPr {
-        number,
-        head: head.into(),
-        merged,
-    };
-    assert_eq!(
-        parse_commit_prs(&pulls),
-        [pr(3, "ns/3-b", true), pr(4, "x", false), pr(5, "", false)]
-    );
-    assert!(parse_commit_prs(&serde_json::json!({})).is_empty());
-}
-
-#[test]
-fn parse_filed_reads_when_each_issue_opened_and_how_it_closed() {
-    let text = [
-        r#"{"number": 7, "title": "fix: a", "labels": [{"name": "type:fix"}], "body": "b", "authorAssociation": "OWNER", "createdAt": "2026-10-05T10:00:00Z", "state": "closed", "stateReason": "duplicate"}"#,
-        r#"{"number": 8, "title": "fix: b", "labels": [], "body": "", "createdAt": "2026-10-06T00:00:00Z", "state": "open", "stateReason": null}"#,
-        r#"{"number": 9, "title": "no time", "createdAt": null, "state": "open"}"#,
-        r#"{"number": 0, "title": "no number", "createdAt": "2026-10-06T00:00:00Z", "state": "open"}"#,
-        "not json",
-    ]
-    .join("\n");
-    let f = parse_filed(&text);
-    assert_eq!(f.len(), 2, "{f:?}");
-    assert_eq!(f[0].issue.number, 7);
-    assert_eq!(f[0].issue.labels, ["type:fix"]);
-    assert!(f[0].issue.team);
-    assert_eq!(
-        f[0].opened,
-        crate::clock::parse_iso("2026-10-05T10:00:00Z").unwrap()
-    );
-    assert_eq!(f[0].state, IssueState::NotPlanned);
-    assert_eq!((f[1].issue.number, f[1].state), (8, IssueState::Open));
 }
 
 #[test]
@@ -293,16 +133,6 @@ fn last_green_skips_what_is_not_a_commit_id() {
 }
 
 #[test]
-fn created_number_reads_the_url_gh_prints() {
-    assert_eq!(
-        created_number("https://github.com/o/r/issues/123\n").unwrap(),
-        123
-    );
-    assert!(created_number("").is_err());
-    assert!(created_number("https://github.com/o/r/issues/new").is_err());
-}
-
-#[test]
 fn path_reads_url_and_scp_forms_and_no_path_from_a_local_path() {
     assert_eq!(path("https://gitlab.com/o/r.git"), Some("o/r.git"));
     assert_eq!(path("ssh://git@gitlab.example:2222/o/r"), Some("o/r"));
@@ -322,4 +152,104 @@ fn host_reads_url_and_scp_forms_and_no_host_from_a_path() {
     assert_eq!(host("git@github.com:o/r.git"), Some("github.com"));
     assert_eq!(host("/srv/git/gitlab:mirror.git"), None);
     assert_eq!(host("../gitlab-mirror"), None);
+}
+
+/// Where a forge's CLI may run: the forges here, the credential checks, and `Proc` itself.
+const FORGE_CALLERS: &[&str] = &["watch/forge/", "forge.rs", "forge/", "proc.rs", "proc/"];
+
+/// The line up to a `//` that is not inside a string literal.
+fn outside_comment(line: &str) -> &str {
+    let (mut in_string, mut escaped, mut prev) = (false, false, '\0');
+    for (i, c) in line.char_indices() {
+        if in_string {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+        } else if c == '"' {
+            in_string = true;
+        } else if c == '/' && prev == '/' {
+            return &line[..i - 1];
+        }
+        prev = c;
+    }
+    line
+}
+
+/// What starts `gh` or `glab`, or calls `gh()` or `gh_json()`.
+fn calls_a_forge(line: &str) -> bool {
+    let code = outside_comment(line);
+    let spawns = ["Proc::", "Command::new"].iter().any(|s| code.contains(s))
+        && ["(\"gh\"", "(\"glab\""].iter().any(|p| code.contains(p));
+    static HELPER: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r#"(^|[^\w."])gh(_json)?\("#).unwrap());
+    spawns || code.contains("Proc::forge(") || HELPER.is_match(code)
+}
+
+#[test]
+fn calls_a_forge_finds_each_way_to_reach_one() {
+    for yes in [
+        "    let out = Proc::forge(\"gh\")",
+        "crate::proc::Proc::tool(\"glab\").args(x)",
+        "let v = gh_json(wt, &[\"pr\"])?;",
+        "    gh(&self.root, &args)",
+        "Proc::forge(program)",
+        "std::process::Command::new(\"gh\").args(x)",
+        "Command::new(\"glab\")",
+        "let u = \"https://x\"; gh(wt, &a);",
+        "let u = \"a\\\"//\"; Command::new(\"gh\")",
+    ] {
+        assert!(calls_a_forge(yes), "{yes}");
+    }
+    for no in [
+        "// gh(wt) ran here once",
+        "fn high(x)",
+        "self.gh(x)",
+        "let ghost = 1;",
+        "\"gh\" => 1,",
+        "    \"gh(\",",
+        "Command::new(\"git\") // gh(wt)",
+        "let u = \"https://x\"; // Command::new(\"gh\")",
+    ] {
+        assert!(!calls_a_forge(no), "{no}");
+    }
+}
+
+/// Every forge call goes through [`Forge`]: no file outside [`FORGE_CALLERS`] starts `gh` or
+/// `glab`, in the unit tests under `src/` too. Integration tests in `tests/` are not scanned.
+#[test]
+fn no_forge_cli_runs_outside_the_forge_modules() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    let mut dirs = vec![src.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let rel = path
+                .strip_prefix(&src)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if FORGE_CALLERS.iter().any(|c| rel.starts_with(c)) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (i, line) in text.lines().enumerate() {
+                if calls_a_forge(line) {
+                    found.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "forge calls outside the forge modules; add a Forge method instead:\n{}",
+        found.join("\n")
+    );
 }

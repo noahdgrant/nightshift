@@ -383,28 +383,27 @@ fn watch_on_gitlab_swaps_labels_and_comments_through_glab() {
     assert!(note.trim_start().starts_with(DISCLOSED), "{note}");
 }
 
+/// GitLab has no merge step yet (#323): the night stops there, naming it, with the issue still
+/// open and nothing merged through `gh`.
 #[test]
-fn watch_on_gitlab_closes_a_merged_issue_and_drops_its_status_label() {
+fn watch_on_gitlab_stops_at_the_merge_step_naming_its_issue() {
     let e = gitlab_env();
     e.factory(&format!("[queue]\nsource = \"gitlab\"\n{AUTO}"));
     e.gl_issue(2, &["type:fix", READY], "", 1);
     e.ctl("pr", "12");
     e.queue("build", &["pass:commit"]);
     e.gh_file("checks-12.json", GREEN);
-    let v = e.run(&["watch", "--once"], 0);
-    assert_eq!(v["units"][0]["outcome"], "merged", "{v}");
-    assert_eq!(e.labels(2), ["type:fix"]);
-    let gh = e.gh_calls();
-    for verb in ["issue list", "issue edit", "issue comment", "issue close"] {
-        assert!(!gh.contains(verb), "{verb}: {gh}");
-    }
-    let calls = e.glab_calls();
-    assert!(!calls.contains("issue note"), "{calls}");
-    assert!(calls.contains("issue close 2"), "{calls}");
+    let out = e.ns().args(["watch", "--once"]).output();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
     assert!(
-        calls.contains("issue update 2 --unlabel status:in-progress"),
-        "{calls}"
+        err.contains("ns run's merge step is not supported on GitLab yet (#323)"),
+        "{err}"
     );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["stopped"], "error", "{v}");
+    assert!(!e.gh_calls().contains("pr "), "{}", e.gh_calls());
+    assert!(!e.glab_calls().contains("issue close"), "{}", e.glab_calls());
 }
 
 #[test]
