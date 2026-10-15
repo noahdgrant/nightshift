@@ -139,7 +139,8 @@ fn move_artifact(path: &Path, from: &str, to: &str) -> Result<()> {
 }
 
 /// Whether the rules baseline in `wt` differs from HEAD's only by entries `ns rules check
-/// --prune` dropped, as opposed to an edit a phase left behind.
+/// --prune` dropped (or messages refreshed, which `rules::removal_only` lets through too), as
+/// opposed to an edit a phase left behind.
 fn pruned(wt: &Path) -> bool {
     let dirty = git::run(wt, &["status", "--porcelain", "--", BASELINE]);
     if dirty.map_or(true, |d| d.is_empty()) {
