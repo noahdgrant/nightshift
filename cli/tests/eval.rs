@@ -339,6 +339,7 @@ fn claude_trials_on_a_subscription_need_a_login_and_drop_bare() {
         .code(2)
         .stderr(predicate::str::contains("claude /login"));
     assert!(e.calls().is_empty());
+    assert!(!e.tmp.path().join("transcripts").join("runs").exists());
 }
 
 #[test]

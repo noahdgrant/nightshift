@@ -236,6 +236,9 @@ fn resolve(args: &Args) -> Result<Env> {
         )
         .into());
     }
+    if !args.dry_run {
+        crate::harness::check_login(&argv[0], cfg.billing == "subscription")?;
+    }
     let parser = parser::for_output(&harness.output);
 
     if !args.skills_dir.is_dir() {
