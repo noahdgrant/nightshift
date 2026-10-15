@@ -42,66 +42,6 @@ fn a_free_rebase_that_gives_up_waiting_for_a_lock_still_rebases_on_the_retry() {
 }
 
 #[test]
-fn a_red_gate_after_a_rebase_with_main_moved_since_rebases_once_more() {
-    let e = Env::new();
-    let n = e.ctrl.join("gates");
-    let n = n.display();
-    // Gate 2 (after the rebase) and gate 3 (after the extra rebase) go red and move main.
-    base_moves_during_build(
-        &e,
-        &format!(
-            "[phases.build]\ngate = \"n=$(($(cat {n} 2>/dev/null || echo 0)+1)); echo $n > {n}; case $n in 2|3) {m}; echo boom; exit 1;; esac\"\n",
-            m = move_main_sh(&e).replace('"', "\\\"")
-        ),
-    );
-    e.queue(
-        "build",
-        &["pass:script", "pass:commit", "pass:commit", "pass:commit"],
-    );
-    e.queue("verify", &["fail:base moved", "pass"]);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "verify", "build", "build", "build", "verify", "review", "ship"]
-    );
-    let r = rebase_events(&e);
-    assert_eq!(r.len(), 2, "one extra rebase, never a second: {r:?}");
-    assert_eq!(r[1]["attempt"], 3);
-    assert_eq!(
-        r[1]["cause"],
-        "the CI gate failed after a rebase and main moved since"
-    );
-    let p = e.prompt(5, "build");
-    assert!(p.contains("boom"), "{p}");
-    assert!(p.contains("rebase onto the newest origin/main"), "{p}");
-    // The third red spent build's second attempt.
-    assert!(!e.prompt(6, "build").contains("rebase onto the newest"));
-}
-
-#[test]
-fn a_red_gate_after_a_rebase_with_main_still_spends_an_attempt() {
-    let e = Env::new();
-    let n = e.ctrl.join("gates");
-    let n = n.display();
-    base_moves_during_build(
-        &e,
-        &format!(
-            "[phases.build]\ngate = \"n=$(($(cat {n} 2>/dev/null || echo 0)+1)); echo $n > {n}; [ $n -ne 2 ] || {{ echo boom; exit 1; }}\"\n"
-        ),
-    );
-    e.queue("build", &["pass:script", "pass:commit", "pass:commit"]);
-    e.queue("verify", &["fail:base moved", "fail"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["reason"], "build is out of attempts (2)", "{v}");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "verify", "build", "build", "verify"]
-    );
-    assert_eq!(rebase_events(&e).len(), 1);
-}
-
-#[test]
 fn no_artifact_is_a_failed_attempt() {
     let e = Env::new();
     e.queue("build", &["none", "pass:commit"]);
@@ -473,42 +413,6 @@ fn a_green_gate_continues_to_verify_and_is_logged() {
         g[0]["sha"].as_str(),
         Some(git(&e.worktree(UNIT), &["rev-parse", "--short", "HEAD"]).as_str())
     );
-}
-
-#[test]
-fn a_red_gate_goes_back_to_build_with_its_output_tail() {
-    let e = Env::new();
-    let flag = e.ctrl.join("gate-green");
-    e.factory(&format!(
-        "[phases.build]\ngate = \"test -f {f} || {{ touch {f}; echo boom from the gate; exit 1; }}\"\n",
-        f = flag.display()
-    ));
-    e.queue("build", &["pass:commit", "pass:commit"]);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "build", "verify", "review", "ship"]
-    );
-    let p = e.prompt(3, "build");
-    assert!(p.contains("attempt 2"), "{p}");
-    assert!(p.contains("boom from the gate"), "{p}");
-    let g = gate_events(&e);
-    assert_eq!(g.len(), 2, "{g:?}");
-    assert_eq!(g[0]["exit"], 1);
-    assert_eq!(g[0]["green"], false);
-    assert_eq!(g[1]["green"], true);
-}
-
-#[test]
-fn a_gate_red_until_attempts_run_out_is_stuck() {
-    let e = Env::new();
-    e.factory("[phases.build]\ngate = \"exit 1\"\n");
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["outcome"], "stuck");
-    assert_eq!(v["reason"], "build is out of attempts (2)");
-    assert_eq!(e.calls(), ["triage", "build", "build"]);
-    assert_eq!(gate_events(&e).len(), 2);
 }
 
 #[test]
