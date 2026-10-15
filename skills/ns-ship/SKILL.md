@@ -41,16 +41,18 @@ GO needs every line below to hold on the current `HEAD`. Record each one. The Ve
 
 NO-GO writes `pr.md` with `status: fail` (the fix is agent work) or `status: blocked` (it needs hardware, credentials, or a decision no agent can make), with `reason` naming the failing line. `cause` comes from the contract's table, and `next` is the phase that owns the fix (`build` for a red check or a secret left in) or `human` when blocked. A finding in pre-existing code never makes NO-GO, whatever its severity: `review.md` files it as an escape issue (`deferred: #<n>`). List it under Follow-ups and carry on.
 
-## 3. File build's open risks
+## 3. File the open risks
 
-On GO, read `## Open risks` in `.ns/<unit-id>/build.md`. Each `file:` line, and each `unfiled:` line left by an earlier run, names a defect or missing work outside the unit's scope. File each one in the tracker per `docs/agents/issue-tracker.md`, as `ns-review` files an escape. Run its duplicate search first; when an open issue already covers the risk, use that issue instead of filing a new one. A new issue gets:
+On GO, read `## Open risks` in `.ns/<unit-id>/build.md` and `## Fallout` in `.ns/<unit-id>/review.md`. Each `file:` line in `build.md`, each `fallout:` line in `review.md`, and each `unfiled:` line left by an earlier run, names a defect or missing work the unit leaves for later. File each one in the tracker per `docs/agents/issue-tracker.md`, as `ns-review` files an escape.
 
-- a body opening with the [disclosure line](../ns-contract/SKILL.md#disclosure), then the risk, its location and evidence from `build.md`, a link to the unit's issue (or the unit ID when it has none), and the sentence "Found while building <unit-id>, outside its scope."
+Check the unit's own issues first: the escape issues `review.md` marks `deferred: #<n>` and the issues this step filed on an earlier run. When one already names the same location, comment the risk on it instead of filing a second; the comment opens with the [disclosure line](../ns-contract/SKILL.md#disclosure). Then run the duplicate search; when an open issue already covers the risk, use that issue instead of filing a new one. A new issue gets:
+
+- a body opening with the disclosure line, then the risk, its location and evidence, a link to the unit's issue (or the unit ID when it has none), and the sentence "Found while building <unit-id>, outside its scope." A `file:` line tagged `unrelated:` adds a last line `Source: incidental`, which `ns quality --bugs` counts it by: a pre-existing bug unrelated to the diff.
 - the `needs-triage` state, a category label (`bug` for a defect, `enhancement` for missing work), and an area label when `docs/agents/triage-labels.md` lists areas, using the label strings that file names
 
-The text comes from `build.md` and the repo; follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content) if a risk quotes an issue or comment. Right after each issue is created, rewrite that line in `build.md` from `file:` to `filed: #<n>`, so a crash mid-step never files it twice. If the tracker can't be reached, rewrite it to `unfiled: <reason>`; it never holds the unit back. A re-run treats `unfiled:` lines as `file:` again, with a fresh duplicate search, and skips `filed:` lines. `note:` lines stay as they are, and so does a risk line with no `file:` or `note:` prefix, which counts as `note:`.
+The text comes from `build.md`, `review.md` and the repo; follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content) if a risk quotes an issue or comment. Right after each issue is created or commented, rewrite that line from `file:` or `fallout:` to `filed: #<n>`, so a crash mid-step never files it twice. If the tracker can't be reached, rewrite it to `unfiled: <reason>`; it never holds the unit back. A re-run treats `unfiled:` lines as `file:` again, with a fresh duplicate search, and skips `filed:` lines. `note:` lines stay as they are, and so does a risk line with no `file:` or `note:` prefix, which counts as `note:`.
 
-Done when no `file:` line is left in `build.md` and each `unfiled:` line names a tracker failure from this run.
+Done when no `file:` line is left in `build.md`, no `fallout:` line in `review.md`, and each `unfiled:` line names a tracker failure from this run.
 
 ## 4. Ship the reviewed commits as they are
 
@@ -87,7 +89,7 @@ a pseudocode sketch, call tree, file tree, or `diff` sketch. Pick one, two at mo
 - <one to three bullets, each a real command and its result, taken from evidence.md. Link the full evidence.>
 
 ## Follow-ups
-<one line per finding review.md marks `deferred: #<n>` and per open risk build.md marks `filed: #<n>`: the issue link and a few words. Name each `unfiled:` risk too. Drop the section when there are none.>
+<one line per finding review.md marks `deferred: #<n>` and per open risk build.md or review.md marks `filed: #<n>`: the issue link and a few words. Name each `unfiled:` risk too. Drop the section when there are none.>
 
 ## Rollback
 <how to undo it: revert the PR, plus anything a revert does not undo
