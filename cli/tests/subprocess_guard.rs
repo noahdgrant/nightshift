@@ -16,9 +16,12 @@ use std::time::{Duration, Instant};
 
 use common::Group;
 
-fn ns() -> common::Ns {
+/// `ns`, run in `dir`: a tempdir outside any repo, so `ns ask` reads no checkout's factory file.
+fn ns(dir: &Path) -> common::Ns {
     let mut c = common::ns();
-    c.env_remove("NS_CONFIG").env_remove("XDG_CONFIG_HOME");
+    c.env_remove("NS_CONFIG")
+        .env_remove("XDG_CONFIG_HOME")
+        .current_dir(dir);
     c
 }
 
@@ -89,7 +92,8 @@ fn a_hung_ns_fails_at_its_timeout_and_takes_its_children_with_it() {
         &format!("{} & {}; sleep 30", job.job(), job.up()),
     );
     let panic = std::panic::catch_unwind(|| {
-        ns().env("NS_CONFIG", &cfg)
+        ns(tmp.path())
+            .env("NS_CONFIG", &cfg)
             .args(["ask", "--role", "review"])
             .write_stdin("x")
             .timeout(Duration::from_secs(3))
@@ -108,7 +112,7 @@ fn a_started_run_that_never_finishes_fails_at_its_timeout() {
     let cfg = harness_config(tmp.path(), "sleep 30");
     let prompt = tmp.path().join("prompt.md");
     fs::write(&prompt, "x").unwrap();
-    let mut run = ns()
+    let mut run = ns(tmp.path())
         .env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review", "--prompt-file"])
         .arg(&prompt)
@@ -126,7 +130,7 @@ fn waiting_for_an_event_that_never_comes_fails_at_the_timeout() {
     let cfg = harness_config(tmp.path(), "sleep 30");
     let prompt = tmp.path().join("prompt.md");
     fs::write(&prompt, "x").unwrap();
-    let run = ns()
+    let run = ns(tmp.path())
         .env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review", "--prompt-file"])
         .arg(&prompt)
@@ -278,7 +282,8 @@ fn output_returns_when_ns_exits_even_if_its_child_holds_the_pipes() {
         tmp.path(),
         &format!("{} & {}; echo hi", job.job(), job.up()),
     );
-    ns().env("NS_CONFIG", &cfg)
+    ns(tmp.path())
+        .env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review"])
         .write_stdin("x")
         .assert()
@@ -293,7 +298,8 @@ fn output_kills_a_descendant_that_left_the_process_group_and_outlived_its_parent
     let job = Grandchild::new(tmp.path());
     let script = format!("setsid sh -c '{}' & {}; echo hi", job.job(), job.up());
     let cfg = harness_config(tmp.path(), &script);
-    ns().env("NS_CONFIG", &cfg)
+    ns(tmp.path())
+        .env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review"])
         .write_stdin("x")
         .assert()
