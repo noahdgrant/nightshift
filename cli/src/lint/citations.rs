@@ -100,19 +100,22 @@ fn citations(name: &str, text: &str) -> Vec<(usize, Option<String>)> {
     found
 }
 
-/// The headings of `quality bar, <heading>: <path>` messages, where the path ends in `name`.
+/// The headings of `quality bar, <heading>: <path>` and `quality bar, <heading>: <item>: <path>`
+/// messages, where a path on the same line ends in `name`.
 fn quality_bar_messages(name: &str, text: &str) -> Vec<(usize, Option<String>)> {
     text.match_indices("quality bar, ")
         .filter_map(|(at, m)| {
-            let rest = &text[at + m.len()..];
+            let rest = text[at + m.len()..].lines().next()?;
             let (heading, after) = rest.split_once(": ")?;
-            let path = after.split([')', ' ', '\n', '"']).next()?;
-            (path.ends_with(name) && !heading.contains('\n')).then(|| {
-                (
-                    text[..at].matches('\n').count() + 1,
-                    Some(heading.to_owned()),
-                )
-            })
+            after
+                .split([')', ' ', '"'])
+                .any(|word| word.ends_with(name))
+                .then(|| {
+                    (
+                        text[..at].matches('\n').count() + 1,
+                        Some(heading.to_owned()),
+                    )
+                })
         })
         .collect()
 }
@@ -170,6 +173,15 @@ mod tests {
                 some(2, "Checks the rules."),
                 (2, None)
             ]
+        );
+    }
+
+    #[test]
+    fn a_quality_bar_message_with_an_item_names_the_heading_before_it() {
+        let text = "(quality bar, Readability: no needless copies: a/quality-bar.md)\n(quality bar, Size: a/quality-bar.md)\n(quality bar, Size: a/other.md)";
+        assert_eq!(
+            quality_bar_messages(BAR, text),
+            [some(1, "Readability"), some(2, "Size")]
         );
     }
 
