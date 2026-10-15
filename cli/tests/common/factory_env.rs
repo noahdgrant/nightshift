@@ -62,7 +62,9 @@ impl Env {
     /// An env whose repo holds what `fill` writes and a demo skill, committed on `branch`,
     /// which is also `origin`'s default branch.
     pub fn with_repo(branch: &str, fill: impl FnOnce(&Path)) -> Env {
-        let tmp = tempfile::tempdir().unwrap();
+        // Off the host /tmp, which a phase's private /tmp hides: one under it is bound back into
+        // the phase's TMPDIR, and goes from a process the phase left running when that is removed.
+        let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
         let base = tmp.path().canonicalize().unwrap();
         let root = base.join("myrepo");
         fs::create_dir(&root).unwrap();
