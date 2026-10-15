@@ -85,6 +85,7 @@ impl Env {
         let ctrl = base.join("ctrl");
         let ghd = base.join("ghd");
         fs::create_dir(base.join("systmp")).unwrap();
+        fs::write(base.join("default-free-gib"), "500").unwrap();
         fs::create_dir(&ctrl).unwrap();
         fs::create_dir(&ghd).unwrap();
         fs::write(ghd.join("issues.jsonl"), "").unwrap();
@@ -259,6 +260,7 @@ impl Env {
             .env("FAKE_GH_DIR", &self.ghd)
             .env("TMPDIR", self.base.join("systmp"))
             .env("ANTHROPIC_API_KEY", "must-not-leak")
+            .env("NS_FREE_GIB_FILE", self.base.join("default-free-gib"))
             .env("NS_NOW", NOW.to_string())
             .env("TZ", "UTC")
             .env("GIT_AUTHOR_NAME", "t")

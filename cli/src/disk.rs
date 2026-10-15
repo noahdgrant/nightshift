@@ -230,6 +230,15 @@ mod tests {
     }
 
     #[test]
+    fn each_limit_acts_alone_when_the_other_is_off() {
+        let at = |wait_gb, stop_gb, gib: u64| DiskLimits { wait_gb, stop_gb }.level(gib * GIB);
+        assert_eq!(at(0, 10, 5), Level::Stop);
+        assert_eq!(at(0, 10, 15), Level::Ok);
+        assert_eq!(at(20, 0, 5), Level::Wait);
+        assert_eq!(at(20, 0, 25), Level::Ok);
+    }
+
+    #[test]
     fn a_missing_worktrees_dir_reads_its_nearest_parent() {
         let tmp = tempfile::tempdir().unwrap();
         let wt = tmp.path().join("repo.worktrees/unit");
