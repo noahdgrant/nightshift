@@ -4,4 +4,5 @@
 
 mod gates;
 mod guards;
+mod merge;
 mod routing;

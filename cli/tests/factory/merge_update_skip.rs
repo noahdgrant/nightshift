@@ -114,33 +114,6 @@ fn a_diff_that_cannot_be_read_updates_the_pr() {
     assert!(needed[0]["error"].as_str().is_some(), "{needed:?}");
 }
 
-#[test]
-fn with_the_local_queue_off_a_base_that_moved_in_other_files_skips_the_update() {
-    let e = behind(
-        &format!("{AUTO}{LEGACY}[phases.build]\ngate = \"true\"\n"),
-        EDIT_WORK,
-        LAND_DISJOINT,
-    );
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    assert!(!e.gh_calls().contains("pr update-branch"));
-    assert_eq!(events_named(&e, "merge_update_skipped").len(), 1);
-}
-
-#[test]
-fn with_the_local_queue_on_a_behind_pr_gates_the_merge_result_and_checks_no_overlap() {
-    let e = behind(
-        &format!("{AUTO}[phases.build]\ngate = \"true\"\n"),
-        EDIT_WORK,
-        LAND_DISJOINT,
-    );
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    assert!(!e.gh_calls().contains("pr update-branch"));
-    assert!(events_named(&e, "merge_update_skipped").is_empty());
-    assert!(events_named(&e, "merge_update_needed").is_empty());
-}
-
 /// Land `land` on main once, while the merge step waits for the PR's CI.
 fn land_during_ci(e: &Env, land: &str) {
     e.gh_file(
@@ -192,43 +165,6 @@ fn main_ci_test(conclusion: &str) -> String {
 }
 
 #[test]
-fn a_red_main_holds_the_merge_until_it_goes_green() {
-    let e = behind(&format!("{AUTO}{BUILD_ONLY}"), EDIT_WORK, LAND_DISJOINT);
-    e.gh_file("main-ci-1.json", &main_ci_test("FAILURE"));
-    e.gh_file("main-ci-2.json", &main_ci_test("FAILURE"));
-    e.gh_file("main-ci.json", &main_ci_test("SUCCESS"));
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    let held = events_named(&e, "merge_held_main_red");
-    assert_eq!(held.len(), 1, "{held:?}");
-    assert_eq!((&held[0]["pr"], &held[0]["sha"]), (&json!(12), &json!(MAIN_TIP)));
-    let calls = e.gh_calls();
-    let queries: Vec<usize> = calls
-        .lines()
-        .enumerate()
-        .filter(|(_, l)| l.starts_with("api graphql"))
-        .map(|(i, _)| i)
-        .collect();
-    assert_eq!(queries.len(), 3, "{calls}");
-    let merge = calls.lines().position(|l| l.starts_with("pr merge")).unwrap();
-    assert!(queries[2] < merge, "{calls}");
-}
-
-#[test]
-fn a_main_still_red_after_the_ci_timeout_ends_the_unit_stuck() {
-    let e = behind(&format!("{AUTO}{BUILD_ONLY}"), EDIT_WORK, LAND_DISJOINT);
-    e.gh_file("main-ci.json", &main_ci_test("FAILURE"));
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["outcome"], "stuck", "{v}");
-    assert_eq!(
-        v["reason"],
-        format!("main's CI is red at {MAIN_TIP}; not merging until it is fixed")
-    );
-    assert!(!e.gh_calls().contains("pr merge"));
-    assert_eq!(events_named(&e, "merge_held_main_red").len(), 1);
-}
-
-#[test]
 fn a_main_with_ci_still_running_or_unreadable_holds_nothing() {
     for (file, text) in [
         ("main-ci.json", main_ci_at(MAIN_TIP, &[], &[("test", "IN_PROGRESS", "")])),
@@ -248,38 +184,6 @@ fn a_main_with_ci_still_running_or_unreadable_holds_nothing() {
         assert_eq!(v["outcome"], "merged", "{file}: {v}");
         assert!(events_named(&e, "merge_held_main_red").is_empty(), "{file}");
     }
-}
-
-/// The local merge queue gated the merge with the old base, so a move in other files still
-/// sends the PR round to gate the merge with the new one.
-#[test]
-fn with_the_local_queue_on_a_base_that_moves_in_other_files_under_the_lock_goes_round() {
-    let e = behind(
-        &format!("{AUTO}[phases.build]\ngate = \"true\"\n"),
-        EDIT_WORK,
-        LAND_DISJOINT,
-    );
-    land_during_ci(&e, "echo two > TWO && git add TWO && $c commit -qm two");
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    let moved = events_named(&e, "merge_base_moved");
-    assert_eq!(moved.len(), 1, "{moved:?}");
-    assert_eq!(moved[0]["to"], remote_main(&e), "{moved:?}");
-    assert!(events_named(&e, "merge_update_skipped").is_empty());
-}
-
-#[test]
-fn with_the_local_queue_on_a_red_main_holds_nothing() {
-    let e = behind(
-        &format!("{AUTO}[phases.build]\ngate = \"true\"\n"),
-        EDIT_WORK,
-        LAND_DISJOINT,
-    );
-    e.gh_file("main-ci.json", &main_ci_test("FAILURE"));
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    assert!(events_named(&e, "merge_held_main_red").is_empty());
-    assert!(!e.gh_calls().contains("api graphql"));
 }
 
 #[test]
@@ -306,15 +210,4 @@ fn a_behind_pr_whose_head_holds_main_s_tip_updates_and_logs_why() {
     let reason = needed[0]["reason"].as_str().unwrap();
     assert!(reason.contains("already in the PR head"), "{reason}");
     assert!(events_named(&e, "merge_update_skipped").is_empty());
-}
-
-#[test]
-fn under_build_only_a_clean_pr_missing_a_disjoint_landing_skips_the_update() {
-    let e = behind(&format!("{AUTO}{BUILD_ONLY}"), EDIT_WORK, LAND_DISJOINT);
-    e.gh_file("pr-12.merge", "CLEAN");
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    assert!(!e.gh_calls().contains("pr update-branch"));
-    assert_eq!(events_named(&e, "merge_update_skipped").len(), 1);
-    assert!(events_named(&e, "merge_update_needed").is_empty());
 }

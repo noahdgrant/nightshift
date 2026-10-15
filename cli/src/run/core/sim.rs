@@ -1,13 +1,15 @@
 //! An in-memory driver over [`step`], for routing scenarios: the same transition function
 //! `run/drive.rs` drives, with a fake unit in place of the worktree, the harness, the gate, the
-//! forge. It mirrors the fake harness of
+//! forge and the merge step's GitHub (`sim/merge.rs`). It mirrors the fake harness of
 //! `cli/tests/fixtures/factory/claude`: each phase pops its next action from a queue,
 //! `status[:extra]`, where `status` is `pass`, `fail`, `blocked`, `none` (no artifact, exit 0) or
 //! `crash` (no artifact, exit 1), and `extra` is `+`-joined words: `commit` moves HEAD,
 //! `movemain` moves the default branch, `sleep` times the phase out, and any other text lands in
 //! the artifact's body (`base moved` as its first line). The guards' words: `pushmain` pushes
-//! HEAD to the default branch, `landmain` lands [`Sim::land_pr`] there and rebases onto it, and
-//! `touch=<path>` makes the phase's commit change `path`, for a red gate's culprit.
+//! HEAD to the default branch, `landmain` lands [`Sim::land_pr`] there and rebases onto it,
+//! `merge` merges the unit's PR, `noorigin` loses the origin, and `touch=<path>` makes the
+//! phase's commit change `path`, for a red gate's culprit. The merge step's: `dirty` and `clean`
+//! set the PR's merge state on GitHub.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
@@ -15,13 +17,18 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use super::gate::{culprit, Suspect};
-use super::guard::{branch_moved, moved_by_others, Unread};
+use super::guard::{branch_moved, moved_by_others, pr_merged, Unread};
+use super::merge::Ask;
 use super::route::{facts_wanted, to_archive, Art, Settings, State};
 use super::step::{step, Action, Event, GateRan, GateRed, GuardFacts, PhaseRan};
 use super::{Ledger, Rebase};
 use crate::factory::PHASES;
 use crate::run::Outcome;
 use crate::watch::forge::CommitPr;
+
+mod merge;
+
+pub use merge::{check, FakeMerge};
 
 /// A fake unit and the scripts of its phases.
 pub struct Sim {
@@ -30,7 +37,7 @@ pub struct Sim {
     /// The default branch's name and the number of times it moved, or `None` without an origin.
     pub remote: Option<(String, u32)>,
     /// Each gate's verdict in order, `Err` carrying a red gate's output; `None` sets no gate
-    /// command. An empty queue goes green.
+    /// command. An empty queue goes green. The merge step's gate takes from it too.
     pub gates: Option<VecDeque<Result<(), String>>>,
     /// The unit's name, whose branch is `ns/<unit>`.
     pub unit: String,
@@ -38,6 +45,8 @@ pub struct Sim {
     pub land_pr: CommitPr,
     /// The forge's query for a commit's PRs fails with this.
     pub forge_fails: Option<String>,
+    /// The merge step's GitHub.
+    pub merge: FakeMerge,
     queues: BTreeMap<&'static str, VecDeque<String>>,
     arts: BTreeMap<&'static str, Art>,
     commits: u32,
@@ -50,6 +59,10 @@ pub struct Sim {
     touched: BTreeMap<u32, Vec<String>>,
     /// The move of the default branch the guards saw last.
     baseline: u32,
+    /// The time, in seconds; the merge step's sleeps move it.
+    now: i64,
+    /// A phase merged the unit's PR.
+    pr_merged: bool,
 }
 
 /// One phase run the core admitted.
@@ -70,11 +83,16 @@ pub struct Report {
     pub outcome: Outcome,
     pub reason: String,
     pub phase: Option<&'static str>,
+    /// The merge step ended the unit for a human to merge.
+    pub needs_human: bool,
     pub runs: Vec<Run>,
     /// The run-log events the core asked for, and those the shell writes from its actions.
     pub logs: Vec<Value>,
-    /// Each gate the core asked for: the phase it followed and whether it went green.
+    /// Each gate the core asked for: the phase it followed (`merge` for the merge step's) and
+    /// whether it went green.
     pub gates: Vec<(&'static str, bool)>,
+    /// What the merge step asked the shell for, in order.
+    pub asks: Vec<Ask>,
 }
 
 impl Report {
@@ -96,6 +114,26 @@ impl Report {
     pub fn events(&self, event: &str) -> Vec<&Value> {
         self.logs.iter().filter(|l| l["event"] == event).collect()
     }
+
+    /// How many times the merge step asked for `ask`, matched by its variant.
+    pub fn asked(&self, ask: &Ask) -> usize {
+        let d = std::mem::discriminant(ask);
+        self.asks
+            .iter()
+            .filter(|a| std::mem::discriminant(*a) == d)
+            .count()
+    }
+
+    /// The heads the merge step squash-merged at.
+    pub fn merged_at(&self) -> Vec<&str> {
+        self.asks
+            .iter()
+            .filter_map(|a| match a {
+                Ask::Merge { head } => Some(head.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 /// The most steps a scenario takes before the sim calls it a loop.
@@ -107,6 +145,7 @@ struct Trace {
     runs: Vec<Run>,
     logs: Vec<Value>,
     gates: Vec<(&'static str, bool)>,
+    asks: Vec<Ask>,
 }
 
 impl Sim {
@@ -128,6 +167,7 @@ impl Sim {
                 merged: true,
             },
             forge_fails: None,
+            merge: FakeMerge::default(),
             queues: BTreeMap::new(),
             arts: BTreeMap::new(),
             commits: 0,
@@ -136,6 +176,8 @@ impl Sim {
             main_prs: BTreeMap::new(),
             touched: BTreeMap::new(),
             baseline: 0,
+            now: 1_000,
+            pr_merged: false,
         }
     }
 
@@ -231,10 +273,15 @@ impl Sim {
                     t.gates.push((phase, !matches!(g, GateRan::Red(_))));
                     Event::GateRan(g)
                 }
-                Action::Merge { .. } => panic!("sim: the merge step is not modelled yet"),
+                Action::Merge { .. } => match self.merge_step(&state, &mut t) {
+                    Ok(back) => Event::MergeEnded(back),
+                    Err((outcome, reason, needs_human)) => {
+                        return t.report(outcome, reason, Some("merge"), needs_human)
+                    }
+                },
                 Action::Finish(e) => {
                     t.logs.extend(e.log);
-                    return t.report(e.outcome, e.reason, e.phase);
+                    return t.report(e.outcome, e.reason, e.phase, false);
                 }
             };
             action = step(&mut ledger, &state, ev);
@@ -296,6 +343,10 @@ impl Sim {
         for w in words {
             match *w {
                 "commit" => self.commits += 1,
+                "merge" => self.pr_merged = true,
+                "noorigin" => self.remote = None,
+                "dirty" => self.merge.merge_state = "DIRTY",
+                "clean" => self.merge.merge_state = "CLEAN",
                 "movemain" | "pushmain" | "landmain" => {
                     let Some((_, n)) = self.remote.as_mut() else {
                         continue;
@@ -320,8 +371,26 @@ impl Sim {
     }
 
     /// The hard rules after `phase`, as `run/post_phase.rs` checks them: the default branch moved
-    /// only by others.
+    /// only by others, and no phase merged the PR.
     fn guard(&mut self, phase: &str, logs: &mut Vec<Value>) -> GuardFacts {
+        let moved = self.branch_guard(phase, logs);
+        if moved.breach.is_some() {
+            return moved;
+        }
+        let pr = self.merge.pr.filter(|_| self.arts.contains_key("ship"));
+        match pr.filter(|_| self.pr_merged) {
+            Some(n) => {
+                let (ev, reason) = pr_merged(phase, n);
+                logs.push(ev);
+                GuardFacts {
+                    breach: Some(reason),
+                }
+            }
+            None => GuardFacts::default(),
+        }
+    }
+
+    fn branch_guard(&mut self, phase: &str, logs: &mut Vec<Value>) -> GuardFacts {
         let Some((branch, n)) = self.remote.clone() else {
             return GuardFacts::default();
         };
@@ -395,14 +464,22 @@ impl Sim {
 }
 
 impl Trace {
-    fn report(self, outcome: Outcome, reason: String, phase: Option<&'static str>) -> Report {
+    fn report(
+        self,
+        outcome: Outcome,
+        reason: String,
+        phase: Option<&'static str>,
+        needs_human: bool,
+    ) -> Report {
         Report {
             outcome,
             reason,
             phase,
+            needs_human,
             runs: self.runs,
             logs: self.logs,
             gates: self.gates,
+            asks: self.asks,
         }
     }
 }

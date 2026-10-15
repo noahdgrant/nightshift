@@ -1,6 +1,6 @@
 //! The hard rules after a phase, and the phase a red gate blames: moved from
-//! `cli/tests/factory/run_runners_and_github_checks.rs` and `skills_sync_and_merge_gate.rs`,
-//! where every assertion was a decision.
+//! `cli/tests/factory/run_runners_and_github_checks.rs`, `skills_sync_and_merge_gate.rs` and
+//! `merge_conflicts_and_validate.rs`, where every assertion was a decision.
 
 use super::super::sim::Sim;
 use crate::run::Outcome;
@@ -55,6 +55,17 @@ fn another_units_merge_the_build_rebased_onto_is_logged_and_the_run_goes_on() {
     assert_eq!(moved.len(), 1, "{moved:?}");
     assert_eq!(moved[0]["prs"], serde_json::json!([3]));
     assert!(!r.logged("breach"));
+}
+
+#[test]
+fn a_pr_merged_by_a_phase_is_stuck() {
+    let mut s = Sim::new();
+    s.settings.merge_auto = true;
+    s.queue("build", &["pass:commit"]);
+    s.queue("ship", &["pass:merge"]);
+    let r = s.run();
+    assert!(r.reason.starts_with("PR merged by run"), "{r:?}");
+    assert!(r.merged_at().is_empty());
 }
 
 #[test]

@@ -1,36 +1,3 @@
-#[test]
-fn auto_merge_conflict_goes_back_to_build() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit", "pass:commit"]);
-    e.gh_file("pr-12.merge", "BEHIND");
-    e.gh_file("update-12.fail", "");
-    e.gh_file("checks-12.json", GREEN);
-    // The second update attempt succeeds.
-    let v = e
-        .ns()
-        .args(["run", "--issue", "7"])
-        .assert()
-        .get_output()
-        .clone();
-    let v: Value = serde_json::from_slice(&v.stdout).unwrap();
-    let p = e.prompt(6, "build");
-    assert!(p.contains("rebase onto main"), "{p}");
-    // The first conflict's rebuild is free. Main stays where it was, so the later ones use
-    // build's two attempts and the unit ends stuck instead of looping.
-    assert_eq!(v["outcome"], "stuck", "{v}");
-    assert_eq!(v["reason"], "build is out of attempts (2)", "{v}");
-    assert!(!e.gh_calls().contains("pr merge"));
-    let r = rebase_events(&e);
-    assert_eq!(r.len(), 1, "{r:?}");
-    assert_eq!(r[0]["cause"], "PR #12 conflicts with main");
-}
-
-fn update_branch_events(e: &Env) -> usize {
-    update_branch_vias(e).len()
-}
-
 /// How each logged branch update was made: `api` or `git`.
 fn update_branch_vias(e: &Env) -> Vec<String> {
     fs::read_to_string(e.root.join(".git/ns/runs.jsonl"))
@@ -42,132 +9,12 @@ fn update_branch_vias(e: &Env) -> Vec<String> {
         .collect()
 }
 
-fn head_polls(e: &Env) -> usize {
-    e.gh_calls()
-        .lines()
-        .filter(|l| *l == "pr view 12 --json headRefOid,mergeStateStatus")
-        .count()
-}
-
-#[test]
-fn a_lagging_head_after_update_branch_is_waited_for() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("pr-12.merge", "BEHIND");
-    e.gh_file("updated-12.head", UPDATED_HEAD);
-    e.gh_file("updated-12.lag", "2");
-    e.gh_file("checks-12.json", GREEN);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    let calls = e.gh_calls();
-    assert_eq!(head_polls(&e), 3, "{calls}");
-    assert_eq!(update_branch_events(&e), 1);
-    let polls = register_polls(&e);
-    assert!(!polls.is_empty(), "{calls}");
-    assert!(
-        polls
-            .iter()
-            .all(|p| p.contains(&format!("/commits/{UPDATED_HEAD}/"))),
-        "{calls}"
-    );
-    assert!(
-        calls.contains(&format!("--match-head-commit {UPDATED_HEAD}")),
-        "{calls}"
-    );
-}
-
-#[test]
-fn a_head_that_never_changes_after_update_branch_needs_a_human_merge() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("pr-12.merge", "BEHIND");
-    e.gh_file("updated-12.lag", "1000");
-    e.gh_file("checks-12.json", GREEN);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    let head = git(&e.worktree(UNIT), &["rev-parse", "HEAD"]);
-    assert_eq!(
-        v["reason"],
-        format!(
-            "PR #12 head {head} did not change after update-branch within 3 min; needs a human merge"
-        )
-    );
-    let calls = e.gh_calls();
-    assert_eq!(head_polls(&e), 9, "{calls}");
-    assert_eq!(update_branch_events(&e), 0);
-    assert!(register_polls(&e).is_empty(), "{calls}");
-    assert!(!calls.contains("pr merge"), "{calls}");
-}
-
-#[test]
-fn a_dirty_view_while_waiting_for_the_head_goes_back_to_build() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit", "pass:commit"]);
-    e.gh_file("pr-12.merge", "BEHIND");
-    e.gh_file("updated-12.merge", "DIRTY");
-    e.gh_file("updated-12.lag", "1000");
-    e.gh_file("checks-12.json", GREEN);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["outcome"], "stuck", "{v}");
-    let p = e.prompt(6, "build");
-    assert!(p.contains("rebase onto main"), "{p}");
-    assert!(!e.gh_calls().contains("pr merge"));
-}
-
 fn update_failures(e: &Env) -> Vec<Value> {
     run_log(e)
         .lines()
         .map(|l| serde_json::from_str::<Value>(l).unwrap())
         .filter(|v| v["event"] == "update_branch_failed")
         .collect()
-}
-
-#[test]
-fn a_failed_update_branch_logs_its_cause() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit", "pass:commit"]);
-    e.gh_file("pr-12.merge", "BEHIND");
-    e.gh_file(
-        "update-12.fail",
-        "GraphQL: merge conflict between base and head",
-    );
-    e.run(&["run", "--issue", "7"], 1);
-    let failed = update_failures(&e);
-    // The first failure's rebuild is a free rebase; the next two use build's attempts.
-    assert_eq!(failed.len(), 3, "{failed:?}");
-    let err = failed[0]["error"].as_str().unwrap();
-    assert!(
-        err.contains("merge conflict between base and head"),
-        "{err}"
-    );
-    assert!(failed[0].get("workflow_scope").is_none(), "{failed:?}");
-    assert!(!e.gh_calls().contains("pr merge"));
-}
-
-#[test]
-fn a_pr_still_behind_after_update_branch_logs_its_merge_state() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("pr-12.merge", "BEHIND");
-    e.gh_file("updated-12.merge", "BEHIND");
-    e.gh_file("updated-12.lag", "1000");
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    let failed = update_failures(&e);
-    assert_eq!(failed.len(), 1, "{failed:?}");
-    assert_eq!(failed[0]["merge_state"], "BEHIND", "{failed:?}");
-    let err = failed[0]["error"].as_str().unwrap();
-    assert!(err.contains("did not change"), "{err}");
 }
 
 const WORKFLOW_REFUSAL: &str = "GraphQL: refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope (updatePullRequestBranch)";
@@ -335,135 +182,12 @@ fn a_failed_push_in_the_git_fallback_needs_a_human_merge() {
     assert!(!e.gh_calls().contains("pr merge"));
 }
 
-#[test]
-fn ci_failure_rebuilds_then_merges_on_the_same_pr() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit", "pass:commit"]);
-    e.gh_file("checks-12-1.json", RED);
-    e.gh_file("checks-12-2.json", GREEN);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "verify", "review", "ship", "build", "verify", "review", "ship"]
-    );
-    let p = e.prompt(6, "build");
-    assert!(p.contains("CI failed on PR #12: ci (fail)"), "{p}");
-    assert!(p.contains("assert 1 == 2"), "{p}");
-    let ci: Vec<_> = run_events(&e)
-        .into_iter()
-        .filter(|ev| ev["event"] == "ci_failed" || ev["event"] == "ci_passed")
-        .map(|ev| (ev["event"].clone(), ev["where"].clone()))
-        .collect();
-    assert_eq!(
-        ci,
-        [
-            ("ci_failed".into(), "github".into()),
-            ("ci_passed".into(), "github".into())
-        ]
-    );
-}
-
 fn register_polls(e: &Env) -> Vec<String> {
     e.gh_calls()
         .lines()
         .filter(|l| l.ends_with("/check-runs --jq .total_count"))
         .map(String::from)
         .collect()
-}
-
-#[test]
-fn checks_that_register_late_are_watched_then_merged() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("register.after", "2");
-    e.gh_file("checks-12.json", GREEN);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    let calls = e.gh_calls();
-    let third = calls
-        .match_indices("/check-runs")
-        .nth(2)
-        .expect("3 polls")
-        .0;
-    let watch = calls.find("pr checks 12 --watch").unwrap();
-    assert!(third < watch, "{calls}");
-    assert_eq!(register_polls(&e).len(), 3, "{calls}");
-}
-
-#[test]
-fn no_checks_registered_within_the_timeout_needs_a_human_merge() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("register.after", "1000");
-    e.gh_file("checks-12.json", GREEN);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    assert_eq!(
-        v["reason"],
-        "no CI checks registered within 3 min on PR #12; needs a human merge"
-    );
-    let calls = e.gh_calls();
-    assert!(!calls.contains("--watch"), "{calls}");
-    assert!(!calls.contains("pr merge"), "{calls}");
-    assert_eq!(register_polls(&e).len(), 9, "{calls}");
-}
-
-#[test]
-fn a_shorter_register_timeout_polls_on_the_capped_schedule() {
-    let e = Env::new();
-    e.factory(&format!("{AUTO}ci_register_timeout = 1\n"));
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("register.after", "1000");
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    assert_eq!(
-        v["reason"],
-        "no CI checks registered within 1 min on PR #12; needs a human merge"
-    );
-    assert_eq!(register_polls(&e).len(), 5, "{}", e.gh_calls());
-}
-
-#[test]
-fn status_only_ci_registers_and_is_watched() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("register.after", "1000");
-    e.gh_file("status.after", "1");
-    e.gh_file("checks-12.json", GREEN);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    let calls = e.gh_calls();
-    assert!(calls.contains("pr checks 12 --watch"), "{calls}");
-    assert_eq!(register_polls(&e).len(), 2, "{calls}");
-}
-
-#[test]
-fn a_failing_check_query_is_reported_not_called_no_ci() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("check-runs.fail", "HTTP 403: rate limit exceeded");
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    let reason = v["reason"].as_str().unwrap();
-    assert!(
-        reason.starts_with("could not query CI checks on PR #12: "),
-        "{reason}"
-    );
-    assert!(reason.contains("rate limit exceeded"), "{reason}");
-    assert!(reason.ends_with("; needs a human merge"), "{reason}");
-    assert!(!e.gh_calls().contains("--watch"), "{}", e.gh_calls());
 }
 
 #[test]
@@ -484,41 +208,6 @@ fn malformed_check_query_output_is_reported_not_called_no_ci() {
         assert!(reason.ends_with("; needs a human merge"), "{reason}");
         assert!(!e.gh_calls().contains("--watch"), "{}", e.gh_calls());
     }
-}
-
-#[test]
-fn zero_check_runs_and_a_failing_status_query_is_reported_not_called_no_ci() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("register.after", "1000");
-    e.gh_file("status.fail", "HTTP 500: server error");
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    let reason = v["reason"].as_str().unwrap();
-    assert!(
-        reason.starts_with("could not query CI checks on PR #12: "),
-        "{reason}"
-    );
-    assert!(reason.contains("server error"), "{reason}");
-    assert!(!e.gh_calls().contains("--watch"), "{}", e.gh_calls());
-}
-
-#[test]
-fn a_status_with_checks_proceeds_though_the_check_runs_query_fails() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("check-runs.fail", "HTTP 403: rate limit exceeded");
-    e.gh_file("status.after", "0");
-    e.gh_file("checks-12.json", GREEN);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    let calls = e.gh_calls();
-    assert!(calls.contains("pr checks 12 --watch"), "{calls}");
-    assert!(calls.contains("pr merge 12"), "{calls}");
 }
 
 const PRINT_HEAD_SHA_CMD: &str = "git rev-parse HEAD";
@@ -804,23 +493,6 @@ fn a_content_change_after_every_review_runs_out_of_attempts() {
     assert!(!e.gh_calls().contains("pr merge"));
 }
 
-#[test]
-fn human_review_files_need_a_human_merge() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("checks-12.json", GREEN);
-    e.gh_file("diff-12.txt", "src/x.rs\n.github/workflows/ci.yml\n");
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done");
-    assert!(v["reason"]
-        .as_str()
-        .unwrap()
-        .starts_with("changes files that need human review; needs a human merge"));
-    assert!(!e.gh_calls().contains("pr merge"));
-}
-
 /// main holds work.txt with a human-review region; the build commit runs `edit` on it.
 fn marked(edit: &str) -> Value {
     let e = Env::new();
@@ -884,36 +556,6 @@ fn a_failed_fetch_of_the_default_branch_needs_a_human_merge() {
         "{v}"
     );
     assert!(!e.gh_calls().contains("pr merge"));
-}
-
-#[test]
-fn a_pr_merged_by_a_phase_is_stuck() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.queue("ship", &["pass:merge"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert!(
-        v["reason"]
-            .as_str()
-            .unwrap()
-            .starts_with("PR merged by run"),
-        "{v}"
-    );
-    assert!(!e.gh_calls().contains("pr merge"));
-}
-
-#[test]
-fn human_policy_never_merges() {
-    let e = Env::new();
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("checks-12.json", GREEN);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "done");
-    assert!(!e.gh_calls().contains("pr merge"));
-    assert!(!e.gh_calls().contains("pr checks"));
 }
 
 #[test]

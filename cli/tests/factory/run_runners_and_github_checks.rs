@@ -412,24 +412,6 @@ fn auto_merge_squashes_when_green_and_no_human_review_files() {
 }
 
 #[test]
-fn auto_merge_updates_a_branch_behind_main_first() {
-    let e = Env::new();
-    e.factory(AUTO);
-    e.ctl("pr", "12");
-    e.queue("build", &["pass:commit"]);
-    e.gh_file("pr-12.merge", "BEHIND");
-    e.gh_file("checks-12.json", GREEN);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    let calls = e.gh_calls();
-    let upd = calls.find("pr update-branch 12").expect("update-branch");
-    let watch = calls.find("pr checks 12 --watch").unwrap();
-    let merge = calls.find("pr merge 12 --squash").unwrap();
-    assert!(upd < watch && watch < merge, "{calls}");
-    assert_eq!(update_branch_vias(&e), ["api"]);
-}
-
-#[test]
 fn build_only_with_no_fast_gate_updates_a_branch_behind_main_and_gates_only_after_build() {
     let e = Env::new();
     e.factory(&format!("{AUTO}[gate]\nlocal = \"build-only\"\n"));
@@ -493,17 +475,6 @@ fn build_only_merges_on_github_updating_the_pr_head_to_main_and_waiting_for_its_
         (&json!("github"), &json!(UPDATED))
     );
     assert_eq!(merge_queue_leftovers(&e), Vec::<String>::new());
-}
-
-#[test]
-fn build_only_does_not_update_a_pr_head_that_holds_main() {
-    let e = Env::new();
-    remote_queue(&e, AUTO);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    let calls = e.gh_calls();
-    assert!(!calls.contains("pr update-branch"), "{calls}");
-    assert!(calls.contains("pr checks 12 --watch"), "{calls}");
 }
 
 #[test]
@@ -573,53 +544,6 @@ fn build_only_sends_red_github_checks_back_to_build_naming_the_check() {
     assert_eq!(fs::read_to_string(&runs).unwrap(), "full\nfull\n");
 }
 
-#[test]
-fn build_only_sends_a_conflict_with_main_back_to_ship() {
-    for (file, text) in [("pr-12.merge", "DIRTY"), ("update-12.fail", "")] {
-        let e = Env::new();
-        remote_queue(&e, AUTO);
-        let tip = main_moves(&e, "built.txt", "x\n");
-        e.gh_file(file, text);
-        let v = e.run(&["run", "--issue", "7"], 1);
-        assert_eq!(v["outcome"], "stuck", "{file}: {v}");
-        assert_eq!(v["reason"], "ship is out of attempts (2)", "{file}: {v}");
-        // The first conflict's reship is free. Main stays where it was, so the next one uses
-        // ship's second attempt and the unit ends stuck instead of looping.
-        let calls = e.calls();
-        assert_eq!(
-            calls,
-            ["triage", "build", "verify", "review", "ship", "ship", "ship"],
-            "{file}"
-        );
-        let p = e.prompt(6, "ship");
-        assert!(
-            p.contains("PR #12 conflicts with main: rebase onto main and resolve conflicts"),
-            "{file}: {p}"
-        );
-        assert!(
-            p.contains(&format!(
-                "merge in the newest origin/main ({tip}). This ship costs no attempt."
-            )),
-            "{file}: {p}"
-        );
-        assert!(!e.prompt(7, "ship").contains("costs no attempt"), "{file}");
-        let r = rebase_events(&e);
-        assert_eq!(r.len(), 1, "{file}: {r:?}");
-        assert_eq!(
-            (&r[0]["phase"], &r[0]["cause"]),
-            (&json!("ship"), &json!("the PR conflicts with its base")),
-            "{file}"
-        );
-        assert!(!e.gh_calls().contains("pr merge"), "{file}");
-        assert!(
-            run_events(&e)
-                .iter()
-                .any(|ev| ev["event"] == "conflict" && ev["pr"] == 12),
-            "{file}"
-        );
-    }
-}
-
 /// A ship script that commits and clears PR #12's conflict, except on its run `move_on`, where
 /// another actor moves main and the PR conflicts again.
 fn ship_brings_in_main(e: &Env, move_on: u32) {
@@ -632,122 +556,6 @@ fn ship_brings_in_main(e: &Env, move_on: u32) {
             move_main_sh(e)
         ),
     );
-}
-
-#[test]
-fn build_only_ships_that_follow_a_moved_base_cost_ship_no_attempts() {
-    let e = Env::new();
-    remote_queue(&e, AUTO);
-    e.gh_file("pr-12.merge", "DIRTY");
-    ship_brings_in_main(&e, 2);
-    // Each reship merges main in; review's rerun after it commits a fix, so verify and ship run
-    // again. The first of those ships finds main moved and the PR conflicting again.
-    e.queue(
-        "ship",
-        &["pass", "pass:script", "pass:script", "pass:script", "pass"],
-    );
-    e.queue("review", &["pass", "pass:commit", "pass:commit"]);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    assert_eq!(
-        e.calls(),
-        [
-            "triage", "build", "verify", "review", "ship", "ship", "verify", "review", "verify",
-            "ship", "ship", "verify", "review", "verify", "ship"
-        ]
-    );
-    let free: Vec<Value> = run_events(&e)
-        .into_iter()
-        .filter(|ev| ev["event"] == "ship_after_base_moved")
-        .collect();
-    assert_eq!(free.len(), 2, "{free:?}");
-    assert_eq!(rebase_events(&e).len(), 2);
-}
-
-#[test]
-fn build_only_ships_that_fail_after_a_moved_base_still_run_out_of_attempts() {
-    let e = Env::new();
-    remote_queue(&e, AUTO);
-    e.gh_file("pr-12.merge", "DIRTY");
-    e.queue("ship", &["pass", "fail:review", "fail:review"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["outcome"], "stuck", "{v}");
-    assert_eq!(v["reason"], "ship is out of attempts (2)", "{v}");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "verify", "review", "ship", "ship", "review"]
-    );
-}
-
-#[test]
-fn build_only_a_failing_ship_after_a_moved_base_gives_its_free_attempt_back() {
-    let e = Env::new();
-    remote_queue(&e, AUTO);
-    e.gh_file("pr-12.merge", "DIRTY");
-    ship_brings_in_main(&e, 0);
-    e.queue("ship", &["pass", "pass:script", "fail:review"]);
-    e.queue("review", &["pass", "pass:commit"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["reason"], "ship is out of attempts (2)", "{v}");
-    assert_eq!(
-        e.calls(),
-        [
-            "triage", "build", "verify", "review", "ship", "ship", "verify", "review", "verify",
-            "ship", "review"
-        ]
-    );
-}
-
-#[test]
-fn build_only_a_build_after_a_moved_base_makes_the_next_ship_cost_an_attempt() {
-    let e = Env::new();
-    remote_queue(&e, AUTO);
-    e.gh_file("pr-12.merge", "DIRTY");
-    ship_brings_in_main(&e, 0);
-    e.queue("ship", &["pass", "pass:script", "pass"]);
-    e.queue("review", &["pass", "fail"]);
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["outcome"], "merged", "{v}");
-    assert_eq!(
-        e.calls(),
-        [
-            "triage", "build", "verify", "review", "ship", "ship", "verify", "review", "build",
-            "verify", "review", "ship"
-        ]
-    );
-    let free = run_events(&e)
-        .into_iter()
-        .filter(|ev| ev["event"] == "ship_after_base_moved")
-        .count();
-    assert_eq!(free, 0);
-}
-
-#[test]
-fn build_only_a_reship_that_changes_nothing_does_not_make_the_next_reship_a_chain_ship() {
-    let e = Env::new();
-    remote_queue(&e, AUTO);
-    e.gh_file("pr-12.merge", "DIRTY");
-    e.ctl("ship.sh", &move_main_sh(&e));
-    e.queue(
-        "ship",
-        &[
-            "pass:script",
-            "pass:script",
-            "pass:script",
-            "fail:review",
-            "fail:review",
-        ],
-    );
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["outcome"], "stuck", "{v}");
-    assert_eq!(v["reason"], "ship is out of attempts (2)", "{v}");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "verify", "review", "ship", "ship", "ship", "ship", "review"]
-    );
-    assert!(!run_events(&e)
-        .iter()
-        .any(|ev| ev["event"] == "ship_after_base_moved"));
 }
 
 #[test]
@@ -805,96 +613,4 @@ fn build_only_a_credited_ship_that_gives_up_on_a_lock_is_credited_again_on_its_r
     };
     assert_eq!(attempts("lock_wait_timeout"), [3, 4], "{stderr}");
     assert_eq!(attempts("ship_after_base_moved"), [3, 4, 5], "{stderr}");
-}
-
-#[test]
-fn build_only_stops_reshipping_for_a_base_that_moves_on_every_check() {
-    let e = Env::new();
-    remote_queue(&e, AUTO);
-    e.gh_file("pr-12.merge", "DIRTY");
-    e.ctl("ship.sh", &move_main_sh(&e));
-    e.queue("ship", &["pass:script"; 7]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["outcome"], "stuck", "{v}");
-    assert_eq!(
-        v["reason"], "ship was sent back 5 times because the base moved (cap 5)",
-        "{v}"
-    );
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "verify", "review", "ship", "ship", "ship", "ship", "ship", "ship"]
-    );
-    assert_eq!(rebase_events(&e).len(), 5);
-    let capped: Vec<Value> = run_events(&e)
-        .into_iter()
-        .filter(|ev| ev["event"] == "reship_cap")
-        .collect();
-    assert_eq!(capped.len(), 1, "{capped:?}");
-    assert_eq!(
-        (&capped[0]["reships"], &capped[0]["cap"]),
-        (&json!(5), &json!(5))
-    );
-    assert!(!e.gh_calls().contains("pr merge"));
-}
-
-#[test]
-fn build_only_a_reship_earns_no_credit_when_origin_default_cannot_be_read() {
-    let e = Env::new();
-    remote_queue(&e, AUTO);
-    e.gh_file("pr-12.merge", "DIRTY");
-    e.ctl(
-        "review.sh",
-        "git remote set-url origin \"$FAKE_CTRL/gone.git\"",
-    );
-    e.queue("review", &["pass:script"]);
-    e.queue("ship", &["pass", "fail:review", "fail:review"]);
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["outcome"], "stuck", "{v}");
-    assert_eq!(v["reason"], "ship is out of attempts (2)", "{v}");
-    assert_eq!(
-        e.calls(),
-        ["triage", "build", "verify", "review", "ship", "ship", "review"]
-    );
-    assert!(!run_events(&e).iter().any(|ev| {
-        ev["event"] == "ship_after_base_moved" || ev["event"] == "rebase_after_base_moved"
-    }));
-}
-
-#[test]
-fn build_only_needs_a_human_merge_when_main_cannot_be_fetched() {
-    let e = Env::new();
-    remote_queue(&e, AUTO);
-    e.queue("ship", &["pass:script"]);
-    e.ctl(
-        "ship.sh",
-        "git remote set-url origin \"$FAKE_CTRL/gone.git\"",
-    );
-    let v = e.run(&["run", "--issue", "7"], 0);
-    assert_eq!(v["needs_human"], true, "{v}");
-    let reason = v["reason"].as_str().unwrap();
-    assert!(
-        reason.starts_with("cannot fetch main to update PR #12: git fetch origin main failed"),
-        "{reason}"
-    );
-    assert!(!e.gh_calls().contains("pr merge"));
-}
-
-#[test]
-fn build_only_waits_for_github_checks_at_most_ci_timeout_minutes() {
-    let e = Env::new();
-    remote_queue(
-        &e,
-        &AUTO.replace("ci_timeout_minutes = 1", "ci_timeout_minutes = 0"),
-    );
-    e.gh_file(
-        "hook.sh",
-        "case \"$*\" in *\"pr checks\"*--watch*) sleep 30; exit 0 ;; esac\n",
-    );
-    let v = e.run(&["run", "--issue", "7"], 1);
-    assert_eq!(v["outcome"], "stuck", "{v}");
-    assert_eq!(
-        v["reason"], "CI on PR #12 did not finish within 0 min",
-        "{v}"
-    );
-    assert!(!e.gh_calls().contains("pr merge"));
 }
