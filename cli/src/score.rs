@@ -40,7 +40,7 @@ pub fn cli(
     let root = factory::root(factory, &repo.root);
     let scorers = scorers(&root, only)?;
     let dir = unit_dir(&repo, unit)?;
-    let queue = factory::load(&root).map(|f| f.queue).unwrap_or_default();
+    let queue = factory::load(&root)?.queue;
     let outcome = outcome(&repo, &queue, &dir)?;
     let artifacts = artifacts(&dir)?;
     let prompts: Vec<(&Scorer, String)> = scorers

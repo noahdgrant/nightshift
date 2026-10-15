@@ -721,3 +721,16 @@ fn on_gitlab_the_outcome_is_read_from_the_merge_request_and_its_approvals() {
     );
     assert!(!e.base.join("gh-calls").exists());
 }
+
+#[test]
+fn a_malformed_factory_file_fails_the_score_instead_of_running_gh() {
+    let e = Env::new("pass");
+    fs::write(
+        e.root.join(".nightshift/nightshift.toml"),
+        "[queue\nsource = \n",
+    )
+    .unwrap();
+    let (_, err) = e.run(&["score", UNIT, "--dry-run"], 2);
+    assert!(err.contains("cannot parse"), "{err}");
+    assert!(!e.base.join("gh-calls").exists(), "gh ran");
+}
