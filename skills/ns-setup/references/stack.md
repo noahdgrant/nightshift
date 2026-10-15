@@ -23,6 +23,7 @@ How to build, test, lint and format this repo. The `ns-*` skills run these comma
 | typecheck | [e.g. `uv run mypy src`, or `none`] | |
 | rules | [the rule pack's commands, or `none`] | |
 | ci-local | [e.g. `scripts/ci-local.sh`: all of CI, in CI's order; `--fast` runs the quick subset. `none` (no backticks) when the repo has no such script] | [e.g. 2 min, `--fast` 20 s] |
+| build-output | [the directories the build writes, relative to the repo root, each in backticks, e.g. `target`, `build`. `none` (no backticks) to keep them] | |
 
 ## Test seams
 
