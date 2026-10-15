@@ -108,8 +108,19 @@ pub struct MergedPrs {
 /// How many PRs one `gh pr list` reads.
 const PR_LIMIT: usize = 200;
 
-/// Issue number -> the PR that closes it and that PR's head branch, empty for a fork's.
-pub type ClosingPrs = BTreeMap<u64, (u64, String)>;
+/// Issue number -> every PR that closes it, in the forge's order, each with its head branch,
+/// empty for a fork's.
+pub type ClosingPrs = BTreeMap<u64, Vec<(u64, String)>>;
+
+/// Adds PR `pr` with head `head` under each issue its `body` closes, once per issue.
+fn add_closing(by_issue: &mut ClosingPrs, body: &str, pr: u64, head: &str) {
+    for n in closed_by(body) {
+        let prs = by_issue.entry(n).or_default();
+        if !prs.iter().any(|(p, _)| *p == pr) {
+            prs.push((pr, head.to_string()));
+        }
+    }
+}
 
 /// The line every body nightshift posts to a forge opens with (skills/ns-contract, Disclosure).
 pub const DISCLOSURE: &str = "🤖 *Posted by nightshift, an AI agent.*";
@@ -322,6 +333,21 @@ fn own_head(p: &Value) -> String {
     }
 }
 
+/// `gh pr list`'s PRs, under each issue their bodies close.
+fn parse_closing(prs: &Value) -> ClosingPrs {
+    let mut by_issue = ClosingPrs::new();
+    for p in prs.as_array().map(Vec::as_slice).unwrap_or_default() {
+        let body = p["body"].as_str().unwrap_or("");
+        add_closing(
+            &mut by_issue,
+            body,
+            p["number"].as_u64().unwrap_or(0),
+            &own_head(p),
+        );
+    }
+    by_issue
+}
+
 /// `gh pr list`'s merged PRs. One with no merge time it can read is left out.
 fn parse_merged(prs: &Value) -> MergedPrs {
     let all = prs.as_array().map_or(&[][..], Vec::as_slice);
@@ -486,13 +512,7 @@ impl Forge for GitHub {
                 "number,body,headRefName,isCrossRepository",
             ],
         )?;
-        let mut by_issue = BTreeMap::new();
-        for p in prs.as_array().cloned().unwrap_or_default() {
-            for n in closed_by(p["body"].as_str().unwrap_or("")) {
-                by_issue.insert(n, (p["number"].as_u64().unwrap_or(0), own_head(&p)));
-            }
-        }
-        Ok(by_issue)
+        Ok(parse_closing(&prs))
     }
 
     fn merged_prs(&self, since: Option<i64>) -> Result<MergedPrs> {

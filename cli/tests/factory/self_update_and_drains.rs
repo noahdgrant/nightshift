@@ -158,15 +158,6 @@ fn gitlab_env() -> Env {
     e
 }
 
-fn queued(v: &Value) -> Vec<u64> {
-    v["queue"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|i| i["number"].as_u64().unwrap())
-        .collect()
-}
-
 fn skipped(v: &Value) -> Vec<(u64, String)> {
     v["skipped"]
         .as_array()

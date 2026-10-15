@@ -1,7 +1,7 @@
 //! GitLab through `glab`. A GitLab issue carries no author association, so the team is read from
 //! the project's members instead (docs/FACTORY.md, Trust).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -9,14 +9,14 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use super::{
-    ClosingPrs, CommitPr, Filed, Forge, IssueLink, IssueState, MergedPr, MergedPrs, Post, Pr,
-    PrState, PrStatus,
+    add_closing, ClosingPrs, CommitPr, Filed, Forge, IssueLink, IssueState, MergedPr, MergedPrs,
+    Post, Pr, PrState, PrStatus,
 };
 use crate::config::ForgeKind;
 use crate::error::SfError;
 use crate::proc::{Kind, Proc};
 use crate::watch::ci::{Check, HeadChecks, Outcome};
-use crate::watch::{closed_by, Issue};
+use crate::watch::Issue;
 
 /// Developer, the lowest access level on the team. Reporter (20), Planner (15) and Guest (10) are
 /// outside it.
@@ -143,6 +143,21 @@ fn merged_path(since: Option<i64>) -> String {
     format!(
         "projects/:id/merge_requests?state=merged&order_by=created_at&per_page={MR_LIMIT}{after}"
     )
+}
+
+/// The MRs under each issue their descriptions close.
+fn to_closing(mrs: &[Value]) -> ClosingPrs {
+    let mut by_issue = ClosingPrs::new();
+    for mr in mrs {
+        let body = mr["description"].as_str().unwrap_or("");
+        add_closing(
+            &mut by_issue,
+            body,
+            mr["iid"].as_u64().unwrap_or(0),
+            &own_branch(mr),
+        );
+    }
+    by_issue
 }
 
 /// An MR's source branch, empty for a fork's: its name says nothing about this project's units.
@@ -305,13 +320,7 @@ impl Forge for GitLab {
         let path = format!(
             "projects/:id/merge_requests?state={state}&order_by=updated_at&per_page={MR_LIMIT}"
         );
-        let mut by_issue = BTreeMap::new();
-        for mr in items(&glab(&self.root, &["api", &path])?)? {
-            for n in closed_by(mr["description"].as_str().unwrap_or("")) {
-                by_issue.insert(n, (mr["iid"].as_u64().unwrap_or(0), own_branch(&mr)));
-            }
-        }
-        Ok(by_issue)
+        Ok(to_closing(&items(&glab(&self.root, &["api", &path])?)?))
     }
 
     /// The merged MRs from `since` on, up to 100. GitLab's list gives no line counts.
@@ -730,6 +739,28 @@ mod tests {
         assert_eq!(
             to_commit_prs(mrs.as_array().unwrap()),
             [pr(3, "ns/3-b", true), pr(4, "x", false), pr(5, "", false)]
+        );
+    }
+
+    #[test]
+    fn to_closing_keeps_every_mr_that_closes_an_issue() {
+        let mr = |iid: u64, description: &str, branch: &str, source: u64| {
+            serde_json::json!({"iid": iid, "description": description, "source_branch": branch,
+                               "source_project_id": source, "target_project_id": 1})
+        };
+        let mrs = [
+            mr(12, "Closes #5", "other", 1),
+            mr(10, "Closes #5. Fixes #6", "ns/5-x", 1),
+            mr(10, "Closes #5", "ns/5-x", 1),
+            mr(9, "Fixes #6", "fork", 2),
+            mr(8, "no reference", "x", 1),
+        ];
+        assert_eq!(
+            to_closing(&mrs),
+            ClosingPrs::from([
+                (5, vec![(12, "other".into()), (10, "ns/5-x".into())]),
+                (6, vec![(10, "ns/5-x".into()), (9, String::new())]),
+            ])
         );
     }
 

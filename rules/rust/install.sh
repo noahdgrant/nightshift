@@ -56,7 +56,7 @@ if [ ! -f "$repo/$dest/allowed-crates.txt" ]; then
 fi
 
 mkdir -p "$repo/$dest"
-cp "$pack/check.sh" "$pack/deny.toml" "$pack/ast-grep.yml" "$pack/clippy-lints.txt" "$repo/$dest/"
+cp "$pack/check.sh" "$pack/deny.toml" "$pack/ast-grep.yml" "$pack/clippy-lints.txt" "$pack/ratchet-binary-size.sh" "$repo/$dest/"
 [ ! -f "$tmp/allowed-crates.txt" ] || cp "$tmp/allowed-crates.txt" "$repo/$dest/"
 if [ ! -f "$repo/$dest/roads.txt" ]; then
   echo "# <name> <file>: the one helper or type that does a job, and the file it lives in." \

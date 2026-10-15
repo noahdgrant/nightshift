@@ -1532,6 +1532,31 @@ fn bugs_a_factory_pr_without_a_closing_reference_does_not_make_a_bug_factory_int
     assert_eq!(v["issues"][0]["source"], "human");
 }
 
+#[test]
+fn bugs_counts_a_factory_pr_that_shares_its_issue_with_another_pr_whichever_is_listed_first() {
+    let factory = json!({"number": 41, "body": "Closes #9", "headRefName": "ns/9-b",
+                         "isCrossRepository": false});
+    let other = json!({"number": 44, "body": "Closes #9", "headRefName": "someone/b2",
+                       "isCrossRepository": false});
+    for prs in [
+        json!([factory.clone(), other.clone()]),
+        json!([other.clone(), factory.clone()]),
+    ] {
+        let (tmp, root) = bugs_fixture(&[fix_issue(
+            11,
+            "2099-01-11T23:59:59Z",
+            "fix: b panics",
+            "`lib.rs:2` panics on empty input.",
+            &[],
+        )]);
+        write(tmp.path().join("fake/prs.json"), &prs.to_string());
+        let out = ns_bugs(&tmp, &root, &["--json"]).output();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["issues"][0]["introduced_by"]["pr"], 41, "{prs}");
+        assert_eq!(v["issues"][0]["source"], "factory_introduced", "{prs}");
+    }
+}
+
 const FOUR_WEEKS: [&str; 4] = ["2098-12-16", "2098-12-23", "2098-12-30", "2099-01-06"];
 
 fn four_weeks() -> Vec<Value> {

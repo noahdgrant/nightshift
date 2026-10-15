@@ -24,7 +24,7 @@ docs/* --bin ns
 docs/agents/* --test ci_local --test factory --test rules_pack --test rules_pack_java
 evals/fakes/* --test eval_fakes
 evals/fixtures/py-inventory/* --test ci_local --test factory
-rules/* --test ci_local --test factory --test git_location --test rules_pack --test rules_pack_java --test test_tools --bin ns
+rules/* --test ci_local --test factory --test git_location --test ratchet --test rules_pack --test rules_pack_java --test test_tools --bin ns
 scripts/* --test check_verify_recipes --test ci_local --test cli
 scripts/ci-tools.sh --test ci_tools --test rules_pack_java
 scripts/rule-packs.sh --test ci_matrix

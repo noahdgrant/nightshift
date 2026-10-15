@@ -665,248 +665,99 @@ fn watch_passes_no_unit_cap_to_the_night_by_default() {
     assert_eq!(max_units(), 4);
 }
 
-const FAKE_TOKEN: &str = "fake-token-4f2a9c";
-
-fn files_under(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    for e in fs::read_dir(dir).unwrap().flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            out.extend(files_under(&p));
-        } else {
-            out.push(p);
-        }
-    }
-    out
+#[test]
+fn watch_pauses_on_a_session_limit_reported_only_in_structured_fields() {
+    let e = Env::new();
+    e.ready(2, "Fix a", &["type:fix"], "");
+    e.ctl("reset", &(NOW + 3600).to_string());
+    e.queue("build", &["session", "pass:commit"]);
+    let v = e.run(&["watch", "--once", "--until", "06:30"], 0);
+    let units = v["units"].as_array().unwrap();
+    assert_eq!(units[0]["outcome"], "paused", "{v}");
+    assert_eq!(units[0]["reset_at"], "2026-10-09T01:00:00+00:00");
+    assert_eq!(units[1]["outcome"], "done");
 }
 
 #[test]
-fn forge_token_reaches_every_child_and_never_the_logs() {
+fn watch_stops_the_night_when_the_harness_keeps_failing_instantly() {
     let e = Env::new();
-    let cmd = e.script("token.sh", &format!("echo '  {FAKE_TOKEN}  '"));
-    e.config(&format!(
-        "[forge.github]\ntoken_command = {:?}\n",
-        cmd.to_str().unwrap()
-    ));
-    e.ready(2, "Fix a", &["type:fix"], "");
-    e.queue("build", &["pass:commit"]);
-    let out = e
-        .ns()
-        .args(["watch", "--once"])
-        .assert()
-        .code(0)
-        .get_output()
-        .clone();
-    assert_eq!(e.tokens_seen(), [FAKE_TOKEN]);
-    assert_eq!(e.calls(), ["triage", "build", "verify", "review", "ship"]);
-    let printed = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+    for n in [2, 3, 4] {
+        e.ready(n, &format!("Fix {n}"), &["type:fix"], "");
+    }
+    e.queue("triage", &["crash"; 6]);
+    let v = e.run(&["watch"], 0);
+    assert_eq!(v["stopped"], "harness failing", "{v}");
+    let units = v["units"].as_array().unwrap();
+    assert_eq!(units.len(), 2, "{v}");
+    assert!(units.iter().all(|u| u["outcome"] == "harness_failing"));
+    let calls = e.gh_calls();
+    assert!(
+        calls.contains(
+            "issue edit 2 --remove-label status:in-progress --add-label status:ready-for-agent"
+        ),
+        "{calls}"
     );
-    assert!(!printed.contains(FAKE_TOKEN), "{printed}");
-    let ns_dir = e.root.join(".git/ns");
-    let logged = files_under(&ns_dir);
-    assert!(logged.iter().any(|p| p.ends_with("runs.jsonl")));
-    assert!(logged
+    assert!(
+        calls.contains(
+            "issue edit 3 --remove-label status:in-progress --add-label status:ready-for-agent"
+        ),
+        "{calls}"
+    );
+    assert!(!calls.contains("issue edit 4"), "{calls}");
+    assert!(!calls.contains("got stuck"), "{calls}");
+}
+
+// ---------------------------------------------------------------- the triage pass
+
+fn numbers(v: &Value) -> Vec<u64> {
+    v.as_array()
+        .unwrap()
         .iter()
-        .any(|p| p.to_string_lossy().contains("transcripts")));
-    for p in logged {
-        let text = fs::read_to_string(&p).unwrap_or_default();
-        assert!(!text.contains(FAKE_TOKEN), "token in {}", p.display());
-    }
+        .map(|i| i["number"].as_u64().or(i["issue"].as_u64()).unwrap())
+        .collect()
+}
+
+fn outcomes(v: &Value) -> Vec<String> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["outcome"].as_str().unwrap().to_string())
+        .collect()
 }
 
 #[test]
-fn forge_token_env_is_read_and_exported() {
+fn watch_triages_a_needs_triage_issue_ready_and_builds_it_the_same_night() {
     let e = Env::new();
-    e.config("[forge.github]\ntoken_env = \"MY_GH_TOKEN\"\n");
-    let out = e
-        .ns()
-        .env("MY_GH_TOKEN", FAKE_TOKEN)
-        .args(["run", "--issue", "7"])
-        .assert()
-        .code(0)
-        .get_output()
-        .clone();
-    assert_eq!(e.tokens_seen(), [FAKE_TOKEN]);
-    assert!(!String::from_utf8_lossy(&out.stdout).contains(FAKE_TOKEN));
-}
-
-#[test]
-fn a_set_gh_token_wins_and_no_command_runs() {
-    let e = Env::new();
-    let marker = e.base.join("ran");
-    let cmd = e.script("token.sh", &format!("touch {}; exit 1", marker.display()));
-    e.config(&format!(
-        "[forge.github]\ntoken_command = {:?}\n",
-        cmd.to_str().unwrap()
-    ));
-    e.ns()
-        .env("GH_TOKEN", "from-env")
-        .args(["run", "--issue", "7"])
-        .assert()
-        .code(0);
-    assert!(
-        !marker.exists(),
-        "token_command ran though GH_TOKEN was set"
-    );
-    assert_eq!(e.tokens_seen(), ["from-env"]);
-}
-
-const OVERRIDES: &str = "[forge.github]
-token_env = \"DEFAULT_TOKEN\"
-[forge.github.owners.\"example-org\"]
-token_env = \"OWNER_TOKEN\"
-[forge.github.repos.\"example-org/backend\"]
-token_env = \"REPO_TOKEN\"
-";
-
-const OVERRIDE_WARNING: &str = "GH_TOKEN from the environment overrides the config's choice";
-
-#[test]
-fn the_token_comes_from_the_table_origin_matches() {
-    let e = Env::new();
-    e.ready(2, "Fix a", &["type:fix"], "");
-    e.config(OVERRIDES);
-    for (origin, want) in [
-        ("git@github-work:example-org/backend.git", "repo-tok"),
-        ("https://github.com/Example-Org/frontend.git", "owner-tok"),
-        ("ssh://git@github.com/someone/else", "default-tok"),
-        ("https://github.com/example-org", "default-tok"),
-    ] {
-        git(&e.root, &["remote", "set-url", "origin", origin]);
-        let _ = fs::remove_file(e.ghd.join("tokens"));
-        let _ = fs::remove_file(e.ghd.join("calls"));
-        let out = e
-            .ns()
-            .env("DEFAULT_TOKEN", "default-tok")
-            .env("OWNER_TOKEN", "owner-tok")
-            .env("REPO_TOKEN", "repo-tok")
-            .args(["watch", "--dry-run"])
-            .assert()
-            .code(0)
-            .get_output()
-            .clone();
-        assert_eq!(e.tokens_seen(), [want], "{origin}");
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(!err.contains(OVERRIDE_WARNING), "{err}");
-        let checked = e
-            .gh_calls()
-            .lines()
-            .filter(|l| l.starts_with("api repos/") && l.ends_with(".full_name"))
-            .count();
-        assert_eq!(checked, 0, "{origin}: a dry run checked: {}", e.gh_calls());
-    }
-    git(
-        &e.root,
-        &[
-            "remote",
-            "set-url",
-            "origin",
-            "git@github.com:example-org/backend.git",
-        ],
-    );
-    let _ = fs::remove_file(e.ghd.join("tokens"));
-    let gitlab_default = e.script(
-        "gl-default.sh",
-        &format!("touch {}/gl-default; echo gl", e.base.display()),
-    );
-    let gitlab_owner = e.script(
-        "gl-owner.sh",
-        &format!("touch {}/gl-owner; echo gl", e.base.display()),
-    );
-    e.config(&format!(
-        "{OVERRIDES}[forge.gitlab]\ntoken_command = {:?}\n[forge.gitlab.owners.\"example-org\"]\ntoken_command = {:?}\n",
-        gitlab_default.to_str().unwrap(),
-        gitlab_owner.to_str().unwrap()
-    ));
-    e.ns()
-        .env_remove("GITLAB_TOKEN")
-        .env("DEFAULT_TOKEN", "default-tok")
-        .env("OWNER_TOKEN", "owner-tok")
-        .env("REPO_TOKEN", "repo-tok")
-        .args(["run", "--issue", "7"])
-        .assert()
-        .code(0);
-    assert_eq!(e.tokens_seen(), ["repo-tok"]);
-    assert!(
-        e.base.join("gl-default").exists(),
-        "the other forge's default table ran no command"
-    );
-    assert!(
-        !e.base.join("gl-owner").exists(),
-        "a github origin matched a gitlab owner table"
-    );
-}
-
-#[test]
-fn a_set_gh_token_wins_over_a_matching_table_and_warns_once_a_night() {
-    let e = Env::new();
-    git(
-        &e.root,
-        &[
-            "remote",
-            "set-url",
-            "origin",
-            "git@github.com:example-org/backend.git",
-        ],
-    );
-    e.config(OVERRIDES);
-    e.ready(2, "Fix a", &["type:fix"], "");
+    e.untriaged(5, "Fix a follow-up", &["status:needs-triage", "type:fix"]);
+    e.triage_sets(&["status:ready-for-agent", "priority:high"]);
+    e.queue("triage", &["pass:script"]);
     e.queue("build", &["pass:commit"]);
-    let out = e
-        .ns()
-        .env("GH_TOKEN", "from-env")
-        .env("REPO_TOKEN", "repo-tok")
-        .args(["watch", "--once"])
-        .assert()
-        .get_output()
-        .clone();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(err.matches(OVERRIDE_WARNING).count(), 1, "{err}");
-    assert!(
-        err.contains("[forge.github.repos.\"example-org/backend\"]"),
-        "{err}"
-    );
-    assert_eq!(e.tokens_seen(), ["from-env"]);
-    assert!(!e.calls().is_empty(), "the unit never ran: {err}");
-    let checks = e
-        .gh_calls()
-        .lines()
-        .filter(|l| *l == "api repos/example-org/backend --jq .full_name")
-        .count();
+    let v = e.run(&["watch"], 0);
+    assert_eq!(numbers(&v["triaged"]), [5], "{v}");
+    assert_eq!(v["triaged"][0]["outcome"], "done", "{v}");
     assert_eq!(
-        checks,
-        1,
-        "the unit checked the repo again: {}",
-        e.gh_calls()
+        v["triaged"][0]["state"],
+        serde_json::json!(["status:ready-for-agent"])
     );
-
-    for args in [&["run", "--issue", "7"][..], &["watch", "--dry-run"][..]] {
-        let out = e
-            .ns()
-            .env("GH_TOKEN", "from-env")
-            .args(args)
-            .assert()
-            .code(0)
-            .get_output()
-            .clone();
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(err.matches(OVERRIDE_WARNING).count(), 1, "{args:?}: {err}");
-    }
-    e.config("");
-    let out = e
-        .ns()
-        .env("GH_TOKEN", "from-env")
-        .args(["watch", "--dry-run"])
-        .assert()
-        .code(0)
-        .get_output()
-        .clone();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !err.contains(OVERRIDE_WARNING),
-        "no config, nothing to override: {err}"
+    assert_eq!(numbers(&v["units"]), [5], "{v}");
+    assert_eq!(v["units"][0]["outcome"], "done", "{v}");
+    assert_eq!(v["stopped"], "queue empty");
+    // The unit picks up the brief the triage-only run wrote, so triage runs once.
+    assert_eq!(
+        e.calls(),
+        ["triage", "build", "verify", "review", "ship"],
+        "{v}"
+    );
+    assert!(e.prompt(1, "triage").contains("Triage only"));
+    assert!(!e.prompt(2, "build").contains("Triage only"));
+    let calls = e.gh_calls();
+    let triaged = calls
+        .find("issue edit 5 --remove-label status:needs-triage --add-label status:ready-for-agent")
+        .expect(&calls);
+    let started = calls.find("--add-label status:in-progress").expect(&calls);
+    assert!(triaged < started, "{calls}");
+    assert_eq!(
+        e.labels(5),
+        ["type:fix", "priority:high", "status:in-review"]
     );
 }

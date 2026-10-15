@@ -121,18 +121,20 @@ impl Listing {
 
     /// Why `ns watch` leaves the issue alone: its author is outside the team, or a PR closes it.
     /// With `resume_own`, an open PR from the issue's own unit branch doesn't count: that unit
-    /// stopped before its merge step ended, and `ns run` resumes it there.
+    /// stopped before its merge step ended, and `ns run` resumes it there. Any other open PR
+    /// that closes the issue still does.
     fn passed_over(&self, i: &Issue, resume_own: bool) -> Option<String> {
         if !i.team {
             return Some("author outside the team".into());
         }
-        if let Some((pr, head)) = self.has_pr.get(&i.number) {
-            if !(resume_own && *head == format!("{BRANCH_PREFIX}{}", unit_id(i))) {
-                return Some(format!("open PR #{pr} closes it"));
-            }
+        let own = format!("{BRANCH_PREFIX}{}", unit_id(i));
+        let mut open = self.has_pr.get(&i.number).into_iter().flatten();
+        if let Some((pr, _)) = open.find(|(_, head)| !(resume_own && *head == own)) {
+            return Some(format!("open PR #{pr} closes it"));
         }
         self.merged_pr
             .get(&i.number)
+            .and_then(|prs| prs.first())
             .map(|(pr, _)| format!("merged PR #{pr} closes it"))
     }
 }
@@ -792,6 +794,54 @@ pub(crate) mod tests {
         crate::testutil::git_any(&other, &["push", "-q", "origin", "HEAD:main"]);
         assert_eq!(fresh_base(&wt).as_deref(), Some("origin/main"));
         assert_eq!(git::run(&wt, &["rev-parse", "origin/main"]).unwrap(), tip);
+    }
+
+    #[test]
+    fn an_own_branch_pr_is_resumed_only_when_no_other_open_pr_closes_the_issue() {
+        let issue = Issue {
+            number: 5,
+            title: "x".into(),
+            labels: vec![],
+            body: String::new(),
+            team: true,
+        };
+        let own = (10, format!("{BRANCH_PREFIX}5-x"));
+        let other = (12, "someone/y".to_string());
+        let listing = |open: Vec<(u64, String)>| Listing {
+            issues: vec![],
+            has_pr: ClosingPrs::from([(5, open)]),
+            merged_pr: ClosingPrs::new(),
+        };
+        let alone = listing(vec![own.clone()]);
+        assert_eq!(alone.passed_over(&issue, true), None);
+        assert_eq!(
+            alone.passed_over(&issue, false).as_deref(),
+            Some("open PR #10 closes it")
+        );
+        for open in [vec![own.clone(), other.clone()], vec![other, own]] {
+            assert_eq!(
+                listing(open).passed_over(&issue, true).as_deref(),
+                Some("open PR #12 closes it")
+            );
+        }
+        let merged = Listing {
+            issues: vec![],
+            has_pr: ClosingPrs::new(),
+            merged_pr: ClosingPrs::from([(5, vec![(7, String::new()), (8, String::new())])]),
+        };
+        assert_eq!(
+            merged.passed_over(&issue, true).as_deref(),
+            Some("merged PR #7 closes it")
+        );
+        let outsider = Issue {
+            team: false,
+            ..issue.clone()
+        };
+        assert_eq!(
+            merged.passed_over(&outsider, true).as_deref(),
+            Some("author outside the team")
+        );
+        assert_eq!(listing(vec![]).passed_over(&issue, true), None);
     }
 
     #[test]

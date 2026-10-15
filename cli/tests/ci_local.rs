@@ -14,6 +14,7 @@ mod affected_rules;
 mod cache;
 mod common;
 
+use std::collections::BTreeMap;
 use std::fs;
 
 use std::path::{Path, PathBuf};
@@ -132,13 +133,14 @@ esac
     )
 }
 
-/// A pinned tool whose `--version` or `-version` prints `version`. Any other run logs its directory and
-/// fails when that log line contains `$FAIL_ON`.
+/// A pinned tool whose `--version`, `-version` or `-VV` prints `version`, every version pinned
+/// for the command when several pins check one (pytest and pytest-cov). Any other run logs its
+/// directory and fails when that log line contains `$FAIL_ON`.
 fn tool_stub(tool: &str, version: &str) -> String {
     format!(
         r#"#!/bin/sh
 case "$*" in
-  --version | -version) echo '{tool} {version}' ;;
+  --version | -version | -VV) echo '{tool} {version}' ;;
   *) line="{tool} ran in ${{PWD##*/}}: $*"
      echo "$line" >&2
      case "$FAIL_ON" in ?*) case "$line" in *"$FAIL_ON"*) exit 1 ;; esac ;; esac ;;
@@ -213,10 +215,14 @@ impl Repo {
             )
             .unwrap();
         }
+        let mut versions: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (_, command, version, _) in pinned_tools() {
+            versions.entry(command).or_default().push(version);
+        }
+        for (command, versions) in versions {
             write_exe(
                 &root.join("bin").join(&command),
-                tool_stub(&command, &version),
+                tool_stub(&command, &versions.join(" ")),
             );
         }
         write_exe(&root.join("scripts/check-private.sh"), "#!/bin/sh\n");
@@ -593,10 +599,10 @@ const AFFECTED_ALWAYS: &[&str] = &["cargo test", "ns rules check --only ast-grep
 const CARGO_SKILLS: &str = "cargo test --bin ns --test ci_local --test cli --test verify_sandbox";
 
 /// The cargo test step for a change under `rules/`, `docs/` or `evals/fixtures/py-inventory/`.
-const CARGO_RULES: &str = "cargo test --bin ns --test ci_local --test factory --test git_location --test rules_pack --test rules_pack_java --test test_tools";
+const CARGO_RULES: &str = "cargo test --bin ns --test ci_local --test factory --test git_location --test ratchet --test rules_pack --test rules_pack_java --test test_tools";
 
 /// The cargo test step for a change under both `skills/` and `rules/`.
-const CARGO_SKILLS_RULES: &str = "cargo test --bin ns --test ci_local --test cli --test factory --test git_location --test rules_pack --test rules_pack_java --test test_tools --test verify_sandbox";
+const CARGO_SKILLS_RULES: &str = "cargo test --bin ns --test ci_local --test cli --test factory --test git_location --test ratchet --test rules_pack --test rules_pack_java --test test_tools --test verify_sandbox";
 
 /// `ci_affected_args` with no arguments.
 fn affected(repo: &Repo, files: Option<&str>, env: &[(&str, &str)]) -> Output {
