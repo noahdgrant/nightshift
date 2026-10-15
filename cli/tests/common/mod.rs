@@ -544,6 +544,12 @@ pub fn copy_exe(from: &Path, to: &Path) {
     );
 }
 
+/// Make the fifo `path`. Fails with `mkfifo`'s output, also when `path` already exists.
+pub fn mkfifo(path: &Path) {
+    let out = command("mkfifo").arg(path).output();
+    assert!(out.status.success(), "mkfifo {}: {out:?}", path.display());
+}
+
 /// Copy the tree `from` to `to`. It holds no executable: copy one with [`copy_exe`].
 pub fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();

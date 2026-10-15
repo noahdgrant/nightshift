@@ -30,7 +30,7 @@ use metrics::{RunStats, Unit};
 pub use record::{issue_of, Meta};
 use runlog::RunLog;
 pub use runlog::Window;
-pub use sync::{import, record_unit, record_units};
+pub use sync::{import, record_unit, record_units, Where};
 
 /// `ns <cmd> --<flag>` as unix seconds: `YYYY-MM-DDTHH:MM:SSZ`, or `YYYY-MM-DD` for `day_time`
 /// UTC.

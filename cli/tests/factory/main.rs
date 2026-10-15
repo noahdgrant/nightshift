@@ -18,7 +18,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use common::{copy_exe, exits, write_exe, Group, Ns};
+use common::{copy_exe, exits, mkfifo, write_exe, Group, Ns};
 use factory_env::{
     another_actor_lands_linked, git, queued, reasons, run_log, unit_with_pr, units_in, Env,
     FAKE_TOKEN, FINDING, NOW, READY, SQUASH_B, UNIT,
@@ -48,3 +48,4 @@ include!("skills_sync_and_merge_gate.rs");
 include!("merge_gate_and_labels.rs");
 include!("merge_update_skip.rs");
 include!("run_review_loop.rs");
+include!("quality_remote.rs");

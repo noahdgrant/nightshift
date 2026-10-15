@@ -102,18 +102,26 @@ fn archive_file(dir: &Path, file: &str, moves: &mut Vec<(PathBuf, PathBuf)>) -> 
 /// Rewrite the artifact at `path` as blocked for a human: `status: blocked`, `next: human`,
 /// `cause: findings_open`, `reason` and `updated` set in its frontmatter, the rest kept.
 pub(super) fn mark_blocked(path: &Path, reason: &str, updated: &str) -> Result<()> {
+    set_fields(
+        path,
+        &[
+            ("status", "blocked".to_string()),
+            ("cause", "findings_open".to_string()),
+            ("next", "human".to_string()),
+            ("reason", serde_json::to_string(reason)?),
+            ("updated", updated.to_string()),
+        ],
+    )
+}
+
+/// Set each of `set`'s frontmatter fields in the artifact at `path`, moved to the end of its
+/// frontmatter, and keep the rest.
+pub(super) fn set_fields(path: &Path, set: &[(&str, String)]) -> Result<()> {
     let text =
         fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
     let Some((yaml, body)) = frontmatter::split(&text) else {
-        anyhow::bail!("{} has no frontmatter to mark blocked", path.display());
+        anyhow::bail!("{} has no frontmatter to set fields in", path.display());
     };
-    let set = [
-        ("status", "blocked".to_string()),
-        ("cause", "findings_open".to_string()),
-        ("next", "human".to_string()),
-        ("reason", serde_json::to_string(reason)?),
-        ("updated", updated.to_string()),
-    ];
     let key = |l: &str| l.split_once(':').map(|(k, _)| k.trim_end().to_string());
     let mut lines: Vec<String> = yaml
         .lines()

@@ -18,6 +18,7 @@ use crate::factory::{self, Factory, PhaseSettings, PHASES, RUN_PHASES};
 use crate::forge;
 use crate::gate;
 use crate::git::{self, Repo};
+use crate::harness;
 use crate::memcap::{self, Cap};
 use crate::pin;
 use crate::watch::NightDir;
@@ -310,11 +311,8 @@ pub fn phase_command(
             unit,
             &format!("phase {}", p.name),
         )?;
-        if subscription {
-            argv = billing::strip_bare(argv);
-        }
     }
-    Ok(argv)
+    Ok(harness::argv(argv, subscription))
 }
 
 /// The worktree `ensure` made is the one the phase commands were rendered for: their
@@ -708,8 +706,10 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
             )?,
         );
     }
-    if subscription && !args.dry_run && commands.values().any(|c| billing::is_claude(c)) {
-        billing::check_login()?;
+    if !args.dry_run {
+        for c in commands.values() {
+            harness::check_login(&c[0], subscription)?;
+        }
     }
 
     if args.dry_run {
@@ -805,7 +805,12 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
             pr,
             outcome: Some(result.outcome.label().to_string()),
         };
-        let ev = crate::quality::record_unit(&repo, &ctx.worktree, &meta);
+        let ev = crate::quality::record_unit(
+            &repo,
+            &crate::quality::Where::loaded(&ctx.fac.quality),
+            &ctx.worktree,
+            &meta,
+        );
         record_saved = ev["error"].is_null();
         ctx.log(ev);
     }

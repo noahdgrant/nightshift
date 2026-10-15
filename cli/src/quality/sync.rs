@@ -13,25 +13,83 @@ use super::artifacts::{self, Unparsed};
 use super::metrics::Unit;
 use super::record::{self, Meta, Record};
 use super::runlog;
-use super::store::{self, Sent};
+use super::store::{self, Dest, Sent};
 use crate::clock::Clock;
 use crate::error::SfError;
+use crate::factory;
+use crate::factory::Quality;
 use crate::git::Repo;
 use crate::run::currency::known_pr;
 use crate::worktree;
 
-/// The records on origin's branch (fetched first) and in the outbox, and a summary of where
-/// they came from.
-fn stored(repo: &Repo) -> (Vec<Record>, Value) {
-    let fetched = store::fetch(&repo.root);
-    let (mut records, bad_remote) = record::parse(&store::tracked(&repo.root).unwrap_or_default());
+/// Where the records go: the `[quality]` table of the factory file the command loaded, or why
+/// that file did not load. A file that does not load sends nothing to a remote: the records wait
+/// in the outbox, so a typo can't turn `remote = "none"` into a push to `origin`.
+pub struct Where(Result<Quality, String>);
+
+impl Where {
+    /// The `[quality]` table of the factory file in `root`.
+    pub fn of(root: &Path) -> Self {
+        Self(
+            factory::load(root)
+                .map(|f| f.quality)
+                .map_err(|e| format!("{e:#}")),
+        )
+    }
+
+    /// The table of a factory file already loaded.
+    pub fn loaded(quality: &Quality) -> Self {
+        Self(Ok(quality.clone()))
+    }
+
+    fn dest(&self) -> Dest<'_> {
+        match &self.0 {
+            Err(e) => Dest::Outbox(format!("the factory file did not load: {e}")),
+            Ok(q) => match q.target() {
+                Ok(Some(r)) => Dest::Remote(r),
+                Ok(None) => Dest::none(),
+                Err(e) => Dest::Outbox(e),
+            },
+        }
+    }
+
+    /// Why records can't go to a remote, apart from `remote = "none"`.
+    fn problem(&self) -> Option<String> {
+        match &self.0 {
+            Err(e) => Some(format!("the factory file did not load: {e}")),
+            Ok(q) => q.target().err(),
+        }
+    }
+
+    fn remote(&self) -> Option<&str> {
+        match self.dest() {
+            Dest::Remote(r) => Some(r),
+            Dest::Outbox(_) => None,
+        }
+    }
+}
+
+/// The records on the remote's branch (fetched first) and in the outbox, and a summary of where
+/// they came from. With no remote, the outbox only.
+fn stored(repo: &Repo, at: &Where) -> (Vec<Record>, Value) {
+    let remote = at.remote();
+    let (fetched, text) = match remote {
+        Some(r) => (
+            Some(store::fetch(&repo.root, r)),
+            store::tracked(&repo.root, r).unwrap_or_default(),
+        ),
+        None => (None, String::new()),
+    };
+    let (mut records, bad_remote) = record::parse(&text);
     let on_branch = records.len();
     let outbox = fs::read_to_string(store::outbox(&repo.common_dir)).unwrap_or_default();
     let (waiting, bad_outbox) = record::parse(&outbox);
     let info = json!({
-        "branch": format!("origin/{}", store::BRANCH),
-        "fetched": fetched.is_ok(),
-        "fetch_error": fetched.err().map(|e| format!("{e:#}")),
+        "remote": remote.unwrap_or("none"),
+        "remote_error": at.problem(),
+        "branch": remote.map(|r| format!("{r}/{}", store::BRANCH)),
+        "fetched": fetched.as_ref().map(Result::is_ok),
+        "fetch_error": fetched.and_then(Result::err).map(|e| format!("{e:#}")),
         "on_branch": on_branch,
         "in_outbox": waiting.len(),
         "bad_lines": bad_remote + bad_outbox,
@@ -42,7 +100,11 @@ fn stored(repo: &Repo) -> (Vec<Record>, Value) {
 
 /// The units the records hold, and where the records came from.
 pub fn stored_units(repo: &Repo) -> (Vec<Unit>, Value) {
-    let (records, mut info) = stored(repo);
+    let at = Where::of(&factory::root(None, &repo.root));
+    let (records, mut info) = stored(repo, &at);
+    if let Some(e) = info["remote_error"].as_str() {
+        eprintln!("ns: warning: quality records are read from the outbox only: {e}");
+    }
     let units = record::units(&records);
     info["units"] = json!(units.len());
     (units, info)
@@ -93,7 +155,7 @@ fn warn_partial(unit: &str, gaps: &[Unparsed]) {
 
 /// Write the quality records of a unit that ended, and flush the outbox. Never fails: the
 /// result is returned as a run-log event, and anything unpushed waits in the outbox.
-pub fn record_unit(repo: &Repo, worktree: &Path, meta: &Meta) -> Value {
+pub fn record_unit(repo: &Repo, at: &Where, worktree: &Path, meta: &Meta) -> Value {
     let (attempts, built, gaps) = unit_lines(worktree, meta, Clock::from_env().now());
     let mut ev = json!({"event": "quality_record", "attempts": attempts});
     warn_partial(&meta.unit, &gaps);
@@ -107,7 +169,7 @@ pub fn record_unit(repo: &Repo, worktree: &Path, meta: &Meta) -> Value {
             Vec::new()
         }
     };
-    match store::publish(&repo.root, &repo.common_dir, &new) {
+    match store::publish(&repo.root, &repo.common_dir, at.dest(), &new) {
         Ok(sent) => {
             if let Sent::Outbox { reason, .. } = &sent {
                 eprintln!("ns: quality records kept in the outbox: {reason}");
@@ -129,7 +191,11 @@ pub fn record_unit(repo: &Repo, worktree: &Path, meta: &Meta) -> Value {
 /// why its records are not saved, or `None` when they are: pushed, waiting in the outbox, or
 /// none to write. A review artifact that can't be read is left out of the record, listed in
 /// the event's `unparsed` with its unit, and warned about.
-pub fn record_units(repo: &Repo, units: &[(&Path, &Meta)]) -> (Value, Vec<Option<String>>) {
+pub fn record_units(
+    repo: &Repo,
+    at: &Where,
+    units: &[(&Path, &Meta)],
+) -> (Value, Vec<Option<String>>) {
     let now = Clock::from_env().now();
     let mut unsaved = vec![None; units.len()];
     let mut new = Vec::new();
@@ -151,7 +217,7 @@ pub fn record_units(repo: &Repo, units: &[(&Path, &Meta)]) -> (Value, Vec<Option
     if !unparsed.is_empty() {
         ev["unparsed"] = json!(unparsed);
     }
-    match store::publish(&repo.root, &repo.common_dir, &new) {
+    match store::publish(&repo.root, &repo.common_dir, at.dest(), &new) {
         Ok(sent) => {
             if let Sent::Outbox { reason, .. } = &sent {
                 eprintln!("ns: quality records kept in the outbox: {reason}");
@@ -179,8 +245,8 @@ pub fn record_units(repo: &Repo, units: &[(&Path, &Meta)]) -> (Value, Vec<Option
     (ev, unsaved)
 }
 
-/// `ns quality import <dir>`: records for each archived `<dir>/<unit>/.ns/<unit>/` that origin's
-/// branch doesn't hold yet, pushed in one commit.
+/// `ns quality import <dir>`: records for each archived `<dir>/<unit>/.ns/<unit>/` that the
+/// remote's branch (or the outbox) doesn't hold yet, pushed in one commit.
 pub fn import(dir: &Path, dry_run: bool) -> Result<ExitCode> {
     if !dir.is_dir() {
         return Err(SfError::usage(
@@ -190,7 +256,8 @@ pub fn import(dir: &Path, dry_run: bool) -> Result<ExitCode> {
         .into());
     }
     let repo = Repo::discover(&std::env::current_dir().context("cannot read current directory")?)?;
-    let (existing, info) = stored(&repo);
+    let at = Where::of(&factory::root(None, &repo.root));
+    let (existing, info) = stored(&repo, &at);
     let have: BTreeSet<&str> = existing.iter().map(|r| r.unit.as_str()).collect();
     let (_, runs) = runlog::read(&repo.run_log(), runlog::Window::default());
     let now = Clock::from_env().now();
@@ -276,21 +343,30 @@ pub fn import(dir: &Path, dry_run: bool) -> Result<ExitCode> {
         out["status"] = json!(status);
         ExitCode::SUCCESS
     } else {
-        let sent = store::publish(&repo.root, &repo.common_dir, &lines(&new)?)?;
+        if let Some(e) = at.problem() {
+            return Err(SfError::usage(
+                format!("cannot import the records: {e}"),
+                "check it with:\n  ns factory validate",
+            )
+            .into());
+        }
+        let remote = at.remote();
+        let sent = store::publish(&repo.root, &repo.common_dir, at.dest(), &lines(&new)?)?;
         out["push"] = sent_json(&sent);
         out["status"] = json!(match sent {
             Sent::Nothing => "already-done",
             Sent::Pushed { .. } => "pushed",
             Sent::Outbox { .. } => "outbox",
         });
-        if matches!(sent, Sent::Outbox { .. }) {
-            out["ok"] = json!(false);
-            eprintln!("error: the records are in the outbox, not on origin");
-            eprintln!("  check:  git remote get-url origin");
-            eprintln!("  then:   ns quality import {}", dir.display());
-            ExitCode::from(1)
-        } else {
-            ExitCode::SUCCESS
+        match (&sent, remote) {
+            (Sent::Outbox { .. }, Some(r)) => {
+                out["ok"] = json!(false);
+                eprintln!("error: the records are in the outbox, not on {r}");
+                eprintln!("  check:  git remote get-url {r}");
+                eprintln!("  then:   ns quality import {}", dir.display());
+                ExitCode::from(1)
+            }
+            _ => ExitCode::SUCCESS,
         }
     };
     println!("{}", serde_json::to_string_pretty(&out)?);
@@ -322,7 +398,8 @@ mod tests {
             })
             .collect();
         let units: Vec<(&Path, &Meta)> = metas.iter().map(|m| (root.as_path(), m)).collect();
-        let (ev, unsaved) = record_units(&repo, &units);
+        let (ev, unsaved) =
+            record_units(&repo, &Where::of(&factory::root(None, &repo.root)), &units);
         assert!(
             unsaved[0].as_deref().unwrap().contains("absolute path"),
             "{ev}"
@@ -363,7 +440,12 @@ mod tests {
             unit: unit.into(),
             ..Meta::default()
         };
-        let ev = record_unit(&repo, &root, &meta);
+        let ev = record_unit(
+            &repo,
+            &Where::of(&factory::root(None, &repo.root)),
+            &root,
+            &meta,
+        );
         assert_eq!(ev["attempts"], 1);
         assert!(
             ev["error"].as_str().unwrap().contains("absolute path"),

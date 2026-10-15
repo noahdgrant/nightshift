@@ -72,6 +72,7 @@ fn rejects_unknown_keys_everywhere() {
         "[automations]\n",
         "[merge]\npolcy = \"auto\"\n",
         "[supervise]\nsilence = 45\n",
+        "[quality]\nremotes = \"origin\"\n",
     ] {
         assert!(parse(bad).is_err(), "{bad}");
     }
@@ -221,6 +222,47 @@ fn a_zero_silence_or_empty_notify_is_a_problem() {
         p,
         ["[supervise] notify is empty; remove it or name a command"]
     );
+}
+
+#[test]
+fn a_quality_remote_that_is_not_a_remote_name_is_refused_where_it_is_used() {
+    for bad in [
+        "",
+        "  ",
+        "-x",
+        "--upload-pack=touch x",
+        "a b",
+        "a..b",
+        "a~1",
+        "x/",
+    ] {
+        let f = parse(&format!("[quality]\nremote = {bad:?}\n")).unwrap();
+        assert!(f.quality.target().is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn quality_remote_defaults_to_origin_and_none_turns_the_push_off() {
+    let f = parse("").unwrap();
+    assert_eq!(f.quality.remote, "origin");
+    assert_eq!(f.quality.target(), Ok(Some("origin")));
+    let f = parse("[quality]\nremote = \"records\"\n").unwrap();
+    assert_eq!(f.quality.target(), Ok(Some("records")));
+    assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+    let f = parse("[quality]\nremote = \"none\"\n").unwrap();
+    assert_eq!(f.quality.target(), Ok(None));
+    assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+}
+
+#[test]
+fn an_empty_or_dash_quality_remote_is_a_problem() {
+    for bad in ["", " ", "-x"] {
+        let p = parse(&format!("[quality]\nremote = {bad:?}\n"))
+            .unwrap()
+            .problems(None);
+        assert_eq!(p.len(), 1, "{bad:?}: {p:?}");
+        assert!(p[0].starts_with("[quality] remote"), "{p:?}");
+    }
 }
 
 #[test]

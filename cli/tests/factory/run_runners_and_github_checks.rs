@@ -324,11 +324,32 @@ fn missing_subscription_login_refuses_to_start() {
         .code(2)
         .stderr(predicates::str::contains("subscription"));
     assert!(e.calls().is_empty());
+    assert!(!e.worktree(UNIT).exists(), "refused before the worktree");
+    // A dry run starts no harness, so it needs no login.
+    e.run(&["run", "--issue", "7", "--dry-run"], 0);
     // billing = "api" disables the guard.
     e.factory("[defaults]\nbilling = \"api\"\n");
     e.queue("build", &["pass:commit"]);
     e.run(&["run", "--issue", "7"], 0);
     assert!(e.ctrl.join("leak").exists(), "api billing keeps the key");
+}
+
+/// The planned phase command is the one that runs: a subscription claude drops `--bare`.
+#[test]
+fn a_subscription_phase_command_drops_bare() {
+    let e = Env::new();
+    fs::write(
+        e.base.join("no-config.toml"),
+        "[harness.claude]\ncommand = [\"claude\"]\ncommand_write = [\"claude\", \"--bare\", \"-p\"]\n",
+    )
+    .unwrap();
+    let bare = |e: &Env| {
+        let d = e.run(&["run", "--issue", "7", "--dry-run"], 0);
+        d["command"].as_array().unwrap().iter().any(|a| a == "--bare")
+    };
+    assert!(!bare(&e));
+    e.factory("[defaults]\nbilling = \"api\"\n");
+    assert!(bare(&e));
 }
 
 #[test]
@@ -551,7 +572,7 @@ fn build_only_a_credited_ship_that_gives_up_on_a_lock_is_credited_again_on_its_r
     let ready = e.ctrl.join("ready");
     let go = e.ctrl.join("go");
     for f in [&ready, &go] {
-        assert!(StdCommand::new("mkfifo").arg(f).status().unwrap().success());
+        mkfifo(f);
     }
     e.ctl(
         "review.sh",

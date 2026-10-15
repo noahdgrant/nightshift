@@ -9,9 +9,8 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 use crate::error::{SfError, EXIT_HARNESS_MISSING, EXIT_NOT_CONFIGURED, EXIT_NO_WRITE_COMMAND};
-use crate::proc::Proc;
 use crate::which::which;
-use crate::{billing, config, factory, git};
+use crate::{billing, config, factory, git, harness};
 
 fn not_configured(msg: String, path: &Path) -> anyhow::Error {
     SfError::new(EXIT_NOT_CONFIGURED, msg)
@@ -238,7 +237,7 @@ impl Plan {
         stdout: Option<File>,
     ) -> Result<Vec<u8>> {
         let (resolved, command) = (&self.resolved, &self.command);
-        let mut cmd = Proc::harness(bin, subscription(cwd)?);
+        let mut cmd = harness::command(bin, &command[1..], subscription(cwd)?, |_| {})?;
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
@@ -246,7 +245,6 @@ impl Plan {
             cmd.output_to(out);
         }
         let out = cmd
-            .args(&command[1..])
             .stdin(prompt.to_vec())
             .stderr_to(dup(std::io::stderr())?)
             .output()
