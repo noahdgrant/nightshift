@@ -774,6 +774,39 @@ mod tests {
     }
 
     #[test]
+    fn a_remote_whose_configured_name_starts_with_a_dash_still_fetches_and_pushes() {
+        let s = setup();
+        let records = s.base.join("records.git");
+        g(&s.base, &["init", "-q", "--bare", "records.git"]);
+        let url = records.to_str().unwrap();
+        g(&s.repo, &["config", "remote.-x.url", url]);
+        g(
+            &s.repo,
+            &[
+                "config",
+                "remote.-x.fetch",
+                "+refs/heads/*:refs/remotes/-x/*",
+            ],
+        );
+        let c = common(&s.repo);
+        let sent = publish(&s.repo, &c, Dest::Remote("-x"), &lines(&["x"])).unwrap();
+        assert_eq!(
+            sent,
+            Sent::Pushed {
+                records: 1,
+                tries: 1
+            }
+        );
+        let head = format!("refs/heads/{BRANCH}");
+        assert_eq!(g(&records, &["show", &format!("{head}:{FILE}")]), "x");
+        let other = clone(&s.base, &s.remote, "other");
+        g(&other, &["config", "remote.-x.url", url]);
+        let tip = fetch(&other, "-x").unwrap().unwrap();
+        assert_eq!(g(&other, &["rev-parse", &tracking("-x")]), tip);
+        assert_eq!(tracked(&other, "-x").unwrap(), "x\n");
+    }
+
+    #[test]
     fn a_url_is_not_a_remote_name() {
         let s = setup();
         let url = s.remote.to_str().unwrap();
