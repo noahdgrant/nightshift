@@ -271,8 +271,10 @@ impl Protected {
                 p.display()
             )));
         }
+        let mut by_key = BTreeSet::new();
         for p in paths.iter().rev() {
             if self.put_back_config(now, p)? {
+                by_key.insert(p);
                 continue;
             }
             match (self.nodes.get(p), now.nodes.get(p)) {
@@ -283,7 +285,7 @@ impl Protected {
             }
         }
         for p in paths {
-            if self.views.contains_key(p) && now.views.contains_key(p) {
+            if by_key.contains(p) {
                 continue;
             }
             match self.nodes.get(p) {
@@ -443,6 +445,10 @@ fn dirty_under(dir: &Path) -> Option<Vec<PathBuf>> {
     let out = git::run(
         top,
         &[
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
             "status",
             "--porcelain=v1",
             "-z",

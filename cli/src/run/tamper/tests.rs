@@ -605,3 +605,169 @@ fn a_deep_tree_is_read_without_recursion() {
     assert_eq!(p.nodes.len(), 201);
     assert!(p.check().is_none());
 }
+
+fn repo_without_hooks(d: &Path) -> (PathBuf, PathBuf) {
+    let wt = d.join("wt");
+    git::run(d, &["init", "-q", wt.to_str().unwrap()]).unwrap();
+    fs::write(wt.join("f"), "f\n").unwrap();
+    git_ok(&wt, &["add", "."]);
+    git_ok(&wt, &["commit", "-q", "-m", "init"]);
+    let hooks = wt.join(".githooks");
+    (wt, hooks)
+}
+
+#[test]
+fn a_value_less_config_key_is_put_back_whole() {
+    let d = tempfile::tempdir().unwrap();
+    let c = d.path().join("config");
+    let text = "[core]\n\tbare\n\thooksPath = hooks\n";
+    fs::write(&c, text).unwrap();
+    let p = Protected::read(vec![config(&c)]);
+    fs::write(&c, "[core]\n\tbare = true\n\thooksPath = /dev/null\n").unwrap();
+    let t = p.check().unwrap();
+    assert!(t.restore_error.is_none(), "{t:?}");
+    assert_eq!(fs::read_to_string(&c).unwrap(), text);
+    assert!(p.check().is_none());
+}
+
+#[test]
+fn a_config_key_removed_a_multi_value_key_and_a_deleted_file_are_put_back() {
+    let d = tempfile::tempdir().unwrap();
+    let c = d.path().join("config");
+    fs::write(
+        &c,
+        "[core]\n\thooksPath = hooks\n[remote \"o\"]\n\tfetch = a\n\tfetch = b\n",
+    )
+    .unwrap();
+    let p = Protected::read(vec![config(&c)]);
+    let key = |k: &str| {
+        git::run(
+            d.path(),
+            &["config", "--file", c.to_str().unwrap(), "--get-all", k],
+        )
+    };
+
+    fs::write(&c, "[remote \"o\"]\n\tfetch = a\n\tfetch = b\n").unwrap();
+    assert!(p.check().unwrap().restore_error.is_none());
+    assert_eq!(key("core.hookspath").unwrap(), "hooks");
+
+    fs::write(
+        &c,
+        "[core]\n\thooksPath = hooks\n[remote \"o\"]\n\tfetch = a\n\tfetch = z\n\tfetch = b\n",
+    )
+    .unwrap();
+    assert!(p.check().unwrap().restore_error.is_none());
+    assert_eq!(key("remote.o.fetch").unwrap(), "a\nb");
+
+    fs::remove_file(&c).unwrap();
+    let t = p.check().unwrap();
+    assert!(t.restore_error.is_none(), "{t:?}");
+    assert_eq!(key("core.hookspath").unwrap(), "hooks");
+    assert!(p.check().is_none());
+}
+
+#[test]
+fn a_staged_rename_under_githooks_is_put_back() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_with_hook(d.path());
+    let p = Protected::read(vec![tracked(&hooks)]);
+    git_ok(&wt, &["mv", ".githooks/pre-commit", ".githooks/renamed"]);
+    let t = p.check().unwrap();
+    assert!(t.restore_error.is_none(), "{t:?}");
+    assert_eq!(t.paths, [hooks.join("pre-commit"), hooks.join("renamed")]);
+    assert!(hooks.join("pre-commit").exists());
+    assert!(!hooks.join("renamed").exists());
+}
+
+#[test]
+fn a_new_directory_under_githooks_is_removed_unless_committed() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_with_hook(d.path());
+    let p = Protected::read(vec![tracked(&hooks)]);
+    fs::create_dir_all(hooks.join("sub")).unwrap();
+    fs::write(hooks.join("sub/x"), "x\n").unwrap();
+    let t = p.check().unwrap();
+    assert!(t.restore_error.is_none(), "{t:?}");
+    assert!(!hooks.join("sub").exists());
+
+    fs::create_dir_all(hooks.join("sub")).unwrap();
+    fs::write(hooks.join("sub/x"), "x\n").unwrap();
+    git_ok(&wt, &["add", "."]);
+    git_ok(&wt, &["commit", "-q", "-m", "sub"]);
+    assert!(p.check().is_none());
+    assert!(hooks.join("sub/x").exists());
+}
+
+#[test]
+fn a_githooks_created_where_there_was_none_is_removed_unless_committed() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_without_hooks(d.path());
+    let p = Protected::read(vec![tracked(&hooks)]);
+    fs::create_dir_all(&hooks).unwrap();
+    fs::write(hooks.join("pre-commit"), "exit 1\n").unwrap();
+    let t = p.check().unwrap();
+    assert!(t.restore_error.is_none(), "{t:?}");
+    assert!(!hooks.exists());
+
+    fs::create_dir_all(&hooks).unwrap();
+    fs::write(hooks.join("pre-commit"), "exit 0\n").unwrap();
+    git_ok(&wt, &["add", "."]);
+    git_ok(&wt, &["commit", "-q", "-m", "hooks"]);
+    assert!(p.check().is_none());
+    assert!(hooks.join("pre-commit").exists());
+}
+
+#[test]
+fn dirty_under_is_none_when_git_cannot_say_and_every_change_stays() {
+    let d = tempfile::tempdir().unwrap();
+    let h = hooks(d.path());
+    assert!(dirty_under(&h).is_none());
+    let p = Protected::read(vec![tracked(&h)]);
+    fs::write(h.join("pre-commit"), "changed\n").unwrap();
+    let t = p.check().unwrap();
+    assert_eq!(t.paths, [h.join("pre-commit")]);
+    assert_eq!(
+        fs::read_to_string(h.join("pre-commit")).unwrap(),
+        "exit 0\n"
+    );
+}
+
+#[test]
+fn the_tracked_check_does_not_run_a_planted_fsmonitor_or_hook() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_with_hook(d.path());
+    let marker = d.path().join("ran");
+    let p = Protected::read(vec![tracked(&hooks)]);
+    let cmd = format!("touch {}", marker.display());
+    git_ok(&wt, &["config", "core.fsmonitor", &cmd]);
+    fs::write(hooks.join("pre-commit"), "exit 1\n").unwrap();
+    assert!(dirty_under(&hooks).is_some());
+    assert!(!marker.exists(), "git status ran the planted command");
+    drop(p);
+}
+
+#[test]
+fn the_production_limits_hold_a_representative_tree() {
+    let d = tempfile::tempdir().unwrap();
+    let h = hooks(d.path());
+    let p = Protected::read(vec![tree(&h)]);
+    assert!(p.over.is_empty());
+    assert!(p.nodes.contains_key(&h.join("sub/x")));
+    assert_eq!(
+        (LIMITS.entries, LIMITS.bytes, LIMITS.depth),
+        (20_000, 64 * 1024 * 1024, 32)
+    );
+}
+
+#[test]
+fn the_byte_cap_is_inclusive() {
+    let d = tempfile::tempdir().unwrap();
+    let dir = d.path().join("t");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("a"), [0u8; 10]).unwrap();
+    assert!(Protected::read_with(vec![tree(&dir)], tight(10, 10, 4))
+        .over
+        .is_empty());
+    let over = Protected::read_with(vec![tree(&dir)], tight(10, 9, 4)).over;
+    assert!(over.contains(&dir));
+}
