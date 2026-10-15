@@ -118,7 +118,7 @@ fn a_matched_value_that_grew_is_new_and_names_both_values() {
     assert!(m.accepted.is_empty());
     assert!(m.fixed.is_empty(), "the entry it grew past is not fixed");
     assert_eq!(m.new.len(), 1);
-    assert_eq!(m.new[0].grew, Some((221, 261)));
+    assert_eq!(m.new[0].growth, Some(Growth { was: 221, now: 261 }));
     assert_eq!(
         m.new[0].line(),
         "a.rs:1: clippy/clippy::too_many_lines: this function has too many lines (261/100) \
@@ -168,8 +168,87 @@ fn a_grown_duplicate_takes_the_entry_that_still_covers_it() {
     );
     assert_eq!(m.accepted.len(), 1);
     assert_eq!(m.new.len(), 1);
-    assert_eq!(m.new[0].grew, Some((100, 200)));
+    assert_eq!(m.new[0].growth, Some(Growth { was: 100, now: 200 }));
     assert!(m.fixed.is_empty(), "both entries were paired");
+}
+
+#[test]
+fn a_finding_that_fits_only_a_large_entry_is_not_starved_by_a_smaller_one() {
+    let base = [
+        sized(100, "a.rs", "fn a() {"),
+        sized(200, "a.rs", "fn a() {"),
+        sized(300, "a.rs", "fn a() {"),
+    ];
+    let current = [
+        sized(50, "a.rs", "fn a() {"),
+        sized(150, "a.rs", "fn a() {"),
+        sized(250, "a.rs", "fn a() {"),
+    ];
+    let m = compare(&current, &base);
+    assert_eq!(m.accepted.len(), 3);
+    assert!(m.new.is_empty());
+    assert!(m.fixed.is_empty());
+}
+
+#[test]
+fn a_grown_finding_is_named_after_the_others_take_the_entries_they_fit() {
+    let base = [sized(5, "a.rs", "fn a() {"), sized(10, "a.rs", "fn a() {")];
+    let m = compare(
+        &[sized(7, "a.rs", "fn a() {"), sized(10, "a.rs", "fn a() {")],
+        &base,
+    );
+    assert_eq!(m.accepted.len(), 1);
+    assert_eq!(m.new.len(), 1);
+    assert_eq!(m.new[0].growth, Some(Growth { was: 5, now: 7 }));
+}
+
+#[test]
+fn removal_only_pairs_a_head_entry_with_the_entry_that_fits_it_in_any_order() {
+    let base = text(&[
+        sized(100, "a.rs", "fn a() {"),
+        sized(200, "a.rs", "fn a() {"),
+        sized(300, "a.rs", "fn a() {"),
+    ]);
+    let head = text(&[
+        sized(50, "a.rs", "fn a() {"),
+        sized(150, "a.rs", "fn a() {"),
+        sized(250, "a.rs", "fn a() {"),
+    ]);
+    assert_eq!(removal_only(&base, &head), Ok(true));
+    let base = text(&[sized(5, "a.rs", "fn a() {"), sized(10, "a.rs", "fn a() {")]);
+    let head = text(&[sized(7, "a.rs", "fn a() {"), sized(10, "a.rs", "fn a() {")]);
+    assert_eq!(removal_only(&base, &head), Ok(false));
+}
+
+#[test]
+fn fixed_lists_the_baseline_entries_in_finding_order() {
+    let base = [f("b.py", 1, "x"), f("a.py", 1, "x")];
+    let m = compare(&[], &base);
+    assert_eq!(m.fixed, [1, 0]);
+}
+
+fn duplicates(count: u64) -> Finding {
+    Finding {
+        tool: "cargo-deny".into(),
+        rule: "duplicate".into(),
+        file: "Cargo.toml".into(),
+        line: None,
+        message: format!("found {count} duplicate entries for crate 'syn'"),
+        snippet: "syn".into(),
+    }
+}
+
+#[test]
+fn a_duplicate_that_gains_a_version_is_new_and_names_both_counts() {
+    let m = compare(&[duplicates(2)], &[duplicates(1)]);
+    assert!(m.accepted.is_empty());
+    assert_eq!(m.new.len(), 1);
+    assert_eq!(m.new[0].growth, Some(Growth { was: 1, now: 2 }));
+    assert_eq!(
+        m.new[0].line(),
+        "Cargo.toml: cargo-deny/duplicate: found 2 duplicate entries for crate 'syn' \
+         (grew from 1 to 2)"
+    );
 }
 
 #[test]
@@ -199,9 +278,9 @@ fn planned_lowers_a_shrunk_value_and_refuses_to_write_with_only() {
     let base = [sized(221, "a.rs", "fn a() {")];
     let current = [sized(100, "a.rs", "fn a() {")];
     let m = compare(&current, &base);
-    let (entries, dropped, lowered) = planned(&base, &m, &current, false).unwrap();
-    assert_eq!((dropped, lowered), (0, 1));
-    assert!(entries[0].message.contains("(100/100)"));
+    let prune = planned(&base, &m, &current, false).unwrap();
+    assert_eq!((prune.dropped, prune.lowered), (0, 1));
+    assert!(prune.entries[0].message.contains("(100/100)"));
     assert!(planned(&base, &m, &current, true).is_none());
 
     let unchanged = compare(&[sized(221, "a.rs", "fn a() {")], &base);
