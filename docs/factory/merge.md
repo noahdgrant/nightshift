@@ -1,6 +1,9 @@
 # Merge
 
-`merge.policy = "human"` (the default) ends a unit at `done` when `pr.md` passes. With `policy = "auto"`, `ns run` then runs its merge step. It is the only code in nightshift that merges, it only merges its own unit's PR, and only with squash:
+`merge.policy = "human"` (the default) ends a unit at `done` when `pr.md` passes. With `policy = "auto"`, `ns run` then runs its merge step. It is the only code in nightshift that merges, it only merges its own unit's PR, and only with squash.
+
+The steps name the `gh` command each forge call runs on GitHub. The step makes those calls through the `Forge` trait (`cli/src/watch/forge.rs`), like every other forge call in `ns`, and `gh` runs only in the GitHub implementation. GitLab has no merge step yet (#323): its first call fails with "ns run's merge step is not supported on GitLab yet (#323)", and the run exits 1. The steps:
+
 
 1. `gh pr view <pr> --json state,headRefOid`. `MERGED` already means something other than this step merged it: stuck. Not `OPEN`: stuck.
 2. The PR head and `review.md` must be current (see the [state table](run.md)), and `review.md` must be `pass`. Otherwise `done`, needing a human merge. The merge in step 8 matches the PR head, including the head from before a `BEHIND` update when `update-branch` reports none; this goes beyond the issue's literal text on purpose, so a rebase after review still merges the reviewed head.
