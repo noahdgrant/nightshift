@@ -30,6 +30,27 @@ rule:
   kind: struct_expression
   has: {field: name, regex: '(^|::)Kind::Harness$'}
 ---
+# The cleanups that delete a tree ns owns go through crate::tree::remove, which first makes every
+# directory in it writable, so a read-only directory a phase left there cannot keep it (#730).
+# Test code in these files may remove a tree it made itself.
+id: tree-removal-skips-modes
+language: rust
+severity: error
+message: "remove_dir_all here fails on a read-only directory a phase left; remove the tree through crate::tree::remove (#730)"
+files: ["cli/src/clean.rs", "cli/src/build_output.rs", "cli/src/run/phase_run.rs"]
+rule:
+  kind: call_expression
+  has: {field: function, regex: '(^|::)remove_dir_all$'}
+  not:
+    inside:
+      stopBy: end
+      all:
+        - any: [{kind: function_item}, {kind: mod_item}]
+        - follows:
+            kind: attribute_item
+            regex: '^#\[(test|cfg\(test\))\]$'
+            stopBy: {not: {any: [{kind: attribute_item}, {kind: line_comment}, {kind: block_comment}]}}
+---
 # wall-clock-in-test, part 1 of 2: in a tests/ directory or a file named tests.rs, any code. Part 2 below matches the same
 # code inside #[test] and #[cfg(test)] items anywhere.
 id: wall-clock-in-test

@@ -661,6 +661,7 @@ fn a_codex_night_drains_before_it_syncs_a_skill_change() {
     e.queue("triage.5-fix-e", &["none"]);
     let (in_a, go_a) = hold_phase(&e, A, "build");
     let (in_b, go_b) = hold_phase(&e, B, "build");
+    let (in_c, go_c) = hold_phase(&e, "4-fix-c", "build");
     let mut w =
         Watching::start(
             e.ns()
@@ -679,6 +680,8 @@ fn a_codex_night_drains_before_it_syncs_a_skill_change() {
     // The drain claims nothing and runs no triage pass for the untriaged #5.
     assert_eq!(e.triage_only_runs(), 0, "{:?}", e.calls());
     release(&go_a);
+    w.entered(&in_c);
+    release(&go_c);
     let (code, v, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(by_issue(&units(&v)), each(&[2, 3, 4], "done"), "{v}");
@@ -764,10 +767,8 @@ fn a_codex_night_whose_checkout_cannot_move_warns_once_and_runs_its_units() {
     fs::write(e.root.join("skills/ns-a/SKILL.md"), "edited\n").unwrap();
     push_from_elsewhere(&e, "skills/ns-a/SKILL.md");
     two_ready(&e);
-    let out = e.ns().args(["watch"]).output();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{err}");
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let (code, v, err) = one_unit_at_a_time(&e, e.ns().args(["watch"]), &[A, B]);
+    assert_eq!(code, Some(0), "{err}");
     assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
     assert_eq!(err.matches("draining").count(), 1, "{err}");
     assert_eq!(events_named(&e, "skills_stale").len(), 1);

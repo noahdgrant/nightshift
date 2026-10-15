@@ -148,6 +148,42 @@ pub fn fake_on_path(name: &str, body: &str) -> tempfile::TempDir {
     dir
 }
 
+/// A temp dir that gives its owner write on every directory in it before it is deleted, so a
+/// test that leaves a read-only directory, or panics before putting it back, leaks nothing.
+pub struct TempTree(tempfile::TempDir);
+
+impl TempTree {
+    pub fn path(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+impl Drop for TempTree {
+    fn drop(&mut self) {
+        crate::tree::make_removable(self.0.path());
+    }
+}
+
+pub fn temp_tree() -> TempTree {
+    TempTree(tempfile::tempdir().unwrap())
+}
+
+pub fn chmod(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// Whether this process reads past a directory's mode (it runs as root).
+pub fn reads_any_mode(dir: &Path) -> bool {
+    let probe = dir.join("probe");
+    fs::create_dir(&probe).unwrap();
+    chmod(&probe, 0);
+    let any = fs::read_dir(&probe).is_ok();
+    chmod(&probe, 0o750);
+    fs::remove_dir(&probe).unwrap();
+    any
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

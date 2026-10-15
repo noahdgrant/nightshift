@@ -90,17 +90,15 @@ fn watch_warns_once_of_free_space_it_cannot_read_and_runs_its_units() {
     e.ready(3, "Fix b", &["type:fix"], "");
     e.ctl("pr", "12");
     e.queue("build", &["pass:commit", "pass:commit"]);
-    let out = e
-        .ns()
-        .env("NS_FREE_GIB_FILE", e.base.join("no-such-file"))
-        .args(["watch", "--max-units", "2"])
-        .assert()
-        .code(0)
-        .get_output()
-        .clone();
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let (code, v, err) = one_unit_at_a_time(
+        &e,
+        e.ns()
+            .env("NS_FREE_GIB_FILE", e.base.join("no-such-file"))
+            .args(["watch", "--max-units", "2"]),
+        &[A, B],
+    );
+    assert_eq!(code, Some(0), "{err}");
     assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
-    let err = String::from_utf8_lossy(&out.stderr);
     // Each filesystem once, the worktrees' and, under WSL, /mnt/c.
     let worktrees = format!("free space on {} can't be read", e.base.display());
     assert_eq!(err.matches(&worktrees).count(), 1, "{err}");

@@ -1,4 +1,5 @@
 use super::*;
+use crate::testutil::{chmod, reads_any_mode, temp_tree};
 
 mod large;
 
@@ -33,10 +34,6 @@ fn git_ok(dir: &Path, args: &[&str]) {
 
 fn mode(path: &Path) -> u32 {
     fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
-}
-
-fn chmod(path: &Path, mode: u32) {
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
 }
 
 /// A tree `hooks/` holding `pre-commit` (0755) and `sub/x`.
@@ -181,19 +178,9 @@ fn a_config_created_where_there_was_none_is_removed() {
     assert!(!c.exists());
 }
 
-/// Whether this process reads past a directory's mode (it runs as root).
-fn reads_any_mode(dir: &Path) -> bool {
-    let probe = dir.join("probe");
-    fs::create_dir(&probe).unwrap();
-    chmod(&probe, 0);
-    let any = fs::read_dir(&probe).is_ok();
-    chmod(&probe, 0o750);
-    any
-}
-
 #[test]
 fn an_unreadable_path_is_neither_compared_nor_put_back() {
-    let d = tempfile::tempdir().unwrap();
+    let d = temp_tree();
     if reads_any_mode(d.path()) {
         return;
     }
@@ -230,7 +217,7 @@ fn an_unreadable_path_is_neither_compared_nor_put_back() {
 
 #[test]
 fn a_restore_that_fails_says_so() {
-    let d = tempfile::tempdir().unwrap();
+    let d = temp_tree();
     if reads_any_mode(d.path()) {
         return;
     }
@@ -361,7 +348,7 @@ fn an_added_directory_is_removed_with_what_is_in_it() {
 
 #[test]
 fn a_path_made_unreadable_during_the_phase_is_put_back() {
-    let d = tempfile::tempdir().unwrap();
+    let d = temp_tree();
     if reads_any_mode(d.path()) {
         return;
     }
