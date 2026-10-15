@@ -233,6 +233,41 @@ fn archiving_keeps_only_current_downstream_passes() {
     assert!(d.join("history/build-2.md").exists());
 }
 
+#[test]
+fn verify_archives_a_non_empty_evidence_dir_and_a_restore_puts_it_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let files = |n: &str| fs::read_dir(d.join(n)).map_or(0, |es| es.count());
+    // Missing or empty: nothing archived, no number taken.
+    archive_for(d, "verify", &state(&[])).unwrap();
+    assert!(!d.join("history").exists());
+    fs::create_dir(d.join("evidence")).unwrap();
+    archive_for(d, "verify", &state(&[])).unwrap();
+    assert!(!d.join("history").exists());
+    // Only verify archives it.
+    fs::write(d.join("evidence/a.log"), "1").unwrap();
+    archive_for(d, "build", &state(&[])).unwrap();
+    assert_eq!(files("evidence"), 1);
+    let moves = archive_for(d, "verify", &state(&[])).unwrap();
+    assert!(d.join("evidence").is_dir());
+    assert_eq!(files("evidence"), 0);
+    assert!(d.join("history/evidence-files-1/a.log").exists());
+    // A set-aside attempt that left evidence/ empty gets the old files back.
+    restore(&moves);
+    assert!(d.join("evidence/a.log").exists());
+    assert!(!d.join("history/evidence-files-1").exists());
+    archive_for(d, "verify", &state(&[])).unwrap();
+    fs::write(d.join("evidence/b.log"), "2").unwrap();
+    let moves = archive_for(d, "verify", &state(&[])).unwrap();
+    assert!(d.join("history/evidence-files-1/a.log").exists());
+    assert!(d.join("history/evidence-files-2/b.log").exists());
+    // One that wrote files of its own keeps them; the archive stays where it is.
+    fs::write(d.join("evidence/c.log"), "3").unwrap();
+    restore(&moves);
+    assert!(d.join("evidence/c.log").exists());
+    assert!(d.join("history/evidence-files-2/b.log").exists());
+}
+
 fn pr_art(dir: &Path, name: &str, pr: u64, updated: &str) {
     fs::create_dir_all(dir.join("history")).unwrap();
     fs::write(
