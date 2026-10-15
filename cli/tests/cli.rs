@@ -860,7 +860,8 @@ fn ask_xdg_config_home() {
 fn ask_runs_harness_and_maps_exit_codes() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = config(tmp.path());
-    ns().env("NS_CONFIG", &cfg)
+    ns().current_dir(tmp.path())
+        .env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review"])
         .write_stdin("hello harness\n")
         .assert()
@@ -869,21 +870,24 @@ fn ask_runs_harness_and_maps_exit_codes() {
 
     let prompt = tmp.path().join("p.md");
     fs::write(&prompt, "from file\n").unwrap();
-    ns().env("NS_CONFIG", &cfg)
+    ns().current_dir(tmp.path())
+        .env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review.spec", "--prompt-file"])
         .arg(&prompt)
         .assert()
         .success()
         .stdout("from file\n");
 
-    ns().env("NS_CONFIG", &cfg)
+    ns().current_dir(tmp.path())
+        .env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review.flaky"])
         .write_stdin("x")
         .assert()
         .code(1)
         .stderr(predicate::str::contains("exited with 1"));
 
-    ns().env("NS_CONFIG", &cfg)
+    ns().current_dir(tmp.path())
+        .env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "verify"])
         .write_stdin("x")
         .assert()
@@ -900,7 +904,8 @@ fn ask_passes_the_harness_stderr_through_and_keeps_it_out_of_stdout() {
         "[harness.h]\ncommand = [\"sh\", \"-c\", \"cat; echo progress >&2\"]\n[roles.review]\nharness = \"h\"\n",
     )
     .unwrap();
-    ns().env("NS_CONFIG", &cfg)
+    ns().current_dir(tmp.path())
+        .env("NS_CONFIG", &cfg)
         .args(["ask", "--role", "review"])
         .write_stdin("answer\n")
         .assert()
