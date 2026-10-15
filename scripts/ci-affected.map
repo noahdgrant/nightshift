@@ -14,7 +14,7 @@ scripts/ci-affected.map all
 scripts/ci-tools.d/* all
 .nightshift/phase-settings.json all
 .agents/skills/* --test check_verify_recipes --test cli --test verify_sandbox
-.githooks/* --test ci_local --test cli --test git_location --bin ns
+.githooks/* --test ci_local --test cli --test factory --test git_location --bin ns
 .github/workflows/ci.yml --test ci_matrix --test test_tools
 .github/workflows/release-please.yml --test release_please
 .nightshift/nightshift.toml --test cli

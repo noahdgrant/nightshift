@@ -48,3 +48,4 @@ include!("merge_gate_and_labels.rs");
 include!("merge_update_skip.rs");
 include!("run_review_loop.rs");
 include!("quality_remote.rs");
+include!("run_tamper_check.rs");

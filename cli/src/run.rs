@@ -33,6 +33,7 @@ mod merge;
 mod phase_run;
 mod phases;
 mod post_phase;
+mod tamper;
 
 use currency::known_pr;
 use drive::{drive, start_ledger};

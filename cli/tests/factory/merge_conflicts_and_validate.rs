@@ -117,9 +117,13 @@ fn a_conflict_in_the_git_fallback_goes_back_to_build() {
     assert!(!e.gh_calls().contains("pr merge"));
 }
 
+/// Shell that makes origin unreachable by moving its repo away: the phase changes no git
+/// config, which the tamper check protects.
+const GONE: &str = "r=$(git remote get-url origin); if [ -d \"$r\" ]; then mv \"$r\" \"$r.gone\"; fi";
+
 #[test]
 fn a_failed_fetch_in_the_git_fallback_needs_a_human_merge() {
-    let (e, v, code) = workflow_refused(LAND_UP, "git remote set-url origin /nonexistent");
+    let (e, v, code) = workflow_refused(LAND_UP, GONE);
     assert_eq!((code, &v["outcome"]), (0, &"done".into()), "{v}");
     let reason = v["reason"].as_str().unwrap();
     assert!(reason.contains("`workflow` scope"), "{reason}");
@@ -601,7 +605,7 @@ fn a_failed_fetch_of_the_default_branch_needs_a_human_merge() {
     let e = Env::new();
     e.factory(AUTO);
     e.ctl("pr", "12");
-    e.ctl("edit", "git remote set-url origin /nonexistent");
+    e.ctl("edit", GONE);
     e.queue("build", &["pass:commit"]);
     e.gh_file("checks-12.json", GREEN);
     e.gh_file("diff-12.txt", "work.txt\n");

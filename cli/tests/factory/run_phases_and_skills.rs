@@ -579,7 +579,7 @@ fn a_stale_snapshot_link_is_pointed_at_the_unit_again() {
 }
 
 #[test]
-fn the_phase_settings_file_is_written_again_on_a_later_run_and_before_each_phase() {
+fn the_phase_settings_file_is_written_again_on_a_later_run_and_put_back_after_a_phase() {
     let e = Env::new();
     e.run(&["run", "--issue", "7"], 0);
     let file = e
@@ -598,21 +598,16 @@ fn the_phase_settings_file_is_written_again_on_a_later_run_and_before_each_phase
     e.run(&["run", "--issue", "7"], 0);
     assert_eq!(fs::read_to_string(&file).unwrap(), good);
 
-    // Build deletes the file; verify and review must still find it whole.
+    // Build deletes the file: the tamper check puts it back whole, and the unit stops.
     let e = Env::new();
-    let seen = e.ctrl.join("seen");
-    let check =
-        format!("cat \"$NS_PHASE_SETTINGS\" >> {seen:?} 2>/dev/null || echo MISSING >> {seen:?}\n");
     e.ctl("build.sh", "rm -f \"$NS_PHASE_SETTINGS\"\n");
-    e.ctl("verify.sh", &check);
-    e.ctl("review.sh", &check);
     e.queue("build", &["pass:script"]);
-    e.queue("verify", &["pass:script"]);
-    e.queue("review", &["pass:script"]);
-    e.run(&["run", "--issue", "7"], 0);
-    let seen = fs::read_to_string(seen).unwrap();
-    assert!(!seen.contains("MISSING"), "{seen}");
-    assert_eq!(seen.matches("PreToolUse").count(), 2, "{seen}");
+    let v = e.run(&["run", "--issue", "7"], 1);
+    assert!(
+        v["reason"].as_str().unwrap().contains("build tampered"),
+        "{v}"
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), good);
 }
 
 #[test]
