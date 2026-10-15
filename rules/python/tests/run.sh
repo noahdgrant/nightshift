@@ -285,9 +285,9 @@ coverage pass --cov=inventory tests
 }
 for mode in fail none bad; do
   coverage "$mode"
-  want="pytest exited 1"
-  [ "$mode" = fail ] || want="no total coverage"
-  [ "$rc" -ne 0 ] && [ -z "$out" ] && grep -qF "ratchet-coverage.sh: $want" <<<"$err" || {
+  want="pytest exited 1" other="no total coverage"
+  [ "$mode" = fail ] || { other=$want; want="no total coverage"; }
+  [ "$rc" -ne 0 ] && [ -z "$out" ] && grep -qF "ratchet-coverage.sh: $want" <<<"$err" && ! grep -qF -e "$other" -e Traceback <<<"$err" || {
     printf 'FAIL ratchet-coverage: pytest %s: exit %s, stdout %q, stderr:\n%s\n' "$mode" "$rc" "$out" "$err" >&2
     failed=1
   }
@@ -296,7 +296,7 @@ nopytest="$tmp/no-pytest"
 mkdir -p "$nopytest"
 for t in sh mktemp rm; do ln -s "$(command -v "$t")" "$nopytest/$t"; done
 out=$(cd "$tmp" && PATH="$nopytest" "$pack/ratchet-coverage.sh" 2>"$tmp/stderr") && rc=0 || rc=$?
-[ "$rc" -ne 0 ] && [ -z "$out" ] && grep -qF "ratchet-coverage.sh: pytest is not on PATH" "$tmp/stderr" || {
+[ "$rc" -ne 0 ] && [ -z "$out" ] && grep -qF "ratchet-coverage.sh: pytest is not on PATH" "$tmp/stderr" && ! grep -qF "exited" "$tmp/stderr" || {
   printf 'FAIL ratchet-coverage: no pytest: exit %s, stdout %q, stderr:\n%s\n' "$rc" "$out" "$(<"$tmp/stderr")" >&2
   failed=1
 }

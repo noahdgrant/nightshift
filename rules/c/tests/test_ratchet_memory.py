@@ -113,6 +113,9 @@ class RatchetMemory(unittest.TestCase):
             "two files": REPORT + "  1\t2\t3\t6\t6\tother.elf\n",
             "not a number": "text data bss dec hex filename\n12k 1 2 3 4 zephyr.elf\n",
             "short line": "text data bss dec hex filename\n1 2\n",
+            "no text column": "rom data bss dec hex filename\n1 2 3 6 6 zephyr.elf\n",
+            "no bss column": "text data dec bss hex filename\n1 2 3 6 6 zephyr.elf\n",
+            "no header": "1 2 3 6 6 a.elf\n4 5 6 15 f zephyr.elf\n",
         }
         for name, report in reports.items():
             with self.subTest(report=name):

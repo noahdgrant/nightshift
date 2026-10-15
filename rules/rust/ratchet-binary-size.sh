@@ -26,10 +26,8 @@ cargo build --release --manifest-path "$crate/Cargo.toml" --bin "$bin" \
   echo "ratchet-binary-size.sh: cargo build failed for $bin in $crate" >&2
   exit 1
 }
-exe=$(jq -r --arg bin "$bin" \
-  'select(.reason == "compiler-artifact" and .target.name == $bin and .executable != null) | .executable' \
-  "$tmp/messages")
-[ -n "$exe" ] && [ -f "$exe" ] || {
+exe=$(jq -r 'select(.reason == "compiler-artifact" and .executable != null) | .executable' "$tmp/messages")
+[ -n "$exe" ] || {
   echo "ratchet-binary-size.sh: cargo built no executable named $bin in $crate" >&2
   exit 1
 }

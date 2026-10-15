@@ -80,8 +80,12 @@ out=$(cd "$tmp" && PATH="$bare" "$script" app ws/app 2>"$tmp/stderr") && rc=0 ||
 err=$(<"$tmp/stderr")
 check_error "no cargo" "ratchet-binary-size.sh: cargo is not on PATH"
 
-# A cargo that builds and reports no executable for the binary.
-printf '#!/bin/sh\necho "{\\"reason\\": \\"build-finished\\", \\"success\\": true}"\n' >"$bare/cargo"
+# A cargo that builds and reports a library and no executable.
+cat >"$bare/cargo" <<'EOF_CARGO'
+#!/bin/sh
+echo '{"reason": "compiler-artifact", "target": {"name": "app"}, "executable": null}'
+echo '{"reason": "build-finished", "success": true}'
+EOF_CARGO
 chmod +x "$bare/cargo"
 out=$(cd "$tmp" && PATH="$bare" "$script" app ws/app 2>"$tmp/stderr") && rc=0 || rc=$?
 err=$(<"$tmp/stderr")
