@@ -937,7 +937,7 @@ fn a_change_in_the_last_chunk_of_many_files_is_found() {
 fn a_committed_executable_hook_is_clean_and_losing_the_bit_is_dirty() {
     let d = tempfile::tempdir().unwrap();
     let (wt, hooks) = repo_with_hook(d.path());
-    chmod(&hooks.join("pre-commit"), 0o755);
+    chmod(&hooks.join("pre-commit"), 0o750);
     git_ok(&wt, &["add", "."]);
     git_ok(&wt, &["commit", "-q", "-m", "exec"]);
     assert_eq!(dirty_under(&hooks).unwrap(), Vec::<PathBuf>::new());
@@ -973,7 +973,7 @@ fn a_large_committed_file_is_clean_until_its_size_or_mode_changes() {
     git_ok(&wt, &["add", "."]);
     git_ok(&wt, &["commit", "-q", "-m", "big"]);
     assert_eq!(dirty_under(&hooks).unwrap(), Vec::<PathBuf>::new());
-    chmod(&big, 0o755);
+    chmod(&big, 0o750);
     assert!(dirty_under(&hooks).unwrap().contains(&big));
 }
 
