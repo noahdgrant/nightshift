@@ -225,6 +225,16 @@ mod tests {
     }
 
     #[test]
+    fn a_dangling_symlink_is_refused() {
+        let (_tmp, wt) = worktree("| build-output | `gone` | |");
+        symlink(wt.join("nowhere"), wt.join("gone")).unwrap();
+        let v = remove(&main(), &wt).unwrap();
+        let reason = v["refused"][0]["reason"].as_str().unwrap();
+        assert!(reason.starts_with("cannot resolve it: "), "{v}");
+        assert!(fs::symlink_metadata(wt.join("gone")).is_ok());
+    }
+
+    #[test]
     fn a_symlink_that_stays_inside_deletes_what_it_points_to() {
         let (_tmp, wt) = worktree("| build-output | `target` | |");
         symlink(wt.join("cli/target"), wt.join("target")).unwrap();
