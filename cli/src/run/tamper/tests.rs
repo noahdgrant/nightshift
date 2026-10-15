@@ -900,3 +900,92 @@ fn the_byte_cap_is_inclusive() {
     let over = Protected::read_with(vec![tree(&dir)], tight(10, 9, 4)).over;
     assert!(over.contains(&dir));
 }
+
+#[test]
+fn a_planted_filter_fires_under_plain_git() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_with_hook(d.path());
+    let marker = d.path().join("ran");
+    let cmd = format!("touch {}; cat", marker.display());
+    git_ok(&wt, &["config", "filter.x.clean", &cmd]);
+    fs::write(wt.join(".git/info/attributes"), "* filter=x\n").unwrap();
+    fs::write(hooks.join("pre-commit"), "exit 1\n").unwrap();
+    git::run(&wt, &["hash-object", "--", ".githooks/pre-commit"]).unwrap();
+    assert!(marker.exists(), "the control must fire");
+}
+
+#[test]
+fn a_change_in_the_last_chunk_of_many_files_is_found() {
+    let d = tempfile::tempdir().unwrap();
+    let wt = d.path().join("wt");
+    git::run(d.path(), &["init", "-q", wt.to_str().unwrap()]).unwrap();
+    let hooks = wt.join(".githooks");
+    fs::create_dir_all(&hooks).unwrap();
+    for i in 0..257 {
+        fs::write(hooks.join(format!("f{i:03}")), format!("{i}\n")).unwrap();
+    }
+    git_ok(&wt, &["add", "."]);
+    git_ok(&wt, &["commit", "-q", "-m", "many"]);
+    assert_eq!(dirty_under(&hooks).unwrap(), Vec::<PathBuf>::new());
+    fs::write(hooks.join("f256"), "changed\n").unwrap();
+    assert_eq!(dirty_under(&hooks).unwrap(), [hooks.join("f256")]);
+    fs::write(hooks.join("f000"), "changed\n").unwrap();
+    assert_eq!(dirty_under(&hooks).unwrap().len(), 2);
+}
+
+#[test]
+fn a_committed_executable_hook_is_clean_and_losing_the_bit_is_dirty() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_with_hook(d.path());
+    chmod(&hooks.join("pre-commit"), 0o755);
+    git_ok(&wt, &["add", "."]);
+    git_ok(&wt, &["commit", "-q", "-m", "exec"]);
+    assert_eq!(dirty_under(&hooks).unwrap(), Vec::<PathBuf>::new());
+    chmod(&hooks.join("pre-commit"), 0o644);
+    assert_eq!(dirty_under(&hooks).unwrap(), [hooks.join("pre-commit")]);
+}
+
+#[test]
+fn a_retargeted_link_is_dirty_even_when_its_new_target_holds_the_old_link_text() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_with_hook(d.path());
+    std::os::unix::fs::symlink("pre-commit", hooks.join("a")).unwrap();
+    git_ok(&wt, &["add", "."]);
+    git_ok(&wt, &["commit", "-q", "-m", "link"]);
+    assert_eq!(dirty_under(&hooks).unwrap(), Vec::<PathBuf>::new());
+    fs::write(hooks.join("y"), "pre-commit").unwrap();
+    fs::remove_file(hooks.join("a")).unwrap();
+    std::os::unix::fs::symlink("y", hooks.join("a")).unwrap();
+    fs::write(hooks.join("y"), "pre-commit").unwrap();
+    let dirty = dirty_under(&hooks).unwrap();
+    assert!(dirty.contains(&hooks.join("a")), "{dirty:?}");
+    fs::remove_file(hooks.join("a")).unwrap();
+    fs::write(hooks.join("a"), "pre-commit").unwrap();
+    assert!(dirty_under(&hooks).unwrap().contains(&hooks.join("a")));
+}
+
+#[test]
+fn a_large_committed_file_is_clean_until_its_size_or_mode_changes() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_with_hook(d.path());
+    let big = hooks.join("big");
+    fs::write(&big, vec![b'a'; (MAX_FILE + 1) as usize]).unwrap();
+    git_ok(&wt, &["add", "."]);
+    git_ok(&wt, &["commit", "-q", "-m", "big"]);
+    assert_eq!(dirty_under(&hooks).unwrap(), Vec::<PathBuf>::new());
+    chmod(&big, 0o755);
+    assert!(dirty_under(&hooks).unwrap().contains(&big));
+}
+
+#[test]
+fn an_unreadable_committed_file_is_dirty() {
+    let d = tempfile::tempdir().unwrap();
+    let (_wt, hooks) = repo_with_hook(d.path());
+    chmod(&hooks.join("pre-commit"), 0o000);
+    let unreadable = !reads_any_mode(d.path());
+    let dirty = dirty_under(&hooks).unwrap();
+    chmod(&hooks.join("pre-commit"), 0o644);
+    if unreadable {
+        assert_eq!(dirty, [hooks.join("pre-commit")]);
+    }
+}

@@ -470,7 +470,13 @@ fn dirty_under(dir: &Path) -> Option<Vec<PathBuf>> {
     for (path, node) in &nodes {
         let mode = match node {
             Node::Dir(_) => continue,
-            Node::Link(_) => "120000",
+            Node::Link(target) => {
+                match head.get(path) {
+                    Some((m, sha)) if m == "120000" && link_matches(top, sha, target) => {}
+                    _ => dirty.push(path.clone()),
+                }
+                continue;
+            }
             Node::File(_, m) | Node::Large(_, m) if m & 0o100 != 0 => "100755",
             Node::File(..) | Node::Large(..) => "100644",
             Node::Unread => {
@@ -504,6 +510,17 @@ fn dirty_under(dir: &Path) -> Option<Vec<PathBuf>> {
     }
     dirty.extend(head.keys().filter(|p| !nodes.contains_key(*p)).cloned());
     Some(dirty)
+}
+
+/// Whether the blob `sha`, a link's text in HEAD, is exactly `target`. A link is never hashed
+/// through `hash-object`, which would follow it and hash the file it points at.
+fn link_matches(top: &Path, sha: &str, target: &Path) -> bool {
+    let Some(want) = target.to_str() else {
+        return false;
+    };
+    let size = git::run(top, &["cat-file", "-s", sha]).ok();
+    let text = git::run(top, &["cat-file", "blob", sha]).ok();
+    size.is_some_and(|n| n == want.len().to_string()) && text.is_some_and(|t| t == want.trim_end())
 }
 
 /// The entries of the git config file `path` without the `branch.*` ones, or `None` when git
