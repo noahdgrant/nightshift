@@ -45,11 +45,21 @@ impl Cache {
         self.root.join(repo)
     }
 
-    /// `git fetch` of upstream HEAD into [`HEAD_REF`], with `extra` options.
+    /// `git fetch` of upstream HEAD into [`HEAD_REF`], with `extra` options. The fetch's auto
+    /// maintenance runs before it returns: detached, its repack rewrites the `shallow` file while
+    /// the next `--deepen` fetch reads it, and that fetch dies with "shallow file has changed"
+    /// (#710). Older git detaches `gc --auto`, newer git `maintenance run --auto`.
     fn fetch(&self, repo: &str, extra: &[&str]) -> Result<()> {
         let url = format!("{}/{repo}", self.base);
         let refspec = format!("+HEAD:{HEAD_REF}");
-        let mut args = vec!["fetch", "--quiet"];
+        let mut args = vec![
+            "-c",
+            "gc.autoDetach=false",
+            "-c",
+            "maintenance.autoDetach=false",
+            "fetch",
+            "--quiet",
+        ];
         args.extend_from_slice(extra);
         args.extend([url.as_str(), refspec.as_str()]);
         let out = git::net(&self.dir(repo), &args).output()?;
