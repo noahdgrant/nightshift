@@ -17,8 +17,8 @@ use crate::run::RunResult;
 use crate::touches::Overlap;
 use crate::watch::ci::{self, Check, HeadChecks, MainCi, Outcome as CheckOutcome};
 use crate::watch::core::fill::{
-    disk_effect, open_fill, Claims, Disk, DiskAct, FillAct, FillInput, Holds, Kind, Open, OpenAct,
-    Stopping,
+    disk_effect, open_fill, waits_for_memory, Claims, Disk, DiskAct, FillAct, FillInput, Holds,
+    Kind, Memory, Open, OpenAct, Stopping,
 };
 use crate::watch::core::red::{self as core_red, Gate, Note, Red, MAIN_RED_UNFIXED};
 use crate::watch::core::settle::{self as core_settle, SettleAct, SettleFacts};
@@ -54,6 +54,8 @@ pub(super) enum Said {
     },
     /// The warning that the fix issue for this head is closed and the queue stays held.
     Shut,
+    /// The free slots wait for memory.
+    MemoryLow { available_mb: u64, need_mb: u64 },
 }
 
 /// A triage-only run of an issue, given the forge to edit as the run's phase would: the fields
@@ -101,6 +103,16 @@ pub(super) struct Sim {
     pub disk: Disk,
     /// What the disk checks said, in order.
     pub disk_said: Vec<DiskAct>,
+    /// `MemAvailable`; `None` checks no memory.
+    pub available_mb: Option<u64>,
+    /// The units' recorded memory peaks.
+    pub peaks: Vec<u64>,
+    /// `MemTotal`; `None` ignores no peak.
+    pub total_mb: Option<u64>,
+    /// The shared cap; `None` clamps no need.
+    pub cap_mb: Option<u64>,
+    /// The last fill waited for memory.
+    pub memory_low: bool,
 }
 
 impl Sim {
@@ -144,6 +156,11 @@ impl Sim {
             free: Box::new(|| vec![("/w".into(), Ok(u64::MAX))]),
             disk: Disk::default(),
             disk_said: Vec::new(),
+            available_mb: None,
+            peaks: Vec::new(),
+            total_mb: None,
+            cap_mb: None,
+            memory_low: false,
         }
     }
 
@@ -308,6 +325,13 @@ impl Sim {
             free: self.parallel - self.running.len(),
             claims: self.claims(),
             holds: &self.holds,
+            memory: Memory {
+                available_mb: self.available_mb,
+                peaks: &self.peaks,
+                total_mb: self.total_mb,
+                cap_mb: self.cap_mb,
+                waiting: self.memory_low,
+            },
         };
         let running = || {
             let units = self.running.iter().map(|i| (i, None));
@@ -316,12 +340,25 @@ impl Sim {
         let ignore = self.fac.queue.overlap_ignore.clone();
         let rule = || Overlap::new(Vec::new(), &ignore);
         let acts = overlap::plan(&self.forge, &input, self.now, running, rule);
+        self.memory_low = waits_for_memory(&acts);
         for act in acts {
             match act {
                 FillAct::Held { issue, .. } => {
                     self.holds.hold(issue, self.now);
                 }
                 FillAct::Forced { .. } => {}
+                FillAct::MemoryLow {
+                    available_mb,
+                    need_mb,
+                    new,
+                } => {
+                    if new {
+                        self.said.push(Said::MemoryLow {
+                            available_mb,
+                            need_mb,
+                        });
+                    }
+                }
                 FillAct::Claim(issue) => self.claim(issue)?,
                 FillAct::Stop(why) => self.stopping = Some(why),
             }

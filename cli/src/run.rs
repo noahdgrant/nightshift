@@ -805,14 +805,15 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         driven?
     };
     let pr = known_pr(&ctx.artifacts);
-    ctx.log(json!({
+    let end = json!({
         "event": "end",
         "outcome": result.outcome.label(),
         "reason": result.reason,
         "phase": result.phase,
         "pr": pr,
         "cost_usd": shared.spent(),
-    }));
+    });
+    ctx.log(with_peak(end, crate::memory::peak_mb()));
     let mut record_saved = false;
     if matches!(
         result.outcome,
@@ -875,6 +876,14 @@ pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<R
         ended_at: Some(shared.clock.now()),
         json,
     })
+}
+
+/// `end` with this unit's peak memory, in MB, when its cgroup recorded one.
+fn with_peak(mut end: Value, peak: Option<u64>) -> Value {
+    if let Some(mb) = peak {
+        end["memory_peak_mb"] = json!(mb);
+    }
+    end
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -994,6 +1003,16 @@ fn dry_run_decision(
 pub(crate) mod tests {
     use super::merge::marked_regions;
     use super::*;
+
+    #[test]
+    fn an_end_event_carries_the_memory_peak_only_when_there_is_one() {
+        let end = json!({"event": "end", "outcome": "done"});
+        assert_eq!(
+            with_peak(end.clone(), Some(812)),
+            json!({"event": "end", "outcome": "done", "memory_peak_mb": 812})
+        );
+        assert_eq!(with_peak(end.clone(), None), end);
+    }
 
     /// A repo cloned from a bare `origin` whose `main` holds plain `f.c` and `g.c`.
     pub(crate) fn cloned() -> (tempfile::TempDir, PathBuf, PathBuf) {

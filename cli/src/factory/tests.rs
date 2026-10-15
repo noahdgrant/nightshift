@@ -79,6 +79,30 @@ fn rejects_unknown_keys_everywhere() {
 }
 
 #[test]
+fn total_memory_mb_is_unset_by_default_and_never_under_the_per_unit_cap() {
+    assert_eq!(parse("").unwrap().limits.total_memory_mb, None);
+    let f = parse("[limits]\ntotal_memory_mb = 16384\nmemory_mb = 8192\n").unwrap();
+    assert_eq!(f.limits.total_memory_mb, Some(16384));
+    assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+    let f = parse("[limits]\ntotal_memory_mb = 8192\nmemory_mb = 8192\n").unwrap();
+    assert!(f.problems(None).is_empty(), "{:?}", f.problems(None));
+    let f = parse("[limits]\ntotal_memory_mb = 4096\nmemory_mb = 8192\n").unwrap();
+    assert_eq!(
+        f.problems(None),
+        ["limits.total_memory_mb = 4096 is under limits.memory_mb = 8192, the cap of one unit"]
+    );
+    let f = parse("[limits]\ntotal_memory_mb = 0\n").unwrap();
+    assert_eq!(
+        f.problems(None),
+        ["limits.total_memory_mb must be at least 1; remove it for the machine's total less 4 GB"]
+    );
+    assert!(parse("[limits]\ntotal_memory_mb = 1\n")
+        .unwrap()
+        .problems(None)
+        .is_empty());
+}
+
+#[test]
 fn memory_mb_is_off_by_default_and_must_be_positive() {
     assert_eq!(parse("").unwrap().limits.memory_mb, None);
     let f = parse("[limits]\nmemory_mb = 8192\n").unwrap();

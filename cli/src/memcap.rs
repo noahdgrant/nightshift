@@ -154,7 +154,8 @@ fn launcher(cap: Option<&Cap>) -> (Vec<String>, Watch) {
         Via::Cgroup => {
             let unit = scope_name();
             let mut c = vec!["systemd-run".to_string()];
-            c.extend(scope_args(&unit, cap.mb));
+            let slice = std::env::var(crate::memory::SLICE_ENV).ok();
+            c.extend(scope_args(&unit, cap.mb, slice.as_deref()));
             (c, Watch::Scope(Scope { unit, mb: cap.mb }))
         }
         Via::Rlimit => (
@@ -168,23 +169,24 @@ fn launcher(cap: Option<&Cap>) -> (Vec<String>, Watch) {
     }
 }
 
-fn scope_args(unit: &str, mb: u64) -> Vec<String> {
-    [
-        "--user",
-        "--scope",
-        "--quiet",
-        &format!("--unit={unit}"),
-        "-p",
-        &format!("MemoryMax={mb}M"),
-        "-p",
-        "MemorySwapMax=0",
-        "-p",
-        "OOMPolicy=stop",
-        "--",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
+/// The scope's `systemd-run` arguments; in `slice`, the unit's own under `ns.slice`
+/// (`crate::memory`), when `ns watch` started the unit in one.
+fn scope_args(unit: &str, mb: u64, slice: Option<&str>) -> Vec<String> {
+    let slice = slice.map(|s| format!("--slice={s}"));
+    ["--user", "--scope", "--quiet", &format!("--unit={unit}")]
+        .into_iter()
+        .chain(slice.as_deref())
+        .chain([
+            "-p",
+            &format!("MemoryMax={mb}M"),
+            "-p",
+            "MemorySwapMax=0",
+            "-p",
+            "OOMPolicy=stop",
+            "--",
+        ])
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// A scope name no other run uses: this process, a counter and the time.
@@ -297,7 +299,11 @@ fn scope_state(unit: &str) -> (String, String) {
 fn probe_cgroup(mb: u64) -> Result<(), String> {
     let mut c = Proc::tool("systemd-run");
     c.arg("--collect")
-        .args(scope_args(&scope_name(), mb))
+        .args(scope_args(
+            &scope_name(),
+            mb,
+            std::env::var(crate::memory::SLICE_ENV).ok().as_deref(),
+        ))
         .args([
             "sh",
             "-c",
@@ -416,6 +422,25 @@ mod tests {
             panic!()
         };
         assert_ne!(unit, other);
+    }
+
+    #[test]
+    fn a_scope_starts_in_the_units_slice_when_it_has_one() {
+        let args = scope_args("ns-1.scope", 64, Some("ns-7x1.slice"));
+        assert_eq!(
+            args[..6],
+            [
+                "--user",
+                "--scope",
+                "--quiet",
+                "--unit=ns-1.scope",
+                "--slice=ns-7x1.slice",
+                "-p"
+            ]
+        );
+        assert!(!scope_args("ns-1.scope", 64, None)
+            .iter()
+            .any(|a| a.starts_with("--slice")));
     }
 
     #[test]

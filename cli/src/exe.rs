@@ -11,7 +11,8 @@ use anyhow::Context;
 ///
 /// `/proc/self/exe` names this process only, so a command line handed to claude or a shell
 /// cannot use it; the hook and the gate need a path that other processes resolve. `ns watch`
-/// does use `/proc/self/exe` (`watch::scheduler`) because it execs the binary itself.
+/// does use its own `/proc/<pid>/exe` (`watch::scheduler`) because it, or `systemd-run` for it,
+/// execs the binary while `ns watch` is alive.
 pub fn ns_exe() -> anyhow::Result<PathBuf> {
     live_exe(
         std::env::current_exe().context("cannot find the ns binary")?,

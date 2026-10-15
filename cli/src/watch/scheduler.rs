@@ -21,7 +21,7 @@ mod scenarios;
 mod settle;
 mod update;
 
-use self::child::{signal, spawn, SIGTERM};
+use self::child::{signal, spawn, Start, SIGTERM};
 use super::core::fill::{Disk, Holds, Kind, Stopping};
 use super::core::red::Red;
 use super::core::settle::pause_until;
@@ -104,6 +104,8 @@ pub(super) struct Plan<'a> {
     pub started: u32,
     /// `None` when the night never updates its own binary.
     pub update: Option<SelfUpdate>,
+    /// Each unit starts in a slice of its own under the shared `ns.slice` (`crate::memory`).
+    pub slice: bool,
 }
 
 /// A unit's `ns run`, running.
@@ -177,6 +179,8 @@ pub(super) struct Scheduler<'a> {
     holds: Holds,
     /// What the night remembers of free disk space.
     disk: Disk,
+    /// The last fill left its free slots waiting for memory.
+    memory_low: bool,
 }
 
 impl<'a> Scheduler<'a> {
@@ -198,6 +202,7 @@ impl<'a> Scheduler<'a> {
             childless: BTreeSet::new(),
             holds: Holds::default(),
             disk: Disk::default(),
+            memory_low: false,
         }
     }
 
@@ -240,9 +245,11 @@ impl<'a> Scheduler<'a> {
             if self.running.is_empty() {
                 let Some(reset) = self.paused_until.filter(|_| self.may_resume()) else {
                     // Nothing runs, but a build may yet give the night a newer ns to hand off to,
-                    // or a refill find the disk space a unit waits for.
+                    // or a refill find the disk space or the memory a unit waits for.
                     let building = self.plan.update.as_ref().is_some_and(|u| u.building());
-                    if self.stopping.is_none() && (building || self.disk.waiting()) {
+                    if self.stopping.is_none()
+                        && (building || self.disk.waiting() || self.memory_low)
+                    {
                         match self.next(night) {
                             Wake::Built(b) => self.built(b, night, tonight),
                             Wake::Refill => next_fill = Kind::Refill,
@@ -351,15 +358,18 @@ impl<'a> Scheduler<'a> {
         let cpus = crate::cpus::share_here(self.plan.parallel);
         let clock = &night.shared.clock;
         let exe = self.plan.update.as_ref().and_then(|u| u.child_exe());
-        let child = match spawn(
-            self.plan.snap,
-            &issue,
-            base.clone(),
+        let slice = self.plan.slice.then(|| {
+            crate::memory::unit_slice(&format!("{}x{}", std::process::id(), self.results))
+        });
+        let start = Start {
+            snap: self.plan.snap,
+            issue: &issue,
             cpus,
             clock,
-            &result,
-            exe,
-        ) {
+            result: &result,
+            slice: slice.as_deref(),
+        };
+        let child = match spawn(&start, base.clone(), exe) {
             Ok(c) => c,
             // A new ns that can't start a unit is given up; the unit starts on this one.
             Err(e) if exe.is_some() => {
@@ -367,7 +377,7 @@ impl<'a> Scheduler<'a> {
                     let to = u.adopted_commit();
                     u.give_up(self.plan.repo, to, e);
                 }
-                spawn(self.plan.snap, &issue, base, cpus, clock, &result, None)?
+                spawn(&start, base, None)?
             }
             Err(e) => return Err(e),
         };
