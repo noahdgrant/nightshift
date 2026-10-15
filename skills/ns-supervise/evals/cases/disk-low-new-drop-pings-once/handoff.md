@@ -23,4 +23,4 @@ none
 
 ## Timeline
 - 12:01 attached (away)
-- 12:30 ping [disk-low 2026-10-10T12:30:00Z]: ns-supervise: disk space low at /mnt/c, 18.4 GiB free, under 20: free space so ns watch can start units again
+- 12:30 ping [disk-low /mnt/c 2026-10-10T12:30:00Z]: ns-supervise: disk space low at /mnt/c, 18.4 GiB free, under 20: free space so ns watch can start units again

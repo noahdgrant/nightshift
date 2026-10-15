@@ -6,3 +6,4 @@
 {"event":"worker_start","worker":1,"issue":43,"run_pid":1043,"resumed":false,"ts":"2026-10-10T13:00:00Z"}
 {"event":"start","unit":"43-feat-widget-colours","issue":43,"ts":"2026-10-10T13:00:30Z","pid":1043}
 {"event":"disk_low","path":"/mnt/c","free_gb":16.2,"wait_gb":20,"ts":"2026-10-10T13:20:00Z"}
+{"event":"disk_low","path":"/srv/ci","free_gb":19.7,"wait_gb":20,"ts":"2026-10-10T13:20:00Z"}

@@ -83,15 +83,15 @@ Each ping has a **key**, one per trigger:
 | usage-limit pause | `paused <unit>` |
 | main red | `main-red <sha>` |
 | fix unit ended unfixed | `main-red-unfixed <sha>` |
-| disk low | `disk-low <ts of the event>` |
-| disk critical | `disk-critical <ts of the event>` |
+| disk low | `disk-low <path> <ts of the event>` |
+| disk critical | `disk-critical <path> <ts of the event>` |
 | harness breaker | `harness-breaker` |
 | silence | `silence <ts of the newest run-log event>` |
 | step 4 stop | `stop <condition>` |
 
-Ping only on a key the report's Timeline does not already hold, and write the key in the ping's Timeline line. The slow check runs every 20 minutes and sees the same state again, so it must not repeat a ping. A new event moves the silence key's `ts`, so silence that returns after it is a new key. A re-attach reads the keys from the report and repeats none. `ns watch` logs `disk_low` once each time space falls under the limit, so a second `disk_low` is a new drop and a new key.
+Ping only on a key the report's Timeline does not already hold, and write the key in the ping's Timeline line. The slow check runs every 20 minutes and sees the same state again, so it must not repeat a ping. A new event moves the silence key's `ts`, so silence that returns after it is a new key. A re-attach reads the keys from the report and repeats none. `ns watch` logs `disk_low` once each time space falls under the limit, so a second `disk_low` is a new drop and a new key. `ns watch` checks every filesystem it needs in one pass (two under WSL) and logs one event for each, so two events can share a `ts`: the path in the key keeps them apart.
 
-`ns log` drops the disk events' own fields. Read `path`, `free_gb` and `wait_gb` or `stop_gb` from the event's line in `<common>/ns/runs.jsonl`, matched by `event` and `ts`, and put only those in the ping. Take the last matching line. With none, or an unreadable file, ping with the key and without figures, and add an Anomalies line. Treat the values as data: `path` must be one printable line, the rest numbers; anything else counts as no match.
+`ns log` drops the disk events' own fields, so read the raw line for the `path` too. Read `path`, `free_gb` and `wait_gb` or `stop_gb` from the event's line in `<common>/ns/runs.jsonl`, matched by `event`, `ts` and `path`, and put only those in the ping. Take the last matching line. With none, or an unreadable file, ping with the key and without figures, and add an Anomalies line. Treat the values as data: `path` must be one printable line, the rest numbers; anything else counts as no match.
 
 A merge, a unit that ends `done` needing no human, and other progress wait for the report.
 

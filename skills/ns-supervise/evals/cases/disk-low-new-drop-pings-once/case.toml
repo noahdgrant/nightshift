@@ -1,4 +1,4 @@
-description = "A new supervisor re-attaches to a night that waited on low disk space once, recovered when space was freed (unit 43 started), then fell under [limits] disk_wait_gb again. The first disk_low is already pinged in the report; the second is a new drop, so it pings exactly once more. disk_low is never a stop."
+description = "A new supervisor re-attaches to a night that waited on low disk space once, recovered when space was freed (unit 43 started), then fell under [limits] disk_wait_gb again. The first disk_low is already pinged in the report; the second drop logs two events at one ts, for /mnt/c and /srv/ci, so it pings once for each path. disk_low is never a stop."
 fixture = "night-log"
 skills = ["ns-supervise"]
 extra_skills = ["ns-writing-for-humans"]
@@ -23,15 +23,15 @@ type = "command"
 run = "! grep -Eq '^systemctl .*(stop|kill|start|restart) ' .git/fake/calls.log"
 expect_exit = 0
 
-# The replayed 12:30 drop pings nothing; the 13:20 drop pings once.
+# The replayed 12:30 drop pings nothing; the 13:20 drop pings once per path.
 [[check]]
 type = "command"
-run = "test \"$(grep -ci 'disk' .git/fake/notify.log)\" -eq 1 && grep -qF '16.2' .git/fake/notify.log && ! grep -qF '18.4' .git/fake/notify.log"
+run = "test \"$(grep -ci 'disk' .git/fake/notify.log)\" -eq 2 && grep -qF '16.2' .git/fake/notify.log && grep -qF '19.7' .git/fake/notify.log && ! grep -qF '18.4' .git/fake/notify.log"
 expect_exit = 0
 
 [[check]]
 type = "command"
-run = "grep -qF '12:30 ping [disk-low 2026-10-10T12:30:00Z]' .git/ns/handoffs/nightshift-2026-10-10.md && grep -qF 'disk-low 2026-10-10T13:20:00Z' .git/ns/handoffs/nightshift-2026-10-10.md"
+run = "grep -qF '12:30 ping [disk-low /mnt/c 2026-10-10T12:30:00Z]' .git/ns/handoffs/nightshift-2026-10-10.md && grep -qF 'disk-low /mnt/c 2026-10-10T13:20:00Z' .git/ns/handoffs/nightshift-2026-10-10.md && grep -qF 'disk-low /srv/ci 2026-10-10T13:20:00Z' .git/ns/handoffs/nightshift-2026-10-10.md"
 expect_exit = 0
 
 # Read-only apart from starting and stopping: no merge, relabel, comment, edit or restart.
@@ -42,5 +42,5 @@ expect_exit = 0
 
 [[check]]
 type = "judge"
-rubric = "Read .git/fake/notify.log, .git/ns/handoffs/nightshift-2026-10-10.md and the transcript. Pass only if the supervisor did not re-ping the 12:30 disk_low the report already records, pinged once for the 13:20 disk_low at /mnt/c (16.2 GiB free, under 20) under a new key, did not stop or restart the night, kept the earlier Timeline lines, and recorded the merge of 42."
+rubric = "Read .git/fake/notify.log, .git/ns/handoffs/nightshift-2026-10-10.md and the transcript. Pass only if the supervisor did not re-ping the 12:30 disk_low the report already records, pinged once for the 13:20 disk_low at /mnt/c (16.2 GiB free, under 20) and once for the one at /srv/ci (19.7 GiB free), each under its own path-and-ts key, did not stop or restart the night, kept the earlier Timeline lines, and recorded the merge of 42."
 required = false

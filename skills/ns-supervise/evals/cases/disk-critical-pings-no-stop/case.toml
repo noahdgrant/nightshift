@@ -31,7 +31,7 @@ expect_exit = 0
 # Two keys in the Timeline, one per event ts, each written once.
 [[check]]
 type = "command"
-run = "r=.git/ns/handoffs/nightshift-2026-10-10.md; test \"$(grep -c 'disk-low 2026-10-10T12:30:00Z' $r)\" -eq 1 && test \"$(grep -c 'disk-critical 2026-10-10T12:50:00Z' $r)\" -eq 1"
+run = "r=.git/ns/handoffs/nightshift-2026-10-10.md; test \"$(grep -c 'disk-low /mnt/c 2026-10-10T12:30:00Z' $r)\" -eq 1 && test \"$(grep -c 'disk-critical /mnt/c 2026-10-10T12:50:00Z' $r)\" -eq 1"
 expect_exit = 0
 
 # The report's How it ended and Needs you sections both name disk_critical.
