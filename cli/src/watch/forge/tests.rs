@@ -153,3 +153,76 @@ fn host_reads_url_and_scp_forms_and_no_host_from_a_path() {
     assert_eq!(host("/srv/git/gitlab:mirror.git"), None);
     assert_eq!(host("../gitlab-mirror"), None);
 }
+
+/// Where a forge's CLI may run: the forges here, the credential checks, and `Proc` itself.
+const FORGE_CALLERS: &[&str] = &["watch/forge/", "forge.rs", "forge/", "proc.rs", "proc/"];
+
+/// What starts `gh` or `glab`, or calls `gh()` or `gh_json()`.
+fn calls_a_forge(line: &str) -> bool {
+    let code = line.split("//").next().unwrap_or_default();
+    let spawns =
+        code.contains("Proc::") && ["(\"gh\"", "(\"glab\""].iter().any(|p| code.contains(p));
+    static HELPER: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r#"(^|[^\w."])gh(_json)?\("#).unwrap());
+    spawns || code.contains("Proc::forge(") || HELPER.is_match(code)
+}
+
+#[test]
+fn calls_a_forge_finds_each_way_to_reach_one() {
+    for yes in [
+        "    let out = Proc::forge(\"gh\")",
+        "crate::proc::Proc::tool(\"glab\").args(x)",
+        "let v = gh_json(wt, &[\"pr\"])?;",
+        "    gh(&self.root, &args)",
+        "Proc::forge(program)",
+    ] {
+        assert!(calls_a_forge(yes), "{yes}");
+    }
+    for no in [
+        "// gh(wt) ran here once",
+        "fn high(x)",
+        "self.gh(x)",
+        "let ghost = 1;",
+        "\"gh\" => 1,",
+        "    \"gh(\",",
+    ] {
+        assert!(!calls_a_forge(no), "{no}");
+    }
+}
+
+/// Every forge call goes through [`Forge`]: no file outside [`FORGE_CALLERS`] starts `gh` or
+/// `glab`, tests included.
+#[test]
+fn no_forge_cli_runs_outside_the_forge_modules() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    let mut dirs = vec![src.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let rel = path
+                .strip_prefix(&src)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if FORGE_CALLERS.iter().any(|c| rel.starts_with(c)) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (i, line) in text.lines().enumerate() {
+                if calls_a_forge(line) {
+                    found.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "forge calls outside the forge modules; add a Forge method instead:\n{}",
+        found.join("\n")
+    );
+}
