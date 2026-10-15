@@ -212,6 +212,19 @@ impl Watching {
     }
 }
 
+/// Run the night `ns` starts, waiting for each of `units` in turn to reach its build, so no wait
+/// spans more than one unit's run: each costs hundreds of processes, slow under load. Its exit
+/// code, summary and stderr.
+fn one_unit_at_a_time(e: &Env, ns: &mut Ns, units: &[&str]) -> (Option<i32>, Value, String) {
+    let held: Vec<_> = units.iter().map(|u| hold_phase(e, u, "build")).collect();
+    let w = Watching::start(ns);
+    for (entered, go) in &held {
+        w.entered(entered);
+        release(go);
+    }
+    w.finish()
+}
+
 /// Each unit record's issue and outcome, sorted by issue.
 fn by_issue(units: &[Value]) -> Vec<(u64, String)> {
     let mut o: Vec<(u64, String)> = units

@@ -730,15 +730,10 @@ fn a_build_past_its_ceiling_is_killed_and_the_night_goes_on() {
     let to = land(&e, "cli/x", "new\n");
     e.ctl("cargo-mode", "slow");
     two_ready(&e);
-    let out = watch_from(&e, &from)
-        .env("NS_SELF_UPDATE_TIMEOUT_MS", "300")
-        .args(["watch"])
-        .assert()
-        .code(0)
-        .get_output()
-        .clone();
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
+    let mut ns = watch_from(&e, &from);
+    ns.env("NS_SELF_UPDATE_TIMEOUT_MS", "300").args(["watch"]);
+    let (code, v, err) = one_unit_at_a_time(&e, &mut ns, &[A, B]);
+    assert_eq!(code, Some(0), "{err}");
     assert_kept_the_old_binary(&e, &to, &v, &err, "timed out");
 }
 
@@ -856,14 +851,8 @@ fn night_with_a_failed_update(mode: &str) -> (Env, String, Value, String) {
     let to = land(&e, "cli/x", "new\n");
     e.ctl("cargo-mode", mode);
     two_ready(&e);
-    let out = watch_from(&e, &from)
-        .args(["watch"])
-        .assert()
-        .code(0)
-        .get_output()
-        .clone();
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    let (code, v, err) = one_unit_at_a_time(&e, watch_from(&e, &from).args(["watch"]), &[A, B]);
+    assert_eq!(code, Some(0), "{err}");
     (e, to, v, err)
 }
 
