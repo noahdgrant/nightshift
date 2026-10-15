@@ -327,25 +327,18 @@ fn without_systemd_run_the_cap_falls_back_to_prlimit() {
 #[test]
 fn a_capped_phase_that_times_out_fails_on_the_timeout() {
     let e = Env::new();
-    let flag = e.ctrl.join("gate-green");
-    e.factory(&format!(
-        "[limits]\nmemory_mb = 64\n[phases.build]\nmax_attempts = 3\ngate = \"test -f {f} || {{ touch {f}; exit 1; }}\"\n",
-        f = flag.display()
-    ));
+    e.factory("[limits]\nmemory_mb = 64\n[phases.build]\nmax_attempts = 1\n");
     break_tool(&e, "systemd-run");
     // Under RLIMIT_AS this message alone would read as the cap; the timeout must win.
     e.ctl("build.sh", "echo MemoryError >&2\n");
-    e.queue(
-        "build",
-        &["pass:commit", "pass:script+sleep", "pass:commit"],
-    );
-    let v = run_with_phase_timeout(&e, 0);
-    assert_eq!(v["outcome"], "done", "{v}");
-    assert_eq!(build_event(&e, 2)["reason"], "timed out after 1.5 s");
+    e.queue("build", &["pass:script+sleep"]);
+    let v = run_with_phase_timeout(&e, 1);
     assert_eq!(
-        build_event(&e, 3)["decision"],
-        "timed out with the CI gate still red"
+        v["reason"],
+        "build is out of attempts (1): the last attempt timed out after 1.5 s; raise its timeout_minutes or split the unit",
+        "{v}"
     );
+    assert_eq!(build_event(&e, 1)["reason"], "timed out after 1.5 s");
 }
 
 /// Fake `systemd-run` that passes the cgroup probe and runs each command in a "scope" logged
@@ -440,12 +433,13 @@ fn every_capped_phase_and_gate_scope_is_reset_after_it_exits_zero_or_not() {
 #[test]
 fn a_capped_phase_that_times_out_still_resets_its_scope() {
     let e = Env::new();
-    e.factory("[limits]\nmemory_mb = 64\n");
+    e.factory("[limits]\nmemory_mb = 64\n[phases.build]\nmax_attempts = 1\n");
     fake_systemd(&e, 0, "active success", "inactive success");
     e.ctl("build.sh", "true\n");
-    e.queue("build", &["pass:script+sleep", "pass:commit"]);
-    let v = run_with_phase_timeout(&e, 0);
-    assert_eq!(build_event(&e, 1)["reason"], "timed out after 1.5 s", "{v}");
+    e.queue("build", &["pass:script+sleep"]);
+    let v = run_with_phase_timeout(&e, 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
+    assert_eq!(build_event(&e, 1)["reason"], "timed out after 1.5 s");
     assert_every_scope_reset(&e, 0);
 }
 

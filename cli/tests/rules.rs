@@ -520,6 +520,77 @@ fn dropping_one_violation_removes_only_its_entry_from_the_file() {
 }
 
 #[test]
+fn a_message_only_change_passes_check_and_baseline_refreshes_it() {
+    let r = Repo::new();
+    r.findings("lint-a", "src.py:2:5: eval is banned\n");
+    r.ns(&["baseline", "--allow-growth"]);
+    let before = fs::read_to_string(r.path(BASELINE)).unwrap();
+    r.findings("lint-a", "src.py:2:5: eval is forbidden\n");
+    let (code, v, err) = r.ns(&["check"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["baselined"], 1);
+
+    let (code, v, err) = r.ns(&["baseline", "--dry-run"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["status"], "planned");
+    assert_eq!(v["refreshed"], 1, "{v}");
+    assert_eq!(fs::read_to_string(r.path(BASELINE)).unwrap(), before);
+
+    let out = common::ns()
+        .args(["rules", "baseline", "--human"])
+        .current_dir(&r.root)
+        .output();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "written: 1 violations, 0 added, 0 dropped, 1 refreshed\n"
+    );
+    assert_eq!(
+        r.baseline().unwrap()["violations"][0]["message"],
+        "eval is forbidden"
+    );
+
+    let (code, v, err) = r.ns(&["baseline"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["status"], "already-done");
+    assert_eq!(v["refreshed"], 0, "{v}");
+    assert_eq!(v["added"], serde_json::json!([]));
+    assert_eq!(v["dropped"], serde_json::json!([]));
+}
+
+#[test]
+fn duplicate_findings_with_new_messages_refresh_to_one_stable_file() {
+    let r = Repo::new();
+    r.findings(
+        "lint-a",
+        "src.py:2:5: eval is banned\nsrc.py:2:1: assignment from eval\n",
+    );
+    r.ns(&["baseline", "--allow-growth"]);
+    r.findings(
+        "lint-a",
+        "src.py:2:1: z is last\nsrc.py:2:5: eval is banned\n",
+    );
+    let (code, v, err) = r.ns(&["baseline"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["status"], "written");
+    assert_eq!(v["refreshed"], 1, "{v}");
+    let first = fs::read_to_string(r.path(BASELINE)).unwrap();
+    assert!(
+        first.contains("z is last") && !first.contains("assignment"),
+        "{first}"
+    );
+
+    r.findings(
+        "lint-a",
+        "src.py:2:5: eval is banned\nsrc.py:2:1: z is last\n",
+    );
+    let (code, v, err) = r.ns(&["baseline"]);
+    assert_eq!(code, Some(0), "{v} {err}");
+    assert_eq!(v["status"], "already-done");
+    assert_eq!(fs::read_to_string(r.path(BASELINE)).unwrap(), first);
+}
+
+#[test]
 fn a_baseline_with_snippet_before_message_still_loads() {
     let r = Repo::new();
     fs::create_dir_all(r.path(".nightshift")).unwrap();

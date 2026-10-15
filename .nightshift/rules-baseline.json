@@ -502,7 +502,7 @@
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/eval/mod.rs",
-      "message": "this function has too many lines (151/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "message": "this function has too many lines (149/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn resolve(args: &Args) -> Result<Env> {"
     },
     {
@@ -516,28 +516,28 @@
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/main.rs",
-      "message": "this function has too many lines (267/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "message": "this function has too many lines (269/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "fn run(cli: Cli) -> Result<ExitCode> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/quality/sync.rs",
-      "message": "this function has too many lines (113/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "message": "this function has too many lines (123/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn import(dir: &Path, dry_run: bool) -> Result<ExitCode> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/run.rs",
-      "message": "this function has too many lines (221/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "message": "this function has too many lines (261/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn execute(args: &RunArgs, shared: &mut Shared, loaded: &Loaded) -> Result<RunResult> {"
     },
     {
       "tool": "clippy",
       "rule": "clippy::too_many_lines",
       "file": "cli/src/watch.rs",
-      "message": "this function has too many lines (233/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
+      "message": "this function has too many lines (247/100) (quality bar, Readability: no function too long to hold in your head: skills/ns-contract/references/quality-bar.md)",
       "snippet": "pub fn run(args: WatchArgs) -> Result<ExitCode> {"
     },
     {

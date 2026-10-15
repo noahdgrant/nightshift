@@ -348,11 +348,11 @@ fn a_failed_build_that_commits_does_not_run_the_gate() {
 #[test]
 fn a_timed_out_verify_that_moved_head_runs_the_gate() {
     let e = Env::new();
-    e.factory("[phases.build]\ngate = \"true\"\n");
+    e.factory("[phases.build]\ngate = \"true\"\n[phases.verify]\nmax_attempts = 1\n");
     e.queue("build", &["pass:commit"]);
-    e.queue("verify", &["blocked:commit+sleep", "pass"]);
-    let v = run_with_timeouts(&e, "verify=1500", 0);
-    assert_eq!(v["outcome"], "done", "{v}");
+    e.queue("verify", &["blocked:commit+sleep"]);
+    let v = run_with_timeouts(&e, "verify=1500", 1);
+    assert_eq!(v["outcome"], "stuck", "{v}");
     assert_eq!(
         gate_verdicts(&e),
         verdicts(&[("build", true), ("verify", true)])
