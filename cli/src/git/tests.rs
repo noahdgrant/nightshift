@@ -42,6 +42,83 @@ fn same_diff(cwd: &Path, base: &str, a: &str, b: &str) -> bool {
 }
 
 #[test]
+fn run_refuses_each_network_subcommand_and_names_run_net() {
+    let dir = tempfile::tempdir().unwrap();
+    g(dir.path(), &["init", "-q"]);
+    for args in [
+        &["fetch", "-q", "origin"][..],
+        &["push", "origin", "main"],
+        &["pull"],
+        &["clone", "-q", "x", "y"],
+        &["ls-remote", "origin"],
+        &["remote", "update"],
+        &["remote", "-v", "update", "origin"],
+        &["-c", "k.v=1", "fetch"],
+        &["--no-pager", "-C", ".", "push"],
+        &["--git-dir", ".git", "ls-remote"],
+        &["--work-tree", ".", "pull"],
+        &["--namespace", "n", "clone"],
+        &["--config-env", "k.v=V", "fetch"],
+    ] {
+        reset_spawns();
+        let err = run(dir.path(), args).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("git::run_net"),
+            "{args:?}: {err:#}"
+        );
+        assert_eq!(spawns(), 0, "{args:?} spawned git");
+    }
+}
+
+#[test]
+fn run_still_runs_local_remote_subcommands() {
+    let dir = tempfile::tempdir().unwrap();
+    g(dir.path(), &["init", "-q"]);
+    run(
+        dir.path(),
+        &["remote", "add", "origin", "https://example.com/r.git"],
+    )
+    .unwrap();
+    assert_eq!(
+        run(dir.path(), &["remote", "get-url", "origin"]).unwrap(),
+        "https://example.com/r.git"
+    );
+    assert_eq!(
+        run(dir.path(), &["remote", "-v"]).unwrap().lines().count(),
+        2
+    );
+    assert_eq!(run(dir.path(), &["remote"]).unwrap(), "origin");
+    assert!(run(dir.path(), &["--version"])
+        .unwrap()
+        .starts_with("git version"));
+    assert!(run(dir.path(), &["-c", "fetch.prune=true", "status"]).is_ok());
+    assert!(run(dir.path(), &["config", "remote.origin.push", "x"]).is_ok());
+}
+
+#[test]
+fn run_net_returns_trimmed_stdout_and_fails_with_stderr() {
+    let t = tempfile::tempdir().unwrap();
+    let (origin, wt) = (t.path().join("origin"), t.path().join("wt"));
+    fs::create_dir_all(&origin).unwrap();
+    g(&origin, &["init", "-q", "-b", "main"]);
+    let head = commit_file(&origin, "f", "x\n");
+    run_net(t.path(), &["clone", "-q", "origin", "wt"]).unwrap();
+    reset_spawns();
+    let out = run_net(&wt, &["ls-remote", "origin", "refs/heads/main"]).unwrap();
+    assert_eq!(out, format!("{head}\trefs/heads/main"));
+    assert_eq!(
+        spawns(),
+        2,
+        "one for the ls-remote, one for its core.sshCommand probe"
+    );
+    fs::remove_dir_all(&origin).unwrap();
+    let err = run_net(&wt, &["fetch", "-q", "origin"]).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.starts_with("git fetch -q origin failed: "), "{msg}");
+    assert!(msg.len() > "git fetch -q origin failed: ".len(), "{msg}");
+}
+
+#[test]
 fn a_network_command_runs_in_the_repo_it_names() {
     let dir = tempfile::tempdir().unwrap();
     g(dir.path(), &["init", "-q"]);

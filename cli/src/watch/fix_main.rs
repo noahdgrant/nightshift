@@ -518,7 +518,7 @@ mod tests {
             "core.hooksPath=/dev/null",
         ];
         all.extend(args);
-        git::run(dir, &all).unwrap().trim().to_string()
+        crate::testutil::git_any(dir, &all).trim().to_string()
     }
 
     #[test]

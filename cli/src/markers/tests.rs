@@ -290,7 +290,7 @@ mod repo {
     use std::fs;
 
     fn git_in(dir: &Path, args: &[&str]) {
-        git::run(dir, args).unwrap();
+        crate::testutil::git_any(dir, args);
     }
 
     fn init() -> tempfile::TempDir {

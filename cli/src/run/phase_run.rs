@@ -72,7 +72,7 @@ pub(super) fn run_phase(io: &mut Io<'_, '_>, state: &State, adm: &Admitted) -> R
     };
     let moves = archive_for(&ctx.artifacts, phase, state)?;
     if let Some((_, branch, sha)) = &adm.rebase {
-        let _ = git::run(&ctx.worktree, &["fetch", "-q", "origin", branch]);
+        let _ = git::run_net(&ctx.worktree, &["fetch", "-q", "origin", branch]);
         ctx.log(json!({
             "event": "rebase_after_base_moved",
             "phase": phase,

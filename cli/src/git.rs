@@ -58,12 +58,59 @@ pub fn ssh_command_set(cwd: &Path) -> bool {
         || run(cwd, &["config", "core.sshCommand"]).is_ok_and(|v| !v.is_empty())
 }
 
-/// Run git in `cwd` and return trimmed stdout. Fails with git's stderr on non-zero exit.
+/// Run git in `cwd` and return trimmed stdout. Fails with git's stderr on non-zero exit, and
+/// without running git for a subcommand that talks to a remote ([`network_subcommand`]), which
+/// goes through [`run_net`].
 pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = command()
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
+    if let Some(sub) = network_subcommand(args) {
+        return Err(SfError::general(format!(
+            "git {sub} talks to a remote: run it with git::run_net, not git::run"
+        ))
+        .into());
+    }
+    let mut c = command();
+    c.arg("-C").arg(cwd).args(args);
+    stdout(c, args)
+}
+
+/// [`run`] for a git command that talks to `origin`, under the network policy of [`net`].
+pub fn run_net(root: &Path, args: &[&str]) -> Result<String> {
+    stdout(net(root, args), args)
+}
+
+/// The subcommand of `args` that talks to a remote (`fetch`, `push`, `pull`, `clone`,
+/// `ls-remote`, `remote update`), past any global options before it (`-c k=v`, `--no-pager`).
+pub fn network_subcommand<'a>(args: &[&'a str]) -> Option<&'a str> {
+    let mut rest = args.iter().copied();
+    let sub = loop {
+        let a = rest.next()?;
+        if [
+            "-c",
+            "-C",
+            "--git-dir",
+            "--work-tree",
+            "--namespace",
+            "--config-env",
+        ]
+        .contains(&a)
+        {
+            rest.next();
+        } else if !a.starts_with('-') {
+            break a;
+        }
+    };
+    match sub {
+        "fetch" | "push" | "pull" | "clone" | "ls-remote" => Some(sub),
+        "remote" => rest
+            .find(|a| !a.starts_with('-'))
+            .filter(|a| *a == "update")
+            .map(|_| "remote update"),
+        _ => None,
+    }
+}
+
+fn stdout(mut c: Proc, args: &[&str]) -> Result<String> {
+    let out = c
         .output()
         .context("failed to run git; is it installed and on PATH?")?;
     if !out.status.success() {

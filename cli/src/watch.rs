@@ -257,7 +257,7 @@ fn requeue_stale(
 /// `git fetch origin` and the `origin/<default>` ref to base new worktrees on.
 fn fresh_base(root: &Path) -> Option<String> {
     let (branch, _) = run::remote_default(root)?;
-    git::run(root, &["fetch", "--quiet", "origin"]).ok()?;
+    git::run_net(root, &["fetch", "--quiet", "origin"]).ok()?;
     Some(format!("origin/{branch}"))
 }
 
