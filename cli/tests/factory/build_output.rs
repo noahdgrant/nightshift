@@ -85,3 +85,48 @@ fn a_paused_run_keeps_its_build_output_for_the_resume() {
     assert!(e.worktree(UNIT).join("target/out").is_file());
     assert!(build_output_events(&e).is_empty());
 }
+
+/// Unit `3-open`'s worktree, kept by `ns clean` since its issue is open, with `target/out`.
+fn open_unit_with_build_output(e: &Env) -> PathBuf {
+    let wt = unit_with_pr(e, 3, "3-open", 30, "OPEN", "OPEN");
+    fs::create_dir_all(wt.join("target")).unwrap();
+    fs::write(wt.join("target/out"), "built\n").unwrap();
+    wt
+}
+
+#[test]
+fn clean_deletes_the_build_output_of_each_worktree_it_keeps() {
+    let e = build_output_env();
+    let wt = open_unit_with_build_output(&e);
+    let v = e.run(&["clean"], 0);
+    assert_eq!(reasons(&v)["3-open"], "issue #3 is open", "{v}");
+    assert_eq!(
+        v["kept"][0]["build_output"],
+        json!({"paths": ["target"], "bytes": 6, "refused": [], "failed": []}),
+        "{v}"
+    );
+    assert!(wt.join("3-open.txt").is_file());
+    assert!(!wt.join("target").exists());
+    let evs = build_output_events(&e);
+    assert_eq!(
+        (evs.len(), evs[0]["unit"].as_str(), evs[0]["by"].as_str()),
+        (1, Some("3-open"), Some("clean"))
+    );
+    assert_eq!(evs[0]["bytes"], 6);
+}
+
+#[test]
+fn clean_leaves_the_build_output_of_a_unit_a_live_run_holds_or_a_dry_run() {
+    let e = build_output_env();
+    let wt = open_unit_with_build_output(&e);
+    let v = e.run(&["clean", "--dry-run"], 0);
+    assert!(v["kept"][0].get("build_output").is_none(), "{v}");
+    let _held = hold(
+        &e.root.join(".git/ns-run-3-open.lock"),
+        r#"{"pid":42,"unit":"3-open","issue":3}"#,
+    );
+    let v = e.run(&["clean"], 0);
+    assert!(v["kept"][0].get("build_output").is_none(), "{v}");
+    assert!(wt.join("target/out").is_file());
+    assert!(build_output_events(&e).is_empty());
+}
