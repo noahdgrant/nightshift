@@ -257,7 +257,7 @@ fn requeue_stale(
 /// `git fetch origin` and the `origin/<default>` ref to base new worktrees on.
 fn fresh_base(root: &Path) -> Option<String> {
     let (branch, _) = run::remote_default(root)?;
-    git::run(root, &["fetch", "--quiet", "origin"]).ok()?;
+    git::run_net(root, &["fetch", "--quiet", "origin"]).ok()?;
     Some(format!("origin/{branch}"))
 }
 
@@ -779,6 +779,20 @@ fn harness_failing(run: &Value) -> bool {
 pub(crate) mod tests {
     use super::*;
     use forge::fake::FakeForge;
+
+    #[test]
+    fn fresh_base_fetches_origin_and_names_its_default_branch() {
+        let (t, origin, wt) = crate::run::tests::cloned();
+        let other = t.path().join("other");
+        crate::testutil::git_any(
+            t.path(),
+            &["clone", "-q", origin.to_str().unwrap(), "other"],
+        );
+        let tip = crate::testutil::commit_file(&other, "new.c", "n\n");
+        crate::testutil::git_any(&other, &["push", "-q", "origin", "HEAD:main"]);
+        assert_eq!(fresh_base(&wt).as_deref(), Some("origin/main"));
+        assert_eq!(git::run(&wt, &["rev-parse", "origin/main"]).unwrap(), tip);
+    }
 
     #[test]
     fn parses_blockers_and_closers() {

@@ -21,7 +21,17 @@ pub fn g(dir: &Path, args: &[&str]) -> String {
     assert_no_git_location();
     let mut a = vec!["-c", "user.name=t", "-c", "user.email=t@t"];
     a.extend_from_slice(args);
-    git::run(dir, &a).unwrap()
+    git_any(dir, &a)
+}
+
+/// Run git in `dir` through [`git::run_net`] or [`git::run`], whichever `args` needs, and panic
+/// on failure.
+pub fn git_any(dir: &Path, args: &[&str]) -> String {
+    if git::network_subcommand(args).is_some() {
+        git::run_net(dir, args).unwrap()
+    } else {
+        git::run(dir, args).unwrap()
+    }
 }
 
 pub fn write_commit(dir: &Path, file: &str, bytes: &[u8]) {
