@@ -186,3 +186,12 @@ fn the_fix_unit_ending_unfixed_stops_unless_until_or_the_harness_ended_it() {
     assert!(!checks_main(&stuck, &harness));
     assert!(!settle(&stuck, harness).contains(&Unfixed));
 }
+
+#[test]
+fn a_pause_lasts_until_the_latest_reset_and_past_until_stops_the_night() {
+    assert_eq!(pause_until(None, 900, None), (900, false));
+    // A later reset already holds: an earlier one never shortens it.
+    assert_eq!(pause_until(Some(1200), 900, None), (1200, false));
+    assert_eq!(pause_until(Some(600), 900, Some(900)), (900, true));
+    assert_eq!(pause_until(Some(600), 900, Some(901)), (900, false));
+}

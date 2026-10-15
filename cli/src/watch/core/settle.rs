@@ -154,6 +154,14 @@ pub fn settle(r: &RunResult, f: SettleFacts) -> Vec<SettleAct> {
     acts
 }
 
+/// How long every unit pauses when a usage limit resets at `reset`: until then, or until the
+/// latest reset tonight, `paused`, when that's later; and whether that lasts past `--until`
+/// (`deadline`), which stops the night.
+pub fn pause_until(paused: Option<i64>, reset: i64, deadline: Option<i64>) -> (i64, bool) {
+    let until = paused.map_or(reset, |p| p.max(reset));
+    (until, deadline.is_some_and(|d| until >= d))
+}
+
 /// Why a `done` unit's PR needs a human merge, as its comment says.
 fn human_merge_comment(r: &RunResult) -> String {
     let why = if r.needs_human {

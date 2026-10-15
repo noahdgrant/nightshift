@@ -24,6 +24,7 @@ mod update;
 use self::child::{signal, spawn, SIGTERM};
 use super::core::fill::{Holds, Kind, Stopping};
 use super::core::red::Red;
+use super::core::settle::pause_until;
 use super::self_update::{Built, SelfUpdate};
 use super::snapshot::{NightDir, Snapshot};
 use super::transitions::{self, Event, State};
@@ -386,8 +387,14 @@ impl<'a> Scheduler<'a> {
 
     /// Pause every unit until `reset`, or until the latest reset tonight when that's later.
     fn pause(&mut self, reset: i64) -> Result<()> {
-        let until = extend_pause(self.plan.snap.night(), &mut self.paused_until, reset)?;
-        if self.plan.deadline.is_some_and(|d| until >= d) {
+        let deadline = self.plan.deadline;
+        let past = extend_pause(
+            self.plan.snap.night(),
+            &mut self.paused_until,
+            reset,
+            deadline,
+        )?;
+        if past {
             self.stop_all(PAUSED_PAST_UNTIL);
         }
         Ok(())
@@ -443,13 +450,19 @@ impl Drop for Scheduler<'_> {
     }
 }
 
-/// Hold every unit until `reset`, or until the latest reset in `paused` when that's later.
-/// The hold is written first, so a hold that can't be written leaves `paused` unchanged.
-fn extend_pause(night: &NightDir, paused: &mut Option<i64>, reset: i64) -> Result<i64> {
-    let until = paused.map_or(reset, |p| p.max(reset));
+/// Hold every unit until `reset`, or until the latest reset in `paused` when that's later
+/// (`core::settle::pause_until`); whether the hold lasts past `deadline`. The hold is written
+/// first, so a hold that can't be written leaves `paused` unchanged.
+fn extend_pause(
+    night: &NightDir,
+    paused: &mut Option<i64>,
+    reset: i64,
+    deadline: Option<i64>,
+) -> Result<bool> {
+    let (until, past) = pause_until(*paused, reset, deadline);
     night.hold(until)?;
     *paused = Some(until);
-    Ok(until)
+    Ok(past)
 }
 
 #[cfg(test)]
@@ -462,13 +475,13 @@ mod tests {
         std::fs::write(tmp.path().join("night.json"), r#"{"watch_pid": 1}"#).unwrap();
         let (night, _) = NightDir::open(tmp.path()).unwrap();
         let mut paused = Some(500);
-        assert_eq!(extend_pause(&night, &mut paused, 900).unwrap(), 900);
+        assert!(!extend_pause(&night, &mut paused, 900, None).unwrap());
         assert_eq!(paused, Some(900));
         std::fs::create_dir(tmp.path().join("hold.tmp")).unwrap();
-        assert!(extend_pause(&night, &mut paused, 1200).is_err());
+        assert!(extend_pause(&night, &mut paused, 1200, None).is_err());
         assert_eq!(paused, Some(900));
         let mut none = None;
-        assert!(extend_pause(&night, &mut none, 1200).is_err());
+        assert!(extend_pause(&night, &mut none, 1200, None).is_err());
         assert_eq!(none, None);
     }
 }
