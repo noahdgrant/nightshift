@@ -107,6 +107,16 @@ fn disk_limits_default_to_20_and_10_gib_and_stop_must_not_exceed_wait() {
 }
 
 #[test]
+fn a_wait_limit_of_zero_turns_the_wait_off_without_the_stop_limit_set() {
+    for toml in [
+        "[limits]\ndisk_wait_gb = 0\n",
+        "[limits]\ndisk_wait_gb = 0\ndisk_stop_gb = 0\n",
+    ] {
+        assert!(parse(toml).unwrap().problems(None).is_empty(), "{toml}");
+    }
+}
+
+#[test]
 fn defaults_and_budget_by_billing() {
     let f = parse("").unwrap();
     assert_eq!(f.gates, "auto");

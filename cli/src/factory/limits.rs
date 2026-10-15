@@ -39,7 +39,7 @@ impl Limits {
             out.push("limits.memory_mb must be at least 1; remove it for no cap".into());
         }
         let (wait, stop) = (self.disk_wait_gb(), self.disk_stop_gb());
-        if stop > wait {
+        if wait > 0 && stop > wait {
             out.push(format!("limits.disk_stop_gb = {stop} is above limits.disk_wait_gb = {wait}; the stop limit must not exceed the wait limit"));
         }
         out

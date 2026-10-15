@@ -154,7 +154,10 @@ fn disk_entry(warnings: &mut Vec<String>) -> Value {
         .disk();
     let paths = match &repo {
         Some(r) => disk::filesystems(r),
-        None => disk::with_host_drive(std::env::current_dir().unwrap_or_else(|_| ".".into())),
+        None => disk::with_host_drive(
+            std::env::current_dir().unwrap_or_else(|_| ".".into()),
+            &disk::proc_version(),
+        ),
     };
     let mut filesystems = Vec::new();
     for (path, free) in disk::read(paths) {

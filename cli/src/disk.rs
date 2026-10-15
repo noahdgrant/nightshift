@@ -50,14 +50,22 @@ const WSL_HOST_DRIVE: &str = "/mnt/c";
 /// The filesystems a unit fills: the one holding `repo`'s worktrees, and under WSL the host's
 /// C: drive, whose free space the WSL disk image grows into.
 pub fn filesystems(repo: &Repo) -> Vec<PathBuf> {
-    with_host_drive(existing(&crate::worktree::planned_path(repo, "unit")))
+    with_host_drive(
+        existing(&crate::worktree::planned_path(repo, "unit")),
+        &proc_version(),
+    )
 }
 
-/// `path`, and under WSL the host's C: drive after it.
-pub fn with_host_drive(path: PathBuf) -> Vec<PathBuf> {
+/// What `/proc/version` says, empty where it can't be read.
+pub fn proc_version() -> String {
+    std::fs::read_to_string("/proc/version").unwrap_or_default()
+}
+
+/// `path`, and after it the host's C: drive when `version`, the text of `/proc/version`, names a
+/// WSL kernel.
+pub fn with_host_drive(path: PathBuf, version: &str) -> Vec<PathBuf> {
     let mut paths = vec![path];
-    let version = std::fs::read_to_string("/proc/version").unwrap_or_default();
-    if is_wsl(&version) {
+    if is_wsl(version) {
         paths.push(PathBuf::from(WSL_HOST_DRIVE));
     }
     paths
@@ -133,6 +141,19 @@ mod tests {
             "Linux version 6.8.0-45-generic (buildd@lcy02-amd64-075)"
         ));
         assert!(!is_wsl(""));
+    }
+
+    #[test]
+    fn the_host_drive_follows_the_worktrees_only_on_a_wsl_kernel() {
+        let wsl = "Linux version 6.6.114.1-microsoft-standard-WSL2 (root@machine)";
+        let generic = "Linux version 6.8.0-45-generic (buildd@lcy02-amd64-075)";
+        let w = PathBuf::from("/w");
+        assert_eq!(
+            with_host_drive(w.clone(), wsl),
+            [w.clone(), PathBuf::from("/mnt/c")]
+        );
+        assert_eq!(with_host_drive(w.clone(), generic), vec![w.clone()]);
+        assert_eq!(with_host_drive(w.clone(), ""), [w]);
     }
 
     #[test]
