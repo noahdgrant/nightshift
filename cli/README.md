@@ -83,6 +83,7 @@ command = ["gemini", "-m", "{model}"]
   | claude | `claude -p --permission-mode plan --model {model}` | `claude -p --permission-mode acceptEdits --model {model}` |
   | codex | `codex exec --sandbox read-only -m {model}` | `codex exec --sandbox workspace-write -m {model}` |
 
+- `ns run` phases use their own write commands, not these: claude with `bypassPermissions` and codex with `danger-full-access` ([docs/factory/run.md](../docs/factory/run.md), "Codex phases").
 - `acceptEdits` lets Claude edit files without asking, but shell commands still need approval, and a headless run cannot give it. A verify or build worker that has to run tests needs more. Either add `--allowedTools` for the commands it needs, or use `--dangerously-skip-permissions`. That flag lets the agent run any command as your user, so use it only in a disposable worktree or a sandbox.
 - Unknown keys are rejected, so a typo fails loudly. Run `ns doctor` after editing.
 
