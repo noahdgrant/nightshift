@@ -147,4 +147,9 @@ fn a_red_gate_with_a_committing_rebuild_that_writes_no_artifact_never_reaches_ve
     let r = s.run();
     assert_eq!(r.outcome, Outcome::Stuck);
     assert!(!r.calls().contains(&"verify"), "{:?}", r.calls());
+    assert_eq!(
+        gates_run(&s),
+        3,
+        "a commit since the red verdict runs the gate again"
+    );
 }
