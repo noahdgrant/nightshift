@@ -18,6 +18,18 @@ rule:
   kind: source_file
   regex: '^(?:[^\n]*\n){1000}[\s\S]'
 ---
+# A Kind::Harness built outside these files skips the billing and phase setup crate::harness::command
+# adds (#657, #716); cli/clippy.toml bans Proc::harness, the other way in. Patterns that match one
+# are not struct_expression nodes, so a match arm is never flagged.
+id: harness-kind-construction
+language: rust
+severity: error
+message: "a Kind::Harness built here skips the billing and phase setup of its kind; start the harness through crate::harness::command (#657)"
+ignores: ["cli/src/harness.rs", "cli/src/proc.rs", "cli/src/proc/tests.rs"]
+rule:
+  kind: struct_expression
+  has: {field: name, regex: '(^|::)Kind::Harness$'}
+---
 # wall-clock-in-test, part 1 of 2: in a tests/ directory or a file named tests.rs, any code. Part 2 below matches the same
 # code inside #[test] and #[cfg(test)] items anywhere.
 id: wall-clock-in-test

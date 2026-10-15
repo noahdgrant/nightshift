@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The Rust pack's tests that run outside cargo test: ratchet-binary-size.sh on a small crate,
-# and ratchet.toml under `ns ratchet check`. cli/tests/rules_pack.rs tests the rest of the pack.
+# ratchet.toml under `ns ratchet check`, and the harness-kind-construction rule's file scope. cli/tests/rules_pack.rs tests the rest of the pack.
 #
 #   rules/rust/tests/run.sh
 set -euo pipefail
@@ -105,6 +105,52 @@ check_error "no jq" "ratchet-binary-size.sh: jq is not on PATH"
   failed=1
 }
 
+# harness-kind-construction flags a Kind::Harness built outside the files allowed to build one,
+# and never a pattern that matches it.
+cat >"$tmp/kind.rs" <<'EOF_KIND'
+fn f(k: Kind, s: bool) -> u8 {
+    let _ = Kind::Harness { subscription: true }; // built
+    let _ = proc::Kind::Harness { subscription: s }; // built
+    let _ = Kind::Harness { subscription }; // built
+    let _ = MyKind::Harness { subscription };
+    match k {
+        Kind::Harness { .. } => 1,
+        _ => 0,
+    }
+}
+
+fn g(k: Kind) {
+    if let Kind::Harness { subscription: true } = k {}
+    if let proc::Kind::Harness { .. } = k {}
+}
+EOF_KIND
+built=()
+n=0
+while IFS= read -r l; do
+  n=$((n + 1))
+  [[ $l != *'// built'* ]] || built+=("$n")
+done <"$tmp/kind.rs"
+kinds="$tmp/kinds"
+for f in other.rs harness.rs proc.rs proc/tests.rs nested/harness.rs; do
+  mkdir -p "$(dirname "$kinds/cli/src/$f")"
+  cp "$tmp/kind.rs" "$kinds/cli/src/$f"
+done
+out=$(cd "$kinds" && "$pack/check.sh" ast-grep cli 2>"$tmp/stderr") || true
+got=$(jq -rs 'map(select(.rule == "harness-kind-construction")) | sort_by(.file, .line)
+  | map("\(.file) \(.line)") | join(" ")' <<<"$out" 2>/dev/null) || true
+want=
+for f in nested/harness.rs other.rs; do
+  for l in "${built[@]}"; do want+="${want:+ }cli/src/$f $l"; done
+done
+[ "$got" = "$want" ] || {
+  printf 'FAIL harness-kind-construction: findings %q, want %q, stderr:\n%s\n' "$got" "$want" "$(<"$tmp/stderr")" >&2
+  failed=1
+}
+jq -e -s 'map(select(.rule == "harness-kind-construction")) | length > 0 and all(.message | contains("crate::harness::command"))' <<<"$out" >/dev/null 2>&1 || {
+  echo "FAIL harness-kind-construction: a finding's message does not name crate::harness::command" >&2
+  failed=1
+}
+
 if [ -x "$ns" ]; then
   # ratchet.toml, filled in and with the script where the install puts it, is a ratchet
   # `ns ratchet check` runs.
@@ -127,4 +173,4 @@ else
 fi
 
 [ "$failed" -eq 0 ] || exit 1
-echo "rules/rust: ratchet-binary-size.sh and ratchet.toml pass"
+echo "rules/rust: ratchet-binary-size.sh, ratchet.toml and harness-kind-construction pass"
