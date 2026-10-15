@@ -226,6 +226,17 @@ fn one_unit_at_a_time(e: &Env, ns: &mut Ns, units: &[&str]) -> (Option<i32>, Val
     w.finish()
 }
 
+#[test]
+#[should_panic(expected = "one wait spanned the builds of [\"2-fix-a\", \"3-fix-b\"]")]
+fn a_night_that_builds_two_units_under_one_wait_fails_its_test() {
+    let e = Env::new();
+    e.factory("[defaults]\nmax_attempts = 1\n");
+    two_ready(&e);
+    // Each build fails at once and its unit ends there, so the night stays cheap.
+    e.queue("build", &["blocked", "blocked"]);
+    e.run(&["watch"], 0);
+}
+
 /// Each unit record's issue and outcome, sorted by issue.
 fn by_issue(units: &[Value]) -> Vec<(u64, String)> {
     let mut o: Vec<(u64, String)> = units
