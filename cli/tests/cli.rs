@@ -3911,17 +3911,89 @@ fn artifact_check_build_finds_the_base_and_keeps_the_other_errors() {
             misfiled,
         ])
     );
-    // Outside a git repo there is no diff to hold the line against.
+}
+
+fn check_build(build: &Path) -> (Option<i32>, Value) {
+    let out = ns()
+        .args([
+            "artifact",
+            "check",
+            build.to_str().unwrap(),
+            "--phase",
+            "build",
+        ])
+        .output();
+    (out.status.code(), json(&out.stdout))
+}
+
+#[test]
+fn artifact_check_build_fails_when_it_cannot_find_the_diff_a_file_line_needs() {
+    let (_tmp, build) = build_artifact_in_unit("- file: off by one: src/a.py:1");
+    let brief = build.with_file_name("brief.md");
+    let cannot = |v: &Value| {
+        let e = v["errors"][0]
+            .as_str()
+            .unwrap_or_else(|| panic!("{v}"))
+            .to_string();
+        assert_eq!(v["errors"].as_array().unwrap().len(), 1, "{v}");
+        assert!(
+            e.contains("cannot tell which files this unit's diff touches"),
+            "{e}"
+        );
+        assert_eq!(v["ok"], false);
+    };
+    // A base that is not a commit.
+    fs::write(&brief, "---\nbase: no-such-branch\n---\nbrief\n").unwrap();
+    let (code, v) = check_build(&build);
+    assert_eq!(code, Some(1));
+    cannot(&v);
+    // A base that looks like an option.
+    fs::write(&brief, "---\nbase: --x\n---\nbrief\n").unwrap();
+    cannot(&check_build(&build).1);
+    // Outside a git repo.
     let dir = tempfile::tempdir().unwrap();
     let alone = dir.path().join("build.md");
-    fs::write(&alone, text).unwrap();
-    ns().args([
-        "artifact",
-        "check",
-        alone.to_str().unwrap(),
-        "--phase",
-        "build",
-    ])
-    .assert()
-    .code(0);
+    fs::copy(&build, &alone).unwrap();
+    let (code, v) = check_build(&alone);
+    assert_eq!(code, Some(1));
+    cannot(&v);
+    // An artifact with no `file:` line needs no diff, so it passes where the diff is unreadable.
+    fs::write(
+        &alone,
+        fs::read_to_string(&build)
+            .unwrap()
+            .replace("- file:", "- note:"),
+    )
+    .unwrap();
+    assert_eq!(check_build(&alone).0, Some(0));
+}
+
+#[test]
+fn artifact_check_only_holds_a_build_artifact_to_the_touched_files() {
+    let (_tmp, build) = build_artifact_in_unit("- file: off by one: src/a.py:1");
+    let text = fs::read_to_string(&build).unwrap();
+    for phase in ["review", "verify", "ship"] {
+        let other = build.with_file_name(format!("{phase}.md"));
+        fs::write(
+            &other,
+            text.replace("phase: build", &format!("phase: {phase}")),
+        )
+        .unwrap();
+        let out = ns()
+            .args([
+                "artifact",
+                "check",
+                other.to_str().unwrap(),
+                "--phase",
+                phase,
+            ])
+            .output();
+        let v = json(&out.stdout);
+        let errors = v["errors"].to_string();
+        assert!(!errors.contains("`file:` line names"), "{phase}: {errors}");
+        assert!(
+            !errors.contains("cannot tell which files"),
+            "{phase}: {errors}"
+        );
+    }
 }

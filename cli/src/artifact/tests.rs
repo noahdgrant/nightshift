@@ -647,3 +647,23 @@ fn a_file_line_naming_a_touched_file_needs_a_tag() {
     assert!(errors("A file: src/inventory/warehouse.py in prose\n").is_empty());
     assert!(misfiled("- file: x: README.md\n", &[]).is_empty());
 }
+
+#[test]
+fn a_file_line_with_a_star_bullet_or_a_path_prefix_still_needs_a_tag() {
+    let touched = ["src/a.py".to_string()];
+    for line in [
+        "* file: x: src/a.py:3",
+        "  * file: x: src/a.py:3",
+        "- file: x: ./src/a.py:3",
+        "- file: x: ../src/a.py:3",
+        "- file: x: ../../src/a.py",
+        "- file: x: ./../src/a.py:3",
+        "- file: x: (./src/a.py)",
+    ] {
+        assert_eq!(misfiled(line, &touched).len(), 1, "{line}");
+    }
+    assert!(misfiled("* file: x: src/a.py:3, unrelated: y", &touched).is_empty());
+    assert!(misfiled("- file: x: ./src/a.py:3, too-big: 200", &touched).is_empty());
+    assert!(misfiled("- file: x: ./lib/src/a.py:3", &touched).is_empty());
+    assert!(misfiled("- file: x: .src/a.py:3", &touched).is_empty());
+}

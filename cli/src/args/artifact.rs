@@ -34,7 +34,8 @@ status pass has cause none; fail and blocked need a cause, a next and a reason; 
 triage's only; a passed triage names next. A file with no schema key is ns-artifact/1 and
 fails the check. A build artifact also fails on a `file:` line that names a file the unit's
 diff touches (from brief.md's base, else origin/HEAD, to HEAD) unless it carries an
-`unrelated: <reason>` or `too-big: <lines>` tag. Spec: skills/ns-contract/SKILL.md (Units of work and artifacts).
+`unrelated: <reason>` or `too-big: <lines>` tag, and fails when it has a `file:` line and the diff
+cannot be read. Spec: skills/ns-contract/SKILL.md (Units of work and artifacts).
 Prints {ok,file,schema,phase,status,cause,next,errors:[...]}, the values as written when invalid.
 Exit codes: 0 valid, 1 invalid (each error says what to change), 2 usage error or unreadable file.")]
     Check {

@@ -522,3 +522,71 @@ fn took_in_base_sees_a_merge_of_the_base() {
     let merged = g(&dir, &["rev-parse", "HEAD"]);
     assert!(took_in_base(&dir, "main", &reviewed, &merged));
 }
+
+fn unit_repo() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path().canonicalize().unwrap();
+    g(&d, &["init", "-q", "-b", "main"]);
+    commit_file(&d, "README", "hi\n");
+    commit_file(&d, "old.txt", "keep me\nsome more text\nand more\n");
+    commit_file(&d, "gone.txt", "bye\n");
+    (tmp, d)
+}
+
+fn files(d: &Path, base: &str) -> Option<Vec<String>> {
+    let mut v = unit_files(d, base, "HEAD")?;
+    v.sort();
+    Some(v)
+}
+
+#[test]
+fn unit_files_ignores_what_the_base_gained_after_the_unit_branched() {
+    let (_tmp, d) = unit_repo();
+    g(&d, &["checkout", "-qb", "unit"]);
+    commit_file(&d, "work.txt", "one\n");
+    g(&d, &["checkout", "-q", "main"]);
+    commit_file(&d, "UPSTREAM", "x\n");
+    g(&d, &["checkout", "-q", "unit"]);
+    assert_eq!(files(&d, "main"), Some(vec!["work.txt".to_string()]));
+}
+
+#[test]
+fn unit_files_ignores_a_merge_of_the_base_though_the_base_ref_is_behind() {
+    let (_tmp, d, _reviewed, _merged) = merged_behind_a_stale_base();
+    assert_eq!(files(&d, "main"), Some(vec!["work.txt".to_string()]));
+}
+
+#[test]
+fn unit_files_names_both_ends_of_a_rename_and_a_deleted_file() {
+    let (_tmp, d) = unit_repo();
+    g(&d, &["checkout", "-qb", "unit"]);
+    g(&d, &["mv", "old.txt", "new.txt"]);
+    g(&d, &["rm", "-q", "gone.txt"]);
+    g(&d, &["commit", "-qm", "move and delete"]);
+    assert_eq!(
+        files(&d, "main"),
+        Some(vec![
+            "gone.txt".to_string(),
+            "new.txt".to_string(),
+            "old.txt".to_string()
+        ])
+    );
+}
+
+#[test]
+fn unit_files_gives_the_real_name_of_a_non_ascii_path() {
+    let (_tmp, d) = unit_repo();
+    g(&d, &["checkout", "-qb", "unit"]);
+    commit_file(&d, "caf\u{e9}.txt", "x\n");
+    assert_eq!(files(&d, "main"), Some(vec!["caf\u{e9}.txt".to_string()]));
+}
+
+#[test]
+fn unit_files_is_none_for_a_base_that_is_not_a_commit() {
+    let (_tmp, d) = unit_repo();
+    g(&d, &["checkout", "-qb", "unit"]);
+    commit_file(&d, "work.txt", "one\n");
+    assert_eq!(files(&d, "no-such-branch"), None);
+    assert_eq!(files(&d, "--no-such"), None);
+    assert_eq!(files(&d, ""), None);
+}

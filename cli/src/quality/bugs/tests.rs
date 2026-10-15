@@ -28,6 +28,20 @@ fn ns_review_files_escapes_with_the_text_marker_and_checklist_read_here() {
     assert!(flat.contains(legacy), "{legacy}");
 }
 
+#[test]
+fn ns_ship_tags_an_unrelated_risk_with_the_incidental_source_read_here() {
+    let skill = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../skills/ns-ship/SKILL.md"),
+    )
+    .unwrap();
+    let flat = skill.split_whitespace().collect::<Vec<_>>().join(" ");
+    let tag = format!("`{MARKER} incidental`");
+    let rule = format!("A `file:` line tagged `unrelated:` adds a last line {tag}");
+    assert!(flat.contains(&rule), "{rule}");
+    let body = format!("🤖 *Posted by nightshift, an AI agent.*\n\nrisk\n\n{MARKER} incidental");
+    assert_eq!(marked(&body), Some(Source::Incidental));
+}
+
 pub(super) fn t(s: &str) -> i64 {
     clock::parse_iso(s).unwrap()
 }
