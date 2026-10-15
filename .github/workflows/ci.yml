@@ -50,6 +50,8 @@ jobs:
         id: tools
         working-directory: .
         run: scripts/ci-tools.sh install pytest ruff ast-grep cargo-deny java pmd bwrap
+      - name: Let bwrap create user namespaces (ubuntu 24.04 restricts them through AppArmor)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: taiki-e/install-action@v2
         with:
           tool: ${{ steps.tools.outputs.install-action }}
