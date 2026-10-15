@@ -17,3 +17,5 @@ amends: [D32]
 ## Reason
 
 Under D32 every out-of-scope finding was filed, so units merged half done: the event a diff added went unhandled by its consumer, the docs it made stale stayed stale, and each follow-up issue cost a whole unit to close (#747). The bounds keep the diff reviewable: 30 lines for an old bug and 150 for a class instance are small next to the unit soft limit of 400. The CLI check makes the common mistake, filing a bug in a file the diff already edits, fail at build instead of relying on prose; the tags keep a real exception cheap to state. The check reads the diff only from `ns artifact check`, not from `ns run`'s routing, so an artifact read outside its worktree still routes.
+
+The build eval case D32 named, `py-out-of-scope-defect-marked-for-filing`, is gone: its low-stock report lives in the same file as the defect, which now makes the defect the unit's to fix. `py-new-field-updates-its-consumer`, `py-missed-sibling-instance-fixed` and `py-unrelated-bug-filed-unrelated` replace it, with `disguised-fallout-file-line-is-a-finding` for review and `github-risk-on-an-escape-is-not-filed-twice` for ship.
