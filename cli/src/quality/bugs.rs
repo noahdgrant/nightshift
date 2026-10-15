@@ -41,6 +41,8 @@ pub enum Source {
     FactoryIntroduced,
     CiMain,
     Human,
+    /// Pre-existing and unrelated to the unit that found it: `ns-ship` files a build `file:` line.
+    Incidental,
 }
 
 impl Source {
@@ -50,6 +52,7 @@ impl Source {
             "factory_introduced" => Self::FactoryIntroduced,
             "ci_main" => Self::CiMain,
             "human" => Self::Human,
+            "incidental" => Self::Incidental,
             _ => return None,
         })
     }
@@ -111,6 +114,7 @@ pub struct Counts {
     pub factory_introduced: usize,
     pub ci_main: usize,
     pub human: usize,
+    pub incidental: usize,
     pub critical_high: usize,
     pub rest: usize,
 }
@@ -123,6 +127,7 @@ impl Counts {
             Source::FactoryIntroduced => &mut self.factory_introduced,
             Source::CiMain => &mut self.ci_main,
             Source::Human => &mut self.human,
+            Source::Incidental => &mut self.incidental,
         } += b.bugs;
         *match b.severity {
             Band::CriticalHigh => &mut self.critical_high,
@@ -349,18 +354,27 @@ impl Report {
         );
         let _ = writeln!(
             s,
-            "{:<9} {:>6} {:>6} {:>7} {:>7} {:>5} {:>9} {:>4}",
-            "week", "opened", "escape", "factory", "ci-main", "human", "crit/high", "rest"
+            "{:<9} {:>6} {:>6} {:>7} {:>7} {:>5} {:>10} {:>9} {:>4}",
+            "week",
+            "opened",
+            "escape",
+            "factory",
+            "ci-main",
+            "human",
+            "incidental",
+            "crit/high",
+            "rest"
         );
         let row = |s: &mut String, name: &str, c: &Counts| {
             let _ = writeln!(
                 s,
-                "{name:<9} {:>6} {:>6} {:>7} {:>7} {:>5} {:>9} {:>4}",
+                "{name:<9} {:>6} {:>6} {:>7} {:>7} {:>5} {:>10} {:>9} {:>4}",
                 c.opened,
                 c.review_escape,
                 c.factory_introduced,
                 c.ci_main,
                 c.human,
+                c.incidental,
                 c.critical_high,
                 c.rest
             );
@@ -604,6 +618,7 @@ mod tests {
             ("Source: review_escape", Source::ReviewEscape),
             ("Source: ci_main", Source::CiMain),
             ("Source:human", Source::Human),
+            ("Source: incidental", Source::Incidental),
         ] {
             let f = filed(1, "2026-10-05", "fix: x", line, &[]);
             assert_eq!(
@@ -733,9 +748,9 @@ mod tests {
             &BTreeSet::new(),
             &MergedPrs::default(),
         );
-        assert_eq!(r.weeks[0].counts, counts([4, 4, 0, 0, 0, 3, 1]));
-        assert_eq!(r.weeks[1].counts, counts([1, 0, 0, 0, 1, 0, 1]));
-        assert_eq!(r.total, counts([5, 4, 0, 0, 1, 3, 2]));
+        assert_eq!(r.weeks[0].counts, counts([4, 4, 0, 0, 0, 0, 3, 1]));
+        assert_eq!(r.weeks[1].counts, counts([1, 0, 0, 0, 1, 0, 0, 1]));
+        assert_eq!(r.total, counts([5, 4, 0, 0, 1, 0, 3, 2]));
     }
 
     fn fixtures() -> Vec<Filed> {
@@ -774,14 +789,16 @@ mod tests {
         ]
     }
 
-    fn counts(c: [usize; 7]) -> Counts {
-        let [opened, review_escape, factory_introduced, ci_main, human, critical_high, rest] = c;
+    fn counts(c: [usize; 8]) -> Counts {
+        let [opened, review_escape, factory_introduced, ci_main, human, incidental, critical_high, rest] =
+            c;
         Counts {
             opened,
             review_escape,
             factory_introduced,
             ci_main,
             human,
+            incidental,
             critical_high,
             rest,
         }
@@ -812,11 +829,11 @@ mod tests {
                 ("2026-W42", "2026-10-12"),
             ]
         );
-        assert_eq!(r.weeks[0].counts, counts([1, 0, 0, 0, 1, 0, 1]));
+        assert_eq!(r.weeks[0].counts, counts([1, 0, 0, 0, 1, 0, 0, 1]));
         assert_eq!(r.weeks[1].counts, Counts::default());
-        assert_eq!(r.weeks[2].counts, counts([2, 1, 0, 1, 0, 2, 0]));
-        assert_eq!(r.weeks[3].counts, counts([2, 0, 1, 0, 1, 0, 2]));
-        assert_eq!(r.total, counts([5, 1, 1, 1, 2, 2, 3]));
+        assert_eq!(r.weeks[2].counts, counts([2, 1, 0, 1, 0, 0, 2, 0]));
+        assert_eq!(r.weeks[3].counts, counts([2, 0, 1, 0, 1, 0, 0, 2]));
+        assert_eq!(r.total, counts([5, 1, 1, 1, 2, 0, 2, 3]));
         let numbers: Vec<u64> = r.issues.iter().map(|b| b.number).collect();
         assert_eq!(numbers, [1, 2, 3, 4, 7]);
         let left: Vec<(u64, &str)> = r
@@ -962,15 +979,15 @@ mod tests {
         );
         assert_eq!(
             lines[2],
-            "week      opened escape factory ci-main human crit/high rest"
+            "week      opened escape factory ci-main human incidental crit/high rest"
         );
         assert_eq!(
             lines[5],
-            "2026-W41       2      1       0       1     0         2    0"
+            "2026-W41       2      1       0       1     0          0         2    0"
         );
         assert_eq!(
             lines[7],
-            "total          5      1       0       1     3         2    3"
+            "total          5      1       0       1     3          0         2    3"
         );
         assert_eq!(
             lines[9],

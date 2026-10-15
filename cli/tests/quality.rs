@@ -1511,11 +1511,11 @@ fn bugs_counts_each_source_per_iso_week_and_leaves_out_duplicates() {
         v["weeks"],
         json!([
             {"week": "2099-W02", "monday": "2099-01-05", "opened": 2, "review_escape": 1,
-             "factory_introduced": 1, "ci_main": 0, "human": 0, "critical_high": 2, "rest": 0,
+             "factory_introduced": 1, "ci_main": 0, "human": 0, "incidental": 0, "critical_high": 2, "rest": 0,
              "merged_units": 1, "changed_lines": 400, "per_unit": 2.0, "per_kloc": 5.0,
              "undercounted": false},
             {"week": "2099-W03", "monday": "2099-01-12", "opened": 2, "review_escape": 0,
-             "factory_introduced": 0, "ci_main": 1, "human": 1, "critical_high": 1, "rest": 1,
+             "factory_introduced": 0, "ci_main": 1, "human": 1, "incidental": 0, "critical_high": 1, "rest": 1,
              "merged_units": 2, "changed_lines": 300, "per_unit": 1.0, "per_kloc": 6.667,
              "undercounted": false},
         ])
@@ -1586,7 +1586,9 @@ fn bugs_weeks_keeps_only_the_latest_weeks() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        text.contains("\n2099-W03       2      0       0       1     1         1    1\n"),
+        text.contains(
+            "\n2099-W03       2      0       0       1     1          0         1    1\n"
+        ),
         "{text}"
     );
     assert!(

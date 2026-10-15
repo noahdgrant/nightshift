@@ -74,7 +74,7 @@ Each issue gets one source, and `by` says what decided it, first match wins:
 
 | Source | Decided by (`by`) |
 |---|---|
-| The one a `Source:` line names (`review_escape`, `factory_introduced`, `ci_main` or `human`) | `marker` |
+| The one a `Source:` line names (`review_escape`, `factory_introduced`, `ci_main`, `human` or `incidental`). `incidental` is a pre-existing bug unrelated to the unit that found it: `ns-ship` files a build `file:` line with it | `marker` |
 | `review_escape`: `ns-review` filed it for pre-existing code; its body has "This escaped an earlier review." | `review_text` |
 | `ci_main`: `ns watch` filed it for a red `main`; its title starts `fix: main is red at` | `ci_title` |
 | `factory_introduced`: `git blame` of the first `path:line` in its body, on the default branch as it stood when the issue opened, names a PR (`(#123)` in the subject) that merged from an `ns/` branch | `blame` |
