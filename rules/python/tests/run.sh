@@ -248,6 +248,80 @@ for args in "" "."; do
   }
 done
 
+# ratchet-coverage.sh against a fake pytest that writes the JSON report pytest-cov would, or
+# fails in the way $FAKE_PYTEST names. Its stdout is noise the script must keep off its own.
+fake="$tmp/fake-pytest"
+mkdir -p "$fake"
+cat >"$fake/pytest" <<'EOF_PYTEST'
+#!/bin/sh
+for a; do case $a in --cov-report=json:*) report=${a#--cov-report=json:} ;; esac; done
+printf '%s\n' "$*" >"$FAKE_ARGS"
+echo "1 passed"
+case $FAKE_PYTEST in
+  pass) printf '{"totals": {"percent_covered": 87.5}}' >"$report" ;;
+  fail) exit 1 ;;
+  bad) printf '{}' >"$report" ;;
+esac
+EOF_PYTEST
+chmod +x "$fake/pytest"
+# Run ratchet-coverage.sh with $1 as FAKE_PYTEST and the rest as its arguments; sets out, err, rc.
+coverage() {
+  local mode=$1
+  shift
+  : >"$tmp/pytest-args"
+  out=$(cd "$tmp" && FAKE_PYTEST=$mode FAKE_ARGS="$tmp/pytest-args" PATH="$fake:$PATH" \
+    "$pack/ratchet-coverage.sh" "$@" 2>"$tmp/stderr") && rc=0 || rc=$?
+  err=$(<"$tmp/stderr")
+}
+coverage pass
+[ "$rc" -eq 0 ] && [ "$out" = 87.5 ] && grep -qE -- '^-q --cov-report=json:[^ ]+ --cov$' "$tmp/pytest-args" && grep -qF "1 passed" <<<"$err" || {
+  printf 'FAIL ratchet-coverage: exit %s, stdout %q, pytest got %q, stderr:\n%s\n' "$rc" "$out" "$(<"$tmp/pytest-args")" "$err" >&2
+  failed=1
+}
+coverage pass --cov=inventory tests
+[ "$rc" -eq 0 ] && [ "$out" = 87.5 ] && grep -qE -- '^-q --cov-report=json:[^ ]+ --cov=inventory tests$' "$tmp/pytest-args" || {
+  printf 'FAIL ratchet-coverage: arguments: exit %s, stdout %q, pytest got %q\n' "$rc" "$out" "$(<"$tmp/pytest-args")" >&2
+  failed=1
+}
+for mode in fail none bad; do
+  coverage "$mode"
+  want="pytest exited 1"
+  [ "$mode" = fail ] || want="no total coverage"
+  [ "$rc" -ne 0 ] && [ -z "$out" ] && grep -qF "ratchet-coverage.sh: $want" <<<"$err" || {
+    printf 'FAIL ratchet-coverage: pytest %s: exit %s, stdout %q, stderr:\n%s\n' "$mode" "$rc" "$out" "$err" >&2
+    failed=1
+  }
+done
+nopytest="$tmp/no-pytest"
+mkdir -p "$nopytest"
+for t in sh mktemp rm; do ln -s "$(command -v "$t")" "$nopytest/$t"; done
+out=$(cd "$tmp" && PATH="$nopytest" "$pack/ratchet-coverage.sh" 2>"$tmp/stderr") && rc=0 || rc=$?
+[ "$rc" -ne 0 ] && [ -z "$out" ] && grep -qF "ratchet-coverage.sh: pytest is not on PATH" "$tmp/stderr" || {
+  printf 'FAIL ratchet-coverage: no pytest: exit %s, stdout %q, stderr:\n%s\n' "$rc" "$out" "$(<"$tmp/stderr")" >&2
+  failed=1
+}
+
+# The real pytest and pytest-cov on a project where 6 of 7 statements run, 3 of 4 in mod.py.
+proj="$tmp/cov-project"
+mkdir -p "$proj"
+printf 'def used():\n    return 1\n\n\ndef unused():\n    return 2\n' >"$proj/mod.py"
+printf 'from mod import used\n\n\ndef test_used():\n    assert used() == 1\n' >"$proj/test_mod.py"
+if pytest -VV 2>&1 | grep -qF pytest-cov; then
+  for args in "|85.71428571428571" "--cov=mod|75.0"; do
+    out=$(cd "$proj" && "$pack/ratchet-coverage.sh" ${args%|*} 2>"$tmp/stderr") && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] && [ "$out" = "${args#*|}" ] || {
+      printf 'FAIL ratchet-coverage: real pytest with "%s": exit %s, stdout %q, want %s, stderr:\n%s\n' \
+        "${args%|*}" "$rc" "$out" "${args#*|}" "$(<"$tmp/stderr")" >&2
+      failed=1
+    }
+  done
+elif [ -n "${CI:-}" ]; then
+  echo "FAIL ratchet-coverage: pytest-cov is missing; install it with: scripts/ci-tools.sh install pytest pytest-cov" >&2
+  failed=1
+else
+  echo "run.sh: skipped the real pytest-cov test; install pytest-cov beside pytest" >&2
+fi
+
 if [ -x "$ns" ]; then
   repo="$tmp/ns-repo"
   mkdir -p "$repo/docs/agents"
@@ -257,6 +331,17 @@ if [ -x "$ns" ]; then
   out=$(cd "$repo" && timeout 60 "$ns" rules check 2>/dev/null) && rc=0 || rc=$?
   [ "$rc" -eq 1 ] && grep -qF '"findings": 1,' <<<"$out" && grep -qF '"file": "bare.py"' <<<"$out" && grep -qF 'error[suppression-reason]' <<<"$out" || {
     printf 'FAIL ns rules check: exit %s on a bare noqa gave:\n%s\n' "$rc" "$out" >&2
+    failed=1
+  }
+
+  # ratchet.toml, with the script where the install puts it, is a ratchet `ns ratchet check` runs.
+  mkdir -p "$repo/.nightshift/rules/python"
+  cp "$pack/ratchet-coverage.sh" "$repo/.nightshift/rules/python/"
+  cp "$pack/ratchet.toml" "$repo/.nightshift/nightshift.toml"
+  out=$(cd "$repo" && FAKE_PYTEST=pass FAKE_ARGS="$tmp/pytest-args" PATH="$fake:$PATH" timeout 60 "$ns" ratchet check 2>/dev/null) && rc=0 || rc=$?
+  got=$(jq -c '[.ratchets[] | [.name, .better, .status, .measured]]' <<<"$out" 2>/dev/null) || true
+  [ "$rc" -eq 0 ] && [ "$got" = '[["coverage","higher","untracked",87.5]]' ] || {
+    printf 'FAIL ratchet.toml: ns ratchet check exited %s:\n%s\n' "$rc" "$out" >&2
     failed=1
   }
 elif [ -n "${CI:-}" ]; then
