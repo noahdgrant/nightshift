@@ -3,6 +3,7 @@
 fn build_output_env() -> Env {
     let e = Env::with_repo("main", |root| {
         fs::write(root.join("README"), "hi\n").unwrap();
+        fs::write(root.join(".gitignore"), "target\n").unwrap();
         fs::create_dir_all(root.join("docs/agents")).unwrap();
         fs::write(
             root.join("docs/agents/stack.md"),

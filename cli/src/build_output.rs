@@ -49,8 +49,8 @@ pub fn remove(repo: &Repo, worktree: &Path) -> Option<Value> {
 }
 
 /// Where `rel` resolves under `root` (canonical), `None` when nothing is there, or why it is
-/// refused: absolute, climbing out, the worktree itself, `.git` or `.ns`, tracked by git, or a
-/// symlink that leads out.
+/// refused: absolute, climbing out, the worktree itself, `.git` or `.ns` (any case), tracked by
+/// git, not ignored by git, or a symlink that leads out.
 fn inside(root: &Path, rel: &str) -> Result<Option<PathBuf>, String> {
     let p = Path::new(rel);
     if p.is_absolute() {
@@ -58,6 +58,9 @@ fn inside(root: &Path, rel: &str) -> Result<Option<PathBuf>, String> {
     }
     if p.components().any(|c| c == Component::ParentDir) {
         return Err("climbs out with ..".into());
+    }
+    if state_dir(p) {
+        return Err("git or nightshift state".into());
     }
     let joined = root.join(p);
     match fs::symlink_metadata(&joined) {
@@ -78,10 +81,7 @@ fn inside(root: &Path, rel: &str) -> Result<Option<PathBuf>, String> {
         ));
     }
     let inner = real.strip_prefix(root).unwrap_or(&real);
-    if matches!(
-        inner.components().next(),
-        Some(Component::Normal(c)) if c == ".git" || c == ".ns"
-    ) {
+    if state_dir(inner) {
         return Err("git or nightshift state".into());
     }
     for candidate in [p, inner] {
@@ -92,7 +92,22 @@ fn inside(root: &Path, rel: &str) -> Result<Option<PathBuf>, String> {
             Err(e) => return Err(format!("cannot check whether git tracks it: {e}")),
         }
     }
-    Ok(Some(real))
+    let plain = inner.to_string_lossy();
+    match crate::git::run(root, &["check-ignore", "-q", "--", &plain]) {
+        Ok(_) => Ok(Some(real)),
+        Err(_) => Err("not ignored by git".into()),
+    }
+}
+
+/// Whether the first component of `p` names `.git` or `.ns`, in any case: a case-insensitive
+/// filesystem resolves `.GIT` to the same directory.
+fn state_dir(p: &Path) -> bool {
+    matches!(
+        p.components().next(),
+        Some(Component::Normal(c))
+            if c.to_string_lossy().eq_ignore_ascii_case(".git")
+                || c.to_string_lossy().eq_ignore_ascii_case(".ns")
+    )
 }
 
 /// The bytes of the files under `path`, symlinks not followed.
@@ -135,6 +150,7 @@ mod tests {
         fs::write(wt.join("cli/target/debug/b"), "defg").unwrap();
         fs::write(wt.join("cli/keep.rs"), "x").unwrap();
         crate::git::run(&wt, &["init", "-q"]).unwrap();
+        fs::write(wt.join(".gitignore"), "target\nout.bin\n").unwrap();
         let stack = format!("| Task | Command | Takes |\n|---|---|---|\n{row}\n");
         fs::write(wt.join("docs/agents/stack.md"), stack).unwrap();
         (tmp, wt)
@@ -298,6 +314,68 @@ mod tests {
         assert!(wt.join("cli/keep.rs").exists());
         assert!(wt.join("docs/agents/stack.md").exists());
         assert!(fs::symlink_metadata(wt.join("via-tracked")).is_ok());
+    }
+
+    #[test]
+    fn each_candidate_path_catches_a_tracked_file() {
+        let (_tmp, wt) = worktree("| build-output | `untracked-link`, `tracked-link` | |");
+        symlink(wt.join("cli/keep.rs"), wt.join("untracked-link")).unwrap();
+        symlink(wt.join("cli/target"), wt.join("tracked-link")).unwrap();
+        crate::git::run(&wt, &["add", "cli/keep.rs", "tracked-link"]).unwrap();
+        let v = remove(&main(), &wt).unwrap();
+        assert_eq!(
+            v["refused"],
+            json!([
+                {"path": "untracked-link", "reason": "tracked by git"},
+                {"path": "tracked-link", "reason": "tracked by git"}
+            ])
+        );
+        assert_eq!(v["paths"], json!([]));
+        assert!(wt.join("cli/target/a").exists());
+    }
+
+    #[test]
+    fn a_git_failure_refuses_instead_of_deleting() {
+        let (_tmp, wt) = worktree("| build-output | `cli/target` | |");
+        fs::remove_dir_all(wt.join(".git")).unwrap();
+        let v = remove(&main(), &wt).unwrap();
+        let reason = v["refused"][0]["reason"].as_str().unwrap();
+        assert!(
+            reason.starts_with("cannot check whether git tracks it: "),
+            "{v}"
+        );
+        assert!(wt.join("cli/target/a").exists());
+    }
+
+    #[test]
+    fn untracked_content_git_does_not_ignore_is_refused() {
+        let (_tmp, wt) = worktree("| build-output | `nested`, `stray.txt` | |");
+        fs::create_dir_all(wt.join("nested/.git")).unwrap();
+        fs::write(wt.join("nested/work"), "unpushed").unwrap();
+        fs::write(wt.join("stray.txt"), "x").unwrap();
+        let v = remove(&main(), &wt).unwrap();
+        assert_eq!(
+            v["refused"],
+            json!([
+                {"path": "nested", "reason": "not ignored by git"},
+                {"path": "stray.txt", "reason": "not ignored by git"}
+            ])
+        );
+        assert!(wt.join("nested/work").exists());
+        assert!(wt.join("stray.txt").exists());
+    }
+
+    #[test]
+    fn state_directories_are_refused_in_any_case() {
+        let (_tmp, wt) = worktree("| build-output | `.GIT`, `.Ns/u` | |");
+        let v = remove(&main(), &wt).unwrap();
+        assert_eq!(
+            v["refused"],
+            json!([
+                {"path": ".GIT", "reason": "git or nightshift state"},
+                {"path": ".Ns/u", "reason": "git or nightshift state"}
+            ])
+        );
     }
 
     #[test]
