@@ -233,8 +233,7 @@ impl Protected {
             .collect()
     }
 
-    /// Forget the changes under a tracked root that git holds as committed: what differs from
-    /// HEAD or the index stays. When git can't say, every change stays.
+    /// Forget the changes under a tracked root that HEAD holds: what differs from HEAD stays. When git can't say, every change stays.
     fn drop_committed(&self, paths: &mut Vec<PathBuf>) {
         for root in self.roots.iter().filter(|r| r.kind == Kind::Tracked) {
             if !paths.iter().any(|p| p.starts_with(&root.path)) {
@@ -263,14 +262,16 @@ impl Protected {
 
     /// Put each of `paths` back as `self` holds it: first clear what `now` has there, deepest
     /// first, then write back what was, shallowest first. A directory whose mode alone changed
-    /// keeps what is under it. A path outside the unit is left, and the error says so.
+    /// keeps what is under it. A path outside the unit is left, after the rest are put back, and the
+    /// error says so.
     fn put_back(&self, now: &Protected, paths: &[PathBuf]) -> std::io::Result<()> {
-        if let Some(p) = paths.iter().find(|p| !self.restorable(p)) {
-            return Err(std::io::Error::other(format!(
-                "{} is outside the unit's own paths, so ns left it as it is",
-                p.display()
-            )));
-        }
+        let outside = paths.iter().find(|p| !self.restorable(p));
+        let paths: Vec<PathBuf> = paths
+            .iter()
+            .filter(|p| self.restorable(p))
+            .cloned()
+            .collect();
+        let paths = &paths;
         let mut by_key = BTreeSet::new();
         for p in paths.iter().rev() {
             if self.put_back_config(now, p)? {
@@ -309,7 +310,13 @@ impl Protected {
                 Some(Node::Unread) | None => {}
             }
         }
-        Ok(())
+        match outside {
+            Some(p) => Err(std::io::Error::other(format!(
+                "{} is outside the unit's own paths, so ns left it as it is",
+                p.display()
+            ))),
+            None => Ok(()),
+        }
     }
 
     /// Put a config file's changed keys back with `git config`, so a `branch.*` key written
@@ -437,36 +444,64 @@ fn walk(path: &Path, limits: Limits, nodes: &mut BTreeMap<PathBuf, Node>) -> boo
     true
 }
 
-/// The paths under `dir`, a tracked directory of a worktree, that differ from HEAD or the
-/// index, or are untracked. `None` when git can't say.
+/// The paths under `dir`, a tracked directory of a worktree, that differ from HEAD, or are not in
+/// it. Decided from HEAD's tree and the files' own bytes and modes, so no config, attribute,
+/// exclude rule or index flag of the repo can hide a change or make git run a command. `None`
+/// when git can't say.
 fn dirty_under(dir: &Path) -> Option<Vec<PathBuf>> {
     let top = dir.parent()?;
     let name = dir.file_name()?.to_str()?;
-    let out = git::run(
-        top,
-        &[
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=all",
-            "--",
-            name,
-        ],
-    )
-    .ok()?;
-    let mut fields = out.split('\0').filter(|f| !f.is_empty());
+    let listing = git::run(top, &["ls-tree", "-r", "-z", "HEAD", "--", name]).ok()?;
+    let mut head = BTreeMap::new();
+    for entry in listing.split('\0').filter(|e| !e.is_empty()) {
+        let (meta, rel) = entry.split_once('\t')?;
+        let mut meta = meta.split(' ');
+        let mode = meta.next()?;
+        let sha = meta.nth(1)?;
+        head.insert(top.join(rel), (mode.to_string(), sha.to_string()));
+    }
+    let mut nodes = BTreeMap::new();
+    if !walk(dir, LIMITS, &mut nodes) {
+        return None;
+    }
     let mut dirty = Vec::new();
-    while let Some(entry) = fields.next() {
-        let (status, rel) = entry.split_at_checked(3)?;
-        dirty.push(top.join(rel));
-        if status.starts_with(['R', 'C']) || status[1..].starts_with(['R', 'C']) {
-            dirty.push(top.join(fields.next()?));
+    let mut files = Vec::new();
+    for (path, node) in &nodes {
+        let mode = match node {
+            Node::Dir(_) => continue,
+            Node::Link(_) => "120000",
+            Node::File(_, m) | Node::Large(_, m) if m & 0o100 != 0 => "100755",
+            Node::File(..) | Node::Large(..) => "100644",
+            Node::Unread => {
+                dirty.push(path.clone());
+                continue;
+            }
+        };
+        match head.get(path) {
+            Some((m, _)) if m == mode => files.push(path),
+            _ => dirty.push(path.clone()),
         }
     }
+    for chunk in files.chunks(256) {
+        let mut args = vec!["hash-object", "--no-filters", "--"];
+        args.extend(
+            chunk
+                .iter()
+                .map(|p| p.to_str())
+                .collect::<Option<Vec<_>>>()?,
+        );
+        let out = git::run(top, &args).ok()?;
+        let shas: Vec<&str> = out.lines().collect();
+        if shas.len() != chunk.len() {
+            return None;
+        }
+        for (path, sha) in chunk.iter().zip(shas) {
+            if head.get(*path).is_none_or(|(_, h)| h != sha) {
+                dirty.push((*path).clone());
+            }
+        }
+    }
+    dirty.extend(head.keys().filter(|p| !nodes.contains_key(*p)).cloned());
     Some(dirty)
 }
 

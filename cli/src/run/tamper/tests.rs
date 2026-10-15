@@ -732,18 +732,148 @@ fn dirty_under_is_none_when_git_cannot_say_and_every_change_stays() {
     );
 }
 
+fn plant_marker_commands(wt: &Path, marker: &Path) {
+    let cmd = format!("touch {}", marker.display());
+    git_ok(wt, &["config", "core.fsmonitor", &cmd]);
+    let hook = wt.join(".git/hooks/post-index-change");
+    fs::write(&hook, format!("#!/bin/sh\n{cmd}\n")).unwrap();
+    chmod(&hook, 0o755);
+}
+
+#[test]
+fn git_status_runs_a_planted_fsmonitor_and_hook() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_with_hook(d.path());
+    let marker = d.path().join("ran");
+    plant_marker_commands(&wt, &marker);
+    fs::write(hooks.join("pre-commit"), "exit 1\n").unwrap();
+    git::run(&wt, &["status", "--porcelain"]).unwrap();
+    assert!(marker.exists(), "the control must fire");
+}
+
 #[test]
 fn the_tracked_check_does_not_run_a_planted_fsmonitor_or_hook() {
     let d = tempfile::tempdir().unwrap();
     let (wt, hooks) = repo_with_hook(d.path());
     let marker = d.path().join("ran");
+    plant_marker_commands(&wt, &marker);
     let p = Protected::read(vec![tracked(&hooks)]);
-    let cmd = format!("touch {}", marker.display());
-    git_ok(&wt, &["config", "core.fsmonitor", &cmd]);
     fs::write(hooks.join("pre-commit"), "exit 1\n").unwrap();
-    assert!(dirty_under(&hooks).is_some());
-    assert!(!marker.exists(), "git status ran the planted command");
-    drop(p);
+    assert!(p.check().is_some());
+    assert!(!marker.exists(), "the check ran the planted command");
+}
+
+#[test]
+fn a_planted_filter_is_not_run_and_the_change_is_put_back() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_with_hook(d.path());
+    let marker = d.path().join("ran");
+    let p = Protected::read(vec![tracked(&hooks)]);
+    let cmd = format!("touch {}; cat", marker.display());
+    git_ok(&wt, &["config", "filter.x.clean", &cmd]);
+    git_ok(&wt, &["config", "filter.x.process", &cmd]);
+    fs::write(wt.join(".git/info/attributes"), "* filter=x\n").unwrap();
+    fs::write(hooks.join("pre-commit"), "exit 1\n").unwrap();
+    let t = p.check().unwrap();
+    assert_eq!(t.paths, [hooks.join("pre-commit")]);
+    assert!(!marker.exists(), "the check ran the planted filter");
+    assert_eq!(
+        fs::read_to_string(hooks.join("pre-commit")).unwrap(),
+        "exit 0\n"
+    );
+}
+
+#[test]
+fn a_planted_filemode_exclude_or_index_flag_does_not_hide_a_change() {
+    let d = tempfile::tempdir().unwrap();
+    let (wt, hooks) = repo_with_hook(d.path());
+    let was = mode(&hooks.join("pre-commit"));
+    let p = Protected::read(vec![tracked(&hooks)]);
+    git_ok(&wt, &["config", "core.fileMode", "false"]);
+    chmod(&hooks.join("pre-commit"), 0o755);
+    let t = p.check().unwrap();
+    assert_eq!(t.paths, [hooks.join("pre-commit")]);
+    assert_eq!(mode(&hooks.join("pre-commit")), was);
+
+    fs::write(wt.join(".git/info/exclude"), "extra\n").unwrap();
+    fs::write(hooks.join("extra"), "exit 1\n").unwrap();
+    let t = p.check().unwrap();
+    assert_eq!(t.paths, [hooks.join("extra")]);
+    assert!(!hooks.join("extra").exists());
+
+    git_ok(
+        &wt,
+        &["update-index", "--assume-unchanged", ".githooks/pre-commit"],
+    );
+    fs::write(hooks.join("pre-commit"), "exit 1\n").unwrap();
+    let t = p.check().unwrap();
+    assert_eq!(t.paths, [hooks.join("pre-commit")]);
+
+    git_ok(
+        &wt,
+        &[
+            "update-index",
+            "--no-assume-unchanged",
+            ".githooks/pre-commit",
+        ],
+    );
+    git_ok(
+        &wt,
+        &["update-index", "--skip-worktree", ".githooks/pre-commit"],
+    );
+    fs::write(hooks.join("pre-commit"), "exit 2\n").unwrap();
+    let t = p.check().unwrap();
+    assert_eq!(t.paths, [hooks.join("pre-commit")]);
+}
+
+#[test]
+fn a_restorable_path_is_put_back_even_when_another_is_outside_the_unit() {
+    let d = tempfile::tempdir().unwrap();
+    let mine = hooks(&d.path().join("mine"));
+    let theirs = hooks(&d.path().join("theirs"));
+    let p = Protected::read(vec![tree(&mine), root(&theirs, Kind::Tree, false)]);
+    fs::write(mine.join("pre-commit"), "changed\n").unwrap();
+    fs::write(theirs.join("pre-commit"), "changed\n").unwrap();
+    let t = p.check().unwrap();
+    assert_eq!(
+        t.paths,
+        [mine.join("pre-commit"), theirs.join("pre-commit")]
+    );
+    let e = t.restore_error.as_deref().unwrap();
+    assert!(e.contains("outside the unit"), "{e}");
+    assert_eq!(
+        fs::read_to_string(mine.join("pre-commit")).unwrap(),
+        "exit 0\n"
+    );
+    assert_eq!(
+        fs::read_to_string(theirs.join("pre-commit")).unwrap(),
+        "changed\n"
+    );
+}
+
+#[test]
+fn a_common_dir_that_is_the_worktrees_own_git_dir_holds_one_config_worktree() {
+    let d = tempfile::tempdir().unwrap();
+    git::run(
+        d.path(),
+        &["init", "-q", d.path().join("wt").to_str().unwrap()],
+    )
+    .unwrap();
+    let wt = d.path().join("wt").canonicalize().unwrap();
+    let common = wt.join(".git");
+    let p = protected_paths(&wt, &common, &wt.join(".ns/u"), "u");
+    let own = common.join("config.worktree");
+    assert_eq!(p.roots.iter().filter(|r| r.path == own).count(), 1);
+}
+
+#[test]
+fn a_worktree_git_cannot_name_adds_no_config_worktree_root() {
+    let d = tempfile::tempdir().unwrap();
+    let wt = d.path().join("plain");
+    fs::create_dir(&wt).unwrap();
+    let common = d.path().join("main/.git");
+    let p = protected_paths(&wt, &common, &wt.join(".ns/u"), "u");
+    assert_eq!(p.roots.len(), 6);
 }
 
 #[test]
