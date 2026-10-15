@@ -326,9 +326,14 @@ fn clean_removes_the_tmpdirs_a_merged_unit_kept() {
         fs::create_dir_all(unit_tmp(&e, unit).join("build-1")).unwrap();
         fs::write(unit_tmp(&e, unit).join("build-1/scratch"), "x\n").unwrap();
     }
+    let done = e.worktree("3-done");
+    for dir in [unit_tmp(&e, "3-done").join("build-1"), done.clone()] {
+        read_only_dir(&dir.join("locked"));
+    }
     let v = e.run(&["clean"], 0);
     assert_eq!(units_in(&v["removed"]), ["3-done"], "{v}");
     assert!(!unit_tmp(&e, "3-done").exists());
+    assert!(!done.exists());
     assert!(unit_tmp(&e, "4-open").join("build-1/scratch").is_file());
 }
 
@@ -813,6 +818,38 @@ fn clean_reports_a_tmpdir_it_could_not_remove() {
     assert!(reason.starts_with(&kept), "{v}");
     assert!(!done.exists());
     assert!(!branch_exists(&e, "3-done"));
+}
+
+/// Make `dir` with a file and a subdirectory holding a file, all of it mode 0500.
+fn read_only_dir(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(dir.join("inner")).unwrap();
+    fs::write(dir.join("f"), "x\n").unwrap();
+    fs::write(dir.join("inner/g"), "y\n").unwrap();
+    for d in [dir.join("inner"), dir.to_path_buf()] {
+        fs::set_permissions(d, fs::Permissions::from_mode(0o500)).unwrap();
+    }
+}
+
+#[test]
+fn auto_merge_removes_a_worktree_and_kept_tmpdir_holding_read_only_directories() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = auto_merge_env();
+    let tmp = unit_tmp(&e, UNIT);
+    fs::create_dir(&tmp).unwrap();
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o700)).unwrap();
+    read_only_dir(&tmp.join("build-0/locked"));
+    e.queue("ship", &["pass:script"]);
+    e.ctl(
+        "ship.sh",
+        "mkdir -p locked/inner && touch locked/f locked/inner/g && chmod 500 locked/inner locked\n",
+    );
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    assert_eq!(v["cleanup"]["removed"], true, "{v}");
+    assert!(!e.worktree(UNIT).exists());
+    assert!(!unit_tmp(&e, UNIT).exists());
+    assert!(!branch_exists(&e, UNIT));
 }
 
 #[test]

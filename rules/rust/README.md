@@ -22,6 +22,10 @@ It misses three cases, each rare enough to leave to review:
 
 `rules/rust/tests/run.sh` checks the flagged and unflagged forms and each allowed file.
 
+## Tree removal in cleanups
+
+The ast-grep rule `tree-removal-skips-modes` (#730) flags a call to `remove_dir_all` in the files that delete a tree `ns` owns: `cli/src/clean.rs` (a unit's `TMPDIR`s and worktree), `cli/src/build_output.rs` and `cli/src/run/phase_run.rs` (a passing phase's `TMPDIR`). `remove_dir_all` fails on a read-only directory a phase left in the tree, so these go through `crate::tree::remove`, which makes each directory writable first without following symlinks. Its `files:` globs name the paths from the repo root. Test code in those files (a `#[test]` or `#[cfg(test)]` item) is not flagged. `rules/rust/tests/run.sh` checks each file, a file outside the list, and a tests module.
+
 ## Compile errors
 
 A compile error is not a finding, so it can't be baselined. Cargo can't check a crate whose dependency didn't compile, so a baselined error would hide every finding behind it. When clippy reports a compiler error, an error with no code or an `E` code such as `E0308`, `check.sh clippy` exits 2 with no findings. It prints the errors, and the findings from the members it did lint (it runs with `--keep-going`), as `check.sh:` lines on stderr:
