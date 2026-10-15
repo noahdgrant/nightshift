@@ -112,7 +112,9 @@ fn watch_gives_each_unit_its_share_of_the_cores() {
         );
         e.queue("build", &["pass:script", "pass:script"]);
         let p = parallel.to_string();
-        let v = e.run(&["watch", "--parallel", &p], 0);
+        let (code, v, err) =
+            one_unit_at_a_time(&e, e.ns().args(["watch", "--parallel", &p]), &[A, B]);
+        assert_eq!(code, Some(0), "{err}");
         assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
         let share = (cores / parallel).max(1);
         assert_eq!(
@@ -207,10 +209,13 @@ fn cleanup_between_units_leaves_the_worktree_of_a_unit_still_running() {
              [ \"$(cat \"$FAKE_GH_DIR/pr-30.state\" 2>/dev/null)\" = MERGED ] && echo x > {looked:?}\n"
         ),
     );
+    let (in_a, go_a) = hold_phase(&e, A, "build");
     let mut w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
     // Unit 3 holds its run lock in setup while unit 2 runs to its end and cleanup runs after it.
     w.entered(&entered);
     release(&go_2);
+    w.entered(&in_a);
+    release(&go_a);
     w.line("ns watch: #2 done (worker");
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -543,10 +548,14 @@ fn the_carried_deadline_beats_the_new_binarys_own() {
     let from = nightshift_repo(&e);
     two_ready(&e);
     let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
     let w = Watching::start(watch_from(&e, &from).args(["watch", "--until", "06:30"]));
     w.entered(&in_a);
     land(&e, "cli/x", "new\n");
     release(&go_a);
+    // Unit 3 starts on the new binary.
+    w.entered(&in_b);
+    release(&go_b);
     let (code, v, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
     // The stub drops --until when it execs, so only the carried deadline can be 06:30.
@@ -643,16 +652,14 @@ fn state_the_new_binary_cannot_read_starts_a_fresh_night() {
         two_ready(&e);
         let path = e.root.join("night.json");
         fs::write(&path, state).unwrap();
-        let out = e
-            .ns()
-            .args(["watch", "--until", "06:30", "--resume-night"])
-            .arg(&path)
-            .assert()
-            .code(0)
-            .get_output()
-            .clone();
-        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-        let err = String::from_utf8_lossy(&out.stderr);
+        let (code, v, err) = one_unit_at_a_time(
+            &e,
+            e.ns()
+                .args(["watch", "--until", "06:30", "--resume-night"])
+                .arg(&path),
+            &[A, B],
+        );
+        assert_eq!(code, Some(0), "{err}");
         assert!(
             err.contains("starting a fresh night") && err.contains(why),
             "{err}"
@@ -662,16 +669,15 @@ fn state_the_new_binary_cannot_read_starts_a_fresh_night() {
     }
     let e = Env::new();
     two_ready(&e);
-    let err = e
-        .ns()
-        .args(["watch", "--resume-night"])
-        .arg(e.root.join("missing.json"))
-        .assert()
-        .code(0)
-        .get_output()
-        .stderr
-        .clone();
-    assert!(String::from_utf8_lossy(&err).contains("starting a fresh night"));
+    let (code, _, err) = one_unit_at_a_time(
+        &e,
+        e.ns()
+            .args(["watch", "--resume-night"])
+            .arg(e.root.join("missing.json")),
+        &[A, B],
+    );
+    assert_eq!(code, Some(0), "{err}");
+    assert!(err.contains("starting a fresh night"), "{err}");
 }
 
 /// A night held in a build, with an update on origin, whose fake cargo runs in `mode`.
@@ -746,10 +752,16 @@ fn a_build_holds_no_slot_and_no_triage_and_the_night_hands_off_once_it_ends() {
     e.untriaged(5, "Fix e", &["status:needs-triage", "type:fix"]);
     e.queue("triage", &["pass", "pass", "none"]);
     let go_cargo = hold_cargo(&e);
+    let (in_a, go_a) = hold_phase(&e, A, "build");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
     let mut w = Watching::start(watch_from(&e, &from).args(["watch"]));
     w.line("self-update: building");
     // While cargo builds, both units run on this ns and the triage pass runs too.
+    w.entered(&in_a);
+    release(&go_a);
     w.line("#2 done");
+    w.entered(&in_b);
+    release(&go_b);
     w.line("#3 done");
     w.line("triage #5");
     release(&go_cargo);

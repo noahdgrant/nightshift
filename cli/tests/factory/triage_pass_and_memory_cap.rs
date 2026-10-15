@@ -237,7 +237,8 @@ fn a_phase_past_the_memory_cap_fails_its_attempt_and_watch_goes_on() {
         &format!("case \"$NS_UNIT\" in 2-*) {HOG} ;; esac\n"),
     );
     e.queue("build", &["pass:script", "pass:script", "pass:script"]);
-    let v = e.run(&["watch"], 0);
+    let (code, v, err) = one_unit_at_a_time(&e, e.ns().arg("watch"), &[A, B]);
+    assert_eq!(code, Some(0), "{err}");
     let units = v["units"].as_array().unwrap();
     assert_eq!(units.len(), 2, "{v}");
     assert_eq!(units[0]["outcome"], "stuck", "{v}");

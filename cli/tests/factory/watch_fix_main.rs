@@ -532,9 +532,11 @@ fn watch_holds_nothing_when_main_ci_cannot_be_read_mid_night() {
     e.queue("build", &["pass:commit", "pass:commit"]);
     e.gh_file("checks-12.json", GREEN);
     e.gh_file("checks-13.json", GREEN);
-    let out = e.ns().args(["watch", "--max-units", "2"]).output();
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
+    let (_, v, err) = one_unit_at_a_time(
+        &e,
+        e.ns().args(["watch", "--max-units", "2"]),
+        &["100-fix-main-is-red-at-abcdef0-test", A],
+    );
     assert_eq!(
         units(&v)
             .iter()

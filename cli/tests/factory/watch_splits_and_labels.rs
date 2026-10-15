@@ -428,7 +428,12 @@ fn watch_respects_max_units() {
         e.ready(n, &format!("Fix {n}"), &["type:fix"], "");
     }
     e.queue("build", &["pass:commit", "pass:commit", "pass:commit"]);
-    let v = e.run(&["watch", "--max-units", "2"], 0);
+    let (code, v, err) = one_unit_at_a_time(
+        &e,
+        e.ns().args(["watch", "--max-units", "2"]),
+        &["2-fix-2", "3-fix-3"],
+    );
+    assert_eq!(code, Some(0), "{err}");
     let issues: Vec<u64> = v["units"]
         .as_array()
         .unwrap()
@@ -466,15 +471,14 @@ fn watch_keeps_its_start_config_when_the_files_break_between_units() {
     );
     e.queue("triage", &["pass:script"]);
     e.queue("build", &["pass:commit", "pass:commit"]);
-    let out = e
-        .ns()
-        .env("MY_GH_TOKEN", FAKE_TOKEN)
-        .args(["watch", "--max-units", "2"])
-        .assert()
-        .code(0)
-        .get_output()
-        .clone();
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let (code, v, err) = one_unit_at_a_time(
+        &e,
+        e.ns()
+            .env("MY_GH_TOKEN", FAKE_TOKEN)
+            .args(["watch", "--max-units", "2"]),
+        &[A, B],
+    );
+    assert_eq!(code, Some(0), "{err}");
     let outcomes: Vec<&str> = v["units"]
         .as_array()
         .unwrap()
@@ -488,7 +492,6 @@ fn watch_keeps_its_start_config_when_the_files_break_between_units() {
     assert_eq!(started["factory"]["path"], factory.to_str().unwrap());
     assert_eq!(started["config"]["sha256"], config_sha.as_str());
     assert_eq!(started["factory"]["sha256"], factory_sha.as_str());
-    let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains(config.to_str().unwrap()), "{err}");
     assert!(
         err.contains(started["config"]["sha256"].as_str().unwrap()),

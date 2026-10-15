@@ -184,10 +184,13 @@ fn a_ready_issue_that_overlaps_a_running_unit_waits_for_it_to_end() {
     brief_comment(&e, 3, "`cli/src/run.rs`");
     // #2 holds at its triage, so the pick reads its prediction from its issue.
     let (in_a, go_a) = hold_phase(&e, A, "triage");
+    let (in_b, go_b) = hold_phase(&e, B, "build");
     let mut w = Watching::start(e.ns().args(["watch", "--parallel", "2"]));
     w.entered(&in_a);
     w.line("ns watch: #3 waits: its touches overlap running 2-fix-a");
     release(&go_a);
+    w.entered(&in_b);
+    release(&go_b);
     let (code, v, err) = w.finish();
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(by_issue(&units(&v)), each(&[2, 3], "done"), "{v}");
