@@ -73,6 +73,7 @@ pub fn run() -> Result<ExitCode> {
     tracked_skill_dirs(&mut problems, &mut warnings);
     let hooks = hooks_entry(&mut problems);
     let disk = disk_entry(&mut warnings);
+    let private_tmp = crate::harness::private_tmp_works();
 
     let ok = parses && problems.is_empty();
     let out = json!({
@@ -88,13 +89,13 @@ pub fn run() -> Result<ExitCode> {
             .as_ref()
             .map(|c| c.roles.values().map(|r| r.harness.clone()).collect::<std::collections::BTreeSet<_>>())
             .unwrap_or_default(),
-        "harnesses": harnesses_entry(),
+        "harnesses": harnesses_entry(private_tmp.is_ok()),
         "skill_dirs": skill_dirs_entry(),
         "claude_phases": {
             "auto_memory": false,
             "env": format!("{}=1", crate::harness::AUTO_MEMORY_ENV),
         },
-        "private_tmp": private_tmp_entry(),
+        "private_tmp": private_tmp_entry(&private_tmp),
         "forge": forge,
         "hooks": hooks,
         "quality": factory().map(|f| json!({ "remote": f.quality.remote })),
@@ -109,17 +110,17 @@ pub fn run() -> Result<ExitCode> {
 }
 
 /// Whether `ns run` gives each phase its `TMPDIR` as a private `/tmp`, and why not when it can't.
-fn private_tmp_entry() -> Value {
-    let works = crate::harness::private_tmp_works();
+fn private_tmp_entry(works: &Result<(), String>) -> Value {
     json!({
         "isolated": works.is_ok(),
         "via": "bwrap",
-        "reason": works.err(),
+        "reason": works.as_ref().err(),
     })
 }
 
-/// Each known harness: whether it is on PATH, where, and its pinning mode.
-fn harnesses_entry() -> Value {
+/// Each known harness: whether it is on PATH, where, its pinning mode, the dirs pinning takes
+/// installed skills from, and whether its phases get a private `/tmp` (every harness's do).
+fn harnesses_entry(private_tmp: bool) -> Value {
     let mut harnesses = Map::new();
     for h in KNOWN_HARNESSES {
         let p = which(h);
@@ -129,6 +130,8 @@ fn harnesses_entry() -> Value {
                 "on_path": p.is_some(),
                 "path": p.map(|p| p.to_string_lossy().into_owned()),
                 "pinning": crate::pin::mode(h).as_str(),
+                "skills_from": crate::pin::installed_dirs(&[h]),
+                "private_tmp": private_tmp,
             }),
         );
     }
