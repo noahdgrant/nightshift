@@ -848,3 +848,24 @@ fn a_gate_after_another_phase_restores_the_pruned_baseline() {
     let runs = fs::read_to_string(e.root.join(".git/ns/runs.jsonl")).unwrap();
     assert!(!runs.contains("baseline_pruned"), "{runs}");
 }
+
+/// #539 end to end: a unit fixes a baselined violation, the gate after build commits the pruned
+/// baseline, the merge step's gate reuses that verdict at the new head, and the PR merges with
+/// no human.
+#[test]
+fn a_unit_that_fixes_a_baselined_violation_merges_on_its_own() {
+    let e = baselined_pack("sed -i '/bad one/d' f.c && git add f.c");
+    e.factory("[merge]\npolicy = \"auto\"\nhuman_review = [\".nightshift/**\"]\nci_timeout_minutes = 1\n");
+    e.ctl("pr", "12");
+    e.gh_file(
+        "checks-12.json",
+        r#"[{"name":"ci","state":"SUCCESS","bucket":"pass","link":"https://github.com/o/r/actions/runs/1/job/2"}]"#,
+    );
+    e.gh_file("diff-12.txt", ".nightshift/rules-baseline.json\nf.c\nwork.txt\n");
+    let v = e.run(&["run", "--issue", "7"], 0);
+    assert_eq!(v["outcome"], "merged", "{v}");
+    let g = gate_events(&e);
+    assert_eq!(g.len(), 1, "{g:?}");
+    let runs = fs::read_to_string(e.root.join(".git/ns/runs.jsonl")).unwrap();
+    assert!(runs.contains("\"baseline_shrinks\""), "{runs}");
+}
