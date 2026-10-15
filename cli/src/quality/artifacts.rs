@@ -201,7 +201,7 @@ pub fn read_attempts(
 /// skipped; a unit id seen in two worktrees keeps the one with the lower path.
 pub fn discover(repo: &Repo, gaps: &mut Vec<Unparsed>) -> Result<Vec<Unit>> {
     let mut units: BTreeMap<String, Unit> = BTreeMap::new();
-    let mut linked: Vec<PathBuf> = git::worktrees(&repo.root)?
+    let mut linked: Vec<PathBuf> = crate::worktree::entries(repo)?
         .into_iter()
         .skip(1)
         .map(|w| w.path)

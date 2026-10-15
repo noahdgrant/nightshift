@@ -1,7 +1,7 @@
 //! One trial's sandbox: scratch repo, throwaway HOME, the harness process and its timeout.
 
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -279,12 +279,18 @@ impl ProcResult {
 }
 
 fn tail_of(path: &Path, max: usize) -> String {
+    File::open(path)
+        .and_then(|mut f| tail_window(&mut f, max))
+        .unwrap_or_default()
+}
+
+/// The last `max` bytes of `r`, decoded lossily and trimmed, read without touching the bytes before them.
+fn tail_window(r: &mut (impl Read + Seek), max: usize) -> std::io::Result<String> {
+    let len = r.seek(SeekFrom::End(0))?;
+    r.seek(SeekFrom::Start(len.saturating_sub(max as u64)))?;
     let mut buf = Vec::new();
-    if let Ok(mut f) = File::open(path) {
-        let _ = f.read_to_end(&mut buf);
-    }
-    let start = buf.len().saturating_sub(max);
-    String::from_utf8_lossy(&buf[start..]).trim().to_string()
+    r.read_to_end(&mut buf)?;
+    Ok(String::from_utf8_lossy(&buf).trim().to_string())
 }
 
 fn sandbox_env(cmd: &mut Proc, scratch: &Scratch) {
@@ -376,5 +382,62 @@ mod tests {
         assert!(ensure_scratch(Path::new("/")).is_err());
         let t = new_root().unwrap();
         assert!(ensure_scratch(t.path()).is_ok());
+    }
+
+    struct Counted {
+        inner: std::io::Cursor<Vec<u8>>,
+        read: usize,
+    }
+
+    impl Read for Counted {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(out)?;
+            self.read += n;
+            Ok(n)
+        }
+    }
+
+    impl Seek for Counted {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    #[test]
+    fn tail_window_reads_only_the_last_max_bytes() {
+        let mut r = Counted {
+            inner: std::io::Cursor::new(b"0123456789".repeat(1000)),
+            read: 0,
+        };
+        assert_eq!(tail_window(&mut r, 15).unwrap(), "567890123456789");
+        assert_eq!(r.read, 15);
+    }
+
+    #[test]
+    fn tail_of_returns_the_raw_byte_window() {
+        let t = new_root().unwrap();
+        let p = t.path().join("log");
+
+        fs::write(&p, format!("first line\n{}\n", "x".repeat(30))).unwrap();
+        assert_eq!(tail_of(&p, 11), "xxxxxxxxxx", "window starts mid-line");
+
+        fs::write(&p, "  short log \n").unwrap();
+        assert_eq!(tail_of(&p, 2000), "short log");
+
+        fs::write(&p, "").unwrap();
+        assert_eq!(tail_of(&p, 2000), "");
+
+        fs::write(&p, "abc").unwrap();
+        assert_eq!(tail_of(&p, 0), "");
+
+        fs::write(&p, "a\u{e9}").unwrap();
+        assert_eq!(
+            tail_of(&p, 1),
+            "\u{fffd}",
+            "a cut multi-byte char decodes lossily"
+        );
+
+        assert_eq!(tail_of(&t.path().join("missing"), 2000), "");
+        assert_eq!(tail_of(t.path(), 2000), "", "a directory is unreadable");
     }
 }

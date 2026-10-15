@@ -392,11 +392,6 @@ pub fn parse_worktree_list(text: &str) -> Vec<WorktreeEntry> {
     entries
 }
 
-pub fn worktrees(cwd: &Path) -> Result<Vec<WorktreeEntry>> {
-    let text = run(cwd, &["worktree", "list", "--porcelain"])?;
-    Ok(parse_worktree_list(&text))
-}
-
 /// Context for a repository: the main worktree root and the common git dir.
 pub struct Repo {
     pub root: PathBuf,
