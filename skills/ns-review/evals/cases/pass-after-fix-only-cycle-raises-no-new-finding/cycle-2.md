@@ -1,8 +1,6 @@
 ---
 cycle: 2
 kind: full
-started: 2026-10-11T02:10:00Z
-ended: 2026-10-11T02:20:00Z
 ---
 
 # Fix cycle 2: 2-cancel-all

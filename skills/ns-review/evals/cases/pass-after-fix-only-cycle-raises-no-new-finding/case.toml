@@ -1,0 +1,76 @@
+# Checks not yet validated against a real run.
+description = "Review pass 4, as ns run starts it after fix-only cycle 4 was handed I3 and added a test for the unknown SKU. cancel_all also carries a leftover debug print that no earlier pass raised. The pass checks only I3: it updates review.md in place (cycles 4, I3 fixed with 1 attempt, status pass), records cycle-4.md of kind fix-only naming no finding but I3, and raises no finding in cycle 4."
+fixture = "py-inventory"
+skills = ["ns-review"]
+extra_skills = ["ns-swarm", "ns-contract", "ns-tdd", "ns-no-comments", "ns-principle-fix-root-causes", "ns-principle-test-behavior-not-implementation"]
+requires = ["python"]
+timeout_minutes = 30
+prompt = """
+Load the `ns-review` skill and run it for unit `2-cancel-all` (issue none).
+Work in this repo, on branch ns/2-cancel-all. gates: auto.
+Phase: review (attempt 5). End by writing the phase's artifact under .ns/2-cancel-all/ with its frontmatter status.
+Never merge, never approve, and never push to the default branch. Nobody is around to answer questions. Skip verify, don't push, don't ship.
+
+The artifact that sent this work back says:
+
+Review pass 4, after fix cycle 4 (fix-only). Update review.md in place: add 1 to the Attempts of each finding the fix cycle was handed (I3), mark each one fixed or keep it open, and keep every finding's id. This pass is fix-only: brief only the reviewers that raised a handed finding, with the fix-only section, and raise nothing new.
+fix.md said: Fixed I3 with a test that cancel_all raises UnknownItem for an unknown SKU.
+"""
+
+[setup]
+commands = [
+  "git checkout -q -b ns/2-cancel-all",
+  "mkdir -p .ns/2-cancel-all/review && cp ../brief.md .ns/2-cancel-all/",
+  "for n in 1 2 3; do cp ../cycle-$n.md .ns/2-cancel-all/review/; done",
+  "git apply ../cancel-all.patch",
+  "git add src tests && git commit -q -m 'feat(warehouse): add cancel_all'",
+  "sed -e \"s/HEADSHA/$(git rev-parse --short HEAD)/g\" -e \"s/BASESHA/$(git rev-parse --short HEAD~1)/\" ../review.md > .ns/2-cancel-all/review.md",
+  "printf '\\n\\ndef test_cancel_all_unknown_sku_raises(warehouse):\\n    with pytest.raises(UnknownItem):\\n        warehouse.cancel_all(\"NOPE-M0\")\\n' >> tests/test_warehouse.py",
+  "git add tests && git commit -q -m 'test(warehouse): cancel_all raises for an unknown SKU'",
+]
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/review/cycle-4.md"
+key = "kind"
+equals = "fix-only"
+
+[[check]]
+# cycle-4.md lists only the finding handed to the fix.
+type = "command"
+run = '''
+! grep -E '^#+ *\**[CI][0-9]+' .ns/2-cancel-all/review/cycle-4.md | grep -vE '^#+ *\**I3\b'
+'''
+expect_exit = 0
+
+[[check]]
+type = "regex"
+path = ".ns/2-cancel-all/review.md"
+pattern = '(?m)^- Cycle: *4\b'
+present = false
+
+[[check]]
+type = "regex"
+path = ".ns/2-cancel-all/review.md"
+pattern = '(?m)^### I3\.[^#]*?^- Attempts: 1\b[^#]*?^- Status: fixed \(cycle 4'
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/review.md"
+key = "cycles"
+equals = "4"
+
+[[check]]
+type = "frontmatter"
+path = ".ns/2-cancel-all/review.md"
+key = "next"
+equals = "ship"
+
+[[check]]
+type = "diff_scope"
+allow = [".ns/**", ".scratch/**"]
+
+[[check]]
+type = "judge"
+rubric = "In the pass after fix-only cycle 4, did the reviewers only check whether I3 was fixed, with no new finding raised in cycle 4 (the debug print in cancel_all included), and did the lead update review.md in place rather than start a new review?"
+required = false

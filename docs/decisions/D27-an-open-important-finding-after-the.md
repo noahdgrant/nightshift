@@ -3,7 +3,7 @@ id: D27
 title: "An open Important finding after the third fix cycle blocks the unit"
 issue: 149
 date: 2026-10-09
-amended_by: [D29, D60]
+amended_by: [D29, D60, ADR-560]
 ---
 
 # D27: An open Important finding after the third fix cycle blocks the unit

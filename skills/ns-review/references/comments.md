@@ -17,4 +17,4 @@ Map each item to a finding:
 
 Each finding gives `file:line`, the comment text, and the one-line reason. Comments that qualify under the keep-list (license headers, public API doc comments, vendor or datasheet constraints with a reference, issue links) are not findings.
 
-In the fix loop, the build agent applies these by loading the `ns-no-comments` skill on the same scope.
+In a fix cycle, the build agent applies these by loading the `ns-no-comments` skill on the same scope.

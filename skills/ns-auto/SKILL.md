@@ -77,6 +77,8 @@ Read the frontmatter of every artifact in `.ns/<unit-id>/`, skipping `history/`.
 | no `build.md`, or build `fail` | build |
 | no `evidence.md`, or evidence not current | verify |
 | evidence `fail` | build |
+| review `fail` with `next: review`, and a `fix.md` | review: the next pass, told "Review pass <n>, after fix cycle <n> (<kind>)" |
+| review `fail` with `next: review`, no `fix.md` | review-fix: fix cycle n, handing over the IDs in `findings`. Cycles 1 to 3 are full; cycles 4 and 5 are fix-only and hand over only findings whose `Attempts:` is under 2. With no cycle left or nothing to hand over, stuck |
 | no `review.md`, or review not current | review |
 | review `fail` | build |
 | no `pr.md`, or pr `pass` and not current | ship |
@@ -85,18 +87,18 @@ Read the frontmatter of every artifact in `.ns/<unit-id>/`, skipping `history/`.
 
 Then two checks on P:
 
-- **Attempts.** Count P's lines in the run log after the last invocation marker, so each invocation gets fresh attempts. A verify or review line right after a P line that passed is free: HEAD moved under the pass, and the rerun failed nothing. A build line sent back by an evidence, review or pr `fail` with `cause: base_moved`, after build passed, is free too, once per new `origin/<base>` sha: fetch it first and pass build its sha. Two attempts per run unless the contract says otherwise. A P that has used them is stuck.
+- **Attempts.** Count P's lines in the run log after the last invocation marker, so each invocation gets fresh attempts. A verify or review line right after a P line that passed is free: HEAD moved under the pass, and the rerun failed nothing. So is each step of the review loop: a review after a review-fix line, and a review-fix after a review line, that wrote their artifact. Fix cycle n is one more than the review-fix lines since the loop's first review. A build line sent back by an evidence, review or pr `fail` with `cause: base_moved`, after build passed, is free too, once per new `origin/<base>` sha: fetch it first and pass build its sha. Two attempts per run unless the contract says otherwise. A P that has used them is stuck.
 - **Push.** When P is ship and the contract grants no push, stop: an escape-hatch stop, reported as such.
 
 ### Archive and capture feedback
 
 When a `fail` sent the work back, read the body of the artifact that did: that body is the feedback.
 
-Then archive before you run P. Move P's artifact, if present, to `.ns/<unit-id>/history/<artifact>-<n>.md`, with n one past the highest already there. Also move every downstream artifact (order: brief, build, evidence, review, pr) that is not both `pass` and current, and every downstream artifact after one that was moved. What stays in `.ns/<unit-id>/` is then current.
+Then archive before you run P. Move P's artifact, if present, to `.ns/<unit-id>/history/<artifact>-<n>.md`, with n one past the highest already there. Also move every downstream artifact (order: brief, build, evidence, review, fix, pr) that is not both `pass` and current, and every downstream artifact after one that was moved. A review loop is the exception: while `review.md` is `fail` with `next: review`, a review keeps `review.md` and moves `fix.md`, and verify keeps both. What stays in `.ns/<unit-id>/` is then current.
 
 ### Run
 
-Load the `ns-<P>` skill with this prompt, keeping the `Feedback` line only when there is feedback:
+Load the `ns-<P>` skill with this prompt, keeping the `Feedback` line only when there is feedback. A review-fix loads `ns-review` with `Phase: review-fix`:
 
 ```
 Run the ns-<P> skill for unit <unit-id> (issue <url or path>). Work in <worktree>. gates: <policy>.
@@ -110,7 +112,7 @@ Read the result. If P wrote no artifact, the attempt failed with "no artifact wr
 
 ### CI gate
 
-Run the gate after a build that wrote `pass`, and after a review that moved HEAD. The command is the `ci-local` row of the Commands table in `docs/agents/stack.md`; with no such row, skip the gate. Run it in the worktree. A non-zero exit is red.
+Run the gate after a build that wrote `pass`, and after a review or review-fix that moved HEAD. The command is the `ci-local` row of the Commands table in `docs/agents/stack.md`; with no such row, skip the gate. Run it in the worktree. A non-zero exit is red.
 
 On red, move the passing `build.md` to `history/` and write a new `build.md` with `status: fail`, `cause: gate_red`, `next: build` and a `reason` naming the command and its exit, whose body is the command, its exit and the last 40 lines of its output. The `build fail` row then sends the next turn to build with that body as the feedback.
 
