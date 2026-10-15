@@ -7,9 +7,12 @@ use anyhow::Result;
 use serde_json::json;
 
 use super::{overlap, red::Gate, FillError, Scheduler};
+use crate::disk;
 use crate::run;
 use crate::stop;
-use crate::watch::core::fill::{open_fill, Claims, FillAct, FillInput, Kind, Open, OpenAct};
+use crate::watch::core::fill::{
+    disk_effect, open_fill, Claims, DiskAct, FillAct, FillInput, Kind, Open, OpenAct,
+};
 use crate::watch::transitions::{self, Event, State};
 use crate::watch::{queue, split, triage, Issue, Night, Tonight};
 
@@ -37,6 +40,11 @@ impl Scheduler<'_> {
                 OpenAct::Housekeep => self.housekeep(tonight),
                 OpenAct::Resume => self.resume_first(night)?,
                 OpenAct::Stop(why) => self.stopping = Some(why),
+                OpenAct::CheckDisk => {
+                    if !self.disk_ok() {
+                        return Ok(());
+                    }
+                }
                 OpenAct::CheckBase => {
                     self.draining = self.check_base(night);
                     if self.draining.is_some() {
@@ -56,6 +64,47 @@ impl Scheduler<'_> {
             max_units: self.plan.max_units,
             over: night.over(self.plan.deadline, &self.plan.loaded.fac),
         }
+    }
+
+    /// Check free disk space before a unit starts: false when the fill starts nothing, as space
+    /// is low and the slot waits, or so low the night stops.
+    fn disk_ok(&mut self) -> bool {
+        let limits = self.plan.loaded.fac.limits.disk();
+        let read = disk::read(disk::filesystems(self.plan.repo));
+        let acts = self.disk.check(read, limits);
+        let effect = disk_effect(&acts);
+        for act in acts {
+            let said = act.said(limits);
+            if let Some(s) = &said {
+                eprintln!("ns watch: {s}");
+            }
+            let common = &self.plan.repo.common_dir;
+            match act {
+                DiskAct::Unread { .. } | DiskAct::Wait => {}
+                DiskAct::Low { path, free_gb } => {
+                    let ev = json!({
+                        "event": "disk_low",
+                        "path": path,
+                        "free_gb": free_gb,
+                        "wait_gb": limits.wait_gb,
+                    });
+                    run::log_event(common, ev);
+                }
+                DiskAct::Critical { path, free_gb } => {
+                    let ev = json!({
+                        "event": "disk_critical",
+                        "path": path,
+                        "free_gb": free_gb,
+                        "stop_gb": limits.stop_gb,
+                    });
+                    run::log_event(common, ev);
+                }
+            }
+        }
+        if let Some(why) = effect.stop {
+            self.stop_all(why);
+        }
+        effect.ok
     }
 
     /// Units merged since go, after their records are saved, and split parents move on. Units

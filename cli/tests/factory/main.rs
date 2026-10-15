@@ -38,6 +38,7 @@ include!("merge_conflicts_and_validate.rs");
 include!("watch_fix_main.rs");
 include!("watch_nights_and_splits.rs");
 include!("watch_splits_and_labels.rs");
+include!("watch_disk_space.rs");
 include!("triage_pass_and_memory_cap.rs");
 include!("run_signals_and_cleanup.rs");
 include!("cleanup_and_cpus.rs");

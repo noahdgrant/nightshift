@@ -9,7 +9,9 @@
 //! it, so a fill reads only what its picks need: no brief when no running unit predicts any.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
+use crate::disk::{DiskLimits, Free, Level, GIB};
 use crate::touches::Overlap;
 use crate::watch::core::red::Gate;
 use crate::watch::{unit_id, Issue};
@@ -90,6 +92,8 @@ pub enum OpenAct {
     Resume,
     /// Start nothing new from here on.
     Stop(Stopping),
+    /// Read free disk space and [`Disk::check`] it; a wait or a stop ends the fill.
+    CheckDisk,
     /// Look at origin's default branch for a self-update or a skills drain; a drain it starts
     /// ends the fill.
     CheckBase,
@@ -99,8 +103,8 @@ pub enum OpenAct {
 
 /// What a fill does before the queue is read: nothing under a pause; the housekeeping of a full
 /// fill; paused units resumed into the free slots, unless the night stops all; then, with a slot
-/// still free, nothing stopping and claims left, the update check of a full fill and the triage
-/// pass.
+/// still free, nothing stopping and claims left, the disk check, the update check of a full fill
+/// and the triage pass.
 pub fn open_fill(o: &Open) -> Vec<OpenAct> {
     let mut acts = Vec::new();
     if o.paused {
@@ -119,6 +123,9 @@ pub fn open_fill(o: &Open) -> Vec<OpenAct> {
         acts.push(OpenAct::Stop(why));
         return acts;
     }
+    if !o.draining {
+        acts.push(OpenAct::CheckDisk);
+    }
     if o.kind == Kind::Full && !o.draining {
         acts.push(OpenAct::CheckBase);
     }
@@ -126,6 +133,111 @@ pub fn open_fill(o: &Open) -> Vec<OpenAct> {
         acts.push(OpenAct::Triage);
     }
     acts
+}
+
+/// Why the night stopped when free disk space fell under `[limits] disk_stop_gb`.
+pub const DISK_CRITICAL: &str = "disk_critical";
+
+/// What the night remembers of free disk space between fills.
+#[derive(Debug, Default)]
+pub struct Disk {
+    /// Filesystems whose free space could not be read, warned of once a night.
+    warned: BTreeSet<PathBuf>,
+    /// The last check found less than the wait limit free.
+    low: bool,
+}
+
+/// What one disk check found, in order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiskAct {
+    /// This filesystem's free space can't be read: said once a night, and it holds nothing up.
+    Unread { path: PathBuf, error: String },
+    /// Less than the wait limit is free here, newly: say so, and start nothing.
+    Low { path: PathBuf, free_gb: u64 },
+    /// Still less than the wait limit free, said already: start nothing.
+    Wait,
+    /// Less than the stop limit is free here: stop the night.
+    Critical { path: PathBuf, free_gb: u64 },
+}
+
+impl DiskAct {
+    /// The fill starts nothing: space is low, or the night stops.
+    pub fn holds(&self) -> bool {
+        !matches!(self, DiskAct::Unread { .. })
+    }
+
+    /// What the night says of this act, `None` for a wait said already.
+    pub fn said(&self, limits: DiskLimits) -> Option<String> {
+        match self {
+            DiskAct::Unread { path, error } => Some(DiskLimits::unread_said(path, error)),
+            DiskAct::Low { path, free_gb } => Some(limits.low_said(path, *free_gb)),
+            DiskAct::Wait => None,
+            DiskAct::Critical { path, free_gb } => Some(limits.critical_said(path, *free_gb)),
+        }
+    }
+}
+
+/// What a disk check does to the fill and the night.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiskEffect {
+    /// The fill goes on and starts units.
+    pub ok: bool,
+    /// Why the night stops, if it does.
+    pub stop: Option<&'static str>,
+}
+
+/// What `acts`, one disk check's findings, do: any but an unread one holds the fill, and a
+/// critical one stops the night.
+pub fn disk_effect(acts: &[DiskAct]) -> DiskEffect {
+    let critical = acts.iter().any(|a| matches!(a, DiskAct::Critical { .. }));
+    DiskEffect {
+        ok: !acts.iter().any(DiskAct::holds),
+        stop: critical.then_some(DISK_CRITICAL),
+    }
+}
+
+impl Disk {
+    /// The last check found less than the wait limit free, so no unit starts until a fill finds
+    /// more.
+    pub fn waiting(&self) -> bool {
+        self.low
+    }
+
+    /// Check `read`, each filesystem a unit fills, against `limits`: the one with the least
+    /// free space decides.
+    pub fn check(&mut self, read: Vec<Free>, limits: DiskLimits) -> Vec<DiskAct> {
+        let mut acts = Vec::new();
+        let mut least: Option<(PathBuf, u64)> = None;
+        for (path, free) in read {
+            match free {
+                Ok(b) if least.as_ref().is_none_or(|(_, l)| b < *l) => least = Some((path, b)),
+                Ok(_) => {}
+                Err(error) => {
+                    if self.warned.insert(path.clone()) {
+                        acts.push(DiskAct::Unread { path, error });
+                    }
+                }
+            }
+        }
+        let was_low = std::mem::take(&mut self.low);
+        let Some((path, bytes)) = least else {
+            return acts;
+        };
+        let free_gb = bytes / GIB;
+        match limits.level(bytes) {
+            Level::Stop => acts.push(DiskAct::Critical { path, free_gb }),
+            Level::Wait => {
+                self.low = true;
+                acts.push(if was_low {
+                    DiskAct::Wait
+                } else {
+                    DiskAct::Low { path, free_gb }
+                });
+            }
+            Level::Ok => {}
+        }
+        acts
+    }
 }
 
 /// The ready issues held back tonight for overlapping a running unit, each with when it was first

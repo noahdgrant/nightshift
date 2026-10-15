@@ -16,9 +16,11 @@ use crate::error::SfError;
 use crate::frontmatter;
 
 mod cycles;
+mod limits;
 mod quality;
 
 pub use cycles::Cycles;
+pub use limits::Limits;
 pub use quality::Quality;
 
 pub const FILE: &str = "nightshift.toml";
@@ -348,19 +350,6 @@ impl Default for Queue {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct Limits {
-    /// Unset: no cap; `--until`, the queue and usage limits end the night.
-    pub max_units: Option<u32>,
-    /// Unset: no cap under `billing = "subscription"`, 25.0 under `api`.
-    pub budget_usd: Option<f64>,
-    /// Unset: no cap. Set: each phase and the gate run under this many MiB (`crate::memcap`).
-    pub memory_mb: Option<u64>,
-    /// Units `ns watch` runs at once; `--parallel` wins. Unset: 1.
-    pub parallel: Option<u32>,
-}
-
 /// One phase with its defaults applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhaseSettings {
@@ -558,12 +547,7 @@ impl Factory {
             "queue.overlap_ignore",
             &self.queue.overlap_ignore,
         ));
-        if self.limits.budget_usd.is_some_and(|b| b < 0.0) {
-            out.push("limits.budget_usd must not be negative".into());
-        }
-        if self.limits.memory_mb == Some(0) {
-            out.push("limits.memory_mb must be at least 1; remove it for no cap".into());
-        }
+        out.extend(self.limits.problems());
         out.extend(self.supervise.problems());
         out.extend(self.quality.problems());
         out
