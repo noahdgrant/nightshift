@@ -655,6 +655,24 @@ fn a_stuck_unit_resumes_at_the_state_it_stuck_in_with_fresh_attempts() {
 }
 
 #[test]
+fn fresh_starts_a_stuck_unit_over_from_setup() {
+    let repo = Repo::new();
+    let broken = Fakes {
+        exit: 1,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &broken)).failure();
+    let out = run_with(&repo, &tools(&repo, &Fakes::passing()), &["--fresh"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let events = lines(&out);
+    assert_eq!(events[0]["state"], "setup");
+    assert_eq!(events.last().unwrap()["to"], "done");
+}
+
+#[test]
 fn a_finished_unit_is_not_run_again() {
     let repo = Repo::new();
     run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"]).success();
