@@ -14,6 +14,17 @@ pub trait Forge {
     /// The newest change request opened from `branch`, if there is one.
     fn change_request_get(&self, repo: &Path, branch: &str) -> Result<Option<ChangeRequest>>;
 
+    /// Opens a change request from `branch` for unit `unit`, linked to the unit so that merging
+    /// it closes the unit on the forge.
+    fn change_request_create(
+        &self,
+        repo: &Path,
+        branch: &str,
+        unit: u64,
+        title: &str,
+        body: &str,
+    ) -> Result<ChangeRequest>;
+
     /// Merges change request `number` into its base as one commit.
     fn change_request_merge(&self, repo: &Path, number: u64) -> Result<()>;
 }

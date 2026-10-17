@@ -16,6 +16,15 @@ impl Repo {
         std::fs::create_dir(&path).unwrap();
         git(&path, &["init", "-q", "-b", "main"]);
         git(&path, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        let origin = tmp.path().join("origin.git");
+        git(
+            tmp.path(),
+            &["init", "-q", "--bare", "-b", "main", "origin.git"],
+        );
+        git(
+            &path,
+            &["remote", "add", "origin", &origin.to_string_lossy()],
+        );
         Repo { _tmp: tmp, path }
     }
 
@@ -25,6 +34,15 @@ impl Repo {
             .unwrap()
             .join("repo.workspaces")
             .join(unit)
+    }
+
+    /// The branches the remote holds.
+    pub fn remote_branches(&self) -> Vec<String> {
+        let origin = self.path.parent().unwrap().join("origin.git");
+        git(&origin, &["branch", "--format=%(refname:short)"])
+            .lines()
+            .map(String::from)
+            .collect()
     }
 
     pub fn branches(&self) -> Vec<String> {

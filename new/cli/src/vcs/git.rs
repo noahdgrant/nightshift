@@ -58,6 +58,20 @@ impl Vcs for Git {
         tree
     }
 
+    fn workspace_commit(&self, path: &Path, message: &str) -> Result<bool> {
+        run(path, &["add", "--all"])?;
+        if succeeds(path, &["diff", "--cached", "--quiet"]) {
+            return Ok(false);
+        }
+        run(path, &["commit", "--message", message])?;
+        Ok(true)
+    }
+
+    fn branch_push(&self, path: &Path, branch: &str) -> Result<()> {
+        run(path, &["push", "--set-upstream", "origin", branch])?;
+        Ok(())
+    }
+
     fn workspace_remove(&self, root: &Path, path: &Path) -> Result<()> {
         run(root, &["worktree", "remove", &path.to_string_lossy()])?;
         Ok(())

@@ -27,6 +27,13 @@ pub trait Vcs {
     /// exactly when nothing changed between them.
     fn workspace_snapshot(&self, path: &Path) -> Result<String>;
 
+    /// Commits everything in the workspace at `path` with `message`. Returns whether there was
+    /// anything to commit.
+    fn workspace_commit(&self, path: &Path, message: &str) -> Result<bool>;
+
+    /// Publishes `branch` from the workspace at `path` to the remote.
+    fn branch_push(&self, path: &Path, branch: &str) -> Result<()>;
+
     /// Removes the workspace at `path` and keeps its branch. Fails when the workspace has
     /// uncommitted changes.
     fn workspace_remove(&self, root: &Path, path: &Path) -> Result<()>;

@@ -59,7 +59,15 @@ fn tools(repo: &Repo, fakes: &Fakes) -> String {
     script(
         &bin,
         "gh",
-        r#"echo '{"number":5,"title":"Add a thing","body":"Make the thing.","labels":[]}'"#,
+        &format!(
+            r#"echo "$@" >> "{bin}/gh.log"
+case "$1 $2" in
+"issue view") echo '{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":[]}}';;
+"pr list") if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"OPEN"}}]'; else echo '[]'; fi;;
+"pr create") touch "{bin}/opened"; echo https://forge.example/9;;
+esac"#,
+            bin = bin.display()
+        ),
     );
     let edit = match fakes.check_edits {
         CheckEdits::Never => "",
@@ -83,7 +91,7 @@ case "$(cat)" in
   {crash}{edit}echo checked it
   if [ -e "$seen" ]; then echo '{verdict}'; else touch "$seen"; echo '{first}'; fi;;
 *"VERDICT: FAIL"*) echo rebuilt with the evidence;;
-*) echo built the thing;;
+*) echo thing > thing.txt; echo built the thing;;
 esac
 exit {exit}"#,
             bin = bin.display(),
@@ -100,6 +108,10 @@ fn run(repo: &Repo, path: &str) -> assert_cmd::assert::Assert {
         .unwrap()
         .args(["run", "5"])
         .env("PATH", path)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
         .current_dir(&repo.path)
         .assert()
 }
@@ -145,6 +157,25 @@ fn run_sets_up_builds_verifies_and_prints_each_move() {
     assert!(repo.branches().contains(&"ns/5".to_string()));
     assert_eq!(read(&repo, "build.md"), "built the thing\n");
     assert_eq!(read(&repo, "evidence.md"), "checked it\nVERDICT: PASS\n");
+}
+
+#[test]
+fn ship_commits_publishes_and_opens_one_change_request() {
+    let repo = Repo::new();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert!(repo.remote_branches().contains(&"ns/5".to_string()));
+    let log = std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log")).unwrap();
+    assert_eq!(
+        log.matches("pr create --head ns/5 --title Add a thing")
+            .count(),
+        1,
+        "{log}"
+    );
+    assert!(log.contains("Posted by nightshift, an AI agent"), "{log}");
+    assert!(log.contains("Closes #5"), "{log}");
+    assert_eq!(read(&repo, "ship.md"), "https://forge.example/9\n");
+    let subject = common::git(&repo.workspace("5"), &["log", "-1", "--format=%s"]);
+    assert_eq!(subject.trim(), "Add a thing");
 }
 
 #[test]

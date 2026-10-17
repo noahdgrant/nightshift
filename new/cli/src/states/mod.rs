@@ -2,6 +2,7 @@
 
 mod build;
 mod setup;
+mod ship;
 mod verdict;
 mod verify;
 
@@ -36,6 +37,7 @@ pub fn run(ctx: &mut Context, state: State) -> Result<Outcome> {
         State::Setup => setup::run(ctx),
         State::Build => build::run(ctx),
         State::Verify => verify::run(ctx),
+        State::Ship => ship::run(ctx),
         _ => Ok(Outcome::Pass),
     }
 }

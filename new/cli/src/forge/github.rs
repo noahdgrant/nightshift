@@ -101,6 +101,25 @@ impl Forge for GitHub {
         }))
     }
 
+    fn change_request_create(
+        &self,
+        repo: &Path,
+        branch: &str,
+        unit: u64,
+        title: &str,
+        body: &str,
+    ) -> Result<ChangeRequest> {
+        let body = format!("{body}\n\nCloses #{unit}\n");
+        self.gh(
+            repo,
+            &[
+                "pr", "create", "--head", branch, "--title", title, "--body", &body,
+            ],
+        )?;
+        self.change_request_get(repo, branch)?
+            .context("the change request was created but cannot be found")
+    }
+
     fn change_request_merge(&self, repo: &Path, number: u64) -> Result<()> {
         self.gh(repo, &["pr", "merge", &number.to_string(), "--squash"])?;
         Ok(())
