@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use assert_cmd::Command;
-use common::Repo;
+use common::{git, Repo};
 
 /// Puts a script named `name` in `bin`.
 fn script(bin: &Path, name: &str, body: &str) {
@@ -517,6 +517,31 @@ fn clean_up_removes_the_workspace_and_branch_of_a_merged_unit() {
 }
 
 #[test]
+fn clean_up_brings_the_main_checkout_up_to_date() {
+    let repo = Repo::new();
+    git(
+        &repo.path,
+        &["push", "-q", "--set-upstream", "origin", "main"],
+    );
+    let other = repo.path.parent().unwrap().join("other");
+    git(
+        repo.path.parent().unwrap(),
+        &["clone", "-q", "origin.git", "other"],
+    );
+    git(
+        &other,
+        &["commit", "-q", "--allow-empty", "-m", "merged elsewhere"],
+    );
+    git(&other, &["push", "-q", "origin", "main"]);
+    let path = tools(&repo, &Fakes::passing());
+    run_with(&repo, &path, &["--merge"]).success();
+    assert_eq!(
+        git(&repo.path, &["log", "-1", "--format=%s", "main"]),
+        "merged elsewhere\n"
+    );
+}
+
+#[test]
 fn clean_up_leaves_the_workspace_of_a_change_request_still_open() {
     let repo = Repo::new();
     let out = run(&repo, &tools(&repo, &Fakes::passing()))
@@ -543,26 +568,57 @@ fn ship_waits_for_pending_checks() {
 }
 
 #[test]
-fn checks_that_never_finish_or_never_appear_go_wrong_and_nothing_is_merged() {
-    for ci in [Ci::NeverFinishes, Ci::NoneReported] {
-        let repo = Repo::new();
-        let fakes = Fakes {
-            ci,
-            ..Fakes::passing()
-        };
-        let out = run_with(
-            &repo,
-            &tools(&repo, &fakes),
-            &["--merge", "--ci-timeout-seconds", "0"],
-        )
-        .failure()
-        .get_output()
-        .stdout
-        .clone();
-        let moves = moves(out);
-        assert_eq!(&moves[moves.len() - 2..], ["ship>ship", "ship>stuck"]);
-        assert!(!gh_log(&repo).contains("pr merge"));
-    }
+fn checks_that_never_finish_go_wrong_and_nothing_is_merged() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        ci: Ci::NeverFinishes,
+        ..Fakes::passing()
+    };
+    let out = run_with(
+        &repo,
+        &tools(&repo, &fakes),
+        &["--merge", "--ci-timeout-seconds", "0"],
+    )
+    .failure()
+    .get_output()
+    .stdout
+    .clone();
+    let moves = moves(out);
+    assert_eq!(&moves[moves.len() - 2..], ["ship>ship", "ship>stuck"]);
+    assert!(!gh_log(&repo).contains("pr merge"));
+}
+
+#[test]
+fn a_repository_with_no_checks_has_none_to_wait_for() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        ci: Ci::NoneReported,
+        ..Fakes::passing()
+    };
+    let path = tools(&repo, &fakes);
+    run_with(&repo, &path, &["--merge", "--ci-start-seconds", "0"]).success();
+    assert!(gh_log(&repo).contains("pr merge"));
+}
+
+#[test]
+fn checks_not_yet_reported_are_waited_for() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        ci: Ci::NoneReported,
+        ..Fakes::passing()
+    };
+    let out = run_with(
+        &repo,
+        &tools(&repo, &fakes),
+        &["--merge", "--ci-timeout-seconds", "0"],
+    )
+    .failure()
+    .get_output()
+    .stdout
+    .clone();
+    let moves = moves(out);
+    assert_eq!(&moves[moves.len() - 2..], ["ship>ship", "ship>stuck"]);
+    assert!(!gh_log(&repo).contains("pr merge"));
 }
 
 #[test]
@@ -956,4 +1012,22 @@ fn artifacts_do_not_block_removing_the_workspace() {
         .assert()
         .success();
     assert!(!repo.workspace("5").exists());
+}
+
+#[test]
+fn a_session_that_runs_out_of_time_goes_wrong_like_any_other_failure() {
+    let repo = Repo::new();
+    let out = run_with(
+        &repo,
+        &tools(&repo, &Fakes::passing()),
+        &["--harness-timeout-seconds", "0"],
+    )
+    .failure()
+    .get_output()
+    .stdout
+    .clone();
+    assert_eq!(
+        &moves(out)[..],
+        ["start setup", "setup>build", "build>build", "build>stuck"]
+    );
 }

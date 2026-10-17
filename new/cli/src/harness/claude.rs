@@ -1,10 +1,10 @@
 use std::ffi::OsString;
-use std::io::Write;
 use std::process::{Command, Stdio};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use super::{Harness, Reply, Task};
+use crate::proc;
 
 pub struct Claude {
     program: OsString,
@@ -33,23 +33,21 @@ impl Harness for Claude {
         if let Some(model) = &task.model {
             cmd.arg("--model").arg(model);
         }
-        let mut child = cmd
-            .current_dir(&task.dir)
+        cmd.current_dir(&task.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("cannot run claude")?;
-        child
-            .stdin
-            .take()
-            .context("claude has no stdin")?
-            .write_all(task.prompt.as_bytes())
-            .context("cannot send the prompt to claude")?;
-        let out = child.wait_with_output().context("claude did not finish")?;
+            .stderr(Stdio::inherit());
+        let done =
+            proc::run(cmd, task.prompt.as_bytes(), task.timeout).context("cannot run claude")?;
+        if done.success.is_none() {
+            bail!(
+                "claude did not finish within {} seconds",
+                task.timeout.as_secs()
+            );
+        }
         Ok(Reply {
-            text: String::from_utf8_lossy(&out.stdout).into_owned(),
-            success: out.status.success(),
+            text: String::from_utf8_lossy(&done.stdout).into_owned(),
+            success: done.success == Some(true),
         })
     }
 }
@@ -58,6 +56,7 @@ impl Harness for Claude {
 mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
+    use std::time::Duration;
 
     use super::*;
 
@@ -75,6 +74,7 @@ mod tests {
             prompt: "do it".into(),
             write,
             model: Some("opus".into()),
+            timeout: Duration::from_secs(30),
         }
     }
 
@@ -99,5 +99,17 @@ mod tests {
             .task_run(&task(tmp.path(), true))
             .unwrap();
         assert!(!reply.success);
+    }
+
+    #[test]
+    fn a_session_out_of_time_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("claude");
+        std::fs::write(&path, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut late = task(tmp.path(), true);
+        late.timeout = Duration::ZERO;
+        let err = Claude::with_program(path).task_run(&late).unwrap_err();
+        assert!(err.to_string().contains("did not finish"));
     }
 }

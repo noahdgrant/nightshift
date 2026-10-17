@@ -129,13 +129,18 @@ impl Forge for GitHub {
             .output()
             .context("cannot run gh")?;
         let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else {
-            return Ok(Checks::Pending);
+            let said = String::from_utf8_lossy(&out.stderr);
+            return Ok(if said.contains("no checks reported") {
+                Checks::NoneReported
+            } else {
+                Checks::Pending
+            });
         };
         let checks = v
             .as_array()
             .context("gh printed checks that are not a list")?;
         if checks.is_empty() {
-            return Ok(Checks::Pending);
+            return Ok(Checks::NoneReported);
         }
         let named = |bucket: &[&str]| -> Vec<String> {
             checks

@@ -3,6 +3,7 @@
 mod claude;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Result;
 
@@ -19,8 +20,11 @@ pub struct Task {
     pub write: bool,
     /// The model to use. `None` takes the harness's own default.
     pub model: Option<String>,
+    /// How long the session may take. A session still running then is killed and is an error.
+    pub timeout: Duration,
 }
 
+#[derive(Debug)]
 pub struct Reply {
     pub text: String,
     /// Whether the session ended normally.

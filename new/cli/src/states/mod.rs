@@ -10,6 +10,7 @@ pub mod verdict;
 mod verify;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Result;
 
@@ -33,6 +34,10 @@ pub struct Context {
     /// Set by `setup`.
     pub workspace: Option<Workspace>,
     pub ship: ship::Options,
+    /// How long a harness session may take.
+    pub harness_timeout: Duration,
+    /// How long the repository's checks may take.
+    pub checks_timeout: Duration,
 }
 
 /// Runs one state. `Err` means the state itself went wrong, which `Outcome::Redo` repeats.

@@ -51,6 +51,10 @@ pub trait Vcs {
     /// started. The branch must not be checked out in any workspace.
     fn branch_delete(&self, root: &Path, branch: &str) -> Result<()>;
 
+    /// Brings the main checkout at `root` up to date with what its branch tracks on the remote,
+    /// by fast-forward only. Does nothing when the branch tracks nothing.
+    fn root_update(&self, root: &Path) -> Result<()>;
+
     /// Removes the workspace at `path` even when it holds changes that are not committed.
     fn workspace_discard(&self, root: &Path, path: &Path) -> Result<()>;
 

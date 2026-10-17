@@ -17,6 +17,9 @@ pub struct Options {
     pub poll: Duration,
     /// How long to wait for the checks before the state goes wrong.
     pub timeout: Duration,
+    /// How long to wait for the first check to be reported. A repository with no checks has
+    /// none to wait for after that.
+    pub start: Duration,
 }
 
 /// Publishes the unit's branch, opens a change request for it, waits for its checks and, when
@@ -61,10 +64,11 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
                 artifact::write(&dir, &id, "evidence.md", &evidence)?;
                 return Ok(Outcome::Fail);
             }
-            Checks::Pending if started.elapsed() >= ctx.ship.timeout => {
+            Checks::NoneReported if started.elapsed() >= ctx.ship.start => break,
+            Checks::NoneReported | Checks::Pending if started.elapsed() >= ctx.ship.timeout => {
                 bail!("the checks on the change request did not finish in time")
             }
-            Checks::Pending => std::thread::sleep(ctx.ship.poll),
+            Checks::NoneReported | Checks::Pending => std::thread::sleep(ctx.ship.poll),
         }
     }
     if ctx.ship.merge {

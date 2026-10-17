@@ -5,7 +5,8 @@ use crate::forge::ChangeState;
 use crate::state::Outcome;
 use crate::workspace;
 
-/// Once the unit's change request has merged, removes its workspace and its branch. A change
+/// Once the unit's change request has merged, brings the main checkout up to date and removes
+/// the unit's workspace and its branch. A change
 /// request still open is the human's to merge, so its workspace stays.
 pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let root = ctx.vcs.root_find(&ctx.from)?;
@@ -19,6 +20,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
             ChangeState::Merged => {}
         },
     }
+    ctx.vcs.root_update(&root)?;
     workspace::remove(ctx.vcs.as_ref(), &ctx.from, &unit)?;
     ctx.workspace = None;
     ctx.vcs.branch_delete(&root, &wanted.branch)?;

@@ -32,6 +32,16 @@ pub struct Args {
     /// How long to wait for the checks to finish before the state goes wrong.
     #[arg(long, default_value_t = 1800)]
     ci_timeout_seconds: u64,
+    /// How long to wait for the first check to be reported. After that a repository with no
+    /// checks is taken to have none.
+    #[arg(long, default_value_t = 120)]
+    ci_start_seconds: u64,
+    /// How long a harness session may take before it is killed and the state goes wrong.
+    #[arg(long, default_value_t = 3600)]
+    harness_timeout_seconds: u64,
+    /// How long the repository's checks may take before they are killed and count as failed.
+    #[arg(long, default_value_t = 1800)]
+    checks_timeout_seconds: u64,
 }
 
 /// Whether `ns run` stops for the human between states.
@@ -78,7 +88,10 @@ pub fn run(args: Args) -> Result<()> {
             merge: args.merge,
             poll: Duration::from_secs(args.ci_poll_seconds),
             timeout: Duration::from_secs(args.ci_timeout_seconds),
+            start: Duration::from_secs(args.ci_start_seconds),
         },
+        harness_timeout: Duration::from_secs(args.harness_timeout_seconds),
+        checks_timeout: Duration::from_secs(args.checks_timeout_seconds),
     };
     if start != State::Setup {
         let workspace = workspace::locate(&root, &unit)?;

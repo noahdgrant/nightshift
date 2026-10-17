@@ -79,7 +79,18 @@ impl Vcs for Git {
     }
 
     fn branch_push(&self, path: &Path, branch: &str) -> Result<()> {
-        run(path, &["push", "--set-upstream", "origin", branch])?;
+        // The branch may have been rewritten since it was last pushed: `build` squashes, and
+        // `--fresh` starts over. The lease keeps a push from overwriting work it has not seen.
+        run(
+            path,
+            &[
+                "push",
+                "--force-with-lease",
+                "--set-upstream",
+                "origin",
+                branch,
+            ],
+        )?;
         Ok(())
     }
 
@@ -89,6 +100,14 @@ impl Vcs for Git {
             run(root, &["branch", "--delete", "--force", branch])?;
         }
         run(root, &["update-ref", "-d", &base_ref(branch)])?;
+        Ok(())
+    }
+
+    fn root_update(&self, root: &Path) -> Result<()> {
+        run(root, &["fetch", "origin"])?;
+        if succeeds(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]) {
+            run(root, &["merge", "--ff-only", "@{upstream}"])?;
+        }
         Ok(())
     }
 

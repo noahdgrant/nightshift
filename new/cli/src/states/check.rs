@@ -36,6 +36,7 @@ pub fn run(ctx: &mut Context, write: bool, prompt: String) -> Result<Outcome> {
         prompt,
         write,
         model: None,
+        timeout: ctx.harness_timeout,
     })?;
     let problem = if !reply.success {
         Some("the harness did not finish the check")

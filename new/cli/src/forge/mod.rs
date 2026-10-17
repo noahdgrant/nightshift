@@ -49,8 +49,10 @@ pub struct ChangeRequest {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Checks {
-    /// Some check has not finished, or none has been reported yet.
+    /// Some check has not finished.
     Pending,
+    /// No check is reported: none has started yet, or the repository has none.
+    NoneReported,
     Passed,
     /// The names of the checks that failed.
     Failed(Vec<String>),

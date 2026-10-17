@@ -4,9 +4,11 @@
 use std::os::fd::AsFd;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::proc;
 use crate::vcs::Vcs;
 
 /// The file holding the command that runs the repository's checks, read from the workspace. A
@@ -32,8 +34,14 @@ pub fn command_find(workspace: &Path) -> Result<Option<String>> {
 
 /// Runs the checks on the workspace at `workspace`, unless they already passed on exactly what it
 /// holds. `None` when the repository has no checks. With `stream`, the checks print as they run
-/// and the report's output is empty.
-pub fn run(vcs: &dyn Vcs, root: &Path, workspace: &Path, stream: bool) -> Result<Option<Report>> {
+/// and the report's output is empty. Checks still running after `timeout` are killed and failed.
+pub fn run(
+    vcs: &dyn Vcs,
+    root: &Path,
+    workspace: &Path,
+    stream: bool,
+    timeout: Duration,
+) -> Result<Option<Report>> {
     let Some(command) = command_find(workspace)? else {
         return Ok(None);
     };
@@ -46,7 +54,7 @@ pub fn run(vcs: &dyn Vcs, root: &Path, workspace: &Path, stream: bool) -> Result
             output: String::new(),
         }));
     }
-    let (passed, output) = execute(&command, workspace, stream)?;
+    let (passed, output) = execute(&command, workspace, stream, timeout)?;
     if passed {
         std::fs::create_dir_all(&remembered)?;
         std::fs::write(&entry, &command)?;
@@ -58,25 +66,29 @@ pub fn run(vcs: &dyn Vcs, root: &Path, workspace: &Path, stream: bool) -> Result
     }))
 }
 
-fn execute(command: &str, dir: &Path, stream: bool) -> Result<(bool, String)> {
+fn execute(command: &str, dir: &Path, stream: bool, timeout: Duration) -> Result<(bool, String)> {
     let mut cmd = Command::new("sh");
-    cmd.arg("-c").current_dir(dir);
+    cmd.arg("-c").current_dir(dir).stdin(Stdio::null());
     if stream {
-        let status = cmd
-            .arg(command)
-            .stdout(Stdio::from(std::io::stderr().as_fd().try_clone_to_owned()?))
-            .status()
-            .context("cannot run the checks")?;
-        return Ok((status.success(), String::new()));
+        cmd.arg(command)
+            .stdout(Stdio::from(std::io::stderr().as_fd().try_clone_to_owned()?));
+    } else {
+        cmd.arg(format!("{{ {command}\n}} 2>&1"))
+            .stdout(Stdio::piped());
     }
-    let out = cmd
-        .arg(format!("{{ {command}\n}} 2>&1"))
-        .output()
-        .context("cannot run the checks")?;
-    Ok((
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-    ))
+    let done = proc::run(cmd, b"", timeout).context("cannot run the checks")?;
+    let mut output = String::from_utf8_lossy(&done.stdout).into_owned();
+    if done.success.is_none() {
+        let note = format!(
+            "The checks did not finish within {} seconds.",
+            timeout.as_secs()
+        );
+        if stream {
+            eprintln!("{note}");
+        }
+        output.push_str(&format!("\n{note}\n"));
+    }
+    Ok((done.success == Some(true), output))
 }
 
 /// The last `lines` lines of `output`, where a failure says what failed.
