@@ -16,12 +16,13 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         .clone();
     let unit = ctx.forge.unit_get(&dir, ctx.unit)?;
     let build = artifact::read(&dir, &ctx.unit.to_string(), "build.md")?;
-    check::run(ctx, true, prompt(&unit.title, &unit.body, &build))
+    let skill = skill::load(&ctx.vcs.root_find(&ctx.from)?, skill::VERIFY)?;
+    check::run(ctx, true, prompt(&skill, &unit.title, &unit.body, &build))
 }
 
-fn prompt(title: &str, body: &str, build: &str) -> String {
+fn prompt(skill: &str, title: &str, body: &str, build: &str) -> String {
     format!(
         "{}\n\n# The unit\n\n## {title}\n\n{body}\n\n# The build summary\n\n{build}\n",
-        skill::body(skill::VERIFY)
+        skill
     )
 }
