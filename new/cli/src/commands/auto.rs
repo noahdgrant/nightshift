@@ -1,13 +1,16 @@
 use std::collections::HashSet;
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
-use chrono::{Local, NaiveTime};
+use chrono::{DateTime, Local, NaiveTime};
 use clap::Args as ClapArgs;
 use serde_json::json;
 
 use super::{run as unit_run, triage};
-use crate::{auto, forge, harness, lock, until, vcs};
+use crate::forge::Forge;
+use crate::os::Os;
+use crate::{auto, forge, harness, lock, os, until, vcs};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -70,18 +73,49 @@ pub fn run(args: Args) -> Result<()> {
         &waiting,
         Duration::from_secs(args.options.harness_timeout_seconds),
     );
-    let deadline = args
-        .until
-        .map(|time| until::deadline_find(Local::now(), time));
+    let os = os::get();
+    let limits = Limits {
+        max_units: args.max_units,
+        deadline: args
+            .until
+            .map(|time| until::deadline_find(os.time_now(), time)),
+    };
+    failed += units_run(forge.as_ref(), os.as_ref(), &root, &limits, &mut |unit| {
+        unit_run::run(unit_run::Args::unattended(unit, args.options.clone()))
+    })?;
+    if failed > 0 {
+        bail!("{failed} units were not triaged or did not finish");
+    }
+    Ok(())
+}
+
+/// When `units_run` stops starting units.
+struct Limits {
+    /// How many units to start. `None` is every ready one.
+    max_units: Option<usize>,
+    /// The moment after which no unit is started. A unit already running finishes.
+    deadline: Option<DateTime<Local>>,
+}
+
+/// Starts the ready units one at a time with `run_unit` until none is left or `limits` say stop,
+/// printing how each ended. Returns how many did not end well.
+fn units_run(
+    forge: &dyn Forge,
+    os: &dyn Os,
+    root: &Path,
+    limits: &Limits,
+    run_unit: &mut dyn FnMut(u64) -> Result<()>,
+) -> Result<usize> {
+    let mut failed = 0;
     // A unit is run once, even when it is still ready afterwards.
     let mut run_already = HashSet::new();
-    while args.max_units.is_none_or(|max| run_already.len() < max) {
-        if deadline.is_some_and(|at| Local::now() >= at) {
+    while limits.max_units.is_none_or(|max| run_already.len() < max) {
+        if limits.deadline.is_some_and(|at| os.time_now() >= at) {
             println!("{}", json!({ "stopped": "until" }));
             break;
         }
         // Read again: triage and the units just run change what is ready and what is blocked.
-        let open = forge.unit_list(&root)?;
+        let open = forge.unit_list(root)?;
         let plan = auto::plan(&open);
         let Some(unit) = plan
             .queue
@@ -92,13 +126,13 @@ pub fn run(args: Args) -> Result<()> {
             break;
         };
         run_already.insert(unit);
-        let ended = unit_run::run(unit_run::Args::unattended(unit, args.options.clone()));
+        let ended = run_unit(unit);
         if let Err(e) = &ended {
             eprintln!("ns: unit {unit}: {e:#}");
             failed += 1;
         }
         let status: Vec<String> = forge
-            .unit_get(&root, unit)
+            .unit_get(root, unit)
             .map(|u| u.labels)
             .unwrap_or_default()
             .into_iter()
@@ -109,8 +143,150 @@ pub fn run(args: Args) -> Result<()> {
             json!({ "unit": unit, "ok": ended.is_ok(), "status": status })
         );
     }
-    if failed > 0 {
-        bail!("{failed} units were not triaged or did not finish");
+    Ok(failed)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    use chrono::{Duration as Span, TimeZone};
+
+    use super::*;
+    use crate::forge::{ChangeRequest, Checks, Unit};
+    use crate::os::Finished;
+
+    /// Ready units 1, 2 and 3, and nothing else.
+    struct Ready;
+
+    impl Forge for Ready {
+        fn unit_list(&self, _: &Path) -> Result<Vec<Unit>> {
+            Ok((1..=3)
+                .map(|number| Unit {
+                    number,
+                    title: String::new(),
+                    body: String::new(),
+                    labels: vec![auto::READY.into()],
+                    from_team: true,
+                })
+                .collect())
+        }
+        fn unit_get(&self, _: &Path, number: u64) -> Result<Unit> {
+            Ok(Unit {
+                number,
+                title: String::new(),
+                body: String::new(),
+                labels: Vec::new(),
+                from_team: true,
+            })
+        }
+        fn unit_labels_set(&self, _: &Path, _: u64, _: &[String], _: &[String]) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_close(&self, _: &Path, _: u64) -> Result<()> {
+            unreachable!()
+        }
+        fn change_request_get(&self, _: &Path, _: &str) -> Result<Option<ChangeRequest>> {
+            unreachable!()
+        }
+        fn change_request_create(
+            &self,
+            _: &Path,
+            _: &str,
+            _: u64,
+            _: &str,
+            _: &str,
+        ) -> Result<ChangeRequest> {
+            unreachable!()
+        }
+        fn change_request_checks_get(&self, _: &Path, _: u64) -> Result<Checks> {
+            unreachable!()
+        }
+        fn change_request_merge(&self, _: &Path, _: u64) -> Result<()> {
+            unreachable!()
+        }
     }
-    Ok(())
+
+    /// An operating system whose clock only moves when a test moves it.
+    struct Clock(Cell<DateTime<Local>>);
+
+    impl Os for Clock {
+        fn process_run(&self, _: Command, _: &[u8], _: Duration) -> Result<Finished> {
+            unreachable!()
+        }
+        fn shell_command(&self, _: &str) -> Command {
+            unreachable!()
+        }
+        fn file_link(&self, _: &Path, _: &Path) -> Result<()> {
+            unreachable!()
+        }
+        fn config_dir_find(&self) -> Result<PathBuf> {
+            unreachable!()
+        }
+        fn time_now(&self) -> DateTime<Local> {
+            self.0.get()
+        }
+    }
+
+    fn start() -> DateTime<Local> {
+        Local
+            .with_ymd_and_hms(2026, 3, 10, 22, 0, 0)
+            .earliest()
+            .unwrap()
+    }
+
+    /// Runs the ready units with a clock that each unit moves on by `each`, and returns the units
+    /// that were started.
+    fn started(limits: Limits, each: Span) -> Vec<u64> {
+        let clock = Clock(Cell::new(start()));
+        let started = RefCell::new(Vec::new());
+        units_run(&Ready, &clock, Path::new("."), &limits, &mut |unit| {
+            started.borrow_mut().push(unit);
+            clock.0.set(clock.0.get() + each);
+            Ok(())
+        })
+        .unwrap();
+        started.into_inner()
+    }
+
+    #[test]
+    fn no_unit_is_started_after_the_deadline_and_the_one_running_finishes() {
+        let limits = Limits {
+            max_units: None,
+            deadline: Some(start() + Span::hours(1)),
+        };
+        // Unit 2 starts at 22:30:30, before the deadline, and ends at 23:01, after it. Unit 3 never
+        // starts.
+        let started = started(limits, Span::minutes(30) + Span::seconds(30));
+        assert_eq!(started, [1, 2]);
+    }
+
+    #[test]
+    fn a_deadline_that_has_already_passed_starts_nothing() {
+        let limits = Limits {
+            max_units: None,
+            deadline: Some(start() - Span::minutes(1)),
+        };
+        assert!(started(limits, Span::minutes(1)).is_empty());
+    }
+
+    #[test]
+    fn without_a_deadline_every_ready_unit_is_started() {
+        let limits = Limits {
+            max_units: None,
+            deadline: None,
+        };
+        assert_eq!(started(limits, Span::hours(9)), [1, 2, 3]);
+    }
+
+    #[test]
+    fn the_deadline_and_the_count_each_stop_the_night() {
+        let limits = Limits {
+            max_units: Some(1),
+            deadline: Some(start() + Span::hours(9)),
+        };
+        assert_eq!(started(limits, Span::minutes(1)), [1]);
+    }
 }

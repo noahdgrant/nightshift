@@ -9,6 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Local};
 
 use super::{Finished, Os};
 
@@ -36,6 +37,10 @@ impl Os for Linux {
         }
         let home = std::env::var_os("HOME").context("HOME is not set")?;
         Ok(PathBuf::from(home).join(".config").join("nightshift"))
+    }
+
+    fn time_now(&self) -> DateTime<Local> {
+        Local::now()
     }
 }
 

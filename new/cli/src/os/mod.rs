@@ -8,6 +8,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use anyhow::Result;
+use chrono::{DateTime, Local};
 
 pub trait Os {
     /// Starts `cmd` and waits for it, at most `timeout`. A piped stdin is fed `input` and closed;
@@ -22,6 +23,9 @@ pub trait Os {
 
     /// Where the user's own files for `ns` live, when nothing says otherwise.
     fn config_dir_find(&self) -> Result<PathBuf>;
+
+    /// The time of day by the clock on the wall.
+    fn time_now(&self) -> DateTime<Local>;
 }
 
 pub struct Finished {
