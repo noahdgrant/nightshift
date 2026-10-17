@@ -30,7 +30,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let evidence = verdict::evidence_ending_in(&dir, &id, Verdict::Fail);
     let problem = artifact::read(&dir, &id, PROBLEM).ok();
     let base = ctx.vcs.workspace_base_find(&dir)?;
-    let checks_note = checks::command_find(ctx.vcs.as_ref(), &dir, &base)?
+    let checks_note = checks::command_find(&dir)?
         .is_some()
         .then(checks_note)
         .transpose()?;
@@ -55,7 +55,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         bail!("{problem}");
     }
     let root = ctx.vcs.root_find(&ctx.from)?;
-    if let Some(report) = checks::run(ctx.vcs.as_ref(), &root, &dir, &base, false)? {
+    if let Some(report) = checks::run(ctx.vcs.as_ref(), &root, &dir, false)? {
         if !report.passed {
             let problem = format!(
                 "The checks failed:\n{}\nFix them.",

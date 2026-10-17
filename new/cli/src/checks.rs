@@ -9,9 +9,8 @@ use anyhow::{Context, Result};
 
 use crate::vcs::Vcs;
 
-/// The file holding the command that runs the repository's checks. It is read as it was where the
-/// unit's branch started, not from the workspace, so a unit cannot loosen its own checks, and a
-/// check added since reaches every unit started after it.
+/// The file holding the command that runs the repository's checks, read from the workspace. A
+/// unit that changes it is held to its change; whether the change is good is for `review` to say.
 const COMMAND_FILE: &str = ".nightshift/check";
 
 pub struct Report {
@@ -22,23 +21,20 @@ pub struct Report {
     pub output: String,
 }
 
-/// The command that runs the repository's checks, if it names one.
-pub fn command_find(vcs: &dyn Vcs, workspace: &Path, base: &str) -> Result<Option<String>> {
-    let text = vcs.file_read(workspace, base, COMMAND_FILE)?;
-    Ok(text.map(|t| t.trim().to_string()).filter(|c| !c.is_empty()))
+/// The command that runs the repository's checks, if the workspace at `workspace` names one.
+pub fn command_find(workspace: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(workspace.join(COMMAND_FILE)) {
+        Ok(text) => Ok(Some(text.trim().to_string()).filter(|c| !c.is_empty())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("cannot read {COMMAND_FILE}")),
+    }
 }
 
-/// Runs the checks the commit `base` names on the workspace at `workspace`, unless they already passed on exactly what it
+/// Runs the checks on the workspace at `workspace`, unless they already passed on exactly what it
 /// holds. `None` when the repository has no checks. With `stream`, the checks print as they run
 /// and the report's output is empty.
-pub fn run(
-    vcs: &dyn Vcs,
-    root: &Path,
-    workspace: &Path,
-    base: &str,
-    stream: bool,
-) -> Result<Option<Report>> {
-    let Some(command) = command_find(vcs, workspace, base)? else {
+pub fn run(vcs: &dyn Vcs, root: &Path, workspace: &Path, stream: bool) -> Result<Option<Report>> {
+    let Some(command) = command_find(workspace)? else {
         return Ok(None);
     };
     let remembered = vcs.state_dir_find(root)?.join("checks-passed");

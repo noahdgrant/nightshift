@@ -57,11 +57,17 @@ fn checks_that_failed_are_run_again() {
 }
 
 #[test]
-fn a_unit_cannot_loosen_its_own_checks() {
-    let (_repo, ws, log) = with_logging_checks("exit 1");
-    std::fs::write(ws.join(".nightshift/check"), "exit 0").unwrap();
+fn a_unit_that_changes_the_checks_is_held_to_its_change() {
+    let (_repo, ws, log) = with_logging_checks("exit 0");
+    ns(&ws, &["check"]).success();
+    let changed = format!("echo changed >> {}\nexit 1", log.display());
+    std::fs::write(ws.join(".nightshift/check"), changed).unwrap();
     ns(&ws, &["check"]).failure();
-    assert_eq!(runs(&log), 1, "the command from where the unit started ran");
+    assert_eq!(
+        runs(&log),
+        2,
+        "the changed command ran, not the cached pass"
+    );
 }
 
 #[test]
