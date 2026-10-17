@@ -27,7 +27,7 @@ From a checkout, to run what you are editing:
 cargo install --path cli --force
 ```
 
-The skills are inside the binary. In each repository, `ns init` copies them into `.nightshift/skills/`: commit them, and edit one to patch it. `ns init` keeps a skill the repository has changed, and `ns init --force` after an upgrade rewrites them all, so `git diff` shows the patches. A skill the repository doesn't have is read from the binary.
+The skills are inside the binary. In each repository, `ns init` copies them into `.nightshift/skills/`: commit them, and edit one to patch it. It records what it copied in `.nightshift/nightshift.toml`, so running it again after an upgrade updates the skills you have not touched and keeps the ones you patched. `ns init --force` overwrites the patched ones too, and `git diff` shows what they were. A skill the repository doesn't have is read from the binary.
 
 ## Setup
 

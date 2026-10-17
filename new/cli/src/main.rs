@@ -9,6 +9,7 @@ mod define;
 mod forge;
 mod harness;
 mod lock;
+mod manifest;
 mod os;
 mod plan;
 mod retry;
