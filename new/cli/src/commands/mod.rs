@@ -3,6 +3,7 @@
 mod auto;
 mod check;
 mod define;
+mod init;
 mod plan;
 mod run;
 mod triage;
@@ -23,6 +24,8 @@ pub enum Command {
     Define(define::Args),
     /// Cut a unit into slices and make it ready for the agent.
     Plan(plan::Args),
+    /// Copy the skills into the repository to be patched.
+    Init(init::Args),
     /// Move a unit through the states, printing each move.
     Run(run::Args),
     /// Print the version of ns.
@@ -40,6 +43,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Auto(args) => auto::run(args),
         Command::Check(args) => check::run(args),
         Command::Define(args) => define::run(args),
+        Command::Init(args) => init::run(args),
         Command::Plan(args) => plan::run(args),
         Command::Run(args) => run::run(args),
         Command::Version(args) => version::run(args),

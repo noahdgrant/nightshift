@@ -27,7 +27,7 @@ From a checkout, to run what you are editing:
 cargo install --path cli --force
 ```
 
-The skills are inside the binary, so each install runs the skills it shipped with. A repository can replace one with `.nightshift/skills/<name>/SKILL.md`.
+The skills are inside the binary. In each repository, `ns init` copies them into `.nightshift/skills/`: commit them, and edit one to patch it. `ns init` keeps a skill the repository has changed, and `ns init --force` after an upgrade rewrites them all, so `git diff` shows the patches. A skill the repository doesn't have is read from the binary.
 
 ## Setup
 

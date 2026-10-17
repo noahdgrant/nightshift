@@ -5,7 +5,7 @@
 //! may replace one with a file of its own, `.nightshift/skills/<name>/SKILL.md`, read when a
 //! state runs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
@@ -20,19 +20,25 @@ pub const REQUIREMENTS: &str = "ns-requirements";
 pub const DESIGN_DOC: &str = "ns-design-doc";
 pub const TROUBLESHOOT: &str = "ns-troubleshoot";
 
+/// Where a repository keeps its own copy of the skills.
+pub fn dir_find(root: &Path) -> PathBuf {
+    root.join(".nightshift").join("skills")
+}
+
+/// Every skill that came with this `ns`, as its name and its file's text.
+pub fn embedded() -> &'static [(&'static str, &'static str)] {
+    EMBEDDED
+}
+
 /// The text of skill `name`, without its frontmatter. `root` is the repository's main checkout.
 pub fn load(root: &Path, name: &str) -> Result<String> {
-    let file = root
-        .join(".nightshift")
-        .join("skills")
-        .join(name)
-        .join("SKILL.md");
+    let file = dir_find(root).join(name).join("SKILL.md");
     match std::fs::read_to_string(&file) {
         Ok(text) => return Ok(body(&text).to_string()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", file.display())),
     }
-    match EMBEDDED.iter().find(|(embedded, _)| *embedded == name) {
+    match embedded().iter().find(|(embedded, _)| *embedded == name) {
         Some((_, text)) => Ok(body(text).to_string()),
         None => bail!("there is no skill named {name}"),
     }
@@ -58,7 +64,7 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         on_disk.sort();
-        let embedded: Vec<&str> = EMBEDDED.iter().map(|(name, _)| *name).collect();
+        let embedded: Vec<&str> = embedded().iter().map(|(name, _)| *name).collect();
         assert_eq!(embedded, on_disk);
     }
 

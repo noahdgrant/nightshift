@@ -2,6 +2,7 @@ mod auto;
 mod check;
 mod common;
 mod define;
+mod init;
 pub mod plan;
 pub mod run;
 mod triage;
