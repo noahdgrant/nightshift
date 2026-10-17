@@ -11,6 +11,21 @@ pub trait Forge {
     /// The unit `number` of the repository at `repo`.
     fn unit_get(&self, repo: &Path, number: u64) -> Result<Unit>;
 
+    /// Adds and removes labels on unit `number`.
+    fn unit_labels_set(
+        &self,
+        repo: &Path,
+        number: u64,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<()>;
+
+    /// Posts `body` as a comment on unit `number`.
+    fn unit_comment_create(&self, repo: &Path, number: u64, body: &str) -> Result<()>;
+
+    /// Closes unit `number` as not planned.
+    fn unit_close(&self, repo: &Path, number: u64) -> Result<()>;
+
     /// Every open unit of the repository at `repo`.
     fn unit_list(&self, repo: &Path) -> Result<Vec<Unit>>;
 
@@ -34,6 +49,9 @@ pub trait Forge {
     /// Merges change request `number` into its base as one commit.
     fn change_request_merge(&self, repo: &Path, number: u64) -> Result<()>;
 }
+
+/// Every post `ns` makes on the forge starts with this line.
+pub const DISCLOSURE: &str = "🤖 *Posted by nightshift, an AI agent.*";
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Unit {

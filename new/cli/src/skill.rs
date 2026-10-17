@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
+pub const TRIAGE: &str = "ns-triage";
 pub const BUILD: &str = "ns-build";
 pub const VERIFY: &str = "ns-verify";
 pub const REVIEW: &str = "ns-review";
@@ -76,6 +77,19 @@ mod tests {
             assert!(
                 skill.contains(PASS_LINE) && skill.contains(FAIL_LINE),
                 "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_triage_skill_names_every_route_and_asks_for_the_lines_the_cli_reads() {
+        let file = format!("{}/../skills/{TRIAGE}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
+        let skill = std::fs::read_to_string(file).unwrap();
+        assert!(skill.contains("\nLABELS: ") && skill.contains("\nROUTE: "));
+        for route in crate::triage::Route::ALL {
+            assert!(
+                skill.contains(&format!("**{}**", route.name())),
+                "{route:?}"
             );
         }
     }

@@ -50,6 +50,47 @@ impl Forge for GitHub {
         unit_from(&v)
     }
 
+    fn unit_labels_set(
+        &self,
+        repo: &Path,
+        number: u64,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<()> {
+        let number = number.to_string();
+        let (add, remove) = (add.join(","), remove.join(","));
+        let mut args = vec!["issue", "edit", &number];
+        for (flag, labels) in [("--add-label", &add), ("--remove-label", &remove)] {
+            if !labels.is_empty() {
+                args.extend([flag, labels]);
+            }
+        }
+        self.gh(repo, &args)?;
+        Ok(())
+    }
+
+    fn unit_comment_create(&self, repo: &Path, number: u64, body: &str) -> Result<()> {
+        self.gh(
+            repo,
+            &["issue", "comment", &number.to_string(), "--body", body],
+        )?;
+        Ok(())
+    }
+
+    fn unit_close(&self, repo: &Path, number: u64) -> Result<()> {
+        self.gh(
+            repo,
+            &[
+                "issue",
+                "close",
+                &number.to_string(),
+                "--reason",
+                "not planned",
+            ],
+        )?;
+        Ok(())
+    }
+
     fn unit_list(&self, repo: &Path) -> Result<Vec<Unit>> {
         let json = self.gh(
             repo,

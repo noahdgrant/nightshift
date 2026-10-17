@@ -10,6 +10,7 @@ mod runlog;
 mod skill;
 mod state;
 mod states;
+mod triage;
 mod vcs;
 mod watch;
 mod workspace;

@@ -8,7 +8,7 @@ pub const READY: &str = "status:ready-for-agent";
 /// A unit nobody has looked at since it was filed.
 pub const NEEDS_TRIAGE: &str = "status:needs-triage";
 /// Every state label starts with this.
-const STATE_PREFIX: &str = "status:";
+pub const STATE_PREFIX: &str = "status:";
 /// Priority labels, highest first.
 const PRIORITIES: [&str; 4] = [
     "priority:critical",

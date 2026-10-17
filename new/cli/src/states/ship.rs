@@ -4,11 +4,8 @@ use anyhow::{bail, Context as _, Result};
 
 use super::Context;
 use crate::artifact;
-use crate::forge::Checks;
+use crate::forge::{Checks, DISCLOSURE};
 use crate::state::Outcome;
-
-/// Every post `ns` makes on the forge starts with this line.
-const DISCLOSURE: &str = "🤖 *Posted by nightshift, an AI agent.*";
 
 pub struct Options {
     /// Merge the change request once its checks pass.

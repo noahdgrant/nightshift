@@ -31,6 +31,9 @@ The line of changes a unit's workspace is on, named `ns/<unit id>`.
 The text a unit's `build` works from: what to change and how to know it is done. Written during triage from the unit's description on the forge.
 _Avoid_: Spec, prompt
 
+**Route**:
+What triage decides a unit needs next: `build`, `define`, `repro`, `info`, `human` or `wontfix`. `ns` turns it into the unit's state label on the forge.
+
 **Change request**:
 A proposal on the forge to merge a unit's branch into the main one, reviewed and checked before it merges.
 _Avoid_: Pull request, merge request, PR, MR
