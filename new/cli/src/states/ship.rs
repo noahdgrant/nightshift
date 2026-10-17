@@ -7,8 +7,8 @@ use crate::state::Outcome;
 /// Every post `ns` makes on the forge starts with this line.
 const DISCLOSURE: &str = "🤖 *Posted by nightshift, an AI agent.*";
 
-/// Commits the unit's work, publishes its branch and opens a change request for it, whose
-/// address it keeps as `ship.md`. A change request that is already open is kept.
+/// Publishes the unit's branch and opens a change request for it, whose address it keeps as
+/// `ship.md`. The work is already committed: `build` is the only state that commits. A change request that is already open is kept.
 pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let workspace = ctx
         .workspace
@@ -18,7 +18,6 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let id = ctx.unit.to_string();
     let unit = ctx.forge.unit_get(&dir, ctx.unit)?;
     let build = artifact::read(&dir, &id, "build.md")?;
-    ctx.vcs.workspace_commit(&dir, &unit.title)?;
     ctx.vcs.branch_push(&dir, &branch)?;
     let change_request = match ctx.forge.change_request_get(&dir, &branch)? {
         Some(existing) => existing,

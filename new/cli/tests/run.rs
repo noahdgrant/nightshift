@@ -160,7 +160,7 @@ fn run_sets_up_builds_verifies_and_prints_each_move() {
 }
 
 #[test]
-fn ship_commits_publishes_and_opens_one_change_request() {
+fn build_commits_and_ship_publishes_and_opens_one_change_request() {
     let repo = Repo::new();
     run(&repo, &tools(&repo, &Fakes::passing())).success();
     let origin = repo.path.parent().unwrap().join("origin.git");
@@ -177,6 +177,8 @@ fn ship_commits_publishes_and_opens_one_change_request() {
     assert_eq!(read(&repo, "ship.md"), "https://forge.example/9\n");
     let subject = common::git(&repo.workspace("5"), &["log", "-1", "--format=%s"]);
     assert_eq!(subject.trim(), "Add a thing");
+    let commits = common::git(&repo.path, &["rev-list", "--count", "main..ns/5"]);
+    assert_eq!(commits.trim(), "1", "build commits once and ship adds none");
 }
 
 #[test]

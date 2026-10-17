@@ -7,8 +7,9 @@ use crate::forge::Unit;
 use crate::harness::Task;
 use crate::state::Outcome;
 
-/// Has the harness implement the unit in the unit's workspace and keeps what it says as
-/// `build.md`, and a snapshot of what it left, for `verify` to hold the workspace to.
+/// Has the harness implement the unit in the unit's workspace, commits what it did, and keeps what
+/// the harness says as `build.md` and a snapshot of the result, for `verify` to hold the
+/// workspace to. The only state that commits.
 pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let dir = ctx
         .workspace
@@ -29,6 +30,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     if !reply.success {
         bail!("the harness did not finish the build");
     }
+    ctx.vcs.workspace_commit(&dir, &unit.title)?;
     let snapshot = ctx.vcs.workspace_snapshot(&dir)?;
     artifact::write(&dir, &id, BUILT_SNAPSHOT, &snapshot)?;
     Ok(Outcome::Pass)
@@ -37,7 +39,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
 fn prompt(unit: &Unit, evidence: Option<&str>) -> String {
     let mut prompt = format!(
         "Implement this unit of work test-first, in small steps, and run the tests before you stop. \
-         End with a short summary of what you changed.\n\n# {}\n\n{}\n",
+         Do not commit; that is done for you. End with a short summary of what you changed.\n\n# {}\n\n{}\n",
         unit.title, unit.body
     );
     if let Some(evidence) = evidence {

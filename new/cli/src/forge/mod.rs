@@ -52,6 +52,6 @@ pub enum ChangeState {
 }
 
 /// The forge `ns` uses. The only place one is chosen.
-pub fn current() -> Box<dyn Forge> {
+pub fn get() -> Box<dyn Forge> {
     Box::new(github::GitHub::new())
 }

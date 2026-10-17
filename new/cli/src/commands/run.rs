@@ -21,9 +21,9 @@ pub struct Args {
 /// Walks the unit through its states. `setup`, `build` and `verify` do work so far.
 pub fn run(args: Args) -> Result<()> {
     let mut ctx = Context {
-        vcs: vcs::current(),
-        forge: forge::current(),
-        harness: harness::current(),
+        vcs: vcs::get(),
+        forge: forge::get(),
+        harness: harness::get(),
         from: std::env::current_dir()?,
         unit: args.unit,
         workspace: None,

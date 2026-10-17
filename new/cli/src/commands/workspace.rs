@@ -26,7 +26,7 @@ enum Sub {
 
 pub fn run(args: Args) -> Result<()> {
     let here = std::env::current_dir()?;
-    let vcs = vcs::current();
+    let vcs = vcs::get();
     match args.command {
         Sub::New { unit, base } => {
             let wt = workspace::ensure(vcs.as_ref(), &here, &unit, base.as_deref())?;

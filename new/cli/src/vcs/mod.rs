@@ -40,6 +40,6 @@ pub trait Vcs {
 }
 
 /// The version control `ns` uses. The only place a tool is chosen.
-pub fn current() -> Box<dyn Vcs> {
+pub fn get() -> Box<dyn Vcs> {
     Box::new(git::Git)
 }

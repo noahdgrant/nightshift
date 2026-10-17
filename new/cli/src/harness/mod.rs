@@ -28,6 +28,6 @@ pub struct Reply {
 }
 
 /// The harness `ns` uses. The only place one is chosen.
-pub fn current() -> Box<dyn Harness> {
+pub fn get() -> Box<dyn Harness> {
     Box::new(claude::Claude::new())
 }
