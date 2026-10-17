@@ -49,6 +49,17 @@ pub fn remove(vcs: &dyn Vcs, from: &Path, unit: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Deletes the unit's workspace, whatever it holds, and its branch.
+pub fn discard(vcs: &dyn Vcs, from: &Path, unit: &str) -> Result<()> {
+    check_unit_id(unit)?;
+    let root = vcs.root_find(from)?;
+    let wt = locate(&root, unit)?;
+    if wt.path.exists() {
+        vcs.workspace_discard(&root, &wt.path)?;
+    }
+    vcs.branch_delete(&root, &wt.branch)
+}
+
 pub fn locate(root: &Path, unit: &str) -> Result<Workspace> {
     let name = root
         .file_name()

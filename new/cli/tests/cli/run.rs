@@ -655,13 +655,15 @@ fn a_stuck_unit_resumes_at_the_state_it_stuck_in_with_fresh_attempts() {
 }
 
 #[test]
-fn fresh_starts_a_stuck_unit_over_from_setup() {
+fn fresh_deletes_the_workspace_and_branch_and_starts_over_from_setup() {
     let repo = Repo::new();
     let broken = Fakes {
         exit: 1,
         ..Fakes::passing()
     };
     run(&repo, &tools(&repo, &broken)).failure();
+    let leftover = repo.workspace("5").join("leftover.txt");
+    std::fs::write(&leftover, "from the first try").unwrap();
     let out = run_with(&repo, &tools(&repo, &Fakes::passing()), &["--fresh"])
         .success()
         .get_output()
@@ -670,6 +672,9 @@ fn fresh_starts_a_stuck_unit_over_from_setup() {
     let events = lines(&out);
     assert_eq!(events[0]["state"], "setup");
     assert_eq!(events.last().unwrap()["to"], "done");
+    assert!(!leftover.exists(), "the first try's files are gone");
+    let commits = common::git(&repo.path, &["rev-list", "--count", "main..ns/5"]);
+    assert_eq!(commits.trim(), "1");
 }
 
 #[test]

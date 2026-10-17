@@ -17,8 +17,7 @@ pub struct Args {
     /// How many times a state may run before the unit is stuck.
     #[arg(long, default_value_t = 2)]
     max_attempts: u32,
-    /// Start the unit over from `setup`, ignoring where it stopped. Its workspace and branch are
-    /// kept.
+    /// Delete the unit's workspace and branch, whatever they hold, and start over from `setup`.
     #[arg(long)]
     fresh: bool,
     /// Stop between states for the human, or go on.
@@ -52,6 +51,7 @@ pub fn run(args: Args) -> Result<()> {
     let root = vcs.root_find(&from)?;
     let log = RunLog::open(vcs.as_ref(), &root)?;
     let resume = if args.fresh {
+        workspace::discard(vcs.as_ref(), &from, &unit)?;
         Resume::Fresh
     } else {
         log.resume(&unit)?

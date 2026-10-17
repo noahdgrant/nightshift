@@ -92,6 +92,14 @@ impl Vcs for Git {
         Ok(())
     }
 
+    fn workspace_discard(&self, root: &Path, path: &Path) -> Result<()> {
+        run(
+            root,
+            &["worktree", "remove", "--force", &path.to_string_lossy()],
+        )?;
+        Ok(())
+    }
+
     fn workspace_remove(&self, root: &Path, path: &Path) -> Result<()> {
         run(root, &["worktree", "remove", &path.to_string_lossy()])?;
         Ok(())

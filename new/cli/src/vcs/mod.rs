@@ -51,6 +51,9 @@ pub trait Vcs {
     /// started. The branch must not be checked out in any workspace.
     fn branch_delete(&self, root: &Path, branch: &str) -> Result<()>;
 
+    /// Removes the workspace at `path` even when it holds changes that are not committed.
+    fn workspace_discard(&self, root: &Path, path: &Path) -> Result<()>;
+
     /// Removes the workspace at `path` and keeps its branch. Fails when the workspace has
     /// uncommitted changes.
     fn workspace_remove(&self, root: &Path, path: &Path) -> Result<()>;
