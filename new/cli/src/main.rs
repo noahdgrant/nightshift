@@ -1,6 +1,7 @@
 //! `ns`: the Nightshift CLI.
 
 mod artifact;
+mod auto;
 mod checks;
 mod commands;
 mod forge;
@@ -12,7 +13,6 @@ mod state;
 mod states;
 mod triage;
 mod vcs;
-mod watch;
 mod workspace;
 
 /// Tests that write a program and run it, or start any process, hold this guard. A process

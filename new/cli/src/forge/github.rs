@@ -69,14 +69,6 @@ impl Forge for GitHub {
         Ok(())
     }
 
-    fn unit_comment_create(&self, repo: &Path, number: u64, body: &str) -> Result<()> {
-        self.gh(
-            repo,
-            &["issue", "comment", &number.to_string(), "--body", body],
-        )?;
-        Ok(())
-    }
-
     fn unit_close(&self, repo: &Path, number: u64) -> Result<()> {
         self.gh(
             repo,

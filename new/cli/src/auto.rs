@@ -1,4 +1,4 @@
-//! What `ns watch` decides from the units a repository has open: which to triage and which to run,
+//! What `ns auto` decides from the units a repository has open: which to triage and which to run,
 //! in what order. Pure: it reads units and changes nothing.
 
 use crate::forge::Unit;

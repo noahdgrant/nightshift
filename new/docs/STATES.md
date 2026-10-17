@@ -1,26 +1,28 @@
 # States
 
-## Before `ns run`
+The table in `cli/src/state.rs` is the source of truth for `ns run`.
 
-`ns watch` triages a unit, and its route sets the unit's state label on the forge. Only `build` leads to `ns run`. `define`, `repro` and the waiting routes are not built yet.
+## `ns auto`
+
+Where a unit goes before it is run. Triage decides, and the unit's label on the forge records it. Only a ready unit goes to `ns run`; `define`, `repro` and the waiting states are not built yet.
 
 ```mermaid
 stateDiagram
+    state "ns run (see below)" as run
     [*] --> triage
-    triage --> build : ready-for-agent
     triage --> define : needs-define
     triage --> repro : needs-repro
     triage --> info : needs-info
     triage --> human : ready-for-human
     triage --> wontfix : closed
-    define --> build
-    repro --> build
-    build --> run
+    triage --> run : ready-for-agent
+    define --> run
+    repro --> run
+    info --> triage : answered
+    run --> [*]
 ```
 
 ## `ns run`
-
-How a unit moves through `ns run`. The table in `cli/src/state.rs` is the source of truth.
 
 ```mermaid
 stateDiagram

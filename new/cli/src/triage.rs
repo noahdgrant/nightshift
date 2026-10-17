@@ -1,15 +1,15 @@
-//! Triage: reads one unit, decides its route, writes the brief or the reason on the forge, and
-//! sets the unit's labels. The harness chooses; `ns` is the only one that writes a state label.
+//! Triage: reads one unit, decides its route, and records the decision as the unit's labels.
+//! It posts nothing. The harness chooses; `ns` is the only one that writes a state label.
 
 use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use crate::forge::{Forge, Unit, DISCLOSURE};
+use crate::auto::STATE_PREFIX;
+use crate::forge::{Forge, Unit};
 use crate::harness::{Harness, Task};
 use crate::skill;
-use crate::watch::STATE_PREFIX;
 
 /// The labels a harness may ask for. A state is for `ns` to set, from the route.
 const CHOSEN_PREFIXES: [&str; 3] = ["type:", "priority:", "area:"];
@@ -61,7 +61,7 @@ impl Route {
     /// The state label a unit takes when triage sends it this way.
     pub fn label(self) -> &'static str {
         match self {
-            Route::Build => crate::watch::READY,
+            Route::Build => crate::auto::READY,
             Route::Define => "status:needs-define",
             Route::Repro => "status:needs-repro",
             Route::Info => "status:needs-info",
@@ -77,15 +77,15 @@ pub struct Triaged {
     pub route: Route,
     /// The `type:`, `priority:` and `area:` labels it chose.
     pub labels: Vec<String>,
-    /// The brief, or the reason or questions, without the two closing lines.
-    pub text: String,
+    /// Why, in a few sentences.
+    pub why: String,
 }
 
-/// Reads the answer: its text, then a `LABELS:` line and a `ROUTE:` line.
+/// Reads the answer: why, then a `LABELS:` line and a `ROUTE:` line.
 pub fn parse(reply: &str) -> Result<Triaged> {
     let mut route = None;
     let mut labels = Vec::new();
-    let mut text = Vec::new();
+    let mut why = Vec::new();
     for line in reply.lines() {
         if let Some(r) = line.trim().strip_prefix("ROUTE:") {
             route = Some(r.trim().to_string());
@@ -96,7 +96,7 @@ pub fn parse(reply: &str) -> Result<Triaged> {
                 .filter(|l| !l.is_empty())
                 .collect();
         } else {
-            text.push(line);
+            why.push(line);
         }
     }
     let route = route.context("the answer has no ROUTE line")?;
@@ -109,20 +109,14 @@ pub fn parse(reply: &str) -> Result<Triaged> {
             "triage asked for the label {bad:?}, which only type, priority and area labels may be"
         );
     }
-    let text = text.join("\n").trim().to_string();
-    if text.is_empty() {
-        bail!("the answer has no brief or reason");
+    let why = why.join("\n").trim().to_string();
+    if why.is_empty() {
+        bail!("the answer gives no reason");
     }
-    Ok(Triaged {
-        route,
-        labels,
-        text,
-    })
+    Ok(Triaged { route, labels, why })
 }
 
-/// Triages unit `number` of the repository at `root`: asks the harness, posts its text as a
-/// comment, then sets the labels. The comment goes first, so a unit is never ready without its
-/// brief.
+/// Triages unit `number` of the repository at `root`: asks the harness, then sets the labels.
 pub fn run(
     forge: &dyn Forge,
     harness: &dyn Harness,
@@ -145,7 +139,6 @@ pub fn run(
         bail!("the harness did not finish triaging unit {number}");
     }
     let triaged = parse(&reply.text)?;
-    forge.unit_comment_create(root, number, &format!("{DISCLOSURE}\n\n{}", triaged.text))?;
     let remove: Vec<String> = unit
         .labels
         .iter()
@@ -176,10 +169,11 @@ mod tests {
 
     #[test]
     fn the_text_comes_before_the_two_closing_lines() {
-        let t = parse("The brief.\n\nLABELS: type:feat, priority:high\nROUTE: build\n").unwrap();
+        let t =
+            parse("Clear and small.\n\nLABELS: type:feat, priority:high\nROUTE: build\n").unwrap();
         assert_eq!(t.route, Route::Build);
         assert_eq!(t.labels, ["type:feat", "priority:high"]);
-        assert_eq!(t.text, "The brief.");
+        assert_eq!(t.why, "Clear and small.");
     }
 
     #[test]
@@ -195,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_with_no_text_is_refused() {
+    fn an_answer_with_no_reason_is_refused() {
         assert!(parse("ROUTE: build").is_err());
     }
 }

@@ -1,6 +1,6 @@
 ---
 name: ns-triage
-description: Read one unit and the code it touches, decide what must happen to it next (build, define, repro, info, human or wontfix), and write the brief or the reason. Use when a unit has no state yet, or when asked to triage one.
+description: Read one unit and the code it touches, decide what must happen to it next (build, define, repro, info, human or wontfix), and give the reason. Use when a unit has no state yet, or when asked to triage one.
 ---
 
 # Triage
@@ -24,16 +24,9 @@ Done when you can say in one sentence what the unit asks for and where in the co
 
 When two routes fit, take the one that asks less of a person.
 
-## 3. Write the text
+## 3. Say why
 
-For **build**, write the brief that the builder works from. The builder explores the code afresh, so describe behaviour and contracts, never file paths or line numbers.
-
-- **Summary**: what must be true when it is done, in two sentences.
-- **Acceptance criteria**: a list, each one testable by a command or a test.
-- **Failure modes and edge cases**: what happens on the errors and boundaries this change meets. Say "none" if none.
-- **Out of scope**: what the builder must leave alone.
-
-For every other route, write what a person needs to act: the questions for **info**, the missing design decision for **define**, what was tried for **repro**, the reason for **human** or **wontfix**.
+Give the reason for the route in a few sentences, for the person who reads it later. Say what the unit asks for, and for any route but **build** what is missing. Do not write the brief or any other text for the unit: you decide the route and nothing else.
 
 ## 4. End with two lines
 

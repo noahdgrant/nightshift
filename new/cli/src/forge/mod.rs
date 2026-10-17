@@ -20,9 +20,6 @@ pub trait Forge {
         remove: &[String],
     ) -> Result<()>;
 
-    /// Posts `body` as a comment on unit `number`.
-    fn unit_comment_create(&self, repo: &Path, number: u64, body: &str) -> Result<()>;
-
     /// Closes unit `number` as not planned.
     fn unit_close(&self, repo: &Path, number: u64) -> Result<()>;
 
