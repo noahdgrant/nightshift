@@ -163,7 +163,8 @@ fn run_sets_up_builds_verifies_and_prints_each_move() {
 fn ship_commits_publishes_and_opens_one_change_request() {
     let repo = Repo::new();
     run(&repo, &tools(&repo, &Fakes::passing())).success();
-    assert!(repo.remote_branches().contains(&"ns/5".to_string()));
+    let origin = repo.path.parent().unwrap().join("origin.git");
+    assert!(common::git(&origin, &["branch", "--list", "ns/5"]).contains("ns/5"));
     let log = std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log")).unwrap();
     assert_eq!(
         log.matches("pr create --head ns/5 --title Add a thing")
