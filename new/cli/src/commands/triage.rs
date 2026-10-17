@@ -1,9 +1,12 @@
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
 use clap::Args as ClapArgs;
 use serde_json::json;
 
+use crate::forge::Forge;
+use crate::harness::Harness;
 use crate::{auto, forge, harness, triage, vcs};
 
 #[derive(ClapArgs)]
@@ -39,16 +42,31 @@ pub fn run(args: Args) -> Result<()> {
             waiting.iter().take(count).map(|u| u.number).collect()
         }
     };
+    let failed = units_triage(
+        forge.as_ref(),
+        harness.as_ref(),
+        &root,
+        &units,
+        Duration::from_secs(args.harness_timeout_seconds),
+    );
+    if failed > 0 {
+        bail!("{failed} of {} units were not triaged", units.len());
+    }
+    Ok(())
+}
+
+/// Triages each of `units`, printing one JSON line for each that was. A unit that cannot be
+/// triaged is reported on stderr and left as it was. Returns how many could not be.
+pub fn units_triage(
+    forge: &dyn Forge,
+    harness: &dyn Harness,
+    root: &Path,
+    units: &[u64],
+    timeout: Duration,
+) -> usize {
     let mut failed = 0;
-    for unit in &units {
-        let triaged = triage::run(
-            forge.as_ref(),
-            harness.as_ref(),
-            &root,
-            *unit,
-            Duration::from_secs(args.harness_timeout_seconds),
-        );
-        match triaged {
+    for unit in units {
+        match triage::run(forge, harness, root, *unit, timeout) {
             Ok(triaged) => println!(
                 "{}",
                 json!({
@@ -64,8 +82,5 @@ pub fn run(args: Args) -> Result<()> {
             }
         }
     }
-    if failed > 0 {
-        bail!("{failed} of {} units were not triaged", units.len());
-    }
-    Ok(())
+    failed
 }

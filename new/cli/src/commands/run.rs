@@ -16,15 +16,22 @@ use crate::{forge, harness, os, status, vcs, workspace};
 pub struct Args {
     /// The unit to take to a merged change: its number on the forge.
     unit: u64,
-    /// How many times a state may run before the unit is stuck.
-    #[arg(long, default_value_t = 2)]
-    max_attempts: u32,
     /// Delete the unit's workspace and branch, whatever they hold, and start over from `setup`.
     #[arg(long)]
     fresh: bool,
     /// Stop between states for the human, or go on.
     #[arg(long, value_enum, default_value_t = Gates::Stop)]
     gates: Gates,
+    #[command(flatten)]
+    options: Options,
+}
+
+/// What a run of a unit is told, which `ns auto` passes on to each unit it runs.
+#[derive(ClapArgs, Clone)]
+pub struct Options {
+    /// How many times a state may run before the unit is stuck.
+    #[arg(long, default_value_t = 2)]
+    max_attempts: u32,
     /// Merge the change request once its checks pass. Without it, `ship` stops at ready to merge.
     #[arg(long)]
     merge: bool,
@@ -40,10 +47,22 @@ pub struct Args {
     ci_start_seconds: u64,
     /// How long a harness session may take before it is killed and the state goes wrong.
     #[arg(long, default_value_t = 3600)]
-    harness_timeout_seconds: u64,
+    pub harness_timeout_seconds: u64,
     /// How long the repository's checks may take before they are killed and count as failed.
     #[arg(long, default_value_t = 1800)]
     checks_timeout_seconds: u64,
+}
+
+impl Args {
+    /// A fresh or resumed run of `unit` that goes on between states without a human.
+    pub fn unattended(unit: u64, options: Options) -> Args {
+        Args {
+            unit,
+            fresh: false,
+            gates: Gates::Auto,
+            options,
+        }
+    }
 }
 
 /// Whether `ns run` stops for the human between states.
@@ -88,13 +107,13 @@ pub fn run(args: Args) -> Result<()> {
         unit: args.unit,
         workspace: None,
         ship: ship::Options {
-            merge: args.merge,
-            poll: Duration::from_secs(args.ci_poll_seconds),
-            timeout: Duration::from_secs(args.ci_timeout_seconds),
-            start: Duration::from_secs(args.ci_start_seconds),
+            merge: args.options.merge,
+            poll: Duration::from_secs(args.options.ci_poll_seconds),
+            timeout: Duration::from_secs(args.options.ci_timeout_seconds),
+            start: Duration::from_secs(args.options.ci_start_seconds),
         },
-        harness_timeout: Duration::from_secs(args.harness_timeout_seconds),
-        checks_timeout: Duration::from_secs(args.checks_timeout_seconds),
+        harness_timeout: Duration::from_secs(args.options.harness_timeout_seconds),
+        checks_timeout: Duration::from_secs(args.options.checks_timeout_seconds),
     };
     if start != State::Setup {
         let workspace = workspace::locate(&root, &unit)?;
@@ -125,7 +144,7 @@ pub fn run(args: Args) -> Result<()> {
         &unit,
         start,
         args.gates,
-        args.max_attempts,
+        args.options.max_attempts,
         phase,
         &mut sink,
     );

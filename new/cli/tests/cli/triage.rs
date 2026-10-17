@@ -228,3 +228,9 @@ fn a_unit_number_cannot_be_combined_with_a_count() {
     triage_many(&repo, "Text.\nROUTE: build", &["7", "--all"]).failure();
     triage_many(&repo, "Text.\nROUTE: build", &["7", "--max-units", "2"]).failure();
 }
+
+#[test]
+fn all_and_a_count_exclude_each_other() {
+    let repo = Repo::new();
+    triage_many(&repo, "Text.\nROUTE: build", &["--all", "--max-units", "2"]).failure();
+}

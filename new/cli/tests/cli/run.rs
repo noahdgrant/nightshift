@@ -5,28 +5,30 @@ use common::{git, script, Repo};
 
 /// How the fake `claude` behaves. It builds, and when asked to verify it checks and ends with a
 /// verdict.
-struct Fakes {
+pub struct Fakes {
     /// The verdict the first check ends with.
-    first_verdict: &'static str,
+    pub first_verdict: &'static str,
     /// The verdict every later check ends with.
-    verdict: &'static str,
-    check_edits: CheckEdits,
+    pub verdict: &'static str,
+    pub check_edits: CheckEdits,
     /// The exit code of `claude`.
-    exit: i32,
+    pub exit: i32,
     /// Whether the fake dies without a word in a check, as a crashed harness would.
-    crash_in_first_check: bool,
-    build_commits: BuildCommits,
-    ci: Ci,
+    pub crash_in_first_check: bool,
+    pub build_commits: BuildCommits,
+    pub ci: Ci,
     /// Whether the build runs the checks itself, the way its prompt tells it to.
-    agent_runs_checks: bool,
+    pub agent_runs_checks: bool,
     /// The verdict the first review ends with.
-    first_review: &'static str,
+    pub first_review: &'static str,
     /// The verdict every later review ends with.
-    review: &'static str,
+    pub review: &'static str,
+    /// The labels the unit has before anything is done to it.
+    pub labels: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Ci {
+pub enum Ci {
     Passes,
     /// The first look at the checks finds one failed; later looks find them passed.
     FailsOnce,
@@ -38,7 +40,7 @@ enum Ci {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum BuildCommits {
+pub enum BuildCommits {
     Always,
     /// The first build leaves its work uncommitted; the next one, told so, commits it.
     OnlyWhenTold,
@@ -50,7 +52,7 @@ enum BuildCommits {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum CheckEdits {
+pub enum CheckEdits {
     Never,
     /// The first check writes a file into the workspace; later checks remove it again.
     FirstThenFixes,
@@ -62,7 +64,7 @@ const PASS: &str = "VERDICT: PASS";
 const FAIL: &str = "VERDICT: FAIL";
 
 impl Fakes {
-    fn passing() -> Fakes {
+    pub fn passing() -> Fakes {
         Fakes {
             first_verdict: PASS,
             verdict: PASS,
@@ -74,13 +76,14 @@ impl Fakes {
             agent_runs_checks: false,
             first_review: PASS,
             review: PASS,
+            labels: r#"[{"name":"status:ready-for-agent"}]"#,
         }
     }
 }
 
 /// A `bin` directory holding a `gh` that serves one unit and the fake `claude`. Returns the
 /// `PATH` to start `ns` with, that directory first.
-fn tools(repo: &Repo, fakes: &Fakes) -> String {
+pub fn tools(repo: &Repo, fakes: &Fakes) -> String {
     let bin = repo.path.parent().unwrap().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let pass = r#"echo '[{"name":"ci","bucket":"pass"}]'"#;
@@ -102,12 +105,18 @@ fn tools(repo: &Repo, fakes: &Fakes) -> String {
         "gh",
         &format!(
             r#"echo "$@" >> "{bin}/gh.log"
-case "$1 $2" in
-"api repos/{{owner}}/{{repo}}/issues/5") labels='{ready}'
+labels() {{
+  l='{initial}'
   case "$(grep 'issue edit' "{bin}/gh.log" | tail -1)" in
-  *"--add-label status:in-progress"*) labels='{progress}';;
+  *"--add-label type:feat,status:ready-for-agent"*) l='{ready}';;
+  *"--add-label status:in-progress"*) l='{progress}';;
+  *"--add-label status:ready-for-human"*) l='{human}';;
+  *"--remove-label status:in-progress"*) l='[]';;
   esac
-  echo '{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":'"$labels"',"author_association":"OWNER"}}';;
+}}
+case "$1 $2" in
+"api repos/{{owner}}/{{repo}}/issues/5") labels; echo '{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":'"$l"',"author_association":"OWNER"}}';;
+"api --paginate") labels; echo '[[{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":'"$l"',"author_association":"OWNER"}}]]';;
 "pr list") if [ -e "{bin}/merged" ]; then state=MERGED; else state=OPEN; fi
   if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"'$state'"}}]'; else echo '[]'; fi;;
 "pr create") touch "{bin}/opened"; echo https://forge.example/9;;
@@ -116,8 +125,10 @@ case "$1 $2" in
 esac"#,
             bin = bin.display(),
             checks = checks,
+            initial = fakes.labels,
             ready = r#"[{"name":"status:ready-for-agent"}]"#,
             progress = r#"[{"name":"status:in-progress"}]"#,
+            human = r#"[{"name":"status:ready-for-human"}]"#,
         ),
     );
     let edit = match fakes.check_edits {
@@ -162,6 +173,7 @@ esac"#,
 reviewed="{bin}/reviewed"
 p="$(cat)"
 case "$p" in
+*"decide what happens to one unit"*) printf 'Small.\nLABELS: type:feat\nROUTE: build\n';;
 *"Find what must be fixed before this change merges"*)
   if echo "$p" | grep -q thing.txt; then echo reviewed the diff; else echo saw no diff; fi
   if [ -e "$reviewed" ]; then echo '{review}'; else touch "$reviewed"; echo '{first_review}'; fi;;

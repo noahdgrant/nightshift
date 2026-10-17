@@ -1,4 +1,5 @@
 use crate::common::{script, Repo};
+use crate::run::{tools, Fakes};
 
 use assert_cmd::Command;
 
@@ -55,13 +56,99 @@ fn the_plan_lists_the_queue_and_what_to_triage_in_order() {
     assert_eq!(numbers(&plan["skipped"]), [5]);
 }
 
-#[test]
-fn auto_without_dry_run_is_not_built_yet() {
-    let repo = Repo::new();
+const UNTRIAGED: &str = "[]";
+
+/// Runs `ns auto` with `extra` arguments against the fakes of `ns run`, which serve one unit, 5.
+fn auto(repo: &Repo, fakes: &Fakes, extra: &[&str]) -> assert_cmd::assert::Assert {
+    let path = tools(repo, fakes);
     Command::cargo_bin("ns")
         .unwrap()
-        .arg("auto")
+        .args(["auto", "--ci-poll-seconds", "0"])
+        .args(extra)
+        .env("PATH", path)
+        .env("NS_CONFIG_DIR", &repo.config)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
         .current_dir(&repo.path)
         .assert()
-        .failure();
+}
+
+fn events(out: &assert_cmd::assert::Assert) -> Vec<serde_json::Value> {
+    String::from_utf8(out.get_output().stdout.clone())
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+fn label_edits(repo: &Repo) -> Vec<String> {
+    std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log"))
+        .unwrap()
+        .lines()
+        .filter(|l| l.starts_with("issue edit"))
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn auto_triages_the_untriaged_unit_then_runs_it() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        labels: UNTRIAGED,
+        ..Fakes::passing()
+    };
+    let out = auto(&repo, &fakes, &["--merge"]).success();
+    let events = events(&out);
+    assert_eq!(events[0]["route"], "build");
+    let last = events.last().unwrap();
+    assert_eq!(last["unit"], 5);
+    assert_eq!(last["ok"], true);
+    assert_eq!(last["status"], serde_json::json!([]));
+    assert_eq!(
+        label_edits(&repo),
+        [
+            "issue edit 5 --add-label type:feat,status:ready-for-agent",
+            "issue edit 5 --add-label status:in-progress --remove-label status:ready-for-agent",
+            "issue edit 5 --remove-label status:in-progress",
+        ]
+    );
+}
+
+#[test]
+fn auto_runs_a_ready_unit_without_triaging_it() {
+    let repo = Repo::new();
+    let out = auto(&repo, &Fakes::passing(), &["--merge"]).success();
+    assert!(events(&out).iter().all(|e| e.get("route").is_none()));
+    assert!(!label_edits(&repo)[0].contains("type:feat"));
+}
+
+#[test]
+fn max_units_limits_how_many_ready_units_are_run() {
+    let repo = Repo::new();
+    let out = auto(&repo, &Fakes::passing(), &["--max-units", "0"]).success();
+    assert!(events(&out).is_empty());
+    assert!(label_edits(&repo).is_empty());
+}
+
+#[test]
+fn a_stuck_unit_is_left_for_a_human_and_auto_reports_it() {
+    let repo = Repo::new();
+    let broken = Fakes {
+        exit: 1,
+        ..Fakes::passing()
+    };
+    let out = auto(&repo, &broken, &[]).failure();
+    let events = events(&out);
+    let last = events.last().unwrap();
+    assert_eq!(last["ok"], false);
+    assert_eq!(
+        last["status"],
+        serde_json::json!(["status:ready-for-human"])
+    );
+    assert_eq!(
+        label_edits(&repo).last().unwrap(),
+        "issue edit 5 --add-label status:ready-for-human --remove-label status:in-progress"
+    );
 }
