@@ -15,6 +15,14 @@ pub fn write(workspace: &Path, unit: &str, name: &str, text: &str) -> Result<Pat
     Ok(path)
 }
 
+/// Removes `name` from the unit's artifact directory, if it is there.
+pub fn remove(workspace: &Path, unit: &str, name: &str) -> Result<()> {
+    match std::fs::remove_file(workspace.join(DIR).join(unit).join(name)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
 /// Reads `name` from the unit's artifact directory.
 pub fn read(workspace: &Path, unit: &str, name: &str) -> Result<String> {
     let path = workspace.join(DIR).join(unit).join(name);

@@ -58,13 +58,9 @@ impl Vcs for Git {
         tree
     }
 
-    fn workspace_commit(&self, path: &Path, message: &str) -> Result<bool> {
-        run(path, &["add", "--all"])?;
-        if succeeds(path, &["diff", "--cached", "--quiet"]) {
-            return Ok(false);
-        }
-        run(path, &["commit", "--message", message])?;
-        Ok(true)
+    fn workspace_changes_list(&self, path: &Path) -> Result<Vec<String>> {
+        let status = run(path, &["status", "--porcelain"])?;
+        Ok(status.lines().map(|l| l.trim().to_string()).collect())
     }
 
     fn branch_push(&self, path: &Path, branch: &str) -> Result<()> {

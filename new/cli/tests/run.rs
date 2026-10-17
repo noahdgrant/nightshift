@@ -25,6 +25,15 @@ struct Fakes {
     exit: i32,
     /// Whether the fake dies without a word in a check, as a crashed harness would.
     crash_in_first_check: bool,
+    build_commits: BuildCommits,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum BuildCommits {
+    Always,
+    /// The first build leaves its work uncommitted; the next one, told so, commits it.
+    OnlyWhenTold,
+    Never,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -47,6 +56,7 @@ impl Fakes {
             check_edits: CheckEdits::Never,
             exit: 0,
             crash_in_first_check: false,
+            build_commits: BuildCommits::Always,
         }
     }
 }
@@ -76,6 +86,14 @@ esac"#,
         }
         CheckEdits::Always => "echo x >> touched.txt; ",
     };
+    let commit = match fakes.build_commits {
+        BuildCommits::Always => r#"git add -A; git commit -q -m "Add a thing"; "#,
+        BuildCommits::OnlyWhenTold | BuildCommits::Never => "",
+    };
+    let when_told = match fakes.build_commits {
+        BuildCommits::OnlyWhenTold => r#"git add -A; git commit -q -m "Add a thing"; "#,
+        BuildCommits::Always | BuildCommits::Never => "",
+    };
     let crash = if fakes.crash_in_first_check {
         r#"if [ ! -e "$seen" ]; then touch "$seen"; exit 9; fi; "#
     } else {
@@ -91,7 +109,8 @@ case "$(cat)" in
   {crash}{edit}echo checked it
   if [ -e "$seen" ]; then echo '{verdict}'; else touch "$seen"; echo '{first}'; fi;;
 *"VERDICT: FAIL"*) echo rebuilt with the evidence;;
-*) echo thing > thing.txt; echo built the thing;;
+*"left uncommitted changes"*) {when_told}echo committed when told;;
+*) echo thing > thing.txt; {commit}echo built the thing;;
 esac
 exit {exit}"#,
             bin = bin.display(),
@@ -160,7 +179,7 @@ fn run_sets_up_builds_verifies_and_prints_each_move() {
 }
 
 #[test]
-fn build_commits_and_ship_publishes_and_opens_one_change_request() {
+fn ship_publishes_what_the_build_committed_and_opens_one_change_request() {
     let repo = Repo::new();
     run(&repo, &tools(&repo, &Fakes::passing())).success();
     let origin = repo.path.parent().unwrap().join("origin.git");
@@ -178,7 +197,46 @@ fn build_commits_and_ship_publishes_and_opens_one_change_request() {
     let subject = common::git(&repo.workspace("5"), &["log", "-1", "--format=%s"]);
     assert_eq!(subject.trim(), "Add a thing");
     let commits = common::git(&repo.path, &["rev-list", "--count", "main..ns/5"]);
-    assert_eq!(commits.trim(), "1", "build commits once and ship adds none");
+    assert_eq!(
+        commits.trim(),
+        "1",
+        "the harness commits once and ship adds none"
+    );
+}
+
+#[test]
+fn a_build_that_leaves_changes_uncommitted_is_run_again_and_told_which() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        build_commits: BuildCommits::OnlyWhenTold,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert!(moves.contains(&"build>build".to_string()), "{moves:?}");
+    assert_eq!(moves.last().unwrap(), "clean_up>done");
+    assert_eq!(read(&repo, "build.md"), "committed when told\n");
+}
+
+#[test]
+fn a_build_that_never_commits_sticks_the_unit_before_verify() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        build_commits: BuildCommits::Never,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert_eq!(&moves[moves.len() - 2..], ["build>build", "build>stuck"]);
+    assert!(!moves.iter().any(|m| m.starts_with("verify")), "{moves:?}");
 }
 
 #[test]

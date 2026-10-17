@@ -27,9 +27,9 @@ pub trait Vcs {
     /// exactly when nothing changed between them.
     fn workspace_snapshot(&self, path: &Path) -> Result<String>;
 
-    /// Commits everything in the workspace at `path` with `message`. Returns whether there was
-    /// anything to commit.
-    fn workspace_commit(&self, path: &Path, message: &str) -> Result<bool>;
+    /// The changes in the workspace at `path` that are not committed, one per entry, and empty
+    /// when everything is committed. Files `ns` keeps there are not counted.
+    fn workspace_changes_list(&self, path: &Path) -> Result<Vec<String>>;
 
     /// Publishes `branch` from the workspace at `path` to the remote.
     fn branch_push(&self, path: &Path, branch: &str) -> Result<()>;
