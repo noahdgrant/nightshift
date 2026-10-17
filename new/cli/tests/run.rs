@@ -26,6 +26,19 @@ struct Fakes {
     /// Whether the fake dies without a word in a check, as a crashed harness would.
     crash_in_first_check: bool,
     build_commits: BuildCommits,
+    ci: Ci,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Ci {
+    Passes,
+    /// The first look at the checks finds one failed; later looks find them passed.
+    FailsOnce,
+    /// The first look finds them pending; later looks find them passed.
+    PendingOnce,
+    NeverFinishes,
+    /// No check is reported, as before any has started.
+    NoneReported,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -61,6 +74,7 @@ impl Fakes {
             exit: 0,
             crash_in_first_check: false,
             build_commits: BuildCommits::Always,
+            ci: Ci::Passes,
         }
     }
 }
@@ -70,6 +84,20 @@ impl Fakes {
 fn tools(repo: &Repo, fakes: &Fakes) -> String {
     let bin = repo.path.parent().unwrap().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
+    let pass = r#"echo '[{"name":"ci","bucket":"pass"}]'"#;
+    let first_then_pass = |first: &str| {
+        format!(
+            r#"if [ -e "{bin}/looked" ]; then {pass}; else touch "{bin}/looked"; {first}; fi"#,
+            bin = bin.display()
+        )
+    };
+    let checks = match fakes.ci {
+        Ci::Passes => pass.to_string(),
+        Ci::FailsOnce => first_then_pass(r#"echo '[{"name":"lint","bucket":"fail"}]'; exit 1"#),
+        Ci::PendingOnce => first_then_pass(r#"echo '[{"name":"ci","bucket":"pending"}]'; exit 8"#),
+        Ci::NeverFinishes => r#"echo '[{"name":"ci","bucket":"pending"}]'; exit 8"#.to_string(),
+        Ci::NoneReported => "echo 'no checks reported' >&2; exit 1".to_string(),
+    };
     script(
         &bin,
         "gh",
@@ -79,8 +107,11 @@ case "$1 $2" in
 "issue view") echo '{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":[]}}';;
 "pr list") if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"OPEN"}}]'; else echo '[]'; fi;;
 "pr create") touch "{bin}/opened"; echo https://forge.example/9;;
+"pr checks") {checks};;
+"pr merge") touch "{bin}/merged";;
 esac"#,
-            bin = bin.display()
+            bin = bin.display(),
+            checks = checks
         ),
     );
     let edit = match fakes.check_edits {
@@ -137,9 +168,15 @@ exit {exit}"#,
 }
 
 fn run(repo: &Repo, path: &str) -> assert_cmd::assert::Assert {
+    run_with(repo, path, &[])
+}
+
+/// Runs `ns run 5` with `extra` arguments. It looks at the checks without waiting between looks.
+fn run_with(repo: &Repo, path: &str, extra: &[&str]) -> assert_cmd::assert::Assert {
     Command::cargo_bin("ns")
         .unwrap()
-        .args(["run", "5"])
+        .args(["run", "5", "--ci-poll-seconds", "0"])
+        .args(extra)
         .env("PATH", path)
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
@@ -216,6 +253,85 @@ fn ship_publishes_what_the_build_committed_and_opens_one_change_request() {
         "1",
         "the harness commits once and ship adds none"
     );
+}
+
+fn gh_log(repo: &Repo) -> String {
+    std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log")).unwrap()
+}
+
+#[test]
+fn ship_stops_at_ready_to_merge_unless_asked_to_merge() {
+    let repo = Repo::new();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert!(!gh_log(&repo).contains("pr merge"));
+}
+
+#[test]
+fn ship_merges_once_the_checks_pass_when_asked() {
+    let repo = Repo::new();
+    run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"]).success();
+    assert_eq!(gh_log(&repo).matches("pr merge 9 --squash").count(), 1);
+}
+
+#[test]
+fn ship_waits_for_pending_checks() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        ci: Ci::PendingOnce,
+        ..Fakes::passing()
+    };
+    run_with(&repo, &tools(&repo, &fakes), &["--merge"]).success();
+    let log = gh_log(&repo);
+    assert_eq!(log.matches("pr checks").count(), 2, "{log}");
+    assert_eq!(log.matches("pr merge").count(), 1, "{log}");
+}
+
+#[test]
+fn checks_that_never_finish_or_never_appear_go_wrong_and_nothing_is_merged() {
+    for ci in [Ci::NeverFinishes, Ci::NoneReported] {
+        let repo = Repo::new();
+        let fakes = Fakes {
+            ci,
+            ..Fakes::passing()
+        };
+        let out = run_with(
+            &repo,
+            &tools(&repo, &fakes),
+            &["--merge", "--ci-timeout-seconds", "0"],
+        )
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+        let moves = moves(out);
+        assert_eq!(&moves[moves.len() - 2..], ["ship>ship", "ship>stuck"]);
+        assert!(!gh_log(&repo).contains("pr merge"));
+    }
+}
+
+#[test]
+fn failed_checks_send_the_unit_back_to_build_with_their_names() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        ci: Ci::FailsOnce,
+        ..Fakes::passing()
+    };
+    let out = run_with(&repo, &tools(&repo, &fakes), &["--merge"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert!(moves.contains(&"ship>build".to_string()), "{moves:?}");
+    assert_eq!(moves.last().unwrap(), "clean_up>done");
+    assert_eq!(read(&repo, "build.md"), "rebuilt with the evidence\n");
+    let log = gh_log(&repo);
+    assert_eq!(
+        log.matches("pr create").count(),
+        1,
+        "the change request is kept: {log}"
+    );
+    assert_eq!(log.matches("pr merge").count(), 1, "{log}");
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 mod build;
 mod setup;
-mod ship;
+pub mod ship;
 mod verdict;
 mod verify;
 
@@ -29,6 +29,7 @@ pub struct Context {
     pub unit: u64,
     /// Set by `setup`.
     pub workspace: Option<Workspace>,
+    pub ship: ship::Options,
 }
 
 /// Runs one state. `Err` means the state itself went wrong, which `Outcome::Redo` repeats.

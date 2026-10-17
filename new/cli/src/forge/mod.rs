@@ -25,6 +25,9 @@ pub trait Forge {
         body: &str,
     ) -> Result<ChangeRequest>;
 
+    /// How the checks on change request `number` stand.
+    fn change_request_checks_get(&self, repo: &Path, number: u64) -> Result<Checks>;
+
     /// Merges change request `number` into its base as one commit.
     fn change_request_merge(&self, repo: &Path, number: u64) -> Result<()>;
 }
@@ -42,6 +45,15 @@ pub struct ChangeRequest {
     pub number: u64,
     pub url: String,
     pub state: ChangeState,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Checks {
+    /// Some check has not finished, or none has been reported yet.
+    Pending,
+    Passed,
+    /// The names of the checks that failed.
+    Failed(Vec<String>),
 }
 
 #[derive(Debug, PartialEq, Eq)]

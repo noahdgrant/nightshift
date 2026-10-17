@@ -5,7 +5,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
-use super::{ChangeRequest, ChangeState, Forge, Unit};
+use super::{ChangeRequest, ChangeState, Checks, Forge, Unit};
 
 pub struct GitHub {
     program: OsString,
@@ -118,6 +118,40 @@ impl Forge for GitHub {
         )?;
         self.change_request_get(repo, branch)?
             .context("the change request was created but cannot be found")
+    }
+
+    fn change_request_checks_get(&self, repo: &Path, number: u64) -> Result<Checks> {
+        // `gh pr checks` exits non-zero while checks are pending or failing, and prints no
+        // JSON when none are reported.
+        let out = Command::new(&self.program)
+            .args(["pr", "checks", &number.to_string(), "--json", "name,bucket"])
+            .current_dir(repo)
+            .output()
+            .context("cannot run gh")?;
+        let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else {
+            return Ok(Checks::Pending);
+        };
+        let checks = v
+            .as_array()
+            .context("gh printed checks that are not a list")?;
+        if checks.is_empty() {
+            return Ok(Checks::Pending);
+        }
+        let named = |bucket: &[&str]| -> Vec<String> {
+            checks
+                .iter()
+                .filter(|c| bucket.contains(&c["bucket"].as_str().unwrap_or_default()))
+                .map(|c| text(&c["name"]))
+                .collect()
+        };
+        let failed = named(&["fail", "cancel"]);
+        Ok(if !failed.is_empty() {
+            Checks::Failed(failed)
+        } else if !named(&["pending"]).is_empty() {
+            Checks::Pending
+        } else {
+            Checks::Passed
+        })
     }
 
     fn change_request_merge(&self, repo: &Path, number: u64) -> Result<()> {

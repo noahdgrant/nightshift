@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::io::Write;
+use std::time::Duration;
 
 use anyhow::{bail, Result};
 use clap::Args as ClapArgs;
 use serde_json::{json, Value};
 
 use crate::state::{Outcome, State};
-use crate::states::{self, Context};
+use crate::states::{self, ship, Context};
 use crate::{forge, harness, vcs};
 
 #[derive(ClapArgs)]
@@ -16,6 +17,15 @@ pub struct Args {
     /// How many times a state may run before the unit is stuck.
     #[arg(long, default_value_t = 2)]
     max_attempts: u32,
+    /// Merge the change request once its checks pass. Without it, `ship` stops at ready to merge.
+    #[arg(long)]
+    merge: bool,
+    /// How often to look at the change request's checks.
+    #[arg(long, default_value_t = 30)]
+    ci_poll_seconds: u64,
+    /// How long to wait for the checks to finish before the state goes wrong.
+    #[arg(long, default_value_t = 1800)]
+    ci_timeout_seconds: u64,
 }
 
 /// Walks the unit through its states. `setup`, `build` and `verify` do work so far.
@@ -27,6 +37,11 @@ pub fn run(args: Args) -> Result<()> {
         from: std::env::current_dir()?,
         unit: args.unit,
         workspace: None,
+        ship: ship::Options {
+            merge: args.merge,
+            poll: Duration::from_secs(args.ci_poll_seconds),
+            timeout: Duration::from_secs(args.ci_timeout_seconds),
+        },
     };
     let phase = |state, _attempt| match states::run(&mut ctx, state) {
         Ok(outcome) => outcome,
