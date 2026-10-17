@@ -24,7 +24,7 @@ The noun is a word from `GLOSSARY.md`.
 
 ## A tool's name stays in its own module
 
-A seam (`vcs`, `forge`, `harness`) is a trait with one file per tool. The tool's name, its commands and its words appear only in that file. The trait and everything that uses it speak the glossary's words.
+A seam (`vcs`, `forge`, `harness`, `os`) is a trait with one file per tool. The tool's name, its commands and its words appear only in that file. The trait and everything that uses it speak the glossary's words.
 
 Bad: a command that builds a `Git` and passes it on, or a method called `pull_request`.
 

@@ -16,6 +16,7 @@ use anyhow::Result;
 
 use crate::forge::Forge;
 use crate::harness::Harness;
+use crate::os::Os;
 use crate::state::{Outcome, State};
 use crate::vcs::Vcs;
 use crate::workspace::Workspace;
@@ -28,6 +29,7 @@ pub struct Context {
     pub vcs: Box<dyn Vcs>,
     pub forge: Box<dyn Forge>,
     pub harness: Box<dyn Harness>,
+    pub os: Box<dyn Os>,
     /// Where `ns` was started, inside the repository.
     pub from: PathBuf,
     pub unit: u64,

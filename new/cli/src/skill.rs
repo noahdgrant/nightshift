@@ -13,17 +13,13 @@ pub const BUILD: &str = "ns-build";
 pub const VERIFY: &str = "ns-verify";
 pub const REVIEW: &str = "ns-review";
 
-/// Where `ns` keeps what belongs to the user: `$NS_CONFIG_DIR`, else `$XDG_CONFIG_HOME/nightshift`,
-/// else `~/.config/nightshift`.
+/// Where `ns` keeps what belongs to the user: `$NS_CONFIG_DIR`, else where the operating system
+/// keeps such files.
 pub fn config_dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("NS_CONFIG_DIR") {
         return Ok(dir.into());
     }
-    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
-        return Ok(PathBuf::from(dir).join("nightshift"));
-    }
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".config").join("nightshift"))
+    crate::os::get().config_dir_find()
 }
 
 /// The directory `ns install` links skills into.

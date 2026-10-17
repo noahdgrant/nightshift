@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Args as ClapArgs;
 use serde_json::json;
 
-use crate::{checks, vcs};
+use crate::{checks, os, vcs};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -20,6 +20,7 @@ pub fn run(args: Args) -> Result<()> {
     let root = vcs.root_find(&here)?;
     let Some(report) = checks::run(
         vcs.as_ref(),
+        os::get().as_ref(),
         &root,
         &here,
         true,

@@ -4,20 +4,22 @@ use std::process::{Command, Stdio};
 use anyhow::{bail, Context, Result};
 
 use super::{Harness, Reply, Task};
-use crate::proc;
+use crate::os::Os;
 
 pub struct Claude {
     program: OsString,
+    os: Box<dyn Os>,
 }
 
 impl Claude {
-    pub fn new() -> Claude {
-        Claude::with_program("claude")
+    pub fn new(os: Box<dyn Os>) -> Claude {
+        Claude::with_program("claude", os)
     }
 
-    pub fn with_program(program: impl Into<OsString>) -> Claude {
+    pub fn with_program(program: impl Into<OsString>, os: Box<dyn Os>) -> Claude {
         Claude {
             program: program.into(),
+            os,
         }
     }
 }
@@ -37,8 +39,10 @@ impl Harness for Claude {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
-        let done =
-            proc::run(cmd, task.prompt.as_bytes(), task.timeout).context("cannot run claude")?;
+        let done = self
+            .os
+            .process_run(cmd, task.prompt.as_bytes(), task.timeout)
+            .context("cannot run claude")?;
         if done.success.is_none() {
             bail!(
                 "claude did not finish within {} seconds",
@@ -65,7 +69,7 @@ mod tests {
         let path = dir.join("claude");
         std::fs::write(&path, format!("#!/bin/sh\necho \"$@\"\ncat\nexit {exit}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        Claude::with_program(path)
+        Claude::with_program(path, crate::os::get())
     }
 
     fn task(dir: &Path, write: bool) -> Task {
@@ -109,7 +113,9 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut late = task(tmp.path(), true);
         late.timeout = Duration::ZERO;
-        let err = Claude::with_program(path).task_run(&late).unwrap_err();
+        let err = Claude::with_program(path, crate::os::get())
+            .task_run(&late)
+            .unwrap_err();
         assert!(err.to_string().contains("did not finish"));
     }
 }

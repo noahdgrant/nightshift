@@ -1,14 +1,13 @@
 //! The repository's own checks (format, lint, tests), run on the unit's workspace. A pass is
 //! remembered by what the workspace holds, so checking the same work twice runs them once.
 
-use std::os::fd::AsFd;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::proc;
+use crate::os::Os;
 use crate::vcs::Vcs;
 
 /// The file holding the command that runs the repository's checks, read from the workspace. A
@@ -37,6 +36,7 @@ pub fn command_find(workspace: &Path) -> Result<Option<String>> {
 /// and the report's output is empty. Checks still running after `timeout` are killed and failed.
 pub fn run(
     vcs: &dyn Vcs,
+    os: &dyn Os,
     root: &Path,
     workspace: &Path,
     stream: bool,
@@ -54,7 +54,7 @@ pub fn run(
             output: String::new(),
         }));
     }
-    let (passed, output) = execute(&command, workspace, stream, timeout)?;
+    let (passed, output) = execute(os, &command, workspace, stream, timeout)?;
     if passed {
         std::fs::create_dir_all(&remembered)?;
         std::fs::write(&entry, &command)?;
@@ -66,17 +66,27 @@ pub fn run(
     }))
 }
 
-fn execute(command: &str, dir: &Path, stream: bool, timeout: Duration) -> Result<(bool, String)> {
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c").current_dir(dir).stdin(Stdio::null());
-    if stream {
-        cmd.arg(command)
-            .stdout(Stdio::from(std::io::stderr().as_fd().try_clone_to_owned()?));
+fn execute(
+    os: &dyn Os,
+    command: &str,
+    dir: &Path,
+    stream: bool,
+    timeout: Duration,
+) -> Result<(bool, String)> {
+    // Streamed, the checks print to stderr, where `ns`'s own output stays clear of them.
+    let script = if stream {
+        format!("{{ {command}\n}} >&2")
     } else {
-        cmd.arg(format!("{{ {command}\n}} 2>&1"))
-            .stdout(Stdio::piped());
+        format!("{{ {command}\n}} 2>&1")
+    };
+    let mut cmd = os.shell_command(&script);
+    cmd.current_dir(dir).stdin(Stdio::null());
+    if !stream {
+        cmd.stdout(Stdio::piped());
     }
-    let done = proc::run(cmd, b"", timeout).context("cannot run the checks")?;
+    let done = os
+        .process_run(cmd, b"", timeout)
+        .context("cannot run the checks")?;
     let mut output = String::from_utf8_lossy(&done.stdout).into_owned();
     if done.success.is_none() {
         let note = format!(

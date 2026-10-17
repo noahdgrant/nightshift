@@ -5,7 +5,7 @@ mod checks;
 mod commands;
 mod forge;
 mod harness;
-mod proc;
+mod os;
 mod runlog;
 mod skill;
 mod state;

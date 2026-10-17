@@ -59,7 +59,14 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         bail!("{problem}");
     }
     let root = ctx.vcs.root_find(&ctx.from)?;
-    if let Some(report) = checks::run(ctx.vcs.as_ref(), &root, &dir, false, ctx.checks_timeout)? {
+    if let Some(report) = checks::run(
+        ctx.vcs.as_ref(),
+        ctx.os.as_ref(),
+        &root,
+        &dir,
+        false,
+        ctx.checks_timeout,
+    )? {
         if !report.passed {
             let problem = format!(
                 "The checks failed:\n{}\nFix them.",

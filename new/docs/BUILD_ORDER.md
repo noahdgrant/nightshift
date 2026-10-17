@@ -27,7 +27,7 @@ Done when one unit has gone to a merged change request this way.
 
 Goal: the same lifecycle, with the machine choosing the state.
 
-1. The seams, each as a small interface with one implementation: harness (claude), forge (GitHub), vcs (git), runner (systemd, unused until `watch`), language (Rust pack).
+1. The seams, each as a small interface with one implementation: harness (claude), forge (GitHub), vcs (git), os (Linux), runner (systemd, unused until `watch`), language (Rust pack).
 2. A state table: read `.ns/<unit>/*.md`, pick the next phase, run it headless, stop at a gate.
 3. `ns run` with `--gates stop` only, a retry limit and a run log.
 4. `ns clean`.

@@ -1,24 +1,45 @@
-//! Runs a child process with a time limit. What it started stops with it: the child leads its own
-//! process group, and a child that runs out of time takes its group down with it.
+//! Linux. A child leads its own process group, and one that runs out of time takes its group
+//! down with it.
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-pub struct Finished {
-    /// Whether the child exited with success. `None` when it ran out of time and was killed.
-    pub success: Option<bool>,
-    /// What the child printed to a piped stdout, up to the end or the kill.
-    pub stdout: Vec<u8>,
+use super::{Finished, Os};
+
+pub struct Linux;
+
+impl Os for Linux {
+    fn process_run(&self, cmd: Command, input: &[u8], timeout: Duration) -> Result<Finished> {
+        run(cmd, input, timeout)
+    }
+
+    fn shell_command(&self, script: &str) -> Command {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(script);
+        cmd
+    }
+
+    fn file_link(&self, target: &Path, link: &Path) -> Result<()> {
+        std::os::unix::fs::symlink(target, link)
+            .with_context(|| format!("cannot link {}", link.display()))
+    }
+
+    fn config_dir_find(&self) -> Result<PathBuf> {
+        if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
+            return Ok(PathBuf::from(dir).join("nightshift"));
+        }
+        let home = std::env::var_os("HOME").context("HOME is not set")?;
+        Ok(PathBuf::from(home).join(".config").join("nightshift"))
+    }
 }
 
-/// Starts `cmd` and waits for it, at most `timeout`. A piped stdin is fed `input` and closed; a
-/// piped stdout is collected.
-pub fn run(mut cmd: Command, input: &[u8], timeout: Duration) -> Result<Finished> {
+fn run(mut cmd: Command, input: &[u8], timeout: Duration) -> Result<Finished> {
     cmd.process_group(0);
     let mut child = cmd.spawn().context("cannot start the process")?;
     let feed = child.stdin.take().map(|mut stdin| {
@@ -83,7 +104,9 @@ mod tests {
 
     #[test]
     fn a_process_that_finishes_gives_its_output() {
-        let done = run(sh("cat; exit 3"), b"hi", Duration::from_secs(30)).unwrap();
+        let done = Linux
+            .process_run(sh("cat; exit 3"), b"hi", Duration::from_secs(30))
+            .unwrap();
         assert_eq!(done.success, Some(false));
         assert_eq!(done.stdout, b"hi");
     }
@@ -94,7 +117,9 @@ mod tests {
         let marker = tmp.path().join("grandchild-lived");
         // The grandchild would write the marker after the kill, if it survived.
         let script = format!("(sleep 1; touch {}) & sleep 30", marker.display());
-        let done = run(sh(&script), b"", Duration::from_millis(100)).unwrap();
+        let done = Linux
+            .process_run(sh(&script), b"", Duration::from_millis(100))
+            .unwrap();
         assert_eq!(done.success, None);
         thread::sleep(Duration::from_millis(1500));
         assert!(!marker.exists());

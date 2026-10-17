@@ -33,5 +33,5 @@ pub struct Reply {
 
 /// The harness `ns` uses. The only place one is chosen.
 pub fn get() -> Box<dyn Harness> {
-    Box::new(claude::Claude::new())
+    Box::new(claude::Claude::new(crate::os::get()))
 }

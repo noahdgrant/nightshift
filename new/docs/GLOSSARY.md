@@ -55,6 +55,10 @@ _Avoid_: Tracker, host, platform
 The version control that holds the code, branches and workspaces. Git is the first.
 _Avoid_: SCM, repo tool
 
+**OS**:
+The operating system `ns` runs on: processes, the shell, links and where the user's files live. Linux is the first.
+_Avoid_: Platform, system
+
 **Language pack**:
 The lint rules and checks for one programming language. Rust is the first.
 _Avoid_: Plugin, ruleset

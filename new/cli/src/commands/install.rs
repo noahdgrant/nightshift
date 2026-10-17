@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
 use serde_json::json;
 
-use crate::skill;
+use crate::{os, skill};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -20,6 +20,7 @@ pub fn run(args: Args) -> Result<()> {
         .source
         .canonicalize()
         .with_context(|| format!("cannot read {}", args.source.display()))?;
+    let os = os::get();
     let target = skill::installed_dir()?;
     std::fs::create_dir_all(&target)?;
     let mut installed = Vec::new();
@@ -35,8 +36,7 @@ pub fn run(args: Args) -> Result<()> {
             Ok(_) => bail!("{} exists and is not a link; remove it first", to.display()),
             Err(_) => {}
         }
-        std::os::unix::fs::symlink(&from, &to)
-            .with_context(|| format!("cannot link {}", to.display()))?;
+        os.file_link(&from, &to)?;
         installed.push(name.to_string_lossy().into_owned());
     }
     installed.sort();

@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::runlog::{Resume, RunLog};
 use crate::state::{Outcome, State};
 use crate::states::{self, ship, Context};
-use crate::{forge, harness, vcs, workspace};
+use crate::{forge, harness, os, vcs, workspace};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -81,6 +81,7 @@ pub fn run(args: Args) -> Result<()> {
         vcs,
         forge: forge::get(),
         harness: harness::get(),
+        os: os::get(),
         from,
         unit: args.unit,
         workspace: None,
