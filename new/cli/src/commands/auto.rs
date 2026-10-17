@@ -2,11 +2,12 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
+use chrono::{Local, NaiveTime};
 use clap::Args as ClapArgs;
 use serde_json::json;
 
 use super::{run as unit_run, triage};
-use crate::{auto, forge, harness, lock, vcs};
+use crate::{auto, forge, harness, lock, until, vcs};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -16,6 +17,10 @@ pub struct Args {
     /// How many ready units to run. Without it, every one that is ready.
     #[arg(long)]
     max_units: Option<usize>,
+    /// Start no unit after this time of day, like 06:30. A unit already running finishes. If
+    /// the time has passed today, it means tomorrow.
+    #[arg(long, value_parser = until::time_parse)]
+    until: Option<NaiveTime>,
     #[command(flatten)]
     options: unit_run::Options,
 }
@@ -65,9 +70,16 @@ pub fn run(args: Args) -> Result<()> {
         &waiting,
         Duration::from_secs(args.options.harness_timeout_seconds),
     );
+    let deadline = args
+        .until
+        .map(|time| until::deadline_find(Local::now(), time));
     // A unit is run once, even when it is still ready afterwards.
     let mut run_already = HashSet::new();
     while args.max_units.is_none_or(|max| run_already.len() < max) {
+        if deadline.is_some_and(|at| Local::now() >= at) {
+            println!("{}", json!({ "stopped": "until" }));
+            break;
+        }
         // Read again: triage and the units just run change what is ready and what is blocked.
         let open = forge.unit_list(&root)?;
         let plan = auto::plan(&open);

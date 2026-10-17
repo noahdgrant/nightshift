@@ -237,3 +237,31 @@ fn a_unit_someone_is_running_is_reported_and_left_alone() {
     assert!(err.contains("unit 5 is already being run"), "{err}");
     assert!(label_edits_none(&repo));
 }
+
+/// A time of day a minute before now, which `--until` takes to be tomorrow.
+fn a_minute_ago() -> String {
+    (chrono::Local::now() - chrono::Duration::minutes(1))
+        .format("%H:%M")
+        .to_string()
+}
+
+#[test]
+fn units_run_while_the_time_to_stop_is_still_ahead() {
+    let repo = Repo::new();
+    let out = auto(
+        &repo,
+        &Fakes::passing(),
+        &["--merge", "--until", &a_minute_ago()],
+    )
+    .success();
+    assert!(events(&out)
+        .iter()
+        .any(|e| e["unit"] == 5 && e["ok"] == true));
+}
+
+#[test]
+fn a_time_that_is_not_a_time_of_day_is_refused() {
+    let repo = Repo::new();
+    auto(&repo, &Fakes::passing(), &["--until", "late"]).failure();
+    assert!(label_edits_none(&repo));
+}
