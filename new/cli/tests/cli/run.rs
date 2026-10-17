@@ -304,8 +304,9 @@ fn ship_publishes_what_the_build_committed_and_opens_one_change_request() {
     );
 }
 
+/// What the fake `gh` was asked, empty when it was not called at all.
 fn gh_log(repo: &Repo) -> String {
-    std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log")).unwrap()
+    std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log")).unwrap_or_default()
 }
 
 #[test]
@@ -1122,4 +1123,34 @@ fn a_human_resuming_a_unit_marks_it_in_progress_again() {
         last_label_edit(&repo),
         "issue edit 5 --remove-label status:in-progress"
     );
+}
+
+/// Holds the lock `ns run` takes for unit 5, as another `ns run` of it would.
+fn unit_lock_held(repo: &Repo, unit: &str) -> std::fs::File {
+    let path = repo.path.join(format!(".git/ns/unit-{unit}.lock"));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = std::fs::File::create(path).unwrap();
+    file.lock().unwrap();
+    file
+}
+
+#[test]
+fn a_unit_already_being_run_is_not_run_again_and_nothing_of_it_is_touched() {
+    let repo = Repo::new();
+    let path = tools(&repo, &Fakes::passing());
+    let held = unit_lock_held(&repo, "5");
+    let out = run_with(&repo, &path, &["--fresh"]).failure();
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(err.contains("unit 5 is already being run"), "{err}");
+    assert!(!repo.workspace("5").exists());
+    assert!(!gh_log(&repo).contains("issue edit"));
+    drop(held);
+    run(&repo, &path).success();
+}
+
+#[test]
+fn another_unit_being_run_does_not_block_this_one() {
+    let repo = Repo::new();
+    let _other = unit_lock_held(&repo, "6");
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
 }

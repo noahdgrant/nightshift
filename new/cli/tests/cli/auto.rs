@@ -224,3 +224,16 @@ fn a_dry_run_does_not_need_the_lock() {
     let _held = lock_held(&repo);
     auto(&repo, &Fakes::passing(), &["--dry-run"]).success();
 }
+
+#[test]
+fn a_unit_someone_is_running_is_reported_and_left_alone() {
+    let repo = Repo::new();
+    let path = repo.path.join(".git/ns/unit-5.lock");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let held = std::fs::File::create(path).unwrap();
+    held.lock().unwrap();
+    let out = auto(&repo, &Fakes::passing(), &[]).failure();
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(err.contains("unit 5 is already being run"), "{err}");
+    assert!(label_edits_none(&repo));
+}

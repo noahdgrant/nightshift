@@ -10,7 +10,7 @@ use crate::forge::ChangeState;
 use crate::runlog::{Resume, RunLog};
 use crate::state::{Outcome, State};
 use crate::states::{self, ship, Context};
-use crate::{forge, harness, os, status, vcs, workspace};
+use crate::{forge, harness, lock, os, status, vcs, workspace};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -80,6 +80,12 @@ pub fn run(args: Args) -> Result<()> {
     let from = std::env::current_dir()?;
     let vcs = vcs::get();
     let root = vcs.root_find(&from)?;
+    // Held until the function ends. Taken before anything of the unit's is read or deleted.
+    let _lock = lock::lock_take(
+        &vcs.state_dir_find(&root)?,
+        &format!("unit-{unit}.lock"),
+        &format!("unit {unit} is already being run"),
+    )?;
     let log = RunLog::open(vcs.as_ref(), &root)?;
     let resume = if args.fresh {
         workspace::discard(vcs.as_ref(), &from, &unit)?;
