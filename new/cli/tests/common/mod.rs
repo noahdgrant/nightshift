@@ -1,0 +1,54 @@
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use tempfile::TempDir;
+
+/// A git repository with one commit, in a temp dir that also holds its `.workspaces` sibling.
+pub struct Repo {
+    _tmp: TempDir,
+    pub path: PathBuf,
+}
+
+impl Repo {
+    pub fn new() -> Repo {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("repo");
+        std::fs::create_dir(&path).unwrap();
+        git(&path, &["init", "-q", "-b", "main"]);
+        git(&path, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        Repo { _tmp: tmp, path }
+    }
+
+    pub fn workspace(&self, unit: &str) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap()
+            .join("repo.workspaces")
+            .join(unit)
+    }
+
+    pub fn branches(&self) -> Vec<String> {
+        git(&self.path, &["branch", "--format=%(refname:short)"])
+            .lines()
+            .map(String::from)
+            .collect()
+    }
+}
+
+pub fn git(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
