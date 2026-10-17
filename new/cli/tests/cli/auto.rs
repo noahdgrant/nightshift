@@ -1,6 +1,8 @@
 use crate::common::{script, Repo};
 use crate::run::{tools, Fakes};
 
+use std::time::Duration;
+
 use assert_cmd::Command;
 
 /// Runs `ns auto --dry-run` against a fake `gh` that lists `issues` on one page.
@@ -60,10 +62,23 @@ const UNTRIAGED: &str = "[]";
 
 /// Runs `ns auto` with `extra` arguments against the fakes of `ns run`, which serve one unit, 5.
 fn auto(repo: &Repo, fakes: &Fakes, extra: &[&str]) -> assert_cmd::assert::Assert {
+    auto_by(repo, fakes, extra, None)
+}
+
+/// Like [`auto`], killed after `hang_guard` if it has not ended. The guard is never what a test
+/// checks.
+fn auto_by(
+    repo: &Repo,
+    fakes: &Fakes,
+    extra: &[&str],
+    hang_guard: Option<Duration>,
+) -> assert_cmd::assert::Assert {
     let path = tools(repo, fakes);
-    Command::cargo_bin("ns")
-        .unwrap()
-        .args(["auto", "--ci-poll-seconds", "0"])
+    let mut cmd = Command::cargo_bin("ns").unwrap();
+    if let Some(guard) = hang_guard {
+        cmd.timeout(guard);
+    }
+    cmd.args(["auto", "--ci-poll-seconds", "0"])
         .args(extra)
         .env("PATH", path)
         .env("NS_CONFIG_DIR", &repo.config)
@@ -151,4 +166,61 @@ fn a_stuck_unit_is_left_for_a_human_and_auto_reports_it() {
         label_edits(&repo).last().unwrap(),
         "issue edit 5 --add-label status:ready-for-human --remove-label status:in-progress"
     );
+}
+
+#[test]
+fn a_unit_is_run_once_even_when_it_is_still_ready_afterwards() {
+    let repo = Repo::new();
+    let stuck_ready = Fakes {
+        labels_follow_edits: false,
+        ..Fakes::passing()
+    };
+    let out = auto_by(
+        &repo,
+        &stuck_ready,
+        &["--merge"],
+        Some(Duration::from_secs(120)),
+    )
+    .success();
+    let ran = events(&out)
+        .into_iter()
+        .filter(|e| e.get("ok").is_some())
+        .count();
+    assert_eq!(ran, 1);
+}
+
+fn lock_path(repo: &Repo) -> std::path::PathBuf {
+    repo.path.join(".git/ns/auto.lock")
+}
+
+/// Holds the lock `ns auto` takes, as another `ns auto` would.
+fn lock_held(repo: &Repo) -> std::fs::File {
+    std::fs::create_dir_all(lock_path(repo).parent().unwrap()).unwrap();
+    let file = std::fs::File::create(lock_path(repo)).unwrap();
+    file.lock().unwrap();
+    file
+}
+
+#[test]
+fn a_second_auto_does_not_start_while_one_runs() {
+    let repo = Repo::new();
+    let held = lock_held(&repo);
+    let out = auto(&repo, &Fakes::passing(), &[]).failure();
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(err.contains("another ns auto is running"), "{err}");
+    assert!(label_edits_none(&repo));
+    drop(held);
+    auto(&repo, &Fakes::passing(), &["--merge"]).success();
+}
+
+fn label_edits_none(repo: &Repo) -> bool {
+    std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log"))
+        .map_or(true, |log| !log.contains("issue edit"))
+}
+
+#[test]
+fn a_dry_run_does_not_need_the_lock() {
+    let repo = Repo::new();
+    let _held = lock_held(&repo);
+    auto(&repo, &Fakes::passing(), &["--dry-run"]).success();
 }

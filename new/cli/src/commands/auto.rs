@@ -6,7 +6,7 @@ use clap::Args as ClapArgs;
 use serde_json::json;
 
 use super::{run as unit_run, triage};
-use crate::{auto, forge, harness, vcs};
+use crate::{auto, forge, harness, lock, vcs};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -25,7 +25,8 @@ pub struct Args {
 /// wrong is left for a human by `ns run`, and the next unit goes on.
 pub fn run(args: Args) -> Result<()> {
     let here = std::env::current_dir()?;
-    let root = vcs::get().root_find(&here)?;
+    let vcs = vcs::get();
+    let root = vcs.root_find(&here)?;
     let forge = forge::get();
     let open = forge.unit_list(&root)?;
     let plan = auto::plan(&open);
@@ -49,6 +50,12 @@ pub fn run(args: Args) -> Result<()> {
         return Ok(());
     }
 
+    // Two at once would run the same units twice.
+    let _lock = lock::lock_take(
+        &vcs.state_dir_find(&root)?,
+        "auto.lock",
+        "another ns auto is running in this repository",
+    )?;
     let harness = harness::get();
     let waiting: Vec<u64> = plan.triage.iter().map(|u| u.number).collect();
     let mut failed = triage::units_triage(

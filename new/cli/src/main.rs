@@ -6,6 +6,7 @@ mod checks;
 mod commands;
 mod forge;
 mod harness;
+mod lock;
 mod os;
 mod retry;
 mod runlog;

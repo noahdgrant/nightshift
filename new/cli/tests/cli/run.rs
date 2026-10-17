@@ -25,6 +25,8 @@ pub struct Fakes {
     pub review: &'static str,
     /// The labels the unit has before anything is done to it.
     pub labels: &'static str,
+    /// Whether the unit's labels change when `ns` edits them. Without it the unit stays as it began.
+    pub labels_follow_edits: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -77,6 +79,7 @@ impl Fakes {
             first_review: PASS,
             review: PASS,
             labels: r#"[{"name":"status:ready-for-agent"}]"#,
+            labels_follow_edits: true,
         }
     }
 }
@@ -107,7 +110,7 @@ pub fn tools(repo: &Repo, fakes: &Fakes) -> String {
             r#"echo "$@" >> "{bin}/gh.log"
 labels() {{
   l='{initial}'
-  case "$(grep 'issue edit' "{bin}/gh.log" | tail -1)" in
+  [ "{follow}" = yes ] && case "$(grep 'issue edit' "{bin}/gh.log" | tail -1)" in
   *"--add-label type:feat,status:ready-for-agent"*) l='{ready}';;
   *"--add-label status:in-progress"*) l='{progress}';;
   *"--add-label status:ready-for-human"*) l='{human}';;
@@ -126,6 +129,11 @@ esac"#,
             bin = bin.display(),
             checks = checks,
             initial = fakes.labels,
+            follow = if fakes.labels_follow_edits {
+                "yes"
+            } else {
+                "no"
+            },
             ready = r#"[{"name":"status:ready-for-agent"}]"#,
             progress = r#"[{"name":"status:in-progress"}]"#,
             human = r#"[{"name":"status:ready-for-human"}]"#,
