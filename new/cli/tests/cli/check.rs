@@ -57,14 +57,23 @@ fn checks_that_failed_are_run_again() {
 }
 
 #[test]
-fn a_changed_check_command_is_not_covered_by_an_old_pass() {
-    let (repo, ws, log) = with_logging_checks("exit 0");
-    ns(&ws, &["check"]).success();
-    repo.set_check(&format!("echo again >> {}", log.display()));
-    assert_eq!(
-        report(ns(&ws, &["check"]).success())["cached"].as_bool(),
-        Some(false)
-    );
+fn a_unit_cannot_loosen_its_own_checks() {
+    let (_repo, ws, log) = with_logging_checks("exit 1");
+    std::fs::write(ws.join(".nightshift/check"), "exit 0").unwrap();
+    ns(&ws, &["check"]).failure();
+    assert_eq!(runs(&log), 1, "the command from where the unit started ran");
+}
+
+#[test]
+fn a_check_added_later_reaches_units_started_after_it_and_not_before() {
+    let (repo, early, _log) = with_logging_checks("exit 0");
+    let later_log = repo.path.parent().unwrap().join("later.log");
+    repo.set_check(&format!("echo later >> {}", later_log.display()));
+    ns(&repo.path, &["workspace", "new", "2"]).success();
+    ns(&early, &["check"]).success();
+    assert_eq!(runs(&later_log), 0);
+    ns(&repo.workspace("2"), &["check"]).success();
+    assert_eq!(runs(&later_log), 1);
 }
 
 #[test]

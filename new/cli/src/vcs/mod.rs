@@ -31,6 +31,9 @@ pub trait Vcs {
     /// remembers.
     fn state_dir_find(&self, root: &Path) -> Result<PathBuf>;
 
+    /// The contents of `file` as it was at commit `rev`, or `None` when it did not exist there.
+    fn file_read(&self, workspace: &Path, rev: &str, file: &str) -> Result<Option<String>>;
+
     /// The commit the workspace's branch started from.
     fn workspace_base_find(&self, path: &Path) -> Result<String>;
 

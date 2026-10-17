@@ -12,7 +12,11 @@ pub fn run(_args: Args) -> Result<()> {
     let here = std::env::current_dir()?;
     let vcs = vcs::get();
     let root = vcs.root_find(&here)?;
-    let Some(report) = checks::run(vcs.as_ref(), &root, &here, true)? else {
+    // Outside a unit's workspace there is no start to read the checks from; use the current commit.
+    let base = vcs
+        .workspace_base_find(&here)
+        .unwrap_or_else(|_| "HEAD".into());
+    let Some(report) = checks::run(vcs.as_ref(), &root, &here, &base, true)? else {
         println!("{}", json!({ "ok": true, "configured": false }));
         return Ok(());
     };

@@ -37,6 +37,14 @@ impl Vcs for Git {
         Ok(())
     }
 
+    fn file_read(&self, workspace: &Path, rev: &str, file: &str) -> Result<Option<String>> {
+        let at = format!("{rev}:{file}");
+        if !succeeds(workspace, &["cat-file", "-e", &at]) {
+            return Ok(None);
+        }
+        Ok(Some(run(workspace, &["show", &at])?))
+    }
+
     fn state_dir_find(&self, root: &Path) -> Result<PathBuf> {
         let common = run(
             root,

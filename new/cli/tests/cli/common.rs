@@ -36,10 +36,12 @@ impl Repo {
             .join(unit)
     }
 
-    /// Sets the command that runs the repository's checks.
+    /// Commits the command that runs the repository's checks. Units started after this use it.
     pub fn set_check(&self, command: &str) {
         std::fs::create_dir_all(self.path.join(".nightshift")).unwrap();
         std::fs::write(self.path.join(".nightshift/check"), command).unwrap();
+        git(&self.path, &["add", ".nightshift/check"]);
+        git(&self.path, &["commit", "-q", "-m", "set the checks"]);
     }
 
     pub fn branches(&self) -> Vec<String> {
