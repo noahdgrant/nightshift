@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -27,6 +27,8 @@ struct Fakes {
     crash_in_first_check: bool,
     build_commits: BuildCommits,
     ci: Ci,
+    /// Whether the build runs the checks itself, the way its prompt tells it to.
+    agent_runs_checks: bool,
     /// The verdict the first review ends with.
     first_review: &'static str,
     /// The verdict every later review ends with.
@@ -79,6 +81,7 @@ impl Fakes {
             crash_in_first_check: false,
             build_commits: BuildCommits::Always,
             ci: Ci::Passes,
+            agent_runs_checks: false,
             first_review: PASS,
             review: PASS,
         }
@@ -128,6 +131,11 @@ esac"#,
         }
         CheckEdits::Always => "echo x >> touched.txt; ",
     };
+    let run_checks = if fakes.agent_runs_checks {
+        r#"ns=$(echo "$p" | sed -n 's/.*run `\(.*\) check` in your workspace.*/\1/p'); [ -n "$ns" ] && "$ns" check 2>/dev/null; "#
+    } else {
+        ""
+    };
     let commit = match fakes.build_commits {
         BuildCommits::Always => r#"git add -A; git commit -q -m "Add a thing"; "#,
         BuildCommits::TwoUntilTold | BuildCommits::TwoAlways => {
@@ -165,9 +173,10 @@ case "$p" in
   {crash}{edit}echo checked it
   if [ -e "$seen" ]; then echo '{verdict}'; else touch "$seen"; echo '{first}'; fi;;
 *"VERDICT: FAIL"*) echo rebuilt with the evidence;;
+*"The checks failed:"*) touch "{bin}/fixed"; echo fixed it;;
 *"left uncommitted changes"*) {when_told}echo committed when told;;
 *"commits on the branch"*) {squash}echo squashed when told;;
-*) echo thing > thing.txt; {commit}echo built the thing;;
+*) echo thing > thing.txt; {run_checks}{commit}echo built the thing;;
 esac
 exit {exit}"#,
             bin = bin.display(),
@@ -334,6 +343,78 @@ fn a_review_that_keeps_failing_sticks_the_unit() {
     let moves = moves(out);
     assert_eq!(moves.last().unwrap(), "review>stuck");
     assert!(!moves.iter().any(|m| m.starts_with("ship")), "{moves:?}");
+}
+
+/// Makes the repository's checks log each run to `bin/checks.log`, and pass once `bin/fixed` exists
+/// when `needs_fix`.
+fn set_checks(repo: &Repo, needs_fix: bool) -> std::path::PathBuf {
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = bin.join("checks.log");
+    let body = if needs_fix {
+        format!(
+            "if [ -e {}/fixed ]; then exit 0; else echo 'lint: unused thing'; exit 1; fi",
+            bin.display()
+        )
+    } else {
+        "exit 0".to_string()
+    };
+    repo.set_check(&format!("echo ran >> {}\n{body}", log.display()));
+    log
+}
+
+fn runs(log: &std::path::Path) -> usize {
+    std::fs::read_to_string(log).map_or(0, |t| t.lines().count())
+}
+
+#[test]
+fn checks_the_agent_ran_itself_are_not_run_again_after_the_build() {
+    let repo = Repo::new();
+    let log = set_checks(&repo, false);
+    let fakes = Fakes {
+        agent_runs_checks: true,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    assert_eq!(runs(&log), 1);
+}
+
+#[test]
+fn checks_the_agent_did_not_run_are_run_after_the_build() {
+    let repo = Repo::new();
+    let log = set_checks(&repo, false);
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert_eq!(runs(&log), 1);
+}
+
+#[test]
+fn failing_checks_send_the_build_around_again_told_what_failed() {
+    let repo = Repo::new();
+    set_checks(&repo, true);
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert!(moves.contains(&"build>build".to_string()), "{moves:?}");
+    assert_eq!(moves.last().unwrap(), "clean_up>done");
+    assert_eq!(read(&repo, "build.md"), "fixed it\n");
+}
+
+#[test]
+fn checks_that_never_pass_stick_the_unit_before_verify() {
+    let repo = Repo::new();
+    repo.set_check("echo boom; exit 1");
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert_eq!(&moves[moves.len() - 2..], ["build>build", "build>stuck"]);
+    assert!(!moves.iter().any(|m| m.starts_with("verify")), "{moves:?}");
+    assert!(read(&repo, "build.problem").contains("boom"));
 }
 
 #[test]

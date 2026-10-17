@@ -37,6 +37,14 @@ impl Vcs for Git {
         Ok(())
     }
 
+    fn state_dir_find(&self, root: &Path) -> Result<PathBuf> {
+        let common = run(
+            root,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?;
+        Ok(Path::new(&common).join("ns"))
+    }
+
     fn workspace_base_find(&self, path: &Path) -> Result<String> {
         let branch = run(path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
         run(path, &["rev-parse", &base_ref(&branch)])

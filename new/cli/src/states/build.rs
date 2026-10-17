@@ -5,6 +5,7 @@ use anyhow::{bail, Context as _, Result};
 use super::verdict::{self, Verdict};
 use super::{Context, BUILT_SNAPSHOT};
 use crate::artifact;
+use crate::checks;
 use crate::forge::Unit;
 use crate::harness::Task;
 use crate::state::Outcome;
@@ -29,9 +30,20 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let evidence = verdict::evidence_ending_in(&dir, &id, Verdict::Fail);
     let problem = artifact::read(&dir, &id, PROBLEM).ok();
     let base = ctx.vcs.workspace_base_find(&dir)?;
+    let root = ctx.vcs.root_find(&ctx.from)?;
+    let checks_note = checks::command_find(&root)?
+        .is_some()
+        .then(checks_note)
+        .transpose()?;
     let reply = ctx.harness.task_run(&Task {
         dir: dir.clone(),
-        prompt: prompt(&unit, &base, evidence.as_deref(), problem.as_deref()),
+        prompt: prompt(
+            &unit,
+            &base,
+            checks_note.as_deref(),
+            evidence.as_deref(),
+            problem.as_deref(),
+        ),
         write: true,
         model: None,
     })?;
@@ -42,6 +54,17 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     if let Some(problem) = what_is_left(ctx, &dir, &base)? {
         artifact::write(&dir, &id, PROBLEM, &problem)?;
         bail!("{problem}");
+    }
+    let root = ctx.vcs.root_find(&ctx.from)?;
+    if let Some(report) = checks::run(ctx.vcs.as_ref(), &root, &dir, false)? {
+        if !report.passed {
+            let problem = format!(
+                "The checks failed:\n{}\nFix them.",
+                checks::tail(&report.output, 40)
+            );
+            artifact::write(&dir, &id, PROBLEM, &problem)?;
+            bail!("the checks failed");
+        }
     }
     artifact::remove(&dir, &id, PROBLEM)?;
     let snapshot = ctx.vcs.workspace_snapshot(&dir)?;
@@ -68,7 +91,23 @@ fn what_is_left(ctx: &Context, dir: &Path, base: &str) -> Result<Option<String>>
     })
 }
 
-fn prompt(unit: &Unit, base: &str, evidence: Option<&str>, problem: Option<&str>) -> String {
+/// Tells the harness how to run the repository's checks, as the pre-commit hook would.
+fn checks_note() -> Result<String> {
+    let ns = std::env::current_exe().context("cannot find the ns program")?;
+    Ok(format!(
+        "Before you commit, run `{} check` in your workspace and fix what it reports until it \
+         passes. It is the repository's own checks.",
+        ns.display()
+    ))
+}
+
+fn prompt(
+    unit: &Unit,
+    base: &str,
+    checks_note: Option<&str>,
+    evidence: Option<&str>,
+    problem: Option<&str>,
+) -> String {
     let mut prompt = format!(
         "Implement this unit of work test-first, in small steps, and run the tests before you stop. \
          Then commit your work with a message that says what changed and why. The branch started \
@@ -76,6 +115,9 @@ fn prompt(unit: &Unit, base: &str, evidence: Option<&str>, problem: Option<&str>
          your commits into one. End with a short summary of what you changed.\n\n# {}\n\n{}\n",
         unit.title, unit.body
     );
+    if let Some(note) = checks_note {
+        prompt.push_str(&format!("\n{note}\n"));
+    }
     if let Some(evidence) = evidence {
         prompt.push_str(&format!(
             "\n# A check of your earlier work found it wrong\n\nFix what it found.\n\n{evidence}\n"

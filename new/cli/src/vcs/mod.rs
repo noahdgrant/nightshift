@@ -27,6 +27,10 @@ pub trait Vcs {
     /// exactly when nothing changed between them.
     fn workspace_snapshot(&self, path: &Path) -> Result<String>;
 
+    /// A directory shared by all of the repository's workspaces where `ns` keeps what it
+    /// remembers.
+    fn state_dir_find(&self, root: &Path) -> Result<PathBuf>;
+
     /// The commit the workspace's branch started from.
     fn workspace_base_find(&self, path: &Path) -> Result<String>;
 

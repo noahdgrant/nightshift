@@ -36,6 +36,12 @@ impl Repo {
             .join(unit)
     }
 
+    /// Sets the command that runs the repository's checks.
+    pub fn set_check(&self, command: &str) {
+        std::fs::create_dir_all(self.path.join(".nightshift")).unwrap();
+        std::fs::write(self.path.join(".nightshift/check"), command).unwrap();
+    }
+
     pub fn branches(&self) -> Vec<String> {
         git(&self.path, &["branch", "--format=%(refname:short)"])
             .lines()

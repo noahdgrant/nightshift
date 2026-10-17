@@ -1,6 +1,7 @@
 //! `ns`: the Nightshift CLI.
 
 mod artifact;
+mod checks;
 mod commands;
 mod forge;
 mod harness;
