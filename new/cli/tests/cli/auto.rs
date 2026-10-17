@@ -121,6 +121,8 @@ fn auto_triages_the_untriaged_unit_then_runs_it() {
     assert_eq!(last["unit"], 5);
     assert_eq!(last["ok"], true);
     assert_eq!(last["status"], serde_json::json!([]));
+    assert_eq!(last["change_request"], "https://forge.example/9");
+    assert_eq!(last["error"], serde_json::Value::Null);
     assert_eq!(
         label_edits(&repo),
         [
@@ -158,6 +160,8 @@ fn a_stuck_unit_is_left_for_a_human_and_auto_reports_it() {
     let events = events(&out);
     let last = events.last().unwrap();
     assert_eq!(last["ok"], false);
+    assert_eq!(last["error"], "unit 5 is stuck in build");
+    assert_eq!(last["change_request"], serde_json::Value::Null);
     assert_eq!(
         last["status"],
         serde_json::json!(["status:ready-for-human"])
@@ -282,4 +286,18 @@ fn auto_troubleshoots_a_unit_that_needs_a_reproduction_before_running_it() {
     assert!(edits.iter().any(
         |e| e.contains("--add-label status:ready-for-agent --remove-label status:needs-repro")
     ));
+}
+
+#[test]
+fn a_change_ready_to_merge_is_reported_with_its_address_and_left_for_a_human() {
+    let repo = Repo::new();
+    let out = auto(&repo, &Fakes::passing(), &[]).success();
+    let events = events(&out);
+    let last = events.last().unwrap();
+    assert_eq!(last["ok"], true);
+    assert_eq!(last["change_request"], "https://forge.example/9");
+    assert_eq!(
+        last["status"],
+        serde_json::json!(["status:ready-for-human"])
+    );
 }

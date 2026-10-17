@@ -10,7 +10,7 @@ use serde_json::json;
 use super::{run as unit_run, triage, troubleshoot};
 use crate::forge::Forge;
 use crate::os::Os;
-use crate::{auto, forge, harness, lock, os, until, vcs};
+use crate::{auto, forge, harness, lock, os, until, vcs, workspace};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -150,9 +150,20 @@ fn units_run(
             .into_iter()
             .filter(|l| l.starts_with(auto::STATE_PREFIX))
             .collect();
+        // A unit that never got as far as a change request has none.
+        let change_request = workspace::locate(root, &unit.to_string())
+            .ok()
+            .and_then(|w| forge.change_request_get(root, &w.branch).ok().flatten())
+            .map(|cr| cr.url);
         println!(
             "{}",
-            json!({ "unit": unit, "ok": ended.is_ok(), "status": status })
+            json!({
+                "unit": unit,
+                "ok": ended.is_ok(),
+                "status": status,
+                "change_request": change_request,
+                "error": ended.as_ref().err().map(|e| format!("{e:#}")),
+            })
         );
     }
     Ok(failed)
@@ -204,7 +215,7 @@ mod tests {
             unreachable!()
         }
         fn change_request_get(&self, _: &Path, _: &str) -> Result<Option<ChangeRequest>> {
-            unreachable!()
+            Ok(None)
         }
         fn change_request_create(
             &self,

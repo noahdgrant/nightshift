@@ -203,6 +203,7 @@ fn walk(
     sink: &mut impl FnMut(Value) -> Result<()>,
 ) -> Result<State> {
     let mut state = start;
+    let mut stuck_in = start;
     let mut runs: HashMap<State, u32> = HashMap::new();
     sink(json!({ "unit": unit, "state": state.to_string() }))?;
     while let Some(next) = state.next() {
@@ -230,6 +231,9 @@ fn walk(
             event["reason"] = "failed".into();
         }
         sink(event)?;
+        if to == State::Stuck {
+            stuck_in = state;
+        }
         state = to;
         if gates == Gates::Stop && matches!(outcome, Outcome::Pass) && state.next().is_some() {
             sink(json!({ "unit": unit, "waiting": state.to_string() }))?;
@@ -237,7 +241,7 @@ fn walk(
         }
     }
     if state == State::Stuck {
-        bail!("unit {unit} is stuck");
+        bail!("unit {unit} is stuck in {stuck_in}");
     }
     Ok(state)
 }
