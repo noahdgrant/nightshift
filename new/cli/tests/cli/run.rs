@@ -1,17 +1,7 @@
 use crate::common;
 
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
-
 use assert_cmd::Command;
-use common::{git, Repo};
-
-/// Puts a script named `name` in `bin`.
-fn script(bin: &Path, name: &str, body: &str) {
-    let path = bin.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
+use common::{git, script, Repo};
 
 /// How the fake `claude` behaves. It builds, and when asked to verify it checks and ends with a
 /// verdict.
@@ -113,7 +103,7 @@ fn tools(repo: &Repo, fakes: &Fakes) -> String {
         &format!(
             r#"echo "$@" >> "{bin}/gh.log"
 case "$1 $2" in
-"issue view") echo '{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":[]}}';;
+"api repos/{{owner}}/{{repo}}/issues/5") echo '{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":[],"author_association":"OWNER"}}';;
 "pr list") if [ -e "{bin}/merged" ]; then state=MERGED; else state=OPEN; fi
   if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"'$state'"}}]'; else echo '[]'; fi;;
 "pr create") touch "{bin}/opened"; echo https://forge.example/9;;

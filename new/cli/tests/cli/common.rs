@@ -72,6 +72,14 @@ impl Repo {
     }
 }
 
+/// Puts a script named `name` in `bin`.
+pub fn script(bin: &Path, name: &str, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = bin.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 pub fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(args)

@@ -44,26 +44,32 @@ impl Forge for GitHub {
     fn unit_get(&self, repo: &Path, number: u64) -> Result<Unit> {
         let json = self.gh(
             repo,
-            &[
-                "issue",
-                "view",
-                &number.to_string(),
-                "--json",
-                "number,title,body,labels",
-            ],
+            &["api", &format!("repos/{{owner}}/{{repo}}/issues/{number}")],
         )?;
         let v: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
-        Ok(Unit {
-            number: v["number"].as_u64().context("unit has no number")?,
-            title: text(&v["title"]),
-            body: text(&v["body"]),
-            labels: v["labels"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|l| text(&l["name"]))
-                .collect(),
-        })
+        unit_from(&v)
+    }
+
+    fn unit_list(&self, repo: &Path) -> Result<Vec<Unit>> {
+        let json = self.gh(
+            repo,
+            &[
+                "api",
+                "--paginate",
+                "--slurp",
+                "repos/{owner}/{repo}/issues?state=open&per_page=100",
+            ],
+        )?;
+        let pages: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
+        pages
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|page| page.as_array().into_iter().flatten())
+            // The forge lists change requests among its issues.
+            .filter(|v| v.get("pull_request").is_none())
+            .map(unit_from)
+            .collect()
     }
 
     fn change_request_get(&self, repo: &Path, branch: &str) -> Result<Option<ChangeRequest>> {
@@ -165,6 +171,24 @@ impl Forge for GitHub {
     }
 }
 
+fn unit_from(v: &Value) -> Result<Unit> {
+    Ok(Unit {
+        number: v["number"].as_u64().context("unit has no number")?,
+        title: text(&v["title"]),
+        body: text(&v["body"]),
+        labels: v["labels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|l| text(&l["name"]))
+            .collect(),
+        from_team: matches!(
+            v["author_association"].as_str(),
+            Some("OWNER" | "MEMBER" | "COLLABORATOR")
+        ),
+    })
+}
+
 fn text(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
@@ -185,10 +209,11 @@ mod tests {
 
     #[test]
     fn a_unit_is_read_with_its_label_names() {
+        let _spawn = crate::testutil::spawning();
         let tmp = tempfile::tempdir().unwrap();
         let gh = fake(
             tmp.path(),
-            r#"{"number":7,"title":"t","body":"b","labels":[{"name":"a"},{"name":"b"}]}"#,
+            r#"{"number":7,"title":"t","body":"b","labels":[{"name":"a"},{"name":"b"}],"author_association":"MEMBER"}"#,
         );
         let unit = gh.unit_get(tmp.path(), 7).unwrap();
         assert_eq!(
@@ -198,12 +223,29 @@ mod tests {
                 title: "t".into(),
                 body: "b".into(),
                 labels: vec!["a".into(), "b".into()],
+                from_team: true,
             }
         );
     }
 
     #[test]
+    fn open_units_are_listed_across_pages_without_change_requests() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = fake(
+            tmp.path(),
+            r#"[[{"number":1,"title":"a","labels":[],"author_association":"NONE"},
+                 {"number":2,"title":"pr","labels":[],"pull_request":{}}],
+                [{"number":3,"title":"c","labels":[],"author_association":"OWNER"}]]"#,
+        );
+        let units = gh.unit_list(tmp.path()).unwrap();
+        let seen: Vec<_> = units.iter().map(|u| (u.number, u.from_team)).collect();
+        assert_eq!(seen, [(1, false), (3, true)]);
+    }
+
+    #[test]
     fn a_branch_with_no_change_request_gives_none() {
+        let _spawn = crate::testutil::spawning();
         let tmp = tempfile::tempdir().unwrap();
         let gh = fake(tmp.path(), "[]");
         assert_eq!(gh.change_request_get(tmp.path(), "ns/u1").unwrap(), None);
@@ -211,6 +253,7 @@ mod tests {
 
     #[test]
     fn a_merged_change_request_is_read() {
+        let _spawn = crate::testutil::spawning();
         let tmp = tempfile::tempdir().unwrap();
         let gh = fake(tmp.path(), r#"[{"number":9,"url":"u","state":"MERGED"}]"#);
         let pr = gh.change_request_get(tmp.path(), "ns/u1").unwrap().unwrap();

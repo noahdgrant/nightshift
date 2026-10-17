@@ -104,6 +104,7 @@ mod tests {
 
     #[test]
     fn a_process_that_finishes_gives_its_output() {
+        let _spawn = crate::testutil::spawning();
         let done = Linux
             .process_run(sh("cat; exit 3"), b"hi", Duration::from_secs(30))
             .unwrap();
@@ -113,6 +114,7 @@ mod tests {
 
     #[test]
     fn a_process_out_of_time_is_killed_with_what_it_started() {
+        let _spawn = crate::testutil::spawning();
         let tmp = tempfile::tempdir().unwrap();
         let marker = tmp.path().join("grandchild-lived");
         // The grandchild would write the marker after the kill, if it survived.

@@ -84,6 +84,7 @@ mod tests {
 
     #[test]
     fn a_read_only_task_plans_and_a_write_task_accepts_edits() {
+        let _spawn = crate::testutil::spawning();
         let tmp = tempfile::tempdir().unwrap();
         let claude = fake(tmp.path(), 0);
         let read = claude.task_run(&task(tmp.path(), false)).unwrap();
@@ -98,6 +99,7 @@ mod tests {
 
     #[test]
     fn a_failing_session_is_reported_not_raised() {
+        let _spawn = crate::testutil::spawning();
         let tmp = tempfile::tempdir().unwrap();
         let reply = fake(tmp.path(), 3)
             .task_run(&task(tmp.path(), true))
@@ -107,6 +109,7 @@ mod tests {
 
     #[test]
     fn a_session_out_of_time_is_an_error() {
+        let _spawn = crate::testutil::spawning();
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("claude");
         std::fs::write(&path, "#!/bin/sh\nexec sleep 30\n").unwrap();

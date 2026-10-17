@@ -11,6 +11,9 @@ pub trait Forge {
     /// The unit `number` of the repository at `repo`.
     fn unit_get(&self, repo: &Path, number: u64) -> Result<Unit>;
 
+    /// Every open unit of the repository at `repo`.
+    fn unit_list(&self, repo: &Path) -> Result<Vec<Unit>>;
+
     /// The newest change request opened from `branch`, if there is one.
     fn change_request_get(&self, repo: &Path, branch: &str) -> Result<Option<ChangeRequest>>;
 
@@ -38,6 +41,8 @@ pub struct Unit {
     pub title: String,
     pub body: String,
     pub labels: Vec<String>,
+    /// Whether the unit's author is on the repository's team. Only the team's units are worked.
+    pub from_team: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]

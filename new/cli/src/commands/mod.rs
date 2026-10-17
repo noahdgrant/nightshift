@@ -4,6 +4,7 @@ mod check;
 mod install;
 mod run;
 mod version;
+mod watch;
 mod workspace;
 
 use anyhow::Result;
@@ -19,6 +20,8 @@ pub enum Command {
     Run(run::Args),
     /// Print the version of ns.
     Version(version::Args),
+    /// Pick the next units to triage and run.
+    Watch(watch::Args),
     /// Create and remove a unit's workspace.
     Workspace(workspace::Args),
 }
@@ -29,6 +32,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Install(args) => install::run(args),
         Command::Run(args) => run::run(args),
         Command::Version(args) => version::run(args),
+        Command::Watch(args) => watch::run(args),
         Command::Workspace(args) => workspace::run(args),
     }
 }
