@@ -124,3 +124,107 @@ fn a_unit_whose_author_turns_out_not_to_be_on_the_team_is_not_triaged() {
         "{log}"
     );
 }
+
+/// Runs `ns triage` with `extra` arguments against a fake `gh` that lists units 7 and 8 as
+/// untriaged, 9 as ready and 6 as the one a stranger filed, and a fake `claude` that answers
+/// `reply` to every unit.
+fn triage_many(repo: &Repo, reply: &str, extra: &[&str]) -> assert_cmd::assert::Assert {
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let list = [
+        unit(8, &[], "OWNER"),
+        unit(7, &["status:needs-triage"], "OWNER"),
+        unit(9, &["status:ready-for-agent"], "OWNER"),
+        unit(6, &[], "NONE"),
+    ]
+    .join(",");
+    script(
+        &bin,
+        "gh",
+        &format!(
+            r#"echo "$@" >> "{bin}/gh.log"
+case "$1 $2" in
+"api --paginate") echo '[[{list}]]';;
+"api repos/{{owner}}/{{repo}}/issues/7") echo '{seven}';;
+"api repos/{{owner}}/{{repo}}/issues/8") echo '{eight}';;
+esac"#,
+            bin = bin.display(),
+            seven = unit(7, &["status:needs-triage"], "OWNER"),
+            eight = unit(8, &[], "OWNER"),
+        ),
+    );
+    script(
+        &bin,
+        "claude",
+        &format!("cat >/dev/null\ncat <<'EOF'\n{reply}\nEOF"),
+    );
+    Command::cargo_bin("ns")
+        .unwrap()
+        .arg("triage")
+        .args(extra)
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("NS_CONFIG_DIR", &repo.config)
+        .current_dir(&repo.path)
+        .assert()
+}
+
+fn triaged(out: &assert_cmd::assert::Assert) -> Vec<u64> {
+    String::from_utf8(out.get_output().stdout.clone())
+        .unwrap()
+        .lines()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["unit"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn without_a_unit_the_first_untriaged_unit_is_triaged() {
+    let repo = Repo::new();
+    let out = triage_many(&repo, "Text.\nROUTE: build", &[]).success();
+    assert_eq!(triaged(&out), [7]);
+}
+
+#[test]
+fn max_units_triages_that_many_untriaged_units_in_order() {
+    let repo = Repo::new();
+    let out = triage_many(&repo, "Text.\nROUTE: build", &["--max-units", "2"]).success();
+    assert_eq!(triaged(&out), [7, 8]);
+    let log = gh_log(&repo);
+    assert!(
+        !log.contains("issue edit 9") && !log.contains("issue edit 6"),
+        "{log}"
+    );
+}
+
+#[test]
+fn all_triages_every_untriaged_unit() {
+    let repo = Repo::new();
+    let out = triage_many(&repo, "Text.\nROUTE: build", &["--all"]).success();
+    assert_eq!(triaged(&out), [7, 8]);
+}
+
+#[test]
+fn a_unit_that_cannot_be_triaged_does_not_stop_the_others() {
+    let repo = Repo::new();
+    let out = triage_many(&repo, "No route line.", &["--all"]).failure();
+    let log = gh_log(&repo);
+    assert!(!log.contains("issue edit"), "{log}");
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(
+        err.contains("unit 7 was not triaged") && err.contains("unit 8 was not triaged"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_unit_number_cannot_be_combined_with_a_count() {
+    let repo = Repo::new();
+    triage_many(&repo, "Text.\nROUTE: build", &["7", "--all"]).failure();
+    triage_many(&repo, "Text.\nROUTE: build", &["7", "--max-units", "2"]).failure();
+}
