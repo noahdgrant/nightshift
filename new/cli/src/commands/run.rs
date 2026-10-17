@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn a_failure_is_retried_then_passes() {
         let (moves, ok) = moves(|s, attempt| {
-            if s == State::Review && attempt == 1 {
+            if s == State::CleanUp && attempt == 1 {
                 Outcome::Fail
             } else {
                 Outcome::Pass
@@ -147,9 +147,9 @@ mod tests {
                 "setup>build",
                 "build>verify",
                 "verify>review",
-                "review>review",
                 "review>ship",
                 "ship>clean_up",
+                "clean_up>clean_up",
                 "clean_up>done",
             ]
         );
@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn a_state_that_keeps_failing_sticks_the_unit() {
         let (moves, ok) = moves(|s, _| {
-            if s == State::Review {
+            if s == State::CleanUp {
                 Outcome::Fail
             } else {
                 Outcome::Pass
@@ -171,8 +171,10 @@ mod tests {
                 "setup>build",
                 "build>verify",
                 "verify>review",
-                "review>review",
-                "review>stuck",
+                "review>ship",
+                "ship>clean_up",
+                "clean_up>clean_up",
+                "clean_up>stuck",
             ]
         );
     }

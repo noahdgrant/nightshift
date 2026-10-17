@@ -30,6 +30,9 @@ pub trait Vcs {
     /// The commit the workspace's branch started from.
     fn workspace_base_find(&self, path: &Path) -> Result<String>;
 
+    /// What the workspace's branch changed since `base`, as a patch.
+    fn workspace_diff(&self, path: &Path, base: &str) -> Result<String>;
+
     /// How many commits the workspace's branch holds past `base`.
     fn workspace_commits_count(&self, path: &Path, base: &str) -> Result<usize>;
 

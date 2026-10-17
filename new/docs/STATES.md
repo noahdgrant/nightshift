@@ -14,6 +14,7 @@ stateDiagram
     done --> [*]
 
     verify --> build : build is wrong
+    review --> build : findings
     ship --> build : checks failed
     setup --> setup : state went wrong
     build --> build : state went wrong

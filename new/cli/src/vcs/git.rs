@@ -42,6 +42,10 @@ impl Vcs for Git {
         run(path, &["rev-parse", &base_ref(&branch)])
     }
 
+    fn workspace_diff(&self, path: &Path, base: &str) -> Result<String> {
+        run(path, &["diff", &format!("{base}..HEAD")])
+    }
+
     fn workspace_commits_count(&self, path: &Path, base: &str) -> Result<usize> {
         let count = run(path, &["rev-list", "--count", &format!("{base}..HEAD")])?;
         count.parse().context("git printed a bad commit count")

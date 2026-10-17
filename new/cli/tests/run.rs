@@ -27,6 +27,10 @@ struct Fakes {
     crash_in_first_check: bool,
     build_commits: BuildCommits,
     ci: Ci,
+    /// The verdict the first review ends with.
+    first_review: &'static str,
+    /// The verdict every later review ends with.
+    review: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -75,6 +79,8 @@ impl Fakes {
             crash_in_first_check: false,
             build_commits: BuildCommits::Always,
             ci: Ci::Passes,
+            first_review: PASS,
+            review: PASS,
         }
     }
 }
@@ -149,7 +155,12 @@ esac"#,
         "claude",
         &format!(
             r#"seen="{bin}/checked"
-case "$(cat)" in
+reviewed="{bin}/reviewed"
+p="$(cat)"
+case "$p" in
+*"You are reviewing a change"*)
+  if echo "$p" | grep -q thing.txt; then echo reviewed the diff; else echo saw no diff; fi
+  if [ -e "$reviewed" ]; then echo '{review}'; else touch "$reviewed"; echo '{first_review}'; fi;;
 *"Do not change any source"*)
   {crash}{edit}echo checked it
   if [ -e "$seen" ]; then echo '{verdict}'; else touch "$seen"; echo '{first}'; fi;;
@@ -162,6 +173,8 @@ exit {exit}"#,
             bin = bin.display(),
             verdict = fakes.verdict,
             first = fakes.first_verdict,
+            review = fakes.review,
+            first_review = fakes.first_review,
             exit = fakes.exit,
         ),
     );
@@ -227,7 +240,10 @@ fn run_sets_up_builds_verifies_and_prints_each_move() {
     );
     assert!(repo.branches().contains(&"ns/5".to_string()));
     assert_eq!(read(&repo, "build.md"), "built the thing\n");
-    assert_eq!(read(&repo, "evidence.md"), "checked it\nVERDICT: PASS\n");
+    assert_eq!(
+        read(&repo, "evidence.md"),
+        "reviewed the diff\nVERDICT: PASS\n"
+    );
 }
 
 #[test]
@@ -258,6 +274,66 @@ fn ship_publishes_what_the_build_committed_and_opens_one_change_request() {
 
 fn gh_log(repo: &Repo) -> String {
     std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log")).unwrap()
+}
+
+#[test]
+fn review_sees_the_diff_and_a_pass_lets_the_unit_ship() {
+    let repo = Repo::new();
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert_eq!(&moves[3..5], ["verify>review", "review>ship"]);
+    assert!(read(&repo, "evidence.md").starts_with("reviewed the diff"));
+}
+
+#[test]
+fn a_failed_review_sends_the_unit_back_to_build_and_review_looks_again() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_review: FAIL,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    let at = moves
+        .iter()
+        .position(|m| m == "review>build")
+        .expect("review goes back");
+    assert_eq!(
+        &moves[at..at + 4],
+        [
+            "review>build",
+            "build>verify",
+            "verify>review",
+            "review>ship"
+        ]
+    );
+    assert_eq!(read(&repo, "build.md"), "rebuilt with the evidence\n");
+}
+
+#[test]
+fn a_review_that_keeps_failing_sticks_the_unit() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_review: FAIL,
+        review: FAIL,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert_eq!(moves.last().unwrap(), "review>stuck");
+    assert!(!moves.iter().any(|m| m.starts_with("ship")), "{moves:?}");
 }
 
 #[test]
@@ -474,7 +550,10 @@ fn a_failed_check_sends_the_unit_back_to_build_with_the_evidence() {
         ]
     );
     assert_eq!(read(&repo, "build.md"), "rebuilt with the evidence\n");
-    assert_eq!(read(&repo, "evidence.md"), "checked it\nVERDICT: PASS\n");
+    assert_eq!(
+        read(&repo, "evidence.md"),
+        "reviewed the diff\nVERDICT: PASS\n"
+    );
 }
 
 #[test]

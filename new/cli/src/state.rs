@@ -41,12 +41,12 @@ impl State {
         }
     }
 
-    /// Where a unit goes when the state finds the work before it wrong. `verify` and `ship` (a
-    /// failed check on the change request) send the unit back to `build`; any other state runs
-    /// again.
+    /// Where a unit goes when the state finds the work before it wrong. `verify`, `review` and
+    /// `ship` (a failed check on the change request) send the unit back to `build`; any other
+    /// state runs again.
     pub fn on_fail(self) -> State {
         match self {
-            State::Verify | State::Ship => State::Build,
+            State::Verify | State::Review | State::Ship => State::Build,
             other => other,
         }
     }
