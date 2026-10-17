@@ -6,7 +6,7 @@ mod clean_up;
 mod review;
 mod setup;
 pub mod ship;
-mod verdict;
+pub mod verdict;
 mod verify;
 
 use std::path::PathBuf;

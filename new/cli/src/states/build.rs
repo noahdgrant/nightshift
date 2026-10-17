@@ -8,6 +8,7 @@ use crate::artifact;
 use crate::checks;
 use crate::forge::Unit;
 use crate::harness::Task;
+use crate::skill;
 use crate::state::Outcome;
 
 /// What the last build run did wrong, kept for the next one.
@@ -94,8 +95,7 @@ fn what_is_left(ctx: &Context, dir: &Path, base: &str) -> Result<Option<String>>
 fn checks_note() -> Result<String> {
     let ns = std::env::current_exe().context("cannot find the ns program")?;
     Ok(format!(
-        "Before you commit, run `{} check` in your workspace and fix what it reports until it \
-         passes. It is the repository's own checks.",
+        "To run the repository's checks, run `{} check` in your workspace.",
         ns.display()
     ))
 }
@@ -108,18 +108,17 @@ fn prompt(
     problem: Option<&str>,
 ) -> String {
     let mut prompt = format!(
-        "Implement this unit of work test-first, in small steps, and run the tests before you stop. \
-         Then commit your work with a message that says what changed and why. The branch started \
-         at commit {base}: when you are done it must hold exactly one commit since then, so squash \
-         your commits into one. End with a short summary of what you changed.\n\n# {}\n\n{}\n",
-        unit.title, unit.body
+        "{}\n\n# The unit\n\n## {}\n\n{}\n\nThe branch started at commit {base}.\n",
+        skill::body(skill::BUILD),
+        unit.title,
+        unit.body
     );
     if let Some(note) = checks_note {
         prompt.push_str(&format!("\n{note}\n"));
     }
     if let Some(evidence) = evidence {
         prompt.push_str(&format!(
-            "\n# A check of your earlier work found it wrong\n\nFix what it found.\n\n{evidence}\n"
+            "\n# A check of your earlier work found it wrong\n\n{evidence}\n"
         ));
     }
     if let Some(problem) = problem {

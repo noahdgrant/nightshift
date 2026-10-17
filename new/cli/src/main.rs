@@ -5,6 +5,7 @@ mod checks;
 mod commands;
 mod forge;
 mod harness;
+mod skill;
 mod state;
 mod states;
 mod vcs;

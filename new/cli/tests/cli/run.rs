@@ -166,10 +166,10 @@ esac"#,
 reviewed="{bin}/reviewed"
 p="$(cat)"
 case "$p" in
-*"You are reviewing a change"*)
+*"Find what must be fixed before this change merges"*)
   if echo "$p" | grep -q thing.txt; then echo reviewed the diff; else echo saw no diff; fi
   if [ -e "$reviewed" ]; then echo '{review}'; else touch "$reviewed"; echo '{first_review}'; fi;;
-*"Do not change any source"*)
+*"Run the real thing and record what you saw"*)
   {crash}{edit}echo checked it
   if [ -e "$seen" ]; then echo '{verdict}'; else touch "$seen"; echo '{first}'; fi;;
 *"VERDICT: FAIL"*) echo rebuilt with the evidence;;

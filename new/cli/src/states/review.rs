@@ -1,8 +1,8 @@
 use anyhow::{Context as _, Result};
 
-use super::verdict::{FAIL_LINE, PASS_LINE};
 use super::{check, Context};
 use crate::artifact;
+use crate::skill;
 use crate::state::Outcome;
 
 /// Has the harness review the unit's changes. It reads them and changes nothing. See
@@ -23,11 +23,8 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
 
 fn prompt(title: &str, body: &str, build: &str, diff: &str) -> String {
     format!(
-        "You are reviewing a change. Find what must be fixed before it merges: bugs, missing or \
-         weak tests, and anything that does not do what the unit asks. Leave out style and \
-         preferences. For each finding, give the file, what is wrong and why it matters. End with \
-         a last line that is exactly `{PASS_LINE}` when nothing must be fixed, or `{FAIL_LINE}` \
-         when something must.\n\n# {title}\n\n{body}\n\n# What the build says it did\n\n{build}\n\n\
-         # The change\n\n{diff}\n"
+        "{}\n\n# The unit\n\n## {title}\n\n{body}\n\n# The build summary\n\n{build}\n\n\
+         # The change\n\n{diff}\n",
+        skill::body(skill::REVIEW)
     )
 }
