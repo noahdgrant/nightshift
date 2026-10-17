@@ -185,6 +185,9 @@ mod tests {
         fn unit_labels_set(&self, _: &Path, _: u64, _: &[String], _: &[String]) -> Result<()> {
             unreachable!()
         }
+        fn unit_body_set(&self, _: &Path, _: u64, _: &str) -> Result<()> {
+            unreachable!()
+        }
         fn unit_close(&self, _: &Path, _: u64) -> Result<()> {
             unreachable!()
         }
@@ -214,6 +217,9 @@ mod tests {
 
     impl Os for Clock {
         fn process_run(&self, _: Command, _: &[u8], _: Duration) -> Result<Finished> {
+            unreachable!()
+        }
+        fn process_interact(&self, _: Command) -> Result<bool> {
             unreachable!()
         }
         fn shell_command(&self, _: &str) -> Command {

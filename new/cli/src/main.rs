@@ -2,12 +2,15 @@
 
 mod artifact;
 mod auto;
+mod brief;
 mod checks;
 mod commands;
+mod define;
 mod forge;
 mod harness;
 mod lock;
 mod os;
+mod plan;
 mod retry;
 mod runlog;
 mod skill;

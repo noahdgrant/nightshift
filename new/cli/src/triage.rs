@@ -62,7 +62,7 @@ impl Route {
     pub fn label(self) -> &'static str {
         match self {
             Route::Build => crate::auto::READY,
-            Route::Define => "status:needs-define",
+            Route::Define => crate::status::NEEDS_DEFINE,
             Route::Repro => "status:needs-repro",
             Route::Info => "status:needs-info",
             Route::Human => crate::status::READY_FOR_HUMAN,

@@ -2,7 +2,7 @@
 
 mod claude;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -10,6 +10,10 @@ use anyhow::Result;
 pub trait Harness {
     /// Runs one headless session and waits for it to finish.
     fn task_run(&self, task: &Task) -> Result<Reply>;
+
+    /// Starts a session the user takes part in, on their terminal, that begins with `prompt`.
+    /// Returns when the user ends it, and whether it ended normally.
+    fn session_interact(&self, dir: &Path, prompt: &str) -> Result<bool>;
 }
 
 pub struct Task {

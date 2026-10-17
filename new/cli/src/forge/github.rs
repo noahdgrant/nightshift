@@ -101,6 +101,14 @@ impl Forge for GitHub {
         Ok(())
     }
 
+    fn unit_body_set(&self, repo: &Path, number: u64, body: &str) -> Result<()> {
+        self.gh(
+            repo,
+            &["issue", "edit", &number.to_string(), "--body", body],
+        )?;
+        Ok(())
+    }
+
     fn unit_close(&self, repo: &Path, number: u64) -> Result<()> {
         self.gh(
             repo,
@@ -410,5 +418,29 @@ mod tests {
             };
             assert_eq!(calls(tmp.path()), expected, "{said}");
         }
+    }
+
+    #[test]
+    fn a_unit_body_is_replaced_whole() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gh");
+        let said = tmp.path().join("said");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do printf '[%s]' \"$a\" >> '{}'; done\n",
+                said.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        GitHub::with_program(path)
+            .unit_body_set(tmp.path(), 7, "line one\nline two")
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(said).unwrap(),
+            "[issue][edit][7][--body][line one\nline two]"
+        );
     }
 }

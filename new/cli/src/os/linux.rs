@@ -20,6 +20,12 @@ impl Os for Linux {
         run(cmd, input, timeout)
     }
 
+    fn process_interact(&self, mut cmd: Command) -> Result<bool> {
+        // Not a group of its own: a group that is not in front of the terminal is stopped when it
+        // reads from it.
+        Ok(cmd.status().context("cannot start the process")?.success())
+    }
+
     fn shell_command(&self, script: &str) -> Command {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(script);

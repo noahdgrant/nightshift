@@ -13,6 +13,9 @@ pub const TRIAGE: &str = "ns-triage";
 pub const BUILD: &str = "ns-build";
 pub const VERIFY: &str = "ns-verify";
 pub const REVIEW: &str = "ns-review";
+pub const GRILLING: &str = "ns-grilling";
+pub const REQUIREMENTS: &str = "ns-requirements";
+pub const DESIGN_DOC: &str = "ns-design-doc";
 
 /// Where `ns` keeps what belongs to the user: `$NS_CONFIG_DIR`, else where the operating system
 /// keeps such files.

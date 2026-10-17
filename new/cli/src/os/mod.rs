@@ -15,6 +15,10 @@ pub trait Os {
     /// a piped stdout is collected. A child out of time is killed with everything it started.
     fn process_run(&self, cmd: Command, input: &[u8], timeout: Duration) -> Result<Finished>;
 
+    /// Starts `cmd` on the user's terminal and waits for it. The user works with it, so it has no
+    /// time limit. Returns whether it exited with success.
+    fn process_interact(&self, cmd: Command) -> Result<bool>;
+
     /// A command that runs `script` in the system's shell.
     fn shell_command(&self, script: &str) -> Command;
 

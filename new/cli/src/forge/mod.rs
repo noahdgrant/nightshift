@@ -20,6 +20,9 @@ pub trait Forge {
         remove: &[String],
     ) -> Result<()>;
 
+    /// Replaces the description of unit `number` with `body`.
+    fn unit_body_set(&self, repo: &Path, number: u64, body: &str) -> Result<()>;
+
     /// Closes unit `number` as not planned.
     fn unit_close(&self, repo: &Path, number: u64) -> Result<()>;
 

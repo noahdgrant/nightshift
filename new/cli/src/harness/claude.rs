@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -72,6 +73,12 @@ impl Claude {
 }
 
 impl Harness for Claude {
+    fn session_interact(&self, dir: &Path, prompt: &str) -> Result<bool> {
+        let mut cmd = Command::new(&self.program);
+        cmd.arg(prompt).current_dir(dir);
+        self.os.process_interact(cmd).context("cannot run claude")
+    }
+
     /// A session that ended badly because the service had a bad moment is started again. What it
     /// changed before it ended stays, as it does when a state runs again.
     fn task_run(&self, task: &Task) -> Result<Reply> {
@@ -200,5 +207,24 @@ mod tests {
             .unwrap();
         assert!(!reply.success);
         assert_eq!(sessions(tmp.path()), 1);
+    }
+
+    #[test]
+    fn an_interactive_session_starts_with_the_prompt_and_reports_how_it_ended() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("claude");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\necho \"$1\" > said\nexit \"${EXIT:-0}\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let claude = Claude::with_program(path, crate::os::get());
+        assert!(claude.session_interact(tmp.path(), "grill me").unwrap());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("said")).unwrap(),
+            "grill me\n"
+        );
     }
 }

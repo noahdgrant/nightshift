@@ -8,6 +8,8 @@ use anyhow::Result;
 use crate::auto::STATE_PREFIX;
 use crate::forge::Forge;
 
+/// The unit is too vague to build and waits for a spec.
+pub const NEEDS_DEFINE: &str = "status:needs-define";
 /// `ns run` has the unit.
 pub const IN_PROGRESS: &str = "status:in-progress";
 /// The unit waits for a human: it is stuck, went wrong, or its change request is ready to merge.

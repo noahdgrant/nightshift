@@ -17,10 +17,12 @@ fn install_links_each_skill_and_can_be_run_again() {
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../skills");
     let first = install(&repo, &source).success();
     let report: serde_json::Value = serde_json::from_slice(&first.get_output().stdout).unwrap();
-    assert_eq!(
-        report["installed"],
-        serde_json::json!(["ns-build", "ns-review", "ns-tdd", "ns-triage", "ns-verify"])
-    );
+    let mut skills: Vec<String> = std::fs::read_dir(&source)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    skills.sort();
+    assert_eq!(report["installed"], serde_json::json!(skills));
     install(&repo, &source).success();
     let link = repo.config.join("skills/ns-build");
     assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
