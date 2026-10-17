@@ -8,6 +8,7 @@ use crate::forge::DISCLOSURE;
 /// Opens the block that keeps the description a unit had before it was defined.
 const ORIGINAL: &str = "<details><summary>Original description</summary>";
 const SLICES: &str = "## Slices";
+const DIAGNOSIS: &str = "## Diagnosis";
 
 /// The description of a unit that was defined: the spec first, the text it came from below.
 pub fn body_defined(spec: &str, original: &str) -> String {
@@ -32,11 +33,7 @@ pub fn body_planned(body: &str, slices: &str) -> Result<String> {
     if is_planned(body) {
         bail!("the unit already has slices");
     }
-    let body = if body.trim_start().starts_with('🤖') {
-        body.trim().to_string()
-    } else {
-        format!("{DISCLOSURE}\n\n{}", body.trim())
-    };
+    let body = with_disclosure(body);
     Ok(match body.find(ORIGINAL) {
         Some(at) => format!(
             "{}\n\n{}\n\n{}\n",
@@ -46,6 +43,32 @@ pub fn body_planned(body: &str, slices: &str) -> Result<String> {
         ),
         None => format!("{body}\n\n{slices}\n"),
     })
+}
+
+/// `body` with the disclosure line on top, unless it has one.
+fn with_disclosure(body: &str) -> String {
+    if body.trim_start().starts_with('🤖') {
+        body.trim().to_string()
+    } else {
+        format!("{DISCLOSURE}\n\n{}", body.trim())
+    }
+}
+
+/// Whether `body` already has a diagnosis.
+pub fn is_diagnosed(body: &str) -> bool {
+    body.lines().any(|l| l.trim() == DIAGNOSIS)
+}
+
+/// `body` with the `diagnosis` of a troubleshooting session added at the end.
+pub fn body_diagnosed(body: &str, diagnosis: &str) -> Result<String> {
+    if is_diagnosed(body) {
+        bail!("the unit already has a diagnosis");
+    }
+    Ok(format!(
+        "{}\n\n{DIAGNOSIS}\n\n{}\n",
+        with_disclosure(body),
+        diagnosis.trim()
+    ))
 }
 
 /// The slices a planning session answered with: its `## Slices` section.
@@ -105,6 +128,14 @@ mod tests {
     fn a_unit_with_slices_is_not_planned_again() {
         let body = body_planned("Spec.", SLICES_TEXT).unwrap();
         assert!(body_planned(&body, SLICES_TEXT).is_err());
+    }
+
+    #[test]
+    fn a_diagnosis_goes_at_the_end_once() {
+        let body = body_diagnosed("It crashes.", "### Repro\nrun it").unwrap();
+        assert!(body.starts_with(DISCLOSURE));
+        assert!(body.ends_with("It crashes.\n\n## Diagnosis\n\n### Repro\nrun it\n"));
+        assert!(body_diagnosed(&body, "again").is_err());
     }
 
     #[test]

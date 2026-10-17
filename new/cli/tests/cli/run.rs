@@ -111,10 +111,10 @@ pub fn tools(repo: &Repo, fakes: &Fakes) -> String {
 labels() {{
   l='{initial}'
   [ "{follow}" = yes ] && case "$(grep 'issue edit' "{bin}/gh.log" | tail -1)" in
-  *"--add-label type:feat,status:ready-for-agent"*) l='{ready}';;
   *"--add-label status:in-progress"*) l='{progress}';;
   *"--add-label status:ready-for-human"*) l='{human}';;
   *"--remove-label status:in-progress"*) l='[]';;
+  *"--add-label "*"status:ready-for-agent"*) l='{ready}';;
   esac
 }}
 case "$1 $2" in
@@ -181,6 +181,7 @@ esac"#,
 reviewed="{bin}/reviewed"
 p="$(cat)"
 case "$p" in
+*"You diagnose one bug"*) printf '### Repro\nrun it\n\nROUTE: build\n';;
 *"decide what happens to one unit"*) printf 'Small.\nLABELS: type:feat\nROUTE: build\n';;
 *"Find what must be fixed before this change merges"*)
   if echo "$p" | grep -q thing.txt; then echo reviewed the diff; else echo saw no diff; fi

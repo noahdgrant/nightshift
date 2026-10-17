@@ -22,6 +22,8 @@ pub struct Plan<'a> {
     pub queue: Vec<&'a Unit>,
     /// Units to triage, first to triage first.
     pub triage: Vec<&'a Unit>,
+    /// Units that need a reproduction, first to troubleshoot first.
+    pub repro: Vec<&'a Unit>,
     /// Units left out and why.
     pub skipped: Vec<(&'a Unit, String)>,
 }
@@ -31,6 +33,7 @@ pub fn plan(open: &[Unit]) -> Plan<'_> {
     let mut plan = Plan {
         queue: Vec::new(),
         triage: Vec::new(),
+        repro: Vec::new(),
         skipped: Vec::new(),
     };
     for unit in open {
@@ -54,12 +57,15 @@ pub fn plan(open: &[Unit]) -> Plan<'_> {
                 plan.skipped
                     .push((unit, format!("blocked by {}", blockers.join(", "))));
             }
+        } else if has(crate::status::NEEDS_REPRO) {
+            plan.repro.push(unit);
         } else if untriaged {
             plan.triage.push(unit);
         }
     }
     plan.queue.sort_by_key(|u| order(u));
     plan.triage.sort_by_key(|u| order(u));
+    plan.repro.sort_by_key(|u| order(u));
     plan
 }
 
@@ -146,6 +152,18 @@ mod tests {
             .map(|(u, w)| (u.number, w.as_str()))
             .collect();
         assert_eq!(why, [(1, "blocked by #2"), (4, "blocked by #2")]);
+    }
+
+    #[test]
+    fn units_that_need_a_reproduction_are_listed_to_troubleshoot() {
+        let open = [
+            unit(2, &[crate::status::NEEDS_REPRO], "", true),
+            unit(1, &[crate::status::NEEDS_REPRO, "priority:high"], "", true),
+            unit(3, &[crate::status::NEEDS_REPRO], "", false),
+        ];
+        let plan = plan(&open);
+        assert_eq!(numbers(&plan.repro), [1, 2]);
+        assert!(plan.queue.is_empty() && plan.triage.is_empty());
     }
 
     #[test]

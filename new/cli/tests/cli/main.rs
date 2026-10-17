@@ -6,5 +6,6 @@ mod install;
 pub mod plan;
 pub mod run;
 mod triage;
+mod troubleshoot;
 mod version;
 mod workspace;

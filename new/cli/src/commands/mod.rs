@@ -7,6 +7,7 @@ mod install;
 mod plan;
 mod run;
 mod triage;
+mod troubleshoot;
 mod version;
 mod workspace;
 
@@ -29,6 +30,8 @@ pub enum Command {
     Run(run::Args),
     /// Print the version of ns.
     Version(version::Args),
+    /// Diagnose a bug nobody has reproduced and send the unit on.
+    Troubleshoot(troubleshoot::Args),
     /// Decide what a unit needs next and record it on the forge.
     Triage(triage::Args),
     /// Create and remove a unit's workspace.
@@ -45,6 +48,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Run(args) => run::run(args),
         Command::Version(args) => version::run(args),
         Command::Triage(args) => triage::run(args),
+        Command::Troubleshoot(args) => troubleshoot::run(args),
         Command::Workspace(args) => workspace::run(args),
     }
 }

@@ -35,7 +35,7 @@ impl Route {
         Route::Wontfix,
     ];
 
-    fn parse(text: &str) -> Option<Route> {
+    pub fn parse(text: &str) -> Option<Route> {
         Some(match text {
             "build" => Route::Build,
             "define" => Route::Define,
@@ -63,7 +63,7 @@ impl Route {
         match self {
             Route::Build => crate::auto::READY,
             Route::Define => crate::status::NEEDS_DEFINE,
-            Route::Repro => "status:needs-repro",
+            Route::Repro => crate::status::NEEDS_REPRO,
             Route::Info => "status:needs-info",
             Route::Human => crate::status::READY_FOR_HUMAN,
             Route::Wontfix => "status:wontfix",

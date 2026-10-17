@@ -8,6 +8,8 @@ use anyhow::Result;
 use crate::auto::STATE_PREFIX;
 use crate::forge::Forge;
 
+/// The unit is a bug nobody has reproduced yet.
+pub const NEEDS_REPRO: &str = "status:needs-repro";
 /// The unit is too vague to build and waits for a spec.
 pub const NEEDS_DEFINE: &str = "status:needs-define";
 /// `ns run` has the unit.

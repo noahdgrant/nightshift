@@ -265,3 +265,21 @@ fn a_time_that_is_not_a_time_of_day_is_refused() {
     auto(&repo, &Fakes::passing(), &["--until", "late"]).failure();
     assert!(label_edits_none(&repo));
 }
+
+#[test]
+fn auto_troubleshoots_a_unit_that_needs_a_reproduction_before_running_it() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        labels: r#"[{"name":"status:needs-repro"}]"#,
+        ..Fakes::passing()
+    };
+    let out = auto(&repo, &fakes, &["--merge"]).success();
+    let events = events(&out);
+    assert_eq!(events[0]["route"], "build");
+    assert_eq!(events.last().unwrap()["ok"], true);
+    let edits = label_edits(&repo);
+    assert!(edits[0].starts_with("issue edit 5 --body"), "{edits:?}");
+    assert!(edits.iter().any(
+        |e| e.contains("--add-label status:ready-for-agent --remove-label status:needs-repro")
+    ));
+}

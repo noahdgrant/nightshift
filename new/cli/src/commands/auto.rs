@@ -7,7 +7,7 @@ use chrono::{DateTime, Local, NaiveTime};
 use clap::Args as ClapArgs;
 use serde_json::json;
 
-use super::{run as unit_run, triage};
+use super::{run as unit_run, triage, troubleshoot};
 use crate::forge::Forge;
 use crate::os::Os;
 use crate::{auto, forge, harness, lock, os, until, vcs};
@@ -50,6 +50,7 @@ pub fn run(args: Args) -> Result<()> {
             json!({
                 "queue": list(&plan.queue),
                 "triage": list(&plan.triage),
+                "repro": list(&plan.repro),
                 "skipped": plan.skipped.iter()
                     .map(|(u, why)| json!({ "unit": u.number, "why": why }))
                     .collect::<Vec<_>>(),
@@ -71,6 +72,17 @@ pub fn run(args: Args) -> Result<()> {
         harness.as_ref(),
         &root,
         &waiting,
+        Duration::from_secs(args.options.harness_timeout_seconds),
+    );
+    // Triage may have sent units to be reproduced.
+    let open = forge.unit_list(&root)?;
+    let repro: Vec<u64> = auto::plan(&open).repro.iter().map(|u| u.number).collect();
+    failed += troubleshoot::units_troubleshoot(
+        forge.as_ref(),
+        harness.as_ref(),
+        vcs.as_ref(),
+        &root,
+        &repro,
         Duration::from_secs(args.options.harness_timeout_seconds),
     );
     let os = os::get();

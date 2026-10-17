@@ -18,6 +18,9 @@ stateDiagram
     triage --> ready : ready-for-agent
     define --> ready
     repro --> ready
+    repro --> define
+    repro --> info
+    repro --> human
     ready --> run : ns run starts, by ns auto or a human
     info --> triage : answered
     run --> [*] : done, in-progress removed
