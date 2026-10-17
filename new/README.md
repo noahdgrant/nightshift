@@ -45,7 +45,7 @@ TODO: fill this in
 ## Run it overnight
 
 ```bash
-ns watch --until 06:30
+ns auto --until 06:30
 ```
 
 It takes `status:ready-for-agent` issues one at a time (`--parallel 3` runs three at once) and starts no new unit after 06:30. A unit already running finishes. [`docs/factory/watch.md`](docs/factory/watch.md) lists the other stop conditions, such as `limits.max_units`.
