@@ -65,7 +65,7 @@ impl Route {
             Route::Define => "status:needs-define",
             Route::Repro => "status:needs-repro",
             Route::Info => "status:needs-info",
-            Route::Human => "status:ready-for-human",
+            Route::Human => crate::status::READY_FOR_HUMAN,
             Route::Wontfix => "status:wontfix",
         }
     }

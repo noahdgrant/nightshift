@@ -69,3 +69,69 @@ Prefer the conventional tool, library and pattern: the repo's existing choice fi
 Bad: a hand-rolled argument parser next to commands that use `clap`.
 
 Good: `clap`, like the other commands.
+
+## Retry what can pass, where it is safe
+
+A call to a service outside `ns` (the forge, a remote, a harness) fails for reasons that pass on their own, such as a dropped connection, a 5xx or a rate limit. Repeat such a call a few times, waiting longer each time, and say each failure on stderr. Do it in the seam that makes the call, so every caller gets it, with `retry::retry`, and give the wait a field so a test can set it to zero.
+
+Repeat only a call that is safe to make twice, and only a failure known to be transient. A permanent error (a 404, no permission, a missing program) fails at once, and so does an error nobody has classified: repeating it hides it and costs time. A call that is not safe to repeat, such as opening or merging a change request, is made once; the state that made it runs again and looks before it acts.
+
+Bad: a loop around every call that retries whatever went wrong.
+
+Good: a list of the failures that can pass, a retry in the seam for the calls that are safe to repeat, and one test per kind of failure.
+
+## A test never waits on the clock
+
+A test never sleeps, and never asserts on real elapsed time. It waits for an event: a child exiting, a file appearing, a message on a channel. A real timeout in a test is only a hang guard: generous, and never the thing the test checks.
+
+Bad: the test passes only if the child exits within a second.
+
+```rust
+let start = Instant::now();
+kill(&child);
+std::thread::sleep(Duration::from_millis(100));
+assert!(start.elapsed() < Duration::from_secs(1));
+```
+
+Good: wait for the exit itself, with a hang guard the test never checks.
+
+```rust
+kill(&child);
+let status = child.wait()?; // the test binary's own timeout is the hang guard
+assert!(!status.success());
+```
+
+## Comments say why, not what
+
+A comment earns its place by saying what the code can't: a constraint, a reason, a trap. Delete a comment that restates the line below it, the file name, or the test's data.
+
+Bad:
+
+```rust
+// Remove the temp dir.
+fs::remove_dir_all(&tmp)?;
+```
+
+Good:
+
+```rust
+// The phase may still hold files open here on Windows; removal waits for the child to exit.
+fs::remove_dir_all(&tmp)?;
+```
+
+## Name what a value means
+
+A type says what its value means. Use a named struct, not a tuple whose fields can be swapped. Use an enum, not an `Option` whose `None` means something ("run everything") nor a `bool` flag argument. Match every enum case by name, not with `_`.
+
+Bad: `None` means "run every step", and a test can't tell unset from empty.
+
+```rust
+fn steps(files: Option<Vec<PathBuf>>) -> Vec<Step>
+```
+
+Good:
+
+```rust
+enum Scope { All, Files(Vec<PathBuf>) }
+fn steps(scope: Scope) -> Vec<Step>
+```

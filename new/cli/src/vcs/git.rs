@@ -1,11 +1,48 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
 use super::Vcs;
+use crate::retry;
 
-pub struct Git;
+/// What git says when a call to the remote failed for a reason that can pass.
+const TRANSIENT: [&str; 10] = [
+    "could not resolve host",
+    "temporary failure in name resolution",
+    "network is unreachable",
+    "connection",
+    "timed out",
+    "remote end hung up",
+    "early eof",
+    "ssh: connect to host",
+    "returned error: 5",
+    "returned error: 429",
+];
+
+pub struct Git {
+    /// How long to wait before the second attempt of a call to the remote.
+    retry_delay: Duration,
+}
+
+impl Git {
+    pub fn new() -> Git {
+        Git {
+            retry_delay: retry::DELAY,
+        }
+    }
+
+    /// Runs `git args` in `dir`, trying again when the remote cannot be reached. For calls that
+    /// leave the same result when made twice.
+    fn remote_run(&self, dir: &Path, args: &[&str]) -> Result<String> {
+        retry::retry(
+            self.retry_delay,
+            || run(dir, args),
+            |r| retry::error_says(r, &TRANSIENT),
+        )
+    }
+}
 
 impl Vcs for Git {
     fn root_find(&self, from: &Path) -> Result<PathBuf> {
@@ -81,7 +118,7 @@ impl Vcs for Git {
     fn branch_push(&self, path: &Path, branch: &str) -> Result<()> {
         // The branch may have been rewritten since it was last pushed: `build` squashes, and
         // `--fresh` starts over. The lease keeps a push from overwriting work it has not seen.
-        run(
+        self.remote_run(
             path,
             &[
                 "push",
@@ -104,7 +141,7 @@ impl Vcs for Git {
     }
 
     fn root_update(&self, root: &Path) -> Result<()> {
-        run(root, &["fetch", "origin"])?;
+        self.remote_run(root, &["fetch", "origin"])?;
         if succeeds(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]) {
             run(root, &["merge", "--ff-only", "@{upstream}"])?;
         }
@@ -186,4 +223,30 @@ fn succeeds(dir: &Path, args: &[&str]) -> bool {
         .current_dir(dir)
         .output()
         .is_ok_and(|o| o.status.success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_remote_that_cannot_be_reached_is_worth_another_attempt() {
+        for (said, repeated) in [
+            (
+                "fatal: unable to access 'https://x/': Could not resolve host: x",
+                true,
+            ),
+            ("ssh: connect to host x port 22: Connection timed out", true),
+            ("fatal: the remote end hung up unexpectedly", true),
+            (
+                "error: RPC failed; HTTP 503 curl 22 The requested URL returned error: 503",
+                true,
+            ),
+            ("! [rejected] x -> x (stale info)", false),
+            ("fatal: Authentication failed for 'https://x/'", false),
+            ("ERROR: Permission to x denied", false),
+        ] {
+            assert_eq!(crate::retry::says(said, &TRANSIENT), repeated, "{said}");
+        }
+    }
 }

@@ -1,14 +1,16 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
 use clap::{Args as ClapArgs, ValueEnum};
 use serde_json::{json, Value};
 
+use crate::forge::ChangeState;
 use crate::runlog::{Resume, RunLog};
 use crate::state::{Outcome, State};
 use crate::states::{self, ship, Context};
-use crate::{forge, harness, os, vcs, workspace};
+use crate::{forge, harness, os, status, vcs, workspace};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -104,6 +106,7 @@ pub fn run(args: Args) -> Result<()> {
         }
         ctx.workspace = Some(workspace);
     }
+    status::unit_status_set(ctx.forge.as_ref(), &root, args.unit, status::IN_PROGRESS)?;
     let phase = |state, _attempt| match states::run(&mut ctx, state) {
         Ok(outcome) => outcome,
         Err(e) => {
@@ -118,14 +121,48 @@ pub fn run(args: Args) -> Result<()> {
         }
         Ok(())
     };
-    walk(
+    let ended = walk(
         &unit,
         start,
         args.gates,
         args.max_attempts,
         phase,
         &mut sink,
-    )
+    );
+    let status = if matches!(ended, Ok(State::Done)) {
+        finished_status_set(&ctx, &root, &unit)
+    } else {
+        // Waiting at a gate, stuck or gone wrong: a human is next.
+        status::unit_status_set(
+            ctx.forge.as_ref(),
+            &root,
+            args.unit,
+            status::READY_FOR_HUMAN,
+        )
+    };
+    match (ended, status) {
+        (Err(e), Err(s)) => {
+            eprintln!("ns: cannot set the status of unit {unit}: {s:#}");
+            Err(e)
+        }
+        (Err(e), Ok(())) => Err(e),
+        (Ok(_), status) => status,
+    }
+}
+
+/// Sets the status of a unit whose states are all done: none when its change request merged,
+/// otherwise it is ready to merge and waits for a human.
+fn finished_status_set(ctx: &Context, root: &Path, unit: &str) -> Result<()> {
+    let branch = workspace::locate(root, unit)?.branch;
+    let merged = matches!(
+        ctx.forge.change_request_get(root, &branch)?,
+        Some(cr) if cr.state == ChangeState::Merged
+    );
+    if merged {
+        status::unit_status_clear(ctx.forge.as_ref(), root, ctx.unit)
+    } else {
+        status::unit_status_set(ctx.forge.as_ref(), root, ctx.unit, status::READY_FOR_HUMAN)
+    }
 }
 
 /// Moves the unit from `start` to `done`, or to `stuck` when a state would run more than
@@ -139,7 +176,7 @@ fn walk(
     max_attempts: u32,
     mut phase: impl FnMut(State, u32) -> Outcome,
     sink: &mut impl FnMut(Value) -> Result<()>,
-) -> Result<()> {
+) -> Result<State> {
     let mut state = start;
     let mut runs: HashMap<State, u32> = HashMap::new();
     sink(json!({ "unit": unit, "state": state.to_string() }))?;
@@ -171,13 +208,13 @@ fn walk(
         state = to;
         if gates == Gates::Stop && matches!(outcome, Outcome::Pass) && state.next().is_some() {
             sink(json!({ "unit": unit, "waiting": state.to_string() }))?;
-            return Ok(());
+            return Ok(state);
         }
     }
     if state == State::Stuck {
         bail!("unit {unit} is stuck");
     }
-    Ok(())
+    Ok(state)
 }
 
 #[cfg(test)]

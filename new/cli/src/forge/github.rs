@@ -1,14 +1,34 @@
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 use super::{ChangeRequest, ChangeState, Checks, Forge, Unit};
+use crate::retry;
+
+/// What `gh` says when a call failed for a reason that can pass: the network, the forge having a
+/// bad moment, or a rate limit. Any other error is permanent, or unknown, and is not repeated.
+const TRANSIENT: [&str; 11] = [
+    "http 5",
+    "http 429",
+    "rate limit",
+    "timeout",
+    "timed out",
+    "error connecting",
+    "connection",
+    "dial tcp",
+    "no such host",
+    "tls handshake",
+    "unexpected eof",
+];
 
 pub struct GitHub {
     program: OsString,
+    /// How long to wait before the second attempt of a call. Each later wait is twice as long.
+    retry_delay: Duration,
 }
 
 impl GitHub {
@@ -19,11 +39,23 @@ impl GitHub {
     pub fn with_program(program: impl Into<OsString>) -> GitHub {
         GitHub {
             program: program.into(),
+            retry_delay: retry::DELAY,
         }
     }
 
-    /// Runs `gh args` in `repo` and returns its stdout.
+    /// Runs `gh args` in `repo` and returns its stdout, trying again when it fails. For calls
+    /// that are safe to repeat: reads, and writes that leave the same result when made twice. Only a
+    /// transient failure is repeated.
     fn gh(&self, repo: &Path, args: &[&str]) -> Result<String> {
+        retry::retry(
+            self.retry_delay,
+            || self.gh_once(repo, args),
+            |r| retry::error_says(r, &TRANSIENT),
+        )
+    }
+
+    /// Runs `gh args` in `repo` once and returns its stdout.
+    fn gh_once(&self, repo: &Path, args: &[&str]) -> Result<String> {
         let out = Command::new(&self.program)
             .args(args)
             .current_dir(repo)
@@ -149,7 +181,8 @@ impl Forge for GitHub {
         body: &str,
     ) -> Result<ChangeRequest> {
         let body = format!("{body}\n\nCloses #{unit}\n");
-        self.gh(
+        // Not repeated: a call that did succeed but reported an error would open a second one.
+        self.gh_once(
             repo,
             &[
                 "pr", "create", "--head", branch, "--title", title, "--body", &body,
@@ -199,7 +232,8 @@ impl Forge for GitHub {
     }
 
     fn change_request_merge(&self, repo: &Path, number: u64) -> Result<()> {
-        self.gh(repo, &["pr", "merge", &number.to_string(), "--squash"])?;
+        // Not repeated: a second merge of a merged change request is an error.
+        self.gh_once(repo, &["pr", "merge", &number.to_string(), "--squash"])?;
         Ok(())
     }
 }
@@ -292,5 +326,89 @@ mod tests {
         let pr = gh.change_request_get(tmp.path(), "ns/u1").unwrap().unwrap();
         assert_eq!(pr.number, 9);
         assert_eq!(pr.state, ChangeState::Merged);
+    }
+
+    /// A stand-in for `gh` that fails `failures` times, then prints `stdout`. It counts its calls
+    /// in a file beside it.
+    fn flaky(dir: &Path, failures: u32, said: &str, stdout: &str) -> GitHub {
+        let path = dir.join("gh");
+        let calls = dir.join("calls");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho x >> '{calls}'\n[ $(wc -l < '{calls}') -le {failures} ] && {{ echo '{said}' >&2; exit 1; }}\ncat <<'EOF'\n{stdout}\nEOF\n",
+                calls = calls.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut gh = GitHub::with_program(path);
+        gh.retry_delay = Duration::ZERO;
+        gh
+    }
+
+    const DOWN: &str = "error connecting to api.github.com";
+
+    fn calls(dir: &Path) -> usize {
+        std::fs::read_to_string(dir.join("calls"))
+            .unwrap()
+            .lines()
+            .count()
+    }
+
+    #[test]
+    fn a_read_that_fails_is_tried_again() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = flaky(tmp.path(), 2, DOWN, "[]");
+        assert_eq!(gh.change_request_get(tmp.path(), "ns/u1").unwrap(), None);
+        assert_eq!(calls(tmp.path()), 3);
+    }
+
+    #[test]
+    fn a_call_that_keeps_failing_gives_up_with_its_error() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = flaky(tmp.path(), 99, DOWN, "");
+        let err = gh
+            .unit_labels_set(tmp.path(), 7, &["a".into()], &[])
+            .unwrap_err();
+        assert!(format!("{err:#}").contains(DOWN), "{err:#}");
+        assert_eq!(calls(tmp.path()), retry::ATTEMPTS as usize);
+    }
+
+    #[test]
+    fn opening_and_merging_a_change_request_are_not_repeated() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = flaky(tmp.path(), 99, DOWN, "");
+        gh.change_request_merge(tmp.path(), 9).unwrap_err();
+        assert_eq!(calls(tmp.path()), 1);
+        gh.change_request_create(tmp.path(), "ns/u1", 7, "t", "b")
+            .unwrap_err();
+        assert_eq!(calls(tmp.path()), 2);
+    }
+
+    #[test]
+    fn only_a_failure_that_can_pass_is_tried_again() {
+        let _spawn = crate::testutil::spawning();
+        for (said, repeated) in [
+            ("gh: Not Found (HTTP 404)", false),
+            ("GraphQL: user does not have the correct permissions", false),
+            ("something nobody has seen", false),
+            ("gh: Bad Gateway (HTTP 502)", true),
+            ("gh: API rate limit exceeded (HTTP 429)", true),
+            ("dial tcp: lookup api.github.com: no such host", true),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let gh = flaky(tmp.path(), 99, said, "");
+            gh.unit_get(tmp.path(), 7).unwrap_err();
+            let expected = if repeated {
+                retry::ATTEMPTS as usize
+            } else {
+                1
+            };
+            assert_eq!(calls(tmp.path()), expected, "{said}");
+        }
     }
 }

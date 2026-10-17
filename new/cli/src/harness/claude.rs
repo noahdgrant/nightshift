@@ -1,14 +1,30 @@
 use std::ffi::OsString;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
 use super::{Harness, Reply, Task};
 use crate::os::Os;
+use crate::retry;
+
+/// What a session that ended badly prints when the service behind it had a bad moment. A session
+/// out of time is not one of these: it is killed and is an error.
+const TRANSIENT: [&str; 7] = [
+    "overloaded",
+    "rate limit",
+    "api error: 5",
+    "api error: 429",
+    "econnreset",
+    "etimedout",
+    "socket hang up",
+];
 
 pub struct Claude {
     program: OsString,
     os: Box<dyn Os>,
+    /// How long to wait before the second attempt of a session.
+    retry_delay: Duration,
 }
 
 impl Claude {
@@ -20,12 +36,11 @@ impl Claude {
         Claude {
             program: program.into(),
             os,
+            retry_delay: retry::DELAY,
         }
     }
-}
 
-impl Harness for Claude {
-    fn task_run(&self, task: &Task) -> Result<Reply> {
+    fn session_run(&self, task: &Task) -> Result<Reply> {
         let mut cmd = Command::new(&self.program);
         cmd.arg("-p").arg("--permission-mode").arg(if task.write {
             "bypassPermissions"
@@ -53,6 +68,23 @@ impl Harness for Claude {
             text: String::from_utf8_lossy(&done.stdout).into_owned(),
             success: done.success == Some(true),
         })
+    }
+}
+
+impl Harness for Claude {
+    /// A session that ended badly because the service had a bad moment is started again. What it
+    /// changed before it ended stays, as it does when a state runs again.
+    fn task_run(&self, task: &Task) -> Result<Reply> {
+        retry::retry(
+            self.retry_delay,
+            || self.session_run(task),
+            |r| match r {
+                Ok(reply) if !reply.success && retry::says(&reply.text, &TRANSIENT) => {
+                    Some(format!("claude ended with: {}", reply.text.trim()))
+                }
+                Ok(_) | Err(_) => None,
+            },
+        )
     }
 }
 
@@ -120,5 +152,53 @@ mod tests {
             .task_run(&late)
             .unwrap_err();
         assert!(err.to_string().contains("did not finish"));
+    }
+
+    /// A stand-in for `claude` that ends badly with `said` the first `failures` times, then
+    /// answers. It counts its sessions in a file beside it.
+    fn flaky(dir: &Path, failures: u32, said: &str) -> Claude {
+        let path = dir.join("claude");
+        let calls = dir.join("calls");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\necho x >> '{calls}'\nif [ $(wc -l < '{calls}') -le {failures} ]; then echo '{said}'; exit 1; fi\necho done\n",
+                calls = calls.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut claude = Claude::with_program(path, crate::os::get());
+        claude.retry_delay = Duration::ZERO;
+        claude
+    }
+
+    fn sessions(dir: &Path) -> usize {
+        std::fs::read_to_string(dir.join("calls"))
+            .unwrap()
+            .lines()
+            .count()
+    }
+
+    #[test]
+    fn a_session_the_service_dropped_is_started_again() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let reply = flaky(tmp.path(), 2, "API Error: 529 Overloaded")
+            .task_run(&task(tmp.path(), true))
+            .unwrap();
+        assert!(reply.success);
+        assert_eq!(sessions(tmp.path()), 3);
+    }
+
+    #[test]
+    fn a_session_that_failed_for_any_other_reason_is_not_started_again() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let reply = flaky(tmp.path(), 99, "the tests do not pass")
+            .task_run(&task(tmp.path(), true))
+            .unwrap();
+        assert!(!reply.success);
+        assert_eq!(sessions(tmp.path()), 1);
     }
 }

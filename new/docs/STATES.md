@@ -1,28 +1,36 @@
 # States
 
-The table in `cli/src/state.rs` is the source of truth for `ns run`.
-
 ## `ns auto`
 
-Where a unit goes before it is run. Triage decides, and the unit's label on the forge records it. Only a ready unit goes to `ns run`; `define`, `repro` and the waiting states are not built yet.
+Where a unit is before, during and after its run. A unit's `status:` label on the forge records it, and `ns` is the only one that changes that label. Triage decides the first label. `ns auto` runs only ready units.
+
+- `ns run` marks a unit `in-progress` when it starts, and takes the label off when the unit reaches `done`. The merged change request closes the unit.
+- When `ns run` ends any other way, it sets `ready-for-human`: the unit is `stuck`, `ns run` itself failed, it waits at a gate, or the change request is ready to merge and `--merge` was not given.
+- `ns auto` only chooses. It runs `ns run <unit>` on units that are `ready-for-agent`, so it never picks up a unit that stopped. A human resumes a `ready-for-human` unit with the same `ns run <unit>`, which goes on from the run log.
+- `ns triage` triages up to N units that nobody has triaged, and `--all` triages every one.
 
 ```mermaid
 stateDiagram
-    state "ns run (see below)" as run
+    state "in-progress: ns run (see below)" as run
     [*] --> triage
     triage --> define : needs-define
     triage --> repro : needs-repro
     triage --> info : needs-info
     triage --> human : ready-for-human
     triage --> wontfix : closed
-    triage --> run : ready-for-agent
-    define --> run
-    repro --> run
+    triage --> ready : ready-for-agent
+    define --> ready
+    repro --> ready
+    ready --> run : ns run starts, by ns auto or a human
     info --> triage : answered
-    run --> [*]
+    run --> [*] : done, in-progress removed
+    run --> human : stuck, error, gate or merge-ready
+    human --> run : a human runs ns run again
 ```
 
 ## `ns run`
+
+The table in `cli/src/state.rs` is the source of truth.
 
 ```mermaid
 stateDiagram

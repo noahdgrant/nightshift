@@ -103,7 +103,11 @@ fn tools(repo: &Repo, fakes: &Fakes) -> String {
         &format!(
             r#"echo "$@" >> "{bin}/gh.log"
 case "$1 $2" in
-"api repos/{{owner}}/{{repo}}/issues/5") echo '{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":[],"author_association":"OWNER"}}';;
+"api repos/{{owner}}/{{repo}}/issues/5") labels='{ready}'
+  case "$(grep 'issue edit' "{bin}/gh.log" | tail -1)" in
+  *"--add-label status:in-progress"*) labels='{progress}';;
+  esac
+  echo '{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":'"$labels"',"author_association":"OWNER"}}';;
 "pr list") if [ -e "{bin}/merged" ]; then state=MERGED; else state=OPEN; fi
   if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"'$state'"}}]'; else echo '[]'; fi;;
 "pr create") touch "{bin}/opened"; echo https://forge.example/9;;
@@ -111,7 +115,9 @@ case "$1 $2" in
 "pr merge") touch "{bin}/merged";;
 esac"#,
             bin = bin.display(),
-            checks = checks
+            checks = checks,
+            ready = r#"[{"name":"status:ready-for-agent"}]"#,
+            progress = r#"[{"name":"status:in-progress"}]"#,
         ),
     );
     let edit = match fakes.check_edits {
@@ -1019,5 +1025,81 @@ fn a_session_that_runs_out_of_time_goes_wrong_like_any_other_failure() {
     assert_eq!(
         &moves(out)[..],
         ["start setup", "setup>build", "build>build", "build>stuck"]
+    );
+}
+
+/// The last label change the fake `gh` was asked for.
+fn last_label_edit(repo: &Repo) -> String {
+    gh_log(repo)
+        .lines()
+        .rfind(|l| l.starts_with("issue edit"))
+        .unwrap_or_default()
+        .to_string()
+}
+
+const STARTED: &str =
+    "issue edit 5 --add-label status:in-progress --remove-label status:ready-for-agent";
+const TO_HUMAN: &str =
+    "issue edit 5 --add-label status:ready-for-human --remove-label status:in-progress";
+
+#[test]
+fn a_unit_is_in_progress_from_the_start_and_its_label_goes_when_its_change_merges() {
+    let repo = Repo::new();
+    run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"]).success();
+    let edits: Vec<_> = gh_log(&repo)
+        .lines()
+        .filter(|l| l.starts_with("issue edit"))
+        .map(String::from)
+        .collect();
+    assert_eq!(
+        edits,
+        [STARTED, "issue edit 5 --remove-label status:in-progress"]
+    );
+}
+
+#[test]
+fn a_change_ready_to_merge_leaves_the_unit_for_a_human() {
+    let repo = Repo::new();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert_eq!(last_label_edit(&repo), TO_HUMAN);
+}
+
+#[test]
+fn a_stuck_unit_is_left_for_a_human() {
+    let repo = Repo::new();
+    let broken = Fakes {
+        exit: 1,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &broken)).failure();
+    assert_eq!(last_label_edit(&repo), TO_HUMAN);
+}
+
+#[test]
+fn a_unit_waiting_at_a_gate_is_left_for_a_human() {
+    let repo = Repo::new();
+    let path = tools(&repo, &Fakes::passing());
+    run_args(&repo, &path, &["run", "5", "--ci-poll-seconds", "0"]).success();
+    assert_eq!(last_label_edit(&repo), TO_HUMAN);
+}
+
+#[test]
+fn a_human_resuming_a_unit_marks_it_in_progress_again() {
+    let repo = Repo::new();
+    let broken = Fakes {
+        exit: 1,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &broken)).failure();
+    run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"]).success();
+    let log = gh_log(&repo);
+    assert_eq!(
+        log.matches("--add-label status:in-progress").count(),
+        2,
+        "{log}"
+    );
+    assert_eq!(
+        last_label_edit(&repo),
+        "issue edit 5 --remove-label status:in-progress"
     );
 }
