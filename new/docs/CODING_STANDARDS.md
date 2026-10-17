@@ -54,7 +54,7 @@ Bad: a page that lists each command's flags, which `--help` prints.
 
 Good: no page. A doc that stays is one nothing else can say, such as why a choice was made, or a picture of how the parts connect.
 
-## One meaning in one place
+## Single source of truth
 
 Keep each meaning in a single place and point to it instead of restating it. A copy can drift from the original, and then the two disagree with no way to tell which is right.
 

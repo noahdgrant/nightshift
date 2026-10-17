@@ -13,7 +13,7 @@ pub enum Outcome {
     Redo,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum State {
     Setup,
     Build,
@@ -26,6 +26,22 @@ pub enum State {
 }
 
 impl State {
+    /// The state called `name`, as it is printed.
+    pub fn parse(name: &str) -> Option<State> {
+        [
+            State::Setup,
+            State::Build,
+            State::Verify,
+            State::Review,
+            State::Ship,
+            State::CleanUp,
+            State::Done,
+            State::Stuck,
+        ]
+        .into_iter()
+        .find(|s| s.to_string() == name)
+    }
+
     pub const START: State = State::Setup;
 
     /// Where a unit goes when the state passes.

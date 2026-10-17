@@ -196,10 +196,16 @@ fn run(repo: &Repo, path: &str) -> assert_cmd::assert::Assert {
 
 /// Runs `ns run 5` with `extra` arguments. It looks at the checks without waiting between looks.
 fn run_with(repo: &Repo, path: &str, extra: &[&str]) -> assert_cmd::assert::Assert {
+    let mut args = vec!["run", "5", "--gates", "auto", "--ci-poll-seconds", "0"];
+    args.extend(extra);
+    run_args(repo, path, &args)
+}
+
+/// Runs `ns` with exactly `args`.
+fn run_args(repo: &Repo, path: &str, args: &[&str]) -> assert_cmd::assert::Assert {
     Command::cargo_bin("ns")
         .unwrap()
-        .args(["run", "5", "--ci-poll-seconds", "0"])
-        .args(extra)
+        .args(args)
         .env("PATH", path)
         .env("NS_CONFIG_DIR", &repo.config)
         .env("GIT_AUTHOR_NAME", "t")
@@ -581,6 +587,117 @@ fn failed_checks_send_the_unit_back_to_build_with_their_names() {
         1,
         "the change request is kept: {log}"
     );
+}
+
+fn lines(out: &[u8]) -> Vec<serde_json::Value> {
+    String::from_utf8_lossy(out)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+fn run_log(repo: &Repo) -> Vec<serde_json::Value> {
+    let path = repo.path.join(".git/ns/runs.jsonl");
+    lines(&std::fs::read(path).unwrap_or_default())
+}
+
+#[test]
+fn gates_stop_the_unit_before_each_state_and_running_again_goes_on() {
+    let repo = Repo::new();
+    let path = tools(&repo, &Fakes::passing());
+    let first = run_args(&repo, &path, &["run", "5", "--ci-poll-seconds", "0"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let first = lines(&first);
+    assert_eq!(first.last().unwrap()["waiting"], "build");
+    assert!(!repo.workspace("5").join(".ns/5/build.md").exists());
+    let mut runs = 1;
+    loop {
+        let out = run_args(&repo, &path, &["run", "5", "--ci-poll-seconds", "0"])
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        runs += 1;
+        let last = lines(&out).last().unwrap().clone();
+        if last.get("waiting").is_none() {
+            assert_eq!(last["to"], "done");
+            break;
+        }
+        assert!(runs < 12, "never finished");
+    }
+    assert_eq!(read(&repo, "build.md"), "built the thing\n");
+}
+
+#[test]
+fn a_stuck_unit_resumes_at_the_state_it_stuck_in_with_fresh_attempts() {
+    let repo = Repo::new();
+    let broken = Fakes {
+        exit: 1,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &broken)).failure();
+    let last = run_log(&repo).last().unwrap().clone();
+    assert_eq!(
+        (last["from"].as_str(), last["to"].as_str()),
+        (Some("build"), Some("stuck"))
+    );
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let events = lines(&out);
+    assert_eq!(events[0]["state"], "build", "resumed at build, not setup");
+    assert_eq!(events.last().unwrap()["to"], "done");
+}
+
+#[test]
+fn a_finished_unit_is_not_run_again() {
+    let repo = Repo::new();
+    run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"]).success();
+    let before = run_log(&repo).len();
+    let out = run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        lines(&out),
+        [serde_json::json!({"unit": "5", "state": "done"})]
+    );
+    assert_eq!(run_log(&repo).len(), before);
+}
+
+#[test]
+fn the_run_log_holds_every_move_with_its_time() {
+    let repo = Repo::new();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    let log = run_log(&repo);
+    let moves: Vec<String> = log
+        .iter()
+        .map(|e| {
+            format!(
+                "{}>{}",
+                e["from"].as_str().unwrap(),
+                e["to"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(
+        moves,
+        [
+            "setup>build",
+            "build>verify",
+            "verify>review",
+            "review>ship",
+            "ship>clean_up",
+            "clean_up>done"
+        ]
+    );
+    assert!(log.iter().all(|e| e["at"].as_u64().is_some_and(|t| t > 0)));
 }
 
 #[test]

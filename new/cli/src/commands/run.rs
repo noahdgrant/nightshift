@@ -1,14 +1,14 @@
 use std::collections::HashMap;
-use std::io::Write;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
-use clap::Args as ClapArgs;
+use clap::{Args as ClapArgs, ValueEnum};
 use serde_json::{json, Value};
 
+use crate::runlog::{Resume, RunLog};
 use crate::state::{Outcome, State};
 use crate::states::{self, ship, Context};
-use crate::{forge, harness, vcs};
+use crate::{forge, harness, vcs, workspace};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -17,6 +17,9 @@ pub struct Args {
     /// How many times a state may run before the unit is stuck.
     #[arg(long, default_value_t = 2)]
     max_attempts: u32,
+    /// Stop between states for the human, or go on.
+    #[arg(long, value_enum, default_value_t = Gates::Stop)]
+    gates: Gates,
     /// Merge the change request once its checks pass. Without it, `ship` stops at ready to merge.
     #[arg(long)]
     merge: bool,
@@ -28,13 +31,38 @@ pub struct Args {
     ci_timeout_seconds: u64,
 }
 
-/// Walks the unit through its states. `setup`, `build` and `verify` do work so far.
+/// Whether `ns run` stops for the human between states.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Gates {
+    /// Stop before each state after the first one this run starts. Run again to go on.
+    Stop,
+    /// Go on without stopping.
+    Auto,
+}
+
+/// Walks the unit through its states, from where it last stopped.
 pub fn run(args: Args) -> Result<()> {
+    let unit = args.unit.to_string();
+    let from = std::env::current_dir()?;
+    let vcs = vcs::get();
+    let root = vcs.root_find(&from)?;
+    let log = RunLog::open(vcs.as_ref(), &root)?;
+    let start = match log.resume(&unit)? {
+        Resume::Fresh => State::START,
+        Resume::At(state) => state,
+        Resume::Finished => {
+            println!(
+                "{}",
+                json!({ "unit": unit, "state": State::Done.to_string() })
+            );
+            return Ok(());
+        }
+    };
     let mut ctx = Context {
-        vcs: vcs::get(),
+        vcs,
         forge: forge::get(),
         harness: harness::get(),
-        from: std::env::current_dir()?,
+        from,
         unit: args.unit,
         workspace: None,
         ship: ship::Options {
@@ -43,6 +71,16 @@ pub fn run(args: Args) -> Result<()> {
             timeout: Duration::from_secs(args.ci_timeout_seconds),
         },
     };
+    if start != State::Setup {
+        let workspace = workspace::locate(&root, &unit)?;
+        if start != State::CleanUp && !workspace.path.exists() {
+            bail!(
+                "the workspace of unit {unit} is gone: {}",
+                workspace.path.display()
+            );
+        }
+        ctx.workspace = Some(workspace);
+    }
     let phase = |state, _attempt| match states::run(&mut ctx, state) {
         Ok(outcome) => outcome,
         Err(e) => {
@@ -50,26 +88,38 @@ pub fn run(args: Args) -> Result<()> {
             Outcome::Redo
         }
     };
+    let mut sink = |event: Value| -> Result<()> {
+        println!("{event}");
+        if event.get("to").is_some() {
+            log.append(&event)?;
+        }
+        Ok(())
+    };
     walk(
-        &args.unit.to_string(),
+        &unit,
+        start,
+        args.gates,
         args.max_attempts,
         phase,
-        &mut std::io::stdout(),
+        &mut sink,
     )
 }
 
-/// Moves the unit from the start state to `done`, or to `stuck` when a state would run more than
-/// `max_attempts` times in all. `phase` runs a state given its attempt number (from 1). Each move
-/// is printed as one JSON line.
+/// Moves the unit from `start` to `done`, or to `stuck` when a state would run more than
+/// `max_attempts` times in all. With `Gates::Stop` it also stops, ready to go on, before every
+/// state after the first. `phase` runs a state given its attempt number (from 1). Every move is
+/// passed to `sink` as one JSON event.
 fn walk(
     unit: &str,
+    start: State,
+    gates: Gates,
     max_attempts: u32,
     mut phase: impl FnMut(State, u32) -> Outcome,
-    out: &mut impl Write,
+    sink: &mut impl FnMut(Value) -> Result<()>,
 ) -> Result<()> {
-    let mut state = State::START;
+    let mut state = start;
     let mut runs: HashMap<State, u32> = HashMap::new();
-    emit(out, json!({ "unit": unit, "state": state.to_string() }))?;
+    sink(json!({ "unit": unit, "state": state.to_string() }))?;
     while let Some(next) = state.next() {
         let attempt = runs.entry(state).or_insert(0);
         *attempt += 1;
@@ -94,17 +144,16 @@ fn walk(
             event["attempt"] = attempt.into();
             event["reason"] = "failed".into();
         }
-        emit(out, event)?;
+        sink(event)?;
         state = to;
+        if gates == Gates::Stop && matches!(outcome, Outcome::Pass) && state.next().is_some() {
+            sink(json!({ "unit": unit, "waiting": state.to_string() }))?;
+            return Ok(());
+        }
     }
     if state == State::Stuck {
         bail!("unit {unit} is stuck");
     }
-    Ok(())
-}
-
-fn emit(out: &mut impl Write, event: Value) -> Result<()> {
-    writeln!(out, "{event}")?;
     Ok(())
 }
 
@@ -113,14 +162,22 @@ mod tests {
     use super::*;
 
     fn moves(unit_outcomes: impl FnMut(State, u32) -> Outcome) -> (Vec<String>, bool) {
-        let mut out = Vec::new();
-        let result = walk("u1", 2, unit_outcomes, &mut out);
-        let moves = String::from_utf8(out)
-            .unwrap()
-            .lines()
+        let mut events = Vec::new();
+        let result = walk(
+            "u1",
+            State::START,
+            Gates::Auto,
+            2,
+            unit_outcomes,
+            &mut |e| {
+                events.push(e);
+                Ok(())
+            },
+        );
+        let moves = events
+            .iter()
             .skip(1)
-            .map(|l| {
-                let v: Value = serde_json::from_str(l).unwrap();
+            .map(|v| {
                 format!(
                     "{}>{}",
                     v["from"].as_str().unwrap(),
