@@ -172,7 +172,6 @@ fn units_run(
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
-    use std::path::PathBuf;
     use std::process::Command;
 
     use chrono::{Duration as Span, TimeZone};
@@ -246,12 +245,6 @@ mod tests {
             unreachable!()
         }
         fn shell_command(&self, _: &str) -> Command {
-            unreachable!()
-        }
-        fn file_link(&self, _: &Path, _: &Path) -> Result<()> {
-            unreachable!()
-        }
-        fn config_dir_find(&self) -> Result<PathBuf> {
             unreachable!()
         }
         fn time_now(&self) -> DateTime<Local> {

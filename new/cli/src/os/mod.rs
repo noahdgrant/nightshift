@@ -3,7 +3,6 @@
 
 mod linux;
 
-use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -21,12 +20,6 @@ pub trait Os {
 
     /// A command that runs `script` in the system's shell.
     fn shell_command(&self, script: &str) -> Command;
-
-    /// Makes `link` point at `target`.
-    fn file_link(&self, target: &Path, link: &Path) -> Result<()>;
-
-    /// Where the user's own files for `ns` live, when nothing says otherwise.
-    fn config_dir_find(&self) -> Result<PathBuf>;
 
     /// The time of day by the clock on the wall.
     fn time_now(&self) -> DateTime<Local>;

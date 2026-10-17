@@ -44,7 +44,6 @@ pub fn ns(repo: &Repo, args: &[&str]) -> assert_cmd::assert::Assert {
             "PATH",
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
         )
-        .env("NS_CONFIG_DIR", &repo.config)
         .current_dir(&repo.path)
         .assert()
 }

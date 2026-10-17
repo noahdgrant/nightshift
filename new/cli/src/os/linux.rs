@@ -3,7 +3,6 @@
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -30,19 +29,6 @@ impl Os for Linux {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(script);
         cmd
-    }
-
-    fn file_link(&self, target: &Path, link: &Path) -> Result<()> {
-        std::os::unix::fs::symlink(target, link)
-            .with_context(|| format!("cannot link {}", link.display()))
-    }
-
-    fn config_dir_find(&self) -> Result<PathBuf> {
-        if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
-            return Ok(PathBuf::from(dir).join("nightshift"));
-        }
-        let home = std::env::var_os("HOME").context("HOME is not set")?;
-        Ok(PathBuf::from(home).join(".config").join("nightshift"))
     }
 
     fn time_now(&self) -> DateTime<Local> {

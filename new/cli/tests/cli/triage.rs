@@ -53,7 +53,6 @@ esac"#,
             "PATH",
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
         )
-        .env("NS_CONFIG_DIR", &repo.config)
         .current_dir(&repo.path)
         .assert()
 }
@@ -166,7 +165,6 @@ esac"#,
             "PATH",
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
         )
-        .env("NS_CONFIG_DIR", &repo.config)
         .current_dir(&repo.path)
         .assert()
 }

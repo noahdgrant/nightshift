@@ -7,8 +7,6 @@ use tempfile::TempDir;
 pub struct Repo {
     _tmp: TempDir,
     pub path: PathBuf,
-    /// The directory `ns` reads its user-level skills from, as `NS_CONFIG_DIR`.
-    pub config: PathBuf,
 }
 
 impl Repo {
@@ -27,25 +25,7 @@ impl Repo {
             &path,
             &["remote", "add", "origin", &origin.to_string_lossy()],
         );
-        let config = tmp.path().join("config");
-        let repo = Repo {
-            _tmp: tmp,
-            path,
-            config,
-        };
-        repo.install_skills(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../skills"));
-        repo
-    }
-
-    /// Runs `ns install` for the skills in `source`, as a user would.
-    pub fn install_skills(&self, source: &Path) {
-        assert_cmd::Command::cargo_bin("ns")
-            .unwrap()
-            .args(["install", "--source"])
-            .arg(source)
-            .env("NS_CONFIG_DIR", &self.config)
-            .assert()
-            .success();
+        Repo { _tmp: tmp, path }
     }
 
     pub fn workspace(&self, unit: &str) -> PathBuf {

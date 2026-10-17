@@ -224,7 +224,6 @@ fn run_args(repo: &Repo, path: &str, args: &[&str]) -> assert_cmd::assert::Asser
         .unwrap()
         .args(args)
         .env("PATH", path)
-        .env("NS_CONFIG_DIR", &repo.config)
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
         .env("GIT_COMMITTER_NAME", "t")
@@ -447,7 +446,7 @@ fn build_prompt(repo: &Repo) -> String {
 }
 
 #[test]
-fn the_build_prompt_is_the_installed_skill_and_the_unit() {
+fn the_build_prompt_is_the_embedded_skill_and_the_unit() {
     let repo = Repo::new();
     run(&repo, &tools(&repo, &Fakes::passing())).success();
     let prompt = build_prompt(&repo);
@@ -460,29 +459,7 @@ fn the_build_prompt_is_the_installed_skill_and_the_unit() {
 }
 
 #[test]
-fn a_skill_changed_after_install_is_used_on_the_next_run() {
-    let repo = Repo::new();
-    let source = repo.path.parent().unwrap().join("my-skills");
-    std::fs::create_dir_all(source.join("ns-build")).unwrap();
-    for name in ["ns-build", "ns-verify", "ns-review"] {
-        std::fs::create_dir_all(source.join(name)).unwrap();
-        let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../skills")
-            .join(name);
-        std::fs::copy(from.join("SKILL.md"), source.join(name).join("SKILL.md")).unwrap();
-    }
-    repo.install_skills(&source);
-    std::fs::write(
-        source.join("ns-build/SKILL.md"),
-        "# Build\n\nMY OWN BUILD STEPS\n",
-    )
-    .unwrap();
-    run(&repo, &tools(&repo, &Fakes::passing())).success();
-    assert!(build_prompt(&repo).contains("MY OWN BUILD STEPS"));
-}
-
-#[test]
-fn a_skill_in_the_repository_wins_over_an_installed_one() {
+fn a_skill_in_the_repository_wins_over_the_embedded_one() {
     let repo = Repo::new();
     std::fs::create_dir_all(repo.path.join(".nightshift/skills/ns-build")).unwrap();
     std::fs::write(
@@ -493,18 +470,6 @@ fn a_skill_in_the_repository_wins_over_an_installed_one() {
     run(&repo, &tools(&repo, &Fakes::passing())).success();
     let prompt = build_prompt(&repo);
     assert!(prompt.starts_with("# Build\n\nTHIS REPOSITORY"), "{prompt}");
-}
-
-#[test]
-fn a_skill_that_is_not_installed_goes_wrong_and_says_how_to_install_it() {
-    let repo = Repo::new();
-    std::fs::remove_dir_all(repo.config.join("skills")).unwrap();
-    let out = run(&repo, &tools(&repo, &Fakes::passing())).failure();
-    let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
-    assert!(
-        stderr.contains("ns-build is not installed; run `ns install`"),
-        "{stderr}"
-    );
 }
 
 #[test]

@@ -13,11 +13,21 @@ An opinionated software factory for building robust and reliable applications. T
 
 ## Install
 
+From a release, on Linux (x86_64):
+
 ```bash
-cargo install --path cli     # the ns CLI
-ns install                   # symlinks skills/ns-* into ~/.agents/skills and ~/.claude/skills
-ns install --harness cursor  # or into one harness's skill dir: claude, codex, cursor, agents
+gh release download ns-v0.2.0 --repo noahdgrant/nightshift --pattern '*.tar.gz' --dir /tmp/ns
+tar -xzf /tmp/ns/ns-*.tar.gz -C /tmp/ns
+install -m 755 /tmp/ns/ns-*/ns ~/.local/bin/ns
 ```
+
+From a checkout, to run what you are editing:
+
+```bash
+cargo install --path cli --force
+```
+
+The skills are inside the binary, so each install runs the skills it shipped with. A repository can replace one with `.nightshift/skills/<name>/SKILL.md`.
 
 ## Setup
 

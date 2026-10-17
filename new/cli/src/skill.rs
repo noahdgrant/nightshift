@@ -1,13 +1,15 @@
 //! The skills the states hand the harness. A state's prompt starts with its skill's text, so the
 //! harness always gets the same instructions, whether or not it would have found the skill.
 //!
-//! Skills are files, read when a state runs, so they can be changed without a new `ns`. A skill
-//! is looked for by name in the repository's `.nightshift/skills/`, then in `ns`'s own skills
-//! directory, which `ns install` fills.
+//! The skills are in the binary, so every install runs the skills that came with it. A repository
+//! may replace one with a file of its own, `.nightshift/skills/<name>/SKILL.md`, read when a
+//! state runs.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+
+include!(concat!(env!("OUT_DIR"), "/skills.rs"));
 
 pub const TRIAGE: &str = "ns-triage";
 pub const BUILD: &str = "ns-build";
@@ -18,40 +20,22 @@ pub const REQUIREMENTS: &str = "ns-requirements";
 pub const DESIGN_DOC: &str = "ns-design-doc";
 pub const TROUBLESHOOT: &str = "ns-troubleshoot";
 
-/// Where `ns` keeps what belongs to the user: `$NS_CONFIG_DIR`, else where the operating system
-/// keeps such files.
-pub fn config_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("NS_CONFIG_DIR") {
-        return Ok(dir.into());
-    }
-    crate::os::get().config_dir_find()
-}
-
-/// The directory `ns install` links skills into.
-pub fn installed_dir() -> Result<PathBuf> {
-    Ok(config_dir()?.join("skills"))
-}
-
 /// The text of skill `name`, without its frontmatter. `root` is the repository's main checkout.
 pub fn load(root: &Path, name: &str) -> Result<String> {
-    let mut looked = vec![root.join(".nightshift").join("skills")];
-    looked.push(installed_dir()?);
-    for dir in &looked {
-        let file = dir.join(name).join("SKILL.md");
-        match std::fs::read_to_string(&file) {
-            Ok(text) => return Ok(body(&text).to_string()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| format!("cannot read {}", file.display())),
-        }
+    let file = root
+        .join(".nightshift")
+        .join("skills")
+        .join(name)
+        .join("SKILL.md");
+    match std::fs::read_to_string(&file) {
+        Ok(text) => return Ok(body(&text).to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", file.display())),
     }
-    bail!(
-        "skill {name} is not installed; run `ns install` with the directory that holds it (looked in {})",
-        looked
-            .iter()
-            .map(|d| d.display().to_string())
-            .collect::<Vec<_>>()
-            .join(" and ")
-    )
+    match EMBEDDED.iter().find(|(embedded, _)| *embedded == name) {
+        Some((_, text)) => Ok(body(text).to_string()),
+        None => bail!("there is no skill named {name}"),
+    }
 }
 
 /// A skill's text without its frontmatter.
@@ -65,6 +49,35 @@ fn body(skill: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_skill_in_the_skills_directory_is_embedded() {
+        let dir = format!("{}/../skills", env!("CARGO_MANIFEST_DIR"));
+        let mut on_disk: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        on_disk.sort();
+        let embedded: Vec<&str> = EMBEDDED.iter().map(|(name, _)| *name).collect();
+        assert_eq!(embedded, on_disk);
+    }
+
+    #[test]
+    fn a_skill_is_the_embedded_one_unless_the_repository_has_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(load(tmp.path(), BUILD).unwrap().starts_with("# Build"));
+        let own = tmp.path().join(".nightshift/skills/ns-build");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("SKILL.md"), "---\nname: ns-build\n---\nMINE\n").unwrap();
+        assert_eq!(load(tmp.path(), BUILD).unwrap(), "MINE\n");
+    }
+
+    #[test]
+    fn a_skill_nobody_wrote_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = load(tmp.path(), "ns-nothing").unwrap_err();
+        assert!(err.to_string().contains("no skill named ns-nothing"));
+    }
 
     #[test]
     fn the_frontmatter_is_left_out() {

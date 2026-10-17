@@ -81,7 +81,6 @@ fn auto_by(
     cmd.args(["auto", "--ci-poll-seconds", "0"])
         .args(extra)
         .env("PATH", path)
-        .env("NS_CONFIG_DIR", &repo.config)
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
         .env("GIT_COMMITTER_NAME", "t")

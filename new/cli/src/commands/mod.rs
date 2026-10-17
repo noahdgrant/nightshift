@@ -3,7 +3,6 @@
 mod auto;
 mod check;
 mod define;
-mod install;
 mod plan;
 mod run;
 mod triage;
@@ -22,8 +21,6 @@ pub enum Command {
     Check(check::Args),
     /// Work out a spec for a vague unit with you, then plan it.
     Define(define::Args),
-    /// Link skills into ns's skills directory.
-    Install(install::Args),
     /// Cut a unit into slices and make it ready for the agent.
     Plan(plan::Args),
     /// Move a unit through the states, printing each move.
@@ -43,7 +40,6 @@ pub fn run(command: Command) -> Result<()> {
         Command::Auto(args) => auto::run(args),
         Command::Check(args) => check::run(args),
         Command::Define(args) => define::run(args),
-        Command::Install(args) => install::run(args),
         Command::Plan(args) => plan::run(args),
         Command::Run(args) => run::run(args),
         Command::Version(args) => version::run(args),
