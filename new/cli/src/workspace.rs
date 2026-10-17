@@ -49,7 +49,7 @@ pub fn remove(vcs: &dyn Vcs, from: &Path, unit: &str) -> Result<bool> {
     Ok(true)
 }
 
-fn locate(root: &Path, unit: &str) -> Result<Workspace> {
+pub fn locate(root: &Path, unit: &str) -> Result<Workspace> {
     let name = root
         .file_name()
         .context("repository has no directory name")?;

@@ -40,6 +40,10 @@ pub trait Vcs {
     /// Publishes `branch` from the workspace at `path` to the remote.
     fn branch_push(&self, path: &Path, branch: &str) -> Result<()>;
 
+    /// Deletes `branch` from the repository at `root`, and what `ns` remembers of where it
+    /// started. The branch must not be checked out in any workspace.
+    fn branch_delete(&self, root: &Path, branch: &str) -> Result<()>;
+
     /// Removes the workspace at `path` and keeps its branch. Fails when the workspace has
     /// uncommitted changes.
     fn workspace_remove(&self, root: &Path, path: &Path) -> Result<()>;

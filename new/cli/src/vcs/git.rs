@@ -71,6 +71,15 @@ impl Vcs for Git {
         Ok(())
     }
 
+    fn branch_delete(&self, root: &Path, branch: &str) -> Result<()> {
+        if succeeds(root, &["rev-parse", "--verify", "--quiet", branch]) {
+            // The branch was merged on the forge, as a new commit, so git sees it as unmerged.
+            run(root, &["branch", "--delete", "--force", branch])?;
+        }
+        run(root, &["update-ref", "-d", &base_ref(branch)])?;
+        Ok(())
+    }
+
     fn workspace_remove(&self, root: &Path, path: &Path) -> Result<()> {
         run(root, &["worktree", "remove", &path.to_string_lossy()])?;
         Ok(())

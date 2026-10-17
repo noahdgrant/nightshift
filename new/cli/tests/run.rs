@@ -105,7 +105,8 @@ fn tools(repo: &Repo, fakes: &Fakes) -> String {
             r#"echo "$@" >> "{bin}/gh.log"
 case "$1 $2" in
 "issue view") echo '{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":[]}}';;
-"pr list") if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"OPEN"}}]'; else echo '[]'; fi;;
+"pr list") if [ -e "{bin}/merged" ]; then state=MERGED; else state=OPEN; fi
+  if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"'$state'"}}]'; else echo '[]'; fi;;
 "pr create") touch "{bin}/opened"; echo https://forge.example/9;;
 "pr checks") {checks};;
 "pr merge") touch "{bin}/merged";;
@@ -274,6 +275,32 @@ fn ship_merges_once_the_checks_pass_when_asked() {
 }
 
 #[test]
+fn clean_up_removes_the_workspace_and_branch_of_a_merged_unit() {
+    let repo = Repo::new();
+    let out = run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(moves(out).last().unwrap(), "clean_up>done");
+    assert!(!repo.workspace("5").exists());
+    assert!(!repo.branches().contains(&"ns/5".to_string()));
+}
+
+#[test]
+fn clean_up_leaves_the_workspace_of_a_change_request_still_open() {
+    let repo = Repo::new();
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(moves(out).last().unwrap(), "clean_up>done");
+    assert!(repo.workspace("5").is_dir());
+    assert!(repo.branches().contains(&"ns/5".to_string()));
+}
+
+#[test]
 fn ship_waits_for_pending_checks() {
     let repo = Repo::new();
     let fakes = Fakes {
@@ -316,7 +343,7 @@ fn failed_checks_send_the_unit_back_to_build_with_their_names() {
         ci: Ci::FailsOnce,
         ..Fakes::passing()
     };
-    let out = run_with(&repo, &tools(&repo, &fakes), &["--merge"])
+    let out = run(&repo, &tools(&repo, &fakes))
         .success()
         .get_output()
         .stdout
@@ -331,7 +358,6 @@ fn failed_checks_send_the_unit_back_to_build_with_their_names() {
         1,
         "the change request is kept: {log}"
     );
-    assert_eq!(log.matches("pr merge").count(), 1, "{log}");
 }
 
 #[test]

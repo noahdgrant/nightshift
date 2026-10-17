@@ -1,6 +1,7 @@
 //! What each state does. A state passes by returning `Ok` and fails by returning `Err`.
 
 mod build;
+mod clean_up;
 mod setup;
 pub mod ship;
 mod verdict;
@@ -39,6 +40,7 @@ pub fn run(ctx: &mut Context, state: State) -> Result<Outcome> {
         State::Build => build::run(ctx),
         State::Verify => verify::run(ctx),
         State::Ship => ship::run(ctx),
+        State::CleanUp => clean_up::run(ctx),
         _ => Ok(Outcome::Pass),
     }
 }
