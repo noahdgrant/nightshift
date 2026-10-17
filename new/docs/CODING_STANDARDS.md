@@ -53,3 +53,19 @@ Code cannot lie; docs can. Write down only the bare minimum, or what is absolute
 Bad: a page that lists each command's flags, which `--help` prints.
 
 Good: no page. A doc that stays is one nothing else can say, such as why a choice was made, or a picture of how the parts connect.
+
+## One meaning in one place
+
+Keep each meaning in a single place and point to it instead of restating it. A copy can drift from the original, and then the two disagree with no way to tell which is right.
+
+Bad: the list of states in the enum and again in the glossary.
+
+Good: the glossary says "the list is in `docs/STATES.md`".
+
+## Take the well-trodden path
+
+Prefer the conventional tool, library and pattern: the repo's existing choice first, then the ecosystem's standard. Agents do best on ground they have seen most, and they copy what sits nearby. A novel choice needs a stated reason, and once made it becomes the path to follow.
+
+Bad: a hand-rolled argument parser next to commands that use `clap`.
+
+Good: `clap`, like the other commands.
