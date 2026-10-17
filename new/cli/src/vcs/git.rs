@@ -29,19 +29,22 @@ impl Vcs for Git {
         if succeeds(root, &["rev-parse", "--verify", "--quiet", branch]) {
             run(root, &["worktree", "add", &path, branch])?;
         } else {
-            run(
-                root,
-                &[
-                    "worktree",
-                    "add",
-                    "-b",
-                    branch,
-                    &path,
-                    base.unwrap_or("HEAD"),
-                ],
-            )?;
+            let base = run(root, &["rev-parse", base.unwrap_or("HEAD")])?;
+            run(root, &["worktree", "add", "-b", branch, &path, &base])?;
+            // Where the branch started, for counting its commits later.
+            run(root, &["update-ref", &base_ref(branch), &base])?;
         }
         Ok(())
+    }
+
+    fn workspace_base_find(&self, path: &Path) -> Result<String> {
+        let branch = run(path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+        run(path, &["rev-parse", &base_ref(&branch)])
+    }
+
+    fn workspace_commits_count(&self, path: &Path, base: &str) -> Result<usize> {
+        let count = run(path, &["rev-list", "--count", &format!("{base}..HEAD")])?;
+        count.parse().context("git printed a bad commit count")
     }
 
     fn workspace_snapshot(&self, path: &Path) -> Result<String> {
@@ -72,6 +75,11 @@ impl Vcs for Git {
         run(root, &["worktree", "remove", &path.to_string_lossy()])?;
         Ok(())
     }
+}
+
+/// The ref that remembers the commit `branch` started from.
+fn base_ref(branch: &str) -> String {
+    format!("refs/ns/base/{branch}")
 }
 
 /// Adds `pattern` to the repository's `info/exclude`, shared by all its worktrees, unless it is

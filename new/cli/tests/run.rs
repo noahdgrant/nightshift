@@ -34,6 +34,10 @@ enum BuildCommits {
     /// The first build leaves its work uncommitted; the next one, told so, commits it.
     OnlyWhenTold,
     Never,
+    /// The first build leaves two commits; the next one, told so, squashes them.
+    TwoUntilTold,
+    /// Every build leaves two commits.
+    TwoAlways,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -88,11 +92,20 @@ esac"#,
     };
     let commit = match fakes.build_commits {
         BuildCommits::Always => r#"git add -A; git commit -q -m "Add a thing"; "#,
+        BuildCommits::TwoUntilTold | BuildCommits::TwoAlways => {
+            r#"git add -A; git commit -q -m one; echo more > more.txt; git add -A; git commit -q -m two; "#
+        }
         BuildCommits::OnlyWhenTold | BuildCommits::Never => "",
+    };
+    let squash = match fakes.build_commits {
+        BuildCommits::TwoUntilTold => {
+            r#"git reset -q --soft HEAD~2; git commit -q -m "Add a thing"; "#
+        }
+        _ => "",
     };
     let when_told = match fakes.build_commits {
         BuildCommits::OnlyWhenTold => r#"git add -A; git commit -q -m "Add a thing"; "#,
-        BuildCommits::Always | BuildCommits::Never => "",
+        _ => "",
     };
     let crash = if fakes.crash_in_first_check {
         r#"if [ ! -e "$seen" ]; then touch "$seen"; exit 9; fi; "#
@@ -110,6 +123,7 @@ case "$(cat)" in
   if [ -e "$seen" ]; then echo '{verdict}'; else touch "$seen"; echo '{first}'; fi;;
 *"VERDICT: FAIL"*) echo rebuilt with the evidence;;
 *"left uncommitted changes"*) {when_told}echo committed when told;;
+*"commits on the branch"*) {squash}echo squashed when told;;
 *) echo thing > thing.txt; {commit}echo built the thing;;
 esac
 exit {exit}"#,
@@ -220,6 +234,42 @@ fn a_build_that_leaves_changes_uncommitted_is_run_again_and_told_which() {
     assert!(moves.contains(&"build>build".to_string()), "{moves:?}");
     assert_eq!(moves.last().unwrap(), "clean_up>done");
     assert_eq!(read(&repo, "build.md"), "committed when told\n");
+}
+
+#[test]
+fn a_build_that_leaves_two_commits_is_told_to_squash_them() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        build_commits: BuildCommits::TwoUntilTold,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert!(moves.contains(&"build>build".to_string()), "{moves:?}");
+    assert_eq!(read(&repo, "build.md"), "squashed when told\n");
+    let commits = common::git(&repo.path, &["rev-list", "--count", "main..ns/5"]);
+    assert_eq!(commits.trim(), "1");
+}
+
+#[test]
+fn a_build_that_keeps_two_commits_sticks_the_unit_before_verify() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        build_commits: BuildCommits::TwoAlways,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert_eq!(&moves[moves.len() - 2..], ["build>build", "build>stuck"]);
+    assert!(!moves.iter().any(|m| m.starts_with("verify")), "{moves:?}");
 }
 
 #[test]

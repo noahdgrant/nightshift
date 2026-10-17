@@ -27,6 +27,12 @@ pub trait Vcs {
     /// exactly when nothing changed between them.
     fn workspace_snapshot(&self, path: &Path) -> Result<String>;
 
+    /// The commit the workspace's branch started from.
+    fn workspace_base_find(&self, path: &Path) -> Result<String>;
+
+    /// How many commits the workspace's branch holds past `base`.
+    fn workspace_commits_count(&self, path: &Path, base: &str) -> Result<usize>;
+
     /// The changes in the workspace at `path` that are not committed, one per entry, and empty
     /// when everything is committed. Files `ns` keeps there are not counted.
     fn workspace_changes_list(&self, path: &Path) -> Result<Vec<String>>;

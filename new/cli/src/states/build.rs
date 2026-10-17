@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::{bail, Context as _, Result};
 
 use super::verdict::{self, Verdict};
@@ -10,10 +12,11 @@ use crate::state::Outcome;
 /// What the last build run did wrong, kept for the next one.
 const PROBLEM: &str = "build.problem";
 
-/// Has the harness implement the unit in the unit's workspace and commit its work, and keeps what
-/// the harness says as `build.md` and a snapshot of the result, for `verify` to hold the
-/// workspace to. The harness owns the commit and its message. `build` only makes sure nothing is
-/// left uncommitted; a build that left changes goes wrong, and its next run is told which.
+/// Has the harness implement the unit in the unit's workspace and commit its work as one commit,
+/// and keeps what the harness says as `build.md` and a snapshot of the result, for `verify` to
+/// hold the workspace to. The harness owns the commit and its message. `build` only makes sure
+/// nothing is left uncommitted and the branch holds one commit; a build that did not goes wrong,
+/// and its next run is told what.
 pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let dir = ctx
         .workspace
@@ -25,9 +28,10 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let unit = ctx.forge.unit_get(&dir, ctx.unit)?;
     let evidence = verdict::evidence_ending_in(&dir, &id, Verdict::Fail);
     let problem = artifact::read(&dir, &id, PROBLEM).ok();
+    let base = ctx.vcs.workspace_base_find(&dir)?;
     let reply = ctx.harness.task_run(&Task {
         dir: dir.clone(),
-        prompt: prompt(&unit, evidence.as_deref(), problem.as_deref()),
+        prompt: prompt(&unit, &base, evidence.as_deref(), problem.as_deref()),
         write: true,
         model: None,
     })?;
@@ -35,12 +39,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     if !reply.success {
         bail!("the harness did not finish the build");
     }
-    let left = ctx.vcs.workspace_changes_list(&dir)?;
-    if !left.is_empty() {
-        let problem = format!(
-            "The last build left uncommitted changes: {}.",
-            left.join(", ")
-        );
+    if let Some(problem) = what_is_left(ctx, &dir, &base)? {
         artifact::write(&dir, &id, PROBLEM, &problem)?;
         bail!("{problem}");
     }
@@ -50,11 +49,31 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     Ok(Outcome::Pass)
 }
 
-fn prompt(unit: &Unit, evidence: Option<&str>, problem: Option<&str>) -> String {
+/// What a finished build got wrong about its commits, if anything: it must leave nothing
+/// uncommitted and exactly one commit on the branch.
+fn what_is_left(ctx: &Context, dir: &Path, base: &str) -> Result<Option<String>> {
+    let left = ctx.vcs.workspace_changes_list(dir)?;
+    if !left.is_empty() {
+        return Ok(Some(format!(
+            "The last build left uncommitted changes: {}. Commit them.",
+            left.join(", ")
+        )));
+    }
+    Ok(match ctx.vcs.workspace_commits_count(dir, base)? {
+        1 => None,
+        0 => Some("The last build left no commit on the branch. Commit your work.".into()),
+        n => Some(format!(
+            "The last build left {n} commits on the branch. Squash them into one."
+        )),
+    })
+}
+
+fn prompt(unit: &Unit, base: &str, evidence: Option<&str>, problem: Option<&str>) -> String {
     let mut prompt = format!(
         "Implement this unit of work test-first, in small steps, and run the tests before you stop. \
-         Then commit your work with a message that says what changed and why. End with a short \
-         summary of what you changed.\n\n# {}\n\n{}\n",
+         Then commit your work with a message that says what changed and why. The branch started \
+         at commit {base}: when you are done it must hold exactly one commit since then, so squash \
+         your commits into one. End with a short summary of what you changed.\n\n# {}\n\n{}\n",
         unit.title, unit.body
     );
     if let Some(evidence) = evidence {
@@ -63,7 +82,7 @@ fn prompt(unit: &Unit, evidence: Option<&str>, problem: Option<&str>) -> String 
         ));
     }
     if let Some(problem) = problem {
-        prompt.push_str(&format!("\n# {problem}\n\nCommit them.\n"));
+        prompt.push_str(&format!("\n# {problem}\n"));
     }
     prompt
 }
