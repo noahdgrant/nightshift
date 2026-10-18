@@ -21,7 +21,7 @@ Done when every requirement has a seam for its test.
 
 ## 2. Build in vertical slices
 
-Load the `ns-tdd` skill and run its loop, one requirement per slice, the riskiest first. Each slice ends with its test green and every existing test green.
+Run the test-driven loop in the instructions that follow these, one requirement per slice, the riskiest first. Each slice ends with its test green and every existing test green.
 
 Keep the diff to what the unit asks. Fix what your change breaks. Put any other defect you notice under **Noticed** in your summary.
 

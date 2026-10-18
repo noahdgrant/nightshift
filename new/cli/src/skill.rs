@@ -13,6 +13,7 @@ include!(concat!(env!("OUT_DIR"), "/skills.rs"));
 
 pub const TRIAGE: &str = "ns-triage";
 pub const BUILD: &str = "ns-build";
+pub const TDD: &str = "ns-tdd";
 pub const VERIFY: &str = "ns-verify";
 pub const REVIEW: &str = "ns-review";
 pub const GRILLING: &str = "ns-grilling";

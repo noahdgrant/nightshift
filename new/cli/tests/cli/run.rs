@@ -451,6 +451,7 @@ fn the_build_prompt_is_the_embedded_skill_and_the_unit() {
     run(&repo, &tools(&repo, &Fakes::passing())).success();
     let prompt = build_prompt(&repo);
     assert!(prompt.starts_with("# Build"), "{prompt}");
+    assert!(prompt.contains("# Test-Driven Development"), "{prompt}");
     assert!(
         prompt.contains("## Add a thing\n\nMake the thing."),
         "{prompt}"

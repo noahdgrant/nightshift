@@ -31,7 +31,13 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let evidence = verdict::evidence_ending_in(&dir, &id, Verdict::Fail);
     let problem = artifact::read(&dir, &id, PROBLEM).ok();
     let base = ctx.vcs.workspace_base_find(&dir)?;
-    let skill = skill::load(&ctx.vcs.root_find(&ctx.from)?, skill::BUILD)?;
+    let root = ctx.vcs.root_find(&ctx.from)?;
+    // The build tells the harness to follow the test-driven loop, so the loop goes with it.
+    let skill = format!(
+        "{}\n\n{}",
+        skill::load(&root, skill::BUILD)?,
+        skill::load(&root, skill::TDD)?
+    );
     let checks_note = checks::command_find(&dir)?
         .is_some()
         .then(checks_note)
