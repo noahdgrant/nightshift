@@ -1,7 +1,0 @@
-# rules/java/install.sh reads this pin and checksum too, to install PMD into a repo.
-version = "7.28.0"
-install = "download"
-url = "https://github.com/pmd/pmd/releases/download/pmd_releases%2F{version}/pmd-dist-{version}-bin.zip"
-sha256 = "f974ba571f7bc01c73fffe11bade25fbc1f438698f9e9c00e416e8d65e9fbac2"
-bin = "pmd-bin-{version}/bin/pmd"
-check = "pmd --version"
