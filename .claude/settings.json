@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "command -v ns >/dev/null 2>&1 && ns sync >/dev/null || true",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}
