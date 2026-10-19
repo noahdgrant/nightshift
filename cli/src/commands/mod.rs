@@ -2,6 +2,7 @@
 
 mod auto;
 mod check;
+mod config;
 mod define;
 mod init;
 mod plan;
@@ -11,7 +12,6 @@ mod sync;
 mod triage;
 mod troubleshoot;
 mod upgrade;
-mod version;
 mod workspace;
 
 use anyhow::Result;
@@ -21,6 +21,8 @@ use clap::Subcommand;
 pub enum Command {
     /// Work through the repository's units unattended.
     Auto(auto::Args),
+    /// Set how ns reaches the forge on this machine.
+    Config(config::Args),
     /// Run the repository's checks on this workspace.
     Check(check::Args),
     /// Work out a spec for a vague unit with you, then plan it.
@@ -38,8 +40,6 @@ pub enum Command {
     /// Manage the versions of ns installed on this machine.
     #[command(name = "self")]
     SelfManage(self_::Args),
-    /// Print the version of ns.
-    Version(version::Args),
     /// Diagnose a bug nobody has reproduced and send the unit on.
     Troubleshoot(troubleshoot::Args),
     /// Decide what a unit needs next and record it on the forge.
@@ -52,6 +52,7 @@ pub fn run(command: Command) -> Result<()> {
     match command {
         Command::Auto(args) => auto::run(args),
         Command::Check(args) => check::run(args),
+        Command::Config(args) => config::run(args),
         Command::Define(args) => define::run(args),
         Command::Init(args) => init::run(args),
         Command::Plan(args) => plan::run(args),
@@ -59,7 +60,6 @@ pub fn run(command: Command) -> Result<()> {
         Command::Sync(args) => sync::run(args),
         Command::Upgrade(args) => upgrade::run(args),
         Command::SelfManage(args) => self_::run(args),
-        Command::Version(args) => version::run(args),
         Command::Triage(args) => triage::run(args),
         Command::Troubleshoot(args) => troubleshoot::run(args),
         Command::Workspace(args) => workspace::run(args),

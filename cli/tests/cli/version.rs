@@ -1,11 +1,11 @@
 use assert_cmd::Command;
 
 #[test]
-fn version_prints_json() {
+fn the_version_flag_prints_the_version() {
     Command::cargo_bin("ns")
         .unwrap()
-        .arg("version")
+        .arg("--version")
         .assert()
         .success()
-        .stdout("{\"version\":\"0.1.0\"}\n");
+        .stdout(format!("ns {}\n", env!("CARGO_PKG_VERSION")));
 }

@@ -1,13 +1,14 @@
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 use super::{ChangeRequest, ChangeState, Checks, Forge, Unit};
-use crate::retry;
+use crate::{config, retry};
 
 /// What `gh` says when a call failed for a reason that can pass: the network, the forge having a
 /// bad moment, or a rate limit. Any other error is permanent, or unknown, and is not repeated.
@@ -29,6 +30,8 @@ pub struct GitHub {
     program: OsString,
     /// How long to wait before the second attempt of a call. Each later wait is twice as long.
     retry_delay: Duration,
+    /// The token of the account named in the config, got once when the first call needs it.
+    token: OnceLock<std::result::Result<Option<String>, String>>,
 }
 
 impl GitHub {
@@ -40,6 +43,38 @@ impl GitHub {
         GitHub {
             program: program.into(),
             retry_delay: retry::DELAY,
+            token: OnceLock::new(),
+        }
+    }
+
+    /// The token `gh` should use: the login of the account the config names. None when a
+    /// `GH_TOKEN` is already set, which wins, or when the config names no account.
+    fn token(&self) -> Result<Option<&str>> {
+        let found = self.token.get_or_init(|| {
+            if std::env::var_os("GH_TOKEN").is_some() {
+                return Ok(None);
+            }
+            let account = config::github_account().map_err(|e| format!("{e:#}"))?;
+            let Some(account) = account else {
+                return Ok(None);
+            };
+            let out = Command::new(&self.program)
+                .args(["auth", "token", "--user", &account])
+                .output()
+                .map_err(|e| format!("cannot run gh: {e}"))?;
+            if !out.status.success() {
+                return Err(format!(
+                    "gh has no login for the account {account} named in the config: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
+            }
+            Ok(Some(
+                String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            ))
+        });
+        match found {
+            Ok(token) => Ok(token.as_deref()),
+            Err(e) => bail!("{e}"),
         }
     }
 
@@ -56,11 +91,12 @@ impl GitHub {
 
     /// Runs `gh args` in `repo` once and returns its stdout.
     fn gh_once(&self, repo: &Path, args: &[&str]) -> Result<String> {
-        let out = Command::new(&self.program)
-            .args(args)
-            .current_dir(repo)
-            .output()
-            .context("cannot run gh")?;
+        let mut cmd = Command::new(&self.program);
+        cmd.args(args).current_dir(repo);
+        if let Some(token) = self.token()? {
+            cmd.env("GH_TOKEN", token);
+        }
+        let out = cmd.output().context("cannot run gh")?;
         if !out.status.success() {
             bail!(
                 "gh {} failed: {}",

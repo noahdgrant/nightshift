@@ -69,7 +69,7 @@ fn the_version_the_repository_is_pinned_to_runs_without_handing_over() {
     let repo = Repo::new();
     let home = tempfile::tempdir().unwrap();
     pin(&repo, OWN);
-    ns(&repo, home.path(), &["version"]).success();
+    ns(&repo, home.path(), &["--version"]).success();
     ns(&repo, home.path(), &["plan", "--help"]).success();
 }
 
@@ -78,7 +78,7 @@ fn the_commands_that_set_the_pin_run_under_any_version() {
     let repo = Repo::new();
     let home = tempfile::tempdir().unwrap();
     pin(&repo, "9.9.9");
-    ns(&repo, home.path(), &["version"]).success();
+    ns(&repo, home.path(), &["--version"]).success();
     ns(&repo, home.path(), &["upgrade"]).success();
     assert!(
         std::fs::read_to_string(repo.path.join(".nightshift/nightshift.toml"))

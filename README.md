@@ -31,22 +31,40 @@ The skills are inside the binary. A repository is pinned to one version of `ns`;
 
 ## Setup
 
-TODO: the lines below about setting up github should be replaced with a `nightshift config forge ...`
+Log in to Claude with your Claude subscription (`claude /login`), and tell `ns` which GitHub account opens the PRs and edits labels. The name is one of the accounts `gh auth status` lists:
 
-Log in to claude with your Claude subscription, and name the GitHub account that should open the PRs in `~/.config/nightshift/config.toml`:
-
-```toml
-[forge.github]
-token_command = "gh auth token --user <account>"
+```bash
+ns config forge github --account <account>
 ```
 
-Then, in each project you want to run the factory on, run `ns init` and commit what it leaves: `.nightshift/nightshift.toml`, which pins the repository to this version of `ns`, and `.claude/settings.json`, whose hook keeps the skills current in a Claude Code session. In a session, type `/ns-grilling` or any other skill.
+It is kept in `~/.config/nightshift/config.toml`, not in the repository. A `GH_TOKEN` already set wins over it.
+
+Then, in each project you want to run the factory on:
+
+1. Run `ns init` and commit what it leaves: `.nightshift/nightshift.toml`, which pins the repository to this version of `ns`, and `.claude/settings.json`, whose hook keeps the skills current in a Claude Code session. In a session, type `/ns-grilling` or any other skill.
+2. Put the command that runs the repository's checks (format, lint, tests) in `.nightshift/check`, such as `scripts/ci-local.sh`, and commit it. Without it, a unit's checks pass without running anything.
+3. Make sure the repository has the labels `ns` sets: `status:needs-triage`, `status:needs-define`, `status:needs-repro`, `status:needs-info`, `status:ready-for-agent`, `status:in-progress`, `status:ready-for-human`, `status:wontfix`, and the `type:`, `area:` and `priority:` labels you use.
 
 To move a repository to a newer `ns`, install it, then run `ns upgrade <version>` and commit the new pin.
 
 ## Run your first unit
 
-TODO: fill this in
+Pick a small issue with clear acceptance criteria, such as a typo or a missing test. Its number is the unit.
+
+```bash
+ns triage 12     # decides what it needs next and labels it; a clear one becomes status:ready-for-agent
+ns run 12        # setup, build, verify, review, ship; stops before each state so you can look
+```
+
+`ns run` makes the unit's workspace beside the repository (`<repo>.workspaces/12`, on the branch `ns/12`), prints each move as a line of JSON, and keeps the unit's `status:` label up to date. Run the same command again to go on from where it stopped. Each state leaves its notes in `.ns/12/` in the workspace. When it is done the change request is open and waiting for you to merge it.
+
+Once you trust the loop, drop the stops, and let `ns` merge a change whose checks pass:
+
+```bash
+ns run 12 --gates auto --merge
+```
+
+A unit that is too vague for `ns triage` to route to build goes to `ns define 12`, a session in which you and the agent work out a spec. `ns run 12 --fresh` throws the workspace away and starts over.
 
 ## Run it overnight
 
@@ -54,7 +72,7 @@ TODO: fill this in
 ns auto --until 06:30
 ```
 
-It takes `status:ready-for-agent` issues one at a time (`--parallel 3` runs three at once) and starts no new unit after 06:30. A unit already running finishes.
+It triages the issues nobody has looked at, then takes the `status:ready-for-agent` ones one at a time and runs each unattended, starting no new unit after 06:30. A unit already running finishes. A unit that gets stuck is labeled `status:ready-for-human` and `ns auto` moves on; pick it up with `ns run`. To try it on a couple of issues first, use `ns auto --max-units 2`, or `--dry-run` to see the queue.
 
 ## Credits
 

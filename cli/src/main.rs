@@ -5,6 +5,7 @@ mod auto;
 mod brief;
 mod checks;
 mod commands;
+mod config;
 mod define;
 mod dispatch;
 mod forge;

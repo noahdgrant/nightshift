@@ -1,6 +1,7 @@
 mod auto;
 mod check;
 mod common;
+mod config;
 mod define;
 mod init;
 pub mod plan;
