@@ -46,7 +46,7 @@ Good:
 // A phase can leave read-only directories, which make the workspace unremovable.
 ```
 
-## The best documentation is no documentation
+## The best documentation is code
 
 Code cannot lie; docs can. Write down only the bare minimum, or what is absolutely required. If the code, a type, a test or `--help` already says it, a doc that repeats it is a second copy to keep true.
 

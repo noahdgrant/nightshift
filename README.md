@@ -41,9 +41,9 @@ It is kept in `~/.config/nightshift/config.toml`, not in the repository. A `GH_T
 
 Then, in each project you want to run the factory on:
 
-1. Run `ns init` and commit what it leaves: `.nightshift/nightshift.toml`, which pins the repository to this version of `ns`, and `.claude/settings.json`, whose hook keeps the skills current in a Claude Code session. In a session, type `/ns-grilling` or any other skill.
+1. Run `ns init` and commit what it leaves: `.nightshift/nightshift.toml`, which pins the repository to this version of `ns`, and `.claude/settings.json`, whose hook keeps the skills current in a Claude Code session. It also creates the `status:` labels `ns` sets on the forge, if they are missing. In a session, type `/ns-grilling` or any other skill.
 2. Put the command that runs the repository's checks (format, lint, tests) in `.nightshift/check`, such as `scripts/ci-local.sh`, and commit it. Without it, a unit's checks pass without running anything.
-3. Make sure the repository has the labels `ns` sets: `status:needs-triage`, `status:needs-define`, `status:needs-repro`, `status:needs-info`, `status:ready-for-agent`, `status:in-progress`, `status:ready-for-human`, `status:wontfix`, and the `type:`, `area:` and `priority:` labels you use.
+3. Create the `type:`, `area:` and `priority:` labels you want `ns triage` to use. It only uses ones the repository has.
 
 To move a repository to a newer `ns`, install it, then run `ns upgrade <version>` and commit the new pin.
 

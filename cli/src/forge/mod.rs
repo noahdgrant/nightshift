@@ -11,6 +11,12 @@ pub trait Forge {
     /// The unit `number` of the repository at `repo`.
     fn unit_get(&self, repo: &Path, number: u64) -> Result<Unit>;
 
+    /// The names of the labels the repository at `repo` has.
+    fn labels_list(&self, repo: &Path) -> Result<Vec<String>>;
+
+    /// Creates the label `name`, which the repository does not have.
+    fn label_create(&self, repo: &Path, name: &str, description: &str) -> Result<()>;
+
     /// Adds and removes labels on unit `number`.
     fn unit_labels_set(
         &self,

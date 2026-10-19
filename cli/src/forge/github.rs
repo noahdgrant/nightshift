@@ -109,6 +109,27 @@ impl GitHub {
 }
 
 impl Forge for GitHub {
+    fn labels_list(&self, repo: &Path) -> Result<Vec<String>> {
+        let json = self.gh(
+            repo,
+            &["label", "list", "--limit", "1000", "--json", "name"],
+        )?;
+        let v: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
+        Ok(v.as_array()
+            .context("gh did not print a list of labels")?
+            .iter()
+            .filter_map(|l| l["name"].as_str().map(str::to_string))
+            .collect())
+    }
+
+    fn label_create(&self, repo: &Path, name: &str, description: &str) -> Result<()> {
+        self.gh(
+            repo,
+            &["label", "create", name, "--description", description],
+        )?;
+        Ok(())
+    }
+
     fn release_download(
         &self,
         source: &str,

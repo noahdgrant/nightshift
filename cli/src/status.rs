@@ -12,10 +12,44 @@ use crate::forge::Forge;
 pub const NEEDS_REPRO: &str = "status:needs-repro";
 /// The unit is too vague to build and waits for a spec.
 pub const NEEDS_DEFINE: &str = "status:needs-define";
+/// The unit needs an answer from its author before anything else.
+pub const NEEDS_INFO: &str = "status:needs-info";
+/// The unit will not be done.
+pub const WONTFIX: &str = "status:wontfix";
 /// `ns run` has the unit.
 pub const IN_PROGRESS: &str = "status:in-progress";
 /// The unit waits for a human: it is stuck, went wrong, or its change request is ready to merge.
 pub const READY_FOR_HUMAN: &str = "status:ready-for-human";
+
+/// Every status label `ns` sets, with what it tells a reader of the forge.
+pub fn all() -> [(&'static str, &'static str); 8] {
+    [
+        (crate::auto::NEEDS_TRIAGE, "Nobody has looked at this yet"),
+        (NEEDS_DEFINE, "Too vague to build; waits for a spec"),
+        (NEEDS_REPRO, "A bug nobody has reproduced yet"),
+        (NEEDS_INFO, "Waits for an answer from the author"),
+        (crate::auto::READY, "Ready for the agent to build"),
+        (IN_PROGRESS, "ns is working on this"),
+        (
+            READY_FOR_HUMAN,
+            "Waits for a human: stuck, failed, or ready to merge",
+        ),
+        (WONTFIX, "Will not be done"),
+    ]
+}
+
+/// Creates on the forge the status labels it does not have. Returns the names it created.
+pub fn labels_ensure(forge: &dyn Forge, repo: &Path) -> Result<Vec<String>> {
+    let have = forge.labels_list(repo)?;
+    let mut created = Vec::new();
+    for (name, description) in all() {
+        if !have.iter().any(|l| l == name) {
+            forge.label_create(repo, name, description)?;
+            created.push(name.to_string());
+        }
+    }
+    Ok(created)
+}
 
 /// Makes `status` the only status label on `unit`.
 pub fn unit_status_set(forge: &dyn Forge, repo: &Path, unit: u64, status: &str) -> Result<()> {

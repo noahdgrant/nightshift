@@ -204,6 +204,12 @@ mod tests {
                 from_team: true,
             })
         }
+        fn labels_list(&self, _: &Path) -> Result<Vec<String>> {
+            unreachable!()
+        }
+        fn label_create(&self, _: &Path, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
         fn unit_labels_set(&self, _: &Path, _: u64, _: &[String], _: &[String]) -> Result<()> {
             unreachable!()
         }
