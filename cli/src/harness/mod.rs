@@ -11,6 +11,10 @@ pub trait Harness {
     /// Where, relative to a repository's top, this harness looks for skills.
     fn skills_dir(&self) -> &'static str;
 
+    /// Makes the harness run `command` whenever a session starts in the repository at `root`, by
+    /// a file meant to be committed. Does nothing when it already does. Returns whether it wrote.
+    fn session_start_hook_install(&self, root: &Path, command: &str) -> Result<bool>;
+
     /// Runs one headless session and waits for it to finish.
     fn task_run(&self, task: &Task) -> Result<Reply>;
 

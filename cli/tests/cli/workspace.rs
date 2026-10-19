@@ -36,3 +36,12 @@ fn a_bad_unit_id_is_refused() {
     let repo = Repo::new();
     ns(&repo, &["workspace", "new", "Bad Id"]).failure();
 }
+
+#[test]
+fn a_new_workspace_has_the_skills_a_session_in_it_finds() {
+    let repo = Repo::new();
+    ns(&repo, &["workspace", "new", "7"]).success();
+    let workspace = repo.workspace("7");
+    assert!(workspace.join(".claude/skills/ns-build/SKILL.md").is_file());
+    assert_eq!(common::git(&workspace, &["status", "--porcelain"]), "");
+}

@@ -9,6 +9,7 @@ mod run;
 mod sync;
 mod triage;
 mod troubleshoot;
+mod upgrade;
 mod version;
 mod workspace;
 
@@ -31,6 +32,8 @@ pub enum Command {
     Run(run::Args),
     /// Write the skills where the repository's harnesses find them.
     Sync(sync::Args),
+    /// Change the version of ns the repository is pinned to.
+    Upgrade(upgrade::Args),
     /// Print the version of ns.
     Version(version::Args),
     /// Diagnose a bug nobody has reproduced and send the unit on.
@@ -50,6 +53,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Plan(args) => plan::run(args),
         Command::Run(args) => run::run(args),
         Command::Sync(args) => sync::run(args),
+        Command::Upgrade(args) => upgrade::run(args),
         Command::Version(args) => version::run(args),
         Command::Triage(args) => triage::run(args),
         Command::Troubleshoot(args) => troubleshoot::run(args),

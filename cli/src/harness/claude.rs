@@ -77,6 +77,40 @@ impl Harness for Claude {
         ".claude/skills"
     }
 
+    fn session_start_hook_install(&self, root: &Path, command: &str) -> Result<bool> {
+        let file = root.join(".claude").join("settings.json");
+        let mut settings: serde_json::Value = match std::fs::read_to_string(&file) {
+            Ok(text) => serde_json::from_str(&text)
+                .with_context(|| format!("{} is not valid JSON", file.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+            Err(e) => return Err(e).with_context(|| format!("cannot read {}", file.display())),
+        };
+        let hooks = settings
+            .as_object_mut()
+            .context("settings.json is not an object")?
+            .entry("hooks")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .context("`hooks` in settings.json is not an object")?
+            .entry("SessionStart")
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .context("`SessionStart` in settings.json is not a list")?;
+        let present = hooks.iter().any(|group| {
+            group["hooks"]
+                .as_array()
+                .is_some_and(|list| list.iter().any(|hook| hook["command"] == command))
+        });
+        if present {
+            return Ok(false);
+        }
+        hooks.push(serde_json::json!({ "hooks": [{ "type": "command", "command": command }] }));
+        std::fs::create_dir_all(file.parent().context("settings.json has no directory")?)?;
+        std::fs::write(&file, serde_json::to_string_pretty(&settings)? + "\n")
+            .with_context(|| format!("cannot write {}", file.display()))?;
+        Ok(true)
+    }
+
     fn session_interact(&self, dir: &Path, prompt: &str) -> Result<bool> {
         let mut cmd = Command::new(&self.program);
         cmd.arg(prompt).current_dir(dir);

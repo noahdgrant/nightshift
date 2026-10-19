@@ -23,6 +23,9 @@ pub fn run(root: &Path, kinds: &[Kind]) -> Result<Vec<Synced>> {
     kinds.iter().map(|kind| one(root, *kind)).collect()
 }
 
+/// What a harness runs when a session starts. A machine without `ns` goes on without it.
+pub const HOOK: &str = "command -v ns >/dev/null 2>&1 && ns sync >/dev/null || true";
+
 fn one(root: &Path, kind: Kind) -> Result<Synced> {
     let dir = harness::of(kind).skills_dir();
     vcs::get().ignore_add(root, &format!("/{dir}/ns-*/"))?;

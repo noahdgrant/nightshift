@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use crate::vcs::Vcs;
+use crate::{manifest, sync};
 
 const BRANCH_PREFIX: &str = "ns/";
 
@@ -29,10 +30,11 @@ pub fn ensure(vcs: &dyn Vcs, from: &Path, unit: &str, base: Option<&str>) -> Res
     check_unit_id(unit)?;
     let root = vcs.root_find(from)?;
     let wt = locate(&root, unit)?;
-    if wt.path.exists() {
-        return Ok(wt);
+    if !wt.path.exists() {
+        vcs.workspace_create(&root, &wt.path, &wt.branch, base)?;
     }
-    vcs.workspace_create(&root, &wt.path, &wt.branch, base)?;
+    // The skills are not committed, so the workspace has none until they are written.
+    sync::run(&wt.path, &manifest::pin_read(&wt.path)?.harness)?;
     Ok(wt)
 }
 

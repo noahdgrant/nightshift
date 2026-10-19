@@ -8,5 +8,6 @@ pub mod run;
 mod sync;
 mod triage;
 mod troubleshoot;
+mod upgrade;
 mod version;
 mod workspace;
