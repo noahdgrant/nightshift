@@ -67,9 +67,7 @@
           "path": "cli/Cargo.lock",
           "jsonpath": "$.package[?(@.name.value == 'nightshift')].version"
         }
-      ],
-      "release-as": "0.1.0"
+      ]
     }
-  },
-  "bootstrap-sha": "5f09bf1d86f184f3eaf2f4d48fdd0d87ad41f4a7"
+  }
 }
