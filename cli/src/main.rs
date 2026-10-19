@@ -10,6 +10,7 @@ mod define;
 mod dispatch;
 mod forge;
 mod harness;
+mod labels;
 mod lock;
 mod manifest;
 mod os;

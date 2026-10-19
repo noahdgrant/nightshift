@@ -152,7 +152,7 @@ fn the_skills_init_writes_are_not_changes_but_the_manifest_and_hook_are() {
 }
 
 #[test]
-fn init_creates_the_status_labels_the_forge_lacks_and_only_those() {
+fn init_creates_the_labels_the_forge_lacks_and_only_those() {
     let repo = Repo::new();
     gh(&repo);
     std::fs::write(
@@ -162,31 +162,54 @@ fn init_creates_the_status_labels_the_forge_lacks_and_only_those() {
     .unwrap();
     let report = init_in(&repo);
     let created = report["labels_created"].as_array().unwrap();
-    assert_eq!(created.len(), 7);
+    assert_eq!(created.len(), 23 - 2);
     assert!(!created.iter().any(|l| l == "status:wontfix"));
     let log = gh_log(&repo);
-    assert_eq!(log.matches("label create").count(), 7, "{log}");
+    assert_eq!(log.matches("label create").count(), 21, "{log}");
     assert!(
         log.contains("label create status:ready-for-agent --description"),
         "{log}"
     );
-    assert!(!log.contains("type:"), "{log}");
+    assert!(!log.contains("label create type:feat"), "{log}");
+    assert!(log.contains("label create type:fix --description"), "{log}");
+    assert!(
+        log.contains("label create priority:high --description"),
+        "{log}"
+    );
+    assert!(!log.contains("label create area:"), "{log}");
 }
 
 #[test]
 fn init_run_again_with_every_label_there_creates_none() {
     let repo = Repo::new();
     let all = [
-        "needs-triage",
-        "needs-define",
-        "needs-repro",
-        "needs-info",
-        "ready-for-agent",
-        "in-progress",
-        "ready-for-human",
-        "wontfix",
+        "status:needs-triage",
+        "status:needs-define",
+        "status:needs-repro",
+        "status:needs-info",
+        "status:ready-for-agent",
+        "status:in-progress",
+        "status:ready-for-human",
+        "status:wontfix",
+        "type:feat",
+        "type:fix",
+        "type:docs",
+        "type:refactor",
+        "type:test",
+        "type:perf",
+        "type:ci",
+        "type:build",
+        "type:chore",
+        "type:style",
+        "type:revert",
+        "priority:critical",
+        "priority:high",
+        "priority:medium",
+        "priority:low",
     ]
-    .map(|s| format!(r#"{{"name":"status:{s}"}}"#))
+    .iter()
+    .map(|name| format!(r#"{{"name":"{name}"}}"#))
+    .collect::<Vec<_>>()
     .join(",");
     gh(&repo);
     std::fs::write(
@@ -209,7 +232,7 @@ fn labels_that_cannot_be_created_fail_init_after_it_wrote_the_rest() {
     let assert = init_cmd(&repo, &repo.path).assert().failure();
     let err = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(
-        err.contains("status labels were not created") && err.contains("denied"),
+        err.contains("labels were not created") && err.contains("denied"),
         "{err}"
     );
     assert!(repo.path.join(".nightshift/nightshift.toml").is_file());

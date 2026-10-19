@@ -10,7 +10,7 @@ pub const NEEDS_TRIAGE: &str = "status:needs-triage";
 /// Every state label starts with this.
 pub const STATE_PREFIX: &str = "status:";
 /// Priority labels, highest first.
-const PRIORITIES: [&str; 4] = [
+pub const PRIORITIES: [&str; 4] = [
     "priority:critical",
     "priority:high",
     "priority:medium",

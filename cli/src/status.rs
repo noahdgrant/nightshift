@@ -38,19 +38,6 @@ pub fn all() -> [(&'static str, &'static str); 8] {
     ]
 }
 
-/// Creates on the forge the status labels it does not have. Returns the names it created.
-pub fn labels_ensure(forge: &dyn Forge, repo: &Path) -> Result<Vec<String>> {
-    let have = forge.labels_list(repo)?;
-    let mut created = Vec::new();
-    for (name, description) in all() {
-        if !have.iter().any(|l| l == name) {
-            forge.label_create(repo, name, description)?;
-            created.push(name.to_string());
-        }
-    }
-    Ok(created)
-}
-
 /// Makes `status` the only status label on `unit`.
 pub fn unit_status_set(forge: &dyn Forge, repo: &Path, unit: u64, status: &str) -> Result<()> {
     let labels = forge.unit_get(repo, unit)?.labels;
