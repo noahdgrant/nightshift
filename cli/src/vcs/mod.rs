@@ -11,6 +11,9 @@ pub trait Vcs {
     /// another workspace of it.
     fn root_find(&self, from: &Path) -> Result<PathBuf>;
 
+    /// The top of the checkout `from` is in, which is a workspace's own directory inside one.
+    fn workspace_find(&self, from: &Path) -> Result<PathBuf>;
+
     /// Adds a workspace at `path` on `branch` for the repository at `root`. A branch that
     /// exists is checked out; otherwise it is created from `base`, or from the current
     /// commit when `base` is `None`.
@@ -30,6 +33,10 @@ pub trait Vcs {
     /// A directory shared by all of the repository's workspaces where `ns` keeps what it
     /// remembers.
     fn state_dir_find(&self, root: &Path) -> Result<PathBuf>;
+
+    /// Keeps files matching `pattern` out of the repository's changes, in every workspace of it,
+    /// without a committed ignore file. `pattern` is anchored at the workspace's top.
+    fn ignore_add(&self, root: &Path, pattern: &str) -> Result<()>;
 
     /// The commit the workspace's branch started from.
     fn workspace_base_find(&self, path: &Path) -> Result<String>;

@@ -8,6 +8,9 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 
 pub trait Harness {
+    /// Where, relative to a repository's top, this harness looks for skills.
+    fn skills_dir(&self) -> &'static str;
+
     /// Runs one headless session and waits for it to finish.
     fn task_run(&self, task: &Task) -> Result<Reply>;
 
@@ -59,5 +62,12 @@ impl Kind {
 
 /// The harness `ns` uses. The only place one is chosen.
 pub fn get() -> Box<dyn Harness> {
-    Box::new(claude::Claude::new(crate::os::get()))
+    of(Kind::Claude)
+}
+
+/// The harness of `kind`.
+pub fn of(kind: Kind) -> Box<dyn Harness> {
+    match kind {
+        Kind::Claude => Box::new(claude::Claude::new(crate::os::get())),
+    }
 }

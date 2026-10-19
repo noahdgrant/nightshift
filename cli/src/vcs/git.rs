@@ -54,6 +54,10 @@ impl Vcs for Git {
         Ok(PathBuf::from(first))
     }
 
+    fn workspace_find(&self, from: &Path) -> Result<PathBuf> {
+        Ok(PathBuf::from(run(from, &["rev-parse", "--show-toplevel"])?))
+    }
+
     fn workspace_create(
         &self,
         root: &Path,
@@ -80,6 +84,10 @@ impl Vcs for Git {
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         )?;
         Ok(Path::new(&common).join("ns"))
+    }
+
+    fn ignore_add(&self, root: &Path, pattern: &str) -> Result<()> {
+        exclude(root, pattern)
     }
 
     fn workspace_base_find(&self, path: &Path) -> Result<String> {

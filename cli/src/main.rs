@@ -18,6 +18,7 @@ mod skill;
 mod state;
 mod states;
 mod status;
+mod sync;
 mod triage;
 mod troubleshoot;
 mod until;

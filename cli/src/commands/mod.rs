@@ -6,6 +6,7 @@ mod define;
 mod init;
 mod plan;
 mod run;
+mod sync;
 mod triage;
 mod troubleshoot;
 mod version;
@@ -28,6 +29,8 @@ pub enum Command {
     Init(init::Args),
     /// Move a unit through the states, printing each move.
     Run(run::Args),
+    /// Write the skills where the repository's harnesses find them.
+    Sync(sync::Args),
     /// Print the version of ns.
     Version(version::Args),
     /// Diagnose a bug nobody has reproduced and send the unit on.
@@ -46,6 +49,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Init(args) => init::run(args),
         Command::Plan(args) => plan::run(args),
         Command::Run(args) => run::run(args),
+        Command::Sync(args) => sync::run(args),
         Command::Version(args) => version::run(args),
         Command::Triage(args) => triage::run(args),
         Command::Troubleshoot(args) => troubleshoot::run(args),

@@ -5,6 +5,7 @@ mod define;
 mod init;
 pub mod plan;
 pub mod run;
+mod sync;
 mod triage;
 mod troubleshoot;
 mod version;

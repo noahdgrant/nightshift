@@ -17,6 +17,25 @@ pub const REQUIREMENTS: &str = "ns-requirements";
 pub const DESIGN_DOC: &str = "ns-design-doc";
 pub const TROUBLESHOOT: &str = "ns-troubleshoot";
 
+/// The skills whose output the CLI parses, such as a route or a verdict line. In a session they
+/// run only when the user types their name.
+const STATE_ONLY: [&str; 3] = [TRIAGE, VERIFY, REVIEW];
+
+/// The file of skill `name` as a harness's session should find it: the embedded file, and for a
+/// state skill the frontmatter line that keeps the harness from starting it on its own.
+pub fn file_for_session(name: &str, text: &str) -> String {
+    if !STATE_ONLY.contains(&name) {
+        return text.to_string();
+    }
+    match text
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n"))
+    {
+        Some((front, body)) => format!("---\n{front}\ndisable-model-invocation: true\n---\n{body}"),
+        None => text.to_string(),
+    }
+}
+
 /// Every skill that came with this `ns`, as its name and its file's text.
 pub fn embedded() -> &'static [(&'static str, &'static str)] {
     EMBEDDED
@@ -63,6 +82,24 @@ mod tests {
     fn a_skill_nobody_wrote_is_an_error() {
         let err = load("ns-nothing").unwrap_err();
         assert!(err.to_string().contains("no skill named ns-nothing"));
+    }
+
+    #[test]
+    fn only_a_state_skill_is_kept_from_starting_on_its_own_in_a_session() {
+        let text = "---\nname: x\ndescription: y\n---\n# X\n";
+        assert_eq!(file_for_session("ns-grilling", text), text);
+        assert_eq!(
+            file_for_session(TRIAGE, text),
+            "---\nname: x\ndescription: y\ndisable-model-invocation: true\n---\n# X\n"
+        );
+    }
+
+    #[test]
+    fn every_state_skill_is_embedded_and_has_frontmatter_to_add_to() {
+        for name in STATE_ONLY {
+            let text = embedded().iter().find(|(n, _)| *n == name).unwrap().1;
+            assert!(file_for_session(name, text).contains("\ndisable-model-invocation: true\n"));
+        }
     }
 
     #[test]

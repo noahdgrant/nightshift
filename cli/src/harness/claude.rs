@@ -73,6 +73,10 @@ impl Claude {
 }
 
 impl Harness for Claude {
+    fn skills_dir(&self) -> &'static str {
+        ".claude/skills"
+    }
+
     fn session_interact(&self, dir: &Path, prompt: &str) -> Result<bool> {
         let mut cmd = Command::new(&self.program);
         cmd.arg(prompt).current_dir(dir);
