@@ -39,7 +39,7 @@ pub fn body_planned(body: &str, slices: &str) -> Result<String> {
             "{}\n\n{}\n\n{}\n",
             body[..at].trim_end(),
             slices,
-            &body[at..].trim_end()
+            body[at..].trim_end()
         ),
         None => format!("{body}\n\n{slices}\n"),
     })
