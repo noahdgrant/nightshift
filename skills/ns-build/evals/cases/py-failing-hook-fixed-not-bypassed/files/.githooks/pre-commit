@@ -1,9 +1,0 @@
-#!/bin/sh
-# Every change under src/ carries a line in CHANGELOG.md.
-staged=$(git diff --cached --name-only)
-if printf '%s\n' "$staged" | grep -q '^src/' && ! printf '%s\n' "$staged" | grep -qx 'CHANGELOG.md'; then
-  echo "pre-commit: src/ changed but CHANGELOG.md did not. Add a line under '## Unreleased' and stage it." >&2
-  exit 1
-fi
-# Record each tree that passes, so a commit that skipped this hook is detectable.
-git write-tree >> "$(git rev-parse --absolute-git-dir)/hook-passed"

@@ -1,2 +1,0 @@
-{"type": "user", "message": {"role": "user", "content": "Add a README"}, "timestamp": "2026-10-05T14:30:00.000Z", "cwd": "/work/beta", "sessionId": "bbbb2222-0000-4000-8000-000000000002"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]}, "timestamp": "2026-10-05T14:30:05.000Z", "cwd": "/work/beta", "sessionId": "bbbb2222-0000-4000-8000-000000000002"}

@@ -1,4 +1,0 @@
-# One entry per line: a header (errno.h) or a directory prefix ending in / (zephyr/).
-errno.h
-zephyr/   # the RTOS
-mbedtls   # names a header called mbedtls, not the mbedtls/ directory

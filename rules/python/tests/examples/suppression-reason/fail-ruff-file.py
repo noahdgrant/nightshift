@@ -1,1 +1,0 @@
-# ruff: noqa: E501

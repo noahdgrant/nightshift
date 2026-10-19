@@ -1,2 +1,0 @@
-def which(cmd):
-    pass

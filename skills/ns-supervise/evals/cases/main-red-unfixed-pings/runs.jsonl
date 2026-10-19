@@ -1,8 +1,0 @@
-{"event":"main_red","sha":"abcdef0123456789abcdef0123456789abcdef01","failing":["test"],"issue":100,"ts":"2026-10-10T12:05:00Z"}
-{"event":"worker_start","worker":1,"issue":100,"run_pid":1100,"resumed":false,"ts":"2026-10-10T12:05:30Z"}
-{"event":"start","unit":"100-fix-main-is-red-at-abcdef0-test","issue":100,"ts":"2026-10-10T12:06:00Z","pid":1100}
-{"event":"phase","unit":"100-fix-main-is-red-at-abcdef0-test","issue":100,"phase":"triage","attempt":1,"status":"pass","wall_s":41.0,"ts":"2026-10-10T12:07:00Z","pid":1100}
-{"event":"phase","unit":"100-fix-main-is-red-at-abcdef0-test","issue":100,"phase":"build","attempt":2,"status":"fail","wall_s":300.0,"ts":"2026-10-10T12:20:00Z","pid":1100}
-{"event":"end","unit":"100-fix-main-is-red-at-abcdef0-test","issue":100,"outcome":"stuck","phase":"build","reason":"build failed twice","pr":null,"ts":"2026-10-10T12:21:00Z","pid":1100}
-{"event":"worker_end","worker":1,"issue":100,"unit":"100-fix-main-is-red-at-abcdef0-test","outcome":"stuck","exit":0,"ts":"2026-10-10T12:21:01Z"}
-{"event":"main_red_unfixed","sha":"abcdef0123456789abcdef0123456789abcdef01","issue":100,"outcome":"stuck","ts":"2026-10-10T12:21:02Z"}

@@ -1,4 +1,0 @@
-id: helper-name
-language: tsx
-rule:
-  regex: '(?i)^(?:mkdirp|ensureDirs?|deepClone|deepCopy|flatten|isArray|sleep)$'

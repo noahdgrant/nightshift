@@ -1,3 +1,0 @@
-description = "A shell adder with a seeded bug"
-[env]
-CALC_MODE = "strict"

@@ -1,6 +1,0 @@
-# <name> <file>: the one helper or type that does a job, and the file it lives in.
-expand_tilde cli/src/config.rs
-rows cli/src/stack.rs
-run_process cli/src/eval/trial.rs
-symlink cli/src/install.rs
-tail cli/src/tail.rs

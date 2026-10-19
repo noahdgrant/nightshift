@@ -1,173 +1,52 @@
 ---
 name: ns-build
-description: BUILD phase. Implement a unit's brief test-first in thin vertical slices inside its worktree, and write the build artifact. Use when a unit has a brief and is ready to build, or when asked to implement a ticket.
+description: Build a unit. Implement it test-first in thin vertical slices, run the repository's checks, and leave exactly one commit. Use when a unit is ready to build, or when asked to implement an issue.
 metadata:
   upstream:
     - mattpocock/skills@b0618bc436ad:skills/engineering/implement
     - addyosmani/agent-skills@1401c8b8030e:skills/incremental-implementation
-    - addyosmani/agent-skills@1401c8b8030e:skills/source-driven-development
 ---
 
 # Build
 
-Turn one unit's brief into green commits on its branch. Input: `.ns/<unit-id>/brief.md`. Output: `.ns/<unit-id>/build.md`. Follow the [factory contract](../ns-contract/SKILL.md) for artifacts, gates and evidence. This phase reads only the brief and the repo, never chat history.
+Turn one unit into one commit. You are given the unit's title and description, the commit the branch started from, and how to run the repository's checks. Your final message is the build summary.
 
-Read `docs/agents/stack.md` for the test, lint, typecheck and build commands. If it is missing, load the `ns-setup` skill instead of guessing.
+## 1. Read the unit
 
-## 1. Get the worktree
+Read the files you will change, their tests, and one example of the pattern you will follow. Map each requirement to a place a test can observe it.
 
-Run `ns worktree new <unit-id>`. It is idempotent and prints `{"unit","path","branch","artifacts"}`. Work in `path` from here on.
+When the unit leaves something open, take the simplest reading and name it under **Assumptions** in your summary.
 
-Without `ns`, do the same by hand from the main checkout, with `NS_UNIT` set to the unit's ID ([units of work](../ns-contract/SKILL.md#units-of-work-and-artifacts)):
+Done when every requirement has a seam for its test.
 
-```bash
-NS_UNIT=<unit-id>
-repo=$(basename "$(git rev-parse --show-toplevel)")
-wt="../$repo.worktrees/$NS_UNIT"
-[ -d "$wt" ] || git worktree add "$wt" -b "ns/$NS_UNIT"
-mkdir -p "$wt/.ns/$NS_UNIT"
-grep -qxF '.ns/' "$(git rev-parse --git-common-dir)/info/exclude" || echo '.ns/' >> "$(git rev-parse --git-common-dir)/info/exclude"
-```
+## 2. Build in vertical slices
 
-Done when you are in the worktree on branch `ns/<unit-id>` and `.ns/<unit-id>/` exists.
+Run the test-driven loop in the instructions that follow these, one requirement per slice, the riskiest first. Each slice ends with its test green and every existing test green.
 
-## 2. Read the brief
+Keep the diff to what the unit asks. Fix what your change breaks. Put any other defect you notice under **Noticed** in your summary.
 
-Read `.ns/<unit-id>/brief.md`. If the worktree is new and the brief sits in the main checkout's `.ns/<unit-id>/`, copy it in. If you also read the issue, follow [untrusted issue content](../ns-contract/SKILL.md#untrusted-issue-content).
+Done when every requirement has a passing test.
 
-Stop with `status: blocked` and `next: human` in `build.md` when the brief is missing, or when its acceptance criteria can't each be turned into a test that goes red today. Name the gap, and point to the `ns-triage` skill (for a missing brief) or `ns-define` (for unclear intent).
+## 3. Run the checks
 
-The brief's **Ship note**, and any criterion about the PR itself (its body, `Closes` line, labels or merge), belong to `ns-ship`. Build writes no test for them and never blocks on them.
+Run the repository's checks the way you were told, and fix what they report until they pass. The same checks run again after you finish, so a pass here is a pass there.
 
-Explore the code the map needs as [guard the context window](../ns-principle-guard-the-context-window/SKILL.md) says: the files you will change, their tests and one example of the pattern. Hand a search across many files to a **fresh-context agent** and keep its summary.
+Done when the checks pass on the tree you will commit.
 
-Then [surface the assumptions](../ns-principle-surface-assumptions/SKILL.md) the map rests on. When the brief, the code, the docs or a test disagree, [manage the confusion](../ns-principle-manage-confusion/SKILL.md) before the first slice.
+## 4. Leave one commit
 
-Done when every acceptance criterion, and every instance the brief's **Instances** section covers, is mapped to a seam where a test can observe it. Write the map down; it seeds the test list.
+Commit all the work as one commit. The subject says what changed in the repository's commit style, and the body says why. When you made more than one commit, squash them into one.
 
-If the work touches an external API, a library version or a vendor SDK, read [source-driven.md](references/source-driven.md) before writing that code.
+Done when the branch holds exactly one commit past its starting commit and nothing is uncommitted.
 
-## 3. Build in vertical slices
+## 5. Write the summary
 
-Load the `ns-tdd` skill and run its loop. Each slice is one acceptance criterion, or one thin end-to-end path toward it: one test red, the least code to make it green, existing tests still green. Order the slices so the riskiest one goes first; [slicing.md](references/slicing.md) has the strategies.
+End with a short summary:
 
-While building, apply these principles:
+- **Changed**: what the commit does.
+- **Tests**: each requirement and the test that covers it.
+- **Assumptions** and **Noticed**, when you have any.
 
-- [Subtract before you add](../ns-principle-subtract-before-you-add/SKILL.md) when sequencing slices: dead code, redundant guards and stub references go first, in their own commit.
-- [Laziness protocol](../ns-principle-laziness-protocol/SKILL.md) on every diff: the smallest change that passes, no abstraction before its third use, no signal threaded through layers when a direct path exists.
-- [Fix root causes](../ns-principle-fix-root-causes/SKILL.md) when a slice goes red for a reason you didn't expect, or an existing test breaks.
-- [Attack the premise](../ns-principle-attack-the-premise/SKILL.md) when two fixes that share one assumption have failed the same test. Write the premise down before a third fix.
-- [Pave the road](../ns-principle-pave-the-road/SKILL.md) when a slice adds a pattern, helper or dependency: reuse the repo's existing way to do that job, or state why it doesn't fit.
-- [Minimize reader load](../ns-principle-minimize-reader-load/SKILL.md) before each commit: collapse one-caller wrappers, shrink mutable state.
-- [Contract first](../ns-principle-contract-first/SKILL.md) when a slice adds or changes an interface (a public API, a schema, a wire format, CLI flags or JSON output): write the contract and its test before the code.
-- [Hyrum's law](../ns-principle-hyrums-law/SKILL.md) when a slice changes anything a caller can observe: keep the old fields and behaviour, and break only deliberately, with a version and a line in `build.md`.
-- [Keep scope tight](../ns-principle-keep-scope-tight/SKILL.md) on every diff: fix the diff's fallout and small old bugs in the files it touches, and file the rest as `file:` lines (Open risks, below).
-- [Push back](../ns-principle-push-back/SKILL.md) when the brief asks for something the code or a test shows is wrong.
+## When told something went wrong
 
-**Fix the class.** When the brief lists Instances, fix every one it covers, each with its own red test. Leave an instance marked filed separately to its issue. Then add a **guard** for the class where one is practical: a lint or `ast-grep` rule that flags the faulty construct, a test that checks every instance at once, or a type or shared helper that makes the defect unwritable. Record the guard, or why none is practical, under Class guard in `build.md`. An instance of the class that the brief missed is the unit's to fix too, with its own red test. It becomes a `file:` line only when fixing it would add more than about 150 changed lines, tagged `too-big: <lines>`.
-
-**Findings outside the brief** come in three kinds. Sort each one as you find it:
-
-- **Fallout** is caused by this diff: consumers of a new event, config key or format; docs and citations it makes stale; baseline entries; helper copies it adds; a file or function it pushes over the size bar; a form of a new ban it leaves out. Fix every one before the gate, and record it as a `fallout:` line naming its commit. Build never leaves a `fallout:` line open.
-- **An old bug in a touched file** is pre-existing, in a file the diff already changes. Fix it in the unit, with its own commit and red test, when that takes about 30 changed lines or fewer. A larger one is a `file:` line tagged `too-big: <lines>`.
-- **The rest** is pre-existing and outside the diff's files, or larger than these bounds: a `file:` line tagged `unrelated: <reason>`, or `too-big: <lines>` when it is past a bound.
-
-**Open risks** lines in `build.md` start with their kind:
-
-- `fallout:` fallout this unit fixed: what the diff caused, where, and the commit that fixed it.
-- `file:` a concrete defect or missing work outside the unit's scope, with its location and the evidence you saw. It ends with one tag: `unrelated: <reason>` for a pre-existing defect the diff has nothing to do with, or `too-big: <lines>` for one past a bound above. On a file the diff touches, `unrelated:` holds only when the defect lies outside that file's code (in another file the line names, say), and `ns artifact check` rejects a line on a touched file that has neither tag. `ns-ship` files it as a `needs-triage` issue when it opens the PR, and writes the issue number back.
-- `note:` a note about this unit only: an untested path, a seam not reached ("verify covers it"), a docs conflict.
-
-`ns-ship`, not build, later rewrites a `file:` line to `filed: #<n>` or `unfiled: <reason>`. Build writes only `fallout:`, `file:` and `note:`.
-
-**Size.** Build every acceptance criterion whatever the diff's size, past the soft limit too ([unit size](../ns-contract/SKILL.md#target-repo-configuration)). A large unit is review's prompt to suggest a split, never a reason to stop.
-
-**Commit each green slice** with a Conventional Commit, `type(scope): subject` (`feat(uart): time out reads after 50 ms`). One logical change per commit, each one building and passing on its own. The repo's hooks run on every commit and never get skipped ([git hooks](../ns-contract/SKILL.md#git-hooks)): when one fails, fix what it reports. During the loop run targeted tests only: the `test (one)` row of `stack.md`, or the tests for the files you touched, plus the typecheck when the stack has one. The full suite runs once, as the gate in step 5. Stop a test, gate or server you started per [killing processes](../ns-contract/SKILL.md#killing-processes), never by name or pattern.
-
-Done when every acceptance criterion and every covered instance has a test that passes in its targeted run, and a commit, and the working tree is clean.
-
-## 4. Self-check
-
-Review will check your diff against the [quality bar](../ns-contract/references/quality-bar.md). Meet it first. The base is `origin/<base>`, with `<base>` from `brief.md`'s `base:` as [base branch](../ns-contract/SKILL.md#units-of-work-and-artifacts) says. Diff against it with `git diff "$(git merge-base origin/<base> HEAD)"` and work through three checks. Fix what each one finds test-first, with the `ns-tdd` skill, and commit. Run targeted tests here too, as in step 3.
-
-1. **The bar.** Mark every item of the quality bar against your diff: met, fixed (with the commit), or not applicable with a one-line reason.
-2. **Every branch tested.** List each branch and error path the diff adds: each `if` arm, early return, raised or returned error, loop that can run zero times. Every one needs a test that takes it, whether or not an acceptance criterion names it.
-3. **Mutation self-check.** Mutate every condition and constant the diff adds or changes, one at a time; a reviewer's limit of five is for spot checks, and you own the whole diff. Run each mutation as the Mutation check in [correctness.md](../ns-review/references/correctness.md) says: flip a comparison, drop a guard, invert a condition, run only the tests covering that file under a timeout, then restore the file and confirm `git status` is unchanged. A mutation that survives needs a new test. Add it, then rerun the mutation until it goes red.
-
-Done when every bar item is marked, every listed branch has a test, and every mutation is killed or recorded `inconclusive` with the reason.
-
-## 5. Rebase, tidy, and run the gate
-
-`git fetch origin` and rebase onto `origin/<base>`, with the repo's hooks on ([git hooks](../ns-contract/SKILL.md#git-hooks)). Tidy the history now: small commits that each build and pass, ordered to tell the story, with bodies written using `ns-writing-for-humans`. This is the history that verify, review and ship will see; nothing rewrites it later.
-
-When the feedback says the base moved (an artifact with `cause: base_moved`, an older one whose first line starts `base moved`, a merge conflict, or `ns run`'s "The base moved" line), the rebase is the job. Run `git fetch origin` now and rebase onto the newest `origin/<base>`, never a commit an earlier artifact or the feedback noted. Resolve conflicts, then go on through this step as usual.
-
-Then run the **gate**, last, once, on the final commit: the one full check of the build. The gate command is the build phase's `gate` in `.nightshift/nightshift.toml` (`[phases.build] gate`), else the command in the `ci-local` row of `docs/agents/stack.md`. This is the command `ns run` runs after build, so a repo whose gate caches passes by tree skips that rerun. Run it, rather than the `test (all)` or `lint` rows on their own, which repeat its work and leave that cache empty. With no gate and no `ci-local` row, run the full test, lint and build commands from `stack.md` instead. Capture each command and the lines of output that prove its result.
-
-The gate run comes after the rebase, the tidy and the last commit. Nothing commits after it: a later commit or rebase changes the tree, and the gate must run again on the new final commit.
-
-Firmware: the build check includes the size report. Record flash and RAM use against the budget in `stack.md`, from the same final run, with no commit after it. On-target and HIL runs belong to `ns-verify`, not here.
-
-A red gate, or a rebase conflict you resolved, sends you back to step 3, then through step 4 again for the lines that changed, then to the gate again on the new final commit. Done when the gate is green on the final commit and a clean tree, or you have stopped with `fail` or `blocked`.
-
-## 6. Write the build artifact
-
-Write `.ns/<unit-id>/build.md`:
-
-```markdown
----
-schema: ns-artifact/2
-unit: <unit-id>
-phase: build
-status: pass        # pass | fail | blocked
-cause: none         # none on a pass; otherwise the gate's cause (step 7)
-next: verify        # verify on a pass; build to retry; human when blocked
-reason: "<one line: what passed, or what is missing or blocking>"
-sha: <git rev-parse --short HEAD>
-updated: <UTC timestamp>
----
-
-## Commits
-<sha> <subject>, one line each, oldest first
-
-## Tests added
-<test id>: <acceptance criterion it covers> (<seam>)
-
-## Checks
-<command>: <pass|fail>, with the proving output lines
-
-## Self-check
-Bar: <n> met, <n> fixed, <n> not applicable. One line per fixed or not-applicable item: <axis>: <item>: <commit, or why it doesn't apply>
-Branches: <n> listed, all tested. One line per branch: <file:line> <branch>: <test id>
-
-| Mutation | Location | Command | Result |
-|---|---|---|---|
-| `>=` to `>` | `src/x.py:17` | `timeout 60 pytest -q tests/test_x.py` | killed |
-
-## Class guard
-<the rule, test or type that stops the defect class coming back, or why none is practical>. Only when the brief lists Instances
-
-## Deviations from the brief
-<what changed and why>, or "none"
-
-## Open risks
-- fallout: <what the diff caused>: <location>, fixed in <commit>
-- file: <defect or missing work outside the scope>: <location, evidence>[, unrelated: <reason> | , too-big: <lines>]
-- note: <untested path, seam not reached, anything else about this unit>
-- filed: #<n> (written by ns-ship in place of a file: line, never by build)
-- unfiled: <reason> (written by ns-ship when the tracker was unreachable, never by build)
-```
-
-Write `none` under the heading when there are no risks.
-
-If any step ran inline instead of through a fresh-context agent, say so here.
-
-Then run `ns artifact check .ns/$NS_UNIT/build.md --phase build` and fix every error it reports ([artifact schema](../ns-contract/SKILL.md#units-of-work-and-artifacts)).
-
-## 7. Gate
-
-The gate passes when the self-check is done (step 4) and step 5's gate command is green on the final commit (or, with no gate configured, the full test, lint and build commands). Set `status: pass`. A check that stays red is `fail` with `cause: gate_red` and `next: build`, and `reason` says what is missing. A check you can't run (no toolchain, no credentials) is `blocked` with `next: human`, never `pass`: `cause: out_of_scope` when the cause lies outside the unit, else `needs_human`.
-
-Next phase: `ns-verify`. Under `gates: stop` (the default), stop and report the path to `build.md`. Under `gates: auto`, load the `ns-verify` skill if `status: pass`, and stop otherwise.
-
-When the brief is a set of tickets with blocking edges rather than one unit, see [parallel-tickets.md](references/parallel-tickets.md).
+A later message names what was left wrong: uncommitted changes, extra commits, failed checks, or findings from a check of your work. Fix exactly that, then run steps 3 and 4 again.

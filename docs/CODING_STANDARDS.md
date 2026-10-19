@@ -1,43 +1,137 @@
 # Coding standards
 
-Rules for the `ns` CLI in `cli/`, and the checks that enforce them. Code that a check enforces cites the rule's section: `CODING_STANDARDS.md, "<heading>"`. `ns lint` fails on a citation that names no heading here (Checks).
+A pattern a tool can catch is a check, not a rule here. The rest needs judgement.
 
-## One path per dependency
+## Method names are noun_verb
 
-Each outside program the CLI runs has one way to call it for each job. A new call goes through that path, never a fresh `Command`. When none fits, change the path rather than add a second one.
+A method on a trait is named for the thing it acts on, then the action. Methods that act on one thing sort together, and the name says what the thing is before what happens to it.
 
-| Dependency | Job | Path |
-|---|---|---|
-| git | A command on the local repo | `git::run` (trimmed stdout), `git::ok` (success only), `git::command` (the `Proc`) |
-| git | A command that talks to `origin`: `fetch`, `push`, `pull`, `clone`, `ls-remote`, `remote update` | `git::run_net` (trimmed stdout), `git::net` (the `Proc`) |
-| A harness (claude, codex, ...) | A headless run: a phase, an eval trial, `ns ask` | `harness::command`, or `harness::capped` under a memory cap; never `Proc::harness` |
+Bad:
 
-`git::run` refuses the network subcommands with an error naming `git::run_net`. The network path never prompts for credentials, and a stalled transfer or a dead ssh connection ends it (#658).
+```rust
+fn add_workspace(&self, ...) -> Result<()>;
+fn merge(&self, ...) -> Result<()>;
+```
 
-`harness::command` checks a subscription claude's login, drops its `--bare`, turns its auto-memory off and lets its background tasks finish, so no caller can skip one (#657). Clippy rejects `Proc::harness` outside it (`cli/clippy.toml`).
+Good:
 
-## Checks
+```rust
+fn workspace_create(&self, ...) -> Result<()>;
+fn change_request_merge(&self, ...) -> Result<()>;
+```
 
-These checks enforce "One path per dependency" for child processes:
+The noun is a word from `GLOSSARY.md`.
 
-- Clippy's `disallowed-methods` in `cli/clippy.toml` rejects `std::process::Command::new`, so every child process starts through `crate::proc::Proc`, which applies its kind's policy: the environment scrub, a timeout that kills the process group, stdin closed (#556). It also rejects `Proc::harness`, so every harness starts through `harness::command` (#657).
-- `cli/tests/subprocess_guard.rs` (`only_proc_harness_and_the_probe_helper_lift_the_ban_in_src`) fails when a file in `cli/src` other than `proc.rs`, `harness.rs` and the unit tests' probe helper `testutil.rs` allows `clippy::disallowed_methods`.
+## A tool's name stays in its own module
 
-These checks fail a change that leaves its ripples behind:
+A seam (`vcs`, `forge`, `harness`, `os`) is a trait with one file per tool. The tool's name, its commands and its words appear only in that file. The trait and everything that uses it speak the glossary's words.
 
-- `ns lint` (`cli/src/lint/events.rs`) fails on a run-log event the CLI emits (a `"event": "<name>"` in `cli/src` outside unit tests) that no reader names: a code span in `skills/ns-supervise/` outside its evals, or a string literal in `cli/src/status.rs`. An event no reader needs goes on its `ALLOWED` list with the reason, and an entry for an event no longer emitted, or one a reader now names, fails too.
-- `ns lint` (`cli/src/lint/citations.rs`) fails on a citation in `cli/`, `docs/`, `rules/` or `skills/` of a section of this file or of `skills/ns-contract/references/quality-bar.md` (`<file>, "<heading>"`) that names none of the file's `## ` headings, and on a citation of this file that names no section.
-- `cli/tests/rules_baseline.rs` fails when `ns rules baseline --dry-run` on the checkout's findings would not leave `.nightshift/rules-baseline.json` byte for byte as it is: a hand-edited entry, a stale message, or entries out of order. Rerun `ns rules baseline` and commit the file.
+Bad: a command that builds a `Git` and passes it on, or a method called `pull_request`.
+
+Good: `vcs::current()` is the one place that picks a tool, and the method is `change_request_get`.
+
+## No issue numbers in committed files
+
+A committed file never names an issue or change request by number. The number means nothing to a reader who can't see the tracker, and it goes stale when the work moves forge. Say what the issue was about.
+
+Bad:
+
+```rust
+// Workaround for #730.
+```
+
+Good:
+
+```rust
+// A phase can leave read-only directories, which make the workspace unremovable.
+```
+
+## The best documentation is no documentation
+
+Code cannot lie; docs can. Write down only the bare minimum, or what is absolutely required. If the code, a type, a test or `--help` already says it, a doc that repeats it is a second copy to keep true.
+
+Bad: a page that lists each command's flags, which `--help` prints.
+
+Good: no page. A doc that stays is one nothing else can say, such as why a choice was made, or a picture of how the parts connect.
+
+## Single source of truth
+
+Keep each meaning in a single place and point to it instead of restating it. A copy can drift from the original, and then the two disagree with no way to tell which is right.
+
+Bad: the list of states in the enum and again in the glossary.
+
+Good: the glossary says "the list is in `docs/STATES.md`".
+
+## Take the well-trodden path
+
+Prefer the conventional tool, library and pattern: the repo's existing choice first, then the ecosystem's standard. Agents do best on ground they have seen most, and they copy what sits nearby. A novel choice needs a stated reason, and once made it becomes the path to follow.
+
+Bad: a hand-rolled argument parser next to commands that use `clap`.
+
+Good: `clap`, like the other commands.
+
+## Retry what can pass, where it is safe
+
+A call to a service outside `ns` (the forge, a remote, a harness) fails for reasons that pass on their own, such as a dropped connection, a 5xx or a rate limit. Repeat such a call a few times, waiting longer each time, and say each failure on stderr. Do it in the seam that makes the call, so every caller gets it, with `retry::retry`, and give the wait a field so a test can set it to zero.
+
+Repeat only a call that is safe to make twice, and only a failure known to be transient. A permanent error (a 404, no permission, a missing program) fails at once, and so does an error nobody has classified: repeating it hides it and costs time. A call that is not safe to repeat, such as opening or merging a change request, is made once; the state that made it runs again and looks before it acts.
+
+Bad: a loop around every call that retries whatever went wrong.
+
+Good: a list of the failures that can pass, a retry in the seam for the calls that are safe to repeat, and one test per kind of failure.
 
 ## A test never waits on the clock
 
-A test waits for an event, never for time to pass: no `sleep`, no timing itself against `Instant::now()` or `.elapsed()`, no literal `Duration` timeout. Code under test that sleeps or reads the time takes `crate::clock::Clock`, which `NS_NOW` pins in a test, so its sleeps advance the pinned clock instead of blocking. A wait that has to bound a hang uses `common::TIMEOUT`.
+A test never sleeps, and never asserts on real elapsed time. It waits for an event: a child exiting, a file appearing, a message on a channel. A real timeout in a test is only a hang guard: generous, and never the thing the test checks.
 
-The ast-grep rule `wall-clock-in-test` in `rules/rust/ast-grep.yml` enforces it (`rules/rust/README.md`). A finding that has to stay, such as a literal that only builds a fake-clock value, goes in the baseline with `ns rules baseline --allow-growth`, which takes a human's yes.
+Bad: the test passes only if the child exits within a second.
 
-## Lints from review findings
+```rust
+let start = Instant::now();
+kill(&child);
+std::thread::sleep(Duration::from_millis(100));
+assert!(start.elapsed() < Duration::from_secs(1));
+```
 
-Clippy lints that catch what review kept finding. `ci-local.sh`'s clippy step denies them.
+Good: wait for the exit itself, with a hang guard the test never checks.
 
-- `cli/Cargo.toml`'s `[lints.clippy]`: `option_option` (an `Option<Option<T>>`, which says nothing about what each `None` means), `fn_params_excessive_bools` and `unused_result_ok` (a `.ok()` whose `Option` is thrown away, dropping the error unread).
-- `cli/clippy.toml`'s `max-fn-params-bools = 2`: three or more bool parameters is a signature to replace with an enum or a struct.
+```rust
+kill(&child);
+let status = child.wait()?; // the test binary's own timeout is the hang guard
+assert!(!status.success());
+```
+
+## Comments say why, not what
+
+A comment earns its place by saying what the code can't: a constraint, a reason, a trap. Delete a comment that restates the line below it, the file name, or the test's data.
+
+Bad:
+
+```rust
+// Remove the temp dir.
+fs::remove_dir_all(&tmp)?;
+```
+
+Good:
+
+```rust
+// The phase may still hold files open here on Windows; removal waits for the child to exit.
+fs::remove_dir_all(&tmp)?;
+```
+
+## Name what a value means
+
+A type says what its value means. Use a named struct, not a tuple whose fields can be swapped. Use an enum, not an `Option` whose `None` means something ("run everything") nor a `bool` flag argument. Match every enum case by name, not with `_`.
+
+Bad: `None` means "run every step", and a test can't tell unset from empty.
+
+```rust
+fn steps(files: Option<Vec<PathBuf>>) -> Vec<Step>
+```
+
+Good:
+
+```rust
+enum Scope { All, Files(Vec<PathBuf>) }
+fn steps(scope: Scope) -> Vec<Step>
+```

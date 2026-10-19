@@ -1,7 +1,0 @@
-ruleDirs: [rules]
-utilDirs: [utils]
-# One parser for every file: TSX reads JavaScript, JSX and TypeScript alike, so each rule is
-# written once. It misreads a `<T>value` type assertion in a .ts file, which
-# consistent-type-assertions bans anyway.
-languageGlobs:
-  tsx: ["*.js", "*.jsx", "*.mjs", "*.cjs", "*.ts", "*.mts", "*.cts"]

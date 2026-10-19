@@ -1,6 +1,0 @@
-{
-  "name": "plain-js",
-  "private": true,
-  "dependencies": { "left-pad": "^1.3.0", "lodash.merge": "^4.6.2" },
-  "devDependencies": { "@scope/pkg": "^1.0.0" }
-}

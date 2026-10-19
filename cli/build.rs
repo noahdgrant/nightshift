@@ -1,55 +1,30 @@
-//! Stamp the commit `ns` is built from into `NS_BUILD_COMMIT`, which `ns --version` shows and
-//! `ns watch`'s self-update compares against (docs/factory/starting-a-night.md, "When the
-//! watched repo is nightshift"). A `NS_BUILD_COMMIT` already set, as the self-update sets it
-//! for a source tree with no `.git`, wins; a tree that is neither gets `unknown`, and
-//! a build that found no commit or watched no HEAD reruns this script on every build, through a
-//! path that never exists, so a later build in a working git tree stamps the real commit.
+//! Embeds the skills in `../skills` in the binary, so one file carries a CLI and the skills that
+//! match it.
 
-mod build_stamp;
-
+use std::fmt::Write;
 use std::path::Path;
-use std::process::Command;
-
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the build script is a crate of its own and cannot use crate::proc"
-)]
-fn git(args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_OBJECT_DIRECTORY")
-        .output()
-        .ok()?;
-    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    (out.status.success() && !s.is_empty()).then_some(s)
-}
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=NS_BUILD_COMMIT");
-    let (commit, rerun_always) = build_stamp::commit(std::env::var("NS_BUILD_COMMIT").ok(), || {
-        let mut watched = false;
-        for p in ["HEAD", "logs/HEAD"] {
-            if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", p]) {
-                if Path::new(&path).exists() {
-                    println!("cargo:rerun-if-changed={path}");
-                    watched = true;
-                }
-            }
-        }
-        build_stamp::Head {
-            commit: git(&["rev-parse", "HEAD"]),
-            watched,
-        }
-    });
-    if rerun_always {
-        let never =
-            Path::new(&std::env::var("OUT_DIR").unwrap()).join("ns-build-commit-unresolved");
-        println!("cargo:rerun-if-changed={}", never.display());
+    let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../skills");
+    println!("cargo:rerun-if-changed={}", skills.display());
+    let mut found: Vec<_> = std::fs::read_dir(&skills)
+        .expect("cannot read the skills directory")
+        .map(|e| e.expect("cannot read a skill").path())
+        .filter(|p| p.join("SKILL.md").is_file())
+        .collect();
+    found.sort();
+    let mut table = String::from("pub const EMBEDDED: &[(&str, &str)] = &[\n");
+    for dir in found {
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let file = dir.join("SKILL.md").canonicalize().unwrap();
+        writeln!(
+            table,
+            "    ({name:?}, include_str!({:?})),",
+            file.display().to_string()
+        )
+        .unwrap();
     }
-    println!("cargo:rustc-env=NS_BUILD_COMMIT={commit}");
+    table.push_str("];\n");
+    let out = std::env::var("OUT_DIR").unwrap();
+    std::fs::write(Path::new(&out).join("skills.rs"), table).unwrap();
 }

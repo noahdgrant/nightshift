@@ -1,4 +1,0 @@
-name: zlogger
-build:
-  cmake: .
-  kconfig: Kconfig

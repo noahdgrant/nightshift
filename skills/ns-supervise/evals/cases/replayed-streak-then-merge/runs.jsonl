@@ -1,8 +1,0 @@
-{"event": "start", "unit": "41-feat-widget-export", "issue": 41, "ts": "2026-10-10T02:00:00Z", "pid": 1041}
-{"event": "end", "unit": "41-feat-widget-export", "issue": 41, "outcome": "stuck", "reason": "build.md is blocked: the toolchain is missing: cargo: command not found", "pr": null, "ts": "2026-10-10T02:20:00Z", "pid": 1041}
-{"event": "start", "unit": "42-fix-widget-sort", "issue": 42, "ts": "2026-10-10T03:00:00Z", "pid": 1042}
-{"event": "end", "unit": "42-fix-widget-sort", "issue": 42, "outcome": "stuck", "reason": "build.md is blocked: the toolchain is missing: cargo: command not found", "pr": null, "ts": "2026-10-10T03:20:00Z", "pid": 1042}
-{"event": "start", "unit": "43-feat-widget-colours", "issue": 43, "ts": "2026-10-10T04:00:00Z", "pid": 1043}
-{"event": "end", "unit": "43-feat-widget-colours", "issue": 43, "outcome": "stuck", "reason": "build.md is blocked: the toolchain is missing: cargo: command not found", "pr": null, "ts": "2026-10-10T04:20:00Z", "pid": 1043}
-{"event": "start", "unit": "44-fix-widget-title", "issue": 44, "ts": "2026-10-10T05:00:00Z", "pid": 1044}
-{"event": "end", "unit": "44-fix-widget-title", "issue": 44, "outcome": "merged", "reason": null, "pr": 104, "ts": "2026-10-10T05:20:00Z", "pid": 1044}

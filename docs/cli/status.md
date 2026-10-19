@@ -1,5 +1,0 @@
-# `ns status`
-
-## `ns status [--since <time>] [--json]`
-
-Summarises the night in four parts. Running: each unit a live `ns run` holds (its run lock), with its last logged phase. Ended: each other unit by the outcome of its last `end` event at or after `--since` (UTC, inclusive; default 24 hours ago): merged, PR for a human (`done`), stuck (`stuck` or `budget`), paused, split, and other (anything else, such as `interrupted`, shown only when present). Next: the ready issues `ns watch` would take, in its order, from the same queue reader; when the forge can't be read it prints `queue unavailable` and gives the reason on stderr. Main: the `main_red`, `main_green` and `main_red_unfixed` events `ns watch` logged at or after `--since`, oldest first, shown only when there are some (`docs/factory/watch.md`, "Main's CI"). Entries hold only the fields `ns log` prints. `--json` prints one object, `{since, running, ended: {merged, pr_for_human, stuck, paused, split, other}, main, next}`, with `main` an empty list when there are none and `next` null when the queue is unavailable.
