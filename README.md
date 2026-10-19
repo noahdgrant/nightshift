@@ -27,7 +27,7 @@ From a checkout, to run what you are editing:
 cargo install --path cli --force
 ```
 
-The skills are inside the binary. In each repository, `ns init` copies them into `.nightshift/skills/`: commit them, and edit one to patch it. It records what it copied in `.nightshift/nightshift.toml`, so running it again after an upgrade updates the skills you have not touched and keeps the ones you patched. `ns init --force` overwrites the patched ones too, and `git diff` shows what they were. A skill the repository doesn't have is read from the binary.
+The skills are inside the binary. A repository is pinned to one version of `ns`; see [`docs/VERSIONING.md`](docs/VERSIONING.md).
 
 ## Setup
 
@@ -40,7 +40,9 @@ Log in to claude with your Claude subscription, and name the GitHub account that
 token_command = "gh auth token --user <account>"
 ```
 
-Then, in each project you want to run the factory on, run `ns init`.
+Then, in each project you want to run the factory on, run `ns init` and commit what it leaves: `.nightshift/nightshift.toml`, which pins the repository to this version of `ns`, and `.claude/settings.json`, whose hook keeps the skills current in a Claude Code session. In a session, type `/ns-grilling` or any other skill.
+
+To move a repository to a newer `ns`, install it, then run `ns upgrade <version>` and commit the new pin.
 
 ## Run your first unit
 

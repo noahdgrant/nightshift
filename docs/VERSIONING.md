@@ -1,0 +1,10 @@
+# Versions and skills
+
+Why a repository pins `ns`, and how the skills reach the agent and the user.
+
+- **One version per repository.** `.nightshift/nightshift.toml` holds `version`, the version of `ns` the repository uses, and `harness`, the harnesses whose skills it wants (`claude`; `codex` is not supported yet). The skills are inside the binary, so the version pins them too.
+- **Many versions on one machine.** Whichever `ns` is run hands over to the pinned one (`~/.local/share/nightshift/versions/<version>/ns`, or under `$NS_HOME`), unless it is that version already. It decides from the arguments before parsing them, because the pinned version may have commands this one lacks. `init`, `upgrade`, `self` and `version` never hand over. `ns self install <version>` fetches a release and checks its checksum; a missing version is an error that names that command.
+- **Agents get the skill in the prompt.** A state's prompt starts with its skill's text, so an unattended run does not depend on the harness finding the skill.
+- **Users get the skills in the harness.** `ns sync` writes them to where the harness looks (`.claude/skills/ns-*`). The copy is a function of the version, so it is not committed: `ns sync` keeps it out of the repository's changes through the git exclude file. It runs from `ns init`, from a hook that `ns init` commits in `.claude/settings.json` so each session starts with current skills, and in every workspace `ns` creates. A skill whose output the CLI parses (`ns-triage`, `ns-verify`, `ns-review`) is written with `disable-model-invocation: true`, so it runs only when typed.
+- **No patching.** A repository varies the skills through its own docs (`docs/agents/`), not by editing a copy.
+- **Developing nightshift in nightshift.** The repository pins the last release. Set `NS_DEV=1` to run the build you are working on: it skips the pin, and `ns sync` links `.claude/skills/ns-*` to `skills/`, so an edit to a skill shows in a session without a rebuild. To move to a release, tag it, then `ns upgrade <version>` in a pull request.
