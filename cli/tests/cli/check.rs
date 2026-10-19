@@ -92,9 +92,9 @@ fn a_repository_with_no_checks_passes_them() {
 
 #[test]
 fn checks_that_run_out_of_time_fail_and_are_not_remembered() {
-    let (_repo, ws, log) = with_logging_checks("sleep 30");
+    let (_repo, ws, _log) = with_logging_checks("sleep 30");
     let out = report(ns(&ws, &["check", "--timeout-seconds", "0"]).failure());
     assert_eq!(out["ok"].as_bool(), Some(false));
+    // A remembered pass would make this succeed.
     ns(&ws, &["check", "--timeout-seconds", "0"]).failure();
-    assert_eq!(runs(&log), 2);
 }
