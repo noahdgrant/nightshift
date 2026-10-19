@@ -1,4 +1,0 @@
-version = "18"
-install = "apt"
-package = "clang-tidy-18"
-check = "clang-tidy --version"

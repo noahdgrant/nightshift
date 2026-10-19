@@ -1,0 +1,68 @@
+name: Release
+
+# Each push to main opens or updates the release PR: the next version and changelog, worked out
+# from the Conventional Commits since the last release. Merging that PR tags vX.Y.Z and creates the
+# GitHub release; the build job then attaches the Linux binary to it. The build is a job of this
+# workflow because a tag made with the default token starts no other workflow.
+# Config: release-please-config.json and .release-please-manifest.json.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-please:
+    name: Release PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+
+  build:
+    name: Build and attach the binary
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+      - name: Test
+        run: cargo test --locked --manifest-path cli/Cargo.toml
+      - name: Build
+        run: cargo build --release --locked --manifest-path cli/Cargo.toml
+      - name: Package and attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          name="ns-$VERSION-x86_64-unknown-linux-gnu"
+          mkdir "$name"
+          cp cli/target/release/ns "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          gh release upload "$TAG" "$name.tar.gz" "$name.tar.gz.sha256"

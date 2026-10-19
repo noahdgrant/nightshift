@@ -1,2 +1,0 @@
-description = "A repo that ns watch works overnight, with systemd, gh and ns faked; each case brings its own run log"
-path_prepend = ["../../fakes/systemd/bin"]   # the fakes go first on PATH; see docs/EVALS.md

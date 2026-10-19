@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-# Fake journalctl for ns eval: records the call; the journal is empty.
-fake=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/fake
-[ "$fake" = /fake ] && fake=$HOME/fake
-mkdir -p "$fake"
-echo "journalctl $*" >> "$fake/calls.log"
-echo "-- No entries --"

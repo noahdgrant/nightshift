@@ -1,2 +1,0 @@
-def memoize(fn):
-    pass

@@ -1,4 +1,0 @@
-description = "Needs a capability the test config doesn't have"
-fixture = "tiny"
-requires = ["zephyr"]
-prompt = "anything"

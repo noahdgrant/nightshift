@@ -1,6 +1,0 @@
-#!/bin/sh
-# post-commit: the harness commits setup after the case's own commands, which moves HEAD.
-# Stamp the new HEAD into the seeded artifacts once, then remove this hook.
-sha=$(git rev-parse --short HEAD)
-sed -i "s/SHA/$sha/" .ns/44-widget-title/*.md
-rm -f "$0"

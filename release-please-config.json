@@ -4,24 +4,72 @@
   "include-component-in-tag": false,
   "bump-minor-pre-major": true,
   "changelog-sections": [
-    { "type": "feat", "section": "Features" },
-    { "type": "fix", "section": "Bug Fixes" },
-    { "type": "perf", "section": "Performance" },
-    { "type": "revert", "section": "Reverts" },
-    { "type": "refactor", "section": "Refactoring" },
-    { "type": "docs", "section": "Documentation" },
-    { "type": "test", "section": "Tests", "hidden": true },
-    { "type": "ci", "section": "CI", "hidden": true },
-    { "type": "build", "section": "Build", "hidden": true },
-    { "type": "style", "section": "Style", "hidden": true },
-    { "type": "chore", "section": "Chores", "hidden": true }
+    {
+      "type": "feat",
+      "section": "Features"
+    },
+    {
+      "type": "fix",
+      "section": "Bug Fixes"
+    },
+    {
+      "type": "perf",
+      "section": "Performance"
+    },
+    {
+      "type": "revert",
+      "section": "Reverts"
+    },
+    {
+      "type": "refactor",
+      "section": "Refactoring"
+    },
+    {
+      "type": "docs",
+      "section": "Documentation"
+    },
+    {
+      "type": "test",
+      "section": "Tests",
+      "hidden": true
+    },
+    {
+      "type": "ci",
+      "section": "CI",
+      "hidden": true
+    },
+    {
+      "type": "build",
+      "section": "Build",
+      "hidden": true
+    },
+    {
+      "type": "style",
+      "section": "Style",
+      "hidden": true
+    },
+    {
+      "type": "chore",
+      "section": "Chores",
+      "hidden": true
+    }
   ],
   "packages": {
     ".": {
       "extra-files": [
-        { "type": "toml", "path": "cli/Cargo.toml", "jsonpath": "$.package.version" },
-        { "type": "toml", "path": "cli/Cargo.lock", "jsonpath": "$.package[?(@.name.value == 'nightshift')].version" }
-      ]
+        {
+          "type": "toml",
+          "path": "cli/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "cli/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'nightshift')].version"
+        }
+      ],
+      "release-as": "0.1.0"
     }
-  }
+  },
+  "bootstrap-sha": "5f09bf1d86f184f3eaf2f4d48fdd0d87ad41f4a7"
 }

@@ -1,0 +1,15 @@
+mod auto;
+mod check;
+mod common;
+mod config;
+mod define;
+mod init;
+pub mod plan;
+pub mod run;
+mod sync;
+mod triage;
+mod troubleshoot;
+mod upgrade;
+mod version;
+mod versions;
+mod workspace;

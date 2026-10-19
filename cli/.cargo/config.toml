@@ -1,0 +1,3 @@
+# A test must not read the config of whoever runs it.
+[env]
+NS_CONFIG = "/nonexistent/nightshift/config.toml"

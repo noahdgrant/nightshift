@@ -1,4 +1,0 @@
-name = "widgets"
-
-[supervise]
-notify = 'cat >> "$(git rev-parse --path-format=absolute --git-common-dir)/fake/notify.log"'

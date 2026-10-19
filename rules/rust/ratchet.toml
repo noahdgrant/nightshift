@@ -1,7 +1,0 @@
-# The binary size ratchet (docs/factory/run.md, "Ratchets"): ns-setup adds this table to
-# .nightshift/nightshift.toml, with {bin} the binary to hold and {crate} the directory of its
-# crate, relative to the repo. Add a table per binary to hold more than one.
-[ratchets.binary-size]
-command = ".nightshift/rules/rust/ratchet-binary-size.sh {bin} {crate}"
-better = "lower"
-tolerance = "1%"

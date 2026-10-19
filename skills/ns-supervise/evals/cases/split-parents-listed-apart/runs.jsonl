@@ -1,8 +1,0 @@
-{"event":"split_parent","number":30,"title":"Widget import and export","action":"close","children":[31,32],"ts":"2026-10-10T12:01:00Z","pid":1000}
-{"event":"start","unit":"51-feat-widget-themes","issue":51,"ts":"2026-10-10T12:06:00Z","pid":1051}
-{"event":"phase","unit":"51-feat-widget-themes","issue":51,"phase":"triage","attempt":1,"status":"split","wall_s":41.0,"ts":"2026-10-10T12:07:00Z","pid":1051}
-{"event":"end","unit":"51-feat-widget-themes","issue":51,"outcome":"split","phase":"triage","reason":"brief.md is split: Split into #52 and #53.","pr":null,"ts":"2026-10-10T12:08:00Z","pid":1051}
-{"event":"start","unit":"54-fix-widget-sort","issue":54,"ts":"2026-10-10T12:21:00Z","pid":1054}
-{"event":"phase","unit":"54-fix-widget-sort","issue":54,"phase":"triage","attempt":1,"status":"pass","wall_s":41.0,"ts":"2026-10-10T12:22:00Z","pid":1054}
-{"event":"phase","unit":"54-fix-widget-sort","issue":54,"phase":"build","attempt":1,"status":"pass","wall_s":300.0,"ts":"2026-10-10T12:28:00Z","pid":1054}
-{"event":"end","unit":"54-fix-widget-sort","issue":54,"outcome":"merged","reason":null,"pr":104,"ts":"2026-10-10T12:30:00Z","pid":1054}

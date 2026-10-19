@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "deny": [
-      "Bash(python3 -m inventory:*)",
-      "Bash(PYTHONPATH=src python3 -m inventory:*)"
-    ]
-  }
-}

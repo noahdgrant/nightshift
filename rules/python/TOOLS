@@ -1,1 +1,0 @@
-ruff ast-grep pytest pytest-cov

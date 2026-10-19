@@ -1,4 +1,0 @@
-id: allowed-package
-language: tsx
-rule:
-  regex: '^(?:)(?:/|$)'
