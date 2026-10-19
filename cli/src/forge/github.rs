@@ -73,6 +73,21 @@ impl GitHub {
 }
 
 impl Forge for GitHub {
+    fn release_download(
+        &self,
+        source: &str,
+        tag: &str,
+        patterns: &[&str],
+        dir: &Path,
+    ) -> Result<()> {
+        let mut args = vec!["release", "download", tag, "--repo", source, "--dir", "."];
+        for pattern in patterns {
+            args.extend(["--pattern", pattern]);
+        }
+        self.gh(dir, &args)?;
+        Ok(())
+    }
+
     fn unit_get(&self, repo: &Path, number: u64) -> Result<Unit> {
         let json = self.gh(
             repo,

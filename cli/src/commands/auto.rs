@@ -232,6 +232,9 @@ mod tests {
         fn change_request_merge(&self, _: &Path, _: u64) -> Result<()> {
             unreachable!()
         }
+        fn release_download(&self, _: &str, _: &str, _: &[&str], _: &Path) -> Result<()> {
+            unreachable!()
+        }
     }
 
     /// An operating system whose clock only moves when a test moves it.
@@ -242,6 +245,9 @@ mod tests {
             unreachable!()
         }
         fn process_interact(&self, _: Command) -> Result<bool> {
+            unreachable!()
+        }
+        fn process_replace(&self, _: Command) -> anyhow::Error {
             unreachable!()
         }
         fn shell_command(&self, _: &str) -> Command {

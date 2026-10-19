@@ -6,6 +6,7 @@ mod brief;
 mod checks;
 mod commands;
 mod define;
+mod dispatch;
 mod forge;
 mod harness;
 mod lock;
@@ -23,6 +24,7 @@ mod triage;
 mod troubleshoot;
 mod until;
 mod vcs;
+mod versions;
 mod workspace;
 
 /// Tests that write a program and run it, or start any process, hold this guard. A process
@@ -49,8 +51,8 @@ struct Cli {
 }
 
 fn main() {
-    let cli = Cli::parse();
-    if let Err(e) = commands::run(cli.command) {
+    let args: Vec<_> = std::env::args_os().collect();
+    if let Err(e) = dispatch::run(&args).and_then(|()| commands::run(Cli::parse().command)) {
         eprintln!("ns: {e:#}");
         std::process::exit(1);
     }

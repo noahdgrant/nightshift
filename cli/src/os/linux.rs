@@ -25,6 +25,10 @@ impl Os for Linux {
         Ok(cmd.status().context("cannot start the process")?.success())
     }
 
+    fn process_replace(&self, mut cmd: Command) -> anyhow::Error {
+        anyhow::Error::new(cmd.exec()).context("cannot start the process")
+    }
+
     fn shell_command(&self, script: &str) -> Command {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(script);

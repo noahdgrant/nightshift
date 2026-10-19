@@ -6,6 +6,7 @@ mod define;
 mod init;
 mod plan;
 mod run;
+mod self_;
 mod sync;
 mod triage;
 mod troubleshoot;
@@ -34,6 +35,9 @@ pub enum Command {
     Sync(sync::Args),
     /// Change the version of ns the repository is pinned to.
     Upgrade(upgrade::Args),
+    /// Manage the versions of ns installed on this machine.
+    #[command(name = "self")]
+    SelfManage(self_::Args),
     /// Print the version of ns.
     Version(version::Args),
     /// Diagnose a bug nobody has reproduced and send the unit on.
@@ -54,6 +58,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Run(args) => run::run(args),
         Command::Sync(args) => sync::run(args),
         Command::Upgrade(args) => upgrade::run(args),
+        Command::SelfManage(args) => self_::run(args),
         Command::Version(args) => version::run(args),
         Command::Triage(args) => triage::run(args),
         Command::Troubleshoot(args) => troubleshoot::run(args),

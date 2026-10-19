@@ -10,4 +10,5 @@ mod triage;
 mod troubleshoot;
 mod upgrade;
 mod version;
+mod versions;
 mod workspace;

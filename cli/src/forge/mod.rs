@@ -46,6 +46,16 @@ pub trait Forge {
     /// How the checks on change request `number` stand.
     fn change_request_checks_get(&self, repo: &Path, number: u64) -> Result<Checks>;
 
+    /// Downloads the files of release `tag` of the repository `source` ("owner/name") whose names
+    /// match one of `patterns` into `dir`.
+    fn release_download(
+        &self,
+        source: &str,
+        tag: &str,
+        patterns: &[&str],
+        dir: &Path,
+    ) -> Result<()>;
+
     /// Merges change request `number` into its base as one commit.
     fn change_request_merge(&self, repo: &Path, number: u64) -> Result<()>;
 }

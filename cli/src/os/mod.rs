@@ -18,6 +18,10 @@ pub trait Os {
     /// time limit. Returns whether it exited with success.
     fn process_interact(&self, cmd: Command) -> Result<bool>;
 
+    /// Replaces this process with `cmd`, which keeps its environment, arguments and terminal.
+    /// Returns only the reason it could not.
+    fn process_replace(&self, cmd: Command) -> anyhow::Error;
+
     /// A command that runs `script` in the system's shell.
     fn shell_command(&self, script: &str) -> Command;
 
