@@ -24,7 +24,7 @@ pub enum Command {
     Define(define::Args),
     /// Cut a unit into slices and make it ready for the agent.
     Plan(plan::Args),
-    /// Copy the skills into the repository to be patched.
+    /// Pin the repository to this version of ns.
     Init(init::Args),
     /// Move a unit through the states, printing each move.
     Run(run::Args),

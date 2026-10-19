@@ -45,7 +45,7 @@ pub fn unit_plan(
     }
     let reply = harness.task_run(&Task {
         dir: root.to_path_buf(),
-        prompt: prompt(&skill::load(root, skill::DESIGN_DOC)?, unit),
+        prompt: prompt(&skill::load(skill::DESIGN_DOC)?, unit),
         write: false,
         model: None,
         timeout,

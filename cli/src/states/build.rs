@@ -35,8 +35,8 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     // The build tells the harness to follow the test-driven loop, so the loop goes with it.
     let skill = format!(
         "{}\n\n{}",
-        skill::load(&root, skill::BUILD)?,
-        skill::load(&root, skill::TDD)?
+        skill::load(skill::BUILD)?,
+        skill::load(skill::TDD)?
     );
     let checks_note = checks::command_find(&dir)?
         .is_some()
@@ -64,7 +64,6 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         artifact::write(&dir, &id, PROBLEM, &problem)?;
         bail!("{problem}");
     }
-    let root = ctx.vcs.root_find(&ctx.from)?;
     if let Some(report) = checks::run(
         ctx.vcs.as_ref(),
         ctx.os.as_ref(),

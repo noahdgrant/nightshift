@@ -16,7 +16,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         .clone();
     let unit = ctx.forge.unit_get(&dir, ctx.unit)?;
     let build = artifact::read(&dir, &ctx.unit.to_string(), "build.md")?;
-    let skill = skill::load(&ctx.vcs.root_find(&ctx.from)?, skill::VERIFY)?;
+    let skill = skill::load(skill::VERIFY)?;
     check::run(ctx, true, prompt(&skill, &unit.title, &unit.body, &build))
 }
 

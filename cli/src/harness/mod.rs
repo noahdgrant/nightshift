@@ -5,7 +5,7 @@ mod claude;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 pub trait Harness {
     /// Runs one headless session and waits for it to finish.
@@ -33,6 +33,28 @@ pub struct Reply {
     pub text: String,
     /// Whether the session ended normally.
     pub success: bool,
+}
+
+/// The harnesses a repository can name in its manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Claude,
+}
+
+impl Kind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Claude => "claude",
+        }
+    }
+
+    pub fn parse(name: &str) -> Result<Kind> {
+        match name {
+            "claude" => Ok(Kind::Claude),
+            "codex" => bail!("the codex harness is not supported yet"),
+            other => bail!("there is no harness named {other}"),
+        }
+    }
 }
 
 /// The harness `ns` uses. The only place one is chosen.

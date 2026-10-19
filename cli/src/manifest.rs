@@ -1,21 +1,15 @@
-//! The repository's `.nightshift/nightshift.toml`. `ns` reads and changes only the tables it
-//! knows, and leaves the rest, comments included, as it found them.
+//! The repository's `.nightshift/nightshift.toml`. `ns` reads and changes only the keys it knows,
+//! and leaves the rest, comments included, as it found them.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use sha2::{Digest, Sha256};
-use toml_edit::{value, DocumentMut, Item, Table};
+use toml_edit::{value, Array, DocumentMut};
+
+use crate::harness::Kind;
 
 fn file_find(root: &Path) -> PathBuf {
     root.join(".nightshift").join("nightshift.toml")
-}
-
-/// What a skill's file holds, as it is recorded.
-pub fn hash(text: &str) -> String {
-    let digest = Sha256::digest(text.as_bytes());
-    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("sha256:{hex}")
 }
 
 fn document_read(root: &Path) -> Result<DocumentMut> {
@@ -29,31 +23,47 @@ fn document_read(root: &Path) -> Result<DocumentMut> {
         .with_context(|| format!("{} is not valid TOML", file.display()))
 }
 
-/// The skills as `ns init` last copied them: the hash of each skill's file, by skill name.
-pub fn skills_read(root: &Path) -> Result<Vec<(String, String)>> {
-    let document = document_read(root)?;
-    Ok(document
-        .get("skills")
-        .and_then(Item::as_table)
-        .into_iter()
-        .flat_map(Table::iter)
-        .filter(|(name, _)| *name != "version")
-        .filter_map(|(name, hash)| Some((name.to_string(), hash.as_str()?.to_string())))
-        .collect())
+/// What the repository says about how it uses nightshift.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Pin {
+    /// The version of `ns` the repository uses. `None` before `ns init`.
+    pub version: Option<String>,
+    /// The harnesses whose skills the repository wants. `claude` when it names none.
+    pub harness: Vec<Kind>,
 }
 
-/// Records the version of `ns` that copied the skills, and the hash of each skill's file.
-pub fn skills_write(root: &Path, version: &str, skills: &[(String, String)]) -> Result<()> {
+pub fn pin_read(root: &Path) -> Result<Pin> {
+    let document = document_read(root)?;
+    let version = document
+        .get("version")
+        .map(|item| {
+            item.as_str()
+                .context("`version` in nightshift.toml is not a string")
+                .map(str::to_string)
+        })
+        .transpose()?;
+    let harness = match document.get("harness") {
+        None => vec![Kind::Claude],
+        Some(item) => item
+            .as_array()
+            .context("`harness` in nightshift.toml is not a list")?
+            .iter()
+            .map(|name| Kind::parse(name.as_str().context("a harness name is not a string")?))
+            .collect::<Result<_>>()?,
+    };
+    Ok(Pin { version, harness })
+}
+
+/// Records the version of `ns` the repository uses, and its harnesses. A `[skills]` table from an
+/// `ns` that copied skills into the repository is dropped.
+pub fn pin_write(root: &Path, pin: &Pin) -> Result<()> {
     let mut document = document_read(root)?;
-    let table = document
-        .entry("skills")
-        .or_insert_with(|| Item::Table(Table::new()))
-        .as_table_mut()
-        .context("`skills` in nightshift.toml is not a table")?;
-    table.insert("version", value(version));
-    for (name, hash) in skills {
-        table.insert(name, value(hash));
+    if let Some(version) = &pin.version {
+        document.insert("version", value(version));
     }
+    let names: Array = pin.harness.iter().map(|kind| kind.name()).collect();
+    document.insert("harness", value(names));
+    document.remove("skills");
     let file = file_find(root);
     std::fs::create_dir_all(file.parent().context("the manifest has no directory")?)?;
     std::fs::write(&file, document.to_string())
@@ -64,32 +74,67 @@ pub fn skills_write(root: &Path, version: &str, skills: &[(String, String)]) -> 
 mod tests {
     use super::*;
 
+    fn pin(version: &str) -> Pin {
+        Pin {
+            version: Some(version.into()),
+            harness: vec![Kind::Claude],
+        }
+    }
+
     #[test]
-    fn skills_are_recorded_and_the_rest_of_the_file_is_left_alone() {
+    fn the_pin_is_recorded_and_the_rest_of_the_file_is_left_alone() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
         let original = "# my factory\nname = \"mine\"\n\n[queue]\nsource = \"github\" # why\n";
         std::fs::write(file_find(tmp.path()), original).unwrap();
-        skills_write(tmp.path(), "0.2.0", &[("ns-build".into(), hash("a"))]).unwrap();
+        pin_write(tmp.path(), &pin("0.2.0")).unwrap();
         let text = std::fs::read_to_string(file_find(tmp.path())).unwrap();
-        assert!(text.starts_with(original.trim_end()), "{text}");
-        assert!(text.contains("[skills]\nversion = \"0.2.0\"\nns-build = \"sha256:"));
-        assert_eq!(
-            skills_read(tmp.path()).unwrap(),
-            [("ns-build".to_string(), hash("a"))]
+        assert!(text.contains("# my factory"), "{text}");
+        assert!(
+            text.contains("[queue]\nsource = \"github\" # why"),
+            "{text}"
+        );
+        assert!(text.contains("version = \"0.2.0\""), "{text}");
+        assert!(text.contains("harness = [\"claude\"]"), "{text}");
+        assert_eq!(pin_read(tmp.path()).unwrap(), pin("0.2.0"));
+    }
+
+    #[test]
+    fn a_repository_with_no_manifest_has_no_version_and_uses_claude() {
+        let tmp = tempfile::tempdir().unwrap();
+        let read = pin_read(tmp.path()).unwrap();
+        assert_eq!(read.version, None);
+        assert_eq!(read.harness, vec![Kind::Claude]);
+    }
+
+    #[test]
+    fn writing_the_pin_drops_the_skills_table_an_older_ns_left() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        std::fs::write(
+            file_find(tmp.path()),
+            "[skills]\nversion = \"0.1.0\"\nns-build = \"sha256:x\"\n",
+        )
+        .unwrap();
+        pin_write(tmp.path(), &pin("0.2.0")).unwrap();
+        let text = std::fs::read_to_string(file_find(tmp.path())).unwrap();
+        assert!(
+            !text.contains("[skills]") && !text.contains("sha256"),
+            "{text}"
         );
     }
 
     #[test]
-    fn a_repository_with_no_manifest_has_no_skills_recorded() {
+    fn an_unknown_harness_is_an_error_and_codex_is_not_supported_yet() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(skills_read(tmp.path()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn the_hash_is_of_the_text() {
-        assert_eq!(hash("a"), hash("a"));
-        assert_ne!(hash("a"), hash("b"));
-        assert!(hash("a").starts_with("sha256:") && hash("a").len() == 7 + 64);
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for (name, message) in [
+            ("codex", "not supported yet"),
+            ("vim", "no harness named vim"),
+        ] {
+            std::fs::write(file_find(tmp.path()), format!("harness = [\"{name}\"]\n")).unwrap();
+            let err = pin_read(tmp.path()).unwrap_err();
+            assert!(err.to_string().contains(message), "{err}");
+        }
     }
 }

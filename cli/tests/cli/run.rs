@@ -460,20 +460,6 @@ fn the_build_prompt_is_the_embedded_skill_and_the_unit() {
 }
 
 #[test]
-fn a_skill_in_the_repository_wins_over_the_embedded_one() {
-    let repo = Repo::new();
-    std::fs::create_dir_all(repo.path.join(".nightshift/skills/ns-build")).unwrap();
-    std::fs::write(
-        repo.path.join(".nightshift/skills/ns-build/SKILL.md"),
-        "---\nname: ns-build\n---\n# Build\n\nTHIS REPOSITORY BUILDS ITS OWN WAY\n",
-    )
-    .unwrap();
-    run(&repo, &tools(&repo, &Fakes::passing())).success();
-    let prompt = build_prompt(&repo);
-    assert!(prompt.starts_with("# Build\n\nTHIS REPOSITORY"), "{prompt}");
-}
-
-#[test]
 fn ship_stops_at_ready_to_merge_unless_asked_to_merge() {
     let repo = Repo::new();
     run(&repo, &tools(&repo, &Fakes::passing())).success();

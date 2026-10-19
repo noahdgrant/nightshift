@@ -130,7 +130,7 @@ pub fn run(
     }
     let reply = harness.task_run(&Task {
         dir: root.to_path_buf(),
-        prompt: prompt(&skill::load(root, skill::TRIAGE)?, &unit),
+        prompt: prompt(&skill::load(skill::TRIAGE)?, &unit),
         write: false,
         model: None,
         timeout,

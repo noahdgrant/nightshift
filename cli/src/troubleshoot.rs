@@ -68,7 +68,7 @@ pub fn run(
     let made = workspace::ensure(vcs, root, &scratch, None)?;
     let reply = harness.task_run(&Task {
         dir: made.path,
-        prompt: prompt(&skill::load(root, skill::TROUBLESHOOT)?, &unit),
+        prompt: prompt(&skill::load(skill::TROUBLESHOOT)?, &unit),
         write: true,
         model: None,
         timeout,

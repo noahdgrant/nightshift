@@ -18,7 +18,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let build = artifact::read(&dir, &ctx.unit.to_string(), "build.md")?;
     let base = ctx.vcs.workspace_base_find(&dir)?;
     let diff = ctx.vcs.workspace_diff(&dir, &base)?;
-    let skill = skill::load(&ctx.vcs.root_find(&ctx.from)?, skill::REVIEW)?;
+    let skill = skill::load(skill::REVIEW)?;
     check::run(
         ctx,
         false,

@@ -1,13 +1,9 @@
 //! The skills the states hand the harness. A state's prompt starts with its skill's text, so the
 //! harness always gets the same instructions, whether or not it would have found the skill.
 //!
-//! The skills are in the binary, so every install runs the skills that came with it. A repository
-//! may replace one with a file of its own, `.nightshift/skills/<name>/SKILL.md`, read when a
-//! state runs.
+//! The skills are in the binary, so every install runs the skills that came with it.
 
-use std::path::{Path, PathBuf};
-
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 
 include!(concat!(env!("OUT_DIR"), "/skills.rs"));
 
@@ -21,24 +17,13 @@ pub const REQUIREMENTS: &str = "ns-requirements";
 pub const DESIGN_DOC: &str = "ns-design-doc";
 pub const TROUBLESHOOT: &str = "ns-troubleshoot";
 
-/// Where a repository keeps its own copy of the skills.
-pub fn dir_find(root: &Path) -> PathBuf {
-    root.join(".nightshift").join("skills")
-}
-
 /// Every skill that came with this `ns`, as its name and its file's text.
 pub fn embedded() -> &'static [(&'static str, &'static str)] {
     EMBEDDED
 }
 
-/// The text of skill `name`, without its frontmatter. `root` is the repository's main checkout.
-pub fn load(root: &Path, name: &str) -> Result<String> {
-    let file = dir_find(root).join(name).join("SKILL.md");
-    match std::fs::read_to_string(&file) {
-        Ok(text) => return Ok(body(&text).to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("cannot read {}", file.display())),
-    }
+/// The text of skill `name`, without its frontmatter.
+pub fn load(name: &str) -> Result<String> {
     match embedded().iter().find(|(embedded, _)| *embedded == name) {
         Some((_, text)) => Ok(body(text).to_string()),
         None => bail!("there is no skill named {name}"),
@@ -70,19 +55,13 @@ mod tests {
     }
 
     #[test]
-    fn a_skill_is_the_embedded_one_unless_the_repository_has_its_own() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(load(tmp.path(), BUILD).unwrap().starts_with("# Build"));
-        let own = tmp.path().join(".nightshift/skills/ns-build");
-        std::fs::create_dir_all(&own).unwrap();
-        std::fs::write(own.join("SKILL.md"), "---\nname: ns-build\n---\nMINE\n").unwrap();
-        assert_eq!(load(tmp.path(), BUILD).unwrap(), "MINE\n");
+    fn a_skill_is_the_embedded_one() {
+        assert!(load(BUILD).unwrap().starts_with("# Build"));
     }
 
     #[test]
     fn a_skill_nobody_wrote_is_an_error() {
-        let tmp = tempfile::tempdir().unwrap();
-        let err = load(tmp.path(), "ns-nothing").unwrap_err();
+        let err = load("ns-nothing").unwrap_err();
         assert!(err.to_string().contains("no skill named ns-nothing"));
     }
 

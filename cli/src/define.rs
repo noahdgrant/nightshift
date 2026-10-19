@@ -34,7 +34,7 @@ pub fn run(
     std::fs::create_dir_all(file.parent().context("the spec has no directory")?)?;
     // A spec left by an earlier session is not this one's.
     let _ = std::fs::remove_file(&file);
-    let ended = harness.session_interact(root, &prompt(root, &unit, &file)?)?;
+    let ended = harness.session_interact(root, &prompt(&unit, &file)?)?;
     let spec = std::fs::read_to_string(&file).unwrap_or_default();
     if spec.trim().is_empty() {
         let how = if ended { "ended" } else { "ended badly" };
@@ -54,11 +54,11 @@ pub fn run(
     })
 }
 
-fn prompt(root: &Path, unit: &Unit, file: &Path) -> Result<String> {
+fn prompt(unit: &Unit, file: &Path) -> Result<String> {
     Ok(format!(
         "{}\n\n{}\n\n# The unit\n\n## {}\n\n{}\n\nWrite the spec to: {}\n",
-        skill::load(root, skill::GRILLING)?,
-        skill::load(root, skill::REQUIREMENTS)?,
+        skill::load(skill::GRILLING)?,
+        skill::load(skill::REQUIREMENTS)?,
         unit.title,
         unit.body,
         file.display()
