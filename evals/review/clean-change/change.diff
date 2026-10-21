@@ -1,0 +1,39 @@
+diff --git a/src/greet.rs b/src/greet.rs
+new file mode 100644
+--- /dev/null
++++ b/src/greet.rs
+@@ -0,0 +1,10 @@
++/// Prints a greeting and returns the exit code.
++pub fn run(name: Option<&str>) -> i32 {
++    match name {
++        Some(name) => {
++            println!("Hello, {name}!");
++            0
++        }
++        None => {
++            eprintln!("usage: tally greet <name>");
++            2
++        }
++    }
++}
+diff --git a/tests/greet.rs b/tests/greet.rs
+new file mode 100644
+--- /dev/null
++++ b/tests/greet.rs
+@@ -0,0 +1,17 @@
++use assert_cmd::Command;
++
++#[test]
++fn greet_prints_the_name() {
++    Command::cargo_bin("tally")
++        .unwrap()
++        .args(["greet", "Ada"])
++        .assert()
++        .success()
++        .stdout("Hello, Ada!\n");
++}
++
++#[test]
++fn greet_without_a_name_is_a_usage_error() {
++    Command::cargo_bin("tally").unwrap().arg("greet").assert().code(2);
++}
