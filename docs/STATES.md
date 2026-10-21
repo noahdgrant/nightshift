@@ -32,6 +32,8 @@ stateDiagram
 
 The table in `cli/src/state.rs` is the source of truth.
 
+`ns run <unit>` resumes a unit at the state it stopped or got stuck in. A unit stuck in `verify` or `review` whose workspace is exactly as the last build left it resumes at `build` instead: the check would judge the same code again, so the build is told the failing findings and changes it.
+
 ```mermaid
 stateDiagram
     [*] --> setup

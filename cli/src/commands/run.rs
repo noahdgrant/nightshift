@@ -2,14 +2,15 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context as _, Result};
 use clap::{Args as ClapArgs, ValueEnum};
 use serde_json::{json, Value};
 
+use crate::artifact;
 use crate::forge::ChangeState;
 use crate::runlog::{Resume, RunLog};
 use crate::state::{Outcome, State};
-use crate::states::{self, clean_up, ship, Context};
+use crate::states::{self, clean_up, ship, Context, BUILT_SNAPSHOT};
 use crate::{forge, harness, lock, os, status, vcs, workspace};
 
 #[derive(ClapArgs)]
@@ -110,9 +111,9 @@ pub fn run(args: Args) -> Result<()> {
         harness_timeout: Duration::from_secs(args.options.harness_timeout_seconds),
         checks_timeout: Duration::from_secs(args.options.checks_timeout_seconds),
     };
-    let start = match resume {
+    let planned = match resume {
         Resume::Fresh => State::START,
-        Resume::At(state) => state,
+        Resume::At(state) | Resume::Stuck(state) => state,
         Resume::Finished => {
             println!(
                 "{}",
@@ -121,9 +122,9 @@ pub fn run(args: Args) -> Result<()> {
             return finished_clean_up(ctx);
         }
     };
-    if start != State::Setup {
+    if planned != State::Setup {
         let workspace = workspace::locate(&root, &unit)?;
-        if start != State::CleanUp && !workspace.path.exists() {
+        if planned != State::CleanUp && !workspace.path.exists() {
             bail!(
                 "the workspace of unit {unit} is gone: {}",
                 workspace.path.display()
@@ -131,6 +132,17 @@ pub fn run(args: Args) -> Result<()> {
         }
         ctx.workspace = Some(workspace);
     }
+    let start = match resume {
+        Resume::Stuck(stuck_in @ (State::Verify | State::Review)) => {
+            stuck_check_resume(&ctx, &log, &unit, stuck_in)?
+        }
+        Resume::Fresh
+        | Resume::At(_)
+        | Resume::Finished
+        | Resume::Stuck(
+            State::Setup | State::Build | State::Ship | State::CleanUp | State::Done | State::Stuck,
+        ) => planned,
+    };
     status::unit_status_set(ctx.forge.as_ref(), &root, args.unit, status::IN_PROGRESS)?;
     let phase = |state, _attempt| match states::run(&mut ctx, state) {
         Ok(outcome) => outcome,
@@ -172,6 +184,33 @@ pub fn run(args: Args) -> Result<()> {
         }
         (Err(e), Ok(())) => Err(e),
         (Ok(_), status) => status,
+    }
+}
+
+/// Where a unit stuck in the check `stuck_in` picks up. A workspace exactly as the last build left
+/// it holds nothing the failed check could judge differently, so the unit goes back to `build`,
+/// which is told the failing findings. Otherwise a human worked on it, and the check runs again.
+/// The move is printed and logged like any other.
+fn stuck_check_resume(ctx: &Context, log: &RunLog, unit: &str, stuck_in: State) -> Result<State> {
+    let dir = &ctx
+        .workspace
+        .as_ref()
+        .context("a stuck unit has no workspace")?
+        .path;
+    let snapshot = ctx.vcs.workspace_snapshot(dir)?;
+    match artifact::read(dir, unit, BUILT_SNAPSHOT) {
+        Ok(built) if built == snapshot => {
+            let event = json!({
+                "unit": unit,
+                "from": State::Stuck.to_string(),
+                "to": State::Build.to_string(),
+                "reason": format!("nothing changed since {stuck_in} failed"),
+            });
+            println!("{event}");
+            log.append(&event)?;
+            Ok(State::Build)
+        }
+        _ => Ok(stuck_in),
     }
 }
 
