@@ -11,7 +11,7 @@ use crate::forge::ChangeState;
 use crate::runlog::{Resume, RunLog};
 use crate::state::{Outcome, State};
 use crate::states::{self, clean_up, ship, Context, BUILT_SNAPSHOT};
-use crate::{forge, harness, lock, os, status, vcs, workspace};
+use crate::{forge, harness, lock, manifest, os, status, vcs, workspace};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -30,9 +30,10 @@ pub struct Args {
 /// What a run of a unit is told, which `ns auto` passes on to each unit it runs.
 #[derive(ClapArgs, Clone)]
 pub struct Options {
-    /// How many times a state may run before the unit is stuck.
-    #[arg(long, default_value_t = 2)]
-    max_attempts: u32,
+    /// How many times a state may run before the unit is stuck. Without it, `[run] max_attempts`
+    /// in `.nightshift/nightshift.toml`, or 3 when the repository does not set it.
+    #[arg(long)]
+    pub max_attempts: Option<u32>,
     /// Merge the change request once its checks pass. Without it, `ship` stops at ready to merge.
     #[arg(long)]
     merge: bool,
@@ -81,6 +82,10 @@ pub fn run(args: Args) -> Result<()> {
     let from = std::env::current_dir()?;
     let vcs = vcs::get();
     let root = vcs.root_find(&from)?;
+    let max_attempts = match args.options.max_attempts {
+        Some(n) => n,
+        None => manifest::max_attempts_read(&root)?,
+    };
     // Held until the function ends. Taken before anything of the unit's is read or deleted.
     let _lock = lock::lock_take(
         &vcs.state_dir_find(&root)?,
@@ -162,14 +167,7 @@ pub fn run(args: Args) -> Result<()> {
         }
         Ok(())
     };
-    let ended = walk(
-        &unit,
-        start,
-        args.gates,
-        args.options.max_attempts,
-        phase,
-        &mut sink,
-    );
+    let ended = walk(&unit, start, args.gates, max_attempts, phase, &mut sink);
     let status = if matches!(ended, Ok(State::Done)) {
         finished_status_set(&ctx, &root, &unit)
     } else {

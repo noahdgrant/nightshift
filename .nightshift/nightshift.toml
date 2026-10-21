@@ -1,5 +1,8 @@
 version = "0.3.0"
 harness = ["claude"]
 
+[run]
+max_attempts = 3
+
 [merge]
 human_review = [".github/**", ".nightshift/**", "release-please-config.json", ".release-please-manifest.json", "rust-toolchain.toml", "skills/**"]

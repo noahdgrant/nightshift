@@ -83,6 +83,13 @@ With `--merge`, `ns run` and `ns auto` merge a change request once its checks pa
 human_review = [".github/**", ".nightshift/**", "skills/**"]
 ```
 
+How many times a state may run before its unit is stuck is `[run] max_attempts` in `.nightshift/nightshift.toml`. `--max-attempts` on `ns run` or `ns auto` wins over it, and a repository that sets neither gets the built-in default, which `ns run --help` states. It must be a whole number of at least 1, or `ns` stops before it runs anything.
+
+```toml
+[run]
+max_attempts = 4
+```
+
 `ns status` shows where each unit stands in the morning.
 
 Every headless session leaves its transcript, what the agent read and ran and not only its final text, as `transcripts/<unit>/<state>-<n>.jsonl` in the repository's `ns` state directory (`.git/ns` with git). It outlives the unit's workspace. `ns log <unit>` shows it; `--state` and `--last` narrow it. Nothing prunes the directory: a session is typically tens of kilobytes to a few megabytes of JSON, and a unit that goes round `build` many times keeps one for each. Deleting `transcripts/` is safe; `ns` only reads it for `ns log`.

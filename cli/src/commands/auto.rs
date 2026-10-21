@@ -13,7 +13,7 @@ use crate::forge::Forge;
 use crate::os::Os;
 use crate::runlog::{Move, Reason, RunLog};
 use crate::state::State;
-use crate::{auto, forge, harness, lock, os, until, vcs, workspace};
+use crate::{auto, forge, harness, lock, manifest, os, until, vcs, workspace};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -44,6 +44,12 @@ pub fn run(args: Args) -> Result<()> {
     let here = std::env::current_dir()?;
     let vcs = vcs::get();
     let root = vcs.root_find(&here)?;
+    // Worked out once, so every unit of the night gets the same number.
+    let mut options = args.options.clone();
+    options.max_attempts = Some(match options.max_attempts {
+        Some(n) => n,
+        None => manifest::max_attempts_read(&root)?,
+    });
     let forge = forge::get();
     let open = forge.unit_list(&root)?;
     let plan = auto::plan(&open);
@@ -115,7 +121,7 @@ pub fn run(args: Args) -> Result<()> {
         &limits,
         &mut |unit| {
             *before.borrow_mut() = log.last_move(&unit.to_string()).ok().flatten();
-            unit_run::run(unit_run::Args::unattended(unit, args.options.clone()))
+            unit_run::run(unit_run::Args::unattended(unit, options.clone()))
         },
         &mut |unit| {
             went_wrong_since(

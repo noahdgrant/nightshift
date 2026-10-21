@@ -1,5 +1,5 @@
 use crate::common::{script, Repo};
-use crate::run::{tools, Fakes, FAIL};
+use crate::run::{set_manifest, tools, Fakes, FAIL};
 
 use std::time::Duration;
 
@@ -61,6 +61,7 @@ fn the_plan_lists_the_queue_and_what_to_triage_in_order() {
 const UNTRIAGED: &str = "[]";
 
 /// Runs `ns auto` with `extra` arguments against the fakes of `ns run`, which serve one unit, 5.
+/// Runs `ns auto` with two attempts a state unless `extra` says otherwise.
 fn auto(repo: &Repo, fakes: &Fakes, extra: &[&str]) -> assert_cmd::assert::Assert {
     auto_by(repo, fakes, extra, None)
 }
@@ -73,13 +74,26 @@ fn auto_by(
     extra: &[&str],
     hang_guard: Option<Duration>,
 ) -> assert_cmd::assert::Assert {
+    auto_run(repo, fakes, extra, hang_guard, false)
+}
+
+fn auto_run(
+    repo: &Repo,
+    fakes: &Fakes,
+    extra: &[&str],
+    hang_guard: Option<Duration>,
+    attempts_unset: bool,
+) -> assert_cmd::assert::Assert {
     let path = tools(repo, fakes);
     let mut cmd = Command::cargo_bin("ns").unwrap();
     if let Some(guard) = hang_guard {
         cmd.timeout(guard);
     }
-    cmd.args(["auto", "--ci-poll-seconds", "0"])
-        .args(extra)
+    cmd.args(["auto", "--ci-poll-seconds", "0"]);
+    if !extra.contains(&"--max-attempts") && !attempts_unset {
+        cmd.args(["--max-attempts", "2"]);
+    }
+    cmd.args(extra)
         .env("PATH", path)
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
@@ -387,4 +401,65 @@ fn units_stuck_for_failing_checks_do_not_stop_the_night() {
     let out = auto(&repo, &fakes, &["--max-failures-in-a-row", "1"]).failure();
     assert_eq!(started_units(&out), [1, 2, 3]);
     assert!(events(&out).iter().all(|e| e.get("stopped").is_none()));
+}
+
+/// How many times each unit's review ran, by unit.
+fn review_runs(repo: &Repo, unit: &str) -> usize {
+    std::fs::read_to_string(repo.path.join(".git/ns/runs.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .filter(|e| e["unit"] == unit && e["from"] == "review")
+        .count()
+}
+
+fn failing_reviews_of_two_units() -> Fakes {
+    Fakes {
+        first_review: FAIL,
+        review: FAIL,
+        labels_follow_edits: false,
+        units: &[1, 2],
+        ..Fakes::passing()
+    }
+}
+
+#[test]
+fn auto_gives_every_unit_the_setting_of_the_repository() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[run]\nmax_attempts = 4\n");
+    auto_run(&repo, &failing_reviews_of_two_units(), &[], None, true).failure();
+    assert_eq!(review_runs(&repo, "1"), 4);
+    assert_eq!(review_runs(&repo, "2"), 4);
+}
+
+#[test]
+fn auto_with_no_setting_gives_every_unit_three_attempts() {
+    let repo = Repo::new();
+    auto_run(&repo, &failing_reviews_of_two_units(), &[], None, true).failure();
+    assert_eq!(review_runs(&repo, "1"), 3);
+    assert_eq!(review_runs(&repo, "2"), 3);
+}
+
+#[test]
+fn auto_gives_every_unit_the_option_over_the_setting() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[run]\nmax_attempts = 4\n");
+    auto(
+        &repo,
+        &failing_reviews_of_two_units(),
+        &["--max-attempts", "1"],
+    )
+    .failure();
+    assert_eq!(review_runs(&repo, "1"), 1);
+    assert_eq!(review_runs(&repo, "2"), 1);
+}
+
+#[test]
+fn auto_with_a_bad_setting_is_an_error_and_runs_nothing() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[run]\nmax_attempts = 0\n");
+    let out = auto_run(&repo, &Fakes::passing(), &[], None, true).failure();
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(err.contains("run.max_attempts"), "{err}");
+    assert!(out.get_output().stdout.is_empty());
 }
