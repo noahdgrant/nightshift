@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0](https://github.com/noahdgrant/nightshift/compare/v0.3.0...v0.4.0) (2026-10-21)
+
+
+### Features
+
+* **cli:** a verification sees the previous verification and re-checks what failed ([#862](https://github.com/noahdgrant/nightshift/issues/862)) ([5d978f5](https://github.com/noahdgrant/nightshift/commit/5d978f5a192647939c7dca2442e7f1fd61561132))
+* **cli:** keep each state's harness session and show it with ns log ([#873](https://github.com/noahdgrant/nightshift/issues/873)) ([31a8465](https://github.com/noahdgrant/nightshift/commit/31a8465c28063961b4741de50b039d80f41bca85))
+* **cli:** merge only changes that touch no human_review path ([#872](https://github.com/noahdgrant/nightshift/issues/872)) ([9eee07e](https://github.com/noahdgrant/nightshift/commit/9eee07e0ba5e872269e5ff53d114393758eccdae))
+* **cli:** ns assigns the unit and its change request to the account it runs as ([#868](https://github.com/noahdgrant/nightshift/issues/868)) ([87167c5](https://github.com/noahdgrant/nightshift/commit/87167c57fc58c437f5f3a6f934f27ced5dcbb064))
+* **cli:** ns auto stops the night after units keep going wrong on the harness ([#861](https://github.com/noahdgrant/nightshift/issues/861)) ([c48e51b](https://github.com/noahdgrant/nightshift/commit/c48e51b9cc3886825f439374a3e521e02d4394e6))
+* **cli:** ns eval review measures the review skill on known cases ([#874](https://github.com/noahdgrant/nightshift/issues/874)) ([d2bf77f](https://github.com/noahdgrant/nightshift/commit/d2bf77f71277adee4fcdf2aa9919ccaa8c17fe62))
+* **cli:** the attempts a unit gets are a setting in nightshift.toml, three by default ([#878](https://github.com/noahdgrant/nightshift/issues/878)) ([692f39b](https://github.com/noahdgrant/nightshift/commit/692f39be43aad1de672ba0cba396b9b987335ead))
+
+
+### Bug Fixes
+
+* **cli:** resuming a unit stuck in a check with nothing changed goes back to build ([#863](https://github.com/noahdgrant/nightshift/issues/863)) ([adde79a](https://github.com/noahdgrant/nightshift/commit/adde79ab0849619d6f2fd5dd5f1d3c35b6e24e0a))
+
 ## [0.3.0](https://github.com/noahdgrant/nightshift/compare/v0.2.0...v0.3.0) (2026-10-21)
 
 
