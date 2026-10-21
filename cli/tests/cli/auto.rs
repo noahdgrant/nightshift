@@ -1,5 +1,5 @@
 use crate::common::{script, Repo};
-use crate::run::{tools, Fakes};
+use crate::run::{tools, Fakes, FAIL};
 
 use std::time::Duration;
 
@@ -299,4 +299,69 @@ fn a_change_ready_to_merge_is_reported_with_its_address_and_left_for_a_human() {
         last["status"],
         serde_json::json!(["status:ready-for-human"])
     );
+}
+
+/// Three ready units, 1 to 3, whose harness always exits non-zero.
+fn three_units_on_a_broken_harness() -> Fakes {
+    Fakes {
+        exit: 1,
+        labels_follow_edits: false,
+        units: &[1, 2, 3],
+        ..Fakes::passing()
+    }
+}
+
+fn started_units(out: &assert_cmd::assert::Assert) -> Vec<u64> {
+    events(out)
+        .iter()
+        .filter(|e| e.get("ok").is_some())
+        .map(|e| e["unit"].as_u64().unwrap())
+        .collect()
+}
+
+#[test]
+fn auto_stops_the_night_after_two_units_in_a_row_go_wrong_on_the_harness() {
+    let repo = Repo::new();
+    let out = auto(&repo, &three_units_on_a_broken_harness(), &[]).failure();
+    assert_eq!(started_units(&out), [1, 2]);
+    let stop = events(&out)
+        .into_iter()
+        .find(|e| e.get("stopped").is_some())
+        .unwrap();
+    assert_eq!(stop["stopped"], "went_wrong");
+    assert_eq!(stop["units"], serde_json::json!([1, 2]));
+    assert!(stop["reason"].as_str().unwrap().contains("in a row"));
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(
+        err.contains("stopped: 2 units in a row went wrong (1, 2)"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_limit_of_zero_runs_every_unit_however_many_go_wrong() {
+    let repo = Repo::new();
+    let out = auto(
+        &repo,
+        &three_units_on_a_broken_harness(),
+        &["--max-failures-in-a-row", "0"],
+    )
+    .failure();
+    assert_eq!(started_units(&out), [1, 2, 3]);
+    assert!(events(&out).iter().all(|e| e.get("stopped").is_none()));
+}
+
+#[test]
+fn units_stuck_for_failing_checks_do_not_stop_the_night() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_review: FAIL,
+        review: FAIL,
+        labels_follow_edits: false,
+        units: &[1, 2, 3],
+        ..Fakes::passing()
+    };
+    let out = auto(&repo, &fakes, &["--max-failures-in-a-row", "1"]).failure();
+    assert_eq!(started_units(&out), [1, 2, 3]);
+    assert!(events(&out).iter().all(|e| e.get("stopped").is_none()));
 }

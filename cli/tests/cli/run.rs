@@ -27,6 +27,9 @@ pub struct Fakes {
     pub labels: &'static str,
     /// Whether the unit's labels change when `ns` edits them. Without it the unit stays as it began.
     pub labels_follow_edits: bool,
+    /// The units the forge lists, all with `labels`. With more than one, `labels_follow_edits`
+    /// should be off, for the fake cannot tell whose labels an edit changed.
+    pub units: &'static [u64],
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -63,7 +66,7 @@ pub enum CheckEdits {
 }
 
 const PASS: &str = "VERDICT: PASS";
-const FAIL: &str = "VERDICT: FAIL";
+pub const FAIL: &str = "VERDICT: FAIL";
 
 impl Fakes {
     pub fn passing() -> Fakes {
@@ -80,6 +83,7 @@ impl Fakes {
             review: PASS,
             labels: r#"[{"name":"status:ready-for-agent"}]"#,
             labels_follow_edits: true,
+            units: &[5],
         }
     }
 }
@@ -118,8 +122,8 @@ labels() {{
   esac
 }}
 case "$1 $2" in
-"api repos/{{owner}}/{{repo}}/issues/5") labels; echo '{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":'"$l"',"author_association":"OWNER"}}';;
-"api --paginate") labels; echo '[[{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":'"$l"',"author_association":"OWNER"}}]]';;
+"api repos/{{owner}}/{{repo}}/issues/"*) labels; echo '{{"number":'"${{2##*/}}"',"title":"Add a thing","body":"Make the thing.","labels":'"$l"',"author_association":"OWNER"}}';;
+"api --paginate") labels; echo '[[{listed}]]';;
 "pr list") if [ -e "{bin}/merged" ]; then state=MERGED; elif [ -e "{bin}/closed" ]; then state=CLOSED; else state=OPEN; fi
   if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"'$state'"}}]'; else echo '[]'; fi;;
 "pr create") touch "{bin}/opened"; echo https://forge.example/9;;
@@ -129,6 +133,14 @@ esac"#,
             bin = bin.display(),
             checks = checks,
             initial = fakes.labels,
+            listed = fakes
+                .units
+                .iter()
+                .map(|n| format!(
+                    r#"{{"number":{n},"title":"Add a thing","body":"Make the thing.","labels":'"$l"',"author_association":"OWNER"}}"#
+                ))
+                .collect::<Vec<_>>()
+                .join(","),
             follow = if fakes.labels_follow_edits {
                 "yes"
             } else {

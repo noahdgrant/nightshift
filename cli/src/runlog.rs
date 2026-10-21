@@ -35,6 +35,28 @@ pub struct Move {
     pub to: State,
     /// When the log recorded it, in seconds since the epoch.
     pub at: Option<u64>,
+    /// Why the unit did not go on to the next state. `None` when it did, or the log gives none
+    /// that is known.
+    pub reason: Option<Reason>,
+}
+
+/// Why a unit went back to a state or got stuck.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Reason {
+    /// The state ran and its checks found the work wanting.
+    Failed,
+    /// The state kept returning an error: the harness, the forge or the clock let it down.
+    WentWrong,
+}
+
+impl Reason {
+    pub fn parse(text: &str) -> Option<Reason> {
+        match text {
+            "failed" => Some(Reason::Failed),
+            "went_wrong" => Some(Reason::WentWrong),
+            _ => None,
+        }
+    }
 }
 
 impl RunLog {
@@ -101,6 +123,7 @@ impl RunLog {
             from: last["from"].as_str().and_then(State::parse),
             to,
             at: last["at"].as_u64(),
+            reason: last["reason"].as_str().and_then(Reason::parse),
         }))
     }
 }
@@ -137,6 +160,21 @@ mod tests {
             err.to_string().contains("unit 5 left before it got stuck"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn a_move_says_why_the_unit_did_not_go_on() {
+        let (_tmp, log) = log_with(
+            r#"{"unit":"5","from":"build","to":"stuck","reason":"went_wrong"}
+{"unit":"6","from":"verify","to":"stuck","reason":"failed"}
+{"unit":"7","from":"verify","to":"stuck","reason":"odd"}
+{"unit":"8","from":"build","to":"verify"}"#,
+        );
+        let reason = |unit| log.last_move(unit).unwrap().unwrap().reason;
+        assert_eq!(reason("5"), Some(Reason::WentWrong));
+        assert_eq!(reason("6"), Some(Reason::Failed));
+        assert_eq!(reason("7"), None);
+        assert_eq!(reason("8"), None);
     }
 
     #[test]
