@@ -14,6 +14,8 @@ metadata:
 
 Number the requirements `R1..Rn` in the unit's order. For a bug, the original repro is a requirement of its own.
 
+The requirements are the unit's, not claims in the build summary. A claim you did not re-run, such as the repository's checks passing, which the build and CI run, is noted as not checked here and does not by itself make the verdict FAIL. A requirement whose only evidence is "the tests pass" is still INCONCLUSIVE, not PASS.
+
 Done when every requirement has an ID and names the observable end state that would prove it.
 
 ## 2. Drive each requirement
