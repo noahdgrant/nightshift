@@ -29,4 +29,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: cli
-      - run: scripts/ci-local.sh
+      # A release PR changes only versions and the changelog, and its code
+      # was checked on main, so it needs only the lock to agree with the
+      # manifest. The job still runs so the required check reports.
+      - name: Check the lock agrees with the manifest
+        if: github.head_ref == 'release-please--branches--main'
+        run: cargo metadata --locked --format-version 1 --manifest-path cli/Cargo.toml > /dev/null
+      - name: Run the checks
+        if: github.head_ref != 'release-please--branches--main'
+        run: scripts/ci-local.sh
