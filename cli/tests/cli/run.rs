@@ -184,6 +184,7 @@ case "$p" in
 *"You diagnose one bug"*) printf '### Repro\nrun it\n\nROUTE: build\n';;
 *"decide what happens to one unit"*) printf 'Small.\nLABELS: type:feat\nROUTE: build\n';;
 *"Find what must be fixed before this change merges"*)
+  n=$(ls "{bin}"/review.prompt.* 2>/dev/null | wc -l); printf %s "$p" > "{bin}/review.prompt.$((n+1))"
   if echo "$p" | grep -q thing.txt; then echo reviewed the diff; else echo saw no diff; fi
   if [ -e "$reviewed" ]; then echo '{review}'; else touch "$reviewed"; echo '{first_review}'; fi;;
 *"Run the real thing and record what you saw"*)
@@ -376,6 +377,72 @@ fn a_failed_review_sends_the_unit_back_to_build_and_review_looks_again() {
         ]
     );
     assert_eq!(read(&repo, "build.md"), "rebuilt with the evidence\n");
+}
+
+fn review_prompt(repo: &Repo, n: usize) -> String {
+    std::fs::read_to_string(
+        repo.path
+            .parent()
+            .unwrap()
+            .join(format!("bin/review.prompt.{n}")),
+    )
+    .unwrap()
+}
+
+const PREVIOUS: &str = "\n# Findings from the previous review";
+
+#[test]
+fn a_first_review_has_no_previous_findings_and_a_review_after_a_failure_has_them() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_review: FAIL,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    assert!(!review_prompt(&repo, 1).contains(PREVIOUS));
+    assert!(review_prompt(&repo, 2)
+        .contains(&format!("{PREVIOUS}\n\nreviewed the diff\nVERDICT: FAIL\n")));
+}
+
+#[test]
+fn every_review_is_kept_as_review_n() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_review: FAIL,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    assert_eq!(
+        read(&repo, "review-1.md"),
+        "reviewed the diff\nVERDICT: FAIL\n"
+    );
+    assert_eq!(
+        read(&repo, "review-2.md"),
+        "reviewed the diff\nVERDICT: PASS\n"
+    );
+}
+
+#[test]
+fn a_unit_resumed_after_stuck_gets_the_last_reviews_findings() {
+    let repo = Repo::new();
+    let failing = Fakes {
+        first_review: FAIL,
+        review: FAIL,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &failing)).failure();
+    let before = std::fs::read_dir(repo.path.parent().unwrap().join("bin"))
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("review.prompt.")
+        })
+        .count();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert!(review_prompt(&repo, before + 1).contains(PREVIOUS));
 }
 
 #[test]

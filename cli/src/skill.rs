@@ -122,6 +122,15 @@ mod tests {
     }
 
     #[test]
+    fn the_review_skill_names_the_three_statuses() {
+        let file = format!("{}/../skills/{REVIEW}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
+        let skill = std::fs::read_to_string(file).unwrap();
+        for status in ["**Fixed**", "**Still open**", "**Withdrawn**"] {
+            assert!(skill.contains(status), "{status}");
+        }
+    }
+
+    #[test]
     fn the_triage_skill_names_every_route_and_asks_for_the_lines_the_cli_reads() {
         let file = format!("{}/../skills/{TRIAGE}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
         let skill = std::fs::read_to_string(file).unwrap();
