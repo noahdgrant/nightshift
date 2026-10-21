@@ -54,6 +54,13 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
                 .change_request_create(&dir, &branch, ctx.unit, &unit.title, &body, &labels)?
         }
     };
+    // The assignee is for people to read; a unit does not depend on it.
+    if let Err(e) = ctx
+        .forge
+        .change_request_assignee_add(&dir, change_request.number)
+    {
+        eprintln!("ns: cannot assign the change request: {e:#}");
+    }
     artifact::write(&dir, &id, "ship.md", &format!("{}\n", change_request.url))?;
 
     let started = Instant::now();

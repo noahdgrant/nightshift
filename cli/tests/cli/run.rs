@@ -30,6 +30,8 @@ pub struct Fakes {
     /// The units the forge lists, all with `labels`. With more than one, `labels_follow_edits`
     /// should be off, for the fake cannot tell whose labels an edit changed.
     pub units: &'static [u64],
+    /// Whether the forge refuses to assign anyone.
+    pub refuses_assignee: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -84,6 +86,7 @@ impl Fakes {
             labels: r#"[{"name":"status:ready-for-agent"}]"#,
             labels_follow_edits: true,
             units: &[5],
+            refuses_assignee: false,
         }
     }
 }
@@ -114,7 +117,7 @@ pub fn tools(repo: &Repo, fakes: &Fakes) -> String {
             r#"echo "$@" >> "{bin}/gh.log"
 labels() {{
   l='{initial}'
-  [ "{follow}" = yes ] && case "$(grep 'issue edit' "{bin}/gh.log" | tail -1)" in
+  [ "{follow}" = yes ] && case "$(grep 'issue edit' "{bin}/gh.log" | grep -v assignee | tail -1)" in
   *"--add-label status:in-progress"*) l='{progress}';;
   *"--add-label status:ready-for-human"*) l='{human}';;
   *"--remove-label status:in-progress"*|*"--remove-label status:ready-for-human"*) l='[]';;
@@ -122,6 +125,7 @@ labels() {{
   esac
 }}
 case "$1 $2" in
+"issue edit"|"pr edit") case "$*" in *--add-assignee*) [ "{refuses}" = yes ] && {{ echo "cannot assign" >&2; exit 1; }};; esac;;
 "api repos/{{owner}}/{{repo}}/issues/"*) labels; echo '{{"number":'"${{2##*/}}"',"title":"Add a thing","body":"Make the thing.","labels":'"$l"',"author_association":"OWNER"}}';;
 "api --paginate") labels; echo '[[{listed}]]';;
 "pr list") if [ -e "{bin}/merged" ]; then state=MERGED; elif [ -e "{bin}/closed" ]; then state=CLOSED; else state=OPEN; fi
@@ -141,6 +145,7 @@ esac"#,
                 ))
                 .collect::<Vec<_>>()
                 .join(","),
+            refuses = if fakes.refuses_assignee { "yes" } else { "no" },
             follow = if fakes.labels_follow_edits {
                 "yes"
             } else {
@@ -343,6 +348,63 @@ fn ship_opens_the_change_request_of_a_unit_with_none_of_those_labels_without_lab
     let log = gh_log(&repo);
     assert_eq!(log.matches("pr create").count(), 1, "{log}");
     assert!(!log.contains("--label"), "{log}");
+}
+
+#[test]
+fn the_unit_and_the_change_request_are_assigned_to_the_account_ns_acts_as() {
+    let repo = Repo::new();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    let log = gh_log(&repo);
+    assert_eq!(
+        log.matches("issue edit 5 --add-assignee @me").count(),
+        1,
+        "{log}"
+    );
+    assert_eq!(
+        log.matches("pr edit 9 --add-assignee @me").count(),
+        1,
+        "{log}"
+    );
+}
+
+#[test]
+fn a_second_ship_assigns_the_change_request_that_already_exists() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        ci: Ci::FailsOnce,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    let log = gh_log(&repo);
+    assert_eq!(log.matches("pr create").count(), 1, "{log}");
+    assert_eq!(
+        log.matches("pr edit 9 --add-assignee @me").count(),
+        2,
+        "{log}"
+    );
+}
+
+#[test]
+fn assignees_are_only_added_never_replaced() {
+    let repo = Repo::new();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    let log = gh_log(&repo);
+    assert!(!log.contains("--remove-assignee"), "{log}");
+    assert!(!log.contains("--assignee"), "{log}");
+}
+
+#[test]
+fn a_refused_assignment_is_said_on_stderr_and_does_not_stop_the_unit() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        refuses_assignee: true,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes)).success();
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(err.contains("cannot assign the unit"), "{err}");
+    assert!(err.contains("cannot assign the change request"), "{err}");
+    assert_eq!(read(&repo, "ship.md"), "https://forge.example/9\n");
 }
 
 /// What the fake `gh` was asked, empty when it was not called at all.
@@ -1349,7 +1411,7 @@ fn a_session_that_runs_out_of_time_goes_wrong_like_any_other_failure() {
 fn last_label_edit(repo: &Repo) -> String {
     gh_log(repo)
         .lines()
-        .rfind(|l| l.starts_with("issue edit"))
+        .rfind(|l| l.starts_with("issue edit") && !l.contains("assignee"))
         .unwrap_or_default()
         .to_string()
 }
@@ -1365,7 +1427,7 @@ fn a_unit_is_in_progress_from_the_start_and_its_label_goes_when_its_change_merge
     run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"]).success();
     let edits: Vec<_> = gh_log(&repo)
         .lines()
-        .filter(|l| l.starts_with("issue edit"))
+        .filter(|l| l.starts_with("issue edit") && !l.contains("assignee"))
         .map(String::from)
         .collect();
     assert_eq!(

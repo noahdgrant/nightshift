@@ -193,6 +193,21 @@ impl Forge for GitHub {
         Ok(())
     }
 
+    fn unit_assignee_add(&self, repo: &Path, number: u64) -> Result<()> {
+        // `@me` is the account `gh` runs as, which `gh` takes from `GH_TOKEN`.
+        self.gh(
+            repo,
+            &[
+                "issue",
+                "edit",
+                &number.to_string(),
+                "--add-assignee",
+                "@me",
+            ],
+        )?;
+        Ok(())
+    }
+
     fn unit_close(&self, repo: &Path, number: u64) -> Result<()> {
         self.gh(
             repo,
@@ -284,6 +299,14 @@ impl Forge for GitHub {
         self.gh_once(repo, &args)?;
         self.change_request_get(repo, branch)?
             .context("the change request was created but cannot be found")
+    }
+
+    fn change_request_assignee_add(&self, repo: &Path, number: u64) -> Result<()> {
+        self.gh(
+            repo,
+            &["pr", "edit", &number.to_string(), "--add-assignee", "@me"],
+        )?;
+        Ok(())
     }
 
     fn change_request_checks_get(&self, repo: &Path, number: u64) -> Result<Checks> {

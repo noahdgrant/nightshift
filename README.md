@@ -58,7 +58,7 @@ ns triage 12     # decides what it needs next and labels it; a clear one becomes
 ns run 12        # runs setup, then stops before build so you can look
 ```
 
-`ns run` makes the unit's workspace beside the repository (`<repo>.workspaces/12`, on the branch `ns/12`), prints each move as a line of JSON, and keeps the unit's `status:` label up to date. Each `ns run 12` runs one state and stops before the next, so the first runs `setup` and stops before `build`; run the same command again to go on from where it stopped, through verify, review and ship. Each state leaves its notes in `.ns/12/` in the workspace. When it is done the change request is open and waiting for you to merge it.
+`ns run` makes the unit's workspace beside the repository (`<repo>.workspaces/12`, on the branch `ns/12`), prints each move as a line of JSON, and keeps the unit's `status:` label up to date. It also assigns the unit and its change request to the account it acts as. Each `ns run 12` runs one state and stops before the next, so the first runs `setup` and stops before `build`; run the same command again to go on from where it stopped, through verify, review and ship. Each state leaves its notes in `.ns/12/` in the workspace. When it is done the change request is open and waiting for you to merge it.
 
 Once you trust the loop, `--gates auto` goes through every state without stopping, and `--merge` lets `ns` merge a change whose checks pass:
 

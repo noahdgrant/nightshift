@@ -101,7 +101,7 @@ fn label_edits(repo: &Repo) -> Vec<String> {
     std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log"))
         .unwrap()
         .lines()
-        .filter(|l| l.starts_with("issue edit"))
+        .filter(|l| l.starts_with("issue edit") && !l.contains("assignee"))
         .map(String::from)
         .collect()
 }
