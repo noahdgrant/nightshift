@@ -188,6 +188,7 @@ case "$p" in
   if echo "$p" | grep -q thing.txt; then echo reviewed the diff; else echo saw no diff; fi
   if [ -e "$reviewed" ]; then echo '{review}'; else touch "$reviewed"; echo '{first_review}'; fi;;
 *"Run the real thing and record what you saw"*)
+  n=$(ls "{bin}"/verify.prompt.* 2>/dev/null | wc -l); printf %s "$p" > "{bin}/verify.prompt.$((n+1))"
   {crash}{edit}echo checked it
   if [ -e "$seen" ]; then echo '{verdict}'; else touch "$seen"; echo '{first}'; fi;;
 *"VERDICT: FAIL"*) echo rebuilt with the evidence;;
@@ -380,11 +381,19 @@ fn a_failed_review_sends_the_unit_back_to_build_and_review_looks_again() {
 }
 
 fn review_prompt(repo: &Repo, n: usize) -> String {
+    prompt_of(repo, "review", n)
+}
+
+fn verify_prompt(repo: &Repo, n: usize) -> String {
+    prompt_of(repo, "verify", n)
+}
+
+fn prompt_of(repo: &Repo, kind: &str, n: usize) -> String {
     std::fs::read_to_string(
         repo.path
             .parent()
             .unwrap()
-            .join(format!("bin/review.prompt.{n}")),
+            .join(format!("bin/{kind}.prompt.{n}")),
     )
     .unwrap()
 }
@@ -443,6 +452,68 @@ fn a_unit_resumed_after_stuck_gets_the_last_reviews_findings() {
         .count();
     run(&repo, &tools(&repo, &Fakes::passing())).success();
     assert!(review_prompt(&repo, before + 1).contains(PREVIOUS));
+}
+
+const PREVIOUS_VERIFICATION: &str = "\n# Findings from the previous verification";
+
+#[test]
+fn a_first_verification_has_no_previous_findings_and_one_after_a_failure_has_them() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_verdict: FAIL,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    assert!(!verify_prompt(&repo, 1).contains(PREVIOUS_VERIFICATION));
+    assert!(verify_prompt(&repo, 2).contains(&format!(
+        "{PREVIOUS_VERIFICATION}\n\nchecked it\nVERDICT: FAIL"
+    )));
+}
+
+#[test]
+fn a_verification_after_a_pass_has_no_previous_findings() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_review: FAIL,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    assert!(!verify_prompt(&repo, 2).contains(PREVIOUS_VERIFICATION));
+}
+
+#[test]
+fn every_verification_is_kept_as_verify_n() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_verdict: FAIL,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    assert_eq!(read(&repo, "verify-1.md"), "checked it\nVERDICT: FAIL\n");
+    assert_eq!(read(&repo, "verify-2.md"), "checked it\nVERDICT: PASS\n");
+}
+
+#[test]
+fn a_unit_resumed_after_stuck_gets_the_last_verifications_findings() {
+    let repo = Repo::new();
+    let failing = Fakes {
+        first_verdict: FAIL,
+        verdict: FAIL,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &failing)).failure();
+    let before = std::fs::read_dir(repo.path.parent().unwrap().join("bin"))
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("verify.prompt.")
+        })
+        .count();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert!(verify_prompt(&repo, before + 1).contains(PREVIOUS_VERIFICATION));
 }
 
 #[test]

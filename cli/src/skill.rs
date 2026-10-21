@@ -122,6 +122,15 @@ mod tests {
     }
 
     #[test]
+    fn the_verify_skill_reruns_the_earlier_failed_requirements_and_trusts_no_earlier_pass() {
+        let file = format!("{}/../skills/{VERIFY}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
+        let skill = std::fs::read_to_string(file).unwrap();
+        assert!(skill.contains("Findings from the previous verification"));
+        assert!(skill.contains("re-run each requirement that was FAIL or INCONCLUSIVE"));
+        assert!(skill.contains("An earlier PASS is not carried forward"));
+    }
+
+    #[test]
     fn the_review_skill_names_the_three_statuses() {
         let file = format!("{}/../skills/{REVIEW}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
         let skill = std::fs::read_to_string(file).unwrap();

@@ -4,6 +4,7 @@ mod build;
 mod check;
 pub mod clean_up;
 mod review;
+mod rounds;
 mod setup;
 pub mod ship;
 pub mod verdict;
