@@ -25,9 +25,21 @@ Trace the call path before you accept a hypothetical. Leave out style and person
 
 Done when each axis has been checked against the diff.
 
-## 2. Write the findings
+## 2. Check the earlier findings
 
-One finding per defect:
+When the prompt has a section `# Findings from the previous review`, give each finding in it one status and a reason:
+
+- **Fixed**: say how you checked, by the diff or the tests, not by the build summary.
+- **Still open**: the defect is still in the change.
+- **Withdrawn**: the finding was wrong; say why.
+
+Do not accept as harmless what that review called Important unless you withdraw it and say why.
+
+Done when every earlier finding has a status with a reason.
+
+## 3. Write the new findings
+
+List them apart from the earlier ones. One finding per defect:
 
 - `file:line`
 - what is wrong
@@ -36,8 +48,10 @@ One finding per defect:
 
 A finding is **Critical** when the change breaks, loses data, or opens a hole, and **Important** when it misses a requirement or a test the change needs. Write nothing below those two.
 
+A finding is Important only when the change fails the unit's requirements, breaks behavior that works today, loses or leaks data, or is unsafe. A failure that needs a file edited by hand, or a state `ns` never writes, is not one.
+
 Done when every finding names a place in the diff and a concrete consequence.
 
-## 3. End with the verdict
+## 4. End with the verdict
 
-End with a last line that is exactly `VERDICT: PASS` when there are no findings, and exactly `VERDICT: FAIL` when there is at least one.
+End with a last line that is exactly `VERDICT: FAIL` when any earlier finding is still open or you found a new one, and exactly `VERDICT: PASS` when none is.
