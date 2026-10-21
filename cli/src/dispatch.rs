@@ -8,16 +8,10 @@ use anyhow::{bail, Result};
 
 use crate::{manifest, os, vcs, versions};
 
-/// The commands that set the pin or install a version. They run under whichever `ns` was started.
-const UNPINNED: [&str; 7] = [
-    "doctor",
-    "init",
-    "upgrade",
-    "self",
-    "config",
-    "--version",
-    "-V",
-];
+/// The commands that set the pin, install a version or check the setup. They run under whichever
+/// `ns` was started. `--version` is not one of them: inside a pinned repository it names the
+/// version that will run there, and anywhere else the version of this `ns`.
+const UNPINNED: [&str; 5] = ["doctor", "init", "upgrade", "self", "config"];
 
 /// Hands over to the `ns` the working repository is pinned to, when that is not this one. Returns
 /// when this `ns` is the one to run the command. It looks at the arguments before they are parsed,

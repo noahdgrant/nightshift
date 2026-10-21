@@ -78,13 +78,40 @@ fn the_commands_that_set_the_pin_run_under_any_version() {
     let repo = Repo::new();
     let home = tempfile::tempdir().unwrap();
     pin(&repo, "9.9.9");
-    ns(&repo, home.path(), &["--version"]).success();
     ns(&repo, home.path(), &["upgrade"]).success();
     assert!(
         std::fs::read_to_string(repo.path.join(".nightshift/nightshift.toml"))
             .unwrap()
             .contains(OWN)
     );
+}
+
+#[test]
+fn version_inside_a_pinned_repository_is_the_version_that_runs_there() {
+    let repo = Repo::new();
+    let home = tempfile::tempdir().unwrap();
+    pin(&repo, "9.9.9");
+    installed(home.path(), "9.9.9");
+    let out = stdout(ns(&repo, home.path(), &["--version"]).success());
+    assert_eq!(out, "ns 1 9.9.9 --version\n");
+}
+
+#[test]
+fn version_in_a_repository_pinned_to_a_version_not_installed_says_how_to_install_it() {
+    let repo = Repo::new();
+    let home = tempfile::tempdir().unwrap();
+    pin(&repo, "9.9.9");
+    let assert = ns(&repo, home.path(), &["--version"]).failure();
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(err.contains("ns self install 9.9.9"), "{err}");
+}
+
+#[test]
+fn version_in_a_repository_that_is_not_pinned_is_this_version() {
+    let repo = Repo::new();
+    let home = tempfile::tempdir().unwrap();
+    let out = stdout(ns(&repo, home.path(), &["--version"]).success());
+    assert_eq!(out, format!("ns {OWN}\n"));
 }
 
 #[test]
