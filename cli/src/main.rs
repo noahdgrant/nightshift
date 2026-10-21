@@ -13,6 +13,7 @@ mod harness;
 mod labels;
 mod lock;
 mod manifest;
+mod merge;
 mod os;
 mod plan;
 mod retry;

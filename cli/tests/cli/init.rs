@@ -162,12 +162,16 @@ fn init_creates_the_labels_the_forge_lacks_and_only_those() {
     .unwrap();
     let report = init_in(&repo);
     let created = report["labels_created"].as_array().unwrap();
-    assert_eq!(created.len(), 23 - 2);
+    assert_eq!(created.len(), 24 - 2);
     assert!(!created.iter().any(|l| l == "status:wontfix"));
     let log = gh_log(&repo);
-    assert_eq!(log.matches("label create").count(), 21, "{log}");
+    assert_eq!(log.matches("label create").count(), 22, "{log}");
     assert!(
         log.contains("label create status:ready-for-agent --description"),
+        "{log}"
+    );
+    assert!(
+        log.contains("label create needs-human-merge --description"),
         "{log}"
     );
     assert!(!log.contains("label create type:feat"), "{log}");
@@ -206,6 +210,7 @@ fn init_run_again_with_every_label_there_creates_none() {
         "priority:high",
         "priority:medium",
         "priority:low",
+        "needs-human-merge",
     ]
     .iter()
     .map(|name| format!(r#"{{"name":"{name}"}}"#))

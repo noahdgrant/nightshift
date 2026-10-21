@@ -3,7 +3,7 @@ use crate::common::{script, Repo};
 use assert_cmd::Command;
 use serde_json::Value;
 
-const ALL_LABELS: [&str; 23] = [
+const ALL_LABELS: [&str; 24] = [
     "status:needs-triage",
     "status:needs-define",
     "status:needs-repro",
@@ -27,6 +27,7 @@ const ALL_LABELS: [&str; 23] = [
     "priority:high",
     "priority:medium",
     "priority:low",
+    "needs-human-merge",
 ];
 
 /// A repository whose setup is complete, with a `gh` that is logged in as `octo`, a `claude` that
@@ -251,6 +252,13 @@ fn a_missing_label_fails_and_says_to_init() {
         .as_str()
         .unwrap()
         .contains("ns init"));
+}
+
+#[test]
+fn a_missing_needs_human_merge_label_fails() {
+    let setup = Setup::new();
+    setup.labels(&ALL_LABELS[..ALL_LABELS.len() - 1]);
+    only_fails(&setup, "labels", "needs-human-merge");
 }
 
 #[test]

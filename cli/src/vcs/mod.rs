@@ -44,6 +44,10 @@ pub trait Vcs {
     /// What the workspace's branch changed since `base`, as a patch.
     fn workspace_diff(&self, path: &Path, base: &str) -> Result<String>;
 
+    /// The files the workspace's branch changed since `base`, relative to the top of the
+    /// repository. A file that moved is listed under both names.
+    fn workspace_files_changed(&self, path: &Path, base: &str) -> Result<Vec<String>>;
+
     /// How many commits the workspace's branch holds past `base`.
     fn workspace_commits_count(&self, path: &Path, base: &str) -> Result<usize>;
 

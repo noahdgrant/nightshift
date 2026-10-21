@@ -23,6 +23,9 @@ const TYPES: [(&str, &str); 11] = [
     ("revert", "Undoes an earlier change"),
 ];
 
+/// On a change request that `ns` left for a person to merge, though its checks passed.
+pub const NEEDS_HUMAN_MERGE: &str = "needs-human-merge";
+
 const PRIORITY_DESCRIPTIONS: [&str; 4] = [
     "Drop everything",
     "Before new features",
@@ -39,7 +42,16 @@ pub fn all() -> Vec<(String, String)> {
         .iter()
         .zip(PRIORITY_DESCRIPTIONS)
         .map(|(name, description)| (name.to_string(), description.to_string()));
-    status.into_iter().chain(types).chain(priorities).collect()
+    let needs_human_merge = (
+        NEEDS_HUMAN_MERGE.to_string(),
+        "A person merges this: it touches files the repository wants reviewed".to_string(),
+    );
+    status
+        .into_iter()
+        .chain(types)
+        .chain(priorities)
+        .chain([needs_human_merge])
+        .collect()
 }
 
 /// Creates on the forge the labels it does not have, and leaves the ones it has as they are.
@@ -63,7 +75,7 @@ mod tests {
     #[test]
     fn every_label_is_there_once() {
         let names: Vec<String> = all().into_iter().map(|(name, _)| name).collect();
-        assert_eq!(names.len(), 8 + 11 + 4);
+        assert_eq!(names.len(), 8 + 11 + 4 + 1);
         let mut sorted = names.clone();
         sorted.sort();
         sorted.dedup();
