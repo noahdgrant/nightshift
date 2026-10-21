@@ -26,6 +26,15 @@ pub enum Resume {
     Finished,
 }
 
+/// One move of a unit from a state to the next.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Move {
+    pub from: State,
+    pub to: State,
+    /// When the log recorded it, in seconds since the epoch.
+    pub at: Option<u64>,
+}
+
 impl RunLog {
     pub fn open(vcs: &dyn Vcs, root: &Path) -> Result<RunLog> {
         Ok(RunLog {
@@ -50,9 +59,25 @@ impl RunLog {
 
     /// Where `unit` picks up, from its last move.
     pub fn resume(&self, unit: &str) -> Result<Resume> {
+        Ok(match self.last_move(unit)? {
+            None => Resume::Fresh,
+            Some(Move {
+                to: State::Done, ..
+            }) => Resume::Finished,
+            Some(Move {
+                from,
+                to: State::Stuck,
+                ..
+            }) => Resume::At(from),
+            Some(Move { to, .. }) => Resume::At(to),
+        })
+    }
+
+    /// The last move of `unit`, or `None` when it has never run.
+    pub fn last_move(&self, unit: &str) -> Result<Option<Move>> {
         let text = match std::fs::read_to_string(&self.path) {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Resume::Fresh),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => {
                 return Err(e).with_context(|| format!("cannot read {}", self.path.display()))
             }
@@ -62,7 +87,7 @@ impl RunLog {
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
             .rfind(|e| e["unit"] == unit && e.get("to").is_some());
         let Some(last) = last else {
-            return Ok(Resume::Fresh);
+            return Ok(None);
         };
         let state = |key: &str| {
             last[key]
@@ -70,10 +95,10 @@ impl RunLog {
                 .and_then(State::parse)
                 .with_context(|| format!("the run log holds a bad {key} state: {last}"))
         };
-        Ok(match state("to")? {
-            State::Done => Resume::Finished,
-            State::Stuck => Resume::At(state("from")?),
-            at => Resume::At(at),
-        })
+        Ok(Some(Move {
+            from: state("from")?,
+            to: state("to")?,
+            at: last["at"].as_u64(),
+        }))
     }
 }

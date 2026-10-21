@@ -70,7 +70,7 @@ pub fn plan(open: &[Unit]) -> Plan<'_> {
 }
 
 /// Highest priority first, then lowest number. A unit with no priority goes last.
-fn order(unit: &Unit) -> (usize, u64) {
+pub fn order(unit: &Unit) -> (usize, u64) {
     let rank = PRIORITIES
         .iter()
         .position(|p| unit.labels.iter().any(|l| l == p))

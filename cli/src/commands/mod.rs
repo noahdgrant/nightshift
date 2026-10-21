@@ -9,6 +9,7 @@ mod init;
 mod plan;
 mod run;
 mod self_;
+mod status;
 mod sync;
 mod triage;
 mod troubleshoot;
@@ -36,6 +37,8 @@ pub enum Command {
     Init(init::Args),
     /// Move a unit through the states, printing each move.
     Run(run::Args),
+    /// Show where each unit stands.
+    Status(status::Args),
     /// Write the skills where the repository's harnesses find them.
     Sync(sync::Args),
     /// Change the version of ns the repository is pinned to.
@@ -61,6 +64,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Init(args) => init::run(args),
         Command::Plan(args) => plan::run(args),
         Command::Run(args) => run::run(args),
+        Command::Status(args) => status::run(args),
         Command::Sync(args) => sync::run(args),
         Command::Upgrade(args) => upgrade::run(args),
         Command::SelfManage(args) => self_::run(args),

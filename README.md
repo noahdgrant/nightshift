@@ -76,6 +76,8 @@ ns auto --until 06:30
 
 It triages the issues nobody has looked at, then takes the `status:ready-for-agent` ones one at a time and runs each unattended, starting no new unit after 06:30. A unit already running finishes. A unit that gets stuck is labeled `status:ready-for-human` and `ns auto` moves on; pick it up with `ns run`. To try it on a couple of issues first, use `ns auto --max-units 2`, or `--dry-run` to see the queue.
 
+`ns status` shows where each unit stands in the morning.
+
 ## Credits
 
 Adapted from [mattpocock/skills](https://github.com/mattpocock/skills), [cursor/plugins pstack](https://github.com/cursor/plugins/tree/main/pstack) and [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills). See [`NOTICE.md`](NOTICE.md).
