@@ -43,7 +43,7 @@ pub trait Forge {
     fn change_request_get(&self, repo: &Path, branch: &str) -> Result<Option<ChangeRequest>>;
 
     /// Opens a change request from `branch` for unit `unit`, linked to the unit so that merging
-    /// it closes the unit on the forge.
+    /// it closes the unit on the forge. The change request carries `labels`.
     fn change_request_create(
         &self,
         repo: &Path,
@@ -51,6 +51,7 @@ pub trait Forge {
         unit: u64,
         title: &str,
         body: &str,
+        labels: &[String],
     ) -> Result<ChangeRequest>;
 
     /// How the checks on change request `number` stand.

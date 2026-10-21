@@ -39,8 +39,19 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         Some(existing) => existing,
         None => {
             let body = format!("{DISCLOSURE}\n\n{}", build.trim_end());
+            // `status:` labels say where the unit is, so only the unit carries them.
+            let labels: Vec<String> = unit
+                .labels
+                .iter()
+                .filter(|l| {
+                    ["type:", "area:", "priority:"]
+                        .iter()
+                        .any(|p| l.starts_with(p))
+                })
+                .cloned()
+                .collect();
             ctx.forge
-                .change_request_create(&dir, &branch, ctx.unit, &unit.title, &body)?
+                .change_request_create(&dir, &branch, ctx.unit, &unit.title, &body, &labels)?
         }
     };
     artifact::write(&dir, &id, "ship.md", &format!("{}\n", change_request.url))?;

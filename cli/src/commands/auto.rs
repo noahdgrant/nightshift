@@ -232,6 +232,7 @@ mod tests {
             _: u64,
             _: &str,
             _: &str,
+            _: &[String],
         ) -> Result<ChangeRequest> {
             unreachable!()
         }

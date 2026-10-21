@@ -304,6 +304,33 @@ fn ship_publishes_what_the_build_committed_and_opens_one_change_request() {
     );
 }
 
+#[test]
+fn ship_gives_the_change_request_the_units_type_area_and_priority_but_not_its_status() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        labels: r#"[{"name":"status:ready-for-agent"},{"name":"type:fix"},{"name":"area:cli"},{"name":"priority:high"},{"name":"bug"},{"name":"status:in-progress"}]"#,
+        labels_follow_edits: false,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    let log = gh_log(&repo);
+    let labels: Vec<_> = log
+        .split("--label ")
+        .skip(1)
+        .map(|rest| rest.split_whitespace().next().unwrap())
+        .collect();
+    assert_eq!(labels, ["type:fix", "area:cli", "priority:high"], "{log}");
+}
+
+#[test]
+fn ship_opens_the_change_request_of_a_unit_with_none_of_those_labels_without_labels() {
+    let repo = Repo::new();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    let log = gh_log(&repo);
+    assert_eq!(log.matches("pr create").count(), 1, "{log}");
+    assert!(!log.contains("--label"), "{log}");
+}
+
 /// What the fake `gh` was asked, empty when it was not called at all.
 fn gh_log(repo: &Repo) -> String {
     std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log")).unwrap_or_default()
