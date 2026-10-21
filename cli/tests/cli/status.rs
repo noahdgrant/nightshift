@@ -161,9 +161,10 @@ fn a_last_move_without_a_time_has_a_null_moved_at() {
 }
 
 #[test]
-fn a_last_move_with_a_bad_from_state_fails() {
+fn a_last_move_with_a_bad_from_state_still_gives_its_state() {
     let runs = r#"{"unit":"5","from":"nowhere","to":"done","at":1}"#;
-    let out = run_status(&[unit(5, &[])], &[], runs).failure();
-    let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
-    assert!(stderr.contains("bad from state"), "{stderr}");
+    let out = run_status(&[unit(5, &[])], &[], runs).success();
+    let json: Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(json["units"][0]["state"], "done");
+    assert_eq!(json["units"][0]["moved_at"], 1);
 }
