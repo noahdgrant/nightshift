@@ -73,6 +73,20 @@ impl Claude {
 }
 
 impl Harness for Claude {
+    fn version_get(&self) -> Result<String> {
+        let out = Command::new(&self.program)
+            .arg("--version")
+            .output()
+            .context("cannot run claude")?;
+        if !out.status.success() {
+            bail!(
+                "claude --version failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
     fn skills_dir(&self) -> &'static str {
         ".claude/skills"
     }

@@ -8,6 +8,9 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 
 pub trait Harness {
+    /// The version the harness reports. An error when it cannot be started.
+    fn version_get(&self) -> Result<String>;
+
     /// Where, relative to a repository's top, this harness looks for skills.
     fn skills_dir(&self) -> &'static str;
 

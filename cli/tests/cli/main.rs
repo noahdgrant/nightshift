@@ -3,6 +3,7 @@ mod check;
 mod common;
 mod config;
 mod define;
+mod doctor;
 mod init;
 pub mod plan;
 pub mod run;

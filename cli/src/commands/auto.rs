@@ -184,6 +184,9 @@ mod tests {
     struct Ready;
 
     impl Forge for Ready {
+        fn login_get(&self, _: &Path) -> Result<String> {
+            unreachable!()
+        }
         fn unit_list(&self, _: &Path) -> Result<Vec<Unit>> {
             Ok((1..=3)
                 .map(|number| Unit {

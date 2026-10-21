@@ -4,6 +4,7 @@ mod auto;
 mod check;
 mod config;
 mod define;
+mod doctor;
 mod init;
 mod plan;
 mod run;
@@ -27,6 +28,8 @@ pub enum Command {
     Check(check::Args),
     /// Work out a spec for a vague unit with you, then plan it.
     Define(define::Args),
+    /// Check that the repository and this machine are set up for ns.
+    Doctor(doctor::Args),
     /// Cut a unit into slices and make it ready for the agent.
     Plan(plan::Args),
     /// Pin the repository to this version of ns.
@@ -54,6 +57,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Check(args) => check::run(args),
         Command::Config(args) => config::run(args),
         Command::Define(args) => define::run(args),
+        Command::Doctor(args) => doctor::run(args),
         Command::Init(args) => init::run(args),
         Command::Plan(args) => plan::run(args),
         Command::Run(args) => run::run(args),

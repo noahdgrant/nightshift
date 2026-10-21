@@ -45,6 +45,8 @@ Then, in each project you want to run the factory on:
 2. Put the command that runs the repository's checks (format, lint, tests) in `.nightshift/check`, such as `scripts/ci-local.sh`, and commit it. Without it, a unit's checks pass without running anything.
 3. Create the `area:` labels for the parts of your project. `ns triage` only uses labels the repository has, and only you know the areas.
 
+Run `ns doctor` to confirm the setup. It prints a JSON object with one check each for the pin, the harness, the forge login, `.nightshift/check` and the labels, says how to fix any that fails, and exits 1 when one does. It changes nothing.
+
 To move a repository to a newer `ns`, install it, then run `ns upgrade <version>` and commit the new pin.
 
 ## Run your first unit

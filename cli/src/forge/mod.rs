@@ -8,6 +8,10 @@ use std::path::Path;
 use anyhow::Result;
 
 pub trait Forge {
+    /// The login the forge sees `ns` as when it works on the repository at `repo`. An error
+    /// when the forge answers with a login other than the account the config names.
+    fn login_get(&self, repo: &Path) -> Result<String>;
+
     /// The unit `number` of the repository at `repo`.
     fn unit_get(&self, repo: &Path, number: u64) -> Result<Unit>;
 
