@@ -774,6 +774,110 @@ fn a_stuck_unit_resumes_at_the_state_it_stuck_in_with_fresh_attempts() {
     assert_eq!(events.last().unwrap()["to"], "done");
 }
 
+/// Sticks unit 5 in `state` by failing every check of it, then returns the `PATH` of fakes that pass.
+fn stuck_in(repo: &Repo, state: &str) -> String {
+    let failing = match state {
+        "review" => Fakes {
+            first_review: FAIL,
+            review: FAIL,
+            ..Fakes::passing()
+        },
+        _ => Fakes {
+            first_verdict: FAIL,
+            verdict: FAIL,
+            ..Fakes::passing()
+        },
+    };
+    run(repo, &tools(repo, &failing)).failure();
+    let last = run_log(repo).last().unwrap().clone();
+    assert_eq!(
+        (last["from"].as_str(), last["to"].as_str()),
+        (Some(state), Some("stuck"))
+    );
+    tools(repo, &Fakes::passing())
+}
+
+#[test]
+fn a_unit_stuck_in_a_check_with_nothing_changed_resumes_at_build_and_says_why() {
+    for state in ["review", "verify"] {
+        let repo = Repo::new();
+        let path = stuck_in(&repo, state);
+        let out = run(&repo, &path).success().get_output().stdout.clone();
+        let events = lines(&out);
+        assert_eq!(
+            events[0],
+            serde_json::json!({
+                "unit": "5",
+                "from": "stuck",
+                "to": "build",
+                "reason": format!("nothing changed since {state} failed"),
+            }),
+            "{state}"
+        );
+        assert_eq!(events[1]["state"], "build", "{state}");
+        // The fake build says this only when its prompt carries the failing evidence.
+        assert_eq!(read(&repo, "build.md"), "rebuilt with the evidence\n");
+        let logged = run_log(&repo);
+        assert!(
+            logged.iter().any(|e| e["from"] == "stuck"
+                && e["to"] == "build"
+                && e["reason"] == format!("nothing changed since {state} failed")),
+            "{state}: {logged:?}"
+        );
+    }
+}
+
+#[test]
+fn a_unit_stuck_in_a_check_whose_workspace_was_edited_resumes_at_that_check() {
+    for state in ["review", "verify"] {
+        let repo = Repo::new();
+        let path = stuck_in(&repo, state);
+        std::fs::write(repo.workspace("5").join("by-a-human.txt"), "fixed\n").unwrap();
+        // The check itself refuses a workspace the build did not leave, so the run may end stuck.
+        let out = run(&repo, &path).get_output().stdout.clone();
+        let events = lines(&out);
+        assert_eq!(events[0]["state"], state);
+        assert!(
+            !events.iter().any(|e| e["from"] == "stuck"),
+            "{state}: {events:?}"
+        );
+    }
+}
+
+#[test]
+fn a_unit_stuck_in_a_check_with_no_snapshot_of_its_build_resumes_at_that_check() {
+    let repo = Repo::new();
+    let path = stuck_in(&repo, "review");
+    std::fs::remove_file(repo.workspace("5").join(".ns/5/built.snapshot")).unwrap();
+    let out = run(&repo, &path).get_output().stdout.clone();
+    let events = lines(&out);
+    assert_eq!(events[0]["state"], "review");
+    assert!(!events.iter().any(|e| e["from"] == "stuck"), "{events:?}");
+}
+
+#[test]
+fn a_unit_stuck_in_ship_resumes_at_ship_whatever_the_workspace_holds() {
+    let repo = Repo::new();
+    let never = Fakes {
+        ci: Ci::NeverFinishes,
+        ..Fakes::passing()
+    };
+    run_with(
+        &repo,
+        &tools(&repo, &never),
+        &["--merge", "--ci-timeout-seconds", "0"],
+    )
+    .failure();
+    let last = run_log(&repo).last().unwrap().clone();
+    assert_eq!(last["from"], "ship");
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(lines(&out)[0]["state"], "ship");
+}
+
 #[test]
 fn fresh_deletes_the_workspace_and_branch_and_starts_over_from_setup() {
     let repo = Repo::new();

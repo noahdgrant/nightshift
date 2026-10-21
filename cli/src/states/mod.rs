@@ -22,7 +22,7 @@ use crate::vcs::Vcs;
 use crate::workspace::Workspace;
 
 /// The artifact `build` leaves with a snapshot of the workspace as it ended the build.
-const BUILT_SNAPSHOT: &str = "built.snapshot";
+pub(crate) const BUILT_SNAPSHOT: &str = "built.snapshot";
 
 /// Everything a state works with.
 pub struct Context {

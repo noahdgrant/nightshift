@@ -20,8 +20,10 @@ pub struct RunLog {
 pub enum Resume {
     /// The unit has never run.
     Fresh,
-    /// The unit stopped, or got stuck, at this state, and starts it again.
+    /// The unit stopped at this state, and starts it again.
     At(State),
+    /// The unit got stuck in this state. Where it picks up is for the caller to decide.
+    Stuck(State),
     /// The unit reached `done`.
     Finished,
 }
@@ -70,7 +72,7 @@ impl RunLog {
                 from,
                 to: State::Stuck,
                 ..
-            }) => Resume::At(from.with_context(|| {
+            }) => Resume::Stuck(from.with_context(|| {
                 format!("the run log holds no state unit {unit} left before it got stuck")
             })?),
             Some(Move { to, .. }) => Resume::At(to),
@@ -126,7 +128,7 @@ mod tests {
     #[test]
     fn a_unit_stuck_after_a_state_picks_up_at_it() {
         let (_tmp, log) = log_with(r#"{"unit":"5","from":"review","to":"stuck","at":1}"#);
-        assert_eq!(log.resume("5").unwrap(), Resume::At(State::Review));
+        assert_eq!(log.resume("5").unwrap(), Resume::Stuck(State::Review));
     }
 
     #[test]
