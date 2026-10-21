@@ -239,7 +239,11 @@ fn walk(
         let mut event = json!({ "unit": unit, "from": state.to_string(), "to": to.to_string() });
         if to != next {
             event["attempt"] = attempt.into();
-            event["reason"] = "failed".into();
+            event["reason"] = match outcome {
+                Outcome::Redo => "went_wrong",
+                Outcome::Pass | Outcome::Fail => "failed",
+            }
+            .into();
         }
         sink(event)?;
         if to == State::Stuck {
@@ -402,5 +406,31 @@ mod tests {
                 "clean_up>done",
             ]
         );
+    }
+
+    /// The reason on each event that has one, for a unit whose every state ends as `outcome`.
+    fn reasons(outcome: fn() -> Outcome) -> Vec<String> {
+        let mut events = Vec::new();
+        let _ = walk(
+            "u1",
+            State::START,
+            Gates::Auto,
+            2,
+            |_, _| outcome(),
+            &mut |e| {
+                events.push(e);
+                Ok(())
+            },
+        );
+        events
+            .iter()
+            .filter_map(|e| e["reason"].as_str().map(String::from))
+            .collect()
+    }
+
+    #[test]
+    fn a_state_that_returns_an_error_is_logged_as_gone_wrong_and_a_failed_check_as_failed() {
+        assert_eq!(reasons(|| Outcome::Redo), ["went_wrong", "went_wrong"]);
+        assert_eq!(reasons(|| Outcome::Fail), ["failed", "failed"]);
     }
 }
