@@ -78,6 +78,8 @@ It triages the issues nobody has looked at, then takes the `status:ready-for-age
 
 `ns status` shows where each unit stands in the morning.
 
+Every headless session leaves its transcript, what the agent read and ran and not only its final text, as `transcripts/<unit>/<state>-<n>.jsonl` in the repository's `ns` state directory (`.git/ns` with git). It outlives the unit's workspace. `ns log <unit>` shows it; `--state` and `--last` narrow it. Nothing prunes the directory: a session is typically tens of kilobytes to a few megabytes of JSON, and a unit that goes round `build` many times keeps one for each. Deleting `transcripts/` is safe; `ns` only reads it for `ns log`.
+
 ## Credits
 
 Adapted from [mattpocock/skills](https://github.com/mattpocock/skills), [cursor/plugins pstack](https://github.com/cursor/plugins/tree/main/pstack) and [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills). See [`NOTICE.md`](NOTICE.md).

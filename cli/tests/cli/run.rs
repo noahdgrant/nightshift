@@ -19,6 +19,8 @@ pub struct Fakes {
     pub ci: Ci,
     /// Whether the build runs the checks itself, the way its prompt tells it to.
     pub agent_runs_checks: bool,
+    /// Whether the first build session ends with an overloaded service, as one the service dropped.
+    pub first_build_dropped: bool,
     /// The verdict the first review ends with.
     pub first_review: &'static str,
     /// The verdict every later review ends with.
@@ -81,6 +83,7 @@ impl Fakes {
             build_commits: BuildCommits::Always,
             ci: Ci::Passes,
             agent_runs_checks: false,
+            first_build_dropped: false,
             first_review: PASS,
             review: PASS,
             labels: r#"[{"name":"status:ready-for-agent"}]"#,
@@ -212,7 +215,7 @@ case "$p" in
 *"The checks failed:"*) touch "{bin}/fixed"; echo fixed it;;
 *"left uncommitted changes"*) {when_told}echo committed when told;;
 *"commits on the branch"*) {squash}echo squashed when told;;
-*) printf %s "$p" > "{bin}/build.prompt"; echo thing > thing.txt; {run_checks}{commit}echo built the thing;;
+*) {drop}printf %s "$p" > "{bin}/build.prompt"; echo thing > thing.txt; {run_checks}{commit}echo built the thing;;
 esac
 exit {exit}"#,
             bin = bin.display(),
@@ -220,6 +223,14 @@ exit {exit}"#,
             first = fakes.first_verdict,
             review = fakes.review,
             first_review = fakes.first_review,
+            drop = if fakes.first_build_dropped {
+                format!(
+                    r#"if [ ! -e "{bin}/dropped" ]; then touch "{bin}/dropped"; echo 'API Error: 529 Overloaded'; exit 1; fi; "#,
+                    bin = bin.display()
+                )
+            } else {
+                String::new()
+            },
             exit = fakes.exit,
         ),
     );
@@ -1405,6 +1416,68 @@ fn a_session_that_runs_out_of_time_goes_wrong_like_any_other_failure() {
         &moves(out)[..],
         ["start setup", "setup>build", "build>build", "build>stuck"]
     );
+}
+
+fn transcripts(repo: &Repo) -> std::path::PathBuf {
+    repo.path.join(".git/ns/transcripts/5")
+}
+
+#[test]
+fn each_session_of_a_state_leaves_a_numbered_transcript_in_the_state_directory() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_review: FAIL,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    let dir = transcripts(&repo);
+    // The fake prints plain text, which is all a session that never printed a result leaves.
+    assert_eq!(
+        std::fs::read_to_string(dir.join("build-1.jsonl")).unwrap(),
+        "built the thing\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("build-2.jsonl")).unwrap(),
+        "rebuilt with the evidence\n"
+    );
+    assert!(dir.join("verify-1.jsonl").is_file());
+    assert!(dir.join("verify-2.jsonl").is_file());
+    assert!(dir.join("review-1.jsonl").is_file());
+    assert!(dir.join("review-2.jsonl").is_file());
+    assert!(!dir.join("review-3.jsonl").exists());
+}
+
+#[test]
+fn a_session_started_again_after_a_dropped_service_leaves_both_transcripts() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_build_dropped: true,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    let dir = transcripts(&repo);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("build-1.jsonl")).unwrap(),
+        "API Error: 529 Overloaded\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("build-2.jsonl")).unwrap(),
+        "built the thing\n"
+    );
+}
+
+#[test]
+fn a_session_killed_on_timeout_still_leaves_a_transcript() {
+    let repo = Repo::new();
+    run_with(
+        &repo,
+        &tools(&repo, &Fakes::passing()),
+        &["--harness-timeout-seconds", "0"],
+    )
+    .failure();
+    let dir = transcripts(&repo);
+    assert!(dir.join("build-1.jsonl").is_file());
+    assert!(dir.join("build-2.jsonl").is_file());
 }
 
 /// The last label change the fake `gh` was asked for.

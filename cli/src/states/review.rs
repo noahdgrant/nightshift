@@ -4,7 +4,7 @@ use super::rounds::Rounds;
 use super::{check, Context};
 use crate::artifact;
 use crate::skill;
-use crate::state::Outcome;
+use crate::state::{Outcome, State};
 
 /// Has the harness review the unit's changes. It reads them and changes nothing. See
 /// [`check::run`] for how it ends; a failing review sends the unit back to `build`.
@@ -25,6 +25,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let previous = reviews.last_failing();
     let outcome = check::run(
         ctx,
+        State::Review,
         false,
         prompt(
             &skill,

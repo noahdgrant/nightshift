@@ -6,6 +6,7 @@ mod config;
 mod define;
 mod doctor;
 mod init;
+mod log;
 mod plan;
 mod run;
 mod self_;
@@ -31,6 +32,8 @@ pub enum Command {
     Define(define::Args),
     /// Check that the repository and this machine are set up for ns.
     Doctor(doctor::Args),
+    /// Show what a unit's harness sessions said and ran.
+    Log(log::Args),
     /// Cut a unit into slices and make it ready for the agent.
     Plan(plan::Args),
     /// Pin the repository to this version of ns.
@@ -62,6 +65,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Define(args) => define::run(args),
         Command::Doctor(args) => doctor::run(args),
         Command::Init(args) => init::run(args),
+        Command::Log(args) => log::run(args),
         Command::Plan(args) => plan::run(args),
         Command::Run(args) => run::run(args),
         Command::Status(args) => status::run(args),

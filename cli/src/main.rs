@@ -22,6 +22,7 @@ mod state;
 mod states;
 mod status;
 mod sync;
+mod transcripts;
 mod triage;
 mod troubleshoot;
 mod until;

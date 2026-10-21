@@ -1,10 +1,10 @@
 use anyhow::{bail, Context as _, Result};
 
 use super::verdict::{self, Verdict, ERROR_LINE};
-use super::{Context, BUILT_SNAPSHOT};
+use super::{session_run, Context, BUILT_SNAPSHOT};
 use crate::artifact;
 use crate::harness::Task;
-use crate::state::Outcome;
+use crate::state::{Outcome, State};
 
 /// What a state that checks the build does with its prompt: the harness runs it, and whatever it
 /// says is kept as `evidence.md`. A check must leave the workspace as the build left it.
@@ -14,8 +14,8 @@ use crate::state::Outcome;
 ///   nothing about the build: the evidence ends in an error verdict, the state goes wrong, and the
 ///   state's next run is told what happened and must put it right.
 ///
-/// `write` is whether the harness may change files, which running the build needs.
-pub fn run(ctx: &mut Context, write: bool, prompt: String) -> Result<Outcome> {
+/// `state` is the checking state, which names the session's transcript. `write` is whether the harness may change files, which running the build needs.
+pub fn run(ctx: &mut Context, state: State, write: bool, prompt: String) -> Result<Outcome> {
     let dir = ctx
         .workspace
         .as_ref()
@@ -31,13 +31,17 @@ pub fn run(ctx: &mut Context, write: bool, prompt: String) -> Result<Outcome> {
              (undo any change you made to files), then check again.\n\n{error}\n"
         ));
     }
-    let reply = ctx.harness.task_run(&Task {
-        dir: dir.clone(),
-        prompt,
-        write,
-        model: None,
-        timeout: ctx.harness_timeout,
-    })?;
+    let reply = session_run(
+        ctx,
+        state,
+        &Task {
+            dir: dir.clone(),
+            prompt,
+            write,
+            model: None,
+            timeout: ctx.harness_timeout,
+        },
+    )?;
     let problem = if !reply.success {
         Some("the harness did not finish the check")
     } else if ctx.vcs.workspace_snapshot(&dir)? != built {
