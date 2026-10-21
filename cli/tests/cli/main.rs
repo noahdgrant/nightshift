@@ -7,6 +7,7 @@ mod doctor;
 mod init;
 pub mod plan;
 pub mod run;
+mod status;
 mod sync;
 mod triage;
 mod troubleshoot;

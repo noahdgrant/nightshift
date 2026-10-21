@@ -26,6 +26,17 @@ pub enum Resume {
     Finished,
 }
 
+/// One move of a unit from a state to the next.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Move {
+    /// The state it left. `None` when the log's entry has none that is a state: only a unit that
+    /// is resumed from `stuck` needs it, so nothing else fails for want of it.
+    pub from: Option<State>,
+    pub to: State,
+    /// When the log recorded it, in seconds since the epoch.
+    pub at: Option<u64>,
+}
+
 impl RunLog {
     pub fn open(vcs: &dyn Vcs, root: &Path) -> Result<RunLog> {
         Ok(RunLog {
@@ -50,9 +61,27 @@ impl RunLog {
 
     /// Where `unit` picks up, from its last move.
     pub fn resume(&self, unit: &str) -> Result<Resume> {
+        Ok(match self.last_move(unit)? {
+            None => Resume::Fresh,
+            Some(Move {
+                to: State::Done, ..
+            }) => Resume::Finished,
+            Some(Move {
+                from,
+                to: State::Stuck,
+                ..
+            }) => Resume::At(from.with_context(|| {
+                format!("the run log holds no state unit {unit} left before it got stuck")
+            })?),
+            Some(Move { to, .. }) => Resume::At(to),
+        })
+    }
+
+    /// The last move of `unit`, or `None` when it has never run.
+    pub fn last_move(&self, unit: &str) -> Result<Option<Move>> {
         let text = match std::fs::read_to_string(&self.path) {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Resume::Fresh),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => {
                 return Err(e).with_context(|| format!("cannot read {}", self.path.display()))
             }
@@ -62,18 +91,57 @@ impl RunLog {
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
             .rfind(|e| e["unit"] == unit && e.get("to").is_some());
         let Some(last) = last else {
-            return Ok(Resume::Fresh);
+            return Ok(None);
         };
-        let state = |key: &str| {
-            last[key]
-                .as_str()
-                .and_then(State::parse)
-                .with_context(|| format!("the run log holds a bad {key} state: {last}"))
-        };
-        Ok(match state("to")? {
-            State::Done => Resume::Finished,
-            State::Stuck => Resume::At(state("from")?),
-            at => Resume::At(at),
-        })
+        let to = last["to"]
+            .as_str()
+            .and_then(State::parse)
+            .with_context(|| format!("the run log holds a bad to state: {last}"))?;
+        Ok(Some(Move {
+            from: last["from"].as_str().and_then(State::parse),
+            to,
+            at: last["at"].as_u64(),
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn log_with(text: &str) -> (tempfile::TempDir, RunLog) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("runs.jsonl");
+        std::fs::write(&path, text).unwrap();
+        (tmp, RunLog { path })
+    }
+
+    #[test]
+    fn a_finished_unit_is_finished_whatever_its_last_from_says() {
+        let (_tmp, log) = log_with(r#"{"unit":"5","from":"nowhere","to":"done","at":1}"#);
+        assert_eq!(log.resume("5").unwrap(), Resume::Finished);
+        assert_eq!(log.last_move("5").unwrap().unwrap().from, None);
+    }
+
+    #[test]
+    fn a_unit_stuck_after_a_state_picks_up_at_it() {
+        let (_tmp, log) = log_with(r#"{"unit":"5","from":"review","to":"stuck","at":1}"#);
+        assert_eq!(log.resume("5").unwrap(), Resume::At(State::Review));
+    }
+
+    #[test]
+    fn a_stuck_unit_with_no_state_to_go_back_to_cannot_be_resumed() {
+        let (_tmp, log) = log_with(r#"{"unit":"5","from":"nowhere","to":"stuck","at":1}"#);
+        let err = log.resume("5").unwrap_err();
+        assert!(
+            err.to_string().contains("unit 5 left before it got stuck"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_last_move_to_nowhere_is_an_error() {
+        let (_tmp, log) = log_with(r#"{"unit":"5","from":"build","to":"nowhere"}"#);
+        assert!(log.last_move("5").is_err());
     }
 }
