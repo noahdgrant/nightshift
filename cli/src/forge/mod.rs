@@ -61,6 +61,9 @@ pub trait Forge {
     /// there stay.
     fn change_request_assignee_add(&self, repo: &Path, number: u64) -> Result<()>;
 
+    /// Adds `label` to change request `number`.
+    fn change_request_label_add(&self, repo: &Path, number: u64, label: &str) -> Result<()>;
+
     /// How the checks on change request `number` stand.
     fn change_request_checks_get(&self, repo: &Path, number: u64) -> Result<Checks>;
 

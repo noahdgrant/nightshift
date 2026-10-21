@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use toml_edit::{value, Array, DocumentMut};
 
 use crate::harness::Kind;
+use crate::merge::HumanReview;
 
 fn file_find(root: &Path) -> PathBuf {
     root.join(".nightshift").join("nightshift.toml")
@@ -63,6 +64,26 @@ pub fn harness_read(root: &Path) -> Result<Vec<Kind>> {
             .map(|name| Kind::parse(name.as_str().context("a harness name is not a string")?))
             .collect(),
     }
+}
+
+/// The files whose change a person must merge: `[merge] human_review`, or the built-in default
+/// when the key is missing. An empty list means every change may be merged.
+pub fn human_review_read(root: &Path) -> Result<HumanReview> {
+    let document = document_read(root)?;
+    let Some(item) = document.get("merge").and_then(|m| m.get("human_review")) else {
+        return Ok(HumanReview::default_globs());
+    };
+    let globs = item
+        .as_array()
+        .context("`merge.human_review` in nightshift.toml is not a list")?
+        .iter()
+        .map(|g| {
+            g.as_str()
+                .map(str::to_string)
+                .context("a `merge.human_review` glob is not a string")
+        })
+        .collect::<Result<_>>()?;
+    Ok(HumanReview::new(globs))
 }
 
 /// Records the version of `ns` the repository uses, and its harnesses. A `[skills]` table from an
@@ -133,6 +154,44 @@ mod tests {
             !text.contains("[skills]") && !text.contains("sha256"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn human_review_is_the_default_unless_the_key_is_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            human_review_read(tmp.path()).unwrap(),
+            HumanReview::default_globs()
+        );
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        std::fs::write(
+            file_find(tmp.path()),
+            "[merge]\nhuman_review = [\"a/**\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            human_review_read(tmp.path()).unwrap(),
+            HumanReview::new(vec!["a/**".into()])
+        );
+        std::fs::write(file_find(tmp.path()), "[merge]\nhuman_review = []\n").unwrap();
+        assert_eq!(
+            human_review_read(tmp.path()).unwrap(),
+            HumanReview::new(Vec::new())
+        );
+    }
+
+    #[test]
+    fn human_review_that_is_not_a_list_of_strings_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for (text, message) in [
+            ("[merge]\nhuman_review = \"a\"\n", "is not a list"),
+            ("[merge]\nhuman_review = [1]\n", "is not a string"),
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            let err = human_review_read(tmp.path()).unwrap_err();
+            assert!(err.to_string().contains(message), "{err}");
+        }
     }
 
     #[test]

@@ -1,10 +1,14 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _, Result};
+use serde_json::json;
 
 use super::Context;
 use crate::artifact;
 use crate::forge::{Checks, DISCLOSURE};
+use crate::labels;
+use crate::manifest;
+use crate::merge::Verdict;
 use crate::state::Outcome;
 
 pub struct Options {
@@ -87,8 +91,29 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         }
     }
     if ctx.ship.merge {
-        ctx.forge
-            .change_request_merge(&dir, change_request.number)?;
+        let root = ctx.vcs.root_find(&ctx.from)?;
+        let base = ctx.vcs.workspace_base_find(&dir)?;
+        let files = ctx.vcs.workspace_files_changed(&dir, &base)?;
+        match manifest::human_review_read(&root)?.verdict(&files)? {
+            Verdict::Merge => ctx
+                .forge
+                .change_request_merge(&dir, change_request.number)?,
+            Verdict::NeedsHuman { file, glob } => {
+                ctx.forge.change_request_label_add(
+                    &dir,
+                    change_request.number,
+                    labels::NEEDS_HUMAN_MERGE,
+                )?;
+                println!(
+                    "{}",
+                    json!({
+                        "unit": id,
+                        "state": "ship",
+                        "not_merged": format!("{file} matches {glob} in merge.human_review, so a person merges it"),
+                    })
+                );
+            }
+        }
     }
     Ok(Outcome::Pass)
 }

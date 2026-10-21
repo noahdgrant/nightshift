@@ -99,6 +99,24 @@ impl Vcs for Git {
         run(path, &["diff", &format!("{base}..HEAD")])
     }
 
+    fn workspace_files_changed(&self, path: &Path, base: &str) -> Result<Vec<String>> {
+        let names = run(
+            path,
+            &[
+                "diff",
+                "--name-only",
+                "-z",
+                "--no-renames",
+                &format!("{base}..HEAD"),
+            ],
+        )?;
+        Ok(names
+            .split('\0')
+            .filter(|name| !name.is_empty())
+            .map(String::from)
+            .collect())
+    }
+
     fn workspace_commits_count(&self, path: &Path, base: &str) -> Result<usize> {
         let count = run(path, &["rev-list", "--count", &format!("{base}..HEAD")])?;
         count.parse().context("git printed a bad commit count")
@@ -256,5 +274,34 @@ mod tests {
         ] {
             assert_eq!(crate::retry::says(said, &TRANSIENT), repeated, "{said}");
         }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn a_changed_file_with_a_non_ascii_name_is_listed_as_it_is_named() {
+        let repo = tempfile::tempdir().unwrap();
+        let dir = repo.path();
+        git(dir, &["init", "-q"]);
+        git(dir, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let base = run(dir, &["rev-parse", "HEAD"]).unwrap();
+        std::fs::create_dir(dir.join(".github")).unwrap();
+        std::fs::write(dir.join(".github/\u{e9}.yml"), "x").unwrap();
+        std::fs::write(dir.join("a.rs"), "x").unwrap();
+        git(dir, &["add", "--all"]);
+        git(dir, &["commit", "-q", "-m", "change"]);
+
+        let mut files = Git::new().workspace_files_changed(dir, &base).unwrap();
+        files.sort();
+
+        assert_eq!(files, vec![".github/\u{e9}.yml", "a.rs"]);
     }
 }

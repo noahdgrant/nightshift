@@ -32,6 +32,8 @@ pub struct Fakes {
     pub units: &'static [u64],
     /// Whether the forge refuses to assign anyone.
     pub refuses_assignee: bool,
+    /// The file the build writes, relative to the workspace.
+    pub builds: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -87,6 +89,7 @@ impl Fakes {
             labels_follow_edits: true,
             units: &[5],
             refuses_assignee: false,
+            builds: "thing.txt",
         }
     }
 }
@@ -212,7 +215,7 @@ case "$p" in
 *"The checks failed:"*) touch "{bin}/fixed"; echo fixed it;;
 *"left uncommitted changes"*) {when_told}echo committed when told;;
 *"commits on the branch"*) {squash}echo squashed when told;;
-*) printf %s "$p" > "{bin}/build.prompt"; echo thing > thing.txt; {run_checks}{commit}echo built the thing;;
+*) printf %s "$p" > "{bin}/build.prompt"; mkdir -p "$(dirname '{builds}')"; echo thing > '{builds}'; {run_checks}{commit}echo built the thing;;
 esac
 exit {exit}"#,
             bin = bin.display(),
@@ -221,6 +224,7 @@ exit {exit}"#,
             review = fakes.review,
             first_review = fakes.first_review,
             exit = fakes.exit,
+            builds = fakes.builds,
         ),
     );
     format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())
@@ -710,6 +714,108 @@ fn ship_merges_once_the_checks_pass_when_asked() {
     let repo = Repo::new();
     run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"]).success();
     assert_eq!(gh_log(&repo).matches("pr merge 9 --squash").count(), 1);
+}
+
+/// Commits `.nightshift/nightshift.toml` with `text` to the repository, before a unit starts.
+fn manifest_set(repo: &Repo, text: &str) {
+    std::fs::create_dir_all(repo.path.join(".nightshift")).unwrap();
+    std::fs::write(repo.path.join(".nightshift/nightshift.toml"), text).unwrap();
+}
+
+#[test]
+fn a_change_touching_a_human_review_file_is_not_merged_and_is_labeled() {
+    let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\"*.txt\"]\n");
+    let out = run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let log = gh_log(&repo);
+    assert!(!log.contains("pr merge"), "{log}");
+    assert_eq!(
+        log.matches("pr edit 9 --add-label needs-human-merge")
+            .count(),
+        1,
+        "{log}"
+    );
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains("thing.txt matches *.txt in merge.human_review"),
+        "{out}"
+    );
+    assert!(
+        log.contains("issue edit 5 --add-label status:ready-for-human"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_workflow_change_is_not_merged_under_the_default_list() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        builds: ".github/workflows/ci.yml",
+        ..Fakes::passing()
+    };
+    let out = run_with(&repo, &tools(&repo, &fakes), &["--merge"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let log = gh_log(&repo);
+    assert!(!log.contains("pr merge"), "{log}");
+    assert!(log.contains("--add-label needs-human-merge"), "{log}");
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains(".github/workflows/ci.yml matches .github/** in merge.human_review"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_configured_list_replaces_the_default_and_an_empty_one_merges_everything() {
+    for text in [
+        "[merge]\nhuman_review = [\".github/**\"]\n",
+        "[merge]\nhuman_review = []\n",
+    ] {
+        let repo = Repo::new();
+        manifest_set(&repo, text);
+        run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"]).success();
+        let log = gh_log(&repo);
+        assert_eq!(log.matches("pr merge 9 --squash").count(), 1, "{log}");
+        assert!(!log.contains("needs-human-merge"), "{log}");
+    }
+}
+
+#[test]
+fn a_change_touching_only_source_is_merged_under_the_default_list() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        builds: "cli/src/x.rs",
+        ..Fakes::passing()
+    };
+    run_with(&repo, &tools(&repo, &fakes), &["--merge"]).success();
+    let log = gh_log(&repo);
+    assert_eq!(log.matches("pr merge 9 --squash").count(), 1, "{log}");
+    assert!(!log.contains("needs-human-merge"), "{log}");
+}
+
+#[test]
+fn a_human_review_list_that_cannot_be_read_stops_the_unit_before_any_merge() {
+    let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = \"a\"\n");
+    run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"]);
+    let log = gh_log(&repo);
+    assert!(!log.contains("pr merge"), "{log}");
+    assert!(!log.contains("needs-human-merge"), "{log}");
+}
+
+#[test]
+fn without_merge_nothing_is_labeled_even_for_a_human_review_file() {
+    let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\"*.txt\"]\n");
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert!(!gh_log(&repo).contains("needs-human-merge"));
 }
 
 #[test]

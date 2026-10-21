@@ -309,6 +309,14 @@ impl Forge for GitHub {
         Ok(())
     }
 
+    fn change_request_label_add(&self, repo: &Path, number: u64, label: &str) -> Result<()> {
+        self.gh(
+            repo,
+            &["pr", "edit", &number.to_string(), "--add-label", label],
+        )?;
+        Ok(())
+    }
+
     fn change_request_checks_get(&self, repo: &Path, number: u64) -> Result<Checks> {
         // `gh pr checks` exits non-zero while checks are pending or failing, and prints no
         // JSON when none are reported.
