@@ -33,6 +33,9 @@ pub trait Forge {
     /// Replaces the description of unit `number` with `body`.
     fn unit_body_set(&self, repo: &Path, number: u64, body: &str) -> Result<()>;
 
+    /// Adds the account `ns` acts as to the assignees of unit `number`. Those already there stay.
+    fn unit_assignee_add(&self, repo: &Path, number: u64) -> Result<()>;
+
     /// Closes unit `number` as not planned.
     fn unit_close(&self, repo: &Path, number: u64) -> Result<()>;
 
@@ -53,6 +56,10 @@ pub trait Forge {
         body: &str,
         labels: &[String],
     ) -> Result<ChangeRequest>;
+
+    /// Adds the account `ns` acts as to the assignees of change request `number`. Those already
+    /// there stay.
+    fn change_request_assignee_add(&self, repo: &Path, number: u64) -> Result<()>;
 
     /// How the checks on change request `number` stand.
     fn change_request_checks_get(&self, repo: &Path, number: u64) -> Result<Checks>;

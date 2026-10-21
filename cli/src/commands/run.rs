@@ -144,6 +144,10 @@ pub fn run(args: Args) -> Result<()> {
         ) => planned,
     };
     status::unit_status_set(ctx.forge.as_ref(), &root, args.unit, status::IN_PROGRESS)?;
+    // The assignee is for people to read; a unit does not depend on it.
+    if let Err(e) = ctx.forge.unit_assignee_add(&root, args.unit) {
+        eprintln!("ns: cannot assign the unit: {e:#}");
+    }
     let phase = |state, _attempt| match states::run(&mut ctx, state) {
         Ok(outcome) => outcome,
         Err(e) => {

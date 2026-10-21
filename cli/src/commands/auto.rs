@@ -313,7 +313,13 @@ mod tests {
         fn unit_body_set(&self, _: &Path, _: u64, _: &str) -> Result<()> {
             unreachable!()
         }
+        fn unit_assignee_add(&self, _: &Path, _: u64) -> Result<()> {
+            unreachable!()
+        }
         fn unit_close(&self, _: &Path, _: u64) -> Result<()> {
+            unreachable!()
+        }
+        fn change_request_assignee_add(&self, _: &Path, _: u64) -> Result<()> {
             unreachable!()
         }
         fn change_request_get(&self, _: &Path, _: &str) -> Result<Option<ChangeRequest>> {
