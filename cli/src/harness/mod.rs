@@ -21,6 +21,10 @@ pub trait Harness {
     /// Runs one headless session and waits for it to finish.
     fn task_run(&self, task: &Task) -> Result<Reply>;
 
+    /// A saved session transcript as plain text: what the agent said, each tool call and the
+    /// start of each tool result, in order.
+    fn transcript_render(&self, transcript: &str) -> String;
+
     /// Starts a session the user takes part in, on their terminal, that begins with `prompt`.
     /// Returns when the user ends it, and whether it ended normally.
     fn session_interact(&self, dir: &Path, prompt: &str) -> Result<bool>;
@@ -43,7 +47,34 @@ pub struct Reply {
     pub text: String,
     /// Whether the session ended normally.
     pub success: bool,
+    /// Everything the session printed, as the harness prints it: what was read and run, not only
+    /// the final `text`.
+    pub transcript: Vec<u8>,
+    /// The transcripts of the sessions started again before this one, oldest first.
+    pub earlier: Vec<Vec<u8>>,
 }
+
+/// The error of a session that ran out of time and was killed. It keeps what the session
+/// produced up to then.
+#[derive(Debug)]
+pub struct TimedOut {
+    pub seconds: u64,
+    pub transcript: Vec<u8>,
+    /// The transcripts of the sessions started again before this one, oldest first.
+    pub earlier: Vec<Vec<u8>>,
+}
+
+impl std::fmt::Display for TimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the harness did not finish within {} seconds",
+            self.seconds
+        )
+    }
+}
+
+impl std::error::Error for TimedOut {}
 
 /// The harnesses a repository can name in its manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

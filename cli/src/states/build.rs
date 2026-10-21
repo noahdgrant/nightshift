@@ -3,13 +3,13 @@ use std::path::Path;
 use anyhow::{bail, Context as _, Result};
 
 use super::verdict::{self, Verdict};
-use super::{Context, BUILT_SNAPSHOT};
+use super::{session_run, Context, BUILT_SNAPSHOT};
 use crate::artifact;
 use crate::checks;
 use crate::forge::Unit;
 use crate::harness::Task;
 use crate::skill;
-use crate::state::Outcome;
+use crate::state::{Outcome, State};
 
 /// What the last build run did wrong, kept for the next one.
 const PROBLEM: &str = "build.problem";
@@ -42,20 +42,24 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         .is_some()
         .then(checks_note)
         .transpose()?;
-    let reply = ctx.harness.task_run(&Task {
-        dir: dir.clone(),
-        prompt: prompt(
-            &skill,
-            &unit,
-            &base,
-            checks_note.as_deref(),
-            evidence.as_deref(),
-            problem.as_deref(),
-        ),
-        write: true,
-        model: None,
-        timeout: ctx.harness_timeout,
-    })?;
+    let reply = session_run(
+        ctx,
+        State::Build,
+        &Task {
+            dir: dir.clone(),
+            prompt: prompt(
+                &skill,
+                &unit,
+                &base,
+                checks_note.as_deref(),
+                evidence.as_deref(),
+                problem.as_deref(),
+            ),
+            write: true,
+            model: None,
+            timeout: ctx.harness_timeout,
+        },
+    )?;
     artifact::write(&dir, &id, "build.md", &reply.text)?;
     if !reply.success {
         bail!("the harness did not finish the build");

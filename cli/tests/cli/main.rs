@@ -6,6 +6,7 @@ mod define;
 mod doctor;
 mod eval;
 mod init;
+mod log;
 pub mod plan;
 pub mod run;
 mod status;

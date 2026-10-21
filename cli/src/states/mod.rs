@@ -16,9 +16,10 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::forge::Forge;
-use crate::harness::Harness;
+use crate::harness::{Harness, Reply, Task, TimedOut};
 use crate::os::Os;
 use crate::state::{Outcome, State};
+use crate::transcripts::Transcripts;
 use crate::vcs::Vcs;
 use crate::workspace::Workspace;
 
@@ -53,5 +54,29 @@ pub fn run(ctx: &mut Context, state: State) -> Result<Outcome> {
         State::Ship => ship::run(ctx),
         State::CleanUp => clean_up::run(ctx),
         _ => Ok(Outcome::Pass),
+    }
+}
+
+/// Runs a headless session of `state` and keeps its transcript, also when the session ran out of
+/// time, which is when it is most wanted.
+pub(crate) fn session_run(ctx: &Context, state: State, task: &Task) -> Result<Reply> {
+    let root = ctx.vcs.root_find(&ctx.from)?;
+    let kept = Transcripts::open(ctx.vcs.as_ref(), &root)?;
+    let unit = ctx.unit.to_string();
+    match ctx.harness.task_run(task) {
+        Ok(reply) => {
+            for raw in reply.earlier.iter().chain([&reply.transcript]) {
+                kept.keep(&unit, state, raw)?;
+            }
+            Ok(reply)
+        }
+        Err(e) => {
+            if let Some(timed_out) = e.downcast_ref::<TimedOut>() {
+                for raw in timed_out.earlier.iter().chain([&timed_out.transcript]) {
+                    kept.keep(&unit, state, raw)?;
+                }
+            }
+            Err(e)
+        }
     }
 }

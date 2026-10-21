@@ -7,6 +7,7 @@ mod define;
 mod doctor;
 mod eval;
 mod init;
+mod log;
 mod plan;
 mod run;
 mod self_;
@@ -32,6 +33,8 @@ pub enum Command {
     Define(define::Args),
     /// Check that the repository and this machine are set up for ns.
     Doctor(doctor::Args),
+    /// Show what a unit's harness sessions said and ran.
+    Log(log::Args),
     /// Measure a skill on cases whose right answer is known. Makes real harness calls.
     Eval(eval::Args),
     /// Cut a unit into slices and make it ready for the agent.
@@ -66,6 +69,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Doctor(args) => doctor::run(args),
         Command::Eval(args) => eval::run(args),
         Command::Init(args) => init::run(args),
+        Command::Log(args) => log::run(args),
         Command::Plan(args) => plan::run(args),
         Command::Run(args) => run::run(args),
         Command::Status(args) => status::run(args),

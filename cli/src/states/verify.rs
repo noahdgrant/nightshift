@@ -4,7 +4,7 @@ use super::rounds::Rounds;
 use super::{check, Context};
 use crate::artifact;
 use crate::skill;
-use crate::state::Outcome;
+use crate::state::{Outcome, State};
 
 /// Has the harness check the build against the unit's description by running it. See
 /// [`check::run`] for how it ends. Every verification is kept as `verify-<n>.md`, and one after a
@@ -24,6 +24,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let previous = verifications.last_failing();
     let outcome = check::run(
         ctx,
+        State::Verify,
         true,
         prompt(&skill, &unit.title, &unit.body, &build, previous.as_deref()),
     )?;
