@@ -33,25 +33,36 @@ pub struct Pin {
 }
 
 pub fn pin_read(root: &Path) -> Result<Pin> {
-    let document = document_read(root)?;
-    let version = document
+    Ok(Pin {
+        version: version_read(root)?,
+        harness: harness_read(root)?,
+    })
+}
+
+/// The version the repository is pinned to, without looking at its harnesses.
+pub fn version_read(root: &Path) -> Result<Option<String>> {
+    document_read(root)?
         .get("version")
         .map(|item| {
             item.as_str()
                 .context("`version` in nightshift.toml is not a string")
                 .map(str::to_string)
         })
-        .transpose()?;
-    let harness = match document.get("harness") {
-        None => vec![Kind::Claude],
+        .transpose()
+}
+
+/// The harnesses the repository names, without looking at its version.
+pub fn harness_read(root: &Path) -> Result<Vec<Kind>> {
+    let document = document_read(root)?;
+    match document.get("harness") {
+        None => Ok(vec![Kind::Claude]),
         Some(item) => item
             .as_array()
             .context("`harness` in nightshift.toml is not a list")?
             .iter()
             .map(|name| Kind::parse(name.as_str().context("a harness name is not a string")?))
-            .collect::<Result<_>>()?,
-    };
-    Ok(Pin { version, harness })
+            .collect(),
+    }
 }
 
 /// Records the version of `ns` the repository uses, and its harnesses. A `[skills]` table from an

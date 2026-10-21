@@ -109,6 +109,18 @@ impl GitHub {
 }
 
 impl Forge for GitHub {
+    fn login_get(&self, repo: &Path) -> Result<String> {
+        let json = self.gh(repo, &["api", "user"])?;
+        let v: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
+        let login = v["login"].as_str().context("gh did not name the login")?;
+        if let Some(account) = config::github_account()? {
+            if account != login {
+                bail!("the forge sees {login} but the config names {account}");
+            }
+        }
+        Ok(login.to_string())
+    }
+
     fn labels_list(&self, repo: &Path) -> Result<Vec<String>> {
         let json = self.gh(
             repo,
