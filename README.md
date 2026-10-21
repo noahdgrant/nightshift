@@ -78,6 +78,8 @@ It triages the issues nobody has looked at, then takes the `status:ready-for-age
 
 `ns status` shows where each unit stands in the morning.
 
+`ns eval review` runs the review skill on the known cases in `evals/review` and reports whether it gives the right verdict each time, so you can tell whether an edit to the skill helped. It makes real harness calls, so it uses subscription time.
+
 ## Credits
 
 Adapted from [mattpocock/skills](https://github.com/mattpocock/skills), [cursor/plugins pstack](https://github.com/cursor/plugins/tree/main/pstack) and [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills). See [`NOTICE.md`](NOTICE.md).
