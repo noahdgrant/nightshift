@@ -245,11 +245,101 @@ fn run(repo: &Repo, path: &str) -> assert_cmd::assert::Assert {
     run_with(repo, path, &[])
 }
 
-/// Runs `ns run 5` with `extra` arguments. It looks at the checks without waiting between looks.
+/// Runs `ns run 5` with `extra` arguments, two attempts a state unless `extra` says otherwise. It
+/// looks at the checks without waiting between looks.
 fn run_with(repo: &Repo, path: &str, extra: &[&str]) -> assert_cmd::assert::Assert {
     let mut args = vec!["run", "5", "--gates", "auto", "--ci-poll-seconds", "0"];
+    if !extra.contains(&"--max-attempts") {
+        args.extend(["--max-attempts", "2"]);
+    }
     args.extend(extra);
     run_args(repo, path, &args)
+}
+
+/// Runs `ns run 5` as it is by default, with no option for the attempts.
+fn run_unset(repo: &Repo, path: &str) -> assert_cmd::assert::Assert {
+    run_args(
+        repo,
+        path,
+        &["run", "5", "--gates", "auto", "--ci-poll-seconds", "0"],
+    )
+}
+
+/// The states a failing review ran, in order, as `ns run` left them in the log.
+fn review_runs(repo: &Repo) -> usize {
+    run_log(repo)
+        .iter()
+        .filter(|e| e["from"] == "review")
+        .count()
+}
+
+#[test]
+fn with_no_option_and_no_setting_a_state_runs_three_times_before_the_unit_is_stuck() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_review: FAIL,
+        review: FAIL,
+        ..Fakes::passing()
+    };
+    run_unset(&repo, &tools(&repo, &fakes)).failure();
+    assert_eq!(review_runs(&repo), 3);
+}
+
+#[test]
+fn a_setting_of_one_runs_a_state_once() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[run]\nmax_attempts = 1\n");
+    let fakes = Fakes {
+        first_review: FAIL,
+        review: FAIL,
+        ..Fakes::passing()
+    };
+    run_unset(&repo, &tools(&repo, &fakes)).failure();
+    assert_eq!(review_runs(&repo), 1);
+}
+
+#[test]
+fn the_option_wins_over_the_setting() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[run]\nmax_attempts = 5\n");
+    let fakes = Fakes {
+        first_review: FAIL,
+        review: FAIL,
+        ..Fakes::passing()
+    };
+    run_with(&repo, &tools(&repo, &fakes), &["--max-attempts", "2"]).failure();
+    assert_eq!(review_runs(&repo), 2);
+}
+
+#[test]
+fn a_setting_of_five_is_used_when_there_is_no_option() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[run]\nmax_attempts = 5\n");
+    let fakes = Fakes {
+        first_review: FAIL,
+        review: FAIL,
+        ..Fakes::passing()
+    };
+    run_unset(&repo, &tools(&repo, &fakes)).failure();
+    assert_eq!(review_runs(&repo), 5);
+}
+
+#[test]
+fn a_bad_setting_is_an_error_that_names_the_key_and_nothing_runs() {
+    for bad in ["0", "-1", "\"three\""] {
+        let repo = Repo::new();
+        set_manifest(&repo, &format!("[run]\nmax_attempts = {bad}\n"));
+        let out = run_unset(&repo, &tools(&repo, &Fakes::passing())).failure();
+        let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(err.contains("run.max_attempts"), "{bad}: {err}");
+        assert!(out.get_output().stdout.is_empty(), "{bad}");
+    }
+}
+
+/// Writes the repository's `.nightshift/nightshift.toml`.
+pub fn set_manifest(repo: &Repo, text: &str) {
+    std::fs::create_dir_all(repo.path.join(".nightshift")).unwrap();
+    std::fs::write(repo.path.join(".nightshift/nightshift.toml"), text).unwrap();
 }
 
 /// Runs `ns` with exactly `args`.

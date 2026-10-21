@@ -86,6 +86,27 @@ pub fn human_review_read(root: &Path) -> Result<HumanReview> {
     Ok(HumanReview::new(globs))
 }
 
+/// How many times a state may run before the unit is stuck, when the person gives no number.
+const MAX_ATTEMPTS_DEFAULT: u32 = 3;
+
+/// The attempts a state gets: `[run] max_attempts`, or the built-in default when the key is
+/// missing. A value that is not a whole number of at least 1 is an error.
+pub fn max_attempts_read(root: &Path) -> Result<u32> {
+    let document = document_read(root)?;
+    let Some(item) = document.get("run").and_then(|r| r.get("max_attempts")) else {
+        return Ok(MAX_ATTEMPTS_DEFAULT);
+    };
+    item.as_integer()
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|&n| n >= 1)
+        .with_context(|| {
+            format!(
+                "`run.max_attempts` in {} is not a whole number of at least 1",
+                file_find(root).display()
+            )
+        })
+}
+
 /// Records the version of `ns` the repository uses, and its harnesses. A `[skills]` table from an
 /// `ns` that copied skills into the repository is dropped.
 pub fn pin_write(root: &Path, pin: &Pin) -> Result<()> {
@@ -191,6 +212,39 @@ mod tests {
             std::fs::write(file_find(tmp.path()), text).unwrap();
             let err = human_review_read(tmp.path()).unwrap_err();
             assert!(err.to_string().contains(message), "{err}");
+        }
+    }
+
+    #[test]
+    fn max_attempts_is_the_setting_or_the_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(max_attempts_read(tmp.path()).unwrap(), 3);
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        std::fs::write(file_find(tmp.path()), "[run]\nmax_attempts = 5\n").unwrap();
+        assert_eq!(max_attempts_read(tmp.path()).unwrap(), 5);
+        std::fs::write(file_find(tmp.path()), "[run]\nmax_attempts = 1\n").unwrap();
+        assert_eq!(max_attempts_read(tmp.path()).unwrap(), 1);
+        std::fs::write(file_find(tmp.path()), "[merge]\nhuman_review = []\n").unwrap();
+        assert_eq!(max_attempts_read(tmp.path()).unwrap(), 3);
+    }
+
+    #[test]
+    fn max_attempts_that_is_not_a_whole_number_of_at_least_one_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for text in [
+            "[run]\nmax_attempts = 0\n",
+            "[run]\nmax_attempts = -2\n",
+            "[run]\nmax_attempts = \"3\"\n",
+            "[run]\nmax_attempts = 2.5\n",
+            "[run]\nmax_attempts = 4294967296\n",
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            let err = max_attempts_read(tmp.path()).unwrap_err().to_string();
+            assert!(
+                err.contains("run.max_attempts") && err.contains("nightshift.toml"),
+                "{text}: {err}"
+            );
         }
     }
 
