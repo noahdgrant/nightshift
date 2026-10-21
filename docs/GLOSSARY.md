@@ -43,7 +43,7 @@ _Avoid_: Output, report
 What a repository says about the version of `ns` it uses, and its harnesses. It is kept in `.nightshift/nightshift.toml`. See `docs/VERSIONING.md`.
 
 **Sync**:
-Writing the skills of the running `ns` where a harness finds them, for a session the user takes part in. See `docs/VERSIONING.md`.
+Writing the skills of the running `ns` where a harness finds them, for a session the user takes part in. It runs when a repository is set up, when a session starts, and in each workspace `ns` creates. See `docs/VERSIONING.md`.
 
 ## Tools behind a seam
 
