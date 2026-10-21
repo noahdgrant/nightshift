@@ -9,6 +9,8 @@ name: Release
 on:
   push:
     branches: [main]
+  # A push event that GitHub drops leaves a release unmade; this starts the job by hand.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}
