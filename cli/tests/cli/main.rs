@@ -4,6 +4,7 @@ mod common;
 mod config;
 mod define;
 mod doctor;
+mod eval;
 mod init;
 mod log;
 pub mod plan;

@@ -41,7 +41,8 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     Ok(outcome)
 }
 
-fn prompt(
+/// The prompt that has the harness review a change. `ns eval review` builds the same one.
+pub fn prompt(
     skill: &str,
     title: &str,
     body: &str,

@@ -301,6 +301,29 @@ fn a_change_ready_to_merge_is_reported_with_its_address_and_left_for_a_human() {
     );
 }
 
+#[test]
+fn auto_reports_why_a_change_was_not_merged() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        builds: ".github/workflows/ci.yml",
+        ..Fakes::passing()
+    };
+    let out = auto(&repo, &fakes, &["--merge"]).success();
+    let events = events(&out);
+    let reason = events
+        .iter()
+        .find_map(|e| e["not_merged"].as_str())
+        .expect("a not_merged event");
+    assert_eq!(
+        reason,
+        ".github/workflows/ci.yml matches .github/** in merge.human_review, so a person merges it"
+    );
+    assert_eq!(
+        events.last().unwrap()["status"],
+        serde_json::json!(["status:ready-for-human"])
+    );
+}
+
 /// Three ready units, 1 to 3, whose harness always exits non-zero.
 fn three_units_on_a_broken_harness() -> Fakes {
     Fakes {

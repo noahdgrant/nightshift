@@ -76,9 +76,18 @@ ns auto --until 06:30
 
 It triages the issues nobody has looked at, then takes the `status:ready-for-agent` ones one at a time and runs each unattended, starting no new unit after 06:30. A unit already running finishes. A unit that gets stuck is labeled `status:ready-for-human` and `ns auto` moves on; pick it up with `ns run`. If two units in a row get stuck because the harness kept failing, not because their checks did, `ns auto` stops and exits non-zero; `--max-failures-in-a-row` changes the count and `0` turns it off. To try it on a couple of issues first, use `ns auto --max-units 2`, or `--dry-run` to see the queue.
 
+With `--merge`, `ns run` and `ns auto` merge a change request once its checks pass, unless it touches a file matching `[merge] human_review` in `.nightshift/nightshift.toml`. Then it is left ready to merge, labeled `needs-human-merge`, and the unit is `status:ready-for-human`. Without the key the default is `.github/**`, `.nightshift/**`, `release-please-config.json`, `.release-please-manifest.json` and `rust-toolchain.toml`; setting it replaces the default, and an empty list lets every change merge.
+
+```toml
+[merge]
+human_review = [".github/**", ".nightshift/**", "skills/**"]
+```
+
 `ns status` shows where each unit stands in the morning.
 
 Every headless session leaves its transcript, what the agent read and ran and not only its final text, as `transcripts/<unit>/<state>-<n>.jsonl` in the repository's `ns` state directory (`.git/ns` with git). It outlives the unit's workspace. `ns log <unit>` shows it; `--state` and `--last` narrow it. Nothing prunes the directory: a session is typically tens of kilobytes to a few megabytes of JSON, and a unit that goes round `build` many times keeps one for each. Deleting `transcripts/` is safe; `ns` only reads it for `ns log`.
+
+`ns eval review` runs the review skill on the known cases in `evals/review` and reports whether it gives the right verdict each time, so you can tell whether an edit to the skill helped. It makes real harness calls, so it uses subscription time.
 
 ## Credits
 

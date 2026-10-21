@@ -63,3 +63,5 @@ stateDiagram
     clean_up --> stuck : out of attempts
     stuck --> [*]
 ```
+
+`ship` merges the change request only when asked to (`--merge`) and when no file the branch changed matches `[merge] human_review` in `.nightshift/nightshift.toml`. Otherwise it labels the change request `needs-human-merge` and leaves it for a person.

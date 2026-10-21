@@ -1,0 +1,52 @@
+diff --git a/src/step.rs b/src/step.rs
+new file mode 100644
+--- /dev/null
++++ b/src/step.rs
+@@ -0,0 +1,14 @@
++use std::path::Path;
++
++/// The step in `.tally/config.toml` under `root`; 1 when the file or the key is missing.
++pub fn read(root: &Path) -> u64 {
++    let Ok(text) = std::fs::read_to_string(root.join(".tally/config.toml")) else {
++        return 1;
++    };
++    text.parse::<toml::Table>()
++        .ok()
++        .and_then(|t| t.get("step")?.as_integer())
++        .map(|n| n as u64)
++        .unwrap_or(1)
++}
+diff --git a/tests/step.rs b/tests/step.rs
+new file mode 100644
+--- /dev/null
++++ b/tests/step.rs
+@@ -0,0 +1,26 @@
++use std::path::Path;
++
++fn root_with(config: Option<&str>) -> tempfile::TempDir {
++    let dir = tempfile::tempdir().unwrap();
++    if let Some(config) = config {
++        std::fs::create_dir(dir.path().join(".tally")).unwrap();
++        std::fs::write(dir.path().join(".tally/config.toml"), config).unwrap();
++    }
++    dir
++}
++
++fn step(root: &Path) -> u64 {
++    tally::step::read(root)
++}
++
++#[test]
++fn step_comes_from_the_config() {
++    assert_eq!(step(root_with(Some("step = 5")).path()), 5);
++}
++
++#[test]
++fn no_config_means_a_step_of_1() {
++    assert_eq!(step(root_with(None).path()), 1);
++}
++
++#[test]
++fn no_step_means_a_step_of_1() {
++    assert_eq!(step(root_with(Some("name = \"x\"")).path()), 1);
++}
