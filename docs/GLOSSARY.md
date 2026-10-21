@@ -39,6 +39,12 @@ _Avoid_: Pull request, merge request, PR, MR
 A file a state writes into the unit's workspace under `.ns/<unit id>/`, for the next state to read.
 _Avoid_: Output, report
 
+**Pin**:
+What a repository says about the version of `ns` it uses, and its harnesses. It is kept in `.nightshift/nightshift.toml`. See `docs/VERSIONING.md`.
+
+**Sync**:
+Writing the skills of the running `ns` where a harness finds them, for a session the user takes part in. See `docs/VERSIONING.md`.
+
 ## Tools behind a seam
 
 Each is a trait with one implementation chosen in one place. The rest of the code uses the trait's words.
