@@ -613,7 +613,7 @@ fn a_review_that_keeps_failing_sticks_the_unit() {
         review: FAIL,
         ..Fakes::passing()
     };
-    let out = run(&repo, &tools(&repo, &fakes))
+    let out = run_with(&repo, &tools(&repo, &fakes), &["--max-attempts", "2"])
         .failure()
         .get_output()
         .stdout
@@ -684,11 +684,15 @@ fn failing_checks_send_the_build_around_again_told_what_failed() {
 fn checks_that_never_pass_stick_the_unit_before_verify() {
     let repo = Repo::new();
     repo.set_check("echo boom; exit 1");
-    let out = run(&repo, &tools(&repo, &Fakes::passing()))
-        .failure()
-        .get_output()
-        .stdout
-        .clone();
+    let out = run_with(
+        &repo,
+        &tools(&repo, &Fakes::passing()),
+        &["--max-attempts", "2"],
+    )
+    .failure()
+    .get_output()
+    .stdout
+    .clone();
     let moves = moves(out);
     assert_eq!(&moves[moves.len() - 2..], ["build>build", "build>stuck"]);
     assert!(!moves.iter().any(|m| m.starts_with("verify")), "{moves:?}");
@@ -903,7 +907,13 @@ fn checks_that_never_finish_go_wrong_and_nothing_is_merged() {
     let out = run_with(
         &repo,
         &tools(&repo, &fakes),
-        &["--merge", "--ci-timeout-seconds", "0"],
+        &[
+            "--max-attempts",
+            "2",
+            "--merge",
+            "--ci-timeout-seconds",
+            "0",
+        ],
     )
     .failure()
     .get_output()
@@ -936,7 +946,13 @@ fn checks_not_yet_reported_are_waited_for() {
     let out = run_with(
         &repo,
         &tools(&repo, &fakes),
-        &["--merge", "--ci-timeout-seconds", "0"],
+        &[
+            "--max-attempts",
+            "2",
+            "--merge",
+            "--ci-timeout-seconds",
+            "0",
+        ],
     )
     .failure()
     .get_output()
@@ -1127,7 +1143,13 @@ fn a_unit_stuck_in_ship_resumes_at_ship_whatever_the_workspace_holds() {
     run_with(
         &repo,
         &tools(&repo, &never),
-        &["--merge", "--ci-timeout-seconds", "0"],
+        &[
+            "--max-attempts",
+            "2",
+            "--merge",
+            "--ci-timeout-seconds",
+            "0",
+        ],
     )
     .failure();
     let last = run_log(&repo).last().unwrap().clone();
@@ -1315,7 +1337,7 @@ fn a_build_that_keeps_two_commits_sticks_the_unit_before_verify() {
         build_commits: BuildCommits::TwoAlways,
         ..Fakes::passing()
     };
-    let out = run(&repo, &tools(&repo, &fakes))
+    let out = run_with(&repo, &tools(&repo, &fakes), &["--max-attempts", "2"])
         .failure()
         .get_output()
         .stdout
@@ -1332,7 +1354,7 @@ fn a_build_that_never_commits_sticks_the_unit_before_verify() {
         build_commits: BuildCommits::Never,
         ..Fakes::passing()
     };
-    let out = run(&repo, &tools(&repo, &fakes))
+    let out = run_with(&repo, &tools(&repo, &fakes), &["--max-attempts", "2"])
         .failure()
         .get_output()
         .stdout
@@ -1349,7 +1371,7 @@ fn a_build_that_keeps_failing_sticks_the_unit_and_keeps_its_output() {
         exit: 1,
         ..Fakes::passing()
     };
-    let out = run(&repo, &tools(&repo, &fakes))
+    let out = run_with(&repo, &tools(&repo, &fakes), &["--max-attempts", "2"])
         .failure()
         .get_output()
         .stdout
@@ -1399,7 +1421,7 @@ fn a_check_that_keeps_failing_sticks_the_unit_after_going_back_to_build_once() {
         verdict: FAIL,
         ..Fakes::passing()
     };
-    let out = run(&repo, &tools(&repo, &fakes))
+    let out = run_with(&repo, &tools(&repo, &fakes), &["--max-attempts", "2"])
         .failure()
         .get_output()
         .stdout
@@ -1419,7 +1441,7 @@ fn evidence_with_no_verdict_is_a_broken_check_that_is_run_again_not_a_failed_bui
         verdict: "all fine",
         ..Fakes::passing()
     };
-    let out = run(&repo, &tools(&repo, &fakes))
+    let out = run_with(&repo, &tools(&repo, &fakes), &["--max-attempts", "2"])
         .failure()
         .get_output()
         .stdout
@@ -1462,7 +1484,7 @@ fn a_check_that_keeps_changing_the_workspace_sticks_the_unit_without_going_back_
         check_edits: CheckEdits::Always,
         ..Fakes::passing()
     };
-    let out = run(&repo, &tools(&repo, &fakes))
+    let out = run_with(&repo, &tools(&repo, &fakes), &["--max-attempts", "2"])
         .failure()
         .get_output()
         .stdout
@@ -1512,7 +1534,7 @@ fn a_session_that_runs_out_of_time_goes_wrong_like_any_other_failure() {
     let out = run_with(
         &repo,
         &tools(&repo, &Fakes::passing()),
-        &["--harness-timeout-seconds", "0"],
+        &["--max-attempts", "2", "--harness-timeout-seconds", "0"],
     )
     .failure()
     .get_output()
@@ -1521,6 +1543,51 @@ fn a_session_that_runs_out_of_time_goes_wrong_like_any_other_failure() {
     assert_eq!(
         &moves(out)[..],
         ["start setup", "setup>build", "build>build", "build>stuck"]
+    );
+}
+
+/// The moves of a unit whose build always fails, run with `extra` arguments.
+fn moves_of_a_build_that_always_fails(extra: &[&str]) -> Vec<String> {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        exit: 1,
+        ..Fakes::passing()
+    };
+    let out = run_with(&repo, &tools(&repo, &fakes), extra)
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    moves(out)
+}
+
+#[test]
+fn a_state_that_keeps_failing_runs_three_times_by_default_before_the_unit_is_stuck() {
+    assert_eq!(
+        moves_of_a_build_that_always_fails(&[]),
+        [
+            "start setup",
+            "setup>build",
+            "build>build",
+            "build>build",
+            "build>stuck"
+        ]
+    );
+}
+
+#[test]
+fn max_attempts_two_runs_a_failing_state_twice() {
+    assert_eq!(
+        moves_of_a_build_that_always_fails(&["--max-attempts", "2"]),
+        ["start setup", "setup>build", "build>build", "build>stuck"]
+    );
+}
+
+#[test]
+fn max_attempts_one_runs_a_failing_state_once() {
+    assert_eq!(
+        moves_of_a_build_that_always_fails(&["--max-attempts", "1"]),
+        ["start setup", "setup>build", "build>stuck"]
     );
 }
 
@@ -1578,7 +1645,7 @@ fn a_session_killed_on_timeout_still_leaves_a_transcript() {
     run_with(
         &repo,
         &tools(&repo, &Fakes::passing()),
-        &["--harness-timeout-seconds", "0"],
+        &["--max-attempts", "2", "--harness-timeout-seconds", "0"],
     )
     .failure();
     let dir = transcripts(&repo);

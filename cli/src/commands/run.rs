@@ -31,7 +31,7 @@ pub struct Args {
 #[derive(ClapArgs, Clone)]
 pub struct Options {
     /// How many times a state may run before the unit is stuck.
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 3)]
     max_attempts: u32,
     /// Merge the change request once its checks pass. Without it, `ship` stops at ready to merge.
     #[arg(long)]
