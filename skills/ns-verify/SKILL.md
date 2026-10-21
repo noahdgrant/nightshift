@@ -18,7 +18,13 @@ The requirements are the unit's, not claims in the build summary. A claim you di
 
 Done when every requirement has an ID and names the observable end state that would prove it.
 
-## 2. Drive each requirement
+## 2. Re-run what failed before
+
+When you are given "Findings from the previous verification", that verification failed and the unit was reworked. First re-run each requirement that was FAIL or INCONCLUSIVE in it, and say its new verdict with the command and the excerpt. Then check the rest as below. An earlier PASS is not carried forward: every requirement is proven again on the current build.
+
+Done when each earlier FAIL and INCONCLUSIVE has a new verdict.
+
+## 3. Drive each requirement
 
 Match the check to the change:
 
@@ -37,12 +43,12 @@ When a check fails, suspect how you looked before you call the work broken.
 
 Done when every requirement has a verdict, and every PASS and FAIL has a command and an excerpt.
 
-## 3. Leave the workspace as you found it
+## 4. Leave the workspace as you found it
 
 Create what a check needs outside the workspace, in a temporary directory, and remove it after. Change no file in the workspace.
 
 When you are told your last check went wrong, undo what you changed first, then check again.
 
-## 4. End with the verdict
+## 5. End with the verdict
 
 Write the evidence: one section per requirement. End with a last line that is exactly `VERDICT: PASS` when every requirement is PASS, and exactly `VERDICT: FAIL` otherwise.
