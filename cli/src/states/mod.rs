@@ -2,7 +2,7 @@
 
 mod build;
 mod check;
-mod clean_up;
+pub mod clean_up;
 mod review;
 mod setup;
 pub mod ship;

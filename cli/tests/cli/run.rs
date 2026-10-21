@@ -113,14 +113,14 @@ labels() {{
   [ "{follow}" = yes ] && case "$(grep 'issue edit' "{bin}/gh.log" | tail -1)" in
   *"--add-label status:in-progress"*) l='{progress}';;
   *"--add-label status:ready-for-human"*) l='{human}';;
-  *"--remove-label status:in-progress"*) l='[]';;
+  *"--remove-label status:in-progress"*|*"--remove-label status:ready-for-human"*) l='[]';;
   *"--add-label "*"status:ready-for-agent"*) l='{ready}';;
   esac
 }}
 case "$1 $2" in
 "api repos/{{owner}}/{{repo}}/issues/5") labels; echo '{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":'"$l"',"author_association":"OWNER"}}';;
 "api --paginate") labels; echo '[[{{"number":5,"title":"Add a thing","body":"Make the thing.","labels":'"$l"',"author_association":"OWNER"}}]]';;
-"pr list") if [ -e "{bin}/merged" ]; then state=MERGED; else state=OPEN; fi
+"pr list") if [ -e "{bin}/merged" ]; then state=MERGED; elif [ -e "{bin}/closed" ]; then state=CLOSED; else state=OPEN; fi
   if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"'$state'"}}]'; else echo '[]'; fi;;
 "pr create") touch "{bin}/opened"; echo https://forge.example/9;;
 "pr checks") {checks};;
@@ -718,6 +718,68 @@ fn a_finished_unit_is_not_run_again() {
         [serde_json::json!({"unit": "5", "state": "done"})]
     );
     assert_eq!(run_log(&repo).len(), before);
+}
+
+/// Ends a run with the change request open, then marks it as `how` on the forge.
+fn finished_then(repo: &Repo, how: &str) -> String {
+    let path = tools(repo, &Fakes::passing());
+    run(repo, &path).success();
+    std::fs::write(repo.path.parent().unwrap().join("bin").join(how), "").unwrap();
+    path
+}
+
+#[test]
+fn a_finished_unit_whose_change_request_merged_since_is_cleaned_up() {
+    let repo = Repo::new();
+    let path = finished_then(&repo, "merged");
+    let before = run_log(&repo).len();
+    let out = run(&repo, &path).success().get_output().stdout.clone();
+    assert_eq!(
+        lines(&out),
+        [serde_json::json!({"unit": "5", "state": "done"})]
+    );
+    assert!(!repo.workspace("5").exists());
+    assert!(!repo.branches().contains(&"ns/5".to_string()));
+    assert!(gh_log(&repo).contains("--remove-label status:ready-for-human"));
+    assert_eq!(run_log(&repo).len(), before);
+}
+
+#[test]
+fn cleaning_up_a_finished_unit_again_changes_nothing() {
+    let repo = Repo::new();
+    let path = finished_then(&repo, "merged");
+    run(&repo, &path).success();
+    let log = gh_log(&repo);
+    run(&repo, &path).success();
+    assert_eq!(
+        gh_log(&repo).matches("issue edit").count(),
+        log.matches("issue edit").count()
+    );
+}
+
+#[test]
+fn a_finished_unit_whose_change_request_is_still_open_is_left_alone() {
+    let repo = Repo::new();
+    let path = finished_then(&repo, "opened");
+    let edits = gh_log(&repo).matches("issue edit").count();
+    let out = run(&repo, &path).success().get_output().stdout.clone();
+    assert_eq!(
+        lines(&out),
+        [serde_json::json!({"unit": "5", "state": "done"})]
+    );
+    assert!(repo.workspace("5").is_dir());
+    assert!(repo.branches().contains(&"ns/5".to_string()));
+    assert_eq!(gh_log(&repo).matches("issue edit").count(), edits);
+}
+
+#[test]
+fn a_finished_unit_whose_change_request_was_closed_is_reported_and_kept() {
+    let repo = Repo::new();
+    let path = finished_then(&repo, "closed");
+    let err = run(&repo, &path).failure().get_output().stderr.clone();
+    assert!(String::from_utf8_lossy(&err).contains("closed without merging"));
+    assert!(repo.workspace("5").is_dir());
+    assert!(repo.branches().contains(&"ns/5".to_string()));
 }
 
 #[test]

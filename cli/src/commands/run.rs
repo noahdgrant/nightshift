@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use crate::forge::ChangeState;
 use crate::runlog::{Resume, RunLog};
 use crate::state::{Outcome, State};
-use crate::states::{self, ship, Context};
+use crate::states::{self, clean_up, ship, Context};
 use crate::{forge, harness, lock, os, status, vcs, workspace};
 
 #[derive(ClapArgs)]
@@ -93,17 +93,6 @@ pub fn run(args: Args) -> Result<()> {
     } else {
         log.resume(&unit)?
     };
-    let start = match resume {
-        Resume::Fresh => State::START,
-        Resume::At(state) => state,
-        Resume::Finished => {
-            println!(
-                "{}",
-                json!({ "unit": unit, "state": State::Done.to_string() })
-            );
-            return Ok(());
-        }
-    };
     let mut ctx = Context {
         vcs,
         forge: forge::get(),
@@ -120,6 +109,17 @@ pub fn run(args: Args) -> Result<()> {
         },
         harness_timeout: Duration::from_secs(args.options.harness_timeout_seconds),
         checks_timeout: Duration::from_secs(args.options.checks_timeout_seconds),
+    };
+    let start = match resume {
+        Resume::Fresh => State::START,
+        Resume::At(state) => state,
+        Resume::Finished => {
+            println!(
+                "{}",
+                json!({ "unit": unit, "state": State::Done.to_string() })
+            );
+            return finished_clean_up(ctx);
+        }
     };
     if start != State::Setup {
         let workspace = workspace::locate(&root, &unit)?;
@@ -173,6 +173,17 @@ pub fn run(args: Args) -> Result<()> {
         (Err(e), Ok(())) => Err(e),
         (Ok(_), status) => status,
     }
+}
+
+/// Cleans up after a unit whose run is done, once its change request has merged since: the
+/// run ended with it open, and nothing else cleans up after the human merges. The unit's status
+/// goes with it. A change request still open changes nothing.
+fn finished_clean_up(mut ctx: Context) -> Result<()> {
+    if clean_up::merged_clean_up(&mut ctx)? {
+        let root = ctx.vcs.root_find(&ctx.from)?;
+        status::unit_status_clear(ctx.forge.as_ref(), &root, ctx.unit)?;
+    }
+    Ok(())
 }
 
 /// Sets the status of a unit whose states are all done: none when its change request merged,
