@@ -271,15 +271,17 @@ impl Forge for GitHub {
         unit: u64,
         title: &str,
         body: &str,
+        labels: &[String],
     ) -> Result<ChangeRequest> {
         let body = format!("{body}\n\nCloses #{unit}\n");
+        let mut args = vec![
+            "pr", "create", "--head", branch, "--title", title, "--body", &body,
+        ];
+        for label in labels {
+            args.extend(["--label", label]);
+        }
         // Not repeated: a call that did succeed but reported an error would open a second one.
-        self.gh_once(
-            repo,
-            &[
-                "pr", "create", "--head", branch, "--title", title, "--body", &body,
-            ],
-        )?;
+        self.gh_once(repo, &args)?;
         self.change_request_get(repo, branch)?
             .context("the change request was created but cannot be found")
     }
@@ -476,7 +478,7 @@ mod tests {
         let gh = flaky(tmp.path(), 99, DOWN, "");
         gh.change_request_merge(tmp.path(), 9).unwrap_err();
         assert_eq!(calls(tmp.path()), 1);
-        gh.change_request_create(tmp.path(), "ns/u1", 7, "t", "b")
+        gh.change_request_create(tmp.path(), "ns/u1", 7, "t", "b", &[])
             .unwrap_err();
         assert_eq!(calls(tmp.path()), 2);
     }
