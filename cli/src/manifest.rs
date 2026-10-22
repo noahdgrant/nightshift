@@ -107,6 +107,34 @@ pub fn max_attempts_read(root: &Path) -> Result<u32> {
         })
 }
 
+/// How many days a transcript is kept, when the person gives no number.
+const TRANSCRIPT_DAYS_DEFAULT: u32 = 7;
+
+/// How long `ns` keeps a transcript.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keep {
+    Forever,
+    Days(u32),
+}
+
+/// The transcripts' keep time: `[run] transcript_days`, or the built-in default when the key is
+/// missing. `0` is for ever. A value that is not a whole number of at least 0 is an error.
+pub fn transcript_days_read(root: &Path) -> Result<Keep> {
+    let document = document_read(root)?;
+    let Some(item) = document.get("run").and_then(|r| r.get("transcript_days")) else {
+        return Ok(Keep::Days(TRANSCRIPT_DAYS_DEFAULT));
+    };
+    item.as_integer()
+        .and_then(|n| u32::try_from(n).ok())
+        .map(|n| if n == 0 { Keep::Forever } else { Keep::Days(n) })
+        .with_context(|| {
+            format!(
+                "`run.transcript_days` in {} is not a whole number of at least 0",
+                file_find(root).display()
+            )
+        })
+}
+
 /// Records the version of `ns` the repository uses, and its harnesses. A `[skills]` table from an
 /// `ns` that copied skills into the repository is dropped.
 pub fn pin_write(root: &Path, pin: &Pin) -> Result<()> {
@@ -243,6 +271,40 @@ mod tests {
             let err = max_attempts_read(tmp.path()).unwrap_err().to_string();
             assert!(
                 err.contains("run.max_attempts") && err.contains("nightshift.toml"),
+                "{text}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn transcript_days_is_the_setting_or_the_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(transcript_days_read(tmp.path()).unwrap(), Keep::Days(7));
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for (text, keep) in [
+            ("[run]\ntranscript_days = 0\n", Keep::Forever),
+            ("[run]\ntranscript_days = 7\n", Keep::Days(7)),
+            ("[run]\ntranscript_days = 30\n", Keep::Days(30)),
+            ("[run]\nmax_attempts = 2\n", Keep::Days(7)),
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            assert_eq!(transcript_days_read(tmp.path()).unwrap(), keep, "{text}");
+        }
+    }
+
+    #[test]
+    fn transcript_days_that_is_not_a_whole_number_of_at_least_zero_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for text in [
+            "[run]\ntranscript_days = -1\n",
+            "[run]\ntranscript_days = \"7\"\n",
+            "[run]\ntranscript_days = 2.5\n",
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            let err = transcript_days_read(tmp.path()).unwrap_err().to_string();
+            assert!(
+                err.contains("run.transcript_days") && err.contains("nightshift.toml"),
                 "{text}: {err}"
             );
         }
