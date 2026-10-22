@@ -58,6 +58,23 @@ pub trait Vcs {
     /// Publishes `branch` from the workspace at `path` to the remote.
     fn branch_push(&self, path: &Path, branch: &str) -> Result<()>;
 
+    /// The commit the workspace's branch is at.
+    fn workspace_head_find(&self, path: &Path) -> Result<String>;
+
+    /// Fetches the base branch (the branch the main checkout at `root` is on) from the remote and
+    /// returns the commit it is at there. `None` when the remote has no such branch.
+    fn base_fetch(&self, root: &Path) -> Result<Option<String>>;
+
+    /// Whether `commit` is part of the workspace's branch.
+    fn workspace_contains(&self, path: &Path, commit: &str) -> Result<bool>;
+
+    /// Rebases the workspace's branch onto `onto`. A conflict aborts the rebase.
+    fn workspace_rebase(&self, path: &Path, onto: &str) -> Result<Rebase>;
+
+    /// Records that the workspace's branch now starts at `base`, so that `workspace_diff` shows
+    /// only what the branch changed past it.
+    fn workspace_base_set(&self, path: &Path, base: &str) -> Result<()>;
+
     /// Deletes `branch` from the repository at `root`, and what `ns` remembers of where it
     /// started. The branch must not be checked out in any workspace.
     fn branch_delete(&self, root: &Path, branch: &str) -> Result<()>;
@@ -72,6 +89,16 @@ pub trait Vcs {
     /// Removes the workspace at `path` and keeps its branch. Fails when the workspace has
     /// uncommitted changes.
     fn workspace_remove(&self, root: &Path, path: &Path) -> Result<()>;
+}
+
+/// How a rebase of the workspace's branch ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Rebase {
+    /// The branch now sits on the new commit.
+    Done,
+    /// The branch could not be moved. The rebase was aborted, so the workspace is as it was.
+    /// These are the files that conflicted.
+    Conflict(Vec<String>),
 }
 
 /// The version control `ns` uses. The only place a tool is chosen.

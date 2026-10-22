@@ -51,6 +51,8 @@ pub enum Reason {
     WentWrong,
     /// Verification could not prove every requirement, twice.
     Inconclusive,
+    /// The base branch moved more often than the unit could keep up with.
+    BaseMoved,
 }
 
 impl Reason {
@@ -59,6 +61,7 @@ impl Reason {
             "failed" => Some(Reason::Failed),
             "went_wrong" => Some(Reason::WentWrong),
             "inconclusive" => Some(Reason::Inconclusive),
+            "base_moved" => Some(Reason::BaseMoved),
             _ => None,
         }
     }
@@ -174,7 +177,8 @@ mod tests {
 {"unit":"6","from":"verify","to":"stuck","reason":"failed"}
 {"unit":"7","from":"verify","to":"stuck","reason":"odd"}
 {"unit":"8","from":"build","to":"verify"}
-{"unit":"9","from":"verify","to":"stuck","reason":"inconclusive"}"#,
+{"unit":"9","from":"verify","to":"stuck","reason":"inconclusive"}
+{"unit":"10","from":"ship","to":"stuck","reason":"base_moved"}"#,
         );
         let reason = |unit| log.last_move(unit).unwrap().unwrap().reason;
         assert_eq!(reason("5"), Some(Reason::WentWrong));
@@ -182,6 +186,7 @@ mod tests {
         assert_eq!(reason("7"), None);
         assert_eq!(reason("8"), None);
         assert_eq!(reason("9"), Some(Reason::Inconclusive));
+        assert_eq!(reason("10"), Some(Reason::BaseMoved));
     }
 
     #[test]
