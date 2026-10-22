@@ -275,6 +275,31 @@ impl Forge for GitHub {
             .collect())
     }
 
+    fn unit_blocker_add(&self, repo: &Path, number: u64, blocker: u64) -> Result<()> {
+        // The relationship names the blocker by its id, which is not its number.
+        let json = self.gh(
+            repo,
+            &["api", &format!("repos/{{owner}}/{{repo}}/issues/{blocker}")],
+        )?;
+        let v: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
+        let id = v["id"].as_u64().context("gh did not give the unit's id")?;
+        let result = self.gh(
+            repo,
+            &[
+                "api",
+                "--method",
+                "POST",
+                &format!("repos/{{owner}}/{{repo}}/issues/{number}/dependencies/blocked_by"),
+                "-F",
+                &format!("issue_id={id}"),
+            ],
+        );
+        match result {
+            Err(e) if format!("{e:#}").to_lowercase().contains("already") => Ok(()),
+            other => other.map(|_| ()),
+        }
+    }
+
     fn change_request_get(&self, repo: &Path, branch: &str) -> Result<Option<ChangeRequest>> {
         let json = self.gh(
             repo,
@@ -475,6 +500,56 @@ mod tests {
             r#"[[{"number":4,"state":"open"},{"number":5,"state":"closed"}],[{"number":6,"state":"open"}]]"#,
         );
         assert_eq!(gh.unit_blockers_list(tmp.path(), 1).unwrap(), [4, 6]);
+    }
+
+    /// A `gh` that logs its arguments, answers a read of an issue with id 555, and ends a POST as
+    /// `post` says.
+    fn blocker_fake(dir: &Path, post: &str) -> GitHub {
+        let path = dir.join("gh");
+        let log = dir.join("gh.log");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> {}\ncase \"$*\" in\n*POST*) {post};;\n*) echo '{{\"id\":555}}';;\nesac\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        GitHub::with_program(path)
+    }
+
+    #[test]
+    fn a_blocker_is_recorded_by_its_id_not_its_number() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = blocker_fake(tmp.path(), "exit 0");
+        gh.unit_blocker_add(tmp.path(), 1, 4).unwrap();
+        let log = std::fs::read_to_string(tmp.path().join("gh.log")).unwrap();
+        assert!(log.contains("api repos/{owner}/{repo}/issues/4\n"), "{log}");
+        assert!(
+            log.contains("api --method POST repos/{owner}/{repo}/issues/1/dependencies/blocked_by -F issue_id=555"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn a_blocker_that_is_already_recorded_is_fine() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = blocker_fake(
+            tmp.path(),
+            "echo 'Dependency already exists (HTTP 422)' >&2; exit 1",
+        );
+        gh.unit_blocker_add(tmp.path(), 1, 4).unwrap();
+    }
+
+    #[test]
+    fn a_blocker_the_forge_refuses_is_an_error() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = blocker_fake(tmp.path(), "echo 'HTTP 404' >&2; exit 1");
+        assert!(gh.unit_blocker_add(tmp.path(), 1, 4).is_err());
     }
 
     #[test]

@@ -28,9 +28,9 @@ When two routes fit, take the one that asks less of a person.
 
 Give the reason for the route in a few sentences, for the person who reads it later. Say what the unit asks for, and for any route but **build** what is missing. Do not write the brief or any other text for the unit: you decide the route and nothing else.
 
-## 4. End with two lines
+## 4. End with the closing lines
 
-Finish with exactly these as the last two lines of your answer:
+Finish with these as the last lines of your answer:
 
 ```
 LABELS: type:<type>, priority:<critical|high|medium|low>, area:<area>
@@ -38,3 +38,11 @@ ROUTE: <route>
 ```
 
 Use only `type:`, `priority:` and `area:` labels that the repository has. Never name a `status:` label: the route sets it.
+
+A unit may list the open issues it cannot start before, such as one that builds on code another unit has yet to add. When it does, add a line before `ROUTE:`:
+
+```
+BLOCKED_BY: <issue numbers, separated by commas>
+```
+
+Leave the line out when nothing blocks the unit. List only issues in this repository that are open, never the unit itself.

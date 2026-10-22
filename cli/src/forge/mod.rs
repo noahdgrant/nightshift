@@ -48,6 +48,10 @@ pub trait Forge {
     /// The numbers of the open units that block unit `number` by the forge's own relationship.
     fn unit_blockers_list(&self, repo: &Path, number: u64) -> Result<Vec<u64>>;
 
+    /// Records that unit `number` is blocked by unit `blocker`. Recording one that is already
+    /// there is not an error.
+    fn unit_blocker_add(&self, repo: &Path, number: u64, blocker: u64) -> Result<()>;
+
     /// The newest change request opened from `branch`, if there is one.
     fn change_request_get(&self, repo: &Path, branch: &str) -> Result<Option<ChangeRequest>>;
 
@@ -150,6 +154,9 @@ mod tests {
             self.0.clone().map_err(|e| anyhow::anyhow!(e))
         }
         fn login_get(&self, _: &Path) -> Result<String> {
+            unreachable!()
+        }
+        fn unit_blocker_add(&self, _: &Path, _: u64, _: u64) -> Result<()> {
             unreachable!()
         }
         fn unit_get(&self, _: &Path, _: u64) -> Result<Unit> {

@@ -79,12 +79,16 @@ pub struct Triaged {
     pub labels: Vec<String>,
     /// Why, in a few sentences.
     pub why: String,
+    /// The numbers of the units it said must be done first. After [`run`], only those recorded.
+    pub blocked_by: Vec<u64>,
 }
 
-/// Reads the answer: why, then a `LABELS:` line and a `ROUTE:` line.
+/// Reads the answer: why, then a `LABELS:` line, a `ROUTE:` line and optionally a `BLOCKED_BY:`
+/// line of unit numbers.
 pub fn parse(reply: &str) -> Result<Triaged> {
     let mut route = None;
     let mut labels = Vec::new();
+    let mut blocked_by = Vec::new();
     let mut why = Vec::new();
     for line in reply.lines() {
         if let Some(r) = line.trim().strip_prefix("ROUTE:") {
@@ -95,6 +99,12 @@ pub fn parse(reply: &str) -> Result<Triaged> {
                 .map(|l| l.trim().to_string())
                 .filter(|l| !l.is_empty())
                 .collect();
+        } else if let Some(b) = line.trim().strip_prefix("BLOCKED_BY:") {
+            blocked_by = b
+                .split(|c: char| !c.is_ascii_digit())
+                .filter_map(|n| n.parse().ok())
+                .collect();
+            blocked_by.dedup();
         } else {
             why.push(line);
         }
@@ -113,7 +123,12 @@ pub fn parse(reply: &str) -> Result<Triaged> {
     if why.is_empty() {
         bail!("the answer gives no reason");
     }
-    Ok(Triaged { route, labels, why })
+    Ok(Triaged {
+        route,
+        labels,
+        why,
+        blocked_by,
+    })
 }
 
 /// Triages unit `number` of the repository at `root`: asks the harness, then sets the labels.
@@ -142,7 +157,7 @@ pub fn run(
             "the harness did not finish triaging unit {number}"
         )));
     }
-    let triaged = parse(&reply.text)?;
+    let mut triaged = parse(&reply.text)?;
     let remove: Vec<String> = unit
         .labels
         .iter()
@@ -155,7 +170,37 @@ pub fn run(
     if triaged.route == Route::Wontfix {
         forge.unit_close(root, number)?;
     }
+    triaged.blocked_by = blockers_record(forge, root, number, &triaged.blocked_by);
     Ok(triaged)
+}
+
+/// Records that unit `number` is blocked by each of `wanted` that is an open unit other than
+/// itself, and returns those. Any other is ignored, and so is a failure of the forge, with a note
+/// on stderr: the route is already decided.
+fn blockers_record(forge: &dyn Forge, root: &Path, number: u64, wanted: &[u64]) -> Vec<u64> {
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let open: Vec<u64> = match forge.unit_list(root) {
+        Ok(units) => units.iter().map(|u| u.number).collect(),
+        Err(e) => {
+            eprintln!("ns: unit {number} was not recorded as blocked: {e:#}");
+            return Vec::new();
+        }
+    };
+    let mut recorded = Vec::new();
+    for &blocker in wanted {
+        if blocker == number {
+            eprintln!("ns: unit {number} cannot be blocked by itself, ignoring it");
+        } else if !open.contains(&blocker) {
+            eprintln!("ns: unit {blocker} is not an open unit, so it does not block unit {number}");
+        } else if let Err(e) = forge.unit_blocker_add(root, number, blocker) {
+            eprintln!("ns: unit {number} was not recorded as blocked by {blocker}: {e:#}");
+        } else {
+            recorded.push(blocker);
+        }
+    }
+    recorded
 }
 
 fn prompt(skill: &str, unit: &Unit) -> String {
@@ -178,6 +223,15 @@ mod tests {
         assert_eq!(t.route, Route::Build);
         assert_eq!(t.labels, ["type:feat", "priority:high"]);
         assert_eq!(t.why, "Clear and small.");
+    }
+
+    #[test]
+    fn a_blocked_by_line_lists_unit_numbers_once_each() {
+        let t = parse("Text.\nBLOCKED_BY: 3, 4, 4\nROUTE: build").unwrap();
+        assert_eq!(t.blocked_by, [3, 4]);
+        let t = parse("Text.\nBLOCKED_BY: [7]\nROUTE: build").unwrap();
+        assert_eq!(t.blocked_by, [7]);
+        assert!(parse("Text.\nROUTE: build").unwrap().blocked_by.is_empty());
     }
 
     #[test]

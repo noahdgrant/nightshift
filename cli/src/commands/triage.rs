@@ -83,6 +83,7 @@ pub fn units_triage(
                         "route": triaged.route.name(),
                         "labels": triaged.labels,
                         "why": triaged.why,
+                        "blocked_by": triaged.blocked_by,
                     })
                 )
             }
