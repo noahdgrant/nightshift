@@ -4,11 +4,11 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::auto::STATE_PREFIX;
 use crate::forge::{Forge, Unit};
-use crate::harness::{Harness, Task};
+use crate::harness::{self, Harness, Task};
 use crate::skill;
 
 /// The labels a harness may ask for. A state is for `ns` to set, from the route.
@@ -128,15 +128,19 @@ pub fn run(
     if !unit.from_team {
         bail!("the author of unit {number} is not on the team");
     }
-    let reply = harness.task_run(&Task {
-        dir: root.to_path_buf(),
-        prompt: prompt(&skill::load(skill::TRIAGE)?, &unit),
-        write: false,
-        model: None,
-        timeout,
-    })?;
+    let reply = harness
+        .task_run(&Task {
+            dir: root.to_path_buf(),
+            prompt: prompt(&skill::load(skill::TRIAGE)?, &unit),
+            write: false,
+            model: None,
+            timeout,
+        })
+        .map_err(harness::session_failed)?;
     if !reply.success {
-        bail!("the harness did not finish triaging unit {number}");
+        return Err(harness::session_failed(anyhow!(
+            "the harness did not finish triaging unit {number}"
+        )));
     }
     let triaged = parse(&reply.text)?;
     let remove: Vec<String> = unit

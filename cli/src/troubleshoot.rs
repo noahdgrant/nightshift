@@ -5,10 +5,10 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::forge::{Forge, Unit};
-use crate::harness::{Harness, Task};
+use crate::harness::{self, Harness, Task};
 use crate::triage::Route;
 use crate::vcs::Vcs;
 use crate::{brief, skill, status, workspace};
@@ -75,9 +75,11 @@ pub fn run(
     });
     // Nothing in it is kept, whether or not the session got anywhere.
     workspace::discard(vcs, root, &scratch)?;
-    let reply = reply?;
+    let reply = reply.map_err(harness::session_failed)?;
     if !reply.success {
-        bail!("the harness did not finish troubleshooting unit {number}");
+        return Err(harness::session_failed(anyhow!(
+            "the harness did not finish troubleshooting unit {number}"
+        )));
     }
     let diagnosis = parse(&reply.text)?;
     forge.unit_body_set(

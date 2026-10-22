@@ -463,3 +463,136 @@ fn auto_with_a_bad_setting_is_an_error_and_runs_nothing() {
     assert!(err.contains("run.max_attempts"), "{err}");
     assert!(out.get_output().stdout.is_empty());
 }
+
+/// Three issues nobody has triaged, whose triage sessions end as `sessions` says.
+fn three_untriaged(sessions: &'static str) -> Fakes {
+    Fakes {
+        labels: UNTRIAGED,
+        labels_follow_edits: false,
+        units: &[1, 2, 3],
+        sessions,
+        ..Fakes::passing()
+    }
+}
+
+fn stderr(out: &assert_cmd::assert::Assert) -> String {
+    String::from_utf8(out.get_output().stderr.clone()).unwrap()
+}
+
+fn tried(err: &str, what: &str) -> usize {
+    err.matches(what).count()
+}
+
+#[test]
+fn auto_stops_triaging_after_two_sessions_in_a_row_fail() {
+    let repo = Repo::new();
+    let out = auto(&repo, &three_untriaged("fff"), &[]).failure();
+    let err = stderr(&out);
+    assert_eq!(tried(&err, "was not triaged"), 2, "{err}");
+    assert!(err.contains("unit 1 was not triaged"), "{err}");
+    assert!(err.contains("unit 2 was not triaged"), "{err}");
+    assert!(
+        err.contains("stopped: 2 units in a row went wrong (1, 2)"),
+        "{err}"
+    );
+    assert!(events(&out).iter().any(|e| e["stopped"] == "went_wrong"));
+}
+
+#[test]
+fn a_triage_that_succeeds_between_two_failures_ends_the_streak() {
+    let repo = Repo::new();
+    let out = auto(&repo, &three_untriaged("fsf"), &[]).failure();
+    let err = stderr(&out);
+    assert_eq!(tried(&err, "was not triaged"), 2, "{err}");
+    assert!(!err.contains("stopped:"), "{err}");
+    assert_eq!(events(&out).len(), 1);
+}
+
+#[test]
+fn a_limit_of_zero_triages_every_unit_however_many_sessions_fail() {
+    let repo = Repo::new();
+    let out = auto(
+        &repo,
+        &three_untriaged("fff"),
+        &["--max-failures-in-a-row", "0"],
+    )
+    .failure();
+    let err = stderr(&out);
+    assert_eq!(tried(&err, "was not triaged"), 3, "{err}");
+    assert!(!err.contains("stopped:"), "{err}");
+}
+
+#[test]
+fn a_triage_answer_ns_cannot_use_does_not_count_toward_the_stop() {
+    let repo = Repo::new();
+    let out = auto(&repo, &three_untriaged("bbb"), &[]).failure();
+    let err = stderr(&out);
+    assert_eq!(tried(&err, "was not triaged"), 3, "{err}");
+    assert!(!err.contains("stopped:"), "{err}");
+}
+
+#[test]
+fn a_failed_triage_streak_keeps_auto_from_troubleshooting_or_running_more() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        labels: UNTRIAGED,
+        units: &[1, 2],
+        labels_follow_edits: false,
+        sessions: "ff",
+        ..Fakes::passing()
+    };
+    let out = auto(&repo, &fakes, &["--max-failures-in-a-row", "2"]).failure();
+    assert!(started_units(&out).is_empty());
+    assert!(stderr(&out).contains("stopped: 2 units in a row went wrong (1, 2)"));
+}
+
+#[test]
+fn auto_stops_troubleshooting_after_two_sessions_in_a_row_fail() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        labels: r#"[{"name":"status:needs-repro"}]"#,
+        labels_follow_edits: false,
+        units: &[1, 2, 3],
+        sessions: "fff",
+        ..Fakes::passing()
+    };
+    let out = auto(&repo, &fakes, &[]).failure();
+    let err = stderr(&out);
+    assert_eq!(tried(&err, "was not troubleshot"), 2, "{err}");
+    assert!(
+        err.contains("stopped: 2 units in a row went wrong (1, 2)"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_troubleshoot_that_succeeds_ends_the_streak() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        labels: r#"[{"name":"status:needs-repro"}]"#,
+        labels_follow_edits: false,
+        units: &[1, 2, 3],
+        sessions: "fsf",
+        ..Fakes::passing()
+    };
+    let out = auto(&repo, &fakes, &[]).failure();
+    let err = stderr(&out);
+    assert_eq!(tried(&err, "was not troubleshot"), 2, "{err}");
+    assert!(!err.contains("stopped:"), "{err}");
+}
+
+#[test]
+fn a_troubleshoot_answer_ns_cannot_use_does_not_count_toward_the_stop() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        labels: r#"[{"name":"status:needs-repro"}]"#,
+        labels_follow_edits: false,
+        units: &[1, 2, 3],
+        sessions: "bbb",
+        ..Fakes::passing()
+    };
+    let out = auto(&repo, &fakes, &[]).failure();
+    let err = stderr(&out);
+    assert_eq!(tried(&err, "was not troubleshot"), 3, "{err}");
+    assert!(!err.contains("stopped:"), "{err}");
+}

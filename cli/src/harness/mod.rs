@@ -7,6 +7,27 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 
+/// Marks an error as the harness session itself failing (it did not start, finish or answer in
+/// time), not a model answer `ns` cannot use.
+#[derive(Debug)]
+struct SessionFailed;
+
+impl std::fmt::Display for SessionFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the harness session failed")
+    }
+}
+
+/// Marks `error` as a failed session.
+pub fn session_failed(error: anyhow::Error) -> anyhow::Error {
+    error.context(SessionFailed)
+}
+
+/// Whether `error` was marked by [`session_failed`].
+pub fn is_session_failure(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<SessionFailed>().is_some()
+}
+
 pub trait Harness {
     /// The version the harness reports. An error when it cannot be started.
     fn version_get(&self) -> Result<String>;
@@ -107,5 +128,25 @@ pub fn get() -> Box<dyn Harness> {
 pub fn of(kind: Kind) -> Box<dyn Harness> {
     match kind {
         Kind::Claude => Box::new(claude::Claude::new(crate::os::get())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_marked_error_is_a_session_failure_even_with_more_context_on_top() {
+        let marked = session_failed(anyhow::anyhow!("not logged in")).context("unit 4");
+        assert!(is_session_failure(&marked));
+        assert_eq!(
+            format!("{marked:#}"),
+            "unit 4: the harness session failed: not logged in"
+        );
+    }
+
+    #[test]
+    fn an_unmarked_error_is_not_a_session_failure() {
+        assert!(!is_session_failure(&anyhow::anyhow!("no ROUTE line")));
     }
 }

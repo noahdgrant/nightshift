@@ -5,6 +5,7 @@ use anyhow::{bail, Result};
 use clap::Args as ClapArgs;
 use serde_json::json;
 
+use crate::auto::Streak;
 use crate::forge::Forge;
 use crate::harness::Harness;
 use crate::vcs::Vcs;
@@ -31,6 +32,7 @@ pub fn run(args: Args) -> Result<()> {
         &root,
         &[args.unit],
         timeout,
+        &mut Streak::new(0),
     );
     if failed > 0 {
         bail!("unit {} was not troubleshot", args.unit);
@@ -39,7 +41,8 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 /// Troubleshoots each of `units`, printing one JSON line for each that was. A unit that cannot be
-/// is reported on stderr and left as it was. Returns how many could not be.
+/// is reported on stderr and left as it was. Returns how many could not be. A failed session
+/// counts toward `streak`, and once it is reached no more units are troubleshot.
 pub fn units_troubleshoot(
     forge: &dyn Forge,
     harness: &dyn Harness,
@@ -47,16 +50,24 @@ pub fn units_troubleshoot(
     root: &Path,
     units: &[u64],
     timeout: Duration,
+    streak: &mut Streak,
 ) -> usize {
     let mut failed = 0;
     for unit in units {
+        if streak.reached() {
+            break;
+        }
         match troubleshoot::run(forge, harness, vcs, root, *unit, timeout) {
-            Ok(diagnosis) => println!(
-                "{}",
-                json!({ "unit": unit, "route": diagnosis.route.name() })
-            ),
+            Ok(diagnosis) => {
+                streak.record(*unit, false);
+                println!(
+                    "{}",
+                    json!({ "unit": unit, "route": diagnosis.route.name() })
+                )
+            }
             Err(e) => {
                 eprintln!("ns: unit {unit} was not troubleshot: {e:#}");
+                streak.record(*unit, harness::is_session_failure(&e));
                 failed += 1;
             }
         }

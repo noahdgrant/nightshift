@@ -9,6 +9,7 @@ use clap::Args as ClapArgs;
 use serde_json::json;
 
 use super::{run as unit_run, triage, troubleshoot};
+use crate::auto::Streak;
 use crate::forge::Forge;
 use crate::os::Os;
 use crate::runlog::{Move, Reason, RunLog};
@@ -29,7 +30,8 @@ pub struct Args {
     until: Option<NaiveTime>,
     /// Start no more units after this many in a row got stuck because a state kept going wrong
     /// (the harness did not finish, ran out of time, the forge did not answer), not because
-    /// checks failed. A unit that finishes or fails its checks ends the streak. 0 turns it off.
+    /// checks failed, or this many triage or troubleshoot sessions in a row failed. A unit that
+    /// finishes or fails its checks, or a session that ends, ends the streak. 0 turns it off.
     #[arg(long, default_value_t = 2)]
     max_failures_in_a_row: usize,
     #[command(flatten)]
@@ -81,6 +83,7 @@ pub fn run(args: Args) -> Result<()> {
         "another ns auto is running in this repository",
     )?;
     let harness = harness::get();
+    let mut streak = Streak::new(args.max_failures_in_a_row);
     let waiting: Vec<u64> = plan.triage.iter().map(|u| u.number).collect();
     let mut failed = triage::units_triage(
         forge.as_ref(),
@@ -88,6 +91,7 @@ pub fn run(args: Args) -> Result<()> {
         &root,
         &waiting,
         Duration::from_secs(args.options.harness_timeout_seconds),
+        &mut streak,
     );
     // Triage may have sent units to be reproduced.
     let open = forge.unit_list(&root)?;
@@ -99,6 +103,7 @@ pub fn run(args: Args) -> Result<()> {
         &root,
         &repro,
         Duration::from_secs(args.options.harness_timeout_seconds),
+        &mut streak,
     );
     let os = os::get();
     let limits = Limits {
@@ -106,10 +111,6 @@ pub fn run(args: Args) -> Result<()> {
         deadline: args
             .until
             .map(|time| until::deadline_find(os.time_now(), time)),
-        wrong_in_a_row: match args.max_failures_in_a_row {
-            0 => WrongInARow::Unlimited,
-            n => WrongInARow::Stop(n),
-        },
     };
     let log = RunLog::open(vcs.as_ref(), &root)?;
     // The unit's last move before it ran, to tell a move this run wrote from an older one.
@@ -119,6 +120,7 @@ pub fn run(args: Args) -> Result<()> {
         os.as_ref(),
         &root,
         &limits,
+        &mut streak,
         &mut |unit| {
             *before.borrow_mut() = log.last_move(&unit.to_string()).ok().flatten();
             unit_run::run(unit_run::Args::unattended(unit, options.clone()))
@@ -130,12 +132,20 @@ pub fn run(args: Args) -> Result<()> {
             )
         },
     )?;
-    failed += ran.failed;
-    if !ran.went_wrong.is_empty() {
+    failed += ran;
+    if streak.reached() {
+        println!(
+            "{}",
+            json!({
+                "stopped": "went_wrong",
+                "reason": format!("{} units in a row got stuck because a state kept going wrong", streak.units().len()),
+                "units": streak.units(),
+            })
+        );
         bail!(
             "stopped: {} units in a row went wrong ({}), which looks like the harness and not the code",
-            ran.went_wrong.len(),
-            ran.went_wrong.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
+            streak.units().len(),
+            streak.units().iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
         );
     }
     if failed > 0 {
@@ -165,39 +175,25 @@ struct Limits {
     max_units: Option<usize>,
     /// The moment after which no unit is started. A unit already running finishes.
     deadline: Option<DateTime<Local>>,
-    wrong_in_a_row: WrongInARow,
-}
-
-/// How many units in a row may get stuck because a state went wrong before the night stops.
-enum WrongInARow {
-    Unlimited,
-    Stop(usize),
-}
-
-/// How `units_run` went.
-struct Ran {
-    /// How many units did not end well.
-    failed: usize,
-    /// The units in the streak that stopped the night. Empty when it did not stop for that.
-    went_wrong: Vec<u64>,
 }
 
 /// Starts the ready units one at a time with `run_unit` until none is left or `limits` say stop,
-/// printing how each ended. `went_wrong` says, of a unit that did not end well, whether it got stuck
-/// because a state kept going wrong.
+/// printing how each ended, and returns how many did not end well. `went_wrong` says, of a unit that
+/// did not end well, whether it got stuck because a state kept going wrong; those count toward
+/// `streak`, which also stops the night once it is reached.
 fn units_run(
     forge: &dyn Forge,
     os: &dyn Os,
     root: &Path,
     limits: &Limits,
+    streak: &mut Streak,
     run_unit: &mut dyn FnMut(u64) -> Result<()>,
     went_wrong: &mut dyn FnMut(u64) -> bool,
-) -> Result<Ran> {
+) -> Result<usize> {
     let mut failed = 0;
-    let mut streak: Vec<u64> = Vec::new();
     // A unit is run once, even when it is still ready afterwards.
     let mut run_already = HashSet::new();
-    while limits.max_units.is_none_or(|max| run_already.len() < max) {
+    while limits.max_units.is_none_or(|max| run_already.len() < max) && !streak.reached() {
         if limits.deadline.is_some_and(|at| os.time_now() >= at) {
             println!("{}", json!({ "stopped": "until" }));
             break;
@@ -218,13 +214,9 @@ fn units_run(
         if let Err(e) = &ended {
             eprintln!("ns: unit {unit}: {e:#}");
             failed += 1;
-            if went_wrong(unit) {
-                streak.push(unit);
-            } else {
-                streak.clear();
-            }
+            streak.record(unit, went_wrong(unit));
         } else {
-            streak.clear();
+            streak.record(unit, false);
         }
         let status: Vec<String> = forge
             .unit_get(root, unit)
@@ -248,25 +240,8 @@ fn units_run(
                 "error": ended.as_ref().err().map(|e| format!("{e:#}")),
             })
         );
-        if matches!(limits.wrong_in_a_row, WrongInARow::Stop(n) if streak.len() >= n) {
-            println!(
-                "{}",
-                json!({
-                    "stopped": "went_wrong",
-                    "reason": format!("{} units in a row got stuck because a state kept going wrong", streak.len()),
-                    "units": streak,
-                })
-            );
-            return Ok(Ran {
-                failed,
-                went_wrong: streak,
-            });
-        }
     }
-    Ok(Ran {
-        failed,
-        went_wrong: Vec::new(),
-    })
+    Ok(failed)
 }
 
 #[cfg(test)]
@@ -394,6 +369,7 @@ mod tests {
             &clock,
             Path::new("."),
             &limits,
+            &mut Streak::new(0),
             &mut |unit| {
                 started.borrow_mut().push(unit);
                 clock.0.set(clock.0.get() + each);
@@ -410,7 +386,6 @@ mod tests {
         let limits = Limits {
             max_units: None,
             deadline: Some(start() + Span::hours(1)),
-            wrong_in_a_row: WrongInARow::Unlimited,
         };
         // Unit 2 starts at 22:30:30, before the deadline, and ends at 23:01, after it. Unit 3 never
         // starts.
@@ -423,7 +398,6 @@ mod tests {
         let limits = Limits {
             max_units: None,
             deadline: Some(start() - Span::minutes(1)),
-            wrong_in_a_row: WrongInARow::Unlimited,
         };
         assert!(started(limits, Span::minutes(1)).is_empty());
     }
@@ -433,7 +407,6 @@ mod tests {
         let limits = Limits {
             max_units: None,
             deadline: None,
-            wrong_in_a_row: WrongInARow::Unlimited,
         };
         assert_eq!(started(limits, Span::hours(9)), [1, 2, 3]);
     }
@@ -443,7 +416,6 @@ mod tests {
         let limits = Limits {
             max_units: Some(1),
             deadline: Some(start() + Span::hours(9)),
-            wrong_in_a_row: WrongInARow::Unlimited,
         };
         assert_eq!(started(limits, Span::minutes(1)), [1]);
     }
@@ -455,22 +427,21 @@ mod tests {
         WentWrong,
     }
 
-    /// Runs the ready units, each ending as the next of `ends`, and returns the units started and
-    /// the units that stopped the night.
-    fn ended(rule: WrongInARow, ends: [End; 3]) -> (Vec<u64>, Vec<u64>) {
+    /// Runs the ready units, each ending as the next of `ends`, and returns the units started.
+    fn ended(streak: &mut Streak, ends: [End; 3]) -> Vec<u64> {
         let limits = Limits {
             max_units: None,
             deadline: None,
-            wrong_in_a_row: rule,
         };
         let clock = Clock(Cell::new(start()));
         let started = RefCell::new(Vec::new());
         let end_of = |unit: u64| ends[unit as usize - 1];
-        let ran = units_run(
+        units_run(
             &Ready,
             &clock,
             Path::new("."),
             &limits,
+            streak,
             &mut |unit| {
                 started.borrow_mut().push(unit);
                 match end_of(unit) {
@@ -481,7 +452,7 @@ mod tests {
             &mut |unit| matches!(end_of(unit), End::WentWrong),
         )
         .unwrap();
-        (started.into_inner(), ran.went_wrong)
+        started.into_inner()
     }
 
     fn moved(to: State, reason: Option<Reason>, at: u64) -> Option<Move> {
@@ -513,38 +484,54 @@ mod tests {
 
     #[test]
     fn units_that_went_wrong_in_a_row_stop_the_night_and_are_named() {
-        let (started, wrong) = ended(
-            WrongInARow::Stop(2),
-            [End::WentWrong, End::WentWrong, End::Finishes],
-        );
+        let mut streak = Streak::new(2);
+        let started = ended(&mut streak, [End::WentWrong, End::WentWrong, End::Finishes]);
         assert_eq!(started, [1, 2]);
-        assert_eq!(wrong, [1, 2]);
+        assert!(streak.reached());
+        assert_eq!(streak.units(), [1, 2]);
     }
 
     #[test]
     fn a_unit_stuck_for_failing_checks_does_not_count_and_ends_the_streak() {
-        let (started, wrong) = ended(
-            WrongInARow::Stop(2),
+        let mut streak = Streak::new(2);
+        let started = ended(
+            &mut streak,
             [End::WentWrong, End::ChecksFail, End::WentWrong],
         );
         assert_eq!(started, [1, 2, 3]);
-        assert!(wrong.is_empty());
+        assert!(!streak.reached());
     }
 
     #[test]
     fn a_unit_that_finishes_ends_the_streak() {
-        let (started, wrong) = ended(
-            WrongInARow::Stop(2),
-            [End::WentWrong, End::Finishes, End::WentWrong],
-        );
+        let mut streak = Streak::new(2);
+        let started = ended(&mut streak, [End::WentWrong, End::Finishes, End::WentWrong]);
         assert_eq!(started, [1, 2, 3]);
-        assert!(wrong.is_empty());
+        assert!(!streak.reached());
     }
 
     #[test]
     fn without_a_limit_every_unit_runs_however_many_went_wrong() {
-        let (started, wrong) = ended(WrongInARow::Unlimited, [End::WentWrong; 3]);
+        let mut streak = Streak::new(0);
+        let started = ended(&mut streak, [End::WentWrong; 3]);
         assert_eq!(started, [1, 2, 3]);
-        assert!(wrong.is_empty());
+        assert!(!streak.reached());
+    }
+
+    #[test]
+    fn failures_of_triage_and_of_runs_are_one_streak() {
+        // Unit 9's triage session failed before the night's units ran.
+        let mut streak = Streak::new(2);
+        streak.record(9, true);
+        let started = ended(&mut streak, [End::WentWrong, End::Finishes, End::Finishes]);
+        assert_eq!(started, [1]);
+        assert_eq!(streak.units(), [9, 1]);
+    }
+
+    #[test]
+    fn a_streak_already_reached_starts_no_unit() {
+        let mut streak = Streak::new(1);
+        streak.record(9, true);
+        assert!(ended(&mut streak, [End::Finishes; 3]).is_empty());
     }
 }

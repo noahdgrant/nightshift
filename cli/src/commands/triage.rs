@@ -5,6 +5,7 @@ use anyhow::{bail, Result};
 use clap::Args as ClapArgs;
 use serde_json::json;
 
+use crate::auto::Streak;
 use crate::forge::Forge;
 use crate::harness::Harness;
 use crate::{auto, forge, harness, triage, vcs};
@@ -48,6 +49,7 @@ pub fn run(args: Args) -> Result<()> {
         &root,
         &units,
         Duration::from_secs(args.harness_timeout_seconds),
+        &mut Streak::new(0),
     );
     if failed > 0 {
         bail!("{failed} of {} units were not triaged", units.len());
@@ -56,28 +58,37 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 /// Triages each of `units`, printing one JSON line for each that was. A unit that cannot be
-/// triaged is reported on stderr and left as it was. Returns how many could not be.
+/// triaged is reported on stderr and left as it was. Returns how many could not be. A failed
+/// session counts toward `streak`, and once it is reached no more units are triaged.
 pub fn units_triage(
     forge: &dyn Forge,
     harness: &dyn Harness,
     root: &Path,
     units: &[u64],
     timeout: Duration,
+    streak: &mut Streak,
 ) -> usize {
     let mut failed = 0;
     for unit in units {
+        if streak.reached() {
+            break;
+        }
         match triage::run(forge, harness, root, *unit, timeout) {
-            Ok(triaged) => println!(
-                "{}",
-                json!({
-                    "unit": unit,
-                    "route": triaged.route.name(),
-                    "labels": triaged.labels,
-                    "why": triaged.why,
-                })
-            ),
+            Ok(triaged) => {
+                streak.record(*unit, false);
+                println!(
+                    "{}",
+                    json!({
+                        "unit": unit,
+                        "route": triaged.route.name(),
+                        "labels": triaged.labels,
+                        "why": triaged.why,
+                    })
+                )
+            }
             Err(e) => {
                 eprintln!("ns: unit {unit} was not triaged: {e:#}");
+                streak.record(*unit, harness::is_session_failure(&e));
                 failed += 1;
             }
         }
