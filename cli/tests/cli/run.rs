@@ -36,6 +36,10 @@ pub struct Fakes {
     pub refuses_assignee: bool,
     /// The file the build writes, relative to the workspace.
     pub builds: &'static str,
+    /// How each triage or troubleshoot session ends, one letter per session in the order they run:
+    /// `s` answers, `f` fails as a harness that is down, `b` exits cleanly with an answer `ns`
+    /// cannot use. Sessions past its end answer.
+    pub sessions: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -93,6 +97,7 @@ impl Fakes {
             units: &[5],
             refuses_assignee: false,
             builds: "thing.txt",
+            sessions: "",
         }
     }
 }
@@ -204,8 +209,8 @@ esac"#,
 reviewed="{bin}/reviewed"
 p="$(cat)"
 case "$p" in
-*"You diagnose one bug"*) printf '### Repro\nrun it\n\nROUTE: build\n';;
-*"decide what happens to one unit"*) printf 'Small.\nLABELS: type:feat\nROUTE: build\n';;
+*"You diagnose one bug"*) {session}*) printf '### Repro\nrun it\n\nROUTE: build\n';; esac;;
+*"decide what happens to one unit"*) {session}*) printf 'Small.\nLABELS: type:feat\nROUTE: build\n';; esac;;
 *"Find what must be fixed before this change merges"*)
   n=$(ls "{bin}"/review.prompt.* 2>/dev/null | wc -l); printf %s "$p" > "{bin}/review.prompt.$((n+1))"
   if echo "$p" | grep -q thing.txt; then echo reviewed the diff; else echo saw no diff; fi
@@ -236,6 +241,11 @@ exit {exit}"#,
             },
             exit = fakes.exit,
             builds = fakes.builds,
+            session = format!(
+                r#"n=$(cat "{bin}/sessions" 2>/dev/null || echo 0); echo $((n+1)) > "{bin}/sessions"; case "$(printf %s '{pattern}' | cut -c$((n+1)))" in f) exit 1;; b) echo 'Not an answer.';; "#,
+                bin = bin.display(),
+                pattern = fakes.sessions
+            ),
         ),
     );
     format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())

@@ -17,6 +17,42 @@ pub const PRIORITIES: [&str; 4] = [
     "priority:low",
 ];
 
+/// The units in a row whose harness session failed, and how many of them stop the night.
+pub struct Streak {
+    /// `None` never stops.
+    limit: Option<usize>,
+    units: Vec<u64>,
+}
+
+impl Streak {
+    /// A streak that stops at `limit` units. `0` turns it off.
+    pub fn new(limit: usize) -> Streak {
+        Streak {
+            limit: (limit > 0).then_some(limit),
+            units: Vec::new(),
+        }
+    }
+
+    /// Notes how unit `unit` ended: a failed session adds to the streak, anything else ends it.
+    pub fn record(&mut self, unit: u64, session_failed: bool) {
+        if session_failed {
+            self.units.push(unit);
+        } else {
+            self.units.clear();
+        }
+    }
+
+    /// Whether enough units in a row failed that no more should be started.
+    pub fn reached(&self) -> bool {
+        self.limit.is_some_and(|n| self.units.len() >= n)
+    }
+
+    /// The units in the streak, in the order they failed.
+    pub fn units(&self) -> &[u64] {
+        &self.units
+    }
+}
+
 pub struct Plan<'a> {
     /// Ready units to run, first to run first.
     pub queue: Vec<&'a Unit>,
@@ -97,6 +133,28 @@ fn blockers(body: &str) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_streak_is_reached_at_its_limit_and_a_success_ends_it() {
+        let mut streak = Streak::new(2);
+        streak.record(1, true);
+        assert!(!streak.reached());
+        streak.record(2, false);
+        streak.record(3, true);
+        assert!(!streak.reached());
+        streak.record(4, true);
+        assert!(streak.reached());
+        assert_eq!(streak.units(), [3, 4]);
+    }
+
+    #[test]
+    fn a_streak_with_a_limit_of_zero_is_never_reached() {
+        let mut streak = Streak::new(0);
+        for unit in 1..=5 {
+            streak.record(unit, true);
+        }
+        assert!(!streak.reached());
+    }
 
     fn unit(number: u64, labels: &[&str], body: &str, from_team: bool) -> Unit {
         Unit {
