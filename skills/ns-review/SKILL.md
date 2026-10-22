@@ -13,17 +13,35 @@ Find what must be fixed before this change merges. You are given the unit's titl
 
 ## 1. Read the change against the unit
 
-Check, in this order:
+There are six review areas. A section `# Your focus` in the prompt names the ones you cover; review only those and leave the others to other sessions. With no such section, review all six, in this order.
 
-1. **Spec**: every requirement is implemented in full, and the change adds no behavior callers can see beyond what the unit asked for.
-2. **Correctness**: empty, zero and boundary values; every error handled or passed on, not swallowed; state changes all-or-nothing; a second run, or a run after a crash, is safe.
-3. **Tests**: every behavior and every branch the change adds has a test; a bug fix has a test that fails without it; tests go through the public interface and assert literal expected values.
-4. **Security**: untrusted input is validated where it enters; none reaches a shell, a query, a path or a template unescaped; no secret sits in code, logs or fixtures.
-5. **Architecture**: the change follows the repository's existing way to do each job, adds no second way, and removes the old path it replaces.
+### Correctness
+
+Empty, zero and boundary values; every error handled or passed on, not swallowed; state changes all-or-nothing; a second run, or a run after a crash, is safe.
+
+### Security
+
+Untrusted input is validated where it enters; none reaches a shell, a query, a path or a template unescaped; no secret sits in code, logs or fixtures.
+
+### Spec
+
+Every requirement is implemented in full, and the change adds no behavior callers can see beyond what the unit asked for.
+
+### Tests
+
+Every behavior and every branch the change adds has a test; a bug fix has a test that fails without it; tests go through the public interface and assert literal expected values.
+
+### Architecture
+
+The change follows the repository's existing way to do each job, adds no second way, and removes the old path it replaces.
+
+### Docs and comments
+
+The comments and docs the change adds or touches are true and say why, not what; the docs the change makes stale are updated.
 
 Trace the call path before you accept a hypothetical. Leave out style and personal preference.
 
-Done when each axis has been checked against the diff.
+Done when each area you cover has been checked against the diff.
 
 ## 2. Check the earlier findings
 
@@ -33,7 +51,7 @@ When the prompt has a section `# Findings from the previous review`, give each f
 - **Still open**: the defect is still in the change.
 - **Withdrawn**: the finding was wrong; say why.
 
-Do not accept as harmless what that review called Important unless you withdraw it and say why.
+Do not accept as harmless what that review called Important unless you withdraw it and say why. The findings in your prompt are the ones from your own areas; judge only those.
 
 Done when every earlier finding has a status with a reason.
 
@@ -56,4 +74,4 @@ Done when every finding names a place in the diff and a concrete consequence.
 
 ## 4. End with the verdict
 
-End with a last line that is exactly `VERDICT: FAIL` when any earlier finding is still open or you found a new one, and exactly `VERDICT: PASS` when none is.
+End with a last line that is exactly `VERDICT: FAIL` when any earlier finding in your areas is still open or you found a new one there, and exactly `VERDICT: PASS` when none is.

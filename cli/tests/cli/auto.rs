@@ -465,6 +465,18 @@ fn auto_with_a_bad_setting_is_an_error_and_runs_nothing() {
 }
 
 #[test]
+fn auto_with_a_bad_review_sessions_setting_is_an_error_and_runs_nothing() {
+    for value in ["2", "\"3\""] {
+        let repo = Repo::new();
+        set_manifest(&repo, &format!("[review]\nsessions = {value}\n"));
+        let out = auto_run(&repo, &Fakes::passing(), &[], None, true).failure();
+        let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(err.contains("review.sessions"), "{value}: {err}");
+        assert!(out.get_output().stdout.is_empty(), "{value}");
+    }
+}
+
+#[test]
 fn auto_deletes_old_transcripts_and_keeps_newer_ones() {
     let repo = Repo::new();
     let old = transcript_keep(&repo, "build-1.jsonl", 8);

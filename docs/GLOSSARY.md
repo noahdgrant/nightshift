@@ -12,6 +12,10 @@ _Avoid_: Job, task, run
 A step of a unit's lifecycle: `setup`, `build`, `verify`, `review`, `ship`, `clean_up`, then `done` or `stuck`. `ns run` moves a unit from one state to the next.
 _Avoid_: Phase, stage
 
+**Review area**:
+One thing a review looks at: correctness, security, spec, tests, architecture, or docs and comments. A review session covers one, three or all six of them, as `[review] sessions` says.
+_Avoid_: Axis, aspect, dimension
+
 **Attempt**:
 One go at a state. A failed state is tried again until its attempts run out.
 _Avoid_: Retry, try

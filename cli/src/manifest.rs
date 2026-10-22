@@ -107,6 +107,27 @@ pub fn max_attempts_read(root: &Path) -> Result<u32> {
         })
 }
 
+/// How many review sessions a review runs, when the person gives no number.
+const REVIEW_SESSIONS_DEFAULT: u32 = 3;
+
+/// The review sessions a review runs: `[review] sessions`, or the built-in default when the key is
+/// missing. Only 1, 3 and 6 are allowed; anything else is an error.
+pub fn review_sessions_read(root: &Path) -> Result<u32> {
+    let document = document_read(root)?;
+    let Some(item) = document.get("review").and_then(|r| r.get("sessions")) else {
+        return Ok(REVIEW_SESSIONS_DEFAULT);
+    };
+    item.as_integer()
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| matches!(n, 1 | 3 | 6))
+        .with_context(|| {
+            format!(
+                "`review.sessions` in {} is not 1, 3 or 6",
+                file_find(root).display()
+            )
+        })
+}
+
 /// How many days a transcript is kept, when the person gives no number.
 const TRANSCRIPT_DAYS_DEFAULT: u32 = 7;
 
@@ -271,6 +292,48 @@ mod tests {
             let err = max_attempts_read(tmp.path()).unwrap_err().to_string();
             assert!(
                 err.contains("run.max_attempts") && err.contains("nightshift.toml"),
+                "{text}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_sessions_is_the_setting_or_the_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(review_sessions_read(tmp.path()).unwrap(), 3);
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for (text, sessions) in [
+            ("[review]\nsessions = 1\n", 1),
+            ("[review]\nsessions = 3\n", 3),
+            ("[review]\nsessions = 6\n", 6),
+            ("[run]\nmax_attempts = 2\n", 3),
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            assert_eq!(
+                review_sessions_read(tmp.path()).unwrap(),
+                sessions,
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_sessions_that_is_not_1_3_or_6_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for text in [
+            "[review]\nsessions = 0\n",
+            "[review]\nsessions = 2\n",
+            "[review]\nsessions = 4\n",
+            "[review]\nsessions = 7\n",
+            "[review]\nsessions = -3\n",
+            "[review]\nsessions = \"3\"\n",
+            "[review]\nsessions = 2.5\n",
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            let err = review_sessions_read(tmp.path()).unwrap_err().to_string();
+            assert!(
+                err.contains("review.sessions") && err.contains("nightshift.toml"),
                 "{text}: {err}"
             );
         }

@@ -5,5 +5,8 @@ harness = ["claude"]
 max_attempts = 3
 transcript_days = 7
 
+[review]
+sessions = 3
+
 [merge]
 human_review = [".github/**", ".nightshift/**", "release-please-config.json", ".release-please-manifest.json", "rust-toolchain.toml", "skills/**"]

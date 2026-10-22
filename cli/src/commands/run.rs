@@ -88,6 +88,8 @@ pub fn run(args: Args) -> Result<()> {
         None => manifest::max_attempts_read(&root)?,
     };
     let keep = manifest::transcript_days_read(&root)?;
+    // Read here so a bad value stops `ns` before it runs anything.
+    manifest::review_sessions_read(&root)?;
     // Held until the function ends. Taken before anything of the unit's is read or deleted.
     let _lock = lock::lock_take(
         &vcs.state_dir_find(&root)?,
