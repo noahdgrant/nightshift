@@ -251,7 +251,7 @@ case "$p" in
   n=$(ls "{bin}"/verify.prompt.* 2>/dev/null | wc -l); printf %s "$p" > "{bin}/verify.prompt.$((n+1))"
   {crash}{edit}echo checked it
   if [ -e "$seen" ]; then echo '{verdict}'; else touch "$seen"; echo '{first}'; fi;;
-*"VERDICT: FAIL"*) echo rebuilt with the evidence;;
+*"VERDICT: FAIL"*) [ -x "{bin}/on-rebuild" ] && "{bin}/on-rebuild"; echo rebuilt with the evidence;;
 *"The checks failed:"*) touch "{bin}/fixed"; echo fixed it;;
 *"left uncommitted changes"*) {when_told}echo committed when told;;
 *"commits on the branch"*) {squash}echo squashed when told;;
@@ -2983,6 +2983,154 @@ fn the_merge_waits_for_the_lock_another_unit_holds() {
     run_with(&repo, &path, &["--merge"]).success();
     assert!(!watcher.join().unwrap(), "merged while the lock was held");
     assert!(gh_log(&repo).contains("pr merge"));
+}
+
+/// Has the repository's checks and a build that is sent back to `build` log, on each run, whether
+/// the merge lock was held. The checks fail while `other.txt` is present when `fail_with_other`.
+fn lock_watching_check(repo: &Repo, fail_with_other: bool) {
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let lock = repo.path.join(".git/ns/merge.lock");
+    let probe = format!(
+        "if [ ! -e '{lock}' ] || flock -n '{lock}' true; then echo $1-free; else echo $1-held; fi >> '{bin}/lock.log'",
+        lock = lock.display(),
+        bin = bin.display()
+    );
+    script(&bin, "on-rebuild", &format!("set -- rebuild\n{probe}"));
+    let fail = if fail_with_other {
+        "; if [ -e other.txt ]; then exit 1; fi"
+    } else {
+        ""
+    };
+    repo.set_check(&format!("set -- check; {probe}{fail}"));
+}
+
+fn lock_log(repo: &Repo) -> Vec<String> {
+    std::fs::read_to_string(repo.path.parent().unwrap().join("bin/lock.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn a_unit_to_be_merged_does_not_rebase_until_the_lock_is_free_and_then_rebases_onto_the_new_base() {
+    let repo = Repo::new();
+    counted_check(&repo, false);
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    let lock = repo.path.join(".git/ns/merge.lock");
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    let held = std::fs::File::create(&lock).unwrap();
+    held.lock().unwrap();
+    let (log, origin_dir) = (repo.path.parent().unwrap().join("bin"), origin(&repo));
+    let script = base_advance_script(&repo, "first.txt", "first");
+    let watcher = std::thread::spawn(move || {
+        // Wait until the unit is at the lock, then let the unit ahead merge into the base.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let checks_while_held = std::fs::read_to_string(log.join("check.log"))
+            .unwrap_or_default()
+            .lines()
+            .count();
+        let pushed_while_held = origin_dir.join("refs/heads/ns/5").exists();
+        assert!(std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .status()
+            .unwrap()
+            .success());
+        let tip = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "main"])
+                .current_dir(&origin_dir)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        drop(held);
+        (checks_while_held, pushed_while_held, tip.trim().to_string())
+    });
+    run_with(&repo, &path, &["--merge"]).success();
+    let (checks_while_held, pushed_while_held, tip) = watcher.join().unwrap();
+    assert_eq!(checks_while_held, 1, "only the build's check ran");
+    assert!(!pushed_while_held);
+    assert_eq!(git(&origin(&repo), &["rev-parse", "ns/5~1"]).trim(), tip);
+    assert_eq!(check_runs(&repo), 2, "the build's, and one on the rebase");
+    assert_eq!(gh_log(&repo).matches("pr merge").count(), 1);
+}
+
+#[test]
+fn a_unit_sent_back_to_build_by_a_conflict_lets_go_of_the_lock() {
+    let repo = Repo::new();
+    lock_watching_check(&repo, false);
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    base_advanced(&repo, "thing.txt", "theirs");
+    run_with(&repo, &path, &["--merge"]).failure();
+    // The conflict is found under the lock; the build it sends the unit back to has let go.
+    assert_eq!(lock_log(&repo), ["check-free", "rebuild-free"]);
+}
+
+#[test]
+fn a_failing_check_on_the_rebase_lets_go_of_the_lock() {
+    let repo = Repo::new();
+    lock_watching_check(&repo, true);
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    base_advanced(&repo, "other.txt", "other");
+    run_with(&repo, &path, &["--merge"]).failure();
+    let log = lock_log(&repo);
+    // The build's, the rebase's under the lock, then the build the unit went back to.
+    assert_eq!(
+        &log[..3],
+        ["check-free", "check-held", "rebuild-free"],
+        "{log:?}"
+    );
+}
+
+#[test]
+fn failing_checks_on_the_change_request_let_go_of_the_lock() {
+    let repo = Repo::new();
+    lock_watching_check(&repo, false);
+    main_published(&repo);
+    let fakes = Fakes {
+        ci: Ci::FailsOnce,
+        ..Fakes::passing()
+    };
+    let path = tools(&repo, &fakes);
+    run_with(&repo, &path, &["--merge"]).success();
+    assert_eq!(lock_log(&repo), ["check-free", "rebuild-free"]);
+}
+
+#[test]
+fn a_unit_that_needs_a_human_merge_never_waits_for_the_lock() {
+    let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\"*.txt\"]\n");
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    let lock = repo.path.join(".git/ns/merge.lock");
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    let held = std::fs::File::create(&lock).unwrap();
+    held.lock().unwrap();
+    run_with(&repo, &path, &["--merge"]).success();
+    assert!(gh_log(&repo).contains("needs-human-merge"));
+    assert!(!gh_log(&repo).contains("pr merge"));
+    drop(held);
+}
+
+#[test]
+fn a_unit_not_asked_to_merge_never_waits_for_the_lock() {
+    let repo = Repo::new();
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    let lock = repo.path.join(".git/ns/merge.lock");
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    let held = std::fs::File::create(&lock).unwrap();
+    held.lock().unwrap();
+    run(&repo, &path).success();
+    assert!(gh_log(&repo).contains("pr create"));
+    drop(held);
 }
 
 #[test]
