@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.5.0](https://github.com/noahdgrant/nightshift/compare/v0.4.0...v0.5.0) (2026-10-22)
+
+
+### Features
+
+* **cli:** a unit waiting for a human merge is refreshed against main by ns run ([#907](https://github.com/noahdgrant/nightshift/issues/907)) ([1b372ee](https://github.com/noahdgrant/nightshift/commit/1b372ee71dd610e3b145b9ac12cb2eed903d82bc))
+* **cli:** an inconclusive verification runs again, then sticks the unit for a human ([#888](https://github.com/noahdgrant/nightshift/issues/888)) ([748bba6](https://github.com/noahdgrant/nightshift/commit/748bba6b2edac8e0f3f2c7f8e2b4cafdd8b03309))
+* **cli:** ns triage records the issues a unit is blocked by ([#898](https://github.com/noahdgrant/nightshift/issues/898)) ([a6ff09d](https://github.com/noahdgrant/nightshift/commit/a6ff09d5dd5e3c621fb2caae54d5a98f783f7a7a))
+* **cli:** pick the model each step uses in nightshift.toml ([#904](https://github.com/noahdgrant/nightshift/issues/904)) ([f96dea2](https://github.com/noahdgrant/nightshift/commit/f96dea2ff374200f2aa798bb3b3a4f2d6dbdb18c))
+* **cli:** read GitHub's blocked-by relationship in ns auto and ns run ([#895](https://github.com/noahdgrant/nightshift/issues/895)) ([4001d46](https://github.com/noahdgrant/nightshift/commit/4001d464c319e225145250994c8a4943fb398f41))
+* **cli:** review runs one, three or six sessions, each on its own areas ([#894](https://github.com/noahdgrant/nightshift/issues/894)) ([e15721f](https://github.com/noahdgrant/nightshift/commit/e15721fde41c90e618808f1cfbfcbfaf4b748169))
+* **cli:** ship holds the merge lock from the rebase to the merge ([#906](https://github.com/noahdgrant/nightshift/issues/906)) ([290c3f0](https://github.com/noahdgrant/nightshift/commit/290c3f00b983dadaf6d26a0e7a18f1bdbe18ac84))
+* **cli:** ship rebases the unit onto main and tests the result before merging ([#903](https://github.com/noahdgrant/nightshift/issues/903)) ([ffbbde5](https://github.com/noahdgrant/nightshift/commit/ffbbde533ca10cf0a659c47914a83e973165c14a))
+* **cli:** transcripts older than a setting are deleted, a week by default ([#889](https://github.com/noahdgrant/nightshift/issues/889)) ([00528c0](https://github.com/noahdgrant/nightshift/commit/00528c008531e7a274d40e1009864350230fe05a))
+* **cli:** use GitHub's native issue types where the repository has them ([#896](https://github.com/noahdgrant/nightshift/issues/896)) ([35f0a68](https://github.com/noahdgrant/nightshift/commit/35f0a68a516cc9cafb69d36e0ada3d77dc2be003))
+* **skills:** fold the principles that answer real mistakes into the state skills ([#897](https://github.com/noahdgrant/nightshift/issues/897)) ([41f5859](https://github.com/noahdgrant/nightshift/commit/41f58598a07ff2ba1ed6291254b326c5ad01794c))
+
+
+### Bug Fixes
+
+* **cli:** remove a unit's lock file when its run ends ([#880](https://github.com/noahdgrant/nightshift/issues/880)) ([ec9c933](https://github.com/noahdgrant/nightshift/commit/ec9c93327fff385aac3d662d0f2c9787833d4f56))
+* **cli:** the test forge for native types implements the new blocker method ([#899](https://github.com/noahdgrant/nightshift/issues/899)) ([62c7f23](https://github.com/noahdgrant/nightshift/commit/62c7f23bf46717a8a6fc8da73551b7599dbb8264))
+* **cli:** triage failures count toward the failures-in-a-row stop ([#884](https://github.com/noahdgrant/nightshift/issues/884)) ([76535ad](https://github.com/noahdgrant/nightshift/commit/76535ad8c055be607dd3e2434c377028d27516ff))
+* **skills:** ns-review states what it ran and what it only read ([#883](https://github.com/noahdgrant/nightshift/issues/883)) ([7f4ee36](https://github.com/noahdgrant/nightshift/commit/7f4ee363b82dbf05e07509fa507ce3b0507ad218))
+
 ## [0.4.0](https://github.com/noahdgrant/nightshift/compare/v0.3.0...v0.4.0) (2026-10-21)
 
 
