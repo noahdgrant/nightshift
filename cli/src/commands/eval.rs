@@ -7,9 +7,9 @@ use serde_json::{json, Value};
 
 use crate::harness::{Harness, Task};
 use crate::skill;
-use crate::states::review;
+use crate::states::review::{self, Focus};
 use crate::states::verdict::{self, Verdict};
-use crate::{harness, vcs};
+use crate::{harness, manifest, vcs};
 
 /// Each run is a real harness call, so it uses subscription time. The tests use a fake `claude`.
 #[derive(ClapArgs)]
@@ -53,11 +53,13 @@ pub fn run(args: Args) -> Result<()> {
     let root = vcs::get().workspace_find(&std::env::current_dir()?)?;
     let cases = cases_load(&root.join("evals/review"), args.case.as_deref())?;
     let skill = skill::load(skill::REVIEW)?;
+    let focuses = review::focuses(manifest::review_sessions_read(&root)?);
     let harness = harness::get();
     let report = review_measure(
         harness.as_ref(),
         &root,
         &skill,
+        focuses,
         &cases,
         args.runs,
         Duration::from_secs(args.harness_timeout_seconds),
@@ -82,6 +84,7 @@ fn review_measure(
     harness: &dyn Harness,
     dir: &Path,
     skill: &str,
+    focuses: &[Focus],
     cases: &[Case],
     runs: u32,
     timeout: Duration,
@@ -89,32 +92,44 @@ fn review_measure(
     let mut ok = true;
     let mut reports = Vec::new();
     for case in cases {
-        let prompt = review::prompt(
-            skill,
-            &case.title,
-            &case.body,
-            &case.build,
-            &case.diff,
-            None,
-        );
+        let prompts: Vec<_> = focuses
+            .iter()
+            .map(|focus| {
+                review::prompt(
+                    skill,
+                    focus,
+                    &case.title,
+                    &case.body,
+                    &case.build,
+                    &case.diff,
+                    None,
+                )
+            })
+            .collect();
         let mut verdicts = Vec::new();
         for _ in 0..runs {
-            let reply = harness.task_run(&Task {
-                dir: dir.to_path_buf(),
-                prompt: prompt.clone(),
-                write: false,
-                model: None,
-                timeout,
-            });
-            let got = match reply {
-                Ok(reply) if reply.success => verdict::parse(&reply.text),
-                Ok(_) => None,
-                Err(e) => {
-                    eprintln!("ns: a run of {} failed: {e:#}", case.name);
-                    None
-                }
-            };
-            verdicts.push(got);
+            // A run is a whole review: every session, and the verdict they come to together.
+            let sessions: Vec<_> = prompts
+                .iter()
+                .map(|prompt| {
+                    let reply = harness.task_run(&Task {
+                        dir: dir.to_path_buf(),
+                        prompt: prompt.clone(),
+                        write: false,
+                        model: None,
+                        timeout,
+                    });
+                    match reply {
+                        Ok(reply) if reply.success => verdict::parse(&reply.text),
+                        Ok(_) => None,
+                        Err(e) => {
+                            eprintln!("ns: a run of {} failed: {e:#}", case.name);
+                            None
+                        }
+                    }
+                })
+                .collect();
+            verdicts.push(review::verdicts_merge(&sessions));
         }
         let matches = verdicts
             .iter()
@@ -191,6 +206,7 @@ mod tests {
                 ("clean-change", "PASS"),
                 ("misses-requirement", "FAIL"),
                 ("needs-a-hand-edit", "PASS"),
+                ("stale-comment", "FAIL"),
             ]
         );
         for case in &cases {
