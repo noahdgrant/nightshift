@@ -36,6 +36,8 @@ fn triage_by(
             r#"echo "$@" >> "{bin}/gh.log"
 case "$1 $2" in
 "api repos/{{owner}}/{{repo}}/issues/4") echo '{read}';;
+"api orgs/{{owner}}/issue-types") cat "{bin}/types.json";;
+"api --method") if [ -f "{bin}/patch-fails" ]; then echo denied >&2; exit 1; fi;;
 esac"#,
             bin = bin.display()
         ),
@@ -56,6 +58,15 @@ esac"#,
         .current_dir(&repo.path)
         .assert()
 }
+
+/// Gives the repository the native types in `json`, as the forge lists them for an organization.
+fn native_types(repo: &Repo, json: &str) {
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("types.json"), json).unwrap();
+}
+
+const ALL_NATIVE: &str = r#"[{"name":"Task"},{"name":"Bug"},{"name":"Feature"}]"#;
 
 fn gh_log(repo: &Repo) -> String {
     std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log")).unwrap()
@@ -81,6 +92,88 @@ fn a_unit_triaged_to_build_is_made_ready_and_nothing_is_posted() {
         !log.contains("comment") && !log.contains("issue close"),
         "{log}"
     );
+}
+
+#[test]
+fn without_native_types_the_type_is_a_label_and_no_type_is_set() {
+    let repo = Repo::new();
+    triage(&repo, "Ok.\nLABELS: type:feat\nROUTE: build", &[]).success();
+    let log = gh_log(&repo);
+    assert!(log.contains("--add-label type:feat,"), "{log}");
+    assert!(!log.contains("PATCH"), "{log}");
+}
+
+#[test]
+fn a_failed_lookup_of_native_types_means_labels() {
+    let repo = Repo::new();
+    triage(&repo, "Ok.\nLABELS: type:fix\nROUTE: build", &[]).success();
+    let log = gh_log(&repo);
+    assert!(log.contains("orgs/{owner}/issue-types"), "{log}");
+    assert!(log.contains("--add-label type:fix,"), "{log}");
+}
+
+#[test]
+fn with_native_types_feat_is_a_feature_without_a_label() {
+    let repo = Repo::new();
+    native_types(&repo, ALL_NATIVE);
+    triage(
+        &repo,
+        "Ok.\nLABELS: type:feat, priority:high\nROUTE: build",
+        &[],
+    )
+    .success();
+    let log = gh_log(&repo);
+    assert!(
+        log.contains("--add-label priority:high,status:ready-for-agent "),
+        "{log}"
+    );
+    assert!(!log.contains("type:feat"), "{log}");
+    assert!(
+        log.contains("api --method PATCH repos/{owner}/{repo}/issues/4 -f type=Feature"),
+        "{log}"
+    );
+}
+
+#[test]
+fn with_native_types_fix_is_a_bug_without_a_label() {
+    let repo = Repo::new();
+    native_types(&repo, ALL_NATIVE);
+    triage(&repo, "Ok.\nLABELS: type:fix\nROUTE: build", &[]).success();
+    let log = gh_log(&repo);
+    assert!(!log.contains("type:fix"), "{log}");
+    assert!(log.contains("-f type=Bug"), "{log}");
+}
+
+#[test]
+fn with_native_types_another_type_is_a_task_and_keeps_its_label() {
+    let repo = Repo::new();
+    native_types(&repo, ALL_NATIVE);
+    triage(&repo, "Ok.\nLABELS: type:refactor\nROUTE: build", &[]).success();
+    let log = gh_log(&repo);
+    assert!(log.contains("--add-label type:refactor,"), "{log}");
+    assert!(log.contains("-f type=Task"), "{log}");
+}
+
+#[test]
+fn a_failed_native_type_set_leaves_the_unit_untouched() {
+    let repo = Repo::new();
+    native_types(&repo, ALL_NATIVE);
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::write(bin.join("patch-fails"), "").unwrap();
+    triage(&repo, "Ok.\nLABELS: type:feat\nROUTE: wontfix", &[]).failure();
+    let log = gh_log(&repo);
+    assert!(!log.contains("issue edit"), "{log}");
+    assert!(!log.contains("issue close"), "{log}");
+}
+
+#[test]
+fn a_native_type_the_organization_removed_falls_back_to_the_label() {
+    let repo = Repo::new();
+    native_types(&repo, r#"[{"name":"Task"},{"name":"Bug"}]"#);
+    triage(&repo, "Ok.\nLABELS: type:feat\nROUTE: build", &[]).success();
+    let log = gh_log(&repo);
+    assert!(log.contains("--add-label type:feat,"), "{log}");
+    assert!(!log.contains("PATCH"), "{log}");
 }
 
 #[test]

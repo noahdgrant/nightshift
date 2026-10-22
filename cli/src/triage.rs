@@ -7,9 +7,9 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::auto::STATE_PREFIX;
-use crate::forge::{Forge, Unit};
+use crate::forge::{self, Forge, Unit};
 use crate::harness::{self, Harness, Task};
-use crate::skill;
+use crate::{labels, skill};
 
 /// The labels a harness may ask for. A state is for `ns` to set, from the route.
 const CHOSEN_PREFIXES: [&str; 3] = ["type:", "priority:", "area:"];
@@ -149,8 +149,13 @@ pub fn run(
         .filter(|l| l.starts_with(STATE_PREFIX))
         .cloned()
         .collect();
-    let mut add = triaged.labels.clone();
+    let split = labels::types_split(&forge::unit_types_get(forge, root), &triaged.labels);
+    let mut add = split.labels;
     add.push(triaged.route.label().to_string());
+    // The type goes first: if it fails the unit is still as it was and triage can run again.
+    if let Some(name) = split.native {
+        forge.unit_type_set(root, number, &name)?;
+    }
     forge.unit_labels_set(root, number, &add, &remove)?;
     if triaged.route == Route::Wontfix {
         forge.unit_close(root, number)?;

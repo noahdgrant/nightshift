@@ -311,6 +311,12 @@ mod tests {
                 from_team: true,
             })
         }
+        fn unit_types_list(&self, _: &Path) -> Result<Vec<String>> {
+            unreachable!()
+        }
+        fn unit_type_set(&self, _: &Path, _: u64, _: &str) -> Result<()> {
+            unreachable!()
+        }
         fn labels_list(&self, _: &Path) -> Result<Vec<String>> {
             unreachable!()
         }

@@ -125,7 +125,7 @@ fn labels_present(root: &Path, forge: &dyn Forge) -> Check {
             )
         }
     };
-    let missing: Vec<String> = labels::all()
+    let missing: Vec<String> = labels::all(&forge::unit_types_get(forge, root))
         .into_iter()
         .map(|(name, _)| name)
         .filter(|name| !have.contains(name))

@@ -21,6 +21,13 @@ pub trait Forge {
     /// Creates the label `name`, which the repository does not have.
     fn label_create(&self, repo: &Path, name: &str, description: &str) -> Result<()>;
 
+    /// The names of the native unit types the repository at `repo` has. An error when the forge
+    /// cannot say; none when it has no such types.
+    fn unit_types_list(&self, repo: &Path) -> Result<Vec<String>>;
+
+    /// Sets the native type of unit `number` to `name`, one of those `unit_types_list` names.
+    fn unit_type_set(&self, repo: &Path, number: u64, name: &str) -> Result<()>;
+
     /// Adds and removes labels on unit `number`.
     fn unit_labels_set(
         &self,
@@ -96,6 +103,12 @@ pub fn blockers_get(forge: &dyn Forge, repo: &Path, number: u64) -> Vec<u64> {
     })
 }
 
+/// The native unit types the forge says the repository has. A forge that cannot say, because the
+/// call fails or the repository has no such types, has none.
+pub fn unit_types_get(forge: &dyn Forge, repo: &Path) -> Vec<String> {
+    forge.unit_types_list(repo).unwrap_or_default()
+}
+
 /// Every post `ns` makes on the forge starts with this line.
 pub const DISCLOSURE: &str = "🤖 *Posted by nightshift, an AI agent.*";
 
@@ -145,7 +158,86 @@ mod tests {
 
     struct Blockers(Result<Vec<u64>, &'static str>);
 
+    struct Types(Result<Vec<String>, &'static str>);
+
+    impl Forge for Types {
+        fn unit_types_list(&self, _: &Path) -> Result<Vec<String>> {
+            self.0.clone().map_err(|e| anyhow::anyhow!(e))
+        }
+        fn unit_type_set(&self, _: &Path, _: u64, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_blockers_list(&self, _: &Path, _: u64) -> Result<Vec<u64>> {
+            unreachable!()
+        }
+        fn login_get(&self, _: &Path) -> Result<String> {
+            unreachable!()
+        }
+        fn unit_get(&self, _: &Path, _: u64) -> Result<Unit> {
+            unreachable!()
+        }
+        fn labels_list(&self, _: &Path) -> Result<Vec<String>> {
+            unreachable!()
+        }
+        fn label_create(&self, _: &Path, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_labels_set(&self, _: &Path, _: u64, _: &[String], _: &[String]) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_body_set(&self, _: &Path, _: u64, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_comment_add(&self, _: &Path, _: u64, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_assignee_add(&self, _: &Path, _: u64) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_close(&self, _: &Path, _: u64) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_list(&self, _: &Path) -> Result<Vec<Unit>> {
+            unreachable!()
+        }
+        fn change_request_get(&self, _: &Path, _: &str) -> Result<Option<ChangeRequest>> {
+            unreachable!()
+        }
+        fn change_request_create(
+            &self,
+            _: &Path,
+            _: &str,
+            _: u64,
+            _: &str,
+            _: &str,
+            _: &[String],
+        ) -> Result<ChangeRequest> {
+            unreachable!()
+        }
+        fn change_request_assignee_add(&self, _: &Path, _: u64) -> Result<()> {
+            unreachable!()
+        }
+        fn change_request_label_add(&self, _: &Path, _: u64, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn change_request_checks_get(&self, _: &Path, _: u64) -> Result<Checks> {
+            unreachable!()
+        }
+        fn release_download(&self, _: &str, _: &str, _: &[&str], _: &Path) -> Result<()> {
+            unreachable!()
+        }
+        fn change_request_merge(&self, _: &Path, _: u64) -> Result<()> {
+            unreachable!()
+        }
+    }
+
     impl Forge for Blockers {
+        fn unit_types_list(&self, _: &Path) -> Result<Vec<String>> {
+            unreachable!()
+        }
+        fn unit_type_set(&self, _: &Path, _: u64, _: &str) -> Result<()> {
+            unreachable!()
+        }
         fn unit_blockers_list(&self, _: &Path, _: u64) -> Result<Vec<u64>> {
             self.0.clone().map_err(|e| anyhow::anyhow!(e))
         }
@@ -220,5 +312,17 @@ mod tests {
     fn a_forge_that_cannot_say_blocks_nothing() {
         let forge = Blockers(Err("404"));
         assert_eq!(blockers_get(&forge, Path::new("."), 1), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn the_native_types_the_forge_names_are_returned() {
+        let forge = Types(Ok(vec!["Bug".into(), "Task".into()]));
+        assert_eq!(unit_types_get(&forge, Path::new(".")), ["Bug", "Task"]);
+    }
+
+    #[test]
+    fn a_failed_lookup_of_native_types_means_none() {
+        let forge = Types(Err("404"));
+        assert_eq!(unit_types_get(&forge, Path::new(".")), Vec::<String>::new());
     }
 }

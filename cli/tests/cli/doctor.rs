@@ -84,10 +84,19 @@ impl Setup {
             &self.bin(),
             "gh",
             &format!(
-                "case \"$1 $2\" in\n  \"label list\") cat \"{}\";;\n  \"api user\") echo '{{\"login\":\"{login}\"}}';;\nesac",
-                self.tmp().join("labels.json").display()
+                "case \"$1 $2\" in\n  \"label list\") cat \"{}\";;\n  \"api orgs/{{owner}}/issue-types\") cat \"{}\";;\n  \"api user\") echo '{{\"login\":\"{login}\"}}';;\nesac",
+                self.tmp().join("labels.json").display(),
+                self.tmp().join("types.json").display()
             ),
         );
+    }
+
+    fn native_types(&self) {
+        std::fs::write(
+            self.tmp().join("types.json"),
+            r#"[{"name":"Task"},{"name":"Bug"},{"name":"Feature"}]"#,
+        )
+        .unwrap();
     }
 
     fn gh_down(&self) {
@@ -252,6 +261,46 @@ fn a_missing_label_fails_and_says_to_init() {
         .as_str()
         .unwrap()
         .contains("ns init"));
+}
+
+#[test]
+fn on_a_repository_with_native_types_the_feat_and_fix_labels_are_not_expected() {
+    let setup = Setup::new();
+    setup.native_types();
+    let without: Vec<&str> = ALL_LABELS
+        .iter()
+        .copied()
+        .filter(|l| *l != "type:feat" && *l != "type:fix")
+        .collect();
+    setup.labels(&without);
+    let (ok, report) = setup.doctor();
+    assert!(ok, "{report}");
+    assert_eq!(check(&report, "labels")["ok"], true, "{report}");
+}
+
+#[test]
+fn on_a_repository_with_native_types_the_other_type_labels_are_still_expected() {
+    let setup = Setup::new();
+    setup.native_types();
+    let without: Vec<&str> = ALL_LABELS
+        .iter()
+        .copied()
+        .filter(|l| *l != "type:feat" && *l != "type:refactor")
+        .collect();
+    setup.labels(&without);
+    only_fails(&setup, "labels", "type:refactor");
+}
+
+#[test]
+fn without_native_types_the_feat_label_is_expected() {
+    let setup = Setup::new();
+    let without: Vec<&str> = ALL_LABELS
+        .iter()
+        .copied()
+        .filter(|l| *l != "type:feat")
+        .collect();
+    setup.labels(&without);
+    only_fails(&setup, "labels", "type:feat");
 }
 
 #[test]
