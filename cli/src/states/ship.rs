@@ -38,10 +38,12 @@ pub struct Options {
 
 /// Publishes the unit's branch, opens a change request for it, waits for its checks and, when
 /// asked, merges it. With `queue`, the branch is first rebased onto the base branch when that has
-/// moved and the repository's checks run on the result; and a merge is made under a lock, of a
-/// head that contains the base branch's newest commit, or the unit goes round again. The address
-/// of the change request is kept as `ship.md`. The work is already committed: `build` is the only
-/// state that commits.
+/// moved and the repository's checks run on the result. A unit that is to be merged takes the
+/// merge lock before that and holds it until it is merged or leaves `ship`, so the units that
+/// merge go one at a time, each onto a base branch that holds the one before. The lock does not
+/// keep out a merge from outside `ns`: the base branch is fetched again before the merge, and
+/// the unit goes round again if it moved. The address of the change request is kept as `ship.md`.
+/// The work is already committed: `build` is the only state that commits.
 ///
 /// Failed checks find the build wrong: the evidence names them, ends in a failing verdict, and the
 /// unit goes back to `build`.
@@ -53,6 +55,26 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let (dir, branch) = (workspace.path.clone(), workspace.branch.clone());
     let id = ctx.unit.to_string();
     let root = ctx.vcs.root_find(&ctx.from)?;
+    // Whether the unit is to be merged, and so is queued behind the others that are.
+    let human = if ctx.ship.merge {
+        let base = ctx.vcs.workspace_base_find(&dir)?;
+        let files = ctx.vcs.workspace_files_changed(&dir, &base)?;
+        match manifest::human_review_read(&root)?.verdict(&files)? {
+            Verdict::NeedsHuman { file, glob } => Some((file, glob)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    // Held from before the rebase until this function returns, whichever way it does.
+    let _lock = if ctx.ship.queue && ctx.ship.merge && human.is_none() {
+        Some(lock::lock_wait(
+            &ctx.vcs.state_dir_find(&root)?,
+            MERGE_LOCK,
+        )?)
+    } else {
+        None
+    };
     let mut moves = 0;
     loop {
         if ctx.ship.queue {
@@ -67,11 +89,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         if !ctx.ship.merge {
             return Ok(Outcome::Pass);
         }
-        let base = ctx.vcs.workspace_base_find(&dir)?;
-        let files = ctx.vcs.workspace_files_changed(&dir, &base)?;
-        if let Verdict::NeedsHuman { file, glob } =
-            manifest::human_review_read(&root)?.verdict(&files)?
-        {
+        if let Some((file, glob)) = &human {
             ctx.forge
                 .change_request_label_add(&dir, number, labels::NEEDS_HUMAN_MERGE)?;
             println!(
@@ -84,15 +102,6 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
             );
             return Ok(Outcome::Pass);
         }
-        // Held until the end of this round.
-        let _lock = if ctx.ship.queue {
-            Some(lock::lock_wait(
-                &ctx.vcs.state_dir_find(&root)?,
-                MERGE_LOCK,
-            )?)
-        } else {
-            None
-        };
         if ctx.ship.queue && base_moved(ctx, &root, &dir)? {
             moves += 1;
             if moves > ctx.ship.max_base_moves {
