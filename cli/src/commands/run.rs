@@ -94,6 +94,8 @@ pub fn run(args: Args) -> Result<()> {
     let keep = manifest::transcript_days_read(&root)?;
     // Read here so a bad value stops `ns` before it runs anything.
     manifest::review_sessions_read(&root)?;
+    let queue = manifest::merge_queue_read(&root)?;
+    let max_base_moves = manifest::max_base_moves_read(&root)?;
     // Held until the function ends. Taken before anything of the unit's is read or deleted.
     let _lock = lock::lock_take(
         &vcs.state_dir_find(&root)?,
@@ -128,6 +130,8 @@ pub fn run(args: Args) -> Result<()> {
             poll: Duration::from_secs(args.options.ci_poll_seconds),
             timeout: Duration::from_secs(args.options.ci_timeout_seconds),
             start: Duration::from_secs(args.options.ci_start_seconds),
+            queue,
+            max_base_moves,
         },
         harness_timeout: Duration::from_secs(args.options.harness_timeout_seconds),
         checks_timeout: Duration::from_secs(args.options.checks_timeout_seconds),
@@ -334,7 +338,7 @@ fn walk(
         let outcome = phase(state, attempt);
         let to = match outcome {
             Outcome::Pass => next,
-            Outcome::Unprovable => State::Stuck,
+            Outcome::Unprovable | Outcome::BaseMoved => State::Stuck,
             Outcome::Fail | Outcome::Redo | Outcome::Inconclusive => {
                 let back = match outcome {
                     Outcome::Fail => state.on_fail(),
@@ -354,6 +358,7 @@ fn walk(
                 Outcome::Redo => "went_wrong",
                 Outcome::Pass | Outcome::Fail => "failed",
                 Outcome::Inconclusive | Outcome::Unprovable => "inconclusive",
+                Outcome::BaseMoved => "base_moved",
             }
             .into();
         }

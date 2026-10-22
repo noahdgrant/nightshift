@@ -153,6 +153,7 @@ labels() {{
   *"--add-label "*"status:ready-for-agent"*) l='{ready}';;
   esac
 }}
+[ -x "{bin}/on-$1-$2" ] && "{bin}/on-$1-$2"
 case "$*" in *dependencies/blocked_by*) {blocked_by};; esac
 case "$1 $2" in
 "issue comment") [ "{refuses_comment}" = yes ] && {{ echo "cannot comment" >&2; exit 1; }};;
@@ -2469,5 +2470,392 @@ fn a_review_sessions_setting_that_is_not_1_3_or_6_stops_ns_run_before_anything_r
         assert!(err.contains("review.sessions"), "{value}: {err}");
         assert!(out.get_output().stdout.is_empty(), "{value}");
         assert!(!repo.workspace("5").exists(), "{value}");
+    }
+}
+
+fn origin(repo: &Repo) -> std::path::PathBuf {
+    repo.path.parent().unwrap().join("origin.git")
+}
+
+/// Publishes the repository's `main` to its origin, as a repository that has one.
+fn main_published(repo: &Repo) {
+    git(&repo.path, &["push", "-q", "origin", "main"]);
+}
+
+/// A shell snippet that adds a commit with the file `name` to the origin's `main`, as another
+/// unit merging would, through a clone of its own.
+fn base_advance_script(repo: &Repo, name: &str, text: &str) -> String {
+    let other = repo.path.parent().unwrap().join("other");
+    format!(
+        r#"[ -d "{other}" ] || git clone -q "{origin}" "{other}"
+cd "{other}" && git pull -q origin main
+echo "{text}" > '{name}' && git add -A && git -c user.name=t -c user.email=t@t commit -q -m "other {name}" && git push -q origin main"#,
+        other = other.display(),
+        origin = origin(repo).display(),
+    )
+}
+
+/// Moves the origin's `main` once now, before the unit starts, and returns its new tip.
+fn base_advanced(repo: &Repo, name: &str, text: &str) -> String {
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(base_advance_script(repo, name, text))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    git(&origin(repo), &["rev-parse", "main"])
+        .trim()
+        .to_string()
+}
+
+/// Has the base branch move, by a new file each time, on each look at the change request's
+/// checks, up to `times` times.
+fn base_moves_on_checks(repo: &Repo, times: u32) {
+    let bin = repo.path.parent().unwrap().join("bin");
+    script(
+        &bin,
+        "on-pr-checks",
+        &format!(
+            r#"n=$(cat "{bin}/moved" 2>/dev/null || echo 0)
+[ "$n" -ge {times} ] && exit 0
+echo $((n+1)) > "{bin}/moved"
+{mover}"#,
+            bin = bin.display(),
+            mover = base_advance_script(repo, "moved.txt", "moved $n"),
+        ),
+    );
+}
+
+/// Has the repository's checks append a line to a log, and fail while `other.txt` is present when
+/// `fail_with_other` is set.
+fn counted_check(repo: &Repo, fail_with_other: bool) {
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fail = if fail_with_other {
+        "; if [ -e other.txt ]; then echo other file present; exit 1; fi"
+    } else {
+        ""
+    };
+    repo.set_check(&format!("echo x >> '{}/check.log'{fail}", bin.display()));
+}
+
+fn check_runs(repo: &Repo) -> usize {
+    std::fs::read_to_string(repo.path.parent().unwrap().join("bin/check.log"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+fn branch_parent(repo: &Repo) -> String {
+    git(&repo.workspace("5"), &["rev-parse", "HEAD~1"])
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn a_base_that_has_not_moved_rebases_nothing_and_runs_no_extra_check() {
+    let repo = Repo::new();
+    counted_check(&repo, false);
+    main_published(&repo);
+    let start = git(&repo.path, &["rev-parse", "main"]).trim().to_string();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert_eq!(branch_parent(&repo), start);
+    assert_eq!(check_runs(&repo), 1, "only the build's check ran");
+    assert_eq!(
+        git(&repo.path, &["rev-parse", "refs/ns/base/ns/5"]).trim(),
+        start
+    );
+}
+
+#[test]
+fn a_recorded_base_left_behind_by_a_stopped_rebase_is_moved_without_another_check() {
+    let repo = Repo::new();
+    main_published(&repo);
+    let start = git(&repo.path, &["rev-parse", "main"]).trim().to_string();
+    let tip = base_advanced(&repo, "other.txt", "other");
+    git(&repo.path, &["pull", "-q", "origin", "main"]);
+    // The branch already holds the base tip, but the build's check leaves the recorded base on
+    // the old commit, as a run stopped between the rebase and the move would.
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    repo.set_check(&format!(
+        "echo x >> '{}/check.log'; git update-ref refs/ns/base/ns/5 {start}",
+        bin.display()
+    ));
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert_eq!(check_runs(&repo), 1, "only the build's check ran");
+    assert_eq!(
+        git(&repo.path, &["rev-parse", "refs/ns/base/ns/5"]).trim(),
+        tip
+    );
+}
+
+#[test]
+fn a_base_that_moved_in_other_files_is_rebased_onto_and_the_result_checked() {
+    let repo = Repo::new();
+    counted_check(&repo, false);
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    let tip = {
+        // The unit starts from the old main; the origin moves on before it ships.
+        let moved = base_advanced(&repo, "other.txt", "other");
+        assert_ne!(moved, git(&repo.path, &["rev-parse", "main"]).trim());
+        moved
+    };
+    run(&repo, &path).success();
+    assert_eq!(branch_parent(&repo), tip);
+    assert_eq!(
+        check_runs(&repo),
+        2,
+        "the build's check and the rebased result's"
+    );
+    assert_eq!(
+        git(&repo.path, &["rev-parse", "refs/ns/base/ns/5"]).trim(),
+        tip
+    );
+    // The unit's change is only its own file, so what is read from the recorded base is.
+    assert_eq!(
+        git(
+            &repo.workspace("5"),
+            &["diff", "--name-only", &format!("{tip}..HEAD")]
+        )
+        .trim(),
+        "thing.txt"
+    );
+    assert_eq!(git(&origin(&repo), &["rev-parse", "ns/5~1"]).trim(), tip);
+}
+
+#[test]
+fn a_rebase_does_not_run_verify_or_review_again() {
+    let repo = Repo::new();
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    base_advanced(&repo, "other.txt", "other");
+    let out = run(&repo, &path).success().get_output().stdout.clone();
+    let moves = moves(out);
+    assert_eq!(
+        moves.iter().filter(|m| *m == "build>verify").count(),
+        1,
+        "{moves:?}"
+    );
+    assert_eq!(
+        moves.iter().filter(|m| *m == "verify>review").count(),
+        1,
+        "{moves:?}"
+    );
+    assert!(!repo
+        .path
+        .parent()
+        .unwrap()
+        .join("bin/verify.prompt.2")
+        .exists());
+    assert_eq!(review_prompts(&repo), 3, "one review of three sessions");
+}
+
+#[test]
+fn a_base_that_moved_is_brought_in_without_a_check_when_the_repository_has_none() {
+    let repo = Repo::new();
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    let tip = base_advanced(&repo, "other.txt", "other");
+    run(&repo, &path).success();
+    assert_eq!(branch_parent(&repo), tip);
+}
+
+#[test]
+fn a_failing_check_on_the_rebased_result_sends_the_unit_back_to_build_with_its_output() {
+    let repo = Repo::new();
+    counted_check(&repo, true);
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    base_advanced(&repo, "other.txt", "other");
+    let out = run(&repo, &path).failure().get_output().stdout.clone();
+    let moves = moves(out);
+    assert!(moves.contains(&"ship>build".to_string()), "{moves:?}");
+    let evidence = read(&repo, "evidence.md");
+    assert!(evidence.contains("other file present"), "{evidence}");
+    assert!(evidence.ends_with("VERDICT: FAIL\n"), "{evidence}");
+}
+
+#[test]
+fn a_conflict_sends_the_unit_back_to_build_naming_the_files_and_leaves_the_workspace_as_it_was() {
+    let repo = Repo::new();
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    base_advanced(&repo, "thing.txt", "theirs");
+    let before = git(&repo.path, &["rev-parse", "main"]).trim().to_string();
+    let out = run(&repo, &path).failure().get_output().stdout.clone();
+    let moves = moves(out);
+    assert!(moves.contains(&"ship>build".to_string()), "{moves:?}");
+    let evidence = read(&repo, "evidence.md");
+    assert!(evidence.contains("thing.txt"), "{evidence}");
+    assert!(
+        evidence.contains("Rebase onto the base branch and resolve them"),
+        "{evidence}"
+    );
+    assert!(evidence.ends_with("VERDICT: FAIL\n"), "{evidence}");
+    let ws = repo.workspace("5");
+    assert_eq!(git(&ws, &["status", "--porcelain"]).trim(), "");
+    assert_eq!(git(&ws, &["rev-parse", "HEAD~1"]).trim(), before);
+    assert!(!ws.join(".git").is_dir());
+    assert_eq!(
+        std::fs::read_to_string(ws.join("thing.txt")).unwrap(),
+        "thing\n"
+    );
+}
+
+#[test]
+fn with_the_queue_off_nothing_is_rebased_no_lock_is_taken_and_the_merge_names_the_head() {
+    let repo = Repo::new();
+    counted_check(&repo, false);
+    manifest_set(&repo, "[merge]\nqueue = false\n");
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    let old = base_advanced(&repo, "other.txt", "other");
+    // A held lock would stop the run, were it asked for.
+    let lock = repo.path.join(".git/ns/merge.lock");
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    let held = std::fs::File::create(&lock).unwrap();
+    held.lock().unwrap();
+    run_with(&repo, &path, &["--merge"]).success();
+    assert_ne!(git(&origin(&repo), &["rev-parse", "ns/5~1"]).trim(), old);
+    assert_eq!(check_runs(&repo), 1);
+    let head = git(&origin(&repo), &["rev-parse", "ns/5"])
+        .trim()
+        .to_string();
+    assert!(gh_log(&repo).contains(&format!("pr merge 9 --squash --match-head-commit {head}")));
+}
+
+#[test]
+fn a_base_that_moves_after_the_checks_passed_sends_the_unit_round_again_and_the_new_head_merges() {
+    let repo = Repo::new();
+    counted_check(&repo, false);
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    base_moves_on_checks(&repo, 1);
+    run_with(&repo, &path, &["--merge"]).success();
+    let log = gh_log(&repo);
+    assert_eq!(log.matches("pr create").count(), 1, "{log}");
+    assert_eq!(log.matches("pr merge").count(), 1, "{log}");
+    let head = git(&origin(&repo), &["rev-parse", "ns/5"])
+        .trim()
+        .to_string();
+    let tip = git(&origin(&repo), &["rev-parse", "main"])
+        .trim()
+        .to_string();
+    assert_eq!(git(&origin(&repo), &["rev-parse", "ns/5~1"]).trim(), tip);
+    assert!(
+        log.contains(&format!("--match-head-commit {head}")),
+        "{log}"
+    );
+    assert_eq!(check_runs(&repo), 2);
+}
+
+#[test]
+fn a_base_that_keeps_moving_sticks_the_unit_saying_so() {
+    let repo = Repo::new();
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    base_moves_on_checks(&repo, 99);
+    let out = run_with(&repo, &path, &["--merge"]).failure();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("the base branch kept moving"), "{stdout}");
+    assert!(
+        stdout.contains("\"ship\",\"to\":\"stuck\"")
+            || stdout.contains("ship>stuck")
+            || moves(stdout.clone().into_bytes()).contains(&"ship>stuck".to_string())
+    );
+    assert!(!gh_log(&repo).contains("pr merge"));
+    // The default allows three moves, so the fourth is one too many.
+    assert_eq!(
+        std::fs::read_to_string(repo.path.parent().unwrap().join("bin/moved"))
+            .unwrap()
+            .trim(),
+        "4"
+    );
+    let last = run_log(&repo).pop().unwrap();
+    assert_eq!(last["reason"], "base_moved");
+}
+
+#[test]
+fn a_setting_of_one_move_sticks_the_unit_at_the_second() {
+    let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nmax_base_moves = 1\n");
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    base_moves_on_checks(&repo, 99);
+    let out = run_with(&repo, &path, &["--merge"]).failure();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("the base branch kept moving"), "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(repo.path.parent().unwrap().join("bin/moved"))
+            .unwrap()
+            .trim(),
+        "2"
+    );
+    assert!(!gh_log(&repo).contains("pr merge"));
+}
+
+#[test]
+fn a_unit_left_for_a_person_is_also_brought_up_to_date_and_checked() {
+    let repo = Repo::new();
+    counted_check(&repo, false);
+    manifest_set(&repo, "[merge]\nhuman_review = [\"*.txt\"]\n");
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    let tip = base_advanced(&repo, "other.txt", "other");
+    run_with(&repo, &path, &["--merge"]).success();
+    assert!(!gh_log(&repo).contains("pr merge"));
+    assert!(gh_log(&repo).contains("needs-human-merge"));
+    assert_eq!(branch_parent(&repo), tip);
+    assert_eq!(check_runs(&repo), 2);
+}
+
+#[test]
+fn the_merge_waits_for_the_lock_another_unit_holds() {
+    let repo = Repo::new();
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    let lock = repo.path.join(".git/ns/merge.lock");
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    let held = std::fs::File::create(&lock).unwrap();
+    held.lock().unwrap();
+    let log = repo.path.parent().unwrap().join("bin/gh.log");
+    let watcher = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let merged_early = std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .contains("pr merge");
+        drop(held);
+        merged_early
+    });
+    run_with(&repo, &path, &["--merge"]).success();
+    assert!(!watcher.join().unwrap(), "merged while the lock was held");
+    assert!(gh_log(&repo).contains("pr merge"));
+}
+
+#[test]
+fn a_bad_merge_setting_is_an_error_that_names_the_key_and_nothing_runs() {
+    for (key, bad) in [
+        ("queue", "\"yes\""),
+        ("queue", "1"),
+        ("max_base_moves", "0"),
+        ("max_base_moves", "-1"),
+        ("max_base_moves", "\"3\""),
+        ("max_base_moves", "2.5"),
+    ] {
+        let repo = Repo::new();
+        set_manifest(&repo, &format!("[merge]\n{key} = {bad}\n"));
+        let out = run_unset(&repo, &tools(&repo, &Fakes::passing())).failure();
+        let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(
+            err.contains(&format!("merge.{key}")),
+            "{key} = {bad}: {err}"
+        );
+        assert!(out.get_output().stdout.is_empty(), "{key} = {bad}");
     }
 }

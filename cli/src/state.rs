@@ -14,6 +14,9 @@ pub enum Outcome {
     Inconclusive,
     /// The state ran again and still could not prove the work. The unit is stuck for a human.
     Unprovable,
+    /// The state could not go on because the base branch kept moving. The unit is stuck for a
+    /// human.
+    BaseMoved,
     /// The state itself went wrong. The unit runs the same state again.
     Redo,
 }

@@ -128,6 +128,47 @@ pub fn review_sessions_read(root: &Path) -> Result<u32> {
         })
 }
 
+/// Whether `ship` tests a change request on the base branch's newest commit before it merges,
+/// when the person says nothing.
+const MERGE_QUEUE_DEFAULT: bool = true;
+
+/// Whether `ship` brings the branch up to date and merges under a lock: `[merge] queue`, or the
+/// built-in default when the key is missing. A value that is not a boolean is an error.
+pub fn merge_queue_read(root: &Path) -> Result<bool> {
+    let document = document_read(root)?;
+    let Some(item) = document.get("merge").and_then(|m| m.get("queue")) else {
+        return Ok(MERGE_QUEUE_DEFAULT);
+    };
+    item.as_bool().with_context(|| {
+        format!(
+            "`merge.queue` in {} is not true or false",
+            file_find(root).display()
+        )
+    })
+}
+
+/// How many times the base branch may move while one change request is merged, when the person
+/// gives no number.
+const MAX_BASE_MOVES_DEFAULT: u32 = 3;
+
+/// The moves of the base branch a unit survives: `[merge] max_base_moves`, or the built-in default
+/// when the key is missing. A value that is not a whole number of at least 1 is an error.
+pub fn max_base_moves_read(root: &Path) -> Result<u32> {
+    let document = document_read(root)?;
+    let Some(item) = document.get("merge").and_then(|m| m.get("max_base_moves")) else {
+        return Ok(MAX_BASE_MOVES_DEFAULT);
+    };
+    item.as_integer()
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|&n| n >= 1)
+        .with_context(|| {
+            format!(
+                "`merge.max_base_moves` in {} is not a whole number of at least 1",
+                file_find(root).display()
+            )
+        })
+}
+
 /// How many days a transcript is kept, when the person gives no number.
 const TRANSCRIPT_DAYS_DEFAULT: u32 = 7;
 
@@ -334,6 +375,73 @@ mod tests {
             let err = review_sessions_read(tmp.path()).unwrap_err().to_string();
             assert!(
                 err.contains("review.sessions") && err.contains("nightshift.toml"),
+                "{text}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_queue_is_the_setting_or_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(merge_queue_read(tmp.path()).unwrap());
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for (text, queue) in [
+            ("[merge]\nqueue = false\n", false),
+            ("[merge]\nqueue = true\n", true),
+            ("[merge]\nhuman_review = []\n", true),
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            assert_eq!(merge_queue_read(tmp.path()).unwrap(), queue, "{text}");
+        }
+    }
+
+    #[test]
+    fn merge_queue_that_is_not_a_boolean_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for text in [
+            "[merge]\nqueue = \"true\"\n",
+            "[merge]\nqueue = 1\n",
+            "[merge]\nqueue = 2.5\n",
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            let err = merge_queue_read(tmp.path()).unwrap_err().to_string();
+            assert!(
+                err.contains("merge.queue") && err.contains("nightshift.toml"),
+                "{text}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn max_base_moves_is_the_setting_or_the_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(max_base_moves_read(tmp.path()).unwrap(), 3);
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for (text, moves) in [
+            ("[merge]\nmax_base_moves = 1\n", 1),
+            ("[merge]\nmax_base_moves = 7\n", 7),
+            ("[merge]\nqueue = true\n", 3),
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            assert_eq!(max_base_moves_read(tmp.path()).unwrap(), moves, "{text}");
+        }
+    }
+
+    #[test]
+    fn max_base_moves_that_is_not_a_whole_number_of_at_least_one_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for text in [
+            "[merge]\nmax_base_moves = 0\n",
+            "[merge]\nmax_base_moves = -1\n",
+            "[merge]\nmax_base_moves = \"3\"\n",
+            "[merge]\nmax_base_moves = 2.5\n",
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            let err = max_base_moves_read(tmp.path()).unwrap_err().to_string();
+            assert!(
+                err.contains("merge.max_base_moves") && err.contains("nightshift.toml"),
                 "{text}: {err}"
             );
         }
