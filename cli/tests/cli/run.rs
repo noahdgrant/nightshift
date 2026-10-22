@@ -291,7 +291,7 @@ fn run(repo: &Repo, path: &str) -> assert_cmd::assert::Assert {
 
 /// Runs `ns run 5` with `extra` arguments, two attempts a state unless `extra` says otherwise. It
 /// looks at the checks without waiting between looks.
-fn run_with(repo: &Repo, path: &str, extra: &[&str]) -> assert_cmd::assert::Assert {
+pub fn run_with(repo: &Repo, path: &str, extra: &[&str]) -> assert_cmd::assert::Assert {
     let mut args = vec!["run", "5", "--gates", "auto", "--ci-poll-seconds", "0"];
     if !extra.contains(&"--max-attempts") {
         args.extend(["--max-attempts", "2"]);
@@ -675,7 +675,7 @@ fn a_refused_assignment_is_said_on_stderr_and_does_not_stop_the_unit() {
 }
 
 /// What the fake `gh` was asked, empty when it was not called at all.
-fn gh_log(repo: &Repo) -> String {
+pub fn gh_log(repo: &Repo) -> String {
     std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log")).unwrap_or_default()
 }
 
@@ -1003,7 +1003,7 @@ fn ship_merges_once_the_checks_pass_when_asked() {
 }
 
 /// Commits `.nightshift/nightshift.toml` with `text` to the repository, before a unit starts.
-fn manifest_set(repo: &Repo, text: &str) {
+pub fn manifest_set(repo: &Repo, text: &str) {
     std::fs::create_dir_all(repo.path.join(".nightshift")).unwrap();
     std::fs::write(repo.path.join(".nightshift/nightshift.toml"), text).unwrap();
 }
@@ -1500,7 +1500,7 @@ fn a_finished_unit_whose_change_request_is_still_open_is_left_alone() {
     let out = run(&repo, &path).success().get_output().stdout.clone();
     assert_eq!(
         lines(&out),
-        [serde_json::json!({"unit": "5", "state": "done"})]
+        [serde_json::json!({"unit": "5", "state": "done", "refresh": "current"})]
     );
     assert!(repo.workspace("5").is_dir());
     assert!(repo.branches().contains(&"ns/5".to_string()));
@@ -2545,12 +2545,12 @@ fn the_model_option_beats_every_key() {
     );
 }
 
-fn origin(repo: &Repo) -> std::path::PathBuf {
+pub fn origin(repo: &Repo) -> std::path::PathBuf {
     repo.path.parent().unwrap().join("origin.git")
 }
 
 /// Publishes the repository's `main` to its origin, as a repository that has one.
-fn main_published(repo: &Repo) {
+pub fn main_published(repo: &Repo) {
     git(&repo.path, &["push", "-q", "origin", "main"]);
 }
 
@@ -2568,7 +2568,7 @@ echo "{text}" > '{name}' && git add -A && git -c user.name=t -c user.email=t@t c
 }
 
 /// Moves the origin's `main` once now, before the unit starts, and returns its new tip.
-fn base_advanced(repo: &Repo, name: &str, text: &str) -> String {
+pub fn base_advanced(repo: &Repo, name: &str, text: &str) -> String {
     let out = std::process::Command::new("sh")
         .arg("-c")
         .arg(base_advance_script(repo, name, text))
@@ -2604,7 +2604,7 @@ echo $((n+1)) > "{bin}/moved"
 
 /// Has the repository's checks append a line to a log, and fail while `other.txt` is present when
 /// `fail_with_other` is set.
-fn counted_check(repo: &Repo, fail_with_other: bool) {
+pub fn counted_check(repo: &Repo, fail_with_other: bool) {
     let bin = repo.path.parent().unwrap().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let fail = if fail_with_other {
@@ -2615,7 +2615,7 @@ fn counted_check(repo: &Repo, fail_with_other: bool) {
     repo.set_check(&format!("echo x >> '{}/check.log'{fail}", bin.display()));
 }
 
-fn check_runs(repo: &Repo) -> usize {
+pub fn check_runs(repo: &Repo) -> usize {
     std::fs::read_to_string(repo.path.parent().unwrap().join("bin/check.log"))
         .unwrap_or_default()
         .lines()
@@ -3153,4 +3153,191 @@ fn a_bad_merge_setting_is_an_error_that_names_the_key_and_nothing_runs() {
         );
         assert!(out.get_output().stdout.is_empty(), "{key} = {bad}");
     }
+}
+
+/// Ends a run with the change request open and the base branch published, then moves the base
+/// branch on. Returns the `PATH` and the base's new tip.
+fn open_behind(repo: &Repo, name: &str) -> (String, String) {
+    counted_check(repo, name == "other.txt-fails");
+    main_published(repo);
+    let path = tools(repo, &Fakes::passing());
+    run(repo, &path).success();
+    let name = name.trim_end_matches("-fails");
+    let tip = base_advanced(repo, name, "other");
+    (path, tip)
+}
+
+fn pr_checks_looks(repo: &Repo) -> usize {
+    gh_log(repo).matches("pr checks").count()
+}
+
+fn run_stdout(repo: &Repo, path: &str) -> Vec<serde_json::Value> {
+    lines(&run(repo, path).success().get_output().stdout)
+}
+
+#[test]
+fn a_done_unit_with_an_open_change_request_behind_its_base_is_rebased_checked_and_pushed() {
+    let repo = Repo::new();
+    let (path, tip) = open_behind(&repo, "other.txt");
+    let looks = pr_checks_looks(&repo);
+    let reviews = review_prompts(&repo);
+    let out = run_stdout(&repo, &path);
+    assert_eq!(
+        out,
+        [serde_json::json!({"unit": "5", "state": "done", "refresh": "refreshed"})]
+    );
+    assert_eq!(branch_parent(&repo), tip);
+    assert_eq!(git(&origin(&repo), &["rev-parse", "ns/5~1"]).trim(), tip);
+    assert_eq!(check_runs(&repo), 2, "the build's check and the refresh's");
+    assert_eq!(pr_checks_looks(&repo), looks + 1);
+    assert_eq!(review_prompts(&repo), reviews, "review did not run again");
+    assert!(!repo
+        .path
+        .parent()
+        .unwrap()
+        .join("bin/verify.prompt.2")
+        .exists());
+    assert!(repo.workspace("5").is_dir());
+}
+
+#[test]
+fn a_done_unit_whose_change_request_is_current_prints_so_and_runs_nothing() {
+    let repo = Repo::new();
+    counted_check(&repo, false);
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    run(&repo, &path).success();
+    let pushed = git(&origin(&repo), &["rev-parse", "ns/5"]);
+    let looks = pr_checks_looks(&repo);
+    let out = run_stdout(&repo, &path);
+    assert_eq!(
+        out,
+        [serde_json::json!({"unit": "5", "state": "done", "refresh": "current"})]
+    );
+    assert_eq!(check_runs(&repo), 1);
+    assert_eq!(git(&origin(&repo), &["rev-parse", "ns/5"]), pushed);
+    assert_eq!(pr_checks_looks(&repo), looks);
+}
+
+#[test]
+fn a_second_run_against_the_same_base_tip_does_nothing() {
+    let repo = Repo::new();
+    let (path, tip) = open_behind(&repo, "other.txt");
+    run(&repo, &path).success();
+    let log = std::fs::read_to_string(repo.path.join(".git/ns/runs.jsonl")).unwrap();
+    assert!(
+        log.contains(&format!(r#""base_tested":"{tip}""#)),
+        "the tip a refresh tested is in the run log: {log}"
+    );
+    let looks = pr_checks_looks(&repo);
+    let out = run_stdout(&repo, &path);
+    assert_eq!(out[0]["refresh"], "current");
+    assert_eq!(check_runs(&repo), 2);
+    assert_eq!(pr_checks_looks(&repo), looks);
+}
+
+#[test]
+fn a_base_tip_the_run_log_says_was_tested_is_not_refreshed_again() {
+    let repo = Repo::new();
+    let (path, tip) = open_behind(&repo, "other.txt");
+    // As after a refresh whose rebase the branch does not show.
+    let log = repo.path.join(".git/ns/runs.jsonl");
+    let mut text = std::fs::read_to_string(&log).unwrap();
+    text.push_str(&format!("{{\"unit\":\"5\",\"base_tested\":\"{tip}\"}}\n"));
+    std::fs::write(&log, text).unwrap();
+    let out = run_stdout(&repo, &path);
+    assert_eq!(out[0]["refresh"], "current");
+    assert_eq!(check_runs(&repo), 1);
+    assert_ne!(branch_parent(&repo), tip);
+}
+
+#[test]
+fn a_refresh_that_conflicts_puts_the_unit_back_at_build_with_the_evidence_in_the_line() {
+    let repo = Repo::new();
+    let (path, _) = open_behind(&repo, "thing.txt");
+    let out = run_stdout(&repo, &path);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0]["from"], "done");
+    assert_eq!(out[0]["to"], "build");
+    assert_eq!(out[0]["reason"], "failed");
+    let evidence = out[0]["evidence"].as_str().unwrap();
+    assert!(evidence.contains("thing.txt"), "{evidence}");
+    assert_eq!(evidence, read(&repo, "evidence.md"));
+    let last = run_log(&repo).into_iter().rfind(|e| e.get("to").is_some());
+    assert_eq!(last.unwrap()["to"], "build");
+    // The next run picks up at build. The fake build does not resolve the conflict, so the unit
+    // is stuck again at the end.
+    let next = lines(&run(&repo, &path).failure().get_output().stdout);
+    assert_eq!(next[0]["state"], "build");
+}
+
+#[test]
+fn a_refresh_whose_check_fails_puts_the_unit_back_at_build_with_the_output() {
+    let repo = Repo::new();
+    let (path, _) = open_behind(&repo, "other.txt-fails");
+    let out = run_stdout(&repo, &path);
+    assert_eq!(out[0]["to"], "build");
+    let evidence = out[0]["evidence"].as_str().unwrap();
+    assert!(evidence.contains("other file present"), "{evidence}");
+    assert!(evidence.ends_with("VERDICT: FAIL\n"), "{evidence}");
+}
+
+#[test]
+fn a_refresh_whose_change_request_checks_fail_puts_the_unit_back_at_build() {
+    let repo = Repo::new();
+    let (_, _) = open_behind(&repo, "other.txt");
+    let failing = Fakes {
+        ci: Ci::FailsOnce,
+        ..Fakes::passing()
+    };
+    let out = run_stdout(&repo, &tools(&repo, &failing));
+    assert_eq!(out[0]["to"], "build");
+    let evidence = out[0]["evidence"].as_str().unwrap();
+    assert!(evidence.contains("lint"), "{evidence}");
+}
+
+#[test]
+fn a_refresh_whose_change_request_checks_never_finish_goes_wrong_and_leaves_the_unit_done() {
+    let repo = Repo::new();
+    let (_, _) = open_behind(&repo, "other.txt");
+    let pending = Fakes {
+        ci: Ci::NeverFinishes,
+        ..Fakes::passing()
+    };
+    let path = tools(&repo, &pending);
+    let out = run_with(&repo, &path, &["--ci-timeout-seconds", "0"]).failure();
+    let err = String::from_utf8_lossy(&out.get_output().stderr).to_string();
+    assert!(err.contains("did not finish in time"), "{err}");
+    let last = run_log(&repo).into_iter().rfind(|e| e.get("to").is_some());
+    assert_eq!(last.unwrap()["to"], "done");
+}
+
+#[test]
+fn with_the_queue_off_a_done_unit_is_not_refreshed() {
+    let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nqueue = false\n");
+    let (path, tip) = open_behind(&repo, "other.txt");
+    let pushed = git(&origin(&repo), &["rev-parse", "ns/5"]);
+    let out = run_stdout(&repo, &path);
+    assert_eq!(out, [serde_json::json!({"unit": "5", "state": "done"})]);
+    assert_ne!(branch_parent(&repo), tip);
+    assert_eq!(git(&origin(&repo), &["rev-parse", "ns/5"]), pushed);
+    assert_eq!(check_runs(&repo), 1);
+}
+
+#[test]
+fn a_done_unit_whose_open_change_request_has_lost_its_workspace_is_reported() {
+    let repo = Repo::new();
+    let (path, _) = open_behind(&repo, "other.txt");
+    git(
+        &repo.path,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            &repo.workspace("5").to_string_lossy(),
+        ],
+    );
+    let err = run(&repo, &path).failure().get_output().stderr.clone();
+    assert!(String::from_utf8_lossy(&err).contains("workspace of unit 5 is gone"));
 }

@@ -12,8 +12,9 @@ use crate::labels;
 use crate::lock;
 use crate::manifest;
 use crate::merge::Verdict;
+use crate::runlog::RunLog;
 use crate::state::Outcome;
-use crate::vcs::Rebase;
+use crate::vcs::{Rebase, Vcs};
 
 /// The lock that lets one unit at a time merge into the base branch.
 const MERGE_LOCK: &str = "merge.lock";
@@ -78,8 +79,10 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let mut moves = 0;
     loop {
         if ctx.ship.queue {
-            if let Some(outcome) = refresh(ctx, &root, &dir, &id)? {
-                return Ok(outcome);
+            if let Some(tip) = ctx.vcs.base_fetch(&root)? {
+                if refresh(ctx, &root, &dir, &id, &tip)? == Refresh::Failed {
+                    return Ok(Outcome::Fail);
+                }
             }
         }
         let number = publish(ctx, &dir, &branch, &id)?;
@@ -123,20 +126,28 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     }
 }
 
-/// Brings the branch up to date with the base branch, when that has commits the branch lacks, and
-/// runs the repository's checks on the result. `Some` when the unit must go back to `build`: the
-/// rebase conflicted, or the checks failed. Neither `verify` nor `review` runs again after a
-/// clean rebase, for the unit's own change is as it was.
-fn refresh(ctx: &Context, root: &Path, dir: &Path, id: &str) -> Result<Option<Outcome>> {
-    let Some(tip) = ctx.vcs.base_fetch(root)? else {
-        return Ok(None);
-    };
-    if ctx.vcs.workspace_contains(dir, &tip)? {
+/// What bringing a branch up to date with the base branch did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Refresh {
+    /// The branch already held the base branch's newest commit, so nothing ran.
+    Current,
+    /// The branch was rebased onto the base branch and the repository's checks passed on it.
+    Refreshed,
+    /// The rebase conflicted or the checks failed, and the evidence says so: the unit must go
+    /// back to `build`.
+    Failed,
+}
+
+/// Brings the branch up to date with the base branch, whose newest commit is `tip`, when the
+/// branch lacks it, and runs the repository's checks on the result. Neither `verify` nor `review`
+/// runs again after a clean rebase, for the unit's own change is as it was.
+fn refresh(ctx: &Context, root: &Path, dir: &Path, id: &str, tip: &str) -> Result<Refresh> {
+    if ctx.vcs.workspace_contains(dir, tip)? {
         // A run stopped between the rebase and the move of the recorded base leaves it stale.
-        ctx.vcs.workspace_base_set(dir, &tip)?;
-        return Ok(None);
+        ctx.vcs.workspace_base_set(dir, tip)?;
+        return Ok(Refresh::Current);
     }
-    if let Rebase::Conflict(files) = ctx.vcs.workspace_rebase(dir, &tip)? {
+    if let Rebase::Conflict(files) = ctx.vcs.workspace_rebase(dir, tip)? {
         let evidence = format!(
             "The base branch moved and the unit's commit conflicts with it in: {}. Rebase onto \
              the base branch and resolve them.\n{}\n",
@@ -144,9 +155,9 @@ fn refresh(ctx: &Context, root: &Path, dir: &Path, id: &str) -> Result<Option<Ou
             super::verdict::FAIL_LINE
         );
         artifact::write(dir, id, "evidence.md", &evidence)?;
-        return Ok(Some(Outcome::Fail));
+        return Ok(Refresh::Failed);
     }
-    ctx.vcs.workspace_base_set(dir, &tip)?;
+    ctx.vcs.workspace_base_set(dir, tip)?;
     let report = checks::run(
         ctx.vcs.as_ref(),
         ctx.os.as_ref(),
@@ -162,9 +173,51 @@ fn refresh(ctx: &Context, root: &Path, dir: &Path, id: &str) -> Result<Option<Ou
             super::verdict::FAIL_LINE
         );
         artifact::write(dir, id, "evidence.md", &evidence)?;
-        return Ok(Some(Outcome::Fail));
+        return Ok(Refresh::Failed);
     }
-    Ok(None)
+    Ok(Refresh::Refreshed)
+}
+
+/// The base branch's newest commit when the open change request of the unit in `dir` lacks it and
+/// no refresh has already tested it, and `None` when the change request is current.
+pub fn base_behind(
+    vcs: &dyn Vcs,
+    log: &RunLog,
+    root: &Path,
+    dir: &Path,
+    unit: &str,
+) -> Result<Option<String>> {
+    let Some(tip) = vcs.base_fetch(root)? else {
+        return Ok(None);
+    };
+    if log.base_tested(unit)?.as_deref() == Some(tip.as_str())
+        || vcs.workspace_contains(dir, &tip)?
+    {
+        return Ok(None);
+    }
+    Ok(Some(tip))
+}
+
+/// Brings the change request of a unit that is done, and still open, up to date with the base
+/// branch, whose newest commit is `tip`: the refresh `run` makes, then the push and the wait for
+/// the change request's checks. `verify` and `review` do not run again.
+pub fn open_refresh(ctx: &Context, tip: &str) -> Result<Refresh> {
+    let workspace = ctx
+        .workspace
+        .as_ref()
+        .context("a refresh ran before there was a workspace")?;
+    let (dir, branch) = (workspace.path.clone(), workspace.branch.clone());
+    let id = ctx.unit.to_string();
+    let root = ctx.vcs.root_find(&ctx.from)?;
+    match refresh(ctx, &root, &dir, &id, tip)? {
+        Refresh::Refreshed => {}
+        other => return Ok(other),
+    }
+    let number = publish(ctx, &dir, &branch, &id)?;
+    Ok(match checks_wait(ctx, &dir, number, &id)? {
+        Some(_) => Refresh::Failed,
+        None => Refresh::Refreshed,
+    })
 }
 
 /// Whether the base branch has a commit the branch about to be merged lacks.

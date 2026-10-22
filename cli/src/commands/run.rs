@@ -11,6 +11,7 @@ use crate::forge::ChangeState;
 use crate::manifest::Place;
 use crate::runlog::{Move, Reason, Resume, RunLog};
 use crate::state::{Outcome, State};
+use crate::states::ship::Refresh;
 use crate::states::{self, clean_up, ship, Context, BUILT_SNAPSHOT};
 use crate::transcripts::Transcripts;
 use crate::{auto, forge, harness, lock, manifest, os, status, vcs, workspace};
@@ -30,6 +31,9 @@ pub struct Args {
     gates: Gates,
     #[command(flatten)]
     options: Options,
+    /// Whether `ns auto` started the run, which never refreshes an open change request.
+    #[arg(skip)]
+    from_auto: bool,
 }
 
 /// What a run of a unit is told, which `ns auto` passes on to each unit it runs.
@@ -73,6 +77,7 @@ impl Args {
             ignore_blockers: false,
             gates: Gates::Auto,
             options,
+            from_auto: true,
         }
     }
 }
@@ -146,13 +151,7 @@ pub fn run(args: Args) -> Result<()> {
     let planned = match resume {
         Resume::Fresh => State::START,
         Resume::At(state) | Resume::Stuck(state) => state,
-        Resume::Finished => {
-            println!(
-                "{}",
-                json!({ "unit": unit, "state": State::Done.to_string() })
-            );
-            return finished_clean_up(ctx);
-        }
+        Resume::Finished => return finished(ctx, &log, args.from_auto),
     };
     if planned != State::Setup {
         let workspace = workspace::locate(&root, &unit)?;
@@ -314,14 +313,83 @@ fn stuck_check_resume(ctx: &Context, log: &RunLog, unit: &str, stuck_in: State) 
     }
 }
 
-/// Cleans up after a unit whose run is done, once its change request has merged since: the
-/// run ended with it open, and nothing else cleans up after the human merges. The unit's status
-/// goes with it. A change request still open changes nothing.
-fn finished_clean_up(mut ctx: Context) -> Result<()> {
+/// Looks again at a unit whose run is done and prints it as one JSON line. A change request that
+/// is still open and behind its base branch is refreshed first, unless `ns auto` asked: the line
+/// then says whether it was current, refreshed, or sent back to `build`. One that has merged since
+/// is cleaned up after, and the unit's status goes with it. A change request still open changes
+/// nothing else.
+fn finished(mut ctx: Context, log: &RunLog, from_auto: bool) -> Result<()> {
+    let root = ctx.vcs.root_find(&ctx.from)?;
+    let unit = ctx.unit.to_string();
+    let mut line = json!({ "unit": unit, "state": State::Done.to_string() });
+    if ctx.ship.queue && !from_auto {
+        if let Some(refresh) = open_refresh(&mut ctx, log, &root, &unit)? {
+            match refresh {
+                Refresh::Current => line["refresh"] = "current".into(),
+                Refresh::Refreshed => line["refresh"] = "refreshed".into(),
+                Refresh::Failed => return sent_back(&ctx, log, &unit),
+            }
+        }
+    }
+    println!("{line}");
     if clean_up::merged_clean_up(&mut ctx)? {
-        let root = ctx.vcs.root_find(&ctx.from)?;
         status::unit_status_clear(ctx.forge.as_ref(), &root, ctx.unit)?;
     }
+    Ok(())
+}
+
+/// Brings the change request of a finished unit up to date with the base branch when it is open
+/// and behind. `None` when it is not open.
+fn open_refresh(
+    ctx: &mut Context,
+    log: &RunLog,
+    root: &Path,
+    unit: &str,
+) -> Result<Option<Refresh>> {
+    let wanted = workspace::locate(root, unit)?;
+    let open = matches!(
+        ctx.forge.change_request_get(root, &wanted.branch)?,
+        Some(cr) if cr.state == ChangeState::Open
+    );
+    if !open {
+        return Ok(None);
+    }
+    if !wanted.path.exists() {
+        bail!(
+            "the workspace of unit {unit} is gone: {}",
+            wanted.path.display()
+        );
+    }
+    let dir = wanted.path.clone();
+    ctx.workspace = Some(wanted);
+    let Some(tip) = ship::base_behind(ctx.vcs.as_ref(), log, root, &dir, unit)? else {
+        return Ok(Some(Refresh::Current));
+    };
+    let refresh = ship::open_refresh(ctx, &tip)?;
+    if refresh == Refresh::Refreshed {
+        log.base_tested_append(unit, &tip)?;
+    }
+    Ok(Some(refresh))
+}
+
+/// Moves a finished unit back to `build` because refreshing its change request failed, and prints
+/// the move with the evidence, so a person sees why before merging.
+fn sent_back(ctx: &Context, log: &RunLog, unit: &str) -> Result<()> {
+    let dir = &ctx
+        .workspace
+        .as_ref()
+        .context("a refresh ran before there was a workspace")?
+        .path;
+    let event = json!({
+        "unit": unit,
+        "from": State::Done.to_string(),
+        "to": State::Build.to_string(),
+        "reason": "failed",
+    });
+    log.append(&event)?;
+    let mut line = event;
+    line["evidence"] = artifact::read(dir, unit, "evidence.md")?.into();
+    println!("{line}");
     Ok(())
 }
 

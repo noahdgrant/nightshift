@@ -89,6 +89,35 @@ impl RunLog {
         Ok(())
     }
 
+    /// Notes that the unit's change request was brought up to date with, and its checks run on,
+    /// the base branch at `tip`.
+    pub fn base_tested_append(&self, unit: &str, tip: &str) -> Result<()> {
+        self.append(&serde_json::json!({ "unit": unit, "base_tested": tip }))
+    }
+
+    /// The base branch commit the unit's change request was last refreshed against, if ever.
+    pub fn base_tested(&self, unit: &str) -> Result<Option<String>> {
+        Ok(self
+            .events()?
+            .iter()
+            .rfind(|e| e["unit"] == unit && e.get("base_tested").is_some())
+            .and_then(|e| e["base_tested"].as_str().map(String::from)))
+    }
+
+    fn events(&self) -> Result<Vec<Value>> {
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(e).with_context(|| format!("cannot read {}", self.path.display()))
+            }
+        };
+        Ok(text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect())
+    }
+
     /// Where `unit` picks up, from its last move.
     pub fn resume(&self, unit: &str) -> Result<Resume> {
         Ok(match self.last_move(unit)? {
@@ -109,16 +138,9 @@ impl RunLog {
 
     /// The last move of `unit`, or `None` when it has never run.
     pub fn last_move(&self, unit: &str) -> Result<Option<Move>> {
-        let text = match std::fs::read_to_string(&self.path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => {
-                return Err(e).with_context(|| format!("cannot read {}", self.path.display()))
-            }
-        };
-        let last = text
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        let last = self
+            .events()?
+            .into_iter()
             .rfind(|e| e["unit"] == unit && e.get("to").is_some());
         let Some(last) = last else {
             return Ok(None);
@@ -187,6 +209,31 @@ mod tests {
         assert_eq!(reason("8"), None);
         assert_eq!(reason("9"), Some(Reason::Inconclusive));
         assert_eq!(reason("10"), Some(Reason::BaseMoved));
+    }
+
+    #[test]
+    fn the_base_tested_is_the_last_one_noted_for_the_unit_and_is_not_a_move() {
+        let (_tmp, log) = log_with(
+            r#"{"unit":"5","from":"ship","to":"done"}
+{"unit":"5","base_tested":"aaa"}
+{"unit":"6","base_tested":"zzz"}
+{"unit":"5","base_tested":"bbb"}
+"#,
+        );
+        assert_eq!(log.base_tested("5").unwrap().as_deref(), Some("bbb"));
+        assert_eq!(log.base_tested("7").unwrap(), None);
+        assert_eq!(log.resume("5").unwrap(), Resume::Finished);
+        log.base_tested_append("5", "ccc").unwrap();
+        assert_eq!(log.base_tested("5").unwrap().as_deref(), Some("ccc"));
+    }
+
+    #[test]
+    fn a_missing_log_has_no_base_tested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = RunLog {
+            path: tmp.path().join("none.jsonl"),
+        };
+        assert_eq!(log.base_tested("5").unwrap(), None);
     }
 
     #[test]
