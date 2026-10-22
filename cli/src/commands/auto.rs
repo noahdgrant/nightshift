@@ -54,6 +54,8 @@ pub fn run(args: Args) -> Result<()> {
         None => manifest::max_attempts_read(&root)?,
     });
     let keep = manifest::transcript_days_read(&root)?;
+    // Read here so a bad value stops `ns` before it runs anything.
+    manifest::review_sessions_read(&root)?;
     let forge = forge::get();
     let open = forge.unit_list(&root)?;
     let plan = auto::plan(&open, &blockers_read(forge.as_ref(), &root, &open));

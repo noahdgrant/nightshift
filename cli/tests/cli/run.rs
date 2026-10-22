@@ -25,6 +25,12 @@ pub struct Fakes {
     pub first_review: &'static str,
     /// The verdict every later review ends with.
     pub review: &'static str,
+    /// The name of the review session that always ends FAIL, whatever the other reviews say. Empty
+    /// for none.
+    pub review_fails_in: &'static str,
+    /// The name of the review session that dies without a word the first time it runs. Empty for
+    /// none.
+    pub review_dies_in: &'static str,
     /// The labels the unit has before anything is done to it.
     pub labels: &'static str,
     /// Whether the unit's labels change when `ns` edits them. Without it the unit stays as it began.
@@ -100,6 +106,8 @@ impl Fakes {
             first_build_dropped: false,
             first_review: PASS,
             review: PASS,
+            review_fails_in: "",
+            review_dies_in: "",
             labels: r#"[{"name":"status:ready-for-agent"}]"#,
             labels_follow_edits: true,
             units: &[5],
@@ -231,8 +239,10 @@ case "$p" in
 *"decide what happens to one unit"*) {session}*) printf 'Small.\nLABELS: type:feat\nROUTE: build\n';; esac;;
 *"Find what must be fixed before this change merges"*)
   n=$(ls "{bin}"/review.prompt.* 2>/dev/null | wc -l); printf %s "$p" > "{bin}/review.prompt.$((n+1))"
+  if [ -n "{review_dies_in}" ] && [ ! -e "{bin}/review.died" ] && printf %s "$p" | grep -q "^{review_dies_in}: review only"; then touch "{bin}/review.died"; exit 9; fi
   if echo "$p" | grep -q thing.txt; then echo reviewed the diff; else echo saw no diff; fi
-  if [ -e "$reviewed" ]; then echo '{review}'; else touch "$reviewed"; echo '{first_review}'; fi;;
+  if [ -n "{review_fails_in}" ] && printf %s "$p" | grep -q "^{review_fails_in}: review only"; then echo '{FAIL}'
+  elif [ -e "$reviewed" ]; then echo '{review}'; else touch "$reviewed"; echo '{first_review}'; fi;;
 *"Run the real thing and record what you saw"*)
   n=$(ls "{bin}"/verify.prompt.* 2>/dev/null | wc -l); printf %s "$p" > "{bin}/verify.prompt.$((n+1))"
   {crash}{edit}echo checked it
@@ -249,6 +259,8 @@ exit {exit}"#,
             first = fakes.first_verdict,
             review = fakes.review,
             first_review = fakes.first_review,
+            review_fails_in = fakes.review_fails_in,
+            review_dies_in = fakes.review_dies_in,
             drop = if fakes.first_build_dropped {
                 format!(
                     r#"if [ ! -e "{bin}/dropped" ]; then touch "{bin}/dropped"; echo 'API Error: 529 Overloaded'; exit 1; fi; "#,
@@ -531,10 +543,7 @@ fn run_sets_up_builds_verifies_and_prints_each_move() {
     );
     assert!(repo.branches().contains(&"ns/5".to_string()));
     assert_eq!(read(&repo, "build.md"), "built the thing\n");
-    assert_eq!(
-        read(&repo, "evidence.md"),
-        "reviewed the diff\nVERDICT: PASS\n"
-    );
+    assert_eq!(read(&repo, "evidence.md"), merged_review([PASS; 3]));
 }
 
 #[test]
@@ -662,7 +671,8 @@ fn review_sees_the_diff_and_a_pass_lets_the_unit_ship() {
         .clone();
     let moves = moves(out);
     assert_eq!(&moves[3..5], ["verify>review", "review>ship"]);
-    assert!(read(&repo, "evidence.md").starts_with("reviewed the diff"));
+    assert!(read(&repo, "evidence.md")
+        .starts_with("# Review session: Behavior\n\nreviewed the diff\nVERDICT: PASS\n"));
 }
 
 #[test]
@@ -694,6 +704,25 @@ fn a_failed_review_sends_the_unit_back_to_build_and_review_looks_again() {
     assert_eq!(read(&repo, "build.md"), "rebuilt with the evidence\n");
 }
 
+/// The review the three default sessions keep when they end with `verdicts`, the reviewed diff
+/// their findings.
+fn merged_review(verdicts: [&str; 3]) -> String {
+    let names = ["Behavior", "Requirements and tests", "Maintainability"];
+    let mut text = String::new();
+    for (name, verdict) in names.iter().zip(verdicts) {
+        text.push_str(&format!(
+            "# Review session: {name}\n\nreviewed the diff\n{verdict}\n\n"
+        ));
+    }
+    text.push_str(if verdicts.iter().all(|v| *v == PASS) {
+        PASS
+    } else {
+        FAIL
+    });
+    text.push('\n');
+    text
+}
+
 fn review_prompt(repo: &Repo, n: usize) -> String {
     prompt_of(repo, "review", n)
 }
@@ -722,9 +751,15 @@ fn a_first_review_has_no_previous_findings_and_a_review_after_a_failure_has_them
         ..Fakes::passing()
     };
     run(&repo, &tools(&repo, &fakes)).success();
-    assert!(!review_prompt(&repo, 1).contains(PREVIOUS));
-    assert!(review_prompt(&repo, 2)
-        .contains(&format!("{PREVIOUS}\n\nreviewed the diff\nVERDICT: FAIL\n")));
+    for n in 1..=3 {
+        assert!(!review_prompt(&repo, n).contains(PREVIOUS));
+    }
+    // Only the session that failed is shown its findings, and not the verdict of the review.
+    assert!(review_prompt(&repo, 4).contains(&format!(
+        "{PREVIOUS}\n\nreviewed the diff\nVERDICT: FAIL\n\n# The change"
+    )));
+    assert!(!review_prompt(&repo, 5).contains(PREVIOUS));
+    assert!(!review_prompt(&repo, 6).contains(PREVIOUS));
 }
 
 #[test]
@@ -737,12 +772,9 @@ fn every_review_is_kept_as_review_n() {
     run(&repo, &tools(&repo, &fakes)).success();
     assert_eq!(
         read(&repo, "review-1.md"),
-        "reviewed the diff\nVERDICT: FAIL\n"
+        merged_review([FAIL, PASS, PASS])
     );
-    assert_eq!(
-        read(&repo, "review-2.md"),
-        "reviewed the diff\nVERDICT: PASS\n"
-    );
+    assert_eq!(read(&repo, "review-2.md"), merged_review([PASS; 3]));
 }
 
 #[test]
@@ -1610,10 +1642,7 @@ fn a_failed_check_sends_the_unit_back_to_build_with_the_evidence() {
         ]
     );
     assert_eq!(read(&repo, "build.md"), "rebuilt with the evidence\n");
-    assert_eq!(
-        read(&repo, "evidence.md"),
-        "reviewed the diff\nVERDICT: PASS\n"
-    );
+    assert_eq!(read(&repo, "evidence.md"), merged_review([PASS; 3]));
 }
 
 #[test]
@@ -1773,9 +1802,11 @@ fn each_session_of_a_state_leaves_a_numbered_transcript_in_the_state_directory()
     );
     assert!(dir.join("verify-1.jsonl").is_file());
     assert!(dir.join("verify-2.jsonl").is_file());
-    assert!(dir.join("review-1.jsonl").is_file());
-    assert!(dir.join("review-2.jsonl").is_file());
-    assert!(!dir.join("review-3.jsonl").exists());
+    // Three sessions to a review, two reviews.
+    for n in 1..=6 {
+        assert!(dir.join(format!("review-{n}.jsonl")).is_file(), "{n}");
+    }
+    assert!(!dir.join("review-7.jsonl").exists());
 }
 
 #[test]
@@ -2283,4 +2314,160 @@ fn a_unit_the_forge_does_not_list_as_open_is_not_refused() {
         ..Fakes::passing()
     };
     run_with(&repo, &tools(&repo, &fakes), &[]).success();
+}
+
+/// Sets `[review] sessions` in the repository's `nightshift.toml`, as committed before the unit
+/// starts.
+fn review_sessions_set(repo: &Repo, value: &str) {
+    std::fs::create_dir_all(repo.path.join(".nightshift")).unwrap();
+    std::fs::write(
+        repo.path.join(".nightshift/nightshift.toml"),
+        format!("[review]\nsessions = {value}\n"),
+    )
+    .unwrap();
+    git(&repo.path, &["add", ".nightshift/nightshift.toml"]);
+    git(&repo.path, &["commit", "-q", "-m", "set review sessions"]);
+}
+
+fn review_prompts(repo: &Repo) -> usize {
+    std::fs::read_dir(repo.path.parent().unwrap().join("bin"))
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("review.prompt.")
+        })
+        .count()
+}
+
+fn focus_line(prompt: &str) -> &str {
+    prompt
+        .split("# Your focus\n\n")
+        .nth(1)
+        .and_then(|rest| rest.lines().next())
+        .unwrap()
+}
+
+#[test]
+fn three_sessions_run_one_after_another_each_naming_its_own_group() {
+    let repo = Repo::new();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert_eq!(review_prompts(&repo), 3);
+    let focus: Vec<_> = (1..=3)
+        .map(|n| focus_line(&review_prompt(&repo, n)).to_string())
+        .collect();
+    assert_eq!(
+        focus,
+        [
+            "Behavior: review only these areas: correctness, security. Leave the others out.",
+            "Requirements and tests: review only these areas: spec, tests. Leave the others out.",
+            "Maintainability: review only these areas: architecture, docs and comments. Leave the others out.",
+        ]
+    );
+}
+
+#[test]
+fn six_sessions_run_each_naming_one_area() {
+    let repo = Repo::new();
+    review_sessions_set(&repo, "6");
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert_eq!(review_prompts(&repo), 6);
+    let focus: Vec<_> = (1..=6)
+        .map(|n| focus_line(&review_prompt(&repo, n)).to_string())
+        .collect();
+    assert_eq!(
+        focus,
+        [
+            "Correctness: review only these areas: correctness. Leave the others out.",
+            "Security: review only these areas: security. Leave the others out.",
+            "Spec: review only these areas: spec. Leave the others out.",
+            "Tests: review only these areas: tests. Leave the others out.",
+            "Architecture: review only these areas: architecture. Leave the others out.",
+            "Docs and comments: review only these areas: docs and comments. Leave the others out.",
+        ]
+    );
+}
+
+#[test]
+fn one_session_reviews_all_six_areas() {
+    let repo = Repo::new();
+    review_sessions_set(&repo, "1");
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert_eq!(review_prompts(&repo), 1);
+    assert_eq!(
+        focus_line(&review_prompt(&repo, 1)),
+        "All areas: review only these areas: correctness, security, spec, tests, architecture, \
+         docs and comments. Leave the others out."
+    );
+}
+
+#[test]
+fn one_failing_session_fails_the_review_and_the_kept_review_names_it() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        review_fails_in: "Requirements and tests",
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).failure();
+    // All three ran, then the review failed; it is not the failing session alone that is kept.
+    assert_eq!(
+        read(&repo, "review-1.md"),
+        merged_review([PASS, FAIL, PASS])
+    );
+    assert!(read(&repo, "review-1.md")
+        .contains("# Review session: Requirements and tests\n\nreviewed the diff\nVERDICT: FAIL"));
+}
+
+#[test]
+fn the_next_review_shows_a_session_only_its_own_unmet_findings() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        review_fails_in: "Maintainability",
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).failure();
+    // Two attempts: round 1 is prompts 1-3, round 2 is prompts 4-6.
+    assert!(!review_prompt(&repo, 4).contains(PREVIOUS));
+    assert!(!review_prompt(&repo, 5).contains(PREVIOUS));
+    assert!(review_prompt(&repo, 6).contains(PREVIOUS));
+}
+
+#[test]
+fn a_session_that_goes_wrong_makes_the_review_go_wrong_and_the_next_run_repeats_all() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        review_dies_in: "Requirements and tests",
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    let at = moves.iter().position(|m| m == "verify>review").unwrap();
+    // Neither PASS nor FAIL: the review runs again and then the unit ships.
+    assert_eq!(
+        &moves[at..at + 3],
+        ["verify>review", "review>review", "review>ship"]
+    );
+    // Behavior ran, Requirements and tests died, then all three again.
+    assert_eq!(review_prompts(&repo), 5);
+    assert_eq!(read(&repo, "review-1.md"), merged_review([PASS; 3]));
+    assert!(!repo.workspace("5").join(".ns/5/review-2.md").exists());
+}
+
+#[test]
+fn a_review_sessions_setting_that_is_not_1_3_or_6_stops_ns_run_before_anything_runs() {
+    for value in ["0", "2", "4", "7", "\"3\"", "2.5"] {
+        let repo = Repo::new();
+        review_sessions_set(&repo, value);
+        let out = run(&repo, &tools(&repo, &Fakes::passing())).failure();
+        let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(err.contains("review.sessions"), "{value}: {err}");
+        assert!(out.get_output().stdout.is_empty(), "{value}");
+        assert!(!repo.workspace("5").exists(), "{value}");
+    }
 }

@@ -66,4 +66,12 @@ stateDiagram
 
 `verify` ends in one of three verdicts. `VERDICT: PASS` goes on to `review` and `VERDICT: FAIL` goes back to `build`. `VERDICT: INCONCLUSIVE` means no requirement failed but at least one could not be proven from the workspace (a live service, credentials, behavior only CI shows). It runs `verify` once more, shown the unproven requirements, and that verification's verdict decides as usual. When the second is inconclusive too, the unit is `stuck` with the reason `inconclusive` in the run log and `status:ready-for-human`, and a comment on the unit lists what is still unproven and what would make each checkable. The second verification counts against `max_attempts`, so with 1 the unit is stuck after the first. A unit stuck this way resumes at `verify`, not `build`, for the build has nothing to change.
 
+`review` reads the change in six review areas: correctness, security, spec, tests, architecture, and docs and comments. `[review] sessions` in `.nightshift/nightshift.toml` is 1, 3 or 6 (3 by default; anything else is an error and nothing runs) and sets how the areas are shared among harness sessions, run one after another:
+
+- **1**: one session reviews all six areas.
+- **3**: behavior (correctness, security), requirements and tests (spec, tests) and maintainability (architecture, docs and comments).
+- **6**: one session for each area.
+
+Each session ends in `VERDICT: PASS` or `VERDICT: FAIL`. The review is `FAIL` when any session fails and `PASS` only when all pass, and `review-<n>.md` keeps a section for each session with its findings and verdict. A session that goes wrong (the harness did not finish, no verdict) makes the review go wrong: the state runs again from its first session. After a `FAIL` the build is told every session's findings, and the next review shows each session only its own findings that were not met.
+
 `ship` merges the change request only when asked to (`--merge`) and when no file the branch changed matches `[merge] human_review` in `.nightshift/nightshift.toml`. Otherwise it labels the change request `needs-human-merge` and leaves it for a person.
