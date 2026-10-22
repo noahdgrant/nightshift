@@ -21,7 +21,7 @@ Cut the loop down until removing anything more makes it stop failing. Keep the c
 
 ## 3. Find the cause
 
-Write down two or three guesses, each as "if X is the cause, then Y". Test the cheapest first, with instrumentation you add and later discard. Change one thing at a time. Stop when you can name the line or the decision that is wrong and show it with the loop.
+Write down two or three guesses, each as "if X is the cause, then Y". Test the cheapest first, with instrumentation you add and later discard. Change one thing at a time. Stop when you can name the line or the decision that is wrong and show it with the loop. Fix root causes: ask why until you reach the cause, and state the cause, not the symptom.
 
 If you cannot build a loop or find a cause, say what you tried, and route to `info` or `human`.
 

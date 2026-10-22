@@ -25,7 +25,7 @@ Untrusted input is validated where it enters; none reaches a shell, a query, a p
 
 ### Spec
 
-Every requirement is implemented in full, and the change adds no behavior callers can see beyond what the unit asked for.
+Every requirement is implemented in full, and the change adds no behavior callers can see beyond what the unit asked for. Keep scope tight: a change that adds behavior the unit did not ask for is a finding.
 
 ### Tests
 
@@ -33,7 +33,7 @@ Every behavior and every branch the change adds has a test; a bug fix has a test
 
 ### Architecture
 
-The change follows the repository's existing way to do each job, adds no second way, and removes the old path it replaces.
+The change follows the repository's existing way to do each job, adds no second way, and removes the old path it replaces. Anything a caller can observe, such as `ns` output, JSON fields, flags and file formats, is a contract, whatever the docs say (Hyrum's law): add rather than change, and a break is deliberate, not a side effect.
 
 ### Docs and comments
 

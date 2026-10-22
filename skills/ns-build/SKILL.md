@@ -15,7 +15,7 @@ Turn one unit into one commit. You are given the unit's title and description, t
 
 Read the files you will change, their tests, and one example of the pattern you will follow. Map each requirement to a place a test can observe it.
 
-When the unit leaves something open, take the simplest reading and name it under **Assumptions** in your summary.
+When the unit leaves something open, take the simplest reading and name it under **Assumptions** in your summary. When the unit, the code, the docs or a test disagree, or a fact is missing, do not guess silently: take the reading that changes least and say what you assumed.
 
 Done when every requirement has a seam for its test.
 
@@ -23,7 +23,7 @@ Done when every requirement has a seam for its test.
 
 Run the test-driven loop in the instructions that follow these, one requirement per slice, the riskiest first. Each slice ends with its test green and every existing test green.
 
-Keep the diff to what the unit asks. Fix what your change breaks. Put any other defect you notice under **Noticed** in your summary.
+Keep the diff to what the unit asks: touch only what it names, and put anything else you find under **Noticed** in your summary instead of fixing it. Fix what your change breaks. Subtract before you add: prefer deleting or reusing to a new abstraction, layer or option, and make the smallest change that meets the unit. Test behavior, not implementation: a test goes through the public interface and asserts literal expected values.
 
 Done when every requirement has a passing test.
 
