@@ -284,6 +284,9 @@ mod tests {
         fn login_get(&self, _: &Path) -> Result<String> {
             unreachable!()
         }
+        fn unit_blocker_add(&self, _: &Path, _: u64, _: u64) -> Result<()> {
+            unreachable!()
+        }
         fn unit_blockers_list(&self, _: &Path, number: u64) -> Result<Vec<u64>> {
             Ok(if self.blocked.contains(&number) {
                 vec![99]
