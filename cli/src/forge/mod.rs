@@ -174,6 +174,9 @@ mod tests {
         fn unit_blockers_list(&self, _: &Path, _: u64) -> Result<Vec<u64>> {
             unreachable!()
         }
+        fn unit_blocker_add(&self, _: &Path, _: u64, _: u64) -> Result<()> {
+            unreachable!()
+        }
         fn login_get(&self, _: &Path) -> Result<String> {
             unreachable!()
         }
