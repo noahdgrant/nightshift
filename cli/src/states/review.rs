@@ -4,7 +4,7 @@ use super::rounds::Rounds;
 use super::verdict::{self, Verdict, FAIL_LINE, PASS_LINE};
 use super::{check, Context};
 use crate::artifact;
-use crate::manifest;
+use crate::manifest::{self, Place};
 use crate::skill;
 use crate::state::{Outcome, State};
 
@@ -113,6 +113,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         let outcome = check::run(
             ctx,
             State::Review,
+            Place::Review,
             false,
             prompt(
                 &skill,

@@ -138,6 +138,7 @@ pub fn run(
     root: &Path,
     number: u64,
     timeout: Duration,
+    model: Option<&str>,
 ) -> Result<Triaged> {
     let unit = forge.unit_get(root, number)?;
     if !unit.from_team {
@@ -148,7 +149,7 @@ pub fn run(
             dir: root.to_path_buf(),
             prompt: prompt(&skill::load(skill::TRIAGE)?, &unit),
             write: false,
-            model: None,
+            model: model.map(str::to_string),
             timeout,
         })
         .map_err(harness::session_failed)?;

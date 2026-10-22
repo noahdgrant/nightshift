@@ -1,6 +1,7 @@
 //! What each harness session of a unit printed, kept as `transcripts/<unit>/<state>-<n>.jsonl` in
 //! the repository's `ns` state directory so it outlives the unit's workspace. `n` counts the
-//! state's sessions for the unit from 1: a retry or a rework is a new session.
+//! state's sessions for the unit from 1: a retry or a rework is a new session. The model a session
+//! used is kept beside it as `<state>-<n>.model`; a session with none used the harness's default.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -21,6 +22,8 @@ pub struct Session {
     pub state: State,
     pub n: usize,
     pub path: PathBuf,
+    /// The model the session used. `None` is the harness's own default.
+    pub model: Option<String>,
 }
 
 impl Transcripts {
@@ -30,8 +33,8 @@ impl Transcripts {
         })
     }
 
-    /// Keeps `raw` as the next session of `state` for `unit`.
-    pub fn keep(&self, unit: &str, state: State, raw: &[u8]) -> Result<()> {
+    /// Keeps `raw` as the next session of `state` for `unit`, with the `model` it ran with.
+    pub fn keep(&self, unit: &str, state: State, raw: &[u8], model: Option<&str>) -> Result<()> {
         let dir = self.dir.join(unit);
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("cannot create {}", dir.display()))?;
@@ -44,7 +47,13 @@ impl Transcripts {
             .unwrap_or(0)
             + 1;
         let path = dir.join(format!("{state}-{n}.jsonl"));
-        std::fs::write(&path, raw).with_context(|| format!("cannot write {}", path.display()))
+        std::fs::write(&path, raw).with_context(|| format!("cannot write {}", path.display()))?;
+        if let Some(model) = model {
+            let path = path.with_extension("model");
+            std::fs::write(&path, model)
+                .with_context(|| format!("cannot write {}", path.display()))?;
+        }
+        Ok(())
     }
 
     /// Deletes the sessions last modified more than `keep` before `now`, and the unit directories
@@ -98,6 +107,7 @@ impl Transcripts {
                 Session {
                     state,
                     n,
+                    model: std::fs::read_to_string(entry.path().with_extension("model")).ok(),
                     path: entry.path(),
                 },
             ));
@@ -136,9 +146,9 @@ mod tests {
     #[test]
     fn a_state_counts_its_sessions_from_one() {
         let (_tmp, t) = store();
-        t.keep("7", State::Build, b"a").unwrap();
-        t.keep("7", State::Review, b"b").unwrap();
-        t.keep("7", State::Build, b"c").unwrap();
+        t.keep("7", State::Build, b"a", None).unwrap();
+        t.keep("7", State::Review, b"b", None).unwrap();
+        t.keep("7", State::Build, b"c", None).unwrap();
         let names: Vec<_> = t
             .sessions("7")
             .unwrap()
@@ -152,10 +162,28 @@ mod tests {
     }
 
     #[test]
+    fn a_session_keeps_the_model_it_ran_with_and_none_means_the_harness_default() {
+        let (_tmp, t) = store();
+        t.keep("7", State::Build, b"a", Some("opus")).unwrap();
+        t.keep("7", State::Verify, b"b", None).unwrap();
+        let sessions = t.sessions("7").unwrap();
+        let model = |state| {
+            sessions
+                .iter()
+                .find(|s| s.state == state)
+                .unwrap()
+                .model
+                .clone()
+        };
+        assert_eq!(model(State::Build).as_deref(), Some("opus"));
+        assert_eq!(model(State::Verify), None);
+    }
+
+    #[test]
     fn units_are_kept_apart() {
         let (_tmp, t) = store();
-        t.keep("7", State::Build, b"a").unwrap();
-        t.keep("8", State::Build, b"b").unwrap();
+        t.keep("7", State::Build, b"a", None).unwrap();
+        t.keep("8", State::Build, b"b", None).unwrap();
         assert_eq!(t.sessions("8").unwrap().len(), 1);
         assert_eq!(t.sessions("8").unwrap()[0].n, 1);
     }
@@ -163,8 +191,8 @@ mod tests {
     #[test]
     fn sessions_come_oldest_first_across_states() {
         let (_tmp, t) = store();
-        t.keep("7", State::Review, b"a").unwrap();
-        t.keep("7", State::Build, b"b").unwrap();
+        t.keep("7", State::Review, b"a", None).unwrap();
+        t.keep("7", State::Build, b"b", None).unwrap();
         // Written in the other order than the names sort in, so the time decides.
         let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let file = std::fs::File::options()
@@ -181,6 +209,7 @@ mod tests {
             state,
             n,
             path: PathBuf::new(),
+            model: None,
         }
     }
 
@@ -212,7 +241,7 @@ mod tests {
     fn a_unit_with_none_has_no_sessions_and_strangers_are_ignored() {
         let (_tmp, t) = store();
         assert!(t.sessions("7").unwrap().is_empty());
-        t.keep("7", State::Build, b"a").unwrap();
+        t.keep("7", State::Build, b"a", None).unwrap();
         for stray in ["notes.txt", "build-x.jsonl", "nowhere-1.jsonl"] {
             std::fs::write(t.dir.join("7").join(stray), "").unwrap();
         }
@@ -220,7 +249,7 @@ mod tests {
     }
 
     fn aged(t: &Transcripts, unit: &str, state: State, days: u64) -> PathBuf {
-        t.keep(unit, state, b"x").unwrap();
+        t.keep(unit, state, b"x", None).unwrap();
         let path = t.sessions(unit).unwrap().pop().unwrap().path;
         let at = now() - Duration::from_secs(days * 86_400);
         std::fs::File::options()

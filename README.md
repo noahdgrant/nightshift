@@ -99,11 +99,20 @@ A review looks at the change in six review areas: correctness, security, spec (e
 sessions = 3
 ```
 
+Each place a headless session starts can use its own model. `[model]` in `.nightshift/nightshift.toml` has the keys `default`, `triage`, `troubleshoot`, `build`, `verify` and `review`. A session uses its own key, then `default`, then the harness's own default model. All of a review's sessions use `review`. `--model <name>` on `ns run`, `ns auto`, `ns triage`, `ns troubleshoot` and `ns eval review` beats every key for that command. A value is the harness's own model name or alias, passed through as it is; `ns` does not check that the harness knows it, and a name the harness rejects fails the session. A key `ns` does not know, or a value that is not a non-empty string, is an error, and `ns` stops before it runs anything. The run log records the model of each move out of `build`, `verify` and `review`, and `ns log` prints it beside each session.
+
+```toml
+[model]
+default = "sonnet"
+build = "opus"
+review = "opus"
+```
+
 `ns status` shows where each unit stands in the morning.
 
 Every headless session leaves its transcript, what the agent read and ran and not only its final text, as `transcripts/<unit>/<state>-<n>.jsonl` in the repository's `ns` state directory (`.git/ns` with git). It outlives the unit's workspace. `ns log <unit>` shows it; `--state` and `--last` narrow it. A session is typically tens of kilobytes to a few megabytes of JSON, and a unit that goes round `build` many times keeps one for each, so `ns run` and `ns auto` delete transcripts last modified more than `[run] transcript_days` days ago, in `.nightshift/nightshift.toml`. Without the key they keep a week's; `0` keeps them for ever. Deleting `transcripts/` is safe; `ns` only reads it for `ns log`.
 
-`ns eval review` runs the review sessions `[review] sessions` sets on the known cases in `evals/review` and reports whether it gives the right verdict each time, so you can tell whether an edit to the skill helped. It makes real harness calls, so it uses subscription time.
+`ns eval review` runs the review sessions `[review] sessions` sets on the known cases in `evals/review` and reports whether it gives the right verdict each time, so you can tell whether an edit to the skill helped. `--model` runs the cases with another model, to compare models on the same cases. It makes real harness calls, so it uses subscription time.
 
 ## Credits
 

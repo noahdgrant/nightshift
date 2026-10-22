@@ -54,6 +54,7 @@ pub fn run(
     root: &Path,
     number: u64,
     timeout: Duration,
+    model: Option<&str>,
 ) -> Result<Diagnosis> {
     let unit = forge.unit_get(root, number)?;
     if !unit.from_team {
@@ -70,7 +71,7 @@ pub fn run(
         dir: made.path,
         prompt: prompt(&skill::load(skill::TROUBLESHOOT)?, &unit),
         write: true,
-        model: None,
+        model: model.map(str::to_string),
         timeout,
     });
     // Nothing in it is kept, whether or not the session got anywhere.

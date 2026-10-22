@@ -234,6 +234,9 @@ esac"#,
             r#"seen="{bin}/checked"
 reviewed="{bin}/reviewed"
 p="$(cat)"
+kind=build
+case "$p" in *"You diagnose one bug"*) kind=troubleshoot;; *"decide what happens to one unit"*) kind=triage;; *"Find what must be fixed before this change merges"*) kind=review;; *"Run the real thing and record what you saw"*) kind=verify;; esac
+echo "$kind $*" >> "{bin}/claude.calls"
 case "$p" in
 *"You diagnose one bug"*) {session}*) printf '### Repro\nrun it\n\nROUTE: build\n';; esac;;
 *"decide what happens to one unit"*) {session}*) printf 'Small.\nLABELS: type:feat\nROUTE: build\n';; esac;;
@@ -513,6 +516,20 @@ fn moves(out: Vec<u8>) -> Vec<String> {
                 Some(to) => format!("{}>{}", v["from"].as_str().unwrap(), to.as_str().unwrap()),
                 None => format!("start {}", v["state"].as_str().unwrap()),
             }
+        })
+        .collect()
+}
+
+/// The model each session of `kind` (build, verify, review, triage or troubleshoot) was started
+/// with, in order: the name after `--model`, or `-` when the session was given none.
+pub fn models_used(repo: &Repo, kind: &str) -> Vec<String> {
+    std::fs::read_to_string(repo.path.parent().unwrap().join("bin/claude.calls"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.strip_prefix(kind)?.strip_prefix(' '))
+        .map(|args| match args.split_once("--model ") {
+            Some((_, rest)) => rest.split(' ').next().unwrap().to_string(),
+            None => "-".to_string(),
         })
         .collect()
 }
@@ -2470,4 +2487,134 @@ fn a_review_sessions_setting_that_is_not_1_3_or_6_stops_ns_run_before_anything_r
         assert!(out.get_output().stdout.is_empty(), "{value}");
         assert!(!repo.workspace("5").exists(), "{value}");
     }
+}
+
+fn models_all(repo: &Repo) -> [Vec<String>; 3] {
+    ["build", "verify", "review"].map(|kind| models_used(repo, kind))
+}
+
+#[test]
+fn with_no_model_table_no_session_is_given_a_model() {
+    let repo = Repo::new();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert_eq!(models_all(&repo), [vec!["-"], vec!["-"], vec!["-"; 3]]);
+}
+
+#[test]
+fn the_default_model_applies_to_every_state() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[model]\ndefault = \"sonnet\"\n");
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert_eq!(
+        models_all(&repo),
+        [vec!["sonnet"], vec!["sonnet"], vec!["sonnet"; 3]]
+    );
+}
+
+#[test]
+fn a_states_own_model_beats_the_default_and_every_review_session_uses_the_review_model() {
+    let repo = Repo::new();
+    set_manifest(
+        &repo,
+        "[model]\ndefault = \"sonnet\"\nbuild = \"opus\"\nreview = \"haiku\"\n",
+    );
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert_eq!(
+        models_all(&repo),
+        [vec!["opus"], vec!["sonnet"], vec!["haiku"; 3]]
+    );
+}
+
+#[test]
+fn the_model_option_beats_every_key() {
+    let repo = Repo::new();
+    set_manifest(
+        &repo,
+        "[model]\ndefault = \"sonnet\"\nbuild = \"opus\"\nreview = \"haiku\"\n",
+    );
+    run_with(
+        &repo,
+        &tools(&repo, &Fakes::passing()),
+        &["--model", "fable"],
+    )
+    .success();
+    assert_eq!(
+        models_all(&repo),
+        [vec!["fable"], vec!["fable"], vec!["fable"; 3]]
+    );
+}
+
+#[test]
+fn a_bad_model_table_stops_ns_run_before_anything_runs() {
+    for (text, key) in [
+        ("[model]\nbuidl = \"opus\"\n", "model.buidl"),
+        ("[model]\nbuild = \"\"\n", "model.build"),
+        ("[model]\nreview = 3\n", "model.review"),
+    ] {
+        let repo = Repo::new();
+        set_manifest(&repo, text);
+        let out = run(&repo, &tools(&repo, &Fakes::passing())).failure();
+        let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(err.contains(key), "{text}: {err}");
+        assert!(err.contains("nightshift.toml"), "{text}: {err}");
+        assert!(out.get_output().stdout.is_empty(), "{text}");
+        assert!(!repo.workspace("5").exists(), "{text}");
+    }
+}
+
+#[test]
+fn an_empty_model_option_is_refused() {
+    let repo = Repo::new();
+    run_with(&repo, &tools(&repo, &Fakes::passing()), &["--model", ""]).failure();
+    assert!(!repo.workspace("5").exists());
+}
+
+fn move_events(out: &assert_cmd::assert::Assert) -> Vec<serde_json::Value> {
+    String::from_utf8(out.get_output().stdout.clone())
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .filter(|e| e.get("to").is_some())
+        .collect()
+}
+
+#[test]
+fn the_moves_out_of_a_session_state_say_which_model_it_used_and_the_run_log_keeps_it() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[model]\nbuild = \"opus\"\n");
+    let out = run(&repo, &tools(&repo, &Fakes::passing())).success();
+    let model_of = |from: &str| {
+        let events = move_events(&out);
+        let event = events.iter().find(|e| e["from"] == from).unwrap();
+        event.get("model").cloned()
+    };
+    assert_eq!(model_of("build"), Some("opus".into()));
+    assert_eq!(model_of("verify"), Some(serde_json::Value::Null));
+    assert_eq!(model_of("review"), Some(serde_json::Value::Null));
+    assert_eq!(model_of("setup"), None);
+    let log = std::fs::read_to_string(repo.path.join(".git/ns/runs.jsonl")).unwrap();
+    assert!(
+        log.lines()
+            .any(|l| l.contains(r#""from":"build""#) && l.contains(r#""model":"opus""#)),
+        "{log}"
+    );
+}
+
+#[test]
+fn log_shows_the_model_each_session_used() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[model]\nbuild = \"opus\"\n");
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    let out = Command::cargo_bin("ns")
+        .unwrap()
+        .args(["log", "5"])
+        .current_dir(&repo.path)
+        .assert()
+        .success();
+    let out = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(out.contains("== build 1 (opus) =="), "{out}");
+    assert!(
+        out.contains("== verify 1 (harness default model) =="),
+        "{out}"
+    );
 }

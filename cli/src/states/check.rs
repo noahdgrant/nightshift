@@ -4,6 +4,7 @@ use super::verdict::{self, Verdict, ERROR_LINE};
 use super::{session_run, Context, BUILT_SNAPSHOT};
 use crate::artifact;
 use crate::harness::Task;
+use crate::manifest::Place;
 use crate::state::{Outcome, State};
 
 /// What a state that checks the build does with its prompt: the harness runs it, and whatever it
@@ -14,8 +15,14 @@ use crate::state::{Outcome, State};
 ///   nothing about the build: the evidence ends in an error verdict, the state goes wrong, and the
 ///   state's next run is told what happened and must put it right.
 ///
-/// `state` is the checking state, which names the session's transcript. `write` is whether the harness may change files, which running the build needs.
-pub fn run(ctx: &mut Context, state: State, write: bool, prompt: String) -> Result<Outcome> {
+/// `state` is the checking state, which names the session's transcript, and `place` is where its model comes from. `write` is whether the harness may change files, which running the build needs.
+pub fn run(
+    ctx: &mut Context,
+    state: State,
+    place: Place,
+    write: bool,
+    prompt: String,
+) -> Result<Outcome> {
     let dir = ctx
         .workspace
         .as_ref()
@@ -38,7 +45,7 @@ pub fn run(ctx: &mut Context, state: State, write: bool, prompt: String) -> Resu
             dir: dir.clone(),
             prompt,
             write,
-            model: None,
+            model: ctx.model_find(place)?,
             timeout: ctx.harness_timeout,
         },
     )?;

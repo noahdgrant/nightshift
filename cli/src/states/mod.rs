@@ -19,6 +19,7 @@ use anyhow::Result;
 
 use crate::forge::Forge;
 use crate::harness::{Harness, Reply, Task, TimedOut};
+use crate::manifest::{self, Place};
 use crate::os::Os;
 use crate::state::{Outcome, State};
 use crate::transcripts::Transcripts;
@@ -44,6 +45,16 @@ pub struct Context {
     pub harness_timeout: Duration,
     /// How long the repository's checks may take.
     pub checks_timeout: Duration,
+    /// The model the person asked for, which beats every key of `[model]`.
+    pub model: Option<String>,
+}
+
+impl Context {
+    /// The model a session at `place` uses.
+    pub(crate) fn model_find(&self, place: Place) -> Result<Option<String>> {
+        let root = self.vcs.root_find(&self.from)?;
+        manifest::model_read(&root, place, self.model.as_deref())
+    }
 }
 
 /// Runs one state. `Err` means the state itself went wrong, which `Outcome::Redo` repeats.
@@ -68,14 +79,14 @@ pub(crate) fn session_run(ctx: &Context, state: State, task: &Task) -> Result<Re
     match ctx.harness.task_run(task) {
         Ok(reply) => {
             for raw in reply.earlier.iter().chain([&reply.transcript]) {
-                kept.keep(&unit, state, raw)?;
+                kept.keep(&unit, state, raw, task.model.as_deref())?;
             }
             Ok(reply)
         }
         Err(e) => {
             if let Some(timed_out) = e.downcast_ref::<TimedOut>() {
                 for raw in timed_out.earlier.iter().chain([&timed_out.transcript]) {
-                    kept.keep(&unit, state, raw)?;
+                    kept.keep(&unit, state, raw, task.model.as_deref())?;
                 }
             }
             Err(e)

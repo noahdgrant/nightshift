@@ -7,7 +7,8 @@ use serde_json::json;
 
 use crate::auto::Streak;
 use crate::forge::Forge;
-use crate::harness::Harness;
+use crate::harness::{Harness, Sessions};
+use crate::manifest::{self, Place};
 use crate::vcs::Vcs;
 use crate::{forge, harness, troubleshoot, vcs};
 
@@ -18,6 +19,9 @@ pub struct Args {
     /// How long the session may take before it is killed and the unit is left as it was.
     #[arg(long, default_value_t = 3600)]
     harness_timeout_seconds: u64,
+    /// The model to use, instead of the one `[model]` in `.nightshift/nightshift.toml` names.
+    #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    model: Option<String>,
 }
 
 /// Diagnoses a bug nobody has reproduced, adds the diagnosis to the unit and sends it on.
@@ -25,13 +29,18 @@ pub fn run(args: Args) -> Result<()> {
     let vcs = vcs::get();
     let root = vcs.root_find(&std::env::current_dir()?)?;
     let timeout = Duration::from_secs(args.harness_timeout_seconds);
+    // Read here so a bad value stops `ns` before it runs anything.
+    let model = manifest::model_read(&root, Place::Troubleshoot, args.model.as_deref())?;
     let failed = units_troubleshoot(
         forge::get().as_ref(),
         harness::get().as_ref(),
         vcs.as_ref(),
         &root,
         &[args.unit],
-        timeout,
+        &Sessions {
+            timeout,
+            model: model.as_deref(),
+        },
         &mut Streak::new(0),
     );
     if failed > 0 {
@@ -49,7 +58,7 @@ pub fn units_troubleshoot(
     vcs: &dyn Vcs,
     root: &Path,
     units: &[u64],
-    timeout: Duration,
+    limits: &Sessions,
     streak: &mut Streak,
 ) -> usize {
     let mut failed = 0;
@@ -57,7 +66,15 @@ pub fn units_troubleshoot(
         if streak.reached() {
             break;
         }
-        match troubleshoot::run(forge, harness, vcs, root, *unit, timeout) {
+        match troubleshoot::run(
+            forge,
+            harness,
+            vcs,
+            root,
+            *unit,
+            limits.timeout,
+            limits.model,
+        ) {
             Ok(diagnosis) => {
                 streak.record(*unit, false);
                 println!(

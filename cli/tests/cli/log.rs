@@ -56,6 +56,11 @@ fn kept() -> Repo {
         3,
         &session("Fixing.", "make fix", "fixed"),
     );
+    std::fs::write(
+        repo.path.join(".git/ns/transcripts/5/build-1.model"),
+        "opus",
+    )
+    .unwrap();
     repo
 }
 
@@ -77,31 +82,31 @@ fn log_prints_each_session_in_order_with_its_calls_and_results() {
     let out = stdout(log(&kept(), &["5"]));
     assert_eq!(
         out,
-        "== build 1 ==\nBuilding.\n> Bash: make\n  = made\n\n\
-         == verify 1 ==\nChecking.\n> Bash: ns check\n  = failed\n\n\
-         == build 2 ==\nFixing.\n> Bash: make fix\n  = fixed\n\n"
+        "== build 1 (opus) ==\nBuilding.\n> Bash: make\n  = made\n\n\
+         == verify 1 (harness default model) ==\nChecking.\n> Bash: ns check\n  = failed\n\n\
+         == build 2 (harness default model) ==\nFixing.\n> Bash: make fix\n  = fixed\n\n"
     );
 }
 
 #[test]
 fn log_state_prints_only_that_states_sessions() {
     let out = stdout(log(&kept(), &["5", "--state", "build"]));
-    assert!(out.starts_with("== build 1 =="), "{out}");
-    assert!(out.contains("== build 2 =="), "{out}");
+    assert!(out.starts_with("== build 1 (opus) =="), "{out}");
+    assert!(out.contains("== build 2 ("), "{out}");
     assert!(!out.contains("verify"), "{out}");
 }
 
 #[test]
 fn log_last_prints_only_the_most_recent_session() {
     let out = stdout(log(&kept(), &["5", "--last"]));
-    assert!(out.starts_with("== build 2 =="), "{out}");
+    assert!(out.starts_with("== build 2 ("), "{out}");
     assert_eq!(out.matches("==").count(), 2);
 }
 
 #[test]
 fn log_last_with_a_state_prints_the_last_session_of_that_state() {
     let out = stdout(log(&kept(), &["5", "--state", "verify", "--last"]));
-    assert!(out.starts_with("== verify 1 =="), "{out}");
+    assert!(out.starts_with("== verify 1 ("), "{out}");
     assert_eq!(out.matches("==").count(), 2);
 }
 

@@ -8,6 +8,7 @@ use crate::artifact;
 use crate::checks;
 use crate::forge::Unit;
 use crate::harness::Task;
+use crate::manifest::Place;
 use crate::skill;
 use crate::state::{Outcome, State};
 
@@ -56,7 +57,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
                 problem.as_deref(),
             ),
             write: true,
-            model: None,
+            model: ctx.model_find(Place::Build)?,
             timeout: ctx.harness_timeout,
         },
     )?;
