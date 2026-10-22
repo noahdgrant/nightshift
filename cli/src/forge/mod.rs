@@ -45,6 +45,9 @@ pub trait Forge {
     /// Every open unit of the repository at `repo`.
     fn unit_list(&self, repo: &Path) -> Result<Vec<Unit>>;
 
+    /// The numbers of the open units that block unit `number` by the forge's own relationship.
+    fn unit_blockers_list(&self, repo: &Path, number: u64) -> Result<Vec<u64>>;
+
     /// The newest change request opened from `branch`, if there is one.
     fn change_request_get(&self, repo: &Path, branch: &str) -> Result<Option<ChangeRequest>>;
 
@@ -82,6 +85,15 @@ pub trait Forge {
 
     /// Merges change request `number` into its base as one commit.
     fn change_request_merge(&self, repo: &Path, number: u64) -> Result<()>;
+}
+
+/// The open units the forge says block unit `number`. A forge that cannot say, because the call
+/// fails or it has no such relationship, blocks nothing; the failure is noted on stderr.
+pub fn blockers_get(forge: &dyn Forge, repo: &Path, number: u64) -> Vec<u64> {
+    forge.unit_blockers_list(repo, number).unwrap_or_else(|e| {
+        eprintln!("ns: cannot read what blocks unit {number}: {e:#}");
+        Vec::new()
+    })
 }
 
 /// Every post `ns` makes on the forge starts with this line.
@@ -125,4 +137,88 @@ pub enum ChangeState {
 /// The forge `ns` uses. The only place one is chosen.
 pub fn get() -> Box<dyn Forge> {
     Box::new(github::GitHub::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Blockers(Result<Vec<u64>, &'static str>);
+
+    impl Forge for Blockers {
+        fn unit_blockers_list(&self, _: &Path, _: u64) -> Result<Vec<u64>> {
+            self.0.clone().map_err(|e| anyhow::anyhow!(e))
+        }
+        fn login_get(&self, _: &Path) -> Result<String> {
+            unreachable!()
+        }
+        fn unit_get(&self, _: &Path, _: u64) -> Result<Unit> {
+            unreachable!()
+        }
+        fn labels_list(&self, _: &Path) -> Result<Vec<String>> {
+            unreachable!()
+        }
+        fn label_create(&self, _: &Path, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_labels_set(&self, _: &Path, _: u64, _: &[String], _: &[String]) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_body_set(&self, _: &Path, _: u64, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_comment_add(&self, _: &Path, _: u64, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_assignee_add(&self, _: &Path, _: u64) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_close(&self, _: &Path, _: u64) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_list(&self, _: &Path) -> Result<Vec<Unit>> {
+            unreachable!()
+        }
+        fn change_request_get(&self, _: &Path, _: &str) -> Result<Option<ChangeRequest>> {
+            unreachable!()
+        }
+        fn change_request_create(
+            &self,
+            _: &Path,
+            _: &str,
+            _: u64,
+            _: &str,
+            _: &str,
+            _: &[String],
+        ) -> Result<ChangeRequest> {
+            unreachable!()
+        }
+        fn change_request_assignee_add(&self, _: &Path, _: u64) -> Result<()> {
+            unreachable!()
+        }
+        fn change_request_label_add(&self, _: &Path, _: u64, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn change_request_checks_get(&self, _: &Path, _: u64) -> Result<Checks> {
+            unreachable!()
+        }
+        fn release_download(&self, _: &str, _: &str, _: &[&str], _: &Path) -> Result<()> {
+            unreachable!()
+        }
+        fn change_request_merge(&self, _: &Path, _: u64) -> Result<()> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn the_forges_blockers_are_returned() {
+        let forge = Blockers(Ok(vec![3, 5]));
+        assert_eq!(blockers_get(&forge, Path::new("."), 1), [3, 5]);
+    }
+
+    #[test]
+    fn a_forge_that_cannot_say_blocks_nothing() {
+        let forge = Blockers(Err("404"));
+        assert_eq!(blockers_get(&forge, Path::new("."), 1), Vec::<u64>::new());
+    }
 }

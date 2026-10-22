@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -58,7 +58,7 @@ pub fn run(args: Args) -> Result<()> {
     manifest::review_sessions_read(&root)?;
     let forge = forge::get();
     let open = forge.unit_list(&root)?;
-    let plan = auto::plan(&open);
+    let plan = auto::plan(&open, &blockers_read(forge.as_ref(), &root, &open));
     if args.dry_run {
         let list = |units: &[&forge::Unit]| -> Vec<_> {
             units
@@ -100,7 +100,11 @@ pub fn run(args: Args) -> Result<()> {
     );
     // Triage may have sent units to be reproduced.
     let open = forge.unit_list(&root)?;
-    let repro: Vec<u64> = auto::plan(&open).repro.iter().map(|u| u.number).collect();
+    let repro: Vec<u64> = auto::plan(&open, &HashMap::new())
+        .repro
+        .iter()
+        .map(|u| u.number)
+        .collect();
     failed += troubleshoot::units_troubleshoot(
         forge.as_ref(),
         harness.as_ref(),
@@ -159,6 +163,15 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
+/// What the forge says blocks each ready unit of `open`, by unit. Only a ready unit's blockers
+/// matter to the plan, so only those are asked for.
+fn blockers_read(forge: &dyn Forge, root: &Path, open: &[forge::Unit]) -> HashMap<u64, Vec<u64>> {
+    open.iter()
+        .filter(|u| u.from_team && u.labels.iter().any(|l| l == auto::READY))
+        .map(|u| (u.number, forge::blockers_get(forge, root, u.number)))
+        .collect()
+}
+
 /// Whether a unit's run moved it into `stuck` because a state kept going wrong. `before` and
 /// `after` are its last move in the run log before and after the run: a move the run did not write
 /// says nothing about it.
@@ -205,7 +218,7 @@ fn units_run(
         }
         // Read again: triage and the units just run change what is ready and what is blocked.
         let open = forge.unit_list(root)?;
-        let plan = auto::plan(&open);
+        let plan = auto::plan(&open, &blockers_read(forge, root, &open));
         let Some(unit) = plan
             .queue
             .iter()
@@ -260,12 +273,23 @@ mod tests {
     use crate::forge::{ChangeRequest, Checks, Unit};
     use crate::os::Finished;
 
-    /// Ready units 1, 2 and 3, and nothing else.
-    struct Ready;
+    /// Ready units 1, 2 and 3, and nothing else. The forge says an open unit 99 blocks each unit
+    /// in `blocked`.
+    #[derive(Default)]
+    struct Ready {
+        blocked: &'static [u64],
+    }
 
     impl Forge for Ready {
         fn login_get(&self, _: &Path) -> Result<String> {
             unreachable!()
+        }
+        fn unit_blockers_list(&self, _: &Path, number: u64) -> Result<Vec<u64>> {
+            Ok(if self.blocked.contains(&number) {
+                vec![99]
+            } else {
+                Vec::new()
+            })
         }
         fn unit_list(&self, _: &Path) -> Result<Vec<Unit>> {
             Ok((1..=3)
@@ -373,7 +397,7 @@ mod tests {
         let clock = Clock(Cell::new(start()));
         let started = RefCell::new(Vec::new());
         units_run(
-            &Ready,
+            &Ready::default(),
             &clock,
             Path::new("."),
             &limits,
@@ -399,6 +423,53 @@ mod tests {
         // starts.
         let started = started(limits, Span::minutes(30) + Span::seconds(30));
         assert_eq!(started, [1, 2]);
+    }
+
+    #[test]
+    fn a_unit_the_forge_says_is_blocked_is_not_started() {
+        let started = RefCell::new(Vec::new());
+        units_run(
+            &Ready { blocked: &[2] },
+            &Clock(Cell::new(start())),
+            Path::new("."),
+            &Limits {
+                max_units: None,
+                deadline: None,
+            },
+            &mut Streak::new(0),
+            &mut |unit| {
+                started.borrow_mut().push(unit);
+                Ok(())
+            },
+            &mut |_| false,
+        )
+        .unwrap();
+        assert_eq!(started.into_inner(), [1, 3]);
+    }
+
+    #[test]
+    fn only_ready_units_of_the_team_are_asked_about() {
+        let unit = |number, labels: &[&str], from_team| Unit {
+            number,
+            title: String::new(),
+            body: String::new(),
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+            from_team,
+        };
+        let open = [
+            unit(1, &[auto::READY], true),
+            unit(2, &[auto::READY], true),
+            unit(3, &[], true),
+            unit(4, &[auto::READY], false),
+        ];
+        let read = blockers_read(
+            &Ready {
+                blocked: &[2, 3, 4],
+            },
+            Path::new("."),
+            &open,
+        );
+        assert_eq!(read, HashMap::from([(1, Vec::new()), (2, vec![99])]));
     }
 
     #[test]
@@ -445,7 +516,7 @@ mod tests {
         let started = RefCell::new(Vec::new());
         let end_of = |unit: u64| ends[unit as usize - 1];
         units_run(
-            &Ready,
+            &Ready::default(),
             &clock,
             Path::new("."),
             &limits,

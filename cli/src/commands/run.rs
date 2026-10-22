@@ -12,7 +12,7 @@ use crate::runlog::{Move, Reason, Resume, RunLog};
 use crate::state::{Outcome, State};
 use crate::states::{self, clean_up, ship, Context, BUILT_SNAPSHOT};
 use crate::transcripts::Transcripts;
-use crate::{forge, harness, lock, manifest, os, status, vcs, workspace};
+use crate::{auto, forge, harness, lock, manifest, os, status, vcs, workspace};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -21,6 +21,9 @@ pub struct Args {
     /// Delete the unit's workspace and branch, whatever they hold, and start over from `setup`.
     #[arg(long)]
     fresh: bool,
+    /// Run the unit although the units that block it are open.
+    #[arg(long)]
+    ignore_blockers: bool,
     /// Stop between states for the human, or go on.
     #[arg(long, value_enum, default_value_t = Gates::Stop)]
     gates: Gates,
@@ -62,6 +65,7 @@ impl Args {
         Args {
             unit,
             fresh: false,
+            ignore_blockers: false,
             gates: Gates::Auto,
             options,
         }
@@ -98,6 +102,13 @@ pub fn run(args: Args) -> Result<()> {
     )?;
     Transcripts::open(vcs.as_ref(), &root)?.prune(keep, SystemTime::now());
     let log = RunLog::open(vcs.as_ref(), &root)?;
+    // A unit that has begun is not stopped, so that resuming it never hits a blocker.
+    let begun = !args.fresh
+        && (!matches!(log.resume(&unit)?, Resume::Fresh)
+            || workspace::locate(&root, &unit)?.path.exists());
+    if !begun && !args.ignore_blockers {
+        blockers_check(forge::get().as_ref(), &root, args.unit)?;
+    }
     let resume = if args.fresh {
         workspace::discard(vcs.as_ref(), &from, &unit)?;
         Resume::Fresh
@@ -197,6 +208,22 @@ pub fn run(args: Args) -> Result<()> {
         (Err(e), Ok(())) => Err(e),
         (Ok(_), status) => status,
     }
+}
+
+/// Stops a unit that open units block, after printing them as one JSON line. The blockers are those
+/// the forge names and those its `Blocked by:` line names.
+fn blockers_check(forge: &dyn forge::Forge, root: &Path, unit: u64) -> Result<()> {
+    let open = forge.unit_list(root)?;
+    let Some(this) = open.iter().find(|u| u.number == unit) else {
+        return Ok(());
+    };
+    let native = HashMap::from([(unit, forge::blockers_get(forge, root, unit))]);
+    let blockers = auto::blockers_of(this, &open, &native);
+    if blockers.is_empty() {
+        return Ok(());
+    }
+    println!("{}", json!({ "unit": unit, "blocked_by": blockers }));
+    bail!("unit {unit} is blocked; run it anyway with --ignore-blockers")
 }
 
 /// Tells the forge what verification could not prove, for a unit that got stuck because of it.

@@ -66,7 +66,7 @@ Once you trust the loop, `--gates auto` goes through every state without stoppin
 ns run 12 --gates auto --merge
 ```
 
-A unit that is too vague for `ns triage` to route to build goes to `ns define 12`, a session in which you and the agent work out a spec. `ns run 12 --fresh` throws the workspace away and starts over.
+A unit that is too vague for `ns triage` to route to build goes to `ns define 12`, a session in which you and the agent work out a spec. `ns run 12 --fresh` throws the workspace away and starts over. A unit is blocked while an open issue blocks it, by GitHub's "blocked by" relationship or a `Blocked by: #a, #b` first line in its description: `ns auto` leaves it waiting, and `ns run` on a unit it has not begun prints the blockers and exits non-zero unless given `--ignore-blockers`; a forge that cannot say counts as not blocked.
 
 ## Run it overnight
 
