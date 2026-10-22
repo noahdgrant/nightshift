@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context as _, Result};
 use clap::{Args as ClapArgs, ValueEnum};
@@ -11,6 +11,7 @@ use crate::forge::ChangeState;
 use crate::runlog::{Resume, RunLog};
 use crate::state::{Outcome, State};
 use crate::states::{self, clean_up, ship, Context, BUILT_SNAPSHOT};
+use crate::transcripts::Transcripts;
 use crate::{forge, harness, lock, manifest, os, status, vcs, workspace};
 
 #[derive(ClapArgs)]
@@ -86,12 +87,14 @@ pub fn run(args: Args) -> Result<()> {
         Some(n) => n,
         None => manifest::max_attempts_read(&root)?,
     };
+    let keep = manifest::transcript_days_read(&root)?;
     // Held until the function ends. Taken before anything of the unit's is read or deleted.
     let _lock = lock::lock_take(
         &vcs.state_dir_find(&root)?,
         &format!("unit-{unit}.lock"),
         &format!("unit {unit} is already being run"),
     )?;
+    Transcripts::open(vcs.as_ref(), &root)?.prune(keep, SystemTime::now());
     let log = RunLog::open(vcs.as_ref(), &root)?;
     let resume = if args.fresh {
         workspace::discard(vcs.as_ref(), &from, &unit)?;

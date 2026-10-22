@@ -1,5 +1,5 @@
 use crate::common::{script, Repo};
-use crate::run::{set_manifest, tools, Fakes, FAIL};
+use crate::run::{set_manifest, tools, transcript_keep, Fakes, FAIL};
 
 use std::time::Duration;
 
@@ -462,6 +462,28 @@ fn auto_with_a_bad_setting_is_an_error_and_runs_nothing() {
     let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
     assert!(err.contains("run.max_attempts"), "{err}");
     assert!(out.get_output().stdout.is_empty());
+}
+
+#[test]
+fn auto_deletes_old_transcripts_and_keeps_newer_ones() {
+    let repo = Repo::new();
+    let old = transcript_keep(&repo, "build-1.jsonl", 8);
+    let new = transcript_keep(&repo, "build-2.jsonl", 6);
+    auto(&repo, &Fakes::passing(), &[]).success();
+    assert!(!old.exists());
+    assert!(new.exists());
+}
+
+#[test]
+fn auto_with_a_bad_transcript_days_setting_is_an_error_and_runs_nothing() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[run]\ntranscript_days = -1\n");
+    let old = transcript_keep(&repo, "build-1.jsonl", 40);
+    let out = auto_run(&repo, &Fakes::passing(), &[], None, true).failure();
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(err.contains("run.transcript_days"), "{err}");
+    assert!(out.get_output().stdout.is_empty());
+    assert!(old.exists());
 }
 
 /// Three issues nobody has triaged, whose triage sessions end as `sessions` says.

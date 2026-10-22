@@ -3,10 +3,11 @@
 //! state's sessions for the unit from 1: a retry or a rework is a new session.
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 
+use crate::manifest::Keep;
 use crate::state::State;
 use crate::vcs::Vcs;
 
@@ -44,6 +45,34 @@ impl Transcripts {
             + 1;
         let path = dir.join(format!("{state}-{n}.jsonl"));
         std::fs::write(&path, raw).with_context(|| format!("cannot write {}", path.display()))
+    }
+
+    /// Deletes the sessions last modified more than `keep` before `now`, and the unit directories
+    /// left empty. What cannot be deleted is skipped: pruning is housekeeping, not a reason to stop.
+    pub fn prune(&self, keep: Keep, now: SystemTime) {
+        let Keep::Days(days) = keep else { return };
+        let Some(cutoff) = now.checked_sub(Duration::from_secs(u64::from(days) * 86_400)) else {
+            return;
+        };
+        let Ok(units) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        for unit in units.flatten() {
+            let Ok(files) = std::fs::read_dir(unit.path()) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let old = file
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|at| at < cutoff);
+                if old {
+                    let _ = std::fs::remove_file(file.path());
+                }
+            }
+            // Fails, and so keeps the directory, while anything is left in it.
+            let _ = std::fs::remove_dir(unit.path());
+        }
     }
 
     /// The sessions kept for `unit`, oldest first. Files that are not sessions are ignored.
@@ -188,5 +217,94 @@ mod tests {
             std::fs::write(t.dir.join("7").join(stray), "").unwrap();
         }
         assert_eq!(t.sessions("7").unwrap().len(), 1);
+    }
+
+    fn aged(t: &Transcripts, unit: &str, state: State, days: u64) -> PathBuf {
+        t.keep(unit, state, b"x").unwrap();
+        let path = t.sessions(unit).unwrap().pop().unwrap().path;
+        let at = now() - Duration::from_secs(days * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+        path
+    }
+
+    fn now() -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(100 * 86_400)
+    }
+
+    #[test]
+    fn prune_deletes_what_is_older_than_the_limit_and_keeps_the_rest() {
+        let (_tmp, t) = store();
+        let old = aged(&t, "7", State::Build, 8);
+        let new = aged(&t, "7", State::Review, 6);
+        t.prune(Keep::Days(7), now());
+        assert!(!old.exists());
+        assert!(new.exists());
+        assert_eq!(t.sessions("7").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn prune_removes_a_unit_directory_left_empty_and_keeps_one_with_files() {
+        let (_tmp, t) = store();
+        let gone = aged(&t, "7", State::Build, 30);
+        aged(&t, "8", State::Build, 30);
+        aged(&t, "8", State::Review, 1);
+        t.prune(Keep::Days(7), now());
+        assert!(!gone.parent().unwrap().exists());
+        assert!(t.dir.join("8").exists());
+    }
+
+    #[test]
+    fn prune_with_forever_deletes_nothing() {
+        let (_tmp, t) = store();
+        let old = aged(&t, "7", State::Build, 5_000_000 / 86_400);
+        t.prune(Keep::Forever, now());
+        assert!(old.exists());
+    }
+
+    #[test]
+    fn prune_does_nothing_without_a_transcripts_directory() {
+        let (_tmp, t) = store();
+        t.prune(Keep::Days(1), now());
+        assert!(!t.dir.exists());
+    }
+
+    #[test]
+    fn prune_with_a_limit_before_the_epoch_deletes_nothing() {
+        let (_tmp, t) = store();
+        let path = aged(&t, "7", State::Build, 99);
+        t.prune(Keep::Days(u32::MAX), now());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn prune_leaves_a_stray_file_beside_the_unit_directories() {
+        let (_tmp, t) = store();
+        let old = aged(&t, "7", State::Build, 30);
+        let stray = t.dir.join("stray.txt");
+        std::fs::write(&stray, "").unwrap();
+        t.prune(Keep::Days(7), now());
+        assert!(stray.exists());
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn prune_skips_what_it_cannot_delete_and_goes_on() {
+        let (_tmp, t) = store();
+        // A directory is old and named like a session, and `remove_file` cannot delete it.
+        let stuck = t.dir.join("7/build-1.jsonl");
+        std::fs::create_dir_all(&stuck).unwrap();
+        std::fs::File::open(&stuck)
+            .unwrap()
+            .set_modified(now() - Duration::from_secs(30 * 86_400))
+            .unwrap();
+        let other = aged(&t, "8", State::Build, 30);
+        t.prune(Keep::Days(7), now());
+        assert!(stuck.exists());
+        assert!(!other.exists());
     }
 }

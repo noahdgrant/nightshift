@@ -352,6 +352,113 @@ pub fn set_manifest(repo: &Repo, text: &str) {
     std::fs::write(repo.path.join(".nightshift/nightshift.toml"), text).unwrap();
 }
 
+/// Saves a transcript of unit 9, which no run here touches, last modified `days` days ago.
+pub fn transcript_keep(repo: &Repo, name: &str, days: u64) -> std::path::PathBuf {
+    let dir = repo.path.join(".git/ns/transcripts/9");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, "{}\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400 + 3_600),
+        )
+        .unwrap();
+    path
+}
+
+#[test]
+fn run_deletes_transcripts_older_than_a_week_by_default_and_keeps_newer_ones() {
+    let repo = Repo::new();
+    let old = transcript_keep(&repo, "build-1.jsonl", 8);
+    let new = transcript_keep(&repo, "build-2.jsonl", 6);
+    run_unset(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert!(!old.exists());
+    assert!(new.exists());
+}
+
+#[test]
+fn log_still_shows_a_transcript_that_a_run_kept() {
+    let repo = Repo::new();
+    let dir = repo.path.join(".git/ns/transcripts/5");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("build-1.jsonl"),
+        r#"{"type":"result","result":"Kept."}"#,
+    )
+    .unwrap();
+    run_unset(&repo, &tools(&repo, &Fakes::passing())).success();
+    let out = Command::cargo_bin("ns")
+        .unwrap()
+        .args(["log", "5", "--state", "build", "--last"])
+        .current_dir(&repo.path)
+        .assert()
+        .success();
+    let out = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(out.starts_with("== build"), "{out}");
+}
+
+#[test]
+fn run_removes_the_directory_of_a_unit_whose_transcripts_are_all_deleted() {
+    let repo = Repo::new();
+    let old = transcript_keep(&repo, "build-1.jsonl", 8);
+    run_unset(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert!(!old.parent().unwrap().exists());
+}
+
+#[test]
+fn a_transcript_days_setting_of_zero_deletes_nothing() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[run]\ntranscript_days = 0\n");
+    let old = transcript_keep(&repo, "build-1.jsonl", 400);
+    run_unset(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert!(old.exists());
+}
+
+#[test]
+fn a_transcript_days_setting_of_thirty_keeps_a_transcript_of_twenty_days() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[run]\ntranscript_days = 30\n");
+    let kept = transcript_keep(&repo, "build-1.jsonl", 20);
+    let gone = transcript_keep(&repo, "build-2.jsonl", 31);
+    run_unset(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert!(kept.exists());
+    assert!(!gone.exists());
+}
+
+#[test]
+fn a_transcript_that_cannot_be_deleted_does_not_stop_the_run() {
+    let repo = Repo::new();
+    // A directory named like a session: old, and not removable as a file.
+    let stuck = transcript_keep(&repo, "build-1.jsonl", 8);
+    std::fs::remove_file(&stuck).unwrap();
+    std::fs::create_dir(&stuck).unwrap();
+    std::fs::File::open(&stuck)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(9 * 86_400))
+        .unwrap();
+    let other = transcript_keep(&repo, "verify-1.jsonl", 8);
+    run_unset(&repo, &tools(&repo, &Fakes::passing())).success();
+    assert!(stuck.exists());
+    assert!(!other.exists());
+}
+
+#[test]
+fn a_bad_transcript_days_setting_is_an_error_that_names_the_key_and_nothing_runs() {
+    for bad in ["-1", "\"7\"", "2.5"] {
+        let repo = Repo::new();
+        set_manifest(&repo, &format!("[run]\ntranscript_days = {bad}\n"));
+        let old = transcript_keep(&repo, "build-1.jsonl", 40);
+        let out = run_unset(&repo, &tools(&repo, &Fakes::passing())).failure();
+        let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(err.contains("run.transcript_days"), "{bad}: {err}");
+        assert!(out.get_output().stdout.is_empty(), "{bad}");
+        assert!(old.exists(), "{bad}");
+    }
+}
+
 /// Runs `ns` with exactly `args`.
 fn run_args(repo: &Repo, path: &str, args: &[&str]) -> assert_cmd::assert::Assert {
     Command::cargo_bin("ns")

@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Result};
 use chrono::{DateTime, Local, NaiveTime};
@@ -14,6 +14,7 @@ use crate::forge::Forge;
 use crate::os::Os;
 use crate::runlog::{Move, Reason, RunLog};
 use crate::state::State;
+use crate::transcripts::Transcripts;
 use crate::{auto, forge, harness, lock, manifest, os, until, vcs, workspace};
 
 #[derive(ClapArgs)]
@@ -52,6 +53,7 @@ pub fn run(args: Args) -> Result<()> {
         Some(n) => n,
         None => manifest::max_attempts_read(&root)?,
     });
+    let keep = manifest::transcript_days_read(&root)?;
     let forge = forge::get();
     let open = forge.unit_list(&root)?;
     let plan = auto::plan(&open);
@@ -82,6 +84,7 @@ pub fn run(args: Args) -> Result<()> {
         "auto.lock",
         "another ns auto is running in this repository",
     )?;
+    Transcripts::open(vcs.as_ref(), &root)?.prune(keep, SystemTime::now());
     let harness = harness::get();
     let mut streak = Streak::new(args.max_failures_in_a_row);
     let waiting: Vec<u64> = plan.triage.iter().map(|u| u.number).collect();
