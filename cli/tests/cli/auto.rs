@@ -1,5 +1,8 @@
 use crate::common::{script, Repo};
-use crate::run::{models_used, set_manifest, tools, transcript_keep, Fakes, FAIL};
+use crate::run::{
+    base_advanced, check_runs, counted_check, gh_log, main_published, models_used, origin,
+    run_with, set_manifest, tools, transcript_keep, Fakes, FAIL,
+};
 
 use std::time::Duration;
 
@@ -730,4 +733,31 @@ fn auto_with_a_bad_model_table_is_an_error_and_runs_nothing() {
     let out = auto_run(&repo, &Fakes::passing(), &[], None, true).failure();
     assert!(stderr(&out).contains("model.build"));
     assert!(out.get_output().stdout.is_empty());
+}
+
+#[test]
+fn auto_leaves_an_open_change_request_alone_however_far_behind_its_base_is() {
+    let repo = Repo::new();
+    counted_check(&repo, false);
+    main_published(&repo);
+    let stays_ready = Fakes {
+        labels_follow_edits: false,
+        ..Fakes::passing()
+    };
+    run_with(&repo, &tools(&repo, &stays_ready), &[]).success();
+    base_advanced(&repo, "other.txt", "other");
+    let pushed = crate::common::git(&origin(&repo), &["rev-parse", "ns/5"]);
+    let looks = gh_log(&repo).matches("pr checks").count();
+    let out = auto_by(&repo, &stays_ready, &[], Some(Duration::from_secs(120))).success();
+    assert!(
+        events(&out).iter().all(|e| e.get("refresh").is_none()),
+        "{:?}",
+        events(&out)
+    );
+    assert_eq!(
+        crate::common::git(&origin(&repo), &["rev-parse", "ns/5"]),
+        pushed
+    );
+    assert_eq!(check_runs(&repo), 1);
+    assert_eq!(gh_log(&repo).matches("pr checks").count(), looks);
 }

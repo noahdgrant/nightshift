@@ -1,4 +1,4 @@
-use crate::common::{script, Repo};
+use crate::common::{git, script, Repo};
 
 use assert_cmd::Command;
 use serde_json::{json, Value};
@@ -22,7 +22,15 @@ fn run_status(
     change_requests: &[(u64, &str)],
     runs: &str,
 ) -> assert_cmd::assert::Assert {
-    let repo = Repo::new();
+    run_status_in(&Repo::new(), issues, change_requests, runs)
+}
+
+fn run_status_in(
+    repo: &Repo,
+    issues: &[String],
+    change_requests: &[(u64, &str)],
+    runs: &str,
+) -> assert_cmd::assert::Assert {
     let bin = repo.path.parent().unwrap().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let cases: String = change_requests
@@ -167,4 +175,105 @@ fn a_last_move_with_a_bad_from_state_still_gives_its_state() {
     let json: Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
     assert_eq!(json["units"][0]["state"], "done");
     assert_eq!(json["units"][0]["moved_at"], 1);
+}
+
+/// A repository whose base branch is published and which has a workspace for unit 7 on `ns/7`,
+/// made from that base. Unit 7 has an open change request.
+fn open_unit_repo() -> Repo {
+    let repo = Repo::new();
+    git(&repo.path, &["push", "-q", "origin", "main"]);
+    git(
+        &repo.path,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "ns/7",
+            &repo.workspace("7").to_string_lossy(),
+        ],
+    );
+    repo
+}
+
+/// Adds a commit to the origin's `main`, through a clone of its own.
+fn base_moves(repo: &Repo) {
+    let other = repo.path.parent().unwrap().join("other");
+    let origin = repo.path.parent().unwrap().join("origin.git");
+    git(
+        repo.path.parent().unwrap(),
+        &["clone", "-q", &origin.to_string_lossy(), "other"],
+    );
+    git(&other, &["commit", "-q", "--allow-empty", "-m", "other"]);
+    git(&other, &["push", "-q", "origin", "main"]);
+}
+
+fn base_of(repo: &Repo, runs: &str) -> Value {
+    let out = run_status_in(repo, &[unit(7, &[])], &[(7, "OPEN")], runs).success();
+    let json: Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    json["units"][0]["change_request"]["base"].clone()
+}
+
+#[test]
+fn an_open_change_request_with_the_base_tip_is_current() {
+    let repo = open_unit_repo();
+    assert_eq!(base_of(&repo, ""), "current");
+}
+
+#[test]
+fn an_open_change_request_without_the_base_tip_is_behind_and_status_changes_nothing() {
+    let repo = open_unit_repo();
+    base_moves(&repo);
+    let head = git(&repo.workspace("7"), &["rev-parse", "HEAD"]);
+    assert_eq!(base_of(&repo, ""), "behind");
+    assert_eq!(git(&repo.workspace("7"), &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        std::fs::read_to_string(repo.path.join(".git/ns/runs.jsonl")).unwrap(),
+        ""
+    );
+}
+
+#[test]
+fn an_unreachable_origin_leaves_the_base_unknown_and_the_rest_listed() {
+    let repo = open_unit_repo();
+    std::fs::remove_dir_all(repo.path.parent().unwrap().join("origin.git")).unwrap();
+    let out = run_status_in(&repo, &[unit(7, &[])], &[(7, "OPEN")], "").success();
+    let json: Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(json["units"][0]["change_request"]["base"], "unknown");
+    assert_eq!(json["units"][0]["unit"], 7);
+    assert_eq!(json["units"][0]["change_request"]["state"], "open");
+}
+
+#[test]
+fn a_base_tip_a_refresh_tested_is_current() {
+    let repo = open_unit_repo();
+    base_moves(&repo);
+    let tip = git(
+        &repo.path.parent().unwrap().join("origin.git"),
+        &["rev-parse", "main"],
+    );
+    let runs = format!("{{\"unit\":\"7\",\"base_tested\":\"{}\"}}\n", tip.trim());
+    assert_eq!(base_of(&repo, &runs), "current");
+}
+
+#[test]
+fn with_the_queue_off_status_shows_no_base() {
+    let repo = open_unit_repo();
+    base_moves(&repo);
+    std::fs::create_dir_all(repo.path.join(".nightshift")).unwrap();
+    std::fs::write(
+        repo.path.join(".nightshift/nightshift.toml"),
+        "[merge]\nqueue = false\n",
+    )
+    .unwrap();
+    assert_eq!(base_of(&repo, ""), Value::Null);
+}
+
+#[test]
+fn a_merged_change_request_shows_no_base() {
+    let repo = open_unit_repo();
+    base_moves(&repo);
+    let out = run_status_in(&repo, &[unit(7, &[])], &[(7, "MERGED")], "").success();
+    let json: Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(json["units"][0]["change_request"]["base"], Value::Null);
 }
