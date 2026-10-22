@@ -94,8 +94,9 @@ pub trait Forge {
         dir: &Path,
     ) -> Result<()>;
 
-    /// Merges change request `number` into its base as one commit.
-    fn change_request_merge(&self, repo: &Path, number: u64) -> Result<()>;
+    /// Merges change request `number` into its base as one commit, only when its head is the
+    /// commit `head`. A change request that has moved on since is refused.
+    fn change_request_merge(&self, repo: &Path, number: u64, head: &str) -> Result<()>;
 }
 
 /// The open units the forge says block unit `number`. A forge that cannot say, because the call
@@ -233,7 +234,7 @@ mod tests {
         fn release_download(&self, _: &str, _: &str, _: &[&str], _: &Path) -> Result<()> {
             unreachable!()
         }
-        fn change_request_merge(&self, _: &Path, _: u64) -> Result<()> {
+        fn change_request_merge(&self, _: &Path, _: u64, _: &str) -> Result<()> {
             unreachable!()
         }
     }
@@ -307,7 +308,7 @@ mod tests {
         fn release_download(&self, _: &str, _: &str, _: &[&str], _: &Path) -> Result<()> {
             unreachable!()
         }
-        fn change_request_merge(&self, _: &Path, _: u64) -> Result<()> {
+        fn change_request_merge(&self, _: &Path, _: u64, _: &str) -> Result<()> {
             unreachable!()
         }
     }

@@ -439,9 +439,19 @@ impl Forge for GitHub {
         })
     }
 
-    fn change_request_merge(&self, repo: &Path, number: u64) -> Result<()> {
+    fn change_request_merge(&self, repo: &Path, number: u64, head: &str) -> Result<()> {
         // Not repeated: a second merge of a merged change request is an error.
-        self.gh_once(repo, &["pr", "merge", &number.to_string(), "--squash"])?;
+        self.gh_once(
+            repo,
+            &[
+                "pr",
+                "merge",
+                &number.to_string(),
+                "--squash",
+                "--match-head-commit",
+                head,
+            ],
+        )?;
         Ok(())
     }
 }
@@ -687,11 +697,35 @@ mod tests {
     }
 
     #[test]
+    fn a_merge_names_the_head_commit_it_may_merge() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gh");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho \"$@\" > '{}'\n",
+                tmp.path().join("args").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let gh = GitHub::with_program(path);
+        gh.change_request_merge(tmp.path(), 9, "abc123").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("args"))
+                .unwrap()
+                .trim(),
+            "pr merge 9 --squash --match-head-commit abc123"
+        );
+    }
+
+    #[test]
     fn opening_and_merging_a_change_request_are_not_repeated() {
         let _spawn = crate::testutil::spawning();
         let tmp = tempfile::tempdir().unwrap();
         let gh = flaky(tmp.path(), 99, DOWN, "");
-        gh.change_request_merge(tmp.path(), 9).unwrap_err();
+        gh.change_request_merge(tmp.path(), 9, "abc").unwrap_err();
         assert_eq!(calls(tmp.path()), 1);
         gh.change_request_create(tmp.path(), "ns/u1", 7, "t", "b", &[])
             .unwrap_err();

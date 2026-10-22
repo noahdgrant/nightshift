@@ -374,7 +374,7 @@ mod tests {
         fn change_request_checks_get(&self, _: &Path, _: u64) -> Result<Checks> {
             unreachable!()
         }
-        fn change_request_merge(&self, _: &Path, _: u64) -> Result<()> {
+        fn change_request_merge(&self, _: &Path, _: u64, _: &str) -> Result<()> {
             unreachable!()
         }
         fn release_download(&self, _: &str, _: &str, _: &[&str], _: &Path) -> Result<()> {

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use super::Vcs;
+use super::{Rebase, Vcs};
 use crate::retry;
 
 /// What git says when a call to the remote failed for a reason that can pass.
@@ -157,6 +157,63 @@ impl Vcs for Git {
         Ok(())
     }
 
+    fn workspace_head_find(&self, path: &Path) -> Result<String> {
+        run(path, &["rev-parse", "HEAD"])
+    }
+
+    fn base_fetch(&self, root: &Path) -> Result<Option<String>> {
+        let branch = run(root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+        // A detached checkout is on no branch.
+        if branch == "HEAD" {
+            return Ok(None);
+        }
+        let heads = self.remote_run(root, &["ls-remote", "--heads", "origin", &branch])?;
+        if heads.is_empty() {
+            return Ok(None);
+        }
+        let tracking = format!("refs/remotes/origin/{branch}");
+        self.remote_run(
+            root,
+            &[
+                "fetch",
+                "origin",
+                &format!("+refs/heads/{branch}:{tracking}"),
+            ],
+        )?;
+        Ok(Some(run(root, &["rev-parse", &tracking])?))
+    }
+
+    fn workspace_contains(&self, path: &Path, commit: &str) -> Result<bool> {
+        Ok(succeeds(
+            path,
+            &["merge-base", "--is-ancestor", commit, "HEAD"],
+        ))
+    }
+
+    fn workspace_rebase(&self, path: &Path, onto: &str) -> Result<Rebase> {
+        let failed = match run(path, &["rebase", onto]) {
+            Ok(_) => return Ok(Rebase::Done),
+            Err(e) => e,
+        };
+        let conflicted = run(path, &["diff", "--name-only", "-z", "--diff-filter=U"])?;
+        let files: Vec<String> = conflicted
+            .split('\0')
+            .filter(|name| !name.is_empty())
+            .map(String::from)
+            .collect();
+        run(path, &["rebase", "--abort"])?;
+        if files.is_empty() {
+            return Err(failed);
+        }
+        Ok(Rebase::Conflict(files))
+    }
+
+    fn workspace_base_set(&self, path: &Path, base: &str) -> Result<()> {
+        let branch = run(path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+        run(path, &["update-ref", &base_ref(&branch), base])?;
+        Ok(())
+    }
+
     fn branch_delete(&self, root: &Path, branch: &str) -> Result<()> {
         if succeeds(root, &["rev-parse", "--verify", "--quiet", branch]) {
             // The branch was merged on the forge, as a new commit, so git sees it as unmerged.
@@ -303,5 +360,137 @@ mod tests {
         files.sort();
 
         assert_eq!(files, vec![".github/\u{e9}.yml", "a.rs"]);
+    }
+
+    fn commit_file(dir: &Path, name: &str, text: &str) -> String {
+        std::fs::write(dir.join(name), text).unwrap();
+        git(dir, &["add", "--all"]);
+        git(dir, &["commit", "-q", "-m", name]);
+        run(dir, &["rev-parse", "HEAD"]).unwrap()
+    }
+
+    /// A repository on `main` with a bare `origin`, and a workspace `ns/1` branched from the
+    /// first commit, which holds `a.txt`.
+    fn repo_with_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        let origin = tmp.path().join("origin.git");
+        std::fs::create_dir(&root).unwrap();
+        git(
+            tmp.path(),
+            &["init", "-q", "--bare", "-b", "main", "origin.git"],
+        );
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(
+            &root,
+            &["remote", "add", "origin", &origin.to_string_lossy()],
+        );
+        git(&root, &["config", "user.name", "t"]);
+        git(&root, &["config", "user.email", "t@t"]);
+        commit_file(&root, "a.txt", "a\n");
+        let ws = tmp.path().join("ws");
+        Git::new()
+            .workspace_create(&root, &ws, "ns/1", None)
+            .unwrap();
+        (tmp, root, ws)
+    }
+
+    #[test]
+    fn the_base_branch_is_fetched_and_its_tip_returned() {
+        let (_tmp, root, _ws) = repo_with_workspace();
+        git(&root, &["push", "-q", "origin", "main"]);
+        let tip = commit_file(&root, "b.txt", "b\n");
+        git(&root, &["push", "-q", "origin", "main"]);
+        // A clone made later sees the remote's tip, not its own.
+        let other = root.parent().unwrap().join("other");
+        git(
+            root.parent().unwrap(),
+            &[
+                "clone",
+                "-q",
+                &root.parent().unwrap().join("origin.git").to_string_lossy(),
+                "other",
+            ],
+        );
+        let newer = commit_file(&other, "c.txt", "c\n");
+        git(&other, &["push", "-q", "origin", "main"]);
+
+        assert_eq!(Git::new().base_fetch(&root).unwrap(), Some(newer));
+        assert_ne!(
+            tip,
+            run(&root, &["rev-parse", "refs/remotes/origin/main"]).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_remote_without_the_base_branch_has_no_tip() {
+        let (_tmp, root, _ws) = repo_with_workspace();
+        assert_eq!(Git::new().base_fetch(&root).unwrap(), None);
+    }
+
+    #[test]
+    fn a_checkout_on_no_branch_has_no_base_to_fetch() {
+        let (_tmp, root, _ws) = repo_with_workspace();
+        git(&root, &["checkout", "-q", "--detach"]);
+        assert_eq!(Git::new().base_fetch(&root).unwrap(), None);
+    }
+
+    #[test]
+    fn a_workspace_contains_the_commits_it_is_built_on_and_not_newer_ones() {
+        let (_tmp, root, ws) = repo_with_workspace();
+        let first = run(&ws, &["rev-parse", "HEAD"]).unwrap();
+        let newer = commit_file(&root, "b.txt", "b\n");
+        let vcs = Git::new();
+        assert!(vcs.workspace_contains(&ws, &first).unwrap());
+        assert!(!vcs.workspace_contains(&ws, &newer).unwrap());
+    }
+
+    #[test]
+    fn a_rebase_moves_the_branch_onto_the_commit_and_the_recorded_base_follows() {
+        let (_tmp, root, ws) = repo_with_workspace();
+        let vcs = Git::new();
+        let old = vcs.workspace_base_find(&ws).unwrap();
+        commit_file(&ws, "mine.txt", "mine\n");
+        let newer = commit_file(&root, "b.txt", "b\n");
+
+        assert_eq!(vcs.workspace_rebase(&ws, &newer).unwrap(), Rebase::Done);
+        assert!(vcs.workspace_contains(&ws, &newer).unwrap());
+        // Until the base is moved, the diff holds the other unit's file as well.
+        assert_eq!(vcs.workspace_files_changed(&ws, &old).unwrap().len(), 2);
+        vcs.workspace_base_set(&ws, &newer).unwrap();
+        assert_eq!(vcs.workspace_base_find(&ws).unwrap(), newer);
+        assert_eq!(
+            vcs.workspace_files_changed(&ws, &newer).unwrap(),
+            ["mine.txt"]
+        );
+        assert_eq!(
+            vcs.workspace_head_find(&ws).unwrap(),
+            run(&ws, &["rev-parse", "HEAD"]).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_conflicting_rebase_is_aborted_and_names_the_files() {
+        let (_tmp, root, ws) = repo_with_workspace();
+        let vcs = Git::new();
+        let mine = commit_file(&ws, "a.txt", "mine\n");
+        let newer = commit_file(&root, "a.txt", "theirs\n");
+
+        assert_eq!(
+            vcs.workspace_rebase(&ws, &newer).unwrap(),
+            Rebase::Conflict(vec!["a.txt".into()])
+        );
+        assert_eq!(vcs.workspace_head_find(&ws).unwrap(), mine);
+        assert!(vcs.workspace_changes_list(&ws).unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "mine\n");
+    }
+
+    #[test]
+    fn a_rebase_that_fails_for_another_reason_is_an_error() {
+        let (_tmp, _root, ws) = repo_with_workspace();
+        let err = Git::new()
+            .workspace_rebase(&ws, "0000000000000000000000000000000000000000")
+            .unwrap_err();
+        assert!(err.to_string().contains("rebase"), "{err}");
     }
 }

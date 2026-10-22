@@ -85,6 +85,14 @@ With `--merge`, `ns run` and `ns auto` merge a change request once its checks pa
 human_review = [".github/**", ".nightshift/**", "skills/**"]
 ```
 
+Before it pushes, `ns` rebases the unit's branch onto the base branch when that has moved, and runs `.nightshift/check` on the result. A conflict or a failing check sends the unit back to `build`; `verify` and `review` do not run again for a clean rebase. With `--merge`, `ns` takes a lock on the repository after the checks pass and fetches the base branch again. If it moved, the unit goes round again; the merge names the head commit the checks passed. `[merge] queue` turns all of this off (default `true`), for a repository with GitHub's own merge queue or one that does not care, and `[merge] max_base_moves` is how many times the base branch may move while one change request is merged before the unit is stuck (default 3, a whole number of at least 1). A value of the wrong type or range is an error, and `ns` stops before it runs anything.
+
+```toml
+[merge]
+queue = true
+max_base_moves = 3
+```
+
 How many times a state may run before its unit is stuck is `[run] max_attempts` in `.nightshift/nightshift.toml`. `--max-attempts` on `ns run` or `ns auto` wins over it, and a repository that sets neither gets the built-in default, which `ns run --help` states. It must be a whole number of at least 1, or `ns` stops before it runs anything.
 
 ```toml

@@ -24,17 +24,32 @@ impl Drop for Lock {
 /// Takes the lock called `name` in `dir`, or fails at once when another process holds it.
 /// `busy` is what the error says in that case.
 pub fn lock_take(dir: &Path, name: &str, busy: &str) -> Result<Lock> {
+    lock_open(dir, name, Some(busy))
+}
+
+/// Takes the lock called `name` in `dir`, waiting for as long as another process holds it.
+pub fn lock_wait(dir: &Path, name: &str) -> Result<Lock> {
+    lock_open(dir, name, None)
+}
+
+/// Takes the lock; when `busy` is set, a lock that is held fails with it instead of waiting.
+fn lock_open(dir: &Path, name: &str, busy: Option<&str>) -> Result<Lock> {
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let path = dir.join(name);
     loop {
         let file =
             File::create(&path).with_context(|| format!("cannot open {}", path.display()))?;
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) => bail!("{busy}"),
-            Err(TryLockError::Error(e)) => {
-                return Err(e).with_context(|| format!("cannot lock {}", path.display()))
-            }
+        match busy {
+            Some(busy) => match file.try_lock() {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => bail!("{busy}"),
+                Err(TryLockError::Error(e)) => {
+                    return Err(e).with_context(|| format!("cannot lock {}", path.display()))
+                }
+            },
+            None => file
+                .lock()
+                .with_context(|| format!("cannot lock {}", path.display()))?,
         }
         // The holder before us removed the file we opened; what we hold is no lock. Try again.
         let same = std::fs::metadata(&path)
@@ -58,6 +73,18 @@ mod tests {
         lock_take(tmp.path(), "y.lock", "busy").unwrap();
         drop(first);
         lock_take(tmp.path(), "x.lock", "busy").unwrap();
+    }
+
+    #[test]
+    fn waiting_for_a_lock_takes_it_once_the_holder_lets_go() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = lock_take(tmp.path(), "x.lock", "busy").unwrap();
+        let dir = tmp.path().to_path_buf();
+        let waiter = std::thread::spawn(move || lock_wait(&dir, "x.lock").map(|_| ()));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!waiter.is_finished());
+        drop(first);
+        waiter.join().unwrap().unwrap();
     }
 
     #[test]

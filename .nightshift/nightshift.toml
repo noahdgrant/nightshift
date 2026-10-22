@@ -9,4 +9,6 @@ transcript_days = 7
 sessions = 3
 
 [merge]
+queue = true
+max_base_moves = 3
 human_review = [".github/**", ".nightshift/**", "release-please-config.json", ".release-please-manifest.json", "rust-toolchain.toml", "skills/**"]
