@@ -9,7 +9,7 @@ use crate::state::{Outcome, State};
 /// What a state that checks the build does with its prompt: the harness runs it, and whatever it
 /// says is kept as `evidence.md`. A check must leave the workspace as the build left it.
 ///
-/// - The build passes or fails by the last line of the evidence.
+/// - The build passes, fails or is inconclusive by the last line of the evidence.
 /// - A check that goes wrong (the harness did not finish, the workspace changed, no verdict) says
 ///   nothing about the build: the evidence ends in an error verdict, the state goes wrong, and the
 ///   state's next run is told what happened and must put it right.
@@ -55,6 +55,7 @@ pub fn run(ctx: &mut Context, state: State, write: bool, prompt: String) -> Resu
         artifact::write(&dir, &id, "evidence.md", &reply.text)?;
         return Ok(match verdict::parse(&reply.text) {
             Some(Verdict::Pass) => Outcome::Pass,
+            Some(Verdict::Inconclusive) => Outcome::Inconclusive,
             _ => Outcome::Fail,
         });
     };

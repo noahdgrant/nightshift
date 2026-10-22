@@ -49,6 +49,8 @@ pub enum Reason {
     Failed,
     /// The state kept returning an error: the harness, the forge or the clock let it down.
     WentWrong,
+    /// Verification could not prove every requirement, twice.
+    Inconclusive,
 }
 
 impl Reason {
@@ -56,6 +58,7 @@ impl Reason {
         match text {
             "failed" => Some(Reason::Failed),
             "went_wrong" => Some(Reason::WentWrong),
+            "inconclusive" => Some(Reason::Inconclusive),
             _ => None,
         }
     }
@@ -170,13 +173,15 @@ mod tests {
             r#"{"unit":"5","from":"build","to":"stuck","reason":"went_wrong"}
 {"unit":"6","from":"verify","to":"stuck","reason":"failed"}
 {"unit":"7","from":"verify","to":"stuck","reason":"odd"}
-{"unit":"8","from":"build","to":"verify"}"#,
+{"unit":"8","from":"build","to":"verify"}
+{"unit":"9","from":"verify","to":"stuck","reason":"inconclusive"}"#,
         );
         let reason = |unit| log.last_move(unit).unwrap().unwrap().reason;
         assert_eq!(reason("5"), Some(Reason::WentWrong));
         assert_eq!(reason("6"), Some(Reason::Failed));
         assert_eq!(reason("7"), None);
         assert_eq!(reason("8"), None);
+        assert_eq!(reason("9"), Some(Reason::Inconclusive));
     }
 
     #[test]

@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn the_checking_skills_ask_for_the_verdict_lines_the_cli_reads() {
-        use crate::states::verdict::{FAIL_LINE, PASS_LINE};
+        use crate::states::verdict::{FAIL_LINE, INCONCLUSIVE_LINE, PASS_LINE};
         for name in [VERIFY, REVIEW] {
             let file = format!("{}/../skills/{name}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
             let skill = std::fs::read_to_string(file).unwrap();
@@ -118,6 +118,7 @@ mod tests {
                 skill.contains(PASS_LINE) && skill.contains(FAIL_LINE),
                 "{name}"
             );
+            assert_eq!(skill.contains(INCONCLUSIVE_LINE), name == VERIFY, "{name}");
         }
     }
 

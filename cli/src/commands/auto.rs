@@ -294,6 +294,9 @@ mod tests {
         fn unit_body_set(&self, _: &Path, _: u64, _: &str) -> Result<()> {
             unreachable!()
         }
+        fn unit_comment_add(&self, _: &Path, _: u64, _: &str) -> Result<()> {
+            unreachable!()
+        }
         fn unit_assignee_add(&self, _: &Path, _: u64) -> Result<()> {
             unreachable!()
         }

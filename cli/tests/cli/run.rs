@@ -34,6 +34,8 @@ pub struct Fakes {
     pub units: &'static [u64],
     /// Whether the forge refuses to assign anyone.
     pub refuses_assignee: bool,
+    /// Whether the forge refuses to add a comment to a unit.
+    pub refuses_comment: bool,
     /// The file the build writes, relative to the workspace.
     pub builds: &'static str,
     /// How each triage or troubleshoot session ends, one letter per session in the order they run:
@@ -73,9 +75,12 @@ pub enum CheckEdits {
     FirstThenFixes,
     /// Every check writes to the workspace.
     Always,
+    /// Only the checks after the first write to the workspace.
+    AfterFirst,
 }
 
 const PASS: &str = "VERDICT: PASS";
+pub const INCONCLUSIVE: &str = "VERDICT: INCONCLUSIVE";
 pub const FAIL: &str = "VERDICT: FAIL";
 
 impl Fakes {
@@ -96,6 +101,7 @@ impl Fakes {
             labels_follow_edits: true,
             units: &[5],
             refuses_assignee: false,
+            refuses_comment: false,
             builds: "thing.txt",
             sessions: "",
         }
@@ -136,6 +142,7 @@ labels() {{
   esac
 }}
 case "$1 $2" in
+"issue comment") [ "{refuses_comment}" = yes ] && {{ echo "cannot comment" >&2; exit 1; }};;
 "issue edit"|"pr edit") case "$*" in *--add-assignee*) [ "{refuses}" = yes ] && {{ echo "cannot assign" >&2; exit 1; }};; esac;;
 "api repos/{{owner}}/{{repo}}/issues/"*) labels; echo '{{"number":'"${{2##*/}}"',"title":"Add a thing","body":"Make the thing.","labels":'"$l"',"author_association":"OWNER"}}';;
 "api --paginate") labels; echo '[[{listed}]]';;
@@ -156,6 +163,7 @@ esac"#,
                 ))
                 .collect::<Vec<_>>()
                 .join(","),
+            refuses_comment = if fakes.refuses_comment { "yes" } else { "no" },
             refuses = if fakes.refuses_assignee { "yes" } else { "no" },
             follow = if fakes.labels_follow_edits {
                 "yes"
@@ -173,6 +181,7 @@ esac"#,
             r#"if [ -e "$seen" ]; then rm -f touched.txt; else echo x > touched.txt; fi; "#
         }
         CheckEdits::Always => "echo x >> touched.txt; ",
+        CheckEdits::AfterFirst => r#"if [ -e "$seen" ]; then echo x >> touched.txt; fi; "#,
     };
     let run_checks = if fakes.agent_runs_checks {
         r#"ns=$(echo "$p" | sed -n 's/.*run `\(.*\) check` in your workspace.*/\1/p'); [ -n "$ns" ] && "$ns" check 2>/dev/null; "#
@@ -1790,4 +1799,263 @@ fn another_unit_being_run_does_not_block_this_one() {
     let repo = Repo::new();
     let _other = unit_lock_held(&repo, "6");
     run(&repo, &tools(&repo, &Fakes::passing())).success();
+}
+
+/// A verification that proved R1 and could not prove R2.
+const UNPROVEN: &str = "### R1\nPASS: ran it\n\n### R2\nINCONCLUSIVE: needs a live service; \
+                        run it against staging\nVERDICT: INCONCLUSIVE";
+
+fn inconclusive_twice() -> Fakes {
+    Fakes {
+        first_verdict: UNPROVEN,
+        verdict: UNPROVEN,
+        ..Fakes::passing()
+    }
+}
+
+#[test]
+fn an_inconclusive_verification_runs_again_and_a_pass_goes_on_to_review() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_verdict: UNPROVEN,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert_eq!(
+        &moves[2..5],
+        ["build>verify", "verify>verify", "verify>review"]
+    );
+    assert!(!moves.contains(&"verify>build".to_string()), "{moves:?}");
+    assert!(!moves.contains(&"build>build".to_string()), "{moves:?}");
+    let log = run_log(&repo);
+    assert_eq!(log[2]["reason"], "inconclusive");
+    assert_eq!(log[2]["attempt"], 1);
+}
+
+#[test]
+fn the_second_verification_is_shown_the_unproven_requirements_of_the_first() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_verdict: UNPROVEN,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    assert!(!verify_prompt(&repo, 1).contains(PREVIOUS_VERIFICATION));
+    assert!(
+        verify_prompt(&repo, 2).contains(&format!("{PREVIOUS_VERIFICATION}\n\nchecked it\n### R1"))
+    );
+    assert!(verify_prompt(&repo, 2).contains("INCONCLUSIVE: needs a live service"));
+    assert!(read(&repo, "verify-1.md").ends_with("VERDICT: INCONCLUSIVE\n"));
+    assert_eq!(read(&repo, "verify-2.md"), "checked it\nVERDICT: PASS\n");
+}
+
+#[test]
+fn an_inconclusive_verification_followed_by_a_fail_sends_the_unit_to_build() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_verdict: UNPROVEN,
+        verdict: FAIL,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert_eq!(
+        &moves[2..6],
+        [
+            "build>verify",
+            "verify>verify",
+            "verify>build",
+            "build>verify"
+        ]
+    );
+}
+
+#[test]
+fn two_inconclusive_verifications_stick_the_unit_for_a_human_and_say_what_is_unproven() {
+    let repo = Repo::new();
+    let out = run_with(
+        &repo,
+        &tools(&repo, &inconclusive_twice()),
+        &["--max-attempts", "3"],
+    )
+    .failure()
+    .get_output()
+    .stdout
+    .clone();
+    let moves = moves(out);
+    assert_eq!(
+        &moves[2..],
+        ["build>verify", "verify>verify", "verify>stuck"]
+    );
+    let last = run_log(&repo).last().unwrap().clone();
+    assert_eq!(last["reason"], "inconclusive");
+    let gh = gh_log(&repo);
+    assert!(gh.contains("--add-label status:ready-for-human"), "{gh}");
+    let comment = gh
+        .lines()
+        .skip_while(|l| !l.starts_with("issue comment 5"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        comment.contains("INCONCLUSIVE: needs a live service; run it against staging"),
+        "{gh}"
+    );
+    assert!(!comment.contains("PASS: ran it"), "{gh}");
+    assert!(!comment.contains("VERDICT"), "{gh}");
+}
+
+#[test]
+fn an_inconclusive_verification_with_one_attempt_sticks_the_unit_after_one() {
+    let repo = Repo::new();
+    run_with(
+        &repo,
+        &tools(&repo, &inconclusive_twice()),
+        &["--max-attempts", "1"],
+    )
+    .failure();
+    assert!(repo.workspace("5").join(".ns/5/verify-1.md").is_file());
+    assert!(!repo.workspace("5").join(".ns/5/verify-2.md").exists());
+    let last = run_log(&repo).last().unwrap().clone();
+    assert_eq!(
+        (
+            last["from"].as_str(),
+            last["to"].as_str(),
+            last["reason"].as_str()
+        ),
+        (Some("verify"), Some("stuck"), Some("inconclusive"))
+    );
+    assert!(gh_log(&repo).contains("issue comment 5 --body"));
+}
+
+#[test]
+fn a_verification_without_an_inconclusive_section_is_commented_whole() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_verdict: "could not run it\nVERDICT: INCONCLUSIVE",
+        verdict: "could not run it\nVERDICT: INCONCLUSIVE",
+        ..Fakes::passing()
+    };
+    run_with(&repo, &tools(&repo, &fakes), &["--max-attempts", "1"]).failure();
+    assert!(gh_log(&repo).contains("could not run it"));
+}
+
+#[test]
+fn a_comment_the_forge_refuses_is_said_and_the_unit_is_still_stuck_for_a_human() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        refuses_comment: true,
+        ..inconclusive_twice()
+    };
+    let assert = run_with(&repo, &tools(&repo, &fakes), &["--max-attempts", "1"]).failure();
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        err.contains("cannot say what verification left unproven"),
+        "{err}"
+    );
+    assert!(gh_log(&repo).contains("--add-label status:ready-for-human"));
+}
+
+#[test]
+fn a_unit_stuck_for_another_reason_gets_no_comment() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_verdict: FAIL,
+        verdict: FAIL,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).failure();
+    assert!(!gh_log(&repo).contains("issue comment"));
+}
+
+#[test]
+fn an_inconclusive_line_followed_by_more_text_is_a_broken_check_not_an_inconclusive_one() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_verdict: "VERDICT: INCONCLUSIVE\nbut also this",
+        verdict: PASS,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    let log = run_log(&repo);
+    assert_eq!(log[2]["reason"], "went_wrong");
+    assert!(!verify_prompt(&repo, 2).contains(PREVIOUS_VERIFICATION));
+}
+
+#[test]
+fn a_fail_requirement_makes_the_verdict_fail_whatever_else_is_inconclusive() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_verdict: "### R1\nFAIL\n### R2\nINCONCLUSIVE\nVERDICT: FAIL",
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(&moves(out)[3], "verify>build");
+}
+
+#[test]
+fn the_second_verification_must_leave_the_workspace_as_the_build_did() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_verdict: UNPROVEN,
+        verdict: PASS,
+        check_edits: CheckEdits::AfterFirst,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert_eq!(&moves[moves.len() - 2..], ["verify>verify", "verify>stuck"]);
+    assert!(!moves.contains(&"verify>review".to_string()), "{moves:?}");
+    assert!(read(&repo, "evidence.md").contains("not as the build left it"));
+}
+
+#[test]
+fn a_review_that_is_inconclusive_does_not_let_the_unit_ship() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_review: INCONCLUSIVE,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert_eq!(&moves[4..6], ["review>build", "build>verify"]);
+}
+
+#[test]
+fn a_unit_stuck_unproven_resumes_at_verify_not_build_though_nothing_changed() {
+    let repo = Repo::new();
+    run_with(
+        &repo,
+        &tools(&repo, &inconclusive_twice()),
+        &["--max-attempts", "1"],
+    )
+    .failure();
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let events = lines(&out);
+    assert_eq!(events[0]["state"], "verify");
+    assert_eq!(events.last().unwrap()["to"], "done");
 }

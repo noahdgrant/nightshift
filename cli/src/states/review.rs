@@ -22,7 +22,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let skill = skill::load(skill::REVIEW)?;
     let id = ctx.unit.to_string();
     let reviews = Rounds::new(&dir, &id, "review");
-    let previous = reviews.last_failing();
+    let previous = reviews.last_unmet();
     let outcome = check::run(
         ctx,
         State::Review,
@@ -38,7 +38,11 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     )?;
     let text = artifact::read(&dir, &id, "evidence.md")?;
     reviews.keep(&text)?;
-    Ok(outcome)
+    // A review asks for only PASS and FAIL; any other verdict does not let the unit ship.
+    Ok(match outcome {
+        Outcome::Inconclusive => Outcome::Fail,
+        other => other,
+    })
 }
 
 /// The prompt that has the harness review a change. `ns eval review` builds the same one.

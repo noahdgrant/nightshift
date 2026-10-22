@@ -73,6 +73,7 @@ fn name(verdict: &Verdict) -> &'static str {
     match verdict {
         Verdict::Pass => "PASS",
         Verdict::Fail => "FAIL",
+        Verdict::Inconclusive => "INCONCLUSIVE",
         Verdict::Error => "ERROR",
     }
 }

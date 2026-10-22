@@ -1,5 +1,5 @@
 //! The numbered files a checking state keeps, `<kind>-<n>.md` with `n` counting from 1, one per
-//! run of the check. The next run reads the last one back when it failed.
+//! run of the check. The next run reads the last one back when it failed or was inconclusive.
 
 use std::path::Path;
 
@@ -31,15 +31,20 @@ impl<'a> Rounds<'a> {
         n
     }
 
-    /// The text of the last run, when it ended in a failing verdict.
-    pub fn last_failing(&self) -> Option<String> {
+    /// The text of the last run, when it ended in a failing or inconclusive verdict.
+    pub fn last_unmet(&self) -> Option<String> {
         let n = self.so_far();
         if n == 0 {
             return None;
         }
         artifact::read(self.dir, self.unit, &self.file(n))
             .ok()
-            .filter(|text| verdict::parse(text) == Some(Verdict::Fail))
+            .filter(|text| {
+                matches!(
+                    verdict::parse(text),
+                    Some(Verdict::Fail | Verdict::Inconclusive)
+                )
+            })
     }
 
     /// Keeps `text` as the next run.
@@ -54,20 +59,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_failing_last_run_is_carried_forward() {
+    fn only_an_unmet_last_run_is_carried_forward() {
         let tmp = tempfile::tempdir().unwrap();
         let rounds = Rounds::new(tmp.path(), "7", "review");
         assert_eq!(rounds.so_far(), 0);
-        assert_eq!(rounds.last_failing(), None);
+        assert_eq!(rounds.last_unmet(), None);
         rounds.keep("bad\nVERDICT: FAIL\n").unwrap();
         assert_eq!(rounds.so_far(), 1);
+        assert_eq!(rounds.last_unmet().as_deref(), Some("bad\nVERDICT: FAIL\n"));
+        rounds.keep("hm\nVERDICT: INCONCLUSIVE\n").unwrap();
         assert_eq!(
-            rounds.last_failing().as_deref(),
-            Some("bad\nVERDICT: FAIL\n")
+            rounds.last_unmet().as_deref(),
+            Some("hm\nVERDICT: INCONCLUSIVE\n")
         );
         rounds.keep("ok\nVERDICT: PASS\n").unwrap();
-        assert_eq!(rounds.so_far(), 2);
-        assert_eq!(rounds.last_failing(), None);
+        assert_eq!(rounds.so_far(), 3);
+        assert_eq!(rounds.last_unmet(), None);
     }
 
     #[test]
