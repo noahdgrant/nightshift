@@ -42,6 +42,9 @@ pub struct Fakes {
     /// `s` answers, `f` fails as a harness that is down, `b` exits cleanly with an answer `ns`
     /// cannot use. Sessions past its end answer.
     pub sessions: &'static str,
+    /// What the forge answers when asked which units block a unit, as the pages of its list.
+    /// `None` is a forge that cannot say.
+    pub blocked_by: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -104,6 +107,7 @@ impl Fakes {
             refuses_comment: false,
             builds: "thing.txt",
             sessions: "",
+            blocked_by: Some("[[]]"),
         }
     }
 }
@@ -141,6 +145,7 @@ labels() {{
   *"--add-label "*"status:ready-for-agent"*) l='{ready}';;
   esac
 }}
+case "$*" in *dependencies/blocked_by*) {blocked_by};; esac
 case "$1 $2" in
 "issue comment") [ "{refuses_comment}" = yes ] && {{ echo "cannot comment" >&2; exit 1; }};;
 "issue edit"|"pr edit") case "$*" in *--add-assignee*) [ "{refuses}" = yes ] && {{ echo "cannot assign" >&2; exit 1; }};; esac;;
@@ -154,6 +159,10 @@ case "$1 $2" in
 esac"#,
             bin = bin.display(),
             checks = checks,
+            blocked_by = match fakes.blocked_by {
+                Some(pages) => format!("echo '{pages}'; exit 0"),
+                None => "echo 'HTTP 404: Not Found' >&2; exit 1".to_string(),
+            },
             initial = fakes.labels,
             listed = fakes
                 .units
@@ -2165,4 +2174,113 @@ fn a_unit_stuck_unproven_resumes_at_verify_not_build_though_nothing_changed() {
     let events = lines(&out);
     assert_eq!(events[0]["state"], "verify");
     assert_eq!(events.last().unwrap()["to"], "done");
+}
+
+const OPEN_BLOCKER: &str = r#"[[{"number":3,"state":"open"}]]"#;
+const CLOSED_BLOCKER: &str = r#"[[{"number":3,"state":"closed"}]]"#;
+
+#[test]
+fn a_unit_with_an_open_blocker_is_refused_with_a_line_naming_it() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        blocked_by: Some(OPEN_BLOCKER),
+        ..Fakes::passing()
+    };
+    let out = run_with(&repo, &tools(&repo, &fakes), &[]).failure();
+    let said = lines(&out.get_output().stdout);
+    assert_eq!(said, [serde_json::json!({ "unit": 5, "blocked_by": [3] })]);
+    assert!(run_log(&repo).is_empty());
+    let log = std::fs::read_to_string(repo.path.parent().unwrap().join("bin/gh.log")).unwrap();
+    assert!(!log.contains("issue edit"), "nothing was changed: {log}");
+}
+
+#[test]
+fn a_closed_blocker_does_not_stop_a_unit() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        blocked_by: Some(CLOSED_BLOCKER),
+        ..Fakes::passing()
+    };
+    run_with(&repo, &tools(&repo, &fakes), &[]).success();
+}
+
+#[test]
+fn ignoring_blockers_runs_a_blocked_unit() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        blocked_by: Some(OPEN_BLOCKER),
+        ..Fakes::passing()
+    };
+    run_with(&repo, &tools(&repo, &fakes), &["--ignore-blockers"]).success();
+}
+
+#[test]
+fn a_unit_that_has_begun_is_not_refused_when_a_blocker_appears() {
+    let repo = Repo::new();
+    let path = tools(&repo, &Fakes::passing());
+    run_args(&repo, &path, &["run", "5", "--ci-poll-seconds", "0"]).success();
+    assert!(!run_log(&repo).is_empty());
+    let blocked = Fakes {
+        blocked_by: Some(OPEN_BLOCKER),
+        ..Fakes::passing()
+    };
+    let out = run_args(
+        &repo,
+        &tools(&repo, &blocked),
+        &["run", "5", "--ci-poll-seconds", "0"],
+    )
+    .success();
+    assert!(!String::from_utf8_lossy(&out.get_output().stdout).contains("blocked_by"));
+}
+
+#[test]
+fn a_unit_with_a_workspace_but_no_run_log_is_not_refused() {
+    let repo = Repo::new();
+    let workspace = repo.path.parent().unwrap().join(format!(
+        "{}.workspaces/5",
+        repo.path.file_name().unwrap().to_str().unwrap()
+    ));
+    std::fs::create_dir_all(&workspace).unwrap();
+    let fakes = Fakes {
+        blocked_by: Some(OPEN_BLOCKER),
+        ..Fakes::passing()
+    };
+    let out = run_with(&repo, &tools(&repo, &fakes), &[]);
+    assert!(!String::from_utf8_lossy(&out.get_output().stdout).contains("blocked_by"));
+}
+
+#[test]
+fn a_fresh_start_of_a_blocked_unit_is_refused() {
+    let repo = Repo::new();
+    let path = tools(&repo, &Fakes::passing());
+    run_args(&repo, &path, &["run", "5", "--ci-poll-seconds", "0"]).success();
+    let blocked = Fakes {
+        blocked_by: Some(OPEN_BLOCKER),
+        ..Fakes::passing()
+    };
+    let out = run_args(&repo, &tools(&repo, &blocked), &["run", "5", "--fresh"]).failure();
+    assert!(String::from_utf8_lossy(&out.get_output().stdout).contains(r#""blocked_by":[3]"#));
+}
+
+#[test]
+fn a_forge_that_cannot_say_what_blocks_a_unit_blocks_nothing() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        blocked_by: None,
+        ..Fakes::passing()
+    };
+    let out = run_with(&repo, &tools(&repo, &fakes), &[]).success();
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(err.contains("cannot read what blocks unit 5"), "{err}");
+}
+
+#[test]
+fn a_unit_the_forge_does_not_list_as_open_is_not_refused() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        blocked_by: Some(OPEN_BLOCKER),
+        units: &[],
+        ..Fakes::passing()
+    };
+    run_with(&repo, &tools(&repo, &fakes), &[]).success();
 }

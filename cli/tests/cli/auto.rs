@@ -618,3 +618,46 @@ fn a_troubleshoot_answer_ns_cannot_use_does_not_count_toward_the_stop() {
     assert_eq!(tried(&err, "was not troubleshot"), 3, "{err}");
     assert!(!err.contains("stopped:"), "{err}");
 }
+
+#[test]
+fn a_unit_the_forge_says_is_blocked_waits_and_is_named_in_the_dry_run() {
+    let repo = Repo::new();
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let issues = [
+        unit(1, &["status:ready-for-agent"], "OWNER"),
+        unit(2, &["status:ready-for-agent"], "OWNER"),
+        unit(3, &["status:ready-for-agent"], "OWNER"),
+    ]
+    .join(",");
+    // Unit 1 has an open blocker and a closed one, unit 2 a closed one, unit 3 none; the call for
+    // unit 3 fails.
+    script(
+        &bin,
+        "gh",
+        &format!(
+            r#"case "$*" in
+*issues/1/dependencies*) echo '[[{{"number":7,"state":"open"}},{{"number":8,"state":"closed"}}]]';;
+*issues/2/dependencies*) echo '[[{{"number":8,"state":"closed"}}]]';;
+*issues/3/dependencies*) echo 'HTTP 404' >&2; exit 1;;
+*) echo '[[{issues}]]';;
+esac"#
+        ),
+    );
+    let out = Command::cargo_bin("ns")
+        .unwrap()
+        .args(["auto", "--dry-run"])
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .current_dir(&repo.path)
+        .assert()
+        .success();
+    let plan: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(numbers(&plan["queue"]), [2, 3]);
+    assert_eq!(
+        plan["skipped"],
+        serde_json::json!([{ "unit": 1, "why": "blocked by #7" }])
+    );
+}

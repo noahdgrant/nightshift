@@ -1,6 +1,8 @@
 //! What `ns auto` decides from the units a repository has open: which to triage and which to run,
 //! in what order. Pure: it reads units and changes nothing.
 
+use std::collections::HashMap;
+
 use crate::forge::Unit;
 
 /// A unit that is ready for the agent.
@@ -64,8 +66,9 @@ pub struct Plan<'a> {
     pub skipped: Vec<(&'a Unit, String)>,
 }
 
-/// Sorts `open` units into the queue, the triage list and the skipped.
-pub fn plan(open: &[Unit]) -> Plan<'_> {
+/// Sorts `open` units into the queue, the triage list and the skipped. `native` holds, by unit, the
+/// open units the forge itself says block it.
+pub fn plan<'a>(open: &'a [Unit], native: &HashMap<u64, Vec<u64>>) -> Plan<'a> {
     let mut plan = Plan {
         queue: Vec::new(),
         triage: Vec::new(),
@@ -78,9 +81,8 @@ pub fn plan(open: &[Unit]) -> Plan<'_> {
                 .push((unit, "its author is not on the team".into()));
             continue;
         }
-        let blockers: Vec<String> = blockers(&unit.body)
+        let blockers: Vec<String> = blockers_of(unit, open, native)
             .into_iter()
-            .filter(|n| open.iter().any(|u| u.number == *n))
             .map(|n| format!("#{n}"))
             .collect();
         let has = |label: &str| unit.labels.iter().any(|l| l == label);
@@ -112,6 +114,22 @@ pub fn order(unit: &Unit) -> (usize, u64) {
         .position(|p| unit.labels.iter().any(|l| l == p))
         .unwrap_or(PRIORITIES.len());
     (rank, unit.number)
+}
+
+/// The open units that block `unit`: those its `Blocked by:` line names and those in `native`, each
+/// once.
+pub fn blockers_of(unit: &Unit, open: &[Unit], native: &HashMap<u64, Vec<u64>>) -> Vec<u64> {
+    let mut found: Vec<u64> = Vec::new();
+    let from_text = blockers(&unit.body)
+        .into_iter()
+        .filter(|n| open.iter().any(|u| u.number == *n));
+    let from_forge = native.get(&unit.number).into_iter().flatten().copied();
+    for n in from_text.chain(from_forge) {
+        if !found.contains(&n) {
+            found.push(n);
+        }
+    }
+    found
 }
 
 /// The units named by a `Blocked by: #a, #b` line, which is the first line of the body, or the
@@ -178,13 +196,13 @@ mod tests {
             unit(9, &[READY, "priority:high"], "", true),
             unit(2, &[READY, "priority:high"], "", true),
         ];
-        assert_eq!(numbers(&plan(&open).queue), [2, 9, 3, 4]);
+        assert_eq!(numbers(&plan(&open, &HashMap::new()).queue), [2, 9, 3, 4]);
     }
 
     #[test]
     fn only_the_teams_units_are_worked() {
         let open = [unit(1, &[READY], "", false), unit(2, &[], "", false)];
-        let plan = plan(&open);
+        let plan = plan(&open, &HashMap::new());
         assert!(plan.queue.is_empty() && plan.triage.is_empty());
         assert_eq!(plan.skipped.len(), 2);
     }
@@ -202,7 +220,7 @@ mod tests {
             ),
             unit(4, &[READY], "Blocked by: #2", true),
         ];
-        let plan = plan(&open);
+        let plan = plan(&open, &HashMap::new());
         assert_eq!(numbers(&plan.queue), [3]);
         let why: Vec<_> = plan
             .skipped
@@ -213,13 +231,42 @@ mod tests {
     }
 
     #[test]
+    fn a_unit_the_forge_says_is_blocked_waits_and_both_sources_name_a_blocker_once() {
+        let open = [
+            unit(1, &[READY], "", true),
+            unit(2, &[READY], "Blocked by: #5", true),
+            unit(3, &[READY], "Blocked by: #4", true),
+            unit(4, &["status:needs-define"], "", true),
+            unit(5, &["status:needs-define"], "", true),
+            unit(6, &[READY], "", true),
+        ];
+        // The forge lists only open blockers: unit 6 has none, and 1's are #5 alone.
+        let native = HashMap::from([(1, vec![5]), (2, vec![5]), (3, vec![9])]);
+        let plan = plan(&open, &native);
+        assert_eq!(numbers(&plan.queue), [6]);
+        let why: Vec<_> = plan
+            .skipped
+            .iter()
+            .map(|(u, w)| (u.number, w.as_str()))
+            .collect();
+        assert_eq!(
+            why,
+            [
+                (1, "blocked by #5"),
+                (2, "blocked by #5"),
+                (3, "blocked by #4, #9")
+            ]
+        );
+    }
+
+    #[test]
     fn units_that_need_a_reproduction_are_listed_to_troubleshoot() {
         let open = [
             unit(2, &[crate::status::NEEDS_REPRO], "", true),
             unit(1, &[crate::status::NEEDS_REPRO, "priority:high"], "", true),
             unit(3, &[crate::status::NEEDS_REPRO], "", false),
         ];
-        let plan = plan(&open);
+        let plan = plan(&open, &HashMap::new());
         assert_eq!(numbers(&plan.repro), [1, 2]);
         assert!(plan.queue.is_empty() && plan.triage.is_empty());
     }
@@ -233,6 +280,6 @@ mod tests {
             unit(4, &["status:in-progress"], "", true),
             unit(5, &["priority:high"], "", true),
         ];
-        assert_eq!(numbers(&plan(&open).triage), [5, 1, 2]);
+        assert_eq!(numbers(&plan(&open, &HashMap::new()).triage), [5, 1, 2]);
     }
 }

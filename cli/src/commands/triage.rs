@@ -34,7 +34,7 @@ pub fn run(args: Args) -> Result<()> {
         Some(unit) => vec![unit],
         None => {
             let open = forge.unit_list(&root)?;
-            let waiting = auto::plan(&open).triage;
+            let waiting = auto::plan(&open, &Default::default()).triage;
             let count = if args.all {
                 waiting.len()
             } else {

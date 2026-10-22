@@ -252,6 +252,29 @@ impl Forge for GitHub {
             .collect()
     }
 
+    fn unit_blockers_list(&self, repo: &Path, number: u64) -> Result<Vec<u64>> {
+        let json = self.gh(
+            repo,
+            &[
+                "api",
+                "--paginate",
+                "--slurp",
+                &format!(
+                    "repos/{{owner}}/{{repo}}/issues/{number}/dependencies/blocked_by?per_page=100"
+                ),
+            ],
+        )?;
+        let pages: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
+        Ok(pages
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|page| page.as_array().into_iter().flatten())
+            .filter(|v| v["state"] == "open")
+            .filter_map(|v| v["number"].as_u64())
+            .collect())
+    }
+
     fn change_request_get(&self, repo: &Path, branch: &str) -> Result<Option<ChangeRequest>> {
         let json = self.gh(
             repo,
@@ -441,6 +464,17 @@ mod tests {
         let units = gh.unit_list(tmp.path()).unwrap();
         let seen: Vec<_> = units.iter().map(|u| (u.number, u.from_team)).collect();
         assert_eq!(seen, [(1, false), (3, true)]);
+    }
+
+    #[test]
+    fn only_the_open_blockers_of_a_unit_are_listed() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = fake(
+            tmp.path(),
+            r#"[[{"number":4,"state":"open"},{"number":5,"state":"closed"}],[{"number":6,"state":"open"}]]"#,
+        );
+        assert_eq!(gh.unit_blockers_list(tmp.path(), 1).unwrap(), [4, 6]);
     }
 
     #[test]
