@@ -15,10 +15,11 @@ fn gh(repo: &Repo) -> std::path::PathBuf {
         &bin,
         "gh",
         &format!(
-            "echo \"$@\" >> \"{log}\"\ncase \"$1 $2\" in\n  \"label list\") cat \"{have}\";;\n  \"label create\") if [ -e \"{fail}\" ]; then echo denied >&2; exit 1; fi;;\nesac\nexit 0",
+            "echo \"$@\" >> \"{log}\"\ncase \"$1 $2\" in\n  \"label list\") cat \"{have}\";;\n  \"api orgs/{{owner}}/issue-types\") cat \"{types}\";;\n  \"label create\") if [ -e \"{fail}\" ]; then echo denied >&2; exit 1; fi;;\nesac\nexit 0",
             log = tmp.join("gh.log").display(),
             have = have.display(),
             fail = tmp.join("gh-fails").display(),
+            types = tmp.join("types.json").display(),
         ),
     );
     bin
@@ -181,6 +182,27 @@ fn init_creates_the_labels_the_forge_lacks_and_only_those() {
         "{log}"
     );
     assert!(!log.contains("label create area:"), "{log}");
+}
+
+#[test]
+fn on_a_repository_with_native_types_init_skips_the_feat_and_fix_labels() {
+    let repo = Repo::new();
+    gh(&repo);
+    std::fs::write(
+        repo.path.parent().unwrap().join("types.json"),
+        r#"[{"name":"Task"},{"name":"Bug"},{"name":"Feature"}]"#,
+    )
+    .unwrap();
+    let report = init_in(&repo);
+    assert_eq!(report["labels_created"].as_array().unwrap().len(), 24 - 2);
+    let log = gh_log(&repo);
+    assert!(!log.contains("label create type:feat"), "{log}");
+    assert!(!log.contains("label create type:fix"), "{log}");
+    assert!(
+        log.contains("label create type:refactor --description"),
+        "{log}"
+    );
+    assert!(!log.contains("PATCH"), "{log}");
 }
 
 #[test]

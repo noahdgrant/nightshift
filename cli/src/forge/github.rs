@@ -166,6 +166,33 @@ impl Forge for GitHub {
         unit_from(&v)
     }
 
+    fn unit_types_list(&self, repo: &Path) -> Result<Vec<String>> {
+        // Only an organization with types turned on answers; a user-owned repository is a 404.
+        let json = self.gh(repo, &["api", "orgs/{owner}/issue-types"])?;
+        let v: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
+        Ok(v.as_array()
+            .context("gh did not print a list of types")?
+            .iter()
+            .filter(|t| t["is_enabled"] != false)
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect())
+    }
+
+    fn unit_type_set(&self, repo: &Path, number: u64, name: &str) -> Result<()> {
+        self.gh(
+            repo,
+            &[
+                "api",
+                "--method",
+                "PATCH",
+                &format!("repos/{{owner}}/{{repo}}/issues/{number}"),
+                "-f",
+                &format!("type={name}"),
+            ],
+        )?;
+        Ok(())
+    }
+
     fn unit_labels_set(
         &self,
         repo: &Path,
@@ -464,6 +491,46 @@ mod tests {
         let units = gh.unit_list(tmp.path()).unwrap();
         let seen: Vec<_> = units.iter().map(|u| (u.number, u.from_team)).collect();
         assert_eq!(seen, [(1, false), (3, true)]);
+    }
+
+    #[test]
+    fn the_enabled_native_types_of_an_organization_are_listed() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = fake(
+            tmp.path(),
+            r#"[{"name":"Bug","is_enabled":true},{"name":"Feature"},{"name":"Old","is_enabled":false}]"#,
+        );
+        assert_eq!(gh.unit_types_list(tmp.path()).unwrap(), ["Bug", "Feature"]);
+    }
+
+    #[test]
+    fn a_list_of_native_types_that_is_not_a_list_is_an_error() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = fake(tmp.path(), r#"{"message":"Not Found"}"#);
+        assert!(gh.unit_types_list(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn a_unit_type_is_set_with_a_patch_of_its_name() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gh");
+        let log = tmp.path().join("log");
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\necho \"$@\" > \"{}\"\n", log.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        GitHub::with_program(path)
+            .unit_type_set(tmp.path(), 7, "Bug")
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(log).unwrap().trim(),
+            "api --method PATCH repos/{owner}/{repo}/issues/7 -f type=Bug"
+        );
     }
 
     #[test]
