@@ -40,6 +40,7 @@ fn eval_in(
         &format!(
             r#"cat >/dev/null
 echo x >> "{bin}/claude.count"
+echo "$*" >> "{bin}/claude.args"
 n=$(wc -l < "{bin}/claude.count")
 case $n in
 {arms}*) echo '{last}';;
@@ -409,5 +410,60 @@ fn a_sessions_setting_that_is_not_1_3_or_6_stops_the_eval_before_any_call() {
     case(&repo, "good", Some("PASS"));
     let err = stderr(eval(&repo, &["VERDICT: PASS"], &[]).failure());
     assert!(err.contains("review.sessions"), "{err}");
+    assert_eq!(calls(&repo), 0);
+}
+
+fn models(repo: &Repo) -> Vec<String> {
+    std::fs::read_to_string(repo.path.parent().unwrap().join("bin/claude.args"))
+        .unwrap()
+        .lines()
+        .map(|l| match l.split_once("--model ") {
+            Some((_, rest)) => rest.split(' ').next().unwrap().to_string(),
+            None => "-".to_string(),
+        })
+        .collect()
+}
+
+fn eval_models(manifest: &str, extra: &[&str]) -> Vec<String> {
+    let repo = Repo::new();
+    case(&repo, "good", Some("PASS"));
+    crate::run::set_manifest(&repo, manifest);
+    eval(
+        &repo,
+        &["VERDICT: PASS"],
+        &[&["--runs", "1"], extra].concat(),
+    )
+    .success();
+    models(&repo)
+}
+
+#[test]
+fn every_review_session_of_a_case_uses_the_review_model() {
+    assert_eq!(eval_models("", &[]), ["-"; 3]);
+    let table = "[model]\ndefault = \"sonnet\"\nreview = \"opus\"\n";
+    assert_eq!(eval_models(table, &[]), ["opus"; 3]);
+    assert_eq!(
+        eval_models("[model]\ndefault = \"sonnet\"\n", &[]),
+        ["sonnet"; 3]
+    );
+}
+
+#[test]
+fn the_model_option_beats_the_review_model() {
+    let table = "[model]\nreview = \"opus\"\n";
+    assert_eq!(eval_models(table, &["--model", "haiku"]), ["haiku"; 3]);
+}
+
+#[test]
+fn a_bad_model_table_stops_the_eval_before_any_call() {
+    let repo = Repo::new();
+    case(&repo, "good", Some("PASS"));
+    crate::run::set_manifest(&repo, "[model]\nreview = \"\"\n");
+    let out = eval(&repo, &["VERDICT: PASS"], &[]).failure();
+    let err = stderr(out);
+    assert!(
+        err.contains("model.review") && err.contains("nightshift.toml"),
+        "{err}"
+    );
     assert_eq!(calls(&repo), 0);
 }

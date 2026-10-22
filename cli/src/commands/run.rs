@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 
 use crate::artifact;
 use crate::forge::ChangeState;
+use crate::manifest::Place;
 use crate::runlog::{Move, Reason, Resume, RunLog};
 use crate::state::{Outcome, State};
 use crate::states::{self, clean_up, ship, Context, BUILT_SNAPSHOT};
@@ -57,6 +58,10 @@ pub struct Options {
     /// How long the repository's checks may take before they are killed and count as failed.
     #[arg(long, default_value_t = 1800)]
     checks_timeout_seconds: u64,
+    /// The model every session uses, instead of the ones `[model]` in
+    /// `.nightshift/nightshift.toml` names.
+    #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub model: Option<String>,
 }
 
 impl Args {
@@ -94,6 +99,7 @@ pub fn run(args: Args) -> Result<()> {
     let keep = manifest::transcript_days_read(&root)?;
     // Read here so a bad value stops `ns` before it runs anything.
     manifest::review_sessions_read(&root)?;
+    manifest::model_read(&root, Place::Build, None)?;
     let queue = manifest::merge_queue_read(&root)?;
     let max_base_moves = manifest::max_base_moves_read(&root)?;
     // Held until the function ends. Taken before anything of the unit's is read or deleted.
@@ -135,6 +141,7 @@ pub fn run(args: Args) -> Result<()> {
         },
         harness_timeout: Duration::from_secs(args.options.harness_timeout_seconds),
         checks_timeout: Duration::from_secs(args.options.checks_timeout_seconds),
+        model: args.options.model.clone(),
     };
     let planned = match resume {
         Resume::Fresh => State::START,
@@ -180,7 +187,15 @@ pub fn run(args: Args) -> Result<()> {
             Outcome::Redo
         }
     };
-    let mut sink = |event: Value| -> Result<()> {
+    let mut sink = |mut event: Value| -> Result<()> {
+        if let Some(place) = event["from"]
+            .as_str()
+            .and_then(State::parse)
+            .and_then(session_place)
+        {
+            event["model"] =
+                manifest::model_read(&root, place, args.options.model.as_deref())?.into();
+        }
         println!("{event}");
         if event.get("to").is_some() {
             log.append(&event)?;
@@ -211,6 +226,16 @@ pub fn run(args: Args) -> Result<()> {
         }
         (Err(e), Ok(())) => Err(e),
         (Ok(_), status) => status,
+    }
+}
+
+/// Where the sessions of `state` take their model from, for a state that starts any.
+fn session_place(state: State) -> Option<Place> {
+    match state {
+        State::Build => Some(Place::Build),
+        State::Verify => Some(Place::Verify),
+        State::Review => Some(Place::Review),
+        _ => None,
     }
 }
 

@@ -5,7 +5,8 @@ use anyhow::{bail, Context as _, Result};
 use clap::{Args as ClapArgs, Subcommand};
 use serde_json::{json, Value};
 
-use crate::harness::{Harness, Task};
+use crate::harness::{Harness, Sessions, Task};
+use crate::manifest::Place;
 use crate::skill;
 use crate::states::review::{self, Focus};
 use crate::states::verdict::{self, Verdict};
@@ -36,6 +37,10 @@ struct ReviewArgs {
     /// How long one run may take before it is killed and counts as a miss.
     #[arg(long, default_value_t = 1800)]
     harness_timeout_seconds: u64,
+    /// The model to run the cases with, instead of the one `[model]` in
+    /// `.nightshift/nightshift.toml` names for review. Run again with another to compare models.
+    #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    model: Option<String>,
 }
 
 /// A fixture: what the review is given, and the verdict it should reach.
@@ -54,6 +59,7 @@ pub fn run(args: Args) -> Result<()> {
     let cases = cases_load(&root.join("evals/review"), args.case.as_deref())?;
     let skill = skill::load(skill::REVIEW)?;
     let focuses = review::focuses(manifest::review_sessions_read(&root)?);
+    let model = manifest::model_read(&root, Place::Review, args.model.as_deref())?;
     let harness = harness::get();
     let report = review_measure(
         harness.as_ref(),
@@ -62,7 +68,10 @@ pub fn run(args: Args) -> Result<()> {
         focuses,
         &cases,
         args.runs,
-        Duration::from_secs(args.harness_timeout_seconds),
+        &Sessions {
+            timeout: Duration::from_secs(args.harness_timeout_seconds),
+            model: model.as_deref(),
+        },
     );
     println!("{}", report);
     if report["ok"] != true {
@@ -87,7 +96,7 @@ fn review_measure(
     focuses: &[Focus],
     cases: &[Case],
     runs: u32,
-    timeout: Duration,
+    limits: &Sessions,
 ) -> Value {
     let mut ok = true;
     let mut reports = Vec::new();
@@ -116,8 +125,8 @@ fn review_measure(
                         dir: dir.to_path_buf(),
                         prompt: prompt.clone(),
                         write: false,
-                        model: None,
-                        timeout,
+                        model: limits.model.map(str::to_string),
+                        timeout: limits.timeout,
                     });
                     match reply {
                         Ok(reply) if reply.success => verdict::parse(&reply.text),

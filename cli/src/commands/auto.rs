@@ -11,6 +11,8 @@ use serde_json::json;
 use super::{run as unit_run, triage, troubleshoot};
 use crate::auto::Streak;
 use crate::forge::Forge;
+use crate::harness::Sessions;
+use crate::manifest::Place;
 use crate::os::Os;
 use crate::runlog::{Move, Reason, RunLog};
 use crate::state::State;
@@ -56,6 +58,7 @@ pub fn run(args: Args) -> Result<()> {
     let keep = manifest::transcript_days_read(&root)?;
     // Read here so a bad value stops `ns` before it runs anything.
     manifest::review_sessions_read(&root)?;
+    manifest::model_read(&root, Place::Build, None)?;
     let forge = forge::get();
     let open = forge.unit_list(&root)?;
     let plan = auto::plan(&open, &blockers_read(forge.as_ref(), &root, &open));
@@ -89,6 +92,9 @@ pub fn run(args: Args) -> Result<()> {
     Transcripts::open(vcs.as_ref(), &root)?.prune(keep, SystemTime::now());
     let harness = harness::get();
     let mut streak = Streak::new(args.max_failures_in_a_row);
+    let triage_model = manifest::model_read(&root, Place::Triage, args.options.model.as_deref())?;
+    let troubleshoot_model =
+        manifest::model_read(&root, Place::Troubleshoot, args.options.model.as_deref())?;
     let waiting: Vec<u64> = plan.triage.iter().map(|u| u.number).collect();
     let mut failed = triage::units_triage(
         forge.as_ref(),
@@ -96,6 +102,7 @@ pub fn run(args: Args) -> Result<()> {
         &root,
         &waiting,
         Duration::from_secs(args.options.harness_timeout_seconds),
+        triage_model.as_deref(),
         &mut streak,
     );
     // Triage may have sent units to be reproduced.
@@ -111,7 +118,10 @@ pub fn run(args: Args) -> Result<()> {
         vcs.as_ref(),
         &root,
         &repro,
-        Duration::from_secs(args.options.harness_timeout_seconds),
+        &Sessions {
+            timeout: Duration::from_secs(args.options.harness_timeout_seconds),
+            model: troubleshoot_model.as_deref(),
+        },
         &mut streak,
     );
     let os = os::get();

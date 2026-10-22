@@ -6,6 +6,7 @@ use super::rounds::Rounds;
 use super::verdict::{self, Verdict, INCONCLUSIVE_LINE};
 use super::{check, Context};
 use crate::artifact;
+use crate::manifest::Place;
 use crate::skill;
 use crate::state::{Outcome, State};
 
@@ -29,6 +30,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let outcome = check::run(
         ctx,
         State::Verify,
+        Place::Verify,
         true,
         prompt(&skill, &unit.title, &unit.body, &build, previous.as_deref()),
     )?;

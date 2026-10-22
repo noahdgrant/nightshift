@@ -8,6 +8,7 @@ use serde_json::json;
 use crate::auto::Streak;
 use crate::forge::Forge;
 use crate::harness::Harness;
+use crate::manifest::{self, Place};
 use crate::{auto, forge, harness, triage, vcs};
 
 #[derive(ClapArgs)]
@@ -23,12 +24,17 @@ pub struct Args {
     /// How long the session may take before it is killed and the unit is left as it was.
     #[arg(long, default_value_t = 1800)]
     harness_timeout_seconds: u64,
+    /// The model to use, instead of the one `[model]` in `.nightshift/nightshift.toml` names.
+    #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    model: Option<String>,
 }
 
 /// Decides what each unit needs next, and records the decision as the unit's labels. A unit that
 /// cannot be triaged is reported and left as it was, and the others go on.
 pub fn run(args: Args) -> Result<()> {
     let root = vcs::get().root_find(&std::env::current_dir()?)?;
+    // Read here so a bad value stops `ns` before it runs anything.
+    let model = manifest::model_read(&root, Place::Triage, args.model.as_deref())?;
     let (forge, harness) = (forge::get(), harness::get());
     let units: Vec<u64> = match args.unit {
         Some(unit) => vec![unit],
@@ -49,6 +55,7 @@ pub fn run(args: Args) -> Result<()> {
         &root,
         &units,
         Duration::from_secs(args.harness_timeout_seconds),
+        model.as_deref(),
         &mut Streak::new(0),
     );
     if failed > 0 {
@@ -66,6 +73,7 @@ pub fn units_triage(
     root: &Path,
     units: &[u64],
     timeout: Duration,
+    model: Option<&str>,
     streak: &mut Streak,
 ) -> usize {
     let mut failed = 0;
@@ -73,7 +81,7 @@ pub fn units_triage(
         if streak.reached() {
             break;
         }
-        match triage::run(forge, harness, root, *unit, timeout) {
+        match triage::run(forge, harness, root, *unit, timeout, model) {
             Ok(triaged) => {
                 streak.record(*unit, false);
                 println!(

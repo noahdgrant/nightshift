@@ -45,7 +45,10 @@ esac"#,
     script(
         &bin,
         "claude",
-        &format!("cat >/dev/null\ncat <<'EOF'\n{reply}\nEOF"),
+        &format!(
+            "cat >/dev/null\necho \"$*\" >> \"{bin}/claude.args\"\ncat <<'EOF'\n{reply}\nEOF",
+            bin = bin.display()
+        ),
     );
     Command::cargo_bin("ns")
         .unwrap()
@@ -479,4 +482,48 @@ fn when_the_open_units_cannot_be_listed_nothing_is_recorded_and_the_triage_still
         stderr(&out)
     );
     assert!(!gh_log(&repo).contains("dependencies"));
+}
+
+fn claude_args(repo: &Repo) -> String {
+    std::fs::read_to_string(repo.path.parent().unwrap().join("bin/claude.args")).unwrap()
+}
+
+const BUILD_REPLY: &str = "Small.\n\nLABELS: type:feat\nROUTE: build";
+
+#[test]
+fn triage_uses_no_model_without_a_model_table() {
+    let repo = Repo::new();
+    triage(&repo, BUILD_REPLY, &[]).success();
+    assert!(!claude_args(&repo).contains("--model"));
+}
+
+#[test]
+fn triage_uses_its_own_model_then_the_default_and_the_option_beats_both() {
+    let repo = Repo::new();
+    crate::run::set_manifest(&repo, "[model]\ndefault = \"sonnet\"\nbuild = \"opus\"\n");
+    triage(&repo, BUILD_REPLY, &[]).success();
+    assert!(claude_args(&repo).contains("--model sonnet"));
+
+    let repo = Repo::new();
+    crate::run::set_manifest(&repo, "[model]\ndefault = \"sonnet\"\ntriage = \"haiku\"\n");
+    triage(&repo, BUILD_REPLY, &[]).success();
+    assert!(claude_args(&repo).contains("--model haiku"));
+
+    let repo = Repo::new();
+    crate::run::set_manifest(&repo, "[model]\ndefault = \"sonnet\"\ntriage = \"haiku\"\n");
+    triage(&repo, BUILD_REPLY, &["--model", "opus"]).success();
+    assert!(claude_args(&repo).contains("--model opus"));
+}
+
+#[test]
+fn triage_with_a_bad_model_table_names_the_key_and_runs_nothing() {
+    let repo = Repo::new();
+    crate::run::set_manifest(&repo, "[model]\ntriage = 3\n");
+    let out = triage(&repo, BUILD_REPLY, &[]).failure();
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(
+        err.contains("model.triage") && err.contains("nightshift.toml"),
+        "{err}"
+    );
+    assert!(!repo.path.parent().unwrap().join("bin/claude.args").exists());
 }

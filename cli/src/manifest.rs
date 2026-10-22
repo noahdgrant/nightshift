@@ -128,6 +128,77 @@ pub fn review_sessions_read(root: &Path) -> Result<u32> {
         })
 }
 
+/// A place where a headless session starts, which `[model]` can give its own model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    Triage,
+    Troubleshoot,
+    Build,
+    Verify,
+    Review,
+}
+
+impl Place {
+    const ALL: [Place; 5] = [
+        Place::Triage,
+        Place::Troubleshoot,
+        Place::Build,
+        Place::Verify,
+        Place::Review,
+    ];
+
+    /// The key of `[model]` that names this place.
+    fn key(self) -> &'static str {
+        match self {
+            Place::Triage => "triage",
+            Place::Troubleshoot => "troubleshoot",
+            Place::Build => "build",
+            Place::Verify => "verify",
+            Place::Review => "review",
+        }
+    }
+}
+
+/// The key of `[model]` that applies to every place without a key of its own.
+const MODEL_DEFAULT_KEY: &str = "default";
+
+/// The model a session at `place` uses: `option` when the person gave one, else `[model]`'s key
+/// for the place, else its `default`, else `None` for the harness's own default. The names are
+/// the harness's and pass through as they are. A key `ns` does not know, or a value that is not a
+/// non-empty string, is an error even when `option` wins.
+pub fn model_read(root: &Path, place: Place, option: Option<&str>) -> Result<Option<String>> {
+    let document = document_read(root)?;
+    let Some(item) = document.get("model") else {
+        return Ok(option.map(str::to_string));
+    };
+    let file = file_find(root);
+    let table = item
+        .as_table_like()
+        .with_context(|| format!("`model` in {} is not a table", file.display()))?;
+    for (key, item) in table.iter() {
+        let known = key == MODEL_DEFAULT_KEY || Place::ALL.iter().any(|p| p.key() == key);
+        if !known {
+            let keys: Vec<_> = Place::ALL.iter().map(|p| p.key()).collect();
+            anyhow::bail!(
+                "`model.{key}` in {} is not a key ns knows: {MODEL_DEFAULT_KEY}, {}",
+                file.display(),
+                keys.join(", ")
+            );
+        }
+        if item.as_str().is_none_or(str::is_empty) {
+            anyhow::bail!(
+                "`model.{key}` in {} is not a non-empty string",
+                file.display()
+            );
+        }
+    }
+    let named = |key: &str| table.get(key).and_then(|i| i.as_str()).map(str::to_string);
+    Ok(option
+        .map(str::to_string)
+        .or_else(|| named(place.key()))
+        .or_else(|| named(MODEL_DEFAULT_KEY)))
+}
+
 /// Whether `ship` tests a change request on the base branch's newest commit before it merges,
 /// when the person says nothing.
 const MERGE_QUEUE_DEFAULT: bool = true;
@@ -222,6 +293,88 @@ mod tests {
             version: Some(version.into()),
             harness: vec![Kind::Claude],
         }
+    }
+
+    fn model_file(text: &str) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        std::fs::write(file_find(tmp.path()), text).unwrap();
+        tmp
+    }
+
+    #[test]
+    fn with_no_model_table_every_place_takes_the_harness_default() {
+        let tmp = model_file("version = \"1\"\n");
+        for place in Place::ALL {
+            assert_eq!(model_read(tmp.path(), place, None).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn the_default_key_applies_to_every_place() {
+        let tmp = model_file("[model]\ndefault = \"sonnet\"\n");
+        for place in Place::ALL {
+            assert_eq!(
+                model_read(tmp.path(), place, None).unwrap().as_deref(),
+                Some("sonnet")
+            );
+        }
+    }
+
+    #[test]
+    fn a_places_key_beats_the_default_and_others_keep_the_default() {
+        let tmp = model_file("[model]\ndefault = \"sonnet\"\nbuild = \"opus\"\n");
+        let read = |place| model_read(tmp.path(), place, None).unwrap();
+        assert_eq!(read(Place::Build).as_deref(), Some("opus"));
+        assert_eq!(read(Place::Review).as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn a_place_with_a_key_and_no_default_leaves_the_others_on_the_harness_default() {
+        let tmp = model_file("[model]\nreview = \"opus\"\n");
+        assert_eq!(
+            model_read(tmp.path(), Place::Review, None)
+                .unwrap()
+                .as_deref(),
+            Some("opus")
+        );
+        assert_eq!(model_read(tmp.path(), Place::Triage, None).unwrap(), None);
+    }
+
+    #[test]
+    fn an_option_beats_every_key_and_stands_without_a_table() {
+        let tmp = model_file("[model]\ndefault = \"sonnet\"\nbuild = \"opus\"\n");
+        let got = model_read(tmp.path(), Place::Build, Some("haiku")).unwrap();
+        assert_eq!(got.as_deref(), Some("haiku"));
+        let bare = model_file("");
+        let got = model_read(bare.path(), Place::Build, Some("haiku")).unwrap();
+        assert_eq!(got.as_deref(), Some("haiku"));
+    }
+
+    #[test]
+    fn a_bad_model_table_is_an_error_naming_the_key_and_the_file() {
+        for (text, key) in [
+            ("[model]\nbuidl = \"opus\"\n", "model.buidl"),
+            ("[model]\nbuild = \"\"\n", "model.build"),
+            ("[model]\ndefault = 3\n", "model.default"),
+        ] {
+            let tmp = model_file(text);
+            // Even an option, or a place the bad key does not touch, does not hide it.
+            let err = model_read(tmp.path(), Place::Triage, Some("x"))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(key), "{text}: {err}");
+            assert!(err.contains("nightshift.toml"), "{text}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_model_that_is_not_a_table_is_an_error() {
+        let tmp = model_file("model = \"opus\"\n");
+        let err = model_read(tmp.path(), Place::Build, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("`model`"), "{err}");
     }
 
     #[test]

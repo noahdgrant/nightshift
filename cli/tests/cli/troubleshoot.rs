@@ -12,6 +12,7 @@ fn claude(repo: &Repo, reply: &str, exit: i32) {
         "claude",
         &format!(
             r#"pwd > "{bin}/session.cwd"
+echo "$*" > "{bin}/session.args"
 cat > "{bin}/session.prompt"
 touch scratch-edit.txt
 cat <<'EOF'
@@ -112,4 +113,48 @@ fn a_unit_with_a_diagnosis_is_not_troubleshot_again() {
     claude(&repo, &format!("{BRIEF}\n\nROUTE: build"), 0);
     ns(&repo, &["troubleshoot", "4"]).failure();
     assert!(!gh_log(&repo).contains("issue edit"));
+}
+
+fn args(repo: &Repo) -> String {
+    std::fs::read_to_string(repo.path.parent().unwrap().join("bin/session.args")).unwrap()
+}
+
+fn troubleshoot_with(manifest: &str, extra: &[&str]) -> String {
+    let repo = Repo::new();
+    forge(&repo, "It crashes.", &["status:needs-repro"]);
+    claude(&repo, &format!("{BRIEF}\n\nROUTE: build"), 0);
+    crate::run::set_manifest(&repo, manifest);
+    let mut all = vec!["troubleshoot", "4"];
+    all.extend(extra);
+    ns(&repo, &all).success();
+    args(&repo)
+}
+
+#[test]
+fn troubleshoot_uses_no_model_its_own_key_the_default_or_the_option() {
+    assert!(!troubleshoot_with("", &[]).contains("--model"));
+    let both = "[model]\ndefault = \"sonnet\"\ntroubleshoot = \"opus\"\n";
+    assert!(troubleshoot_with(both, &[]).contains("--model opus"));
+    assert!(troubleshoot_with("[model]\ndefault = \"sonnet\"\n", &[]).contains("--model sonnet"));
+    assert!(troubleshoot_with(both, &["--model", "haiku"]).contains("--model haiku"));
+}
+
+#[test]
+fn troubleshoot_with_a_bad_model_table_names_the_key_and_runs_nothing() {
+    let repo = Repo::new();
+    forge(&repo, "It crashes.", &["status:needs-repro"]);
+    claude(&repo, &format!("{BRIEF}\n\nROUTE: build"), 0);
+    crate::run::set_manifest(&repo, "[model]\nbogus = \"x\"\n");
+    let out = ns(&repo, &["troubleshoot", "4"]).failure();
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(
+        err.contains("model.bogus") && err.contains("nightshift.toml"),
+        "{err}"
+    );
+    assert!(!repo
+        .path
+        .parent()
+        .unwrap()
+        .join("bin/session.args")
+        .exists());
 }

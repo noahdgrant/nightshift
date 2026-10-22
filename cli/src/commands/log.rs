@@ -34,9 +34,10 @@ pub fn run(args: Args) -> Result<()> {
     for session in sessions {
         let raw = std::fs::read(&session.path)?;
         println!(
-            "== {} {} ==\n{}",
+            "== {} {} ({}) ==\n{}",
             session.state,
             session.n,
+            session.model.as_deref().unwrap_or("harness default model"),
             harness.transcript_render(&String::from_utf8_lossy(&raw))
         );
     }

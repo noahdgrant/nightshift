@@ -63,6 +63,14 @@ pub struct Task {
     pub timeout: Duration,
 }
 
+/// How a batch of sessions runs.
+pub struct Sessions<'a> {
+    /// How long one session may take.
+    pub timeout: Duration,
+    /// The model each session uses. `None` takes the harness's own default.
+    pub model: Option<&'a str>,
+}
+
 #[derive(Debug)]
 pub struct Reply {
     pub text: String,

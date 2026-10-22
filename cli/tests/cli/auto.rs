@@ -1,5 +1,5 @@
 use crate::common::{script, Repo};
-use crate::run::{set_manifest, tools, transcript_keep, Fakes, FAIL};
+use crate::run::{models_used, set_manifest, tools, transcript_keep, Fakes, FAIL};
 
 use std::time::Duration;
 
@@ -672,4 +672,62 @@ esac"#
         plan["skipped"],
         serde_json::json!([{ "unit": 1, "why": "blocked by #7" }])
     );
+}
+
+#[test]
+fn auto_gives_triage_troubleshoot_and_the_states_their_own_models() {
+    let repo = Repo::new();
+    set_manifest(
+        &repo,
+        "[model]\ndefault = \"sonnet\"\ntriage = \"haiku\"\ntroubleshoot = \"fable\"\nbuild = \"opus\"\n",
+    );
+    let fakes = Fakes {
+        labels: UNTRIAGED,
+        ..Fakes::passing()
+    };
+    auto(&repo, &fakes, &[]).success();
+    assert_eq!(models_used(&repo, "triage"), ["haiku"]);
+    assert_eq!(models_used(&repo, "build"), ["opus"]);
+    assert_eq!(models_used(&repo, "verify"), ["sonnet"]);
+}
+
+#[test]
+fn auto_troubleshoots_with_the_troubleshoot_model() {
+    let repo = Repo::new();
+    set_manifest(
+        &repo,
+        "[model]\ndefault = \"sonnet\"\ntroubleshoot = \"fable\"\n",
+    );
+    let fakes = Fakes {
+        labels: r#"[{"name":"status:needs-repro"}]"#,
+        labels_follow_edits: false,
+        units: &[1],
+        ..Fakes::passing()
+    };
+    auto(&repo, &fakes, &["--max-units", "0"]).success();
+    assert_eq!(models_used(&repo, "troubleshoot"), ["fable"]);
+}
+
+#[test]
+fn the_model_option_of_auto_beats_every_key_for_every_session() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[model]\ndefault = \"sonnet\"\ntriage = \"haiku\"\n");
+    let fakes = Fakes {
+        labels: UNTRIAGED,
+        ..Fakes::passing()
+    };
+    auto(&repo, &fakes, &["--model", "opus"]).success();
+    for kind in ["triage", "build", "verify"] {
+        assert_eq!(models_used(&repo, kind), ["opus"], "{kind}");
+    }
+    assert_eq!(models_used(&repo, "review"), ["opus"; 3]);
+}
+
+#[test]
+fn auto_with_a_bad_model_table_is_an_error_and_runs_nothing() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[model]\nbuild = 7\n");
+    let out = auto_run(&repo, &Fakes::passing(), &[], None, true).failure();
+    assert!(stderr(&out).contains("model.build"));
+    assert!(out.get_output().stdout.is_empty());
 }
