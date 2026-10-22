@@ -8,7 +8,7 @@ metadata:
 
 # Verify
 
-"It compiles" is not evidence, and neither is "the tests pass". Run the real thing and record what you saw. You are given the unit's title and description and the build summary.
+"It compiles" is not evidence, and neither is "the tests pass". Prove it works against the real artifact, with the real command or request, not a proxy. Run the real thing and record what you saw. You are given the unit's title and description and the build summary.
 
 ## 1. List the requirements
 
