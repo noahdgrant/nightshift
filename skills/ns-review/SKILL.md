@@ -50,6 +50,8 @@ A finding is **Critical** when the change breaks, loses data, or opens a hole, a
 
 A finding is Important only when the change fails the unit's requirements, breaks behavior that works today, loses or leaks data, or is unsafe. A failure that needs a file edited by hand, or a state `ns` never writes, is not one.
 
+You run nothing, so a claim about what happens when the code runs (a test fails, a command errors, output differs) is a guess unless you quote where you were given it, such as the build summary or the evidence. Otherwise word it as a risk read from the code ("this test would fail because ..."), never as a fact. A finding that is only a guess about a run is not Critical or Important.
+
 Done when every finding names a place in the diff and a concrete consequence.
 
 ## 4. End with the verdict
