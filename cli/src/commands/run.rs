@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::artifact;
 use crate::forge::ChangeState;
-use crate::runlog::{Resume, RunLog};
+use crate::runlog::{Move, Reason, Resume, RunLog};
 use crate::state::{Outcome, State};
 use crate::states::{self, clean_up, ship, Context, BUILT_SNAPSHOT};
 use crate::{forge, harness, lock, manifest, os, status, vcs, workspace};
@@ -168,6 +168,11 @@ pub fn run(args: Args) -> Result<()> {
         Ok(())
     };
     let ended = walk(&unit, start, args.gates, max_attempts, phase, &mut sink);
+    if ended.is_err() {
+        if let Err(e) = unproven_comment_add(&ctx, &log, &root, &unit) {
+            eprintln!("ns: cannot say what verification left unproven: {e:#}");
+        }
+    }
     let status = if matches!(ended, Ok(State::Done)) {
         finished_status_set(&ctx, &root, &unit)
     } else {
@@ -189,6 +194,28 @@ pub fn run(args: Args) -> Result<()> {
     }
 }
 
+/// Tells the forge what verification could not prove, for a unit that got stuck because of it.
+fn unproven_comment_add(ctx: &Context, log: &RunLog, root: &Path, unit: &str) -> Result<()> {
+    let stuck_unproven = matches!(
+        log.last_move(unit)?,
+        Some(Move {
+            to: State::Stuck,
+            reason: Some(Reason::Inconclusive),
+            ..
+        })
+    );
+    if !stuck_unproven {
+        return Ok(());
+    }
+    let dir = &ctx
+        .workspace
+        .as_ref()
+        .context("a stuck unit has no workspace")?
+        .path;
+    let note = states::unproven_note(dir, unit)?;
+    ctx.forge.unit_comment_add(root, ctx.unit, &note)
+}
+
 /// Where a unit stuck in the check `stuck_in` picks up. A workspace exactly as the last build left
 /// it holds nothing the failed check could judge differently, so the unit goes back to `build`,
 /// which is told the failing findings. Otherwise a human worked on it, and the check runs again.
@@ -199,6 +226,16 @@ fn stuck_check_resume(ctx: &Context, log: &RunLog, unit: &str, stuck_in: State) 
         .as_ref()
         .context("a stuck unit has no workspace")?
         .path;
+    // Nothing was wrong with the build, so the build has nothing to change.
+    if matches!(
+        log.last_move(unit)?,
+        Some(Move {
+            reason: Some(Reason::Inconclusive),
+            ..
+        })
+    ) {
+        return Ok(stuck_in);
+    }
     let snapshot = ctx.vcs.workspace_snapshot(dir)?;
     match artifact::read(dir, unit, BUILT_SNAPSHOT) {
         Ok(built) if built == snapshot => {
@@ -265,7 +302,8 @@ fn walk(
         let outcome = phase(state, attempt);
         let to = match outcome {
             Outcome::Pass => next,
-            Outcome::Fail | Outcome::Redo => {
+            Outcome::Unprovable => State::Stuck,
+            Outcome::Fail | Outcome::Redo | Outcome::Inconclusive => {
                 let back = match outcome {
                     Outcome::Fail => state.on_fail(),
                     _ => state,
@@ -283,6 +321,7 @@ fn walk(
             event["reason"] = match outcome {
                 Outcome::Redo => "went_wrong",
                 Outcome::Pass | Outcome::Fail => "failed",
+                Outcome::Inconclusive | Outcome::Unprovable => "inconclusive",
             }
             .into();
         }
@@ -307,12 +346,19 @@ mod tests {
     use super::*;
 
     fn moves(unit_outcomes: impl FnMut(State, u32) -> Outcome) -> (Vec<String>, bool) {
+        moves_with(2, unit_outcomes)
+    }
+
+    fn moves_with(
+        max_attempts: u32,
+        unit_outcomes: impl FnMut(State, u32) -> Outcome,
+    ) -> (Vec<String>, bool) {
         let mut events = Vec::new();
         let result = walk(
             "u1",
             State::START,
             Gates::Auto,
-            2,
+            max_attempts,
             unit_outcomes,
             &mut |e| {
                 events.push(e);
@@ -449,6 +495,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_inconclusive_state_runs_again_and_one_that_is_unprovable_sticks() {
+        let (moves, ok) = moves(|s, attempt| match (s, attempt) {
+            (State::Verify, 1) => Outcome::Inconclusive,
+            _ => Outcome::Pass,
+        });
+        assert!(ok);
+        assert_eq!(
+            &moves[1..4],
+            ["build>verify", "verify>verify", "verify>review"]
+        );
+        let (moves, ok) = moves_with(1, |s, _| match s {
+            State::Verify => Outcome::Unprovable,
+            _ => Outcome::Pass,
+        });
+        assert!(!ok);
+        assert_eq!(moves.last().unwrap(), "verify>stuck");
+        let (moves, _) = self::moves(|s, _| match s {
+            State::Verify => Outcome::Inconclusive,
+            _ => Outcome::Pass,
+        });
+        assert_eq!(moves.last().unwrap(), "verify>stuck");
+    }
+
     /// The reason on each event that has one, for a unit whose every state ends as `outcome`.
     fn reasons(outcome: fn() -> Outcome) -> Vec<String> {
         let mut events = Vec::new();
@@ -473,5 +543,10 @@ mod tests {
     fn a_state_that_returns_an_error_is_logged_as_gone_wrong_and_a_failed_check_as_failed() {
         assert_eq!(reasons(|| Outcome::Redo), ["went_wrong", "went_wrong"]);
         assert_eq!(reasons(|| Outcome::Fail), ["failed", "failed"]);
+        assert_eq!(
+            reasons(|| Outcome::Inconclusive),
+            ["inconclusive", "inconclusive"]
+        );
+        assert_eq!(reasons(|| Outcome::Unprovable), ["inconclusive"]);
     }
 }

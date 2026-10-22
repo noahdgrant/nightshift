@@ -193,6 +193,14 @@ impl Forge for GitHub {
         Ok(())
     }
 
+    fn unit_comment_add(&self, repo: &Path, number: u64, body: &str) -> Result<()> {
+        self.gh(
+            repo,
+            &["issue", "comment", &number.to_string(), "--body", body],
+        )?;
+        Ok(())
+    }
+
     fn unit_assignee_add(&self, repo: &Path, number: u64) -> Result<()> {
         // `@me` is the account `gh` runs as, which `gh` takes from `GH_TOKEN`.
         self.gh(
@@ -535,6 +543,30 @@ mod tests {
             };
             assert_eq!(calls(tmp.path()), expected, "{said}");
         }
+    }
+
+    #[test]
+    fn a_unit_comment_is_added_whole() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gh");
+        let said = tmp.path().join("said");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do printf '[%s]' \"$a\" >> '{}'; done\n",
+                said.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        GitHub::with_program(path)
+            .unit_comment_add(tmp.path(), 7, "line one\nline two")
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(said).unwrap(),
+            "[issue][comment][7][--body][line one\nline two]"
+        );
     }
 
     #[test]

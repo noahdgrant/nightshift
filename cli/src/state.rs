@@ -9,6 +9,11 @@ pub enum Outcome {
     Pass,
     /// The state ran and found the work before it wrong. The unit goes to `State::on_fail`.
     Fail,
+    /// The state ran and could not prove the work either way. The unit runs the same state once
+    /// more, shown what was left unproven.
+    Inconclusive,
+    /// The state ran again and still could not prove the work. The unit is stuck for a human.
+    Unprovable,
     /// The state itself went wrong. The unit runs the same state again.
     Redo,
 }

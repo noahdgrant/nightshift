@@ -17,7 +17,7 @@ One go at a state. A failed state is tried again until its attempts run out.
 _Avoid_: Retry, try
 
 **Stuck**:
-The end state of a unit whose state failed every attempt. It waits for a human.
+The end state of a unit whose state failed every attempt, or whose verification could not prove it twice. It waits for a human.
 _Avoid_: Failed, blocked
 
 **Workspace**:

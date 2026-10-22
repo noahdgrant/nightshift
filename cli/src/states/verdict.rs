@@ -6,12 +6,15 @@ pub enum Verdict {
     Pass,
     /// The work does not meet the unit.
     Fail,
+    /// No requirement failed, but at least one could not be proven from the workspace.
+    Inconclusive,
     /// The check itself went wrong, so it says nothing about the work.
     Error,
 }
 
 pub const PASS_LINE: &str = "VERDICT: PASS";
 pub const FAIL_LINE: &str = "VERDICT: FAIL";
+pub const INCONCLUSIVE_LINE: &str = "VERDICT: INCONCLUSIVE";
 pub const ERROR_LINE: &str = "VERDICT: ERROR";
 
 /// The verdict on the last non-empty line of `evidence`, if that line is one.
@@ -24,6 +27,7 @@ pub fn parse(evidence: &str) -> Option<Verdict> {
     {
         PASS_LINE => Some(Verdict::Pass),
         FAIL_LINE => Some(Verdict::Fail),
+        INCONCLUSIVE_LINE => Some(Verdict::Inconclusive),
         ERROR_LINE => Some(Verdict::Error),
         _ => None,
     }
@@ -55,6 +59,15 @@ mod tests {
             Some(Verdict::Error)
         );
         assert_eq!(parse("VERDICT: PASS\nmore"), None);
+        assert_eq!(
+            parse("a\nVERDICT: INCONCLUSIVE\n"),
+            Some(Verdict::Inconclusive)
+        );
+        assert_eq!(parse("VERDICT: INCONCLUSIVE\nmore"), None);
+        assert_eq!(
+            parse("VERDICT: INCONCLUSIVE\nVERDICT: FAIL"),
+            Some(Verdict::Fail)
+        );
         assert_eq!(parse(""), None);
     }
 }

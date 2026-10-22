@@ -33,6 +33,9 @@ pub trait Forge {
     /// Replaces the description of unit `number` with `body`.
     fn unit_body_set(&self, repo: &Path, number: u64, body: &str) -> Result<()>;
 
+    /// Adds a comment with `body` to unit `number`.
+    fn unit_comment_add(&self, repo: &Path, number: u64, body: &str) -> Result<()>;
+
     /// Adds the account `ns` acts as to the assignees of unit `number`. Those already there stay.
     fn unit_assignee_add(&self, repo: &Path, number: u64) -> Result<()>;
 

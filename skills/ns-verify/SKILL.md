@@ -51,4 +51,10 @@ When you are told your last check went wrong, undo what you changed first, then 
 
 ## 5. End with the verdict
 
-Write the evidence: one section per requirement. End with a last line that is exactly `VERDICT: PASS` when every requirement is PASS, and exactly `VERDICT: FAIL` otherwise.
+Write the evidence: one section per requirement. End with a last line that is exactly one of:
+
+- `VERDICT: PASS` when every requirement is PASS.
+- `VERDICT: FAIL` when any requirement is FAIL, whatever else is INCONCLUSIVE.
+- `VERDICT: INCONCLUSIVE` when no requirement is FAIL and at least one is INCONCLUSIVE.
+
+INCONCLUSIVE is for a check that cannot be run from the workspace, such as a live service, credentials, or behavior only CI shows. It is not for a check you skipped or did not try hard enough: run that one. A requirement that is INCONCLUSIVE says what would make it checkable, because a human reads it when it stays unproven.

@@ -10,6 +10,8 @@ pub mod ship;
 pub mod verdict;
 mod verify;
 
+pub use verify::unproven_note;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
