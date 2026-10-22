@@ -1,14 +1,24 @@
 //! A lock on a file in the repository's `ns` state directory, held until the process ends. The
-//! operating system lets go of it when the process dies, so a crash leaves no lock behind.
+//! operating system lets go of it when the process dies, so a crash leaves no lock behind. The
+//! file is removed when the lock is let go, so finished units leave nothing in the directory.
 
 use std::fs::{File, TryLockError};
-use std::path::Path;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
 /// Held for as long as it lives.
 pub struct Lock {
     _file: File,
+    path: PathBuf,
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        // Removed while still locked, so no one can take it between the two.
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// Takes the lock called `name` in `dir`, or fails at once when another process holds it.
@@ -16,12 +26,21 @@ pub struct Lock {
 pub fn lock_take(dir: &Path, name: &str, busy: &str) -> Result<Lock> {
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let path = dir.join(name);
-    let file = File::create(&path).with_context(|| format!("cannot open {}", path.display()))?;
-    match file.try_lock() {
-        Ok(()) => Ok(Lock { _file: file }),
-        Err(TryLockError::WouldBlock) => bail!("{busy}"),
-        Err(TryLockError::Error(e)) => {
-            Err(e).with_context(|| format!("cannot lock {}", path.display()))
+    loop {
+        let file =
+            File::create(&path).with_context(|| format!("cannot open {}", path.display()))?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => bail!("{busy}"),
+            Err(TryLockError::Error(e)) => {
+                return Err(e).with_context(|| format!("cannot lock {}", path.display()))
+            }
+        }
+        // The holder before us removed the file we opened; what we hold is no lock. Try again.
+        let same = std::fs::metadata(&path)
+            .is_ok_and(|m| m.ino() == file.metadata().map_or(0, |f| f.ino()));
+        if same {
+            return Ok(Lock { _file: file, path });
         }
     }
 }
@@ -39,5 +58,14 @@ mod tests {
         lock_take(tmp.path(), "y.lock", "busy").unwrap();
         drop(first);
         lock_take(tmp.path(), "x.lock", "busy").unwrap();
+    }
+
+    #[test]
+    fn a_lock_let_go_leaves_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = lock_take(tmp.path(), "x.lock", "busy").unwrap();
+        assert!(tmp.path().join("x.lock").exists());
+        drop(lock);
+        assert!(!tmp.path().join("x.lock").exists());
     }
 }
