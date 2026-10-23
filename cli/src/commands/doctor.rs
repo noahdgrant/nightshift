@@ -4,6 +4,7 @@ use anyhow::{bail, Result};
 use clap::Args as ClapArgs;
 use serde_json::json;
 
+use crate::commands::init::{CLOSES_UNIT_CHECK, CLOSES_UNIT_PATH};
 use crate::forge::Forge;
 use crate::{checks, forge, harness, labels, manifest, vcs};
 
@@ -43,6 +44,8 @@ pub fn run(_args: Args) -> Result<()> {
         forge_login(&root, forge.as_ref()),
         checks_command(&root),
         labels_present(&root, forge.as_ref()),
+        protection(&root, forge.as_ref()),
+        workflow(&root),
     ];
     let ok = results.iter().all(|c| c.ok);
     let list: Vec<_> = results
@@ -136,6 +139,52 @@ fn labels_present(root: &Path, forge: &dyn Forge) -> Check {
         fail(
             "labels",
             format!("missing {}; run `ns init`", missing.join(", ")),
+        )
+    }
+}
+
+fn protection(root: &Path, forge: &dyn Forge) -> Check {
+    let got = match forge.branch_protection_get(root) {
+        Ok(got) => got,
+        Err(e) => {
+            return fail(
+                "protection",
+                format!("the branch protection cannot be read: {e:#}; fix the forge check first"),
+            )
+        }
+    };
+    let branch = got.branch;
+    match got.required_checks {
+        None if got.protected => fail(
+            "protection",
+            format!(
+                "the protection of {branch} does not require status checks, so it cannot require the check {CLOSES_UNIT_CHECK}; edit the protection in the repository settings to require it, which keeps the other rules"
+            ),
+        ),
+        None => fail(
+            "protection",
+            format!(
+                "{branch} is not protected; run `gh api --method PUT repos/{{owner}}/{{repo}}/branches/{branch}/protection -F 'required_status_checks[strict]=false' -f 'required_status_checks[contexts][]={CLOSES_UNIT_CHECK}' -F enforce_admins=false -F required_pull_request_reviews=null -F restrictions=null`"
+            ),
+        ),
+        Some(required) if !required.iter().any(|c| c == CLOSES_UNIT_CHECK) => fail(
+            "protection",
+            format!(
+                "the protection of {branch} does not require the check {CLOSES_UNIT_CHECK}; run `gh api --method POST repos/{{owner}}/{{repo}}/branches/{branch}/protection/required_status_checks/contexts -f 'contexts[]={CLOSES_UNIT_CHECK}'`"
+            ),
+        ),
+        Some(_) => pass("protection", branch),
+    }
+}
+
+fn workflow(root: &Path) -> Check {
+    const PATH: &str = CLOSES_UNIT_PATH;
+    if root.join(PATH).is_file() {
+        pass("workflow", PATH)
+    } else {
+        fail(
+            "workflow",
+            format!("{PATH} is missing; run `ns init`, then commit it"),
         )
     }
 }

@@ -291,6 +291,9 @@ mod tests {
     }
 
     impl Forge for Ready {
+        fn branch_protection_get(&self, _: &Path) -> Result<crate::forge::BranchProtection> {
+            unreachable!()
+        }
         fn login_get(&self, _: &Path) -> Result<String> {
             unreachable!()
         }

@@ -6,7 +6,9 @@ use crate::{forge, harness, labels, manifest, skill, sync, vcs};
 
 /// The check that fails a change request which closes no unit.
 const CLOSES_UNIT: &str = include_str!("../closes-unit.yml");
-const CLOSES_UNIT_PATH: &str = ".github/workflows/closes-unit.yml";
+pub(crate) const CLOSES_UNIT_PATH: &str = ".github/workflows/closes-unit.yml";
+/// The name the workflow's check reports, which the branch protection must require.
+pub(crate) const CLOSES_UNIT_CHECK: &str = "Closes a unit";
 
 #[derive(ClapArgs)]
 pub struct Args {}
@@ -73,4 +75,14 @@ fn agents_point(root: &std::path::Path, dir: &str) -> Result<()> {
         format!("{}\n{line}", have.trim_end())
     };
     std::fs::write(&path, text).with_context(|| format!("cannot write {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_workflow_reports_the_check_the_protection_requires() {
+        assert!(CLOSES_UNIT.contains(&format!("name: {CLOSES_UNIT_CHECK}\n")));
+    }
 }

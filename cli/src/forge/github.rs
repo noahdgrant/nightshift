@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
-use super::{ChangeRequest, ChangeState, Checks, Forge, Unit};
+use super::{BranchProtection, ChangeRequest, ChangeState, Checks, Forge, Unit};
 use crate::{config, retry};
 
 /// What `gh` says when a call failed for a reason that can pass: the network, the forge having a
@@ -143,6 +143,39 @@ impl Forge for GitHub {
             }
         }
         Ok(login.to_string())
+    }
+
+    /// Reads the classic branch protection of the default branch. A branch protected only by
+    /// rulesets reads as unprotected.
+    fn branch_protection_get(&self, repo: &Path) -> Result<BranchProtection> {
+        let json = self.gh(repo, &["api", "repos/{owner}/{repo}"])?;
+        let info: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
+        let branch = info["default_branch"]
+            .as_str()
+            .context("the forge did not name the default branch")?
+            .to_string();
+        let endpoint = format!("repos/{{owner}}/{{repo}}/branches/{branch}/protection");
+        let (protected, required_checks) = match self.gh(repo, &["api", &endpoint]) {
+            Ok(json) => {
+                let v: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
+                let checks = &v["required_status_checks"];
+                let names = checks.is_object().then(|| {
+                    checks["contexts"]
+                        .as_array()
+                        .map(|names| names.iter().map(text).collect())
+                        .unwrap_or_default()
+                });
+                (true, names)
+            }
+            // `gh` exposes an unprotected branch only as this message of the 404.
+            Err(e) if format!("{e:#}").contains("Branch not protected") => (false, None),
+            Err(e) => return Err(e),
+        };
+        Ok(BranchProtection {
+            branch,
+            protected,
+            required_checks,
+        })
     }
 
     fn labels_list(&self, repo: &Path) -> Result<Vec<String>> {
@@ -505,6 +538,66 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\ncat <<'EOF'\n{stdout}\nEOF\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         GitHub::with_program(path)
+    }
+
+    #[test]
+    fn a_protected_default_branch_lists_its_required_checks() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gh");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\ncase \"$2\" in\n  repos/{owner}/{repo}) echo '{\"default_branch\":\"trunk\"}';;\n  repos/{owner}/{repo}/branches/trunk/protection) echo '{\"required_status_checks\":{\"contexts\":[\"a\",\"b\"]}}';;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let got = GitHub::with_program(path)
+            .branch_protection_get(tmp.path())
+            .unwrap();
+        assert_eq!(
+            got,
+            BranchProtection {
+                branch: "trunk".into(),
+                protected: true,
+                required_checks: Some(vec!["a".into(), "b".into()]),
+            }
+        );
+    }
+
+    #[test]
+    fn a_default_branch_the_forge_says_is_not_protected_has_no_required_checks() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gh");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\ncase \"$2\" in\n  repos/{owner}/{repo}) echo '{\"default_branch\":\"main\"}';;\n  *) echo 'Branch not protected (HTTP 404)' >&2; exit 1;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let got = GitHub::with_program(path)
+            .branch_protection_get(tmp.path())
+            .unwrap();
+        assert!(!got.protected);
+        assert_eq!(got.required_checks, None);
+    }
+
+    #[test]
+    fn a_protection_without_status_checks_has_no_required_checks() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gh");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\ncase \"$2\" in\n  repos/{owner}/{repo}) echo '{\"default_branch\":\"main\"}';;\n  *) echo '{\"required_pull_request_reviews\":{}}';;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let got = GitHub::with_program(path)
+            .branch_protection_get(tmp.path())
+            .unwrap();
+        assert!(got.protected);
+        assert_eq!(got.required_checks, None);
     }
 
     #[test]
