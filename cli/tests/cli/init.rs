@@ -142,7 +142,7 @@ fn the_hook_is_added_once_and_the_rest_of_the_settings_stay() {
 }
 
 #[test]
-fn the_skills_init_writes_are_not_changes_but_the_manifest_hook_and_agents_file_are() {
+fn the_skills_init_writes_are_not_changes_but_the_manifest_hook_agents_file_and_workflow_are() {
     let repo = Repo::new();
     init_in(&repo);
     let status = crate::common::git(&repo.path, &["status", "--porcelain", "-uall"]);
@@ -150,6 +150,7 @@ fn the_skills_init_writes_are_not_changes_but_the_manifest_hook_and_agents_file_
         status.lines().map(|l| &l[3..]).collect::<Vec<_>>(),
         [
             ".claude/settings.json",
+            ".github/workflows/closes-unit.yml",
             ".nightshift/nightshift.toml",
             "AGENTS.md"
         ]
@@ -308,4 +309,30 @@ fn an_agents_file_that_cannot_be_read_fails_init_and_is_left_as_it_is() {
     let err = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(err.contains("cannot read"), "{err}");
     assert_eq!(std::fs::read(repo.path.join("AGENTS.md")).unwrap(), bytes);
+}
+
+#[test]
+fn init_writes_the_check_that_a_change_request_closes_a_unit() {
+    let repo = Repo::new();
+    let report = init_in(&repo);
+    let text =
+        std::fs::read_to_string(repo.path.join(".github/workflows/closes-unit.yml")).unwrap();
+    assert!(text.contains("name: PR closes a unit"));
+    assert!(text.contains("closingIssuesReferences"));
+    assert!(!text.contains("release-please"));
+    assert_eq!(report["workflows_written"], 1);
+    assert_eq!(init_in(&repo)["workflows_written"], 0);
+}
+
+#[test]
+fn an_existing_closes_unit_workflow_is_left_alone() {
+    let repo = Repo::new();
+    let dir = repo.path.join(".github/workflows");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("closes-unit.yml"), "mine\n").unwrap();
+    assert_eq!(init_in(&repo)["workflows_written"], 0);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("closes-unit.yml")).unwrap(),
+        "mine\n"
+    );
 }

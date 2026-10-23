@@ -4,13 +4,18 @@ use serde_json::json;
 
 use crate::{forge, harness, labels, manifest, skill, sync, vcs};
 
+/// The check that fails a change request which closes no unit.
+const CLOSES_UNIT: &str = include_str!("../closes-unit.yml");
+const CLOSES_UNIT_PATH: &str = ".github/workflows/closes-unit.yml";
+
 #[derive(ClapArgs)]
 pub struct Args {}
 
 /// Pins the repository to this `ns`: records its version in `.nightshift/nightshift.toml`, along
 /// with the harnesses the repository uses, writes their skills, and makes a session start with
 /// the skills up to date, and creates the labels the forge lacks. The files it leaves to
-/// commit are the manifest and the hook. Run again, it changes only what is missing.
+/// commit are the manifest, the hook and the workflow that checks a change request closes a unit.
+/// Run again, it changes only what is missing, and it never overwrites an existing workflow.
 pub fn run(_args: Args) -> Result<()> {
     let root = vcs::get().root_find(&std::env::current_dir()?)?;
     let mut pin = manifest::pin_read(&root)?;
@@ -23,6 +28,15 @@ pub fn run(_args: Args) -> Result<()> {
         let wrote = harness::of(*kind).session_start_hook_install(&root, sync::HOOK)?;
         hooks.push(json!({ "harness": kind.name(), "written": wrote }));
     }
+    let workflow = root.join(CLOSES_UNIT_PATH);
+    let workflows_written = if workflow.exists() {
+        0
+    } else {
+        std::fs::create_dir_all(workflow.parent().context("a workflow has no directory")?)?;
+        std::fs::write(&workflow, CLOSES_UNIT)
+            .with_context(|| format!("cannot write {}", workflow.display()))?;
+        1
+    };
     let labels = labels::ensure(forge::get().as_ref(), &root)
         .context("the labels were not created; run `ns init` again")?;
     println!(
@@ -32,6 +46,7 @@ pub fn run(_args: Args) -> Result<()> {
             "harness": pin.harness.iter().map(|k| k.name()).collect::<Vec<_>>(),
             "skills_written": synced.iter().map(|s| s.written).sum::<usize>(),
             "hooks": hooks,
+            "workflows_written": workflows_written,
             "labels_created": labels,
         })
     );
