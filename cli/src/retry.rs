@@ -1,5 +1,6 @@
-//! Repeating a call that failed for a reason that can pass, as `docs/CODING_STANDARDS.md` says
-//! under "Retry what can pass, where it is safe". The caller decides which calls are safe to
+//! Repeating a call that failed for a reason that can pass, as the shipped coding standards
+//! (`standards/ns-coding-standards.md`) say, and `docs/CODING_STANDARDS.md` says where in the
+//! seam. The caller decides which calls are safe to
 //! repeat and which failures can pass.
 
 use std::time::Duration;

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
 use serde_json::json;
 
-use crate::{forge, harness, labels, manifest, sync, vcs};
+use crate::{forge, harness, labels, manifest, skill, sync, vcs};
 
 #[derive(ClapArgs)]
 pub struct Args {}
@@ -17,6 +17,7 @@ pub fn run(_args: Args) -> Result<()> {
     pin.version = Some(env!("CARGO_PKG_VERSION").to_string());
     manifest::pin_write(&root, &pin)?;
     let synced = sync::run(&root, &pin.harness)?;
+    agents_point(&root, harness::of(pin.harness[0]).skills_dir())?;
     let mut hooks = Vec::new();
     for kind in &pin.harness {
         let wrote = harness::of(*kind).session_start_hook_install(&root, sync::HOOK)?;
@@ -35,4 +36,26 @@ pub fn run(_args: Args) -> Result<()> {
         })
     );
     Ok(())
+}
+
+/// Makes sure the repository's `AGENTS.md` points to the coding standards that `ns sync` writes
+/// in `dir`, creating the file when there is none and leaving the rest of it as it is.
+fn agents_point(root: &std::path::Path, dir: &str) -> Result<()> {
+    let path = root.join("AGENTS.md");
+    let file = format!("{dir}/{}", skill::STANDARDS_FILE);
+    let have = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    };
+    if have.contains(&file) {
+        return Ok(());
+    }
+    let line = format!("- **Coding standards**: `{file}`, which holds in any language.\n");
+    let text = if have.is_empty() {
+        format!("# Agents\n\n{line}")
+    } else {
+        format!("{}\n{line}", have.trim_end())
+    };
+    std::fs::write(&path, text).with_context(|| format!("cannot write {}", path.display()))
 }
