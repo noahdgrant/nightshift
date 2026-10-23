@@ -89,6 +89,30 @@ impl GitHub {
         )
     }
 
+    /// Lists the open units once, as the forge answered.
+    fn unit_list_once(&self, repo: &Path) -> Result<Vec<Unit>> {
+        let json = self.gh(
+            repo,
+            &[
+                "api",
+                "--paginate",
+                "--slurp",
+                "repos/{owner}/{repo}/issues?state=open&per_page=100",
+            ],
+        )?;
+        let pages: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
+        pages
+            .as_array()
+            .filter(|pages| pages.iter().all(Value::is_array))
+            .context("gh printed something that is not a list of pages")?
+            .iter()
+            .flat_map(|page| page.as_array().into_iter().flatten())
+            // The forge lists change requests among its issues.
+            .filter(|v| v.get("pull_request").is_none())
+            .map(unit_from)
+            .collect()
+    }
+
     /// Runs `gh args` in `repo` once and returns its stdout.
     fn gh_once(&self, repo: &Path, args: &[&str]) -> Result<String> {
         let mut cmd = Command::new(&self.program);
@@ -258,25 +282,16 @@ impl Forge for GitHub {
     }
 
     fn unit_list(&self, repo: &Path) -> Result<Vec<Unit>> {
-        let json = self.gh(
-            repo,
-            &[
-                "api",
-                "--paginate",
-                "--slurp",
-                "repos/{owner}/{repo}/issues?state=open&per_page=100",
-            ],
-        )?;
-        let pages: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
-        pages
-            .as_array()
-            .into_iter()
-            .flatten()
-            .flat_map(|page| page.as_array().into_iter().flatten())
-            // The forge lists change requests among its issues.
-            .filter(|v| v.get("pull_request").is_none())
-            .map(unit_from)
-            .collect()
+        // The forge has been seen answering with an empty list for a repository that has open
+        // units, so an empty list is asked for again before it is believed.
+        retry::retry(
+            self.retry_delay,
+            || self.unit_list_once(repo),
+            |r| match r {
+                Ok(units) if units.is_empty() => Some("gh listed no units".into()),
+                _ => retry::error_says(r, &["not a list of pages"]),
+            },
+        )
     }
 
     fn unit_blockers_list(&self, repo: &Path, number: u64) -> Result<Vec<u64>> {
@@ -526,6 +541,37 @@ mod tests {
         let units = gh.unit_list(tmp.path()).unwrap();
         let seen: Vec<_> = units.iter().map(|u| (u.number, u.from_team)).collect();
         assert_eq!(seen, [(1, false), (3, true)]);
+    }
+
+    #[test]
+    fn an_empty_list_of_units_is_asked_for_again() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gh");
+        let seen = tmp.path().join("seen");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nif [ -e {seen} ]; then echo '[[{{\"number\":1,\"title\":\"a\",\"labels\":[]}}]]'; else touch {seen}; echo '[]'; fi\n",
+                seen = seen.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut gh = GitHub::with_program(path);
+        gh.retry_delay = Duration::ZERO;
+        let units = gh.unit_list(tmp.path()).unwrap();
+        assert_eq!(units.len(), 1);
+    }
+
+    #[test]
+    fn an_answer_that_is_not_a_list_of_pages_is_an_error() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut gh = fake(tmp.path(), r#"{"message":"Bad gateway"}"#);
+        gh.retry_delay = Duration::ZERO;
+        let err = gh.unit_list(tmp.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("not a list of pages"));
     }
 
     #[test]
