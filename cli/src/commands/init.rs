@@ -15,8 +15,10 @@ pub struct Args {}
 
 /// Pins the repository to this `ns`: records its version in `.nightshift/nightshift.toml`, along
 /// with the harnesses the repository uses, writes their skills, and makes a session start with
-/// the skills up to date, and creates the labels the forge lacks. The files it leaves to
-/// commit are the manifest, the hook and the workflow that checks a change request closes a unit.
+/// the skills up to date, and creates the labels the forge lacks. When the repository has neither
+/// `AGENTS.md` nor `CLAUDE.md`, writes both. Either way `AGENTS.md`, or `CLAUDE.md` when that is
+/// all there is, is given a pointer to the coding standards. The files it leaves to commit are the
+/// manifest, the hook, those files and the workflow that checks a change request closes a unit.
 /// Run again, it changes only what is missing, and it never overwrites an existing workflow.
 pub fn run(_args: Args) -> Result<()> {
     let root = vcs::get().root_find(&std::env::current_dir()?)?;
@@ -24,6 +26,7 @@ pub fn run(_args: Args) -> Result<()> {
     pin.version = Some(env!("CARGO_PKG_VERSION").to_string());
     manifest::pin_write(&root, &pin)?;
     let synced = sync::run(&root, &pin.harness)?;
+    let instruction_files = sync::instruction_files_write(&root)?;
     agents_point(&root, harness::of(pin.harness[0]).skills_dir())?;
     let mut hooks = Vec::new();
     for kind in &pin.harness {
@@ -49,31 +52,36 @@ pub fn run(_args: Args) -> Result<()> {
             "skills_written": synced.iter().map(|s| s.written).sum::<usize>(),
             "hooks": hooks,
             "workflows_written": workflows_written,
+            "instruction_files": instruction_files,
             "labels_created": labels,
         })
     );
     Ok(())
 }
 
-/// Makes sure the repository's `AGENTS.md` points to the coding standards that `ns sync` writes
-/// in `dir`, creating the file when there is none and leaving the rest of it as it is.
+/// Makes sure the repository's `AGENTS.md`, or its `CLAUDE.md` when that is all it has, points to
+/// the coding standards that `ns sync` writes in `dir`, and leaves the rest of the file as it is.
+/// It creates nothing: a repository with neither file is given both by `instruction_files_write`.
 fn agents_point(root: &std::path::Path, dir: &str) -> Result<()> {
-    let path = root.join("AGENTS.md");
     let file = format!("{dir}/{}", skill::STANDARDS_FILE);
+    let Some(path) = ["AGENTS.md", "CLAUDE.md"]
+        .map(|name| root.join(name))
+        .into_iter()
+        .find(|p| p.symlink_metadata().is_ok())
+    else {
+        return Ok(());
+    };
     let have = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        // A link to nothing is the owner's; writing would create what it points to.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
     };
     if have.contains(&file) {
         return Ok(());
     }
     let line = format!("- **Coding standards**: `{file}`, which holds in any language.\n");
-    let text = if have.is_empty() {
-        format!("# Agents\n\n{line}")
-    } else {
-        format!("{}\n{line}", have.trim_end())
-    };
+    let text = format!("{}\n\n{line}", have.trim_end());
     std::fs::write(&path, text).with_context(|| format!("cannot write {}", path.display()))
 }
 
