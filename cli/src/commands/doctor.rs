@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::commands::init::{CLOSES_UNIT_CHECK, CLOSES_UNIT_PATH};
 use crate::forge::Forge;
-use crate::{checks, forge, harness, labels, manifest, vcs};
+use crate::{checks, forge, harness, labels, manifest, skill, vcs};
 
 #[derive(ClapArgs)]
 pub struct Args {}
@@ -46,6 +46,7 @@ pub fn run(_args: Args) -> Result<()> {
         labels_present(&root, forge.as_ref()),
         protection(&root, forge.as_ref()),
         workflow(&root),
+        standards(&root),
     ];
     let ok = results.iter().all(|c| c.ok);
     let list: Vec<_> = results
@@ -186,5 +187,20 @@ fn workflow(root: &Path) -> Check {
             "workflow",
             format!("{PATH} is missing; run `ns init`, then commit it"),
         )
+    }
+}
+
+fn standards(root: &Path) -> Check {
+    const PATH: &str = skill::STANDARDS_PATH;
+    match std::fs::read_to_string(root.join(PATH)) {
+        Ok(text) if text == skill::STANDARDS => pass("standards", PATH),
+        Ok(_) => fail(
+            "standards",
+            format!("{PATH} differs from the pinned version's; run `ns sync`, then commit it"),
+        ),
+        Err(_) => fail(
+            "standards",
+            format!("{PATH} is missing; run `ns sync`, then commit it"),
+        ),
     }
 }

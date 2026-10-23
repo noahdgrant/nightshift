@@ -46,6 +46,7 @@ impl Setup {
         setup.labels(&ALL_LABELS);
         setup.protection(Some(&["Closes a unit"]));
         setup.workflow(true);
+        setup.standards(true);
         setup.gh_login("octo");
         setup.claude("echo 2.0.0");
         setup
@@ -110,6 +111,21 @@ impl Setup {
         } else {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    fn standards(&self, current: bool) {
+        let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../standards/ns-coding-standards.md");
+        let text = std::fs::read_to_string(shipped).unwrap();
+        std::fs::write(
+            self.repo.path.join(".nightshift/coding-standards.md"),
+            if current {
+                text
+            } else {
+                "EDITED\n".to_string()
+            },
+        )
+        .unwrap();
     }
 
     fn gh_login(&self, login: &str) {
@@ -213,7 +229,8 @@ fn a_complete_setup_passes_every_check() {
             "checks",
             "labels",
             "protection",
-            "workflow"
+            "workflow",
+            "standards"
         ]
     );
     assert_eq!(check(&report, "pin")["detail"], env!("CARGO_PKG_VERSION"));
@@ -363,7 +380,7 @@ fn doctor_changes_nothing() {
     let status = crate::common::git(&setup.repo.path, &["status", "--porcelain", "-uall"]);
     assert_eq!(
         status.trim(),
-        "?? .github/workflows/closes-unit.yml\n?? .nightshift/nightshift.toml"
+        "?? .github/workflows/closes-unit.yml\n?? .nightshift/coding-standards.md\n?? .nightshift/nightshift.toml"
     );
 }
 
@@ -550,4 +567,18 @@ fn a_repository_without_the_closes_unit_workflow_fails_and_says_to_init() {
         .as_str()
         .unwrap()
         .contains("ns init"));
+}
+
+#[test]
+fn standards_that_differ_from_the_pinned_versions_fail_and_say_to_sync() {
+    let setup = Setup::new();
+    setup.standards(false);
+    only_fails(&setup, "standards", "ns sync");
+}
+
+#[test]
+fn missing_standards_fail_and_say_to_sync() {
+    let setup = Setup::new();
+    std::fs::remove_file(setup.repo.path.join(".nightshift/coding-standards.md")).unwrap();
+    only_fails(&setup, "standards", "ns sync");
 }

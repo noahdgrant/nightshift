@@ -65,6 +65,7 @@ fn sync_run_again_writes_nothing_and_repairs_an_edited_skill() {
 #[test]
 fn the_skills_are_not_changes_to_the_repository() {
     let repo = Repo::new();
+    repo.standards_commit();
     sync_in(&repo.path);
     assert_eq!(git(&repo.path, &["status", "--porcelain"]), "");
 }
@@ -88,6 +89,7 @@ fn a_skill_of_the_users_own_is_left_alone_and_one_this_version_lacks_is_removed(
 #[test]
 fn a_workspace_of_the_repository_ignores_the_skills_too() {
     let repo = Repo::new();
+    repo.standards_commit();
     sync_in(&repo.path);
     let workspace = repo.path.parent().unwrap().join("other");
     git(
@@ -125,6 +127,7 @@ fn source_skill(repo: &Repo, name: &str, text: &str) {
 #[test]
 fn in_development_a_skill_is_a_link_to_the_repositorys_own_so_an_edit_shows_at_once() {
     let repo = Repo::new();
+    repo.standards_commit();
     source_skill(&repo, "ns-build", "FIRST\n");
     sync_dev(&repo);
     let link = repo.path.join(".claude/skills/ns-build");
@@ -189,7 +192,7 @@ fn crate_file_for_session(name: &str) -> String {
 }
 
 fn standards_file(repo: &Repo) -> std::path::PathBuf {
-    repo.path.join(".claude/skills/ns-coding-standards.md")
+    repo.path.join(".nightshift/coding-standards.md")
 }
 
 fn shipped_standards() -> String {
@@ -198,18 +201,37 @@ fn shipped_standards() -> String {
 }
 
 #[test]
-fn sync_writes_the_coding_standards_beside_the_skills_and_repairs_an_edit() {
+fn sync_writes_the_coding_standards_to_a_committable_file_and_repairs_an_edit() {
     let repo = Repo::new();
     sync_in(&repo.path);
     assert_eq!(
         std::fs::read_to_string(standards_file(&repo)).unwrap(),
         shipped_standards()
     );
-    assert_eq!(git(&repo.path, &["status", "--porcelain"]), "");
+    assert!(git(&repo.path, &["status", "--porcelain"]).contains(".nightshift/"));
+    assert!(
+        !std::fs::read_to_string(repo.path.join(".git/info/exclude"))
+            .unwrap_or_default()
+            .contains("coding-standards")
+    );
+    assert!(!repo
+        .path
+        .join(".claude/skills/ns-coding-standards.md")
+        .exists());
     std::fs::write(standards_file(&repo), "EDITED\n").unwrap();
     assert_eq!(sync_in(&repo.path)["synced"][0]["written"], 1);
     assert_eq!(
         std::fs::read_to_string(standards_file(&repo)).unwrap(),
         shipped_standards()
     );
+}
+
+#[test]
+fn sync_removes_the_standards_an_older_ns_wrote_beside_the_skills() {
+    let repo = Repo::new();
+    let old = repo.path.join(".claude/skills/ns-coding-standards.md");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::write(&old, "OLD\n").unwrap();
+    sync_in(&repo.path);
+    assert!(!old.exists());
 }

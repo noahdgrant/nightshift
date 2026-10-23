@@ -1,6 +1,8 @@
 //! Puts the skills that came with this `ns` where each of the repository's harnesses finds them,
 //! for a session the user takes part in. A copy is a function of the version, so it is kept out
-//! of the repository's changes and rewritten whenever it differs.
+//! of the repository's changes and rewritten whenever it differs. The coding standards are the
+//! exception: they are one committed file, `.nightshift/coding-standards.md`, replaced when the
+//! version changes.
 //!
 //! With `NS_DEV` set, in a repository that has a `skills` directory of its own (nightshift's), a
 //! skill is a link to that directory's copy instead, so an edit to a skill shows in a session
@@ -24,7 +26,28 @@ pub struct Synced {
 }
 
 pub fn run(root: &Path, kinds: &[Kind]) -> Result<Vec<Synced>> {
-    kinds.iter().map(|kind| one(root, *kind)).collect()
+    let standards = standards_write(root)?;
+    let mut synced = kinds
+        .iter()
+        .map(|kind| one(root, *kind))
+        .collect::<Result<Vec<_>>>()?;
+    if let Some(first) = synced.first_mut() {
+        first.written += standards;
+    }
+    Ok(synced)
+}
+
+/// Writes the coding standards of this `ns` to the file a repository commits, if it differs.
+/// Returns how many files it wrote.
+fn standards_write(root: &Path) -> Result<usize> {
+    let path = root.join(skill::STANDARDS_PATH);
+    if std::fs::read_to_string(&path).ok().as_deref() == Some(skill::STANDARDS) {
+        return Ok(0);
+    }
+    std::fs::create_dir_all(path.parent().context("the standards have no directory")?)?;
+    std::fs::write(&path, skill::STANDARDS)
+        .with_context(|| format!("cannot write {}", path.display()))?;
+    Ok(1)
 }
 
 const AGENTS_MD: &str = "# Instructions\n\nWrite the standards a harness follows in this repository here: how to build and test it, the style of its code, and how to name a commit.\n";
@@ -106,20 +129,11 @@ fn one(root: &Path, kind: Kind) -> Result<Synced> {
             .with_context(|| format!("cannot write {}", file.display()))?;
         written += 1;
     }
-    let standards = base.join(skill::STANDARDS_FILE);
-    if std::fs::read_to_string(&standards).ok().as_deref() != Some(skill::STANDARDS) {
-        std::fs::write(&standards, skill::STANDARDS)
-            .with_context(|| format!("cannot write {}", standards.display()))?;
-        written += 1;
-    }
     let mut removed = 0;
     for entry in std::fs::read_dir(&base)? {
         let path = entry?.path();
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if name.starts_with("ns-")
-            && name != skill::STANDARDS_FILE
-            && !skill::embedded().iter().any(|(n, _)| *n == name)
-        {
+        if name.starts_with("ns-") && !skill::embedded().iter().any(|(n, _)| *n == name) {
             remove(&path)?;
             removed += 1;
         }
@@ -136,8 +150,10 @@ fn one(root: &Path, kind: Kind) -> Result<Synced> {
 fn remove(path: &Path) -> Result<()> {
     if path.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
         std::fs::remove_file(path)?;
-    } else if path.exists() {
+    } else if path.is_dir() {
         std::fs::remove_dir_all(path)?;
+    } else if path.exists() {
+        std::fs::remove_file(path)?;
     }
     Ok(())
 }
