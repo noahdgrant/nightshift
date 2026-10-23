@@ -214,6 +214,28 @@ impl Vcs for Git {
         Ok(())
     }
 
+    fn workspace_base_anchor(&self, root: &Path, path: &Path) -> Result<()> {
+        let base_branch = run(root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+        let tracking = format!("refs/remotes/origin/{base_branch}");
+        // A detached checkout is on no branch; a missing ref means no remote was ever fetched.
+        if base_branch == "HEAD"
+            || !succeeds(path, &["rev-parse", "--verify", "--quiet", &tracking])
+        {
+            return Ok(());
+        }
+        let branch = run(path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+        let recorded = run(path, &["rev-parse", &base_ref(&branch)])?;
+        let Ok(anchor) = run(path, &["merge-base", "HEAD", &tracking]) else {
+            return Ok(());
+        };
+        if anchor != recorded
+            && succeeds(path, &["merge-base", "--is-ancestor", &recorded, &anchor])
+        {
+            run(path, &["update-ref", &base_ref(&branch), &anchor])?;
+        }
+        Ok(())
+    }
+
     fn branch_delete(&self, root: &Path, branch: &str) -> Result<()> {
         if succeeds(root, &["rev-parse", "--verify", "--quiet", branch]) {
             // The branch was merged on the forge, as a new commit, so git sees it as unmerged.
@@ -433,6 +455,50 @@ mod tests {
         let (_tmp, root, _ws) = repo_with_workspace();
         git(&root, &["checkout", "-q", "--detach"]);
         assert_eq!(Git::new().base_fetch(&root).unwrap(), None);
+    }
+
+    /// A workspace rebased onto a base that moved by one commit, its own commit on top, and the
+    /// commit it was branched from.
+    fn workspace_on_a_moved_base(root: &Path, ws: &Path) -> (String, String) {
+        let first = run(ws, &["rev-parse", "HEAD"]).unwrap();
+        git(root, &["push", "-q", "origin", "main"]);
+        let moved = commit_file(root, "b.txt", "b\n");
+        git(root, &["push", "-q", "origin", "main"]);
+        git(ws, &["fetch", "-q", "origin", "main"]);
+        commit_file(ws, "w.txt", "w\n");
+        git(ws, &["rebase", "-q", "origin/main"]);
+        (first, moved)
+    }
+
+    #[test]
+    fn the_recorded_base_moves_to_where_a_rebased_workspace_now_sits() {
+        let (_tmp, root, ws) = repo_with_workspace();
+        let vcs = Git::new();
+        let (first, moved) = workspace_on_a_moved_base(&root, &ws);
+        assert_eq!(vcs.workspace_base_find(&ws).unwrap(), first);
+        vcs.workspace_base_anchor(&root, &ws).unwrap();
+        assert_eq!(vcs.workspace_base_find(&ws).unwrap(), moved);
+        assert_eq!(vcs.workspace_commits_count(&ws, &moved).unwrap(), 1);
+    }
+
+    #[test]
+    fn the_recorded_base_stays_when_the_main_checkout_is_on_no_branch() {
+        let (_tmp, root, ws) = repo_with_workspace();
+        let vcs = Git::new();
+        let (first, _) = workspace_on_a_moved_base(&root, &ws);
+        git(&root, &["checkout", "-q", "--detach"]);
+        vcs.workspace_base_anchor(&root, &ws).unwrap();
+        assert_eq!(vcs.workspace_base_find(&ws).unwrap(), first);
+    }
+
+    #[test]
+    fn the_recorded_base_stays_when_the_remote_was_never_fetched() {
+        let (_tmp, root, ws) = repo_with_workspace();
+        let vcs = Git::new();
+        let first = vcs.workspace_base_find(&ws).unwrap();
+        commit_file(&ws, "w.txt", "w\n");
+        vcs.workspace_base_anchor(&root, &ws).unwrap();
+        assert_eq!(vcs.workspace_base_find(&ws).unwrap(), first);
     }
 
     #[test]

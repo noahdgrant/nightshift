@@ -3286,6 +3286,89 @@ fn a_refresh_that_conflicts_puts_the_unit_back_at_build_with_the_evidence_in_the
 }
 
 #[test]
+fn a_conflict_resolved_by_the_build_on_a_base_that_moved_by_two_commits_ends_with_one_commit() {
+    let repo = Repo::new();
+    counted_check(&repo, false);
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    run(&repo, &path).success();
+    base_advanced(&repo, "first.txt", "first");
+    let tip = base_advanced(&repo, "thing.txt", "theirs");
+    let bin = repo.path.parent().unwrap().join("bin");
+    script(
+        &bin,
+        "on-rebuild",
+        r#"git fetch -q origin main
+git rebase origin/main >/dev/null 2>&1
+echo resolved > thing.txt
+git add -A
+GIT_EDITOR=true git -c user.name=t -c user.email=t@t rebase --continue >/dev/null"#,
+    );
+    run_stdout(&repo, &path);
+    let next = run(&repo, &path);
+    let ws = repo.workspace("5");
+    assert_eq!(
+        git(&ws, &["rev-list", "--count", &format!("{tip}..HEAD")]).trim(),
+        "1"
+    );
+    let moves = moves(next.get_output().stdout.clone());
+    assert!(!moves.contains(&"build>stuck".to_string()), "{moves:?}");
+    assert!(!moves.contains(&"build>build".to_string()), "{moves:?}");
+}
+
+#[test]
+fn a_base_that_moves_again_after_the_build_rebases_does_not_count_the_commits_between() {
+    let repo = Repo::new();
+    counted_check(&repo, false);
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    run(&repo, &path).success();
+    base_advanced(&repo, "first.txt", "first");
+    base_advanced(&repo, "thing.txt", "theirs");
+    let bin = repo.path.parent().unwrap().join("bin");
+    script(
+        &bin,
+        "on-rebuild",
+        &format!(
+            r#"git fetch -q origin main
+git rebase origin/main >/dev/null 2>&1
+echo resolved > thing.txt
+git add -A
+GIT_EDITOR=true git -c user.name=t -c user.email=t@t rebase --continue >/dev/null
+({})"#,
+            base_advance_script(&repo, "later.txt", "later")
+        ),
+    );
+    run_stdout(&repo, &path);
+    let next = run(&repo, &path);
+    let moves = moves(next.get_output().stdout.clone());
+    let latest = git(&origin(&repo), &["rev-parse", "main"])
+        .trim()
+        .to_string();
+    let ws = repo.workspace("5");
+    assert_eq!(
+        git(&ws, &["rev-list", "--count", &format!("{latest}..HEAD")]).trim(),
+        "1"
+    );
+    assert!(!moves.contains(&"build>stuck".to_string()), "{moves:?}");
+    assert!(!moves.contains(&"build>build".to_string()), "{moves:?}");
+}
+
+#[test]
+fn a_build_that_commits_without_rebasing_onto_the_moved_base_is_told_to_rebase() {
+    let repo = Repo::new();
+    counted_check(&repo, false);
+    main_published(&repo);
+    let path = tools(&repo, &Fakes::passing());
+    run(&repo, &path).success();
+    base_advanced(&repo, "thing.txt", "theirs");
+    run_stdout(&repo, &path);
+    let moves = moves(run(&repo, &path).failure().get_output().stdout.clone());
+    assert!(moves.contains(&"build>build".to_string()), "{moves:?}");
+    assert_eq!(moves.last().unwrap(), "build>stuck");
+}
+
+#[test]
 fn a_refresh_whose_check_fails_puts_the_unit_back_at_build_with_the_output() {
     let repo = Repo::new();
     let (path, _) = open_behind(&repo, "other.txt-fails");

@@ -71,9 +71,15 @@ pub trait Vcs {
     /// Rebases the workspace's branch onto `onto`. A conflict aborts the rebase.
     fn workspace_rebase(&self, path: &Path, onto: &str) -> Result<Rebase>;
 
-    /// Records that the workspace's branch now starts at `base`, so that `workspace_diff` shows
-    /// only what the branch changed past it.
+    /// Records the base the workspace's branch is judged against: `workspace_diff` and the
+    /// commit count start from it. It may be a commit the branch has yet to be rebased onto.
     fn workspace_base_set(&self, path: &Path, base: &str) -> Result<()>;
+
+    /// Moves the recorded base to the commit where the workspace's branch leaves the base
+    /// branch, as the remote-tracking ref of the main checkout at `root` last saw it. Reads
+    /// only local refs. The base stays put when the tracking ref is missing, or when the new
+    /// commit would not be past the recorded base (the branch has not been rebased onto it).
+    fn workspace_base_anchor(&self, root: &Path, path: &Path) -> Result<()>;
 
     /// Deletes `branch` from the repository at `root`, and what `ns` remembers of where it
     /// started. The branch must not be checked out in any workspace.

@@ -148,6 +148,8 @@ fn refresh(ctx: &Context, root: &Path, dir: &Path, id: &str, tip: &str) -> Resul
         return Ok(Refresh::Current);
     }
     if let Rebase::Conflict(files) = ctx.vcs.workspace_rebase(dir, tip)? {
+        // The build resolves the conflict by rebasing onto `tip`, so it is judged against it.
+        ctx.vcs.workspace_base_set(dir, tip)?;
         let evidence = format!(
             "The base branch moved and the unit's commit conflicts with it in: {}. Rebase onto \
              the base branch and resolve them.\n{}\n",
