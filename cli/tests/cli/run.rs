@@ -998,6 +998,7 @@ fn ship_stops_at_ready_to_merge_unless_asked_to_merge() {
 #[test]
 fn ship_merges_once_the_checks_pass_when_asked() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"]).success();
     assert_eq!(gh_log(&repo).matches("pr merge 9 --squash").count(), 1);
 }
@@ -1037,10 +1038,10 @@ fn a_change_touching_a_human_review_file_is_not_merged_and_is_labeled() {
 }
 
 #[test]
-fn a_workflow_change_is_not_merged_under_the_default_list() {
+fn a_change_is_not_merged_under_the_default_list() {
     let repo = Repo::new();
     let fakes = Fakes {
-        builds: ".github/workflows/ci.yml",
+        builds: "cli/src/x.rs",
         ..Fakes::passing()
     };
     let out = run_with(&repo, &tools(&repo, &fakes), &["--merge"])
@@ -1053,7 +1054,7 @@ fn a_workflow_change_is_not_merged_under_the_default_list() {
     assert!(log.contains("--add-label needs-human-merge"), "{log}");
     let out = String::from_utf8(out).unwrap();
     assert!(
-        out.contains(".github/workflows/ci.yml matches .github/** in merge.human_review"),
+        out.contains("cli/src/x.rs matches ** in merge.human_review"),
         "{out}"
     );
 }
@@ -1074,8 +1075,9 @@ fn a_configured_list_replaces_the_default_and_an_empty_one_merges_everything() {
 }
 
 #[test]
-fn a_change_touching_only_source_is_merged_under_the_default_list() {
+fn a_change_touching_only_source_is_merged_under_a_list_that_names_other_files() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     let fakes = Fakes {
         builds: "cli/src/x.rs",
         ..Fakes::passing()
@@ -1107,6 +1109,7 @@ fn without_merge_nothing_is_labeled_even_for_a_human_review_file() {
 #[test]
 fn clean_up_removes_the_workspace_and_branch_of_a_merged_unit() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     let out = run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"])
         .success()
         .get_output()
@@ -1120,6 +1123,7 @@ fn clean_up_removes_the_workspace_and_branch_of_a_merged_unit() {
 #[test]
 fn clean_up_brings_the_main_checkout_up_to_date() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     git(
         &repo.path,
         &["push", "-q", "--set-upstream", "origin", "main"],
@@ -1158,6 +1162,7 @@ fn clean_up_leaves_the_workspace_of_a_change_request_still_open() {
 #[test]
 fn ship_waits_for_pending_checks() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     let fakes = Fakes {
         ci: Ci::PendingOnce,
         ..Fakes::passing()
@@ -1192,6 +1197,7 @@ fn checks_that_never_finish_go_wrong_and_nothing_is_merged() {
 #[test]
 fn a_repository_with_no_checks_has_none_to_wait_for() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     let fakes = Fakes {
         ci: Ci::NoneReported,
         ..Fakes::passing()
@@ -1441,6 +1447,7 @@ fn fresh_deletes_the_workspace_and_branch_and_starts_over_from_setup() {
 #[test]
 fn a_finished_unit_is_not_run_again() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"]).success();
     let before = run_log(&repo).len();
     let out = run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"])
@@ -1877,6 +1884,7 @@ const TO_HUMAN: &str =
 #[test]
 fn a_unit_is_in_progress_from_the_start_and_its_label_goes_when_its_change_merges() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     run_with(&repo, &tools(&repo, &Fakes::passing()), &["--merge"]).success();
     let edits: Vec<_> = gh_log(&repo)
         .lines()
@@ -1918,6 +1926,7 @@ fn a_unit_waiting_at_a_gate_is_left_for_a_human() {
 #[test]
 fn a_human_resuming_a_unit_marks_it_in_progress_again() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     let broken = Fakes {
         exit: 1,
         ..Fakes::passing()
@@ -2859,7 +2868,7 @@ fn a_conflict_sends_the_unit_back_to_build_naming_the_files_and_leaves_the_works
 fn with_the_queue_off_nothing_is_rebased_no_lock_is_taken_and_the_merge_names_the_head() {
     let repo = Repo::new();
     counted_check(&repo, false);
-    manifest_set(&repo, "[merge]\nqueue = false\n");
+    manifest_set(&repo, "[merge]\nhuman_review = []\nqueue = false\n");
     main_published(&repo);
     let path = tools(&repo, &Fakes::passing());
     let old = base_advanced(&repo, "other.txt", "other");
@@ -2880,6 +2889,7 @@ fn with_the_queue_off_nothing_is_rebased_no_lock_is_taken_and_the_merge_names_th
 #[test]
 fn a_base_that_moves_after_the_checks_passed_sends_the_unit_round_again_and_the_new_head_merges() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     counted_check(&repo, false);
     main_published(&repo);
     let path = tools(&repo, &Fakes::passing());
@@ -2905,6 +2915,7 @@ fn a_base_that_moves_after_the_checks_passed_sends_the_unit_round_again_and_the_
 #[test]
 fn a_base_that_keeps_moving_sticks_the_unit_saying_so() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     main_published(&repo);
     let path = tools(&repo, &Fakes::passing());
     base_moves_on_checks(&repo, 99);
@@ -2931,7 +2942,7 @@ fn a_base_that_keeps_moving_sticks_the_unit_saying_so() {
 #[test]
 fn a_setting_of_one_move_sticks_the_unit_at_the_second() {
     let repo = Repo::new();
-    manifest_set(&repo, "[merge]\nmax_base_moves = 1\n");
+    manifest_set(&repo, "[merge]\nhuman_review = []\nmax_base_moves = 1\n");
     main_published(&repo);
     let path = tools(&repo, &Fakes::passing());
     base_moves_on_checks(&repo, 99);
@@ -2965,6 +2976,7 @@ fn a_unit_left_for_a_person_is_also_brought_up_to_date_and_checked() {
 #[test]
 fn the_merge_waits_for_the_lock_another_unit_holds() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     main_published(&repo);
     let path = tools(&repo, &Fakes::passing());
     let lock = repo.path.join(".git/ns/merge.lock");
@@ -3016,6 +3028,7 @@ fn lock_log(repo: &Repo) -> Vec<String> {
 #[test]
 fn a_unit_to_be_merged_does_not_rebase_until_the_lock_is_free_and_then_rebases_onto_the_new_base() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     counted_check(&repo, false);
     main_published(&repo);
     let path = tools(&repo, &Fakes::passing());
@@ -3075,6 +3088,7 @@ fn a_unit_sent_back_to_build_by_a_conflict_lets_go_of_the_lock() {
 #[test]
 fn a_failing_check_on_the_rebase_lets_go_of_the_lock() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     lock_watching_check(&repo, true);
     main_published(&repo);
     let path = tools(&repo, &Fakes::passing());

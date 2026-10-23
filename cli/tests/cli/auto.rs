@@ -1,7 +1,7 @@
 use crate::common::{script, Repo};
 use crate::run::{
-    base_advanced, check_runs, counted_check, gh_log, main_published, models_used, origin,
-    run_with, set_manifest, tools, transcript_keep, Fakes, FAIL,
+    base_advanced, check_runs, counted_check, gh_log, main_published, manifest_set, models_used,
+    origin, run_with, set_manifest, tools, transcript_keep, Fakes, FAIL,
 };
 
 use std::time::Duration;
@@ -126,6 +126,7 @@ fn label_edits(repo: &Repo) -> Vec<String> {
 #[test]
 fn auto_triages_the_untriaged_unit_then_runs_it() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     let fakes = Fakes {
         labels: UNTRIAGED,
         ..Fakes::passing()
@@ -321,6 +322,7 @@ fn a_change_ready_to_merge_is_reported_with_its_address_and_left_for_a_human() {
 #[test]
 fn auto_reports_why_a_change_was_not_merged() {
     let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
     let fakes = Fakes {
         builds: ".github/workflows/ci.yml",
         ..Fakes::passing()

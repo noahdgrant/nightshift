@@ -4,15 +4,9 @@
 use anyhow::{Context, Result};
 use globset::Glob;
 
-/// Where a change request waits for a person by default: the workflows, the release configuration
-/// and what pins the toolchain.
-const DEFAULT: [&str; 5] = [
-    ".github/**",
-    ".nightshift/**",
-    "release-please-config.json",
-    ".release-please-manifest.json",
-    "rust-toolchain.toml",
-];
+/// Where a change request waits for a person by default: everywhere, until the repository names
+/// the files it wants reviewed.
+const DEFAULT: [&str; 1] = ["**"];
 
 /// The globs of the files whose change a person must merge.
 #[derive(Debug, PartialEq, Eq)]
@@ -81,7 +75,7 @@ mod tests {
 
     #[test]
     fn a_double_star_crosses_directories() {
-        let policy = HumanReview::default_globs();
+        let policy = HumanReview::new(files(&[".github/**"]));
         assert_eq!(
             policy
                 .verdict(&files(&[".github/workflows/ci.yml"]))
@@ -92,7 +86,7 @@ mod tests {
 
     #[test]
     fn a_file_at_the_root_matches_its_own_name() {
-        let policy = HumanReview::default_globs();
+        let policy = HumanReview::new(files(&["rust-toolchain.toml"]));
         assert_eq!(
             policy.verdict(&files(&["rust-toolchain.toml"])).unwrap(),
             needs("rust-toolchain.toml", "rust-toolchain.toml")
@@ -101,13 +95,21 @@ mod tests {
 
     #[test]
     fn a_path_that_matches_nothing_may_be_merged() {
-        let policy = HumanReview::default_globs();
+        let policy = HumanReview::new(files(&[".github/**"]));
         assert_eq!(
             policy
                 .verdict(&files(&["cli/src/x.rs", "docs/github.md"]))
                 .unwrap(),
             Verdict::Merge
         );
+    }
+
+    #[test]
+    fn the_default_holds_every_path() {
+        let policy = HumanReview::default_globs();
+        for file in ["cli/src/x.rs", "README.md", ".github/workflows/ci.yml"] {
+            assert_eq!(policy.verdict(&files(&[file])).unwrap(), needs(file, "**"));
+        }
     }
 
     #[test]
