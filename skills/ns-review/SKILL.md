@@ -39,6 +39,8 @@ The change follows the repository's existing way to do each job, adds no second 
 
 The comments and docs the change adds or touches are true and say why, not what; the docs the change makes stale are updated.
 
+Every path, command or file a committed file names exists in a fresh checkout, or is created by a step the file says to run. A pointer to a file that is generated or git-ignored is a finding: someone who has only cloned the repository does not have it.
+
 Trace the call path before you accept a hypothetical. Leave out style and personal preference.
 
 Done when each area you cover has been checked against the diff.
