@@ -27,7 +27,7 @@ fn sync_writes_every_skill_where_claude_finds_it() {
     let report = sync_in(&repo.path);
     assert_eq!(report["synced"][0]["harness"], "claude");
     assert_eq!(report["synced"][0]["dir"], ".claude/skills");
-    assert_eq!(report["synced"][0]["written"], 9);
+    assert_eq!(report["synced"][0]["written"], 10);
     assert_eq!(
         std::fs::read_to_string(skill_file(&repo, "ns-grilling")).unwrap(),
         shipped("ns-grilling")
@@ -186,4 +186,30 @@ fn without_a_skills_directory_ns_dev_changes_nothing() {
 fn crate_file_for_session(name: &str) -> String {
     let text = shipped(name);
     text.replacen("\n---\n", "\ndisable-model-invocation: true\n---\n", 1)
+}
+
+fn standards_file(repo: &Repo) -> std::path::PathBuf {
+    repo.path.join(".claude/skills/ns-coding-standards.md")
+}
+
+fn shipped_standards() -> String {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../standards");
+    std::fs::read_to_string(dir.join("ns-coding-standards.md")).unwrap()
+}
+
+#[test]
+fn sync_writes_the_coding_standards_beside_the_skills_and_repairs_an_edit() {
+    let repo = Repo::new();
+    sync_in(&repo.path);
+    assert_eq!(
+        std::fs::read_to_string(standards_file(&repo)).unwrap(),
+        shipped_standards()
+    );
+    assert_eq!(git(&repo.path, &["status", "--porcelain"]), "");
+    std::fs::write(standards_file(&repo), "EDITED\n").unwrap();
+    assert_eq!(sync_in(&repo.path)["synced"][0]["written"], 1);
+    assert_eq!(
+        std::fs::read_to_string(standards_file(&repo)).unwrap(),
+        shipped_standards()
+    );
 }

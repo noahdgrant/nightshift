@@ -115,7 +115,7 @@ fn settings(repo: &Repo) -> serde_json::Value {
 fn init_writes_the_skills_and_a_hook_that_keeps_them_current_in_a_session() {
     let repo = Repo::new();
     let report = init_in(&repo);
-    assert_eq!(report["skills_written"], 9);
+    assert_eq!(report["skills_written"], 10);
     assert!(repo.path.join(".claude/skills/ns-build/SKILL.md").is_file());
     let hook = &settings(&repo)["hooks"]["SessionStart"][0]["hooks"][0];
     assert_eq!(hook["type"], "command");
@@ -142,13 +142,17 @@ fn the_hook_is_added_once_and_the_rest_of_the_settings_stay() {
 }
 
 #[test]
-fn the_skills_init_writes_are_not_changes_but_the_manifest_and_hook_are() {
+fn the_skills_init_writes_are_not_changes_but_the_manifest_hook_and_agents_file_are() {
     let repo = Repo::new();
     init_in(&repo);
     let status = crate::common::git(&repo.path, &["status", "--porcelain", "-uall"]);
     assert_eq!(
         status.lines().map(|l| &l[3..]).collect::<Vec<_>>(),
-        [".claude/settings.json", ".nightshift/nightshift.toml"]
+        [
+            ".claude/settings.json",
+            ".nightshift/nightshift.toml",
+            "AGENTS.md"
+        ]
     );
 }
 
@@ -263,4 +267,45 @@ fn labels_that_cannot_be_created_fail_init_after_it_wrote_the_rest() {
         "{err}"
     );
     assert!(repo.path.join(".nightshift/nightshift.toml").is_file());
+}
+
+#[test]
+fn init_writes_an_agents_file_that_points_to_the_shipped_coding_standards() {
+    let repo = Repo::new();
+    init_in(&repo);
+    let agents = std::fs::read_to_string(repo.path.join("AGENTS.md")).unwrap();
+    assert!(
+        agents.contains("`.claude/skills/ns-coding-standards.md`"),
+        "{agents}"
+    );
+    assert!(repo
+        .path
+        .join(".claude/skills/ns-coding-standards.md")
+        .is_file());
+}
+
+#[test]
+fn init_adds_the_pointer_once_to_an_agents_file_the_repository_has() {
+    let repo = Repo::new();
+    std::fs::write(repo.path.join("AGENTS.md"), "# Mine\n\n- Be kind.\n").unwrap();
+    init_in(&repo);
+    init_in(&repo);
+    let agents = std::fs::read_to_string(repo.path.join("AGENTS.md")).unwrap();
+    assert!(agents.starts_with("# Mine\n\n- Be kind.\n"), "{agents}");
+    assert_eq!(
+        agents.matches("ns-coding-standards.md").count(),
+        1,
+        "{agents}"
+    );
+}
+
+#[test]
+fn an_agents_file_that_cannot_be_read_fails_init_and_is_left_as_it_is() {
+    let repo = Repo::new();
+    let bytes = [0xff, 0xfe, b'#', 0x00];
+    std::fs::write(repo.path.join("AGENTS.md"), bytes).unwrap();
+    let assert = init_cmd(&repo, &repo.path).assert().failure();
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(err.contains("cannot read"), "{err}");
+    assert_eq!(std::fs::read(repo.path.join("AGENTS.md")).unwrap(), bytes);
 }

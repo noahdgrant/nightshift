@@ -65,11 +65,20 @@ fn one(root: &Path, kind: Kind) -> Result<Synced> {
             .with_context(|| format!("cannot write {}", file.display()))?;
         written += 1;
     }
+    let standards = base.join(skill::STANDARDS_FILE);
+    if std::fs::read_to_string(&standards).ok().as_deref() != Some(skill::STANDARDS) {
+        std::fs::write(&standards, skill::STANDARDS)
+            .with_context(|| format!("cannot write {}", standards.display()))?;
+        written += 1;
+    }
     let mut removed = 0;
     for entry in std::fs::read_dir(&base)? {
         let path = entry?.path();
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if name.starts_with("ns-") && !skill::embedded().iter().any(|(n, _)| *n == name) {
+        if name.starts_with("ns-")
+            && name != skill::STANDARDS_FILE
+            && !skill::embedded().iter().any(|(n, _)| *n == name)
+        {
             remove(&path)?;
             removed += 1;
         }

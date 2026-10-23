@@ -1,6 +1,6 @@
 name: PR closes a unit
 
-# A change request must close the unit it answers (docs/CODING_STANDARDS.md).
+# A change request must close the unit it answers (standards/ns-coding-standards.md).
 
 on:
   pull_request:
@@ -40,5 +40,5 @@ jobs:
             fi
             sleep 5
           done
-          echo "::error::The PR body must end with 'Closes #<unit>', naming a unit that exists. See docs/CODING_STANDARDS.md."
+          echo "::error::The PR body must end with 'Closes #<unit>', naming a unit that exists. See standards/ns-coding-standards.md."
           exit 1
