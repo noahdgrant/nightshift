@@ -30,6 +30,10 @@ Bad: a command that builds a `Git` and passes it on, or a method called `pull_re
 
 Good: `vcs::current()` is the one place that picks a tool, and the method is `change_request_get`.
 
+## A change request closes a unit
+
+The body of a change request ends with `Closes #<unit>`, naming a unit that exists. The tracker's number belongs in the change request, never in a committed file (next section). `closes-unit.yml` fails a change request that closes none.
+
 ## No issue numbers in committed files
 
 A committed file never names an issue or change request by number. The number means nothing to a reader who can't see the tracker, and it goes stale when the work moves forge. Say what the issue was about.
