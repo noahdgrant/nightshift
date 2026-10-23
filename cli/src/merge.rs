@@ -4,15 +4,9 @@
 use anyhow::{Context, Result};
 use globset::Glob;
 
-/// Where a change request waits for a person by default: the workflows, the release configuration
-/// and what pins the toolchain.
-const DEFAULT: [&str; 5] = [
-    ".github/**",
-    ".nightshift/**",
-    "release-please-config.json",
-    ".release-please-manifest.json",
-    "rust-toolchain.toml",
-];
+/// Where a change request waits for a person by default: the workflows, the `ns` configuration and
+/// what pins the toolchain.
+const DEFAULT: [&str; 3] = [".github/**", ".nightshift/**", "rust-toolchain.toml"];
 
 /// The globs of the files whose change a person must merge.
 #[derive(Debug, PartialEq, Eq)]
@@ -96,6 +90,20 @@ mod tests {
         assert_eq!(
             policy.verdict(&files(&["rust-toolchain.toml"])).unwrap(),
             needs("rust-toolchain.toml", "rust-toolchain.toml")
+        );
+    }
+
+    #[test]
+    fn a_release_tool_config_is_not_special_by_default() {
+        let policy = HumanReview::default_globs();
+        assert_eq!(
+            policy
+                .verdict(&files(&[
+                    "release-please-config.json",
+                    ".release-please-manifest.json"
+                ]))
+                .unwrap(),
+            Verdict::Merge
         );
     }
 
