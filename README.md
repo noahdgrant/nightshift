@@ -47,7 +47,7 @@ Then, in each project you want to run the factory on:
 
 A unit's type is set by the repository's kind. Where the owner is an organization with native issue types, `ns triage` sets Feature for `feat` and Bug for `fix` and adds no `type:` label for them (`ns init` does not create `type:feat` or `type:fix` there); every other type is set as Task and also keeps its `type:` label, which records the exact type. `ns init` never creates or changes a native type, since that is an organization setting. If the organization has renamed or removed Feature, Bug or Task, or the repository is a personal one with no native types, the `type:` labels carry the type, as before.
 
-Run `ns doctor` to confirm the setup. It prints a JSON object with one check each for the pin, the harness, the forge login, `.nightshift/check` and the labels, says how to fix any that fails, and exits 1 when one does. It changes nothing.
+Run `ns doctor` to confirm the setup. It prints a JSON object with one check each for the pin, the harness, the forge login, `.nightshift/check`, the labels, the classic branch protection of the default branch (a branch protected only by rulesets reads as unprotected) and the `closes-unit` workflow, says how to fix any that fails, and exits 1 when one does. It changes nothing.
 
 To move a repository to a newer `ns`, install it, then run `ns upgrade <version>` and commit the new pin.
 

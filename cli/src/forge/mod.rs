@@ -12,6 +12,9 @@ pub trait Forge {
     /// when the forge answers with a login other than the account the config names.
     fn login_get(&self, repo: &Path) -> Result<String>;
 
+    /// How the default branch of the repository at `repo` is protected.
+    fn branch_protection_get(&self, repo: &Path) -> Result<BranchProtection>;
+
     /// The unit `number` of the repository at `repo`.
     fn unit_get(&self, repo: &Path, number: u64) -> Result<Unit>;
 
@@ -117,6 +120,17 @@ pub fn unit_types_get(forge: &dyn Forge, repo: &Path) -> Vec<String> {
 /// Every post `ns` makes on the forge starts with this line.
 pub const DISCLOSURE: &str = "🤖 *Posted by nightshift, an AI agent.*";
 
+/// The default branch of a repository, and the checks its protection requires of a change
+/// request before it merges.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BranchProtection {
+    pub branch: String,
+    /// Whether the branch has classic protection at all.
+    pub protected: bool,
+    /// The names of the required checks; none when the protection does not enable status checks.
+    pub required_checks: Option<Vec<String>>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Unit {
     pub number: u64,
@@ -179,6 +193,9 @@ mod tests {
             unreachable!()
         }
         fn login_get(&self, _: &Path) -> Result<String> {
+            unreachable!()
+        }
+        fn branch_protection_get(&self, _: &Path) -> Result<BranchProtection> {
             unreachable!()
         }
         fn unit_get(&self, _: &Path, _: u64) -> Result<Unit> {
@@ -250,6 +267,9 @@ mod tests {
             self.0.clone().map_err(|e| anyhow::anyhow!(e))
         }
         fn login_get(&self, _: &Path) -> Result<String> {
+            unreachable!()
+        }
+        fn branch_protection_get(&self, _: &Path) -> Result<BranchProtection> {
             unreachable!()
         }
         fn unit_blocker_add(&self, _: &Path, _: u64, _: u64) -> Result<()> {

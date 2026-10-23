@@ -44,6 +44,8 @@ impl Setup {
         setup.pin(env!("CARGO_PKG_VERSION"));
         setup.repo.set_check("scripts/ci-local.sh");
         setup.labels(&ALL_LABELS);
+        setup.protection(Some(&["Closes a unit"]));
+        setup.workflow(true);
         setup.gh_login("octo");
         setup.claude("echo 2.0.0");
         setup
@@ -79,14 +81,46 @@ impl Setup {
         .unwrap();
     }
 
+    /// The default branch's protection: none, or the status checks it requires.
+    fn protection(&self, required: Option<&[&str]>) {
+        let path = self.tmp().join("protection.json");
+        match required {
+            None => {
+                let _ = std::fs::remove_file(path);
+            }
+            Some(names) => {
+                let json: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+                std::fs::write(
+                    path,
+                    format!(
+                        r#"{{"required_status_checks":{{"contexts":[{}]}}}}"#,
+                        json.join(",")
+                    ),
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    fn workflow(&self, present: bool) {
+        let path = self.repo.path.join(".github/workflows/closes-unit.yml");
+        if present {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "name: PR closes a unit\n").unwrap();
+        } else {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
     fn gh_login(&self, login: &str) {
         script(
             &self.bin(),
             "gh",
             &format!(
-                "case \"$1 $2\" in\n  \"label list\") cat \"{}\";;\n  \"api orgs/{{owner}}/issue-types\") cat \"{}\";;\n  \"api user\") echo '{{\"login\":\"{login}\"}}';;\nesac",
+                "case \"$1 $2\" in\n  \"label list\") cat \"{}\";;\n  \"api orgs/{{owner}}/issue-types\") cat \"{}\";;\n  \"api user\") echo '{{\"login\":\"{login}\"}}';;\n  \"api repos/{{owner}}/{{repo}}\") echo '{{\"default_branch\":\"main\"}}';;\n  \"api repos/{{owner}}/{{repo}}/branches/main/protection\") if [ -f \"{p}\" ]; then cat \"{p}\"; else echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1; fi;;\nesac",
                 self.tmp().join("labels.json").display(),
-                self.tmp().join("types.json").display()
+                self.tmp().join("types.json").display(),
+                p = self.tmp().join("protection.json").display()
             ),
         );
     }
@@ -170,7 +204,18 @@ fn a_complete_setup_passes_every_check() {
         .iter()
         .map(|c| c["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["pin", "harness", "forge", "checks", "labels"]);
+    assert_eq!(
+        names,
+        [
+            "pin",
+            "harness",
+            "forge",
+            "checks",
+            "labels",
+            "protection",
+            "workflow"
+        ]
+    );
     assert_eq!(check(&report, "pin")["detail"], env!("CARGO_PKG_VERSION"));
 }
 
@@ -316,7 +361,10 @@ fn doctor_changes_nothing() {
     setup.pin("9.9.9");
     setup.doctor();
     let status = crate::common::git(&setup.repo.path, &["status", "--porcelain", "-uall"]);
-    assert_eq!(status.trim(), "?? .nightshift/nightshift.toml");
+    assert_eq!(
+        status.trim(),
+        "?? .github/workflows/closes-unit.yml\n?? .nightshift/nightshift.toml"
+    );
 }
 
 #[test]
@@ -397,7 +445,7 @@ fn labels_that_cannot_be_listed_fail_and_say_to_fix_the_forge_first() {
     script(
         &setup.bin(),
         "gh",
-        "case \"$1 $2\" in\n  \"api user\") echo '{\"login\":\"octo\"}';;\n  *) echo 'boom' >&2; exit 1;;\nesac",
+        "case \"$1 $2\" in\n  \"api user\") echo '{\"login\":\"octo\"}';;\n  \"label list\") echo 'boom' >&2; exit 1;;\n  \"api repos/{owner}/{repo}\") echo '{\"default_branch\":\"main\"}';;\n  \"api repos/{owner}/{repo}/branches/main/protection\") echo '{\"required_status_checks\":{\"contexts\":[\"Closes a unit\"]}}';;\n  *) echo 'boom' >&2; exit 1;;\nesac",
     );
     only_fails(
         &setup,
@@ -425,4 +473,81 @@ fn every_harness_is_checked_and_the_first_that_fails_is_named() {
     );
     setup.claude("exit 1");
     only_fails(&setup, "harness", "claude cannot be started");
+}
+
+#[test]
+fn an_unprotected_default_branch_fails_and_says_the_command_that_protects_it() {
+    let setup = Setup::new();
+    setup.protection(None);
+    only_fails(&setup, "protection", "main is not protected");
+    let (_, report) = setup.doctor();
+    let detail = check(&report, "protection")["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("gh api --method PUT repos/{owner}/{repo}/branches/main/protection"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn a_protection_that_does_not_require_the_closes_unit_check_fails() {
+    let setup = Setup::new();
+    setup.protection(Some(&["build"]));
+    only_fails(
+        &setup,
+        "protection",
+        "does not require the check Closes a unit",
+    );
+    let (_, report) = setup.doctor();
+    let detail = check(&report, "protection")["detail"].as_str().unwrap();
+    assert!(
+        detail.contains(
+            "gh api --method POST repos/{owner}/{repo}/branches/main/protection/required_status_checks/contexts"
+        ),
+        "{detail}"
+    );
+    assert!(detail.contains("contexts[]=Closes a unit"), "{detail}");
+}
+
+#[test]
+fn a_protection_that_requires_no_checks_fails() {
+    let setup = Setup::new();
+    std::fs::write(setup.tmp().join("protection.json"), "{}").unwrap();
+    only_fails(&setup, "protection", "does not require status checks");
+    let (_, report) = setup.doctor();
+    let detail = check(&report, "protection")["detail"].as_str().unwrap();
+    assert!(!detail.contains("gh api"), "{detail}");
+}
+
+#[test]
+fn a_protection_that_requires_the_closes_unit_check_among_others_passes() {
+    let setup = Setup::new();
+    setup.protection(Some(&["build", "Closes a unit"]));
+    let (ok, report) = setup.doctor();
+    assert!(ok, "{report}");
+    assert_eq!(check(&report, "protection")["detail"], "main");
+}
+
+#[test]
+fn a_protection_the_forge_cannot_read_fails_and_says_to_fix_the_forge_first() {
+    let setup = Setup::new();
+    setup.gh_down();
+    let (_, report) = setup.doctor();
+    let c = check(&report, "protection");
+    assert_eq!(c["ok"], false, "{report}");
+    assert!(c["detail"]
+        .as_str()
+        .unwrap()
+        .contains("fix the forge check first"));
+}
+
+#[test]
+fn a_repository_without_the_closes_unit_workflow_fails_and_says_to_init() {
+    let setup = Setup::new();
+    setup.workflow(false);
+    only_fails(&setup, "workflow", ".github/workflows/closes-unit.yml");
+    let (_, report) = setup.doctor();
+    assert!(check(&report, "workflow")["detail"]
+        .as_str()
+        .unwrap()
+        .contains("ns init"));
 }
