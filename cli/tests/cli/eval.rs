@@ -256,6 +256,36 @@ fn the_review_prompt_carries_the_case() {
 }
 
 #[test]
+fn the_eval_review_prompt_carries_the_shipped_standards() {
+    let repo = Repo::new();
+    case(&repo, "good", Some("PASS"));
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    script(
+        &bin,
+        "claude",
+        &format!("cat > \"{}/prompt\"\necho 'VERDICT: PASS'", bin.display()),
+    );
+    Command::cargo_bin("ns")
+        .unwrap()
+        .args(["eval", "review", "--runs", "1"])
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .current_dir(&repo.path)
+        .assert()
+        .success();
+    let prompt = std::fs::read_to_string(bin.join("prompt")).unwrap();
+    assert!(
+        prompt.contains(
+            "# The coding standards\n\n## .nightshift/coding-standards.md\n\n# Coding standards"
+        ),
+        "{prompt}"
+    );
+}
+
+#[test]
 fn a_harness_that_errors_is_a_miss_and_is_reported() {
     let repo = Repo::new();
     case(&repo, "slow", Some("PASS"));

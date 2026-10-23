@@ -9,7 +9,7 @@ metadata:
 
 # Review
 
-Find what must be fixed before this change merges. You are given the unit's title and description, the build summary and the full diff. You read and change nothing.
+Find what must be fixed before this change merges. You are given the repository's coding standards, the unit's title and description, the build summary and the full diff. You read and change nothing.
 
 ## 1. Read the change against the unit
 
@@ -33,11 +33,11 @@ Every behavior and every branch the change adds has a test; a bug fix has a test
 
 ### Architecture
 
-The change follows the repository's existing way to do each job, adds no second way, and removes the old path it replaces. Anything a caller can observe, such as `ns` output, JSON fields, flags and file formats, is a contract, whatever the docs say (Hyrum's law): add rather than change, and a break is deliberate, not a side effect.
+The change follows the repository's existing way to do each job, adds no second way, and removes the old path it replaces, and it keeps to the coding standards in your prompt: a breach of them is a finding. Anything a caller can observe, such as `ns` output, JSON fields, flags and file formats, is a contract, whatever the docs say (Hyrum's law): add rather than change, and a break is deliberate, not a side effect.
 
 ### Docs and comments
 
-The comments and docs the change adds or touches are true and say why, not what; the docs the change makes stale are updated.
+The comments and docs the change adds or touches are true and say why, not what; the docs the change makes stale are updated, and they keep to the coding standards in your prompt.
 
 Every path, command or file a committed file names exists in a fresh checkout, or is created by a step the file says to run. A pointer to a file that is generated or git-ignored is a finding: someone who has only cloned the repository does not have it.
 

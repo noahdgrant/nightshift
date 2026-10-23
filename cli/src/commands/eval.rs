@@ -57,7 +57,7 @@ pub fn run(args: Args) -> Result<()> {
     let Skill::Review(args) = args.skill;
     let root = vcs::get().workspace_find(&std::env::current_dir()?)?;
     let cases = cases_load(&root.join("evals/review"), args.case.as_deref())?;
-    let skill = skill::load(skill::REVIEW)?;
+    let skill = review::instructions(&skill::load(skill::REVIEW)?, &review::standards_read(&root));
     let focuses = review::focuses(manifest::review_sessions_read(&root)?);
     let model = manifest::model_read(&root, Place::Review, args.model.as_deref())?;
     let harness = harness::get();
