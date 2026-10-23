@@ -1,0 +1,41 @@
+name: PR closes a unit
+
+# A change request must close the unit it answers.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  pull-requests: read
+  issues: read
+
+jobs:
+  closes-unit:
+    name: Closes a unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Closes a unit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        # GitHub lists the units a PR closes only once the Closes line names a
+        # unit that exists. It can lag a few seconds behind an edit, so retry.
+        run: |
+          for attempt in 1 2 3; do
+            closes="$(gh pr view "$PR" -R "$REPO" --json closingIssuesReferences \
+              -q '[.closingIssuesReferences[] | "#\(.number)"] | join(" ")')"
+            if [ -n "$closes" ]; then
+              echo "PR closes $closes"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::The PR body must end with 'Closes #<unit>', naming a unit that exists."
+          exit 1
