@@ -27,6 +27,47 @@ pub fn run(root: &Path, kinds: &[Kind]) -> Result<Vec<Synced>> {
     kinds.iter().map(|kind| one(root, *kind)).collect()
 }
 
+const AGENTS_MD: &str = "# Instructions\n\nWrite the standards a harness follows in this repository here: how to build and test it, the style of its code, and how to name a commit.\n";
+const CLAUDE_MD: &str = "@AGENTS.md\n";
+
+/// Writes `AGENTS.md` and a `CLAUDE.md` that holds it when the repository has neither, and returns
+/// the files it wrote. One that exists is the owner's, and a second file written beside it could
+/// contradict it, so it blocks both. A dangling symlink counts as a file, and a file is created
+/// only if absent, so no write follows a link out of the repository. `CLAUDE.md` goes first and is
+/// removed if `AGENTS.md` fails, so a failed run leaves neither and a rerun can finish.
+pub fn instruction_files_write(root: &Path) -> Result<Vec<&'static str>> {
+    let (agents, claude) = (root.join("AGENTS.md"), root.join("CLAUDE.md"));
+    if agents.symlink_metadata().is_ok() || claude.symlink_metadata().is_ok() {
+        return Ok(Vec::new());
+    }
+    pair_create(&agents, &claude)?;
+    Ok(vec!["AGENTS.md", "CLAUDE.md"])
+}
+
+/// Creates a file only if absent and removes it again if its text cannot be written, so a failure
+/// never leaves an empty file that a rerun would take for the owner's.
+fn create(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    if let Err(e) = file.write_all(text.as_bytes()) {
+        let _ = std::fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(())
+}
+
+fn pair_create(agents: &Path, claude: &Path) -> Result<()> {
+    create(claude, CLAUDE_MD).context("CLAUDE.md was not written")?;
+    if let Err(e) = create(agents, AGENTS_MD) {
+        let _ = std::fs::remove_file(claude);
+        return Err(e).context("AGENTS.md was not written");
+    }
+    Ok(())
+}
+
 /// What a harness runs when a session starts. A machine without `ns` goes on without it.
 pub const HOOK: &str = "command -v ns >/dev/null 2>&1 && ns sync >/dev/null || true";
 
@@ -99,4 +140,29 @@ fn remove(path: &Path) -> Result<()> {
         std::fs::remove_dir_all(path)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_agents_md_takes_claude_md_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("CLAUDE.md");
+        let agents = dir.path().join("missing").join("AGENTS.md");
+        let err = pair_create(&agents, &claude).unwrap_err();
+        assert_eq!(err.to_string(), "AGENTS.md was not written");
+        assert!(claude.symlink_metadata().is_err());
+    }
+
+    #[test]
+    fn a_failed_claude_md_leaves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("missing").join("CLAUDE.md");
+        let agents = dir.path().join("AGENTS.md");
+        let err = pair_create(&agents, &claude).unwrap_err();
+        assert_eq!(err.to_string(), "CLAUDE.md was not written");
+        assert!(agents.symlink_metadata().is_err());
+    }
 }

@@ -152,9 +152,61 @@ fn the_skills_init_writes_are_not_changes_but_the_manifest_hook_agents_file_and_
             ".claude/settings.json",
             ".github/workflows/closes-unit.yml",
             ".nightshift/nightshift.toml",
-            "AGENTS.md"
+            "AGENTS.md",
+            "CLAUDE.md"
         ]
     );
+}
+
+#[test]
+fn a_repository_with_neither_gets_a_minimal_agents_md_and_a_claude_md_that_holds_it() {
+    let repo = Repo::new();
+    let report = init_in(&repo);
+    let agents = std::fs::read_to_string(repo.path.join("AGENTS.md")).unwrap();
+    assert!(
+        agents.starts_with("# Instructions\n\nWrite the standards a harness follows in this repository here: how to build and test it, the style of its code, and how to name a commit.\n"),
+        "{agents}"
+    );
+    assert!(agents.contains("ns-coding-standards.md"), "{agents}");
+    assert_eq!(
+        std::fs::read_to_string(repo.path.join("CLAUDE.md")).unwrap(),
+        "@AGENTS.md\n"
+    );
+    assert_eq!(
+        report["instruction_files"],
+        serde_json::json!(["AGENTS.md", "CLAUDE.md"])
+    );
+}
+
+#[test]
+fn a_repository_with_either_file_keeps_its_text_gets_the_pointer_and_no_other_file() {
+    for have in ["AGENTS.md", "CLAUDE.md"] {
+        let repo = Repo::new();
+        std::fs::write(repo.path.join(have), "mine\n").unwrap();
+        let report = init_in(&repo);
+        assert_eq!(report["instruction_files"], serde_json::json!([]));
+        let kept = std::fs::read_to_string(repo.path.join(have)).unwrap();
+        assert!(kept.starts_with("mine\n"), "{kept}");
+        assert_eq!(kept.matches("ns-coding-standards.md").count(), 1, "{kept}");
+        let other = if have == "AGENTS.md" {
+            "CLAUDE.md"
+        } else {
+            "AGENTS.md"
+        };
+        assert!(!repo.path.join(other).exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dangling_symlink_counts_as_a_file_and_is_not_written_through() {
+    let repo = Repo::new();
+    let outside = repo.path.join("outside-new-file");
+    std::os::unix::fs::symlink(&outside, repo.path.join("CLAUDE.md")).unwrap();
+    let report = init_in(&repo);
+    assert_eq!(report["instruction_files"], serde_json::json!([]));
+    assert!(!outside.exists());
+    assert!(!repo.path.join("AGENTS.md").exists());
 }
 
 #[test]
