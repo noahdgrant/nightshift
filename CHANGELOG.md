@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.6.0](https://github.com/noahdgrant/nightshift/compare/v0.5.0...v0.6.0) (2026-10-24)
+
+
+### Features
+
+* **cli:** ns doctor checks a repository is ready for ns ([#927](https://github.com/noahdgrant/nightshift/issues/927)) ([9db765e](https://github.com/noahdgrant/nightshift/commit/9db765e9c4e12317617be805e337f8c57fe5dd01))
+* **cli:** ns init installs the closes-unit check in a repository ([#925](https://github.com/noahdgrant/nightshift/issues/925)) ([53fe99a](https://github.com/noahdgrant/nightshift/commit/53fe99acc90fcc2db1db1a83a125496a1a02fc41))
+* **cli:** ns init writes AGENTS.md and CLAUDE.md when the repository has neither ([#928](https://github.com/noahdgrant/nightshift/issues/928)) ([df70683](https://github.com/noahdgrant/nightshift/commit/df7068332d5517b8c910e98268c11ee3686bdbf2))
+* **cli:** the coding standards ship with ns as one document that repositories point to ([#924](https://github.com/noahdgrant/nightshift/issues/924)) ([a2c0449](https://github.com/noahdgrant/nightshift/commit/a2c04491ce5cf1481294290964cee4c86fcc40ba))
+* **cli:** the merge policy starts closed in a repository that has not chosen one ([#923](https://github.com/noahdgrant/nightshift/issues/923)) ([2fa2ed3](https://github.com/noahdgrant/nightshift/commit/2fa2ed31c67de9636270105d90c69482f13eb291))
+* **cli:** the review is given the repository's coding standards ([#937](https://github.com/noahdgrant/nightshift/issues/937)) ([c413e8d](https://github.com/noahdgrant/nightshift/commit/c413e8d61f595cd009a7f7653865ad9f3407d5cd))
+* **cli:** the shipped coding standards are one committed file, kept current by ns sync ([#936](https://github.com/noahdgrant/nightshift/issues/936)) ([8f41e76](https://github.com/noahdgrant/nightshift/commit/8f41e76195ca43a57d240150669248316d96aa01))
+* **skills:** review checks that what a committed file names exists in a fresh checkout ([#934](https://github.com/noahdgrant/nightshift/issues/934)) ([53bf941](https://github.com/noahdgrant/nightshift/commit/53bf94109b022a5e9d0ab2ae6a8eccfa142f84f8))
+
+
+### Bug Fixes
+
+* **cli:** a unit refreshed onto a moved base is judged against the base it now sits on ([#935](https://github.com/noahdgrant/nightshift/issues/935)) ([e9a0c5e](https://github.com/noahdgrant/nightshift/commit/e9a0c5ef1817b094147eaaef873f861d6f6bd4b5))
+* **cli:** an empty list of units from the forge is asked for again ([#909](https://github.com/noahdgrant/nightshift/issues/909)) ([870afec](https://github.com/noahdgrant/nightshift/commit/870afec3209c28f33477bb01bd769e5d00737276))
+
 ## [0.5.0](https://github.com/noahdgrant/nightshift/compare/v0.4.0...v0.5.0) (2026-10-22)
 
 
