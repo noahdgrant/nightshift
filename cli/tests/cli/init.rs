@@ -142,7 +142,8 @@ fn the_hook_is_added_once_and_the_rest_of_the_settings_stay() {
 }
 
 #[test]
-fn the_skills_init_writes_are_not_changes_but_the_manifest_hook_agents_file_and_workflow_are() {
+fn the_skills_init_writes_are_not_changes_but_the_manifest_hook_agents_file_standards_and_workflow_are(
+) {
     let repo = Repo::new();
     init_in(&repo);
     let status = crate::common::git(&repo.path, &["status", "--porcelain", "-uall"]);
@@ -151,6 +152,7 @@ fn the_skills_init_writes_are_not_changes_but_the_manifest_hook_agents_file_and_
         [
             ".claude/settings.json",
             ".github/workflows/closes-unit.yml",
+            ".nightshift/coding-standards.md",
             ".nightshift/nightshift.toml",
             "AGENTS.md",
             "CLAUDE.md"
@@ -167,7 +169,7 @@ fn a_repository_with_neither_gets_a_minimal_agents_md_and_a_claude_md_that_holds
         agents.starts_with("# Instructions\n\nWrite the standards a harness follows in this repository here: how to build and test it, the style of its code, and how to name a commit.\n"),
         "{agents}"
     );
-    assert!(agents.contains("ns-coding-standards.md"), "{agents}");
+    assert!(agents.contains("coding-standards.md"), "{agents}");
     assert_eq!(
         std::fs::read_to_string(repo.path.join("CLAUDE.md")).unwrap(),
         "@AGENTS.md\n"
@@ -187,7 +189,7 @@ fn a_repository_with_either_file_keeps_its_text_gets_the_pointer_and_no_other_fi
         assert_eq!(report["instruction_files"], serde_json::json!([]));
         let kept = std::fs::read_to_string(repo.path.join(have)).unwrap();
         assert!(kept.starts_with("mine\n"), "{kept}");
-        assert_eq!(kept.matches("ns-coding-standards.md").count(), 1, "{kept}");
+        assert_eq!(kept.matches("coding-standards.md").count(), 1, "{kept}");
         let other = if have == "AGENTS.md" {
             "CLAUDE.md"
         } else {
@@ -328,13 +330,10 @@ fn init_writes_an_agents_file_that_points_to_the_shipped_coding_standards() {
     init_in(&repo);
     let agents = std::fs::read_to_string(repo.path.join("AGENTS.md")).unwrap();
     assert!(
-        agents.contains("`.claude/skills/ns-coding-standards.md`"),
+        agents.contains("`.nightshift/coding-standards.md`"),
         "{agents}"
     );
-    assert!(repo
-        .path
-        .join(".claude/skills/ns-coding-standards.md")
-        .is_file());
+    assert!(repo.path.join(".nightshift/coding-standards.md").is_file());
 }
 
 #[test]
@@ -345,11 +344,7 @@ fn init_adds_the_pointer_once_to_an_agents_file_the_repository_has() {
     init_in(&repo);
     let agents = std::fs::read_to_string(repo.path.join("AGENTS.md")).unwrap();
     assert!(agents.starts_with("# Mine\n\n- Be kind.\n"), "{agents}");
-    assert_eq!(
-        agents.matches("ns-coding-standards.md").count(),
-        1,
-        "{agents}"
-    );
+    assert_eq!(agents.matches("coding-standards.md").count(), 1, "{agents}");
 }
 
 #[test]

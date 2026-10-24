@@ -44,6 +44,17 @@ impl Repo {
         git(&self.path, &["commit", "-q", "-m", "set the checks"]);
     }
 
+    /// Commits the coding standards `ns sync` keeps in a repository, as a pinned one has them, so
+    /// that a sync leaves the working tree as it was.
+    pub fn standards_commit(&self) {
+        let shipped =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../standards/ns-coding-standards.md");
+        std::fs::create_dir_all(self.path.join(".nightshift")).unwrap();
+        std::fs::copy(shipped, self.path.join(".nightshift/coding-standards.md")).unwrap();
+        git(&self.path, &["add", ".nightshift/coding-standards.md"]);
+        git(&self.path, &["commit", "-q", "-m", "commit the standards"]);
+    }
+
     pub fn branches(&self) -> Vec<String> {
         git(&self.path, &["branch", "--format=%(refname:short)"])
             .lines()

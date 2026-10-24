@@ -18,8 +18,8 @@ pub const DESIGN_DOC: &str = "ns-design-doc";
 pub const TROUBLESHOOT: &str = "ns-troubleshoot";
 
 /// The coding standards that hold in any language, which a repository's own standards point to.
-/// It is written beside the skills, under this file name.
-pub const STANDARDS_FILE: &str = "ns-coding-standards.md";
+/// It is committed, at this path from the repository root, and `ns sync` keeps it current.
+pub const STANDARDS_PATH: &str = ".nightshift/coding-standards.md";
 pub const STANDARDS: &str = include_str!("../../standards/ns-coding-standards.md");
 
 /// The skills whose output the CLI parses, such as a route or a verdict line. In a session they

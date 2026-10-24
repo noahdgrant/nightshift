@@ -2,7 +2,7 @@
 
 A pattern a tool can catch is a check, not a rule here. The rest needs judgement.
 
-This is what is specific to Rust and to nightshift. The standards that hold in any language (a change request closes a unit, no issue numbers in committed files, one meaning in one place, what to retry) are in `.claude/skills/ns-coding-standards.md`, which `ns sync` writes and `ns init` points `AGENTS.md` to. `closes-unit.yml` fails a change request that closes none.
+This is what is specific to Rust and to nightshift. The standards that hold in any language (a change request closes a unit, no issue numbers in committed files, one meaning in one place, what to retry) are in `.nightshift/coding-standards.md`, which `ns sync` keeps current and `ns init` points `AGENTS.md` to. `closes-unit.yml` fails a change request that closes none.
 
 ## Method names are noun_verb
 

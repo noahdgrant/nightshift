@@ -1040,6 +1040,7 @@ fn a_change_touching_a_human_review_file_is_not_merged_and_is_labeled() {
 #[test]
 fn a_change_is_not_merged_under_the_default_list() {
     let repo = Repo::new();
+    repo.standards_commit();
     let fakes = Fakes {
         builds: "cli/src/x.rs",
         ..Fakes::passing()
@@ -2753,6 +2754,7 @@ fn a_recorded_base_left_behind_by_a_stopped_rebase_is_moved_without_another_chec
 #[test]
 fn a_base_that_moved_in_other_files_is_rebased_onto_and_the_result_checked() {
     let repo = Repo::new();
+    repo.standards_commit();
     counted_check(&repo, false);
     main_published(&repo);
     let path = tools(&repo, &Fakes::passing());

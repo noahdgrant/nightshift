@@ -27,7 +27,7 @@ pub fn run(_args: Args) -> Result<()> {
     manifest::pin_write(&root, &pin)?;
     let synced = sync::run(&root, &pin.harness)?;
     let instruction_files = sync::instruction_files_write(&root)?;
-    agents_point(&root, harness::of(pin.harness[0]).skills_dir())?;
+    agents_point(&root)?;
     let mut hooks = Vec::new();
     for kind in &pin.harness {
         let wrote = harness::of(*kind).session_start_hook_install(&root, sync::HOOK)?;
@@ -60,10 +60,10 @@ pub fn run(_args: Args) -> Result<()> {
 }
 
 /// Makes sure the repository's `AGENTS.md`, or its `CLAUDE.md` when that is all it has, points to
-/// the coding standards that `ns sync` writes in `dir`, and leaves the rest of the file as it is.
+/// the coding standards that `ns sync` writes, and leaves the rest of the file as it is.
 /// It creates nothing: a repository with neither file is given both by `instruction_files_write`.
-fn agents_point(root: &std::path::Path, dir: &str) -> Result<()> {
-    let file = format!("{dir}/{}", skill::STANDARDS_FILE);
+fn agents_point(root: &std::path::Path) -> Result<()> {
+    let file = skill::STANDARDS_PATH;
     let Some(path) = ["AGENTS.md", "CLAUDE.md"]
         .map(|name| root.join(name))
         .into_iter()
@@ -77,7 +77,7 @@ fn agents_point(root: &std::path::Path, dir: &str) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
     };
-    if have.contains(&file) {
+    if have.contains(file) {
         return Ok(());
     }
     let line = format!("- **Coding standards**: `{file}`, which holds in any language.\n");
