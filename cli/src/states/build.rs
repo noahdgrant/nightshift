@@ -65,6 +65,10 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     if !reply.success {
         bail!("the harness did not finish the build");
     }
+    // The build may have rebased onto a base branch that moved, so the commits are counted
+    // from where the branch now sits on it.
+    ctx.vcs.workspace_base_anchor(&root, &dir)?;
+    let base = ctx.vcs.workspace_base_find(&dir)?;
     if let Some(problem) = what_is_left(ctx, &dir, &base)? {
         artifact::write(&dir, &id, PROBLEM, &problem)?;
         bail!("{problem}");
@@ -100,6 +104,11 @@ fn what_is_left(ctx: &Context, dir: &Path, base: &str) -> Result<Option<String>>
         return Ok(Some(format!(
             "The last build left uncommitted changes: {}. Commit them.",
             left.join(", ")
+        )));
+    }
+    if !ctx.vcs.workspace_contains(dir, base)? {
+        return Ok(Some(format!(
+            "The branch does not sit on commit {base}. Rebase onto the base branch."
         )));
     }
     Ok(match ctx.vcs.workspace_commits_count(dir, base)? {
