@@ -2419,6 +2419,25 @@ fn six_sessions_run_each_naming_one_area() {
 }
 
 #[test]
+fn the_review_prompt_carries_the_shipped_standards_and_the_files_agents_md_names() {
+    let repo = Repo::new();
+    std::fs::write(repo.path.join("RULES.md"), "the repository's own rules").unwrap();
+    std::fs::write(repo.path.join("AGENTS.md"), "- **Rules**: `RULES.md`.\n").unwrap();
+    run(&repo, &tools(&repo, &Fakes::passing())).success();
+    let prompt = review_prompt(&repo, 1);
+    assert!(
+        prompt.contains(
+            "# The coding standards\n\n## .nightshift/coding-standards.md\n\n# Coding standards"
+        ),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("## RULES.md\n\nthe repository's own rules"),
+        "{prompt}"
+    );
+}
+
+#[test]
 fn one_session_reviews_all_six_areas() {
     let repo = Repo::new();
     review_sessions_set(&repo, "1");

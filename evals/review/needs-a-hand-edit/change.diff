@@ -1,11 +1,27 @@
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -6,3 +6,7 @@ edition = "2021"
+ [dependencies]
+ clap = { version = "4", features = ["derive"] }
++toml = "0.8"
++
++[dev-dependencies]
++tempfile = "3"
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,3 @@
+ pub mod count;
++pub mod step;
 diff --git a/src/step.rs b/src/step.rs
 new file mode 100644
 --- /dev/null
 +++ b/src/step.rs
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,13 @@
 +use std::path::Path;
 +
-+/// The step in `.tally/config.toml` under `root`; 1 when the file or the key is missing.
++/// The step in `.tally/config.toml` under `root`; 1 when the file or the key is missing, or the value is no use.
 +pub fn read(root: &Path) -> u64 {
 +    let Ok(text) = std::fs::read_to_string(root.join(".tally/config.toml")) else {
 +        return 1;
@@ -13,14 +29,14 @@ new file mode 100644
 +    text.parse::<toml::Table>()
 +        .ok()
 +        .and_then(|t| t.get("step")?.as_integer())
-+        .map(|n| n as u64)
++        .and_then(|n| u64::try_from(n).ok())
 +        .unwrap_or(1)
 +}
 diff --git a/tests/step.rs b/tests/step.rs
 new file mode 100644
 --- /dev/null
 +++ b/tests/step.rs
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,49 @@
 +use std::path::Path;
 +
 +fn root_with(config: Option<&str>) -> tempfile::TempDir {
@@ -49,4 +65,24 @@ new file mode 100644
 +#[test]
 +fn no_step_means_a_step_of_1() {
 +    assert_eq!(step(root_with(Some("name = \"x\"")).path()), 1);
++}
++
++#[test]
++fn a_config_that_is_not_toml_means_a_step_of_1() {
++    assert_eq!(step(root_with(Some("step =")).path()), 1);
++}
++
++#[test]
++fn a_step_that_is_not_an_integer_means_a_step_of_1() {
++    assert_eq!(step(root_with(Some("step = \"5\"")).path()), 1);
++}
++
++#[test]
++fn a_negative_step_means_a_step_of_1() {
++    assert_eq!(step(root_with(Some("step = -3")).path()), 1);
++}
++
++#[test]
++fn a_step_of_0_is_read_as_0() {
++    assert_eq!(step(root_with(Some("step = 0")).path()), 0);
 +}

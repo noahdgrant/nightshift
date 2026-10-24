@@ -101,6 +101,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let base = ctx.vcs.workspace_base_find(&dir)?;
     let diff = ctx.vcs.workspace_diff(&dir, &base)?;
     let skill = skill::load(skill::REVIEW)?;
+    let skill = instructions(&skill, &standards_read(&root));
     let id = ctx.unit.to_string();
     let reviews = Rounds::new(&dir, &id, "review");
     let previous = reviews.last_unmet();
@@ -187,6 +188,40 @@ pub fn verdicts_merge(verdicts: &[Option<Verdict>]) -> Option<Verdict> {
     Some(merged)
 }
 
+/// The coding standards a review judges against: the ones that ship with `ns`, then each file the
+/// repository's `AGENTS.md` (or its `CLAUDE.md`) names in backticks that exists in `root`. The
+/// shipped standards' own copy is left out, since they come first.
+pub fn standards_read(root: &std::path::Path) -> String {
+    let mut text = format!("## {}\n\n{}\n\n", skill::STANDARDS_PATH, skill::STANDARDS);
+    let Some(pointers) = ["AGENTS.md", "CLAUDE.md"]
+        .iter()
+        .find_map(|name| std::fs::read_to_string(root.join(name)).ok())
+    else {
+        return text;
+    };
+    let mut seen = Vec::new();
+    for path in pointers.split('`').skip(1).step_by(2) {
+        let skip = !path.ends_with(".md")
+            || std::path::Path::new(path).is_absolute()
+            || path.contains("..")
+            || path == skill::STANDARDS_PATH
+            || seen.contains(&path);
+        if skip {
+            continue;
+        }
+        if let Ok(file) = std::fs::read_to_string(root.join(path)) {
+            text.push_str(&format!("## {path}\n\n{}\n\n", file.trim_end()));
+            seen.push(path);
+        }
+    }
+    text
+}
+
+/// What a review session starts with: the review skill, then the coding standards it judges by.
+pub fn instructions(skill: &str, standards: &str) -> String {
+    format!("{skill}\n\n# The coding standards\n\n{standards}")
+}
+
 /// The prompt that has the harness review a change with one session. `ns eval review` builds the
 /// same one.
 pub fn prompt(
@@ -255,6 +290,77 @@ mod tests {
         assert!(got.contains("Docs and comments: review only these areas: docs and comments."));
         assert!(got
             .contains("# Findings from the previous review\n\nold\nVERDICT: FAIL\n\n# The change"));
+    }
+
+    #[test]
+    fn the_instructions_are_the_skill_then_the_standards() {
+        assert_eq!(
+            instructions("SKILL", "STD"),
+            "SKILL\n\n# The coding standards\n\nSTD"
+        );
+    }
+
+    #[test]
+    fn the_standards_are_the_shipped_ones_then_the_files_agents_md_points_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("docs/RULES.md"), "rules text").unwrap();
+        std::fs::write(
+            root.join("AGENTS.md"),
+            "- **Rules**: `docs/RULES.md`, and `docs/GONE.md`, `src/main.rs`, \
+             `.nightshift/coding-standards.md`, `docs/RULES.md`.\n",
+        )
+        .unwrap();
+        let got = standards_read(root);
+        assert_eq!(
+            got,
+            format!(
+                "## .nightshift/coding-standards.md\n\n{}\n\n## docs/RULES.md\n\nrules text\n\n",
+                skill::STANDARDS
+            )
+        );
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            standards_read(empty.path()),
+            format!(
+                "## .nightshift/coding-standards.md\n\n{}\n\n",
+                skill::STANDARDS
+            )
+        );
+    }
+
+    #[test]
+    fn a_claude_md_is_read_for_pointers_when_there_is_no_agents_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("RULES.md"), "rules text").unwrap();
+        std::fs::write(root.join("CLAUDE.md"), "Read `RULES.md`.\n").unwrap();
+        assert!(standards_read(root).ends_with("## RULES.md\n\nrules text\n\n"));
+    }
+
+    #[test]
+    fn a_pointer_out_of_the_repository_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(dir.path().join("secret.md"), "secret").unwrap();
+        let outside = dir.path().join("secret.md");
+        std::fs::write(
+            root.join("AGENTS.md"),
+            format!("`../secret.md` `{}`\n", outside.display()),
+        )
+        .unwrap();
+        assert!(!standards_read(&root).contains("secret"));
+    }
+
+    #[test]
+    fn a_file_named_twice_is_read_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("RULES.md"), "rules text").unwrap();
+        std::fs::write(root.join("AGENTS.md"), "`RULES.md` and again `RULES.md`\n").unwrap();
+        assert_eq!(standards_read(root).matches("rules text").count(), 1);
     }
 
     fn found(text: &str) -> String {
