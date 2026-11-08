@@ -11,7 +11,35 @@ pub(crate) const CLOSES_UNIT_PATH: &str = ".github/workflows/closes-unit.yml";
 /// The name the workflow's check reports, which the branch protection must require.
 pub(crate) const CLOSES_UNIT_CHECK: &str = "Closes a unit";
 
-/// Where the command that runs the repository's checks is kept.
+/// The pages of `docs/agents/` that `ns init` writes: path from the repository root, and text.
+/// Each is a fixed template for a person to fill in.
+const AGENT_PAGES: [(&str, &str); 3] = [
+    (
+        "docs/agents/stack.md",
+        "# Stack\n\nWhat the repository is built with. Read by `ns-triage` and `ns-design-doc`.\n\nReplace this with the languages, frameworks and tools the repository uses.\n",
+    ),
+    (
+        "docs/agents/how-to-run.md",
+        "# How to run\n\nHow to run and verify the repository. Read by `ns-verify`.\n\nThe checks are in `.nightshift/check`.\n\nReplace this with how to start the app and use it the way a user would.\n",
+    ),
+    (
+        "docs/agents/labels.md",
+        "# Labels\n\nWhat the repository's labels mean. Read by `ns-triage`.\n\nReplace this with the labels the repository uses and when each applies.\n",
+    ),
+];
+
+/// Writes each page of `docs/agents/` that is missing; an existing page is left alone.
+fn agent_pages_write(root: &std::path::Path) -> Result<()> {
+    for (rel, text) in AGENT_PAGES {
+        let path = root.join(rel);
+        if path.symlink_metadata().is_ok() {
+            continue;
+        }
+        std::fs::create_dir_all(path.parent().context("a page has no directory")?)?;
+        std::fs::write(&path, text).with_context(|| format!("cannot write {}", path.display()))?;
+    }
+    Ok(())
+}
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -28,7 +56,7 @@ pub struct Args {
 /// manifest, the hook, those files and the workflow that checks a change request closes a unit.
 /// It also writes `.nightshift/check`, the command that runs the repository's checks: given by
 /// `--check`, or else proposed from what the repository holds and confirmed by the user. An
-/// existing file is left alone. Run again, it changes only what is missing, and it never
+/// existing file is left alone. It writes the pages of `docs/agents/` that are missing. Run again, it changes only what is missing, and it never
 /// overwrites an existing workflow.
 pub fn run(args: Args) -> Result<()> {
     let root = vcs::get().root_find(&std::env::current_dir()?)?;
@@ -39,6 +67,7 @@ pub fn run(args: Args) -> Result<()> {
     let synced = sync::run(&root, &pin.harness)?;
     let instruction_files = sync::instruction_files_write(&root)?;
     agents_point(&root)?;
+    agent_pages_write(&root)?;
     let mut hooks = Vec::new();
     for kind in &pin.harness {
         let wrote = harness::of(*kind).session_start_hook_install(&root, sync::HOOK)?;
@@ -299,6 +328,18 @@ mod tests {
         let d = dir();
         std::fs::write(d.path().join("package.json"), r#"{"scripts":{}}"#).unwrap();
         assert_eq!(check_detect(d.path()), None);
+    }
+
+    #[test]
+    fn the_agent_pages_are_written_and_an_existing_one_is_left_alone() {
+        let d = dir();
+        std::fs::create_dir_all(d.path().join("docs/agents")).unwrap();
+        std::fs::write(d.path().join("docs/agents/stack.md"), "mine\n").unwrap();
+        agent_pages_write(d.path()).unwrap();
+        let read = |n: &str| std::fs::read_to_string(d.path().join("docs/agents").join(n)).unwrap();
+        assert_eq!(read("stack.md"), "mine\n");
+        assert!(read("how-to-run.md").contains("`.nightshift/check`"));
+        assert!(read("labels.md").starts_with("# Labels\n"));
     }
 
     #[test]

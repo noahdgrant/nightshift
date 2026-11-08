@@ -33,6 +33,8 @@ Match the check to the change:
 - A parser or migration replays a saved real input.
 - A bug fix reruns the original repro.
 
+When the repository has `docs/agents/how-to-run.md`, read it and use it to run the unit the way a user would.
+
 For each requirement, record the command, an output excerpt that shows the end state, and a verdict:
 
 - **PASS**: you observed the end state.
