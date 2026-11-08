@@ -6,7 +6,7 @@ use crate::checks::COMMAND_FILE;
 use crate::{forge, harness, labels, manifest, skill, sync, vcs};
 
 /// The check that fails a change request which closes no unit.
-const CLOSES_UNIT: &str = include_str!("../closes-unit.yml");
+const CLOSES_UNIT: &str = include_str!("../../../.github/workflows/closes-unit.yml");
 pub(crate) const CLOSES_UNIT_PATH: &str = ".github/workflows/closes-unit.yml";
 /// The name the workflow's check reports, which the branch protection must require.
 pub(crate) const CLOSES_UNIT_CHECK: &str = "Closes a unit";

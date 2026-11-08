@@ -3,7 +3,7 @@ use crate::common::{script, Repo};
 use assert_cmd::Command;
 use serde_json::Value;
 
-const ALL_LABELS: [&str; 24] = [
+const ALL_LABELS: [&str; 25] = [
     "status:needs-triage",
     "status:needs-define",
     "status:needs-repro",
@@ -28,6 +28,7 @@ const ALL_LABELS: [&str; 24] = [
     "priority:medium",
     "priority:low",
     "needs-human-merge",
+    "skip-closes-unit",
 ];
 
 /// A repository whose setup is complete, with a `gh` that is logged in as `octo`, a `claude` that
@@ -368,8 +369,15 @@ fn without_native_types_the_feat_label_is_expected() {
 #[test]
 fn a_missing_needs_human_merge_label_fails() {
     let setup = Setup::new();
-    setup.labels(&ALL_LABELS[..ALL_LABELS.len() - 1]);
+    setup.labels(&ALL_LABELS[..ALL_LABELS.len() - 2]);
     only_fails(&setup, "labels", "needs-human-merge");
+}
+
+#[test]
+fn a_missing_skip_closes_unit_label_fails() {
+    let setup = Setup::new();
+    setup.labels(&ALL_LABELS[..ALL_LABELS.len() - 1]);
+    only_fails(&setup, "labels", "skip-closes-unit");
 }
 
 #[test]

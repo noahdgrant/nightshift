@@ -226,16 +226,20 @@ fn init_creates_the_labels_the_forge_lacks_and_only_those() {
     .unwrap();
     let report = init_in(&repo);
     let created = report["labels_created"].as_array().unwrap();
-    assert_eq!(created.len(), 24 - 2);
+    assert_eq!(created.len(), 25 - 2);
     assert!(!created.iter().any(|l| l == "status:wontfix"));
     let log = gh_log(&repo);
-    assert_eq!(log.matches("label create").count(), 22, "{log}");
+    assert_eq!(log.matches("label create").count(), 23, "{log}");
     assert!(
         log.contains("label create status:ready-for-agent --description"),
         "{log}"
     );
     assert!(
         log.contains("label create needs-human-merge --description"),
+        "{log}"
+    );
+    assert!(
+        log.contains("label create skip-closes-unit --description"),
         "{log}"
     );
     assert!(!log.contains("label create type:feat"), "{log}");
@@ -257,7 +261,7 @@ fn on_a_repository_with_native_types_init_skips_the_feat_and_fix_labels() {
     )
     .unwrap();
     let report = init_in(&repo);
-    assert_eq!(report["labels_created"].as_array().unwrap().len(), 24 - 2);
+    assert_eq!(report["labels_created"].as_array().unwrap().len(), 25 - 2);
     let log = gh_log(&repo);
     assert!(!log.contains("label create type:feat"), "{log}");
     assert!(!log.contains("label create type:fix"), "{log}");
@@ -296,6 +300,7 @@ fn init_run_again_with_every_label_there_creates_none() {
         "priority:medium",
         "priority:low",
         "needs-human-merge",
+        "skip-closes-unit",
     ]
     .iter()
     .map(|name| format!(r#"{{"name":"{name}"}}"#))
@@ -435,4 +440,35 @@ fn init_with_no_terminal_and_no_checks_command_fails_and_says_what_to_pass() {
     let err = String::from_utf8_lossy(&out.get_output().stderr).to_string();
     assert!(err.contains("--check '<command>'"), "{err}");
     assert!(!repo.path.join(".nightshift/check").exists());
+}
+
+#[test]
+fn init_does_not_fail_when_skip_closes_unit_exists() {
+    let repo = Repo::new();
+    gh(&repo);
+    std::fs::write(
+        repo.path.parent().unwrap().join("labels.json"),
+        r#"[{"name":"skip-closes-unit"}]"#,
+    )
+    .unwrap();
+    let report = init_in(&repo);
+    assert!(!report["labels_created"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l == "skip-closes-unit"));
+    assert!(!gh_log(&repo).contains("label create skip-closes-unit"));
+}
+
+#[test]
+fn the_workflow_init_writes_is_the_one_this_repository_runs() {
+    let repo = Repo::new();
+    init_in(&repo);
+    let written = std::fs::read(repo.path.join(".github/workflows/closes-unit.yml")).unwrap();
+    let ours = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../.github/workflows/closes-unit.yml"
+    ))
+    .unwrap();
+    assert_eq!(written, ours);
 }
