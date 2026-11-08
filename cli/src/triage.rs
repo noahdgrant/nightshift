@@ -151,6 +151,7 @@ pub fn run(
             write: false,
             model: model.map(str::to_string),
             timeout,
+            resume: None,
         })
         .map_err(harness::session_failed)?;
     if !reply.success {

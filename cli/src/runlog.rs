@@ -95,6 +95,14 @@ impl RunLog {
         self.append(&serde_json::json!({ "unit": unit, "base_tested": tip }))
     }
 
+    /// Notes that the unit's build left `commits` commits and what resuming its session to squash
+    /// them came to: `squashed` or `unresumable`.
+    pub fn squash_append(&self, unit: &str, result: &str, commits: usize) -> Result<()> {
+        self.append(&serde_json::json!({
+            "unit": unit, "state": "build", "squash": result, "commits": commits
+        }))
+    }
+
     /// The base branch commit the unit's change request was last refreshed against, if ever.
     pub fn base_tested(&self, unit: &str) -> Result<Option<String>> {
         Ok(self

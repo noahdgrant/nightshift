@@ -47,6 +47,7 @@ pub fn run(
             write,
             model: ctx.model_find(place)?,
             timeout: ctx.harness_timeout,
+            resume: None,
         },
     )?;
     let problem = if !reply.success {

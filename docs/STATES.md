@@ -66,6 +66,8 @@ stateDiagram
     stuck --> [*]
 ```
 
+A build that leaves several commits on the branch is not sent back. `ns` resumes the build's own session and tells it to squash them into one commit with a message that summarises all of them; that costs no attempt, and the run log records `"squash":"squashed"` or `"squash":"unresumable"` with the commit count. When the session cannot be resumed (no session id, or the harness fails), the unit is `stuck` with the reason `went_wrong`. A squash that still leaves several commits fails the build as any other, and spends an attempt.
+
 `verify` ends in one of three verdicts. `VERDICT: PASS` goes on to `review` and `VERDICT: FAIL` goes back to `build`. `VERDICT: INCONCLUSIVE` means no requirement failed but at least one could not be proven from the workspace (a live service, credentials, behavior only CI shows). It runs `verify` once more, shown the unproven requirements, and that verification's verdict decides as usual. When the second is inconclusive too, the unit is `stuck` with the reason `inconclusive` in the run log and `status:stuck`, and a comment on the unit lists what is still unproven and what would make each checkable. The second verification counts against `max_attempts`, so with 1 the unit is stuck after the first. A unit stuck this way resumes at `verify`, not `build`, for the build has nothing to change.
 
 `review` reads the change in six review areas: correctness, security, spec, tests, architecture, and docs and comments. `[review] sessions` in `.nightshift/nightshift.toml` is 1, 3 or 6 (3 by default; anything else is an error and nothing runs) and sets how the areas are shared among harness sessions, run one after another:

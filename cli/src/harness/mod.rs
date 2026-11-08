@@ -61,6 +61,8 @@ pub struct Task {
     pub model: Option<String>,
     /// How long the session may take. A session still running then is killed and is an error.
     pub timeout: Duration,
+    /// The session to carry on, by the id its reply gave. `None` starts a new one.
+    pub resume: Option<String>,
 }
 
 /// How a batch of sessions runs.
@@ -76,6 +78,8 @@ pub struct Reply {
     pub text: String,
     /// Whether the session ended normally.
     pub success: bool,
+    /// The id to resume this session by. `None` when the harness gave none.
+    pub session: Option<String>,
     /// Everything the session printed, as the harness prints it: what was read and run, not only
     /// the final `text`.
     pub transcript: Vec<u8>,
