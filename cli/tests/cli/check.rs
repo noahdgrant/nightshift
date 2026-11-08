@@ -98,3 +98,80 @@ fn checks_that_run_out_of_time_fail_and_are_not_remembered() {
     // A remembered pass would make this succeed.
     ns(&ws, &["check", "--timeout-seconds", "0"]).failure();
 }
+
+const START: &str = concat!("ns:human-", "review start");
+const END: &str = concat!("ns:human-", "review end");
+
+/// `text` with `@start` and `@end` written as the markers, so this file holds none itself.
+fn marked(text: &str) -> Vec<u8> {
+    text.replace("@start", START)
+        .replace("@end", END)
+        .into_bytes()
+}
+
+/// A repository whose checks pass, holding `files` in the workspace of unit 1.
+fn with_files(files: &[(&str, &[u8])]) -> (Repo, std::path::PathBuf) {
+    let repo = Repo::new();
+    repo.set_check("exit 0");
+    for (name, content) in files {
+        std::fs::write(repo.path.join(name), content).unwrap();
+    }
+    common::git(&repo.path, &["add", "."]);
+    common::git(&repo.path, &["commit", "-q", "-m", "files"]);
+    ns(&repo.path, &["workspace", "new", "1"]).success();
+    let ws = repo.workspace("1");
+    (repo, ws)
+}
+
+#[test]
+fn good_markers_pass() {
+    let (_repo, ws) = with_files(&[
+        ("a.rs", &marked("// @start: money\nlet x = 1;\n// @end\n")),
+        ("b.md", &marked("<!-- @start -->\ntext\n<!-- @end -->\n")),
+        ("plain.txt", b"nothing here\n"),
+    ]);
+    assert_eq!(
+        report(ns(&ws, &["check"]).success())["ok"].as_bool(),
+        Some(true)
+    );
+}
+
+#[test]
+fn a_bad_marker_fails_naming_the_file_and_line() {
+    let (_repo, ws) = with_files(&[("src.py", &marked("x = 1\n# @start: why\ny = 2\n"))]);
+    let out = ns(&ws, &["check"]).failure();
+    let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains(&format!("src.py:2: `{START}` has no `{END}`")),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn files_that_are_not_text_or_not_tracked_are_skipped() {
+    let (_repo, ws) = with_files(&[(
+        "blob.bin",
+        &[0xff, 0xfe, b' ']
+            .iter()
+            .chain(&marked("@end\n"))
+            .copied()
+            .collect::<Vec<u8>>(),
+    )]);
+    std::fs::write(ws.join("untracked.txt"), marked("@end\n")).unwrap();
+    ns(&ws, &["check"]).success();
+}
+
+#[test]
+fn every_bad_file_is_reported_with_its_own_line() {
+    let (_repo, ws) = with_files(&[
+        ("a.rs", &marked("x\n// @end\n")),
+        ("b.py", &marked("# @start\n# @start\n# @end\n")),
+    ]);
+    let out = ns(&ws, &["check"]).failure();
+    let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains(&format!("a.rs:2: `{END}` has no `{START}`")),
+        "{stderr}"
+    );
+    assert!(stderr.contains("b.py:2: "), "{stderr}");
+}

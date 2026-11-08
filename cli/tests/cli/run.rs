@@ -970,6 +970,39 @@ fn checks_that_never_pass_stick_the_unit_before_verify() {
     assert!(read(&repo, "build.problem").contains("boom"));
 }
 
+/// A repository with no checks command whose files hold an end marker with no start (`a.rs`) and a
+/// nested start (`b.py`), for the build, which reads what the checks print from the report.
+#[test]
+fn unreadable_markers_stick_the_build_even_with_no_checks_command() {
+    const START: &str = concat!("ns:human-", "review start");
+    const END: &str = concat!("ns:human-", "review end");
+    let repo = Repo::new();
+    std::fs::write(repo.path.join("a.rs"), format!("x\n// {END}\n")).unwrap();
+    std::fs::write(
+        repo.path.join("b.py"),
+        format!("# {START}\n# {START}\n# {END}\n"),
+    )
+    .unwrap();
+    git(&repo.path, &["add", "."]);
+    git(&repo.path, &["commit", "-q", "-m", "files"]);
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert_eq!(&moves[moves.len() - 2..], ["build>build", "build>stuck"]);
+    let problem = read(&repo, "build.problem");
+    assert!(
+        problem.contains(&format!("a.rs:2: `{END}` has no `{START}`")),
+        "{problem}"
+    );
+    assert!(
+        problem.contains("b.py:2: ") && problem.contains("inside the region started on line 1"),
+        "{problem}"
+    );
+}
+
 fn build_prompt(repo: &Repo) -> String {
     std::fs::read_to_string(repo.path.parent().unwrap().join("bin/build.prompt")).unwrap()
 }

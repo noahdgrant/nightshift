@@ -51,6 +51,9 @@ pub trait Vcs {
     /// How many commits the workspace's branch holds past `base`.
     fn workspace_commits_count(&self, path: &Path, base: &str) -> Result<usize>;
 
+    /// The files git tracks in the workspace at `path`, relative to its top.
+    fn workspace_files_list(&self, path: &Path) -> Result<Vec<String>>;
+
     /// The changes in the workspace at `path` that are not committed, one per entry, and empty
     /// when everything is committed. Files `ns` keeps there are not counted.
     fn workspace_changes_list(&self, path: &Path) -> Result<Vec<String>>;
