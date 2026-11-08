@@ -179,13 +179,10 @@ fn a_stuck_unit_is_left_for_a_human_and_auto_reports_it() {
     assert_eq!(last["ok"], false);
     assert_eq!(last["error"], "unit 5 is stuck in build");
     assert_eq!(last["change_request"], serde_json::Value::Null);
-    assert_eq!(
-        last["status"],
-        serde_json::json!(["status:ready-for-human"])
-    );
+    assert_eq!(last["status"], serde_json::json!(["status:stuck"]));
     assert_eq!(
         label_edits(&repo).last().unwrap(),
-        "issue edit 5 --add-label status:ready-for-human --remove-label status:in-progress"
+        "issue edit 5 --add-label status:stuck --remove-label status:in-progress"
     );
 }
 
@@ -315,7 +312,7 @@ fn a_change_ready_to_merge_is_reported_with_its_address_and_left_for_a_human() {
     assert_eq!(last["change_request"], "https://forge.example/9");
     assert_eq!(
         last["status"],
-        serde_json::json!(["status:ready-for-human"])
+        serde_json::json!(["status:waiting-for-human"])
     );
 }
 
@@ -339,7 +336,7 @@ fn auto_reports_why_a_change_was_not_merged() {
     );
     assert_eq!(
         events.last().unwrap()["status"],
-        serde_json::json!(["status:ready-for-human"])
+        serde_json::json!(["status:waiting-for-human"])
     );
 }
 

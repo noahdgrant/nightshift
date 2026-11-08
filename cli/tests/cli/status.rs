@@ -102,14 +102,14 @@ fn a_done_unit_shows_its_last_move_and_its_open_change_request() {
         "\n",
     );
     let out = status(
-        &[unit(7, &["status:ready-for-human"])],
+        &[unit(7, &["status:waiting-for-human"])],
         &[(7, "OPEN")],
         runs,
     );
     assert_eq!(
         out["units"][0],
         json!({
-            "unit": 7, "title": "unit 7", "status": "status:ready-for-human",
+            "unit": 7, "title": "unit 7", "status": "status:waiting-for-human",
             "state": "done", "moved_at": 200,
             "change_request": {"url": "https://forge.example/7", "state": "open"},
         })
@@ -119,7 +119,7 @@ fn a_done_unit_shows_its_last_move_and_its_open_change_request() {
 #[test]
 fn a_stuck_unit_shows_stuck() {
     let runs = r#"{"unit":"4","from":"verify","to":"stuck","at":300}"#;
-    let out = status(&[unit(4, &["status:ready-for-human"])], &[], runs);
+    let out = status(&[unit(4, &["status:waiting-for-human"])], &[], runs);
     assert_eq!(out["units"][0]["state"], "stuck");
     assert_eq!(out["units"][0]["moved_at"], 300);
 }

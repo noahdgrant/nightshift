@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::commands::init::{CLOSES_UNIT_CHECK, CLOSES_UNIT_PATH};
 use crate::forge::Forge;
-use crate::{checks, forge, harness, labels, manifest, skill, vcs};
+use crate::{checks, forge, harness, labels, manifest, skill, status, vcs};
 
 #[derive(ClapArgs)]
 pub struct Args {}
@@ -134,7 +134,16 @@ fn labels_present(root: &Path, forge: &dyn Forge) -> Check {
         .map(|(name, _)| name)
         .filter(|name| !have.contains(name))
         .collect();
-    if missing.is_empty() {
+    if have.iter().any(|n| n == status::LEGACY_READY_FOR_HUMAN) {
+        let mut said = format!(
+            "{} still exists and `ns` no longer sets it; run `ns init`",
+            status::LEGACY_READY_FOR_HUMAN
+        );
+        if !missing.is_empty() {
+            said.push_str(&format!("; missing {}", missing.join(", ")));
+        }
+        fail("labels", said)
+    } else if missing.is_empty() {
         pass("labels", "every label is there")
     } else {
         fail(

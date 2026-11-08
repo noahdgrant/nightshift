@@ -226,10 +226,10 @@ fn init_creates_the_labels_the_forge_lacks_and_only_those() {
     .unwrap();
     let report = init_in(&repo);
     let created = report["labels_created"].as_array().unwrap();
-    assert_eq!(created.len(), 25 - 2);
+    assert_eq!(created.len(), 26 - 2);
     assert!(!created.iter().any(|l| l == "status:wontfix"));
     let log = gh_log(&repo);
-    assert_eq!(log.matches("label create").count(), 23, "{log}");
+    assert_eq!(log.matches("label create").count(), 24, "{log}");
     assert!(
         log.contains("label create status:ready-for-agent --description"),
         "{log}"
@@ -261,7 +261,7 @@ fn on_a_repository_with_native_types_init_skips_the_feat_and_fix_labels() {
     )
     .unwrap();
     let report = init_in(&repo);
-    assert_eq!(report["labels_created"].as_array().unwrap().len(), 25 - 2);
+    assert_eq!(report["labels_created"].as_array().unwrap().len(), 26 - 2);
     let log = gh_log(&repo);
     assert!(!log.contains("label create type:feat"), "{log}");
     assert!(!log.contains("label create type:fix"), "{log}");
@@ -282,7 +282,8 @@ fn init_run_again_with_every_label_there_creates_none() {
         "status:needs-info",
         "status:ready-for-agent",
         "status:in-progress",
-        "status:ready-for-human",
+        "status:stuck",
+        "status:waiting-for-human",
         "status:wontfix",
         "type:feat",
         "type:fix",
@@ -471,4 +472,47 @@ fn the_workflow_init_writes_is_the_one_this_repository_runs() {
     ))
     .unwrap();
     assert_eq!(written, ours);
+}
+
+#[test]
+fn init_renames_the_old_ready_for_human_label_and_creates_stuck() {
+    let repo = Repo::new();
+    gh(&repo);
+    std::fs::write(
+        repo.path.parent().unwrap().join("labels.json"),
+        r#"[{"name":"status:ready-for-human"}]"#,
+    )
+    .unwrap();
+    let report = init_in(&repo);
+    assert_eq!(report["labels_renamed"], true);
+    let log = gh_log(&repo);
+    assert!(
+        log.contains("label edit status:ready-for-human --name status:waiting-for-human"),
+        "{log}"
+    );
+    assert!(
+        !log.contains("label create status:waiting-for-human"),
+        "{log}"
+    );
+    assert!(
+        log.contains("label create status:stuck --description A state failed every attempt or could not be proven; a person looks first"),
+        "{log}"
+    );
+}
+
+#[test]
+fn init_leaves_both_labels_alone_and_says_so() {
+    let repo = Repo::new();
+    gh(&repo);
+    std::fs::write(
+        repo.path.parent().unwrap().join("labels.json"),
+        r#"[{"name":"status:ready-for-human"},{"name":"status:waiting-for-human"}]"#,
+    )
+    .unwrap();
+    let out = init_cmd(&repo, &repo.path).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("has both"), "{err}");
+    let log = gh_log(&repo);
+    assert!(!log.contains("label edit"), "{log}");
+    assert!(!log.contains("status:waiting-for-human --desc"), "{log}");
 }

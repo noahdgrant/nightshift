@@ -112,18 +112,41 @@ pub fn all(native: &[String]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Creates on the forge the labels it does not have, and leaves the ones it has as they are.
-/// Returns the names it created.
-pub fn ensure(forge: &dyn Forge, repo: &Path) -> Result<Vec<String>> {
-    let have = forge.labels_list(repo)?;
-    let mut created = Vec::new();
+/// What `ensure` did on the forge.
+#[derive(Debug, Default, PartialEq)]
+pub struct Ensured {
+    /// The names of the labels it created.
+    pub created: Vec<String>,
+    /// Whether it renamed `status:ready-for-human` to `status:waiting-for-human`.
+    pub renamed: bool,
+    /// Whether the repository has both of those, so `ensure` left both alone.
+    pub both_left: bool,
+}
+
+/// Creates on the forge the labels it does not have, and leaves the ones it has as they are. A
+/// repository that has `status:ready-for-human` and not `status:waiting-for-human` gets the old
+/// label renamed, which keeps every unit that carries it.
+pub fn ensure(forge: &dyn Forge, repo: &Path) -> Result<Ensured> {
+    let mut have = forge.labels_list(repo)?;
+    let mut done = Ensured::default();
+    let legacy = status::LEGACY_READY_FOR_HUMAN;
+    let waiting = status::WAITING_FOR_HUMAN;
+    if have.iter().any(|n| n == legacy) {
+        if have.iter().any(|n| n == waiting) {
+            done.both_left = true;
+        } else {
+            forge.label_rename(repo, legacy, waiting)?;
+            have.push(waiting.to_string());
+            done.renamed = true;
+        }
+    }
     for (name, description) in all(&forge::unit_types_get(forge, repo)) {
         if !have.contains(&name) {
             forge.label_create(repo, &name, &description)?;
-            created.push(name);
+            done.created.push(name);
         }
     }
-    Ok(created)
+    Ok(done)
 }
 
 #[cfg(test)]
@@ -133,7 +156,7 @@ mod tests {
     #[test]
     fn every_label_is_there_once() {
         let names: Vec<String> = all(&[]).into_iter().map(|(name, _)| name).collect();
-        assert_eq!(names.len(), 8 + 11 + 4 + 2);
+        assert_eq!(names.len(), 9 + 11 + 4 + 2);
         let mut sorted = names.clone();
         sorted.sort();
         sorted.dedup();
@@ -185,7 +208,7 @@ mod tests {
             .into_iter()
             .map(|(name, _)| name)
             .collect();
-        assert_eq!(names.len(), 8 + 9 + 4 + 2);
+        assert_eq!(names.len(), 9 + 9 + 4 + 2);
         assert!(!names.contains(&"type:feat".to_string()));
         assert!(!names.contains(&"type:fix".to_string()));
         assert!(names.contains(&"type:refactor".to_string()));

@@ -151,8 +151,9 @@ labels() {{
   l='{initial}'
   [ "{follow}" = yes ] && case "$(grep 'issue edit' "{bin}/gh.log" | grep -v assignee | tail -1)" in
   *"--add-label status:in-progress"*) l='{progress}';;
-  *"--add-label status:ready-for-human"*) l='{human}';;
-  *"--remove-label status:in-progress"*|*"--remove-label status:ready-for-human"*) l='[]';;
+  *"--add-label status:waiting-for-human"*) l='{human}';;
+  *"--add-label status:stuck"*) l='{stuck}';;
+  *"--remove-label status:in-progress"*|*"--remove-label status:waiting-for-human"*|*"--remove-label status:stuck"*) l='[]';;
   *"--add-label "*"status:ready-for-agent"*) l='{ready}';;
   esac
 }}
@@ -193,7 +194,8 @@ esac"#,
             },
             ready = r#"[{"name":"status:ready-for-agent"}]"#,
             progress = r#"[{"name":"status:in-progress"}]"#,
-            human = r#"[{"name":"status:ready-for-human"}]"#,
+            human = r#"[{"name":"status:waiting-for-human"}]"#,
+            stuck = r#"[{"name":"status:stuck"}]"#,
         ),
     );
     let edit = match fakes.check_edits {
@@ -1069,7 +1071,7 @@ fn a_change_touching_a_human_review_file_is_not_merged_and_is_labeled() {
         "{out}"
     );
     assert!(
-        log.contains("issue edit 5 --add-label status:ready-for-human"),
+        log.contains("issue edit 5 --add-label status:waiting-for-human"),
         "{log}"
     );
 }
@@ -1119,7 +1121,7 @@ fn assert_held(out: &str, log: &str, said: &str) {
         "{log}"
     );
     assert!(
-        log.contains("issue edit 5 --add-label status:ready-for-human"),
+        log.contains("issue edit 5 --add-label status:waiting-for-human"),
         "{log}"
     );
     assert!(out.contains(said), "{out}");
@@ -1643,7 +1645,7 @@ fn a_finished_unit_whose_change_request_merged_since_is_cleaned_up() {
     );
     assert!(!repo.workspace("5").exists());
     assert!(!repo.branches().contains(&"ns/5".to_string()));
-    assert!(gh_log(&repo).contains("--remove-label status:ready-for-human"));
+    assert!(gh_log(&repo).contains("--remove-label status:waiting-for-human"));
     assert_eq!(run_log(&repo).len(), before);
 }
 
@@ -2039,8 +2041,9 @@ fn last_label_edit(repo: &Repo) -> String {
 
 const STARTED: &str =
     "issue edit 5 --add-label status:in-progress --remove-label status:ready-for-agent";
-const TO_HUMAN: &str =
-    "issue edit 5 --add-label status:ready-for-human --remove-label status:in-progress";
+const TO_WAITING: &str =
+    "issue edit 5 --add-label status:waiting-for-human --remove-label status:in-progress";
+const TO_STUCK: &str = "issue edit 5 --add-label status:stuck --remove-label status:in-progress";
 
 #[test]
 fn a_unit_is_in_progress_from_the_start_and_its_label_goes_when_its_change_merges() {
@@ -2062,7 +2065,7 @@ fn a_unit_is_in_progress_from_the_start_and_its_label_goes_when_its_change_merge
 fn a_change_ready_to_merge_leaves_the_unit_for_a_human() {
     let repo = Repo::new();
     run(&repo, &tools(&repo, &Fakes::passing())).success();
-    assert_eq!(last_label_edit(&repo), TO_HUMAN);
+    assert_eq!(last_label_edit(&repo), TO_WAITING);
 }
 
 #[test]
@@ -2073,7 +2076,7 @@ fn a_stuck_unit_is_left_for_a_human() {
         ..Fakes::passing()
     };
     run(&repo, &tools(&repo, &broken)).failure();
-    assert_eq!(last_label_edit(&repo), TO_HUMAN);
+    assert_eq!(last_label_edit(&repo), TO_STUCK);
 }
 
 #[test]
@@ -2081,7 +2084,7 @@ fn a_unit_waiting_at_a_gate_is_left_for_a_human() {
     let repo = Repo::new();
     let path = tools(&repo, &Fakes::passing());
     run_args(&repo, &path, &["run", "5", "--ci-poll-seconds", "0"]).success();
-    assert_eq!(last_label_edit(&repo), TO_HUMAN);
+    assert_eq!(last_label_edit(&repo), TO_WAITING);
 }
 
 #[test]
@@ -2234,7 +2237,7 @@ fn two_inconclusive_verifications_stick_the_unit_for_a_human_and_say_what_is_unp
     let last = run_log(&repo).last().unwrap().clone();
     assert_eq!(last["reason"], "inconclusive");
     let gh = gh_log(&repo);
-    assert!(gh.contains("--add-label status:ready-for-human"), "{gh}");
+    assert!(gh.contains("--add-label status:stuck"), "{gh}");
     let comment = gh
         .lines()
         .skip_while(|l| !l.starts_with("issue comment 5"))
@@ -2296,7 +2299,7 @@ fn a_comment_the_forge_refuses_is_said_and_the_unit_is_still_stuck_for_a_human()
         err.contains("cannot say what verification left unproven"),
         "{err}"
     );
-    assert!(gh_log(&repo).contains("--add-label status:ready-for-human"));
+    assert!(gh_log(&repo).contains("--add-label status:stuck"));
 }
 
 #[test]

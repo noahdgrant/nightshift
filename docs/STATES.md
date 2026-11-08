@@ -4,7 +4,7 @@
 
 A unit's `status:` label on the forge says where it is, and only `ns` changes it.
 
-`ns auto` never resumes a unit. A unit that stopped is `ready-for-human`, so a human looks at it first and resumes it with `ns run <unit>`.
+`ns auto` never resumes a unit. A unit that is `stuck` is labeled `status:stuck`, so a human looks at it first and resumes it with `ns run <unit>`.
 
 ```mermaid
 stateDiagram
@@ -13,7 +13,7 @@ stateDiagram
     triage --> define : needs-define
     triage --> repro : needs-repro
     triage --> info : needs-info
-    triage --> human : ready-for-human
+    triage --> human : waiting-for-human
     triage --> wontfix : closed
     triage --> ready : ready-for-agent
     define --> ready
@@ -24,7 +24,9 @@ stateDiagram
     ready --> run : ns run starts, by ns auto or a human
     info --> triage : answered
     run --> [*] : done, in-progress removed
-    run --> human : stuck, error, gate or merge-ready
+    run --> stuck : stuck or error
+    run --> human : gate or merge-ready
+    stuck --> run : a human runs ns run again
     human --> run : a human runs ns run again
 ```
 
@@ -64,7 +66,7 @@ stateDiagram
     stuck --> [*]
 ```
 
-`verify` ends in one of three verdicts. `VERDICT: PASS` goes on to `review` and `VERDICT: FAIL` goes back to `build`. `VERDICT: INCONCLUSIVE` means no requirement failed but at least one could not be proven from the workspace (a live service, credentials, behavior only CI shows). It runs `verify` once more, shown the unproven requirements, and that verification's verdict decides as usual. When the second is inconclusive too, the unit is `stuck` with the reason `inconclusive` in the run log and `status:ready-for-human`, and a comment on the unit lists what is still unproven and what would make each checkable. The second verification counts against `max_attempts`, so with 1 the unit is stuck after the first. A unit stuck this way resumes at `verify`, not `build`, for the build has nothing to change.
+`verify` ends in one of three verdicts. `VERDICT: PASS` goes on to `review` and `VERDICT: FAIL` goes back to `build`. `VERDICT: INCONCLUSIVE` means no requirement failed but at least one could not be proven from the workspace (a live service, credentials, behavior only CI shows). It runs `verify` once more, shown the unproven requirements, and that verification's verdict decides as usual. When the second is inconclusive too, the unit is `stuck` with the reason `inconclusive` in the run log and `status:stuck`, and a comment on the unit lists what is still unproven and what would make each checkable. The second verification counts against `max_attempts`, so with 1 the unit is stuck after the first. A unit stuck this way resumes at `verify`, not `build`, for the build has nothing to change.
 
 `review` reads the change in six review areas: correctness, security, spec, tests, architecture, and docs and comments. `[review] sessions` in `.nightshift/nightshift.toml` is 1, 3 or 6 (3 by default; anything else is an error and nothing runs) and sets how the areas are shared among harness sessions, run one after another:
 

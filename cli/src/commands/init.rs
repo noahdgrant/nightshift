@@ -3,7 +3,7 @@ use clap::Args as ClapArgs;
 use serde_json::json;
 
 use crate::checks::COMMAND_FILE;
-use crate::{forge, harness, labels, manifest, skill, sync, vcs};
+use crate::{forge, harness, labels, manifest, skill, status, sync, vcs};
 
 /// The check that fails a change request which closes no unit.
 const CLOSES_UNIT: &str = include_str!("../../../.github/workflows/closes-unit.yml");
@@ -82,8 +82,15 @@ pub fn run(args: Args) -> Result<()> {
             .with_context(|| format!("cannot write {}", workflow.display()))?;
         1
     };
-    let labels = labels::ensure(forge::get().as_ref(), &root)
+    let ensured = labels::ensure(forge::get().as_ref(), &root)
         .context("the labels were not created; run `ns init` again")?;
+    if ensured.both_left {
+        eprintln!(
+            "ns: the repository has both {} and {}; left both alone. Move the units from the old one and delete it",
+            status::LEGACY_READY_FOR_HUMAN,
+            status::WAITING_FOR_HUMAN
+        );
+    }
     println!(
         "{}",
         json!({
@@ -93,7 +100,8 @@ pub fn run(args: Args) -> Result<()> {
             "hooks": hooks,
             "workflows_written": workflows_written,
             "instruction_files": instruction_files,
-            "labels_created": labels,
+            "labels_created": ensured.created,
+            "labels_renamed": ensured.renamed,
         })
     );
     Ok(())

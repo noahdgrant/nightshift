@@ -210,13 +210,14 @@ pub fn run(args: Args) -> Result<()> {
     let status = if matches!(ended, Ok(State::Done)) {
         finished_status_set(&ctx, &root, &unit)
     } else {
-        // Waiting at a gate, stuck or gone wrong: a human is next.
-        status::unit_status_set(
-            ctx.forge.as_ref(),
-            &root,
-            args.unit,
-            status::READY_FOR_HUMAN,
-        )
+        // Stuck, or gone wrong, is a unit a person looks at first; waiting at a gate is only
+        // waiting for a person to go on.
+        let label = if ended.is_err() {
+            status::STUCK
+        } else {
+            status::WAITING_FOR_HUMAN
+        };
+        status::unit_status_set(ctx.forge.as_ref(), &root, args.unit, label)
     };
     match (ended, status) {
         (Err(e), Err(s)) => {
@@ -394,7 +395,7 @@ fn sent_back(ctx: &Context, log: &RunLog, unit: &str) -> Result<()> {
 }
 
 /// Sets the status of a unit whose states are all done: none when its change request merged,
-/// otherwise it is ready to merge and waits for a human.
+/// otherwise it is ready to merge and waits for a person.
 fn finished_status_set(ctx: &Context, root: &Path, unit: &str) -> Result<()> {
     let branch = workspace::locate(root, unit)?.branch;
     let merged = matches!(
@@ -404,7 +405,12 @@ fn finished_status_set(ctx: &Context, root: &Path, unit: &str) -> Result<()> {
     if merged {
         status::unit_status_clear(ctx.forge.as_ref(), root, ctx.unit)
     } else {
-        status::unit_status_set(ctx.forge.as_ref(), root, ctx.unit, status::READY_FOR_HUMAN)
+        status::unit_status_set(
+            ctx.forge.as_ref(),
+            root,
+            ctx.unit,
+            status::WAITING_FOR_HUMAN,
+        )
     }
 }
 

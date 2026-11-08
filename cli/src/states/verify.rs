@@ -13,7 +13,7 @@ use crate::state::{Outcome, State};
 /// Has the harness check the build against the unit's description by running it. See
 /// [`check::run`] for how it ends. Every verification is kept as `verify-<n>.md`, and one after a
 /// failing or inconclusive verification is shown that one. A verification that is inconclusive
-/// right after an inconclusive one leaves the unit unprovable, for a human.
+/// right after an inconclusive one leaves the unit unprovable, so it is stuck.
 pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let dir = ctx
         .workspace
@@ -73,7 +73,7 @@ pub fn unproven_note(dir: &Path, unit: &str) -> Result<String> {
         unproven.join("\n\n")
     };
     Ok(format!(
-        "Verification could not prove these requirements, twice, so this unit waits for a human. \
+        "Verification could not prove these requirements, twice, so this unit is stuck and a person looks first. \
          Each says what would make it checkable.\n\n{body}\n"
     ))
 }

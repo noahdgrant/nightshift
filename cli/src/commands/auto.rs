@@ -43,7 +43,7 @@ pub struct Args {
 
 /// Triages every unit nobody has triaged, then runs the ready units one at a time, each
 /// unattended, until none is left or `--max-units` have been run. A unit that is stuck or goes
-/// wrong is left for a human by `ns run`, and the next unit goes on, unless too many in a row went
+/// wrong is marked stuck by `ns run`, and the next unit goes on, unless too many in a row went
 /// wrong.
 pub fn run(args: Args) -> Result<()> {
     let here = std::env::current_dir()?;
@@ -337,6 +337,9 @@ mod tests {
             unreachable!()
         }
         fn label_create(&self, _: &Path, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn label_rename(&self, _: &Path, _: &str, _: &str) -> Result<()> {
             unreachable!()
         }
         fn unit_labels_set(&self, _: &Path, _: u64, _: &[String], _: &[String]) -> Result<()> {

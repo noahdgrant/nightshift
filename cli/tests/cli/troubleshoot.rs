@@ -70,7 +70,7 @@ fn each_route_sets_its_own_label() {
     for (route, label) in [
         ("define", "status:needs-define"),
         ("info", "status:needs-info"),
-        ("human", "status:ready-for-human"),
+        ("human", "status:waiting-for-human"),
     ] {
         let repo = Repo::new();
         forge(&repo, "It crashes.", &["status:needs-repro"]);
