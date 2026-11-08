@@ -55,6 +55,9 @@ impl Claude {
             } else {
                 "plan"
             });
+        if let Some(session) = &task.resume {
+            cmd.arg("--resume").arg(session);
+        }
         if let Some(model) = &task.model {
             cmd.arg("--model").arg(model);
         }
@@ -75,11 +78,13 @@ impl Claude {
             .into());
         }
         let raw = String::from_utf8_lossy(&done.stdout).into_owned();
+        let session = transcript::session_find(&raw);
         Ok(Reply {
             // A session that died before its result printed has only what it printed, which
             // still says why.
             text: transcript::result_find(&raw).unwrap_or(raw),
             success: done.success == Some(true),
+            session,
             transcript: done.stdout,
             earlier: Vec::new(),
         })
@@ -205,6 +210,7 @@ mod tests {
             write,
             model: Some("opus".into()),
             timeout: Duration::from_secs(30),
+            resume: None,
         }
     }
 

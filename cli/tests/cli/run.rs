@@ -77,6 +77,10 @@ pub enum BuildCommits {
     TwoUntilTold,
     /// Every build leaves two commits.
     TwoAlways,
+    /// The first build leaves two commits and its session prints no id to resume it by.
+    TwoWithoutSession,
+    /// The first build leaves two commits, and resuming its session fails.
+    TwoResumeFails,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -213,7 +217,10 @@ esac"#,
     };
     let commit = match fakes.build_commits {
         BuildCommits::Always => r#"git add -A; git commit -q -m "Add a thing"; "#,
-        BuildCommits::TwoUntilTold | BuildCommits::TwoAlways => {
+        BuildCommits::TwoUntilTold
+        | BuildCommits::TwoAlways
+        | BuildCommits::TwoWithoutSession
+        | BuildCommits::TwoResumeFails => {
             r#"git add -A; git commit -q -m one; echo more > more.txt; git add -A; git commit -q -m two; "#
         }
         BuildCommits::OnlyWhenTold | BuildCommits::Never => "",
@@ -222,6 +229,7 @@ esac"#,
         BuildCommits::TwoUntilTold => {
             r#"git reset -q --soft HEAD~2; git commit -q -m "Add a thing"; "#
         }
+        BuildCommits::TwoResumeFails => "exit 1; ",
         _ => "",
     };
     let when_told = match fakes.build_commits {
@@ -259,8 +267,8 @@ case "$p" in
 *"VERDICT: FAIL"*) [ -x "{bin}/on-rebuild" ] && "{bin}/on-rebuild"; echo rebuilt with the evidence;;
 *"The checks failed:"*) touch "{bin}/fixed"; echo fixed it;;
 *"left uncommitted changes"*) {when_told}echo committed when told;;
-*"commits on the branch"*) {squash}echo squashed when told;;
-*) {drop}printf %s "$p" > "{bin}/build.prompt"; mkdir -p "$(dirname '{builds}')"; printf %s '{content}' > '{builds}'; {run_checks}{commit}echo built the thing;;
+*"commits on the branch"*|*"Squash them into one commit"*) {squash}echo squashed when told;;
+*) {drop}printf %s "$p" > "{bin}/build.prompt"; mkdir -p "$(dirname '{builds}')"; printf %s '{content}' > '{builds}'; {run_checks}{commit}{built};;
 esac
 exit {exit}"#,
             bin = bin.display(),
@@ -277,6 +285,14 @@ exit {exit}"#,
                 )
             } else {
                 String::new()
+            },
+            built = if !matches!(
+                fakes.build_commits,
+                BuildCommits::TwoUntilTold | BuildCommits::TwoAlways | BuildCommits::TwoResumeFails
+            ) {
+                "echo built the thing".to_string()
+            } else {
+                r#"printf '%s\n' '{"type":"result","result":"built the thing\n","session_id":"sess-1"}'"#.to_string()
             },
             exit = fakes.exit,
             builds = fakes.builds,
@@ -1735,7 +1751,7 @@ fn a_build_that_leaves_changes_uncommitted_is_run_again_and_told_which() {
 }
 
 #[test]
-fn a_build_that_leaves_two_commits_is_told_to_squash_them() {
+fn a_build_that_leaves_two_commits_is_squashed_by_its_own_session_without_an_attempt() {
     let repo = Repo::new();
     let fakes = Fakes {
         build_commits: BuildCommits::TwoUntilTold,
@@ -1747,10 +1763,64 @@ fn a_build_that_leaves_two_commits_is_told_to_squash_them() {
         .stdout
         .clone();
     let moves = moves(out);
-    assert!(moves.contains(&"build>build".to_string()), "{moves:?}");
-    assert_eq!(read(&repo, "build.md"), "squashed when told\n");
+    assert!(!moves.contains(&"build>build".to_string()), "{moves:?}");
+    assert_eq!(moves.last().unwrap(), "clean_up>done");
+    assert_eq!(read(&repo, "build.md"), "built the thing\n");
     let commits = common::git(&repo.path, &["rev-list", "--count", "main..ns/5"]);
     assert_eq!(commits.trim(), "1");
+    let subject = common::git(&repo.path, &["log", "-1", "--format=%s", "ns/5"]);
+    assert_eq!(subject.trim(), "Add a thing");
+    let calls =
+        std::fs::read_to_string(repo.path.parent().unwrap().join("bin/claude.calls")).unwrap();
+    assert!(
+        calls
+            .lines()
+            .any(|c| c.starts_with("build ") && c.contains("--resume sess-1")),
+        "{calls}"
+    );
+    let log = std::fs::read_to_string(repo.path.join(".git/ns/runs.jsonl")).unwrap();
+    assert!(
+        log.contains(r#""squash":"squashed""#) && log.contains(r#""commits":2"#),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_build_whose_resumed_session_fails_to_squash_sticks_the_unit() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        build_commits: BuildCommits::TwoResumeFails,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert_eq!(moves.last().unwrap(), "build>stuck");
+    assert!(!moves.contains(&"build>build".to_string()), "{moves:?}");
+    let log = std::fs::read_to_string(repo.path.join(".git/ns/runs.jsonl")).unwrap();
+    assert!(log.contains(r#""squash":"unresumable""#), "{log}");
+}
+
+#[test]
+fn a_build_that_leaves_two_commits_and_cannot_be_resumed_sticks_the_unit() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        build_commits: BuildCommits::TwoWithoutSession,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let moves = moves(out);
+    assert_eq!(moves.last().unwrap(), "build>stuck");
+    assert!(!moves.contains(&"build>build".to_string()), "{moves:?}");
+    let log = std::fs::read_to_string(repo.path.join(".git/ns/runs.jsonl")).unwrap();
+    assert!(log.contains(r#""squash":"unresumable""#), "{log}");
 }
 
 #[test]

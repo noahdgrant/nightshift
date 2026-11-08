@@ -49,4 +49,4 @@ End with a short summary:
 
 ## When told something went wrong
 
-A later message names what was left wrong: uncommitted changes, extra commits, failed checks, or findings from a check of your work. Fix exactly that, then run steps 3 and 4 again.
+A later message names what was left wrong: uncommitted changes, extra commits (the resumed session is asked to squash them, and that costs no attempt), failed checks, or findings from a check of your work. Fix exactly that, then run steps 3 and 4 again.

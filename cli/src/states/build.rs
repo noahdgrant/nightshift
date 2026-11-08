@@ -7,8 +7,9 @@ use super::{session_run, Context, BUILT_SNAPSHOT};
 use crate::artifact;
 use crate::checks;
 use crate::forge::Unit;
-use crate::harness::Task;
+use crate::harness::{Reply, Task, TimedOut};
 use crate::manifest::Place;
+use crate::runlog::RunLog;
 use crate::skill;
 use crate::state::{Outcome, State};
 
@@ -59,6 +60,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
             write: true,
             model: ctx.model_find(Place::Build)?,
             timeout: ctx.harness_timeout,
+            resume: None,
         },
     )?;
     artifact::write(&dir, &id, "build.md", &reply.text)?;
@@ -69,6 +71,14 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     // from where the branch now sits on it.
     ctx.vcs.workspace_base_anchor(&root, &dir)?;
     let base = ctx.vcs.workspace_base_find(&dir)?;
+    if ctx.vcs.workspace_contains(&dir, &base)? {
+        let n = ctx.vcs.workspace_commits_count(&dir, &base)?;
+        if n > 1 {
+            if let Some(outcome) = squash(ctx, &root, &dir, &id, &reply, n)? {
+                return Ok(outcome);
+            }
+        }
+    }
     if let Some(problem) = what_is_left(ctx, &dir, &base)? {
         artifact::write(&dir, &id, PROBLEM, &problem)?;
         bail!("{problem}");
@@ -94,6 +104,56 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let snapshot = ctx.vcs.workspace_snapshot(&dir)?;
     artifact::write(&dir, &id, BUILT_SNAPSHOT, &snapshot)?;
     Ok(Outcome::Pass)
+}
+
+/// Has the build's own session, resumed, squash the `n` commits it left into one. That is not an
+/// attempt: the build goes on to count the commits as usual. `Some` is how the build ends instead,
+/// when the session cannot be resumed.
+fn squash(
+    ctx: &Context,
+    root: &Path,
+    dir: &Path,
+    id: &str,
+    reply: &Reply,
+    n: usize,
+) -> Result<Option<Outcome>> {
+    let log = RunLog::open(ctx.vcs.as_ref(), root)?;
+    let note = |result: &str| log.squash_append(id, result, n);
+    let Some(session) = reply.session.clone() else {
+        note("unresumable")?;
+        return Ok(Some(Outcome::Unresumable));
+    };
+    let resumed = session_run(
+        ctx,
+        State::Build,
+        &Task {
+            dir: dir.to_path_buf(),
+            prompt: format!(
+                "The branch holds {n} commits on top of the base. Squash them into one commit \
+                 whose message summarises all of them, in the repository's commit style. Leave \
+                 nothing uncommitted."
+            ),
+            write: true,
+            model: ctx.model_find(Place::Build)?,
+            timeout: ctx.harness_timeout,
+            resume: Some(session),
+        },
+    );
+    match resumed {
+        Ok(r) if r.success => {
+            note("squashed")?;
+            Ok(None)
+        }
+        Ok(_) => {
+            note("unresumable")?;
+            Ok(Some(Outcome::Unresumable))
+        }
+        Err(e) if e.downcast_ref::<TimedOut>().is_some() => Err(e),
+        Err(_) => {
+            note("unresumable")?;
+            Ok(Some(Outcome::Unresumable))
+        }
+    }
 }
 
 /// What a finished build got wrong about its commits, if anything: it must leave nothing

@@ -127,6 +127,7 @@ fn review_measure(
                         write: false,
                         model: limits.model.map(str::to_string),
                         timeout: limits.timeout,
+                        resume: None,
                     });
                     match reply {
                         Ok(reply) if reply.success => verdict::parse(&reply.text),

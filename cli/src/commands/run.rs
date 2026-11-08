@@ -437,7 +437,7 @@ fn walk(
         let outcome = phase(state, attempt);
         let to = match outcome {
             Outcome::Pass => next,
-            Outcome::Unprovable | Outcome::BaseMoved => State::Stuck,
+            Outcome::Unprovable | Outcome::BaseMoved | Outcome::Unresumable => State::Stuck,
             Outcome::Fail | Outcome::Redo | Outcome::Inconclusive => {
                 let back = match outcome {
                     Outcome::Fail => state.on_fail(),
@@ -454,7 +454,7 @@ fn walk(
         if to != next {
             event["attempt"] = attempt.into();
             event["reason"] = match outcome {
-                Outcome::Redo => "went_wrong",
+                Outcome::Redo | Outcome::Unresumable => "went_wrong",
                 Outcome::Pass | Outcome::Fail => "failed",
                 Outcome::Inconclusive | Outcome::Unprovable => "inconclusive",
                 Outcome::BaseMoved => "base_moved",

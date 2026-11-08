@@ -16,6 +16,8 @@ pub enum Outcome {
     Unprovable,
     /// The state could not go on because the base branch kept moving. The unit is stuck.
     BaseMoved,
+    /// The state could not resume the session it needed to. The unit is stuck for a human.
+    Unresumable,
     /// The state itself went wrong. The unit runs the same state again.
     Redo,
 }

@@ -14,6 +14,14 @@ pub fn result_find(raw: &str) -> Option<String> {
         .and_then(|event| event["result"].as_str().map(String::from))
 }
 
+/// The id of the session the stream belongs to. `None` when no event names one.
+pub fn session_find(raw: &str) -> Option<String> {
+    raw.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .rfind(|event| event["session_id"].is_string())
+        .and_then(|event| event["session_id"].as_str().map(String::from))
+}
+
 /// The stream as plain text, in order: what the agent said, one line per tool call and the start
 /// of each tool result. A line that is not an event, such as the cut-off end of a killed session,
 /// is skipped.
