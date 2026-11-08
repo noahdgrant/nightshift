@@ -315,6 +315,7 @@ mod tests {
                     body: String::new(),
                     labels: vec![auto::READY.into()],
                     from_team: true,
+                    url: String::new(),
                 })
                 .collect())
         }
@@ -325,6 +326,7 @@ mod tests {
                 body: String::new(),
                 labels: Vec::new(),
                 from_team: true,
+                url: String::new(),
             })
         }
         fn unit_types_list(&self, _: &Path) -> Result<Vec<String>> {
@@ -480,6 +482,7 @@ mod tests {
             body: String::new(),
             labels: labels.iter().map(|l| l.to_string()).collect(),
             from_team,
+            url: String::new(),
         };
         let open = [
             unit(1, &[auto::READY], true),
