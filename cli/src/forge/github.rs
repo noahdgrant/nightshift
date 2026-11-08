@@ -393,7 +393,7 @@ impl Forge for GitHub {
                 "--limit",
                 "1",
                 "--json",
-                "number,url,state",
+                "number,url,state,headRefOid",
             ],
         )?;
         let v: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
@@ -412,6 +412,7 @@ impl Forge for GitHub {
                 .context("change request has no number")?,
             url: text(&pr["url"]),
             state,
+            head: text(&pr["headRefOid"]),
         }))
     }
 

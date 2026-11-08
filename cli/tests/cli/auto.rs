@@ -187,6 +187,27 @@ fn a_stuck_unit_is_left_for_a_human_and_auto_reports_it() {
 }
 
 #[test]
+fn auto_does_not_take_over_a_change_request_a_person_opened_for_a_stuck_unit() {
+    let repo = Repo::new();
+    let broken = Fakes {
+        exit: 1,
+        ..Fakes::passing()
+    };
+    auto(&repo, &broken, &["--merge"]).failure();
+    std::fs::write(repo.path.parent().unwrap().join("bin/opened"), "").unwrap();
+    // The forge still lists the unit as ready, so `ns auto` reaches it.
+    let still_ready = Fakes {
+        labels_follow_edits: false,
+        ..Fakes::passing()
+    };
+    let out = auto(&repo, &still_ready, &["--merge"]).get_output().clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("took_over"), "{stdout}");
+    assert!(!gh_log(&repo).contains("pr merge"));
+    assert!(repo.workspace("5").is_dir());
+}
+
+#[test]
 fn a_unit_is_run_once_even_when_it_is_still_ready_afterwards() {
     let repo = Repo::new();
     let stuck_ready = Fakes {

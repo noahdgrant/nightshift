@@ -151,6 +151,8 @@ pub struct ChangeRequest {
     pub number: u64,
     pub url: String,
     pub state: ChangeState,
+    /// The commit its head branch is at on the forge.
+    pub head: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]

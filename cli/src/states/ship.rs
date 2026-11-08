@@ -263,12 +263,13 @@ fn base_moved(ctx: &Context, root: &Path, dir: &Path) -> Result<bool> {
 
 /// Pushes the branch and returns the number of its change request, opened if it has none.
 fn publish(ctx: &Context, dir: &Path, branch: &str, id: &str) -> Result<u64> {
-    let unit = ctx.forge.unit_get(dir, ctx.unit)?;
-    let build = artifact::read(dir, id, "build.md")?;
     ctx.vcs.branch_push(dir, branch)?;
     let change_request = match ctx.forge.change_request_get(dir, branch)? {
         Some(existing) => existing,
         None => {
+            // Read only here: a taken-over unit has a change request already and may have no `build.md`.
+            let unit = ctx.forge.unit_get(dir, ctx.unit)?;
+            let build = artifact::read(dir, id, "build.md")?;
             let body = format!("{DISCLOSURE}\n\n{}", build.trim_end());
             // `status:` labels say where the unit is, so only the unit carries them.
             let labels: Vec<String> = unit
