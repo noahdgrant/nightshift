@@ -169,7 +169,8 @@ case "$1 $2" in
 "api repos/{{owner}}/{{repo}}/issues/"*) labels; echo '{{"number":'"${{2##*/}}"',"title":"Add a thing","body":"Make the thing.","labels":'"$l"',"author_association":"OWNER"}}';;
 "api --paginate") labels; echo '[[{listed}]]';;
 "pr list") if [ -e "{bin}/merged" ]; then state=MERGED; elif [ -e "{bin}/closed" ]; then state=CLOSED; else state=OPEN; fi
-  if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"'$state'"}}]'; else echo '[]'; fi;;
+  head=$(cat "{bin}/pr-head" 2>/dev/null || git rev-parse refs/heads/ns/5 2>/dev/null)
+  if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"'$state'","headRefOid":"'$head'"}}]'; else echo '[]'; fi;;
 "pr create") touch "{bin}/opened"; echo https://forge.example/9;;
 "pr checks") {checks};;
 "pr merge") touch "{bin}/merged";;
@@ -1494,6 +1495,214 @@ fn a_stuck_unit_resumes_at_the_state_it_stuck_in_with_fresh_attempts() {
     let events = lines(&out);
     assert_eq!(events[0]["state"], "build", "resumed at build, not setup");
     assert_eq!(events.last().unwrap()["to"], "done");
+}
+
+/// Sticks unit 5 in build with its work done, then has a person open its change request: the
+/// forge now answers for `ns/5`. Returns the `PATH` of fakes that pass.
+fn stuck_with_person_opened_change_request(repo: &Repo) -> String {
+    let broken = Fakes {
+        exit: 1,
+        ..Fakes::passing()
+    };
+    run(repo, &tools(repo, &broken)).failure();
+    let path = tools(repo, &Fakes::passing());
+    std::fs::write(repo.path.parent().unwrap().join("bin/opened"), "").unwrap();
+    path
+}
+
+fn forge_mark(repo: &Repo, name: &str, content: &str) {
+    std::fs::write(repo.path.parent().unwrap().join("bin").join(name), content).unwrap();
+}
+
+#[test]
+fn a_stuck_unit_with_a_change_request_a_person_opened_goes_to_ship_and_is_cleaned_up() {
+    let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
+    let path = stuck_with_person_opened_change_request(&repo);
+    let sessions = || {
+        std::fs::read_to_string(repo.path.parent().unwrap().join("bin/claude.calls"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let before = sessions();
+    let out = run_with(&repo, &path, &["--merge"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let events = lines(&out);
+    assert_eq!(events[0], serde_json::json!({"unit": "5", "took_over": 9}));
+    let taken: Vec<String> = events
+        .iter()
+        .filter(|e| e.get("to").is_some())
+        .map(|e| {
+            format!(
+                "{}>{}",
+                e["from"].as_str().unwrap(),
+                e["to"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(
+        taken,
+        ["ship>clean_up", "clean_up>done"],
+        "no build, verify or review"
+    );
+    assert_eq!(sessions(), before, "no session ran");
+    assert!(gh_log(&repo).contains("pr merge"));
+    assert!(!repo.workspace("5").exists());
+    assert!(!repo.branches().contains(&"ns/5".to_string()));
+    assert!(gh_log(&repo).contains("--remove-label status:in-progress"));
+    let took_over = run_log(&repo)
+        .iter()
+        .any(|e| e["took_over"] == 9 && e["unit"] == "5");
+    assert!(took_over, "the run log records the take-over");
+}
+
+#[test]
+fn a_stuck_unit_whose_person_opened_change_request_merged_goes_straight_to_clean_up() {
+    let repo = Repo::new();
+    let path = stuck_with_person_opened_change_request(&repo);
+    forge_mark(&repo, "merged", "");
+    let out = run(&repo, &path).success().get_output().stdout.clone();
+    let taken: Vec<String> = lines(&out)
+        .iter()
+        .filter(|e| e.get("to").is_some())
+        .map(|e| {
+            format!(
+                "{}>{}",
+                e["from"].as_str().unwrap(),
+                e["to"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(taken, ["clean_up>done"]);
+    assert!(!repo.workspace("5").exists());
+    assert!(!repo.branches().contains(&"ns/5".to_string()));
+    assert!(!gh_log(&repo).contains("pr merge"));
+}
+
+#[test]
+fn a_stuck_unit_whose_person_opened_change_request_was_closed_removes_nothing() {
+    let repo = Repo::new();
+    let path = stuck_with_person_opened_change_request(&repo);
+    forge_mark(&repo, "closed", "");
+    let out = run(&repo, &path).failure().get_output().clone();
+    assert!(String::from_utf8_lossy(&out.stderr).contains("closed without merging"));
+    assert!(repo.workspace("5").is_dir());
+    assert!(repo.branches().contains(&"ns/5".to_string()));
+}
+
+#[test]
+fn a_stuck_unit_is_not_taken_over_when_the_workspace_is_not_the_change_requests_head() {
+    let repo = Repo::new();
+    let path = stuck_with_person_opened_change_request(&repo);
+    forge_mark(
+        &repo,
+        "pr-head",
+        "0123456789abcdef0123456789abcdef01234567\n",
+    );
+    let before = run_log(&repo).len();
+    let edits = gh_log(&repo).matches("issue edit").count();
+    let out = run(&repo, &path).failure().get_output().clone();
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not the head of the change request"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(run_log(&repo).len(), before);
+    assert!(!gh_log(&repo).contains("pr merge"));
+    assert_eq!(gh_log(&repo).matches("issue edit").count(), edits);
+    assert!(repo.workspace("5").is_dir());
+}
+
+#[test]
+fn a_stuck_unit_is_not_cleaned_up_when_a_merged_change_request_is_not_the_workspaces_head() {
+    let repo = Repo::new();
+    let path = stuck_with_person_opened_change_request(&repo);
+    forge_mark(&repo, "merged", "");
+    forge_mark(
+        &repo,
+        "pr-head",
+        "0123456789abcdef0123456789abcdef01234567\n",
+    );
+    let out = run(&repo, &path).failure().get_output().clone();
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not the head of the change request"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(repo.workspace("5").is_dir());
+    assert!(repo.branches().contains(&"ns/5".to_string()));
+}
+
+#[test]
+fn a_unit_stuck_in_ship_whose_change_request_a_person_merged_goes_to_clean_up() {
+    let repo = Repo::new();
+    let never = Fakes {
+        ci: Ci::NeverFinishes,
+        ..Fakes::passing()
+    };
+    run_with(
+        &repo,
+        &tools(&repo, &never),
+        &["--merge", "--ci-timeout-seconds", "0"],
+    )
+    .failure();
+    forge_mark(&repo, "merged", "");
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let events = lines(&out);
+    assert_eq!(events[0]["took_over"], 9);
+    assert!(!repo.workspace("5").exists());
+}
+
+#[test]
+fn a_unit_stuck_in_verify_with_a_change_request_a_person_opened_is_taken_over() {
+    let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
+    let path = stuck_in(&repo, "verify");
+    forge_mark(&repo, "opened", "");
+    let sessions = || {
+        std::fs::read_to_string(repo.path.parent().unwrap().join("bin/claude.calls"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let before = sessions();
+    let out = run_with(&repo, &path, &["--merge"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let events = lines(&out);
+    assert_eq!(events[0], serde_json::json!({"unit": "5", "took_over": 9}));
+    assert!(events.iter().all(|e| e["from"] != "stuck"), "{events:?}");
+    assert_eq!(sessions(), before, "no session ran");
+    assert!(gh_log(&repo).contains("pr merge"));
+    assert!(!repo.workspace("5").exists());
+}
+
+#[test]
+fn a_stuck_unit_with_no_change_request_resumes_as_before() {
+    let repo = Repo::new();
+    let broken = Fakes {
+        exit: 1,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &broken)).failure();
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let events = lines(&out);
+    assert_eq!(events[0]["state"], "build");
+    assert!(events.iter().all(|e| e.get("took_over").is_none()));
 }
 
 /// Sticks unit 5 in `state` by failing every check of it, then returns the `PATH` of fakes that pass.

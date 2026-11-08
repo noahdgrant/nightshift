@@ -163,15 +163,35 @@ pub fn run(args: Args) -> Result<()> {
         }
         ctx.workspace = Some(workspace);
     }
-    let start = match resume {
-        Resume::Stuck(stuck_in @ (State::Verify | State::Review)) => {
+    // `ns auto` never resumes a stuck unit, so it never takes one over either.
+    let taken_over =
+        match resume {
+            // A unit stuck in `setup` has no workspace, and one stuck in `clean_up` is past the change
+            // request. In `ship` the change request is `ns`'s own while it is open, so only a merge or
+            // a close by a person moves the unit.
+            Resume::Stuck(
+                stuck_in @ (State::Build | State::Verify | State::Review | State::Ship),
+            ) if !args.from_auto => takeover_find(&ctx, &log, &root, &unit, stuck_in)?,
+            _ => None,
+        };
+    let start = match (taken_over, resume) {
+        (Some(state), _) => state,
+        (None, Resume::Stuck(stuck_in @ (State::Verify | State::Review))) => {
             stuck_check_resume(&ctx, &log, &unit, stuck_in)?
         }
-        Resume::Fresh
-        | Resume::At(_)
-        | Resume::Finished
-        | Resume::Stuck(
-            State::Setup | State::Build | State::Ship | State::CleanUp | State::Done | State::Stuck,
+        (
+            None,
+            Resume::Fresh
+            | Resume::At(_)
+            | Resume::Finished
+            | Resume::Stuck(
+                State::Setup
+                | State::Build
+                | State::Ship
+                | State::CleanUp
+                | State::Done
+                | State::Stuck,
+            ),
         ) => planned,
     };
     status::unit_status_set(ctx.forge.as_ref(), &root, args.unit, status::IN_PROGRESS)?;
@@ -275,6 +295,54 @@ fn unproven_comment_add(ctx: &Context, log: &RunLog, root: &Path, unit: &str) ->
         .path;
     let note = states::unproven_note(dir, unit)?;
     ctx.forge.unit_comment_add(root, ctx.unit, &note)
+}
+
+/// Where a stuck unit goes when a person opened its change request by hand: `ship` for an open
+/// one, so `ns` waits for it and merges it as for a unit it shipped itself, and `clean_up` for one
+/// that has merged, and for a closed one too, where `clean_up` reports it and removes nothing, so
+/// the unit ends `stuck`. `None` when the forge has none for the unit's branch, or when the unit
+/// is stuck in `ship` and the change request is open. An open or merged
+/// one must be at the commit the workspace holds, or `ns` stops before it changes anything. The
+/// take-over is printed and logged with the change request's number.
+fn takeover_find(
+    ctx: &Context,
+    log: &RunLog,
+    root: &Path,
+    unit: &str,
+    stuck_in: State,
+) -> Result<Option<State>> {
+    let workspace = ctx
+        .workspace
+        .as_ref()
+        .context("a stuck unit has no workspace")?;
+    let Some(cr) = ctx.forge.change_request_get(root, &workspace.branch)? else {
+        return Ok(None);
+    };
+    let state = match cr.state {
+        ChangeState::Open => State::Ship,
+        ChangeState::Merged | ChangeState::Closed => State::CleanUp,
+    };
+    // A unit stuck in `ship` with its own open change request resumes as it always did.
+    if state == stuck_in {
+        return Ok(None);
+    }
+    // A merged change request can be an older one that reused the branch name, and `clean_up`
+    // would throw away the workspace's newer work; a closed one makes `clean_up` remove nothing.
+    if cr.state != ChangeState::Closed {
+        let head = ctx.vcs.workspace_head_find(&workspace.path)?;
+        if head != cr.head {
+            bail!(
+                "the workspace of unit {unit} is at {head}, which is not the head of the \
+                 change request {}, at {}; nothing was changed",
+                cr.url,
+                cr.head
+            );
+        }
+    }
+    let event = json!({ "unit": unit, "took_over": cr.number });
+    println!("{event}");
+    log.append(&event)?;
+    Ok(Some(state))
 }
 
 /// Where a unit stuck in the check `stuck_in` picks up. A workspace exactly as the last build left

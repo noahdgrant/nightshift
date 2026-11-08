@@ -36,6 +36,8 @@ The table in `cli/src/state.rs` is the source of truth.
 
 `ns run <unit>` resumes a unit at the state it stopped or got stuck in. A unit stuck in `verify` or `review` whose workspace is exactly as the last build left it resumes at `build` instead: the check would judge the same code again, so the build is told the failing findings and changes it.
 
+Before it resumes a unit stuck in `build`, `verify`, `review` or `ship`, `ns run` asks the forge for a change request whose head branch is `ns/<unit>`, so it recognises one a person opened by hand. An open one is taken over: the unit goes to `ship`, which rebases, waits for the change request's checks and merges when the merge policy allows, and then `clean_up` runs; `build`, `verify` and `review` do not run again. One that has merged goes straight to `clean_up`. One closed without merging goes to `clean_up` too, which reports it, removes nothing and leaves the unit `stuck`. With none, the unit resumes as above. An open or merged change request must be at the commit the workspace holds; otherwise `ns` stops and changes nothing, so it does not overwrite what the person pushed. A unit stuck in `ship` with an open change request resumes at `ship` as before, because `ns` opened that change request itself, and one stuck in `clean_up` is not asked. A take-over prints and logs `{"unit":..,"took_over":<number>}`. `ns auto` never takes a unit over.
+
 ```mermaid
 stateDiagram
     [*] --> setup
