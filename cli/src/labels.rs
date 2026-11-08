@@ -26,6 +26,9 @@ const TYPES: [(&str, &str); 11] = [
 /// On a change request that `ns` left for a person to merge, though its checks passed.
 pub const NEEDS_HUMAN_MERGE: &str = "needs-human-merge";
 
+/// On a change request that closes no unit, so the check that it does skips it.
+pub const SKIP_CLOSES_UNIT: &str = "skip-closes-unit";
+
 const PRIORITY_DESCRIPTIONS: [&str; 4] = [
     "Drop everything",
     "Before new features",
@@ -97,11 +100,15 @@ pub fn all(native: &[String]) -> Vec<(String, String)> {
         NEEDS_HUMAN_MERGE.to_string(),
         "A person merges this: it touches files the repository wants reviewed".to_string(),
     );
+    let skip_closes_unit = (
+        SKIP_CLOSES_UNIT.to_string(),
+        "This change request closes no unit, so the closes-unit check skips it".to_string(),
+    );
     status
         .into_iter()
         .chain(types)
         .chain(priorities)
-        .chain([needs_human_merge])
+        .chain([needs_human_merge, skip_closes_unit])
         .collect()
 }
 
@@ -126,7 +133,7 @@ mod tests {
     #[test]
     fn every_label_is_there_once() {
         let names: Vec<String> = all(&[]).into_iter().map(|(name, _)| name).collect();
-        assert_eq!(names.len(), 8 + 11 + 4 + 1);
+        assert_eq!(names.len(), 8 + 11 + 4 + 2);
         let mut sorted = names.clone();
         sorted.sort();
         sorted.dedup();
@@ -178,7 +185,7 @@ mod tests {
             .into_iter()
             .map(|(name, _)| name)
             .collect();
-        assert_eq!(names.len(), 8 + 9 + 4 + 1);
+        assert_eq!(names.len(), 8 + 9 + 4 + 2);
         assert!(!names.contains(&"type:feat".to_string()));
         assert!(!names.contains(&"type:fix".to_string()));
         assert!(names.contains(&"type:refactor".to_string()));

@@ -1,10 +1,10 @@
 name: PR closes a unit
 
-# A change request must close the unit it answers (standards/ns-coding-standards.md).
+# A change request must close the unit it answers (.nightshift/coding-standards.md).
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,9 +17,9 @@ permissions:
 jobs:
   closes-unit:
     name: Closes a unit
-    # Release-please PRs only bump the version and changelog, and close no
-    # unit. A skipped job counts as passing, so they can still merge.
-    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+    # A change request labelled skip-closes-unit closes no unit. A skipped job
+    # counts as passing, so it can still merge.
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-closes-unit') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -40,5 +40,5 @@ jobs:
             fi
             sleep 5
           done
-          echo "::error::The PR body must end with 'Closes #<unit>', naming a unit that exists. See standards/ns-coding-standards.md."
+          echo "::error::The PR body must end with 'Closes #<unit>', naming a unit that exists. See .nightshift/coding-standards.md."
           exit 1
