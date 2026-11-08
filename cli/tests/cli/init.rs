@@ -32,7 +32,7 @@ fn gh_log(repo: &Repo) -> String {
 fn init_cmd(repo: &Repo, dir: &std::path::Path) -> Command {
     let bin = gh(repo);
     let mut cmd = Command::cargo_bin("ns").unwrap();
-    cmd.arg("init")
+    cmd.args(["init", "--check", "true"])
         .env(
             "PATH",
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
@@ -152,6 +152,7 @@ fn the_skills_init_writes_are_not_changes_but_the_manifest_hook_agents_file_stan
         [
             ".claude/settings.json",
             ".github/workflows/closes-unit.yml",
+            ".nightshift/check",
             ".nightshift/coding-standards.md",
             ".nightshift/nightshift.toml",
             "AGENTS.md",
@@ -382,4 +383,34 @@ fn an_existing_closes_unit_workflow_is_left_alone() {
         std::fs::read_to_string(dir.join("closes-unit.yml")).unwrap(),
         "mine\n"
     );
+}
+
+#[test]
+fn init_writes_the_given_check_command_and_leaves_an_existing_file_alone() {
+    let repo = Repo::new();
+    init_in(&repo);
+    let file = repo.path.join(".nightshift/check");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "true\n");
+    std::fs::write(&file, "mine\n").unwrap();
+    init_in(&repo);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "mine\n");
+}
+
+#[test]
+fn init_with_no_terminal_and_no_checks_command_fails_and_says_what_to_pass() {
+    let repo = Repo::new();
+    let bin = gh(&repo);
+    let out = Command::cargo_bin("ns")
+        .unwrap()
+        .arg("init")
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .current_dir(&repo.path)
+        .assert()
+        .failure();
+    let err = String::from_utf8_lossy(&out.get_output().stderr).to_string();
+    assert!(err.contains("--check '<command>'"), "{err}");
+    assert!(!repo.path.join(".nightshift/check").exists());
 }

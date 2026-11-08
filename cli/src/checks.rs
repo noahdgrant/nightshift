@@ -12,7 +12,7 @@ use crate::vcs::Vcs;
 
 /// The file holding the command that runs the repository's checks, read from the workspace. A
 /// unit that changes it is held to its change; whether the change is good is for `review` to say.
-const COMMAND_FILE: &str = ".nightshift/check";
+pub(crate) const COMMAND_FILE: &str = ".nightshift/check";
 
 pub struct Report {
     pub passed: bool,
