@@ -14,7 +14,7 @@ pub fn forge(repo: &Repo, body: &str, labels: &[&str]) {
         .map(|l| format!(r#"{{"name":"{l}"}}"#))
         .collect();
     let unit = format!(
-        r#"{{"number":4,"title":"unit 4","body":"{body}","labels":[{}],"author_association":"OWNER"}}"#,
+        r#"{{"number":4,"title":"unit 4","body":"{body}","labels":[{}],"author_association":"OWNER","html_url":"https://github.com/o/r/issues/4"}}"#,
         labels.join(",")
     );
     script(

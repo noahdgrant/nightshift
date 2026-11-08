@@ -19,6 +19,7 @@ pub struct Args {
 pub fn run(args: Args) -> Result<()> {
     let vcs = vcs::get();
     let root = vcs.root_find(&std::env::current_dir()?)?;
+    let unit = forge::get().unit_get(&root, args.unit)?;
     let slices = define::run(
         forge::get().as_ref(),
         harness::get().as_ref(),
@@ -27,6 +28,9 @@ pub fn run(args: Args) -> Result<()> {
         args.unit,
         Duration::from_secs(args.harness_timeout_seconds),
     )?;
-    println!("{}", json!({ "unit": args.unit, "slices": slices }));
+    println!(
+        "{}",
+        json!({ "unit": args.unit, "url": unit.url, "slices": slices })
+    );
     Ok(())
 }

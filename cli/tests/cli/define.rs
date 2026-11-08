@@ -37,7 +37,13 @@ fn a_defined_unit_has_the_spec_then_the_slices_and_is_ready() {
     let repo = Repo::new();
     forge(&repo, "Vague idea.", &["status:needs-define"]);
     claude(&repo, "Goal: do the thing.", SLICES);
-    ns(&repo, &["define", "4"]).success();
+    let out = ns(&repo, &["define", "4"]).success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("https://github.com/o/r/issues/4"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains(".md"), "{stdout}");
     let log = gh_log(&repo);
     // The spec is recorded first, with the original kept, so a failed plan loses nothing.
     assert!(log.contains("issue edit 4 --body 🤖 *Posted by nightshift, an AI agent.*\n\nGoal: do the thing.\n\n<details><summary>Original description</summary>\n\nVague idea."), "{log}");
@@ -62,6 +68,8 @@ fn the_session_is_given_the_grilling_the_requirements_and_the_unit() {
     assert!(prompt.contains("Interview the user relentlessly"));
     assert!(prompt.contains("You turn one vague unit into a spec"));
     assert!(prompt.contains("## unit 4\n\nVague idea."));
+    assert!(prompt.contains("Show the whole spec"), "{prompt}");
+    assert!(prompt.contains("`ns` records it on the unit"), "{prompt}");
 }
 
 #[test]

@@ -181,6 +181,7 @@ mod tests {
             body: body.into(),
             labels: labels.iter().map(|l| l.to_string()).collect(),
             from_team,
+            url: String::new(),
         }
     }
 

@@ -1,11 +1,11 @@
 ---
 name: ns-requirements
-description: Turn a vague unit into a spec a builder can work from, and write it to the file you are given. Use in the define step, once the user has been grilled, or when asked to write the requirements of a unit.
+description: Turn a vague unit into a spec a builder can work from, show it to the user in the conversation, and once they approve it write it to the file you are given. Use in the define step, once the user has been grilled, or when asked to write the requirements of a unit.
 ---
 
 # Requirements
 
-You turn one vague unit into a spec. You are given its title and description, and the path of the file to write. The user is in this session with you.
+You turn one vague unit into a spec. You are given its title and description, and the path of the file to write. The user is in this session with you and reads the spec here, in the conversation, never in a file.
 
 ## 1. Settle what is asked
 
@@ -28,4 +28,4 @@ Done when every requirement can be passed or failed and nothing in it names a me
 
 ## 3. Confirm, then write
 
-Show the user the spec. Write it to the file you were given only after they say it is right, then stop. Never write a file anywhere else.
+Show the user the whole spec in the conversation, and ask them to approve it or say what to change. Revise and show it again until they approve. Write it to the file you were given only after they approve, then stop; `ns` records it on the unit. Never edit the issue yourself, and never write a file anywhere else.

@@ -524,6 +524,7 @@ fn unit_from(v: &Value) -> Result<Unit> {
             v["author_association"].as_str(),
             Some("OWNER" | "MEMBER" | "COLLABORATOR")
         ),
+        url: text(&v["html_url"]),
     })
 }
 
@@ -611,7 +612,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let gh = fake(
             tmp.path(),
-            r#"{"number":7,"title":"t","body":"b","labels":[{"name":"a"},{"name":"b"}],"author_association":"MEMBER"}"#,
+            r#"{"number":7,"title":"t","body":"b","labels":[{"name":"a"},{"name":"b"}],"author_association":"MEMBER","html_url":"https://github.com/o/r/issues/7"}"#,
         );
         let unit = gh.unit_get(tmp.path(), 7).unwrap();
         assert_eq!(
@@ -622,6 +623,7 @@ mod tests {
                 body: "b".into(),
                 labels: vec!["a".into(), "b".into()],
                 from_team: true,
+                url: "https://github.com/o/r/issues/7".into(),
             }
         );
     }

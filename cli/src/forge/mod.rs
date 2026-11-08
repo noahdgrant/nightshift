@@ -142,6 +142,8 @@ pub struct Unit {
     pub labels: Vec<String>,
     /// Whether the unit's author is on the repository's team. Only the team's units are worked.
     pub from_team: bool,
+    /// The unit's address on the forge.
+    pub url: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]

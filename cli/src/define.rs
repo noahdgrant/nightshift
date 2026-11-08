@@ -44,6 +44,7 @@ pub fn run(
         body: brief::body_defined(&spec, &unit.body),
         labels: unit.labels.clone(),
         title: unit.title.clone(),
+        url: unit.url.clone(),
         ..unit
     };
     forge.unit_body_set(root, number, &defined.body)?;
@@ -56,7 +57,9 @@ pub fn run(
 
 fn prompt(unit: &Unit, file: &Path) -> Result<String> {
     Ok(format!(
-        "{}\n\n{}\n\n# The unit\n\n## {}\n\n{}\n\nWrite the spec to: {}\n",
+        "{}\n\n{}\n\n# The unit\n\n## {}\n\n{}\n\nShow the whole spec to the person in this conversation, and ask them to approve it or say what \
+to change. Only once they approve, write it to the file below, then stop. `ns` records it on the \
+unit afterwards; never edit the issue yourself.\n\nWrite the spec to: {}\n",
         skill::load(skill::GRILLING)?,
         skill::load(skill::REQUIREMENTS)?,
         unit.title,
