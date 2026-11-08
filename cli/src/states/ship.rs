@@ -11,7 +11,7 @@ use crate::forge::{Checks, DISCLOSURE};
 use crate::labels;
 use crate::lock;
 use crate::manifest;
-use crate::merge::Verdict;
+use crate::merge::{self, Verdict};
 use crate::runlog::RunLog;
 use crate::state::Outcome;
 use crate::vcs::{Rebase, Vcs};
@@ -56,17 +56,8 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let (dir, branch) = (workspace.path.clone(), workspace.branch.clone());
     let id = ctx.unit.to_string();
     let root = ctx.vcs.root_find(&ctx.from)?;
-    // Whether the unit is to be merged, and so is queued behind the others that are.
-    let human = if ctx.ship.merge {
-        let base = ctx.vcs.workspace_base_find(&dir)?;
-        let files = ctx.vcs.workspace_files_changed(&dir, &base)?;
-        match manifest::human_review_read(&root)?.verdict(&files)? {
-            Verdict::NeedsHuman { file, glob } => Some((file, glob)),
-            _ => None,
-        }
-    } else {
-        None
-    };
+    // Whether a person must merge the unit, as far as the branch before any rebase says.
+    let mut human = hold_find(ctx, &root, &dir)?;
     // Held from before the rebase until this function returns, whichever way it does.
     let _lock = if ctx.ship.queue && ctx.ship.merge && human.is_none() {
         Some(lock::lock_wait(
@@ -92,7 +83,12 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         if !ctx.ship.merge {
             return Ok(Outcome::Pass);
         }
-        if let Some((file, glob)) = &human {
+        // A rebase brings in the base's markers, so a change that was outside every region may
+        // now be inside one: decide again on the tree that is to be merged.
+        if human.is_none() {
+            human = hold_find(ctx, &root, &dir)?;
+        }
+        if let Some(why) = &human {
             ctx.forge
                 .change_request_label_add(&dir, number, labels::NEEDS_HUMAN_MERGE)?;
             println!(
@@ -100,7 +96,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
                 json!({
                     "unit": id,
                     "state": "ship",
-                    "not_merged": format!("{file} matches {glob} in merge.human_review, so a person merges it"),
+                    "not_merged": why,
                 })
             );
             return Ok(Outcome::Pass);
@@ -124,6 +120,41 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         ctx.forge.change_request_merge(&dir, number, &head)?;
         return Ok(Outcome::Pass);
     }
+}
+
+/// Why a person must merge the unit's change, when it is to be merged: it touches a path of
+/// `merge.human_review` or a human-review region, compared with the unit's recorded base.
+fn hold_find(ctx: &Context, root: &Path, dir: &Path) -> Result<Option<String>> {
+    if !ctx.ship.merge {
+        return Ok(None);
+    }
+    let base = ctx.vcs.workspace_base_find(dir)?;
+    let files = ctx.vcs.workspace_files_changed(dir, &base)?;
+    Ok(match manifest::human_review_read(root)?.verdict(&files)? {
+        Verdict::NeedsHuman { file, glob } => Some(format!(
+            "{file} matches {glob} in merge.human_review, so a person merges it"
+        )),
+        _ => region_hold_find(ctx, dir, &base, &files)?,
+    })
+}
+
+/// Why a person must merge the change, when it touches a human-review region of one of `files`:
+/// the first file that does.
+fn region_hold_find(
+    ctx: &Context,
+    dir: &Path,
+    base: &str,
+    files: &[String],
+) -> Result<Option<String>> {
+    for file in files {
+        let hunks = ctx.vcs.workspace_hunks(dir, base, file)?;
+        let old = ctx.vcs.workspace_file_read(dir, base, file)?;
+        let new = ctx.vcs.workspace_file_read(dir, "HEAD", file)?;
+        if let Some(why) = merge::region_hold(file, old.as_deref(), new.as_deref(), &hunks) {
+            return Ok(Some(why));
+        }
+    }
+    Ok(None)
 }
 
 /// What bringing a branch up to date with the base branch did.
