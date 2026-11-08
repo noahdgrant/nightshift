@@ -136,6 +136,15 @@ impl Vcs for Git {
         tree
     }
 
+    fn workspace_files_list(&self, path: &Path) -> Result<Vec<String>> {
+        let names = run(path, &["ls-files", "-z"])?;
+        Ok(names
+            .split('\0')
+            .filter(|name| !name.is_empty())
+            .map(String::from)
+            .collect())
+    }
+
     fn workspace_changes_list(&self, path: &Path) -> Result<Vec<String>> {
         let status = run(path, &["status", "--porcelain"])?;
         Ok(status.lines().map(|l| l.trim().to_string()).collect())

@@ -47,6 +47,14 @@ Then, in each project you want to run the factory on:
 
 A unit's type is set by the repository's kind. Where the owner is an organization with native issue types, `ns triage` sets Feature for `feat` and Bug for `fix` and adds no `type:` label for them (`ns init` does not create `type:feat` or `type:fix` there); every other type is set as Task and also keeps its `type:` label, which records the exact type. `ns init` never creates or changes a native type, since that is an organization setting. If the organization has renamed or removed Feature, Bug or Task, or the repository is a personal one with no native types, the `type:` labels carry the type, as before.
 
+A file can fence lines a person must review with a start marker and an end marker, each a line of a comment in any syntax. The start marker may give a reason after a colon. Regions do not nest. `ns check` runs before the repository's checks and fails, naming the file and line, on a start with no end, an end with no start, or a start inside another region. It reads the text files git tracks; a file with no markers is fine. This is what a region looks like:
+
+```
+# ns:human-review start: the retry limit is a business rule
+MAX_RETRIES = 3
+# ns:human-review end
+```
+
 Run `ns doctor` to confirm the setup. It prints a JSON object with one check each for the pin, the harness, the forge login, `.nightshift/check`, the labels, the classic branch protection of the default branch (a branch protected only by rulesets reads as unprotected), the `closes-unit` workflow and the coding standards (the file must equal the pinned version's), says how to fix any that fails, and exits 1 when one does. It changes nothing.
 
 To move a repository to a newer `ns`, install it, then run `ns upgrade <version>` and commit the new pin.
@@ -85,7 +93,7 @@ With `--merge`, `ns run` and `ns auto` merge a change request once its checks pa
 human_review = [".github/**", ".nightshift/**", "skills/**"]
 ```
 
-Before it pushes, `ns` rebases the unit's branch onto the base branch when that has moved, and runs `.nightshift/check` on the result. A conflict or a failing check sends the unit back to `build`; `verify` and `review` do not run again for a clean rebase. A unit that is going to merge (`--merge`, and no file in the change matches `human_review`) takes a lock on the repository before it fetches the base branch and holds it until it is merged or leaves `ship`, so units merge one at a time, each rebased onto a base branch that holds the one before. It waits for the lock without a limit; the wait for the change request's checks under it is bounded by the timeout for checks. It fetches the base branch again before the merge, and if a merge from outside `ns` moved it, the unit goes round again; the merge names the head commit the checks passed. `[merge] queue` turns all of this off (default `true`), for a repository with GitHub's own merge queue or one that does not care, and `[merge] max_base_moves` is how many times the base branch may move, by merges from outside `ns`, while one change request is merged before the unit is stuck (default 3, a whole number of at least 1). A value of the wrong type or range is an error, and `ns` stops before it runs anything.
+Before it pushes, `ns` rebases the unit's branch onto the base branch when that has moved, and runs the checks on the result (the human-review markers first, then `.nightshift/check`). A conflict or a failing check sends the unit back to `build`; `verify` and `review` do not run again for a clean rebase. A unit that is going to merge (`--merge`, and no file in the change matches `human_review`) takes a lock on the repository before it fetches the base branch and holds it until it is merged or leaves `ship`, so units merge one at a time, each rebased onto a base branch that holds the one before. It waits for the lock without a limit; the wait for the change request's checks under it is bounded by the timeout for checks. It fetches the base branch again before the merge, and if a merge from outside `ns` moved it, the unit goes round again; the merge names the head commit the checks passed. `[merge] queue` turns all of this off (default `true`), for a repository with GitHub's own merge queue or one that does not care, and `[merge] max_base_moves` is how many times the base branch may move, by merges from outside `ns`, while one change request is merged before the unit is stuck (default 3, a whole number of at least 1). A value of the wrong type or range is an error, and `ns` stops before it runs anything.
 
 ```toml
 [merge]

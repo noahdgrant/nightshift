@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::markers;
 use crate::os::Os;
 use crate::vcs::Vcs;
 
@@ -42,6 +43,16 @@ pub fn run(
     stream: bool,
     timeout: Duration,
 ) -> Result<Option<Report>> {
+    if let Some(problems) = markers_check(vcs, workspace)? {
+        if stream {
+            eprintln!("{problems}");
+        }
+        return Ok(Some(Report {
+            passed: false,
+            cached: false,
+            output: if stream { String::new() } else { problems },
+        }));
+    }
     let Some(command) = command_find(workspace)? else {
         return Ok(None);
     };
@@ -64,6 +75,23 @@ pub fn run(
         cached: false,
         output,
     }))
+}
+
+/// What is wrong with the human-review markers in the files git tracks in `workspace`, one line
+/// per file naming the file and line, or `None` when every marker reads. Files that are not text
+/// are skipped.
+fn markers_check(vcs: &dyn Vcs, workspace: &Path) -> Result<Option<String>> {
+    let mut problems = Vec::new();
+    for name in vcs.workspace_files_list(workspace)? {
+        let Ok(text) = std::fs::read(workspace.join(&name)).map(String::from_utf8) else {
+            continue;
+        };
+        let Ok(text) = text else { continue };
+        if let Err(e) = markers::regions_read(&text) {
+            problems.push(format!("{name}:{}: {e}", e.line()));
+        }
+    }
+    Ok((!problems.is_empty()).then(|| problems.join("\n")))
 }
 
 fn execute(
