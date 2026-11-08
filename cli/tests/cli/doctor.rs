@@ -3,14 +3,15 @@ use crate::common::{script, Repo};
 use assert_cmd::Command;
 use serde_json::Value;
 
-const ALL_LABELS: [&str; 25] = [
+const ALL_LABELS: [&str; 26] = [
     "status:needs-triage",
     "status:needs-define",
     "status:needs-repro",
     "status:needs-info",
     "status:ready-for-agent",
     "status:in-progress",
-    "status:ready-for-human",
+    "status:stuck",
+    "status:waiting-for-human",
     "status:wontfix",
     "type:feat",
     "type:fix",
@@ -589,4 +590,28 @@ fn missing_standards_fail_and_say_to_sync() {
     let setup = Setup::new();
     std::fs::remove_file(setup.repo.path.join(".nightshift/coding-standards.md")).unwrap();
     only_fails(&setup, "standards", "ns sync");
+}
+
+#[test]
+fn the_old_ready_for_human_label_fails_and_says_to_init() {
+    let setup = Setup::new();
+    let mut have = ALL_LABELS.to_vec();
+    have.push("status:ready-for-human");
+    setup.labels(&have);
+    only_fails(&setup, "labels", "status:ready-for-human");
+    let (_, report) = setup.doctor();
+    assert!(check(&report, "labels")["detail"]
+        .as_str()
+        .unwrap()
+        .contains("ns init"));
+}
+
+#[test]
+fn a_missing_stuck_or_waiting_label_fails() {
+    for gone in ["status:stuck", "status:waiting-for-human"] {
+        let setup = Setup::new();
+        let have: Vec<&str> = ALL_LABELS.iter().copied().filter(|l| *l != gone).collect();
+        setup.labels(&have);
+        only_fails(&setup, "labels", gone);
+    }
 }

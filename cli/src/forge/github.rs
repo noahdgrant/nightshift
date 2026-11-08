@@ -199,6 +199,11 @@ impl Forge for GitHub {
         Ok(())
     }
 
+    fn label_rename(&self, repo: &Path, from: &str, to: &str) -> Result<()> {
+        self.gh(repo, &["label", "edit", from, "--name", to])?;
+        Ok(())
+    }
+
     fn release_download(
         &self,
         source: &str,

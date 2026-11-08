@@ -18,11 +18,15 @@ pub const NEEDS_INFO: &str = "status:needs-info";
 pub const WONTFIX: &str = "status:wontfix";
 /// `ns run` has the unit.
 pub const IN_PROGRESS: &str = "status:in-progress";
-/// The unit waits for a human: it is stuck, went wrong, or its change request is ready to merge.
-pub const READY_FOR_HUMAN: &str = "status:ready-for-human";
+/// The unit ended `stuck`: a state failed every attempt, or verification could not prove it twice.
+pub const STUCK: &str = "status:stuck";
+/// The unit waits for a person and is not stuck: a merge, hardware, credentials or a decision.
+pub const WAITING_FOR_HUMAN: &str = "status:waiting-for-human";
+/// The name `WAITING_FOR_HUMAN` had before it was told apart from `STUCK`. `ns` never sets it.
+pub const LEGACY_READY_FOR_HUMAN: &str = "status:ready-for-human";
 
 /// Every status label `ns` sets, with what it tells a reader of the forge.
-pub fn all() -> [(&'static str, &'static str); 8] {
+pub fn all() -> [(&'static str, &'static str); 9] {
     [
         (crate::auto::NEEDS_TRIAGE, "Nobody has looked at this yet"),
         (NEEDS_DEFINE, "Too vague to build; waits for a spec"),
@@ -31,8 +35,12 @@ pub fn all() -> [(&'static str, &'static str); 8] {
         (crate::auto::READY, "Ready for the agent to build"),
         (IN_PROGRESS, "ns is working on this"),
         (
-            READY_FOR_HUMAN,
-            "Waits for a human: stuck, failed, or ready to merge",
+            STUCK,
+            "A state failed every attempt or could not be proven; a person looks first",
+        ),
+        (
+            WAITING_FOR_HUMAN,
+            "Waiting for a person: a merge, hardware, credentials or a decision",
         ),
         (WONTFIX, "Will not be done"),
     ]

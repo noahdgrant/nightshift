@@ -65,7 +65,7 @@ impl Route {
             Route::Define => crate::status::NEEDS_DEFINE,
             Route::Repro => crate::status::NEEDS_REPRO,
             Route::Info => crate::status::NEEDS_INFO,
-            Route::Human => crate::status::READY_FOR_HUMAN,
+            Route::Human => crate::status::WAITING_FOR_HUMAN,
             Route::Wontfix => crate::status::WONTFIX,
         }
     }

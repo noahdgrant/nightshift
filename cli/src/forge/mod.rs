@@ -24,6 +24,9 @@ pub trait Forge {
     /// Creates the label `name`, which the repository does not have.
     fn label_create(&self, repo: &Path, name: &str, description: &str) -> Result<()>;
 
+    /// Renames the label `from` to `to`, which keeps every unit that carries it.
+    fn label_rename(&self, repo: &Path, from: &str, to: &str) -> Result<()>;
+
     /// The names of the native unit types the repository at `repo` has. An error when the forge
     /// cannot say; none when it has no such types.
     fn unit_types_list(&self, repo: &Path) -> Result<Vec<String>>;
@@ -207,6 +210,9 @@ mod tests {
         fn label_create(&self, _: &Path, _: &str, _: &str) -> Result<()> {
             unreachable!()
         }
+        fn label_rename(&self, _: &Path, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
         fn unit_labels_set(&self, _: &Path, _: u64, _: &[String], _: &[String]) -> Result<()> {
             unreachable!()
         }
@@ -282,6 +288,9 @@ mod tests {
             unreachable!()
         }
         fn label_create(&self, _: &Path, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn label_rename(&self, _: &Path, _: &str, _: &str) -> Result<()> {
             unreachable!()
         }
         fn unit_labels_set(&self, _: &Path, _: u64, _: &[String], _: &[String]) -> Result<()> {

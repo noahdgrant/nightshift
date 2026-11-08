@@ -21,8 +21,12 @@ One go at a state. A failed state is tried again until its attempts run out.
 _Avoid_: Retry, try
 
 **Stuck**:
-The end state of a unit whose state failed every attempt, or whose verification could not prove it twice. It waits for a human.
+The end state of a unit whose state failed every attempt, or whose verification could not prove it twice. A person looks first. It carries `status:stuck`.
 _Avoid_: Failed, blocked
+
+**Waiting for a human**:
+The state of a unit that a person must act on and that is not stuck: a change request waiting for a merge, or work that needs hardware, credentials or a decision. It carries `status:waiting-for-human`.
+_Avoid_: Ready for human
 
 **Workspace**:
 A directory where one unit's work happens, kept apart from the main checkout and from other units' workspaces.
