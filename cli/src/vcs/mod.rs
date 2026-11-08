@@ -2,9 +2,18 @@
 
 mod git;
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+
+/// A run of lines a change touched: the 1-based lines it removed from the old version and the
+/// lines it put in the new one, each empty when the change only added or only removed.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Hunk {
+    pub old: Range<usize>,
+    pub new: Range<usize>,
+}
 
 pub trait Vcs {
     /// The root of the main checkout of the repository `from` is in, even when `from` is
@@ -47,6 +56,13 @@ pub trait Vcs {
     /// The files the workspace's branch changed since `base`, relative to the top of the
     /// repository. A file that moved is listed under both names.
     fn workspace_files_changed(&self, path: &Path, base: &str) -> Result<Vec<String>>;
+
+    /// The hunks of `file` that the workspace's branch changed since `base`, in order, with no
+    /// context lines around them. A file that is binary has none.
+    fn workspace_hunks(&self, path: &Path, base: &str, file: &str) -> Result<Vec<Hunk>>;
+
+    /// The text of `file` at commit `rev`, or `None` when the commit has no such file.
+    fn workspace_file_read(&self, path: &Path, rev: &str, file: &str) -> Result<Option<String>>;
 
     /// How many commits the workspace's branch holds past `base`.
     fn workspace_commits_count(&self, path: &Path, base: &str) -> Result<usize>;

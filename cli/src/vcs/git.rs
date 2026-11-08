@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use super::{Rebase, Vcs};
+use super::{Hunk, Rebase, Vcs};
 use crate::retry;
 
 /// What git says when a call to the remote failed for a reason that can pass.
@@ -115,6 +115,41 @@ impl Vcs for Git {
             .filter(|name| !name.is_empty())
             .map(String::from)
             .collect())
+    }
+
+    fn workspace_hunks(&self, path: &Path, base: &str, file: &str) -> Result<Vec<Hunk>> {
+        let diff = run(
+            path,
+            &[
+                "diff",
+                "-U0",
+                "--no-color",
+                "--no-renames",
+                &format!("{base}..HEAD"),
+                "--",
+                file,
+            ],
+        )?;
+        Ok(diff.lines().filter_map(hunk_read).collect())
+    }
+
+    fn workspace_file_read(&self, path: &Path, rev: &str, file: &str) -> Result<Option<String>> {
+        let object = format!("{rev}:{file}");
+        if !succeeds(path, &["cat-file", "-e", &object]) {
+            return Ok(None);
+        }
+        let out = Command::new("git")
+            .args(["show", &object])
+            .current_dir(path)
+            .output()
+            .context("cannot run git")?;
+        if !out.status.success() {
+            bail!(
+                "git show {object} failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
     }
 
     fn workspace_commits_count(&self, path: &Path, base: &str) -> Result<usize> {
@@ -301,6 +336,26 @@ fn exclude(root: &Path, pattern: &str) -> Result<()> {
     };
     std::fs::write(&file, format!("{text}{sep}{pattern}\n"))
         .with_context(|| format!("cannot write {}", file.display()))
+}
+
+/// The hunk a `@@ -a,b +c,d @@` line of a patch names, or `None` for any other line.
+fn hunk_read(line: &str) -> Option<Hunk> {
+    let rest = line.strip_prefix("@@ -")?;
+    let (old, rest) = rest.split_once(" +")?;
+    let (new, _) = rest.split_once(" @@")?;
+    let range = |spec: &str| -> Option<std::ops::Range<usize>> {
+        let (start, count) = match spec.split_once(',') {
+            Some((s, c)) => (s.parse().ok()?, c.parse().ok()?),
+            None => (spec.parse().ok()?, 1),
+        };
+        // With a count of 0, git names the line the lines would come after.
+        let start = if count == 0 { start + 1 } else { start };
+        Some(start..start + count)
+    };
+    Some(Hunk {
+        old: range(old)?,
+        new: range(new)?,
+    })
 }
 
 /// Runs `git args` in `dir` and returns its trimmed stdout.
@@ -567,5 +622,38 @@ mod tests {
             .workspace_rebase(&ws, "0000000000000000000000000000000000000000")
             .unwrap_err();
         assert!(err.to_string().contains("rebase"), "{err}");
+    }
+
+    #[test]
+    fn hunks_name_the_lines_each_side_of_a_change() {
+        let repo = tempfile::tempdir().unwrap();
+        let dir = repo.path();
+        git(dir, &["init", "-q"]);
+        let base = commit_file(dir, "f", "1\n2\n3\n4\n5\n");
+        commit_file(dir, "f", "1\nx\n3\n5\n6\n");
+        let vcs = Git::new();
+
+        assert_eq!(
+            vcs.workspace_hunks(dir, &base, "f").unwrap(),
+            vec![
+                Hunk {
+                    old: 2..3,
+                    new: 2..3
+                },
+                Hunk {
+                    old: 4..5,
+                    new: 4..4
+                },
+                Hunk {
+                    old: 6..6,
+                    new: 5..6
+                },
+            ]
+        );
+        assert_eq!(
+            vcs.workspace_file_read(dir, &base, "f").unwrap().as_deref(),
+            Some("1\n2\n3\n4\n5\n")
+        );
+        assert_eq!(vcs.workspace_file_read(dir, &base, "g").unwrap(), None);
     }
 }

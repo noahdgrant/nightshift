@@ -44,6 +44,8 @@ pub struct Fakes {
     pub refuses_comment: bool,
     /// The file the build writes, relative to the workspace.
     pub builds: &'static str,
+    /// The text the build writes to that file.
+    pub content: &'static str,
     /// How each triage or troubleshoot session ends, one letter per session in the order they run:
     /// `s` answers, `f` fails as a harness that is down, `b` exits cleanly with an answer `ns`
     /// cannot use. Sessions past its end answer.
@@ -114,6 +116,7 @@ impl Fakes {
             refuses_assignee: false,
             refuses_comment: false,
             builds: "thing.txt",
+            content: "thing\n",
             sessions: "",
             blocked_by: Some("[[]]"),
         }
@@ -255,7 +258,7 @@ case "$p" in
 *"The checks failed:"*) touch "{bin}/fixed"; echo fixed it;;
 *"left uncommitted changes"*) {when_told}echo committed when told;;
 *"commits on the branch"*) {squash}echo squashed when told;;
-*) {drop}printf %s "$p" > "{bin}/build.prompt"; mkdir -p "$(dirname '{builds}')"; echo thing > '{builds}'; {run_checks}{commit}echo built the thing;;
+*) {drop}printf %s "$p" > "{bin}/build.prompt"; mkdir -p "$(dirname '{builds}')"; printf %s '{content}' > '{builds}'; {run_checks}{commit}echo built the thing;;
 esac
 exit {exit}"#,
             bin = bin.display(),
@@ -275,6 +278,7 @@ exit {exit}"#,
             },
             exit = fakes.exit,
             builds = fakes.builds,
+            content = fakes.content,
             session = format!(
                 r#"n=$(cat "{bin}/sessions" 2>/dev/null || echo 0); echo $((n+1)) > "{bin}/sessions"; case "$(printf %s '{pattern}' | cut -c$((n+1)))" in f) exit 1;; b) echo 'Not an answer.';; "#,
                 bin = bin.display(),
@@ -1068,6 +1072,129 @@ fn a_change_touching_a_human_review_file_is_not_merged_and_is_labeled() {
         log.contains("issue edit 5 --add-label status:ready-for-human"),
         "{log}"
     );
+}
+
+/// `text` with `@start` and `@end` written as the human-review markers, which this repository's
+/// own files must not hold.
+fn marked(text: &str) -> String {
+    text.replace("@start", concat!("ns:human-", "review start"))
+        .replace("@end", concat!("ns:human-", "review end"))
+}
+
+/// Commits `region.txt` as `before` to the repository, builds `after` over it, and runs the unit
+/// to the merge. Returns what `ns` printed and what `gh` was asked.
+fn region_run(before: &str, after: &str) -> (String, String) {
+    let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = []\n");
+    std::fs::write(repo.path.join("region.txt"), marked(before)).unwrap();
+    git(&repo.path, &["add", "region.txt"]);
+    git(&repo.path, &["commit", "-q", "-m", "add region.txt"]);
+    let after = marked(after);
+    let fakes = Fakes {
+        builds: "region.txt",
+        content: Box::leak(after.into_boxed_str()),
+        ..Fakes::passing()
+    };
+    let out = run_with(&repo, &tools(&repo, &fakes), &["--merge"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    (String::from_utf8(out).unwrap(), gh_log(&repo))
+}
+
+const REGION_BEFORE: &str = "a\n@start: the retry limit\nMAX = 3\n@end\nz\n";
+
+fn assert_merged(out: &str, log: &str) {
+    assert_eq!(log.matches("pr merge 9 --squash").count(), 1, "{log}");
+    assert!(!log.contains("needs-human-merge"), "{log}\n{out}");
+}
+
+fn assert_held(out: &str, log: &str, said: &str) {
+    assert!(!log.contains("pr merge"), "{log}");
+    assert_eq!(
+        log.matches("pr edit 9 --add-label needs-human-merge")
+            .count(),
+        1,
+        "{log}"
+    );
+    assert!(
+        log.contains("issue edit 5 --add-label status:ready-for-human"),
+        "{log}"
+    );
+    assert!(out.contains(said), "{out}");
+}
+
+#[test]
+fn a_change_outside_every_region_is_merged() {
+    let (out, log) = region_run(REGION_BEFORE, &REGION_BEFORE.replace("z\n", "y\n"));
+    assert_merged(&out, &log);
+}
+
+#[test]
+fn a_change_inside_a_region_is_held_and_names_the_file_lines_and_reason() {
+    let (out, log) = region_run(REGION_BEFORE, &REGION_BEFORE.replace("MAX = 3", "MAX = 9"));
+    assert_held(
+        &out,
+        &log,
+        "region.txt changes lines 2-4 of its old version, a human-review region: the retry limit, so a person merges it",
+    );
+}
+
+#[test]
+fn a_change_that_deletes_lines_that_were_in_a_region_is_held() {
+    let (out, log) = region_run(REGION_BEFORE, "a\nz\n");
+    assert_held(
+        &out,
+        &log,
+        "region.txt changes lines 2-4 of its old version",
+    );
+}
+
+#[test]
+fn a_change_that_moves_a_marker_is_held() {
+    let (out, log) = region_run(
+        REGION_BEFORE,
+        "a\nMAX = 3\n@start: the retry limit\n@end\nz\n",
+    );
+    assert_held(&out, &log, "region.txt changes lines");
+}
+
+#[test]
+fn a_base_that_gains_a_region_around_the_change_while_it_is_rebased_holds_it() {
+    let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = []\n");
+    std::fs::write(repo.path.join("region.txt"), "l1\nl2\nl3\nl4\nl5\nl6\nl7\n").unwrap();
+    git(&repo.path, &["add", "region.txt"]);
+    git(&repo.path, &["commit", "-q", "-m", "add region.txt"]);
+    main_published(&repo);
+    // Another unit wraps l3 to l5 in a region after this one started, leaving l4 as it was.
+    base_advanced(
+        &repo,
+        "region.txt",
+        &marked("l1\nl2\n@start: the retry limit\nl3\nl4\nl5\n@end\nl6\nl7"),
+    );
+    let fakes = Fakes {
+        builds: "region.txt",
+        content: "l1\nl2\nl3\nX\nl5\nl6\nl7\n",
+        ..Fakes::passing()
+    };
+    let out = run_with(&repo, &tools(&repo, &fakes), &["--merge"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_held(
+        &String::from_utf8(out).unwrap(),
+        &gh_log(&repo),
+        "region.txt changes lines",
+    );
+}
+
+#[test]
+fn a_change_to_a_file_without_markers_is_merged() {
+    let (out, log) = region_run("a\nb\n", "a\nc\n");
+    assert_merged(&out, &log);
 }
 
 #[test]

@@ -4,6 +4,9 @@
 use anyhow::{Context, Result};
 use globset::Glob;
 
+use crate::markers;
+use crate::vcs::Hunk;
+
 /// Where a change request waits for a person by default: everywhere, until the repository names
 /// the files it wants reviewed.
 const DEFAULT: [&str; 1] = ["**"];
@@ -56,6 +59,53 @@ impl HumanReview {
         }
         Ok(Verdict::Merge)
     }
+}
+
+/// Why a change to `file` must be merged by a person, when it touches a region a person must
+/// review or a marker `ns` cannot read. `old` and `new` are the file before and after the change,
+/// `None` where it did not exist, and `hunks` the lines the change touched. Both versions are
+/// checked: lines a change deletes sit in the old version's regions, and a marker the change adds
+/// or edits sits in the new one's. A marker line is part of its region, so changing one is
+/// touching it.
+pub fn region_hold(
+    file: &str,
+    old: Option<&str>,
+    new: Option<&str>,
+    hunks: &[Hunk],
+) -> Option<String> {
+    let mut read = Vec::new();
+    for (version, text) in [("old", old), ("new", new)] {
+        let Some(text) = text else { continue };
+        match markers::regions_read(text) {
+            Ok(regions) => read.push((version, regions)),
+            Err(e) => {
+                return Some(format!(
+                    "{file} has a marker `ns` cannot read in its {version} version (line {}: {e}), so a person merges it",
+                    e.line()
+                ))
+            }
+        }
+    }
+    for (version, regions) in read {
+        for region in regions {
+            let touched = hunks.iter().any(|h| {
+                let lines = if version == "old" { &h.old } else { &h.new };
+                !lines.is_empty() && lines.start <= region.end && region.start < lines.end
+            });
+            if touched {
+                let reason = if region.reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", region.reason)
+                };
+                return Some(format!(
+                    "{file} changes lines {}-{} of its {version} version, a human-review region{reason}, so a person merges it",
+                    region.start, region.end
+                ));
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -135,5 +185,106 @@ mod tests {
         let policy = HumanReview::new(files(&["[a"]));
         let err = policy.verdict(&files(&["a"])).unwrap_err();
         assert!(err.to_string().contains("not a glob"), "{err}");
+    }
+
+    /// `text` with `@start` and `@end` written as the markers.
+    fn marked(text: &str) -> String {
+        text.replace("@start", markers::START)
+            .replace("@end", markers::END)
+    }
+
+    fn hunk(old: std::ops::Range<usize>, new: std::ops::Range<usize>) -> Hunk {
+        Hunk { old, new }
+    }
+
+    const FILE: &str = "a\n@start: the limit\nb\n@end\nc\n";
+
+    #[test]
+    fn a_change_outside_every_region_is_not_held() {
+        let text = marked(FILE);
+        assert_eq!(
+            region_hold("f", Some(&text), Some(&text), &[hunk(5..6, 5..6)]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_change_inside_a_region_is_held_with_its_lines_and_reason() {
+        let text = marked(FILE);
+        assert_eq!(
+            region_hold("f", Some(&text), Some(&text), &[hunk(3..4, 3..4)]),
+            Some("f changes lines 2-4 of its old version, a human-review region: the limit, so a person merges it".to_string())
+        );
+    }
+
+    #[test]
+    fn a_region_without_a_reason_is_named_by_its_lines() {
+        let text = marked("@start\nb\n@end\n");
+        assert_eq!(
+            region_hold("f", Some(&text), Some(&text), &[hunk(2..3, 2..3)]),
+            Some("f changes lines 1-3 of its old version, a human-review region, so a person merges it".to_string())
+        );
+    }
+
+    #[test]
+    fn lines_deleted_from_a_region_of_the_old_version_hold() {
+        let old = marked(FILE);
+        let new = "a\nc\n";
+        let why = region_hold("f", Some(&old), Some(new), &[hunk(2..5, 2..2)]).unwrap();
+        assert!(why.contains("lines 2-4 of its old version"), "{why}");
+    }
+
+    #[test]
+    fn lines_added_inside_a_region_of_the_new_version_hold() {
+        let old = marked("a\n@start\n@end\n");
+        let new = marked("a\n@start\nx\n@end\n");
+        let why = region_hold("f", Some(&old), Some(&new), &[hunk(3..3, 3..4)]).unwrap();
+        assert!(why.contains("lines 2-4 of its new version"), "{why}");
+    }
+
+    #[test]
+    fn a_marker_that_moves_holds() {
+        let old = marked(FILE);
+        let new = marked("a\nb\n@start: the limit\n@end\nc\n");
+        let why = region_hold(
+            "f",
+            Some(&old),
+            Some(&new),
+            &[hunk(2..3, 2..2), hunk(3..3, 3..4)],
+        );
+        assert!(why.is_some());
+    }
+
+    #[test]
+    fn a_marker_that_is_edited_holds() {
+        let old = marked(FILE);
+        let new = marked(&FILE.replace("the limit", "a new reason"));
+        let why = region_hold("f", Some(&old), Some(&new), &[hunk(2..3, 2..3)]).unwrap();
+        assert!(why.contains("lines 2-4"), "{why}");
+    }
+
+    #[test]
+    fn a_marker_that_cannot_be_read_holds_in_either_version() {
+        let good = marked(FILE);
+        let bad = marked("a\n@start\nb\n");
+        let why = region_hold("f", Some(&good), Some(&bad), &[hunk(4..5, 4..4)]).unwrap();
+        assert_eq!(
+            why,
+            "f has a marker `ns` cannot read in its new version (line 2: `ns:human-review start` has no `ns:human-review end`), so a person merges it"
+        );
+        let why = region_hold("f", Some(&bad), Some(&good), &[hunk(5..5, 5..6)]).unwrap();
+        assert!(why.contains("in its old version"), "{why}");
+    }
+
+    #[test]
+    fn a_file_without_markers_is_not_held() {
+        assert_eq!(
+            region_hold("f", Some("a\n"), Some("b\n"), &[hunk(1..2, 1..2)]),
+            None
+        );
+        assert_eq!(
+            region_hold("f", None, Some("b\n"), &[hunk(0..0, 1..2)]),
+            None
+        );
     }
 }
