@@ -108,6 +108,11 @@ mod tests {
     }
 
     #[test]
+    fn the_verify_skill_reads_the_how_to_run_page() {
+        assert!(load(VERIFY).unwrap().contains("docs/agents/how-to-run.md"));
+    }
+
+    #[test]
     fn the_frontmatter_is_left_out() {
         assert_eq!(body("---\nname: x\n---\n\n# X\n\ntext\n"), "# X\n\ntext\n");
         assert_eq!(body("no frontmatter"), "no frontmatter");
