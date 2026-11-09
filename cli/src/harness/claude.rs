@@ -29,6 +29,9 @@ pub struct Claude {
     os: Box<dyn Os>,
     /// How long to wait before the second attempt of a session.
     retry_delay: Duration,
+    /// Whether `NS_DEV` is set: `ns` is then the build being worked on, and a session must find
+    /// that build and not an installed release.
+    dev: bool,
 }
 
 impl Claude {
@@ -41,11 +44,33 @@ impl Claude {
             program: program.into(),
             os,
             retry_delay: retry::DELAY,
+            dev: std::env::var_os("NS_DEV").is_some(),
         }
     }
 
-    fn session_run(&self, task: &Task) -> Result<Reply> {
+    /// The command that starts the harness, with the environment every session gets. Under
+    /// `NS_DEV` the directory of the running `ns` comes first on `PATH`, so the hook a session
+    /// runs and any `ns` it calls are this build. Otherwise `PATH` is left as it is, because the
+    /// dispatcher already hands over to the pinned version.
+    fn command(&self) -> Result<Command> {
         let mut cmd = Command::new(&self.program);
+        if self.dev {
+            let exe = std::env::current_exe().context("cannot find the running ns")?;
+            let dir = exe.parent().context("the running ns has no directory")?;
+            let mut dirs = vec![dir.to_path_buf()];
+            dirs.extend(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            ));
+            cmd.env(
+                "PATH",
+                std::env::join_paths(dirs).context("cannot build PATH")?,
+            );
+        }
+        Ok(cmd)
+    }
+
+    fn session_run(&self, task: &Task) -> Result<Reply> {
+        let mut cmd = self.command()?;
         // The stream carries the tool calls and results; `--verbose` is what `claude` requires of
         // `stream-json` in a headless session.
         cmd.args(["-p", "--output-format", "stream-json", "--verbose"])
@@ -149,7 +174,7 @@ impl Harness for Claude {
     }
 
     fn session_interact(&self, dir: &Path, prompt: &str) -> Result<bool> {
-        let mut cmd = Command::new(&self.program);
+        let mut cmd = self.command()?;
         cmd.arg(prompt).current_dir(dir);
         self.os.process_interact(cmd).context("cannot run claude")
     }
@@ -230,6 +255,35 @@ mod tests {
             "-p --output-format stream-json --verbose --permission-mode bypassPermissions --model opus\ndo it"
         );
         assert!(write.success);
+    }
+
+    /// A stand-in for `claude` that prints the `PATH` it was started with.
+    fn path_printer(dir: &Path, dev: bool) -> Claude {
+        let path = dir.join("claude");
+        std::fs::write(&path, "#!/bin/sh\ncat >/dev/null\necho \"$PATH\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut claude = Claude::with_program(path, crate::os::get());
+        claude.dev = dev;
+        claude
+    }
+
+    #[test]
+    fn under_ns_dev_the_running_ns_comes_first_on_path_and_otherwise_path_is_as_it_was() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let ours = std::env::current_exe().unwrap();
+        let first = format!("{}:", ours.parent().unwrap().display());
+        let outer = std::env::var("PATH").unwrap();
+
+        let dev = path_printer(tmp.path(), true)
+            .task_run(&task(tmp.path(), true))
+            .unwrap();
+        assert_eq!(dev.text.trim(), format!("{first}{outer}"));
+
+        let plain = path_printer(tmp.path(), false)
+            .task_run(&task(tmp.path(), true))
+            .unwrap();
+        assert_eq!(plain.text.trim(), outer);
     }
 
     #[test]
