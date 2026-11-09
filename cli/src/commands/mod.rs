@@ -7,6 +7,7 @@ mod define;
 mod doctor;
 mod eval;
 mod grades;
+mod improve;
 mod init;
 mod log;
 mod plan;
@@ -36,6 +37,8 @@ pub enum Command {
     Doctor(doctor::Args),
     /// Show each rubric's pass rate per week and per ns version.
     Grades(grades::Args),
+    /// File units that fix the cause of grades that did not pass.
+    Improve(improve::Args),
     /// Show what a unit's harness sessions said and ran.
     Log(log::Args),
     /// Measure a skill on cases whose right answer is known. Makes real harness calls.
@@ -72,6 +75,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Doctor(args) => doctor::run(args),
         Command::Eval(args) => eval::run(args),
         Command::Grades(args) => grades::run(args),
+        Command::Improve(args) => improve::run(args),
         Command::Init(args) => init::run(args),
         Command::Log(args) => log::run(args),
         Command::Plan(args) => plan::run(args),

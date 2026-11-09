@@ -300,6 +300,9 @@ mod tests {
         fn unit_blocker_add(&self, _: &Path, _: u64, _: u64) -> Result<()> {
             unreachable!()
         }
+        fn unit_create(&self, _: &Path, _: &str, _: &str, _: &[String]) -> Result<u64> {
+            unreachable!()
+        }
         fn unit_blockers_list(&self, _: &Path, number: u64) -> Result<Vec<u64>> {
             Ok(if self.blocked.contains(&number) {
                 vec![99]

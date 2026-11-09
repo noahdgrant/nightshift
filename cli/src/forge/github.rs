@@ -291,6 +291,20 @@ impl Forge for GitHub {
         Ok(())
     }
 
+    fn unit_create(&self, repo: &Path, title: &str, body: &str, labels: &[String]) -> Result<u64> {
+        let mut args = vec!["issue", "create", "--title", title, "--body", body];
+        for label in labels {
+            args.extend(["--label", label]);
+        }
+        // Not repeated: a call that did succeed but reported an error would open a second one.
+        let out = self.gh_once(repo, &args)?;
+        out.trim()
+            .rsplit('/')
+            .next()
+            .and_then(|n| n.parse().ok())
+            .with_context(|| format!("gh did not print the new unit's address: {}", out.trim()))
+    }
+
     fn unit_body_set(&self, repo: &Path, number: u64, body: &str) -> Result<()> {
         self.gh(
             repo,

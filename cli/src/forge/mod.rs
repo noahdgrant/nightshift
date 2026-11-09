@@ -46,6 +46,10 @@ pub trait Forge {
         remove: &[String],
     ) -> Result<()>;
 
+    /// Opens a unit with `title`, `body` and `labels`, which the repository has, and returns its
+    /// number.
+    fn unit_create(&self, repo: &Path, title: &str, body: &str, labels: &[String]) -> Result<u64>;
+
     /// Replaces the description of unit `number` with `body`.
     fn unit_body_set(&self, repo: &Path, number: u64, body: &str) -> Result<()>;
 
@@ -209,6 +213,9 @@ mod tests {
         fn unit_blocker_add(&self, _: &Path, _: u64, _: u64) -> Result<()> {
             unreachable!()
         }
+        fn unit_create(&self, _: &Path, _: &str, _: &str, _: &[String]) -> Result<u64> {
+            unreachable!()
+        }
         fn login_get(&self, _: &Path) -> Result<String> {
             unreachable!()
         }
@@ -296,6 +303,9 @@ mod tests {
             unreachable!()
         }
         fn unit_blocker_add(&self, _: &Path, _: u64, _: u64) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_create(&self, _: &Path, _: &str, _: &str, _: &[String]) -> Result<u64> {
             unreachable!()
         }
         fn unit_get(&self, _: &Path, _: u64) -> Result<Unit> {

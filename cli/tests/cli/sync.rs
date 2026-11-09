@@ -28,7 +28,7 @@ fn sync_writes_every_skill_where_claude_finds_it() {
     let report = sync_in(&repo.path);
     assert_eq!(report["synced"][0]["harness"], "claude");
     assert_eq!(report["synced"][0]["dir"], ".claude/skills");
-    assert_eq!(report["synced"][0]["written"], 10);
+    assert_eq!(report["synced"][0]["written"], 11);
     assert_eq!(
         std::fs::read_to_string(skill_file(&repo, "ns-grilling")).unwrap(),
         shipped("ns-grilling")

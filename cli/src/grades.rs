@@ -46,6 +46,33 @@ pub fn parse(events: &[Value]) -> Vec<Entry> {
         .collect()
 }
 
+/// A grade that did not pass, with what the improvement session needs of it.
+#[derive(Debug, PartialEq)]
+pub struct Failure {
+    pub unit: String,
+    pub rubric: String,
+    pub score: f64,
+    pub reason: String,
+}
+
+/// The grades among `events` that did not pass and were made in the last `days` days up to `now`,
+/// oldest first. An event that is not a whole grade is left out.
+pub fn failures_since(events: &[Value], now: i64, days: u32) -> Vec<Failure> {
+    let from = now - i64::from(days) * 86_400;
+    events
+        .iter()
+        .filter(|v| v["pass"] == false && v["at"].as_i64().is_some_and(|at| at >= from))
+        .filter_map(|v| {
+            Some(Failure {
+                unit: v["unit"].as_str()?.to_string(),
+                rubric: v["rubric"].as_str()?.to_string(),
+                score: v["score"].as_f64()?,
+                reason: v["reason"].as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
 /// The ISO week of `at`, as `2026-W45`.
 fn week_of(at: i64) -> Option<String> {
     let week = DateTime::from_timestamp(at, 0)?.iso_week();
@@ -301,6 +328,29 @@ mod tests {
             json!({"rubric": "a", "pass": true, "at": 5, "version": "1"}),
         ];
         assert_eq!(parse(&events).len(), 1);
+    }
+
+    #[test]
+    fn only_a_failing_grade_inside_the_days_is_a_failure() {
+        let grade = |unit: &str, pass: bool, days_ago: i64| {
+            json!({"unit": unit, "rubric": "a", "score": 0.25, "pass": pass,
+                   "reason": "why", "at": NOW - days_ago * 86_400})
+        };
+        let events = [
+            grade("1", false, 2),
+            grade("2", true, 2),
+            grade("3", false, 9),
+            json!({"rubric": "a", "pass": false, "at": NOW}),
+        ];
+        assert_eq!(
+            failures_since(&events, NOW, 7),
+            [Failure {
+                unit: "1".into(),
+                rubric: "a".into(),
+                score: 0.25,
+                reason: "why".into()
+            }]
+        );
     }
 
     #[test]

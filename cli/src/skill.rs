@@ -16,6 +16,7 @@ pub const GRILLING: &str = "ns-grilling";
 pub const REQUIREMENTS: &str = "ns-requirements";
 pub const DESIGN_DOC: &str = "ns-design-doc";
 pub const TROUBLESHOOT: &str = "ns-troubleshoot";
+pub const IMPROVE: &str = "ns-improve";
 
 /// The coding standards that hold in any language, which a repository's own standards point to.
 /// It is committed, at this path from the repository root, and `ns sync` keeps it current.
@@ -24,7 +25,7 @@ pub const STANDARDS: &str = include_str!("../../standards/ns-coding-standards.md
 
 /// The skills whose output the CLI parses, such as a route or a verdict line. In a session they
 /// run only when the user types their name.
-const STATE_ONLY: [&str; 3] = [TRIAGE, VERIFY, REVIEW];
+const STATE_ONLY: [&str; 4] = [TRIAGE, VERIFY, REVIEW, IMPROVE];
 
 /// The file of skill `name` as a harness's session should find it: the embedded file, and for a
 /// state skill the frontmatter line that keeps the harness from starting it on its own.
