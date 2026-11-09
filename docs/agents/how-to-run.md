@@ -9,6 +9,7 @@ The checks are in `.nightshift/check`: it runs `scripts/ci-local.sh`, which runs
 - Build: `cargo build --manifest-path cli/Cargo.toml`.
 - Run what you built, not the installed `ns`: `NS_DEV=1 cli/target/debug/ns <command>`. `NS_DEV=1` skips the repository's pin, which would otherwise hand the command over to the pinned release.
 - Run a command the way a user would. For a change to `ns init`, `ns check`, `ns doctor` or `ns config`, make a scratch git repository in a temporary directory and run the command there.
+- To build in a temporary copy of the workspace, set `CARGO_TARGET_DIR` to a directory inside the copy (for example `$T/target`), never to `cli/target` in the workspace. Output built from the copy's path stays in the workspace's `target` and breaks its next build once the copy is deleted.
 
 ## What the tests do
 
