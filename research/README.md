@@ -1,0 +1,26 @@
+# Research
+
+Sources kept for reference when designing nightshift: talks, posts and screenshots, saved so a later session can read them without finding them again. One folder per topic. Each folder's entry below says where a source came from and what we took from it.
+
+A transcript is fetched with the `youtube-transcript` skill (`.claude/skills/youtube-transcript/`). A screenshot gets a line here that restates its text, because a session cannot search an image. A web page is kept as a link and a summary in our own words, with the date it was read, and not as a copy.
+
+## self-improvement
+
+Saved 2026-11-08 and 2026-11-09. Three sources on how to trust and improve what coding harnesses produce. They led to the workarounds and "Defend this" sections of the build summary, the fix level of a review finding, the retrospective state with its rubrics and grades, `ns grades` and `ns improve`.
+
+- `holmes-warp-self-improvement-transcript.md`: Ben Holmes (Warp), ["Your AI Agent Is Hiding Its Mistakes From You"](https://youtu.be/pz74r-4dGfQ), AI Engineer. Sessions are graded against markdown rubrics by a judge session. The failing grades go to a daily improvement session that proposes changes to skills and configuration. Scores over time show whether a merged change helped. A session that works around a wrong instruction without saying so is the main thing the grading finds.
+- `mitchellh-whiteboard-defense.png`: a post by Mitchell Hashimoto (@mitchellh), 2026-09-16, the "whiteboard defense". Whoever ships customer-facing work must be able to explain it and defend its decisions when asked: why X and not Y, what a malicious actor does, which data structure and why, where it fails. Line-level knowledge of the code is not required. Proofs of concept and demos are exempt.
+- `poteto-architecture-improvement-layers.png`: a post by lauren (@poteto), 2026-10-16, "whenever you correct your agent". Fix the cause at the highest layer that removes the whole category: the codebase (types, boundaries), then static analysis (lint rules, tests, CI), then prose (comments, rules, `AGENTS.md`, skills), and last human review, the layer that scales worst. The post is cut off at the bottom of the screenshot.
+
+## service-design
+
+Saved 2026-11-09. For the code nightshift builds when the repository is a network service.
+
+- `awasthi-system-design-in-12-lines.jpg`: a post by Saumya Awasthi (@iamsaumyaawasthi), "System Design in 12 lines". Each line pairs a symptom with a pattern: slow reads, a cache; write spikes, a queue; too much traffic, a load balancer; a read-heavy database, read replicas; a write-heavy database, sharding; slow queries, indexes; slow file loads, object storage and a CDN; temporary failures, retry with backoff; too many requests, rate limiting; one service failing, a circuit breaker; duplicate requests, idempotency keys; can't see what broke, logs, metrics and tracing. Seven of the twelve are scale levers to add when the symptom is measured. The other five (retry, rate limiting, circuit breaker, idempotency, observability) belong in every service.
+- [Safety Nets and Guardrails](https://friendgineers.rosenshein.org/posts/2025/04/07/), Leon Rosenshein, 2025-04-07, read 2026-11-09. A guardrail acts before a mistake, so the mistake is hard to make: types that admit only valid values, builders that fail at once, an API that is hard to misuse. A safety net acts after one, so the damage is limited: top-level error handling, transactions that roll back, recovery. They are separate and a system needs both. Guardrails are the same idea as the top layers of the improvement layers above.
+
+## code-review
+
+Saved 2026-11-09.
+
+- [Solving code review at Anthropic](https://claude.dev/blog/solving-code-review-at-anthropic/), Addy Osmani, Morgan Westlee Lunt and Qing Wang, published 2026-10-15, read 2026-11-09. The Claude Code team writes about 90% of its code with Claude and moved most review to machines and earlier in the work, keeping people for risky decisions. The steps it describes: verify before the change request exists, with a fresh-context reviewer; an automated review of every change by several bug-hunting sessions, with a separate group of verifier sessions voting on each finding and style-only findings dropped; a blocking security pass; blocking CI; human approval tiered by risk, where sensitive paths always need a person, an automated approval never counts as a person's, and an approval covers one commit; a merge queue that retests on the newest main; feature flags and a staged release with a one-step rollback. To make review settle, it caps the rounds, re-reviews only the diff after the first rounds, flags the whole class of a bug and not one instance, and reports no repeated findings. Every incident or revert becomes a test case for the reviewer, which is scored on that set daily, so a change to its prompts is kept only if the score holds. Noise is measured by how authors answer comments. The numbers it reports, taken from a summary of the page and not checked against the page itself: changes landing in the monorepo rose from about 2,500 a day to over 30,000, the revert share fell by over 40%, a change passing after one round of review and fixes rose from 65% to 78%, and one needing five or more rounds fell from 8.9% to 1.5%.
