@@ -64,6 +64,13 @@ pub trait Vcs {
     /// The text of `file` at commit `rev`, or `None` when the commit has no such file.
     fn workspace_file_read(&self, path: &Path, rev: &str, file: &str) -> Result<Option<String>>;
 
+    /// The full id of the commit `rev` names in the repository at `path`; an error when it names
+    /// no commit.
+    fn commit_find(&self, path: &Path, rev: &str) -> Result<String>;
+
+    /// What the commit changed and said.
+    fn commit_show(&self, path: &Path, commit: &str) -> Result<CommitChange>;
+
     /// How many commits the workspace's branch holds past `base`.
     fn workspace_commits_count(&self, path: &Path, base: &str) -> Result<usize>;
 
@@ -129,4 +136,12 @@ pub enum Rebase {
 /// The version control `ns` uses. The only place a tool is chosen.
 pub fn get() -> Box<dyn Vcs> {
     Box::new(git::Git::new())
+}
+
+/// What one commit changed and said.
+pub struct CommitChange {
+    /// The diff the commit made.
+    pub diff: String,
+    /// The body of its message: what follows the subject line.
+    pub body: String,
 }

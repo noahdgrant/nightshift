@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use super::{Hunk, Rebase, Vcs};
+use super::{CommitChange, Hunk, Rebase, Vcs};
 use crate::retry;
 
 /// What git says when a call to the remote failed for a reason that can pass.
@@ -150,6 +150,30 @@ impl Vcs for Git {
             );
         }
         Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+    }
+
+    fn commit_find(&self, path: &Path, rev: &str) -> Result<String> {
+        let spec = format!("{rev}^{{commit}}");
+        run(path, &["rev-parse", "--verify", "--end-of-options", &spec])
+            .map_err(|_| anyhow::anyhow!("there is no commit {rev}"))
+    }
+
+    fn commit_show(&self, path: &Path, commit: &str) -> Result<CommitChange> {
+        let diff = run(
+            path,
+            &[
+                "show",
+                "--format=",
+                "--no-renames",
+                "--end-of-options",
+                commit,
+            ],
+        )?;
+        let body = run(
+            path,
+            &["show", "-s", "--format=%b", "--end-of-options", commit],
+        )?;
+        Ok(CommitChange { diff, body })
     }
 
     fn workspace_commits_count(&self, path: &Path, base: &str) -> Result<usize> {
