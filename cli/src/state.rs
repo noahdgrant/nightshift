@@ -7,6 +7,9 @@ use std::fmt;
 pub enum Outcome {
     /// The state did its work.
     Pass,
+    /// `ship` did its work but the change has not merged, so a person merges it: the unit skips
+    /// `retrospective` and goes to `clean_up`.
+    Unmerged,
     /// The state ran and found the work before it wrong. The unit goes to `State::on_fail`.
     Fail,
     /// The state ran and could not prove the work either way. The unit runs the same state once
@@ -29,6 +32,7 @@ pub enum State {
     Verify,
     Review,
     Ship,
+    Retrospective,
     CleanUp,
     Done,
     Stuck,
@@ -43,6 +47,7 @@ impl State {
             State::Verify,
             State::Review,
             State::Ship,
+            State::Retrospective,
             State::CleanUp,
             State::Done,
             State::Stuck,
@@ -60,7 +65,8 @@ impl State {
             State::Build => Some(State::Verify),
             State::Verify => Some(State::Review),
             State::Review => Some(State::Ship),
-            State::Ship => Some(State::CleanUp),
+            State::Ship => Some(State::Retrospective),
+            State::Retrospective => Some(State::CleanUp),
             State::CleanUp => Some(State::Done),
             State::Done | State::Stuck => None,
         }
@@ -85,9 +91,23 @@ impl fmt::Display for State {
             State::Verify => "verify",
             State::Review => "review",
             State::Ship => "ship",
+            State::Retrospective => "retrospective",
             State::CleanUp => "clean_up",
             State::Done => "done",
             State::Stuck => "stuck",
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retrospective_sits_between_ship_and_clean_up() {
+        assert_eq!(State::Ship.next(), Some(State::Retrospective));
+        assert_eq!(State::Retrospective.next(), Some(State::CleanUp));
+        assert_eq!(State::parse("retrospective"), Some(State::Retrospective));
+        assert_eq!(State::Retrospective.to_string(), "retrospective");
     }
 }

@@ -74,6 +74,13 @@ impl RunLog {
         })
     }
 
+    /// A JSON-lines file named `name` in the same state directory, appended to like the run log.
+    pub fn sibling_open(vcs: &dyn Vcs, root: &Path, name: &str) -> Result<RunLog> {
+        Ok(RunLog {
+            path: vcs.state_dir_find(root)?.join(name),
+        })
+    }
+
     /// Adds `event`, with the time it was added.
     pub fn append(&self, event: &Value) -> Result<()> {
         let mut event = event.clone();

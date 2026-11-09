@@ -268,6 +268,41 @@ pub fn transcript_days_read(root: &Path) -> Result<Keep> {
         })
 }
 
+/// What `[retrospective]` says about grading a merged unit.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Retrospective {
+    /// Whether the state runs. True when the key is missing.
+    pub enabled: bool,
+    /// The model its session uses. `None` takes the harness's own default.
+    pub model: Option<String>,
+}
+
+/// The `[retrospective]` table, with `enabled` true and no model when a key is missing. A value of
+/// the wrong type is an error that names the key and the file.
+pub fn retrospective_read(root: &Path) -> Result<Retrospective> {
+    let document = document_read(root)?;
+    let table = document.get("retrospective");
+    let enabled = match table.and_then(|t| t.get("enabled")) {
+        None => true,
+        Some(item) => item.as_bool().with_context(|| {
+            format!(
+                "`retrospective.enabled` in {} is not true or false",
+                file_find(root).display()
+            )
+        })?,
+    };
+    let model = match table.and_then(|t| t.get("model")) {
+        None => None,
+        Some(item) => Some(item.as_str().map(str::to_string).with_context(|| {
+            format!(
+                "`retrospective.model` in {} is not a string",
+                file_find(root).display()
+            )
+        })?),
+    };
+    Ok(Retrospective { enabled, model })
+}
+
 /// Records the version of `ns` the repository uses, and its harnesses. A `[skills]` table from an
 /// `ns` that copied skills into the repository is dropped.
 pub fn pin_write(root: &Path, pin: &Pin) -> Result<()> {
@@ -629,6 +664,49 @@ mod tests {
             let err = transcript_days_read(tmp.path()).unwrap_err().to_string();
             assert!(
                 err.contains("run.transcript_days") && err.contains("nightshift.toml"),
+                "{text}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn retrospective_is_enabled_with_no_model_unless_the_file_says_otherwise() {
+        let tmp = tempfile::tempdir().unwrap();
+        let want = |enabled, model: Option<&str>| Retrospective {
+            enabled,
+            model: model.map(String::from),
+        };
+        assert_eq!(retrospective_read(tmp.path()).unwrap(), want(true, None));
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for (text, expected) in [
+            ("[retrospective]\nenabled = false\n", want(false, None)),
+            (
+                "[retrospective]\nmodel = \"opus\"\n",
+                want(true, Some("opus")),
+            ),
+            ("[run]\nmax_attempts = 2\n", want(true, None)),
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            assert_eq!(retrospective_read(tmp.path()).unwrap(), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_retrospective_value_of_the_wrong_type_is_an_error_naming_the_key_and_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for (text, key) in [
+            (
+                "[retrospective]\nenabled = \"no\"\n",
+                "retrospective.enabled",
+            ),
+            ("[retrospective]\nenabled = 0\n", "retrospective.enabled"),
+            ("[retrospective]\nmodel = 3\n", "retrospective.model"),
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            let err = retrospective_read(tmp.path()).unwrap_err().to_string();
+            assert!(
+                err.contains(key) && err.contains("nightshift.toml"),
                 "{text}: {err}"
             );
         }

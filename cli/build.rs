@@ -1,5 +1,5 @@
-//! Embeds the skills in `../skills` in the binary, so one file carries a CLI and the skills that
-//! match it.
+//! Embeds the skills in `../skills` and the default rubrics in `../rubrics` in the binary, so one
+//! file carries a CLI and the skills and rubrics that match it.
 
 use std::fmt::Write;
 use std::path::Path;
@@ -27,4 +27,20 @@ fn main() {
     table.push_str("];\n");
     let out = std::env::var("OUT_DIR").unwrap();
     std::fs::write(Path::new(&out).join("skills.rs"), table).unwrap();
+
+    let rubrics = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rubrics");
+    println!("cargo:rerun-if-changed={}", rubrics.display());
+    let mut found: Vec<_> = std::fs::read_dir(&rubrics)
+        .expect("cannot read the rubrics directory")
+        .map(|e| e.expect("cannot read a rubric").path())
+        .filter(|p| p.extension().is_some_and(|e| e == "md"))
+        .collect();
+    found.sort();
+    let mut table = String::from("pub const EMBEDDED: &[&str] = &[\n");
+    for file in found {
+        let file = file.canonicalize().unwrap();
+        writeln!(table, "    include_str!({:?}),", file.display().to_string()).unwrap();
+    }
+    table.push_str("];\n");
+    std::fs::write(Path::new(&out).join("rubrics.rs"), table).unwrap();
 }

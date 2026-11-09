@@ -105,6 +105,7 @@ pub fn run(args: Args) -> Result<()> {
     // Read here so a bad value stops `ns` before it runs anything.
     manifest::review_sessions_read(&root)?;
     manifest::model_read(&root, Place::Build, None)?;
+    manifest::retrospective_read(&root)?;
     let queue = manifest::merge_queue_read(&root)?;
     let max_base_moves = manifest::max_base_moves_read(&root)?;
     // Held until the function ends. Taken before anything of the unit's is read or deleted.
@@ -188,6 +189,7 @@ pub fn run(args: Args) -> Result<()> {
                 State::Setup
                 | State::Build
                 | State::Ship
+                | State::Retrospective
                 | State::CleanUp
                 | State::Done
                 | State::Stuck,
@@ -298,8 +300,8 @@ fn unproven_comment_add(ctx: &Context, log: &RunLog, root: &Path, unit: &str) ->
 }
 
 /// Where a stuck unit goes when a person opened its change request by hand: `ship` for an open
-/// one, so `ns` waits for it and merges it as for a unit it shipped itself, and `clean_up` for one
-/// that has merged, and for a closed one too, where `clean_up` reports it and removes nothing, so
+/// one, so `ns` waits for it and merges it as for a unit it shipped itself, `retrospective` for one
+/// that has merged, and `clean_up` for a closed one, where it reports it and removes nothing, so
 /// the unit ends `stuck`. `None` when the forge has none for the unit's branch, or when the unit
 /// is stuck in `ship` and the change request is open. An open or merged
 /// one must be at the commit the workspace holds, or `ns` stops before it changes anything. The
@@ -320,7 +322,8 @@ fn takeover_find(
     };
     let state = match cr.state {
         ChangeState::Open => State::Ship,
-        ChangeState::Merged | ChangeState::Closed => State::CleanUp,
+        ChangeState::Merged => State::Retrospective,
+        ChangeState::Closed => State::CleanUp,
     };
     // A unit stuck in `ship` with its own open change request resumes as it always did.
     if state == stuck_in {
@@ -505,6 +508,7 @@ fn walk(
         let outcome = phase(state, attempt);
         let to = match outcome {
             Outcome::Pass => next,
+            Outcome::Unmerged => State::CleanUp,
             Outcome::Unprovable | Outcome::BaseMoved | Outcome::Unresumable => State::Stuck,
             Outcome::Fail | Outcome::Redo | Outcome::Inconclusive => {
                 let back = match outcome {
@@ -523,7 +527,7 @@ fn walk(
             event["attempt"] = attempt.into();
             event["reason"] = match outcome {
                 Outcome::Redo | Outcome::Unresumable => "went_wrong",
-                Outcome::Pass | Outcome::Fail => "failed",
+                Outcome::Pass | Outcome::Unmerged | Outcome::Fail => "failed",
                 Outcome::Inconclusive | Outcome::Unprovable => "inconclusive",
                 Outcome::BaseMoved => "base_moved",
             }
@@ -534,7 +538,10 @@ fn walk(
             stuck_in = state;
         }
         state = to;
-        if gates == Gates::Stop && matches!(outcome, Outcome::Pass) && state.next().is_some() {
+        if gates == Gates::Stop
+            && matches!(outcome, Outcome::Pass | Outcome::Unmerged)
+            && state.next().is_some()
+        {
             sink(json!({ "unit": unit, "waiting": state.to_string() }))?;
             return Ok(state);
         }
@@ -600,7 +607,8 @@ mod tests {
                 "build>verify",
                 "verify>review",
                 "review>ship",
-                "ship>clean_up",
+                "ship>retrospective",
+                "retrospective>clean_up",
                 "clean_up>clean_up",
                 "clean_up>done",
             ]
@@ -624,11 +632,22 @@ mod tests {
                 "build>verify",
                 "verify>review",
                 "review>ship",
-                "ship>clean_up",
+                "ship>retrospective",
+                "retrospective>clean_up",
                 "clean_up>clean_up",
                 "clean_up>stuck",
             ]
         );
+    }
+
+    #[test]
+    fn a_ship_that_did_not_merge_skips_retrospective() {
+        let (moves, ok) = moves(|s, _| match s {
+            State::Ship => Outcome::Unmerged,
+            _ => Outcome::Pass,
+        });
+        assert!(ok);
+        assert_eq!(&moves[4..], ["ship>clean_up", "clean_up>done"]);
     }
 
     #[test]
@@ -650,7 +669,8 @@ mod tests {
                 "build>verify",
                 "verify>review",
                 "review>ship",
-                "ship>clean_up",
+                "ship>retrospective",
+                "retrospective>clean_up",
                 "clean_up>done",
             ]
         );
@@ -693,7 +713,8 @@ mod tests {
                 "verify>verify",
                 "verify>review",
                 "review>ship",
-                "ship>clean_up",
+                "ship>retrospective",
+                "retrospective>clean_up",
                 "clean_up>done",
             ]
         );
