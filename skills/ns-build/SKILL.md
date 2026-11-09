@@ -25,6 +25,8 @@ Run the test-driven loop in the instructions that follow these, one requirement 
 
 Keep the diff to what the unit asks: touch only what it names, and put anything else you find under **Noticed** in your summary instead of fixing it. Fix what your change breaks. Subtract before you add: prefer deleting or reusing to a new abstraction, layer or option, and make the smallest change that meets the unit. Test behavior, not implementation: a test goes through the public interface and asserts literal expected values.
 
+When the unit builds or changes a network service, apply `ns-service-design`.
+
 Done when every requirement has a passing test.
 
 ## 3. Run the checks

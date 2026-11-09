@@ -33,7 +33,7 @@ Every behavior and every branch the change adds has a test; a bug fix has a test
 
 ### Architecture
 
-The change follows the repository's existing way to do each job, adds no second way, and removes the old path it replaces, and it keeps to the coding standards in your prompt: a breach of them is a finding. Anything a caller can observe, such as `ns` output, JSON fields, flags and file formats, is a contract, whatever the docs say (Hyrum's law): add rather than change, and a break is deliberate, not a side effect.
+The change follows the repository's existing way to do each job, adds no second way, and removes the old path it replaces, and it keeps to the coding standards in your prompt: a breach of them is a finding. For a change that builds or changes a network service, check each always item of `ns-service-design` at each boundary the change adds. A missing one is a finding at the fix level `check` or `code` where one fits. Anything a caller can observe, such as `ns` output, JSON fields, flags and file formats, is a contract, whatever the docs say (Hyrum's law): add rather than change, and a break is deliberate, not a side effect.
 
 ### Docs and comments
 

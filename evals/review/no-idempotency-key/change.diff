@@ -1,0 +1,27 @@
+diff --git a/src/orders.rs b/src/orders.rs
+new file mode 100644
+--- /dev/null
++++ b/src/orders.rs
+@@ -0,0 +1,10 @@
++use crate::db::Db;
++
++/// Stores the order and returns its id.
++pub fn create(db: &Db, body: &str) -> Result<u64, String> {
++    if body.is_empty() {
++        return Err("empty order".into());
++    }
++    Ok(db.insert("orders", body))
++}
+diff --git a/tests/orders.rs b/tests/orders.rs
+new file mode 100644
+--- /dev/null
++++ b/tests/orders.rs
+@@ -0,0 +1,8 @@
++use shop::{db::Db, orders};
++
++#[test]
++fn post_orders_stores_the_order() {
++    let db = Db::in_memory();
++    assert_eq!(orders::create(&db, "tea").unwrap(), 1);
++    assert_eq!(db.count("orders"), 1);
++}

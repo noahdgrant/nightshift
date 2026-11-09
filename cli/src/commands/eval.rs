@@ -216,6 +216,8 @@ mod tests {
                 ("clean-change", "PASS"),
                 ("misses-requirement", "FAIL"),
                 ("needs-a-hand-edit", "PASS"),
+                ("no-idempotency-key", "FAIL"),
+                ("no-symptom-for-cache", "FAIL"),
                 ("points-at-generated-file", "FAIL"),
                 ("repeats-a-mistake", "FAIL"),
                 ("stale-comment", "FAIL"),
