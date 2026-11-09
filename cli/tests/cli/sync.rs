@@ -6,6 +6,7 @@ fn sync_in(dir: &std::path::Path) -> serde_json::Value {
     let out = Command::cargo_bin("ns")
         .unwrap()
         .arg("sync")
+        .env_remove("NS_DEV")
         .current_dir(dir)
         .assert()
         .success();
