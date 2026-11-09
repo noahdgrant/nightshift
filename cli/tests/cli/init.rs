@@ -159,6 +159,7 @@ fn the_skills_init_writes_are_not_changes_but_the_manifest_hook_agents_file_stan
             "CLAUDE.md",
             "docs/agents/how-to-run.md",
             "docs/agents/labels.md",
+            "docs/agents/review.md",
             "docs/agents/stack.md"
         ]
     );
@@ -389,6 +390,23 @@ fn init_writes_the_agent_pages_and_leaves_an_existing_one_alone() {
     assert!(std::fs::read_to_string(dir.join("how-to-run.md"))
         .unwrap()
         .contains(".nightshift/check"));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("review.md")).unwrap(),
+        "# Review\n\nWhat review reads hardest and leaves out. Read by `ns-review`.\n\n## Where review looks hardest\n\n<!-- Paths or kinds of change that need the closest read, and why. -->\n\n## What to leave out\n\n<!-- Kinds of finding the repository does not want, such as style a linter already owns. -->\n"
+    );
+}
+
+#[test]
+fn init_leaves_an_existing_review_page_as_it_was() {
+    let repo = Repo::new();
+    let dir = repo.path.join("docs/agents");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("review.md"), "mine\n").unwrap();
+    init_in(&repo);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("review.md")).unwrap(),
+        "mine\n"
+    );
 }
 
 #[test]

@@ -13,7 +13,7 @@ pub(crate) const CLOSES_UNIT_CHECK: &str = "Closes a unit";
 
 /// The pages of `docs/agents/` that `ns init` writes: path from the repository root, and text.
 /// Each is a fixed template for a person to fill in.
-const AGENT_PAGES: [(&str, &str); 3] = [
+const AGENT_PAGES: [(&str, &str); 4] = [
     (
         "docs/agents/stack.md",
         "# Stack\n\nWhat the repository is built with. Read by `ns-triage` and `ns-design-doc`.\n\nReplace this with the languages, frameworks and tools the repository uses.\n",
@@ -25,6 +25,10 @@ const AGENT_PAGES: [(&str, &str); 3] = [
     (
         "docs/agents/labels.md",
         "# Labels\n\nWhat the repository's labels mean. Read by `ns-triage`.\n\nReplace this with the labels the repository uses and when each applies.\n",
+    ),
+    (
+        "docs/agents/review.md",
+        "# Review\n\nWhat review reads hardest and leaves out. Read by `ns-review`.\n\n## Where review looks hardest\n\n<!-- Paths or kinds of change that need the closest read, and why. -->\n\n## What to leave out\n\n<!-- Kinds of finding the repository does not want, such as style a linter already owns. -->\n",
     ),
 ];
 
