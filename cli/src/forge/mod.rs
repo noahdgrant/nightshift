@@ -14,6 +14,9 @@ pub trait Forge {
 
     /// How the default branch of the repository at `repo` is protected.
     fn branch_protection_get(&self, repo: &Path) -> Result<BranchProtection>;
+    /// The active rules that apply to `branch` of the repository at `repo`, besides its
+    /// protection.
+    fn branch_rules_get(&self, repo: &Path, branch: &str) -> Result<BranchRules>;
 
     /// The unit `number` of the repository at `repo`.
     fn unit_get(&self, repo: &Path, number: u64) -> Result<Unit>;
@@ -148,6 +151,17 @@ pub struct BranchProtection {
     pub required_checks: Option<Vec<String>>,
 }
 
+/// The rules that apply to a branch, which count as protection beside the classic kind.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BranchRules {
+    /// Whether any active rule applies to the branch.
+    pub applies: bool,
+    /// The names of the checks the rules require.
+    pub required_checks: Vec<String>,
+    /// Where a person adds a required check to these rules, in the forge's own words.
+    pub setting: String,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Unit {
     pub number: u64,
@@ -220,6 +234,9 @@ mod tests {
             unreachable!()
         }
         fn branch_protection_get(&self, _: &Path) -> Result<BranchProtection> {
+            unreachable!()
+        }
+        fn branch_rules_get(&self, _: &Path, _: &str) -> Result<BranchRules> {
             unreachable!()
         }
         fn unit_get(&self, _: &Path, _: u64) -> Result<Unit> {
@@ -303,6 +320,9 @@ mod tests {
             unreachable!()
         }
         fn branch_protection_get(&self, _: &Path) -> Result<BranchProtection> {
+            unreachable!()
+        }
+        fn branch_rules_get(&self, _: &Path, _: &str) -> Result<BranchRules> {
             unreachable!()
         }
         fn unit_blocker_add(&self, _: &Path, _: u64, _: u64) -> Result<()> {

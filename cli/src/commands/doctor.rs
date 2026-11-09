@@ -180,6 +180,32 @@ fn protection(root: &Path, forge: &dyn Forge) -> Check {
         }
     };
     let branch = got.branch;
+    let rules = match forge.branch_rules_get(root, &branch) {
+        Ok(rules) => rules,
+        Err(e) => {
+            return fail(
+                "protection",
+                format!("the rules of {branch} cannot be read: {e:#}; fix the forge check first"),
+            )
+        }
+    };
+    let required = got.required_checks.clone().unwrap_or_default();
+    if required
+        .iter()
+        .chain(&rules.required_checks)
+        .any(|c| c == CLOSES_UNIT_CHECK)
+    {
+        return pass("protection", branch);
+    }
+    if rules.applies {
+        return fail(
+            "protection",
+            format!(
+                "the rules of {branch} do not require the check {CLOSES_UNIT_CHECK}; add it to {}",
+                rules.setting
+            ),
+        );
+    }
     match got.required_checks {
         None if got.protected => fail(
             "protection",
@@ -193,13 +219,12 @@ fn protection(root: &Path, forge: &dyn Forge) -> Check {
                 "{branch} is not protected; run `gh api --method PUT repos/{{owner}}/{{repo}}/branches/{branch}/protection -F 'required_status_checks[strict]=false' -f 'required_status_checks[contexts][]={CLOSES_UNIT_CHECK}' -F enforce_admins=false -F required_pull_request_reviews=null -F restrictions=null`"
             ),
         ),
-        Some(required) if !required.iter().any(|c| c == CLOSES_UNIT_CHECK) => fail(
+        Some(_) => fail(
             "protection",
             format!(
                 "the protection of {branch} does not require the check {CLOSES_UNIT_CHECK}; run `gh api --method POST repos/{{owner}}/{{repo}}/branches/{branch}/protection/required_status_checks/contexts -f 'contexts[]={CLOSES_UNIT_CHECK}'`"
             ),
         ),
-        Some(_) => pass("protection", branch),
     }
 }
 
