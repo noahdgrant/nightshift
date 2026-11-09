@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.7.0](https://github.com/noahdgrant/nightshift/compare/v0.6.0...v0.7.0) (2026-11-09)
+
+
+### Features
+
+* **cli:** a repository sets how long ship waits for CI in nightshift.toml ([#1028](https://github.com/noahdgrant/nightshift/issues/1028)) ([0f28097](https://github.com/noahdgrant/nightshift/commit/0f280978522f6d3414ea135400d98f50b6e48774))
+* **cli:** a retrospective state after ship grades a merged unit on one rubric ([#973](https://github.com/noahdgrant/nightshift/issues/973)) ([529efd8](https://github.com/noahdgrant/nightshift/commit/529efd81c23214c149fd71e689340ef3577451af))
+* **cli:** ns eval add turns a merged change that carried a defect into a review case ([#995](https://github.com/noahdgrant/nightshift/issues/995)) ([1e38824](https://github.com/noahdgrant/nightshift/commit/1e38824af8481c57dd83efae6bc44748104eb34a))
+* **cli:** ns grades shows each rubric's pass rate per week and per ns version ([#975](https://github.com/noahdgrant/nightshift/issues/975)) ([e182c53](https://github.com/noahdgrant/nightshift/commit/e182c53e41d6f697064f4682439851ba8e177201))
+* **cli:** ns grades shows how long changes wait for a person ([#996](https://github.com/noahdgrant/nightshift/issues/996)) ([38ca556](https://github.com/noahdgrant/nightshift/commit/38ca556b7adcf9629ca925564d43057b0d363bbe))
+* **cli:** ns improve files a unit for a cause that three graded units failed on ([#977](https://github.com/noahdgrant/nightshift/issues/977)) ([f957b3e](https://github.com/noahdgrant/nightshift/commit/f957b3e9892344347a7a4df83b963d9f3ad99083))
+* **cli:** ns-review reads the repository's own page on what review should look hardest at and leave out ([#992](https://github.com/noahdgrant/nightshift/issues/992)) ([4850cbe](https://github.com/noahdgrant/nightshift/commit/4850cbea7be5f9d996b570c62f77df88a6e0b5bb)), closes [#982](https://github.com/noahdgrant/nightshift/issues/982)
+* **cli:** review re-reads only what changed since the last round and flags a whole class of mistake at once ([#991](https://github.com/noahdgrant/nightshift/issues/991)) ([0b3016e](https://github.com/noahdgrant/nightshift/commit/0b3016ecad153202d706683697baac759e93027d))
+* **cli:** the retrospective grades four default rubrics and a repository's own ([#974](https://github.com/noahdgrant/nightshift/issues/974)) ([4dff4b3](https://github.com/noahdgrant/nightshift/commit/4dff4b3cc17175842d793eb61e5bb44210d30ca2))
+* **skills:** a service-design skill that design, build and review use for a network service ([#980](https://github.com/noahdgrant/nightshift/issues/980)) ([e765e44](https://github.com/noahdgrant/nightshift/commit/e765e44afeb77fb21b4c5f3e658f482aa12c38c8))
+* **skills:** build and verify say which instructions they had to work around ([#967](https://github.com/noahdgrant/nightshift/issues/967)) ([ace7d18](https://github.com/noahdgrant/nightshift/commit/ace7d18cd1987075a3278340581ce1eed47efd8f))
+* **skills:** build ends its summary with what a person must be able to defend ([#969](https://github.com/noahdgrant/nightshift/issues/969)) ([456c4e3](https://github.com/noahdgrant/nightshift/commit/456c4e3558685929368a00028b979a54ef4f2098))
+* **skills:** Defend this in the build summary also says how to undo the change ([#993](https://github.com/noahdgrant/nightshift/issues/993)) ([cc73369](https://github.com/noahdgrant/nightshift/commit/cc7336997309f01bace0c6b4dbfe97d8f3dfd2d6))
+* **skills:** ns-whiteboard-defence answers why something was built that way and how it works from the record ([#994](https://github.com/noahdgrant/nightshift/issues/994)) ([bcc834f](https://github.com/noahdgrant/nightshift/commit/bcc834f65fdafcb9e2b252743178bd44c003cd28))
+* **skills:** review says which fix level would remove a finding's whole category ([#970](https://github.com/noahdgrant/nightshift/issues/970)) ([a66754e](https://github.com/noahdgrant/nightshift/commit/a66754e52d375c41ca37aeac4e7c85e307979a7b))
+
+
+### Bug Fixes
+
+* **cli:** ns doctor counts a branch ruleset as protection and checks that it requires the closes-unit check ([#1027](https://github.com/noahdgrant/nightshift/issues/1027)) ([af36888](https://github.com/noahdgrant/nightshift/commit/af36888dbd80dda1ab15d798ee8fba08d56bb884))
+* **cli:** ns init sets the description of the labels it owns, including a renamed one ([#956](https://github.com/noahdgrant/nightshift/issues/956)) ([7300fa9](https://github.com/noahdgrant/nightshift/commit/7300fa9d52f1c04051d0179e348ff885a546ed1d))
+* **cli:** ns sync keeps the skills it writes through a symlinked skills folder out of the repository's changes ([#1026](https://github.com/noahdgrant/nightshift/issues/1026)) ([706266f](https://github.com/noahdgrant/nightshift/commit/706266f311a377e5c880e89a18f93aa3efe6b56b))
+* **cli:** ns upgrade and ns init from a worktree say which checkout they changed ([#968](https://github.com/noahdgrant/nightshift/issues/968)) ([cd79f6a](https://github.com/noahdgrant/nightshift/commit/cd79f6ac9727ea73e5c53df2ed1b6b1d2e5f43a7))
+* **cli:** say how to run the built ns against the fake gh, and name GH_TOKEN in the error ([#1005](https://github.com/noahdgrant/nightshift/issues/1005)) ([844df76](https://github.com/noahdgrant/nightshift/commit/844df76e179d83d6791f9e4a53014ade5b41c076))
+* **cli:** sessions started under NS_DEV use the ns that started them ([#1021](https://github.com/noahdgrant/nightshift/issues/1021)) ([2bac455](https://github.com/noahdgrant/nightshift/commit/2bac4553e8161d87459c79a664a601a4e5d51472))
+* **cli:** ship opens a new change request when the only one for the branch is closed ([#1020](https://github.com/noahdgrant/nightshift/issues/1020)) ([45ab25a](https://github.com/noahdgrant/nightshift/commit/45ab25ad5273266976b1d977bb395c6fac778915))
+* **cli:** the closes-unit check skips a release change request by its branch, not by a label ([#988](https://github.com/noahdgrant/nightshift/issues/988)) ([79e64e3](https://github.com/noahdgrant/nightshift/commit/79e64e35f64b142152b40384372a9f7e4e1d7605))
+* **skills:** an unproven Should or Could does not stick a unit in verification ([#1019](https://github.com/noahdgrant/nightshift/issues/1019)) ([9f27577](https://github.com/noahdgrant/nightshift/commit/9f275772ddc85d9ed3c07ac711703b8417ba46ba))
+* **skills:** verify builds outside the workspace into an output directory outside it ([#972](https://github.com/noahdgrant/nightshift/issues/972)) ([3ef0607](https://github.com/noahdgrant/nightshift/commit/3ef060787b9b7c30f271a8e8624d25adc4b36f53))
+
+
+### Documentation
+
+* add the nightshift logo ([#978](https://github.com/noahdgrant/nightshift/issues/978)) ([08a37d4](https://github.com/noahdgrant/nightshift/commit/08a37d413fb017bf5db71f650839032069bed243))
+* **repo:** add the Lloyd talk on factories that improve themselves to research ([#1004](https://github.com/noahdgrant/nightshift/issues/1004)) ([b078010](https://github.com/noahdgrant/nightshift/commit/b0780108e80b6a8d4b1635e4692f9dbd815ce01a))
+* **repo:** keep research sources and a youtube-transcript dev skill ([#990](https://github.com/noahdgrant/nightshift/issues/990)) ([dd344b9](https://github.com/noahdgrant/nightshift/commit/dd344b9290143a30e90cd145634e0311cd2fd6b9))
+
 ## [0.6.0](https://github.com/noahdgrant/nightshift/compare/v0.5.0...v0.6.0) (2026-11-08)
 
 
