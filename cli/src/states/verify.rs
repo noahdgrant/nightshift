@@ -45,15 +45,32 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     })
 }
 
+const NOT_PROVEN_HEADING: &str = "Not proven (Should, Could)";
+
 /// What a human needs to unstick a unit verify could not prove: the sections of the last
-/// verification that are inconclusive, each with what would make it checkable. The whole
+/// verification that are inconclusive (leaving out those under `Not proven (Should, Could)`), each with what would make it checkable. The whole
 /// verification when none can be told apart.
 pub fn unproven_note(dir: &Path, unit: &str) -> Result<String> {
     let verifications = Rounds::new(dir, unit, "verify");
     let n = verifications.so_far();
     let text = artifact::read(dir, unit, &format!("verify-{n}.md"))?;
     let mut sections: Vec<Vec<&str>> = Vec::new();
+    // The level of the `Not proven (Should, Could)` heading while inside it: a Should or Could
+    // does not stick the unit, so nothing under that heading goes in the note.
+    let mut skipping: Option<usize> = None;
     for line in text.lines().filter(|l| l.trim() != INCONCLUSIVE_LINE) {
+        if line.starts_with('#') {
+            let level = line.chars().take_while(|c| *c == '#').count();
+            if skipping.is_some_and(|l| level <= l) {
+                skipping = None;
+            }
+            if skipping.is_none() && line.contains(NOT_PROVEN_HEADING) {
+                skipping = Some(level);
+            }
+        }
+        if skipping.is_some() {
+            continue;
+        }
         if line.starts_with('#') || sections.is_empty() {
             sections.push(Vec::new());
         }
@@ -73,7 +90,7 @@ pub fn unproven_note(dir: &Path, unit: &str) -> Result<String> {
         unproven.join("\n\n")
     };
     Ok(format!(
-        "Verification could not prove these requirements, twice, so this unit is stuck and a person looks first. \
+        "Verification could not prove these Must requirements, twice, so this unit is stuck and a person looks first. \
          Each says what would make it checkable.\n\n{body}\n"
     ))
 }
@@ -105,6 +122,51 @@ mod tests {
         );
         assert!(!note.contains("R1"), "{note}");
         assert!(!note.contains("VERDICT"), "{note}");
+    }
+
+    #[test]
+    fn the_note_leaves_out_the_unproven_should_and_could() {
+        let tmp = tempfile::tempdir().unwrap();
+        Rounds::new(tmp.path(), "7", "verify")
+            .keep("### R1\nINCONCLUSIVE: needs staging\n\n## Not proven (Should, Could)\n\n### R2\nINCONCLUSIVE: costly run\n\n## Workarounds\nNone\nVERDICT: INCONCLUSIVE\n")
+            .unwrap();
+        let note = unproven_note(tmp.path(), "7").unwrap();
+        assert!(
+            note.contains("### R1\nINCONCLUSIVE: needs staging"),
+            "{note}"
+        );
+        assert!(!note.contains("R2"), "{note}");
+        assert!(!note.contains("costly run"), "{note}");
+    }
+
+    #[test]
+    fn the_note_keeps_a_must_written_before_the_not_proven_heading() {
+        let tmp = tempfile::tempdir().unwrap();
+        Rounds::new(tmp.path(), "7", "verify")
+            .keep("### R1\nINCONCLUSIVE: needs staging\n\n### R2\nPASS\n\n## Not proven (Should, Could)\n### R3\nINCONCLUSIVE: costly run\n### R4\nINCONCLUSIVE: slow\nVERDICT: INCONCLUSIVE\n")
+            .unwrap();
+        let note = unproven_note(tmp.path(), "7").unwrap();
+        assert!(
+            note.contains("### R1\nINCONCLUSIVE: needs staging"),
+            "{note}"
+        );
+        assert!(!note.contains("R3") && !note.contains("R4"), "{note}");
+    }
+
+    #[test]
+    fn the_verify_skill_ends_pass_when_only_a_should_is_unproven() {
+        let file = format!(
+            "{}/../skills/ns-verify/SKILL.md",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let skill = std::fs::read_to_string(file).unwrap();
+        assert!(skill.contains(
+            "when no requirement is FAIL and at least one **Must** requirement is INCONCLUSIVE"
+        ));
+        assert!(skill.contains(&format!("`## {NOT_PROVEN_HEADING}`")));
+        assert!(skill.contains("with every Must PASS, the verdict is PASS"));
+        assert!(skill.contains("A Should or Could that is FAIL still makes the verdict FAIL"));
+        assert!(skill.contains("counts as a Must"));
     }
 
     #[test]
