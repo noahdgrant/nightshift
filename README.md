@@ -60,7 +60,7 @@ MAX_RETRIES = 3
 # ns:human-review end
 ```
 
-Run `ns doctor` to confirm the setup. It prints a JSON object with one check each for the pin, the harness, the forge login, `.nightshift/check`, the labels, the classic branch protection of the default branch (a branch protected only by rulesets reads as unprotected), the `closes-unit` workflow and the coding standards (the file must equal the pinned version's), says how to fix any that fails, and exits 1 when one does. It changes nothing.
+Run `ns doctor` to confirm the setup. It prints a JSON object with one check each for the pin, the harness, the forge login, `.nightshift/check`, the labels, the protection of the default branch (classic branch protection or an active ruleset, which together must require the `Closes a unit` check), the `closes-unit` workflow and the coding standards (the file must equal the pinned version's), says how to fix any that fails, and exits 1 when one does. It changes nothing.
 
 To move a repository to a newer `ns`, install it, then run `ns upgrade <version>` and commit the new pin.
 

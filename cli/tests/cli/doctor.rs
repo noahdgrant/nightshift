@@ -96,6 +96,30 @@ impl Setup {
         }
     }
 
+    /// The active rules that apply to the default branch: none, or a rule requiring these checks.
+    fn ruleset(&self, required: Option<&[&str]>) {
+        let path = self.tmp().join("rules.json");
+        match required {
+            None => {
+                let _ = std::fs::remove_file(path);
+            }
+            Some(names) => {
+                let json: Vec<String> = names
+                    .iter()
+                    .map(|n| format!(r#"{{"context":"{n}"}}"#))
+                    .collect();
+                std::fs::write(
+                    path,
+                    format!(
+                        r#"[{{"type":"pull_request","parameters":{{}}}},{{"type":"required_status_checks","parameters":{{"required_status_checks":[{}]}}}}]"#,
+                        json.join(",")
+                    ),
+                )
+                .unwrap();
+            }
+        }
+    }
+
     fn workflow(&self, present: bool) {
         let path = self.repo.path.join(".github/workflows/closes-unit.yml");
         if present {
@@ -126,10 +150,11 @@ impl Setup {
             &self.bin(),
             "gh",
             &format!(
-                "case \"$1 $2\" in\n  \"label list\") cat \"{}\";;\n  \"api orgs/{{owner}}/issue-types\") cat \"{}\";;\n  \"api user\") echo '{{\"login\":\"{login}\"}}';;\n  \"api repos/{{owner}}/{{repo}}\") echo '{{\"default_branch\":\"main\"}}';;\n  \"api repos/{{owner}}/{{repo}}/branches/main/protection\") if [ -f \"{p}\" ]; then cat \"{p}\"; else echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1; fi;;\nesac",
+                "case \"$1 $2\" in\n  \"label list\") cat \"{}\";;\n  \"api orgs/{{owner}}/issue-types\") cat \"{}\";;\n  \"api user\") echo '{{\"login\":\"{login}\"}}';;\n  \"api repos/{{owner}}/{{repo}}\") echo '{{\"default_branch\":\"main\"}}';;\n  \"api repos/{{owner}}/{{repo}}/branches/main/protection\") if [ -f \"{p}\" ]; then cat \"{p}\"; else echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1; fi;;\n  \"api repos/{{owner}}/{{repo}}/rules/branches/main\") if [ -f \"{r}\" ]; then cat \"{r}\"; else echo '[]'; fi;;\nesac",
                 self.tmp().join("labels.json").display(),
                 self.tmp().join("types.json").display(),
-                p = self.tmp().join("protection.json").display()
+                p = self.tmp().join("protection.json").display(),
+                r = self.tmp().join("rules.json").display()
             ),
         );
     }
@@ -455,13 +480,31 @@ fn labels_that_cannot_be_listed_fail_and_say_to_fix_the_forge_first() {
     script(
         &setup.bin(),
         "gh",
-        "case \"$1 $2\" in\n  \"api user\") echo '{\"login\":\"octo\"}';;\n  \"label list\") echo 'boom' >&2; exit 1;;\n  \"api repos/{owner}/{repo}\") echo '{\"default_branch\":\"main\"}';;\n  \"api repos/{owner}/{repo}/branches/main/protection\") echo '{\"required_status_checks\":{\"contexts\":[\"Closes a unit\"]}}';;\n  *) echo 'boom' >&2; exit 1;;\nesac",
+        "case \"$1 $2\" in\n  \"api user\") echo '{\"login\":\"octo\"}';;\n  \"label list\") echo 'boom' >&2; exit 1;;\n  \"api repos/{owner}/{repo}\") echo '{\"default_branch\":\"main\"}';;\n  \"api repos/{owner}/{repo}/branches/main/protection\") echo '{\"required_status_checks\":{\"contexts\":[\"Closes a unit\"]}}';;\n  \"api repos/{owner}/{repo}/rules/branches/main\") echo '[]';;\n  *) echo 'boom' >&2; exit 1;;\nesac",
     );
     only_fails(
         &setup,
         "labels",
         "fix the forge check first, then run `ns init`",
     );
+}
+
+#[test]
+fn rules_that_cannot_be_read_fail_the_protection_and_say_to_fix_the_forge_first() {
+    let setup = Setup::new();
+    script(
+        &setup.bin(),
+        "gh",
+        "case \"$1 $2\" in\n  \"api user\") echo '{\"login\":\"octo\"}';;\n  \"api repos/{owner}/{repo}\") echo '{\"default_branch\":\"main\"}';;\n  \"api repos/{owner}/{repo}/branches/main/protection\") echo '{\"required_status_checks\":{\"contexts\":[\"Closes a unit\"]}}';;\n  *) echo 'boom' >&2; exit 1;;\nesac",
+    );
+    let (_, report) = setup.doctor();
+    let detail = check(&report, "protection")["detail"].as_str().unwrap();
+    assert_eq!(check(&report, "protection")["ok"], false);
+    assert!(
+        detail.contains("the rules of main cannot be read"),
+        "{detail}"
+    );
+    assert!(detail.contains("fix the forge check first"), "{detail}");
 }
 
 #[test]
@@ -535,6 +578,57 @@ fn a_protection_that_requires_the_closes_unit_check_among_others_passes() {
     let (ok, report) = setup.doctor();
     assert!(ok, "{report}");
     assert_eq!(check(&report, "protection")["detail"], "main");
+}
+
+#[test]
+fn a_ruleset_alone_that_requires_the_closes_unit_check_passes() {
+    let setup = Setup::new();
+    setup.protection(None);
+    setup.ruleset(Some(&["build", "Closes a unit"]));
+    let (ok, report) = setup.doctor();
+    assert!(ok, "{report}");
+    assert_eq!(check(&report, "protection")["detail"], "main");
+}
+
+#[test]
+fn a_ruleset_alone_that_does_not_require_the_closes_unit_check_fails_and_says_to_add_it() {
+    let setup = Setup::new();
+    setup.protection(None);
+    setup.ruleset(Some(&["build"]));
+    only_fails(
+        &setup,
+        "protection",
+        "the rules of main do not require the check Closes a unit; add it to the ruleset",
+    );
+    let (_, report) = setup.doctor();
+    let detail = check(&report, "protection")["detail"].as_str().unwrap();
+    assert!(!detail.contains("not protected"), "{detail}");
+}
+
+#[test]
+fn the_closes_unit_check_may_come_from_the_ruleset_while_the_classic_protection_requires_others() {
+    let setup = Setup::new();
+    setup.protection(Some(&["build"]));
+    setup.ruleset(Some(&["Closes a unit"]));
+    let (ok, report) = setup.doctor();
+    assert!(ok, "{report}");
+}
+
+#[test]
+fn the_closes_unit_check_may_come_from_the_classic_protection_while_the_ruleset_requires_others() {
+    let setup = Setup::new();
+    setup.protection(Some(&["Closes a unit"]));
+    setup.ruleset(Some(&["build"]));
+    let (ok, report) = setup.doctor();
+    assert!(ok, "{report}");
+}
+
+#[test]
+fn a_protection_and_a_ruleset_that_both_lack_the_closes_unit_check_fail() {
+    let setup = Setup::new();
+    setup.protection(Some(&["build"]));
+    setup.ruleset(Some(&["lint"]));
+    only_fails(&setup, "protection", "add it to the ruleset");
 }
 
 #[test]

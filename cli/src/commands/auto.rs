@@ -294,6 +294,9 @@ mod tests {
         fn branch_protection_get(&self, _: &Path) -> Result<crate::forge::BranchProtection> {
             unreachable!()
         }
+        fn branch_rules_get(&self, _: &Path, _: &str) -> Result<crate::forge::BranchRules> {
+            unreachable!()
+        }
         fn login_get(&self, _: &Path) -> Result<String> {
             unreachable!()
         }

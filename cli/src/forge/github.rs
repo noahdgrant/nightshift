@@ -7,7 +7,9 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
-use super::{BranchProtection, ChangeRequest, ChangeState, Checks, Forge, Label, Unit};
+use super::{
+    BranchProtection, BranchRules, ChangeRequest, ChangeState, Checks, Forge, Label, Unit,
+};
 use crate::{config, retry};
 
 /// What `gh` says when a call failed for a reason that can pass: the network, the forge having a
@@ -175,6 +177,32 @@ impl Forge for GitHub {
             branch,
             protected,
             required_checks,
+        })
+    }
+
+    /// Reads the active rulesets that apply to `branch`, as the forge merges them.
+    fn branch_rules_get(&self, repo: &Path, branch: &str) -> Result<BranchRules> {
+        let endpoint = format!("repos/{{owner}}/{{repo}}/rules/branches/{branch}");
+        let json = self.gh(repo, &["api", &endpoint])?;
+        let rules: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
+        let rules = rules
+            .as_array()
+            .context("gh printed something that is not a list of rules")?;
+        let required_checks = rules
+            .iter()
+            .filter(|r| r["type"] == "required_status_checks")
+            .flat_map(|r| {
+                r["parameters"]["required_status_checks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+            })
+            .map(|c| text(&c["context"]))
+            .collect();
+        Ok(BranchRules {
+            applies: !rules.is_empty(),
+            required_checks,
+            setting: "the ruleset in the repository settings (Settings, Rules, Rulesets)".into(),
         })
     }
 
@@ -642,6 +670,55 @@ mod tests {
             .unwrap();
         assert!(got.protected);
         assert_eq!(got.required_checks, None);
+    }
+
+    #[test]
+    fn the_rules_of_a_branch_list_the_checks_they_require() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gh");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\ncase \"$2\" in\n  repos/{owner}/{repo}/rules/branches/trunk) echo '[{\"type\":\"pull_request\"},{\"type\":\"required_status_checks\",\"parameters\":{\"required_status_checks\":[{\"context\":\"a\"},{\"context\":\"b\"}]}}]';;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let got = GitHub::with_program(path)
+            .branch_rules_get(tmp.path(), "trunk")
+            .unwrap();
+        assert!(got.applies);
+        assert_eq!(got.required_checks, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn rules_the_forge_prints_as_invalid_json_are_an_error() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = fake(tmp.path(), "nope");
+        let err = gh.branch_rules_get(tmp.path(), "main").unwrap_err();
+        assert!(format!("{err:#}").contains("invalid JSON"), "{err:#}");
+    }
+
+    #[test]
+    fn rules_the_forge_prints_as_something_other_than_a_list_are_an_error() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = fake(tmp.path(), "{}");
+        let err = gh.branch_rules_get(tmp.path(), "main").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not a list of rules"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_branch_no_rule_applies_to_has_no_required_checks() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = fake(tmp.path(), "[]");
+        let got = gh.branch_rules_get(tmp.path(), "main").unwrap();
+        assert!(!got.applies);
+        assert!(got.required_checks.is_empty());
     }
 
     #[test]
