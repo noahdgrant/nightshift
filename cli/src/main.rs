@@ -18,6 +18,7 @@ mod merge;
 mod os;
 mod plan;
 mod retry;
+mod rubric;
 mod runlog;
 mod skill;
 mod state;

@@ -130,6 +130,15 @@ review = "opus"
 
 Every headless session leaves its transcript, what the agent read and ran and not only its final text, as `transcripts/<unit>/<state>-<n>.jsonl` in the repository's `ns` state directory (`.git/ns` with git). It outlives the unit's workspace. `ns log <unit>` shows it; `--state` and `--last` narrow it. A session is typically tens of kilobytes to a few megabytes of JSON, and a unit that goes round `build` many times keeps one for each, so `ns run` and `ns auto` delete transcripts last modified more than `[run] transcript_days` days ago, in `.nightshift/nightshift.toml`. Without the key they keep a week's; `0` keeps them for ever. Deleting `transcripts/` is safe; `ns` only reads it for `ns log`.
 
+
+Once `ship` has merged a change, the `retrospective` state looks back at the unit and grades it on the rubrics in `rubrics/` (this version has `efficiency`). Each grade is appended as a JSON line to `grades.jsonl` in the `ns` state directory (`.git/ns` with git), next to the run log, and is never pruned. A retrospective that goes wrong is logged as skipped and never sticks the unit. `[retrospective]` in `.nightshift/nightshift.toml` sets `enabled` (default `true`) and `model` (default: the harness's own). `docs/STATES.md` has the rest.
+
+```toml
+[retrospective]
+enabled = true
+model = "opus"
+```
+
 `ns eval review` runs the review sessions `[review] sessions` sets on the known cases in `evals/review` and reports whether it gives the right verdict each time, so you can tell whether an edit to the skill helped. `--model` runs the cases with another model, to compare models on the same cases. It makes real harness calls, so it uses subscription time.
 
 ## Credits

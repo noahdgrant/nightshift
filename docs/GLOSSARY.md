@@ -9,8 +9,20 @@ One piece of work, tracked on the forge and named by its number there. A unit ow
 _Avoid_: Job, task, run
 
 **State**:
-A step of a unit's lifecycle: `setup`, `build`, `verify`, `review`, `ship`, `clean_up`, then `done` or `stuck`. `ns run` moves a unit from one state to the next.
+A step of a unit's lifecycle: `setup`, `build`, `verify`, `review`, `ship`, `retrospective`, `clean_up`, then `done` or `stuck`. `ns run` moves a unit from one state to the next.
 _Avoid_: Phase, stage
+
+**Retrospective**:
+The state after `ship`, run once the change has merged: one read-only session looks back at how the unit went and grades it by each rubric.
+_Avoid_: Postmortem
+
+**Rubric**:
+A markdown file that says what to judge and how to grade it: a `name`, a `pass` line and a scale of values from 0 to 1.
+_Avoid_: Criterion
+
+**Grade**:
+One rubric's result for one unit: a score from 0 to 1, pass or not, and a reason. It is kept in `grades.jsonl`.
+_Avoid_: Rating
 
 **Review area**:
 One thing a review looks at: correctness, security, spec, tests, architecture, or docs and comments. A review session covers one, three or all six of them, as `[review] sessions` says.

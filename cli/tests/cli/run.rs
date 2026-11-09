@@ -53,6 +53,9 @@ pub struct Fakes {
     /// What the forge answers when asked which units block a unit, as the pages of its list.
     /// `None` is a forge that cannot say.
     pub blocked_by: Option<&'static str>,
+    /// How the retrospective session ends: `""` grades well, `"fail"` exits non-zero, `"bad"`
+    /// answers with no grade line, `"hang"` never finishes, `"line:<text>"` answers `<text>`.
+    pub retro: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -123,6 +126,7 @@ impl Fakes {
             content: "thing\n",
             sessions: "",
             blocked_by: Some("[[]]"),
+            retro: "",
         }
     }
 }
@@ -250,7 +254,7 @@ esac"#,
 reviewed="{bin}/reviewed"
 p="$(cat)"
 kind=build
-case "$p" in *"You diagnose one bug"*) kind=troubleshoot;; *"decide what happens to one unit"*) kind=triage;; *"Find what must be fixed before this change merges"*) kind=review;; *"Run the real thing and record what you saw"*) kind=verify;; esac
+case "$p" in *"You diagnose one bug"*) kind=troubleshoot;; *"decide what happens to one unit"*) kind=triage;; *"Find what must be fixed before this change merges"*) kind=review;; *"Run the real thing and record what you saw"*) kind=verify;; *"You grade how one unit went"*) kind=retrospective;; esac
 echo "$kind $*" >> "{bin}/claude.calls"
 case "$p" in
 *"You diagnose one bug"*) {session}*) printf '### Repro\nrun it\n\nROUTE: build\n';; esac;;
@@ -261,6 +265,15 @@ case "$p" in
   if echo "$p" | grep -q thing.txt; then echo reviewed the diff; else echo saw no diff; fi
   if [ -n "{review_fails_in}" ] && printf %s "$p" | grep -q "^{review_fails_in}: review only"; then echo '{FAIL}'
   elif [ -e "$reviewed" ]; then echo '{review}'; else touch "$reviewed"; echo '{first_review}'; fi;;
+*"You grade how one unit went"*)
+  printf %s "$p" > "{bin}/retro.prompt"
+  case "{retro}" in
+  fail) exit 1;;
+  bad) echo 'It went fine.';;
+  hang) exec sleep 30;;
+  line:*) echo "$(printf %s '{retro}' | cut -c6-)";;
+  *) echo 'Looked at everything.'; echo 'GRADE: efficiency 0.8 one failed call, then straight on';;
+  esac;;
 *"Run the real thing and record what you saw"*)
   n=$(ls "{bin}"/verify.prompt.* 2>/dev/null | wc -l); printf %s "$p" > "{bin}/verify.prompt.$((n+1))"
   {crash}{edit}echo checked it
@@ -277,6 +290,7 @@ exit {exit}"#,
             first = fakes.first_verdict,
             review = fakes.review,
             first_review = fakes.first_review,
+            retro = fakes.retro,
             review_fails_in = fakes.review_fails_in,
             review_dies_in = fakes.review_dies_in,
             drop = if fakes.first_build_dropped {
@@ -1546,10 +1560,14 @@ fn a_stuck_unit_with_a_change_request_a_person_opened_goes_to_ship_and_is_cleane
         .collect();
     assert_eq!(
         taken,
-        ["ship>clean_up", "clean_up>done"],
+        [
+            "ship>retrospective",
+            "retrospective>clean_up",
+            "clean_up>done"
+        ],
         "no build, verify or review"
     );
-    assert_eq!(sessions(), before, "no session ran");
+    assert_eq!(sessions(), before + 1, "only the retrospective ran");
     assert!(gh_log(&repo).contains("pr merge"));
     assert!(!repo.workspace("5").exists());
     assert!(!repo.branches().contains(&"ns/5".to_string()));
@@ -1561,7 +1579,7 @@ fn a_stuck_unit_with_a_change_request_a_person_opened_goes_to_ship_and_is_cleane
 }
 
 #[test]
-fn a_stuck_unit_whose_person_opened_change_request_merged_goes_straight_to_clean_up() {
+fn a_stuck_unit_whose_person_opened_change_request_merged_goes_to_retrospective_then_clean_up() {
     let repo = Repo::new();
     let path = stuck_with_person_opened_change_request(&repo);
     forge_mark(&repo, "merged", "");
@@ -1577,7 +1595,12 @@ fn a_stuck_unit_whose_person_opened_change_request_merged_goes_straight_to_clean
             )
         })
         .collect();
-    assert_eq!(taken, ["clean_up>done"]);
+    assert_eq!(
+        taken,
+        ["retrospective>clean_up", "clean_up>done"],
+        "no build, verify or review"
+    );
+    assert!(run_log(&repo).iter().any(|e| e["took_over"] == 9));
     assert!(!repo.workspace("5").exists());
     assert!(!repo.branches().contains(&"ns/5".to_string()));
     assert!(!gh_log(&repo).contains("pr merge"));
@@ -1682,7 +1705,7 @@ fn a_unit_stuck_in_verify_with_a_change_request_a_person_opened_is_taken_over() 
     let events = lines(&out);
     assert_eq!(events[0], serde_json::json!({"unit": "5", "took_over": 9}));
     assert!(events.iter().all(|e| e["from"] != "stuck"), "{events:?}");
-    assert_eq!(sessions(), before, "no session ran");
+    assert_eq!(sessions(), before + 1, "only the retrospective ran");
     assert!(gh_log(&repo).contains("pr merge"));
     assert!(!repo.workspace("5").exists());
 }
@@ -3900,4 +3923,282 @@ fn a_done_unit_whose_open_change_request_has_lost_its_workspace_is_reported() {
     );
     let err = run(&repo, &path).failure().get_output().stderr.clone();
     assert!(String::from_utf8_lossy(&err).contains("workspace of unit 5 is gone"));
+}
+
+/// Runs `ns run 5 --merge` for a unit whose change may merge.
+fn run_merged(repo: &Repo, fakes: &Fakes, extra: &[&str]) -> assert_cmd::assert::Assert {
+    manifest_append(repo, "[merge]\nhuman_review = [\".github/**\"]\n");
+    let mut args = vec!["--merge"];
+    args.extend(extra);
+    run_with(repo, &tools(repo, fakes), &args)
+}
+
+/// Adds `text` to the repository's manifest.
+fn manifest_append(repo: &Repo, text: &str) {
+    let file = repo.path.join(".nightshift/nightshift.toml");
+    let old = std::fs::read_to_string(&file).unwrap_or_default();
+    set_manifest(repo, &format!("{old}{text}"));
+}
+
+fn grades(repo: &Repo) -> Vec<serde_json::Value> {
+    lines(&std::fs::read(repo.path.join(".git/ns/grades.jsonl")).unwrap_or_default())
+}
+
+fn skipped(repo: &Repo) -> Vec<serde_json::Value> {
+    run_log(repo)
+        .into_iter()
+        .filter(|e| e["retrospective"] == "skipped")
+        .collect()
+}
+
+fn bin_file(repo: &Repo, name: &str) -> String {
+    std::fs::read_to_string(repo.path.parent().unwrap().join("bin").join(name)).unwrap_or_default()
+}
+
+#[test]
+fn a_merged_unit_goes_through_retrospective_between_ship_and_clean_up() {
+    let repo = Repo::new();
+    let out = run_merged(&repo, &Fakes::passing(), &[])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        moves(out),
+        [
+            "start setup",
+            "setup>build",
+            "build>verify",
+            "verify>review",
+            "review>ship",
+            "ship>retrospective",
+            "retrospective>clean_up",
+            "clean_up>done",
+        ]
+    );
+    assert!(skipped(&repo).is_empty());
+}
+
+#[test]
+fn a_unit_waiting_for_a_person_to_merge_does_not_reach_retrospective() {
+    let repo = Repo::new();
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(moves(out).contains(&"ship>clean_up".to_string()));
+    assert!(!bin_file(&repo, "claude.calls").contains("retrospective"));
+    assert!(grades(&repo).is_empty());
+    assert!(skipped(&repo).is_empty());
+}
+
+#[test]
+fn a_grade_line_is_kept_in_grades_jsonl_with_every_field() {
+    let repo = Repo::new();
+    git(
+        &repo.path,
+        &["push", "-q", "--set-upstream", "origin", "main"],
+    );
+    let main = git(&repo.path, &["rev-parse", "main"]).trim().to_string();
+    run_merged(&repo, &Fakes::passing(), &["--model", "opus"]).success();
+    let kept = grades(&repo);
+    assert_eq!(kept.len(), 1);
+    let grade = &kept[0];
+    assert_eq!(grade["unit"], "5");
+    assert_eq!(grade["rubric"], "efficiency");
+    assert_eq!(grade["score"], 0.8);
+    assert_eq!(grade["pass"], true);
+    assert_eq!(grade["reason"], "one failed call, then straight on");
+    assert_eq!(grade["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(grade["base"], main.as_str());
+    assert!(grade["at"].as_u64().is_some_and(|t| t > 0));
+    assert_eq!(grade["model"], "opus");
+}
+
+#[test]
+fn a_score_below_the_pass_line_is_kept_as_not_passing_and_without_a_model_has_none() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        retro: "line:GRADE: efficiency 0.59 lots of retries",
+        ..Fakes::passing()
+    };
+    run_merged(&repo, &fakes, &[]).success();
+    let kept = grades(&repo);
+    assert_eq!(kept[0]["score"], 0.59);
+    assert_eq!(kept[0]["pass"], false);
+    assert!(kept[0].get("model").is_none());
+}
+
+#[test]
+fn the_retrospective_reads_the_unit_the_change_the_notes_and_the_sessions() {
+    let repo = Repo::new();
+    run_merged(&repo, &Fakes::passing(), &[]).success();
+    let prompt = bin_file(&repo, "retro.prompt");
+    assert!(
+        prompt.contains("## Add a thing\n\nMake the thing."),
+        "title and description"
+    );
+    assert!(prompt.contains("# The build summary\n\nbuilt the thing"));
+    assert!(prompt.contains("+thing"), "the diff");
+    assert!(prompt.contains("## evidence.md"), "the notes");
+    assert!(prompt.contains("## build 1"), "the kept sessions");
+    assert!(prompt.contains("## efficiency"), "the rubric");
+    let calls = bin_file(&repo, "claude.calls");
+    let retro = calls
+        .lines()
+        .find(|l| l.starts_with("retrospective"))
+        .unwrap();
+    assert!(
+        !retro.contains("--dangerously") && !retro.contains("acceptEdits"),
+        "{retro}"
+    );
+}
+
+#[test]
+fn a_retrospective_that_goes_wrong_is_skipped_and_the_unit_goes_on_to_clean_up() {
+    for (retro, reason) in [
+        ("fail", "the harness"),
+        ("bad", "GRADE"),
+        ("line:GRADE: efficiency 7 too high", "GRADE"),
+    ] {
+        let repo = Repo::new();
+        let fakes = Fakes {
+            retro,
+            ..Fakes::passing()
+        };
+        let out = run_merged(&repo, &fakes, &[])
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        assert_eq!(
+            &moves(out)[5..],
+            [
+                "ship>retrospective",
+                "retrospective>clean_up",
+                "clean_up>done"
+            ],
+            "{retro}"
+        );
+        assert!(grades(&repo).is_empty(), "{retro}");
+        let skips = skipped(&repo);
+        assert_eq!(skips.len(), 1, "{retro}");
+        assert_eq!(skips[0]["unit"], "5");
+        assert!(
+            skips[0]["reason"].as_str().unwrap().contains(reason),
+            "{retro}: {skips:?}"
+        );
+        assert!(!repo.workspace("5").exists(), "{retro}");
+    }
+}
+
+#[test]
+fn a_retrospective_that_times_out_is_skipped_and_costs_no_attempt() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        retro: "hang",
+        ..Fakes::passing()
+    };
+    let out = run_merged(
+        &repo,
+        &fakes,
+        &["--harness-timeout-seconds", "2", "--max-attempts", "1"],
+    )
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+    assert_eq!(moves(out).last().unwrap(), "clean_up>done");
+    assert_eq!(
+        bin_file(&repo, "claude.calls")
+            .matches("retrospective")
+            .count(),
+        1
+    );
+    let skips = skipped(&repo);
+    assert!(
+        skips[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("did not finish"),
+        "{skips:?}"
+    );
+    assert!(grades(&repo).is_empty());
+}
+
+#[test]
+fn a_disabled_retrospective_runs_no_session_and_the_run_log_says_why() {
+    let repo = Repo::new();
+    manifest_append(&repo, "[retrospective]\nenabled = false\n");
+    let out = run_merged(&repo, &Fakes::passing(), &[])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(moves(out).contains(&"ship>retrospective".to_string()));
+    assert!(!bin_file(&repo, "claude.calls").contains("retrospective"));
+    assert!(grades(&repo).is_empty());
+    let skips = skipped(&repo);
+    assert_eq!(skips.len(), 1);
+    assert_eq!(skips[0]["reason"], "disabled");
+}
+
+#[test]
+fn the_retrospective_model_is_the_settings_and_the_option_beats_it() {
+    let repo = Repo::new();
+    manifest_append(&repo, "[retrospective]\nmodel = \"haiku\"\n");
+    run_merged(&repo, &Fakes::passing(), &[]).success();
+    assert_eq!(grades(&repo)[0]["model"], "haiku");
+    let calls = bin_file(&repo, "claude.calls");
+    assert!(calls
+        .lines()
+        .any(|l| l.starts_with("retrospective") && l.contains("haiku")));
+}
+
+#[test]
+fn the_model_option_beats_the_retrospective_setting() {
+    let repo = Repo::new();
+    manifest_append(&repo, "[retrospective]\nmodel = \"haiku\"\n");
+    run_merged(&repo, &Fakes::passing(), &["--model", "opus"]).success();
+    assert_eq!(grades(&repo)[0]["model"], "opus");
+    let calls = bin_file(&repo, "claude.calls");
+    assert!(calls
+        .lines()
+        .any(|l| l.starts_with("retrospective") && l.contains("opus") && !l.contains("haiku")));
+}
+
+#[test]
+fn a_bad_retrospective_setting_is_an_error_that_names_the_key_and_nothing_runs() {
+    for (text, key) in [
+        (
+            "[retrospective]\nenabled = \"no\"\n",
+            "retrospective.enabled",
+        ),
+        ("[retrospective]\nmodel = 4\n", "retrospective.model"),
+    ] {
+        let repo = Repo::new();
+        set_manifest(&repo, text);
+        let out = run(&repo, &tools(&repo, &Fakes::passing())).failure();
+        let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(
+            err.contains(key) && err.contains("nightshift.toml"),
+            "{err}"
+        );
+        assert!(out.get_output().stdout.is_empty());
+    }
+}
+
+#[test]
+fn ns_log_shows_the_retrospectives_session() {
+    let repo = Repo::new();
+    run_merged(&repo, &Fakes::passing(), &[]).success();
+    let out = Command::cargo_bin("ns")
+        .unwrap()
+        .current_dir(&repo.path)
+        .args(["log", "5", "--state", "retrospective"])
+        .assert()
+        .success();
+    let text = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(text.starts_with("== retrospective 1 ("), "{text}");
 }

@@ -3,6 +3,7 @@
 mod build;
 mod check;
 pub mod clean_up;
+pub mod retrospective;
 pub mod review;
 mod rounds;
 mod setup;
@@ -65,6 +66,7 @@ pub fn run(ctx: &mut Context, state: State) -> Result<Outcome> {
         State::Verify => verify::run(ctx),
         State::Review => review::run(ctx),
         State::Ship => ship::run(ctx),
+        State::Retrospective => retrospective::run(ctx),
         State::CleanUp => clean_up::run(ctx),
         _ => Ok(Outcome::Pass),
     }

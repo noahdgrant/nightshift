@@ -81,7 +81,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
             return Ok(outcome);
         }
         if !ctx.ship.merge {
-            return Ok(Outcome::Pass);
+            return Ok(Outcome::Unmerged);
         }
         // A rebase brings in the base's markers, so a change that was outside every region may
         // now be inside one: decide again on the tree that is to be merged.
@@ -99,7 +99,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
                     "not_merged": why,
                 })
             );
-            return Ok(Outcome::Pass);
+            return Ok(Outcome::Unmerged);
         }
         if ctx.ship.queue && base_moved(ctx, &root, &dir)? {
             moves += 1;
