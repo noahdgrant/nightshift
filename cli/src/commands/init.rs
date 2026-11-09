@@ -59,7 +59,7 @@ pub struct Args {
 /// existing file is left alone. It writes the pages of `docs/agents/` that are missing. Run again, it changes only what is missing, and it never
 /// overwrites an existing workflow.
 pub fn run(args: Args) -> Result<()> {
-    let root = vcs::get().root_find(&std::env::current_dir()?)?;
+    let root = vcs::get().workspace_find(&std::env::current_dir()?)?;
     check_write(&root, args.check, &mut prompt_terminal)?;
     let mut pin = manifest::pin_read(&root)?;
     pin.version = Some(env!("CARGO_PKG_VERSION").to_string());
@@ -94,6 +94,7 @@ pub fn run(args: Args) -> Result<()> {
     println!(
         "{}",
         json!({
+            "checkout": root,
             "version": pin.version,
             "harness": pin.harness.iter().map(|k| k.name()).collect::<Vec<_>>(),
             "skills_written": synced.iter().map(|s| s.written).sum::<usize>(),
