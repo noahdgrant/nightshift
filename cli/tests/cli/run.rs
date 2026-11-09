@@ -174,8 +174,9 @@ case "$1 $2" in
 "api --paginate") labels; echo '[[{listed}]]';;
 "pr list") merged_at=null; if [ -e "{bin}/merged" ]; then state=MERGED; merged_at='"2026-11-06T12:00:00Z"'; elif [ -e "{bin}/closed" ]; then state=CLOSED; else state=OPEN; fi
   head=$(cat "{bin}/pr-head" 2>/dev/null || git rev-parse refs/heads/ns/5 2>/dev/null)
-  if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"'$state'","headRefOid":"'$head'","mergedAt":'$merged_at'}}]'; else echo '[]'; fi;;
-"pr create") touch "{bin}/opened"; echo https://forge.example/9;;
+  older=; [ -e "{bin}/older-closed" ] && older=',{{"number":3,"url":"https://forge.example/3","state":"CLOSED","headRefOid":"'$head'","mergedAt":null}}'
+  if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"'$state'","headRefOid":"'$head'","mergedAt":'$merged_at'}}'$older']'; else echo '[]'; fi;;
+"pr create") touch "{bin}/opened"; rm -f "{bin}/closed"; echo https://forge.example/9;;
 "pr checks") {checks};;
 "pr merge") touch "{bin}/merged";;
 esac"#,
@@ -625,6 +626,31 @@ fn ship_publishes_what_the_build_committed_and_opens_one_change_request() {
         "1",
         "the harness commits once and ship adds none"
     );
+}
+
+#[test]
+fn ship_opens_a_new_change_request_when_the_only_one_for_the_branch_is_closed() {
+    let repo = Repo::new();
+    manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");
+    let path = tools(&repo, &Fakes::passing());
+    forge_mark(&repo, "opened", "");
+    forge_mark(&repo, "closed", "");
+    run_with(&repo, &path, &["--merge"]).success();
+    let log = gh_log(&repo);
+    assert_eq!(log.matches("pr create --head ns/5").count(), 1, "{log}");
+    assert_eq!(log.matches("pr merge 9 --squash").count(), 1, "{log}");
+}
+
+#[test]
+fn ship_takes_the_open_change_request_when_the_branch_also_has_a_closed_one() {
+    let repo = Repo::new();
+    let path = tools(&repo, &Fakes::passing());
+    forge_mark(&repo, "opened", "");
+    forge_mark(&repo, "older-closed", "");
+    run(&repo, &path).success();
+    let log = gh_log(&repo);
+    assert_eq!(log.matches("pr create").count(), 0, "{log}");
+    assert_eq!(read(&repo, "ship.md"), "https://forge.example/9\n");
 }
 
 #[test]
