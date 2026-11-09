@@ -64,7 +64,7 @@ impl GitHub {
                 .map_err(|e| format!("cannot run gh: {e}"))?;
             if !out.status.success() {
                 return Err(format!(
-                    "gh has no login for the account {account} named in the config: {}",
+                    "gh has no login for the account {account} named in the config: {}. A GH_TOKEN already set is used instead.",
                     String::from_utf8_lossy(&out.stderr).trim()
                 ));
             }

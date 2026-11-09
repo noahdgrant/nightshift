@@ -97,3 +97,35 @@ fn without_an_account_gh_is_left_as_it_is() {
         "{log}"
     );
 }
+
+#[test]
+fn an_account_gh_has_no_login_for_is_an_error_that_names_gh_token() {
+    let repo = Repo::new();
+    let tmp = repo.path.parent().unwrap().to_path_buf();
+    let bin = tmp.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    script(
+        &bin,
+        "gh",
+        "if [ \"$1\" = auth ]; then echo 'no oauth token' >&2; exit 1; fi\necho '[]'",
+    );
+    let file = tmp.join("config.toml");
+    std::fs::write(&file, "[forge.github]\naccount = \"alice\"\n").unwrap();
+    let out = Command::cargo_bin("ns")
+        .unwrap()
+        .args(["auto", "--dry-run"])
+        .env("NS_CONFIG", &file)
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env_remove("GH_TOKEN")
+        .current_dir(&repo.path)
+        .assert()
+        .failure();
+    let err = String::from_utf8_lossy(&out.get_output().stderr).to_string();
+    assert!(
+        err.contains("gh has no login for the account alice named in the config: no oauth token. A GH_TOKEN already set is used instead."),
+        "{err}"
+    );
+}
