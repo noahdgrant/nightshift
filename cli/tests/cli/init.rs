@@ -226,20 +226,16 @@ fn init_creates_the_labels_the_forge_lacks_and_only_those() {
     .unwrap();
     let report = init_in(&repo);
     let created = report["labels_created"].as_array().unwrap();
-    assert_eq!(created.len(), 26 - 2);
+    assert_eq!(created.len(), 25 - 2);
     assert!(!created.iter().any(|l| l == "status:wontfix"));
     let log = gh_log(&repo);
-    assert_eq!(log.matches("label create").count(), 24, "{log}");
+    assert_eq!(log.matches("label create").count(), 23, "{log}");
     assert!(
         log.contains("label create status:ready-for-agent --description"),
         "{log}"
     );
     assert!(
         log.contains("label create needs-human-merge --description"),
-        "{log}"
-    );
-    assert!(
-        log.contains("label create skip-closes-unit --description"),
         "{log}"
     );
     assert!(!log.contains("label create type:feat"), "{log}");
@@ -261,7 +257,7 @@ fn on_a_repository_with_native_types_init_skips_the_feat_and_fix_labels() {
     )
     .unwrap();
     let report = init_in(&repo);
-    assert_eq!(report["labels_created"].as_array().unwrap().len(), 26 - 2);
+    assert_eq!(report["labels_created"].as_array().unwrap().len(), 25 - 2);
     let log = gh_log(&repo);
     assert!(!log.contains("label create type:feat"), "{log}");
     assert!(!log.contains("label create type:fix"), "{log}");
@@ -346,7 +342,8 @@ fn init_writes_the_check_that_a_change_request_closes_a_unit() {
         std::fs::read_to_string(repo.path.join(".github/workflows/closes-unit.yml")).unwrap();
     assert!(text.contains("name: PR closes a unit"));
     assert!(text.contains("closingIssuesReferences"));
-    assert!(!text.contains("release-please"));
+    assert!(text.contains("release-please--branches--"));
+    assert!(!text.contains("skip-closes-unit"));
     assert_eq!(report["workflows_written"], 1);
     assert_eq!(init_in(&repo)["workflows_written"], 0);
 }
@@ -411,24 +408,6 @@ fn init_with_no_terminal_and_no_checks_command_fails_and_says_what_to_pass() {
     let err = String::from_utf8_lossy(&out.get_output().stderr).to_string();
     assert!(err.contains("--check '<command>'"), "{err}");
     assert!(!repo.path.join(".nightshift/check").exists());
-}
-
-#[test]
-fn init_does_not_fail_when_skip_closes_unit_exists() {
-    let repo = Repo::new();
-    gh(&repo);
-    std::fs::write(
-        repo.path.parent().unwrap().join("labels.json"),
-        labels_json(&["skip-closes-unit"]),
-    )
-    .unwrap();
-    let report = init_in(&repo);
-    assert!(!report["labels_created"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|l| l == "skip-closes-unit"));
-    assert!(!gh_log(&repo).contains("label create skip-closes-unit"));
 }
 
 #[test]
