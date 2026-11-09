@@ -217,6 +217,7 @@ mod tests {
                 ("misses-requirement", "FAIL"),
                 ("needs-a-hand-edit", "PASS"),
                 ("points-at-generated-file", "FAIL"),
+                ("repeats-a-mistake", "FAIL"),
                 ("stale-comment", "FAIL"),
             ]
         );

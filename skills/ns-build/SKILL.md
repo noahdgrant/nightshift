@@ -60,4 +60,4 @@ It counts when you tried what an instruction said and it did not work (a command
 
 ## When told something went wrong
 
-A later message names what was left wrong: uncommitted changes, extra commits (the resumed session is asked to squash them, and that costs no attempt), failed checks, or findings from a check of your work. Fix exactly that, then run steps 3 and 4 again.
+A later message names what was left wrong: uncommitted changes, extra commits (the resumed session is asked to squash them, and that costs no attempt), failed checks, or findings from a check of your work. Fix exactly that, then run steps 3 and 4 again. When a finding carries a `Fix level:` and a `Durable fix:`, fix it at that level when you can: the type, rule or test the finding names, not a comment or a doc in its place.
