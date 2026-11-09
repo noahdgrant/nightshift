@@ -7,7 +7,7 @@ use serde_json::json;
 use super::Context;
 use crate::artifact;
 use crate::checks;
-use crate::forge::{Checks, DISCLOSURE};
+use crate::forge::{ChangeState, Checks, DISCLOSURE};
 use crate::labels;
 use crate::lock;
 use crate::manifest;
@@ -260,10 +260,17 @@ fn base_moved(ctx: &Context, root: &Path, dir: &Path) -> Result<bool> {
     }
 }
 
-/// Pushes the branch and returns the number of its change request, opened if it has none.
+/// Pushes the branch and returns the number of its change request, opened if it has none or only
+/// one that was closed without merging.
 fn publish(ctx: &Context, dir: &Path, branch: &str, id: &str) -> Result<u64> {
     ctx.vcs.branch_push(dir, branch)?;
-    let change_request = match ctx.forge.change_request_get(dir, branch)? {
+    // One closed without merging is passed over: it cannot be merged, and the forge will not
+    // reopen it once the branch was force-pushed.
+    let existing = ctx
+        .forge
+        .change_request_get(dir, branch)?
+        .filter(|cr| cr.state != ChangeState::Closed);
+    let change_request = match existing {
         Some(existing) => existing,
         None => {
             // Read only here: a taken-over unit has a change request already and may have no `build.md`.
