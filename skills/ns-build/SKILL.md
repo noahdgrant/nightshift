@@ -46,6 +46,13 @@ End with a short summary:
 - **Changed**: what the commit does.
 - **Tests**: each requirement and the test that covers it.
 - **Assumptions** and **Noticed**, when you have any.
+- **Workarounds**: the section `## Workarounds`, always present. See below.
+
+### Workarounds
+
+List each instruction, doc, skill step or command that was wrong, out of date or missing, and what you did instead, so someone can fix it. A person reads this section in the change request, so keep each workaround to one line. When there was none, write the single word `None`.
+
+It counts when you tried what an instruction said and it did not work (a command that does not exist, a wrong path, a stale doc), or when you had to find out for yourself what no instruction told you (where to run the checks, which port is free). A failing test or an ordinary code mistake of yours does not count.
 
 ## When told something went wrong
 
