@@ -1,0 +1,26 @@
+diff --git a/src/count.rs b/src/count.rs
+new file mode 100644
+--- /dev/null
++++ b/src/count.rs
+@@ -0,0 +1,6 @@
++/// Prints the number of lines in `path` and returns the exit code.
++pub fn run(path: &str) -> i32 {
++    let text = std::fs::read_to_string(path).unwrap();
++    println!("{}", text.lines().count());
++    0
++}
+diff --git a/tests/count.rs b/tests/count.rs
+new file mode 100644
+--- /dev/null
++++ b/tests/count.rs
+@@ -0,0 +1,10 @@
++use assert_cmd::Command;
++
++#[test]
++fn count_prints_the_lines() {
++    let dir = tempfile::tempdir().unwrap();
++    let file = dir.path().join("a.txt");
++    std::fs::write(&file, "a\nb\n").unwrap();
++    let out = Command::cargo_bin("tally").unwrap().args(["count", file.to_str().unwrap()]).output().unwrap();
++    assert_eq!(String::from_utf8(out.stdout).unwrap(), "2\n");
++}

@@ -409,6 +409,16 @@ mod tests {
     }
 
     #[test]
+    fn a_finding_with_a_fix_level_is_passed_on_whole() {
+        let finding = "src/a.rs:3 a path built from a string\nFix level: code\nDurable fix: a `RepoPath` type\nVERDICT: FAIL\n";
+        let text = merge(&[(&GROUPS[0], found(finding))], false);
+        assert_eq!(
+            earlier_findings(&text, &GROUPS[0]),
+            Some(finding.trim_end())
+        );
+    }
+
+    #[test]
     fn the_last_section_does_not_take_the_reviews_own_verdict() {
         let text = merge(
             &[

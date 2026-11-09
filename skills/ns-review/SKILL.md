@@ -67,6 +67,14 @@ List them apart from the earlier ones. One finding per defect:
 - what is wrong
 - why it matters
 - the fix
+- `Fix level:` where the fix belongs, one of:
+  - `code`: a type, boundary or interface shape that makes the mistake impossible.
+  - `check`: a lint rule, test or CI check that catches the category.
+  - `prose`: a doc, comment, skill or coding standard, for what only judgement can enforce.
+  - `none`: a one-off with no category.
+- `Durable fix:` the type, rule or test by name, on a finding at level `code` or `check`.
+
+Choose the highest level that removes the whole category of mistake: `code`, then `check`, and `prose` only when neither fits. Use `none` when the mistake is a one-off.
 
 A finding is **Critical** when the change breaks, loses data, or opens a hole, and **Important** when it misses a requirement or a test the change needs. Write nothing below those two.
 
