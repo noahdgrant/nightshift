@@ -518,3 +518,39 @@ fn init_sets_the_description_of_a_label_it_owns_and_leaves_the_others_alone() {
     assert!(!log.contains("status:in-review"), "{log}");
     assert!(!log.contains("area:cli"), "{log}");
 }
+
+#[test]
+fn init_in_a_worktree_writes_its_files_there_and_names_it() {
+    let repo = Repo::new();
+    let dir = repo.path.parent().unwrap().join("elsewhere");
+    crate::common::git(
+        &repo.path,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "other",
+            &dir.to_string_lossy(),
+        ],
+    );
+    let report = init_at(&repo, &dir);
+    assert_eq!(
+        report["checkout"],
+        dir.canonicalize().unwrap().to_string_lossy().as_ref()
+    );
+    assert!(dir.join(".nightshift/nightshift.toml").is_file());
+    assert!(dir.join("docs/agents").is_dir());
+    assert!(!repo.path.join(".nightshift").exists());
+    assert!(!repo.path.join("docs").exists());
+}
+
+#[test]
+fn init_in_the_main_checkout_names_it() {
+    let repo = Repo::new();
+    let report = init_in(&repo);
+    assert_eq!(
+        report["checkout"],
+        repo.path.canonicalize().unwrap().to_string_lossy().as_ref()
+    );
+}

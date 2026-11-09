@@ -41,3 +41,50 @@ fn upgrade_to_another_version_pins_it_and_leaves_the_skills_to_that_version() {
     assert!(manifest(&repo).contains("version = \"9.9.9\""));
     assert!(!repo.path.join(".claude/skills").exists());
 }
+
+fn worktree(repo: &Repo) -> std::path::PathBuf {
+    let dir = repo.path.parent().unwrap().join("elsewhere");
+    crate::common::git(
+        &repo.path,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "other",
+            &dir.to_string_lossy(),
+        ],
+    );
+    dir
+}
+
+#[test]
+fn upgrade_in_a_worktree_changes_the_worktree_and_names_it() {
+    let repo = Repo::new();
+    let dir = worktree(&repo);
+    let out = Command::cargo_bin("ns")
+        .unwrap()
+        .args(["upgrade", "9.9.9"])
+        .current_dir(&dir)
+        .assert()
+        .success();
+    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(
+        report["checkout"],
+        dir.canonicalize().unwrap().to_string_lossy().as_ref()
+    );
+    let pin = std::fs::read_to_string(dir.join(".nightshift/nightshift.toml")).unwrap();
+    assert!(pin.contains("version = \"9.9.9\""));
+    assert!(!repo.path.join(".nightshift/nightshift.toml").exists());
+}
+
+#[test]
+fn upgrade_in_the_main_checkout_names_it() {
+    let repo = Repo::new();
+    let report = upgrade(&repo, &["9.9.9"]);
+    assert_eq!(
+        report["checkout"],
+        repo.path.canonicalize().unwrap().to_string_lossy().as_ref()
+    );
+    assert!(manifest(&repo).contains("version = \"9.9.9\""));
+}

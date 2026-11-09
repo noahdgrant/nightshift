@@ -13,7 +13,7 @@ pub struct Args {
 /// Changes the version the repository is pinned to. The skills are written only for this `ns`'s
 /// own version; for another, the `ns` of that version writes them when it next runs `ns sync`.
 pub fn run(args: Args) -> Result<()> {
-    let root = vcs::get().root_find(&std::env::current_dir()?)?;
+    let root = vcs::get().workspace_find(&std::env::current_dir()?)?;
     let own = env!("CARGO_PKG_VERSION");
     let version = args.version.unwrap_or_else(|| own.to_string());
     let mut pin = manifest::pin_read(&root)?;
@@ -23,6 +23,9 @@ pub fn run(args: Args) -> Result<()> {
     if synced {
         sync::run(&root, &pin.harness)?;
     }
-    println!("{}", json!({ "version": version, "synced": synced }));
+    println!(
+        "{}",
+        json!({ "version": version, "synced": synced, "checkout": root })
+    );
     Ok(())
 }
