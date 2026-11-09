@@ -167,6 +167,9 @@ pub struct ChangeRequest {
     pub state: ChangeState,
     /// The commit its head branch is at on the forge.
     pub head: String,
+    /// When it merged, in seconds since the epoch. `None` while it has not, or when the forge
+    /// gives no time.
+    pub merged_at: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

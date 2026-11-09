@@ -25,7 +25,8 @@ pub fn run(args: Args) -> Result<()> {
     let events = RunLog::sibling_open(&*vcs, &root, GRADES_FILE)?.events()?;
     let entries = grades::parse(&events);
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
-    let report = grades::report(&entries, now, args.weeks);
+    let runs = RunLog::open(&*vcs, &root)?.events()?;
+    let report = grades::report(&entries, now, args.weeks).with_waits(&runs, now, args.weeks);
     if report.is_empty() {
         if !args.json {
             if entries.is_empty() {

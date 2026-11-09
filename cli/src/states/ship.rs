@@ -91,14 +91,13 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         if let Some(why) = &human {
             ctx.forge
                 .change_request_label_add(&dir, number, labels::NEEDS_HUMAN_MERGE)?;
-            println!(
-                "{}",
-                json!({
-                    "unit": id,
-                    "state": "ship",
-                    "not_merged": why,
-                })
-            );
+            let event = json!({
+                "unit": id,
+                "state": "ship",
+                "not_merged": why,
+            });
+            println!("{event}");
+            RunLog::open(ctx.vcs.as_ref(), &root)?.append(&event)?;
             return Ok(Outcome::Unmerged);
         }
         if ctx.ship.queue && base_moved(ctx, &root, &dir)? {
