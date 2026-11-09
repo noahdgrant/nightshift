@@ -12,7 +12,7 @@ metadata:
 
 ## 1. List the requirements
 
-Number the requirements `R1..Rn` in the unit's order. For a bug, the original repro is a requirement of its own.
+Number the requirements `R1..Rn` in the unit's order, and note each one's priority: Must, Should or Could, from the unit's headings. A requirement with no priority stated, because the description has no Must, Should, Could or Won't headings, counts as a Must. For a bug, the original repro is a requirement of its own.
 
 The requirements are the unit's, not claims in the build summary. A claim you did not re-run, such as the repository's checks passing, which the build and CI run, is noted as not checked here and does not by itself make the verdict FAIL. A requirement whose only evidence is "the tests pass" is still INCONCLUSIVE, not PASS.
 
@@ -61,6 +61,8 @@ End with a last line that is exactly one of:
 
 - `VERDICT: PASS` when every requirement is PASS.
 - `VERDICT: FAIL` when any requirement is FAIL, whatever else is INCONCLUSIVE.
-- `VERDICT: INCONCLUSIVE` when no requirement is FAIL and at least one is INCONCLUSIVE.
+- `VERDICT: INCONCLUSIVE` when no requirement is FAIL and at least one **Must** requirement is INCONCLUSIVE.
+
+A Should or Could that is INCONCLUSIVE does not change the verdict: with every Must PASS, the verdict is PASS. List it in the evidence under the heading `## Not proven (Should, Could)`, written as a level-2 heading, with one `### R<n>` section per entry saying what would prove it. Put every Must section before that heading, because `ns` leaves out everything under it when it comments on a stuck unit. A Should or Could that is FAIL still makes the verdict FAIL.
 
 INCONCLUSIVE is for a check that cannot be run from the workspace, such as a live service, credentials, or behavior only CI shows. It is not for a check you skipped or did not try hard enough: run that one. A requirement that is INCONCLUSIVE says what would make it checkable, because a human reads it when it stays unproven.
