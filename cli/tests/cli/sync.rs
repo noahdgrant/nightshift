@@ -236,3 +236,103 @@ fn sync_removes_the_standards_an_older_ns_wrote_beside_the_skills() {
     sync_in(&repo.path);
     assert!(!old.exists());
 }
+
+fn linked_skills(repo: &Repo, target: &str) {
+    std::fs::create_dir_all(repo.path.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(target, repo.path.join(".claude/skills")).unwrap();
+}
+
+#[test]
+fn skills_written_through_a_symlinked_skills_folder_are_not_changes_to_the_repository() {
+    let repo = Repo::new();
+    repo.standards_commit();
+    let mine = repo.path.join(".agents/skills/mine");
+    std::fs::create_dir_all(&mine).unwrap();
+    std::fs::write(mine.join("SKILL.md"), "MINE\n").unwrap();
+    linked_skills(&repo, "../.agents/skills");
+    git(&repo.path, &["add", ".agents", ".claude"]);
+    git(&repo.path, &["commit", "-m", "skills"]);
+
+    sync_in(&repo.path);
+    assert_eq!(
+        std::fs::read_to_string(repo.path.join(".agents/skills/ns-tdd/SKILL.md")).unwrap(),
+        shipped("ns-tdd")
+    );
+    assert_eq!(git(&repo.path, &["status", "--porcelain"]), "");
+    assert_eq!(
+        std::fs::read_to_string(mine.join("SKILL.md")).unwrap(),
+        "MINE\n"
+    );
+    assert_eq!(sync_in(&repo.path)["synced"][0]["written"], 0);
+
+    std::fs::create_dir_all(repo.path.join(".agents/skills/ns-gone")).unwrap();
+    assert_eq!(sync_in(&repo.path)["synced"][0]["removed"], 1);
+    assert!(!repo.path.join(".agents/skills/ns-gone").exists());
+}
+
+fn exclude(repo: &Repo) -> String {
+    std::fs::read_to_string(repo.path.join(".git/info/exclude")).unwrap_or_default()
+}
+
+fn sync_fails(repo: &Repo) -> String {
+    let out = Command::cargo_bin("ns")
+        .unwrap()
+        .arg("sync")
+        .env_remove("NS_DEV")
+        .current_dir(&repo.path)
+        .assert()
+        .failure();
+    String::from_utf8_lossy(&out.get_output().stderr).to_string()
+}
+
+#[test]
+fn a_skills_link_that_leaves_the_repository_is_an_error_and_writes_nothing() {
+    let repo = Repo::new();
+    let outside = tempfile::tempdir().unwrap();
+    linked_skills(&repo, outside.path().to_str().unwrap());
+    let err = sync_fails(&repo);
+    assert!(err.contains(".claude/skills"), "{err}");
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+    assert!(!exclude(&repo).contains("ns-*"));
+}
+
+#[test]
+fn a_relative_skills_link_that_climbs_out_of_the_repository_is_an_error_and_writes_nothing() {
+    let repo = Repo::new();
+    linked_skills(&repo, "../../outside");
+    let err = sync_fails(&repo);
+    assert!(err.contains(".claude/skills"), "{err}");
+    assert!(!exclude(&repo).contains("ns-*"));
+    assert!(!repo.path.join(".agents").exists());
+}
+
+#[test]
+fn an_absolute_skills_link_into_the_repository_is_excluded_like_a_relative_one() {
+    let repo = Repo::new();
+    repo.standards_commit();
+    std::fs::create_dir_all(repo.path.join(".agents/skills")).unwrap();
+    let target = repo.path.join(".agents/skills");
+    linked_skills(&repo, target.to_str().unwrap());
+    sync_in(&repo.path);
+    assert!(
+        exclude(&repo).contains("/.agents/skills/ns-*\n"),
+        "{}",
+        exclude(&repo)
+    );
+    assert!(repo.path.join(".agents/skills/ns-tdd/SKILL.md").exists());
+}
+
+#[test]
+fn a_skills_link_to_a_sibling_folder_is_excluded_from_the_top() {
+    let repo = Repo::new();
+    repo.standards_commit();
+    std::fs::create_dir_all(repo.path.join(".claude/real")).unwrap();
+    linked_skills(&repo, "./real");
+    sync_in(&repo.path);
+    assert!(
+        exclude(&repo).contains("/.claude/real/ns-*\n"),
+        "{}",
+        exclude(&repo)
+    );
+    assert!(repo.path.join(".claude/real/ns-tdd/SKILL.md").exists());
+}

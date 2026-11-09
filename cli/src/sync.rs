@@ -96,8 +96,12 @@ pub const HOOK: &str = "command -v ns >/dev/null 2>&1 && ns sync >/dev/null || t
 
 fn one(root: &Path, kind: Kind) -> Result<Synced> {
     let dir = harness::of(kind).skills_dir();
-    vcs::get().ignore_add(root, &format!("/{dir}/ns-*"))?;
     let base = root.join(dir);
+    let through = link_target(root, dir)?;
+    vcs::get().ignore_add(root, &format!("/{dir}/ns-*"))?;
+    if let Some(target) = through {
+        vcs::get().ignore_add(root, &format!("/{target}/ns-*"))?;
+    }
     let source = root.join("skills");
     let linked = std::env::var_os("NS_DEV").is_some() && source.is_dir();
     let mut written = 0;
@@ -144,6 +148,43 @@ fn one(root: &Path, kind: Kind) -> Result<Synced> {
         written,
         removed,
     })
+}
+
+/// When `dir` is a symbolic link, the folder it points to as a path from the top of `root`, so the
+/// skills written through the link can be excluded too. A link that points outside `root` is an
+/// error that names the link.
+fn link_target(root: &Path, dir: &str) -> Result<Option<String>> {
+    let link = root.join(dir);
+    if !link.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
+        return Ok(None);
+    }
+    let to = std::fs::read_link(&link)?;
+    let mut parts: Vec<_> = if to.is_absolute() {
+        Vec::new()
+    } else {
+        Path::new(dir)
+            .parent()
+            .map(|p| p.components().collect())
+            .unwrap_or_default()
+    };
+    let rest = if to.is_absolute() {
+        to.strip_prefix(root).ok().map(Path::to_path_buf)
+    } else {
+        Some(to.clone())
+    };
+    let outside = || anyhow::anyhow!("{dir} links to {}, outside the repository", to.display());
+    let rest = rest.ok_or_else(outside)?;
+    for part in rest.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                parts.pop().ok_or_else(outside)?;
+            }
+            std::path::Component::Normal(_) => parts.push(part),
+            _ => {}
+        }
+    }
+    let target: std::path::PathBuf = parts.iter().collect();
+    Ok(Some(target.to_string_lossy().into_owned()))
 }
 
 /// Removes a skill directory, or the link that stands for it, without touching what it links to.
