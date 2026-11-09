@@ -1,0 +1,14 @@
+<!doctype html>
+<!-- The source of social-preview.png (1280 x 640, GitHub's size for a repository social preview).
+     Render it with any headless browser at that viewport size. -->
+<meta charset="utf-8">
+<title>nightshift social preview</title>
+<style>
+  html, body { margin: 0; }
+  body { width: 1280px; height: 640px; background: #151618; position: relative; overflow: hidden; }
+  .bar { position: absolute; left: 0; right: 0; top: 0; height: 8px; background: #f5b942; }
+  .content { position: absolute; inset: 8px 0 0 0; display: flex; align-items: center; justify-content: center; }
+  img { width: 960px; height: auto; display: block; }
+</style>
+<div class="bar"></div>
+<div class="content"><img src="logo-dark.svg" alt="nightshift"></div>

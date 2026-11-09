@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img">
+  <title>nightshift</title>
+  <defs><mask id="m"><rect width="128" height="128" fill="#fff"/>
+    <path d="M30 70L52 86L30 102" fill="none" stroke="#000" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M62 104H92" stroke="#000" stroke-width="10" stroke-linecap="round"/>
+    <path d="M86.8 23A17 17 0 1 0 101.6 46.8A14 14 0 0 1 86.8 23Z" fill="#000"/></mask></defs>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="#f5b942" mask="url(#m)"/>
+</svg>

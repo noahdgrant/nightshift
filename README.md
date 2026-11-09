@@ -1,4 +1,9 @@
-# Nightshift
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+    <img alt="nightshift" src="docs/assets/logo-light.svg" width="360">
+  </picture>
+</h1>
 
 An opinionated software factory for building robust and reliable applications. The factory takes a piece of work through the entire software development lifecycle (SDLC): triage, define, plan, build, verify, review, and ship.
 
