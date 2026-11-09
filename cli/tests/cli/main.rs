@@ -6,6 +6,7 @@ mod define;
 mod doctor;
 mod eval;
 mod grades;
+mod improve;
 mod init;
 mod log;
 pub mod plan;

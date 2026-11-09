@@ -58,6 +58,10 @@ pub trait Forge {
     /// Closes unit `number` as not planned.
     fn unit_close(&self, repo: &Path, number: u64) -> Result<()>;
 
+    /// Files a new unit with `title`, `body` and `labels`, and returns its number. A call that
+    /// fails may still have filed the unit, so it is not repeated.
+    fn unit_create(&self, repo: &Path, title: &str, body: &str, labels: &[String]) -> Result<u64>;
+
     /// Every open unit of the repository at `repo`.
     fn unit_list(&self, repo: &Path) -> Result<Vec<Unit>>;
 
@@ -248,6 +252,9 @@ mod tests {
         fn unit_list(&self, _: &Path) -> Result<Vec<Unit>> {
             unreachable!()
         }
+        fn unit_create(&self, _: &Path, _: &str, _: &str, _: &[String]) -> Result<u64> {
+            unreachable!()
+        }
         fn change_request_get(&self, _: &Path, _: &str) -> Result<Option<ChangeRequest>> {
             unreachable!()
         }
@@ -329,6 +336,9 @@ mod tests {
             unreachable!()
         }
         fn unit_list(&self, _: &Path) -> Result<Vec<Unit>> {
+            unreachable!()
+        }
+        fn unit_create(&self, _: &Path, _: &str, _: &str, _: &[String]) -> Result<u64> {
             unreachable!()
         }
         fn change_request_get(&self, _: &Path, _: &str) -> Result<Option<ChangeRequest>> {

@@ -336,6 +336,22 @@ impl Forge for GitHub {
         Ok(())
     }
 
+    fn unit_create(&self, repo: &Path, title: &str, body: &str, labels: &[String]) -> Result<u64> {
+        let labels = labels.join(",");
+        let mut args = vec!["issue", "create", "--title", title, "--body", body];
+        if !labels.is_empty() {
+            args.extend(["--label", &labels]);
+        }
+        // Not through `gh`: a repeated create could file the unit twice.
+        let out = self.gh_once(repo, &args)?;
+        // `gh` prints the new unit's address, which ends with its number.
+        out.trim()
+            .rsplit('/')
+            .next()
+            .and_then(|n| n.parse().ok())
+            .with_context(|| format!("gh did not print the new unit's address: {}", out.trim()))
+    }
+
     fn unit_list(&self, repo: &Path) -> Result<Vec<Unit>> {
         // The forge has been seen answering with an empty list for a repository that has open
         // units, so an empty list is asked for again before it is believed.
