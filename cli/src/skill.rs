@@ -160,6 +160,27 @@ mod tests {
     }
 
     #[test]
+    fn the_service_design_skill_is_short_and_reference_only() {
+        let text = embedded()
+            .iter()
+            .find(|(n, _)| *n == "ns-service-design")
+            .unwrap()
+            .1;
+        assert!(text.lines().count() <= 60);
+        assert!(!file_for_session("ns-service-design", text).contains("disable-model-invocation"));
+        assert!(text.contains(".nightshift/coding-standards.md"));
+    }
+
+    #[test]
+    fn design_build_and_review_name_the_service_design_skill() {
+        for name in [DESIGN_DOC, BUILD, REVIEW] {
+            let file = format!("{}/../skills/{name}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
+            let skill = std::fs::read_to_string(file).unwrap();
+            assert!(skill.contains("`ns-service-design`"), "{name}");
+        }
+    }
+
+    #[test]
     fn the_triage_skill_names_every_route_and_asks_for_the_lines_the_cli_reads() {
         let file = format!("{}/../skills/{TRIAGE}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
         let skill = std::fs::read_to_string(file).unwrap();

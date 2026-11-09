@@ -1,0 +1,39 @@
+diff --git a/src/products.rs b/src/products.rs
+new file mode 100644
+--- /dev/null
++++ b/src/products.rs
+@@ -0,0 +1,18 @@
++use crate::db::Db;
++use std::collections::HashMap;
++use std::sync::Mutex;
++
++static CACHE: Mutex<Option<HashMap<u64, String>>> = Mutex::new(None);
++
++/// Returns the product as JSON, or `None` for a missing one.
++pub fn get(db: &Db, id: u64) -> Option<String> {
++    let mut guard = CACHE.lock().unwrap();
++    let cache = guard.get_or_insert_with(HashMap::new);
++    if let Some(hit) = cache.get(&id) {
++        return Some(hit.clone());
++    }
++    let product = db.find("products", id)?;
++    cache.insert(id, product.clone());
++    Some(product)
++}
+diff --git a/tests/products.rs b/tests/products.rs
+new file mode 100644
+--- /dev/null
++++ b/tests/products.rs
+@@ -0,0 +1,12 @@
++use shop::{db::Db, products};
++
++#[test]
++fn get_product_returns_it() {
++    let db = Db::with("products", 7, "{\"name\":\"tea\"}");
++    assert_eq!(products::get(&db, 7).unwrap(), "{\"name\":\"tea\"}");
++}
++
++#[test]
++fn get_missing_product_is_404() {
++    assert!(products::get(&Db::in_memory(), 9).is_none());
++}
