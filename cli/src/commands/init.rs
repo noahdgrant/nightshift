@@ -101,6 +101,7 @@ pub fn run(args: Args) -> Result<()> {
             "workflows_written": workflows_written,
             "instruction_files": instruction_files,
             "labels_created": ensured.created,
+            "labels_described": ensured.described.len(),
             "labels_renamed": ensured.renamed,
         })
     );

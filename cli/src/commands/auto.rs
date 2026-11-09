@@ -335,13 +335,16 @@ mod tests {
         fn unit_type_set(&self, _: &Path, _: u64, _: &str) -> Result<()> {
             unreachable!()
         }
-        fn labels_list(&self, _: &Path) -> Result<Vec<String>> {
+        fn labels_list(&self, _: &Path) -> Result<Vec<crate::forge::Label>> {
             unreachable!()
         }
         fn label_create(&self, _: &Path, _: &str, _: &str) -> Result<()> {
             unreachable!()
         }
         fn label_rename(&self, _: &Path, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn label_describe(&self, _: &Path, _: &str, _: &str) -> Result<()> {
             unreachable!()
         }
         fn unit_labels_set(&self, _: &Path, _: u64, _: &[String], _: &[String]) -> Result<()> {

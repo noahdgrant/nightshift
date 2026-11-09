@@ -270,7 +270,11 @@ mod tests {
         let why = region_hold("f", Some(&good), Some(&bad), &[hunk(4..5, 4..4)]).unwrap();
         assert_eq!(
             why,
-            "f has a marker `ns` cannot read in its new version (line 2: `ns:human-review start` has no `ns:human-review end`), so a person merges it"
+            concat!(
+                "f has a marker `ns` cannot read in its new version (line 2: `ns:human-review",
+                " start` has no `ns:human-review",
+                " end`), so a person merges it"
+            )
         );
         let why = region_hold("f", Some(&bad), Some(&good), &[hunk(5..5, 5..6)]).unwrap();
         assert!(why.contains("in its old version"), "{why}");

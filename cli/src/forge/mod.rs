@@ -18,14 +18,17 @@ pub trait Forge {
     /// The unit `number` of the repository at `repo`.
     fn unit_get(&self, repo: &Path, number: u64) -> Result<Unit>;
 
-    /// The names of the labels the repository at `repo` has.
-    fn labels_list(&self, repo: &Path) -> Result<Vec<String>>;
+    /// The labels the repository at `repo` has, with their descriptions.
+    fn labels_list(&self, repo: &Path) -> Result<Vec<Label>>;
 
     /// Creates the label `name`, which the repository does not have.
     fn label_create(&self, repo: &Path, name: &str, description: &str) -> Result<()>;
 
     /// Renames the label `from` to `to`, which keeps every unit that carries it.
     fn label_rename(&self, repo: &Path, from: &str, to: &str) -> Result<()>;
+
+    /// Sets the description of the label `name`, which the repository has.
+    fn label_describe(&self, repo: &Path, name: &str, description: &str) -> Result<()>;
 
     /// The names of the native unit types the repository at `repo` has. An error when the forge
     /// cannot say; none when it has no such types.
@@ -123,6 +126,13 @@ pub fn unit_types_get(forge: &dyn Forge, repo: &Path) -> Vec<String> {
 /// Every post `ns` makes on the forge starts with this line.
 pub const DISCLOSURE: &str = "🤖 *Posted by nightshift, an AI agent.*";
 
+/// A label on the forge: its name and its description, empty when it has none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Label {
+    pub name: String,
+    pub description: String,
+}
+
 /// The default branch of a repository, and the checks its protection requires of a change
 /// request before it merges.
 #[derive(Debug, PartialEq, Eq)]
@@ -208,13 +218,16 @@ mod tests {
         fn unit_get(&self, _: &Path, _: u64) -> Result<Unit> {
             unreachable!()
         }
-        fn labels_list(&self, _: &Path) -> Result<Vec<String>> {
+        fn labels_list(&self, _: &Path) -> Result<Vec<Label>> {
             unreachable!()
         }
         fn label_create(&self, _: &Path, _: &str, _: &str) -> Result<()> {
             unreachable!()
         }
         fn label_rename(&self, _: &Path, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn label_describe(&self, _: &Path, _: &str, _: &str) -> Result<()> {
             unreachable!()
         }
         fn unit_labels_set(&self, _: &Path, _: u64, _: &[String], _: &[String]) -> Result<()> {
@@ -288,13 +301,16 @@ mod tests {
         fn unit_get(&self, _: &Path, _: u64) -> Result<Unit> {
             unreachable!()
         }
-        fn labels_list(&self, _: &Path) -> Result<Vec<String>> {
+        fn labels_list(&self, _: &Path) -> Result<Vec<Label>> {
             unreachable!()
         }
         fn label_create(&self, _: &Path, _: &str, _: &str) -> Result<()> {
             unreachable!()
         }
         fn label_rename(&self, _: &Path, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn label_describe(&self, _: &Path, _: &str, _: &str) -> Result<()> {
             unreachable!()
         }
         fn unit_labels_set(&self, _: &Path, _: u64, _: &[String], _: &[String]) -> Result<()> {

@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::forge::{self, Forge};
+use crate::forge::{self, Forge, Label};
 use crate::{auto, status};
 
 /// The kinds of change a unit can be, which are the Conventional Commit types.
@@ -117,33 +117,52 @@ pub fn all(native: &[String]) -> Vec<(String, String)> {
 pub struct Ensured {
     /// The names of the labels it created.
     pub created: Vec<String>,
+    /// The names of the existing labels whose description it set.
+    pub described: Vec<String>,
     /// Whether it renamed `status:ready-for-human` to `status:waiting-for-human`.
     pub renamed: bool,
     /// Whether the repository has both of those, so `ensure` left both alone.
     pub both_left: bool,
 }
 
-/// Creates on the forge the labels it does not have, and leaves the ones it has as they are. A
-/// repository that has `status:ready-for-human` and not `status:waiting-for-human` gets the old
-/// label renamed, which keeps every unit that carries it.
+/// Creates on the forge the labels it does not have, and sets the description of the ones it has
+/// where it differs from this version's. A repository that has `status:ready-for-human` and not
+/// `status:waiting-for-human` gets the old label renamed, which keeps every unit that carries it.
+/// Labels outside `all` are left alone.
 pub fn ensure(forge: &dyn Forge, repo: &Path) -> Result<Ensured> {
     let mut have = forge.labels_list(repo)?;
     let mut done = Ensured::default();
     let legacy = status::LEGACY_READY_FOR_HUMAN;
     let waiting = status::WAITING_FOR_HUMAN;
-    if have.iter().any(|n| n == legacy) {
-        if have.iter().any(|n| n == waiting) {
+    let has = |have: &[Label], name: &str| have.iter().any(|l| l.name == name);
+    if has(&have, legacy) {
+        if has(&have, waiting) {
             done.both_left = true;
         } else {
             forge.label_rename(repo, legacy, waiting)?;
-            have.push(waiting.to_string());
+            let description = have
+                .iter()
+                .find(|l| l.name == legacy)
+                .map(|l| l.description.clone())
+                .unwrap_or_default();
+            have.push(Label {
+                name: waiting.to_string(),
+                description,
+            });
             done.renamed = true;
         }
     }
     for (name, description) in all(&forge::unit_types_get(forge, repo)) {
-        if !have.contains(&name) {
-            forge.label_create(repo, &name, &description)?;
-            done.created.push(name);
+        match have.iter().find(|l| l.name == name) {
+            None => {
+                forge.label_create(repo, &name, &description)?;
+                done.created.push(name);
+            }
+            Some(label) if label.description != description => {
+                forge.label_describe(repo, &name, &description)?;
+                done.described.push(name);
+            }
+            Some(_) => {}
         }
     }
     Ok(done)
@@ -161,6 +180,22 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), names.len());
+    }
+
+    #[test]
+    fn no_description_says_pr_names_ns_watch_or_a_skill_for_a_command() {
+        for (name, description) in all(&[]) {
+            let lower = description.to_lowercase();
+            assert!(!lower.contains("pull request"), "{name}: {description}");
+            assert!(!lower.contains("ns watch"), "{name}: {description}");
+            assert!(!lower.contains("ns-"), "{name}: {description}");
+            assert!(
+                !description
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| w == "PR" || w == "PRs"),
+                "{name}: {description}"
+            );
+        }
     }
 
     fn native(names: &[&str]) -> Vec<String> {

@@ -3,6 +3,68 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
+/// Every label `ns` owns with the description this version gives it, as literals.
+#[allow(dead_code)]
+pub const LABEL_DESCRIPTIONS: [(&str, &str); 26] = [
+    ("status:needs-triage", "Nobody has looked at this yet"),
+    (
+        "status:needs-define",
+        "Too vague to build; waits for a spec",
+    ),
+    ("status:needs-repro", "A bug nobody has reproduced yet"),
+    ("status:needs-info", "Waits for an answer from the author"),
+    ("status:ready-for-agent", "Ready for the agent to build"),
+    ("status:in-progress", "ns is working on this"),
+    (
+        "status:stuck",
+        "A state failed every attempt or could not be proven; a person looks first",
+    ),
+    (
+        "status:waiting-for-human",
+        "Waiting for a person: a merge, hardware, credentials or a decision",
+    ),
+    ("status:wontfix", "Will not be done"),
+    ("type:feat", "A new capability"),
+    ("type:fix", "A bug fix"),
+    ("type:docs", "Documentation only"),
+    ("type:refactor", "A change that neither fixes nor adds"),
+    ("type:test", "Tests only"),
+    ("type:perf", "A faster way to do the same"),
+    ("type:ci", "Continuous integration"),
+    ("type:build", "The build or its dependencies"),
+    ("type:chore", "Upkeep that is none of the above"),
+    ("type:style", "Formatting only"),
+    ("type:revert", "Undoes an earlier change"),
+    ("priority:critical", "Drop everything"),
+    ("priority:high", "Before new features"),
+    ("priority:medium", "Next in line"),
+    ("priority:low", "When there is room"),
+    (
+        "needs-human-merge",
+        "A person merges this: it touches files the repository wants reviewed",
+    ),
+    (
+        "skip-closes-unit",
+        "This change request closes no unit, so the closes-unit check skips it",
+    ),
+];
+
+/// The JSON `gh label list` prints for `labels`, each with this version's description.
+#[allow(dead_code)]
+pub fn labels_json(labels: &[&str]) -> String {
+    let items: Vec<String> = labels
+        .iter()
+        .map(|n| {
+            let d = LABEL_DESCRIPTIONS
+                .iter()
+                .find(|(name, _)| name == n)
+                .map_or("", |(_, d)| *d);
+            format!(r#"{{"name":"{n}","description":"{d}"}}"#)
+        })
+        .collect();
+    format!("[{}]", items.join(","))
+}
+
 /// A git repository with one commit, in a temp dir that also holds its `.workspaces` sibling.
 pub struct Repo {
     _tmp: TempDir,
