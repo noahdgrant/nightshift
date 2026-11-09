@@ -1,4 +1,4 @@
-use crate::common::{script, Repo};
+use crate::common::{labels_json, script, Repo, LABEL_DESCRIPTIONS};
 
 use assert_cmd::Command;
 
@@ -221,7 +221,7 @@ fn init_creates_the_labels_the_forge_lacks_and_only_those() {
     gh(&repo);
     std::fs::write(
         repo.path.parent().unwrap().join("labels.json"),
-        r#"[{"name":"status:wontfix"},{"name":"type:feat"}]"#,
+        labels_json(&["status:wontfix", "type:feat"]),
     )
     .unwrap();
     let report = init_in(&repo);
@@ -275,49 +275,19 @@ fn on_a_repository_with_native_types_init_skips_the_feat_and_fix_labels() {
 #[test]
 fn init_run_again_with_every_label_there_creates_none() {
     let repo = Repo::new();
-    let all = [
-        "status:needs-triage",
-        "status:needs-define",
-        "status:needs-repro",
-        "status:needs-info",
-        "status:ready-for-agent",
-        "status:in-progress",
-        "status:stuck",
-        "status:waiting-for-human",
-        "status:wontfix",
-        "type:feat",
-        "type:fix",
-        "type:docs",
-        "type:refactor",
-        "type:test",
-        "type:perf",
-        "type:ci",
-        "type:build",
-        "type:chore",
-        "type:style",
-        "type:revert",
-        "priority:critical",
-        "priority:high",
-        "priority:medium",
-        "priority:low",
-        "needs-human-merge",
-        "skip-closes-unit",
-    ]
-    .iter()
-    .map(|name| format!(r#"{{"name":"{name}"}}"#))
-    .collect::<Vec<_>>()
-    .join(",");
+    let all: Vec<&str> = LABEL_DESCRIPTIONS.iter().map(|(name, _)| *name).collect();
     gh(&repo);
     std::fs::write(
         repo.path.parent().unwrap().join("labels.json"),
-        format!("[{all}]"),
+        labels_json(&all),
     )
     .unwrap();
-    assert_eq!(
-        init_in(&repo)["labels_created"].as_array().unwrap().len(),
-        0
-    );
-    assert!(!gh_log(&repo).contains("label create"));
+    let report = init_in(&repo);
+    assert_eq!(report["labels_created"].as_array().unwrap().len(), 0);
+    assert_eq!(report["labels_described"], 0);
+    let log = gh_log(&repo);
+    assert!(!log.contains("label create"), "{log}");
+    assert!(!log.contains("label edit"), "{log}");
 }
 
 #[test]
@@ -449,7 +419,7 @@ fn init_does_not_fail_when_skip_closes_unit_exists() {
     gh(&repo);
     std::fs::write(
         repo.path.parent().unwrap().join("labels.json"),
-        r#"[{"name":"skip-closes-unit"}]"#,
+        labels_json(&["skip-closes-unit"]),
     )
     .unwrap();
     let report = init_in(&repo);
@@ -480,11 +450,17 @@ fn init_renames_the_old_ready_for_human_label_and_creates_stuck() {
     gh(&repo);
     std::fs::write(
         repo.path.parent().unwrap().join("labels.json"),
-        r#"[{"name":"status:ready-for-human"}]"#,
+        r#"[{"name":"status:ready-for-human","description":"Needs a person: hardware, credentials, a judgement call, or a stuck run"}]"#,
     )
     .unwrap();
     let report = init_in(&repo);
     assert_eq!(report["labels_renamed"], true);
+    assert_eq!(report["labels_described"], 1);
+    assert!(
+        gh_log(&repo).contains("label edit status:waiting-for-human --description Waiting for a person: a merge, hardware, credentials or a decision"),
+        "{}",
+        gh_log(&repo)
+    );
     let log = gh_log(&repo);
     assert!(
         log.contains("label edit status:ready-for-human --name status:waiting-for-human"),
@@ -513,6 +489,32 @@ fn init_leaves_both_labels_alone_and_says_so() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("has both"), "{err}");
     let log = gh_log(&repo);
-    assert!(!log.contains("label edit"), "{log}");
-    assert!(!log.contains("status:waiting-for-human --desc"), "{log}");
+    assert!(!log.contains("label edit status:ready-for-human"), "{log}");
+    assert!(!log.contains("--name"), "{log}");
+}
+
+#[test]
+fn init_sets_the_description_of_a_label_it_owns_and_leaves_the_others_alone() {
+    let repo = Repo::new();
+    gh(&repo);
+    std::fs::write(
+        repo.path.parent().unwrap().join("labels.json"),
+        r#"[{"name":"status:ready-for-agent","description":"Agent Brief written; ns watch picks it up overnight"},
+            {"name":"type:fix","description":"A bug fix"},
+            {"name":"status:in-review","description":"An open PR from nightshift is waiting for human review"},
+            {"name":"area:cli","description":"The cli"}]"#,
+    )
+    .unwrap();
+    let report = init_in(&repo);
+    assert_eq!(report["labels_described"], 1);
+    let log = gh_log(&repo);
+    assert!(
+        log.contains(
+            "label edit status:ready-for-agent --description Ready for the agent to build"
+        ),
+        "{log}"
+    );
+    assert_eq!(log.matches("label edit").count(), 1, "{log}");
+    assert!(!log.contains("status:in-review"), "{log}");
+    assert!(!log.contains("area:cli"), "{log}");
 }

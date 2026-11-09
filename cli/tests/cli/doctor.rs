@@ -1,4 +1,4 @@
-use crate::common::{script, Repo};
+use crate::common::{labels_json, script, Repo};
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -73,15 +73,7 @@ impl Setup {
     }
 
     fn labels(&self, names: &[&str]) {
-        let json: Vec<String> = names
-            .iter()
-            .map(|n| format!(r#"{{"name":"{n}"}}"#))
-            .collect();
-        std::fs::write(
-            self.tmp().join("labels.json"),
-            format!("[{}]", json.join(",")),
-        )
-        .unwrap();
+        std::fs::write(self.tmp().join("labels.json"), labels_json(names)).unwrap();
     }
 
     /// The default branch's protection: none, or the status checks it requires.
@@ -614,4 +606,23 @@ fn a_missing_stuck_or_waiting_label_fails() {
         setup.labels(&have);
         only_fails(&setup, "labels", gone);
     }
+}
+
+#[test]
+fn a_label_with_another_description_fails_naming_it_and_says_to_init() {
+    let setup = Setup::new();
+    std::fs::write(
+        setup.tmp().join("labels.json"),
+        labels_json(&ALL_LABELS).replace(
+            "Waiting for a person: a merge, hardware, credentials or a decision",
+            "Needs a person: hardware, credentials, a judgement call, or a stuck run",
+        ),
+    )
+    .unwrap();
+    only_fails(&setup, "labels", "status:waiting-for-human");
+    let (_, report) = setup.doctor();
+    let detail = check(&report, "labels")["detail"].as_str().unwrap();
+    assert!(detail.contains("description"), "{detail}");
+    assert!(detail.contains("ns init"), "{detail}");
+    assert!(!detail.contains("status:wontfix"), "{detail}");
 }

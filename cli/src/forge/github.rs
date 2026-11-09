@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
-use super::{BranchProtection, ChangeRequest, ChangeState, Checks, Forge, Unit};
+use super::{BranchProtection, ChangeRequest, ChangeState, Checks, Forge, Label, Unit};
 use crate::{config, retry};
 
 /// What `gh` says when a call failed for a reason that can pass: the network, the forge having a
@@ -178,17 +178,34 @@ impl Forge for GitHub {
         })
     }
 
-    fn labels_list(&self, repo: &Path) -> Result<Vec<String>> {
+    fn labels_list(&self, repo: &Path) -> Result<Vec<Label>> {
         let json = self.gh(
             repo,
-            &["label", "list", "--limit", "1000", "--json", "name"],
+            &[
+                "label",
+                "list",
+                "--limit",
+                "1000",
+                "--json",
+                "name,description",
+            ],
         )?;
         let v: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
         Ok(v.as_array()
             .context("gh did not print a list of labels")?
             .iter()
-            .filter_map(|l| l["name"].as_str().map(str::to_string))
+            .filter_map(|l| {
+                Some(Label {
+                    name: l["name"].as_str()?.to_string(),
+                    description: l["description"].as_str().unwrap_or_default().to_string(),
+                })
+            })
             .collect())
+    }
+
+    fn label_describe(&self, repo: &Path, name: &str, description: &str) -> Result<()> {
+        self.gh(repo, &["label", "edit", name, "--description", description])?;
+        Ok(())
     }
 
     fn label_create(&self, repo: &Path, name: &str, description: &str) -> Result<()> {

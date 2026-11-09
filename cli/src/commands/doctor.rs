@@ -129,27 +129,43 @@ fn labels_present(root: &Path, forge: &dyn Forge) -> Check {
             )
         }
     };
-    let missing: Vec<String> = labels::all(&forge::unit_types_get(forge, root))
-        .into_iter()
-        .map(|(name, _)| name)
-        .filter(|name| !have.contains(name))
+    let wanted = labels::all(&forge::unit_types_get(forge, root));
+    let missing: Vec<String> = wanted
+        .iter()
+        .filter(|(name, _)| !have.iter().any(|l| &l.name == name))
+        .map(|(name, _)| name.clone())
         .collect();
-    if have.iter().any(|n| n == status::LEGACY_READY_FOR_HUMAN) {
-        let mut said = format!(
-            "{} still exists and `ns` no longer sets it; run `ns init`",
+    let stale: Vec<String> = wanted
+        .iter()
+        .filter(|(name, description)| {
+            have.iter()
+                .any(|l| &l.name == name && &l.description != description)
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    let mut problems = Vec::new();
+    if have
+        .iter()
+        .any(|l| l.name == status::LEGACY_READY_FOR_HUMAN)
+    {
+        problems.push(format!(
+            "{} still exists and `ns` no longer sets it",
             status::LEGACY_READY_FOR_HUMAN
-        );
-        if !missing.is_empty() {
-            said.push_str(&format!("; missing {}", missing.join(", ")));
-        }
-        fail("labels", said)
-    } else if missing.is_empty() {
+        ));
+    }
+    if !missing.is_empty() {
+        problems.push(format!("missing {}", missing.join(", ")));
+    }
+    if !stale.is_empty() {
+        problems.push(format!(
+            "the description of {} differs from this version's",
+            stale.join(", ")
+        ));
+    }
+    if problems.is_empty() {
         pass("labels", "every label is there")
     } else {
-        fail(
-            "labels",
-            format!("missing {}; run `ns init`", missing.join(", ")),
-        )
+        fail("labels", format!("{}; run `ns init`", problems.join("; ")))
     }
 }
 
