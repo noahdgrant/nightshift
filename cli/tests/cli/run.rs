@@ -172,9 +172,9 @@ case "$1 $2" in
 "issue edit"|"pr edit") case "$*" in *--add-assignee*) [ "{refuses}" = yes ] && {{ echo "cannot assign" >&2; exit 1; }};; esac;;
 "api repos/{{owner}}/{{repo}}/issues/"*) labels; echo '{{"number":'"${{2##*/}}"',"title":"Add a thing","body":"Make the thing.","labels":'"$l"',"author_association":"OWNER"}}';;
 "api --paginate") labels; echo '[[{listed}]]';;
-"pr list") if [ -e "{bin}/merged" ]; then state=MERGED; elif [ -e "{bin}/closed" ]; then state=CLOSED; else state=OPEN; fi
+"pr list") merged_at=null; if [ -e "{bin}/merged" ]; then state=MERGED; merged_at='"2026-11-06T12:00:00Z"'; elif [ -e "{bin}/closed" ]; then state=CLOSED; else state=OPEN; fi
   head=$(cat "{bin}/pr-head" 2>/dev/null || git rev-parse refs/heads/ns/5 2>/dev/null)
-  if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"'$state'","headRefOid":"'$head'"}}]'; else echo '[]'; fi;;
+  if [ -e "{bin}/opened" ]; then echo '[{{"number":9,"url":"https://forge.example/9","state":"'$state'","headRefOid":"'$head'","mergedAt":'$merged_at'}}]'; else echo '[]'; fi;;
 "pr create") touch "{bin}/opened"; echo https://forge.example/9;;
 "pr checks") {checks};;
 "pr merge") touch "{bin}/merged";;
@@ -1188,6 +1188,17 @@ fn a_change_touching_a_human_review_file_is_not_merged_and_is_labeled() {
         log.contains("issue edit 5 --add-label status:waiting-for-human"),
         "{log}"
     );
+    let logged: Vec<_> = run_log(&repo)
+        .into_iter()
+        .filter(|e| e.get("not_merged").is_some())
+        .collect();
+    assert_eq!(logged.len(), 1);
+    assert_eq!(logged[0]["unit"], "5");
+    assert_eq!(
+        logged[0]["not_merged"],
+        "thing.txt matches *.txt in merge.human_review, so a person merges it"
+    );
+    assert!(logged[0]["at"].is_u64());
 }
 
 /// `text` with `@start` and `@end` written as the human-review markers, which this repository's
@@ -1683,7 +1694,8 @@ fn a_stuck_unit_whose_person_opened_change_request_merged_goes_to_retrospective_
         ["retrospective>clean_up", "clean_up>done"],
         "no build, verify or review"
     );
-    assert!(run_log(&repo).iter().any(|e| e["took_over"] == 9));
+    let took_over = run_log(&repo).into_iter().find(|e| e["took_over"] == 9);
+    assert_eq!(took_over.unwrap()["merged_at"], 1_793_966_400);
     assert!(!repo.workspace("5").exists());
     assert!(!repo.branches().contains(&"ns/5".to_string()));
     assert!(!gh_log(&repo).contains("pr merge"));

@@ -342,7 +342,10 @@ fn takeover_find(
             );
         }
     }
-    let event = json!({ "unit": unit, "took_over": cr.number });
+    let mut event = json!({ "unit": unit, "took_over": cr.number });
+    if let Some(merged_at) = cr.merged_at {
+        event["merged_at"] = merged_at.into();
+    }
     println!("{event}");
     log.append(&event)?;
     Ok(Some(state))

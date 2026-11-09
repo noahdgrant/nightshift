@@ -426,7 +426,7 @@ impl Forge for GitHub {
                 "--limit",
                 "1",
                 "--json",
-                "number,url,state,headRefOid",
+                "number,url,state,headRefOid,mergedAt",
             ],
         )?;
         let v: Value = serde_json::from_str(&json).context("gh printed invalid JSON")?;
@@ -446,6 +446,10 @@ impl Forge for GitHub {
             url: text(&pr["url"]),
             state,
             head: text(&pr["headRefOid"]),
+            merged_at: pr["mergedAt"]
+                .as_str()
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .map(|t| t.timestamp()),
         }))
     }
 
@@ -825,6 +829,19 @@ mod tests {
         let pr = gh.change_request_get(tmp.path(), "ns/u1").unwrap().unwrap();
         assert_eq!(pr.number, 9);
         assert_eq!(pr.state, ChangeState::Merged);
+        assert_eq!(pr.merged_at, None);
+    }
+
+    #[test]
+    fn the_time_a_change_request_merged_is_read_in_seconds() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = fake(
+            tmp.path(),
+            r#"[{"number":9,"url":"u","state":"MERGED","mergedAt":"2026-11-06T12:00:00Z"}]"#,
+        );
+        let pr = gh.change_request_get(tmp.path(), "ns/u1").unwrap().unwrap();
+        assert_eq!(pr.merged_at, Some(1_793_966_400));
     }
 
     /// A stand-in for `gh` that fails `failures` times, then prints `stdout`. It counts its calls

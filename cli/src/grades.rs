@@ -96,8 +96,18 @@ struct Tally {
     passed: usize,
 }
 
+/// One ISO week's units that waited for a person, by the week they were merged in.
+#[derive(Debug, PartialEq)]
+pub struct WaitRow {
+    pub period: String,
+    pub units: usize,
+    pub median_hours: f64,
+    pub p90_hours: f64,
+}
+
 pub struct Report {
     pub weeks: Vec<Cell>,
+    pub waits: Vec<WaitRow>,
     pub versions: Vec<Cell>,
     week_keys: Vec<String>,
     version_keys: Vec<String>,
@@ -157,6 +167,7 @@ pub fn report(entries: &[Entry], now: i64, weeks: u32) -> Report {
     };
     Report {
         weeks: cells(&week_keys, count(&|k| k.week.clone())),
+        waits: Vec::new(),
         versions: cells(&version_keys, count(&|k| k.entry.version.clone())),
         week_keys,
         version_keys,
@@ -164,7 +175,64 @@ pub fn report(entries: &[Entry], now: i64, weeks: u32) -> Report {
     }
 }
 
+/// The value at fraction `q` of the sorted `values`, between its neighbours when it falls
+/// between two.
+fn quantile(values: &[f64], q: f64) -> f64 {
+    let at = q * (values.len() - 1) as f64;
+    let (low, high) = (at.floor() as usize, at.ceil() as usize);
+    values[low] + (values[high] - values[low]) * (at - low as f64)
+}
+
+/// How long units waited for a person, from the run log's `events`: from a unit's first
+/// `not_merged` line to the `merged_at` of its take-over, counted in the ISO week of `merged_at`
+/// and only when that is one of the last `weeks` weeks up to `now`. A unit with no `merged_at`
+/// is not counted; a week with no unit has no row.
+fn waits(events: &[Value], now: i64, weeks: u32) -> Vec<WaitRow> {
+    let mut first: BTreeMap<&str, i64> = BTreeMap::new();
+    let mut merged: BTreeMap<&str, i64> = BTreeMap::new();
+    for e in events {
+        let (Some(unit), Some(at)) = (e["unit"].as_str(), e["at"].as_i64()) else {
+            continue;
+        };
+        if e.get("not_merged").is_some() {
+            first.entry(unit).or_insert(at);
+        }
+        if let Some(m) = e["merged_at"].as_i64() {
+            merged.insert(unit, m);
+        }
+    }
+    let mut by_week: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for (unit, merged_at) in merged {
+        let (Some(from), Some(week)) = (first.get(unit), week_of(merged_at)) else {
+            continue;
+        };
+        by_week
+            .entry(week)
+            .or_default()
+            .push((merged_at - from).max(0) as f64 / 3600.0);
+    }
+    weeks_back(now, weeks)
+        .into_iter()
+        .filter_map(|period| {
+            let mut hours = by_week.remove(&period)?;
+            hours.sort_by(f64::total_cmp);
+            Some(WaitRow {
+                period,
+                units: hours.len(),
+                median_hours: quantile(&hours, 0.5),
+                p90_hours: quantile(&hours, 0.9),
+            })
+        })
+        .collect()
+}
+
 impl Report {
+    /// Adds the `Human wait` table, from the run log's `events`, for the same weeks.
+    pub fn with_waits(mut self, events: &[Value], now: i64, weeks: u32) -> Report {
+        self.waits = waits(events, now, weeks);
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
         self.weeks.is_empty()
     }
@@ -172,11 +240,31 @@ impl Report {
     /// Two tables, the weeks and then the versions, each period a row and each rubric a column
     /// holding the pass rate and, in brackets, the number of grades; `-` where there are none.
     pub fn render(&self) -> String {
-        format!(
+        let mut out = format!(
             "{}\n{}",
             table("week", &self.week_keys, &self.rubrics, &self.weeks),
             table("version", &self.version_keys, &self.rubrics, &self.versions)
-        )
+        );
+        if !self.waits.is_empty() {
+            out.push_str("\nHuman wait\n");
+            out.push_str(&grid(
+                std::iter::once(
+                    ["week", "units", "median hours", "p90 hours"]
+                        .map(String::from)
+                        .to_vec(),
+                )
+                .chain(self.waits.iter().map(|w| {
+                    vec![
+                        w.period.clone(),
+                        w.units.to_string(),
+                        format!("{:.1}", w.median_hours),
+                        format!("{:.1}", w.p90_hours),
+                    ]
+                }))
+                .collect(),
+            ));
+        }
+        out
     }
 
     /// One JSON line for each rubric and period that has grades.
@@ -194,7 +282,17 @@ impl Report {
         };
         let weeks = self.weeks.iter().map(|c| line("week", c));
         let versions = self.versions.iter().map(|c| line("version", c));
-        weeks.chain(versions).collect()
+        let waits = self.waits.iter().map(|w| {
+            json!({
+                "kind": "human_wait",
+                "period": w.period,
+                "units": w.units,
+                "median_hours": w.median_hours,
+                "p90_hours": w.p90_hours,
+            })
+            .to_string()
+        });
+        weeks.chain(versions).chain(waits).collect()
     }
 }
 
@@ -220,6 +318,11 @@ fn table(title: &str, keys: &[String], rubrics: &[String], cells: &[Cell]) -> St
         }
         rows.push(row);
     }
+    grid(rows)
+}
+
+/// `rows` as plain text with each column as wide as its widest cell.
+fn grid(rows: Vec<Vec<String>>) -> String {
     let widths: Vec<usize> = (0..rows[0].len())
         .map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0))
         .collect();
@@ -250,6 +353,123 @@ mod tests {
             at: NOW - days_ago * 86_400,
             version: version.into(),
         }
+    }
+
+    fn log(unit: &str, at: i64, extra: Value) -> Value {
+        let mut e = json!({"unit": unit, "at": at});
+        for (k, v) in extra.as_object().unwrap() {
+            e[k] = v.clone();
+        }
+        e
+    }
+
+    fn not_merged(unit: &str, at: i64) -> Value {
+        log(
+            unit,
+            at,
+            json!({"state": "ship", "not_merged": "a person merges it"}),
+        )
+    }
+
+    fn took_over(unit: &str, at: i64, merged_at: i64) -> Value {
+        log(unit, at, json!({"took_over": 9, "merged_at": merged_at}))
+    }
+
+    const H: i64 = 3600;
+
+    #[test]
+    fn a_unit_waits_from_its_not_merged_line_to_its_merged_at() {
+        let events = [
+            not_merged("1", NOW - 10 * H),
+            took_over("1", NOW, NOW - 4 * H),
+        ];
+        assert_eq!(
+            waits(&events, NOW, 2),
+            [WaitRow {
+                period: "2026-W45".into(),
+                units: 1,
+                median_hours: 6.0,
+                p90_hours: 6.0
+            }]
+        );
+    }
+
+    #[test]
+    fn the_first_not_merged_line_starts_the_wait() {
+        let events = [
+            not_merged("1", NOW - 20 * H),
+            not_merged("1", NOW - 10 * H),
+            took_over("1", NOW, NOW - 5 * H),
+        ];
+        assert_eq!(waits(&events, NOW, 1)[0].median_hours, 15.0);
+    }
+
+    #[test]
+    fn a_unit_with_no_merged_at_is_not_counted() {
+        let events = [
+            not_merged("1", NOW - 10 * H),
+            log("1", NOW, json!({"took_over": 9})),
+            not_merged("2", NOW - 10 * H),
+        ];
+        assert_eq!(waits(&events, NOW, 1), []);
+    }
+
+    #[test]
+    fn the_median_and_90th_percentile_run_over_the_units_of_a_week() {
+        let events: Vec<Value> = [1, 2, 3, 4, 10]
+            .iter()
+            .enumerate()
+            .flat_map(|(i, h)| {
+                let unit = i.to_string();
+                [
+                    not_merged(&unit, NOW - 100 * H),
+                    took_over(&unit, NOW, NOW - 100 * H + h * H),
+                ]
+            })
+            .collect();
+        let w = &waits(&events, NOW, 1)[0];
+        assert_eq!((w.units, w.median_hours), (5, 3.0));
+        assert!((w.p90_hours - 7.6).abs() < 1e-9, "{}", w.p90_hours);
+    }
+
+    #[test]
+    fn a_unit_is_counted_in_the_week_it_merged() {
+        let events = [
+            not_merged("1", NOW - 20 * 86_400),
+            took_over("1", NOW, NOW - 7 * 86_400),
+        ];
+        let rows = waits(&events, NOW, 3);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].period, "2026-W44");
+        assert_eq!(rows[0].median_hours, 13.0 * 24.0);
+    }
+
+    #[test]
+    fn the_human_wait_table_is_printed_and_carried_in_json() {
+        let entries = [entry("a", true, 0, "1.0.0")];
+        let events = [
+            not_merged("1", NOW - 10 * H),
+            took_over("1", NOW, NOW - 4 * H),
+        ];
+        let r = report(&entries, NOW, 1).with_waits(&events, NOW, 1);
+        assert!(
+            r.render()
+                .ends_with("\nHuman wait\nweek      units  median hours  p90 hours\n2026-W45  1      6.0           6.0\n"),
+            "{}",
+            r.render()
+        );
+        assert_eq!(
+            r.json_lines().last().unwrap(),
+            r#"{"kind":"human_wait","median_hours":6.0,"p90_hours":6.0,"period":"2026-W45","units":1}"#
+        );
+    }
+
+    #[test]
+    fn with_no_unit_counted_the_human_wait_table_is_left_out() {
+        let entries = [entry("a", true, 0, "1.0.0")];
+        let r = report(&entries, NOW, 1).with_waits(&[], NOW, 1);
+        assert!(!r.render().contains("Human wait"));
+        assert!(r.json_lines().iter().all(|l| !l.contains("human_wait")));
     }
 
     #[test]
