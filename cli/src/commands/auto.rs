@@ -307,6 +307,9 @@ mod tests {
                 Vec::new()
             })
         }
+        fn unit_create(&self, _: &Path, _: &str, _: &str, _: &[String]) -> Result<u64> {
+            unreachable!()
+        }
         fn unit_list(&self, _: &Path) -> Result<Vec<Unit>> {
             Ok((1..=3)
                 .map(|number| Unit {

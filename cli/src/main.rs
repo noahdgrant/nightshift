@@ -11,6 +11,7 @@ mod dispatch;
 mod forge;
 mod grades;
 mod harness;
+mod improve;
 mod labels;
 mod lock;
 mod manifest;
