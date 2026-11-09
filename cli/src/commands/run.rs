@@ -49,9 +49,11 @@ pub struct Options {
     /// How often to look at the change request's checks.
     #[arg(long, default_value_t = 30)]
     ci_poll_seconds: u64,
-    /// How long to wait for the checks to finish before the state goes wrong.
-    #[arg(long, default_value_t = 1800)]
-    ci_timeout_seconds: u64,
+    /// How long to wait for the checks to finish before the state goes wrong. Without it,
+    /// `[ship] ci_timeout_seconds` in `.nightshift/nightshift.toml`, or 1800 when the repository
+    /// does not set it.
+    #[arg(long)]
+    pub ci_timeout_seconds: Option<u64>,
     /// How long to wait for the first check to be reported. After that a repository with no
     /// checks is taken to have none.
     #[arg(long, default_value_t = 120)]
@@ -101,6 +103,10 @@ pub fn run(args: Args) -> Result<()> {
         Some(n) => n,
         None => manifest::max_attempts_read(&root)?,
     };
+    let ci_timeout = match args.options.ci_timeout_seconds {
+        Some(n) => n,
+        None => manifest::ci_timeout_read(&root)?,
+    };
     let keep = manifest::transcript_days_read(&root)?;
     // Read here so a bad value stops `ns` before it runs anything.
     manifest::review_sessions_read(&root)?;
@@ -140,7 +146,7 @@ pub fn run(args: Args) -> Result<()> {
         ship: ship::Options {
             merge: args.options.merge,
             poll: Duration::from_secs(args.options.ci_poll_seconds),
-            timeout: Duration::from_secs(args.options.ci_timeout_seconds),
+            timeout: Duration::from_secs(ci_timeout),
             start: Duration::from_secs(args.options.ci_start_seconds),
             queue,
             max_base_moves,

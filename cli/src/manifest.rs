@@ -268,6 +268,30 @@ pub fn transcript_days_read(root: &Path) -> Result<Keep> {
         })
 }
 
+/// How long `ship` waits for the change request's checks, when the person gives no number.
+const CI_TIMEOUT_SECONDS_DEFAULT: u64 = 1800;
+
+/// Seconds `ship` waits for the checks: `[ship] ci_timeout_seconds`, or 1800 when the key is
+/// missing. A value that is not a whole number above 0 is an error.
+pub fn ci_timeout_read(root: &Path) -> Result<u64> {
+    let document = document_read(root)?;
+    let Some(item) = document
+        .get("ship")
+        .and_then(|r| r.get("ci_timeout_seconds"))
+    else {
+        return Ok(CI_TIMEOUT_SECONDS_DEFAULT);
+    };
+    item.as_integer()
+        .and_then(|n| u64::try_from(n).ok())
+        .filter(|&n| n > 0)
+        .with_context(|| {
+            format!(
+                "`ship.ci_timeout_seconds` in {} is not a whole number above 0",
+                file_find(root).display()
+            )
+        })
+}
+
 /// What `[retrospective]` says about grading a merged unit.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Retrospective {
@@ -664,6 +688,40 @@ mod tests {
             let err = transcript_days_read(tmp.path()).unwrap_err().to_string();
             assert!(
                 err.contains("run.transcript_days") && err.contains("nightshift.toml"),
+                "{text}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn ci_timeout_is_the_setting_or_1800_seconds() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(ci_timeout_read(tmp.path()).unwrap(), 1800);
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for (text, seconds) in [
+            ("[ship]\nci_timeout_seconds = 1\n", 1),
+            ("[ship]\nci_timeout_seconds = 2400\n", 2400),
+            ("[run]\nmax_attempts = 2\n", 1800),
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            assert_eq!(ci_timeout_read(tmp.path()).unwrap(), seconds, "{text}");
+        }
+    }
+
+    #[test]
+    fn ci_timeout_that_is_not_a_whole_number_above_zero_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for text in [
+            "[ship]\nci_timeout_seconds = 0\n",
+            "[ship]\nci_timeout_seconds = -5\n",
+            "[ship]\nci_timeout_seconds = \"60\"\n",
+            "[ship]\nci_timeout_seconds = 2.5\n",
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            let err = ci_timeout_read(tmp.path()).unwrap_err().to_string();
+            assert!(
+                err.contains("ship.ci_timeout_seconds") && err.contains("nightshift.toml"),
                 "{text}: {err}"
             );
         }

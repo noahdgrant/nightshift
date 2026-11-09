@@ -531,6 +531,46 @@ fn a_bad_transcript_days_setting_is_an_error_that_names_the_key_and_nothing_runs
     }
 }
 
+#[test]
+fn a_ci_timeout_setting_bounds_the_wait_for_checks() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[ship]\nci_timeout_seconds = 1\n");
+    let pending = Fakes {
+        ci: Ci::NeverFinishes,
+        ..Fakes::passing()
+    };
+    let path = tools(&repo, &pending);
+    let out = run_with(&repo, &path, &["--merge"]).failure();
+    let err = String::from_utf8_lossy(&out.get_output().stderr).to_string();
+    assert!(err.contains("did not finish in time"), "{err}");
+}
+
+#[test]
+fn the_ci_timeout_flag_wins_over_the_setting() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[ship]\nci_timeout_seconds = 3600\n");
+    let pending = Fakes {
+        ci: Ci::NeverFinishes,
+        ..Fakes::passing()
+    };
+    let path = tools(&repo, &pending);
+    let out = run_with(&repo, &path, &["--merge", "--ci-timeout-seconds", "0"]).failure();
+    let err = String::from_utf8_lossy(&out.get_output().stderr).to_string();
+    assert!(err.contains("did not finish in time"), "{err}");
+}
+
+#[test]
+fn a_bad_ci_timeout_setting_is_an_error_that_names_the_key_and_nothing_runs() {
+    for bad in ["0", "-1", "\"60\"", "2.5"] {
+        let repo = Repo::new();
+        set_manifest(&repo, &format!("[ship]\nci_timeout_seconds = {bad}\n"));
+        let out = run_unset(&repo, &tools(&repo, &Fakes::passing())).failure();
+        let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(err.contains("ship.ci_timeout_seconds"), "{bad}: {err}");
+        assert!(out.get_output().stdout.is_empty(), "{bad}");
+    }
+}
+
 /// Runs `ns` with exactly `args`.
 fn run_args(repo: &Repo, path: &str, args: &[&str]) -> assert_cmd::assert::Assert {
     Command::cargo_bin("ns")

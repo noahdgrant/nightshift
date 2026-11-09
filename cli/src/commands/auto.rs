@@ -55,6 +55,10 @@ pub fn run(args: Args) -> Result<()> {
         Some(n) => n,
         None => manifest::max_attempts_read(&root)?,
     });
+    options.ci_timeout_seconds = Some(match options.ci_timeout_seconds {
+        Some(n) => n,
+        None => manifest::ci_timeout_read(&root)?,
+    });
     let keep = manifest::transcript_days_read(&root)?;
     // Read here so a bad value stops `ns` before it runs anything.
     manifest::review_sessions_read(&root)?;
