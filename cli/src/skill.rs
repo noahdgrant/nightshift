@@ -133,6 +133,15 @@ mod tests {
     }
 
     #[test]
+    fn the_verify_skill_keeps_a_copys_build_output_out_of_the_workspace() {
+        let skill = load(VERIFY).unwrap();
+        assert!(skill.contains("keep the build's output outside the workspace too"));
+        assert!(skill.contains("Never point a build's output directory"));
+        assert!(skill.contains("`CARGO_TARGET_DIR`"));
+        assert!(skill.contains("breaks the workspace's next build"));
+    }
+
+    #[test]
     fn the_verify_skill_reruns_the_earlier_failed_requirements_and_trusts_no_earlier_pass() {
         let file = format!("{}/../skills/{VERIFY}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
         let skill = std::fs::read_to_string(file).unwrap();

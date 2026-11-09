@@ -49,6 +49,8 @@ Done when every requirement has a verdict, and every PASS and FAIL has a command
 
 Create what a check needs outside the workspace, in a temporary directory, and remove it after. Change no file in the workspace.
 
+When you build or run the change outside the workspace, in a temporary copy of it, keep the build's output outside the workspace too: in a directory inside the copy, or in another temporary one. Never point a build's output directory (for example `CARGO_TARGET_DIR`) at one inside the workspace. Writing build output into the workspace's own output directory is a change to the workspace, and it has a cost: output built from another path stays in that directory and breaks the workspace's next build once the temporary copy is gone.
+
 When you are told your last check went wrong, undo what you changed first, then check again.
 
 ## 5. End with the verdict
