@@ -46,6 +46,10 @@ End with a short summary:
 - **Changed**: what the commit does.
 - **Tests**: each requirement and the test that covers it.
 - **Assumptions** and **Noticed**, when you have any.
+- **`## Defend this`**: the section just before `## Workarounds`. Its reader is a person who may be asked to defend the change and did not read every line, so write it about the change as a whole, not about lines of code. A section that restates the diff is wrong. Use plain sentences, at most 15 lines in all, covering:
+  - **Decisions**: each choice a reader could question, as "X over Y, because Z". At most five. Leave out choices the unit forced.
+  - **Hostile or malformed input**: what happens when an input or a caller is malicious or wrong, at each boundary the change touches. When it touches none, write `Not applicable` and say why.
+  - **Where it fails**: its limits, how it fails and what it does not handle.
 - **Workarounds**: the section `## Workarounds`, always present. See below.
 
 ### Workarounds
