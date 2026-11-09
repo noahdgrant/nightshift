@@ -6,6 +6,7 @@ mod config;
 mod define;
 mod doctor;
 mod eval;
+mod grades;
 mod init;
 mod log;
 mod plan;
@@ -33,6 +34,8 @@ pub enum Command {
     Define(define::Args),
     /// Check that the repository and this machine are set up for ns.
     Doctor(doctor::Args),
+    /// Show each rubric's pass rate per week and per ns version.
+    Grades(grades::Args),
     /// Show what a unit's harness sessions said and ran.
     Log(log::Args),
     /// Measure a skill on cases whose right answer is known. Makes real harness calls.
@@ -68,6 +71,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Define(args) => define::run(args),
         Command::Doctor(args) => doctor::run(args),
         Command::Eval(args) => eval::run(args),
+        Command::Grades(args) => grades::run(args),
         Command::Init(args) => init::run(args),
         Command::Log(args) => log::run(args),
         Command::Plan(args) => plan::run(args),

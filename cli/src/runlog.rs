@@ -119,7 +119,8 @@ impl RunLog {
             .and_then(|e| e["base_tested"].as_str().map(String::from)))
     }
 
-    fn events(&self) -> Result<Vec<Value>> {
+    /// Every event in the file, none when it does not exist; a line that is not JSON is left out.
+    pub fn events(&self) -> Result<Vec<Value>> {
         let text = match std::fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
