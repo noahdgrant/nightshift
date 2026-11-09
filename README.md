@@ -115,6 +115,13 @@ How many times a state may run before its unit is stuck is `[run] max_attempts` 
 max_attempts = 4
 ```
 
+How long `ship` waits for the change request's checks to finish is `[ship] ci_timeout_seconds` in `.nightshift/nightshift.toml`, for `ns run` and `ns auto`. `--ci-timeout-seconds` wins over it, and a repository that sets neither waits 1800 seconds (30 minutes). It must be a whole number of seconds above 0, or `ns` stops before it runs anything.
+
+```toml
+[ship]
+ci_timeout_seconds = 2400
+```
+
 A review looks at the change in six review areas: correctness, security, spec (every requirement implemented in full, nothing beyond it), tests, architecture, and docs and comments (the change's comments and docs are true, say why and not what, and the docs it makes stale are updated). `[review] sessions` in `.nightshift/nightshift.toml` sets how many harness sessions share them, one after another. With `3`, the default, the groups are behavior (correctness and security), requirements and tests (spec and tests) and maintainability (architecture, and docs and comments). With `6` each area has its own session, and with `1` one session reviews all six. Each session is shown only its own earlier findings that were not met. The review fails when any session ends `VERDICT: FAIL`, and passes only when all pass. More sessions find more and show which area missed what, and cost more subscription time. Any value but 1, 3 or 6 is an error, and `ns` stops before it runs anything.
 
 ```toml

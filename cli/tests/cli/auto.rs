@@ -521,6 +521,16 @@ fn auto_with_a_bad_transcript_days_setting_is_an_error_and_runs_nothing() {
     assert!(old.exists());
 }
 
+#[test]
+fn auto_with_a_bad_ci_timeout_setting_is_an_error_and_runs_nothing() {
+    let repo = Repo::new();
+    set_manifest(&repo, "[ship]\nci_timeout_seconds = 0\n");
+    let out = auto_run(&repo, &Fakes::passing(), &[], None, true).failure();
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(err.contains("ship.ci_timeout_seconds"), "{err}");
+    assert!(out.get_output().stdout.is_empty());
+}
+
 /// Three issues nobody has triaged, whose triage sessions end as `sessions` says.
 fn three_untriaged(sessions: &'static str) -> Fakes {
     Fakes {
