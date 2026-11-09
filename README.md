@@ -150,6 +150,8 @@ model = "opus"
 
 `ns eval review` runs the review sessions `[review] sessions` sets on the known cases in `evals/review` and reports whether it gives the right verdict each time, so you can tell whether an edit to the skill helped. `--model` runs the cases with another model, to compare models on the same cases. It makes real harness calls, so it uses subscription time.
 
+`ns eval add review <commit> --unit <number> --as <case> [--expect <PASS|FAIL>]` writes the change a commit made, and the unit it was for, as a new case in `evals/review`. Use it after a defect got past review and was found later: the change that carried it becomes a case, so the next edit to the skill is checked against it. `--expect` is `FAIL` when absent. It writes nothing and fails when the case already exists, the commit is not found or the unit cannot be read. It prints one JSON line naming the directory; read the case and commit it.
+
 ## Credits
 
 Adapted from [mattpocock/skills](https://github.com/mattpocock/skills), [cursor/plugins pstack](https://github.com/cursor/plugins/tree/main/pstack) and [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills). See [`NOTICE.md`](NOTICE.md).

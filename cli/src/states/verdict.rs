@@ -1,6 +1,6 @@
 //! The last line of a check's evidence says how the check ended.
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// The work meets the unit.
     Pass,

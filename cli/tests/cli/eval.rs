@@ -497,3 +497,142 @@ fn a_bad_model_table_stops_the_eval_before_any_call() {
     );
     assert_eq!(calls(&repo), 0);
 }
+
+/// Commits a change that adds `f.txt` with a body in its message; returns the commit's id.
+fn defect_commit(repo: &Repo) -> String {
+    std::fs::write(repo.path.join("f.txt"), "one\n").unwrap();
+    git(&repo.path, &["add", "f.txt"]);
+    git(
+        &repo.path,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "feat: add f",
+            "-m",
+            "Added f.\n\nTests: none.",
+        ],
+    );
+    git(&repo.path, &["rev-parse", "HEAD"]).trim().to_string()
+}
+
+/// Runs `ns eval add review` with `extra` arguments. The fake `gh` knows unit 4 only.
+fn add(repo: &Repo, extra: &[&str]) -> assert_cmd::assert::Assert {
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    script(
+        &bin,
+        "gh",
+        r#"case "$1 $2" in
+"api repos/{owner}/{repo}/issues/4") printf '%s\n' '{"number":4,"title":"feat: a title","body":"A description.\n\nMore.","labels":[],"author_association":"OWNER","html_url":"https://github.com/o/r/issues/4"}';;
+*) echo 'not found' >&2; exit 1;;
+esac"#,
+    );
+    Command::cargo_bin("ns")
+        .unwrap()
+        .args(["eval", "add", "review"])
+        .args(extra)
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .current_dir(&repo.path)
+        .assert()
+}
+
+fn case_files(repo: &Repo, name: &str) -> Vec<String> {
+    let dir = repo.path.join("evals/review").join(name);
+    let mut names: Vec<_> = std::fs::read_dir(dir)
+        .map(|d| {
+            d.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+fn case_read(repo: &Repo, name: &str, file: &str) -> String {
+    std::fs::read_to_string(repo.path.join("evals/review").join(name).join(file)).unwrap()
+}
+
+#[test]
+fn add_writes_the_four_files_and_expects_fail_by_default() {
+    let repo = Repo::new();
+    let commit = defect_commit(&repo);
+    let out = add(&repo, &[&commit, "--unit", "4", "--as", "lost-f"]).success();
+    let line = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert_eq!(line.lines().count(), 1);
+    let dir = repo.path.join("evals/review/lost-f");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&line).unwrap(),
+        serde_json::json!({ "case": "lost-f", "dir": dir })
+    );
+    assert_eq!(
+        case_files(&repo, "lost-f"),
+        ["build.md", "change.diff", "expect", "unit.md"]
+    );
+    assert_eq!(case_read(&repo, "lost-f", "expect"), "FAIL\n");
+    assert_eq!(
+        case_read(&repo, "lost-f", "unit.md"),
+        "feat: a title\n\nA description.\n\nMore.\n"
+    );
+    assert_eq!(
+        case_read(&repo, "lost-f", "build.md"),
+        "Added f.\n\nTests: none.\n"
+    );
+    let diff = case_read(&repo, "lost-f", "change.diff");
+    assert!(diff.starts_with("diff --git a/f.txt b/f.txt\n"), "{diff}");
+    assert!(diff.ends_with("+one\n"), "{diff}");
+}
+
+#[test]
+fn add_with_expect_pass_writes_pass() {
+    let repo = Repo::new();
+    let commit = defect_commit(&repo);
+    add(
+        &repo,
+        &[&commit, "--unit", "4", "--as", "fine", "--expect", "PASS"],
+    )
+    .success();
+    assert_eq!(case_read(&repo, "fine", "expect"), "PASS\n");
+}
+
+#[test]
+fn add_that_fails_writes_nothing() {
+    let repo = Repo::new();
+    let commit = defect_commit(&repo);
+    add(&repo, &[&commit, "--unit", "4", "--as", "taken"]).success();
+    let before = case_read(&repo, "taken", "unit.md");
+
+    let again = add(&repo, &[&commit, "--unit", "4", "--as", "taken"]).failure();
+    assert!(stderr(again).contains("already exists"));
+    assert_eq!(case_read(&repo, "taken", "unit.md"), before);
+
+    let bad_name = add(&repo, &[&commit, "--unit", "4", "--as", "Bad Name"]).failure();
+    assert!(stderr(bad_name).contains("lowercase letters, digits and hyphens"));
+    assert!(case_files(&repo, "Bad Name").is_empty());
+
+    let no_commit = add(&repo, &["nosuchcommit", "--unit", "4", "--as", "ghost"]).failure();
+    assert!(stderr(no_commit).contains("there is no commit nosuchcommit"));
+    assert!(case_files(&repo, "ghost").is_empty());
+
+    let no_unit = add(&repo, &[&commit, "--unit", "9", "--as", "orphan"]).failure();
+    assert!(stderr(no_unit).contains("cannot read unit 9"));
+    assert!(case_files(&repo, "orphan").is_empty());
+}
+
+#[test]
+fn add_refuses_an_expect_that_is_not_pass_or_fail() {
+    let repo = Repo::new();
+    let commit = defect_commit(&repo);
+    for bad in ["INCONCLUSIVE", "pass"] {
+        let out = add(
+            &repo,
+            &[&commit, "--unit", "4", "--as", "odd", "--expect", bad],
+        )
+        .failure();
+        assert!(stderr(out).contains("expect must be PASS or FAIL"));
+        assert!(case_files(&repo, "odd").is_empty());
+    }
+}

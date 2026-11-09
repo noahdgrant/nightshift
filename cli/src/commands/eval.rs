@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{anyhow, bail, Context as _, Result};
 use clap::{Args as ClapArgs, Subcommand};
 use serde_json::{json, Value};
 
@@ -24,6 +24,36 @@ enum Skill {
     /// Run the review skill on the cases in evals/review and report whether it gives the right
     /// verdict each time. Every run is a real harness call and costs subscription time.
     Review(ReviewArgs),
+    /// Add a case to the cases a skill is scored on.
+    Add(AddArgs),
+}
+
+#[derive(ClapArgs)]
+struct AddArgs {
+    #[command(subcommand)]
+    skill: AddSkill,
+}
+
+#[derive(Subcommand)]
+enum AddSkill {
+    /// Write the change a commit made, and the unit it was for, as a case in evals/review. Use
+    /// it after a defect got past review, so the change that carried it is a case.
+    Review(AddReviewArgs),
+}
+
+#[derive(ClapArgs)]
+struct AddReviewArgs {
+    /// The commit that carried the defect.
+    commit: String,
+    /// The unit the commit was made for, read from the forge.
+    #[arg(long)]
+    unit: u64,
+    /// The case's name: lowercase letters, digits and hyphens.
+    #[arg(long = "as")]
+    case: String,
+    /// The verdict the review should reach.
+    #[arg(long, value_parser = expect_parse, default_value = "FAIL")]
+    expect: Verdict,
 }
 
 #[derive(ClapArgs)]
@@ -54,7 +84,13 @@ struct Case {
 }
 
 pub fn run(args: Args) -> Result<()> {
-    let Skill::Review(args) = args.skill;
+    let args = match args.skill {
+        Skill::Review(args) => args,
+        Skill::Add(add) => {
+            let AddSkill::Review(add) = add.skill;
+            return case_add(add);
+        }
+    };
     let root = vcs::get().workspace_find(&std::env::current_dir()?)?;
     let cases = cases_load(&root.join("evals/review"), args.case.as_deref())?;
     let skill = review::instructions(&skill::load(skill::REVIEW)?, &review::standards_read(&root));
@@ -78,6 +114,53 @@ pub fn run(args: Args) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn case_add(args: AddReviewArgs) -> Result<()> {
+    let vcs = vcs::get();
+    let root = vcs.workspace_find(&std::env::current_dir()?)?;
+    let case = &args.case;
+    if case.is_empty()
+        || !case
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        bail!("the case name {case:?} must be lowercase letters, digits and hyphens");
+    }
+    let dir = root.join("evals/review").join(case);
+    if dir.exists() {
+        bail!("the case {case} already exists in {}", dir.display());
+    }
+    let commit = vcs.commit_find(&root, &args.commit)?;
+    let change = vcs.commit_show(&root, &commit)?;
+    let unit = crate::forge::get()
+        .unit_get(&root, args.unit)
+        .with_context(|| format!("cannot read unit {}", args.unit))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let files = [
+        (
+            "unit.md",
+            format!("{}\n\n{}\n", unit.title, unit.body.trim()),
+        ),
+        ("change.diff", format!("{}\n", change.diff)),
+        ("build.md", format!("{}\n", change.body)),
+        ("expect", format!("{}\n", name(&args.expect))),
+    ];
+    for (file, text) in files {
+        std::fs::write(dir.join(file), text)
+            .with_context(|| format!("cannot write {}", dir.join(file).display()))?;
+    }
+    println!("{}", json!({ "case": case, "dir": dir }));
+    Ok(())
+}
+
+/// The verdicts a case can expect: the two a review ends with.
+fn expect_parse(text: &str) -> Result<Verdict, String> {
+    match text {
+        "PASS" => Ok(Verdict::Pass),
+        "FAIL" => Ok(Verdict::Fail),
+        other => Err(format!("expect must be PASS or FAIL, not {other:?}")),
+    }
 }
 
 fn name(verdict: &Verdict) -> &'static str {
@@ -183,11 +266,7 @@ fn case_load(dir: &Path, name: &str) -> Result<Case> {
     };
     let unit = read("unit.md")?;
     let (title, body) = unit.split_once('\n').unwrap_or((&unit, ""));
-    let expect = match read("expect")?.trim() {
-        "PASS" => Verdict::Pass,
-        "FAIL" => Verdict::Fail,
-        other => bail!("case {name}: expect must be PASS or FAIL, not {other:?}"),
-    };
+    let expect = expect_parse(read("expect")?.trim()).map_err(|e| anyhow!("case {name}: {e}"))?;
     Ok(Case {
         name: name.to_string(),
         title: title.trim().to_string(),
@@ -228,6 +307,20 @@ mod tests {
             assert!(!case.body.is_empty(), "{}: no description", case.name);
             assert!(!case.build.trim().is_empty(), "{}: no build", case.name);
             assert!(case.diff.contains("diff --git"), "{}: no diff", case.name);
+        }
+    }
+
+    #[test]
+    fn an_expect_file_as_add_writes_it_loads_back() {
+        for verdict in [Verdict::Pass, Verdict::Fail] {
+            let dir = tempfile::tempdir().unwrap();
+            let case = dir.path().join("c");
+            std::fs::create_dir(&case).unwrap();
+            for file in ["unit.md", "build.md", "change.diff"] {
+                std::fs::write(case.join(file), "x\n").unwrap();
+            }
+            std::fs::write(case.join("expect"), format!("{}\n", name(&verdict))).unwrap();
+            assert_eq!(case_load(dir.path(), "c").unwrap().expect, verdict);
         }
     }
 }
