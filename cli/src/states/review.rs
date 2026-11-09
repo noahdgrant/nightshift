@@ -5,6 +5,7 @@ use super::verdict::{self, Verdict, FAIL_LINE, PASS_LINE};
 use super::{check, Context};
 use crate::artifact;
 use crate::manifest::{self, Place};
+use crate::runlog::RunLog;
 use crate::skill;
 use crate::state::{Outcome, State};
 
@@ -105,6 +106,14 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let id = ctx.unit.to_string();
     let reviews = Rounds::new(&dir, &id, "review");
     let previous = reviews.last_unmet();
+    let round = reviews.so_far() + 1;
+    let head = ctx.vcs.workspace_head_find(&dir)?;
+    let since = since_read(ctx, &dir, &id, round)?;
+    let log = RunLog::open(ctx.vcs.as_ref(), &root)?;
+    log.append(&serde_json::json!({
+        "unit": id, "state": "review", "round": round,
+        "read": if since.is_some() { "since_last" } else { "whole" },
+    }))?;
     let mut kept = Vec::new();
     let mut passed = true;
     for focus in focuses(sessions) {
@@ -123,7 +132,10 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
                 &unit.body,
                 &build,
                 &diff,
-                earlier,
+                Earlier {
+                    findings: earlier,
+                    since: since.as_deref(),
+                },
             ),
         )?;
         passed &= matches!(outcome, Outcome::Pass);
@@ -133,7 +145,33 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let text = merge(&kept, passed);
     artifact::write(&dir, &id, "evidence.md", &text)?;
     reviews.keep(&text)?;
+    artifact::write(&dir, &id, HEAD_FILE, &head)?;
     Ok(if passed { Outcome::Pass } else { Outcome::Fail })
+}
+
+/// The commit the last review saw, kept with the unit's other notes.
+const HEAD_FILE: &str = "review.head";
+
+/// The diff from the commit the previous review saw to the head, for a review after the first.
+/// `None` for the first review, when no commit was kept, and when the diff to that commit cannot
+/// be made (any `git diff` error, such as a commit that is gone); the review then reads the whole
+/// change.
+fn since_read(
+    ctx: &Context,
+    dir: &std::path::Path,
+    id: &str,
+    round: usize,
+) -> Result<Option<String>> {
+    if round == 1 {
+        return Ok(None);
+    }
+    let Ok(seen) = artifact::read(dir, id, HEAD_FILE) else {
+        return Ok(None);
+    };
+    let seen = seen.trim();
+    // The rework rewrites the unit's one commit, so `seen` is rarely an ancestor of the head; the
+    // diff still reads between any two commits. Any failure to make it falls back to `whole`.
+    Ok(ctx.vcs.workspace_diff(dir, seen).ok())
 }
 
 /// The review that merges what each session found: a section for each session, then the verdict
@@ -222,6 +260,21 @@ pub fn instructions(skill: &str, standards: &str) -> String {
     format!("{skill}\n\n# The coding standards\n\n{standards}")
 }
 
+/// What a review session is told about the reviews before it: its own findings that were not met,
+/// and the diff since the commit the last review saw.
+#[derive(Default, Clone, Copy)]
+pub struct Earlier<'a> {
+    pub findings: Option<&'a str>,
+    pub since: Option<&'a str>,
+}
+
+/// What a review after the first is told about the diff since the last review.
+const SINCE_RULES: &str = "# Changed since the last review\n\n\
+    Review this diff. The change above is for reference. Report a finding in code this diff does \
+    not touch only when it is Critical (the change breaks, loses data or opens a hole). Do not \
+    raise again a finding the previous review marked Fixed or Withdrawn, unless this diff undid \
+    the fix. An earlier finding still open stays open.";
+
 /// The prompt that has the harness review a change with one session. `ns eval review` builds the
 /// same one.
 pub fn prompt(
@@ -231,15 +284,27 @@ pub fn prompt(
     body: &str,
     build: &str,
     diff: &str,
-    previous: Option<&str>,
+    earlier: Earlier,
 ) -> String {
-    let previous = previous
+    let previous = earlier
+        .findings
         .map(|text| format!("# Findings from the previous review\n\n{text}\n\n"))
+        .unwrap_or_default();
+    let since = earlier
+        .since
+        .map(|diff| {
+            let diff = if diff.trim().is_empty() {
+                "Nothing changed since the last review."
+            } else {
+                diff
+            };
+            format!("\n{SINCE_RULES}\n\n{diff}\n")
+        })
         .unwrap_or_default();
     format!(
         "{skill}\n\n# Your focus\n\n{}: review only these areas: {}. Leave the others out.\n\n\
          # The unit\n\n## {title}\n\n{body}\n\n# The build summary\n\n{build}\n\n\
-         {previous}# The change\n\n{diff}\n",
+         {previous}# The change\n\n{diff}\n{since}",
         focus.name,
         focus.areas.join(", ")
     )
@@ -271,7 +336,15 @@ mod tests {
 
     #[test]
     fn the_prompt_names_the_focus_and_only_the_focus() {
-        let got = prompt("SKILL", &GROUPS[0], "T", "B", "built", "diff", None);
+        let got = prompt(
+            "SKILL",
+            &GROUPS[0],
+            "T",
+            "B",
+            "built",
+            "diff",
+            Earlier::default(),
+        );
         assert_eq!(
             got,
             "SKILL\n\n# Your focus\n\nBehavior: review only these areas: correctness, security. \
@@ -285,11 +358,61 @@ mod tests {
             "B",
             "b",
             "d",
-            Some("old\nVERDICT: FAIL"),
+            Earlier {
+                findings: Some("old\nVERDICT: FAIL"),
+                since: None,
+            },
         );
         assert!(got.contains("Docs and comments: review only these areas: docs and comments."));
         assert!(got
             .contains("# Findings from the previous review\n\nold\nVERDICT: FAIL\n\n# The change"));
+    }
+
+    #[test]
+    fn a_later_review_is_given_the_diff_since_the_last_one_and_the_rule_for_code_it_leaves_out() {
+        let first = prompt("S", &ALL[0], "T", "B", "b", "WHOLE", Earlier::default());
+        assert!(!first.contains("Changed since the last review"));
+        let later = prompt(
+            "S",
+            &ALL[0],
+            "T",
+            "B",
+            "b",
+            "WHOLE",
+            Earlier {
+                since: Some("SINCE"),
+                ..Earlier::default()
+            },
+        );
+        assert!(later.contains("# The change\n\nWHOLE\n\n# Changed since the last review\n\n"));
+        assert!(later.ends_with("\nSINCE\n"));
+        assert!(later.contains("Review this diff."));
+        assert!(later.contains("only when it is Critical"));
+        assert!(later.contains("Fixed or Withdrawn"));
+    }
+
+    #[test]
+    fn a_later_review_with_an_empty_diff_says_nothing_changed() {
+        let got = prompt(
+            "S",
+            &ALL[0],
+            "T",
+            "B",
+            "b",
+            "WHOLE",
+            Earlier {
+                since: Some(""),
+                ..Earlier::default()
+            },
+        );
+        assert!(got.ends_with("\nNothing changed since the last review.\n"));
+    }
+
+    #[test]
+    fn the_skill_asks_for_one_finding_per_class_and_limits_later_rounds() {
+        let skill = crate::skill::load(crate::skill::REVIEW).unwrap();
+        assert!(skill.contains("report one finding that names the class and lists every instance"));
+        assert!(skill.contains("`# Changed since the last review`"));
     }
 
     #[test]

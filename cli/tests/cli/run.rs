@@ -808,13 +808,96 @@ fn a_first_review_has_no_previous_findings_and_a_review_after_a_failure_has_them
     run(&repo, &tools(&repo, &fakes)).success();
     for n in 1..=3 {
         assert!(!review_prompt(&repo, n).contains(PREVIOUS));
+        assert!(!review_prompt(&repo, n).contains("\n# Changed since the last review\n"));
     }
+    for n in 4..=6 {
+        assert!(review_prompt(&repo, n).contains("\n# Changed since the last review\n"));
+    }
+    let log = run_log(&repo);
+    let reads: Vec<_> = log
+        .iter()
+        .filter(|e| e["state"] == "review")
+        .map(|e| {
+            (
+                e["round"].as_u64().unwrap(),
+                e["read"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reads,
+        [(1, "whole".to_string()), (2, "since_last".to_string())]
+    );
     // Only the session that failed is shown its findings, and not the verdict of the review.
     assert!(review_prompt(&repo, 4).contains(&format!(
         "{PREVIOUS}\n\nreviewed the diff\nVERDICT: FAIL\n\n# The change"
     )));
     assert!(!review_prompt(&repo, 5).contains(PREVIOUS));
     assert!(!review_prompt(&repo, 6).contains(PREVIOUS));
+}
+
+#[test]
+fn a_rework_that_amends_the_commit_still_gets_the_diff_since_the_last_review() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_review: FAIL,
+        ..Fakes::passing()
+    };
+    let path = tools(&repo, &fakes);
+    let bin = repo.path.parent().unwrap().join("bin");
+    script(
+        &bin,
+        "on-rebuild",
+        r#"echo second > second.txt
+git add -A
+git -c user.name=t -c user.email=t@t commit -q --amend --no-edit"#,
+    );
+    run(&repo, &path).success();
+    let later = review_prompt(&repo, 4);
+    let (_, changed) = later
+        .split_once("\n# Changed since the last review\n")
+        .expect("the section is there");
+    assert!(changed.contains("second.txt"));
+    assert!(!changed.contains("+++ b/thing.txt"));
+}
+
+#[test]
+fn a_review_reads_the_whole_change_when_the_kept_commit_is_unusable_or_missing() {
+    for setup in [
+        "for f in .ns/*/review.head; do echo deadbeefdeadbeefdeadbeefdeadbeefdeadbeef > \"$f\"; done",
+        "rm -f .ns/*/review.head",
+    ] {
+        let repo = Repo::new();
+        let fakes = Fakes {
+            first_review: FAIL,
+            ..Fakes::passing()
+        };
+        let path = tools(&repo, &fakes);
+        let bin = repo.path.parent().unwrap().join("bin");
+        script(&bin, "on-rebuild", setup);
+        run(&repo, &path).success();
+        assert!(
+            !review_prompt(&repo, 4).contains("\n# Changed since the last review\n"),
+            "{setup}"
+        );
+        let reads: Vec<_> = run_log(&repo)
+            .iter()
+            .filter(|e| e["state"] == "review")
+            .map(|e| e["read"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(reads, ["whole", "whole"], "{setup}");
+    }
+}
+
+#[test]
+fn a_rework_that_changes_nothing_is_told_nothing_changed() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        first_review: FAIL,
+        ..Fakes::passing()
+    };
+    run(&repo, &tools(&repo, &fakes)).success();
+    assert!(review_prompt(&repo, 4).contains("Nothing changed since the last review."));
 }
 
 #[test]
@@ -1942,6 +2025,7 @@ fn the_run_log_holds_every_move_with_its_time() {
     let log = run_log(&repo);
     let moves: Vec<String> = log
         .iter()
+        .filter(|e| e.get("to").is_some())
         .map(|e| {
             format!(
                 "{}>{}",

@@ -111,7 +111,7 @@ fn review_measure(
                     &case.body,
                     &case.build,
                     &case.diff,
-                    None,
+                    review::Earlier::default(),
                 )
             })
             .collect();

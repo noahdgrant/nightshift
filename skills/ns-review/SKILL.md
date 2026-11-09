@@ -45,6 +45,8 @@ Every path, command or file a committed file names exists in a fresh checkout, o
 
 Trace the call path before you accept a hypothetical. Leave out style and personal preference.
 
+When the prompt has a section `# Changed since the last review`, this is not the first review of the unit: review that diff, and read the whole change only as reference. Report a finding in code the diff does not touch only when it is Critical. Do not raise again a finding the previous review marked Fixed or Withdrawn, unless the diff undid the fix.
+
 Done when each area you cover has been checked against the diff.
 
 ## 2. Check the earlier findings
@@ -73,6 +75,8 @@ List them apart from the earlier ones. One finding per defect:
   - `prose`: a doc, comment, skill or coding standard, for what only judgement can enforce.
   - `none`: a one-off with no category.
 - `Durable fix:` the type, rule or test by name, on a finding at level `code` or `check`.
+
+When a defect is one of a class, the same mistake in several places or one rule broken in several ways, report one finding that names the class and lists every instance found in the change, so that one round finds them all.
 
 Choose the highest level that removes the whole category of mistake: `code`, then `check`, and `prose` only when neither fits. Use `none` when the mistake is a one-off.
 
