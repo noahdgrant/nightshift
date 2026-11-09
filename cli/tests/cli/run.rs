@@ -272,7 +272,7 @@ case "$p" in
   bad) echo 'It went fine.';;
   hang) exec sleep 30;;
   line:*) echo "$(printf %s '{retro}' | cut -c6-)";;
-  *) echo 'Looked at everything.'; echo 'GRADE: efficiency 0.8 one failed call, then straight on';;
+  *) echo 'Looked at everything.'; echo 'GRADE: efficiency 0.8 one failed call, then straight on'; echo 'GRADE: redundant-tests 1 none'; echo 'GRADE: verbosity 0.9 tight'; echo 'GRADE: followed-the-brief 0.7 one extra';  if printf %s "$p" | grep -q '^## mine$'; then echo 'GRADE: mine 0.5 fine'; fi;;
   esac;;
 *"Run the real thing and record what you saw"*)
   n=$(ls "{bin}"/verify.prompt.* 2>/dev/null | wc -l); printf %s "$p" > "{bin}/verify.prompt.$((n+1))"
@@ -4003,7 +4003,7 @@ fn a_grade_line_is_kept_in_grades_jsonl_with_every_field() {
     let main = git(&repo.path, &["rev-parse", "main"]).trim().to_string();
     run_merged(&repo, &Fakes::passing(), &["--model", "opus"]).success();
     let kept = grades(&repo);
-    assert_eq!(kept.len(), 1);
+    assert_eq!(kept.len(), 4);
     let grade = &kept[0];
     assert_eq!(grade["unit"], "5");
     assert_eq!(grade["rubric"], "efficiency");
@@ -4043,7 +4043,17 @@ fn the_retrospective_reads_the_unit_the_change_the_notes_and_the_sessions() {
     assert!(prompt.contains("+thing"), "the diff");
     assert!(prompt.contains("## evidence.md"), "the notes");
     assert!(prompt.contains("## build 1"), "the kept sessions");
-    assert!(prompt.contains("## efficiency"), "the rubric");
+    for name in [
+        "efficiency",
+        "redundant-tests",
+        "verbosity",
+        "followed-the-brief",
+    ] {
+        assert!(
+            prompt.contains(&format!("## {name}\n")),
+            "the rubric {name}"
+        );
+    }
     let calls = bin_file(&repo, "claude.calls");
     let retro = calls
         .lines()
@@ -4053,6 +4063,128 @@ fn the_retrospective_reads_the_unit_the_change_the_notes_and_the_sessions() {
         !retro.contains("--dangerously") && !retro.contains("acceptEdits"),
         "{retro}"
     );
+}
+
+/// Commits the rubric file `name` with `text` to the repository, before a unit starts.
+fn rubric_commit(repo: &Repo, name: &str, text: &str) {
+    let dir = repo.path.join("docs/agents/rubrics");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(name), text).unwrap();
+    git(&repo.path, &["add", "."]);
+    git(&repo.path, &["commit", "-q", "-m", "add a rubric"]);
+}
+
+fn graded(repo: &Repo) -> Vec<(String, f64)> {
+    grades(repo)
+        .iter()
+        .map(|g| {
+            (
+                g["rubric"].as_str().unwrap().to_string(),
+                g["score"].as_f64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn all_four_default_rubrics_are_graded_in_one_session() {
+    let repo = Repo::new();
+    run_merged(&repo, &Fakes::passing(), &[]).success();
+    assert_eq!(
+        graded(&repo),
+        [
+            ("efficiency".to_string(), 0.8),
+            ("followed-the-brief".to_string(), 0.7),
+            ("redundant-tests".to_string(), 1.0),
+            ("verbosity".to_string(), 0.9),
+        ]
+    );
+    assert_eq!(
+        bin_file(&repo, "claude.calls")
+            .matches("retrospective")
+            .count(),
+        1
+    );
+    assert!(skipped(&repo).is_empty());
+}
+
+#[test]
+fn a_repository_rubric_is_added_and_graded_with_the_defaults() {
+    let repo = Repo::new();
+    rubric_commit(
+        &repo,
+        "mine.md",
+        "---\nname: mine\npass: 0.5\n---\nJudge mine.\n",
+    );
+    run_merged(&repo, &Fakes::passing(), &[]).success();
+    let prompt = bin_file(&repo, "retro.prompt");
+    assert!(prompt.contains("## mine\n\nIt passes at 0.5.\n\nJudge mine."));
+    assert_eq!(graded(&repo).len(), 5);
+    assert!(graded(&repo).contains(&("mine".to_string(), 0.5)));
+}
+
+#[test]
+fn a_repository_rubric_named_like_a_default_replaces_it() {
+    let repo = Repo::new();
+    rubric_commit(
+        &repo,
+        "verbosity.md",
+        "---\nname: verbosity\npass: 0.95\n---\nOur own verbosity.\n",
+    );
+    run_merged(&repo, &Fakes::passing(), &[]).success();
+    let prompt = bin_file(&repo, "retro.prompt");
+    assert!(prompt.contains("Our own verbosity."));
+    assert_eq!(prompt.matches("## verbosity\n").count(), 1);
+    let kept = grades(&repo);
+    assert_eq!(kept.len(), 4);
+    let verbosity = kept.iter().find(|g| g["rubric"] == "verbosity").unwrap();
+    assert_eq!(
+        verbosity["pass"], false,
+        "0.9 is under the replacement's 0.95"
+    );
+}
+
+#[test]
+fn an_invalid_repository_rubric_is_left_out_and_the_log_names_its_file() {
+    let repo = Repo::new();
+    rubric_commit(
+        &repo,
+        "wrong.md",
+        "---\nname: other\npass: 0.5\n---\nJudge.\n",
+    );
+    run_merged(&repo, &Fakes::passing(), &[]).success();
+    assert_eq!(graded(&repo).len(), 4);
+    assert!(!bin_file(&repo, "retro.prompt").contains("Judge.\n\n# The unit"));
+    let skips = skipped(&repo);
+    assert_eq!(skips.len(), 1);
+    assert_eq!(
+        skips[0]["reason"],
+        "docs/agents/rubrics/wrong.md: its `name` is other, not wrong"
+    );
+}
+
+#[test]
+fn a_rubric_the_reply_left_out_is_not_stored_and_the_log_says_which() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        retro: "line:GRADE: efficiency 0.4 slow",
+        ..Fakes::passing()
+    };
+    run_merged(&repo, &fakes, &[]).success();
+    assert_eq!(graded(&repo), [("efficiency".to_string(), 0.4)]);
+    let reasons: Vec<String> = skipped(&repo)
+        .iter()
+        .map(|s| s["reason"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(reasons.len(), 3);
+    for name in ["redundant-tests", "verbosity", "followed-the-brief"] {
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.ends_with(&format!("line for {name}"))),
+            "{reasons:?}"
+        );
+    }
 }
 
 #[test]

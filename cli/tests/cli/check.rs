@@ -114,7 +114,9 @@ fn with_files(files: &[(&str, &[u8])]) -> (Repo, std::path::PathBuf) {
     let repo = Repo::new();
     repo.set_check("exit 0");
     for (name, content) in files {
-        std::fs::write(repo.path.join(name), content).unwrap();
+        let file = repo.path.join(name);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, content).unwrap();
     }
     common::git(&repo.path, &["add", "."]);
     common::git(&repo.path, &["commit", "-q", "-m", "files"]);
@@ -174,4 +176,42 @@ fn every_bad_file_is_reported_with_its_own_line() {
         "{stderr}"
     );
     assert!(stderr.contains("b.py:2: "), "{stderr}");
+}
+
+#[test]
+fn an_invalid_rubric_file_fails_naming_the_file() {
+    let (_repo, ws) = with_files(&[
+        (
+            "docs/agents/rubrics/good.md",
+            b"---\nname: good\npass: 0.5\n---\nJudge.\n",
+        ),
+        (
+            "docs/agents/rubrics/bad.md",
+            b"---\nname: other\npass: 0.5\n---\nJudge.\n",
+        ),
+    ]);
+    let out = ns(&ws, &["check"]).failure();
+    let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("docs/agents/rubrics/bad.md: its `name` is other, not bad"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("good.md"), "{stderr}");
+}
+
+#[test]
+fn an_invalid_rubric_file_fails_from_a_subdirectory_too() {
+    let (_repo, ws) = with_files(&[
+        (
+            "docs/agents/rubrics/bad.md",
+            b"---\nname: other\npass: 0.5\n---\nJudge.\n",
+        ),
+        ("sub/keep.txt", b"x\n"),
+    ]);
+    let out = ns(&ws.join("sub"), &["check"]).failure();
+    let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("docs/agents/rubrics/bad.md: its `name` is other, not bad"),
+        "{stderr}"
+    );
 }
