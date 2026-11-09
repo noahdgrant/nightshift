@@ -41,7 +41,7 @@ The change follows the repository's existing way to do each job, adds no second 
 
 The comments and docs the change adds or touches are true and say why, not what; the docs the change makes stale are updated, and they keep to the coding standards in your prompt.
 
-The build summary ends with a `## Defend this` section, and it is true to the diff. A missing section, or one the diff contradicts, is a finding. Check that **How to undo it** is present and true to the diff: a summary that says reverting the commit is enough, when the change writes a migration or leaves data behind, is a finding.
+The build summary ends with a `## Defend this` section, and it is true to the diff. A missing section, or one the diff contradicts, is a finding. (`ns-whiteboard-defence` reads it later, to explain the change when asked.) Check that **How to undo it** is present and true to the diff: a summary that says reverting the commit is enough, when the change writes a migration or leaves data behind, is a finding.
 
 Every path, command or file a committed file names exists in a fresh checkout, or is created by a step the file says to run. A pointer to a file that is generated or git-ignored is a finding: someone who has only cloned the repository does not have it.
 

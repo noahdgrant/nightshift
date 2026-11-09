@@ -179,6 +179,39 @@ mod tests {
     }
 
     #[test]
+    fn the_whiteboard_defence_skill_is_short_may_start_on_its_own_and_answers_from_the_record() {
+        let text = embedded()
+            .iter()
+            .find(|(n, _)| *n == "ns-whiteboard-defence")
+            .unwrap()
+            .1;
+        assert!(text.lines().count() <= 60);
+        assert!(text.contains("Use when the user asks why"));
+        assert!(
+            !file_for_session("ns-whiteboard-defence", text).contains("disable-model-invocation")
+        );
+        for needed in [
+            "git blame",
+            "git log -S",
+            "ns log <unit>",
+            "`recorded`",
+            "`inferred`",
+            "the record does not say",
+        ] {
+            assert!(text.contains(needed), "{needed}");
+        }
+    }
+
+    #[test]
+    fn build_and_review_name_the_whiteboard_defence_skill() {
+        for name in [BUILD, REVIEW] {
+            let file = format!("{}/../skills/{name}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
+            let skill = std::fs::read_to_string(file).unwrap();
+            assert!(skill.contains("`ns-whiteboard-defence`"), "{name}");
+        }
+    }
+
+    #[test]
     fn design_build_and_review_name_the_service_design_skill() {
         for name in [DESIGN_DOC, BUILD, REVIEW] {
             let file = format!("{}/../skills/{name}/SKILL.md", env!("CARGO_MANIFEST_DIR"));

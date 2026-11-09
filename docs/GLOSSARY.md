@@ -65,6 +65,10 @@ What a repository says about the version of `ns` it uses, and its harnesses. It 
 **Sync**:
 Writing the skills of the running `ns` where a harness finds them, for a session the user takes part in. It runs when a repository is set up, when a session starts, and in each workspace `ns` creates. See `docs/VERSIONING.md`.
 
+**Whiteboard defence**:
+Explaining a change as a whole, and standing behind its decisions, when asked. The `## Defend this` section of the build summary is its written start.
+_Avoid_: Walkthrough
+
 ## Tools behind a seam
 
 Each is a trait with one implementation chosen in one place. The rest of the code uses the trait's words.
