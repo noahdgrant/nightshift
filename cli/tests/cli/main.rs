@@ -5,6 +5,7 @@ mod config;
 mod define;
 mod doctor;
 mod eval;
+mod grades;
 mod init;
 mod log;
 pub mod plan;

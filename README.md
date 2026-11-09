@@ -128,6 +128,8 @@ review = "opus"
 
 `ns status` shows where each unit stands in the morning.
 
+`ns grades [--weeks <n>]` shows whether a change to the factory moved the grades. It reads `grades.jsonl` in the `ns` state directory and prints two plain-text tables: each rubric's pass rate, with the number of grades in brackets, for each of the last `n` ISO weeks (8 without the flag, the current week included), and the same for each `ns` version that graded in those weeks. A week or version with no grades for a rubric shows `-`. With no grades it prints one line saying so. `--json` prints one JSON line for each rubric and period instead. It changes nothing and starts no session.
+
 Every headless session leaves its transcript, what the agent read and ran and not only its final text, as `transcripts/<unit>/<state>-<n>.jsonl` in the repository's `ns` state directory (`.git/ns` with git). It outlives the unit's workspace. `ns log <unit>` shows it; `--state` and `--last` narrow it. A session is typically tens of kilobytes to a few megabytes of JSON, and a unit that goes round `build` many times keeps one for each, so `ns run` and `ns auto` delete transcripts last modified more than `[run] transcript_days` days ago, in `.nightshift/nightshift.toml`. Without the key they keep a week's; `0` keeps them for ever. Deleting `transcripts/` is safe; `ns` only reads it for `ns log`.
 
 

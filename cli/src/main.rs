@@ -9,6 +9,7 @@ mod config;
 mod define;
 mod dispatch;
 mod forge;
+mod grades;
 mod harness;
 mod labels;
 mod lock;

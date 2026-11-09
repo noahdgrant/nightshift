@@ -5,6 +5,7 @@ use serde_json::json;
 
 use super::{session_run, Context, BUILT_SNAPSHOT};
 use crate::artifact::{self, DIR};
+use crate::grades;
 use crate::harness::Task;
 use crate::manifest::{self, Retrospective};
 use crate::rubric::{self, Rubric};
@@ -134,15 +135,7 @@ fn grade(
             .iter()
             .find(|r| r.name == grade.rubric)
             .is_some_and(|r| grade.score >= r.pass);
-        let mut line = json!({
-            "unit": id,
-            "rubric": grade.rubric,
-            "score": grade.score,
-            "pass": pass,
-            "reason": grade.reason,
-            "version": env!("CARGO_PKG_VERSION"),
-            "base": base,
-        });
+        let mut line = grades::line(&id, &grade, pass, &base);
         if let Some(model) = &model {
             line["model"] = model.as_str().into();
         }
