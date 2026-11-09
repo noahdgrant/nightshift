@@ -28,7 +28,7 @@ its scale that fits best.\n\nEnd your reply with one line for each rubric, and n
 them:\n\nGRADE: <rubric> <score> <reason>\n\n`<rubric>` is the rubric's name, `<score>` a number \
 from 0 to 1, and `<reason>` one line.";
 
-/// Grades the merged unit once, by each default rubric, with one read-only harness session, and
+/// Grades the merged unit once, by each rubric in force, with one read-only harness session, and
 /// keeps each grade in `grades.jsonl`. It never fails the unit: when it is disabled, or the session
 /// fails, times out or gives no valid grade line, the run log says `skipped` with the reason and
 /// the unit goes on, for the change has merged.
@@ -37,21 +37,28 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let setting = manifest::retrospective_read(&root)?;
     let id = ctx.unit.to_string();
     let log = RunLog::open(ctx.vcs.as_ref(), &root)?;
-    let skipped = if !setting.enabled {
-        Some("disabled".to_string())
-    } else {
-        grade(ctx, &root, &setting)
-            .err()
-            .map(|e| format!("{e:#}").replace('\n', " "))
-    };
-    if let Some(reason) = skipped {
+    let mut skips = Vec::new();
+    if !setting.enabled {
+        skips.push("disabled".to_string());
+    } else if let Err(e) = grade(ctx, &root, &setting, &mut skips) {
+        skips.push(format!("{e:#}"));
+    }
+    for reason in skips {
+        let reason = reason.replace('\n', " ");
         let event = json!({ "unit": id, "retrospective": "skipped", "reason": reason });
         log.append(&event)?;
     }
     Ok(Outcome::Pass)
 }
 
-fn grade(ctx: &mut Context, root: &Path, setting: &Retrospective) -> Result<()> {
+/// Grades the unit. What is left out on the way, a rubric file that is not valid or a rubric the
+/// reply did not grade, goes to `skips`, one reason each.
+fn grade(
+    ctx: &mut Context,
+    root: &Path,
+    setting: &Retrospective,
+    skips: &mut Vec<String>,
+) -> Result<()> {
     let dir = ctx
         .workspace
         .as_ref()
@@ -59,7 +66,8 @@ fn grade(ctx: &mut Context, root: &Path, setting: &Retrospective) -> Result<()> 
         .path
         .clone();
     let id = ctx.unit.to_string();
-    let rubrics = rubric::defaults()?;
+    let (rubrics, invalid) = rubric::in_force(&dir)?;
+    skips.extend(invalid);
     let unit = ctx.forge.unit_get(&dir, ctx.unit)?;
     let build = artifact::read(&dir, &id, "build.md")
         .unwrap_or_else(|_| "(the unit has no build summary)".to_string());
@@ -103,9 +111,18 @@ fn grade(ctx: &mut Context, root: &Path, setting: &Retrospective) -> Result<()> 
     if !reply.success {
         bail!("the harness did not finish the retrospective");
     }
-    let Some(grades) = rubric::grades_parse(&reply.text, &rubrics) else {
-        bail!("the reply has no valid `GRADE: <rubric> <score> <reason>` line for every rubric");
-    };
+    let (grades, missing) = rubric::grades_parse(&reply.text, &rubrics);
+    if grades.is_empty() {
+        bail!(
+            "the reply has no valid `GRADE: <rubric> <score> <reason>` line for {}",
+            missing.join(", ")
+        );
+    }
+    for name in missing {
+        skips.push(format!(
+            "the reply has no valid `GRADE: <rubric> <score> <reason>` line for {name}"
+        ));
+    }
     // The base branch's commit when graded; the main checkout's own when the remote has none.
     let base = match ctx.vcs.base_fetch(root).ok().flatten() {
         Some(tip) => tip,
