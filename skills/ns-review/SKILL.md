@@ -13,6 +13,8 @@ Find what must be fixed before this change merges. You are given the repository'
 
 ## 1. Read the change against the unit
 
+When the repository has `docs/agents/review.md`, read it first. Spend the most effort where its `## Where review looks hardest` says, and report nothing its `## What to leave out` says to leave out, except a Critical finding, which is never left out.
+
 There are six review areas. A section `# Your focus` in the prompt names the ones you cover; review only those and leave the others to other sessions. With no such section, review all six, in this order.
 
 ### Correctness

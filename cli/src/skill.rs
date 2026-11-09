@@ -113,6 +113,13 @@ mod tests {
     }
 
     #[test]
+    fn the_review_skill_reads_the_review_page_and_never_leaves_out_a_critical_finding() {
+        let text = load(REVIEW).unwrap();
+        assert!(text.contains("docs/agents/review.md"));
+        assert!(text.contains("except a Critical finding"));
+    }
+
+    #[test]
     fn the_frontmatter_is_left_out() {
         assert_eq!(body("---\nname: x\n---\n\n# X\n\ntext\n"), "# X\n\ntext\n");
         assert_eq!(body("no frontmatter"), "no frontmatter");
