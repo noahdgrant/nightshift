@@ -35,6 +35,11 @@ jobs:
       - name: Check the lock agrees with the manifest
         if: github.head_ref == 'release-please--branches--main'
         run: cargo metadata --locked --format-version 1 --manifest-path cli/Cargo.toml > /dev/null
-      - name: Run the checks
+      # ns check reads the marker regions, then runs .nightshift/check, which
+      # is scripts/ci-local.sh. NS_DEV=1 keeps the build from handing over to
+      # a pinned release, which CI does not have.
+      - name: Run ns check
         if: github.head_ref != 'release-please--branches--main'
-        run: scripts/ci-local.sh
+        env:
+          NS_DEV: "1"
+        run: cargo run --locked --manifest-path cli/Cargo.toml -- check
