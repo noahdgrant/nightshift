@@ -115,7 +115,7 @@ fn settings(repo: &Repo) -> serde_json::Value {
 fn init_writes_the_skills_and_a_hook_that_keeps_them_current_in_a_session() {
     let repo = Repo::new();
     let report = init_in(&repo);
-    assert_eq!(report["skills_written"], 11);
+    assert_eq!(report["skills_written"], 12);
     assert!(repo.path.join(".claude/skills/ns-build/SKILL.md").is_file());
     let hook = &settings(&repo)["hooks"]["SessionStart"][0]["hooks"][0];
     assert_eq!(hook["type"], "command");
