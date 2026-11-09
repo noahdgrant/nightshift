@@ -657,6 +657,29 @@ fn a_repository_without_the_closes_unit_workflow_fails_and_says_to_init() {
 }
 
 #[test]
+fn a_workflow_that_still_cancels_or_runs_on_labels_fails_and_says_what_to_remove() {
+    for old in [
+        "on:\n  pull_request:\n    types: [opened, labeled]\n",
+        "concurrency:\n  cancel-in-progress: true\n",
+    ] {
+        let setup = Setup::new();
+        let path = setup.repo.path.join(".github/workflows/closes-unit.yml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("name: PR closes a unit\n{old}")).unwrap();
+        only_fails(&setup, "workflow", "remove");
+        let (_, report) = setup.doctor();
+        let detail = check(&report, "workflow")["detail"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            detail.contains("labeled") && detail.contains("cancel-in-progress"),
+            "{detail}"
+        );
+    }
+}
+
+#[test]
 fn standards_that_differ_from_the_pinned_versions_fail_and_say_to_sync() {
     let setup = Setup::new();
     setup.standards(false);
