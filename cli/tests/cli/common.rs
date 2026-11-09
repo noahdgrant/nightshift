@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 /// Every label `ns` owns with the description this version gives it, as literals.
 #[allow(dead_code)]
-pub const LABEL_DESCRIPTIONS: [(&str, &str); 26] = [
+pub const LABEL_DESCRIPTIONS: [(&str, &str); 25] = [
     ("status:needs-triage", "Nobody has looked at this yet"),
     (
         "status:needs-define",
@@ -42,10 +42,6 @@ pub const LABEL_DESCRIPTIONS: [(&str, &str); 26] = [
     (
         "needs-human-merge",
         "A person merges this: it touches files the repository wants reviewed",
-    ),
-    (
-        "skip-closes-unit",
-        "This change request closes no unit, so the closes-unit check skips it",
     ),
 ];
 

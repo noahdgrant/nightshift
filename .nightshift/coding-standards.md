@@ -4,7 +4,9 @@ These hold in any language. A repository adds its own, for its language and its 
 
 ## A change request closes a unit
 
-The body of a change request ends with `Closes #<unit>`, naming a unit that exists. The tracker's number belongs in the change request, never in a committed file (next section).
+The body of a change request ends with `Closes #<unit>`, naming a unit that exists. Work with no unit gets one first: open the issue, then the change request. Only a release change request closes none.
+
+The tracker's number belongs in the change request, never in a committed file (next section).
 
 ## No issue numbers in committed files
 

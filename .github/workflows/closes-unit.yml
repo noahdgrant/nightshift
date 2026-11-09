@@ -17,9 +17,12 @@ permissions:
 jobs:
   closes-unit:
     name: Closes a unit
-    # A change request labelled skip-closes-unit closes no unit. A skipped job
-    # counts as passing, so it can still merge.
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-closes-unit') }}
+    # release-please's release change request closes no unit, and it is the only
+    # change request that does not: any other work gets a unit first. It is
+    # known by its branch, which nobody names by accident and which a label,
+    # one click away, would not be. A skipped job counts as passing, so it can
+    # still merge.
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'release-please--branches--')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

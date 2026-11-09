@@ -17,6 +17,5 @@ What the repository's labels mean. Read by `ns-triage`.
   - `status:split`: split into child units; it closes when they are done.
   - `status:wontfix`: closed as not planned.
 - **`needs-human-merge`**: on a change request `ns` left for a person to merge, because it touches a `[merge] human_review` path.
-- **`skip-closes-unit`**: on a change request that closes no unit (a release change request), so the "Closes a unit" check skips it.
 - **`breaking change`**: the change alters behavior users or skills depend on.
 - **`autorelease:`**: release-please's own labels; leave them alone.
