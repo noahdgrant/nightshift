@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/noahdgrant/nightshift/compare/v0.7.0...v0.7.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **cli:** the closes-unit workflow leaves no cancelled run, so requiring its check does not block a merge ([#1032](https://github.com/noahdgrant/nightshift/issues/1032)) ([0c6370f](https://github.com/noahdgrant/nightshift/commit/0c6370f638d5737bb895e0e039952733e74507bc))
+
 ## [0.7.0](https://github.com/noahdgrant/nightshift/compare/v0.6.0...v0.7.0) (2026-11-09)
 
 
