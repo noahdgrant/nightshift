@@ -230,13 +230,19 @@ fn protection(root: &Path, forge: &dyn Forge) -> Check {
 
 fn workflow(root: &Path) -> Check {
     const PATH: &str = CLOSES_UNIT_PATH;
-    if root.join(PATH).is_file() {
-        pass("workflow", PATH)
-    } else {
-        fail(
+    let Ok(text) = std::fs::read_to_string(root.join(PATH)) else {
+        return fail(
             "workflow",
             format!("{PATH} is missing; run `ns init`, then commit it"),
+        );
+    };
+    if text.contains("labeled") || text.contains("cancel-in-progress") {
+        fail(
+            "workflow",
+            format!("{PATH} still has `labeled` or `cancel-in-progress`, which block a merge once its check is required; remove `labeled` and `unlabeled` from the pull_request types and remove the `concurrency` block"),
         )
+    } else {
+        pass("workflow", PATH)
     }
 }
 

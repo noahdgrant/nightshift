@@ -360,4 +360,12 @@ mod tests {
     fn the_workflow_reports_the_check_the_protection_requires() {
         assert!(CLOSES_UNIT.contains(&format!("name: {CLOSES_UNIT_CHECK}\n")));
     }
+
+    #[test]
+    fn the_workflow_never_cancels_a_run_and_ignores_label_changes() {
+        assert!(!CLOSES_UNIT.contains("labeled"));
+        assert!(!CLOSES_UNIT.contains("cancel-in-progress"));
+        assert!(!CLOSES_UNIT.contains("concurrency"));
+        assert!(CLOSES_UNIT.contains("types: [opened, synchronize, reopened, edited]"));
+    }
 }

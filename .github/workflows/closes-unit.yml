@@ -4,11 +4,10 @@ name: PR closes a unit
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    types: [opened, synchronize, reopened, edited]
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# No run is ever cancelled: GitHub counts each cancelled run of a required check as
+# a failure, so this file has no cancel setting. The check is stateless and takes seconds.
 
 permissions:
   pull-requests: read
