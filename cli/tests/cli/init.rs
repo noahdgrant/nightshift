@@ -115,7 +115,7 @@ fn settings(repo: &Repo) -> serde_json::Value {
 fn init_writes_the_skills_and_a_hook_that_keeps_them_current_in_a_session() {
     let repo = Repo::new();
     let report = init_in(&repo);
-    assert_eq!(report["skills_written"], 12);
+    assert_eq!(report["skills_written"], 13);
     assert!(repo.path.join(".claude/skills/ns-build/SKILL.md").is_file());
     let hook = &settings(&repo)["hooks"]["SessionStart"][0]["hooks"][0];
     assert_eq!(hook["type"], "command");
@@ -152,6 +152,7 @@ fn the_skills_init_writes_are_not_changes_but_the_manifest_hook_agents_file_stan
         [
             ".claude/settings.json",
             ".github/workflows/closes-unit.yml",
+            ".github/workflows/pr-title.yml",
             ".nightshift/check",
             ".nightshift/coding-standards.md",
             ".nightshift/nightshift.toml",
@@ -345,8 +346,17 @@ fn init_writes_the_check_that_a_change_request_closes_a_unit() {
     assert!(text.contains("closingIssuesReferences"));
     assert!(text.contains("release-please--branches--"));
     assert!(!text.contains("skip-closes-unit"));
-    assert_eq!(report["workflows_written"], 1);
+    assert_eq!(report["workflows_written"], 2);
     assert_eq!(init_in(&repo)["workflows_written"], 0);
+}
+
+#[test]
+fn init_writes_the_check_that_a_change_request_title_is_a_conventional_commit() {
+    let repo = Repo::new();
+    init_in(&repo);
+    let text = std::fs::read_to_string(repo.path.join(".github/workflows/pr-title.yml")).unwrap();
+    assert!(text.contains("name: PR title"));
+    assert!(text.contains("pr-conventional-commits"));
 }
 
 #[test]
@@ -355,6 +365,7 @@ fn an_existing_closes_unit_workflow_is_left_alone() {
     let dir = repo.path.join(".github/workflows");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("closes-unit.yml"), "mine\n").unwrap();
+    std::fs::write(dir.join("pr-title.yml"), "mine\n").unwrap();
     assert_eq!(init_in(&repo)["workflows_written"], 0);
     assert_eq!(
         std::fs::read_to_string(dir.join("closes-unit.yml")).unwrap(),
@@ -429,16 +440,18 @@ fn init_with_no_terminal_and_no_checks_command_fails_and_says_what_to_pass() {
 }
 
 #[test]
-fn the_workflow_init_writes_is_the_one_this_repository_runs() {
+fn the_workflows_init_writes_are_the_ones_this_repository_runs() {
     let repo = Repo::new();
     init_in(&repo);
-    let written = std::fs::read(repo.path.join(".github/workflows/closes-unit.yml")).unwrap();
-    let ours = std::fs::read(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../.github/workflows/closes-unit.yml"
-    ))
-    .unwrap();
-    assert_eq!(written, ours);
+    for name in ["closes-unit.yml", "pr-title.yml"] {
+        let written = std::fs::read(repo.path.join(".github/workflows").join(name)).unwrap();
+        let ours = std::fs::read(format!(
+            "{}/../.github/workflows/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        assert_eq!(written, ours, "{name}");
+    }
 }
 
 #[test]
