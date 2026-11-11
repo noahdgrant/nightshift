@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use crate::harness::{Harness, Tokens, Usage};
 use crate::rubric::Grade;
+use crate::transcripts::Session;
 
 /// What one kept session of a unit used: the state it ran for and what its transcript says of
 /// its model and tokens.
@@ -49,6 +50,21 @@ impl SessionUse {
             },
         })
     }
+}
+
+/// What each of `sessions` used. A transcript that cannot be read has no data, as one with no
+/// usage does: the grading session has already run by now, and a grade is worth more than the
+/// tokens beside it.
+pub fn sessions_use(sessions: &[Session], harness: &dyn Harness) -> Vec<SessionUse> {
+    sessions
+        .iter()
+        .map(|session| SessionUse {
+            state: session.state.to_string(),
+            usage: std::fs::read(&session.path)
+                .map(|raw| harness.transcript_usage(&String::from_utf8_lossy(&raw)))
+                .unwrap_or_default(),
+        })
+        .collect()
 }
 
 /// `sessions` with an entry for the retrospective, no data, added when its transcript was not
@@ -1206,6 +1222,41 @@ mod tests {
             r.json_lines().last().unwrap(),
             r#"{"kind":"unmerged_tokens","period":"2026-W45","tokens":42,"units":2}"#
         );
+    }
+
+    #[test]
+    fn a_session_whose_transcript_cannot_be_read_has_no_usage_and_the_others_keep_theirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kept = tmp.path().join("build-1.jsonl");
+        std::fs::write(&kept, "1 2 3 4").unwrap();
+        let sessions = [
+            crate::transcripts::Session {
+                state: crate::state::State::Build,
+                n: 1,
+                path: kept,
+                model: None,
+            },
+            crate::transcripts::Session {
+                state: crate::state::State::Review,
+                n: 1,
+                path: tmp.path().join("review-1.jsonl"),
+                model: None,
+            },
+        ];
+        let got = sessions_use(&sessions, &Fake);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].state, "build");
+        assert_eq!(
+            got[0].usage.tokens,
+            Some(Tokens {
+                input: 1,
+                output: 2,
+                cache_read: 3,
+                cache_write: 4
+            })
+        );
+        assert_eq!(got[1].state, "review");
+        assert_eq!(got[1].usage, Usage::default());
     }
 
     /// Reads a transcript that is "<input> <output> <cache_read> <cache_write>", or "none".

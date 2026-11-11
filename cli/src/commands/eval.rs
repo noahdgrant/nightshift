@@ -95,7 +95,8 @@ struct ReviewArgs {
     #[arg(long, default_value_t = 1800)]
     harness_timeout_seconds: u64,
     /// The model to run the cases with, instead of the one `[model]` in
-    /// `.nightshift/nightshift.toml` names for review. Run again with another to compare models.
+    /// `.nightshift/nightshift.toml` names for the skill: its `review` key for `ns eval review`,
+    /// its `verify` key for `ns eval verify`. Run again with another to compare models.
     #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
     model: Option<String>,
 }

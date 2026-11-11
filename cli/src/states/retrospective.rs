@@ -135,15 +135,10 @@ fn grade(
         None => ctx.vcs.workspace_head_find(root)?,
     };
     // Read again: the retrospective's own session is kept only now.
-    let mut used = Vec::new();
-    for session in kept.sessions(&id)? {
-        let raw = std::fs::read(&session.path)?;
-        used.push(grades::SessionUse {
-            state: session.state.to_string(),
-            usage: ctx.harness.transcript_usage(&String::from_utf8_lossy(&raw)),
-        });
-    }
-    let used = grades::with_retrospective(used);
+    let used = grades::with_retrospective(grades::sessions_use(
+        &kept.sessions(&id).unwrap_or_default(),
+        ctx.harness.as_ref(),
+    ));
     let store = RunLog::sibling_open(&*ctx.vcs, root, GRADES_FILE)?;
     for grade in grades {
         let pass = rubrics
