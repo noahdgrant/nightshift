@@ -1,6 +1,6 @@
 //! What each state does. A state passes by returning `Ok` and fails by returning `Err`.
 
-mod build;
+pub mod build;
 mod check;
 pub mod clean_up;
 pub mod retrospective;

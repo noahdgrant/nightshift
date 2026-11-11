@@ -1,3 +1,5 @@
+mod replay;
+
 use std::path::Path;
 use std::time::Duration;
 
@@ -28,6 +30,9 @@ enum Skill {
     /// Run the verify skill on the cases in evals/verify and report whether it reaches the right
     /// verdict each time. Every run is a real harness call and costs subscription time.
     Verify(ReviewArgs),
+    /// Replay the cases in evals/replay on each model and show how many pass, against the tokens
+    /// they cost. Every replay is a build and a grading session and costs subscription time.
+    Replay(replay::ReplayArgs),
     /// Add a case to the cases a skill is scored on.
     Add(AddArgs),
     /// List merged units worth keeping as review cases. Changes nothing and starts no session.
@@ -58,6 +63,9 @@ enum AddSkill {
     /// Write the change a commit made, and the unit it was for, as a case in evals/review. Use
     /// it after a defect got past review, so the change that carried it is a case.
     Review(AddReviewArgs),
+    /// Keep a past unit as a case in evals/replay: its text and the commit its change request was
+    /// made on.
+    Replay(replay::AddReplayArgs),
 }
 
 #[derive(ClapArgs)]
@@ -107,9 +115,12 @@ pub fn run(args: Args) -> Result<()> {
         Skill::Review(args) => args,
         Skill::Verify(args) => return verify_run(args),
         Skill::Suggest(args) => return suggest_run(args),
+        Skill::Replay(args) => return replay::run(args),
         Skill::Add(add) => {
-            let AddSkill::Review(add) = add.skill;
-            return case_add(add);
+            return match add.skill {
+                AddSkill::Review(add) => case_add(add),
+                AddSkill::Replay(add) => replay::add(add),
+            }
         }
     };
     let root = vcs::get().workspace_find(&std::env::current_dir()?)?;
@@ -266,10 +277,8 @@ fn case_titles(dir: &Path) -> Vec<CaseTitle> {
         .collect()
 }
 
-fn case_add(args: AddReviewArgs) -> Result<()> {
-    let vcs = vcs::get();
-    let root = vcs.workspace_find(&std::env::current_dir()?)?;
-    let case = &args.case;
+/// An error unless `case` is lowercase letters, digits and hyphens.
+fn case_name_check(case: &str) -> Result<()> {
     if case.is_empty()
         || !case
             .chars()
@@ -277,6 +286,14 @@ fn case_add(args: AddReviewArgs) -> Result<()> {
     {
         bail!("the case name {case:?} must be lowercase letters, digits and hyphens");
     }
+    Ok(())
+}
+
+fn case_add(args: AddReviewArgs) -> Result<()> {
+    let vcs = vcs::get();
+    let root = vcs.workspace_find(&std::env::current_dir()?)?;
+    let case = &args.case;
+    case_name_check(case)?;
     let dir = root.join("evals/review").join(case);
     if dir.exists() {
         bail!("the case {case} already exists in {}", dir.display());
