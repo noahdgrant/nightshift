@@ -8,6 +8,11 @@ use crate::{forge, harness, labels, manifest, skill, status, sync, vcs};
 /// The check that fails a change request which closes no unit.
 const CLOSES_UNIT: &str = include_str!("../../../.github/workflows/closes-unit.yml");
 pub(crate) const CLOSES_UNIT_PATH: &str = ".github/workflows/closes-unit.yml";
+/// The check that fails a change request whose title is not a Conventional Commit.
+const PR_TITLE: &str = include_str!("../../../.github/workflows/pr-title.yml");
+const PR_TITLE_PATH: &str = ".github/workflows/pr-title.yml";
+/// The workflows `ns init` writes: path from the repository root, and text.
+const WORKFLOWS: [(&str, &str); 2] = [(CLOSES_UNIT_PATH, CLOSES_UNIT), (PR_TITLE_PATH, PR_TITLE)];
 /// The name the workflow's check reports, which the branch protection must require.
 pub(crate) const CLOSES_UNIT_CHECK: &str = "Closes a unit";
 
@@ -57,7 +62,7 @@ pub struct Args {
 /// the skills up to date, and creates the labels the forge lacks. When the repository has neither
 /// `AGENTS.md` nor `CLAUDE.md`, writes both. Either way `AGENTS.md`, or `CLAUDE.md` when that is
 /// all there is, is given a pointer to the coding standards. The files it leaves to commit are the
-/// manifest, the hook, those files and the workflow that checks a change request closes a unit.
+/// manifest, the hook, those files and the workflows that check a change request closes a unit and has a Conventional Commit title.
 /// It also writes `.nightshift/check`, the command that runs the repository's checks: given by
 /// `--check`, or else proposed from what the repository holds and confirmed by the user. An
 /// existing file is left alone. It writes the pages of `docs/agents/` that are missing. Run again, it changes only what is missing, and it never
@@ -77,15 +82,17 @@ pub fn run(args: Args) -> Result<()> {
         let wrote = harness::of(*kind).session_start_hook_install(&root, sync::HOOK)?;
         hooks.push(json!({ "harness": kind.name(), "written": wrote }));
     }
-    let workflow = root.join(CLOSES_UNIT_PATH);
-    let workflows_written = if workflow.exists() {
-        0
-    } else {
+    let mut workflows_written = 0;
+    for (path, text) in WORKFLOWS {
+        let workflow = root.join(path);
+        if workflow.exists() {
+            continue;
+        }
         std::fs::create_dir_all(workflow.parent().context("a workflow has no directory")?)?;
-        std::fs::write(&workflow, CLOSES_UNIT)
+        std::fs::write(&workflow, text)
             .with_context(|| format!("cannot write {}", workflow.display()))?;
-        1
-    };
+        workflows_written += 1;
+    }
     let ensured = labels::ensure(forge::get().as_ref(), &root)
         .context("the labels were not created; run `ns init` again")?;
     if ensured.both_left {
@@ -359,6 +366,20 @@ mod tests {
     #[test]
     fn the_workflow_reports_the_check_the_protection_requires() {
         assert!(CLOSES_UNIT.contains(&format!("name: {CLOSES_UNIT_CHECK}\n")));
+    }
+
+    #[test]
+    fn the_title_workflow_pins_its_action_to_a_commit_and_never_cancels_a_run() {
+        assert!(!PR_TITLE.contains("concurrency"));
+        assert!(!PR_TITLE.contains("cancel-in-progress"));
+        for line in PR_TITLE.lines().filter(|l| l.contains("uses:")) {
+            let (_, version) = line.split_once('@').unwrap();
+            let sha = version.split_whitespace().next().unwrap();
+            assert!(
+                sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+                "{line}"
+            );
+        }
     }
 
     #[test]

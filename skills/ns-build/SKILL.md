@@ -27,6 +27,8 @@ Keep the diff to what the unit asks: touch only what it names, and put anything 
 
 When the unit builds or changes a network service, apply `ns-service-design`.
 
+When the unit adds or changes a CI pipeline, apply `ns-ci-design`.
+
 Done when every requirement has a passing test.
 
 ## 3. Run the checks

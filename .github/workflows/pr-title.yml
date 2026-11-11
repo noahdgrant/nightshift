@@ -7,10 +7,6 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
   pull-requests: read
 
@@ -20,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: ytanikin/pr-conventional-commits@1.4.0
+      - uses: ytanikin/pr-conventional-commits@6ac1cea04190fc076b0e539025501d7e7d241ac1 # 1.4.0
         with:
           task_types: '["build","chore","ci","docs","feat","fix","perf","refactor","style","test","revert"]'
           add_label: 'false'

@@ -179,6 +179,39 @@ mod tests {
     }
 
     #[test]
+    fn the_ci_design_skill_is_short_may_start_on_its_own_and_states_each_rule() {
+        let text = embedded()
+            .iter()
+            .find(|(n, _)| *n == "ns-ci-design")
+            .unwrap()
+            .1;
+        assert!(text.lines().count() <= 60);
+        assert!(!file_for_session("ns-ci-design", text).contains("disable-model-invocation"));
+        for needed in [
+            "`.nightshift/check`",
+            "Conventional Commit",
+            "`Closes #<unit>`",
+            "no `needs`",
+            "full commit SHA",
+            "`ubuntu-latest`",
+            "--locked",
+            "`timeout-minutes`",
+            "`pull_request_target`",
+        ] {
+            assert!(text.contains(needed), "{needed}");
+        }
+    }
+
+    #[test]
+    fn build_and_review_name_the_ci_design_skill() {
+        for name in [BUILD, REVIEW] {
+            let file = format!("{}/../skills/{name}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
+            let skill = std::fs::read_to_string(file).unwrap();
+            assert!(skill.contains("`ns-ci-design`"), "{name}");
+        }
+    }
+
+    #[test]
     fn the_whiteboard_defence_skill_is_short_may_start_on_its_own_and_answers_from_the_record() {
         let text = embedded()
             .iter()
