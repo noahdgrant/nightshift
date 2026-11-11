@@ -636,3 +636,229 @@ fn add_refuses_an_expect_that_is_not_pass_or_fail() {
         assert!(case_files(&repo, "odd").is_empty());
     }
 }
+
+/// Writes the verify case `name` into the repository's evals, with a fixture `repo/` holding
+/// one file, `x.txt`.
+fn vcase(repo: &Repo, name: &str, expect: &str) {
+    let dir = repo.path.join("evals/verify").join(name);
+    std::fs::create_dir_all(dir.join("repo")).unwrap();
+    std::fs::write(dir.join("repo/x.txt"), "fixture\n").unwrap();
+    std::fs::write(dir.join("unit.md"), "feat: a title\n\nA description.\n").unwrap();
+    std::fs::write(dir.join("build.md"), "built it\n").unwrap();
+    std::fs::write(dir.join("expect"), expect).unwrap();
+}
+
+/// Runs `ns eval verify` with `extra` arguments and a fake `claude` that runs `body` (it reads
+/// stdin to the file `prompt` first, and its working directory is the case's directory).
+fn verify_with(repo: &Repo, body: &str, extra: &[&str]) -> assert_cmd::assert::Assert {
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    script(
+        &bin,
+        "claude",
+        &format!("cat > \"{}/prompt\"\n{body}", bin.display()),
+    );
+    Command::cargo_bin("ns")
+        .unwrap()
+        .args(["eval", "verify"])
+        .args(extra)
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .current_dir(&repo.path)
+        .assert()
+}
+
+#[test]
+fn verify_a_right_verdict_is_ok_and_the_run_sees_a_one_commit_repository() {
+    let repo = Repo::new();
+    vcase(&repo, "stuck", "INCONCLUSIVE\n");
+    let bin = repo.path.parent().unwrap().join("bin");
+    let out = verify_with(
+        &repo,
+        &format!(
+            "pwd > \"{b}/cwd\"\ncat x.txt > \"{b}/seen\"\ngit rev-list --count HEAD > \"{b}/commits\"\ngit status --porcelain > \"{b}/dirty\"\necho 'Needs a token.'\necho 'VERDICT: INCONCLUSIVE'",
+            b = bin.display()
+        ),
+        &["--runs", "2"],
+    )
+    .success();
+    assert_eq!(
+        report(&out),
+        serde_json::json!({
+            "skill": "verify",
+            "runs": 2,
+            "ok": true,
+            "cases": [{
+                "case": "stuck",
+                "expected": "INCONCLUSIVE",
+                "verdicts": ["INCONCLUSIVE", "INCONCLUSIVE"],
+                "matches": 2,
+            }],
+        })
+    );
+    let read = |f: &str| std::fs::read_to_string(bin.join(f)).unwrap();
+    assert_eq!(read("seen"), "fixture\n");
+    assert_eq!(read("commits"), "1\n");
+    assert_eq!(read("dirty"), "");
+    let prompt = read("prompt");
+    assert!(
+        prompt.contains("## feat: a title\n\nA description.\n\n# The build summary\n\nbuilt it"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("# Findings from the previous verification"),
+        "{prompt}"
+    );
+    // The fixture, not the repository `ns` was run from, was the working directory.
+    let cwd = read("cwd");
+    assert!(
+        !cwd.trim().starts_with(repo.path.to_str().unwrap()),
+        "{cwd}"
+    );
+    assert!(
+        !repo.path.join("x.txt").exists(),
+        "a case changed the repository it was run from"
+    );
+}
+
+#[test]
+fn verify_a_wrong_verdict_is_not_ok_and_exits_1() {
+    let repo = Repo::new();
+    vcase(&repo, "good", "PASS\n");
+    let out = verify_with(&repo, "echo 'VERDICT: FAIL'", &["--runs", "1"]).code(1);
+    let report = report(&out);
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["cases"][0]["verdicts"], serde_json::json!(["FAIL"]));
+    assert_eq!(report["cases"][0]["matches"], 0);
+}
+
+#[test]
+fn verify_a_timeout_is_a_miss_and_the_directory_is_deleted() {
+    let repo = Repo::new();
+    vcase(&repo, "slow", "PASS\n");
+    let bin = repo.path.parent().unwrap().join("bin");
+    let out = verify_with(
+        &repo,
+        &format!("pwd > \"{}/cwd\"\nexec sleep 30", bin.display()),
+        &["--runs", "1", "--harness-timeout-seconds", "1"],
+    )
+    .code(1);
+    assert_eq!(
+        report(&out)["cases"][0]["verdicts"],
+        serde_json::json!([null])
+    );
+    let cwd = std::fs::read_to_string(bin.join("cwd")).unwrap();
+    assert!(!std::path::Path::new(cwd.trim()).exists(), "{cwd}");
+}
+
+#[test]
+fn verify_the_directory_is_deleted_after_a_failed_run() {
+    let repo = Repo::new();
+    vcase(&repo, "bad", "PASS\n");
+    let bin = repo.path.parent().unwrap().join("bin");
+    let out = verify_with(
+        &repo,
+        &format!(
+            "pwd > \"{}/cwd\"\necho 'VERDICT: PASS'\nexit 1",
+            bin.display()
+        ),
+        &["--runs", "1"],
+    )
+    .code(1);
+    assert_eq!(
+        report(&out)["cases"][0]["verdicts"],
+        serde_json::json!([null])
+    );
+    let cwd = std::fs::read_to_string(bin.join("cwd")).unwrap();
+    assert!(!std::path::Path::new(cwd.trim()).exists(), "{cwd}");
+}
+
+#[test]
+fn verify_a_case_that_cannot_be_read_is_an_error_naming_it() {
+    for (missing, what) in [
+        ("expect", "expect"),
+        ("repo", "repo"),
+        ("build.md", "build.md"),
+    ] {
+        let repo = Repo::new();
+        vcase(&repo, "broken", "PASS\n");
+        let path = repo.path.join("evals/verify/broken").join(missing);
+        if path.is_dir() {
+            std::fs::remove_dir_all(path).unwrap();
+        } else {
+            std::fs::remove_file(path).unwrap();
+        }
+        let out = verify_with(&repo, "echo 'VERDICT: PASS'", &[]).failure();
+        let err = stderr_of(&out);
+        assert!(err.contains("broken") && err.contains(what), "{err}");
+        assert!(!repo.path.parent().unwrap().join("bin/cwd").exists());
+    }
+}
+
+#[test]
+fn verify_an_expect_that_is_not_a_verdict_is_an_error_naming_the_case() {
+    let repo = Repo::new();
+    vcase(&repo, "odd", "MAYBE\n");
+    let out = verify_with(&repo, "echo 'VERDICT: PASS'", &[]).failure();
+    let err = stderr_of(&out);
+    assert!(
+        err.contains("odd") && err.contains("expect must be PASS, FAIL or INCONCLUSIVE"),
+        "{err}"
+    );
+    assert!(!repo.path.parent().unwrap().join("bin/cwd").exists());
+}
+
+#[test]
+fn verify_a_reply_with_no_verdict_line_is_a_miss() {
+    let repo = Repo::new();
+    vcase(&repo, "mute", "PASS\n");
+    let out = verify_with(&repo, "echo 'all fine'", &["--runs", "1"]).code(1);
+    let report = report(&out);
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["cases"][0]["verdicts"], serde_json::json!([null]));
+}
+
+#[test]
+fn verify_case_runs_only_that_case_and_an_unknown_one_is_an_error() {
+    let repo = Repo::new();
+    vcase(&repo, "a", "PASS\n");
+    vcase(&repo, "b", "PASS\n");
+    let out = verify_with(
+        &repo,
+        "echo 'VERDICT: PASS'",
+        &["--runs", "1", "--case", "b"],
+    )
+    .success();
+    assert_eq!(report(&out)["cases"].as_array().unwrap().len(), 1);
+    let out = verify_with(&repo, "echo 'VERDICT: PASS'", &["--case", "nope"]).failure();
+    assert!(stderr_of(&out).contains("nope"));
+}
+
+#[test]
+fn verify_model_beats_the_verify_key() {
+    let repo = Repo::new();
+    vcase(&repo, "a", "PASS\n");
+    std::fs::create_dir_all(repo.path.join(".nightshift")).unwrap();
+    std::fs::write(
+        repo.path.join(".nightshift/nightshift.toml"),
+        "[model]\nverify = \"from-toml\"\n",
+    )
+    .unwrap();
+    let bin = repo.path.parent().unwrap().join("bin");
+    let body = format!(
+        "echo \"$*\" > \"{}/args\"\necho 'VERDICT: PASS'",
+        bin.display()
+    );
+    verify_with(&repo, &body, &["--runs", "1"]).success();
+    assert!(std::fs::read_to_string(bin.join("args"))
+        .unwrap()
+        .contains("from-toml"));
+    verify_with(&repo, &body, &["--runs", "1", "--model", "from-flag"]).success();
+    let args = std::fs::read_to_string(bin.join("args")).unwrap();
+    assert!(
+        args.contains("from-flag") && !args.contains("from-toml"),
+        "{args}"
+    );
+}
