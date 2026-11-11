@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use crate::harness::{Harness, Sessions, Task};
 use crate::manifest::Place;
+use crate::runlog::RunLog;
 use crate::skill;
 use crate::states::review::{self, Focus};
 use crate::states::verdict::{self, Verdict};
@@ -29,6 +30,21 @@ enum Skill {
     Verify(ReviewArgs),
     /// Add a case to the cases a skill is scored on.
     Add(AddArgs),
+    /// List merged units worth keeping as review cases. Changes nothing and starts no session.
+    Suggest(SuggestArgs),
+}
+
+#[derive(ClapArgs)]
+struct SuggestArgs {
+    /// How many ISO weeks back to look for merged units, the current one included.
+    #[arg(long, default_value_t = 8)]
+    weeks: u32,
+    /// The fewest times review must have sent a unit back to build.
+    #[arg(long, default_value_t = 2)]
+    rounds: u32,
+    /// Print one JSON line for each unit instead of text.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(ClapArgs)]
@@ -90,6 +106,7 @@ pub fn run(args: Args) -> Result<()> {
     let args = match args.skill {
         Skill::Review(args) => args,
         Skill::Verify(args) => return verify_run(args),
+        Skill::Suggest(args) => return suggest_run(args),
         Skill::Add(add) => {
             let AddSkill::Review(add) = add.skill;
             return case_add(add);
@@ -141,6 +158,112 @@ fn verify_run(args: ReviewArgs) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Lists the merged units that have a signal worth a review case, from the run log, the grades
+/// and the forge (for titles). Writes nothing: `ns eval add review` writes a case.
+fn suggest_run(args: SuggestArgs) -> Result<()> {
+    let vcs = vcs::get();
+    let root = vcs.workspace_find(&std::env::current_dir()?)?;
+    let runs = RunLog::open(&*vcs, &root)?.events()?;
+    let grades =
+        RunLog::sibling_open(&*vcs, &root, crate::states::retrospective::GRADES_FILE)?.events()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs() as i64;
+    let found = crate::suggest::suggest(
+        &runs,
+        &crate::grades::parse(&grades),
+        now,
+        args.weeks,
+        args.rounds,
+    );
+    let cases = case_titles(&root.join("evals/review"));
+    let forge = crate::forge::get();
+    let mut lines = Vec::new();
+    for candidate in found {
+        let title = match candidate.unit.parse::<u64>() {
+            Ok(n) => match forge.unit_get(&root, n) {
+                Ok(u) => u.title,
+                Err(e) => {
+                    eprintln!(
+                        "ns: could not read the title of unit {}, so it is not checked against the cases: {e:#}",
+                        candidate.unit
+                    );
+                    String::new()
+                }
+            },
+            Err(_) => String::new(),
+        };
+        let case = cases
+            .iter()
+            .find(|c| !title.is_empty() && c.title == title)
+            .map(|c| c.name.clone());
+        lines.push(Suggestion {
+            candidate,
+            title,
+            case,
+        });
+    }
+    if lines.is_empty() {
+        if !args.json {
+            println!("There is no merged unit worth keeping as a review case.");
+        }
+        return Ok(());
+    }
+    for Suggestion {
+        candidate,
+        title,
+        case,
+    } in lines
+    {
+        if args.json {
+            println!(
+                "{}",
+                json!({ "unit": candidate.unit, "title": title, "reasons": candidate.reasons, "case": case })
+            );
+        } else {
+            let mark = case.map_or(String::new(), |n| format!(" [already a case: {n}]"));
+            println!(
+                "#{} {}{}: {}",
+                candidate.unit,
+                title,
+                mark,
+                candidate.reasons.join("; ")
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A listed unit: why it was picked, its title, and the review case it already is, if any.
+struct Suggestion {
+    candidate: crate::suggest::Candidate,
+    title: String,
+    case: Option<String>,
+}
+
+/// An existing review case: the title on the first line of its `unit.md`, and its name.
+struct CaseTitle {
+    title: String,
+    name: String,
+}
+
+/// The title on the first line of each case's `unit.md` in `dir`, with the case's name.
+fn case_titles(dir: &Path) -> Vec<CaseTitle> {
+    let Ok(names) = case_names_list(dir, None) else {
+        return Vec::new();
+    };
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let text = std::fs::read_to_string(dir.join(&name).join("unit.md")).ok()?;
+            Some(CaseTitle {
+                title: text.lines().next()?.trim().to_string(),
+                name,
+            })
+        })
+        .collect()
 }
 
 fn case_add(args: AddReviewArgs) -> Result<()> {

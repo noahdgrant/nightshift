@@ -125,13 +125,13 @@ pub fn parse(events: &[Value]) -> Vec<Entry> {
 }
 
 /// The ISO week of `at`, as `2026-W45`.
-fn week_of(at: i64) -> Option<String> {
+pub fn week_of(at: i64) -> Option<String> {
     let week = DateTime::from_timestamp(at, 0)?.iso_week();
     Some(format!("{}-W{:02}", week.year(), week.week()))
 }
 
 /// The `weeks` ISO weeks ending with the one that holds `now`, oldest first.
-fn weeks_back(now: i64, weeks: u32) -> Vec<String> {
+pub fn weeks_back(now: i64, weeks: u32) -> Vec<String> {
     let Some(today) = DateTime::from_timestamp(now, 0).map(|t| t.date_naive()) else {
         return Vec::new();
     };

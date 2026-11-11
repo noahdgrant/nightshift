@@ -175,6 +175,8 @@ model = "opus"
 
 `ns eval add review <commit> --unit <number> --as <case> [--expect <PASS|FAIL>]` writes the change a commit made, and the unit it was for, as a new case in `evals/review`. Use it after a defect got past review and was found later: the change that carried it becomes a case, so the next edit to the skill is checked against it. `--expect` is `FAIL` when absent. It writes nothing and fails when the case already exists, the commit is not found or the unit cannot be read. It prints one JSON line naming the directory; read the case and commit it.
 
+`ns eval suggest [--weeks <n>] [--rounds <n>] [--json]` lists the units merged in the last `--weeks` ISO weeks (8 by default) worth keeping as review cases, so you know which to give to `ns eval add review`. A unit is listed when review sent it back to `build` at least `--rounds` times (2 by default), when it was `stuck` before it merged, or when one of its grades did not pass; each line gives the unit's number and title and the reason for each signal, and units with more signals come first. A unit whose title is already on the first line of a case's `unit.md` in `evals/review` is marked as a case. It reads the run log, `grades.jsonl` and the forge (for titles), changes nothing and starts no session. It does not find a unit that carried a defect found by a later fix; add that one by hand with `ns eval add review`.
+
 ## Credits
 
 Adapted from [mattpocock/skills](https://github.com/mattpocock/skills), [cursor/plugins pstack](https://github.com/cursor/plugins/tree/main/pstack) and [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills). See [`NOTICE.md`](NOTICE.md).

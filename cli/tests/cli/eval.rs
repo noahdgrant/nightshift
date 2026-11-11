@@ -862,3 +862,117 @@ fn verify_model_beats_the_verify_key() {
         "{args}"
     );
 }
+
+/// Runs `ns eval suggest` with the run log `runs` kept. The fake `gh` knows units 4 and 5.
+fn suggest(repo: &Repo, runs: &str, extra: &[&str]) -> String {
+    suggest_both(repo, runs, extra).0
+}
+
+/// As `suggest`, with what it wrote to stderr.
+fn suggest_both(repo: &Repo, runs: &str, extra: &[&str]) -> (String, String) {
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    script(
+        &bin,
+        "gh",
+        r#"case "$1 $2" in
+"api repos/{owner}/{repo}/issues/4") printf '%s\n' '{"number":4,"title":"feat: four","body":"b","labels":[],"author_association":"OWNER","html_url":"u"}';;
+"api repos/{owner}/{repo}/issues/5") printf '%s\n' '{"number":5,"title":"feat: five","body":"b","labels":[],"author_association":"OWNER","html_url":"u"}';;
+*) echo 'not found' >&2; exit 1;;
+esac"#,
+    );
+    let dir = repo.path.join(".git/ns");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("runs.jsonl"), runs).unwrap();
+    let out = Command::cargo_bin("ns")
+        .unwrap()
+        .args(["eval", "suggest"])
+        .args(extra)
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .current_dir(&repo.path)
+        .assert()
+        .success();
+    (
+        String::from_utf8(out.get_output().stdout.clone()).unwrap(),
+        String::from_utf8(out.get_output().stderr.clone()).unwrap(),
+    )
+}
+
+fn runs_now() -> (u64, String) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let log = format!(
+        r#"{{"unit":"4","from":"verify","to":"stuck","at":{now}}}
+{{"unit":"4","took_over":1,"merged_at":{now},"at":{now}}}
+{{"unit":"5","from":"ship","to":"done","merged_at":{now},"at":{now}}}
+"#
+    );
+    (now, log)
+}
+
+#[test]
+fn suggest_lists_a_unit_with_its_title_and_reason_and_changes_nothing() {
+    let repo = Repo::new();
+    let (_, log) = runs_now();
+    let out = suggest(&repo, &log, &[]);
+    assert_eq!(out, "#4 feat: four: was stuck in verify\n");
+    assert!(!repo.path.join("evals").exists());
+    assert_eq!(calls(&repo), 0);
+}
+
+#[test]
+fn suggest_marks_a_unit_that_is_already_a_case() {
+    let repo = Repo::new();
+    let dir = repo.path.join("evals/review/four");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("unit.md"), "feat: four\n\nbody\n").unwrap();
+    let (_, log) = runs_now();
+    let out = suggest(&repo, &log, &[]);
+    assert_eq!(
+        out,
+        "#4 feat: four [already a case: four]: was stuck in verify\n"
+    );
+}
+
+#[test]
+fn suggest_json_is_one_line_for_each_unit() {
+    let repo = Repo::new();
+    let (_, log) = runs_now();
+    let out = suggest(&repo, &log, &["--json"]);
+    assert_eq!(
+        out,
+        "{\"case\":null,\"reasons\":[\"was stuck in verify\"],\"title\":\"feat: four\",\"unit\":\"4\"}\n"
+    );
+}
+
+#[test]
+fn suggest_with_no_unit_to_list_says_so_and_succeeds() {
+    let repo = Repo::new();
+    let out = suggest(&repo, "", &[]);
+    assert_eq!(
+        out,
+        "There is no merged unit worth keeping as a review case.\n"
+    );
+}
+
+#[test]
+fn suggest_says_on_stderr_when_it_cannot_read_a_units_title() {
+    let repo = Repo::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let log = format!(
+        r#"{{"unit":"9","from":"verify","to":"stuck","at":{now}}}
+{{"unit":"9","took_over":1,"merged_at":{now},"at":{now}}}
+"#
+    );
+    let (out, err) = suggest_both(&repo, &log, &[]);
+    assert_eq!(out, "#9 : was stuck in verify\n");
+    assert!(err.contains("could not read the title of unit 9"), "{err}");
+}
