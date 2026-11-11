@@ -26,6 +26,7 @@ mod skill;
 mod state;
 mod states;
 mod status;
+mod suggest;
 mod summary;
 mod sync;
 mod transcripts;
