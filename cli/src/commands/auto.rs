@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Local, NaiveTime};
 use clap::Args as ClapArgs;
 use serde_json::json;
@@ -17,7 +17,7 @@ use crate::os::Os;
 use crate::runlog::{Move, Reason, RunLog};
 use crate::state::State;
 use crate::transcripts::Transcripts;
-use crate::{auto, forge, harness, lock, manifest, os, until, vcs, workspace};
+use crate::{auto, forge, harness, lock, manifest, os, summary, until, vcs, workspace};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -49,25 +49,176 @@ pub fn run(args: Args) -> Result<()> {
     let here = std::env::current_dir()?;
     let vcs = vcs::get();
     let root = vcs.root_find(&here)?;
+    if args.dry_run {
+        night_run(
+            &args,
+            vcs.as_ref(),
+            &root,
+            os::get().as_ref(),
+            Mode::DryRun,
+            &mut Streak::new(0),
+        )?;
+        return Ok(());
+    }
+    let state_dir = vcs.state_dir_find(&root)?;
+    // Two at once would run the same units twice. Taken before anything else can fail, so that
+    // every night that gets this far leaves a summary; a refused one leaves none, because the
+    // run that holds the lock owns the night's file.
+    let _lock = night_lock(&state_dir)?;
+    let os = os::get();
+    let night = os.time_now().date_naive();
+    let log = RunLog::open(vcs.as_ref(), &root)?;
+    let forge = forge::get();
+    let mut streak = Streak::new(args.max_failures_in_a_row);
+    let ended = RefCell::new(Vec::new());
+    let ran = night_run(
+        &args,
+        vcs.as_ref(),
+        &root,
+        os.as_ref(),
+        Mode::Live {
+            log: &log,
+            ended: &ended,
+        },
+        &mut streak,
+    );
+    let went_wrong = went_wrong_text(streak.units().len());
+    // Written even when the night went wrong, which is when a person most needs it.
+    let stopped = stopped_find(
+        streak.usage_limit(),
+        streak.reached(),
+        streak.units().len(),
+        &ran,
+    );
+    night_write(
+        forge.as_ref(),
+        &root,
+        &state_dir,
+        night,
+        ended.into_inner(),
+        stopped.as_deref(),
+        &|unit| log.last_move(&unit.to_string()).ok().flatten(),
+    )?;
+    let failed = ran?;
+    if let Some(reason) = streak.usage_limit() {
+        // Every unit is as it was, so this is a clean stop and not a failure.
+        println!("{}", json!({ "stopped": "usage_limit", "reason": reason }));
+        eprintln!("ns: stopped: {reason}");
+        return Ok(());
+    }
+    if streak.reached() {
+        println!(
+            "{}",
+            json!({
+                "stopped": "went_wrong",
+                "reason": went_wrong,
+                "units": streak.units(),
+            })
+        );
+        bail!(
+            "stopped: {} units in a row went wrong ({}), which looks like the harness and not the code",
+            streak.units().len(),
+            streak.units().iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
+        );
+    }
+    if failed > 0 {
+        bail!("{failed} units were not triaged or did not finish");
+    }
+    Ok(())
+}
+
+fn went_wrong_text(units: usize) -> String {
+    format!("{units} units in a row got stuck because a state kept going wrong")
+}
+
+/// Why the night ended before the units ran out, if it did, for the summary. A usage limit comes
+/// first, then too many units in a row going wrong, then an error that cut the night short.
+fn stopped_find(
+    usage_limit: Option<&str>,
+    streak_reached: bool,
+    streak_units: usize,
+    ran: &Result<usize>,
+) -> Option<String> {
+    if let Some(limit) = usage_limit {
+        return Some(limit.to_string());
+    }
+    if streak_reached {
+        return Some(went_wrong_text(streak_units));
+    }
+    ran.as_ref().err().map(|e| format!("{e:#}"))
+}
+
+/// Whether a night is for real or only shows what it would do.
+enum Mode<'a> {
+    DryRun,
+    /// `log` is the run log and `ended` is where each unit run is noted.
+    Live {
+        log: &'a RunLog,
+        ended: &'a RefCell<Vec<summary::Ended>>,
+    },
+}
+
+/// Writes the night's summary file into `state_dir`: each unit of `ended` with where it ended up on
+/// the forge, or as stuck when the forge cannot say. `last_move` gives a unit's last move in the
+/// run log.
+fn night_write(
+    forge: &dyn Forge,
+    root: &Path,
+    state_dir: &Path,
+    night: chrono::NaiveDate,
+    ended: Vec<summary::Ended>,
+    stopped: Option<&str>,
+    last_move: &dyn Fn(u64) -> Option<Move>,
+) -> Result<()> {
+    let entries: Vec<_> = ended
+        .iter()
+        .map(|e| {
+            let labels = forge
+                .unit_get(root, e.unit)
+                .map(|u| u.labels)
+                .map_err(|err| format!("{err:#}"));
+            summary::entry_find(
+                e.unit,
+                labels.as_deref().map_err(String::as_str),
+                last_move(e.unit).as_ref(),
+                &e.run,
+            )
+        })
+        .collect();
+    let file = state_dir.join(summary::file_name(night));
+    std::fs::write(&file, summary::render(night, &entries, stopped))
+        .with_context(|| format!("cannot write {}", file.display()))
+}
+
+/// Everything of a night up to the summary: triage, troubleshooting and the units. Returns how
+/// many did not end well. A dry run only lists the plan.
+fn night_run(
+    args: &Args,
+    vcs: &dyn vcs::Vcs,
+    root: &Path,
+    os: &dyn Os,
+    mode: Mode,
+    streak: &mut Streak,
+) -> Result<usize> {
     // Worked out once, so every unit of the night gets the same number.
     let mut options = args.options.clone();
     options.max_attempts = Some(match options.max_attempts {
         Some(n) => n,
-        None => manifest::max_attempts_read(&root)?,
+        None => manifest::max_attempts_read(root)?,
     });
     options.ci_timeout_seconds = Some(match options.ci_timeout_seconds {
         Some(n) => n,
-        None => manifest::ci_timeout_read(&root)?,
+        None => manifest::ci_timeout_read(root)?,
     });
-    let keep = manifest::transcript_days_read(&root)?;
+    let keep = manifest::transcript_days_read(root)?;
     // Read here so a bad value stops `ns` before it runs anything.
-    manifest::review_sessions_read(&root)?;
-    manifest::retrospective_share_read(&root)?;
-    manifest::model_read(&root, Place::Build, None)?;
+    manifest::review_sessions_read(root)?;
+    manifest::retrospective_share_read(root)?;
+    manifest::model_read(root, Place::Build, None)?;
     let forge = forge::get();
-    let open = forge.unit_list(&root)?;
-    let plan = auto::plan(&open, &blockers_read(forge.as_ref(), &root, &open));
-    if args.dry_run {
+    let open = forge.unit_list(root)?;
+    let plan = auto::plan(&open, &blockers_read(forge.as_ref(), root, &open));
+    let Mode::Live { log, ended } = mode else {
         let list = |units: &[&forge::Unit]| -> Vec<_> {
             units
                 .iter()
@@ -85,33 +236,26 @@ pub fn run(args: Args) -> Result<()> {
                     .collect::<Vec<_>>(),
             })
         );
-        return Ok(());
-    }
+        return Ok(0);
+    };
 
-    // Two at once would run the same units twice.
-    let _lock = lock::lock_take(
-        &vcs.state_dir_find(&root)?,
-        "auto.lock",
-        "another ns auto is running in this repository",
-    )?;
-    Transcripts::open(vcs.as_ref(), &root)?.prune(keep, SystemTime::now());
+    Transcripts::open(vcs, root)?.prune(keep, SystemTime::now());
     let harness = harness::get();
-    let mut streak = Streak::new(args.max_failures_in_a_row);
-    let triage_model = manifest::model_read(&root, Place::Triage, args.options.model.as_deref())?;
+    let triage_model = manifest::model_read(root, Place::Triage, args.options.model.as_deref())?;
     let troubleshoot_model =
-        manifest::model_read(&root, Place::Troubleshoot, args.options.model.as_deref())?;
+        manifest::model_read(root, Place::Troubleshoot, args.options.model.as_deref())?;
     let waiting: Vec<u64> = plan.triage.iter().map(|u| u.number).collect();
     let mut failed = triage::units_triage(
         forge.as_ref(),
         harness.as_ref(),
-        &root,
+        root,
         &waiting,
         Duration::from_secs(args.options.harness_timeout_seconds),
         triage_model.as_deref(),
-        &mut streak,
+        streak,
     );
     // Triage may have sent units to be reproduced.
-    let open = forge.unit_list(&root)?;
+    let open = forge.unit_list(root)?;
     let repro: Vec<u64> = auto::plan(&open, &HashMap::new())
         .repro
         .iter()
@@ -120,38 +264,42 @@ pub fn run(args: Args) -> Result<()> {
     failed += troubleshoot::units_troubleshoot(
         forge.as_ref(),
         harness.as_ref(),
-        vcs.as_ref(),
-        &root,
+        vcs,
+        root,
         &repro,
         &Sessions {
             timeout: Duration::from_secs(args.options.harness_timeout_seconds),
             model: troubleshoot_model.as_deref(),
         },
-        &mut streak,
+        streak,
     );
-    let os = os::get();
     let limits = Limits {
         max_units: args.max_units,
         deadline: args
             .until
             .map(|time| until::deadline_find(os.time_now(), time)),
     };
-    let log = RunLog::open(vcs.as_ref(), &root)?;
     // The unit's last move before it ran, to tell a move this run wrote from an older one.
     let before = RefCell::new(None);
-    let ran = units_run(
+    failed += units_run(
         forge.as_ref(),
-        os.as_ref(),
-        &root,
+        os,
+        root,
         &limits,
-        &mut streak,
+        streak,
         &mut |unit| {
             *before.borrow_mut() = log.last_move(&unit.to_string()).ok().flatten();
-            unit_run::run(unit_run::Args::unattended(
+            let result = unit_run::run(unit_run::Args::unattended(
                 unit,
                 options.clone(),
                 limits.deadline,
-            ))
+            ));
+            let run = match &result {
+                Ok(()) => summary::Run::Done,
+                Err(e) => summary::Run::Failed(format!("{e:#}")),
+            };
+            ended.borrow_mut().push(summary::Ended { unit, run });
+            result
         },
         &mut |unit| {
             went_wrong_since(
@@ -160,32 +308,17 @@ pub fn run(args: Args) -> Result<()> {
             )
         },
     )?;
-    failed += ran;
-    if let Some(reason) = streak.usage_limit() {
-        // Every unit is as it was, so this is a clean stop and not a failure.
-        println!("{}", json!({ "stopped": "usage_limit", "reason": reason }));
-        eprintln!("ns: stopped: {reason}");
-        return Ok(());
-    }
-    if streak.reached() {
-        println!(
-            "{}",
-            json!({
-                "stopped": "went_wrong",
-                "reason": format!("{} units in a row got stuck because a state kept going wrong", streak.units().len()),
-                "units": streak.units(),
-            })
-        );
-        bail!(
-            "stopped: {} units in a row went wrong ({}), which looks like the harness and not the code",
-            streak.units().len(),
-            streak.units().iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
-        );
-    }
-    if failed > 0 {
-        bail!("{failed} units were not triaged or did not finish");
-    }
-    Ok(())
+    Ok(failed)
+}
+
+/// The lock that keeps two `ns auto` out of one repository. It fails at once, naming itself, when
+/// another holds it; the operating system lets go of it when its holder dies.
+fn night_lock(state_dir: &Path) -> Result<lock::Lock> {
+    lock::lock_take(
+        state_dir,
+        "auto.lock",
+        "another ns auto is running in this repository",
+    )
 }
 
 /// What the forge says blocks each ready unit of `open`, by unit. Only a ready unit's blockers
@@ -303,6 +436,8 @@ mod tests {
     #[derive(Default)]
     struct Ready {
         blocked: &'static [u64],
+        /// Whether the forge fails to give a unit back.
+        get_fails: bool,
     }
 
     impl Forge for Ready {
@@ -341,6 +476,9 @@ mod tests {
                 .collect())
         }
         fn unit_get(&self, _: &Path, number: u64) -> Result<Unit> {
+            if self.get_fails {
+                anyhow::bail!("rate limited");
+            }
             Ok(Unit {
                 number,
                 title: String::new(),
@@ -436,6 +574,15 @@ mod tests {
         fn sleep(&self, _: Duration) {
             unreachable!()
         }
+        fn runner_install(&self, _: &crate::os::Runner) -> Result<crate::os::Installed> {
+            unreachable!()
+        }
+        fn runner_remove(&self, _: &Path) -> Result<bool> {
+            unreachable!()
+        }
+        fn runner_check(&self, _: &crate::os::Runner) -> Result<crate::os::RunnerState> {
+            unreachable!()
+        }
     }
 
     fn start() -> DateTime<Local> {
@@ -483,7 +630,10 @@ mod tests {
     fn a_unit_the_forge_says_is_blocked_is_not_started() {
         let started = RefCell::new(Vec::new());
         units_run(
-            &Ready { blocked: &[2] },
+            &Ready {
+                blocked: &[2],
+                ..Ready::default()
+            },
             &Clock(Cell::new(start())),
             Path::new("."),
             &Limits {
@@ -520,6 +670,7 @@ mod tests {
         let read = blockers_read(
             &Ready {
                 blocked: &[2, 3, 4],
+                ..Ready::default()
             },
             Path::new("."),
             &open,
@@ -552,6 +703,131 @@ mod tests {
             deadline: Some(start() + Span::hours(9)),
         };
         assert_eq!(started(limits, Span::minutes(1)), [1]);
+    }
+
+    #[test]
+    fn a_second_ns_auto_is_refused_by_the_lock_and_one_after_the_first_ends_is_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = night_lock(tmp.path()).unwrap();
+        let err = night_lock(tmp.path()).err().unwrap();
+        assert_eq!(
+            err.to_string(),
+            "another ns auto is running in this repository"
+        );
+        drop(first);
+        night_lock(tmp.path()).unwrap();
+    }
+
+    #[test]
+    fn a_lock_file_left_by_a_process_that_died_does_not_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A dead process holds no lock but may leave its file.
+        std::fs::write(tmp.path().join("auto.lock"), "").unwrap();
+        night_lock(tmp.path()).unwrap();
+    }
+
+    fn night_text(forge: &Ready, ended: Vec<summary::Ended>, stopped: Option<&str>) -> String {
+        let tmp = tempfile::tempdir().unwrap();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();
+        night_write(
+            forge,
+            Path::new("."),
+            tmp.path(),
+            date,
+            ended,
+            stopped,
+            &|_| None,
+        )
+        .unwrap();
+        std::fs::read_to_string(tmp.path().join("night-2026-03-10.md")).unwrap()
+    }
+
+    #[test]
+    fn a_usage_limit_is_named_before_a_streak_or_an_error() {
+        let ran: Result<usize> = Err(anyhow::anyhow!("boom"));
+        assert_eq!(
+            stopped_find(Some("limit hit"), true, 3, &ran).as_deref(),
+            Some("limit hit")
+        );
+    }
+
+    #[test]
+    fn a_streak_is_named_before_an_error() {
+        let ran: Result<usize> = Err(anyhow::anyhow!("boom"));
+        assert_eq!(
+            stopped_find(None, true, 3, &ran).as_deref(),
+            Some("3 units in a row got stuck because a state kept going wrong")
+        );
+    }
+
+    #[test]
+    fn an_error_alone_is_the_reason_the_night_stopped() {
+        let ran: Result<usize> = Err(anyhow::anyhow!("forge down").context("cannot list"));
+        assert_eq!(
+            stopped_find(None, false, 0, &ran).as_deref(),
+            Some("cannot list: forge down")
+        );
+    }
+
+    #[test]
+    fn a_night_that_ran_out_of_units_did_not_stop_early() {
+        assert_eq!(stopped_find(None, false, 0, &Ok(2)), None);
+    }
+
+    #[test]
+    fn a_night_with_no_unit_still_writes_its_summary() {
+        assert_eq!(
+            night_text(&Ready::default(), Vec::new(), None),
+            "# ns auto, night of 2026-03-10\n\nNo unit was ready to run.\n"
+        );
+    }
+
+    #[test]
+    fn a_night_that_stopped_early_says_why_in_its_summary() {
+        let text = night_text(
+            &Ready::default(),
+            Vec::new(),
+            Some("cannot read the settings"),
+        );
+        assert!(
+            text.contains("Stopped early: cannot read the settings\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_unit_whose_run_failed_is_listed_stuck_with_the_error() {
+        let ended = vec![
+            summary::Ended {
+                unit: 1,
+                run: summary::Run::Done,
+            },
+            summary::Ended {
+                unit: 2,
+                run: summary::Run::Failed("boom".into()),
+            },
+        ];
+        let text = night_text(&Ready::default(), ended, None);
+        assert!(text.contains("## Merged\n\n- #1\n"), "{text}");
+        assert!(text.contains("## Stuck\n\n- #2: boom\n"), "{text}");
+    }
+
+    #[test]
+    fn a_unit_the_forge_cannot_describe_is_not_listed_as_merged() {
+        let forge = Ready {
+            get_fails: true,
+            ..Ready::default()
+        };
+        let ended = vec![summary::Ended {
+            unit: 1,
+            run: summary::Run::Done,
+        }];
+        let text = night_text(&forge, ended, None);
+        assert!(text.contains("## Merged\n\nNone\n"), "{text}");
+        assert!(
+            text.contains("- #1: its labels could not be read from the forge: rate limited\n"),
+            "{text}"
+        );
     }
 
     #[derive(Clone, Copy)]

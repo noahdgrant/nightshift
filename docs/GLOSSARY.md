@@ -94,5 +94,5 @@ The lint rules and checks for one programming language. Rust is the first.
 _Avoid_: Plugin, ruleset
 
 **Runner**:
-What starts `ns` unattended, for example a systemd user unit. Not built yet.
+What starts `ns auto` unattended on a schedule and leaves a summary of the night. The first is a systemd user unit, installed by `ns runner install`; Linux only.
 _Avoid_: Scheduler, daemon

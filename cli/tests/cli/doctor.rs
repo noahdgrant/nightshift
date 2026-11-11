@@ -248,9 +248,11 @@ fn a_complete_setup_passes_every_check() {
             "labels",
             "protection",
             "workflow",
-            "standards"
+            "standards",
+            "runner"
         ]
     );
+    assert_eq!(check(&report, "runner")["detail"], "not installed");
     assert_eq!(check(&report, "pin")["detail"], env!("CARGO_PKG_VERSION"));
 }
 

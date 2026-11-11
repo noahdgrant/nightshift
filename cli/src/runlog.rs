@@ -56,6 +56,20 @@ pub enum Reason {
 }
 
 impl Reason {
+    /// What a person reads in the morning for a unit that got stuck for this reason.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Reason::Failed => "a state ran and its checks found the work wanting",
+            Reason::WentWrong => {
+                "a state kept going wrong: the harness, the forge or the clock let it down"
+            }
+            Reason::Inconclusive => "verification could not prove every requirement, twice",
+            Reason::BaseMoved => {
+                "the base branch moved more often than the unit could keep up with"
+            }
+        }
+    }
+
     pub fn parse(text: &str) -> Option<Reason> {
         match text {
             "failed" => Some(Reason::Failed),
@@ -250,6 +264,17 @@ mod tests {
             path: tmp.path().join("none.jsonl"),
         };
         assert_eq!(log.base_tested("5").unwrap(), None);
+    }
+
+    #[test]
+    fn every_reason_describes_itself() {
+        assert_eq!(
+            Reason::BaseMoved.describe(),
+            "the base branch moved more often than the unit could keep up with"
+        );
+        for r in [Reason::Failed, Reason::WentWrong, Reason::Inconclusive] {
+            assert!(!r.describe().is_empty());
+        }
     }
 
     #[test]

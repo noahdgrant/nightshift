@@ -146,6 +146,15 @@ mod tests {
         fn sleep(&self, d: Duration) {
             self.0.borrow_mut().push(d);
         }
+        fn runner_install(&self, _: &crate::os::Runner) -> Result<crate::os::Installed> {
+            unreachable!()
+        }
+        fn runner_remove(&self, _: &std::path::Path) -> Result<bool> {
+            unreachable!()
+        }
+        fn runner_check(&self, _: &crate::os::Runner) -> Result<crate::os::RunnerState> {
+            unreachable!()
+        }
     }
 
     /// A harness that hits a usage limit resetting at 13:00 once, then passes.

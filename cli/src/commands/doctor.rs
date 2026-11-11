@@ -6,6 +6,7 @@ use serde_json::json;
 
 use crate::commands::init::{CLOSES_UNIT_CHECK, CLOSES_UNIT_PATH};
 use crate::forge::Forge;
+use crate::os::RunnerState;
 use crate::{checks, forge, harness, labels, manifest, skill, status, vcs};
 
 #[derive(ClapArgs)]
@@ -47,6 +48,7 @@ pub fn run(_args: Args) -> Result<()> {
         protection(&root, forge.as_ref()),
         workflow(&root),
         standards(&root),
+        runner(&root),
     ];
     let ok = results.iter().all(|c| c.ok);
     let list: Vec<_> = results
@@ -58,6 +60,31 @@ pub fn run(_args: Args) -> Result<()> {
         bail!("the setup has problems; each failed check says how to fix it");
     }
     Ok(())
+}
+
+/// A runner that is installed must match the settings and this `ns`; one that is not installed is
+/// fine.
+fn runner(root: &Path) -> Check {
+    const FIX: &str = "run `ns runner install`";
+    let built = std::env::current_exe()
+        .map_err(anyhow::Error::from)
+        .and_then(|ns| {
+            let path = std::env::var("PATH").unwrap_or_default();
+            crate::commands::runner::runner_build(root, ns, path)
+        });
+    let runner = match built {
+        Ok(runner) => runner,
+        Err(e) => return fail("runner", format!("{e:#}")),
+    };
+    match crate::os::get().runner_check(&runner) {
+        Ok(RunnerState::NotInstalled) => pass("runner", "not installed"),
+        Ok(RunnerState::Current) => pass("runner", "installed"),
+        Ok(RunnerState::Differs) => fail(
+            "runner",
+            format!("the installed runner does not match the settings or this ns; {FIX}"),
+        ),
+        Err(e) => fail("runner", format!("{e:#}")),
+    }
 }
 
 fn pin(root: &Path) -> Check {

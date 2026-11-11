@@ -12,6 +12,7 @@ mod init;
 mod log;
 mod plan;
 mod run;
+mod runner;
 mod self_;
 mod status;
 mod sync;
@@ -49,6 +50,8 @@ pub enum Command {
     Init(init::Args),
     /// Move a unit through the states, printing each move.
     Run(run::Args),
+    /// Start `ns auto` on a schedule, unattended.
+    Runner(runner::Args),
     /// Show where each unit stands.
     Status(status::Args),
     /// Write the skills where the repository's harnesses find them.
@@ -80,6 +83,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Log(args) => log::run(args),
         Command::Plan(args) => plan::run(args),
         Command::Run(args) => run::run(args),
+        Command::Runner(args) => runner::run(args),
         Command::Status(args) => status::run(args),
         Command::Sync(args) => sync::run(args),
         Command::Upgrade(args) => upgrade::run(args),
