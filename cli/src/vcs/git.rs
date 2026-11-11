@@ -78,6 +78,28 @@ impl Vcs for Git {
         Ok(())
     }
 
+    fn workspace_init(&self, path: &Path) -> Result<()> {
+        run(path, &["init", "-q"])?;
+        run(path, &["add", "-A"])?;
+        run(
+            path,
+            &[
+                "-c",
+                "user.name=ns",
+                "-c",
+                "user.email=ns@localhost",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--no-verify",
+                "-m",
+                "the first commit",
+            ],
+        )?;
+        Ok(())
+    }
+
     fn state_dir_find(&self, root: &Path) -> Result<PathBuf> {
         let common = run(
             root,

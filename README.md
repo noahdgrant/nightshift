@@ -171,6 +171,8 @@ model = "opus"
 
 `ns eval review` runs the review sessions `[review] sessions` sets on the known cases in `evals/review` and reports whether it gives the right verdict each time, so you can tell whether an edit to the skill helped. `--model` runs the cases with another model, to compare models on the same cases. It makes real harness calls, so it uses subscription time.
 
+`ns eval verify` does the same for the verify skill on the cases in `evals/verify`, with the same flags and report; `--model` beats the `verify` key of `[model]`. Each case is a small repository in `repo/`, which each run copies into a new temporary directory and makes a repository with one commit, and the run is scored on its own `VERDICT:` line (the second verification after an INCONCLUSIVE is not replayed). A case holds only commands that are deterministic and need no network. Cases are written by hand (see `evals/verify/README.md`). Each run is a real harness call, so it uses subscription time, and a verification runs commands, so a case costs more than a review session.
+
 `ns eval add review <commit> --unit <number> --as <case> [--expect <PASS|FAIL>]` writes the change a commit made, and the unit it was for, as a new case in `evals/review`. Use it after a defect got past review and was found later: the change that carried it becomes a case, so the next edit to the skill is checked against it. `--expect` is `FAIL` when absent. It writes nothing and fails when the case already exists, the commit is not found or the unit cannot be read. It prints one JSON line naming the directory; read the case and commit it.
 
 ## Credits

@@ -9,7 +9,7 @@ mod rounds;
 mod setup;
 pub mod ship;
 pub mod verdict;
-mod verify;
+pub mod verify;
 
 pub use verify::unproven_note;
 

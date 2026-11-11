@@ -95,7 +95,13 @@ pub fn unproven_note(dir: &Path, unit: &str) -> Result<String> {
     ))
 }
 
-fn prompt(skill: &str, title: &str, body: &str, build: &str, previous: Option<&str>) -> String {
+pub(crate) fn prompt(
+    skill: &str,
+    title: &str,
+    body: &str,
+    build: &str,
+    previous: Option<&str>,
+) -> String {
     let previous = previous
         .map(|text| format!("\n# Findings from the previous verification\n\n{text}"))
         .unwrap_or_default();

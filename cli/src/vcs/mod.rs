@@ -34,6 +34,9 @@ pub trait Vcs {
         base: Option<&str>,
     ) -> Result<()>;
 
+    /// Makes the existing directory `path` a repository with one commit of everything in it.
+    fn workspace_init(&self, path: &Path) -> Result<()>;
+
     /// A fingerprint of everything in the workspace at `path` that a commit would hold: tracked
     /// files, untracked files that are not ignored, and their contents. Two snapshots are equal
     /// exactly when nothing changed between them.
