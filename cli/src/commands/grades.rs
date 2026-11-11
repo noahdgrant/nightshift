@@ -6,7 +6,7 @@ use clap::Args as ClapArgs;
 use crate::runlog::RunLog;
 use crate::states::retrospective::GRADES_FILE;
 use crate::transcripts::Transcripts;
-use crate::{grades, harness, vcs};
+use crate::{grades, harness, manifest, vcs};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -23,6 +23,7 @@ pub struct Args {
 pub fn run(args: Args) -> Result<()> {
     let vcs = vcs::get();
     let root = vcs.root_find(&std::env::current_dir()?)?;
+    let level = manifest::retrospective_share_read(&root)?;
     let events = RunLog::sibling_open(&*vcs, &root, GRADES_FILE)?.events()?;
     let entries = grades::parse(&events);
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
@@ -42,7 +43,7 @@ pub fn run(args: Args) -> Result<()> {
     };
     let report = grades::report(&entries, now, args.weeks)
         .with_waits(&runs, now, args.weeks)
-        .with_cycles(&runs, &entries, &kept, now, args.weeks);
+        .with_cycles(&runs, &entries, &kept, now, args.weeks, level);
     if report.is_empty() {
         if !args.json {
             if entries.is_empty() {

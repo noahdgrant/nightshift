@@ -128,6 +128,31 @@ pub fn review_sessions_read(root: &Path) -> Result<u32> {
         })
 }
 
+/// The level of `ns grades`' retrospective share, in percent, when the person gives none. A first
+/// guess: revisit it once there is data.
+const RETROSPECTIVE_SHARE_DEFAULT: f64 = 25.0;
+
+/// The level `[grades] retrospective_share` sets, a percentage from 0 to 100, or the built-in
+/// default when the key is missing. Anything else is an error.
+pub fn retrospective_share_read(root: &Path) -> Result<f64> {
+    let document = document_read(root)?;
+    let Some(item) = document
+        .get("grades")
+        .and_then(|g| g.get("retrospective_share"))
+    else {
+        return Ok(RETROSPECTIVE_SHARE_DEFAULT);
+    };
+    item.as_float()
+        .or_else(|| item.as_integer().map(|n| n as f64))
+        .filter(|n| (0.0..=100.0).contains(n))
+        .with_context(|| {
+            format!(
+                "`grades.retrospective_share` in {} is not a percentage from 0 to 100",
+                file_find(root).display()
+            )
+        })
+}
+
 /// A place where a headless session starts, which `[model]` can give its own model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
@@ -587,6 +612,49 @@ mod tests {
             let err = review_sessions_read(tmp.path()).unwrap_err().to_string();
             assert!(
                 err.contains("review.sessions") && err.contains("nightshift.toml"),
+                "{text}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn retrospective_share_is_the_setting_or_25() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(retrospective_share_read(tmp.path()).unwrap(), 25.0);
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for (text, level) in [
+            ("[grades]\nretrospective_share = 10\n", 10.0),
+            ("[grades]\nretrospective_share = 0\n", 0.0),
+            ("[grades]\nretrospective_share = 100\n", 100.0),
+            ("[grades]\nretrospective_share = 12.5\n", 12.5),
+            ("[run]\nmax_attempts = 2\n", 25.0),
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            assert_eq!(
+                retrospective_share_read(tmp.path()).unwrap(),
+                level,
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn retrospective_share_outside_0_to_100_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
+        for text in [
+            "[grades]\nretrospective_share = -1\n",
+            "[grades]\nretrospective_share = 101\n",
+            "[grades]\nretrospective_share = 100.5\n",
+            "[grades]\nretrospective_share = nan\n",
+            "[grades]\nretrospective_share = \"25\"\n",
+        ] {
+            std::fs::write(file_find(tmp.path()), text).unwrap();
+            let err = retrospective_share_read(tmp.path())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("grades.retrospective_share") && err.contains("nightshift.toml"),
                 "{text}: {err}"
             );
         }
