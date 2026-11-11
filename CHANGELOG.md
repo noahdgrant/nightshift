@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/noahdgrant/nightshift/compare/v0.8.0...v0.8.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **cli:** a test no longer fails once the version moves past the repository's pin ([#1050](https://github.com/noahdgrant/nightshift/issues/1050)) ([db027a2](https://github.com/noahdgrant/nightshift/commit/db027a24e71b1ab453c684621e9b80479a6e28ae)), closes [#1049](https://github.com/noahdgrant/nightshift/issues/1049)
+
 ## [0.8.0](https://github.com/noahdgrant/nightshift/compare/v0.7.1...v0.8.0) (2026-11-11)
 
 
