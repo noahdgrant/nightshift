@@ -4214,6 +4214,18 @@ fn a_grade_line_is_kept_in_grades_jsonl_with_every_field() {
     assert_eq!(grade["base"], main.as_str());
     assert!(grade["at"].as_u64().is_some_and(|t| t > 0));
     assert_eq!(grade["model"], "opus");
+    // The fake harness prints plain text, so no session has a model or tokens to read.
+    let states: Vec<&str> = grade["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["state"].as_str().unwrap())
+        .collect();
+    assert!(states.contains(&"build"), "{states:?}");
+    assert_eq!(states.last(), Some(&"retrospective"));
+    for s in grade["sessions"].as_array().unwrap() {
+        assert!(s["model"].is_null() && s["tokens"].is_null(), "{s}");
+    }
 }
 
 #[test]
