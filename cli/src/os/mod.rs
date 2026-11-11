@@ -27,6 +27,9 @@ pub trait Os {
 
     /// The time of day by the clock on the wall.
     fn time_now(&self) -> DateTime<Local>;
+
+    /// Blocks for `duration`.
+    fn sleep(&self, duration: Duration);
 }
 
 pub struct Finished {

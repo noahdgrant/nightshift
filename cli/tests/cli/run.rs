@@ -54,7 +54,7 @@ pub struct Fakes {
     /// `None` is a forge that cannot say.
     pub blocked_by: Option<&'static str>,
     /// How the retrospective session ends: `""` grades well, `"fail"` exits non-zero, `"bad"`
-    /// answers with no grade line, `"hang"` never finishes, `"line:<text>"` answers `<text>`.
+    /// answers with no grade line, `"limit"` ends on a usage limit with no reset, `"hang"` never finishes, `"line:<text>"` answers `<text>`.
     pub retro: &'static str,
 }
 
@@ -84,6 +84,10 @@ pub enum BuildCommits {
     TwoWithoutSession,
     /// The first build leaves two commits, and resuming its session fails.
     TwoResumeFails,
+    /// The first build leaves two commits, and resuming its session ends on a usage limit.
+    TwoResumeLimited,
+    /// The first build ends on a usage limit that resets in the year 2100.
+    LimitedFarAhead,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -226,16 +230,24 @@ esac"#,
         BuildCommits::TwoUntilTold
         | BuildCommits::TwoAlways
         | BuildCommits::TwoWithoutSession
-        | BuildCommits::TwoResumeFails => {
+        | BuildCommits::TwoResumeFails
+        | BuildCommits::TwoResumeLimited => {
             r#"git add -A; git commit -q -m one; echo more > more.txt; git add -A; git commit -q -m two; "#
         }
-        BuildCommits::OnlyWhenTold | BuildCommits::Never => "",
+        BuildCommits::OnlyWhenTold | BuildCommits::Never | BuildCommits::LimitedFarAhead => "",
+    };
+    let limited = match fakes.build_commits {
+        BuildCommits::LimitedFarAhead => {
+            "echo 'Claude AI usage limit reached|4102444800'; exit 1; "
+        }
+        _ => "",
     };
     let squash = match fakes.build_commits {
         BuildCommits::TwoUntilTold => {
             r#"git reset -q --soft HEAD~2; git commit -q -m "Add a thing"; "#
         }
         BuildCommits::TwoResumeFails => "exit 1; ",
+        BuildCommits::TwoResumeLimited => "echo 'Claude AI usage limit reached'; exit 1; ",
         _ => "",
     };
     let when_told = match fakes.build_commits {
@@ -270,6 +282,7 @@ case "$p" in
   printf %s "$p" > "{bin}/retro.prompt"
   case "{retro}" in
   fail) exit 1;;
+  limit) echo 'Claude AI usage limit reached'; exit 1;;
   bad) echo 'It went fine.';;
   hang) exec sleep 30;;
   line:*) echo "$(printf %s '{retro}' | cut -c6-)";;
@@ -283,7 +296,7 @@ case "$p" in
 *"The checks failed:"*) touch "{bin}/fixed"; echo fixed it;;
 *"left uncommitted changes"*) {when_told}echo committed when told;;
 *"commits on the branch"*|*"Squash them into one commit"*) {squash}echo squashed when told;;
-*) {drop}printf %s "$p" > "{bin}/build.prompt"; mkdir -p "$(dirname '{builds}')"; printf %s '{content}' > '{builds}'; {run_checks}{commit}{built};;
+*) {limited}{drop}printf %s "$p" > "{bin}/build.prompt"; mkdir -p "$(dirname '{builds}')"; printf %s '{content}' > '{builds}'; {run_checks}{commit}{built};;
 esac
 exit {exit}"#,
             bin = bin.display(),
@@ -304,12 +317,16 @@ exit {exit}"#,
             },
             built = if !matches!(
                 fakes.build_commits,
-                BuildCommits::TwoUntilTold | BuildCommits::TwoAlways | BuildCommits::TwoResumeFails
+                BuildCommits::TwoUntilTold
+                    | BuildCommits::TwoAlways
+                    | BuildCommits::TwoResumeFails
+                    | BuildCommits::TwoResumeLimited
             ) {
                 "echo built the thing".to_string()
             } else {
                 r#"printf '%s\n' '{"type":"result","result":"built the thing\n","session_id":"sess-1"}'"#.to_string()
             },
+            limited = limited,
             exit = fakes.exit,
             builds = fakes.builds,
             content = fakes.content,
@@ -2196,6 +2213,27 @@ fn a_build_whose_resumed_session_fails_to_squash_sticks_the_unit() {
     assert!(!moves.contains(&"build>build".to_string()), "{moves:?}");
     let log = std::fs::read_to_string(repo.path.join(".git/ns/runs.jsonl")).unwrap();
     assert!(log.contains(r#""squash":"unresumable""#), "{log}");
+}
+
+#[test]
+fn a_usage_limit_in_a_squash_stops_the_run_and_is_not_unresumable() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        build_commits: BuildCommits::TwoResumeLimited,
+        ..Fakes::passing()
+    };
+    let out = run(&repo, &tools(&repo, &fakes))
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).unwrap();
+    assert!(!out.contains(r#""to":"stuck""#), "{out}");
+    assert!(out.contains("usage_limit"), "{out}");
+    let log = std::fs::read_to_string(repo.path.join(".git/ns/runs.jsonl")).unwrap_or_default();
+    assert!(!log.contains("unresumable"), "{log}");
+    let gh = gh_log(&repo);
+    assert!(!gh.contains("status:stuck"), "{gh}");
 }
 
 #[test]
@@ -4419,6 +4457,25 @@ fn a_retrospective_that_times_out_is_skipped_and_costs_no_attempt() {
         "{skips:?}"
     );
     assert!(grades(&repo).is_empty());
+}
+
+#[test]
+fn a_usage_limit_in_the_retrospective_stops_the_run_and_gives_the_label_back() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        retro: "limit",
+        ..Fakes::passing()
+    };
+    run_merged(&repo, &fakes, &["--max-attempts", "1"]).failure();
+    assert!(skipped(&repo).is_empty(), "{:?}", skipped(&repo));
+    assert!(grades(&repo).is_empty());
+    let gh = gh_log(&repo);
+    assert!(!gh.contains("status:stuck"), "{gh}");
+    let last = gh
+        .lines()
+        .rfind(|l| l.starts_with("issue edit") && !l.contains("assignee"))
+        .unwrap();
+    assert!(last.contains("--add-label status:ready-for-agent"), "{gh}");
 }
 
 #[test]

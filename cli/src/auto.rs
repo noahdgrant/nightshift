@@ -24,6 +24,8 @@ pub struct Streak {
     /// `None` never stops.
     limit: Option<usize>,
     units: Vec<u64>,
+    /// Why the night stopped on a usage limit it could not wait out. Not a failure of any unit.
+    usage_limit: Option<String>,
 }
 
 impl Streak {
@@ -32,7 +34,23 @@ impl Streak {
         Streak {
             limit: (limit > 0).then_some(limit),
             units: Vec::new(),
+            usage_limit: None,
         }
+    }
+
+    /// Notes that unit `unit` ended with `error`. A usage limit stops the night without adding to
+    /// the streak or ending it; anything else is `record`ed, with `session_failed` as given.
+    pub fn error_record(&mut self, unit: u64, error: &anyhow::Error, session_failed: bool) {
+        if crate::harness::usage_limit_of(error).is_some() {
+            self.usage_limit = Some(format!("{error:#}"));
+        } else {
+            self.record(unit, session_failed);
+        }
+    }
+
+    /// Why the night stopped on a usage limit, if it did.
+    pub fn usage_limit(&self) -> Option<&str> {
+        self.usage_limit.as_deref()
     }
 
     /// Notes how unit `unit` ended: a failed session adds to the streak, anything else ends it.
@@ -44,9 +62,10 @@ impl Streak {
         }
     }
 
-    /// Whether enough units in a row failed that no more should be started.
+    /// Whether no more units should be started: enough in a row failed, or a usage limit stopped
+    /// the night.
     pub fn reached(&self) -> bool {
-        self.limit.is_some_and(|n| self.units.len() >= n)
+        self.usage_limit.is_some() || self.limit.is_some_and(|n| self.units.len() >= n)
     }
 
     /// The units in the streak, in the order they failed.
@@ -163,6 +182,24 @@ mod tests {
         streak.record(4, true);
         assert!(streak.reached());
         assert_eq!(streak.units(), [3, 4]);
+    }
+
+    #[test]
+    fn a_usage_limit_stops_the_night_without_touching_the_streak() {
+        let mut streak = Streak::new(2);
+        streak.record(1, true);
+        let limit = anyhow::Error::new(crate::harness::UsageLimit { resets: None });
+        streak.error_record(2, &limit, true);
+        assert!(streak.reached());
+        assert_eq!(streak.units(), [1]);
+        assert_eq!(
+            streak.usage_limit(),
+            Some("the harness usage limit is reached and it does not say when it resets")
+        );
+        let mut other = Streak::new(2);
+        other.error_record(3, &anyhow::anyhow!("boom"), true);
+        assert!(!other.reached());
+        assert_eq!(other.units(), [3]);
     }
 
     #[test]

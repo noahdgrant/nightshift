@@ -23,6 +23,9 @@ pub enum Outcome {
     Unresumable,
     /// The state itself went wrong. The unit runs the same state again.
     Redo,
+    /// The harness has no usage left and `ns` cannot wait for it. The run stops with the unit as
+    /// it was, and the state is not counted as an attempt.
+    Halt,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

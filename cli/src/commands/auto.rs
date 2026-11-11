@@ -146,7 +146,11 @@ pub fn run(args: Args) -> Result<()> {
         &mut streak,
         &mut |unit| {
             *before.borrow_mut() = log.last_move(&unit.to_string()).ok().flatten();
-            unit_run::run(unit_run::Args::unattended(unit, options.clone()))
+            unit_run::run(unit_run::Args::unattended(
+                unit,
+                options.clone(),
+                limits.deadline,
+            ))
         },
         &mut |unit| {
             went_wrong_since(
@@ -156,6 +160,12 @@ pub fn run(args: Args) -> Result<()> {
         },
     )?;
     failed += ran;
+    if let Some(reason) = streak.usage_limit() {
+        // Every unit is as it was, so this is a clean stop and not a failure.
+        println!("{}", json!({ "stopped": "usage_limit", "reason": reason }));
+        eprintln!("ns: stopped: {reason}");
+        return Ok(());
+    }
     if streak.reached() {
         println!(
             "{}",
@@ -246,7 +256,7 @@ fn units_run(
         if let Err(e) = &ended {
             eprintln!("ns: unit {unit}: {e:#}");
             failed += 1;
-            streak.record(unit, went_wrong(unit));
+            streak.error_record(unit, e, went_wrong(unit));
         } else {
             streak.record(unit, false);
         }
@@ -422,6 +432,9 @@ mod tests {
         fn time_now(&self) -> DateTime<Local> {
             self.0.get()
         }
+        fn sleep(&self, _: Duration) {
+            unreachable!()
+        }
     }
 
     fn start() -> DateTime<Local> {
@@ -573,6 +586,33 @@ mod tests {
         )
         .unwrap();
         started.into_inner()
+    }
+
+    #[test]
+    fn a_usage_limit_stops_the_night_and_is_not_a_unit_that_went_wrong() {
+        let mut streak = Streak::new(2);
+        let started = RefCell::new(Vec::new());
+        units_run(
+            &Ready::default(),
+            &Clock(Cell::new(start())),
+            Path::new("."),
+            &Limits {
+                max_units: None,
+                deadline: None,
+            },
+            &mut streak,
+            &mut |unit| {
+                started.borrow_mut().push(unit);
+                Err(anyhow::Error::new(crate::harness::UsageLimit {
+                    resets: None,
+                }))
+            },
+            &mut |_| true,
+        )
+        .unwrap();
+        assert_eq!(started.into_inner(), [1]);
+        assert!(streak.units().is_empty());
+        assert!(streak.usage_limit().is_some());
     }
 
     fn moved(to: State, reason: Option<Reason>, at: u64) -> Option<Move> {

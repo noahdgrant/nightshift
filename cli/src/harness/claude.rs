@@ -5,8 +5,9 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use chrono::{Local, TimeZone};
 
-use super::{Harness, Reply, Task, TimedOut};
+use super::{Harness, Reply, Task, TimedOut, UsageLimit};
 use crate::os::Os;
 use crate::retry;
 
@@ -23,6 +24,55 @@ const TRANSIENT: [&str; 7] = [
     "etimedout",
     "socket hang up",
 ];
+
+/// What a session that ended badly prints when the user's subscription has no usage left until a
+/// window ends. This is not a bad moment, so it is never repeated after seconds.
+///
+/// The text comes from the installed `claude` CLI (2.1.321), which holds these phrases, and from
+/// Claude Code's documentation of its usage limits. It has not been seen from a real limit: a
+/// real one, once seen, replaces the fixtures in the tests.
+const USAGE_LIMIT: [&str; 6] = [
+    "usage limit reached",
+    "usage limit has been reached",
+    "reached your usage limit",
+    "reached your weekly usage limit",
+    "hit your usage limit",
+    "hit your limit",
+];
+
+/// The usage limit `reply` says was reached, with its reset time when one can be read. Two forms
+/// are read, both as epoch seconds: the older text `Claude AI usage limit reached|<epoch>`, and
+/// the `resetsAt` of a `rate_limit_event` the stream printed with status `rejected`, which the
+/// CLI emits in `stream-json` mode. A limit whose text gives only a clock time such as "resets
+/// 3pm" has no reset that can be read.
+fn usage_limit_find(reply: &Reply) -> Option<UsageLimit> {
+    if reply.success || !retry::says(&reply.text, &USAGE_LIMIT) {
+        return None;
+    }
+    let from_text = reply
+        .text
+        .to_lowercase()
+        .split_once("limit reached|")
+        .and_then(|(_, rest)| {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<i64>().ok()
+        });
+    let from_stream = || {
+        String::from_utf8_lossy(&reply.transcript)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|event| event["type"] == "rate_limit_event")
+            .map(|event| event["rate_limit_info"].clone())
+            .filter(|info| info["status"] == "rejected")
+            .filter_map(|info| info["resetsAt"].as_i64())
+            .next_back()
+    };
+    let resets = from_text
+        .or_else(from_stream)
+        .map(|n| if n > 100_000_000_000 { n / 1000 } else { n })
+        .and_then(|secs| Local.timestamp_opt(secs, 0).single());
+    Some(UsageLimit { resets })
+}
 
 pub struct Claude {
     program: OsString,
@@ -179,6 +229,7 @@ impl Harness for Claude {
         self.os.process_interact(cmd).context("cannot run claude")
     }
 
+    /// A session that ended on a usage limit is an error [`UsageLimit`], never started again here.
     /// A session that ended badly because the service had a bad moment is started again. What it
     /// changed before it ended stays, as it does when a state runs again.
     fn task_run(&self, task: &Task) -> Result<Reply> {
@@ -188,6 +239,8 @@ impl Harness for Claude {
             self.retry_delay,
             || self.session_run(task),
             |r| match r {
+                // A usage limit is no bad moment, and its text may hold a word of `TRANSIENT`.
+                Ok(reply) if usage_limit_find(reply).is_some() => None,
                 Ok(reply) if !reply.success && retry::says(&reply.text, &TRANSIENT) => {
                     attempts.set(attempts.get() + 1);
                     // The last attempt is the reply itself, not an earlier session.
@@ -200,6 +253,10 @@ impl Harness for Claude {
             },
         );
         let earlier = earlier.into_inner();
+        // It is an error, not a failed reply, so no caller spends an attempt on it.
+        if let Some(limit) = result.as_ref().ok().and_then(usage_limit_find) {
+            return Err(limit.into());
+        }
         match &mut result {
             Ok(reply) => reply.earlier = earlier,
             Err(e) => {
@@ -483,5 +540,93 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("said")).unwrap(),
             "grill me\n"
         );
+    }
+
+    /// A stand-in for `claude` that prints `said` and ends badly, and counts its sessions.
+    fn limited(dir: &Path, said: &str) -> Claude {
+        flaky(dir, 99, said)
+    }
+
+    #[test]
+    fn a_usage_limit_with_a_reset_is_an_error_that_is_not_started_again() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let err = limited(tmp.path(), "Claude AI usage limit reached|1773180000")
+            .task_run(&task(tmp.path(), true))
+            .unwrap_err();
+        let limit = crate::harness::usage_limit_of(&err).unwrap();
+        assert_eq!(limit.resets.unwrap().timestamp(), 1_773_180_000);
+        assert_eq!(sessions(tmp.path()), 1);
+    }
+
+    #[test]
+    fn a_usage_limit_in_a_rate_limit_event_gives_its_reset() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let stream = concat!(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1773180000,"rateLimitType":"five_hour"}}"#,
+            "\n",
+            r#"{"type":"result","is_error":true,"result":"You've hit your limit"}"#
+        );
+        let err = streaming(tmp.path(), stream, "exit 1")
+            .task_run(&task(tmp.path(), true))
+            .unwrap_err();
+        let limit = crate::harness::usage_limit_of(&err).unwrap();
+        assert_eq!(limit.resets.unwrap().timestamp(), 1_773_180_000);
+    }
+
+    #[test]
+    fn a_reset_in_milliseconds_is_read_as_one() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let stream = concat!(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1773180000000}}"#,
+            "\n",
+            r#"{"type":"result","is_error":true,"result":"You've hit your limit"}"#
+        );
+        let err = streaming(tmp.path(), stream, "exit 1")
+            .task_run(&task(tmp.path(), true))
+            .unwrap_err();
+        let limit = crate::harness::usage_limit_of(&err).unwrap();
+        assert_eq!(limit.resets.unwrap().timestamp(), 1_773_180_000);
+    }
+
+    #[test]
+    fn a_usage_limit_that_says_no_time_is_an_error_with_no_reset() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let err = limited(tmp.path(), "5-hour usage limit reached, resets 3pm")
+            .task_run(&task(tmp.path(), true))
+            .unwrap_err();
+        assert!(crate::harness::usage_limit_of(&err)
+            .unwrap()
+            .resets
+            .is_none());
+        assert_eq!(sessions(tmp.path()), 1);
+    }
+
+    #[test]
+    fn a_usage_limit_that_also_says_429_is_still_not_started_again() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let err = limited(
+            tmp.path(),
+            "API Error: 429 Claude AI usage limit reached|1773180000",
+        )
+        .task_run(&task(tmp.path(), true))
+        .unwrap_err();
+        assert!(crate::harness::usage_limit_of(&err).is_some());
+        assert_eq!(sessions(tmp.path()), 1);
+    }
+
+    #[test]
+    fn a_429_that_is_not_a_usage_limit_is_still_started_again() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let reply = flaky(tmp.path(), 2, "API Error: 429 rate limit exceeded")
+            .task_run(&task(tmp.path(), true))
+            .unwrap();
+        assert!(reply.success);
+        assert_eq!(sessions(tmp.path()), 3);
     }
 }

@@ -6,7 +6,7 @@ use serde_json::json;
 use super::{session_run, Context, BUILT_SNAPSHOT};
 use crate::artifact::{self, DIR};
 use crate::grades;
-use crate::harness::Task;
+use crate::harness::{usage_limit_of, Task};
 use crate::manifest::{self, Retrospective};
 use crate::rubric::{self, Rubric};
 use crate::runlog::RunLog;
@@ -42,6 +42,11 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     if !setting.enabled {
         skips.push("disabled".to_string());
     } else if let Err(e) = grade(ctx, &root, &setting, &mut skips) {
+        // A usage limit is not the retrospective's failure: the run stops and the grading runs
+        // again once the limit has reset, for the grades cannot be had later.
+        if usage_limit_of(&e).is_some() {
+            return Err(e);
+        }
         skips.push(format!("{e:#}"));
     }
     for reason in skips {

@@ -17,9 +17,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
+use chrono::{DateTime, Local};
 
 use crate::forge::Forge;
-use crate::harness::{Harness, Reply, Task, TimedOut};
+use crate::harness::{self, Harness, Reply, Task, TimedOut};
 use crate::manifest::{self, Place};
 use crate::os::Os;
 use crate::state::{Outcome, State};
@@ -48,6 +49,9 @@ pub struct Context {
     pub checks_timeout: Duration,
     /// The model the person asked for, which beats every key of `[model]`.
     pub model: Option<String>,
+    /// The moment `ns auto` stops, when it was told one. A usage limit that resets after it is
+    /// not waited for.
+    pub until: Option<DateTime<Local>>,
 }
 
 impl Context {
@@ -78,7 +82,14 @@ pub(crate) fn session_run(ctx: &Context, state: State, task: &Task) -> Result<Re
     let root = ctx.vcs.root_find(&ctx.from)?;
     let kept = Transcripts::open(ctx.vcs.as_ref(), &root)?;
     let unit = ctx.unit.to_string();
-    match ctx.harness.task_run(task) {
+    // A usage limit that says when it resets is waited out here, so the state goes on in place.
+    let ran = harness::usage_limit_wait(
+        ctx.until,
+        &|| ctx.os.time_now(),
+        &|d| ctx.os.sleep(d),
+        || ctx.harness.task_run(task),
+    );
+    match ran {
         Ok(reply) => {
             for raw in reply.earlier.iter().chain([&reply.transcript]) {
                 kept.keep(&unit, state, raw, task.model.as_deref())?;
@@ -93,5 +104,133 @@ pub(crate) fn session_run(ctx: &Context, state: State, task: &Task) -> Result<Re
             }
             Err(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::UsageLimit;
+    use crate::os::Finished;
+    use chrono::TimeZone;
+    use std::cell::{Cell, RefCell};
+    use std::process::Command;
+    use std::rc::Rc;
+
+    fn at(hour: u32) -> DateTime<Local> {
+        Local
+            .with_ymd_and_hms(2026, 3, 10, hour, 0, 0)
+            .earliest()
+            .unwrap()
+    }
+
+    /// An operating system at 10:00 that records how long it was asked to sleep.
+    struct Clock(Rc<RefCell<Vec<Duration>>>);
+
+    impl Os for Clock {
+        fn process_run(&self, _: Command, _: &[u8], _: Duration) -> Result<Finished> {
+            unreachable!()
+        }
+        fn process_interact(&self, _: Command) -> Result<bool> {
+            unreachable!()
+        }
+        fn process_replace(&self, _: Command) -> anyhow::Error {
+            unreachable!()
+        }
+        fn shell_command(&self, _: &str) -> Command {
+            unreachable!()
+        }
+        fn time_now(&self) -> DateTime<Local> {
+            at(10)
+        }
+        fn sleep(&self, d: Duration) {
+            self.0.borrow_mut().push(d);
+        }
+    }
+
+    /// A harness that hits a usage limit resetting at 13:00 once, then passes.
+    struct Limited(Rc<Cell<u32>>);
+
+    impl Harness for Limited {
+        fn version_get(&self) -> Result<String> {
+            unreachable!()
+        }
+        fn skills_dir(&self) -> &'static str {
+            unreachable!()
+        }
+        fn session_start_hook_install(&self, _: &std::path::Path, _: &str) -> Result<bool> {
+            unreachable!()
+        }
+        fn task_run(&self, _: &Task) -> Result<Reply> {
+            self.0.set(self.0.get() + 1);
+            if self.0.get() == 1 {
+                return Err(UsageLimit {
+                    resets: Some(at(13)),
+                }
+                .into());
+            }
+            Ok(Reply {
+                text: "done".into(),
+                success: true,
+                session: None,
+                transcript: b"{}".to_vec(),
+                earlier: Vec::new(),
+            })
+        }
+        fn transcript_render(&self, _: &str) -> String {
+            unreachable!()
+        }
+        fn session_interact(&self, _: &std::path::Path, _: &str) -> Result<bool> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn session_run_waits_out_a_usage_limit_with_a_reset_and_calls_again() {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        };
+        git(&["init", "-q"]);
+        let slept = Rc::new(RefCell::new(Vec::new()));
+        let calls = Rc::new(Cell::new(0));
+        let ctx = Context {
+            vcs: crate::vcs::get(),
+            forge: crate::forge::get(),
+            harness: Box::new(Limited(calls.clone())),
+            os: Box::new(Clock(slept.clone())),
+            from: repo.path().to_path_buf(),
+            unit: 7,
+            workspace: None,
+            ship: ship::Options {
+                merge: false,
+                poll: Duration::ZERO,
+                timeout: Duration::ZERO,
+                start: Duration::ZERO,
+                queue: false,
+                max_base_moves: 0,
+            },
+            harness_timeout: Duration::from_secs(1),
+            checks_timeout: Duration::from_secs(1),
+            model: None,
+            until: None,
+        };
+        let task = Task {
+            dir: repo.path().to_path_buf(),
+            prompt: String::new(),
+            write: false,
+            model: None,
+            timeout: Duration::from_secs(1),
+            resume: None,
+        };
+        let reply = session_run(&ctx, State::Build, &task).unwrap();
+        assert_eq!(reply.text, "done");
+        assert_eq!(calls.get(), 2);
+        assert_eq!(*slept.borrow(), [Duration::from_secs(3 * 3600)]);
     }
 }

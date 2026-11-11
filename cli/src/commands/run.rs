@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context as _, Result};
+use chrono::{DateTime, Local};
 use clap::{Args as ClapArgs, ValueEnum};
 use serde_json::{json, Value};
 
@@ -34,6 +35,9 @@ pub struct Args {
     /// Whether `ns auto` started the run, which never refreshes an open change request.
     #[arg(skip)]
     from_auto: bool,
+    /// The moment `ns auto` stops, which a usage limit must not make a run wait past.
+    #[arg(skip)]
+    until: Option<DateTime<Local>>,
 }
 
 /// What a run of a unit is told, which `ns auto` passes on to each unit it runs.
@@ -72,7 +76,7 @@ pub struct Options {
 
 impl Args {
     /// A fresh or resumed run of `unit` that goes on between states without a human.
-    pub fn unattended(unit: u64, options: Options) -> Args {
+    pub fn unattended(unit: u64, options: Options, until: Option<DateTime<Local>>) -> Args {
         Args {
             unit,
             fresh: false,
@@ -80,6 +84,7 @@ impl Args {
             gates: Gates::Auto,
             options,
             from_auto: true,
+            until,
         }
     }
 }
@@ -154,6 +159,7 @@ pub fn run(args: Args) -> Result<()> {
         harness_timeout: Duration::from_secs(args.options.harness_timeout_seconds),
         checks_timeout: Duration::from_secs(args.options.checks_timeout_seconds),
         model: args.options.model.clone(),
+        until: args.until,
     };
     let planned = match resume {
         Resume::Fresh => State::START,
@@ -202,13 +208,26 @@ pub fn run(args: Args) -> Result<()> {
             ),
         ) => planned,
     };
+    // What the unit was labeled before, to give back when a usage limit stops the run.
+    let label_before = ctx
+        .forge
+        .unit_get(&root, args.unit)?
+        .labels
+        .into_iter()
+        .find(|l| l.starts_with(auto::STATE_PREFIX));
     status::unit_status_set(ctx.forge.as_ref(), &root, args.unit, status::IN_PROGRESS)?;
     // The assignee is for people to read; a unit does not depend on it.
     if let Err(e) = ctx.forge.unit_assignee_add(&root, args.unit) {
         eprintln!("ns: cannot assign the unit: {e:#}");
     }
+    let halted = std::cell::RefCell::new(None);
     let phase = |state, _attempt| match states::run(&mut ctx, state) {
         Ok(outcome) => outcome,
+        // A usage limit is not the state going wrong: the run stops and the state is not counted.
+        Err(e) if harness::usage_limit_of(&e).is_some() => {
+            *halted.borrow_mut() = Some(e);
+            Outcome::Halt
+        }
         Err(e) => {
             eprintln!("ns: {state} went wrong: {e:#}");
             Outcome::Redo
@@ -230,6 +249,23 @@ pub fn run(args: Args) -> Result<()> {
         Ok(())
     };
     let ended = walk(&unit, start, args.gates, max_attempts, phase, &mut sink);
+    if let Some(e) = halted.into_inner() {
+        // Nothing was logged for the state that hit the limit, so a run resumes where this began.
+        let restored = match &label_before {
+            Some(label) => status::unit_status_set(ctx.forge.as_ref(), &root, args.unit, label),
+            None => status::unit_status_clear(ctx.forge.as_ref(), &root, args.unit),
+        };
+        if let Err(r) = restored {
+            eprintln!("ns: cannot give unit {unit} its status back: {r:#}");
+        }
+        println!(
+            "{}",
+            json!({ "unit": args.unit, "stopped": "usage_limit", "reason": format!("{e:#}") })
+        );
+        return Err(e.context(format!(
+            "stopped: unit {unit} is left as it was; run it again after the limit resets"
+        )));
+    }
     if ended.is_err() {
         if let Err(e) = unproven_comment_add(&ctx, &log, &root, &unit) {
             eprintln!("ns: cannot say what verification left unproven: {e:#}");
@@ -515,9 +551,13 @@ fn walk(
         *attempt += 1;
         let attempt = *attempt;
         let outcome = phase(state, attempt);
+        if matches!(outcome, Outcome::Halt) {
+            bail!("unit {unit} was stopped in {state}");
+        }
         let to = match outcome {
             Outcome::Pass => next,
             Outcome::Unmerged => State::CleanUp,
+            Outcome::Halt => unreachable!("a halted run returns before it moves"),
             Outcome::Unprovable | Outcome::BaseMoved | Outcome::Unresumable => State::Stuck,
             Outcome::Fail | Outcome::Redo | Outcome::Inconclusive => {
                 let back = match outcome {
@@ -536,6 +576,7 @@ fn walk(
             event["attempt"] = attempt.into();
             event["reason"] = match outcome {
                 Outcome::Redo | Outcome::Unresumable => "went_wrong",
+                Outcome::Halt => unreachable!("a halted run returns before it moves"),
                 Outcome::Pass | Outcome::Unmerged | Outcome::Fail => "failed",
                 Outcome::Inconclusive | Outcome::Unprovable => "inconclusive",
                 Outcome::BaseMoved => "base_moved",
@@ -597,6 +638,29 @@ mod tests {
             })
             .collect();
         (moves, result.is_ok())
+    }
+
+    #[test]
+    fn a_halted_state_stops_the_walk_with_no_move_and_no_attempt_spent() {
+        let mut events = Vec::new();
+        let mut calls = 0;
+        let result = walk(
+            "u1",
+            State::Build,
+            Gates::Auto,
+            1,
+            |_, _| {
+                calls += 1;
+                Outcome::Halt
+            },
+            &mut |e| {
+                events.push(e);
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+        assert_eq!(events.len(), 1, "only the starting state is reported");
     }
 
     #[test]
