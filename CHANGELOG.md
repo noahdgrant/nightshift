@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.8.0](https://github.com/noahdgrant/nightshift/compare/v0.7.1...v0.8.0) (2026-11-11)
+
+
+### Features
+
+* **cli:** a grade records the models and token use of the sessions it graded, and ns grades splits by model ([#1038](https://github.com/noahdgrant/nightshift/issues/1038)) ([da68c00](https://github.com/noahdgrant/nightshift/commit/da68c0066bfad93e595900b5a5d2cbdbee458d73))
+* **cli:** a runner starts ns unattended on a schedule ([#1041](https://github.com/noahdgrant/nightshift/issues/1041)) ([148491a](https://github.com/noahdgrant/nightshift/commit/148491a3f46b496f60931507599048f715a6b999))
+* **cli:** ns eval covers the verify skill ([#1042](https://github.com/noahdgrant/nightshift/issues/1042)) ([e0b7d20](https://github.com/noahdgrant/nightshift/commit/e0b7d20c3923d9fba5e990c3f97d8c1ecc830715))
+* **cli:** ns eval replays past units on another model and shows quality against cost ([#1044](https://github.com/noahdgrant/nightshift/issues/1044)) ([81aa8cf](https://github.com/noahdgrant/nightshift/commit/81aa8cf89babfbebdf8859a51f4efaffabdea95a))
+* **cli:** ns eval suggests merged units worth keeping as review cases ([#1043](https://github.com/noahdgrant/nightshift/issues/1043)) ([7e73ae5](https://github.com/noahdgrant/nightshift/commit/7e73ae5d9414b84b9702c64761e7a93491a254e8))
+* **cli:** ns grades shows cycle time and cost for each unit ([#1039](https://github.com/noahdgrant/nightshift/issues/1039)) ([15891d8](https://github.com/noahdgrant/nightshift/commit/15891d8b6da22f24d2b514866ff1c11ef67ed725))
+* **cli:** ns grades shows cycle time and token cost for each week of merged units ([15891d8](https://github.com/noahdgrant/nightshift/commit/15891d8b6da22f24d2b514866ff1c11ef67ed725))
+* **cli:** ns grades shows what share of a unit's tokens the retrospective takes ([#1040](https://github.com/noahdgrant/nightshift/issues/1040)) ([5b4fe3e](https://github.com/noahdgrant/nightshift/commit/5b4fe3efa35c7917a435ee36b7dbda273d44a9ac))
+* **skills:** a ci-design skill, and ns init writes the title check ([#1046](https://github.com/noahdgrant/nightshift/issues/1046)) ([0948ef2](https://github.com/noahdgrant/nightshift/commit/0948ef269a5c04c83aa16f5b2293e3cb6fa5978d))
+
+
+### Bug Fixes
+
+* **cli:** a usage limit on the harness is waited out, not retried for seconds ([#1036](https://github.com/noahdgrant/nightshift/issues/1036)) ([b9eeda6](https://github.com/noahdgrant/nightshift/commit/b9eeda64aa77fc368a642f228ae6dbc82c75372d))
+* **cli:** the retrospective keeps its grades when a transcript is unreadable, and two small slips ([#1048](https://github.com/noahdgrant/nightshift/issues/1048)) ([56e913e](https://github.com/noahdgrant/nightshift/commit/56e913eee67b3d4624402fafebd9ba24667889f0)), closes [#1047](https://github.com/noahdgrant/nightshift/issues/1047)
+
 ## [0.7.1](https://github.com/noahdgrant/nightshift/compare/v0.7.0...v0.7.1) (2026-11-10)
 
 
