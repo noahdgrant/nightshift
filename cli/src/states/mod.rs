@@ -180,6 +180,9 @@ mod tests {
         fn transcript_render(&self, _: &str) -> String {
             unreachable!()
         }
+        fn transcript_usage(&self, _: &str) -> crate::harness::Usage {
+            unreachable!()
+        }
         fn session_interact(&self, _: &std::path::Path, _: &str) -> Result<bool> {
             unreachable!()
         }

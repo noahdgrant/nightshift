@@ -138,3 +138,48 @@ fn grades_all_older_than_the_window_are_not_called_absent() {
         "There are no grades in the last 1 weeks.\n"
     );
 }
+
+/// Keeps one grade of `unit` whose sessions are `sessions`, a JSON array.
+fn keep_sessions(repo: &Repo, unit: &str, pass: bool, sessions: &str) {
+    use std::io::Write;
+    let dir = repo.path.join(".git/ns");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("grades.jsonl"))
+        .unwrap();
+    writeln!(
+        file,
+        r#"{{"unit":"{unit}","rubric":"efficiency","score":0.5,"pass":{pass},"reason":"r","version":"1.0.0","base":"b","at":{},"sessions":{sessions}}}"#,
+        now()
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_pass_rate_is_split_by_build_model_with_the_units_left_out_counted() {
+    let repo = Repo::new();
+    let opus = r#"[{"state":"build","model":"opus","tokens":null}]"#;
+    keep_sessions(&repo, "1", true, opus);
+    keep_sessions(&repo, "2", false, opus);
+    keep_sessions(
+        &repo,
+        "3",
+        true,
+        r#"[{"state":"build","model":null,"tokens":null}]"#,
+    );
+    keep(&repo, "efficiency", true, 0, "1.0.0");
+    let out = grades(&repo, &[]);
+    let model = out.split("\n\n").nth(2).expect(&out);
+    assert_eq!(
+        model,
+        "model  efficiency\nopus   50% (2)\n2 units left out: their build session names no model\n"
+    );
+    let json = grades(&repo, &["--json"]);
+    assert!(json.contains(r#""kind":"model","#), "{json}");
+    assert!(
+        json.contains(r#"{"kind":"model_left_out","units":2}"#),
+        "{json}"
+    );
+}

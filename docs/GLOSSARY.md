@@ -21,7 +21,7 @@ A markdown file that says what to judge and how to grade it: a `name`, a `pass` 
 _Avoid_: Criterion
 
 **Grade**:
-One rubric's result for one unit: a score from 0 to 1, pass or not, and a reason. It is kept in `grades.jsonl`.
+One rubric's result for one unit: a score from 0 to 1, pass or not, and a reason. It is kept in `grades.jsonl` with the state, model and tokens of each session of the unit.
 _Avoid_: Rating
 
 **Review area**:

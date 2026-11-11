@@ -110,9 +110,28 @@ pub trait Harness {
     /// start of each tool result, in order.
     fn transcript_render(&self, transcript: &str) -> String;
 
+    /// The model and the tokens a saved session transcript records.
+    fn transcript_usage(&self, transcript: &str) -> Usage;
+
     /// Starts a session the user takes part in, on their terminal, that begins with `prompt`.
     /// Returns when the user ends it, and whether it ended normally.
     fn session_interact(&self, dir: &Path, prompt: &str) -> Result<bool>;
+}
+
+/// The four token totals of a session, kept apart: they cost differently and are not summed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Tokens {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+}
+
+/// What a session's transcript says about its model and its tokens. `None` is what it does not say.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Usage {
+    pub model: Option<String>,
+    pub tokens: Option<Tokens>,
 }
 
 pub struct Task {

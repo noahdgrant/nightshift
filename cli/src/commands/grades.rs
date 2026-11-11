@@ -12,13 +12,13 @@ pub struct Args {
     /// How many ISO weeks back to show, the current one included.
     #[arg(long, default_value_t = 8)]
     weeks: u32,
-    /// Print one JSON line for each rubric and period instead of the tables.
+    /// Print one JSON line for each rubric and period, model and wait instead of the tables.
     #[arg(long)]
     json: bool,
 }
 
-/// Prints each rubric's pass rate and number of grades per ISO week and per `ns` version, from
-/// `grades.jsonl`. Changes nothing and starts no session.
+/// Prints each rubric's pass rate and number of grades per ISO week, per `ns` version and per
+/// model of the unit's last `build` session, from `grades.jsonl`. Changes nothing and starts no session.
 pub fn run(args: Args) -> Result<()> {
     let vcs = vcs::get();
     let root = vcs.root_find(&std::env::current_dir()?)?;

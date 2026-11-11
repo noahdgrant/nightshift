@@ -35,7 +35,7 @@ pub enum Command {
     Define(define::Args),
     /// Check that the repository and this machine are set up for ns.
     Doctor(doctor::Args),
-    /// Show each rubric's pass rate per week and per ns version.
+    /// Show each rubric's pass rate per week, per ns version and per model of a unit's build state.
     Grades(grades::Args),
     /// File a unit for each cause that three graded units failed on.
     Improve(improve::Args),
