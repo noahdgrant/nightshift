@@ -127,6 +127,13 @@ pub struct Tokens {
     pub cache_write: u64,
 }
 
+impl Tokens {
+    /// Input plus output: the figure a unit's cost is counted in. Cache reads and writes are not in it.
+    pub fn billable(&self) -> u64 {
+        self.input + self.output
+    }
+}
+
 /// What a session's transcript says about its model and its tokens. `None` is what it does not say.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Usage {

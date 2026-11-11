@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, Datelike, Duration, NaiveDate};
 use serde_json::{json, Value};
 
-use crate::harness::{Tokens, Usage};
+use crate::harness::{Harness, Tokens, Usage};
 use crate::rubric::Grade;
 
 /// What one kept session of a unit used: the state it ran for and what its transcript says of
@@ -183,9 +183,34 @@ pub struct WaitRow {
     pub p90_hours: f64,
 }
 
+/// One ISO week's merged units, by the week they were merged in: how long they took from their
+/// first move to `merged_at` and the input plus output tokens of their sessions.
+#[derive(Debug, PartialEq)]
+pub struct CycleRow {
+    pub period: String,
+    pub units: usize,
+    pub median_hours: f64,
+    pub p90_hours: f64,
+    /// `None` when no unit of the week has token data.
+    pub median_tokens: Option<f64>,
+    pub p90_tokens: Option<f64>,
+    /// The units left out of the token figures, for want of token data.
+    pub no_tokens: usize,
+}
+
+/// The tokens spent in one ISO week on units that never merged, by the week of their last move.
+#[derive(Debug, PartialEq)]
+pub struct UnmergedRow {
+    pub period: String,
+    pub units: usize,
+    pub tokens: u64,
+}
+
 pub struct Report {
     pub weeks: Vec<Cell>,
     pub waits: Vec<WaitRow>,
+    pub cycles: Vec<CycleRow>,
+    pub unmerged: Vec<UnmergedRow>,
     pub versions: Vec<Cell>,
     /// The grades by the model that did the unit's `build`, each model as a `period`.
     pub models: Vec<Cell>,
@@ -262,6 +287,8 @@ pub fn report(entries: &[Entry], now: i64, weeks: u32) -> Report {
     Report {
         weeks: cells(&week_keys, count(&|k| Some(k.week.clone()))),
         waits: Vec::new(),
+        cycles: Vec::new(),
+        unmerged: Vec::new(),
         versions: cells(&version_keys, count(&|k| Some(k.entry.version.clone()))),
         models: cells(
             &model_keys,
@@ -326,10 +353,143 @@ fn waits(events: &[Value], now: i64, weeks: u32) -> Vec<WaitRow> {
         .collect()
 }
 
+/// The input plus output tokens of the sessions of a grade line; `None` when no session has
+/// token data. Cache reads and writes are not counted.
+fn entry_tokens(sessions: &[SessionUse]) -> Option<u64> {
+    sessions
+        .iter()
+        .filter_map(|s| s.usage.tokens)
+        .map(|t| t.billable())
+        .reduce(|a, b| a + b)
+}
+
+/// The tokens of a unit's kept session `transcripts`, counted as a grade line's are; `None` when
+/// none of them says its tokens.
+pub fn kept_tokens(harness: &dyn Harness, transcripts: &[String]) -> Option<u64> {
+    let sessions: Vec<SessionUse> = transcripts
+        .iter()
+        .map(|t| SessionUse {
+            state: String::new(),
+            usage: harness.transcript_usage(t),
+        })
+        .collect();
+    entry_tokens(&sessions)
+}
+
+/// Cycle time and tokens of the units merged in the last `weeks` weeks up to `now`, and the
+/// tokens of units that never merged. A unit's cycle runs from its first move in `events` to its
+/// `merged_at`; a unit with no `merged_at` is not merged. A merged unit's tokens are those of its
+/// latest grade line. A unit never merged is one with no `merged_at` whose last move is into
+/// `stuck` (a closed change request ends there too); `kept` gives its tokens from the transcripts
+/// still kept.
+fn cycles(
+    events: &[Value],
+    entries: &[Entry],
+    kept: &dyn Fn(&str) -> Option<u64>,
+    now: i64,
+    weeks: u32,
+) -> (Vec<CycleRow>, Vec<UnmergedRow>) {
+    let mut first: BTreeMap<&str, i64> = BTreeMap::new();
+    let mut last: BTreeMap<&str, (i64, bool)> = BTreeMap::new();
+    let mut merged: BTreeMap<&str, i64> = BTreeMap::new();
+    for e in events {
+        let (Some(unit), Some(at)) = (e["unit"].as_str(), e["at"].as_i64()) else {
+            continue;
+        };
+        if let Some(to) = e["to"].as_str() {
+            first.entry(unit).or_insert(at);
+            last.insert(unit, (at, to == "stuck"));
+        }
+        if let Some(m) = e["merged_at"].as_i64() {
+            merged.insert(unit, m);
+        }
+    }
+    let mut graded: BTreeMap<&str, (i64, Option<u64>)> = BTreeMap::new();
+    for entry in entries {
+        let latest = graded
+            .entry(entry.unit.as_str())
+            .or_insert((i64::MIN, None));
+        if entry.at >= latest.0 {
+            *latest = (entry.at, entry_tokens(&entry.sessions));
+        }
+    }
+    let keys = weeks_back(now, weeks);
+    // Per week: hours, and tokens where the unit has them.
+    let mut by_week: BTreeMap<String, Vec<(f64, Option<u64>)>> = BTreeMap::new();
+    for (unit, merged_at) in &merged {
+        let (Some(from), Some(week)) = (first.get(unit), week_of(*merged_at)) else {
+            continue;
+        };
+        let tokens = graded.get(unit).and_then(|g| g.1);
+        by_week
+            .entry(week)
+            .or_default()
+            .push(((merged_at - from).max(0) as f64 / 3600.0, tokens));
+    }
+    let rows = keys
+        .iter()
+        .filter_map(|period| {
+            let units = by_week.remove(period)?;
+            let mut hours: Vec<f64> = units.iter().map(|u| u.0).collect();
+            let mut tokens: Vec<f64> = units.iter().filter_map(|u| u.1).map(|t| t as f64).collect();
+            hours.sort_by(f64::total_cmp);
+            tokens.sort_by(f64::total_cmp);
+            Some(CycleRow {
+                period: period.clone(),
+                units: units.len(),
+                median_hours: quantile(&hours, 0.5),
+                p90_hours: quantile(&hours, 0.9),
+                median_tokens: (!tokens.is_empty()).then(|| quantile(&tokens, 0.5)),
+                p90_tokens: (!tokens.is_empty()).then(|| quantile(&tokens, 0.9)),
+                no_tokens: units.len() - tokens.len(),
+            })
+        })
+        .collect();
+    let mut unmerged_by_week: BTreeMap<String, (usize, u64)> = BTreeMap::new();
+    for (unit, (at, stuck)) in &last {
+        if !stuck || merged.contains_key(unit) {
+            continue;
+        }
+        let (Some(week), Some(tokens)) = (week_of(*at), kept(unit)) else {
+            continue;
+        };
+        let t = unmerged_by_week.entry(week).or_default();
+        t.0 += 1;
+        t.1 += tokens;
+    }
+    let unmerged = keys
+        .into_iter()
+        .filter_map(|period| {
+            let (units, tokens) = unmerged_by_week.remove(&period)?;
+            Some(UnmergedRow {
+                period,
+                units,
+                tokens,
+            })
+        })
+        .collect();
+    (rows, unmerged)
+}
+
 impl Report {
     /// Adds the `Human wait` table, from the run log's `events`, for the same weeks.
     pub fn with_waits(mut self, events: &[Value], now: i64, weeks: u32) -> Report {
         self.waits = waits(events, now, weeks);
+        self
+    }
+
+    /// Adds the `Cycle time and tokens` table, from the run log's `events` and the grade
+    /// `entries`, for the same weeks. `kept` returns the tokens of the transcripts still kept for
+    /// a unit, `None` when there are none.
+    pub fn with_cycles(
+        mut self,
+        events: &[Value],
+        entries: &[Entry],
+        kept: &dyn Fn(&str) -> Option<u64>,
+        now: i64,
+        weeks: u32,
+    ) -> Report {
+        (self.cycles, self.unmerged) = cycles(events, entries, kept, now, weeks);
         self
     }
 
@@ -380,6 +540,47 @@ impl Report {
                 .collect(),
             ));
         }
+        if !self.cycles.is_empty() {
+            let count = |v: Option<f64>| v.map_or("-".to_string(), |v| format!("{v:.0}"));
+            out.push_str("\nCycle time and tokens\n");
+            out.push_str(&grid(
+                std::iter::once(
+                    [
+                        "week",
+                        "units",
+                        "median hours",
+                        "p90 hours",
+                        "median tokens",
+                        "p90 tokens",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
+                )
+                .chain(self.cycles.iter().map(|c| {
+                    vec![
+                        c.period.clone(),
+                        c.units.to_string(),
+                        format!("{:.1}", c.median_hours),
+                        format!("{:.1}", c.p90_hours),
+                        count(c.median_tokens),
+                        count(c.p90_tokens),
+                    ]
+                }))
+                .collect(),
+            ));
+            let no_tokens: usize = self.cycles.iter().map(|c| c.no_tokens).sum();
+            if no_tokens > 0 {
+                out.push_str(&format!(
+                    "{no_tokens} units left out of the token figures: no token data\n"
+                ));
+            }
+        }
+        for u in &self.unmerged {
+            out.push_str(&format!(
+                "{}  never merged: {} units, {} tokens (kept transcripts only)\n",
+                u.period, u.units, u.tokens
+            ));
+        }
         out
     }
 
@@ -411,11 +612,35 @@ impl Report {
             })
             .to_string()
         });
+        let cycles = self.cycles.iter().map(|c| {
+            json!({
+                "kind": "cycle",
+                "period": c.period,
+                "units": c.units,
+                "median_hours": c.median_hours,
+                "p90_hours": c.p90_hours,
+                "median_tokens": c.median_tokens,
+                "p90_tokens": c.p90_tokens,
+                "no_tokens_units": c.no_tokens,
+            })
+            .to_string()
+        });
+        let unmerged = self.unmerged.iter().map(|u| {
+            json!({
+                "kind": "unmerged_tokens",
+                "period": u.period,
+                "units": u.units,
+                "tokens": u.tokens,
+            })
+            .to_string()
+        });
         weeks
             .chain(versions)
             .chain(models)
             .chain(left_out)
             .chain(waits)
+            .chain(cycles)
+            .chain(unmerged)
             .collect()
     }
 }
@@ -617,6 +842,247 @@ mod tests {
         assert_eq!(
             r.json_lines().last().unwrap(),
             r#"{"kind":"human_wait","median_hours":6.0,"p90_hours":6.0,"period":"2026-W45","units":1}"#
+        );
+    }
+
+    fn moved(unit: &str, at: i64, to: &str) -> Value {
+        log(unit, at, json!({"from": "build", "to": to}))
+    }
+
+    fn with_tokens(unit: &str, input: u64, output: u64) -> Entry {
+        built_by(
+            unit,
+            true,
+            vec![SessionUse {
+                state: "build".into(),
+                usage: Usage {
+                    model: None,
+                    tokens: Some(Tokens {
+                        input,
+                        output,
+                        cache_read: 9_999,
+                        cache_write: 9_999,
+                    }),
+                },
+            }],
+        )
+    }
+
+    fn no_kept(_: &str) -> Option<u64> {
+        None
+    }
+
+    fn cycle_report(
+        events: &[Value],
+        entries: &[Entry],
+        kept: &dyn Fn(&str) -> Option<u64>,
+    ) -> Report {
+        report(&[entry("a", true, 0, "1.0.0")], NOW, 1).with_cycles(events, entries, kept, NOW, 1)
+    }
+
+    #[test]
+    fn cycle_time_and_tokens_run_from_the_first_move_to_merged_at_over_the_units_of_a_week() {
+        let mut events = Vec::new();
+        let mut entries = Vec::new();
+        for (unit, hours, tokens) in [
+            ("1", 2, 100),
+            ("2", 4, 200),
+            ("3", 6, 300),
+            ("4", 8, 400),
+            ("5", 10, 500),
+        ] {
+            events.push(moved(unit, NOW - 20 * H, "build"));
+            events.push(moved(unit, NOW - 19 * H, "verify"));
+            events.push(took_over(unit, NOW, NOW - 20 * H + hours * H));
+            entries.push(with_tokens(unit, tokens - 10, 10));
+        }
+        let r = cycle_report(&events, &entries, &no_kept);
+        assert_eq!(
+            r.cycles,
+            vec![CycleRow {
+                period: "2026-W45".into(),
+                units: 5,
+                median_hours: 6.0,
+                p90_hours: 9.2,
+                median_tokens: Some(300.0),
+                p90_tokens: Some(460.0),
+                no_tokens: 0,
+            }]
+        );
+        assert!(
+            r.render().ends_with("\nCycle time and tokens\nweek      units  median hours  p90 hours  median tokens  p90 tokens\n2026-W45  5      6.0           9.2        300            460\n"),
+            "{}",
+            r.render()
+        );
+        assert_eq!(
+            r.json_lines().last().unwrap(),
+            r#"{"kind":"cycle","median_hours":6.0,"median_tokens":300.0,"no_tokens_units":0,"p90_hours":9.2,"p90_tokens":460.0,"period":"2026-W45","units":5}"#
+        );
+    }
+
+    #[test]
+    fn a_unit_with_no_merged_at_is_not_in_the_cycle_table() {
+        let events = [
+            moved("1", NOW - 5 * H, "build"),
+            moved("1", NOW - H, "ship"),
+        ];
+        let r = cycle_report(&events, &[with_tokens("1", 1, 1)], &no_kept);
+        assert_eq!(r.cycles, vec![]);
+        assert!(!r.render().contains("Cycle time"));
+    }
+
+    #[test]
+    fn a_unit_with_no_token_data_is_left_out_of_the_token_figures_only_and_counted() {
+        let events = [
+            moved("1", NOW - 5 * H, "build"),
+            took_over("1", NOW, NOW - H),
+            moved("2", NOW - 9 * H, "build"),
+            took_over("2", NOW, NOW - H),
+            moved("3", NOW - 9 * H, "build"),
+            took_over("3", NOW, NOW - H),
+        ];
+        // Unit 2's session has no usage; unit 3 was never graded.
+        let silent = built_by("2", true, vec![used("build", None, None)]);
+        let entries = [with_tokens("1", 70, 30), silent];
+        let r = cycle_report(&events, &entries, &no_kept);
+        assert_eq!(r.cycles[0].units, 3);
+        assert_eq!(r.cycles[0].median_hours, 8.0);
+        assert_eq!(r.cycles[0].median_tokens, Some(100.0));
+        assert_eq!(r.cycles[0].no_tokens, 2);
+        assert!(
+            r.render()
+                .contains("2 units left out of the token figures: no token data\n"),
+            "{}",
+            r.render()
+        );
+    }
+
+    #[test]
+    fn units_that_never_merged_are_a_separate_line_of_kept_tokens() {
+        let events = [
+            moved("1", NOW - 5 * H, "build"),
+            moved("1", NOW - H, "stuck"),
+            moved("2", NOW - 5 * H, "build"),
+            moved("2", NOW - 2 * H, "stuck"),
+            moved("3", NOW - 5 * H, "build"),
+            moved("3", NOW - 2 * H, "stuck"),
+            took_over("3", NOW - H, NOW - H),
+            moved("4", NOW - 5 * H, "build"),
+            moved("5", NOW - 5 * H, "build"),
+            moved("5", NOW - H, "stuck"),
+        ];
+        // Unit 3 merged after all; unit 4 is in progress; unit 5's transcripts are pruned.
+        let kept = |unit: &str| match unit {
+            "1" => Some(40),
+            "2" => Some(2),
+            "3" => Some(1_000),
+            "4" => Some(1_000),
+            _ => None,
+        };
+        let r = cycle_report(&events, &[], &kept);
+        assert_eq!(
+            r.unmerged,
+            vec![UnmergedRow {
+                period: "2026-W45".into(),
+                units: 2,
+                tokens: 42
+            }]
+        );
+        assert_eq!(r.cycles.iter().map(|c| c.units).sum::<usize>(), 1);
+        assert!(
+            r.render()
+                .ends_with("2026-W45  never merged: 2 units, 42 tokens (kept transcripts only)\n"),
+            "{}",
+            r.render()
+        );
+        assert_eq!(
+            r.json_lines().last().unwrap(),
+            r#"{"kind":"unmerged_tokens","period":"2026-W45","tokens":42,"units":2}"#
+        );
+    }
+
+    /// Reads a transcript that is "<input> <output> <cache_read> <cache_write>", or "none".
+    struct Fake;
+
+    impl Harness for Fake {
+        fn version_get(&self) -> anyhow::Result<String> {
+            unreachable!()
+        }
+        fn skills_dir(&self) -> &'static str {
+            unreachable!()
+        }
+        fn session_start_hook_install(&self, _: &std::path::Path, _: &str) -> anyhow::Result<bool> {
+            unreachable!()
+        }
+        fn task_run(&self, _: &crate::harness::Task) -> anyhow::Result<crate::harness::Reply> {
+            unreachable!()
+        }
+        fn transcript_render(&self, _: &str) -> String {
+            unreachable!()
+        }
+        fn transcript_usage(&self, t: &str) -> Usage {
+            let n: Vec<u64> = t.split(' ').filter_map(|x| x.parse().ok()).collect();
+            Usage {
+                model: None,
+                tokens: (n.len() == 4).then(|| Tokens {
+                    input: n[0],
+                    output: n[1],
+                    cache_read: n[2],
+                    cache_write: n[3],
+                }),
+            }
+        }
+        fn session_interact(&self, _: &std::path::Path, _: &str) -> anyhow::Result<bool> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn kept_tokens_sum_input_and_output_over_the_kept_sessions() {
+        let two = ["10 5 900 900".to_string(), "20 7 800 800".to_string()];
+        assert_eq!(kept_tokens(&Fake, &two), Some(42));
+        let one_silent = ["10 5 0 0".to_string(), "none".to_string()];
+        assert_eq!(kept_tokens(&Fake, &one_silent), Some(15));
+        assert_eq!(kept_tokens(&Fake, &["none".to_string()]), None);
+        assert_eq!(kept_tokens(&Fake, &[]), None);
+    }
+
+    #[test]
+    fn cycle_rows_and_never_merged_lines_are_one_for_each_week_in_the_window() {
+        let w = 7 * 24 * H;
+        let mut events = Vec::new();
+        // Merged this week, three weeks back (a week with none between), and eight weeks back.
+        for (unit, ago) in [("1", 0), ("2", 3 * w), ("3", 8 * w)] {
+            events.push(moved(unit, NOW - ago - 5 * H, "build"));
+            events.push(took_over(unit, NOW - ago, NOW - ago - H));
+        }
+        // Stuck this week and two weeks back.
+        for (unit, ago) in [("4", 0), ("5", 2 * w)] {
+            events.push(moved(unit, NOW - ago - 5 * H, "build"));
+            events.push(moved(unit, NOW - ago - H, "stuck"));
+        }
+        let kept = |_: &str| Some(7);
+        let r = report(&[entry("a", true, 0, "1.0.0")], NOW, 4).with_cycles(
+            &events,
+            &[],
+            &kept,
+            NOW,
+            4,
+        );
+        let periods = |v: Vec<&str>| v.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            r.cycles
+                .iter()
+                .map(|c| c.period.clone())
+                .collect::<Vec<_>>(),
+            periods(vec!["2026-W42", "2026-W45"])
+        );
+        assert_eq!(
+            r.unmerged
+                .iter()
+                .map(|c| c.period.clone())
+                .collect::<Vec<_>>(),
+            periods(vec!["2026-W43", "2026-W45"])
         );
     }
 
