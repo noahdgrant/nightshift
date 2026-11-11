@@ -5,6 +5,7 @@ mod config;
 mod define;
 mod doctor;
 mod eval;
+mod eval_replay;
 mod grades;
 mod improve;
 mod init;

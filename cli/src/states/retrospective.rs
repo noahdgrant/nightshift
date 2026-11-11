@@ -199,7 +199,7 @@ fn cut_middle(text: &str, limit: usize) -> String {
 }
 
 /// What the retrospective's session is given.
-fn prompt(
+pub(crate) fn prompt(
     rubrics: &[Rubric],
     title: &str,
     body: &str,

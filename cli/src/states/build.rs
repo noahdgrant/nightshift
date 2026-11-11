@@ -34,16 +34,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     let problem = artifact::read(&dir, &id, PROBLEM).ok();
     let base = ctx.vcs.workspace_base_find(&dir)?;
     let root = ctx.vcs.root_find(&ctx.from)?;
-    // The build tells the harness to follow the test-driven loop, so the loop goes with it.
-    let skill = format!(
-        "{}\n\n{}",
-        skill::load(skill::BUILD)?,
-        skill::load(skill::TDD)?
-    );
-    let checks_note = checks::command_find(&dir)?
-        .is_some()
-        .then(checks_note)
-        .transpose()?;
+    let (skill, checks_note) = prompt_inputs(&dir)?;
     let reply = session_run(
         ctx,
         State::Build,
@@ -187,6 +178,37 @@ fn checks_note() -> Result<String> {
         "To run the repository's checks, run `{} check` in your workspace.",
         ns.display()
     ))
+}
+
+/// What `build` is given for a unit with this `title` and `body`, started on `base`, as a first
+/// attempt: no earlier findings. `ns eval replay` builds with it in a workspace of its own.
+pub(crate) fn replay_prompt(dir: &Path, title: &str, body: &str, base: &str) -> Result<String> {
+    let unit = Unit {
+        number: 0,
+        title: title.to_string(),
+        body: body.to_string(),
+        labels: Vec::new(),
+        from_team: true,
+        url: String::new(),
+    };
+    let (skill, note) = prompt_inputs(dir)?;
+    Ok(prompt(&skill, &unit, base, note.as_deref(), None, None))
+}
+
+/// The skill text and the checks note every build prompt starts from, for `run` and for
+/// `replay_prompt` alike, so a replay sends what `ns run` sends.
+fn prompt_inputs(dir: &Path) -> Result<(String, Option<String>)> {
+    // The build tells the harness to follow the test-driven loop, so the loop goes with it.
+    let skill = format!(
+        "{}\n\n{}",
+        skill::load(skill::BUILD)?,
+        skill::load(skill::TDD)?
+    );
+    let note = checks::command_find(dir)?
+        .is_some()
+        .then(checks_note)
+        .transpose()?;
+    Ok((skill, note))
 }
 
 fn prompt(

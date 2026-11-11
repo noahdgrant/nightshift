@@ -371,6 +371,27 @@ fn entry_tokens(sessions: &[SessionUse]) -> Option<u64> {
         .reduce(|a, b| a + b)
 }
 
+/// The tokens of `unit`, input plus output, over the sessions of its latest grade line; `None`
+/// when it has no grade line or none of its sessions says its tokens.
+pub fn unit_tokens(entries: &[Entry], unit: &str) -> Option<u64> {
+    let latest = entries
+        .iter()
+        .filter(|e| e.unit == unit)
+        .max_by_key(|e| e.at)?;
+    entry_tokens(&latest.sessions)
+}
+
+/// The commit the last grade line of `unit` in `events` names as its `base`. `None` when the
+/// unit has no grade line or its lines name none.
+pub fn unit_base(events: &[Value], unit: &str) -> Option<String> {
+    events
+        .iter()
+        .rfind(|v| v["unit"].as_str() == Some(unit) && v["rubric"].is_string())
+        .and_then(|v| v["base"].as_str())
+        .filter(|b| !b.is_empty())
+        .map(String::from)
+}
+
 /// The input plus output tokens of the `retrospective` sessions of a grade line; 0 for none.
 fn retro_tokens(sessions: &[SessionUse]) -> u64 {
     sessions
