@@ -976,3 +976,21 @@ fn suggest_says_on_stderr_when_it_cannot_read_a_units_title() {
     assert_eq!(out, "#9 : was stuck in verify\n");
     assert!(err.contains("could not read the title of unit 9"), "{err}");
 }
+
+#[test]
+fn the_model_flag_help_of_review_and_verify_names_both_model_keys() {
+    for skill in ["review", "verify"] {
+        let out = Command::cargo_bin("ns")
+            .unwrap()
+            .args(["eval", skill, "--help"])
+            .assert()
+            .success();
+        let help = String::from_utf8_lossy(&out.get_output().stdout).replace('\n', " ");
+        assert!(
+            help.contains(
+                "its `review` key for `ns eval review`, its `verify` key for `ns eval verify`"
+            ),
+            "{skill}: {help}"
+        );
+    }
+}
