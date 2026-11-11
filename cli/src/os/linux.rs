@@ -38,6 +38,10 @@ impl Os for Linux {
     fn time_now(&self) -> DateTime<Local> {
         Local::now()
     }
+
+    fn sleep(&self, duration: Duration) {
+        thread::sleep(duration);
+    }
 }
 
 fn run(mut cmd: Command, input: &[u8], timeout: Duration) -> Result<Finished> {

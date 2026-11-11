@@ -84,7 +84,7 @@ pub fn units_troubleshoot(
             }
             Err(e) => {
                 eprintln!("ns: unit {unit} was not troubleshot: {e:#}");
-                streak.record(*unit, harness::is_session_failure(&e));
+                streak.error_record(*unit, &e, harness::is_session_failure(&e));
                 failed += 1;
             }
         }

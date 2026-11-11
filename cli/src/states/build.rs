@@ -7,7 +7,7 @@ use super::{session_run, Context, BUILT_SNAPSHOT};
 use crate::artifact;
 use crate::checks;
 use crate::forge::Unit;
-use crate::harness::{Reply, Task, TimedOut};
+use crate::harness::{usage_limit_of, Reply, Task, TimedOut};
 use crate::manifest::Place;
 use crate::runlog::RunLog;
 use crate::skill;
@@ -148,7 +148,7 @@ fn squash(
             note("unresumable")?;
             Ok(Some(Outcome::Unresumable))
         }
-        Err(e) if e.downcast_ref::<TimedOut>().is_some() => Err(e),
+        Err(e) if e.downcast_ref::<TimedOut>().is_some() || usage_limit_of(&e).is_some() => Err(e),
         Err(_) => {
             note("unresumable")?;
             Ok(Some(Outcome::Unresumable))

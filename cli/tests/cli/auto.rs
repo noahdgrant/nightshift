@@ -1,7 +1,7 @@
 use crate::common::{script, Repo};
 use crate::run::{
     base_advanced, check_runs, counted_check, gh_log, main_published, manifest_set, models_used,
-    origin, run_with, set_manifest, tools, transcript_keep, Fakes, FAIL,
+    origin, run_with, set_manifest, tools, transcript_keep, BuildCommits, Fakes, FAIL,
 };
 
 use std::time::Duration;
@@ -396,6 +396,33 @@ fn auto_stops_the_night_after_two_units_in_a_row_go_wrong_on_the_harness() {
         err.contains("stopped: 2 units in a row went wrong (1, 2)"),
         "{err}"
     );
+}
+
+#[test]
+fn a_usage_limit_that_resets_after_until_stops_ns_auto_at_once() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        build_commits: BuildCommits::LimitedFarAhead,
+        ..Fakes::passing()
+    };
+    // The guard only keeps a broken run from hanging for the 70 years the reset is away.
+    let out = auto_by(
+        &repo,
+        &fakes,
+        &["--until", "06:30"],
+        Some(Duration::from_secs(120)),
+    )
+    .success();
+    let stop = events(&out)
+        .into_iter()
+        .find(|e| e.get("stopped").is_some())
+        .unwrap();
+    assert_eq!(stop["stopped"], "usage_limit");
+    assert!(!label_edits(&repo)
+        .iter()
+        .any(|l| l.contains("status:stuck")));
+    let log = std::fs::read_to_string(repo.path.join(".git/ns/runs.jsonl")).unwrap_or_default();
+    assert!(!log.contains(r#""to":"stuck""#), "{log}");
 }
 
 #[test]

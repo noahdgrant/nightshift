@@ -97,7 +97,7 @@ pub fn units_triage(
             }
             Err(e) => {
                 eprintln!("ns: unit {unit} was not triaged: {e:#}");
-                streak.record(*unit, harness::is_session_failure(&e));
+                streak.error_record(*unit, &e, harness::is_session_failure(&e));
                 failed += 1;
             }
         }
