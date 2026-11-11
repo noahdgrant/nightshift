@@ -2,12 +2,14 @@
 //! live. Everything specific to one lives in its own file.
 
 mod linux;
+mod systemd;
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use anyhow::Result;
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, NaiveTime};
 
 pub trait Os {
     /// Starts `cmd` and waits for it, at most `timeout`. A piped stdin is fed `input` and closed;
@@ -30,6 +32,47 @@ pub trait Os {
 
     /// Blocks for `duration`.
     fn sleep(&self, duration: Duration);
+
+    /// Writes what starts `ns auto` for `runner.root` on a schedule, and turns the schedule on.
+    /// Changes nothing that is already as `runner` says.
+    fn runner_install(&self, runner: &Runner) -> Result<Installed>;
+
+    /// Turns off and deletes the runner of the repository at `root`. Returns whether there was one.
+    fn runner_remove(&self, root: &Path) -> Result<bool>;
+
+    /// Whether the installed runner is the one `runner` describes.
+    fn runner_check(&self, runner: &Runner) -> Result<RunnerState>;
+}
+
+/// What a runner is told about the repository it starts `ns` for.
+pub struct Runner {
+    /// The repository's main checkout, where `ns auto` runs.
+    pub root: PathBuf,
+    /// The `ns` that starts the night: the one that installed the runner.
+    pub ns: PathBuf,
+    /// The `PATH` the night's tools (`git`, the forge's CLI, the harness) are found by.
+    pub path: String,
+    /// When the night starts.
+    pub start: NaiveTime,
+    /// The time of day `ns auto` stops starting units.
+    pub until: NaiveTime,
+}
+
+#[derive(Debug)]
+pub struct Installed {
+    /// The files that make up the runner.
+    pub files: Vec<PathBuf>,
+    /// Whether any of them was written, because it was new or different.
+    pub changed: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RunnerState {
+    NotInstalled,
+    /// Installed, and it matches the settings and the running `ns`.
+    Current,
+    /// Installed, and it differs from what `ns runner install` would write now.
+    Differs,
 }
 
 pub struct Finished {

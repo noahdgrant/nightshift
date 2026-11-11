@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use chrono::NaiveTime;
 use toml_edit::{value, Array, DocumentMut};
 
 use crate::harness::Kind;
@@ -352,6 +353,36 @@ pub fn retrospective_read(root: &Path) -> Result<Retrospective> {
     Ok(Retrospective { enabled, model })
 }
 
+/// When the runner starts `ns auto` and when `ns auto` stops starting units.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct RunnerTimes {
+    pub start: NaiveTime,
+    pub until: NaiveTime,
+}
+
+/// The runner's times: `[runner] start` and `[runner] until`, as a time of day like `22:00`. They
+/// are 22:00 and 06:00 when a key is missing. A value that is not a time of day is an error.
+pub fn runner_read(root: &Path) -> Result<RunnerTimes> {
+    let document = document_read(root)?;
+    let time = |key: &str, default: &str| -> Result<NaiveTime> {
+        let text = match document.get("runner").and_then(|r| r.get(key)) {
+            None => default,
+            Some(item) => item.as_str().with_context(|| {
+                format!(
+                    "`runner.{key}` in {} is not a time of day like 06:30",
+                    file_find(root).display()
+                )
+            })?,
+        };
+        crate::until::time_parse(text)
+            .map_err(|e| anyhow::anyhow!("`runner.{key}` in {}: {e}", file_find(root).display()))
+    };
+    Ok(RunnerTimes {
+        start: time("start", "22:00")?,
+        until: time("until", "06:00")?,
+    })
+}
+
 /// Records the version of `ns` the repository uses, and its harnesses. A `[skills]` table from an
 /// `ns` that copied skills into the repository is dropped.
 pub fn pin_write(root: &Path, pin: &Pin) -> Result<()> {
@@ -384,6 +415,50 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join(".nightshift")).unwrap();
         std::fs::write(file_find(tmp.path()), text).unwrap();
         tmp
+    }
+
+    #[test]
+    fn the_runner_times_default_to_22_00_and_06_00_and_come_from_the_settings() {
+        let t = |h, m| NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        let got = runner_read(model_file("").path()).unwrap();
+        assert_eq!(
+            got,
+            RunnerTimes {
+                start: t(22, 0),
+                until: t(6, 0)
+            }
+        );
+        let got = runner_read(model_file("[runner]\nstart = \"23:15\"\n").path()).unwrap();
+        assert_eq!(
+            got,
+            RunnerTimes {
+                start: t(23, 15),
+                until: t(6, 0)
+            }
+        );
+        let got = runner_read(model_file("[runner]\nuntil = \"05:30\"\n").path()).unwrap();
+        assert_eq!(
+            got,
+            RunnerTimes {
+                start: t(22, 0),
+                until: t(5, 30)
+            }
+        );
+    }
+
+    #[test]
+    fn a_runner_time_that_is_not_a_time_of_day_is_an_error_naming_the_key_and_the_file() {
+        for (text, key) in [
+            ("[runner]\nstart = \"25:00\"\n", "runner.start"),
+            ("[runner]\nuntil = \"dawn\"\n", "runner.until"),
+            ("[runner]\nstart = 22\n", "runner.start"),
+        ] {
+            let err = runner_read(model_file(text).path())
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(key), "{text}: {err}");
+            assert!(err.contains("nightshift.toml"), "{text}: {err}");
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 A unit's `status:` label on the forge says where it is, and only `ns` changes it.
 
-`ns auto` never resumes a unit. A unit that is `stuck` is labeled `status:stuck`, so a human looks at it first and resumes it with `ns run <unit>`.
+`ns auto` holds a per-repository lock, so a second one refuses at once, and every run that took it ends by writing the night's summary file (see the README, "Run it overnight"). It never resumes a unit. A unit that is `stuck` is labeled `status:stuck`, so a human looks at it first and resumes it with `ns run <unit>`.
 
 ```mermaid
 stateDiagram

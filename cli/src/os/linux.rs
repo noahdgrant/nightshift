@@ -3,6 +3,7 @@
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 
-use super::{Finished, Os};
+use super::{systemd, Finished, Installed, Os, Runner, RunnerState};
 
 pub struct Linux;
 
@@ -41,6 +42,18 @@ impl Os for Linux {
 
     fn sleep(&self, duration: Duration) {
         thread::sleep(duration);
+    }
+
+    fn runner_install(&self, runner: &Runner) -> Result<Installed> {
+        systemd::install(&systemd::dir_find()?, runner, &mut systemd::ctl)
+    }
+
+    fn runner_remove(&self, root: &Path) -> Result<bool> {
+        systemd::remove(&systemd::dir_find()?, root, &mut systemd::ctl)
+    }
+
+    fn runner_check(&self, runner: &Runner) -> Result<RunnerState> {
+        systemd::check(&systemd::dir_find()?, runner)
     }
 }
 
