@@ -979,9 +979,13 @@ fn suggest_says_on_stderr_when_it_cannot_read_a_units_title() {
 
 #[test]
 fn the_model_flag_help_of_review_and_verify_names_both_model_keys() {
+    // Outside this repository: its pin is the last release, which is not this build once the
+    // version has been bumped, and `ns` refuses to run from a repository pinned to another one.
+    let elsewhere = tempfile::tempdir().unwrap();
     for skill in ["review", "verify"] {
         let out = Command::cargo_bin("ns")
             .unwrap()
+            .current_dir(elsewhere.path())
             .args(["eval", skill, "--help"])
             .assert()
             .success();
