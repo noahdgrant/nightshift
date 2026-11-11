@@ -183,3 +183,23 @@ fn the_pass_rate_is_split_by_build_model_with_the_units_left_out_counted() {
         "{json}"
     );
 }
+
+#[test]
+fn a_retrospective_share_outside_0_to_100_is_an_error() {
+    let repo = Repo::new();
+    keep(&repo, "efficiency", true, 0, "1.0.0");
+    std::fs::create_dir_all(repo.path.join(".nightshift")).unwrap();
+    std::fs::write(
+        repo.path.join(".nightshift/nightshift.toml"),
+        "[grades]\nretrospective_share = 101\n",
+    )
+    .unwrap();
+    let out = Command::cargo_bin("ns")
+        .unwrap()
+        .arg("grades")
+        .current_dir(&repo.path)
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(stderr.contains("grades.retrospective_share"), "{stderr}");
+}

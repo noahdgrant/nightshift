@@ -62,6 +62,7 @@ pub fn run(args: Args) -> Result<()> {
     let keep = manifest::transcript_days_read(&root)?;
     // Read here so a bad value stops `ns` before it runs anything.
     manifest::review_sessions_read(&root)?;
+    manifest::retrospective_share_read(&root)?;
     manifest::model_read(&root, Place::Build, None)?;
     let forge = forge::get();
     let open = forge.unit_list(&root)?;

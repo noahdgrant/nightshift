@@ -196,6 +196,11 @@ pub struct CycleRow {
     pub p90_tokens: Option<f64>,
     /// The units left out of the token figures, for want of token data.
     pub no_tokens: usize,
+    /// The percentage of the week's tokens the `retrospective` sessions took, over the units with
+    /// token data; `None` when no unit has any.
+    pub retro_share: Option<f64>,
+    /// Whether `retro_share` is above the level.
+    pub above_level: bool,
 }
 
 /// The tokens spent in one ISO week on units that never merged, by the week of their last move.
@@ -211,6 +216,8 @@ pub struct Report {
     pub waits: Vec<WaitRow>,
     pub cycles: Vec<CycleRow>,
     pub unmerged: Vec<UnmergedRow>,
+    /// The level, in percent, above which a week's retrospective share is marked.
+    pub retro_level: f64,
     pub versions: Vec<Cell>,
     /// The grades by the model that did the unit's `build`, each model as a `period`.
     pub models: Vec<Cell>,
@@ -289,6 +296,7 @@ pub fn report(entries: &[Entry], now: i64, weeks: u32) -> Report {
         waits: Vec::new(),
         cycles: Vec::new(),
         unmerged: Vec::new(),
+        retro_level: 0.0,
         versions: cells(&version_keys, count(&|k| Some(k.entry.version.clone()))),
         models: cells(
             &model_keys,
@@ -363,6 +371,16 @@ fn entry_tokens(sessions: &[SessionUse]) -> Option<u64> {
         .reduce(|a, b| a + b)
 }
 
+/// The input plus output tokens of the `retrospective` sessions of a grade line; 0 for none.
+fn retro_tokens(sessions: &[SessionUse]) -> u64 {
+    sessions
+        .iter()
+        .filter(|s| s.state == "retrospective")
+        .filter_map(|s| s.usage.tokens)
+        .map(|t| t.billable())
+        .sum()
+}
+
 /// The tokens of a unit's kept session `transcripts`, counted as a grade line's are; `None` when
 /// none of them says its tokens.
 pub fn kept_tokens(harness: &dyn Harness, transcripts: &[String]) -> Option<u64> {
@@ -388,6 +406,7 @@ fn cycles(
     kept: &dyn Fn(&str) -> Option<u64>,
     now: i64,
     weeks: u32,
+    level: f64,
 ) -> (Vec<CycleRow>, Vec<UnmergedRow>) {
     let mut first: BTreeMap<&str, i64> = BTreeMap::new();
     let mut last: BTreeMap<&str, (i64, bool)> = BTreeMap::new();
@@ -404,36 +423,70 @@ fn cycles(
             merged.insert(unit, m);
         }
     }
-    let mut graded: BTreeMap<&str, (i64, Option<u64>)> = BTreeMap::new();
+    /// A unit's latest grade line: when it was written, the tokens of all its
+    /// sessions (`None` without token data) and those of the retrospective.
+    struct GradedUnit {
+        at: i64,
+        tokens: Option<u64>,
+        retro_tokens: u64,
+    }
+    /// A unit merged in a week: hours from first state to merge, and its tokens.
+    struct MergedUnit {
+        hours: f64,
+        tokens: Option<u64>,
+        retro_tokens: u64,
+    }
+    let mut graded: BTreeMap<&str, GradedUnit> = BTreeMap::new();
     for entry in entries {
-        let latest = graded
-            .entry(entry.unit.as_str())
-            .or_insert((i64::MIN, None));
-        if entry.at >= latest.0 {
-            *latest = (entry.at, entry_tokens(&entry.sessions));
+        let latest = graded.entry(entry.unit.as_str()).or_insert(GradedUnit {
+            at: i64::MIN,
+            tokens: None,
+            retro_tokens: 0,
+        });
+        if entry.at >= latest.at {
+            *latest = GradedUnit {
+                at: entry.at,
+                tokens: entry_tokens(&entry.sessions),
+                retro_tokens: retro_tokens(&entry.sessions),
+            };
         }
     }
     let keys = weeks_back(now, weeks);
-    // Per week: hours, and tokens where the unit has them.
-    let mut by_week: BTreeMap<String, Vec<(f64, Option<u64>)>> = BTreeMap::new();
+    // Per week: each merged unit's hours, and its tokens where it has them.
+    let mut by_week: BTreeMap<String, Vec<MergedUnit>> = BTreeMap::new();
     for (unit, merged_at) in &merged {
         let (Some(from), Some(week)) = (first.get(unit), week_of(*merged_at)) else {
             continue;
         };
-        let tokens = graded.get(unit).and_then(|g| g.1);
-        by_week
-            .entry(week)
-            .or_default()
-            .push(((merged_at - from).max(0) as f64 / 3600.0, tokens));
+        let (tokens, retro_tokens) = graded
+            .get(unit)
+            .map_or((None, 0), |g| (g.tokens, g.retro_tokens));
+        by_week.entry(week).or_default().push(MergedUnit {
+            hours: (merged_at - from).max(0) as f64 / 3600.0,
+            tokens,
+            retro_tokens,
+        });
     }
     let rows = keys
         .iter()
         .filter_map(|period| {
             let units = by_week.remove(period)?;
-            let mut hours: Vec<f64> = units.iter().map(|u| u.0).collect();
-            let mut tokens: Vec<f64> = units.iter().filter_map(|u| u.1).map(|t| t as f64).collect();
+            let mut hours: Vec<f64> = units.iter().map(|u| u.hours).collect();
+            let mut tokens: Vec<f64> = units
+                .iter()
+                .filter_map(|u| u.tokens)
+                .map(|t| t as f64)
+                .collect();
             hours.sort_by(f64::total_cmp);
             tokens.sort_by(f64::total_cmp);
+            // One share for the week, over the units that have token data.
+            let all: u64 = units.iter().filter_map(|u| u.tokens).sum();
+            let retro: u64 = units
+                .iter()
+                .filter(|u| u.tokens.is_some())
+                .map(|u| u.retro_tokens)
+                .sum();
+            let retro_share = (all > 0).then(|| 100.0 * retro as f64 / all as f64);
             Some(CycleRow {
                 period: period.clone(),
                 units: units.len(),
@@ -442,6 +495,8 @@ fn cycles(
                 median_tokens: (!tokens.is_empty()).then(|| quantile(&tokens, 0.5)),
                 p90_tokens: (!tokens.is_empty()).then(|| quantile(&tokens, 0.9)),
                 no_tokens: units.len() - tokens.len(),
+                retro_share,
+                above_level: retro_share.is_some_and(|s| s > level),
             })
         })
         .collect();
@@ -480,7 +535,8 @@ impl Report {
 
     /// Adds the `Cycle time and tokens` table, from the run log's `events` and the grade
     /// `entries`, for the same weeks. `kept` returns the tokens of the transcripts still kept for
-    /// a unit, `None` when there are none.
+    /// a unit, `None` when there are none. A week whose retrospective share is above `retro_level`
+    /// percent is marked.
     pub fn with_cycles(
         mut self,
         events: &[Value],
@@ -488,8 +544,10 @@ impl Report {
         kept: &dyn Fn(&str) -> Option<u64>,
         now: i64,
         weeks: u32,
+        retro_level: f64,
     ) -> Report {
-        (self.cycles, self.unmerged) = cycles(events, entries, kept, now, weeks);
+        self.retro_level = retro_level;
+        (self.cycles, self.unmerged) = cycles(events, entries, kept, now, weeks, retro_level);
         self
     }
 
@@ -552,6 +610,7 @@ impl Report {
                         "p90 hours",
                         "median tokens",
                         "p90 tokens",
+                        "retro share",
                     ]
                     .map(String::from)
                     .to_vec(),
@@ -564,9 +623,16 @@ impl Report {
                         format!("{:.1}", c.p90_hours),
                         count(c.median_tokens),
                         count(c.p90_tokens),
+                        c.retro_share.map_or("-".to_string(), |s| {
+                            format!("{s:.0}%{}", if c.above_level { " *" } else { "" })
+                        }),
                     ]
                 }))
                 .collect(),
+            ));
+            out.push_str(&format!(
+                "* the retrospective's share of tokens is above the level of {}%\n",
+                self.retro_level
             ));
             let no_tokens: usize = self.cycles.iter().map(|c| c.no_tokens).sum();
             if no_tokens > 0 {
@@ -622,6 +688,9 @@ impl Report {
                 "median_tokens": c.median_tokens,
                 "p90_tokens": c.p90_tokens,
                 "no_tokens_units": c.no_tokens,
+                "retro_share": c.retro_share,
+                "retro_level": self.retro_level,
+                "above_level": c.above_level,
             })
             .to_string()
         });
@@ -877,7 +946,8 @@ mod tests {
         entries: &[Entry],
         kept: &dyn Fn(&str) -> Option<u64>,
     ) -> Report {
-        report(&[entry("a", true, 0, "1.0.0")], NOW, 1).with_cycles(events, entries, kept, NOW, 1)
+        report(&[entry("a", true, 0, "1.0.0")], NOW, 1)
+            .with_cycles(events, entries, kept, NOW, 1, 25.0)
     }
 
     #[test]
@@ -907,17 +977,133 @@ mod tests {
                 median_tokens: Some(300.0),
                 p90_tokens: Some(460.0),
                 no_tokens: 0,
+                retro_share: Some(0.0),
+                above_level: false,
             }]
         );
         assert!(
-            r.render().ends_with("\nCycle time and tokens\nweek      units  median hours  p90 hours  median tokens  p90 tokens\n2026-W45  5      6.0           9.2        300            460\n"),
+            r.render().ends_with("\nCycle time and tokens\nweek      units  median hours  p90 hours  median tokens  p90 tokens  retro share\n2026-W45  5      6.0           9.2        300            460         0%\n* the retrospective's share of tokens is above the level of 25%\n"),
             "{}",
             r.render()
         );
         assert_eq!(
             r.json_lines().last().unwrap(),
-            r#"{"kind":"cycle","median_hours":6.0,"median_tokens":300.0,"no_tokens_units":0,"p90_hours":9.2,"p90_tokens":460.0,"period":"2026-W45","units":5}"#
+            r#"{"above_level":false,"kind":"cycle","median_hours":6.0,"median_tokens":300.0,"no_tokens_units":0,"p90_hours":9.2,"p90_tokens":460.0,"period":"2026-W45","retro_level":25.0,"retro_share":0.0,"units":5}"#
         );
+    }
+
+    fn tok(input: u64, output: u64) -> Option<Tokens> {
+        Some(Tokens {
+            input,
+            output,
+            cache_read: 9_999,
+            cache_write: 9_999,
+        })
+    }
+
+    /// A unit merged at `NOW` whose build took `build` tokens and retrospective `retro`.
+    fn graded_unit(unit: &str, build: u64, retro: u64) -> (Vec<Value>, Entry) {
+        (
+            vec![
+                moved(unit, NOW - 5 * H, "build"),
+                took_over(unit, NOW, NOW - H),
+            ],
+            built_by(
+                unit,
+                true,
+                vec![
+                    used("build", None, tok(build, 0)),
+                    used("retrospective", None, tok(retro, 0)),
+                ],
+            ),
+        )
+    }
+
+    #[test]
+    fn the_retrospective_share_is_one_share_for_the_week_over_its_units() {
+        // 10 of 100, 40 of 200 and 50 of 100: 100 of 400 is 25%, not the mean of 10, 20 and 50.
+        let (mut events, mut entries) = (Vec::new(), Vec::new());
+        for (unit, build, retro) in [("1", 90, 10), ("2", 160, 40), ("3", 50, 50)] {
+            let (e, g) = graded_unit(unit, build, retro);
+            events.extend(e);
+            entries.push(g);
+        }
+        let r = cycle_report(&events, &entries, &no_kept);
+        assert_eq!(r.cycles[0].retro_share, Some(25.0));
+        assert!(!r.cycles[0].above_level, "25% is not above 25%");
+    }
+
+    #[test]
+    fn a_week_above_the_level_is_marked_and_one_below_is_not() {
+        let w = 7 * 24 * H;
+        let (mut events, mut entries) = (Vec::new(), Vec::new());
+        // This week 30 of 100; the week before 20 of 100.
+        for (unit, ago, build, retro) in [("1", 0, 70, 30), ("2", w, 80, 20)] {
+            events.push(moved(unit, NOW - ago - 5 * H, "build"));
+            events.push(took_over(unit, NOW - ago, NOW - ago - H));
+            entries.push(built_by(
+                unit,
+                true,
+                vec![
+                    used("build", None, tok(build, 0)),
+                    used("retrospective", None, tok(retro, 0)),
+                ],
+            ));
+        }
+        let r = report(&[entry("a", true, 0, "1.0.0")], NOW, 2)
+            .with_cycles(&events, &entries, &no_kept, NOW, 2, 25.0);
+        assert_eq!(r.cycles[0].retro_share, Some(20.0));
+        assert!(!r.cycles[0].above_level);
+        assert_eq!(r.cycles[1].retro_share, Some(30.0));
+        assert!(r.cycles[1].above_level);
+        let out = r.render();
+        assert!(out.contains("100            100         20%\n"), "{out}");
+        assert!(out.contains("100            100         30% *\n"), "{out}");
+        assert!(
+            out.contains("* the retrospective's share of tokens is above the level of 25%\n"),
+            "{out}"
+        );
+        let json = r.json_lines();
+        assert!(
+            json[json.len() - 1].contains(r#""above_level":true"#)
+                && json[json.len() - 1].contains(r#""retro_level":25.0"#)
+                && json[json.len() - 1].contains(r#""retro_share":30.0"#),
+            "{json:?}"
+        );
+    }
+
+    #[test]
+    fn a_unit_with_no_token_data_is_left_out_of_the_retrospective_share() {
+        let (mut events, mut entries) = (Vec::new(), Vec::new());
+        let (e, g) = graded_unit("1", 90, 10);
+        events.extend(e);
+        entries.push(g);
+        // Unit 2 has no token data at all; its retrospective would swing the share.
+        events.extend([
+            moved("2", NOW - 5 * H, "build"),
+            took_over("2", NOW, NOW - H),
+        ]);
+        entries.push(built_by(
+            "2",
+            true,
+            vec![used("build", None, None), used("retrospective", None, None)],
+        ));
+        let r = cycle_report(&events, &entries, &no_kept);
+        assert_eq!(r.cycles[0].retro_share, Some(10.0));
+    }
+
+    #[test]
+    fn a_unit_whose_retrospective_has_no_tokens_counts_none_of_them_as_retrospective() {
+        let (events, g) = graded_unit("1", 100, 0);
+        let g = Entry {
+            sessions: vec![
+                used("build", None, tok(100, 0)),
+                used("retrospective", None, None),
+            ],
+            ..g
+        };
+        let r = cycle_report(&events, &[g], &no_kept);
+        assert_eq!(r.cycles[0].retro_share, Some(0.0));
     }
 
     #[test]
@@ -1068,6 +1254,7 @@ mod tests {
             &kept,
             NOW,
             4,
+            25.0,
         );
         let periods = |v: Vec<&str>| v.iter().map(|p| p.to_string()).collect::<Vec<_>>();
         assert_eq!(
