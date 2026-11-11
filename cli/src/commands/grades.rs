@@ -5,14 +5,15 @@ use clap::Args as ClapArgs;
 
 use crate::runlog::RunLog;
 use crate::states::retrospective::GRADES_FILE;
-use crate::{grades, vcs};
+use crate::transcripts::Transcripts;
+use crate::{grades, harness, vcs};
 
 #[derive(ClapArgs)]
 pub struct Args {
     /// How many ISO weeks back to show, the current one included.
     #[arg(long, default_value_t = 8)]
     weeks: u32,
-    /// Print one JSON line for each rubric and period, model and wait instead of the tables.
+    /// Print one JSON line for each rubric and period, model, wait, cycle and unmerged-token line instead of the tables.
     #[arg(long)]
     json: bool,
 }
@@ -26,7 +27,22 @@ pub fn run(args: Args) -> Result<()> {
     let entries = grades::parse(&events);
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
     let runs = RunLog::open(&*vcs, &root)?.events()?;
-    let report = grades::report(&entries, now, args.weeks).with_waits(&runs, now, args.weeks);
+    let harness = harness::get();
+    let transcripts = Transcripts::open(&*vcs, &root)?;
+    // The tokens of a unit's kept sessions; `None` when none is kept or none says its tokens.
+    let kept = |unit: &str| {
+        let texts: Vec<String> = transcripts
+            .sessions(unit)
+            .ok()?
+            .iter()
+            .filter_map(|s| std::fs::read(&s.path).ok())
+            .map(|raw| String::from_utf8_lossy(&raw).into_owned())
+            .collect();
+        grades::kept_tokens(&*harness, &texts)
+    };
+    let report = grades::report(&entries, now, args.weeks)
+        .with_waits(&runs, now, args.weeks)
+        .with_cycles(&runs, &entries, &kept, now, args.weeks);
     if report.is_empty() {
         if !args.json {
             if entries.is_empty() {
