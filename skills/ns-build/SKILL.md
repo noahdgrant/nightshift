@@ -29,6 +29,8 @@ When the unit builds or changes a network service, apply `ns-service-design`.
 
 When the unit adds or changes a CI pipeline, apply `ns-ci-design`.
 
+When the unit adds a module, a dependency, a boundary to a tool or service, or a pattern the repository has no example of, apply `ns-architecture-design`.
+
 Done when every requirement has a passing test.
 
 ## 3. Run the checks

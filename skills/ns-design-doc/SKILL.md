@@ -22,6 +22,7 @@ A slice is one thin change through every layer it needs that delivers one behavi
 - A slice is never "set up", "refactor" or "write tests" by itself: that work belongs inside the slice that needs it.
 - A requirement that is too large for one sitting is cut again.
 - For a unit that builds or changes a network service, the slices include the always items at each boundary the unit adds. Use `ns-service-design` for them.
+- For a unit that adds a module, a dependency or a boundary to a tool or service, the first slice that touches the boundary also creates its seam, so every later slice has a test that can reach it. Use `ns-architecture-design` for it.
 
 Done when every Must and Should requirement is covered by a slice and no slice covers nothing in the spec.
 
